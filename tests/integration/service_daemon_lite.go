@@ -11,8 +11,8 @@ import (
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +23,7 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	t.Helper()
 	nc := gw.NATSConn
 	cfg := &config.Config{AZ: testAZ, Region: testRegion}
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 
 	acm, err := acmdomain.NewACMServiceImplWithNATS(t.Context(), cfg, nc, masterKey)
@@ -48,5 +48,5 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	subscribeServiceMethods(t, nc, "eks", eks)
 
 	subscribeServiceMethods(t, nc, "ecs", handlers_ecs.NewService(nc, testRegion, ""))
-	subscribeServiceMethods(t, nc, "rds", handlers_rds.NewService(nc, testRegion))
+	subscribeServiceMethods(t, nc, "rds", rdsinstance.NewService(nc, testRegion))
 }

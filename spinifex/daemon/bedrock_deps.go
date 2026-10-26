@@ -6,8 +6,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -40,7 +40,7 @@ func (d *Daemon) buildBedrockLaunchDeps() ochre.LaunchDeps {
 		Instance: d,
 		Image:    d.imageService,
 		Volume:   d.volumeService,
-		Attacher: handlers_rds.NewNATSVolumeAttacher(d.natsConn),
+		Attacher: rdsinstance.NewNATSVolumeAttacher(d.natsConn),
 		Weights:  weights,
 		// A fresh plumber rather than d.networkPlumber: it is stateless, and
 		// taking it here would order this call after startLocal.

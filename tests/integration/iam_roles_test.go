@@ -121,7 +121,7 @@ func TestIAMRolesAndProfiles(t *testing.T) {
 	require.Equal(t, "described", aws.StringValue(got.Role.Description))
 
 	// The MaxSessionDuration range guard (3600-43200) is unreachable here: the
-	// SDK refuses values below 3600 before dispatch. handlers/iam covers it in
+	// SDK refuses values below 3600 before dispatch. domains/iam covers it in
 	// TestRole_MaxSessionDurationBounds.
 
 	// UpdateAssumeRolePolicy — swap document, no enforcement yet.

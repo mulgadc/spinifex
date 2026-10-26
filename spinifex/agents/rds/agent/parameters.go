@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // The generated parameter files and what it takes to install one. They live on
@@ -43,7 +43,7 @@ func (s parameterStore) servingPath() string   { return filepath.Join(s.dir, s.s
 
 // Byte-for-byte what rds-init writes for the same set, so the copies compared
 // against it are comparing values rather than formatting.
-func (s parameterStore) render(params []handlers_rds.Parameter) ([]byte, error) {
+func (s parameterStore) render(params []rdsinstance.Parameter) ([]byte, error) {
 	body, err := renderParameters(s.optionFileName, params)
 	if err != nil {
 		return nil, err
@@ -54,7 +54,7 @@ func (s parameterStore) render(params []handlers_rds.Parameter) ([]byte, error) 
 // Installs the resolved set at the path rds-init uses, so a later boot
 // overwrites rather than shadows it. Returns a func putting back whatever was
 // there, so the caller can undo the install without re-rendering anything.
-func (s parameterStore) install(params []handlers_rds.Parameter) (restore func() error, err error) {
+func (s parameterStore) install(params []rdsinstance.Parameter) (restore func() error, err error) {
 	path := s.installedPath()
 	// A missing file is the first-ever apply, and its rollback is a removal.
 	previous, readErr := os.ReadFile(path)

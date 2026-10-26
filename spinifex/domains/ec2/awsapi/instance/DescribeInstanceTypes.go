@@ -3,7 +3,6 @@ package instance
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
@@ -101,10 +100,10 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 
 		if missing := missingInstanceTypes(finalInstanceTypes, input.InstanceTypes); len(missing) > 0 {
 			if !proveAbsence || !everyNodeAnswered(nodeIDs, answered, sum) {
-				return nil, errors.Join(
+				return nil, awserrors.WithRetryAfter(
 					awserrors.Errorf(awserrors.ErrorServiceUnavailable,
 						"cannot confirm instance type(s) %s: describe fan-out did not complete", strings.Join(missing, ", ")),
-					awserrors.RetryAfter(awserrors.ErrorServiceUnavailable, describeIncompleteRetryAfter),
+					describeIncompleteRetryAfter,
 				)
 			}
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidInstanceType,

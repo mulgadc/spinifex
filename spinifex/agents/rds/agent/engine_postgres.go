@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // The engine is reached over its unix socket under peer authentication, so the
@@ -149,7 +149,7 @@ func newPostgresEngine(cfg Config, meta EngineCatalog, run commandRunner, startS
 func (e *postgresEngine) SetPassword(ctx context.Context, username, password string) error {
 	if username == "" || password == "" {
 		return fmt.Errorf("set-password requires both %s and %s",
-			handlers_rds.CommandParamMasterUsername, handlers_rds.CommandParamMasterUserPassword)
+			rdsinstance.CommandParamMasterUsername, rdsinstance.CommandParamMasterUserPassword)
 	}
 	// The statement below runs as the cluster superuser over the socket under
 	// peer auth, so a reserved name in the command payload would hand the
@@ -182,7 +182,7 @@ ALTER ROLE :"master" WITH LOGIN PASSWORD :'password';
 // Installs the resolved set, validates it with the engine's own parser before
 // the engine adopts it, and reloads. A refused value is rolled back here rather
 // than left on the data volume, where it would survive every VM replace.
-func (e *postgresEngine) ApplyParameters(ctx context.Context, params []handlers_rds.Parameter) ([]string, error) {
+func (e *postgresEngine) ApplyParameters(ctx context.Context, params []rdsinstance.Parameter) ([]string, error) {
 	e.paramMu.Lock()
 	defer e.paramMu.Unlock()
 

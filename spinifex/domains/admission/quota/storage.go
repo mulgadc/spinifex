@@ -23,7 +23,10 @@ func (s *Service) EnforceVolumeCreate(ctx context.Context, natsConn *nats.Conn, 
 	if err != nil {
 		return err
 	}
-	limits := s.limitsFor(ctx, accountID)
+	limits, err := s.limitsFor(ctx, accountID)
+	if err != nil {
+		return err
+	}
 	if err := exceeds(len(out.Volumes), 1, limits.Volumes); err != nil {
 		return err
 	}
@@ -43,7 +46,11 @@ func (s *Service) EnforceVolumeModify(ctx context.Context, natsConn *nats.Conn, 
 	if err != nil {
 		return err
 	}
-	return exceeds(total-oldGiB, newGiB, s.limitsFor(ctx, accountID).VolumesGiB)
+	limits, err := s.limitsFor(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return exceeds(total-oldGiB, newGiB, limits.VolumesGiB)
 }
 
 // volumeUsage sums the account's volume sizes in GiB via a single DescribeVolumes

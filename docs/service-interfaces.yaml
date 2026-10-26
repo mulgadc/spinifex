@@ -76,9 +76,9 @@ services:
       - spinifex/domains/ec2/vpc
       - spinifex/handlers/elbv2
       - spinifex/domains/acm
-      - spinifex/handlers/iam
+      - spinifex/domains/iam
       - spinifex/handlers/ecs
-      - spinifex/handlers/rds
+      - spinifex/domains/rds/instance
       - spinifex/domains/rds/subnetgroup
       - spinifex/domains/rds/parametergroup
       - spinifex/domains/rds/engine
@@ -158,7 +158,7 @@ services:
       - "elbv2.RemoveListenerCertificates"
       - "elbv2.DescribeListenerCertificates"
       - "elbv2.DescribeSSLPolicies"
-      # RDS control plane (handlers/rds/subjects.go). One wildcard rather than
+      # RDS control plane (domains/rds/instance/subjects.go). One wildcard rather than
       # 30 literals: every action subject is registered from a constant, so a
       # per-subject list would be a hand-mirror of that file with nothing
       # checking it.

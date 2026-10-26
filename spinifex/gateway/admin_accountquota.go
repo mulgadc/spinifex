@@ -43,6 +43,9 @@ func (gw *GatewayConfig) adminGetAccountQuota(ctx context.Context, body []byte) 
 
 	over, limits, err := gw.Quota.GetAccountQuota(ctx, accountID)
 	if err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
+			return nil, err
+		}
 		slog.ErrorContext(ctx, "GetAccountQuota: failed to read override", "accountID", accountID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
@@ -61,6 +64,9 @@ func (gw *GatewayConfig) adminPutAccountQuota(ctx context.Context, body []byte) 
 	// The caller's own identity, so a quota change names who made it.
 	updatedBy, _ := ctx.Value(ctxIdentity).(string)
 	if err := gw.Quota.PutAccountQuota(ctx, accountID, over, updatedBy); err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
+			return nil, err
+		}
 		slog.ErrorContext(ctx, "PutAccountQuota: failed to store override", "accountID", accountID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
@@ -69,6 +75,9 @@ func (gw *GatewayConfig) adminPutAccountQuota(ctx context.Context, body []byte) 
 
 	stored, limits, err := gw.Quota.GetAccountQuota(ctx, accountID)
 	if err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
+			return nil, err
+		}
 		slog.ErrorContext(ctx, "PutAccountQuota: failed to read back override", "accountID", accountID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}

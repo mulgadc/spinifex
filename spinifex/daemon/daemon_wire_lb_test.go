@@ -7,8 +7,8 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,7 +20,7 @@ func newWireLBTestDaemon(t *testing.T, cfg *config.Config) *Daemon {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
@@ -203,7 +203,7 @@ func TestWireLBAgentConfig_GatewayURL_SingleNodeBindMatchesAdvertise(t *testing.
 // newSubscribeTestDaemon creates a minimal Daemon wired enough for subscribeAll.
 func newSubscribeTestDaemon(t *testing.T, nc *nats.Conn, gatewayURL, accessKey string) *Daemon {
 	t.Helper()
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)

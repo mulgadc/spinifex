@@ -5,7 +5,7 @@ package agent
 
 import (
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // catalogFromEngine adapts a real engine-package Engine to this package's
@@ -59,10 +59,10 @@ func testEngineCatalogLookup(name string) (EngineCatalog, error) {
 // settingsToParameters converts the engine package's own result type to the
 // wire type the agent's command handlers carry, at the boundary test code
 // crosses it.
-func settingsToParameters(settings []rdsengine.Setting) []handlers_rds.Parameter {
-	out := make([]handlers_rds.Parameter, 0, len(settings))
+func settingsToParameters(settings []rdsengine.Setting) []rdsinstance.Parameter {
+	out := make([]rdsinstance.Parameter, 0, len(settings))
 	for _, s := range settings {
-		out = append(out, handlers_rds.Parameter{Name: s.Name, Value: s.Value})
+		out = append(out, rdsinstance.Parameter{Name: s.Name, Value: s.Value})
 	}
 	return out
 }

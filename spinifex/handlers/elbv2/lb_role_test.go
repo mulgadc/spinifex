@@ -4,8 +4,8 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	iammock "github.com/mulgadc/spinifex/spinifex/domains/iam/mock"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -15,7 +15,7 @@ import (
 func TestEnsureLBInstanceProfile_UsesLazyProvider(t *testing.T) {
 	t.Parallel()
 	f := iammock.New()
-	s := &ELBv2ServiceImpl{IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return f }}
+	s := &ELBv2ServiceImpl{IAMProvider: func() iamdomain.SystemInstanceRoleEnsurer { return f }}
 
 	arn := s.ensureLBInstanceProfile(awsidentifiers.GlobalAccountID)
 	assert.Equal(t, "arn:aws:iam::"+awsidentifiers.GlobalAccountID+":instance-profile/"+lbAgentSystemRoleName, arn)
@@ -40,6 +40,6 @@ func TestEnsureLBInstanceProfile_CreatesInSystemAccount(t *testing.T) {
 // VM falls back to baked static creds and retries on the next launch.
 func TestEnsureLBInstanceProfile_NotReadyFallsBack(t *testing.T) {
 	t.Parallel()
-	s := &ELBv2ServiceImpl{IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return nil }}
+	s := &ELBv2ServiceImpl{IAMProvider: func() iamdomain.SystemInstanceRoleEnsurer { return nil }}
 	assert.Empty(t, s.ensureLBInstanceProfile(awsidentifiers.GlobalAccountID))
 }

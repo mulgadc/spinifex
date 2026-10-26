@@ -1,0 +1,496 @@
+package sts
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
+	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const (
+	testPresignedHost   = "sts.au-mel-1.mulga.local"
+	testPresignedRegion = "au-mel-1"
+)
+
+// presignTestURL builds an `aws eks get-token`-shape SigV4-presigned GET URL for
+// sts.GetCallerIdentity using the real aws-sdk-go v4 presigner — the same
+// canonicalisation `aws eks get-token` uses — signing the X-K8s-Aws-Id header with
+// the given clusterName so a Verify call against the same clusterName succeeds.
+func presignTestURL(t *testing.T, accessKeyID, secret, clusterName string, signedTime time.Time, expires int64) string {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet,
+		"https://"+testPresignedHost+"/?Action=GetCallerIdentity&Version=2011-06-15", nil)
+	require.NoError(t, err)
+	req.Header.Set("X-K8s-Aws-Id", clusterName)
+
+	signer := v4.NewSigner(credentials.NewStaticCredentials(accessKeyID, secret, ""))
+	_, err = signer.Presign(req, nil, presignedService, testPresignedRegion, time.Duration(expires)*time.Second, signedTime)
+	require.NoError(t, err)
+
+	return req.URL.String()
+}
+
+// seedAccessKey writes an active IAM access key for the user and returns its
+// plaintext secret so the test can sign with it. Uses the production
+// CreateAccessKey path (returns the plaintext once).
+func seedAccessKey(t *testing.T, svc *STSServiceImpl, accountID, userName string) (akid, secret string) {
+	t.Helper()
+	seedUser(t, svc, accountID, userName)
+	out, err := svc.iamSvc.CreateAccessKey(accountID, &iam.CreateAccessKeyInput{UserName: aws.String(userName)})
+	require.NoError(t, err)
+	return aws.StringValue(out.AccessKey.AccessKeyId), aws.StringValue(out.AccessKey.SecretAccessKey)
+}
+
+func withFrozenTime(t *testing.T, now time.Time) {
+	t.Helper()
+	prev := presignedTimeNow
+	presignedTimeNow = func() time.Time { return now }
+	t.Cleanup(func() { presignedTimeNow = prev })
+}
+
+// ----- Happy paths --------------------------------------------------------
+
+func TestVerifyPresignedGetCallerIdentity_HappyPath_LongLived(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "alice")
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "demo-cluster"
+	u := presignTestURL(t, akid, secret, cluster, signedAt, 900)
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, testCallerAccountID, got.AccountID)
+	assert.Equal(t, cluster, got.XK8sAwsID)
+	assert.Equal(t, principalTypeUserPresigned, got.PrincipalType)
+	assert.Contains(t, got.ARN, ":user/alice")
+}
+
+func TestVerifyPresignedGetCallerIdentity_HappyPath_SessionCred(t *testing.T) {
+	// A session credential (ASIA prefix) signs the URL. VerifyPresigned must
+	// resolve via LookupSessionCredential, decrypt the secret, and match.
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "irsa-presign",
+		trustPolicyAllowingUser(testCallerARN()))
+
+	// Acquire a session credential the orthodox way.
+	assumeOut, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess-presign"))
+	require.NoError(t, err)
+	akid := aws.StringValue(assumeOut.Credentials.AccessKeyId)
+	secret := aws.StringValue(assumeOut.Credentials.SecretAccessKey)
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "session-cluster"
+	u := presignTestURL(t, akid, secret, cluster, signedAt, 900)
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, testCallerAccountID, got.AccountID)
+	assert.Equal(t, cluster, got.XK8sAwsID)
+	assert.Equal(t, principalTypeAssumedRolePresigned, got.PrincipalType)
+	assert.Equal(t, aws.StringValue(assumeOut.AssumedRoleUser.Arn), got.ARN)
+	assert.Equal(t, aws.StringValue(assumeOut.AssumedRoleUser.AssumedRoleId), got.UserID)
+}
+
+// A GetSessionToken session is the IAM user itself, as GetCallerIdentity reports
+// it on AWS: the user ARN, path included, and the user's UserId.
+func TestVerifyPresignedGetCallerIdentity_UserSession_ResolvesAsUser(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	out, err := svc.iamSvc.CreateUser(testCallerAccountID, &iam.CreateUserInput{
+		UserName: aws.String(testCallerUserName), Path: aws.String("/eng/"),
+	})
+	require.NoError(t, err)
+	tokOut, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser,
+		testCallerAccessKeyID, &sts.GetSessionTokenInput{})
+	require.NoError(t, err)
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "user-session-cluster"
+	u := presignTestURL(t, aws.StringValue(tokOut.Credentials.AccessKeyId),
+		aws.StringValue(tokOut.Credentials.SecretAccessKey), cluster, signedAt, 900)
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, principalTypeUserPresigned, got.PrincipalType)
+	assert.Equal(t, "arn:aws:iam::"+testCallerAccountID+":user/eng/"+testCallerUserName, got.ARN)
+	assert.Equal(t, aws.StringValue(out.User.UserId), got.UserID)
+	assert.Equal(t, testCallerAccountID, got.AccountID)
+}
+
+// GetCallerIdentity reports the account ID as root's UserId, so the presigned
+// door must agree with the SigV4 one for a root session.
+func TestVerifyPresignedGetCallerIdentity_RootSession_UserIDIsAccountID(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	seedUser(t, svc, testCallerAccountID, "root")
+	tokOut, err := svc.GetSessionToken(testCallerAccountID, "root", principalTypeUser,
+		testCallerAccessKeyID, &sts.GetSessionTokenInput{})
+	require.NoError(t, err)
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "root-session-cluster"
+	u := presignTestURL(t, aws.StringValue(tokOut.Credentials.AccessKeyId),
+		aws.StringValue(tokOut.Credentials.SecretAccessKey), cluster, signedAt, 900)
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, principalTypeUserPresigned, got.PrincipalType)
+	assert.Equal(t, testCallerAccountID, got.UserID)
+}
+
+// rewriteSession mints a role session, applies mutate to its stored record and
+// returns a URL presigned with it.
+func rewriteSession(t *testing.T, svc *STSServiceImpl, roleName, cluster string, signedAt time.Time, mutate func(*SessionCredential)) (string, *sts.AssumeRoleOutput) {
+	t.Helper()
+	role := createRoleInAccount(t, svc, testCallerAccountID, roleName, trustPolicyAllowingUser(testCallerARN()))
+	assumeOut, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess-"+roleName))
+	require.NoError(t, err)
+	akid := aws.StringValue(assumeOut.Credentials.AccessKeyId)
+
+	cred, err := svc.LookupSessionCredential(akid)
+	require.NoError(t, err)
+	require.NotNil(t, cred)
+	mutate(cred)
+	raw, err := json.Marshal(cred)
+	require.NoError(t, err)
+	_, err = sessionsKV(t, svc).Put(t.Context(), akid, raw)
+	require.NoError(t, err)
+
+	return presignTestURL(t, akid, aws.StringValue(assumeOut.Credentials.SecretAccessKey), cluster, signedAt, 900), assumeOut
+}
+
+// A record minted before PrincipalType existed carries an empty value and is a
+// role session.
+func TestVerifyPresignedGetCallerIdentity_LegacyEmptyPrincipalType_ResolvesAsAssumedRole(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "legacy-cluster"
+	u, assumeOut := rewriteSession(t, svc, "irsa-legacy", cluster, signedAt, func(c *SessionCredential) {
+		c.PrincipalType = ""
+	})
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, principalTypeAssumedRolePresigned, got.PrincipalType)
+	assert.Equal(t, aws.StringValue(assumeOut.AssumedRoleUser.Arn), got.ARN)
+	assert.Equal(t, aws.StringValue(assumeOut.AssumedRoleUser.AssumedRoleId), got.UserID)
+}
+
+// The EKS webhook maps the returned ARN to a Kubernetes identity, so an identity
+// that resolves without one must be refused, not returned empty.
+func TestVerifyPresignedGetCallerIdentity_EmptyARN_Rejected(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "no-arn-cluster"
+	u, _ := rewriteSession(t, svc, "irsa-noarn", cluster, signedAt, func(c *SessionCredential) {
+		c.AssumedRoleARN = ""
+	})
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+}
+
+// Before the continuity check the session branch performed no IAM lookup at
+// all, so a stale session left a working path to a cluster identity mapping
+// keyed on an ARN whose role no longer exists.
+func TestVerifyPresignedGetCallerIdentity_StaleSessionRejected(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "irsa-stale",
+		trustPolicyAllowingUser(testCallerARN()))
+
+	assumeOut, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess-stale"))
+	require.NoError(t, err)
+	akid := aws.StringValue(assumeOut.Credentials.AccessKeyId)
+	secret := aws.StringValue(assumeOut.Credentials.SecretAccessKey)
+
+	deleteRole(t, svc, testCallerAccountID, "irsa-stale")
+	createRoleInAccount(t, svc, testCallerAccountID, "irsa-stale", trustPolicyAllowingWildcard())
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "stale-cluster"
+	u := presignTestURL(t, akid, secret, cluster, signedAt, 900)
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+	assert.Nil(t, got)
+}
+
+// Ordering pin, the counterpart of the SigV4 door's: the continuity check reads
+// the IAM users and roles buckets, and a presigned URL carries its AKID in the
+// clear, so it must stay behind the signature. A faulting IAM backend makes the
+// check's presence observable — its error is distinct from a signature rejection.
+func TestVerifyPresignedGetCallerIdentity_BadSignature_SkipsPrincipalCheck(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "irsa-order",
+		trustPolicyAllowingUser(testCallerARN()))
+
+	assumeOut, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess-order"))
+	require.NoError(t, err)
+	akid := aws.StringValue(assumeOut.Credentials.AccessKeyId)
+	goodSecret := aws.StringValue(assumeOut.Credentials.SecretAccessKey)
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+	const cluster = "order-cluster"
+
+	boom := errors.New("jetstream unavailable")
+	svc.iamSvc = faultingIAMService{err: boom}
+
+	// Wrong secret: the signature must be rejected without the check ever running.
+	got, err := svc.VerifyPresignedGetCallerIdentity(
+		presignTestURL(t, akid, "wrong-secret-key", cluster, signedAt, 900), cluster)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+	assert.NotErrorIs(t, err, boom, "continuity check must not run before the signature verifies")
+
+	// The other half: a good signature does reach the check, and its fault is not
+	// laundered into a token rejection.
+	got, err = svc.VerifyPresignedGetCallerIdentity(
+		presignTestURL(t, akid, goodSecret, cluster, signedAt, 900), cluster)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, boom)
+}
+
+// ----- Cross-cluster anti-replay (Q10 mandatory) --------------------------
+
+func TestVerifyPresignedGetCallerIdentity_CrossClusterReplay(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "bob")
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	// Sign for cluster-A.
+	u := presignTestURL(t, akid, secret, "cluster-A", signedAt, 900)
+
+	// Present to cluster-B — signature reconstruction binds X-K8s-Aws-Id =
+	// cluster-B, so the recomputed signature differs and verification fails.
+	_, err := svc.VerifyPresignedGetCallerIdentity(u, "cluster-B")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+}
+
+func TestVerifyPresignedGetCallerIdentity_MissingXK8sAwsIdInSignedHeaders(t *testing.T) {
+	// An attacker presigning without x-k8s-aws-id in SignedHeaders strips the
+	// cross-cluster check from the canonical request. Verify must refuse even
+	// though the signature itself is valid — the URL is structurally untrustworthy.
+	svc, _ := newTestSetup(t)
+	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "eve")
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	// Presign without setting X-K8s-Aws-Id, so SignedHeaders is host only.
+	req, err := http.NewRequest(http.MethodGet,
+		"https://"+testPresignedHost+"/?Action=GetCallerIdentity&Version=2011-06-15", nil)
+	require.NoError(t, err)
+	signer := v4.NewSigner(credentials.NewStaticCredentials(akid, secret, ""))
+	_, err = signer.Presign(req, nil, presignedService, testPresignedRegion, 900*time.Second, signedAt)
+	require.NoError(t, err)
+
+	_, err = svc.VerifyPresignedGetCallerIdentity(req.URL.String(), "any-cluster")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+}
+
+// ----- Expiry -------------------------------------------------------------
+
+func TestVerifyPresignedGetCallerIdentity_Expired(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "carol")
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	const cluster = "exp-cluster"
+	u := presignTestURL(t, akid, secret, cluster, signedAt, 60)
+
+	// Verifier clock 5 minutes after signing — beyond 60s expiry.
+	withFrozenTime(t, signedAt.Add(5*time.Minute))
+	_, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorExpiredToken, err.Error())
+}
+
+// ----- Tampered URL detection ---------------------------------------------
+
+func TestVerifyPresignedGetCallerIdentity_TamperedQueryParameter(t *testing.T) {
+	// Flip an unrelated query param (Action) after signing — must invalidate
+	// the signature because Action is part of the canonical query string.
+	svc, _ := newTestSetup(t)
+	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "dave")
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	u := presignTestURL(t, akid, secret, "c", signedAt, 900)
+	tampered := strings.Replace(u, "GetCallerIdentity", "GetSessionToken", 1)
+
+	_, err := svc.VerifyPresignedGetCallerIdentity(tampered, "c")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+}
+
+// ----- Bad envelope / input edges ----------------------------------------
+
+func TestVerifyPresignedGetCallerIdentity_MissingInput(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	_, err := svc.VerifyPresignedGetCallerIdentity("", "c")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+	_, err = svc.VerifyPresignedGetCallerIdentity("https://x", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestVerifyPresignedGetCallerIdentity_RejectsHTTP(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	_, err := svc.VerifyPresignedGetCallerIdentity("http://sts.local/?X-Amz-Algorithm=AWS4-HMAC-SHA256", "c")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+}
+
+func TestVerifyPresignedGetCallerIdentity_BadAlgorithm(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	u := "https://sts.local/?X-Amz-Algorithm=foo&X-Amz-Credential=a/20240101/r/sts/aws4_request&X-Amz-Date=20240101T000000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host;x-k8s-aws-id&X-Amz-Signature=00"
+	_, err := svc.VerifyPresignedGetCallerIdentity(u, "c")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+}
+
+func TestVerifyPresignedGetCallerIdentity_UnknownAccessKey(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	u := presignTestURL(t, "AKIAGHOSTEXAMPLE0000", "fake-secret", "c", signedAt, 900)
+	_, err := svc.VerifyPresignedGetCallerIdentity(u, "c")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+}
+
+func TestVerifyPresignedGetCallerIdentity_UnknownAKIDPrefix(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+	u := presignTestURL(t, "QQQQEXAMPLE000000000", "x", "c", signedAt, 900)
+	_, err := svc.VerifyPresignedGetCallerIdentity(u, "c")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+}
+
+func TestVerifyPresignedGetCallerIdentity_BadServiceInCredential(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "frank")
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	// Build a URL whose credential scope claims s3 instead of sts — the
+	// service mismatch is structural, no signature work needed.
+	date := signedAt.UTC().Format("20060102")
+	amzDate := signedAt.UTC().Format("20060102T150405Z")
+	q := url.Values{}
+	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+	q.Set("X-Amz-Credential", akid+"/"+date+"/au-mel-1/s3/aws4_request")
+	q.Set("X-Amz-Date", amzDate)
+	q.Set("X-Amz-Expires", "900")
+	q.Set("X-Amz-SignedHeaders", "host;x-k8s-aws-id")
+	q.Set("X-Amz-Signature", strings.Repeat("a", 64))
+	_ = secret
+	u := "https://" + testPresignedHost + "/?" + q.Encode()
+	_, err := svc.VerifyPresignedGetCallerIdentity(u, "c")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+}
+
+func TestVerifyPresignedGetCallerIdentity_CredentialDateMismatch(t *testing.T) {
+	// X-Amz-Date date portion (YYYYMMDD) and credential-scope date must agree.
+	// AWS-CLI enforces this; mismatch is a tampered URL.
+	svc, _ := newTestSetup(t)
+	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "george")
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	q := url.Values{}
+	wrongDate := signedAt.Add(-24 * time.Hour).Format("20060102")
+	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+	q.Set("X-Amz-Credential", akid+"/"+wrongDate+"/au-mel-1/sts/aws4_request")
+	q.Set("X-Amz-Date", signedAt.Format("20060102T150405Z"))
+	q.Set("X-Amz-Expires", "900")
+	q.Set("X-Amz-SignedHeaders", "host;x-k8s-aws-id")
+	q.Set("X-Amz-Signature", strings.Repeat("a", 64))
+	_ = secret
+	u := "https://" + testPresignedHost + "/?" + q.Encode()
+	_, err := svc.VerifyPresignedGetCallerIdentity(u, "c")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
+}
+
+// TestVerifyPresignedGetCallerIdentity_RealSDKPresign signs the URL with the
+// actual aws-sdk-go v4 presigner — the same canonicalisation `aws eks
+// get-token` uses. This is the faithful end-to-end guard: it caught the
+// payload-hash bug (verify used the S3-only "UNSIGNED-PAYLOAD" instead of the
+// empty-string SHA256 that botocore signs non-S3 requests with).
+func TestVerifyPresignedGetCallerIdentity_RealSDKPresign(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "carol")
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "prod-cluster"
+	req, err := http.NewRequest(http.MethodGet,
+		"https://"+testPresignedHost+"/?Action=GetCallerIdentity&Version=2011-06-15", nil)
+	require.NoError(t, err)
+	req.Header.Set("X-K8s-Aws-Id", cluster)
+
+	signer := v4.NewSigner(credentials.NewStaticCredentials(akid, secret, ""))
+	_, err = signer.Presign(req, nil, "sts", testPresignedRegion, 900*time.Second, signedAt)
+	require.NoError(t, err)
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(req.URL.String(), cluster)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, cluster, got.XK8sAwsID)
+	assert.Contains(t, got.ARN, ":user/carol")
+
+	// Anti-replay: the SDK-signed URL must NOT verify against a different cluster.
+	_, err = svc.VerifyPresignedGetCallerIdentity(req.URL.String(), "other-cluster")
+	require.Error(t, err)
+}

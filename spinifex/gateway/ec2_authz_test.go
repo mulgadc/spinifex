@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,23 +24,23 @@ const (
 )
 
 // scopedPolicyGateway serves one policy document to every principal.
-func scopedPolicyGateway(statements ...handlers_iam.Statement) *GatewayConfig {
-	docs := []handlers_iam.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+func scopedPolicyGateway(statements ...iamdomain.Statement) *GatewayConfig {
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
 	return &GatewayConfig{
 		DisableLogging: true,
 		Region:         authzRegion,
 		IAMService: &policyMockIAMService{
-			getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
-			getRolePoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
+			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	}
 }
 
-func statement(effect, action, resource string) handlers_iam.Statement {
-	return handlers_iam.Statement{
+func statement(effect, action, resource string) iamdomain.Statement {
+	return iamdomain.Statement{
 		Effect:   effect,
-		Action:   handlers_iam.StringOrArr{action},
-		Resource: handlers_iam.StringOrArr{resource},
+		Action:   iamdomain.StringOrArr{action},
+		Resource: iamdomain.StringOrArr{resource},
 	}
 }
 
@@ -250,7 +250,7 @@ func TestEC2Request_RejectsOversizedResourceList(t *testing.T) {
 // per-service beads rest on: passing a real ARN where "*" was passed cannot
 // withdraw access that works today.
 func TestEC2Request_AccountWideAllowIsUnaffected(t *testing.T) {
-	for _, policy := range []handlers_iam.Statement{
+	for _, policy := range []iamdomain.Statement{
 		statement("Allow", "ec2:*", "*"),
 		statement("Allow", "*", "*"),
 	} {
@@ -318,11 +318,11 @@ type profileIAMService struct {
 	resolveErr error
 }
 
-func (s *profileIAMService) ResolveInstanceProfile(accountID, _ string) (*handlers_iam.InstanceProfile, error) {
+func (s *profileIAMService) ResolveInstanceProfile(accountID, _ string) (*iamdomain.InstanceProfile, error) {
 	if s.resolveErr != nil {
 		return nil, s.resolveErr
 	}
-	return &handlers_iam.InstanceProfile{AccountID: accountID, RoleName: "app"}, nil
+	return &iamdomain.InstanceProfile{AccountID: accountID, RoleName: "app"}, nil
 }
 
 func (s *profileIAMService) CanonicalResourceARN(accountID string, _ arn.IAMResourceType, name string) (string, error) {
@@ -331,7 +331,7 @@ func (s *profileIAMService) CanonicalResourceARN(accountID string, _ arn.IAMReso
 
 func passRoleDeniedGateway(t *testing.T, resolveErr error) *GatewayConfig {
 	t.Helper()
-	docs := []handlers_iam.PolicyDocument{{Version: "2012-10-17", Statement: []handlers_iam.Statement{
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: []iamdomain.Statement{
 		statement("Allow", "ec2:*", "*"),
 		statement("Deny", "iam:PassRole", "*"),
 	}}}
@@ -341,7 +341,7 @@ func passRoleDeniedGateway(t *testing.T, resolveErr error) *GatewayConfig {
 		NATSConn:       startTestNATS(t),
 		IAMService: &profileIAMService{
 			policyMockIAMService: policyMockIAMService{
-				getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
+				getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 			},
 			resolveErr: resolveErr,
 		},

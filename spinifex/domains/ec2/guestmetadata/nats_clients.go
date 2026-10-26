@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/nats-io/nats.go"
 )
 
@@ -39,7 +39,7 @@ func NewNATSSTSAssumer(nc *nats.Conn) *NATSSTSAssumer {
 }
 
 func (a *NATSSTSAssumer) AssumeRoleForInstance(ctx context.Context, accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error) {
-	return natsmsg.NATSRequest[sts.AssumeRoleOutput](ctx, a.nc, handlers_sts.SubjectAssumeRoleForInstance, handlers_sts.AssumeRoleForInstanceRequest{
+	return natsmsg.NATSRequest[sts.AssumeRoleOutput](ctx, a.nc, stsdomain.SubjectAssumeRoleForInstance, stsdomain.AssumeRoleForInstanceRequest{
 		AccountID:       accountID,
 		RoleARN:         roleARN,
 		InstanceID:      instanceID,
@@ -50,7 +50,7 @@ func (a *NATSSTSAssumer) AssumeRoleForInstance(ctx context.Context, accountID, r
 // NATSProfileLookup is the NATS-backed profileLookup with a short-TTL cache.
 type NATSProfileLookup struct {
 	nc       *nats.Conn
-	profiles *ttlCache[*handlers_iam.InstanceProfile]
+	profiles *ttlCache[*iamdomain.InstanceProfile]
 	roles    *ttlCache[*iam.GetRoleOutput]
 }
 
@@ -60,17 +60,17 @@ var _ profileLookup = (*NATSProfileLookup)(nil)
 func NewNATSProfileLookup(nc *nats.Conn) *NATSProfileLookup {
 	return &NATSProfileLookup{
 		nc:       nc,
-		profiles: newTTLCache[*handlers_iam.InstanceProfile](profileCacheTTL),
+		profiles: newTTLCache[*iamdomain.InstanceProfile](profileCacheTTL),
 		roles:    newTTLCache[*iam.GetRoleOutput](profileCacheTTL),
 	}
 }
 
-func (p *NATSProfileLookup) ResolveInstanceProfile(ctx context.Context, accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
+func (p *NATSProfileLookup) ResolveInstanceProfile(ctx context.Context, accountID, nameOrARN string) (*iamdomain.InstanceProfile, error) {
 	key := accountID + "\x00" + nameOrARN
 	if v, ok := p.profiles.get(key); ok {
 		return v, nil
 	}
-	out, err := natsmsg.NATSRequest[handlers_iam.InstanceProfile](ctx, p.nc, handlers_iam.SubjectResolveInstanceProfile, handlers_iam.ResolveInstanceProfileRequest{
+	out, err := natsmsg.NATSRequest[iamdomain.InstanceProfile](ctx, p.nc, iamdomain.SubjectResolveInstanceProfile, iamdomain.ResolveInstanceProfileRequest{
 		AccountID: accountID,
 		NameOrARN: nameOrARN,
 	}, imdsRPCTimeout, accountID)
@@ -86,7 +86,7 @@ func (p *NATSProfileLookup) GetRole(ctx context.Context, accountID string, input
 	if v, ok := p.roles.get(key); ok {
 		return v, nil
 	}
-	out, err := natsmsg.NATSRequest[iam.GetRoleOutput](ctx, p.nc, handlers_iam.SubjectGetRole, handlers_iam.GetRoleRequest{
+	out, err := natsmsg.NATSRequest[iam.GetRoleOutput](ctx, p.nc, iamdomain.SubjectGetRole, iamdomain.GetRoleRequest{
 		AccountID: accountID,
 		Input:     input,
 	}, imdsRPCTimeout, accountID)

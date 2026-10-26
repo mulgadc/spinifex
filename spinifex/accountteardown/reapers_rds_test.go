@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,7 +116,7 @@ func (f *fakeRDS) called() []string {
 }
 
 func newRDSReapers(nc *nats.Conn) (*rdsInstanceReaper, *rdsSubnetGroupReaper, *rdsParameterGroupReaper) {
-	svc := handlers_rds.NewNATSService(nc)
+	svc := rdsinstance.NewNATSService(nc)
 	return &rdsInstanceReaper{svc: svc}, &rdsSubnetGroupReaper{svc: svc}, &rdsParameterGroupReaper{svc: svc}
 }
 

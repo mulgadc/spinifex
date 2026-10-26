@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/iam"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -333,4 +333,4 @@ func (svc *echoIAMService) UpdateAssumeRolePolicy(accountID string, input *iam.U
 	return echoIAMCall[iam.UpdateAssumeRolePolicyInput, iam.UpdateAssumeRolePolicyOutput](svc, accountID, input)
 }
 
-var _ handlers_iam.IAMService = (*echoIAMService)(nil)
+var _ iamdomain.IAMService = (*echoIAMService)(nil)

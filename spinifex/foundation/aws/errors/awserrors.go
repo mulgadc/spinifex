@@ -658,18 +658,34 @@ func HasDependencies(kind, id string) error {
 // retryableError wraps a registered code with a suggested Retry-After
 // duration, for a 503 that a client can expect to clear on its own within a
 // bounded window (e.g. a warm-up race) rather than an open-ended outage.
-// Error() returns only the code, so code resolution is unaffected.
+// Error() returns only the code, or the wrapped error's text, so code
+// resolution is unaffected.
 type retryableError struct {
 	code       string
+	err        error
 	retryAfter time.Duration
 }
 
-func (e *retryableError) Error() string { return e.code }
+func (e *retryableError) Error() string {
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return e.code
+}
+
+func (e *retryableError) Unwrap() error { return e.err }
 
 // RetryAfter wraps code (a registered ErrorLookup key) with a suggested
 // Retry-After duration for ErrorHandler to surface as a response header.
 func RetryAfter(code string, d time.Duration) error {
 	return &retryableError{code: code, retryAfter: d}
+}
+
+// WithRetryAfter attaches a suggested Retry-After duration to err without
+// changing its text, unlike joining err with RetryAfter, which appends the
+// bare code on a second line.
+func WithRetryAfter(err error, d time.Duration) error {
+	return &retryableError{err: err, retryAfter: d}
 }
 
 // ResolveRetryAfter returns the Retry-After duration attached to err via

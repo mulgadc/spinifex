@@ -28,12 +28,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 )
 
 // The TestCurrentBehaviour_ tests in this file pin today's SigV4 authentication,
@@ -56,7 +56,7 @@ type cbCreds struct {
 // cbDecryptCounter is the real IAM service with DecryptSecret counted, so a test
 // can observe whether the door decrypted a secret before rejecting a request.
 type cbDecryptCounter struct {
-	*handlers_iam.IAMServiceImpl
+	*iamdomain.IAMServiceImpl
 
 	decrypts atomic.Int32
 }
@@ -79,8 +79,8 @@ type cbEnv struct {
 	nc        *nats.Conn // the gateway's connection
 	iamNC     *nats.Conn // IAM/STS connection; == nc unless separateIAMConn
 	js        jetstream.JetStream
-	iam       *handlers_iam.IAMServiceImpl
-	sts       *handlers_sts.STSServiceImpl
+	iam       *iamdomain.IAMServiceImpl
+	sts       *stsdomain.STSServiceImpl
 	counter   *cbDecryptCounter
 	h         http.Handler
 	accountID string
@@ -100,20 +100,20 @@ func newCBEnv(t *testing.T, opts cbEnvOpts) *cbEnv {
 		e.iamNC = iamNC
 	}
 
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	e.iam, err = handlers_iam.NewIAMServiceImpl(t.Context(), e.iamNC, masterKey)
+	e.iam, err = iamdomain.NewIAMServiceImpl(t.Context(), e.iamNC, masterKey)
 	require.NoError(t, err)
 	iamJS := testutil.NewJetStream(t, e.iamNC)
-	e.sts, err = handlers_sts.NewSTSServiceImpl(t.Context(), e.iamNC, e.iam, masterKey, handlers_eks.NewOIDCJWKSReader(iamJS))
+	e.sts, err = stsdomain.NewSTSServiceImpl(t.Context(), e.iamNC, e.iam, masterKey, handlers_eks.NewOIDCJWKSReader(iamJS))
 	require.NoError(t, err)
 	if !opts.noRevoker {
 		e.iam.SetSessionRevoker(e.sts)
 	}
 
-	encrypted, err := handlers_iam.EncryptSecret(cbRootSecret, masterKey)
+	encrypted, err := iamdomain.EncryptSecret(cbRootSecret, masterKey)
 	require.NoError(t, err)
-	require.NoError(t, e.iam.SeedBootstrap(&handlers_iam.BootstrapData{
+	require.NoError(t, e.iam.SeedBootstrap(&iamdomain.BootstrapData{
 		AccessKeyID: cbRootAKID, EncryptedSecret: encrypted, AccountID: awsidentifiers.GlobalAccountID,
 	}))
 
@@ -268,11 +268,11 @@ func (e *cbEnv) getSessionToken(t *testing.T, c cbCreds) cbCreds {
 // expireSession rewrites a stored session record's expiry into the past.
 func (e *cbEnv) expireSession(t *testing.T, akid string) {
 	t.Helper()
-	kv, err := e.js.KeyValue(t.Context(), handlers_sts.KVBucketSessionCredentials)
+	kv, err := e.js.KeyValue(t.Context(), stsdomain.KVBucketSessionCredentials)
 	require.NoError(t, err)
 	entry, err := kv.Get(t.Context(), akid)
 	require.NoError(t, err)
-	var cred handlers_sts.SessionCredential
+	var cred stsdomain.SessionCredential
 	require.NoError(t, json.Unmarshal(entry.Value(), &cred))
 	cred.ExpiresAt = time.Now().UTC().Add(-time.Minute)
 	data, err := json.Marshal(cred)
@@ -365,7 +365,7 @@ func TestCurrentBehaviour_Auth_LongLivedRejections(t *testing.T) {
 		creds := e.newKey(t, "alice")
 		require.Equal(t, http.StatusOK, e.callerIdentity(t, creds).Code)
 		_, err := e.iam.UpdateAccessKey(e.accountID, &iam.UpdateAccessKeyInput{
-			UserName: aws.String("alice"), AccessKeyId: aws.String(creds.akid), Status: aws.String(handlers_iam.AccessKeyStatusInactive),
+			UserName: aws.String("alice"), AccessKeyId: aws.String(creds.akid), Status: aws.String(iamdomain.AccessKeyStatusInactive),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, cbRegistry(awserrors.ErrorInvalidClientTokenId), cbOutcomeOf(e.callerIdentity(t, creds)))
@@ -462,7 +462,7 @@ func TestCurrentBehaviour_Session_GetSessionTokenOutlivesMintingKey(t *testing.T
 	assert.Equal(t, e.aliceID, cbXML(rec.Body.String(), "UserId"))
 
 	_, err := e.iam.UpdateAccessKey(e.accountID, &iam.UpdateAccessKeyInput{
-		UserName: aws.String("alice"), AccessKeyId: aws.String(mintKey.akid), Status: aws.String(handlers_iam.AccessKeyStatusInactive),
+		UserName: aws.String("alice"), AccessKeyId: aws.String(mintKey.akid), Status: aws.String(iamdomain.AccessKeyStatusInactive),
 	})
 	require.NoError(t, err)
 	_, err = e.iam.DeleteAccessKey(e.accountID, &iam.DeleteAccessKeyInput{
@@ -486,16 +486,16 @@ func TestCurrentBehaviour_Session_WebIdentityCredentials(t *testing.T) {
 	issuer := testDiscIssuer
 
 	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), e.js,
-		handlers_iam.IAMAccountBucketName(e.accountID), handlers_iam.KVBucketIAMAccountVersion)
+		iamdomain.IAMAccountBucketName(e.accountID), iamdomain.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
-	_, err = iamKV.Put(t.Context(), handlers_iam.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
+	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
 	require.NoError(t, err)
 
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	point, err := priv.PublicKey.Bytes()
 	require.NoError(t, err)
-	jwks, err := json.Marshal(handlers_sts.JWKS{Keys: []handlers_sts.JWK{{
+	jwks, err := json.Marshal(stsdomain.JWKS{Keys: []stsdomain.JWK{{
 		Kty: "EC", Kid: "k1", Alg: "ES256", Use: "sig", Crv: "P-256",
 		X: base64.RawURLEncoding.EncodeToString(point[1:33]),
 		Y: base64.RawURLEncoding.EncodeToString(point[33:65]),
@@ -506,7 +506,7 @@ func TestCurrentBehaviour_Session_WebIdentityCredentials(t *testing.T) {
 	_, err = eksKV.Put(t.Context(), handlers_eks.OIDCJWKSKey(testDiscCluster), jwks)
 	require.NoError(t, err)
 
-	federated := handlers_iam.OIDCProviderARN(e.accountID, strings.TrimPrefix(issuer, "https://"))
+	federated := iamdomain.OIDCProviderARN(e.accountID, strings.TrimPrefix(issuer, "https://"))
 	role, err := e.iam.CreateRole(e.accountID, &iam.CreateRoleInput{
 		RoleName: aws.String("irsa"),
 		AssumeRolePolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"` +
@@ -640,11 +640,11 @@ func TestCurrentBehaviour_Revocation_OrphanedKeyAuthenticatesAsRecreatedUser(t *
 // access-key records in place, the state an interrupted DeleteAccessKey leaves.
 func (e *cbEnv) orphanKeys(t *testing.T, user string) {
 	t.Helper()
-	usersKV, err := e.js.KeyValue(t.Context(), handlers_iam.KVBucketUsers)
+	usersKV, err := e.js.KeyValue(t.Context(), iamdomain.KVBucketUsers)
 	require.NoError(t, err)
 	entry, err := usersKV.Get(t.Context(), e.accountID+"."+user)
 	require.NoError(t, err)
-	var u handlers_iam.User
+	var u iamdomain.User
 	require.NoError(t, json.Unmarshal(entry.Value(), &u))
 	u.AccessKeys = []string{}
 	data, err := json.Marshal(u)
@@ -744,7 +744,7 @@ func TestCurrentBehaviour_Auth_BackingStateUnavailable(t *testing.T) {
 
 	t.Run("access_key_bucket_deleted", func(t *testing.T) {
 		e := newCBEnv(t, cbEnvOpts{})
-		require.NoError(t, e.js.DeleteKeyValue(t.Context(), handlers_iam.KVBucketAccessKeys))
+		require.NoError(t, e.js.DeleteKeyValue(t.Context(), iamdomain.KVBucketAccessKeys))
 		for name, c := range map[string]cbCreds{"known": e.alice, "unknown": {akid: cbUnknownKey, secret: cbBadSecret}} {
 			assert.Equal(t, internal, cbOutcomeOf(e.request(t, e.h, c, "sts", gci)), name)
 		}
@@ -754,13 +754,13 @@ func TestCurrentBehaviour_Auth_BackingStateUnavailable(t *testing.T) {
 		e := newCBEnv(t, cbEnvOpts{})
 		roleARN, _ := e.createAssumableRole(t, "app")
 		s := e.assumeRole(t, roleARN, "s1")
-		require.NoError(t, e.js.DeleteKeyValue(t.Context(), handlers_sts.KVBucketSessionCredentials))
+		require.NoError(t, e.js.DeleteKeyValue(t.Context(), stsdomain.KVBucketSessionCredentials))
 		assert.Equal(t, internal, cbOutcomeOf(e.callerIdentity(t, s)))
 	})
 
 	t.Run("accounts_bucket_deleted", func(t *testing.T) {
 		e := newCBEnv(t, cbEnvOpts{})
-		require.NoError(t, e.js.DeleteKeyValue(t.Context(), handlers_iam.KVBucketAccounts))
+		require.NoError(t, e.js.DeleteKeyValue(t.Context(), iamdomain.KVBucketAccounts))
 		// Fails closed only once the signature holds; a bad one still reads as such.
 		assert.Equal(t, internal, cbOutcomeOf(e.callerIdentity(t, e.alice)))
 		assert.Equal(t, cbRegistry(awserrors.ErrorSignatureDoesNotMatch),
@@ -812,7 +812,7 @@ func TestCurrentBehaviour_AntiEnumeration_RejectionShapes(t *testing.T) {
 	e := newCBEnv(t, cbEnvOpts{})
 	bobKey, _ := e.newUser(t, "bob")
 	_, err := e.iam.UpdateAccessKey(e.accountID, &iam.UpdateAccessKeyInput{
-		UserName: aws.String("bob"), AccessKeyId: aws.String(bobKey.akid), Status: aws.String(handlers_iam.AccessKeyStatusInactive),
+		UserName: aws.String("bob"), AccessKeyId: aws.String(bobKey.akid), Status: aws.String(iamdomain.AccessKeyStatusInactive),
 	})
 	require.NoError(t, err)
 	carolKey, _ := e.newUser(t, "carol")
@@ -858,7 +858,7 @@ func TestCurrentBehaviour_AntiEnumeration_RejectionShapes(t *testing.T) {
 func TestCurrentBehaviour_Cache_AccountStatusIsTheOnlyAuthCache(t *testing.T) {
 	require.Equal(t, 5*time.Second, accountActiveTTL)
 
-	for _, status := range []string{handlers_iam.AccountStatusSuspended, handlers_iam.AccountStatusTerminating} {
+	for _, status := range []string{iamdomain.AccountStatusSuspended, iamdomain.AccountStatusTerminating} {
 		t.Run(status, func(t *testing.T) {
 			e := newCBEnv(t, cbEnvOpts{})
 			require.Equal(t, http.StatusOK, e.callerIdentity(t, e.alice).Code)

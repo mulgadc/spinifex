@@ -10,9 +10,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 )
 
 // Principal-type values mirror gateway.principalType{User,AssumedRole,Root},
@@ -35,8 +35,8 @@ const (
 func GetCallerIdentity(
 	accountID, callerARN, callerPrincipalType, identity, assumedRoleID string,
 	input *sts.GetCallerIdentityInput,
-	iamSvc handlers_iam.IAMService,
-	stsSvc handlers_sts.STSService,
+	iamSvc iamdomain.IAMService,
+	stsSvc stsdomain.STSService,
 ) (*sts.GetCallerIdentityOutput, error) {
 	userID, _, err := ResolveCallerUser(accountID, callerPrincipalType, identity, assumedRoleID, iamSvc)
 	if err != nil {
@@ -60,7 +60,7 @@ func GetCallerIdentity(
 // An error is a dependency fault; a missing value returns empty.
 func ResolveCallerUser(
 	accountID, callerPrincipalType, identity, assumedRoleID string,
-	iamSvc handlers_iam.IAMService,
+	iamSvc iamdomain.IAMService,
 ) (userID, userARN string, err error) {
 	switch callerPrincipalType {
 	case PrincipalTypeRoot:

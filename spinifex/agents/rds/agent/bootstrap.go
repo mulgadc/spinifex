@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // The staged payload this boot has to acknowledge once PostgreSQL has applied
@@ -23,7 +23,7 @@ type pendingBootstrap struct {
 // Fetches the boot material and writes the handoff rds-init is blocked waiting
 // for, then points the health probe at the assigned port.
 func (a *Agent) bootstrap(ctx context.Context) error {
-	var cfg *handlers_rds.GetDBBootstrapConfigOutput
+	var cfg *rdsinstance.GetDBBootstrapConfigOutput
 	if err := retryObserved(ctx, "bootstrap fetch", func(ctx context.Context) error {
 		fetched, err := a.cp.GetBootstrapConfig(ctx, a.id)
 		if err != nil {
@@ -35,7 +35,7 @@ func (a *Agent) bootstrap(ctx context.Context) error {
 		// A control plane predating the encrypted payload answers initialize with
 		// nothing to initialise with. Retrying re-dials the queue group until an
 		// upgraded node answers, so a mixed-version fleet heals within one boot.
-		if fetched.Mode == handlers_rds.BootstrapModeInitialize &&
+		if fetched.Mode == rdsinstance.BootstrapModeInitialize &&
 			(fetched.MasterUserPassword == nil || *fetched.MasterUserPassword == "") {
 			return fmt.Errorf("bootstrap fetch returned mode=%s with no master password", fetched.Mode)
 		}
@@ -92,7 +92,7 @@ const (
 
 // bootstrap.env is written last and renamed into place, so its appearance —
 // which rds-init waits on — means the whole handoff is complete.
-func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput, optionFileName func(name string) string) error {
+func writeHandoff(dir string, cfg *rdsinstance.GetDBBootstrapConfigOutput, optionFileName func(name string) string) error {
 	if cfg.MasterUsername == "" {
 		return fmt.Errorf("bootstrap config carries no master username")
 	}
@@ -137,7 +137,7 @@ func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput, opti
 
 // Every value is single-quoted because rds-init sources this with `.`: an
 // unquoted password holding a space, `$` or `;` would be word-split or executed.
-func renderBootstrapEnv(cfg *handlers_rds.GetDBBootstrapConfigOutput) string {
+func renderBootstrapEnv(cfg *rdsinstance.GetDBBootstrapConfigOutput) string {
 	var b strings.Builder
 	b.WriteString("# Written by rds-agent. Regenerated on every boot; edits are lost.\n")
 	writeEnvLine(&b, "RDS_MODE", cfg.Mode)
@@ -193,7 +193,7 @@ func shellQuote(s string) string {
 // postgresql.conf syntax, which MariaDB's option files also parse. Values are
 // quoted so a space or unit suffix survives. Names are the engine's startup
 // spellings, not the customer's: the wrong one leaves the engine unable to boot.
-func renderParameters(optionFileName func(name string) string, params []handlers_rds.Parameter) (string, error) {
+func renderParameters(optionFileName func(name string) string, params []rdsinstance.Parameter) (string, error) {
 	if optionFileName == nil {
 		return "", fmt.Errorf("render the resolved parameters: no engine catalog resolved")
 	}

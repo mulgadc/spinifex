@@ -1,0 +1,71 @@
+package instance
+
+import (
+	"context"
+	"log/slog"
+
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+)
+
+// The vanity hostname for a DB instance, or "" on a deployment with no base
+// domain — where the endpoint is the bare ENI IP instead.
+func (s *Service) dnsName(accountID, dbInstanceIdentifier string) string {
+	if s.deps.BaseDomain == "" {
+		return ""
+	}
+	return dns.RDSName(dbInstanceIdentifier, accountID, s.region, s.deps.BaseDomain)
+}
+
+// DesiredDNSChanges returns the UPSERTs for every endpoint-ready DB instance across all account
+// buckets, plus whether the enumeration was authoritative. Instances live in per-account buckets, so
+// a complete cross-tenant view requires reading every one: any failure yields ok=false, which
+// suppresses RDS pruning rather than deleting a tenant's endpoint on a partial view.
+func (s *Service) DesiredDNSChanges() (changes []dns.Change, ok bool) {
+	if s == nil || s.deps.BaseDomain == "" {
+		return nil, false
+	}
+	ctx := context.Background()
+	js, err := s.js()
+	if err != nil {
+		return nil, false
+	}
+	buckets, err := AccountBuckets(ctx, js)
+	if err != nil {
+		slog.Warn("rds DesiredDNSChanges: enumerate account buckets", "err", err)
+		return nil, false
+	}
+	for _, bucket := range buckets {
+		bucketChanges, err := desiredBucketDNSChanges(ctx, bucket, s.deps.BaseDomain)
+		if err != nil {
+			slog.Warn("rds DesiredDNSChanges: read DB instances", "bucket", bucket.Name(), "err", err)
+			return nil, false
+		}
+		changes = append(changes, bucketChanges...)
+	}
+	return changes, true
+}
+
+// A deleted instance's record is gone, so it contributes nothing and the
+// reconcile prunes its record. Anything still holding an ENI IP keeps its name
+// resolvable, including a failed instance an operator is still investigating.
+func desiredBucketDNSChanges(ctx context.Context, kv *kvstore.Bucket, baseDomain string) ([]dns.Change, error) {
+	ids, err := ListDBInstanceIDs(ctx, kv)
+	if err != nil {
+		return nil, err
+	}
+	var changes []dns.Change
+	for _, id := range ids {
+		var rec DBInstanceRecord
+		found, err := getJSON(ctx, kv, DBInstanceKey(id), &rec)
+		if err != nil {
+			return nil, err
+		}
+		if !found || rec.Status == StatusDeleted || rec.DNSName == "" || rec.ENIPrivateIP == "" {
+			continue
+		}
+		changes = append(changes, dns.RDSChanges(
+			dns.ActionUpsert, rec.DNSName, baseDomain, rec.ENIPrivateIP)...)
+	}
+	return changes, nil
+}

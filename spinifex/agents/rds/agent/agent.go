@@ -14,8 +14,8 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/rdsgw"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
 // The gateway resolves the authoritative DB instance from the request's
@@ -30,15 +30,15 @@ type identity struct {
 // Every method is a SigV4-signed Query request, so the NATS bus stays
 // host-internal.
 type controlPlane interface {
-	Register(ctx context.Context, id identity) (*handlers_rds.RegisterDBInstanceOutput, error)
-	SubmitState(ctx context.Context, id identity, health handlers_rds.EngineHealth, message string) (*handlers_rds.SubmitDBStateChangeOutput, error)
+	Register(ctx context.Context, id identity) (*rdsinstance.RegisterDBInstanceOutput, error)
+	SubmitState(ctx context.Context, id identity, health rdsinstance.EngineHealth, message string) (*rdsinstance.SubmitDBStateChangeOutput, error)
 	// Returns Mode=initialize with the master password for as long as a payload
 	// staged for this VM generation is unacknowledged, and Mode=attach after.
-	GetBootstrapConfig(ctx context.Context, id identity) (*handlers_rds.GetDBBootstrapConfigOutput, error)
+	GetBootstrapConfig(ctx context.Context, id identity) (*rdsinstance.GetDBBootstrapConfigOutput, error)
 	// Reports that PostgreSQL durably applied the staged password, which is what
 	// lets the control plane destroy it.
 	AcknowledgeBootstrap(ctx context.Context, id identity, pending *pendingBootstrap) error
-	PollCommands(ctx context.Context, id identity, replies []handlers_rds.CommandReply, wait time.Duration) ([]handlers_rds.Command, error)
+	PollCommands(ctx context.Context, id identity, replies []rdsinstance.CommandReply, wait time.Duration) ([]rdsinstance.Command, error)
 }
 
 // Bounds a register, heartbeat or bootstrap request. The long poll sets its own
@@ -71,7 +71,7 @@ func newGatewayControlPlane(cfg Config) (*gatewayControlPlane, error) {
 	return &gatewayControlPlane{client: client}, nil
 }
 
-func (g *gatewayControlPlane) Register(ctx context.Context, id identity) (*handlers_rds.RegisterDBInstanceOutput, error) {
+func (g *gatewayControlPlane) Register(ctx context.Context, id identity) (*rdsinstance.RegisterDBInstanceOutput, error) {
 	params := url.Values{}
 	setIfPresent(params, "DBInstanceIdentifier", id.DBInstanceIdentifier)
 	setIfPresent(params, "AgentVersion", id.AgentVersion)
@@ -80,14 +80,14 @@ func (g *gatewayControlPlane) Register(ctx context.Context, id identity) (*handl
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 
-	var out handlers_rds.RegisterDBInstanceOutput
+	var out rdsinstance.RegisterDBInstanceOutput
 	if err := g.client.Call(ctx, "RegisterDBInstance", params, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (g *gatewayControlPlane) SubmitState(ctx context.Context, id identity, health handlers_rds.EngineHealth, message string) (*handlers_rds.SubmitDBStateChangeOutput, error) {
+func (g *gatewayControlPlane) SubmitState(ctx context.Context, id identity, health rdsinstance.EngineHealth, message string) (*rdsinstance.SubmitDBStateChangeOutput, error) {
 	params := url.Values{"EngineHealth": {string(health)}}
 	setIfPresent(params, "DBInstanceIdentifier", id.DBInstanceIdentifier)
 	setIfPresent(params, "EngineVersion", id.EngineVersion)
@@ -96,21 +96,21 @@ func (g *gatewayControlPlane) SubmitState(ctx context.Context, id identity, heal
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 
-	var out handlers_rds.SubmitDBStateChangeOutput
+	var out rdsinstance.SubmitDBStateChangeOutput
 	if err := g.client.Call(ctx, "SubmitDBStateChange", params, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (g *gatewayControlPlane) GetBootstrapConfig(ctx context.Context, id identity) (*handlers_rds.GetDBBootstrapConfigOutput, error) {
+func (g *gatewayControlPlane) GetBootstrapConfig(ctx context.Context, id identity) (*rdsinstance.GetDBBootstrapConfigOutput, error) {
 	params := url.Values{}
 	setIfPresent(params, "DBInstanceIdentifier", id.DBInstanceIdentifier)
 
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 
-	var out handlers_rds.GetDBBootstrapConfigOutput
+	var out rdsinstance.GetDBBootstrapConfigOutput
 	if err := g.client.Call(ctx, "GetDBBootstrapConfig", params, &out); err != nil {
 		return nil, err
 	}
@@ -128,7 +128,7 @@ func (g *gatewayControlPlane) AcknowledgeBootstrap(ctx context.Context, id ident
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 
-	var out handlers_rds.AcknowledgeDBBootstrapOutput
+	var out rdsinstance.AcknowledgeDBBootstrapOutput
 	if err := g.client.Call(ctx, "AcknowledgeDBBootstrap", params, &out); err != nil {
 		return err
 	}
@@ -140,10 +140,10 @@ func (g *gatewayControlPlane) AcknowledgeBootstrap(ctx context.Context, id ident
 
 // Declared here so the in-guest binary does not link the server side of the API.
 type pollDBCommandsOutput struct {
-	Commands []handlers_rds.Command `xml:"Commands>member"`
+	Commands []rdsinstance.Command `xml:"Commands>member"`
 }
 
-func (g *gatewayControlPlane) PollCommands(ctx context.Context, id identity, replies []handlers_rds.CommandReply, wait time.Duration) ([]handlers_rds.Command, error) {
+func (g *gatewayControlPlane) PollCommands(ctx context.Context, id identity, replies []rdsinstance.CommandReply, wait time.Duration) ([]rdsinstance.Command, error) {
 	params := url.Values{"WaitTimeSeconds": {strconv.FormatInt(int64(wait.Seconds()), 10)}}
 	setIfPresent(params, "DBInstanceIdentifier", id.DBInstanceIdentifier)
 	// Replies ride the poll rather than a separate action, so replying and
@@ -179,7 +179,7 @@ type Agent struct {
 	cp              controlPlane
 	probe           *engineProbe
 	engine          engine
-	handoffWriter   func(string, *handlers_rds.GetDBBootstrapConfigOutput) error
+	handoffWriter   func(string, *rdsinstance.GetDBBootstrapConfigOutput) error
 	dataMountWaiter func(context.Context, string, string) error
 
 	// Set by bootstrap when the fetch replayed a staged payload; nil leaves the
@@ -231,13 +231,13 @@ func newAgent(cfg Config, cp controlPlane, probe *engineProbe) (*Agent, error) {
 	}
 	a := &Agent{
 		cfg: cfg, id: id, cp: cp, probe: probe,
-		handoffWriter: func(dir string, bootCfg *handlers_rds.GetDBBootstrapConfigOutput) error {
+		handoffWriter: func(dir string, bootCfg *rdsinstance.GetDBBootstrapConfigOutput) error {
 			return writeHandoff(dir, bootCfg, catalog.OptionFileName)
 		},
 		dataMountWaiter: waitForDataMount,
 	}
 	a.engine = eng
-	a.hb = newHeartbeater(cp, probe, a.engine, handlers_rds.HeartbeatInterval)
+	a.hb = newHeartbeater(cp, probe, a.engine, rdsinstance.HeartbeatInterval)
 	a.cmd = newCommander(cp, newCommandRegistry(a.engine, newGuestStorage(cfg, execCommandRunner)), cfg.PollWait)
 	a.guard = newParamGuard(a.engine, probe, cp)
 	return a, nil
@@ -329,7 +329,7 @@ func (a *Agent) refuseEngineMismatch(ctx context.Context) error {
 	slog.ErrorContext(ctx, "rds-agent: "+message)
 	// Reported before returning, so the control plane learns why the instance
 	// never came up rather than only that it never did.
-	if _, err := a.cp.SubmitState(ctx, a.id, handlers_rds.EngineHealthUnhealthy, message); err != nil {
+	if _, err := a.cp.SubmitState(ctx, a.id, rdsinstance.EngineHealthUnhealthy, message); err != nil {
 		slog.ErrorContext(ctx, "rds-agent: reporting the engine mismatch failed", "err", err)
 	}
 	return errors.New(message)

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -129,13 +129,13 @@ func TestNATSBootstrap_HappyPath(t *testing.T) {
 
 	tokEntry, err := h.kv.Get(h.t.Context(), NodeTokenKey(bootstrapTestCluster))
 	require.NoError(t, err)
-	dec, err := handlers_iam.DecryptSecret(string(tokEntry.Value()), bootstrapTestMasterKey)
+	dec, err := iamdomain.DecryptSecret(string(tokEntry.Value()), bootstrapTestMasterKey)
 	require.NoError(t, err)
 	assert.Equal(t, "k3s::server-node-token::v1", dec)
 
 	kcEntry, err := h.kv.Get(h.t.Context(), AdminKubeconfigKey(bootstrapTestCluster))
 	require.NoError(t, err)
-	dec, err = handlers_iam.DecryptSecret(string(kcEntry.Value()), bootstrapTestMasterKey)
+	dec, err = iamdomain.DecryptSecret(string(kcEntry.Value()), bootstrapTestMasterKey)
 	require.NoError(t, err)
 	assert.Equal(t, "apiVersion: v1\nkind: Config\n", dec)
 
@@ -278,7 +278,7 @@ func TestNATSBootstrap_OneShotIgnoresSubsequentMessages(t *testing.T) {
 
 	entry, err := h.kv.Get(h.t.Context(), NodeTokenKey(bootstrapTestCluster))
 	require.NoError(t, err)
-	dec, err := handlers_iam.DecryptSecret(string(entry.Value()), bootstrapTestMasterKey)
+	dec, err := iamdomain.DecryptSecret(string(entry.Value()), bootstrapTestMasterKey)
 	require.NoError(t, err)
 	assert.Equal(t, "first-token", dec, "second token publication must be dropped")
 }
@@ -358,7 +358,7 @@ func TestBootstrapPendingKinds(t *testing.T) {
 		BootstrapPendingKinds(t.Context(), h.kv, bootstrapTestCluster, meta))
 
 	// Persist token only -> token drops out of pending.
-	ct, err := handlers_iam.EncryptSecret("tok", bootstrapTestMasterKey)
+	ct, err := iamdomain.EncryptSecret("tok", bootstrapTestMasterKey)
 	require.NoError(t, err)
 	_, err = h.kv.Put(t.Context(), NodeTokenKey(bootstrapTestCluster), []byte(ct))
 	require.NoError(t, err)

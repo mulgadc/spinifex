@@ -24,11 +24,19 @@ SKIP_WORKLOAD=0
 SKIP_POOL=0
 DRY_RUN=0
 DESTROY_ONLY=0
+DESTROY_IDENTITY=0
 INSTANCE_PRINCIPAL=0
+SETUP_INSTANCE_PRINCIPAL=0
+REINSTALL=0
+SHOW_AWS_CREDENTIALS=0
 CREDENTIAL_HOOK="${OCI_CREDENTIAL_HOOK:-}"
 # Empty means oci_env.py chooses, which is $OCI_CLI_PROFILE, then the reference
 # tenancy, then DEFAULT. Named here so a deployment can say which tenancy it is in.
 OCI_PROFILE="${OCI_PROFILE:-}"
+IDENTITY_OCI_PROFILE=""
+EXISTING_HOSTS_FILE=""
+EXISTING_STATE_FILE=""
+EXISTING_INFRA=0
 DISTRO=""
 SETUP_SH=""
 # Empty means the driver's own default list. Unset is distinguishable from empty,
@@ -80,8 +88,8 @@ usage() {
     cat >&2 <<EOF
 usage: ${0##*/} --topology <bm|vm-single|vm-multi|vm-single-principal> [options]
 
-Builds the topology, installs Spinifex, forms the cluster, runs a Terraform
-workbook against it, then destroys everything.
+Builds a topology, or installs on existing OCI hosts, then installs Spinifex,
+forms the cluster, and verifies the OCI address allocator.
 
   --topology <name>       Required. No default: a command aimed at the wrong
                           topology is the easiest expensive mistake here.
@@ -94,6 +102,23 @@ workbook against it, then destroys everything.
                           policy to exist already; see instance-principal.tf.
                           Not needed when instance_principal is set in your
                           tfvars, which this reads; the flag outranks it.
+  --setup-instance-principal
+                          Create the dynamic group and policy before deployment.
+                          Needs a tenancy-admin profile. Opt-in because these are
+                          tenancy-level resources. Use --identity-oci-profile to
+                          use a different profile for this one-time setup.
+  --identity-oci-profile NAME
+                          Tenancy-admin profile for --setup-instance-principal.
+                          Defaults to --oci-profile / OCI_PROFILE.
+  --existing-hosts-file PATH
+                          Install and form on existing hosts listed one public SSH
+                          IP per line. Skips Terraform apply and never destroys.
+                          Specify --instance-principal or --credential-hook.
+  --existing-state-file PATH
+                          Read hosts_file, compute_shape and instance_principal
+                          from an existing local Terraform state. Skips Terraform
+                          apply and never destroys. Mutually exclusive with
+                          --existing-hosts-file.
   --credential-hook PATH  Executable run after formation, before the pool, as
                           "hook <ssh-key> <host>...". Where an API-key deployment
                           installs its credential. Default \$OCI_CREDENTIAL_HOOK.
@@ -111,13 +136,21 @@ workbook against it, then destroys everything.
   --distro PATH           Install this distro tarball instead of the published
                           release, so what is proved is the ref it was built from.
   --setup-sh PATH         setup.sh to pair with --distro. Both or neither.
+  --reinstall             Re-run the package installer on hosts that already
+                          have Spinifex. Normally a failed run resumes from the
+                          installed package to avoid replacing clustered OVN.
   --no-external-pool      Form without an OCI credential: no external pool and no
                           allocator gate. Implies --skip-workload, because a guest
                           with no public address proves nothing a customer wants.
   --skip-workload         Form and verify only; launch no guests.
+  --show-aws-credentials  Print node 1's ~/.aws/credentials after the cluster is
+                          Ready. This reveals a secret; do not use it in CI logs.
   --keep                  Leave the infrastructure up. Implies no verdict.
   --keep-on-fail          Destroy on success, leave a failure up to inspect.
   --destroy-only          Destroy whatever this topology's state holds, then stop.
+  --destroy-identity      With --destroy-only, also destroy the Dynamic Group and
+                          IAM policy tracked by setup-identity.sh. These are
+                          tenancy-wide and may be shared by another cluster.
   --dry-run               Print the plan and the per-node steps, change nothing.
 EOF
     exit 2
@@ -133,14 +166,21 @@ while [ $# -gt 0 ]; do
         --version) INSTALL_VERSION="${2:?}"; shift 2 ;;
         --distro) DISTRO="${2:?}"; shift 2 ;;
         --setup-sh) SETUP_SH="${2:?}"; shift 2 ;;
+        --reinstall) REINSTALL=1; shift ;;
         --instance-principal) INSTANCE_PRINCIPAL=1; shift ;;
+        --setup-instance-principal) SETUP_INSTANCE_PRINCIPAL=1; shift ;;
+        --identity-oci-profile) IDENTITY_OCI_PROFILE="${2:?}"; shift 2 ;;
+        --existing-hosts-file) EXISTING_HOSTS_FILE="${2:?}"; shift 2 ;;
+        --existing-state-file) EXISTING_STATE_FILE="${2:?}"; shift 2 ;;
         --credential-hook) CREDENTIAL_HOOK="${2:?}"; shift 2 ;;
         --oci-profile) OCI_PROFILE="${2:?}"; shift 2 ;;
         --no-external-pool) SKIP_POOL=1; SKIP_WORKLOAD=1; shift ;;
         --skip-workload) SKIP_WORKLOAD=1; shift ;;
+        --show-aws-credentials) SHOW_AWS_CREDENTIALS=1; shift ;;
         --keep) KEEP=1; shift ;;
         --keep-on-fail) KEEP_ON_FAIL=1; shift ;;
         --destroy-only) DESTROY_ONLY=1; shift ;;
+        --destroy-identity) DESTROY_IDENTITY=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h | --help) usage ;;
         *) die "unknown option $1" ;;
@@ -166,6 +206,22 @@ if [ "$TOPO_FORCE_PRINCIPAL" = 1 ]; then
     [ "$SKIP_POOL" != 1 ] \
         || die "--no-external-pool makes $TOPOLOGY meaningless: the allocator is what exercises the instance principal, so a run without it proves nothing"
 fi
+
+[ -z "$EXISTING_HOSTS_FILE" ] || [ -z "$EXISTING_STATE_FILE" ] \
+    || die "--existing-hosts-file and --existing-state-file are mutually exclusive"
+if [ -n "$EXISTING_HOSTS_FILE" ] || [ -n "$EXISTING_STATE_FILE" ]; then
+    EXISTING_INFRA=1
+    [ "$DESTROY_ONLY" = 0 ] \
+        || die "--destroy-only is unavailable with existing infrastructure; this driver did not create it"
+    [ "$KEEP_ON_FAIL" = 0 ] \
+        || die "--keep-on-fail is unnecessary with existing infrastructure, which is always kept"
+    KEEP=1
+fi
+
+[ "$SETUP_INSTANCE_PRINCIPAL" = 0 ] || [ "$INSTANCE_PRINCIPAL" = 1 ] \
+    || die "--setup-instance-principal requires --instance-principal (or vm-single-principal)"
+[ "$DESTROY_IDENTITY" = 0 ] || [ "$DESTROY_ONLY" = 1 ] \
+    || die "--destroy-identity is valid only with --destroy-only"
 
 # Terraform's own order, as far as this script needs it: the last assignment across
 # terraform.tfvars then *.auto.tfvars alphabetically is the one that applies. Read
@@ -206,7 +262,9 @@ NODES="$TOPO_DEFAULT_NODES"
 # sweep could read it, leaving instances running that nothing can find.
 STATE_ROOT="${OCI_STATE_ROOT:-$HERE}"
 mkdir -p "$STATE_ROOT"
-STATE_DIR="$STATE_ROOT/.validate-$TOPOLOGY"
+STATE_SUFFIX=""
+[ "$EXISTING_INFRA" = 1 ] && STATE_SUFFIX="-existing"
+STATE_DIR="$STATE_ROOT/.validate-$TOPOLOGY$STATE_SUFFIX"
 RESULTS="$STATE_DIR/results.txt"
 
 # Tab-separated siblings of the human block, for the run-page tables. Written here
@@ -238,6 +296,108 @@ tf_vars=("${tf_state[@]}")
 if [ "${#tf_principal_var[@]}" -gt 0 ]; then
     tf_vars=("${tf_principal_var[@]}" "${tf_vars[@]}")
 fi
+
+# Keep host discovery separate from provisioning.  The downstream install,
+# formation and allocator checks need only public SSH addresses, so they can be
+# reused against infrastructure Terraform did not create in this run.
+load_hosts() {
+    local raw="$1" source="$2" line other
+    HOSTS=()
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%%#*}"
+        line="$(printf '%s' "$line" | tr -d '[:space:]')"
+        [ -n "$line" ] || continue
+        [[ "$line" =~ ^[0-9]+(\.[0-9]+){3}$ ]] \
+            || die "$source contains a non-IPv4 host entry: '$line'"
+        for other in "${HOSTS[@]:-}"; do
+            [ "$line" != "$other" ] || die "$source lists '$line' more than once"
+        done
+        HOSTS+=("$line")
+    done <<EOF
+$raw
+EOF
+    [ "${#HOSTS[@]}" -ge 1 ] || die "$source named no hosts"
+}
+
+state_output() {
+    local name="$1"
+    terraform -chdir="$HERE" output -state="$EXISTING_STATE_FILE" -raw "$name"
+}
+
+load_existing_infrastructure() {
+    local raw state_principal
+    if [ -n "$EXISTING_HOSTS_FILE" ]; then
+        [ -r "$EXISTING_HOSTS_FILE" ] \
+            || die "--existing-hosts-file is not readable: '$EXISTING_HOSTS_FILE'"
+        raw="$(cat "$EXISTING_HOSTS_FILE")"
+        load_hosts "$raw" "--existing-hosts-file $EXISTING_HOSTS_FILE"
+        SHAPE="existing infrastructure"
+        # A hosts file contains no trustworthy authentication metadata.  Demand
+        # an explicit instance-principal flag or an API-key hook rather than
+        # quietly inheriting a stale local tfvars value.
+        if [ "$INSTANCE_PRINCIPAL" != 1 ] && [ -z "$CREDENTIAL_HOOK" ]; then
+            die "--existing-hosts-file needs --instance-principal or --credential-hook; host addresses cannot prove how the nodes authenticate"
+        fi
+    else
+        [ -r "$EXISTING_STATE_FILE" ] \
+            || die "--existing-state-file is not readable: '$EXISTING_STATE_FILE'"
+        raw="$(state_output hosts_file)" \
+            || die "could not read hosts_file from existing state '$EXISTING_STATE_FILE'"
+        load_hosts "$raw" "hosts_file in $EXISTING_STATE_FILE"
+        SHAPE="$(state_output compute_shape 2>/dev/null || echo 'existing infrastructure')"
+        state_principal="$(state_output instance_principal)" \
+            || die "could not read instance_principal from existing state '$EXISTING_STATE_FILE'"
+        if [ "$INSTANCE_PRINCIPAL" = 1 ] && [ "$state_principal" != adopt ]; then
+            die "--instance-principal was requested but existing state says instance_principal='$state_principal'"
+        fi
+        if [ "$INSTANCE_PRINCIPAL" != 1 ]; then
+            PRINCIPAL_MODE="$state_principal"
+        fi
+    fi
+    NODES="${#HOSTS[@]}"
+    log "using existing infrastructure: ${HOSTS[*]}"
+}
+
+identity_resources() {
+    local action="$1" identity_profile
+    case "$action" in
+        create)
+            [ "$SETUP_INSTANCE_PRINCIPAL" = 1 ] || return 0
+            if [ "$DRY_RUN" = 1 ]; then
+                log "dry run: planning the instance-principal dynamic group and policy"
+            else
+                log "creating/verifying the instance-principal dynamic group and policy"
+            fi
+            ;;
+        destroy)
+            [ "$DESTROY_IDENTITY" = 1 ] || return 0
+            log "destroying the instance-principal Dynamic Group and IAM policy"
+            ;;
+        *) die "internal error: unknown identity action '$action'" ;;
+    esac
+    identity_profile="$IDENTITY_OCI_PROFILE"
+    [ -n "$identity_profile" ] || identity_profile="$OCI_PROFILE"
+    if [ -n "$identity_profile" ]; then
+        if [ "$action" = destroy ]; then
+            OCI_CLI_PROFILE="$identity_profile" OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" \
+                "$HERE/setup-identity.sh" --destroy
+        elif [ "$DRY_RUN" = 1 ]; then
+            OCI_CLI_PROFILE="$identity_profile" OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" \
+                "$HERE/setup-identity.sh" --dry-run
+        else
+            OCI_CLI_PROFILE="$identity_profile" OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" \
+                "$HERE/setup-identity.sh"
+        fi
+    else
+        if [ "$action" = destroy ]; then
+            OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh" --destroy
+        elif [ "$DRY_RUN" = 1 ]; then
+            OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh" --dry-run
+        else
+            OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh"
+        fi
+    fi
+}
 
 ssh_node() {
     local host="$1"
@@ -274,6 +434,31 @@ record() {
     printf '%s\t%s\t%s\n' "$gate" "$status" "$detail" >> "$RESULTS_TSV"
 }
 
+# Checkpoints are deliberately local to the validation state directory.  They
+# let a retry continue after a transient failure without treating a marker by
+# itself as proof: the corresponding host state is checked before it is reused.
+stage_done() { [ -f "$STATE_DIR/stage-$1.done" ]; }
+mark_stage() { : > "$STATE_DIR/stage-$1.done"; }
+
+formation_complete() {
+    local host
+    stage_done formation || return 1
+    for host in "${HOSTS[@]}"; do
+        ssh_node "$host" 'test -s /etc/spinifex/spinifex.toml' || return 1
+    done
+}
+
+pool_complete() {
+    local host
+    stage_done pool || return 1
+    for host in "${HOSTS[@]}"; do
+        ssh_node "$host" 'grep -q imds_host_meta_ip /etc/spinifex/spinifex.toml' || return 1
+        if [ "$SKIP_POOL" != 1 ]; then
+            ssh_node "$host" "grep -q 'name               = \"oci-public\"' /etc/spinifex/spinifex.toml" || return 1
+        fi
+    done
+}
+
 # The driver's per-workbook lines, which are go test's own shape because
 # go-junit-report consumes them downstream. A workbook the driver never reached
 # is absent from its log and so absent here, which the summary renders as a row
@@ -303,7 +488,11 @@ destroy_topology() {
 cleanup() {
     local rc=$?
     if [ "$KEEP" = 1 ]; then
-        log "--keep: leaving the infrastructure up, no verdict recorded"
+        if [ "$EXISTING_INFRA" = 1 ]; then
+            log "existing infrastructure mode: leaving infrastructure untouched"
+        else
+            log "--keep: leaving the infrastructure up, no verdict recorded"
+        fi
         # The command to get in, printed rather than left to be assembled from an
         # address elsewhere in the log. HOSTS is empty if we never got as far as
         # the apply, which is why this is guarded rather than assumed.
@@ -313,7 +502,8 @@ cleanup() {
             local key="$SSH_PRIVATE_KEY"
             case "$key" in "$HOME"/*) key="~${key#"$HOME"}" ;; esac
             log "ssh in with: ssh -i $key ubuntu@${HOSTS[0]}"
-            log "destroy it with: $0 --topology $TOPOLOGY --destroy-only"
+            [ "$EXISTING_INFRA" = 1 ] || \
+                log "destroy it with: $0 --topology $TOPOLOGY --destroy-only"
         fi
         return
     fi
@@ -348,6 +538,7 @@ if [ "$DESTROY_ONLY" = 1 ]; then
     log "destroy only: whatever $STATE_DIR/terraform.tfstate holds"
     destroy_topology
     [ "$DESTROY_RC" = 0 ] || exit 1
+    identity_resources destroy
     exit 0
 fi
 
@@ -368,7 +559,7 @@ log "$SHAPE, $NODES node(s), state in $STATE_DIR"
 # Checked here, not where the hook is run: nothing about it depends on the apply, and
 # the run is otherwise forty minutes and a bare-metal bill from discovering that the
 # path in a CI variable does not exist on this runner.
-if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
+if [ "$EXISTING_INFRA" != 1 ] && [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
     [ -n "$CREDENTIAL_HOOK" ] \
         || die "this deployment authenticates with an API key and no credential hook is set, so no node could reach the OCI API; set --credential-hook or OCI_CREDENTIAL_HOOK, or use an instance principal"
     [ -x "$CREDENTIAL_HOOK" ] || die "credential hook is not executable: $CREDENTIAL_HOOK"
@@ -409,7 +600,25 @@ assert_no_tfvars_override() {
 }
 assert_no_tfvars_override
 
+if [ "$EXISTING_INFRA" = 1 ]; then
+    load_existing_infrastructure
+fi
+identity_resources create
+
+if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
+    [ -n "$CREDENTIAL_HOOK" ] \
+        || die "this deployment authenticates with an API key and no credential hook is set, so no node could reach the OCI API; set --credential-hook or OCI_CREDENTIAL_HOOK, or use an instance principal"
+    [ -x "$CREDENTIAL_HOOK" ] || die "credential hook is not executable: $CREDENTIAL_HOOK"
+fi
+
 if [ "$DRY_RUN" = 1 ]; then
+    if [ "$EXISTING_INFRA" = 1 ]; then
+        plan="install Spinifex on $NODES existing node(s), form the cluster"
+        [ "$SKIP_POOL" = 1 ] && plan="$plan, configure no external pool"
+        [ "$SKIP_WORKLOAD" = 1 ] && plan="$plan, launch no guests"
+        log "dry run: would $plan; Terraform apply and destroy are skipped"
+        exit 0
+    fi
     # Whole plan to a file, summary to the terminal. A dry run is here to catch a
     # plan aimed at the wrong compartment, and `tail` dropped the resource count
     # and every compartment and shape line along with it, leaving only the outputs
@@ -439,29 +648,26 @@ fi
 
 trap cleanup EXIT
 
-tf init -input=false > "$STATE_DIR/init.log" 2>&1 || die "terraform init failed; see $STATE_DIR/init.log"
+if [ "$EXISTING_INFRA" = 1 ]; then
+    record build SKIP "existing infrastructure"
+else
+    tf init -input=false > "$STATE_DIR/init.log" 2>&1 || die "terraform init failed; see $STATE_DIR/init.log"
 
-log "building"
-tf apply -auto-approve -no-color "${tf_vars[@]}" > "$STATE_DIR/apply.log" 2>&1 \
-    || die "terraform apply failed; see $STATE_DIR/apply.log"
-record build PASS
+    log "building"
+    tf apply -auto-approve -no-color "${tf_vars[@]}" > "$STATE_DIR/apply.log" 2>&1 \
+        || die "terraform apply failed; see $STATE_DIR/apply.log"
+    record build PASS
 
-# A read loop rather than mapfile, which bash 3.2 on macOS does not have. The
-# output is captured first so a failed terraform fails here, not silently as an
-# empty host list.
-hosts_raw=$(tf output -raw "${tf_state[@]}" hosts_file) \
-    || die "could not read the hosts_file output from $STATE_DIR/terraform.tfstate"
-HOSTS=()
-while IFS= read -r line; do
-    if [ -n "$line" ]; then HOSTS+=("$line"); fi
-done <<EOF
-$hosts_raw
-EOF
-[ "${#HOSTS[@]}" -ge 1 ] || die "the hosts_file output named no hosts, so the apply built nothing to install on"
-for host in "${HOSTS[@]}"; do
-    [[ "$host" =~ ^[0-9]+(\.[0-9]+){3}$ ]] \
-        || die "the hosts_file output is not an address: '$host' -- something on the wrapper's stdout is in the capture"
-done
+    hosts_raw=$(tf output -raw "${tf_state[@]}" hosts_file) \
+        || die "could not read hosts_file from $STATE_DIR/terraform.tfstate"
+    load_hosts "$hosts_raw" "hosts_file from $STATE_DIR/terraform.tfstate"
+    SHAPE=$(tf output -raw "${tf_state[@]}" compute_shape) \
+        || die "could not read compute_shape from $STATE_DIR/terraform.tfstate"
+    built_principal=$(tf output -raw "${tf_state[@]}" instance_principal) \
+        || die "could not read instance_principal from $STATE_DIR/terraform.tfstate"
+    [ "$built_principal" = "$PRINCIPAL_MODE" ] \
+        || die "read instance_principal='$PRINCIPAL_MODE' from the tfvars and the apply built '$built_principal'; set it in one place"
+fi
 
 # Written for every topology, not just the multi-node one that passes it to
 # install-node.sh: it is also how an operator gets the addresses afterwards
@@ -474,18 +680,6 @@ if [ "${#HOSTS[@]}" != "$NODES" ]; then
     log "note: $NODES node(s) is the $TOPOLOGY default, and the apply built ${#HOSTS[@]}; taking the apply's"
     NODES="${#HOSTS[@]}"
 fi
-SHAPE=$(tf output -raw "${tf_state[@]}" compute_shape) \
-    || die "could not read the compute_shape output from $STATE_DIR/terraform.tfstate"
-
-# Terraform is the authority on which credential was built, and the reader above is
-# a guess made before the apply. They have to agree: the hook is skipped on the
-# strength of that guess, and a node left with no credential at all would otherwise
-# fail much later as an allocator that cannot resolve its VNIC.
-built_principal=$(tf output -raw "${tf_state[@]}" instance_principal) \
-    || die "could not read the instance_principal output from $STATE_DIR/terraform.tfstate"
-[ "$built_principal" = "$PRINCIPAL_MODE" ] \
-    || die "read instance_principal='$PRINCIPAL_MODE' from the tfvars and the apply built '$built_principal'; set it in one place"
-
 log "hosts: ${HOSTS[*]}"
 log "$SHAPE, $NODES node(s), oci_auth $([ "$PRINCIPAL_MODE" = off ] && echo "from a key file" || echo "as the instance principal")"
 
@@ -519,6 +713,15 @@ record "cloud-init units" PASS
 # guide gets today. A nightly judging a branch must pass --distro.
 log "installing Spinifex on each node ($([ -n "$DISTRO" ] && echo "$(basename "$DISTRO")" || echo "published release"))"
 for host in "${HOSTS[@]}"; do
+    # A retry after OVN formation must not re-run setup.sh: the installer invokes
+    # setup-ovn.sh in standalone mode, which is correct on a new host but would
+    # replace the clustered NB/SB client configuration we are trying to resume.
+    # An explicit --reinstall remains available for a deliberate package upgrade.
+    if [ "$REINSTALL" = 0 ] && ssh_node "$host" 'command -v spx >/dev/null && test -x /usr/local/share/spinifex/setup-ovn.sh'; then
+        INSTALLED_VERSION="$(ssh_node "$host" 'spx version' 2>&1 | head -1)"
+        log "$host already installed: $INSTALLED_VERSION (resuming; installer skipped)"
+        continue
+    fi
     if [ -n "$DISTRO" ]; then
         scp -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR -q "$DISTRO" "$SETUP_SH" "ubuntu@$host:/tmp/" \
@@ -568,7 +771,10 @@ record install PASS "$INSTALLED_VERSION"
 # A single node is its own documented path: install-node.sh refuses fewer than two
 # hosts, because there is nothing to join. Both branches use the flags the guide
 # names, so what is validated is what the guide tells a customer to type.
-if [ "$NODES" = 1 ]; then
+if formation_complete; then
+    log "cluster formation already completed (resuming; formation skipped)"
+    record formation SKIP "checkpoint verified"
+elif [ "$NODES" = 1 ]; then
     log "initializing the single node"
     ssh_node "${HOSTS[0]}" '
         set -e
@@ -578,6 +784,8 @@ if [ "$NODES" = 1 ]; then
         sudo systemctl start spinifex.target
     ' > "$STATE_DIR/form.log" 2>&1 \
         || die "single-node init failed; see $STATE_DIR/form.log"
+    mark_stage formation
+    record formation PASS
 else
     log "forming the cluster"
     "$REPO_ROOT/scripts/install-node.sh" \
@@ -588,29 +796,34 @@ else
         --ipsec off \
         --yes > "$STATE_DIR/form.log" 2>&1 \
         || die "formation failed; see $STATE_DIR/form.log"
+    mark_stage formation
+    record formation PASS
 fi
-record formation PASS
 
 # Runs after formation and before the pool is configured, which is the only window
 # where a node has /etc/spinifex but has not yet started the allocator. Nothing in
 # this repository knows what it does: an API-key deployment needs a credential on
 # each node, and a credential belongs to the operator, not to a checked-in script.
 # Skipped under instance principal, which needs no handoff at all.
-if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
-    log "running the credential hook"
-    # Arguments, not a file: the hook is told where the nodes are and how to reach
-    # them, and decides for itself what to put there.
-    "$CREDENTIAL_HOOK" "$SSH_PRIVATE_KEY" "${HOSTS[@]}" > "$STATE_DIR/credential-hook.log" 2>&1 \
-        || die "the credential hook failed; see $STATE_DIR/credential-hook.log"
-    log "credential hook ok"
-fi
+if pool_complete; then
+    log "OCI pool configuration already completed (resuming; pool setup skipped)"
+    record pool SKIP "checkpoint verified"
+else
+    if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
+        log "running the credential hook"
+        # Arguments, not a file: the hook is told where the nodes are and how to reach
+        # them, and decides for itself what to put there.
+        "$CREDENTIAL_HOOK" "$SSH_PRIVATE_KEY" "${HOSTS[@]}" > "$STATE_DIR/credential-hook.log" 2>&1 \
+            || die "the credential hook failed; see $STATE_DIR/credential-hook.log"
+        log "credential hook ok"
+    fi
 
-# The IMDS remap and the pool are both set-before-first-start, and the remap is the
-# half that is invisible when missing: without it the cloud's metadata service is
-# shadowed by Spinifex's own endpoints and the allocator cannot resolve its VNIC.
-log "configuring the IMDS remap$([ "$SKIP_POOL" = 1 ] && echo " (no external pool)" || echo " and the external pool")"
-for host in "${HOSTS[@]}"; do
-    ssh_node "$host" "SKIP_POOL=$SKIP_POOL bash -s" > "$STATE_DIR/pool-$host.log" 2>&1 <<'REMOTE' \
+    # The IMDS remap and the pool are both set-before-first-start, and the remap is the
+    # half that is invisible when missing: without it the cloud's metadata service is
+    # shadowed by Spinifex's own endpoints and the allocator cannot resolve its VNIC.
+    log "configuring the IMDS remap$([ "$SKIP_POOL" = 1 ] && echo " (no external pool)" || echo " and the external pool")"
+    for host in "${HOSTS[@]}"; do
+    ssh_node "$host" "SKIP_POOL=$SKIP_POOL PRINCIPAL_MODE=$PRINCIPAL_MODE bash -s" > "$STATE_DIR/pool-$host.log" 2>&1 <<'REMOTE' \
         || die "pool configuration failed on $host; see $STATE_DIR/pool-$host.log"
 set -e
 sudo cp /etc/spinifex/spinifex.toml /etc/spinifex/spinifex.toml.bak-prepool
@@ -628,6 +841,11 @@ if n != 1:
 open(path, "w").write(text)
 PY
 if [ "${SKIP_POOL:-0}" != 1 ]; then
+    if [ "${PRINCIPAL_MODE:-off}" = adopt ]; then
+        grep -q 'oci_auth[[:space:]]*=[[:space:]]*"instance_principal"' \
+            /etc/spinifex/oci/external-pool.toml \
+            || { echo "instance-principal mode needs oci_auth = \\"instance_principal\\" in /etc/spinifex/oci/external-pool.toml"; exit 1; }
+    fi
     grep -q 'name               = "oci-public"' /etc/spinifex/spinifex.toml \
         || sudo tee -a /etc/spinifex/spinifex.toml < /etc/spinifex/oci/external-pool.toml >/dev/null
 fi
@@ -640,7 +858,10 @@ sudo python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' \
     || { echo "spinifex.toml is not valid TOML after the IMDS remap and the pool append"; exit 1; }
 sudo systemctl restart spinifex.target
 REMOTE
-done
+    done
+    mark_stage pool
+    record pool PASS
+fi
 
 # Everything needed to tell the three allocator faults apart, and deliberately no
 # credential: the config file and the PEM are reported as mode and size only, which
@@ -732,6 +953,12 @@ done
 cat "$STATE_DIR/nodes.txt"
 [ "$ready" = "$NODES" ] || die "expected $NODES Ready node(s), got $ready; see $STATE_DIR/nodes.txt"
 record membership PASS "$ready Ready"
+
+if [ "$SHOW_AWS_CREDENTIALS" = 1 ]; then
+    log "AWS credentials from node 1 (${HOSTS[0]}) — SENSITIVE: do not paste into logs or chat"
+    ssh_node "${HOSTS[0]}" 'test -r ~/.aws/credentials && cat ~/.aws/credentials' \
+        || die "node 1 has no readable ~/.aws/credentials"
+fi
 
 if [ "$SKIP_WORKLOAD" = 1 ]; then
     log "--skip-workload: stopping before the workbook"

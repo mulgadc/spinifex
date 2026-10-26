@@ -6,32 +6,32 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // passRoleTo is a PassRole statement on every role, conditioned on the
 // consuming service the way AWS's documented examples scope it.
-func passRoleTo(effect, operator, service string) handlers_iam.Statement {
+func passRoleTo(effect, operator, service string) iamdomain.Statement {
 	s := statement(effect, "iam:PassRole", "*")
-	s.Condition = map[string]map[string]handlers_iam.ConditionValue{
+	s.Condition = map[string]map[string]iamdomain.ConditionValue{
 		operator: {iampolicy.KeyPassedToService: {service}},
 	}
 	return s
 }
 
-func passRoleToGateway(t *testing.T, statements ...handlers_iam.Statement) *GatewayConfig {
+func passRoleToGateway(t *testing.T, statements ...iamdomain.Statement) *GatewayConfig {
 	t.Helper()
-	docs := []handlers_iam.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
 	return &GatewayConfig{
 		DisableLogging: true,
 		Region:         authzRegion,
 		NATSConn:       startTestNATS(t),
 		IAMService: &profileIAMService{
 			policyMockIAMService: policyMockIAMService{
-				getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
+				getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 			},
 		},
 	}
@@ -122,7 +122,7 @@ func TestPassedToService_EKS(t *testing.T) {
 // A Deny scoped to one service fences that service and leaves the others to
 // the unconditional grant.
 func TestPassedToService_DenyFencesOneService(t *testing.T) {
-	statements := []handlers_iam.Statement{
+	statements := []iamdomain.Statement{
 		statement("Allow", "ec2:*", "*"),
 		statement("Allow", "ecs:*", "*"),
 		statement("Allow", "iam:PassRole", "*"),
@@ -136,7 +136,7 @@ func TestPassedToService_DenyFencesOneService(t *testing.T) {
 // any other action does not hold.
 func TestPassedToService_AbsentOutsidePassRole(t *testing.T) {
 	grant := statement("Allow", "ec2:*", "*")
-	grant.Condition = map[string]map[string]handlers_iam.ConditionValue{
+	grant.Condition = map[string]map[string]iamdomain.ConditionValue{
 		iampolicy.OpStringEquals: {iampolicy.KeyPassedToService: {"ec2.amazonaws.com"}},
 	}
 	assertUnauthorized(t, dispatchEC2(t, scopedPolicyGateway(grant), "Action=DeleteVolume"))

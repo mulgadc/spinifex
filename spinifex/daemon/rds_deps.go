@@ -12,13 +12,13 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // A launch can only arrive over the gateway, long after service init, so unlike
 // the EKS/ECS IAM deps none of this is built lazily.
-func (d *Daemon) buildRDSLaunchDeps() handlers_rds.LaunchDeps {
-	return handlers_rds.LaunchDeps{
+func (d *Daemon) buildRDSLaunchDeps() rdsinstance.LaunchDeps {
+	return rdsinstance.LaunchDeps{
 		Config: d.config,
 		SystemVPC: systemvpc.Deps{
 			VPC:      d.vpcService,
@@ -33,14 +33,14 @@ func (d *Daemon) buildRDSLaunchDeps() handlers_rds.LaunchDeps {
 		Instance: d,
 		Image:    d.imageService,
 		Volume:   d.volumeService,
-		Attacher: handlers_rds.NewNATSVolumeAttacher(d.natsConn),
+		Attacher: rdsinstance.NewNATSVolumeAttacher(d.natsConn),
 	}
 }
 
 // The control-plane deps on top of the launch primitives: where the endpoint
 // ENI is placed, the instance role the agent authenticates with, the base zone
 // the endpoint record lands in, and the VM-state lookup the reconciler needs.
-func (d *Daemon) buildRDSDeps() (handlers_rds.Deps, error) {
+func (d *Daemon) buildRDSDeps() (rdsinstance.Deps, error) {
 	gatewayCA := ""
 	if d.config.NATS.CACert != "" {
 		if caBytes, err := os.ReadFile(d.config.NATS.CACert); err == nil {
@@ -55,18 +55,18 @@ func (d *Daemon) buildRDSDeps() (handlers_rds.Deps, error) {
 	// the fetch that replays one is answered by any node in the queue group.
 	masterKey, err := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 	if err != nil {
-		return handlers_rds.Deps{}, fmt.Errorf("load RDS master key: %w", err)
+		return rdsinstance.Deps{}, fmt.Errorf("load RDS master key: %w", err)
 	}
 
-	return handlers_rds.Deps{
+	return rdsinstance.Deps{
 		CACertPath:    d.config.NATS.CACert,
 		CAKeyPath:     clusterCAKeyPath(d.config.NATS.CACert),
 		MasterKey:     masterKey,
 		Launch:        d.buildRDSLaunchDeps(),
 		Network:       d.vpcService,
 		IAM:           d.systemRoleEnsurer,
-		InstanceState: handlers_rds.NewDescribeInstanceState(d.describeInstancesFanOut),
-		Instances:     handlers_rds.NewNATSInstanceCommander(d.natsConn),
+		InstanceState: rdsinstance.NewDescribeInstanceState(d.describeInstancesFanOut),
+		Instances:     rdsinstance.NewNATSInstanceCommander(d.natsConn),
 		Snapshots:     d.snapshotService,
 		Storage:       d.volumeService,
 		BaseDomain:    d.dnsBaseDomain,
@@ -77,7 +77,7 @@ func (d *Daemon) buildRDSDeps() (handlers_rds.Deps, error) {
 		GatewayCACert:    gatewayCA,
 		BootstrapTimeout: time.Duration(d.config.RDS.BootstrapTimeoutSeconds) * time.Second,
 		FailureGrace:     time.Duration(d.config.RDS.FailureGraceSeconds) * time.Second,
-		Backup: handlers_rds.BackupPolicy{
+		Backup: rdsinstance.BackupPolicy{
 			RetentionCapDays:       int64(d.config.RDS.BackupRetentionCapDays),
 			RetentionDays:          int64(d.config.RDS.BackupRetentionDays),
 			BackupWindowBlock:      d.config.RDS.BackupWindowBlock,

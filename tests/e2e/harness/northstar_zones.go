@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 )
 
 const northstarServerConfigPath = "/etc/spinifex/northstar/northstar.toml"
@@ -29,7 +30,21 @@ func DNSTargets(env *Env) []Node {
 			return cluster.Nodes
 		}
 	}
-	return []Node{{Index: 1, Name: "local", Addr: gatewayDialHost(env)}}
+	return []Node{{Index: 1, Name: "local", Addr: localNorthstarAddr(env)}}
+}
+
+// localNorthstarAddr is where the local node's northstar answers :53. It binds
+// the node's WAN address there, not loopback, so the gateway's dial host is
+// only the fallback for a config the harness cannot read.
+func localNorthstarAddr(env *Env) string {
+	if env.ConfigDir != "" {
+		if cc, err := loadClusterConfig(filepath.Join(env.ConfigDir, "spinifex.toml")); err == nil {
+			if ips := dns.ResolverNameserverIPs(cc); len(ips) > 0 {
+				return ips[0]
+			}
+		}
+	}
+	return gatewayDialHost(env)
 }
 
 // NorthstarZoneStore returns write credentials for the bucket northstar loads

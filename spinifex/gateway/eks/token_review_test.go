@@ -9,8 +9,8 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -61,15 +61,15 @@ func TestWebhookTokenReview_InfraFaultIsServerInternal(t *testing.T) {
 func TestWebhookTokenReview_ResolvesIdentity(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: handlers_eks.AccountBucketName("111122223333")})
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: ekscluster.AccountBucketName("111122223333")})
 	require.NoError(t, err)
 	_, err = access.New("us-east-1").Create(t.Context(), kv, "111122223333", access.Spec{
 		Cluster: "alpha", PrincipalARN: testARN, Groups: []string{"system:masters"}, Type: access.EntryTypeStandard,
 	})
 	require.NoError(t, err)
 
-	sub, err := nc.Subscribe(handlers_eks.TokenVerifySubject, func(m *nats.Msg) {
-		resp, _ := json.Marshal(handlers_eks.TokenVerifyResponse{
+	sub, err := nc.Subscribe(ekscluster.TokenVerifySubject, func(m *nats.Msg) {
+		resp, _ := json.Marshal(ekscluster.TokenVerifyResponse{
 			AccountID:     "111122223333",
 			ARN:           testARN,
 			UserID:        "AROAEXAMPLE:session",

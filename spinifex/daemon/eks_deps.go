@@ -10,8 +10,8 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
 
@@ -48,7 +48,7 @@ func (d *Daemon) systemRoleEnsurer() iamdomain.SystemInstanceRoleEnsurer {
 
 // buildEKSServiceDeps assembles the EKSServiceDeps. All collaborators must
 // already be initialised. MasterKey is loaded best-effort from the config dir.
-func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
+func (d *Daemon) buildEKSServiceDeps() ekscluster.EKSServiceDeps {
 	masterKey, err := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 	if err != nil {
 		slog.Warn("EKS: master key read failed; CreateCluster + DeleteCluster will reject until key is provisioned",
@@ -71,7 +71,7 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		}
 	}
 
-	deps := handlers_eks.EKSServiceDeps{
+	deps := ekscluster.EKSServiceDeps{
 		Config:              d.config,
 		NATSConn:            d.natsConn,
 		MasterKey:           masterKey,
@@ -100,7 +100,7 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		NATGW:          d.natGatewayService,
 		RouteTable:     d.routeTableService,
 		PlacementGroup: ec2placementgroup.NewNATSPlacementGroupService(d.natsConn),
-		Scheduler:      handlers_eks.NewNATSHostScheduler(d.natsConn),
+		Scheduler:      ekscluster.NewNATSHostScheduler(d.natsConn),
 		CPControl:      d.newEKSCPControl(),
 	}
 

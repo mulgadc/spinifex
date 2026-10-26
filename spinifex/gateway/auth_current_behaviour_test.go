@@ -28,12 +28,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 )
 
 // The TestCurrentBehaviour_ tests in this file pin today's SigV4 authentication,
@@ -105,7 +105,7 @@ func newCBEnv(t *testing.T, opts cbEnvOpts) *cbEnv {
 	e.iam, err = iamdomain.NewIAMServiceImpl(t.Context(), e.iamNC, masterKey)
 	require.NoError(t, err)
 	iamJS := testutil.NewJetStream(t, e.iamNC)
-	e.sts, err = stsdomain.NewSTSServiceImpl(t.Context(), e.iamNC, e.iam, masterKey, handlers_eks.NewOIDCJWKSReader(iamJS))
+	e.sts, err = stsdomain.NewSTSServiceImpl(t.Context(), e.iamNC, e.iam, masterKey, ekscluster.NewOIDCJWKSReader(iamJS))
 	require.NoError(t, err)
 	if !opts.noRevoker {
 		e.iam.SetSessionRevoker(e.sts)
@@ -501,9 +501,9 @@ func TestCurrentBehaviour_Session_WebIdentityCredentials(t *testing.T) {
 		Y: base64.RawURLEncoding.EncodeToString(point[33:65]),
 	}}})
 	require.NoError(t, err)
-	eksKV, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), e.js, e.accountID)
+	eksKV, err := ekscluster.GetOrCreateAccountBucket(t.Context(), e.js, e.accountID)
 	require.NoError(t, err)
-	_, err = eksKV.Put(t.Context(), handlers_eks.OIDCJWKSKey(testDiscCluster), jwks)
+	_, err = eksKV.Put(t.Context(), ekscluster.OIDCJWKSKey(testDiscCluster), jwks)
 	require.NoError(t, err)
 
 	federated := iamdomain.OIDCProviderARN(e.accountID, strings.TrimPrefix(issuer, "https://"))

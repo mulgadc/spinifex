@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,13 +24,13 @@ func TestPublishInternal_RelaysToSubjects(t *testing.T) {
 		{
 			name:    "bootstrap token",
 			body:    `{"accountId":"111122223333","channel":"bootstrap","kind":"k3s-bootstrap-token","payload":{"token":"k3s-secret"}}`,
-			subject: handlers_eks.BootstrapSubject("111122223333", "alpha", handlers_eks.BootstrapSubjectToken),
+			subject: ekscluster.BootstrapSubject("111122223333", "alpha", ekscluster.BootstrapSubjectToken),
 			payload: `{"token":"k3s-secret"}`,
 		},
 		{
 			name:    "state report",
 			body:    `{"accountId":"111122223333","channel":"state","payload":{"healthz":"ok","node_count":1,"ts":42}}`,
-			subject: handlers_eks.StateSubject("111122223333", "alpha"),
+			subject: ekscluster.StateSubject("111122223333", "alpha"),
 			payload: `{"healthz":"ok","node_count":1,"ts":42}`,
 		},
 		{

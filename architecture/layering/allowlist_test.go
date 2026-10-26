@@ -25,7 +25,7 @@ var allowlist = []allowance{
 
 	{From: "agents/ecs/agent", To: "handlers/ecs", Debt: "agents/ecs/agent", Reason: "assignment/state wire types from the ECS implementation; needs a guest/controller contract"},
 
-	{From: "agents/eks/tokenwebhook", To: "handlers/eks", Debt: "agents/eks/tokenwebhook", Reason: "WebhookTokenReviewResult from the EKS implementation; needs an EKS contract or projection"},
+	{From: "agents/eks/tokenwebhook", To: "domains/eks/cluster", Debt: "agents/eks/tokenwebhook", Reason: "WebhookTokenReviewResult from the EKS implementation; needs an EKS contract or projection"},
 
 	{From: "agents/rds/agent", To: "domains/rds/instance", Debt: "agents/rds/agent (dependency, narrowed)", Reason: "command protocol, wire and record types; needs a guest/controller wire contract"},
 
@@ -128,14 +128,14 @@ var allowlist = []allowance{
 	{From: "handlers/ecs", To: "handlers/elbv2", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
 	{From: "handlers/ecs", To: "domains/iam", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
 
-	{From: "handlers/eks", To: "domains/dns", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
-	{From: "handlers/eks", To: "domains/ec2/ebs/metadata", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
-	{From: "handlers/eks", To: "domains/ec2/instancetypes", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
-	{From: "handlers/eks", To: "domains/ec2/placementgroup", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
-	{From: "handlers/eks", To: "domains/ec2/systeminstance", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
-	{From: "handlers/eks", To: "domains/network/systemvpc", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
-	{From: "handlers/eks", To: "domains/iam", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
-	{From: "handlers/eks", To: "runtime/compute/vm", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
+	{From: "domains/eks/cluster", To: "domains/dns", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
+	{From: "domains/eks/cluster", To: "domains/ec2/ebs/metadata", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
+	{From: "domains/eks/cluster", To: "domains/ec2/instancetypes", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
+	{From: "domains/eks/cluster", To: "domains/ec2/placementgroup", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
+	{From: "domains/eks/cluster", To: "domains/ec2/systeminstance", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
+	{From: "domains/eks/cluster", To: "domains/network/systemvpc", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
+	{From: "domains/eks/cluster", To: "domains/iam", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
+	{From: "domains/eks/cluster", To: "runtime/compute/vm", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
 
 	{From: "handlers/elbv2", To: "domains/acm", Debt: "handlers/elbv2 (cross-domain)", Reason: "legacy ELBv2 cross-domain import; clears when ELBv2 is extracted behind consumer-owned capabilities"},
 	{From: "handlers/elbv2", To: "domains/dns", Debt: "handlers/elbv2 (cross-domain)", Reason: "legacy ELBv2 cross-domain import; clears when ELBv2 is extracted behind consumer-owned capabilities"},
@@ -159,5 +159,4 @@ var allowlist = []allowance{
 	{From: "operator/cli", To: "daemon", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "gateway", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "gateway/bedrock", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
-	{From: "operator/cli", To: "handlers/eks", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 }

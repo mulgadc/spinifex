@@ -9,7 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
@@ -40,7 +40,7 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	t.Cleanup(elbv2.Close)
 	subscribeServiceMethods(t, nc, "elbv2", elbv2)
 
-	eks, err := handlers_eks.NewEKSServiceImpl(handlers_eks.EKSServiceDeps{
+	eks, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{
 		Config: cfg, NATSConn: nc, MasterKey: masterKey, Region: testRegion, HolderID: "integration-test-node",
 	})
 	require.NoError(t, err, "construct EKS service")

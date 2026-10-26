@@ -8,7 +8,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -35,7 +35,7 @@ func (gw *GatewayConfig) eksAccountKV(ctx context.Context, accountID string) (je
 	if err != nil {
 		return nil, err
 	}
-	return js.KeyValue(ctx, handlers_eks.AccountBucketName(accountID))
+	return js.KeyValue(ctx, ekscluster.AccountBucketName(accountID))
 }
 
 // OIDCDiscoveryDocument serves the cluster's OpenID discovery document. The
@@ -57,7 +57,7 @@ func (gw *GatewayConfig) OIDCDiscoveryDocument(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	meta, err := handlers_eks.GetClusterMeta(r.Context(), kv, clusterName)
+	meta, err := ekscluster.GetClusterMeta(r.Context(), kv, clusterName)
 	if err != nil || meta == nil || meta.OIDCIssuer == "" {
 		http.NotFound(w, r)
 		return
@@ -90,7 +90,7 @@ func (gw *GatewayConfig) OIDCJWKS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry, err := kv.Get(r.Context(), handlers_eks.OIDCJWKSKey(clusterName))
+	entry, err := kv.Get(r.Context(), ekscluster.OIDCJWKSKey(clusterName))
 	if err != nil {
 		http.NotFound(w, r)
 		return

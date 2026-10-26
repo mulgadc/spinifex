@@ -5,9 +5,9 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -30,21 +30,21 @@ func cpAgent(instanceID string) gateway_eks.Caller {
 	return gateway_eks.Caller{
 		AccountID:     awsidentifiers.GlobalAccountID,
 		PrincipalType: principalTypeAssumedRole,
-		RoleName:      handlers_eks.CPInstanceRoleName,
+		RoleName:      ekscluster.CPInstanceRoleName,
 		SessionName:   instanceID,
 	}
 }
 
 // seedCluster writes a cluster meta whose control plane is the given members.
-func seedCluster(t *testing.T, nc *nats.Conn, accountID, cluster string, meta *handlers_eks.ClusterMeta) {
+func seedCluster(t *testing.T, nc *nats.Conn, accountID, cluster string, meta *ekscluster.ClusterMeta) {
 	t.Helper()
 	js := testutil.NewJetStream(t, nc)
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
-		Bucket: handlers_eks.AccountBucketName(accountID),
+		Bucket: ekscluster.AccountBucketName(accountID),
 	})
 	require.NoError(t, err)
 	meta.Name = cluster
-	require.NoError(t, handlers_eks.PutClusterMeta(t.Context(), kv, meta))
+	require.NoError(t, ekscluster.PutClusterMeta(t.Context(), kv, meta))
 }
 
 func publishBody(accountID string) []byte {
@@ -75,7 +75,7 @@ func TestAuthorizeInternal_RejectsNonCPPrincipals(t *testing.T) {
 		{"tenant role session", gateway_eks.Caller{
 			AccountID:     tenantAccount,
 			PrincipalType: principalTypeAssumedRole,
-			RoleName:      handlers_eks.CPInstanceRoleName,
+			RoleName:      ekscluster.CPInstanceRoleName,
 			SessionName:   cpInstanceID,
 		}},
 		{"system user, not a role session", gateway_eks.Caller{
@@ -90,7 +90,7 @@ func TestAuthorizeInternal_RejectsNonCPPrincipals(t *testing.T) {
 		{"no session name", gateway_eks.Caller{
 			AccountID:     awsidentifiers.GlobalAccountID,
 			PrincipalType: principalTypeAssumedRole,
-			RoleName:      handlers_eks.CPInstanceRoleName,
+			RoleName:      ekscluster.CPInstanceRoleName,
 		}},
 	}
 	for _, tc := range cases {
@@ -116,8 +116,8 @@ func TestAuthorizeInternal_IgnoresOtherActions(t *testing.T) {
 
 func TestAuthorizeInternal_AllowsClusterMember(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	seedCluster(t, nc, tenantAccount, "alpha", &handlers_eks.ClusterMeta{
-		ControlPlaneNodes: []handlers_eks.ControlPlaneNode{
+	seedCluster(t, nc, tenantAccount, "alpha", &ekscluster.ClusterMeta{
+		ControlPlaneNodes: []ekscluster.ControlPlaneNode{
 			{InstanceID: otherInstance}, {InstanceID: cpInstanceID},
 		},
 	})
@@ -136,7 +136,7 @@ func TestAuthorizeInternal_AllowsClusterMember(t *testing.T) {
 // scalar field only, and their VMs must keep reaching the routes.
 func TestAuthorizeInternal_AllowsLegacyScalarMember(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	seedCluster(t, nc, tenantAccount, "alpha", &handlers_eks.ClusterMeta{
+	seedCluster(t, nc, tenantAccount, "alpha", &ekscluster.ClusterMeta{
 		ControlPlaneInstanceID: cpInstanceID,
 	})
 
@@ -148,11 +148,11 @@ func TestAuthorizeInternal_AllowsLegacyScalarMember(t *testing.T) {
 // does not serve, which is what the path segment previously let it do.
 func TestAuthorizeInternal_RejectsClusterTheCallerDoesNotServe(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	seedCluster(t, nc, tenantAccount, "alpha", &handlers_eks.ClusterMeta{
-		ControlPlaneNodes: []handlers_eks.ControlPlaneNode{{InstanceID: cpInstanceID}},
+	seedCluster(t, nc, tenantAccount, "alpha", &ekscluster.ClusterMeta{
+		ControlPlaneNodes: []ekscluster.ControlPlaneNode{{InstanceID: cpInstanceID}},
 	})
-	seedCluster(t, nc, "444455556666", "beta", &handlers_eks.ClusterMeta{
-		ControlPlaneNodes: []handlers_eks.ControlPlaneNode{{InstanceID: otherInstance}},
+	seedCluster(t, nc, "444455556666", "beta", &ekscluster.ClusterMeta{
+		ControlPlaneNodes: []ekscluster.ControlPlaneNode{{InstanceID: otherInstance}},
 	})
 
 	cases := []struct {
@@ -182,8 +182,8 @@ func TestAuthorizeInternal_RejectsClusterTheCallerDoesNotServe(t *testing.T) {
 // A member reads its own directive and no other member's.
 func TestAuthorizeInternal_RecoveryIsSelfOnly(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	seedCluster(t, nc, tenantAccount, "alpha", &handlers_eks.ClusterMeta{
-		ControlPlaneNodes: []handlers_eks.ControlPlaneNode{
+	seedCluster(t, nc, tenantAccount, "alpha", &ekscluster.ClusterMeta{
+		ControlPlaneNodes: []ekscluster.ControlPlaneNode{
 			{InstanceID: cpInstanceID}, {InstanceID: otherInstance},
 		},
 	})

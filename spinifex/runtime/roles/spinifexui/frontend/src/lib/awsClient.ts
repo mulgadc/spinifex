@@ -10,6 +10,7 @@ import { EKSClient } from "@aws-sdk/client-eks"
 import { ElasticLoadBalancingV2Client } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { IAMClient } from "@aws-sdk/client-iam"
 import { RDSClient } from "@aws-sdk/client-rds"
+import { Route53Client } from "@aws-sdk/client-route-53"
 import { S3Client } from "@aws-sdk/client-s3"
 import { HttpRequest } from "@smithy/protocol-http"
 
@@ -32,6 +33,7 @@ let s3Client: S3Client | null = null
 let ecrClient: ECRClient | null = null
 let ecsClient: ECSClient | null = null
 let rdsClient: RDSClient | null = null
+let route53Client: Route53Client | null = null
 let bedrockAgentClient: BedrockAgentClient | null = null
 let bedrockAgentRuntimeClient: BedrockAgentRuntimeClient | null = null
 let bedrockClient: BedrockClient | null = null
@@ -309,6 +311,44 @@ export function getRdsClient(): RDSClient {
   return rdsClient
 }
 
+// Route 53 is a global service: the SDK signs it for us-east-1, which the
+// gateway accepts alongside its own region.
+const ROUTE53_SIGNING_REGION = "us-east-1"
+
+export function getRoute53Client(): Route53Client {
+  if (!route53Client) {
+    const credentials = getCredentials()
+
+    if (!credentials) {
+      throw new Error("AWS credentials not configured")
+    }
+
+    route53Client = new Route53Client({
+      endpoint: AWSGW_SIGN_ENDPOINT,
+      region: ROUTE53_SIGNING_REGION,
+      credentials: {
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
+      },
+    })
+    route53Client.middlewareStack.add(
+      (next) => async (args) => {
+        if (HttpRequest.isInstance(args.request)) {
+          args.request.hostname = window.location.hostname
+          args.request.port = Number(window.location.port) || 443
+          args.request.path = `/proxy/awsgw${args.request.path}`
+        }
+
+        return await next(args)
+      },
+      { step: "finalizeRequest", name: "proxyRewrite", override: true },
+    )
+  }
+
+  return route53Client
+}
+
 export function getS3Client(): S3Client {
   if (!s3Client) {
     const credentials = getCredentials()
@@ -508,6 +548,7 @@ export function clearClients(): void {
   ecrClient = null
   ecsClient = null
   rdsClient = null
+  route53Client = null
   bedrockAgentClient = null
   bedrockAgentRuntimeClient = null
   bedrockClient = null

@@ -205,6 +205,9 @@ importers:
       '@aws-sdk/client-rds':
         specifier: ^3.1152.0
         version: 3.1152.0
+      '@aws-sdk/client-route-53':
+        specifier: ^3.1152.0
+        version: 3.1152.0
       '@aws-sdk/client-s3':
         specifier: ^3.1152.0
         version: 3.1152.0
@@ -412,6 +415,10 @@ packages:
     resolution: {integrity: sha512-PhO7E5Y7lAuK+n8oOPL/VZ+Ni7R7PdRZl5esjEO2drco8IkoizYqlQYC4tnwJpxpsxrT2P9aA5qKdA+hh86EBQ==}
     engines: {node: '>=20.0.0'}
 
+  '@aws-sdk/client-route-53@3.1152.0':
+    resolution: {integrity: sha512-4VqvR8UKDArms1V4VrKKvmH8jgb4bFWQk4JY8UOXFyij+pOioyRHPMkcg09V3OP07HWRQ8ZJJ/UX9uqvf7NR7A==}
+    engines: {node: '>=20.0.0'}
+
   '@aws-sdk/client-s3@3.1152.0':
     resolution: {integrity: sha512-oI1+ZaM6pSOwZazu4nAb7rL8ug7LSjg31tDoJqRB9MooRqqWCf/qvkIZqne1mRA3xK3slg6K0RNWXaJYHbWLvg==}
     engines: {node: '>=20.0.0'}
@@ -478,6 +485,10 @@ packages:
     resolution: {integrity: sha512-IS4voIGSgbj63fB07AO0ScmvYpEWJDyIyOFTGl5I79GFT+feOGebRUpgAvpwmyFY8PB8pTR9LqVhmSk7aS3Fdg==}
     engines: {node: '>=20.0.0'}
 
+  '@aws-sdk/middleware-sdk-route53@3.972.28':
+    resolution: {integrity: sha512-93l3lB5ngw0XQDGvuK/R9R3UAN4+xeYgLOW8E6nzldlNhu0E8vfkYMTlh5km643i9F193b5ZO21wOWWT47RxHw==}
+    engines: {node: '>=20.0.0'}
+
   '@aws-sdk/middleware-sdk-s3@3.972.79':
     resolution: {integrity: sha512-UfgAQosf4IEXldMsyntVuHsJnaQzlH6pmkOr6dQy7CaOYSlGz3mWiW4Di7XfQ/kPJP6xE7oMshz1V0E8RqGdRg==}
     engines: {node: '>=20.0.0'}
@@ -508,6 +519,10 @@ packages:
 
   '@aws-sdk/types@3.974.6':
     resolution: {integrity: sha512-v/clNZzZnDxGyvpHMOGpJKVXFAExJzUNAAjaWGdcx8QAcXLGwTaOkw33p5SHAi0YAioK32xB3hWwOekRVfmfKg==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/types@3.975.0':
+    resolution: {integrity: sha512-WQlhs6juByzWOzj5fwxOx0mPJaEqMcG/sDpl3Id61B3XhKE63xY+0QWcnG+sWR/sCfprmreyUo1lM7IKZmHMzw==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/util-locate-window@3.965.10':
@@ -3841,6 +3856,18 @@ snapshots:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
+  '@aws-sdk/client-route-53@3.1152.0':
+    dependencies:
+      '@aws-sdk/core': 3.978.3
+      '@aws-sdk/credential-provider-node': 3.972.86
+      '@aws-sdk/middleware-sdk-route53': 3.972.28
+      '@aws-sdk/types': 3.974.6
+      '@smithy/core': 3.36.0
+      '@smithy/fetch-http-handler': 5.8.0
+      '@smithy/node-http-handler': 4.12.1
+      '@smithy/types': 4.19.0
+      tslib: 2.8.1
+
   '@aws-sdk/client-s3@3.1152.0':
     dependencies:
       '@aws-sdk/checksums': 3.1001.3
@@ -4004,6 +4031,12 @@ snapshots:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
+  '@aws-sdk/middleware-sdk-route53@3.972.28':
+    dependencies:
+      '@aws-sdk/types': 3.975.0
+      '@smithy/types': 4.19.0
+      tslib: 2.8.1
+
   '@aws-sdk/middleware-sdk-s3@3.972.79':
     dependencies:
       '@aws-sdk/core': 3.978.3
@@ -4065,6 +4098,11 @@ snapshots:
       tslib: 2.8.1
 
   '@aws-sdk/types@3.974.6':
+    dependencies:
+      '@smithy/types': 4.19.0
+      tslib: 2.8.1
+
+  '@aws-sdk/types@3.975.0':
     dependencies:
       '@smithy/types': 4.19.0
       tslib: 2.8.1

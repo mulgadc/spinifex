@@ -89,6 +89,11 @@ func (r *Realizer) Reconcile(ctx context.Context) (time.Duration, error) {
 	if err != nil {
 		return 0, fmt.Errorf("list published zones: %w", err)
 	}
+	changes, err := r.store.ListAllChanges(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list changes: %w", err)
+	}
+	pending := pendingByZone(changes)
 
 	var revisit time.Duration
 	var errs []error
@@ -105,11 +110,11 @@ func (r *Realizer) Reconcile(ctx context.Context) (time.Duration, error) {
 		}
 		served[apex] = true
 		prev, had := published[apex]
-		pending, err := r.realize(ctx, apex, zone, doc, prev, had)
+		retry, err := r.realize(ctx, apex, zone, doc, prev, had, pending)
 		if err != nil {
 			errs = append(errs, err)
 		}
-		if pending || err != nil {
+		if retry || err != nil {
 			revisit = realizeRetry
 		}
 	}
@@ -117,15 +122,15 @@ func (r *Realizer) Reconcile(ctx context.Context) (time.Duration, error) {
 		if served[apex] {
 			continue
 		}
-		pending, err := r.withdraw(ctx, p)
+		retry, err := r.withdraw(ctx, p, pending[p.AccountID+"/"+p.ZoneID])
 		if err != nil {
 			errs = append(errs, err)
 		}
-		if pending || err != nil {
+		if retry || err != nil {
 			revisit = realizeRetry
 		}
 	}
-	if err := r.pruneOrphanChanges(ctx, zones); err != nil {
+	if err := r.pruneOrphanChanges(ctx, zones, changes); err != nil {
 		errs = append(errs, err)
 	}
 	return revisit, errors.Join(errs...)
@@ -150,16 +155,33 @@ func (r *Realizer) servedZones(zones []ZoneRecord) map[string]*ZoneRecord {
 	return out
 }
 
+// pendingByZone groups the PENDING changes by account and zone.
+func pendingByZone(changes []ChangeRecord) map[string][]ChangeRecord {
+	out := map[string][]ChangeRecord{}
+	for _, c := range changes {
+		if c.Status == ChangeStatusPending {
+			out[c.AccountID+"/"+c.ZoneID] = append(out[c.AccountID+"/"+c.ZoneID], c)
+		}
+	}
+	return out
+}
+
 // realize writes the zone if northstar does not already hold this version,
 // then reloads until every server serves it.
-func (r *Realizer) realize(ctx context.Context, apex string, zone *ZoneRecord, doc *RRSetsDoc, prev PublishedZone, had bool) (pending bool, err error) {
+func (r *Realizer) realize(ctx context.Context, apex string, zone *ZoneRecord, doc *RRSetsDoc, prev PublishedZone, had bool, pending map[string][]ChangeRecord) (retry bool, err error) {
 	body, err := renderZone(zone, doc)
 	if err != nil {
 		return false, fmt.Errorf("render %s: %w", apex, err)
 	}
 	sum := md5.Sum(body) //nolint:gosec // see import
 	digest := hex.EncodeToString(sum[:])
+	waiting := pending[zone.AccountID+"/"+zone.ID]
 	if had && prev.ZoneID == zone.ID && prev.Digest == digest && prev.InSync {
+		// Every server already serves this content, so a change that left the
+		// rendered zone unchanged is in sync as it stands.
+		if err := r.store.MarkInSync(ctx, waiting, doc.Version); err != nil {
+			return false, fmt.Errorf("mark changes in sync for %s: %w", apex, err)
+		}
 		return false, nil
 	}
 	next := PublishedZone{Apex: apex, AccountID: zone.AccountID, ZoneID: zone.ID, Version: doc.Version, Digest: digest}
@@ -175,12 +197,12 @@ func (r *Realizer) realize(ctx context.Context, apex string, zone *ZoneRecord, d
 	if !r.reloaded(ctx, apex, digest) {
 		return true, nil
 	}
-	if err := r.store.MarkChangesInSync(ctx, zone.AccountID, zone.ID, doc.Version); err != nil {
+	if err := r.store.MarkInSync(ctx, waiting, doc.Version); err != nil {
 		return false, fmt.Errorf("mark changes in sync for %s: %w", apex, err)
 	}
 	if had && prev.ZoneID != zone.ID {
 		// The name moved to another zone; the one it left is no longer served.
-		if err := r.store.MarkChangesInSync(ctx, prev.AccountID, prev.ZoneID, math.MaxUint64); err != nil {
+		if err := r.store.MarkInSync(ctx, pending[prev.AccountID+"/"+prev.ZoneID], math.MaxUint64); err != nil {
 			return false, fmt.Errorf("mark changes in sync for %s: %w", apex, err)
 		}
 	}
@@ -192,7 +214,7 @@ func (r *Realizer) realize(ctx context.Context, apex string, zone *ZoneRecord, d
 }
 
 // withdraw deletes a zone northstar should no longer serve.
-func (r *Realizer) withdraw(ctx context.Context, p PublishedZone) (pending bool, err error) {
+func (r *Realizer) withdraw(ctx context.Context, p PublishedZone, waiting []ChangeRecord) (retry bool, err error) {
 	if r.Reserved != nil && r.Reserved(p.Apex+".") {
 		slog.Error("route53: refusing to withdraw a platform zone", "zone", p.Apex)
 		return false, nil
@@ -203,7 +225,7 @@ func (r *Realizer) withdraw(ctx context.Context, p PublishedZone) (pending bool,
 	if !r.reloaded(ctx, p.Apex, "") {
 		return true, nil
 	}
-	if err := r.store.MarkChangesInSync(ctx, p.AccountID, p.ZoneID, math.MaxUint64); err != nil {
+	if err := r.store.MarkInSync(ctx, waiting, math.MaxUint64); err != nil {
 		return false, fmt.Errorf("mark changes in sync for %s: %w", p.Apex, err)
 	}
 	if err := r.store.DeletePublished(ctx, p.Apex); err != nil {
@@ -233,14 +255,10 @@ func (r *Realizer) reloaded(ctx context.Context, apex, digest string) bool {
 
 // pruneOrphanChanges deletes the INSYNC changes of deleted zones once they are
 // past the retention GetChange honours.
-func (r *Realizer) pruneOrphanChanges(ctx context.Context, zones []ZoneRecord) error {
+func (r *Realizer) pruneOrphanChanges(ctx context.Context, zones []ZoneRecord, changes []ChangeRecord) error {
 	live := make(map[string]bool, len(zones))
 	for _, z := range zones {
 		live[z.AccountID+"/"+z.ID] = true
-	}
-	changes, err := r.store.ListAllChanges(ctx)
-	if err != nil {
-		return fmt.Errorf("list changes: %w", err)
 	}
 	cutoff := r.Now().Add(-changeRetention)
 	for _, c := range changes {

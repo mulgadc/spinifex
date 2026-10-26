@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -315,4 +316,62 @@ func TestRealizerPrunesTheChangesOfDeletedZones(t *testing.T) {
 	require.NoError(t, err)
 	_, err = svc.GetChange(ctx, &r53.GetChangeInput{Id: aws.String(changeID)}, acctA)
 	requireCode(t, err, "NoSuchChange")
+}
+
+// The P0-2 scale, from the control plane's side: 1,100 active zones across
+// three accounts are each published once, an idle pass writes nothing, and one
+// changed zone is the only rewrite.
+func TestRealizerPublishesEveryZoneAtScale(t *testing.T) {
+	const zones = 1100
+	svc := newService(t)
+	ns := newFakeNorthstar(3)
+	r := newRealizer(svc, ns)
+	accounts := []string{acctA, acctB, "000000000013"}
+	ids := make([]string, zones)
+	for i := range zones {
+		account := accounts[i%len(accounts)]
+		ids[i] = createZone(t, svc, account, fmt.Sprintf("d%04d.example.com", i+1))
+		setState(t, svc, account, ids[i], route53.StateActive)
+	}
+
+	revisit, err := r.Reconcile(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, revisit)
+	assert.Equal(t, zones, ns.puts)
+	for _, apex := range []string{"d0001.example.com", "d0550.example.com", "d1100.example.com"} {
+		assert.True(t, ns.has(apex), "%s is not published", apex)
+	}
+
+	_, err = r.Reconcile(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, zones, ns.puts, "an idle pass rewrites nothing")
+
+	_, err = apply(svc, accounts[1], ids[1], change("CREATE", "www.d0002.example.com", "A", 60, "192.0.2.2"))
+	require.NoError(t, err)
+	_, err = r.Reconcile(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, zones+1, ns.puts, "only the changed zone is rewritten")
+	assert.Contains(t, ns.zone(t, "d0002.example.com").Records, nsconfig.Records{Domain: "www.", Type: 1, Class: 1, TTL: 60, Address: "192.0.2.2"})
+}
+
+// A change that leaves the rendered zone as it was, such as an UPSERT of the
+// same value, still reaches INSYNC, or Terraform would wait on it forever.
+func TestRealizerSyncsAChangeThatAltersNothing(t *testing.T) {
+	svc := newService(t)
+	ns := newFakeNorthstar(2)
+	r := newRealizer(svc, ns)
+	id := createZone(t, svc, acctA, "example.com")
+	setState(t, svc, acctA, id, route53.StateActive)
+	_, err := apply(svc, acctA, id, change("CREATE", "www.example.com", "A", 60, "192.0.2.1"))
+	require.NoError(t, err)
+	_, err = r.Reconcile(ctx)
+	require.NoError(t, err)
+
+	out, err := apply(svc, acctA, id, change("UPSERT", "www.example.com", "A", 60, "192.0.2.1"))
+	require.NoError(t, err)
+	puts := ns.puts
+	_, err = r.Reconcile(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, puts, ns.puts, "identical content is not rewritten")
+	assert.Equal(t, "INSYNC", changeStatus(t, svc, acctA, aws.StringValue(out.ChangeInfo.Id)))
 }

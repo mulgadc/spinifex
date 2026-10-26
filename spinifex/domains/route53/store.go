@@ -160,13 +160,13 @@ func (s *Store) GetZone(ctx context.Context, account, id string) (*ZoneRecord, e
 
 // ListAccountZones returns every zone the account owns.
 func (s *Store) ListAccountZones(ctx context.Context, account string) ([]ZoneRecord, error) {
-	return s.zones.List(ctx, keyPrefixZone+account+".")
+	return list(ctx, s.zones, keyPrefixZone+account+".*")
 }
 
 // ListAllZones returns every zone in every account, for the realizer and the
 // verifier, which act across accounts.
 func (s *Store) ListAllZones(ctx context.Context) ([]ZoneRecord, error) {
-	return s.zones.List(ctx, keyPrefixZone)
+	return list(ctx, s.zones, keyPrefixZone+">")
 }
 
 // MutateZone applies fn to a zone under CAS.
@@ -199,7 +199,7 @@ func (s *Store) PutChange(ctx context.Context, c *ChangeRecord) error {
 
 // ListZoneChanges returns every change recorded for one zone.
 func (s *Store) ListZoneChanges(ctx context.Context, account, zoneID string) ([]ChangeRecord, error) {
-	all, err := s.changes.List(ctx, keyPrefixChange+account+".")
+	all, err := list(ctx, s.changes, keyPrefixChange+account+".*")
 	if err != nil {
 		return nil, err
 	}
@@ -219,11 +219,17 @@ func (s *Store) MarkChangesInSync(ctx context.Context, account, zoneID string, v
 	if err != nil {
 		return err
 	}
+	return s.MarkInSync(ctx, changes, version)
+}
+
+// MarkInSync moves each PENDING change in changes at or below version to
+// INSYNC, for a caller that has already listed them.
+func (s *Store) MarkInSync(ctx context.Context, changes []ChangeRecord, version uint64) error {
 	for _, c := range changes {
 		if c.Status != ChangeStatusPending || c.Version > version {
 			continue
 		}
-		err := s.changes.Mutate(ctx, changeKey(account, c.ID), func(rec *ChangeRecord) (bool, error) {
+		err := s.changes.Mutate(ctx, changeKey(c.AccountID, c.ID), func(rec *ChangeRecord) (bool, error) {
 			if rec.Status == ChangeStatusInSync {
 				return false, nil
 			}
@@ -308,7 +314,7 @@ func (s *Store) ReleaseCallerReference(ctx context.Context, account, ref string)
 
 // ListAllChanges returns every change in every account.
 func (s *Store) ListAllChanges(ctx context.Context) ([]ChangeRecord, error) {
-	return s.changes.List(ctx, keyPrefixChange)
+	return list(ctx, s.changes, keyPrefixChange+">")
 }
 
 // DeleteChange removes one change.
@@ -318,7 +324,7 @@ func (s *Store) DeleteChange(ctx context.Context, account, id string) error {
 
 // ListPublished returns the published zones keyed by apex.
 func (s *Store) ListPublished(ctx context.Context) (map[string]PublishedZone, error) {
-	all, err := s.publish.List(ctx, keyPrefixPublish)
+	all, err := list(ctx, s.publish, keyPrefixPublish+">")
 	if err != nil {
 		return nil, err
 	}
@@ -337,4 +343,19 @@ func (s *Store) SetPublished(ctx context.Context, p *PublishedZone) error {
 // DeletePublished forgets a withdrawn zone.
 func (s *Store) DeletePublished(ctx context.Context, apex string) error {
 	return s.bucket.Delete(ctx, keyPrefixPublish+apex)
+}
+
+// list reads every record under a subject filter in one watch. Store.List
+// enumerates every key in the bucket and then fetches each match on its own,
+// which a pass over every zone repeats per zone.
+func list[T any](ctx context.Context, st *kvstore.Store[T], filter string) ([]T, error) {
+	items, _, err := st.Snapshot(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, len(items))
+	for i, it := range items {
+		out[i] = it.Value
+	}
+	return out, nil
 }

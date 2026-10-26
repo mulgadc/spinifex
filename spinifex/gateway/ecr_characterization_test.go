@@ -21,9 +21,9 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,9 +45,9 @@ func decodeAuthToken(token string) (string, error) {
 // ecrPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS so Request dispatches. docs is every principal's policy; the
 // region is testRegion because signTestRequestAs always signs for it.
-func ecrPipelineApp(t *testing.T, docs []handlers_iam.PolicyDocument) (*GatewayConfig, http.Handler) {
+func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConfig, http.Handler) {
 	t.Helper()
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
@@ -59,7 +59,7 @@ func ecrPipelineApp(t *testing.T, docs []handlers_iam.PolicyDocument) (*GatewayC
 		IAMService: &policyMockIAMService{
 			mockIAMService: mockIAMService{
 				masterKey: testMasterKey,
-				accessKeys: map[string]*handlers_iam.AccessKey{
+				accessKeys: map[string]*iamdomain.AccessKey{
 					testAccessKey: {
 						AccessKeyID:     testAccessKey,
 						SecretAccessKey: encryptedSecret,
@@ -69,7 +69,7 @@ func ecrPipelineApp(t *testing.T, docs []handlers_iam.PolicyDocument) (*GatewayC
 					},
 				},
 			},
-			getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
+			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	}
 
@@ -83,11 +83,11 @@ func ecrPipelineApp(t *testing.T, docs []handlers_iam.PolicyDocument) (*GatewayC
 
 // allowAllECRDocs is the policy ecrPipelineApp uses when the test is not
 // exercising authorization itself.
-func allowAllECRDocs() []handlers_iam.PolicyDocument {
-	return []handlers_iam.PolicyDocument{{
+func allowAllECRDocs() []iamdomain.PolicyDocument {
+	return []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{
-			{Effect: "Allow", Action: handlers_iam.StringOrArr{"*"}, Resource: handlers_iam.StringOrArr{"*"}},
+		Statement: []iamdomain.Statement{
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"*"}, Resource: iamdomain.StringOrArr{"*"}},
 		},
 	}}
 }
@@ -362,13 +362,13 @@ func (s *recordingRepoStore) DeleteRepo(context.Context, string, string) error {
 // ECR dispatch runs, and denies, before a composed capability (here
 // RepositoryActionService backing CreateRepository) is ever invoked.
 func TestECRPipeline_AuthzGateBlocksComposedAction(t *testing.T) {
-	scopedDocs := []handlers_iam.PolicyDocument{{
+	scopedDocs := []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{
+		Statement: []iamdomain.Statement{
 			{
 				Effect:   "Allow",
-				Action:   handlers_iam.StringOrArr{"ecr:CreateRepository"},
-				Resource: handlers_iam.StringOrArr{"arn:aws:ecr:" + testRegion + ":" + ecrTestAccount + ":repository/other"},
+				Action:   iamdomain.StringOrArr{"ecr:CreateRepository"},
+				Resource: iamdomain.StringOrArr{"arn:aws:ecr:" + testRegion + ":" + ecrTestAccount + ":repository/other"},
 			},
 		},
 	}}

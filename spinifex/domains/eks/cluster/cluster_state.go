@@ -1,0 +1,515 @@
+package cluster
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
+	"strings"
+	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// ClusterStatus is the persisted cluster lifecycle state; values match the AWS EKS status enum.
+type ClusterStatus string
+
+const (
+	ClusterStatusCreating ClusterStatus = "CREATING"
+	ClusterStatusActive   ClusterStatus = "ACTIVE"
+	ClusterStatusDeleting ClusterStatus = "DELETING"
+	ClusterStatusFailed   ClusterStatus = "FAILED"
+)
+
+// ClusterVpcConfig is the persisted subset of eks.VpcConfigResponse.
+type ClusterVpcConfig struct {
+	SubnetIds        []string `json:"subnetIds"`
+	SecurityGroupIds []string `json:"securityGroupIds,omitempty"`
+	VpcId            string   `json:"vpcId,omitempty"`
+	// EndpointPublicAccess/EndpointPrivateAccess mirror AWS resourcesVpcConfig.
+	// PublicAccessCidrs stores allowed source ranges for the public endpoint.
+	EndpointPublicAccess  bool     `json:"endpointPublicAccess"`
+	EndpointPrivateAccess bool     `json:"endpointPrivateAccess"`
+	PublicAccessCidrs     []string `json:"publicAccessCidrs,omitempty"`
+	// ClusterSecurityGroupId is the EKS-managed primary SG id, created in the
+	// caller's own VPC so DescribeSecurityGroups (scoped to the caller's
+	// account) can resolve it. Empty for clusters created before this field.
+	ClusterSecurityGroupId string `json:"clusterSecurityGroupId,omitempty"`
+}
+
+// ClusterNetworkConfig is the persisted subset of eks.KubernetesNetworkConfigResponse,
+// captured verbatim from CreateCluster's request. This is a force-new, create-only
+// field with no update path, so it is never synthesised after the fact.
+type ClusterNetworkConfig struct {
+	IpFamily        string `json:"ipFamily,omitempty"`
+	ServiceIpv4Cidr string `json:"serviceIpv4Cidr,omitempty"`
+	ServiceIpv6Cidr string `json:"serviceIpv6Cidr,omitempty"`
+}
+
+// ClusterUpgradePolicyMeta is the persisted subset of eks.UpgradePolicyResponse.
+type ClusterUpgradePolicyMeta struct {
+	SupportType string `json:"supportType,omitempty"`
+}
+
+// ClusterLogSetup mirrors one eks.LogSetup {types, enabled} pairing from a
+// CreateCluster request's logging.clusterLogging list, stored verbatim so
+// DescribeCluster can echo back exactly what was asked for.
+type ClusterLogSetup struct {
+	Types   []string `json:"types,omitempty"`
+	Enabled bool     `json:"enabled"`
+}
+
+// ClusterMeta is the persisted control-plane record at ClusterMetaKey(name); source of truth for DescribeCluster.
+type ClusterMeta struct {
+	Name         string        `json:"name"`
+	Arn          string        `json:"arn"`
+	Status       ClusterStatus `json:"status"`
+	StatusReason string        `json:"statusReason,omitempty"`
+	Version      string        `json:"version"`
+	RoleArn      string        `json:"roleArn"`
+	Endpoint     string        `json:"endpoint,omitempty"`
+	// EndpointIP is the NLB front-end IP (external-pool for public, VPC IP for private).
+	// The apiserver serving cert SANs this IP for TLS verification.
+	EndpointIP string `json:"endpointIp,omitempty"`
+	// EndpointDNSName is the account-qualified apiserver DNS name
+	// ({cluster}.{accountID}.{region}.eks.{baseDomain}) registered with northstar → EndpointIP.
+	// It is published as Endpoint and SANed on the apiserver cert. Empty otherwise.
+	EndpointDNSName string `json:"endpointDnsName,omitempty"`
+	// PrivateEndpointIP is the customer-VPC (Set A) IP of the ENI threaded onto the
+	// cluster NLB's LB VM when EndpointPrivateAccess is on. In-VPC workers + kubectl
+	// reach the control plane here on :443 (no public hairpin / NAT GW). SANed on
+	// the apiserver cert. PrivateEndpointENIID is its ENI, kept for teardown.
+	PrivateEndpointIP       string            `json:"privateEndpointIp,omitempty"`
+	PrivateEndpointENIID    string            `json:"privateEndpointEniId,omitempty"`
+	OIDCIssuer              string            `json:"oidcIssuer,omitempty"`
+	CertificateAuthorityB64 string            `json:"certificateAuthorityB64,omitempty"`
+	ResourcesVpcConfig      *ClusterVpcConfig `json:"resourcesVpcConfig,omitempty"`
+	// KubernetesNetworkConfig is the requested service-IP network config,
+	// stored verbatim; nil for clusters created before this field or when the
+	// caller specified none of it.
+	KubernetesNetworkConfig *ClusterNetworkConfig `json:"kubernetesNetworkConfig,omitempty"`
+	// BootstrapClusterCreatorAdminPermissions mirrors bootstrapCreatorAdmin's
+	// resolved default-true decision, so DescribeCluster echoes exactly what
+	// CreateCluster actually did. Nil predates this field and also defaults true.
+	BootstrapClusterCreatorAdminPermissions *bool `json:"bootstrapClusterCreatorAdminPermissions,omitempty"`
+	// AuthenticationMode is the requested accessConfig.authenticationMode
+	// ("API" or "API_AND_CONFIG_MAP"), stored verbatim; empty predates this
+	// field and also defaults to API, the only grant path Spinifex ever runs.
+	AuthenticationMode string `json:"authenticationMode,omitempty"`
+	// UpgradePolicy is the requested extended-support policy, stored verbatim;
+	// nil when the caller specified none (DescribeCluster then reports the
+	// AWS-standard default).
+	UpgradePolicy *ClusterUpgradePolicyMeta `json:"upgradePolicy,omitempty"`
+	// Logging is the requested clusterLogging list, stored verbatim including
+	// disabled entries; nil when the caller specified none (DescribeCluster
+	// then reports every known log type disabled, since none is ever exported).
+	Logging                []ClusterLogSetup `json:"logging,omitempty"`
+	ControlPlaneInstanceID string            `json:"controlPlaneInstanceId,omitempty"`
+	ControlPlaneENIID      string            `json:"controlPlaneEniId,omitempty"`
+	ControlPlaneENIIP      string            `json:"controlPlaneEniIp,omitempty"`
+	// ControlPlaneMgmtIP is the CP VM's br-mgmt NIC address, used as the /healthz
+	// probe target until authoritative in-VPC DNS is available.
+	ControlPlaneMgmtIP string `json:"controlPlaneMgmtIp,omitempty"`
+	// ManagedCPVPC holds the system-account control-plane VPC ("Set B") refs the
+	// NLB + CP VMs live in; nil for clusters created before this topology. Torn
+	// down by DeleteCluster.
+	ManagedCPVPC *ManagedCPVPC `json:"managedCpVpc,omitempty"`
+	// ControlPlaneNodes lists the placed control-plane server VMs. HA spread
+	// holds one entry per distinct host; the single-CP path holds one. [0] is the
+	// primary the NLB target + egress SNAT wire to until per-node NLB
+	// registration (231.7.3). The scalar ControlPlane* fields above mirror [0]
+	// for readers that predate this field (reconciler, teardown) and for clusters
+	// persisted before HA spread existed (empty ControlPlaneNodes).
+	ControlPlaneNodes []ControlPlaneNode `json:"controlPlaneNodes,omitempty"`
+	// ControlPlaneSpreadGroup is the spread placement-group name; "" for single-CP.
+	ControlPlaneSpreadGroup string `json:"controlPlaneSpreadGroup,omitempty"`
+	// ControlPlaneTemplate is the create-time K3sServerInput the reconciler
+	// replays to provision a replacement CP member that joins the surviving etcd
+	// quorum. Per-node fields (TargetNodeID/ServerURL/KonnServerCount) and rotating
+	// creds (AccessKey/SecretKey/IamInstanceProfileArn) are cleared at persist and
+	// re-derived at provision. Nil for clusters created before member-count reconcile.
+	ControlPlaneTemplate *K3sServerInput `json:"controlPlaneTemplate,omitempty"`
+	// EgressEIPAllocationID / EgressEIPPublicIP track the hidden-pool SNAT address
+	// for CP VM egress (image pulls). Released on DeleteCluster.
+	EgressEIPAllocationID string    `json:"egressEipAllocationId,omitempty"`
+	EgressEIPPublicIP     string    `json:"egressEipPublicIp,omitempty"`
+	NLBArn                string    `json:"nlbArn,omitempty"`
+	NLBTargetGroupArn     string    `json:"nlbTargetGroupArn,omitempty"`
+	KonnTargetGroupArn    string    `json:"konnTargetGroupArn,omitempty"`
+	CreatedAt             time.Time `json:"createdAt"`
+	// DeletingSince stamps when the cluster entered DELETING. The teardown
+	// backstop reaper waits out a healthy synchronous DeleteCluster (min-age)
+	// before re-driving purgeClusterInfra, so it only ever re-drives a wedged
+	// teardown, never one still in progress. No omitempty: encoding/json never
+	// treats a time.Time as empty.
+	DeletingSince time.Time `json:"deletingSince"`
+	// DeleteReapAttempts counts backstop-reaper re-drive attempts against this
+	// DELETING cluster since DeletingSince. Drives the reaper's exponential
+	// backoff and the terminal give-up after maxDeleteReapAttempts.
+	DeleteReapAttempts int `json:"deleteReapAttempts,omitempty"`
+	// LastDeleteReapAttempt stamps the most recent backstop-reaper re-drive, so
+	// backoff grows from the last attempt rather than from DeletingSince.
+	// No omitempty: encoding/json never treats a time.Time as empty.
+	LastDeleteReapAttempt time.Time `json:"lastDeleteReapAttempt"`
+	// DeleteReapExhausted marks a DELETING cluster whose backstop reaper gave up
+	// after maxDeleteReapAttempts. Status stays DELETING — its infra remains
+	// tracked and billable pending operator intervention — only the automatic
+	// re-drive stops.
+	DeleteReapExhausted bool `json:"deleteReapExhausted,omitempty"`
+	// LastDeleteReapError is the error string from the most recent failed
+	// backstop-reaper re-drive, so an operator sees why teardown is stuck
+	// instead of just that it is. Set on every failed attempt, not only on
+	// exhaustion, and cleared once a re-drive succeeds.
+	LastDeleteReapError string `json:"lastDeleteReapError,omitempty"`
+	// HealthIssue is the last health failure reason ("" = healthy).
+	// DescribeCluster surfaces it as a ClusterHealth issue.
+	HealthIssue string `json:"healthIssue,omitempty"`
+	// No omitempty: stdlib encoding/json never treats a time.Time as empty.
+	LastHealthProbe time.Time `json:"lastHealthProbe"`
+	// NodeCount is the node total from the CP's last NATS state report.
+	NodeCount int `json:"nodeCount,omitempty"`
+	// NodegroupNodeCounts is the per-nodegroup Ready count from the CP's last NATS
+	// state report, keyed by the eks.amazonaws.com/nodegroup node label value.
+	// waitWorkersReady gates a nodegroup's ACTIVE transition on ITS OWN entry here,
+	// never the cluster-wide NodeCount total — otherwise one nodegroup's Ready
+	// workers could mask another nodegroup whose own workers never registered.
+	NodegroupNodeCounts map[string]int `json:"nodegroupNodeCounts,omitempty"`
+	// Tags are the create-time resource tags, stored verbatim so DescribeCluster
+	// echoes them back. Without the round-trip a stock terraform-aws provider
+	// reconciling default_tags sees perpetual drift and issues TagResource on
+	// every apply. Store-only; no enforcement.
+	Tags map[string]string `json:"tags,omitempty"`
+}
+
+// ManagedCPVPC records the spinifex-managed control-plane VPC ("Set B") built
+// under the system account at CreateCluster: the AWS-managed-account analogue
+// the customer never provisions. Holds the resource IDs DeleteCluster tears down
+// in dependency order (NAT GW + EIP → route tables → subnets → IGW → VPC). The
+// NLB lives in PublicSubnetId; the control-plane VM(s) in PrivateSubnetIds.
+type ManagedCPVPC struct {
+	VpcId               string   `json:"vpcId,omitempty"`
+	IGWId               string   `json:"igwId,omitempty"`
+	PublicSubnetId      string   `json:"publicSubnetId,omitempty"`
+	PublicRouteTableId  string   `json:"publicRouteTableId,omitempty"`
+	PrivateSubnetIds    []string `json:"privateSubnetIds,omitempty"`
+	PrivateRouteTableId string   `json:"privateRouteTableId,omitempty"`
+	NatGatewayId        string   `json:"natGatewayId,omitempty"`
+	NatEIPAllocationID  string   `json:"natEipAllocationId,omitempty"`
+	NatEIPPublicIP      string   `json:"natEipPublicIp,omitempty"`
+}
+
+// ControlPlaneNode identifies one placed control-plane server VM and the host
+// it landed on. NodeID is the Spinifex host — distinct per entry under HA
+// spread, empty for a single control plane launched on the local node.
+type ControlPlaneNode struct {
+	NodeID     string `json:"nodeId,omitempty"`
+	InstanceID string `json:"instanceId"`
+	ENIID      string `json:"eniId,omitempty"`
+	ENIIP      string `json:"eniIp,omitempty"`
+	MgmtIP     string `json:"mgmtIp,omitempty"`
+}
+
+// ErrClusterNotFound is returned when the cluster meta key is absent.
+// Callers translate it to ResourceNotFoundException at the service boundary.
+var ErrClusterNotFound = errors.New("eks: cluster not found")
+
+const maxClusterStateCASRetries = 5
+
+// PutClusterMeta writes the meta record unconditionally.
+func PutClusterMeta(ctx context.Context, kv jetstream.KeyValue, meta *ClusterMeta) error {
+	if meta == nil {
+		return errors.New("eks: PutClusterMeta nil meta")
+	}
+	if meta.Name == "" {
+		return errors.New("eks: PutClusterMeta meta.Name empty")
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshal cluster meta %s: %w", meta.Name, err)
+	}
+	if _, err := kv.Put(ctx, ClusterMetaKey(meta.Name), data); err != nil {
+		return fmt.Errorf("kv put %s: %w", ClusterMetaKey(meta.Name), err)
+	}
+	return nil
+}
+
+// IsControlPlaneMember reports whether instanceID is one of this cluster's
+// control-plane server VMs. The scalar ControlPlaneInstanceID is consulted too,
+// for clusters persisted before ControlPlaneNodes existed.
+func (m *ClusterMeta) IsControlPlaneMember(instanceID string) bool {
+	if m == nil || instanceID == "" {
+		return false
+	}
+	for _, node := range m.ControlPlaneNodes {
+		if node.InstanceID == instanceID {
+			return true
+		}
+	}
+	return m.ControlPlaneInstanceID == instanceID
+}
+
+// GetClusterMeta reads the meta record. Returns ErrClusterNotFound if the
+// key is absent.
+func GetClusterMeta(ctx context.Context, kv jetstream.KeyValue, name string) (*ClusterMeta, error) {
+	if name == "" {
+		return nil, errors.New("eks: GetClusterMeta empty name")
+	}
+	entry, err := kv.Get(ctx, ClusterMetaKey(name))
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, ErrClusterNotFound
+		}
+		return nil, fmt.Errorf("kv get %s: %w", ClusterMetaKey(name), err)
+	}
+	var meta ClusterMeta
+	if err := json.Unmarshal(entry.Value(), &meta); err != nil {
+		return nil, fmt.Errorf("unmarshal cluster meta %s: %w", name, err)
+	}
+	return &meta, nil
+}
+
+// casUpdateMeta does a revision-checked read-modify-write of the cluster meta.
+// mutate returns true when a field changed. Returns ErrClusterNotFound if the
+// cluster is deleted concurrently.
+func casUpdateMeta(ctx context.Context, kv jetstream.KeyValue, name string, mutate func(*ClusterMeta) bool) error {
+	if name == "" {
+		return errors.New("eks: casUpdateMeta empty name")
+	}
+	_, err := kvutil.Update(ctx, kv, ClusterMetaKey(name), kvutil.CASConfig{
+		Attempts: maxClusterStateCASRetries,
+		NotFound: ErrClusterNotFound,
+		Exhausted: func(string, int) error {
+			return fmt.Errorf("eks: casUpdateMeta %s exhausted CAS retries", name)
+		},
+	}, func(m *ClusterMeta) (bool, error) { return mutate(m), nil })
+	return err
+}
+
+// SetClusterStatus does a CAS update of meta.Status. Returns ErrClusterNotFound if deleted concurrently.
+func SetClusterStatus(ctx context.Context, kv jetstream.KeyValue, name string, status ClusterStatus) error {
+	if name == "" {
+		return errors.New("eks: SetClusterStatus empty name")
+	}
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		if m.Status == status {
+			return false
+		}
+		m.Status = status
+		if status == ClusterStatusDeleting && m.DeletingSince.IsZero() {
+			m.DeletingSince = time.Now().UTC()
+		}
+		return true
+	})
+}
+
+// MarkClusterFailed transitions the cluster to FAILED with a reason, but only
+// from CREATING — so a late error cannot clobber a concurrent delete or an active cluster.
+func MarkClusterFailed(ctx context.Context, kv jetstream.KeyValue, name, reason string) error {
+	if name == "" {
+		return errors.New("eks: MarkClusterFailed empty name")
+	}
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		if m.Status != ClusterStatusCreating {
+			return false
+		}
+		m.Status = ClusterStatusFailed
+		m.StatusReason = reason
+		return true
+	})
+}
+
+// maxDeleteReapAttempts caps automatic backstop re-drives of a wedged DELETING
+// cluster. A teardown that still fails after this many attempts is failing for
+// a reason retries will not fix (e.g. an unretriable DependencyViolation), so
+// further re-drives would only keep hammering AWS/OVN forever.
+const maxDeleteReapAttempts = 6
+
+// RecordDeleteReapAttempt increments the backstop reaper's attempt counter and
+// stamps LastDeleteReapAttempt, returning the updated count. Called immediately
+// before each re-drive so a crash mid-purge still counts the attempt on restart.
+func RecordDeleteReapAttempt(ctx context.Context, kv jetstream.KeyValue, name string) (int, error) {
+	if name == "" {
+		return 0, errors.New("eks: RecordDeleteReapAttempt empty name")
+	}
+	var attempts int
+	err := casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		m.DeleteReapAttempts++
+		m.LastDeleteReapAttempt = time.Now().UTC()
+		attempts = m.DeleteReapAttempts
+		return true
+	})
+	return attempts, err
+}
+
+// RecordDeleteReapFailure persists the error from a failed backstop re-drive
+// onto ClusterMeta, so an operator inspecting a wedged DELETING cluster sees
+// why teardown keeps failing instead of just that it is. Called on every
+// failed attempt, not only on eventual exhaustion.
+func RecordDeleteReapFailure(ctx context.Context, kv jetstream.KeyValue, name string, purgeErr error) error {
+	if name == "" {
+		return errors.New("eks: RecordDeleteReapFailure empty name")
+	}
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		m.LastDeleteReapError = purgeErr.Error()
+		return true
+	})
+}
+
+// MarkDeleteReapExhausted flags a DELETING cluster whose backstop reaper has
+// given up after maxDeleteReapAttempts. Status stays DELETING — a cluster with
+// un-torn-down infra must stay DELETING so its resources remain tracked and
+// billable — only the automatic re-drive stops; an operator must intervene.
+func MarkDeleteReapExhausted(ctx context.Context, kv jetstream.KeyValue, name string) error {
+	if name == "" {
+		return errors.New("eks: MarkDeleteReapExhausted empty name")
+	}
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		if m.Status != ClusterStatusDeleting || m.DeleteReapExhausted {
+			return false
+		}
+		m.DeleteReapExhausted = true
+		return true
+	})
+}
+
+// SetClusterCertificateAuthority does a CAS update of meta.CertificateAuthorityB64.
+// Called by the bootstrap subscriber when the K3s VM publishes its CA.
+func SetClusterCertificateAuthority(ctx context.Context, kv jetstream.KeyValue, name, caB64 string) error {
+	if name == "" {
+		return errors.New("eks: SetClusterCertificateAuthority empty name")
+	}
+	if caB64 == "" {
+		return errors.New("eks: SetClusterCertificateAuthority empty CA")
+	}
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		if m.CertificateAuthorityB64 == caB64 {
+			return false
+		}
+		m.CertificateAuthorityB64 = caB64
+		return true
+	})
+}
+
+// SetClusterHealth records the latest health outcome; issue="" means healthy.
+// Only writes on a state change, stamping LastHealthProbe at the transition.
+func SetClusterHealth(ctx context.Context, kv jetstream.KeyValue, name, issue string) error {
+	if name == "" {
+		return errors.New("eks: SetClusterHealth empty name")
+	}
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		if m.HealthIssue == issue {
+			return false
+		}
+		m.HealthIssue = issue
+		m.LastHealthProbe = time.Now().UTC()
+		return true
+	})
+}
+
+// SetClusterHealthState records health + node count (cluster-wide and, when the
+// CP state report carries it, per-nodegroup). LastHealthProbe is stamped on any
+// change; no KV write when nothing changed. nodegroupReady may be nil (older
+// AMI / no report yet), in which case the persisted per-nodegroup counts are
+// left untouched.
+func SetClusterHealthState(ctx context.Context, kv jetstream.KeyValue, name, issue string, nodeCount int, nodegroupReady map[string]int) error {
+	if name == "" {
+		return errors.New("eks: SetClusterHealthState empty name")
+	}
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		changed := m.HealthIssue != issue || m.NodeCount != nodeCount
+		if nodegroupReady != nil && !maps.Equal(m.NodegroupNodeCounts, nodegroupReady) {
+			changed = true
+		}
+		if !changed {
+			return false
+		}
+		m.HealthIssue = issue
+		m.NodeCount = nodeCount
+		if nodegroupReady != nil {
+			m.NodegroupNodeCounts = nodegroupReady
+		}
+		m.LastHealthProbe = time.Now().UTC()
+		return true
+	})
+}
+
+// ClearClusterManagedCPVPC clears meta.ManagedCPVPC once the managed CP VPC's
+// EC2 teardown has converged (including converging from an already-gone VPC).
+// purgeClusterInfra calls it immediately after a successful DeleteClusterCPVPC
+// so a re-drive of a wedged DELETING — with some unrelated step still failing —
+// never retries EC2/OVN calls against a stale VpcId, which is what turns a
+// single DependencyViolation into a permanent teardown loop. No-op if already
+// cleared. Returns ErrClusterNotFound if the cluster was deleted concurrently.
+func ClearClusterManagedCPVPC(ctx context.Context, kv jetstream.KeyValue, name string) error {
+	if name == "" {
+		return errors.New("eks: ClearClusterManagedCPVPC empty name")
+	}
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		if m.ManagedCPVPC == nil {
+			return false
+		}
+		m.ManagedCPVPC = nil
+		return true
+	})
+}
+
+// SwapControlPlaneMember atomically replaces a lost control-plane member
+// (deadInstanceID) with a freshly provisioned one in meta.ControlPlaneNodes and
+// refreshes the scalar [0] mirrors if the primary changed. A no-op (no error)
+// when the dead member is already gone from the list — a concurrent swap already
+// won. Returns ErrClusterNotFound if the cluster was deleted concurrently.
+func SwapControlPlaneMember(ctx context.Context, kv jetstream.KeyValue, name, deadInstanceID string, replacement ControlPlaneNode) error {
+	if name == "" {
+		return errors.New("eks: SwapControlPlaneMember empty name")
+	}
+	if replacement.InstanceID == "" {
+		return errors.New("eks: SwapControlPlaneMember empty replacement instance id")
+	}
+	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		idx := -1
+		for i, n := range m.ControlPlaneNodes {
+			if n.InstanceID == deadInstanceID {
+				idx = i
+				break
+			}
+		}
+		if idx == -1 {
+			return false
+		}
+		m.ControlPlaneNodes[idx] = replacement
+		primary := m.ControlPlaneNodes[0]
+		m.ControlPlaneInstanceID = primary.InstanceID
+		m.ControlPlaneENIID = primary.ENIID
+		m.ControlPlaneENIIP = primary.ENIIP
+		m.ControlPlaneMgmtIP = primary.MgmtIP
+		return true
+	})
+}
+
+// DeleteClusterPrefix removes every KV key under clusters/{name}/.
+// Returns the first error but continues sweeping.
+func DeleteClusterPrefix(ctx context.Context, kv jetstream.KeyValue, name string) error {
+	if name == "" {
+		return errors.New("eks: DeleteClusterPrefix empty name")
+	}
+	prefix := fmt.Sprintf("clusters/%s/", name)
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("kv keys: %w", err)
+	}
+	var firstErr error
+	for _, k := range keys {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if err := kv.Delete(ctx, k); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("kv delete %s: %w", k, err)
+		}
+	}
+	return firstErr
+}

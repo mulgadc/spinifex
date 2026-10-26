@@ -98,7 +98,7 @@ func runMultinodeDNS(t *testing.T, fix *Fixture) {
 					return fmt.Errorf("%s:%s topology %v, want %v", node.Name, port, topology, expectedTopology)
 				}
 				return nil
-			}, 90*time.Second, 3*time.Second)
+			}, dnsTopologyTimeout(), dnsPoll())
 			harness.Detail(t, "node", node.Name, "port", port, "topology", topology)
 		}
 	}
@@ -258,12 +258,27 @@ func launchDNSGuests(t *testing.T, fix *Fixture) map[string]dnsGuest {
 	return guests
 }
 
+// DNS convergence budgets, tunable so CI can ask for a cheaper or a harder run.
+// Topology covers every node agreeing on the NS set; resolve covers a record
+// becoming answerable from a guest or a node.
+func dnsTopologyTimeout() time.Duration {
+	return envDurationOr("SPINIFEX_MULTINODE_DNS_TOPOLOGY_TIMEOUT", 90*time.Second)
+}
+
+func dnsResolveTimeout() time.Duration {
+	return envDurationOr("SPINIFEX_MULTINODE_DNS_TIMEOUT", 2*time.Minute)
+}
+
+func dnsPoll() time.Duration {
+	return envDurationOr("SPINIFEX_MULTINODE_DNS_POLL", 3*time.Second)
+}
+
 func assertGuestIPv4(t *testing.T, target harness.SSHTarget, name, expectedIP string) {
 	t.Helper()
 	harness.EventuallyErr(t, func() error {
 		_, err := guestIPv4(target, name, expectedIP)
 		return err
-	}, 2*time.Minute, 3*time.Second)
+	}, dnsResolveTimeout(), dnsPoll())
 }
 
 func guestIPv4(target harness.SSHTarget, name, expectedIP string) ([]byte, error) {
@@ -332,7 +347,7 @@ func assertNodeIPv4(t *testing.T, node harness.Node, name, expectedIP string) {
 			}
 		}
 		return fmt.Errorf("query A %s via %s did not return %s: %v", name, node.Name, expectedIP, response.Answer)
-	}, 2*time.Minute, 3*time.Second)
+	}, dnsResolveTimeout(), dnsPoll())
 }
 
 func runGuestCommand(target harness.SSHTarget, command string) ([]byte, error) {

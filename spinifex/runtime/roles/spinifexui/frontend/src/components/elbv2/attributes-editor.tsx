@@ -226,7 +226,7 @@ export function AttributesEditor({
 }
 
 // Spec: DefaultLoadBalancerAttributes ALB subset. Keys must match
-// handlers/elbv2/types.go:DefaultLoadBalancerAttributes or handler returns
+// domains/elbv2/types.go:DefaultLoadBalancerAttributes or handler returns
 // ValidationError.
 export const albAttributeSpecs: AttributeSpec[] = [
   {
@@ -340,7 +340,7 @@ export const albAttributeSpecs: AttributeSpec[] = [
 ]
 
 // Spec: DefaultTargetGroupAttributes. Keys must match
-// handlers/elbv2/types.go:DefaultTargetGroupAttributes.
+// domains/elbv2/types.go:DefaultTargetGroupAttributes.
 export const targetGroupAttributeSpecs: AttributeSpec[] = [
   {
     key: "deregistration_delay.timeout_seconds",

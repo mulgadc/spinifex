@@ -9,12 +9,12 @@ import (
 // The status every offered version carries. One version per engine and it is
 // the one the AMI ships, so nothing is ever deprecated, pending or beta.
 //
-// Duplicated against handlers_rds's own copy deliberately: this one backs the
+// Duplicated against domains/rds/instance's own copy deliberately: this one backs the
 // selection filter here, that one backs the AWS SDK projection there.
 const engineVersionStatusAvailable = "available"
 
 // Every endpoint is a private VPC address, so a vpc=false filter matches
-// nothing. Duplicated against handlers_rds's own copy for the same reason as
+// nothing. Duplicated against domains/rds/instance's own copy for the same reason as
 // engineVersionStatusAvailable above.
 const orderableVpc = true
 

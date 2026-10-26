@@ -1,0 +1,51 @@
+package cluster
+
+import (
+	"log/slog"
+
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+)
+
+const (
+	// CPInstanceRoleName is the Spinifex-managed instance role attached to the
+	// k3s control-plane VM. IMDS serves it so the VM's gateway publishes are
+	// signed with scoped, rotating credentials instead of a baked static key.
+	// The gateway's internal-route gate names it to tell a CP VM from a tenant.
+	CPInstanceRoleName = "spinifex-eks-server"
+
+	// eksServerInlinePolicyName is the inline policy granting the CP VM the
+	// internal gateway actions its bootstrap/state-report/addon-fetch need.
+	eksServerInlinePolicyName = "spinifex-eks-server-internal"
+
+	// eksServerInlinePolicy grants only the internal gateway actions the CP VM
+	// calls: PublishInternal (bootstrap/state), ListInternalAddons (addon fetch),
+	// WebhookTokenReview (the eks-token-webhook relays `aws eks get-token` bearer
+	// tokens to the token-review broker for host-side STS verification), and
+	// GetRecoveryDirective (the k3s-recovery agent pulls its per-member etcd
+	// recovery directive at boot). The gateway evaluates these per request against
+	// the role's policies.
+	eksServerInlinePolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["eks:PublishInternal","eks:ListInternalAddons","eks:WebhookTokenReview","eks:GetRecoveryDirective"],"Resource":"*"}]}`
+)
+
+// ensureCPInstanceProfile returns the CP instance-profile ARN, or "" to signal
+// the caller should fall back to static creds. That fallback still launches, but
+// baked keys authenticate as a system user with no instance identity, so the VM
+// is denied the internal routes for its life — see the log lines below.
+func (s *EKSServiceImpl) ensureCPInstanceProfile(accountID string) string {
+	iam := s.iamEnsurer()
+	if iam == nil {
+		slog.Warn("EKS: IAM service unwired; CP VM falls back to baked static gateway creds and "+
+			"will be denied eks:PublishInternal, eks:WebhookTokenReview, eks:ListInternalAddons and eks:GetRecoveryDirective (no instance identity to bind)",
+			"accountID", accountID)
+		return ""
+	}
+	profileARN, err := iamdomain.EnsureSystemInstanceProfile(iam, accountID,
+		CPInstanceRoleName, eksServerInlinePolicyName, eksServerInlinePolicy)
+	if err != nil {
+		slog.Error("EKS: ensure CP instance profile failed; CP VM falls back to baked static gateway creds and "+
+			"will be denied eks:PublishInternal, eks:WebhookTokenReview, eks:ListInternalAddons and eks:GetRecoveryDirective (no instance identity to bind)",
+			"accountID", accountID, "role", CPInstanceRoleName, "err", err)
+		return ""
+	}
+	return profileARN
+}

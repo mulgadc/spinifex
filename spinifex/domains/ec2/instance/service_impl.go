@@ -2918,7 +2918,7 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instanc
 		}
 		// Terminate implies detach: DeleteVolumeOnTerminate clears the stale
 		// AttachedInstance left over from Stop (Unmount deliberately never
-		// clears a Boot volume, daemon/vm_adapters.go) before deleting, so
+		// clears a Boot volume, runtime/daemon/vm_adapters.go) before deleting, so
 		// DeleteVolume's in-use guard does not reject an otherwise-legitimate
 		// delete. The resulting error is surfaced into lastErr, not swallowed.
 		if err := s.volumeDeleter.DeleteVolumeOnTerminate(ctx, ebsRequest.Name, instance.AccountID); err != nil {

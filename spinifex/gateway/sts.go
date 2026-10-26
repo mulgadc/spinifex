@@ -8,11 +8,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	spxarn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
-	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
@@ -58,21 +58,21 @@ func stsHandler[In any](handler func(c stsCaller, input *In, gw *GatewayConfig) 
 
 var stsActions = map[string]STSHandler{
 	"AssumeRole": stsHandler(func(c stsCaller, input *sts.AssumeRoleInput, gw *GatewayConfig) (any, error) {
-		return gateway_sts.AssumeRole(c.accountID, c.arn, c.identity, input, gw.STSService)
+		return stsawsapi.AssumeRole(c.accountID, c.arn, c.identity, input, gw.STSService)
 	}),
 	// AssumeRoleWithWebIdentity is anonymous — authenticated by JWT, not SigV4.
 	// anonymousSTSInterceptor routes it ahead of auth with a zero stsCaller.
 	"AssumeRoleWithWebIdentity": stsHandler(func(_ stsCaller, input *sts.AssumeRoleWithWebIdentityInput, gw *GatewayConfig) (any, error) {
-		return gateway_sts.AssumeRoleWithWebIdentity(input, gw.STSService)
+		return stsawsapi.AssumeRoleWithWebIdentity(input, gw.STSService)
 	}),
 	"GetAccessKeyInfo": stsHandler(func(_ stsCaller, input *sts.GetAccessKeyInfoInput, gw *GatewayConfig) (any, error) {
-		return gateway_sts.GetAccessKeyInfo(input, gw.STSService)
+		return stsawsapi.GetAccessKeyInfo(input, gw.STSService)
 	}),
 	"GetCallerIdentity": stsHandler(func(c stsCaller, input *sts.GetCallerIdentityInput, gw *GatewayConfig) (any, error) {
-		return gateway_sts.GetCallerIdentity(c.accountID, c.arn, c.principalType, c.identity, c.assumedRoleID, input, gw.IAMService, gw.STSService)
+		return stsawsapi.GetCallerIdentity(c.accountID, c.arn, c.principalType, c.identity, c.assumedRoleID, input, gw.IAMService, gw.STSService)
 	}),
 	"GetSessionToken": stsHandler(func(c stsCaller, input *sts.GetSessionTokenInput, gw *GatewayConfig) (any, error) {
-		return gateway_sts.GetSessionToken(c.accountID, c.identity, c.principalType, c.accessKey, input, gw.STSService)
+		return stsawsapi.GetSessionToken(c.accountID, c.identity, c.principalType, c.accessKey, input, gw.STSService)
 	}),
 }
 
@@ -105,11 +105,11 @@ func (gw *GatewayConfig) stsPolicyResource(queryArgs map[string]string) (string,
 		return "", errors.New(awserrors.ErrorInternalError)
 	}
 
-	_, role, err := handlers_sts.ResolveRoleByARN(gw.IAMService, roleARN)
+	_, role, err := stsdomain.ResolveRoleByARN(gw.IAMService, roleARN)
 	switch {
 	case err == nil:
 		return aws.StringValue(role.Arn), nil
-	case errors.Is(err, handlers_sts.ErrRoleUnresolved):
+	case errors.Is(err, stsdomain.ErrRoleUnresolved):
 		// Echoing the supplied ARN keeps the denial identical whether or not the
 		// role exists. The handler refuses an ARN that is not the stored one, so
 		// a grant matched here on an invented path still ends in a denial there.

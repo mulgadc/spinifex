@@ -1,0 +1,188 @@
+package cluster
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+type fakeIGWProvisioner struct {
+	createCalls []*ec2.CreateInternetGatewayInput
+	attachCalls []*ec2.AttachInternetGatewayInput
+	detachCalls []*ec2.DetachInternetGatewayInput
+	deleteCalls []*ec2.DeleteInternetGatewayInput
+
+	// gateways holds confirmed gateways keyed by IGW id.
+	gateways map[string]*ec2.InternetGateway
+	// intent is igwID -> vpcID for attaches not yet confirmed.
+	intent    map[string]string
+	nextID    string
+	createErr error
+}
+
+var _ igwProvisioner = (*fakeIGWProvisioner)(nil)
+
+func newFakeIGWProvisioner() *fakeIGWProvisioner {
+	return &fakeIGWProvisioner{gateways: map[string]*ec2.InternetGateway{}, nextID: "igw-fake0001"}
+}
+
+func (f *fakeIGWProvisioner) CreateInternetGateway(_ context.Context, input *ec2.CreateInternetGatewayInput, _ string) (*ec2.CreateInternetGatewayOutput, error) {
+	f.createCalls = append(f.createCalls, input)
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	igw := &ec2.InternetGateway{
+		InternetGatewayId: aws.String(f.nextID),
+		Tags:              tags.MapToEC2(tags.Extract(input.TagSpecifications, "internet-gateway")),
+	}
+	f.gateways[f.nextID] = igw
+	return &ec2.CreateInternetGatewayOutput{InternetGateway: igw}, nil
+}
+
+// Attaching is asynchronous: the record names the VPC immediately, but the
+// describe projection reports no attachment until a reconcile pass confirms it.
+func (f *fakeIGWProvisioner) AttachInternetGateway(_ context.Context, input *ec2.AttachInternetGatewayInput, _ string) (*ec2.AttachInternetGatewayOutput, error) {
+	f.attachCalls = append(f.attachCalls, input)
+	if f.intent == nil {
+		f.intent = map[string]string{}
+	}
+	f.intent[aws.StringValue(input.InternetGatewayId)] = aws.StringValue(input.VpcId)
+	return &ec2.AttachInternetGatewayOutput{}, nil
+}
+
+func (f *fakeIGWProvisioner) AttachmentIntent(_ context.Context, _, vpcID string) (*ec2.InternetGateway, error) {
+	for igwID, attached := range f.intent {
+		if attached != vpcID {
+			continue
+		}
+		if igw, ok := f.gateways[igwID]; ok {
+			out := *igw
+			out.Attachments = []*ec2.InternetGatewayAttachment{
+				{VpcId: aws.String(vpcID), State: aws.String("available")},
+			}
+			return &out, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeIGWProvisioner) DetachInternetGateway(_ context.Context, input *ec2.DetachInternetGatewayInput, _ string) (*ec2.DetachInternetGatewayOutput, error) {
+	f.detachCalls = append(f.detachCalls, input)
+	igwID := aws.StringValue(input.InternetGatewayId)
+	if igw, ok := f.gateways[igwID]; ok {
+		igw.Attachments = nil
+	}
+	delete(f.intent, igwID)
+	return &ec2.DetachInternetGatewayOutput{}, nil
+}
+
+func (f *fakeIGWProvisioner) DeleteInternetGateway(_ context.Context, input *ec2.DeleteInternetGatewayInput, _ string) (*ec2.DeleteInternetGatewayOutput, error) {
+	f.deleteCalls = append(f.deleteCalls, input)
+	delete(f.gateways, aws.StringValue(input.InternetGatewayId))
+	return &ec2.DeleteInternetGatewayOutput{}, nil
+}
+
+// seedAttached registers an IGW already attached to vpcID with the given tags.
+func (f *fakeIGWProvisioner) seedAttached(igwID, vpcID string, tagKV ...string) {
+	igw := &ec2.InternetGateway{
+		InternetGatewayId: aws.String(igwID),
+		Attachments:       []*ec2.InternetGatewayAttachment{{VpcId: aws.String(vpcID), State: aws.String("available")}},
+	}
+	for i := 0; i+1 < len(tagKV); i += 2 {
+		igw.Tags = append(igw.Tags, &ec2.Tag{Key: aws.String(tagKV[i]), Value: aws.String(tagKV[i+1])})
+	}
+	f.gateways[igwID] = igw
+	if f.intent == nil {
+		f.intent = map[string]string{}
+	}
+	// A confirmed attachment is intent too.
+	f.intent[igwID] = vpcID
+}
+
+func TestEnsureClusterIGW_FreshCreatesAndAttaches(t *testing.T) {
+	t.Parallel()
+	f := newFakeIGWProvisioner()
+
+	require.NoError(t, EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
+
+	require.Len(t, f.createCalls, 1)
+	require.Len(t, f.attachCalls, 1)
+	assert.Equal(t, "vpc-1", aws.StringValue(f.attachCalls[0].VpcId))
+	assert.Equal(t, "igw-fake0001", aws.StringValue(f.attachCalls[0].InternetGatewayId))
+
+	igw := f.gateways["igw-fake0001"]
+	require.NotNil(t, igw)
+	assert.ElementsMatch(t, []*ec2.Tag{
+		{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
+		{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String("demo")},
+	}, igw.Tags, "created IGW must carry cluster ownership tags, so teardown can tell it from a customer's")
+}
+
+func TestEnsureClusterIGW_ExistingIsReusedNotRecreated(t *testing.T) {
+	t.Parallel()
+	f := newFakeIGWProvisioner()
+	f.seedAttached("igw-customer", "vpc-1") // untagged, customer-provisioned
+
+	require.NoError(t, EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
+
+	assert.Empty(t, f.createCalls, "must not create when VPC already has an attached IGW")
+	assert.Empty(t, f.attachCalls)
+}
+
+func TestEnsureClusterIGW_Idempotent(t *testing.T) {
+	t.Parallel()
+	f := newFakeIGWProvisioner()
+	require.NoError(t, EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
+	require.NoError(t, EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
+	assert.Len(t, f.createCalls, 1, "second call reuses the IGW created by the first")
+}
+
+func TestDeleteClusterIGW_RemovesOnlyOwned(t *testing.T) {
+	t.Parallel()
+	f := newFakeIGWProvisioner()
+	f.seedAttached("igw-owned", "vpc-1", tags.ManagedByKey, tags.ManagedByEKS, clusterEKSClusterTagKey, "demo")
+
+	require.NoError(t, DeleteClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
+
+	require.Len(t, f.detachCalls, 1)
+	require.Len(t, f.deleteCalls, 1)
+	assert.Equal(t, "igw-owned", aws.StringValue(f.deleteCalls[0].InternetGatewayId))
+	assert.NotContains(t, f.gateways, "igw-owned")
+}
+
+func TestDeleteClusterIGW_LeavesCustomerIGW(t *testing.T) {
+	t.Parallel()
+	f := newFakeIGWProvisioner()
+	f.seedAttached("igw-customer", "vpc-1") // untagged
+
+	require.NoError(t, DeleteClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
+
+	assert.Empty(t, f.detachCalls, "must not touch a customer-provisioned IGW")
+	assert.Empty(t, f.deleteCalls)
+	assert.Contains(t, f.gateways, "igw-customer")
+}
+
+func TestDeleteClusterIGW_WrongClusterTagNotOwned(t *testing.T) {
+	t.Parallel()
+	f := newFakeIGWProvisioner()
+	f.seedAttached("igw-other", "vpc-1", tags.ManagedByKey, tags.ManagedByEKS, clusterEKSClusterTagKey, "other-cluster")
+
+	require.NoError(t, DeleteClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
+
+	assert.Empty(t, f.deleteCalls, "must not delete another cluster's IGW")
+}
+
+func TestEnsureClusterIGW_CreateErrorPropagates(t *testing.T) {
+	t.Parallel()
+	f := newFakeIGWProvisioner()
+	f.createErr = errors.New("boom")
+	err := EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create IGW")
+}

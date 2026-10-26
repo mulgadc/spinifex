@@ -15,9 +15,9 @@ import (
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -44,9 +44,9 @@ func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
+	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
 	for _, subject := range teardownSubjects {
@@ -139,7 +139,7 @@ func (emptyBucketStore) DeleteBucket(context.Context, string) error { return nil
 // newTenantAccount creates an account that is safe to delete. Account ids are
 // sequential and the first belongs to the super admin, which is protected, so
 // the tenant under test can never be the first one created.
-func newTenantAccount(t *testing.T, gw *GatewayConfig, name string) *handlers_iam.Account {
+func newTenantAccount(t *testing.T, gw *GatewayConfig, name string) *iamdomain.Account {
 	t.Helper()
 	if accounts, err := gw.IAMService.ListAccounts(); err == nil && len(accounts) == 0 {
 		_, err := gw.IAMService.CreateAccount("super-admin@example.com")
@@ -207,7 +207,7 @@ func TestAdminDeleteAccountDryRunChangesNothing(t *testing.T) {
 
 	stored, err := gw.IAMService.GetAccount(account.AccountID)
 	require.NoError(t, err)
-	assert.Equal(t, handlers_iam.AccountStatusActive, stored.Status)
+	assert.Equal(t, iamdomain.AccountStatusActive, stored.Status)
 
 	// No job record means a later real delete is not answered as a replay.
 	_, err = gw.adminDescribeAccountDeletion(t.Context(),
@@ -428,7 +428,7 @@ func TestAdminDeleteAccountRefusesAMismatchedName(t *testing.T) {
 
 	stored, err := gw.IAMService.GetAccount(account.AccountID)
 	require.NoError(t, err)
-	assert.Equal(t, handlers_iam.AccountStatusActive, stored.Status)
+	assert.Equal(t, iamdomain.AccountStatusActive, stored.Status)
 }
 
 func TestAdminDeleteAccountRejectsAnUnknownAccount(t *testing.T) {

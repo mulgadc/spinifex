@@ -14,7 +14,6 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -323,7 +322,7 @@ func TestReaper_ServiceOnlyBundleLivenessProbedNotReaped(t *testing.T) {
 		State:        StateReady,
 		BaseURL:      "http://10.0.0.1:8001",
 		PrivateIP:    "10.0.0.1",
-		Members:      map[string]MemberEndpoint{embedModelID: {Port: 8001, Family: gateway_bedrock.FamilyTEI}},
+		Members:      map[string]MemberEndpoint{embedModelID: {Port: 8001, Family: FamilyTEI}},
 		ReadyAt:      time.Now().Add(-time.Hour),
 		LastActiveAt: time.Now().Add(-time.Hour),
 		Generation:   1,

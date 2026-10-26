@@ -104,8 +104,8 @@ func TestLive_QEMUNBDLifecycle(t *testing.T) {
 
 	pub, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: nodeID})
 	require.NoError(t, err, "publish volume")
-	t.Logf("published volume %s to node %s: %s", pub.VolumeID, pub.NodeID, pub.NBDURI)
-	sockPath := requireUnixSocketPath(t, pub.NBDURI)
+	t.Logf("published volume %s to node %s: %s", pub.VolumeID, pub.NodeID, liveNBDURI(t, pub))
+	sockPath := requireUnixSocketPath(t, liveNBDURI(t, pub))
 
 	writePattern(t, sockPath, pattern, liveVolumeBytes)
 	readAndVerifyPattern(t, sockPath, pattern, liveVolumeBytes)
@@ -129,8 +129,8 @@ func TestLive_QEMUNBDLifecycle(t *testing.T) {
 
 	restoredPub, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: restoredVolumeID, NodeID: nodeID})
 	require.NoError(t, err, "publish restored volume")
-	t.Logf("published restored volume %s to node %s: %s", restoredPub.VolumeID, restoredPub.NodeID, restoredPub.NBDURI)
-	restoredSockPath := requireUnixSocketPath(t, restoredPub.NBDURI)
+	t.Logf("published restored volume %s to node %s: %s", restoredPub.VolumeID, restoredPub.NodeID, liveNBDURI(t, restoredPub))
+	restoredSockPath := requireUnixSocketPath(t, liveNBDURI(t, restoredPub))
 
 	// The real proof: bytes written before the snapshot survive both the
 	// snapshot and the restore into an independent volume.
@@ -149,6 +149,15 @@ func cleanupBestEffort(t *testing.T, step string, fn func() error) {
 	} else {
 		t.Logf("cleanup: %s: ok", step)
 	}
+}
+
+// liveNBDURI requires pub to carry an nbd export, which is all qemunbdd
+// publishes, and returns its URI.
+func liveNBDURI(t *testing.T, pub *ebsprovider.PublishedVolume) string {
+	t.Helper()
+	require.Equal(t, ebsprovider.ExportKindNBD, pub.Export.Kind, "qemunbdd must publish an nbd export")
+	require.NotNil(t, pub.Export.NBD, "nbd export has no nbd details")
+	return pub.Export.NBD.NBDURI
 }
 
 // requireUnixSocketPath asserts nbdURI is a nbd:unix: URI and returns its

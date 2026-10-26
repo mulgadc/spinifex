@@ -12,9 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
 
@@ -24,7 +24,7 @@ const fanOutTimeout = 3 * time.Second
 
 // resolveAndAuthorizeProfile resolves a profile (name or ARN) and enforces iam:PassRole.
 // Profiles without a role skip PassRole; missing profile → InvalidIamInstanceProfile.NotFound.
-func resolveAndAuthorizeProfile(spec *ec2.IamInstanceProfileSpecification, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (*handlers_iam.InstanceProfile, error) {
+func resolveAndAuthorizeProfile(spec *ec2.IamInstanceProfileSpecification, iamSvc iamdomain.IAMService, accountID string, passRoleCheck PassRoleChecker) (*iamdomain.InstanceProfile, error) {
 	nameOrARN := profileNameOrARN(spec)
 	if nameOrARN == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -55,7 +55,7 @@ func resolveAndAuthorizeProfile(spec *ec2.IamInstanceProfileSpecification, iamSv
 // AssociateIamInstanceProfile attaches a profile to a running instance.
 // The gateway resolves the profile and enforces PassRole; the daemon validates
 // no existing profile and generates a fresh iip-assoc-… ID.
-func AssociateIamInstanceProfile(ctx context.Context, input *ec2.AssociateIamInstanceProfileInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (*ec2.AssociateIamInstanceProfileOutput, error) {
+func AssociateIamInstanceProfile(ctx context.Context, input *ec2.AssociateIamInstanceProfileInput, natsConn *nats.Conn, iamSvc iamdomain.IAMService, accountID string, passRoleCheck PassRoleChecker) (*ec2.AssociateIamInstanceProfileOutput, error) {
 	if input == nil || input.InstanceId == nil || *input.InstanceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -107,7 +107,7 @@ func DisassociateIamInstanceProfile(ctx context.Context, input *ec2.Disassociate
 
 // ReplaceIamInstanceProfileAssociation swaps the profile for an existing association.
 // The gateway resolves the new profile and enforces PassRole; the daemon swaps atomically.
-func ReplaceIamInstanceProfileAssociation(ctx context.Context, input *ec2.ReplaceIamInstanceProfileAssociationInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, expectedNodes int, accountID string, passRoleCheck PassRoleChecker) (*ec2.ReplaceIamInstanceProfileAssociationOutput, error) {
+func ReplaceIamInstanceProfileAssociation(ctx context.Context, input *ec2.ReplaceIamInstanceProfileAssociationInput, natsConn *nats.Conn, iamSvc iamdomain.IAMService, expectedNodes int, accountID string, passRoleCheck PassRoleChecker) (*ec2.ReplaceIamInstanceProfileAssociationOutput, error) {
 	if input == nil || input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -173,7 +173,7 @@ func DescribeIamInstanceProfileAssociations(ctx context.Context, input *ec2.Desc
 
 // enrichProfileID fills IamInstanceProfile.Id from the resolved profile.
 // Daemons have no IAM access. Safe to call with a nil association.
-func enrichProfileID(assoc *ec2.IamInstanceProfileAssociation, profile *handlers_iam.InstanceProfile) {
+func enrichProfileID(assoc *ec2.IamInstanceProfileAssociation, profile *iamdomain.InstanceProfile) {
 	if assoc == nil || profile == nil {
 		return
 	}

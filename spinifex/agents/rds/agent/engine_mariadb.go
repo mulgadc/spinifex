@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // The control plane's own statements about this engine, resolved once at
@@ -386,7 +386,7 @@ SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';
 func (e *mariadbEngine) SetPassword(ctx context.Context, username, password string) error {
 	if username == "" || password == "" {
 		return fmt.Errorf("set-password requires both %s and %s",
-			handlers_rds.CommandParamMasterUsername, handlers_rds.CommandParamMasterUserPassword)
+			rdsinstance.CommandParamMasterUsername, rdsinstance.CommandParamMasterUserPassword)
 	}
 	// This runs as the server's own superuser, so a reserved name in the payload
 	// would rotate the platform's account. The whole rule matters here, not just
@@ -410,7 +410,7 @@ func (e *mariadbEngine) SetPassword(ctx context.Context, username, password stri
 // Installs the resolved set and applies the half a running server can adopt.
 // MariaDB re-reads no file while up, so SET GLOBAL is the only immediate path.
 // It has no offline parser, so the safety net is the boot-time rollback.
-func (e *mariadbEngine) ApplyParameters(ctx context.Context, params []handlers_rds.Parameter) ([]string, error) {
+func (e *mariadbEngine) ApplyParameters(ctx context.Context, params []rdsinstance.Parameter) ([]string, error) {
 	e.paramMu.Lock()
 	defer e.paramMu.Unlock()
 
@@ -473,7 +473,7 @@ func (e *mariadbEngine) ApplyParameters(ctx context.Context, params []handlers_r
 //
 // TLS enforcement is excluded: applyTLSEnforcement issues it after this batch
 // has succeeded.
-func (e *mariadbEngine) applyDynamicParameters(ctx context.Context, params []handlers_rds.Parameter) error {
+func (e *mariadbEngine) applyDynamicParameters(ctx context.Context, params []rdsinstance.Parameter) error {
 	var b strings.Builder
 	b.WriteString("SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';\n")
 	applied := 0

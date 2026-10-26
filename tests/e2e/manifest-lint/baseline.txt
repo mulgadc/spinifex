@@ -70,4 +70,4 @@ create	tests/e2e/single/negative_test.go	RunInstances	#2
 create	tests/e2e/single/negative_test.go	RunInstances	#3
 create	tests/e2e/single/negative_test.go	RunInstances	#4
 create	tests/e2e/single/snapshot_test.go	CreateSnapshot	#1
-subject	spinifex/daemon/daemon.go	spinifex.image.promote
+subject	spinifex/runtime/daemon/daemon.go	spinifex.image.promote

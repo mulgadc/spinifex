@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -272,6 +273,83 @@ func TestBuildDrives(t *testing.T) {
 				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{0, 0, 3},
+		},
+		{
+			name: "block data volume emits a raw node over host_device with the same device wiring",
+			requests: []EBSRequest{
+				{Name: "vol-blk", BlockDevice: "/dev/sdx", BlockSizeBytes: 10 << 30, HotplugPort: 2},
+			},
+			cpuCount:      2,
+			wantIOThreads: []IOThread{{ID: "ioth-vol-blk"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=nbd-vol-blk,size=10737418240,file.driver=host_device,file.filename=/dev/sdx,file.aio=native,file.cache.direct=on"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,id=vdisk-vol-blk,drive=nbd-vol-blk,iothread=ioth-vol-blk,serial=volblk,bus=hotplug-ebs2,werror=stop,rerror=stop"},
+			},
+			wantHotplugPorts: []int{2},
+		},
+		{
+			name: "NBD boot volume alongside a block data volume",
+			requests: []EBSRequest{
+				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
+				{Name: "vol-blk", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20},
+			},
+			cpuCount: 2,
+			wantDrives: []Drive{
+				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
+			},
+			wantIOThreads: []IOThread{{ID: "ioth-os"}, {ID: "ioth-vol-blk"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=nbd-vol-blk,size=1048576,file.driver=host_device,file.filename=/dev/sdx,file.aio=native,file.cache.direct=on"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-blk,drive=nbd-vol-blk,iothread=ioth-vol-blk,serial=volblk,bus=hotplug-ebs1,werror=stop,rerror=stop"},
+			},
+			wantHotplugPorts: []int{0, 1},
+		},
+		{
+			name:     "block boot volume is rejected",
+			requests: []EBSRequest{{Name: "vol-boot", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20, Boot: true}},
+			cpuCount: 2,
+			wantErr:  "volume vol-boot: block device export is only supported for data volumes",
+		},
+		{
+			name:     "block EFI volume is rejected",
+			requests: []EBSRequest{{Name: "vol-efi", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20, EFI: true}},
+			cpuCount: 2,
+			wantErr:  "volume vol-efi: block device export is only supported for data volumes",
+		},
+		{
+			name:     "both NBDURI and BlockDevice set is rejected",
+			requests: []EBSRequest{{Name: "vol-both", NBDURI: "nbd:unix:/tmp/x.sock", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20}},
+			cpuCount: 2,
+			wantErr:  "volume vol-both has both NBDURI and BlockDevice set",
+		},
+		{
+			name:     "NBDURI with a stray BlockSizeBytes is rejected",
+			requests: []EBSRequest{{Name: "vol-stray", NBDURI: "nbd:unix:/tmp/x.sock", BlockSizeBytes: 1 << 20}},
+			cpuCount: 2,
+			wantErr:  "volume vol-stray has BlockSizeBytes set without BlockDevice",
+		},
+		{
+			name:     "block device with zero size is rejected",
+			requests: []EBSRequest{{Name: "vol-nosize", BlockDevice: "/dev/sdx"}},
+			cpuCount: 2,
+			wantErr:  `volume vol-nosize BlockDevice "/dev/sdx" has zero BlockSizeBytes`,
+		},
+		{
+			name:     "relative block device path is rejected",
+			requests: []EBSRequest{{Name: "vol-rel", BlockDevice: "dev/sdx", BlockSizeBytes: 1 << 20}},
+			cpuCount: 2,
+			wantErr:  `volume vol-rel BlockDevice "dev/sdx" is not an absolute path`,
+		},
+		{
+			name:     "block device path with a comma is rejected",
+			requests: []EBSRequest{{Name: "vol-comma", BlockDevice: "/dev/sdx,file.locking=off", BlockSizeBytes: 1 << 20}},
+			cpuCount: 2,
+			wantErr:  `volume vol-comma BlockDevice "/dev/sdx,file.locking=off" contains a comma`,
 		},
 		{
 			name:     "empty requests",
@@ -1008,6 +1086,28 @@ func TestStartQEMU_DirectBoot_InstanceTypeNotFound(t *testing.T) {
 	assert.Empty(t, plumber.setupCalls)
 }
 
+// TestStartQEMU_BlockDeviceMissing verifies a block volume's launch readiness
+// is the device's presence, not an NBD connect.
+func TestStartQEMU_BlockDeviceMissing(t *testing.T) {
+	m := directBootManager(t, &fakeNetworkPlumber{})
+	missing := filepath.Join(t.TempDir(), "missing-dev")
+
+	instance := &VM{
+		ID:           "i-blk-missing",
+		InstanceType: "t3.nano",
+		DirectBoot:   true,
+	}
+	instance.EBSRequests.Requests = []EBSRequest{
+		{Name: "vol-blk", BlockDevice: missing, BlockSizeBytes: 1 << 20},
+	}
+
+	err := m.startQEMU(instance)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "block device not present for vol-blk")
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
 // scriptedNetworkPlumber returns errors from a pre-loaded slice, one per call.
 type scriptedNetworkPlumber struct {
 	calls []TapSpec
@@ -1030,6 +1130,14 @@ func (p *scriptedNetworkPlumber) CleanupTap(_ string) error { return nil }
 func (p *scriptedNetworkPlumber) AttachIMDSDatapath(_, _, _ string) error { return nil }
 
 func (p *scriptedNetworkPlumber) DetachIMDSDatapath(_ string) error { return nil }
+
+func (p *scriptedNetworkPlumber) IMDSDatapathStates(_ context.Context, _ []string) (map[string]IMDSDatapathState, error) {
+	return nil, nil
+}
+
+func (p *scriptedNetworkPlumber) RepairIMDSDatapath(_ context.Context, _, _, _ string) error {
+	return nil
+}
 
 func (p *scriptedNetworkPlumber) EnsureIMDSDatapathBridge() error { return nil }
 
@@ -1270,6 +1378,12 @@ func TestQMPGreetingTimeout(t *testing.T) {
 		"a guest with an NBD drive waits for the volume open, not the plain default")
 	assert.Greater(t, qmpNBDGreetingTimeout, 35*time.Second,
 		"the deadline must exceed the 35s cold open measured with one node of three away")
+
+	block := &VM{EBSRequests: EBSRequests{Requests: []EBSRequest{
+		{Name: "vol-data", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20},
+	}}}
+	assert.Equal(t, qmp.DefaultGreetingTimeout, qmpGreetingTimeout(block),
+		"a host block device opens locally, so it keeps the plain default")
 
 	// A small GPU guest (<1 GiB scaling contribution) sits at the floor.
 	smallGPU := &VM{

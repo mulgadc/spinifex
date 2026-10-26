@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // The include the image build validates against a real mariadbd. It is checked
@@ -30,7 +30,7 @@ func TestMariaDBDefaultParametersFixture_MatchesTheCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LookupEngine: %v", err)
 	}
-	sizing := handlers_rds.InstanceSizing()
+	sizing := rdsinstance.InstanceSizing()
 	class := sizing.SmallestInstanceClass()
 	settings, err := engine.ResolveEffectiveParameters(sizing, class, nil)
 	if err != nil {

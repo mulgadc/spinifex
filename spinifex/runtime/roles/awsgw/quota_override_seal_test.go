@@ -15,7 +15,7 @@ import (
 )
 
 // stubChecker answers AccountTerminating from a fixed set, standing in for
-// handlers_iam.AccountStatusReader so this test does not need a real IAM
+// iamdomain.AccountStatusReader so this test does not need a real IAM
 // bucket.
 type stubChecker struct {
 	terminating map[string]bool

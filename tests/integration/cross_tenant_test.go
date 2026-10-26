@@ -22,10 +22,10 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
-	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
-	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
-	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
-	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -342,7 +342,7 @@ func scopedServices() []scopedService {
 		// Every ECS identifier is folded through a ShortName/ShortID helper and
 		// rebuilt on the caller's account, so a full ARN is accepted wherever a
 		// name is. The two cases drive the tag and the cluster-list resolvers.
-		{name: "ecs", actions: gateway_ecs.ScopedActions(), uncased: map[string]string{
+		{name: "ecs", actions: ecsawsapi.ScopedActions(), uncased: map[string]string{
 			"TagResource":                   sameHelper("ListTagsForResource"),
 			"UntagResource":                 sameHelper("ListTagsForResource"),
 			"CreateCluster":                 sameHelper("DescribeClusters"),
@@ -388,11 +388,11 @@ func scopedServices() []scopedService {
 
 		// Same shape as ECR: the tag actions read an ARN, the rest name a
 		// cluster, nodegroup or addon by path segment.
-		{name: "eks", actions: gateway_eks.ScopedActions(), uncased: eksUncased()},
+		{name: "eks", actions: eksawsapi.ScopedActions(), uncased: eksUncased()},
 
-		{name: "elasticloadbalancing", actions: gateway_elbv2.ScopedActions(), uncased: elbv2Uncased()},
+		{name: "elasticloadbalancing", actions: elbv2awsapi.ScopedActions(), uncased: elbv2Uncased()},
 
-		{name: "iam", actions: gateway_iam.ScopedActions(), uncased: iamUncased()},
+		{name: "iam", actions: iamawsapi.ScopedActions(), uncased: iamUncased()},
 	}
 }
 

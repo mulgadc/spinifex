@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -46,20 +46,20 @@ var rdsAccountLevelActions = map[string]string{
 // carries a written reason for being account-level, and an action in both sets
 // or in neither fails.
 func TestRDSScopeTableIsExhaustive(t *testing.T) {
-	unsupported := gateway_rds.UnsupportedActionNames()
+	unsupported := rdsawsapi.UnsupportedActionNames()
 
-	for _, action := range gateway_rds.ActionNames() {
+	for _, action := range rdsawsapi.ActionNames() {
 		if slices.Contains(unsupported, action) {
 			continue
 		}
 		_, accountLevel := rdsAccountLevelActions[action]
-		assert.NotEqual(t, gateway_rds.HasScope(action), accountLevel,
-			"rds action %q must either carry a scope in gateway/rds/handler.go or a written reason "+
+		assert.NotEqual(t, rdsawsapi.HasScope(action), accountLevel,
+			"rds action %q must either carry a scope in domains/rds/awsapi/handler.go or a written reason "+
 				"in rdsAccountLevelActions, not both and not neither", action)
 	}
 
 	for action := range rdsAccountLevelActions {
-		assert.True(t, gateway_rds.HasAction(action),
+		assert.True(t, rdsawsapi.HasAction(action),
 			"rdsAccountLevelActions names %q, which RDS does not serve: remove it", action)
 		assert.NotContains(t, unsupported, action,
 			"rdsAccountLevelActions names %q, which is recognised but not offered: remove it", action)

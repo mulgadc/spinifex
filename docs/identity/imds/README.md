@@ -286,6 +286,7 @@ Useful background for host-side troubleshooting:
 - The IMDS HTTP server runs inside the `spinifex-vpcd` service on each host, listening on `169.254.169.254:80` with one listener per instance's primary interface — attribution is structural, with no source-IP trust.
 - A freshly launched guest's metadata service comes up within a few seconds of launch; cloud-init's built-in retries absorb this window.
 - Session tokens and cached role credentials are not persisted. A vpcd restart drops them; SDKs and cloud-init transparently reissue. Datapath state on the host survives service restarts.
+- An Open vSwitch restart, upgrade or crash drops every `br-imds` flow, which takes the guest's whole network down, not only IMDS. `spinifex-daemon` checks each running guest's datapath every 10 seconds and re-installs what was lost.
 
 ## Limits and Defaults
 
@@ -361,6 +362,15 @@ Look for `IMDS: tap responder serving` (listener bound) and `IMDS: issued IMDSv2
 ovs-vsctl list-ports br-imds          # per-instance endpoint + patch ports
 ovs-vsctl list-ports br-int | grep imi-
 ```
+
+3. If the guest has lost all networking, not just IMDS, check whether `br-imds` still has its ports but no flows:
+
+```bash
+sudo ovs-ofctl dump-flows br-imds | grep -c cookie=   # 7 per running instance
+journalctl -u spinifex-daemon | grep 'IMDS: per-tap datapath'
+```
+
+That is the state an Open vSwitch restart leaves behind. The daemon repairs it within 10 seconds and logs `IMDS: per-tap datapath was lost; re-installed`. A count that stays at 0 with `IMDS: per-tap datapath repair failed` in the log names the step that failed.
 
 ### cloud-init Did Not Apply SSH Key or User Data
 

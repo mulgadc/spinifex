@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 // IAMReapers returns the identity-stage reapers in teardown order.
@@ -14,7 +14,7 @@ import (
 // Access keys go first and deliberately: it is the second quiesce, and unlike
 // the account-status gate it holds even against a caller that reached the
 // cluster some other way.
-func IAMReapers(svc handlers_iam.IAMService) []Reaper {
+func IAMReapers(svc iamdomain.IAMService) []Reaper {
 	return []Reaper{
 		&accessKeyReaper{svc: svc},
 		&instanceProfileReaper{svc: svc},
@@ -34,7 +34,7 @@ func IAMReapers(svc handlers_iam.IAMService) []Reaper {
 // They survive their cluster's deletion, so nothing else in teardown reaches
 // them and an account would be left holding a trust anchor for a cluster that
 // no longer exists.
-type oidcProviderReaper struct{ svc handlers_iam.IAMService }
+type oidcProviderReaper struct{ svc iamdomain.IAMService }
 
 func (r *oidcProviderReaper) Kind() string { return "oidc-provider" }
 func (r *oidcProviderReaper) Stage() Stage { return StagePlatform }
@@ -62,7 +62,7 @@ func (r *oidcProviderReaper) Delete(_ context.Context, accountID string, resourc
 	return ignoreAlreadyGone(err)
 }
 
-type accessKeyReaper struct{ svc handlers_iam.IAMService }
+type accessKeyReaper struct{ svc iamdomain.IAMService }
 
 func (r *accessKeyReaper) Kind() string { return "access-key" }
 func (r *accessKeyReaper) Stage() Stage { return StageIdentity }
@@ -102,7 +102,7 @@ func (r *accessKeyReaper) Delete(_ context.Context, accountID string, resource R
 	return ignoreAlreadyGone(err)
 }
 
-type iamUserReaper struct{ svc handlers_iam.IAMService }
+type iamUserReaper struct{ svc iamdomain.IAMService }
 
 func (r *iamUserReaper) Kind() string { return "iam-user" }
 func (r *iamUserReaper) Stage() Stage { return StageIdentity }
@@ -166,7 +166,7 @@ func (r *iamUserReaper) Delete(_ context.Context, accountID string, resource Res
 	return ignoreAlreadyGone(err)
 }
 
-type iamRoleReaper struct{ svc handlers_iam.IAMService }
+type iamRoleReaper struct{ svc iamdomain.IAMService }
 
 func (r *iamRoleReaper) Kind() string { return "iam-role" }
 func (r *iamRoleReaper) Stage() Stage { return StageIdentity }
@@ -228,7 +228,7 @@ func (r *iamRoleReaper) Delete(_ context.Context, accountID string, resource Res
 	return ignoreAlreadyGone(err)
 }
 
-type iamGroupReaper struct{ svc handlers_iam.IAMService }
+type iamGroupReaper struct{ svc iamdomain.IAMService }
 
 func (r *iamGroupReaper) Kind() string { return "iam-group" }
 func (r *iamGroupReaper) Stage() Stage { return StageIdentity }
@@ -254,7 +254,7 @@ func (r *iamGroupReaper) Delete(_ context.Context, accountID string, resource Re
 	return ignoreAlreadyGone(err)
 }
 
-type iamPolicyReaper struct{ svc handlers_iam.IAMService }
+type iamPolicyReaper struct{ svc iamdomain.IAMService }
 
 func (r *iamPolicyReaper) Kind() string { return "iam-policy" }
 func (r *iamPolicyReaper) Stage() Stage { return StageIdentity }
@@ -302,7 +302,7 @@ func (r *iamPolicyReaper) Delete(_ context.Context, accountID string, resource R
 	return ignoreAlreadyGone(err)
 }
 
-type instanceProfileReaper struct{ svc handlers_iam.IAMService }
+type instanceProfileReaper struct{ svc iamdomain.IAMService }
 
 func (r *instanceProfileReaper) Kind() string { return "instance-profile" }
 func (r *instanceProfileReaper) Stage() Stage { return StageIdentity }

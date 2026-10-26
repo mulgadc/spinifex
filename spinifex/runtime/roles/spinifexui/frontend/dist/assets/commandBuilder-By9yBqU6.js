@@ -1,1 +1,0 @@
-import{Do as e,Lo as t,yn as n}from"./awsClient-CTqCZGaC.js";var r=t(n,`AWSIdentityManagementV20100508`,`IAMClient`,e),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

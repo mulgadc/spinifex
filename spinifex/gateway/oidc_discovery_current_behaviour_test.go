@@ -20,10 +20,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 )
 
 // The TestCurrentBehaviour_ tests in this file pin today's public OIDC discovery
@@ -51,10 +51,10 @@ func newDiscoveryEnv(t *testing.T) *discoveryEnv {
 	return &discoveryEnv{nc: nc, kv: kv, h: gw.SetupRoutes()}
 }
 
-func (e *discoveryEnv) putMeta(t *testing.T, status handlers_eks.ClusterStatus, issuer string) {
+func (e *discoveryEnv) putMeta(t *testing.T, status ekscluster.ClusterStatus, issuer string) {
 	t.Helper()
-	require.NoError(t, handlers_eks.PutClusterMeta(t.Context(), e.kv,
-		&handlers_eks.ClusterMeta{Name: testDiscCluster, Status: status, OIDCIssuer: issuer}))
+	require.NoError(t, ekscluster.PutClusterMeta(t.Context(), e.kv,
+		&ekscluster.ClusterMeta{Name: testDiscCluster, Status: status, OIDCIssuer: issuer}))
 }
 
 func (e *discoveryEnv) putJWKS(t *testing.T, raw string) {
@@ -88,16 +88,16 @@ func TestCurrentBehaviour_OIDCDiscoveryOutcomesByStoredState(t *testing.T) {
 	const jwks = `{"keys":[{"kty":"EC","kid":"abc"}]}`
 	for _, tc := range []struct {
 		name               string
-		status             handlers_eks.ClusterStatus
+		status             ekscluster.ClusterStatus
 		issuer             string
 		withMeta, withJWKS bool
 		wantDisc, wantKeys int
 	}{
-		{name: "active", status: handlers_eks.ClusterStatusActive, issuer: testDiscIssuer, withMeta: true, withJWKS: true, wantDisc: 200, wantKeys: 200},
-		{name: "deleting", status: handlers_eks.ClusterStatusDeleting, issuer: testDiscIssuer, withMeta: true, withJWKS: true, wantDisc: 200, wantKeys: 200},
-		{name: "failed", status: handlers_eks.ClusterStatusFailed, issuer: testDiscIssuer, withMeta: true, withJWKS: true, wantDisc: 200, wantKeys: 200},
-		{name: "meta_without_issuer", status: handlers_eks.ClusterStatusCreating, withMeta: true, withJWKS: true, wantDisc: 404, wantKeys: 200},
-		{name: "jwks_absent", status: handlers_eks.ClusterStatusActive, issuer: testDiscIssuer, withMeta: true, wantDisc: 200, wantKeys: 404},
+		{name: "active", status: ekscluster.ClusterStatusActive, issuer: testDiscIssuer, withMeta: true, withJWKS: true, wantDisc: 200, wantKeys: 200},
+		{name: "deleting", status: ekscluster.ClusterStatusDeleting, issuer: testDiscIssuer, withMeta: true, withJWKS: true, wantDisc: 200, wantKeys: 200},
+		{name: "failed", status: ekscluster.ClusterStatusFailed, issuer: testDiscIssuer, withMeta: true, withJWKS: true, wantDisc: 200, wantKeys: 200},
+		{name: "meta_without_issuer", status: ekscluster.ClusterStatusCreating, withMeta: true, withJWKS: true, wantDisc: 404, wantKeys: 200},
+		{name: "jwks_absent", status: ekscluster.ClusterStatusActive, issuer: testDiscIssuer, withMeta: true, wantDisc: 200, wantKeys: 404},
 		{name: "jwks_without_meta", withJWKS: true, wantDisc: 404, wantKeys: 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -123,9 +123,9 @@ func TestCurrentBehaviour_OIDCDiscoveryOutcomesByStoredState(t *testing.T) {
 // endpoints return the stock 404 body.
 func TestCurrentBehaviour_OIDCDiscoveryAfterClusterPrefixDeleted(t *testing.T) {
 	e := newDiscoveryEnv(t)
-	e.putMeta(t, handlers_eks.ClusterStatusDeleting, testDiscIssuer)
+	e.putMeta(t, ekscluster.ClusterStatusDeleting, testDiscIssuer)
 	e.putJWKS(t, `{"keys":[{"kty":"EC","kid":"abc"}]}`)
-	require.NoError(t, handlers_eks.DeleteClusterPrefix(t.Context(), e.kv, testDiscCluster))
+	require.NoError(t, ekscluster.DeleteClusterPrefix(t.Context(), e.kv, testDiscCluster))
 
 	for _, p := range []string{cbDiscPath, cbKeysPath} {
 		rec := getOIDC(t, e.h, p)
@@ -139,7 +139,7 @@ func TestCurrentBehaviour_OIDCDiscoveryAfterClusterPrefixDeleted(t *testing.T) {
 func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 	t.Run("closed_connection", func(t *testing.T) {
 		e := newDiscoveryEnv(t)
-		e.putMeta(t, handlers_eks.ClusterStatusActive, testDiscIssuer)
+		e.putMeta(t, ekscluster.ClusterStatusActive, testDiscIssuer)
 		e.putJWKS(t, `{"keys":[]}`)
 		e.nc.Close()
 		for _, p := range []string{cbDiscPath, cbKeysPath} {
@@ -174,20 +174,20 @@ func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 func TestCurrentBehaviour_WebIdentityJWKSMissingWireResponse(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
+	iamSvc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
-	stsSvc, err := handlers_sts.NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, handlers_eks.NewOIDCJWKSReader(js))
+	stsSvc, err := stsdomain.NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, ekscluster.NewOIDCJWKSReader(js))
 	require.NoError(t, err)
 
 	issuer := testDiscIssuer
 	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), js,
-		handlers_iam.IAMAccountBucketName(testDiscAccount), handlers_iam.KVBucketIAMAccountVersion)
+		iamdomain.IAMAccountBucketName(testDiscAccount), iamdomain.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
-	_, err = iamKV.Put(t.Context(), handlers_iam.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
+	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
 	require.NoError(t, err)
-	federated := handlers_iam.OIDCProviderARN(testDiscAccount, strings.TrimPrefix(issuer, "https://"))
+	federated := iamdomain.OIDCProviderARN(testDiscAccount, strings.TrimPrefix(issuer, "https://"))
 	role, err := iamSvc.CreateRole(testDiscAccount, &iam.CreateRoleInput{
 		RoleName: aws.String("irsa-wire"),
 		AssumeRolePolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"` +

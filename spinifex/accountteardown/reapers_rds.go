@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/nats-io/nats.go"
 )
 
@@ -16,7 +16,7 @@ import (
 // and an address. The configuration groups outlive them and cannot be removed
 // while an instance still references one, so they wait for the platform stage.
 func RDSReapers(nc *nats.Conn) []Reaper {
-	svc := handlers_rds.NewNATSService(nc)
+	svc := rdsinstance.NewNATSService(nc)
 	return []Reaper{
 		&rdsInstanceReaper{svc: svc},
 		&rdsSubnetGroupReaper{svc: svc},
@@ -31,7 +31,7 @@ func RDSReapers(nc *nats.Conn) []Reaper {
 const rdsDefaultParameterGroupPrefix = "default."
 
 type rdsInstanceReaper struct {
-	svc *handlers_rds.NATSService
+	svc *rdsinstance.NATSService
 }
 
 func (r *rdsInstanceReaper) Kind() string { return "rds-instance" }
@@ -99,7 +99,7 @@ func isDeletionProtected(err error) bool {
 }
 
 type rdsSubnetGroupReaper struct {
-	svc *handlers_rds.NATSService
+	svc *rdsinstance.NATSService
 }
 
 func (r *rdsSubnetGroupReaper) Kind() string { return "rds-subnet-group" }
@@ -129,7 +129,7 @@ func (r *rdsSubnetGroupReaper) Delete(ctx context.Context, accountID string, res
 }
 
 type rdsParameterGroupReaper struct {
-	svc *handlers_rds.NATSService
+	svc *rdsinstance.NATSService
 }
 
 func (r *rdsParameterGroupReaper) Kind() string { return "rds-parameter-group" }

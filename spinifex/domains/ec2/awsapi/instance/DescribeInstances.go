@@ -14,8 +14,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
 
@@ -76,8 +76,8 @@ func WithFanoutTimeout(d time.Duration) DescribeOption {
 // "not found" as "not currently running/present" rather than a fault.
 // The customer-facing gateway action uses DescribeInstancesChecked instead,
 // which adds the InvalidInstanceID.NotFound assertion AWS callers expect.
-// Callers that must not act on a partial view at all (the quota reconcile)
-// use DescribeInstancesForReconcile.
+// Callers that must not act on a partial view at all use
+// DescribeAccountInstancesComplete.
 func DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string, opts ...DescribeOption) (*ec2.DescribeInstancesOutput, error) {
 	reservations, _, client4xx, err := gatherInstances(ctx, input, natsConn, expectedNodes, nil, accountID, opts...)
 	if err != nil {
@@ -163,18 +163,6 @@ func missingInstanceIDs(reservations []*ec2.Reservation, instanceIDs []*string) 
 		}
 	}
 	return missing
-}
-
-// DescribeInstancesForReconcile is the strict variant, for a caller that may act
-// only on a provably whole view. complete is true only when the sweep observed
-// every expected node and both instance buckets; a partial sweep — a node down,
-// a timed-out fan-out, or a failed bucket query — returns complete=false so the
-// caller can decline to act rather than act on a short count. The quota vCPU
-// sweep reads the instance record space instead of this; the retype gate is
-// what still calls it.
-func DescribeInstancesForReconcile(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (reservations []*ec2.Reservation, complete bool, err error) {
-	reservations, complete, _, err = gatherInstances(ctx, input, natsConn, expectedNodes, nil, accountID)
-	return reservations, complete, err
 }
 
 // DescribeAccountInstancesComplete lists the account's instances, or returns a
@@ -477,7 +465,7 @@ func judgeIdentityCompleteness(ctx context.Context, frames []natsmsg.Frame, sum 
 // that carries only an ARN. Results are cached per ARN to avoid repeated RPCs.
 // Misses are warn-logged and leave Id empty (graceful degradation for deleted profiles).
 // Safe to call with a nil output or nil IAMService (no-op).
-func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc handlers_iam.IAMService, accountID string) {
+func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc iamdomain.IAMService, accountID string) {
 	if out == nil || iamSvc == nil {
 		return
 	}

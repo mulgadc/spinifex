@@ -9,10 +9,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
-	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,19 +24,19 @@ import (
 func TestEKSRequest_InternalAddonsWireBody(t *testing.T) {
 	const cpInstanceID = "i-cp0000000000001"
 	_, nc, js := testutil.StartTestJetStream(t)
-	kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, authzAccountID)
+	kv, err := ekscluster.GetOrCreateAccountBucket(t.Context(), js, authzAccountID)
 	require.NoError(t, err)
-	require.NoError(t, handlers_eks.PutClusterMeta(t.Context(), kv, &handlers_eks.ClusterMeta{
+	require.NoError(t, ekscluster.PutClusterMeta(t.Context(), kv, &ekscluster.ClusterMeta{
 		Name:              "prod",
-		Status:            handlers_eks.ClusterStatusActive,
-		ControlPlaneNodes: []handlers_eks.ControlPlaneNode{{InstanceID: cpInstanceID}},
+		Status:            ekscluster.ClusterStatusActive,
+		ControlPlaneNodes: []ekscluster.ControlPlaneNode{{InstanceID: cpInstanceID}},
 	}))
 
-	svc, err := handlers_eks.NewEKSServiceImpl(handlers_eks.EKSServiceDeps{NATSConn: nc, Region: authzRegion})
+	svc, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Region: authzRegion})
 	require.NoError(t, err)
 	sub, err := nc.Subscribe("eks.ListStagedAddonManifests", func(m *nats.Msg) {
 		acct := natsmsg.AccountIDFromMsg(m)
-		natsmsg.ServeNATSRequestCtx(m, func(ctx context.Context, in *handlers_eks.ListStagedAddonManifestsInput) (*handlers_eks.ListStagedAddonManifestsOutput, error) {
+		natsmsg.ServeNATSRequestCtx(m, func(ctx context.Context, in *ekscluster.ListStagedAddonManifestsInput) (*ekscluster.ListStagedAddonManifestsOutput, error) {
 			return svc.ListStagedAddonManifests(ctx, in, acct)
 		})
 	})
@@ -65,9 +65,9 @@ func TestEKSRequest_InternalAddonsWireBody(t *testing.T) {
 	ctx = context.WithValue(ctx, ctxIdentity, cpInstanceID)
 	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeAssumedRole)
 	ctx = context.WithValue(ctx, ctxUnderlyingRoleARN,
-		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+handlers_eks.CPInstanceRoleName)
+		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+ekscluster.CPInstanceRoleName)
 	ctx = context.WithValue(ctx, ctxAssumedRoleARN,
-		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+handlers_eks.CPInstanceRoleName+"/"+cpInstanceID)
+		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+ekscluster.CPInstanceRoleName+"/"+cpInstanceID)
 	require.NoError(t, gw.EKS_Request(rec, req.WithContext(ctx)))
 
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -83,13 +83,13 @@ func TestEKSRequest_InternalAddonsWireBody(t *testing.T) {
 // role passes nothing.
 func TestPassedRoleARNs_AddonServiceAccountRoleIsChecked(t *testing.T) {
 	body := []byte(`{"addonName":"aws-load-balancer-controller","serviceAccountRoleArn":"arn:aws:iam::123456789012:role/alb"}`)
-	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/alb"}, gateway_eks.PassedRoleARNs("CreateAddon", body))
-	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/alb"}, gateway_eks.PassedRoleARNs("UpdateAddon", body))
+	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/alb"}, eksawsapi.PassedRoleARNs("CreateAddon", body))
+	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/alb"}, eksawsapi.PassedRoleARNs("UpdateAddon", body))
 
 	roleless := []byte(`{"addonName":"spinifex-noop"}`)
-	assert.Empty(t, gateway_eks.PassedRoleARNs("CreateAddon", roleless))
-	assert.Empty(t, gateway_eks.PassedRoleARNs("UpdateAddon", roleless))
+	assert.Empty(t, eksawsapi.PassedRoleARNs("CreateAddon", roleless))
+	assert.Empty(t, eksawsapi.PassedRoleARNs("UpdateAddon", roleless))
 
 	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/node"},
-		gateway_eks.PassedRoleARNs("CreateNodegroup", []byte(`{"nodeRole":"arn:aws:iam::123456789012:role/node"}`)))
+		eksawsapi.PassedRoleARNs("CreateNodegroup", []byte(`{"nodeRole":"arn:aws:iam::123456789012:role/node"}`)))
 }

@@ -172,36 +172,23 @@ func (s *Service) ChargeLaunch(ctx context.Context, accountID string, reservatio
 // static type without a NATS round trip.
 type InstanceTypeResolver func(accountID, instanceID string) (instanceType string, ok bool, err error)
 
-// NATSInstanceTypeResolver builds the production resolver: an account-filtered,
-// single-instance describe returning the live type of a running or stopped
-// instance. It uses the strict reconcile variant so an incomplete sweep does not
-// masquerade as "instance absent" and wave a retype past the cap (see
-// confirmInstanceType). expectedNodes is the configured node total, re-evaluated
-// per call so a config change is reflected without a restart.
-func NATSInstanceTypeResolver(natsConn *nats.Conn, expectedNodes func() int) InstanceTypeResolver {
+// NATSInstanceTypeResolver builds the production resolver from a node-identity
+// checked describe of the one instance. A found instance resolves even with a node
+// silent; an absence a silent node could hide is a retryable ServiceUnavailable.
+func NATSInstanceTypeResolver(natsConn *nats.Conn, nodeIDs func() []string) InstanceTypeResolver {
 	return func(accountID, instanceID string) (string, bool, error) {
-		reservations, complete, err := ec2instanceapi.DescribeInstancesForReconcile(
-			context.Background(), &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}},
-			natsConn, expectedNodes(), accountID)
+		out, err := ec2instanceapi.DescribeInstancesChecked(context.Background(),
+			&ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}},
+			natsConn, 0, nodeIDs(), accountID)
 		if err != nil {
+			if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorInvalidInstanceIDNotFound {
+				return "", false, nil
+			}
 			return "", false, err
 		}
-		return confirmInstanceType(reservations, instanceID, complete)
+		instanceType, ok := instanceTypeFromReservations(out.Reservations, instanceID)
+		return instanceType, ok, nil
 	}
-}
-
-// confirmInstanceType resolves instanceID's type from a describe sweep. A genuine
-// absence on a complete sweep returns ok false with no error, so the retype gate
-// charges nothing and the daemon rejects the modify. An instance that cannot be
-// found on an incomplete sweep (a node or bucket missed) fails closed with
-// ErrorServerInternal: a partial view must not be read as absent and let a retype
-// skip its cap check. The client retries once the sweep is clean.
-func confirmInstanceType(reservations []*ec2.Reservation, instanceID string, complete bool) (string, bool, error) {
-	instanceType, ok := instanceTypeFromReservations(reservations, instanceID)
-	if !ok && !complete {
-		return "", false, errors.New(awserrors.ErrorServerInternal)
-	}
-	return instanceType, ok, nil
 }
 
 // EnforceRetype is the check-before gate for a ModifyInstanceAttribute that

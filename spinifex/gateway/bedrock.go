@@ -10,8 +10,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
 // bedrockRoute maps one HTTP method + chi path pattern to an AWS action and handler.
@@ -24,57 +24,57 @@ type bedrockRoute = rest.Route[bedrockRouteHandler]
 // gw.bedrockAccessResolver(): the configured grant store, or a deny-all
 // fallback. provisioned is gw.bedrockProvisionedStore(). guardrails is
 // gw.bedrockGuardrailStore().
-type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver gateway_bedrock.CredentialResolver, loggingStore *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error)
+type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver ochre.CredentialResolver, loggingStore *ochre.LoggingConfigStore, access ochre.AccessResolver, provisioned *ochre.ProvisionedStore, guardrails *ochre.GuardrailStore) (any, error)
 
 // bedrockRoutes is the dispatch table. Order is presentational: the router
 // matches through a chi trie, which prefers a literal segment over a {param} one.
 var bedrockRoutes = []bedrockRoute{
 	{Method: "GET", Pattern: "/foundation-models", Action: "ListFoundationModels",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
-			return gateway_bedrock.ListFoundationModels(ctx, acct, resolver, access, new(bedrock.ListFoundationModelsInput))
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, resolver ochre.CredentialResolver, _ *ochre.LoggingConfigStore, access ochre.AccessResolver, _ *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
+			return ochre.ListFoundationModels(ctx, acct, resolver, access, new(bedrock.ListFoundationModelsInput))
 		}},
 	{Method: "GET", Pattern: "/foundation-models/{modelIdentifier}", Action: "GetFoundationModel",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, access gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
-			return gateway_bedrock.GetFoundationModel(ctx, acct, p[0], access)
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, access ochre.AccessResolver, _ *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
+			return ochre.GetFoundationModel(ctx, acct, p[0], access)
 		}},
 	{Method: "PUT", Pattern: "/logging/modelinvocations", Action: "PutModelInvocationLoggingConfiguration",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, store *ochre.LoggingConfigStore, _ ochre.AccessResolver, _ *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
 			input := new(bedrock.PutModelInvocationLoggingConfigurationInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
 					return nil, errors.New(awserrors.ErrorValidationException)
 				}
 			}
-			return gateway_bedrock.PutModelInvocationLoggingConfiguration(ctx, acct, store, input)
+			return ochre.PutModelInvocationLoggingConfiguration(ctx, acct, store, input)
 		}},
 	{Method: "GET", Pattern: "/logging/modelinvocations", Action: "GetModelInvocationLoggingConfiguration",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
-			return gateway_bedrock.GetModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.GetModelInvocationLoggingConfigurationInput))
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, store *ochre.LoggingConfigStore, _ ochre.AccessResolver, _ *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
+			return ochre.GetModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.GetModelInvocationLoggingConfigurationInput))
 		}},
 	{Method: "DELETE", Pattern: "/logging/modelinvocations", Action: "DeleteModelInvocationLoggingConfiguration",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, store *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
-			return gateway_bedrock.DeleteModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.DeleteModelInvocationLoggingConfigurationInput))
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, store *ochre.LoggingConfigStore, _ ochre.AccessResolver, _ *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
+			return ochre.DeleteModelInvocationLoggingConfiguration(ctx, acct, store, new(bedrock.DeleteModelInvocationLoggingConfigurationInput))
 		}},
 	{Method: "POST", Pattern: "/provisioned-model-throughput", Action: "CreateProvisionedModelThroughput",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, provisioned *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
 			input := new(bedrock.CreateProvisionedModelThroughputInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
 					return nil, errors.New(awserrors.ErrorValidationException)
 				}
 			}
-			return gateway_bedrock.CreateProvisionedModelThroughput(ctx, acct, provisioned, input)
+			return ochre.CreateProvisionedModelThroughput(ctx, acct, provisioned, input)
 		}},
 	{Method: "GET", Pattern: "/provisioned-model-throughput/{provisionedModelId}", Action: "GetProvisionedModelThroughput",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
-			return gateway_bedrock.GetProvisionedModelThroughput(ctx, acct, provisioned, &bedrock.GetProvisionedModelThroughputInput{ProvisionedModelId: aws.String(p[0])})
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, provisioned *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
+			return ochre.GetProvisionedModelThroughput(ctx, acct, provisioned, &bedrock.GetProvisionedModelThroughputInput{ProvisionedModelId: aws.String(p[0])})
 		}},
 	{Method: "GET", Pattern: "/provisioned-model-throughputs", Action: "ListProvisionedModelThroughputs",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
-			return gateway_bedrock.ListProvisionedModelThroughputs(ctx, acct, provisioned, new(bedrock.ListProvisionedModelThroughputsInput))
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, provisioned *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
+			return ochre.ListProvisionedModelThroughputs(ctx, acct, provisioned, new(bedrock.ListProvisionedModelThroughputsInput))
 		}},
 	{Method: "PATCH", Pattern: "/provisioned-model-throughput/{provisionedModelId}", Action: "UpdateProvisionedModelThroughput",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, provisioned *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
 			input := new(bedrock.UpdateProvisionedModelThroughputInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -82,24 +82,24 @@ var bedrockRoutes = []bedrockRoute{
 				}
 			}
 			input.ProvisionedModelId = aws.String(p[0])
-			return gateway_bedrock.UpdateProvisionedModelThroughput(ctx, acct, provisioned, input)
+			return ochre.UpdateProvisionedModelThroughput(ctx, acct, provisioned, input)
 		}},
 	{Method: "DELETE", Pattern: "/provisioned-model-throughput/{provisionedModelId}", Action: "DeleteProvisionedModelThroughput",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, _ *gateway_bedrock.GuardrailStore) (any, error) {
-			return gateway_bedrock.DeleteProvisionedModelThroughput(ctx, acct, provisioned, &bedrock.DeleteProvisionedModelThroughputInput{ProvisionedModelId: aws.String(p[0])})
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, provisioned *ochre.ProvisionedStore, _ *ochre.GuardrailStore) (any, error) {
+			return ochre.DeleteProvisionedModelThroughput(ctx, acct, provisioned, &bedrock.DeleteProvisionedModelThroughputInput{ProvisionedModelId: aws.String(p[0])})
 		}},
 	{Method: "POST", Pattern: "/guardrails", Action: "CreateGuardrail",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, _ *ochre.ProvisionedStore, guardrails *ochre.GuardrailStore) (any, error) {
 			input := new(bedrock.CreateGuardrailInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
 					return nil, errors.New(awserrors.ErrorValidationException)
 				}
 			}
-			return gateway_bedrock.CreateGuardrail(ctx, acct, guardrails, input)
+			return ochre.CreateGuardrail(ctx, acct, guardrails, input)
 		}},
 	{Method: "GET", Pattern: "/guardrails/{guardrailIdentifier}", Action: "GetGuardrail",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, _ *ochre.ProvisionedStore, guardrails *ochre.GuardrailStore) (any, error) {
 			input := new(bedrock.GetGuardrailInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -107,14 +107,14 @@ var bedrockRoutes = []bedrockRoute{
 				}
 			}
 			input.GuardrailIdentifier = aws.String(p[0])
-			return gateway_bedrock.GetGuardrail(ctx, acct, guardrails, input)
+			return ochre.GetGuardrail(ctx, acct, guardrails, input)
 		}},
 	{Method: "GET", Pattern: "/guardrails", Action: "ListGuardrails",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
-			return gateway_bedrock.ListGuardrails(ctx, acct, guardrails, new(bedrock.ListGuardrailsInput))
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, _ *ochre.ProvisionedStore, guardrails *ochre.GuardrailStore) (any, error) {
+			return ochre.ListGuardrails(ctx, acct, guardrails, new(bedrock.ListGuardrailsInput))
 		}},
 	{Method: "PUT", Pattern: "/guardrails/{guardrailIdentifier}", Action: "UpdateGuardrail",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, _ *ochre.ProvisionedStore, guardrails *ochre.GuardrailStore) (any, error) {
 			input := new(bedrock.UpdateGuardrailInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -122,10 +122,10 @@ var bedrockRoutes = []bedrockRoute{
 				}
 			}
 			input.GuardrailIdentifier = aws.String(p[0])
-			return gateway_bedrock.UpdateGuardrail(ctx, acct, guardrails, input)
+			return ochre.UpdateGuardrail(ctx, acct, guardrails, input)
 		}},
 	{Method: "DELETE", Pattern: "/guardrails/{guardrailIdentifier}", Action: "DeleteGuardrail",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, _ *ochre.ProvisionedStore, guardrails *ochre.GuardrailStore) (any, error) {
 			input := new(bedrock.DeleteGuardrailInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -133,10 +133,10 @@ var bedrockRoutes = []bedrockRoute{
 				}
 			}
 			input.GuardrailIdentifier = aws.String(p[0])
-			return gateway_bedrock.DeleteGuardrail(ctx, acct, guardrails, input)
+			return ochre.DeleteGuardrail(ctx, acct, guardrails, input)
 		}},
 	{Method: "POST", Pattern: "/guardrails/{guardrailIdentifier}", Action: "CreateGuardrailVersion",
-		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ *gateway_bedrock.LoggingConfigStore, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore) (any, error) {
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ ochre.CredentialResolver, _ *ochre.LoggingConfigStore, _ ochre.AccessResolver, _ *ochre.ProvisionedStore, guardrails *ochre.GuardrailStore) (any, error) {
 			input := new(bedrock.CreateGuardrailVersionInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -144,7 +144,7 @@ var bedrockRoutes = []bedrockRoute{
 				}
 			}
 			input.GuardrailIdentifier = aws.String(p[0])
-			return gateway_bedrock.CreateGuardrailVersion(ctx, acct, guardrails, input)
+			return ochre.CreateGuardrailVersion(ctx, acct, guardrails, input)
 		}},
 }
 
@@ -197,7 +197,7 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 
 	// After the body read and the query fold: CreateProvisionedModelThroughput
 	// names the foundation model it commits there rather than in the path.
-	resources, err := gateway_bedrock.ResourceARNs("bedrock", action, gw.Region, accountID, params, body)
+	resources, err := ochre.ResourceARNs("bedrock", action, gw.Region, accountID, params, body)
 	if err != nil {
 		return err
 	}
@@ -214,17 +214,17 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 		return err
 	}
 
-	gateway_bedrock.WriteJSONResponse(w, output)
+	ochre.WriteJSONResponse(w, output)
 	return nil
 }
 
 // bedrockResolver returns gw.BedrockCredentials as a CredentialResolver, or
 // the no-op fallback when no credential store is configured.
-func (gw *GatewayConfig) bedrockResolver() gateway_bedrock.CredentialResolver {
+func (gw *GatewayConfig) bedrockResolver() ochre.CredentialResolver {
 	if gw.BedrockCredentials != nil {
 		return gw.BedrockCredentials
 	}
-	return gateway_bedrock.NoopCredentialResolver
+	return ochre.NoopCredentialResolver
 }
 
 // bedrockLoggingConfigStore returns gw.BedrockLoggingConfig, or a store
@@ -232,20 +232,20 @@ func (gw *GatewayConfig) bedrockResolver() gateway_bedrock.CredentialResolver {
 // with an error (no JetStream to open a KV bucket against) rather than
 // panicking, which is acceptable for unit tests of unrelated routes that
 // never reach a logging-config handler.
-func (gw *GatewayConfig) bedrockLoggingConfigStore() *gateway_bedrock.LoggingConfigStore {
+func (gw *GatewayConfig) bedrockLoggingConfigStore() *ochre.LoggingConfigStore {
 	if gw.BedrockLoggingConfig != nil {
 		return gw.BedrockLoggingConfig
 	}
-	return gateway_bedrock.NewLoggingConfigStore(nil)
+	return ochre.NewLoggingConfigStore(nil)
 }
 
 // bedrockRecorder returns gw.BedrockRecorder, or the no-op fallback when no
 // invocation recorder is configured.
-func (gw *GatewayConfig) bedrockRecorder() gateway_bedrock.Recorder {
+func (gw *GatewayConfig) bedrockRecorder() ochre.Recorder {
 	if gw.BedrockRecorder != nil {
 		return gw.BedrockRecorder
 	}
-	return gateway_bedrock.NoopRecorder
+	return ochre.NoopRecorder
 }
 
 // bedrockAccessResolver returns gw.BedrockAccess wrapped so a staged
@@ -254,11 +254,11 @@ func (gw *GatewayConfig) bedrockRecorder() gateway_bedrock.Recorder {
 // deny-by-default, so an unconfigured gateway advertises and serves no models
 // rather than all of them; staged-open behaviour requires the access
 // subsystem to be present, so the fallback stays unwrapped.
-func (gw *GatewayConfig) bedrockAccessResolver() gateway_bedrock.AccessResolver {
+func (gw *GatewayConfig) bedrockAccessResolver() ochre.AccessResolver {
 	if gw.BedrockAccess != nil {
-		return gateway_bedrock.NewStagedOpenAccessResolver(gw.BedrockAccess)
+		return ochre.NewStagedOpenAccessResolver(gw.BedrockAccess)
 	}
-	return gateway_bedrock.DenyAllAccessResolver
+	return ochre.DenyAllAccessResolver
 }
 
 // bedrockProvisionedStore returns gw.BedrockProvisioned, or a store backed by
@@ -266,11 +266,11 @@ func (gw *GatewayConfig) bedrockAccessResolver() gateway_bedrock.AccessResolver 
 // (no JetStream to open a KV bucket against) rather than panicking, which is
 // acceptable for unit tests of unrelated routes that never reach a
 // provisioned-throughput handler.
-func (gw *GatewayConfig) bedrockProvisionedStore() *gateway_bedrock.ProvisionedStore {
+func (gw *GatewayConfig) bedrockProvisionedStore() *ochre.ProvisionedStore {
 	if gw.BedrockProvisioned != nil {
 		return gw.BedrockProvisioned
 	}
-	return gateway_bedrock.NewProvisionedStore(nil, gw.Region, nil)
+	return ochre.NewProvisionedStore(nil, gw.Region, nil)
 }
 
 // bedrockGuardrailStore returns gw.BedrockGuardrails, or a store backed by no
@@ -278,27 +278,27 @@ func (gw *GatewayConfig) bedrockProvisionedStore() *gateway_bedrock.ProvisionedS
 // (no JetStream to open a KV bucket against) rather than panicking, which is
 // acceptable for unit tests of unrelated routes that never reach a guardrail
 // handler.
-func (gw *GatewayConfig) bedrockGuardrailStore() *gateway_bedrock.GuardrailStore {
+func (gw *GatewayConfig) bedrockGuardrailStore() *ochre.GuardrailStore {
 	if gw.BedrockGuardrails != nil {
 		return gw.BedrockGuardrails
 	}
-	return gateway_bedrock.NewGuardrailStore(nil, gw.Region)
+	return ochre.NewGuardrailStore(nil, gw.Region)
 }
 
 // bedrockEndpointResolver returns the registry-backed resolver when one is
 // configured, which resolves gw.BedrockEndpoints ahead of the registry itself.
 // Without it only the pinned endpoints resolve, so a model that was never
 // pinned returns ModelNotReady rather than launching.
-func (gw *GatewayConfig) bedrockEndpointResolver() gateway_bedrock.EndpointResolver {
+func (gw *GatewayConfig) bedrockEndpointResolver() ochre.EndpointResolver {
 	if gw.BedrockEndpointResolver != nil {
 		return gw.BedrockEndpointResolver
 	}
-	return gateway_bedrock.NewStaticEndpointResolver(gw.BedrockEndpoints)
+	return ochre.NewStaticEndpointResolver(gw.BedrockEndpoints)
 }
 
 // bedrockEmbedder returns gw.BedrockEmbedder, or nil when unconfigured. A nil
-// Embedder is a valid value throughout gateway_bedrock's guardrail engine:
+// Embedder is a valid value throughout ochre's guardrail engine:
 // it simply falls back to topicPolicy's literal matcher.
-func (gw *GatewayConfig) bedrockEmbedder() gateway_bedrock.Embedder {
+func (gw *GatewayConfig) bedrockEmbedder() ochre.Embedder {
 	return gw.BedrockEmbedder
 }

@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -176,7 +176,7 @@ func deleteSigningKey(ctx context.Context, kv jetstream.KeyValue, kid string) er
 // decodeSigningKey decrypts and parses one stored signing key's encrypted PKCS#8
 // PEM bytes into a SigningKey under kid.
 func decodeSigningKey(kid string, ciphertext []byte, masterKey []byte) (*SigningKey, error) {
-	pemStr, err := handlers_iam.DecryptSecret(string(ciphertext), masterKey)
+	pemStr, err := iamdomain.DecryptSecret(string(ciphertext), masterKey)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt signing key %s: %w", kid, err)
 	}
@@ -203,7 +203,7 @@ func generateSigningKey(ctx context.Context, kv jetstream.KeyValue, masterKey []
 		return nil, fmt.Errorf("marshal pkcs8 private key: %w", err)
 	}
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})
-	ciphertext, err := handlers_iam.EncryptSecret(string(pemBytes), masterKey)
+	ciphertext, err := iamdomain.EncryptSecret(string(pemBytes), masterKey)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt signing key: %w", err)
 	}

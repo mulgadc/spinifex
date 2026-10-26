@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // How long the engine is given to come up after a boot before the installed
@@ -66,10 +66,10 @@ func (g *paramGuard) Run(ctx context.Context) {
 		return
 	}
 
-	message := handlers_rds.ParameterRollbackMessage
+	message := rdsinstance.ParameterRollbackMessage
 	slog.Error("rds-agent: "+message, "after_ms", otelsetup.Millis(g.after))
 	if g.cp != nil {
-		if _, err := g.cp.SubmitState(ctx, g.id, handlers_rds.EngineHealthUnhealthy, message); err != nil {
+		if _, err := g.cp.SubmitState(ctx, g.id, rdsinstance.EngineHealthUnhealthy, message); err != nil {
 			slog.Error("rds-agent: reporting the parameter rollback failed", "err", err)
 		}
 	}

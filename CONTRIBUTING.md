@@ -61,7 +61,7 @@ sudo apt-get install -y shellcheck
 curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
 ```
 
-The web console additionally needs Node.js 24 and `pnpm`.
+The web console additionally needs `pnpm` and the Node.js version pinned in `spinifex/runtime/roles/spinifexui/frontend/.nvmrc`.
 
 ## Development Workflow
 

@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 const (
@@ -31,7 +31,7 @@ type heartbeater struct {
 
 func newHeartbeater(cp controlPlane, probe *engineProbe, recorder servingParameterRecorder, interval time.Duration) *heartbeater {
 	if interval <= 0 {
-		interval = handlers_rds.HeartbeatInterval
+		interval = rdsinstance.HeartbeatInterval
 	}
 	return &heartbeater{cp: cp, probe: probe, recorder: recorder, interval: interval}
 }
@@ -68,7 +68,7 @@ func (h *heartbeater) beat(ctx context.Context) {
 		}
 		message += *failure
 	}
-	if health == handlers_rds.EngineHealthHealthy && h.recorder != nil {
+	if health == rdsinstance.EngineHealthHealthy && h.recorder != nil {
 		// Checking every healthy beat also observes a restart that completed
 		// between probes. The recorder skips unchanged and pending-restart sets.
 		recordCtx, cancel := context.WithTimeout(ctx, servingParameterRecordTimeout)

@@ -14,9 +14,9 @@ import (
 
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -27,17 +27,17 @@ const testClientToken = "0123456789abcdef0123456789abcdef"
 
 // capMockIAMService reports a fixed account count for the cap check.
 type capMockIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	accounts int
 	err      error
 }
 
-func (m *capMockIAMService) ListAccounts() ([]*handlers_iam.Account, error) {
+func (m *capMockIAMService) ListAccounts() ([]*iamdomain.Account, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return make([]*handlers_iam.Account, m.accounts), nil
+	return make([]*iamdomain.Account, m.accounts), nil
 }
 
 func TestValidateCreateAccountRequest(t *testing.T) {
@@ -239,9 +239,9 @@ func newCreateAccountGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
+	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
 	sub, err := nc.Subscribe(ec2v1.EnsureDefaultVpcSubject, func(msg *nats.Msg) {
@@ -276,7 +276,7 @@ func TestAdminCreateAccountProvisionsAndReplays(t *testing.T) {
 
 	assert.NotEmpty(t, created.AccountID)
 	assert.Equal(t, "ben@example.com", created.AccountName)
-	assert.Equal(t, handlers_iam.AdminUserName, created.AdminUser)
+	assert.Equal(t, iamdomain.AdminUserName, created.AdminUser)
 	assert.NotEmpty(t, created.AccessKeyID)
 	assert.NotEmpty(t, created.SecretAccessKey)
 	assert.Equal(t, "vpc-0a1b2c3d", created.DefaultVpcID)

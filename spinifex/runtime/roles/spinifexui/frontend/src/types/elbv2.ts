@@ -67,7 +67,7 @@ export type TargetGroupProtocol = CreateTargetGroupFormData["protocol"]
 export const DEFAULT_SSL_POLICY = "ELBSecurityPolicy-2016-08"
 
 // Load balancer types and the listener protocols each supports, mirroring the
-// server's validation (handlers/elbv2/service_impl.go): ALBs speak HTTP/HTTPS,
+// server's validation (domains/elbv2/service_impl.go): ALBs speak HTTP/HTTPS,
 // NLBs speak TCP/UDP/TLS/TCP_UDP.
 export const LB_TYPES = ["application", "network"] as const
 

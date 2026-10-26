@@ -24,8 +24,8 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
@@ -1108,7 +1108,7 @@ func TestCheckPolicy_FailsClosed(t *testing.T) {
 // resolved from storage. STS opts into detailed wording at its dispatcher.
 func TestCheckPolicyResources_DenialIsOpaque(t *testing.T) {
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, nil
 		},
 	}
@@ -1175,12 +1175,12 @@ func TestCheckPolicy_AssumedRoleSessionNamedRoot(t *testing.T) {
 
 func TestCheckPolicy_NonRootAllowPolicy(t *testing.T) {
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-			return []handlers_iam.PolicyDocument{
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+			return []iamdomain.PolicyDocument{
 				{
 					Version: "2012-10-17",
-					Statement: []handlers_iam.Statement{
-						{Effect: "Allow", Action: handlers_iam.StringOrArr{"ec2:*"}, Resource: handlers_iam.StringOrArr{"*"}},
+					Statement: []iamdomain.Statement{
+						{Effect: "Allow", Action: iamdomain.StringOrArr{"ec2:*"}, Resource: iamdomain.StringOrArr{"*"}},
 					},
 				},
 			}, nil
@@ -1199,12 +1199,12 @@ func TestCheckPolicy_NonRootAllowPolicy(t *testing.T) {
 
 func TestCheckPolicy_NonRootDenyPolicy(t *testing.T) {
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-			return []handlers_iam.PolicyDocument{
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+			return []iamdomain.PolicyDocument{
 				{
 					Version: "2012-10-17",
-					Statement: []handlers_iam.Statement{
-						{Effect: "Deny", Action: handlers_iam.StringOrArr{"ec2:*"}, Resource: handlers_iam.StringOrArr{"*"}},
+					Statement: []iamdomain.Statement{
+						{Effect: "Deny", Action: iamdomain.StringOrArr{"ec2:*"}, Resource: iamdomain.StringOrArr{"*"}},
 					},
 				},
 			}, nil
@@ -1224,7 +1224,7 @@ func TestCheckPolicy_NonRootDenyPolicy(t *testing.T) {
 
 func TestCheckPolicy_NonRootNoPolicies(t *testing.T) {
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, nil
 		},
 	}
@@ -1242,7 +1242,7 @@ func TestCheckPolicy_NonRootNoPolicies(t *testing.T) {
 
 func TestCheckPolicy_GetUserPoliciesError(t *testing.T) {
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, errors.New("db connection failed")
 		},
 	}
@@ -1283,7 +1283,7 @@ func TestCheckPolicy_NATSTransientRetriesAllAttempts(t *testing.T) {
 	shortenPolicyResolveRetry(t)
 	calls := 0
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			calls++
 			return nil, fmt.Errorf("get user: %w", nats.ErrNoResponders)
 		},
@@ -1305,16 +1305,16 @@ func TestCheckPolicy_NATSTransientRetriesThenSucceeds(t *testing.T) {
 	shortenPolicyResolveRetry(t)
 	calls := 0
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			calls++
 			if calls < 3 {
 				return nil, fmt.Errorf("get user: %w", nats.ErrNoResponders)
 			}
-			return []handlers_iam.PolicyDocument{
+			return []iamdomain.PolicyDocument{
 				{
 					Version: "2012-10-17",
-					Statement: []handlers_iam.Statement{
-						{Effect: "Allow", Action: handlers_iam.StringOrArr{"ec2:*"}, Resource: handlers_iam.StringOrArr{"*"}},
+					Statement: []iamdomain.Statement{
+						{Effect: "Allow", Action: iamdomain.StringOrArr{"ec2:*"}, Resource: iamdomain.StringOrArr{"*"}},
 					},
 				},
 			}, nil
@@ -1334,7 +1334,7 @@ func TestCheckPolicy_NATSTransientRetriesThenSucceeds(t *testing.T) {
 
 func TestCheckPolicy_NonTransientErrorStillFails(t *testing.T) {
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, errors.New("database corruption")
 		},
 	}

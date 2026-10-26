@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 )
 
 const (
@@ -23,18 +23,18 @@ func seedDiscoveryCluster(t *testing.T) http.Handler {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, testDiscAccount)
+	kv, err := ekscluster.GetOrCreateAccountBucket(t.Context(), js, testDiscAccount)
 	if err != nil {
 		t.Fatalf("account bucket: %v", err)
 	}
-	if err := handlers_eks.PutClusterMeta(t.Context(), kv, &handlers_eks.ClusterMeta{
+	if err := ekscluster.PutClusterMeta(t.Context(), kv, &ekscluster.ClusterMeta{
 		Name:       testDiscCluster,
-		Status:     handlers_eks.ClusterStatusActive,
+		Status:     ekscluster.ClusterStatusActive,
 		OIDCIssuer: testDiscIssuer,
 	}); err != nil {
 		t.Fatalf("put cluster meta: %v", err)
 	}
-	if _, err := kv.Put(t.Context(), handlers_eks.OIDCJWKSKey(testDiscCluster), []byte(`{"keys":[{"kty":"EC","kid":"abc"}]}`)); err != nil {
+	if _, err := kv.Put(t.Context(), ekscluster.OIDCJWKSKey(testDiscCluster), []byte(`{"keys":[{"kty":"EC","kid":"abc"}]}`)); err != nil {
 		t.Fatalf("put jwks: %v", err)
 	}
 

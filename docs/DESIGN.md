@@ -50,14 +50,12 @@ Request routing (`spinifex/gateway/gateway.go`):
 1. **Authentication**: SigV4 middleware validates AWS credentials and resolves the account ID
 2. **Throttling**: Per-account+action token bucket rejects bursts post-auth
 3. **Service Detection**: Extracts service name from the Authorization header
-4. **Action Dispatch**: Routes to service-specific handler. A service registered through the ingress dispatch registry (`ingress/aws/dispatch`, wired by `runtime/roles/awsgw`) is dispatched by its registration; currently that is ECR's control plane, registered from `domains/ecr/awsapi`. Every other service uses the legacy switch:
+4. **Action Dispatch**: Routes to service-specific handler. A service registered through the ingress dispatch registry (`ingress/aws/dispatch`, wired by `runtime/roles/awsgw`) is dispatched by its registration; currently those are the ECR and ACM control planes, registered from `domains/ecr/awsapi` and `domains/acm/awsapi`. Every other service uses the legacy switch:
 
 ```go
 switch svc {
 case "ec2":
     err = gw.EC2_Request(w, r)
-case "account":
-    err = gw.Account_Request(w, r)
 case "iam":
     err = gw.IAM_Request(w, r)
 case "sts":
@@ -66,10 +64,13 @@ case "elasticloadbalancing":
     err = gw.ELBv2_Request(w, r)
 case "eks":
     err = gw.EKS_Request(w, r)
+case "bedrock":
+    err = gw.Bedrock_Request(w, r)
+// ... bedrock-runtime, bedrock-agent, bedrock-agent-runtime
 case "ecs":
     err = gw.ECS_Request(w, r)
-case "acm":
-    err = gw.ACM_Request(w, r)
+case "rds":
+    err = gw.RDS_Request(w, r)
 case "tagging":
     err = gw.Tagging_Request(w, r)
 case "spinifex":
@@ -79,14 +80,15 @@ case "spinifex":
 
 ### 3. EC2 Handler
 
-The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and delegates to specific handlers via a generic `ec2Handler` wrapper. The account ID resolved by SigV4 auth is threaded into every handler so requests are scoped per IAM principal:
+The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and delegates to specific handlers via the generic `ec2Handler` and `ec2HandlerWithReq` wrappers. The account ID resolved by SigV4 auth is threaded into every handler so requests are scoped per IAM principal:
 
 ```go
-"RunInstances": ec2Handler(func(input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-    return ec2instanceapi.RunInstances(input, gw.NATSConn, accountID)
+"RunInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
+    // ... PassRole and launch-quota checks, then the vCPU quota charge
+    return ec2instanceapi.RunInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, launchQuotaCheck, gw.ExpectedNodes)
 }),
-"DescribeInstances": ec2Handler(func(input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-    return ec2instanceapi.DescribeInstances(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
+"DescribeInstances": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
+    return ec2instanceapi.DescribeInstancesChecked(ctx, input, gw.NATSConn, 0, gw.NodeIDs, accountID)
 }),
 // ... + volumes, snapshots, VPCs, subnets, route tables, IGWs, NAT gateways,
 // security groups, network interfaces, elastic IPs, placement groups, key pairs,
@@ -98,13 +100,13 @@ The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and de
 The gateway communicates with daemons via NATS request/response. Most calls go through `natsmsg.NATSRequest`, which marshals the input, attaches the account ID as a NATS header, and unmarshals the typed response:
 
 ```go
-func (s *NATSInstanceService) RunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
+func (s *NATSInstanceService) RunInstances(ctx context.Context, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
     topic := fmt.Sprintf("ec2.RunInstances.%s", aws.StringValue(input.InstanceType))
-    return natsmsg.NATSRequest[ec2.Reservation](s.natsConn, topic, input, 5*time.Minute, accountID)
+    return natsmsg.NATSRequest[ec2.Reservation](ctx, s.natsConn, topic, input, 5*time.Minute, accountID)
 }
 ```
 
-`RunInstances` uses a per-instance-type subject so NATS only delivers the request to a node with spare capacity for that type — no application-level reject-and-retry.
+The gateway's `RunInstances` places instances itself (`domains/ec2/awsapi/instance/placement.go`): it gathers capacity from every node on `spinifex.node.status`, spreads the launch across eligible nodes, and sends each node its share on the node-targeted subject `ec2.RunInstances.{type}.{nodeId}`, rolling back on partial failure.
 
 ### Cross-Process Contract Ownership
 
@@ -124,14 +126,14 @@ refactor. It needs a versioned successor or an explicit compatibility plan.
 
 ### 5. Daemon Processing
 
-Daemons (`spinifex/daemon/daemon.go`) subscribe to NATS topics and handle requests. A table-driven `subscribeAll()` registers the static EC2/ELBv2 surface at startup:
+Daemons (`spinifex/runtime/daemon/daemon.go`) subscribe to NATS topics and handle requests. A table-driven `subscribeAll()` registers the static EC2/ELBv2 surface at startup:
 
 ```go
 // Queue group → load-balanced (one daemon handles each request)
-{"ec2.CreateKeyPair", d.handleEC2CreateKeyPair, "spinifex-workers"},
+{"ec2.CreateKeyPair", handleNATSRequest(d.node, d.keyService.CreateKeyPair), "spinifex-workers"},
 
 // No queue group → fan-out (every daemon responds)
-{"ec2.DescribeInstanceTypes", d.handleEC2DescribeInstanceTypes, ""},
+{"ec2.DescribeInstanceTypes", handleNATSRequest(d.node, d.instanceService.DescribeInstanceTypes), ""},
 ```
 
 `ec2.RunInstances` is dynamic: `ResourceManager` subscribes to `ec2.RunInstances.{type}` only while the node has capacity for that type, and unsubscribes when full. The node-targeted subject `ec2.RunInstances.{type}.{nodeId}` stays subscribed even at full capacity — the launch-time `allocate()` enforces limits there. Per-instance commands flow over `ec2.cmd.{instanceID}`, subscribed only by the owning node.
@@ -144,20 +146,17 @@ When a daemon handles `RunInstances`:
 
 1. **Resource Check**: Validates CPU/memory availability via `ResourceManager`
 2. **Volume Generation**: Creates boot and EFI volumes via Viperblock
-3. **Volume Mount**: Sends `ebs.mount` request to Viperblock, receives NBD URI
+3. **Volume Mount**: Sends a mount request to the colocated Viperblock worker on `ebs.{node}.mount`, receives NBD URI
 4. **QEMU Launch**: Builds and executes QEMU command with NBD-backed disks
 5. **QMP Monitoring**: Establishes QEMU Machine Protocol connection for VM management
 6. **Command subscription**: Subscribes to `ec2.cmd.{instanceID}` for subsequent commands on this VM
 
 ```go
-// Volume mounting via NATS
-msg, err := d.natsConn.Request("ebs.mount", ebsMountRequest, 10*time.Second)
+// Volume mounting via NATS (runtime/daemon/vm_adapters.go)
+reply, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, viperblocklegacyv1.MountSubject(a.node), ebsMountRequest, 30*time.Second)
 
-// QEMU launch with NBD storage
-cmd := exec.Command("qemu-system-x86_64",
-    "-drive", fmt.Sprintf("file=nbd:%s,format=raw", nbdURI),
-    // ... additional QEMU args
-)
+// QEMU launch with NBD-backed drives in args (runtime/compute/vm/vm.go)
+cmd := exec.Command(qemuArchitecture, args...) // qemu-system-x86_64 or qemu-system-aarch64
 ```
 
 ## Key Components
@@ -199,32 +198,16 @@ type ResourceManager struct {
 
 ### Multi-Node Aggregation
 
-For operations that need data from all nodes (like `DescribeInstances`), the gateway uses inbox-based fan-out (`spinifex/domains/ec2/awsapi/instance/DescribeInstances.go`):
+For operations that need data from all nodes (like `DescribeInstances`), the gateway uses the scatter-gather helper `natsmsg.Gather` (`spinifex/foundation/messaging/nats/nats.go`), called from `spinifex/domains/ec2/awsapi/instance/DescribeInstances.go`:
 
 ```go
-func DescribeInstances(...) {
-    // Create unique inbox for collecting responses
-    inbox := nats.NewInbox()
-    sub, _ := natsConn.SubscribeSync(inbox)
-
-    // Publish to all nodes (no queue group = all daemons respond).
-    // Account ID is propagated as a NATS header so each daemon scopes its response.
-    pubMsg := nats.NewMsg("ec2.DescribeInstances")
-    pubMsg.Reply = inbox
-    pubMsg.Data = jsonData
-    pubMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
-    _ = natsConn.PublishMsg(pubMsg)
-
-    // Collect responses, returning early once expectedNodes have replied
-    // or the 3s timeout is hit.
-    for {
-        msg, err := sub.NextMsg(3 * time.Second)
-        allReservations = append(allReservations, nodeOutput.Reservations...)
-    }
-
-    return allReservations
-}
+// Publish to every node (no queue group = all daemons respond) and collect
+// the replies. The account ID travels as a NATS header so each daemon scopes
+// its response.
+frames, sum, err := natsmsg.Gather(ctx, natsConn, "ec2.DescribeInstances", jsonData, gatherOpts)
 ```
+
+Given the configured node IDs, `Gather` checks each reply's `X-Node-ID` header against them, and `DescribeInstancesChecked` fails closed rather than returning a partial listing when a node is missing, duplicated or unidentified.
 
 ## Storage Integration
 
@@ -240,6 +223,7 @@ type EBSRequest struct {
     Boot      bool    // Boot volume flag
     EFI       bool    // EFI boot volume
     NBDURI    string  // NBD URI returned from mount
+    // ... + DeviceName, DeleteOnTermination, hotplug port and host block-device fields
 }
 ```
 
@@ -298,6 +282,7 @@ type Config struct {
     Predastore PredastoreConfig // S3 endpoint + service credentials
     Viperblock ViperblockConfig
     VPCD       VPCDConfig       // OVN/OVS endpoints
+    // ... + EBS, Northstar, RDS, ACM, Bedrock, OchreVector
 }
 ```
 
@@ -320,15 +305,13 @@ spinifex/
 │   ├── ingress/             # AWS protocol ingress: query/REST parsing, dispatch registry, rate limiting
 │   ├── runtime/
 │   │   ├── roles/           # Long-running service roles (awsgw, spinifex, vpcd, nats, predastore, ...)
+│   │   ├── daemon/          # Per-node daemon and its NATS subscription table
 │   │   └── compute/         # VM lifecycle, QMP, NBD, GPU
 │   ├── bootstrap/           # Cluster and node configuration structures, preflight checks
 │   ├── operator/            # spx CLI commands, admin use cases, installer, upgrade
-│   ├── agents/              # In-guest agent libraries (ecs, eks, rds)
+│   ├── agents/              # In-guest agent libraries (ecs, eks, elbv2, rds)
 │   ├── gateway/             # Legacy root: HTTP route assembly, SigV4 auth, legacy per-service dispatch
-│   ├── handlers/            # Legacy root: ecs, eks, elbv2, iam, rds, sts service implementations
-│   ├── daemon/              # Legacy root: per-node daemon and its NATS subscription table
-│   ├── accountteardown/     # Legacy root: account deletion cleanup
-│   └── lbagent/             # Legacy root: load-balancer agent
+│   └── accountteardown/     # Legacy root: account deletion cleanup
 ├── internal/                # In-guest SigV4 clients, AWS Smithy models and test kits
 ├── architecture/            # Executable architecture rules (package layering)
 ├── build/                   # systemd units, node helper scripts, microVM build
@@ -338,7 +321,7 @@ spinifex/
     └── e2e/                 # Live-cluster suites (see docs/testing/e2e-coverage.md)
 ```
 
-The five legacy roots predate ADR-0001 and are frozen: they may shrink but not gain packages.
+The two remaining legacy roots predate ADR-0001 and are frozen: they may shrink but not gain packages.
 [`PACKAGE_BOUNDARY_MIGRATION.md`](PACKAGE_BOUNDARY_MIGRATION.md) records what remains in each and what blocks its move.
 
 ## Development

@@ -1,0 +1,42 @@
+package awsapi
+
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go/service/elbv2"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
+)
+
+// ValidateDescribeRulesInput rejects a nil input with InvalidParameterValue and returns
+// MissingParameter when neither ListenerArn nor RuleArns is given.
+func ValidateDescribeRulesInput(input *elbv2.DescribeRulesInput) error {
+	if input == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	hasListener := input.ListenerArn != nil && *input.ListenerArn != ""
+	hasRules := len(input.RuleArns) > 0
+	if !hasListener && !hasRules {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	return nil
+}
+
+// DescribeRules handles the ELBv2 DescribeRules API call.
+func DescribeRules(ctx context.Context, input *elbv2.DescribeRulesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeRulesOutput, error) {
+	var output elbv2.DescribeRulesOutput
+
+	if err := ValidateDescribeRulesInput(input); err != nil {
+		return output, err
+	}
+
+	svc := elbv2domain.NewNATSELBv2Service(natsConn)
+	result, err := svc.DescribeRules(ctx, input, accountID)
+	if err != nil {
+		return output, err
+	}
+
+	return *result, nil
+}

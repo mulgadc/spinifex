@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/operator/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,8 +18,8 @@ func policyActions(t *testing.T, document string) []string {
 
 	var doc struct {
 		Statement []struct {
-			Effect string                   `json:"Effect"`
-			Action handlers_iam.StringOrArr `json:"Action"`
+			Effect string                `json:"Effect"`
+			Action iamdomain.StringOrArr `json:"Action"`
 		} `json:"Statement"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(document), &doc))
@@ -122,10 +122,10 @@ func TestPrincipalPolicyActionsIgnoreAnUndecodableDocument(t *testing.T) {
 // Rotating the super-admin account's own administrator would revoke the
 // bootstrap credential the operator is holding.
 func TestPrincipalNameRefusesTheAccountAdministrator(t *testing.T) {
-	err := cli.ValidatePrincipalName(handlers_iam.AdminUserName)
+	err := cli.ValidatePrincipalName(iamdomain.AdminUserName)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), handlers_iam.AdminUserName)
+	assert.Contains(t, err.Error(), iamdomain.AdminUserName)
 }
 
 func TestPrincipalNameRejectsUnusableNames(t *testing.T) {
@@ -169,14 +169,14 @@ func TestPrintPrincipalTableMarksAnEmptyGrant(t *testing.T) {
 // TERMINATING reads the same either way — which is how a stuck teardown is
 // noticed.
 func TestAccountSummariesCarryStatus(t *testing.T) {
-	summaries := cli.AccountSummaries([]*handlers_iam.Account{
-		{AccountID: "000000000042", AccountName: "t@example.com", Status: handlers_iam.AccountStatusActive},
+	summaries := cli.AccountSummaries([]*iamdomain.Account{
+		{AccountID: "000000000042", AccountName: "t@example.com", Status: iamdomain.AccountStatusActive},
 		nil,
-		{AccountID: "000000000043", AccountName: "u@example.com", Status: handlers_iam.AccountStatusTerminating},
+		{AccountID: "000000000043", AccountName: "u@example.com", Status: iamdomain.AccountStatusTerminating},
 	})
 
 	require.Len(t, summaries, 2)
-	assert.Equal(t, handlers_iam.AccountStatusTerminating, summaries[1].Status)
+	assert.Equal(t, iamdomain.AccountStatusTerminating, summaries[1].Status)
 }
 
 func TestPrintAccountTableRendersEveryAccount(t *testing.T) {
@@ -185,7 +185,7 @@ func TestPrintAccountTableRendersEveryAccount(t *testing.T) {
 			{
 				AccountID:   "000000000042",
 				AccountName: "tenant@example.com",
-				Status:      handlers_iam.AccountStatusTerminating,
+				Status:      iamdomain.AccountStatusTerminating,
 				CreatedAt:   "2026-08-16T07:00:00Z",
 			},
 		})
@@ -193,7 +193,7 @@ func TestPrintAccountTableRendersEveryAccount(t *testing.T) {
 
 	assert.Contains(t, output, "000000000042")
 	assert.Contains(t, output, "tenant@example.com")
-	assert.Contains(t, output, handlers_iam.AccountStatusTerminating)
+	assert.Contains(t, output, iamdomain.AccountStatusTerminating)
 	assert.Contains(t, output, "2026-08-16 07:00")
 }
 

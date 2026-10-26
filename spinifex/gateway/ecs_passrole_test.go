@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +17,7 @@ import (
 // TestECSRegisterTaskDefinition_PassRole exercises the full gw.ECS_Request
 // dispatch (X-Amz-Target parsing, action-level checkPolicy, then the
 // iam:PassRole resource check gateway/ecs.go builds and threads through
-// gateway_ecs.Handler) with a real authenticated user identity, so the IAM
+// ecsawsapi.Handler) with a real authenticated user identity, so the IAM
 // policy is actually evaluated rather than taking the pre-IAM bypass.
 const testECSPassRoleTargetARN = "arn:aws:iam::123456789012:role/ecs-task-role"
 
@@ -44,19 +44,19 @@ func registerTaskDefinitionBody(t *testing.T, taskRoleARN string) string {
 // unconditionally (the action-level check gateway/ecs.go:39 always runs
 // first) plus iam:PassRole scoped to passRoleResource, so tests can isolate
 // the resource-level PassRole decision from the action-level one.
-func allowRegisterTaskDefAndPassRole(passRoleResource string) []handlers_iam.PolicyDocument {
-	return []handlers_iam.PolicyDocument{{
+func allowRegisterTaskDefAndPassRole(passRoleResource string) []iamdomain.PolicyDocument {
+	return []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{
-			{Effect: "Allow", Action: handlers_iam.StringOrArr{"ecs:RegisterTaskDefinition"}, Resource: handlers_iam.StringOrArr{"*"}},
-			{Effect: "Allow", Action: handlers_iam.StringOrArr{"iam:PassRole"}, Resource: handlers_iam.StringOrArr{passRoleResource}},
+		Statement: []iamdomain.Statement{
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"ecs:RegisterTaskDefinition"}, Resource: iamdomain.StringOrArr{"*"}},
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"iam:PassRole"}, Resource: iamdomain.StringOrArr{passRoleResource}},
 		},
 	}}
 }
 
 func TestECSRegisterTaskDefinition_DeniedWithoutPassRole(t *testing.T) {
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			// ecs:RegisterTaskDefinition is granted; iam:PassRole is scoped to a
 			// different role, so the target ARN is specifically denied.
 			return allowRegisterTaskDefAndPassRole("arn:aws:iam::123456789012:role/some-other-role"), nil
@@ -73,7 +73,7 @@ func TestECSRegisterTaskDefinition_DeniedWithoutPassRole(t *testing.T) {
 
 func TestECSRegisterTaskDefinition_AllowedWithPassRole(t *testing.T) {
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return allowRegisterTaskDefAndPassRole(testECSPassRoleTargetARN), nil
 		},
 	}
@@ -91,7 +91,7 @@ func TestECSRegisterTaskDefinition_AllowedWithPassRole(t *testing.T) {
 
 func TestECSRegisterTaskDefinition_NoRoleSkipsPassRole(t *testing.T) {
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			// No iam:PassRole grant at all — if the gateway still consulted
 			// PassRole for a roleless task definition this would deny it.
 			return allowPolicyResource("ecs:RegisterTaskDefinition", "*"), nil
@@ -110,7 +110,7 @@ func TestECSRegisterTaskDefinition_NoRoleSkipsPassRole(t *testing.T) {
 // policy denials stay opaque while retaining the service's 403 envelope.
 func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
 	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return allowPolicyResource("ecs:RegisterTaskDefinition", "*"), nil
 		},
 	}

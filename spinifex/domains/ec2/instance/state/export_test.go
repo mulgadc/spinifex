@@ -1,8 +1,8 @@
 package state
 
 import (
-	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 )
 
 // LocalVMReaderForTest is the local instance state reader's consumer-facing

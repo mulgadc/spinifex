@@ -22,6 +22,10 @@ type recordingProvider struct {
 	publishes  []ebsprovider.PublishVolumeRequest
 	snapshots  []ebsprovider.CreateSnapshotRequest
 	publishURI string
+
+	// publishExport, when its Kind is set, replaces the nbd export built
+	// from publishURI.
+	publishExport ebsprovider.VolumeExport
 }
 
 func newRecordingProvider() *recordingProvider {
@@ -39,7 +43,11 @@ func (p *recordingProvider) PublishVolume(ctx context.Context, req ebsprovider.P
 	if _, err := p.MemoryProvider.PublishVolume(ctx, req); err != nil {
 		return nil, err
 	}
-	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, NBDURI: p.publishURI}, nil
+	export := ebsprovider.NewNBDExport(p.publishURI)
+	if p.publishExport.Kind != "" {
+		export = p.publishExport
+	}
+	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, Export: export}, nil
 }
 
 func (p *recordingProvider) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) error {
@@ -115,6 +123,32 @@ func TestImportImage_WriteFailureStillUnpublishes(t *testing.T) {
 
 	assert.Equal(t, []string{"create", "publish", "unpublish"}, provider.calls,
 		"a failed copy must not be snapshotted, and must still be unpublished")
+}
+
+// TestImportImage_BlockExportIsRefused covers a provider that publishes a host
+// block device: the import writes only through NBD, so it must fail without
+// copying and still release the export.
+func TestImportImage_BlockExportIsRefused(t *testing.T) {
+	var wroteTo string
+	stubWriteImage(t, nil, &wroteTo)
+	provider := newRecordingProvider()
+	provider.publishExport = ebsprovider.VolumeExport{
+		Kind:  ebsprovider.ExportKindBlock,
+		Block: &ebsprovider.BlockExport{DevicePath: "/dev/sdx", SizeBytes: 1 << 30},
+	}
+
+	err := ImportImage(context.Background(), provider, ImportOpts{
+		VolumeID:   "ami-import005",
+		NodeID:     "node-a",
+		SizeBytes:  1 << 30,
+		SourcePath: "/dev/null",
+		Snapshot:   true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"block" export`)
+	assert.Empty(t, wroteTo, "a block export must not reach the NBD writer")
+	assert.Equal(t, []string{"create", "publish", "unpublish"}, provider.calls,
+		"a refused export must not be snapshotted, and must still be unpublished")
 }
 
 // TestImportImage_NoSnapshotWhenNotAsked covers the weights-style import that

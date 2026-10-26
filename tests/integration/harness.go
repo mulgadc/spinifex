@@ -42,10 +42,10 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	awsdispatch "github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
@@ -144,19 +144,19 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	nc, js, err := sharedNATSHarness.connectIsolated(accountNameFor(t))
 	require.NoError(t, err)
 
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 
-	iamSvc, err := handlers_iam.NewIAMServiceWithRetry(t.Context(), nc, masterKey)
+	iamSvc, err := iamdomain.NewIAMServiceWithRetry(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	stsSvc, err := handlers_sts.NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, handlers_eks.NewOIDCJWKSReader(js))
+	stsSvc, err := stsdomain.NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, ekscluster.NewOIDCJWKSReader(js))
 	require.NoError(t, err)
 
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretAccessKey, masterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretAccessKey, masterKey)
 	require.NoError(t, err)
 
-	require.NoError(t, iamSvc.SeedBootstrap(&handlers_iam.BootstrapData{
+	require.NoError(t, iamSvc.SeedBootstrap(&iamdomain.BootstrapData{
 		AccessKeyID:     testAccessKeyID,
 		EncryptedSecret: encryptedSecret,
 		AccountID:       awsidentifiers.GlobalAccountID,
@@ -168,7 +168,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	signingKey, verifyKeys, err := ecrauth.LoadOrCreateSigningKey(t.Context(), js, masterKey)
 	require.NoError(t, err)
 
-	bedrockAccess := gateway_bedrock.NewModelAccessStore(js)
+	bedrockAccess := ochre.NewModelAccessStore(js)
 
 	// ECR's control plane is composed as the awsgw role composes it, sharing
 	// the OCI registry, meta store and token issuer the /v2 data plane uses.
@@ -272,7 +272,7 @@ func (gw *Gateway) ECRClient(t *testing.T) *ecr.ECR {
 // BedrockClient returns an aws-sdk-go v1 Bedrock (control-plane) client
 // pointed at the gateway's httptest server, signed with the seeded root
 // credentials. ListFoundationModels/GetFoundationModel are pure gateway-side
-// catalog logic (gateway/bedrock/catalog.go) with no NATS/daemon hop, so no
+// catalog logic (domains/ochre/catalog.go) with no NATS/daemon hop, so no
 // DaemonLite wiring is needed to exercise them.
 func (gw *Gateway) BedrockClient(t *testing.T) *bedrock.Bedrock {
 	t.Helper()

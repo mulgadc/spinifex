@@ -261,7 +261,7 @@ var ec2Actions = map[string]ec2Action{
 	"ModifyInstanceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifyInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
 		var delta int
 		if input.InstanceType != nil {
-			resolve := quota.NATSInstanceTypeResolver(gw.NATSConn, func() int { return gw.ExpectedNodes })
+			resolve := quota.NATSInstanceTypeResolver(gw.NATSConn, func() []string { return gw.NodeIDs })
 			d, err := gw.Quota.EnforceRetype(ctx, resolve, accountID, aws.StringValue(input.InstanceId), aws.StringValue(input.InstanceType.Value))
 			if err != nil {
 				return nil, err

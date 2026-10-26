@@ -95,7 +95,7 @@ const faultSource = `package %s
 import (
 	"encoding/json"
 
-	spxd "github.com/mulgadc/spinifex/spinifex/daemon"
+	spxd "github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
@@ -176,11 +176,11 @@ func TestADR0007_S6_RatchetDetectsFaults(t *testing.T) {
 // must see those too.
 func TestADR0007_S6_RatchetSeesBareIdentifiersInOwnerPackages(t *testing.T) {
 	src := map[string]string{
-		"spinifex/daemon/new_consumer.go":           "package daemon\n\nfunc f() string { return InstanceStateBucket + LocalStatePath(\"\") }\n",
+		"spinifex/runtime/daemon/new_consumer.go":   "package daemon\n\nfunc f() string { return InstanceStateBucket + LocalStatePath(\"\") }\n",
 		"spinifex/runtime/compute/vm/new_reader.go": "package vm\n\nfunc g(r *InstanceRecord) *VM { return VMFromRecord(r) }\n",
 	}
 	want := map[string][]string{
-		"spinifex/daemon/new_consumer.go":           {"daemon.InstanceStateBucket", "daemon.LocalStatePath"},
+		"spinifex/runtime/daemon/new_consumer.go":   {"daemon.InstanceStateBucket", "daemon.LocalStatePath"},
 		"spinifex/runtime/compute/vm/new_reader.go": {"vm.InstanceRecord", "vm.VMFromRecord"},
 	}
 	for rel, code := range src {

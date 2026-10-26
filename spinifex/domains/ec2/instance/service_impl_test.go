@@ -2034,7 +2034,7 @@ func TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError(t *te
 
 // TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted locks the
 // second half of the terminate-implies-detach fix: a DeleteOnTermination=false
-// Boot volume is never cleared by Stop's Unmount (daemon/vm_adapters.go), so
+// Boot volume is never cleared by Stop's Unmount (runtime/daemon/vm_adapters.go), so
 // without this it would strand attached to the now-gone instance forever.
 // Terminate must still detach it (AWS semantics: it survives as available,
 // it just isn't deleted).

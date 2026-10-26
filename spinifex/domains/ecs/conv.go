@@ -1,0 +1,314 @@
+package ecs
+
+import (
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
+	"log/slog"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ecs"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
+)
+
+// awsStringSlice dereferences a []*string, dropping nils/empties.
+func awsStringSlice(in []*string) []string {
+	out := make([]string, 0, len(in))
+	for _, p := range in {
+		if v := aws.StringValue(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// ClusterShortName extracts the cluster name from a name or a cluster ARN, and
+// resolves an omitted reference to the default cluster. Exported so the policy
+// gate names the same cluster the handler acts on.
+func ClusterShortName(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return defaultCluster
+	}
+	if i := strings.LastIndex(ref, "cluster/"); i >= 0 {
+		return ref[i+len("cluster/"):]
+	}
+	return ref
+}
+
+// ContainerInstanceShortID extracts the container-instance UUID from an ID or ARN.
+func ContainerInstanceShortID(ref string) string {
+	if _, after, ok := strings.CutLast(ref, "/"); ok {
+		return after
+	}
+	return ref
+}
+
+// TaskShortID extracts the task UUID from a bare id or a task ARN
+// (arn:...:task/{cluster}/{taskID}); the final path segment is the task id.
+func TaskShortID(ref string) string {
+	if _, after, ok := strings.CutLast(ref, "/"); ok {
+		return after
+	}
+	return ref
+}
+
+// CapacityProviderShortName extracts the capacity-provider name from a name
+// or a capacity-provider ARN.
+func CapacityProviderShortName(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if i := strings.LastIndex(ref, "capacity-provider/"); i >= 0 {
+		return ref[i+len("capacity-provider/"):]
+	}
+	return ref
+}
+
+// gpuCountFromResourceRequirements sums the whole-GPU count from a container's
+// resourceRequirements (AWS ECS GPU semantics: type=GPU, value=stringified
+// int). Entries with a non-numeric or negative value are skipped and warned —
+// AWS itself rejects those at RegisterTaskDefinition, so this only guards
+// against malformed input reaching the scheduler.
+func gpuCountFromResourceRequirements(in []*ecs.ResourceRequirement) int {
+	total := 0
+	for _, rr := range in {
+		if rr == nil || aws.StringValue(rr.Type) != ecs.ResourceTypeGpu {
+			continue
+		}
+		n, err := strconv.Atoi(aws.StringValue(rr.Value))
+		if err != nil || n < 0 {
+			slog.Warn("ECS: ignoring invalid GPU resourceRequirement value", "value", aws.StringValue(rr.Value))
+			continue
+		}
+		total += n
+	}
+	return total
+}
+
+// containerDefsFromAWS maps SDK container definitions to the persisted subset.
+func containerDefsFromAWS(in []*ecs.ContainerDefinition) []taskdefinition.Container {
+	out := make([]taskdefinition.Container, 0, len(in))
+	for _, c := range in {
+		if c == nil {
+			continue
+		}
+		def := taskdefinition.Container{
+			Name:      aws.StringValue(c.Name),
+			Image:     aws.StringValue(c.Image),
+			CPU:       int(aws.Int64Value(c.Cpu)),
+			MemoryMiB: int(aws.Int64Value(c.Memory)),
+			GPU:       gpuCountFromResourceRequirements(c.ResourceRequirements),
+			Essential: aws.BoolValue(c.Essential),
+			Command:   awsStringSlice(c.Command),
+		}
+		if c.Environment != nil {
+			def.Environment = map[string]string{}
+		}
+		for _, e := range c.Environment {
+			if e == nil {
+				continue
+			}
+			def.Environment[aws.StringValue(e.Name)] = aws.StringValue(e.Value)
+		}
+		for _, p := range c.PortMappings {
+			if p == nil {
+				continue
+			}
+			def.PortMappings = append(def.PortMappings, taskdefinition.PortMapping{
+				ContainerPort: int(aws.Int64Value(p.ContainerPort)),
+				HostPort:      int(aws.Int64Value(p.HostPort)),
+				Protocol:      aws.StringValue(p.Protocol),
+				Name:          aws.StringValue(p.Name),
+			})
+		}
+		if lc := c.LogConfiguration; lc != nil {
+			def.LogDriver = aws.StringValue(lc.LogDriver)
+			for k, v := range lc.Options {
+				if def.LogOptions == nil {
+					def.LogOptions = map[string]string{}
+				}
+				def.LogOptions[k] = aws.StringValue(v)
+			}
+		}
+		def.User = aws.StringValue(c.User)
+		def.ReadonlyRootFilesystem = c.ReadonlyRootFilesystem
+		def.Privileged = c.Privileged
+		def.PseudoTerminal = c.PseudoTerminal
+		def.Interactive = c.Interactive
+		if c.SystemControls != nil {
+			def.SystemControls = []taskdefinition.SystemControl{}
+		}
+		for _, sc := range c.SystemControls {
+			if sc == nil {
+				continue
+			}
+			def.SystemControls = append(def.SystemControls, taskdefinition.SystemControl{
+				Namespace: aws.StringValue(sc.Namespace),
+				Value:     aws.StringValue(sc.Value),
+			})
+		}
+		def.MountPointsSet = c.MountPoints != nil
+		def.VolumesFromSet = c.VolumesFrom != nil
+		if lp := c.LinuxParameters; lp != nil {
+			def.InitProcessEnabled = lp.InitProcessEnabled
+			if lp.Capabilities != nil {
+				def.CapAdd = awsStringSlice(lp.Capabilities.Add)
+				def.CapDrop = awsStringSlice(lp.Capabilities.Drop)
+			}
+		}
+		def.StartTimeout = c.StartTimeout
+		def.StopTimeout = c.StopTimeout
+		out = append(out, def)
+	}
+	return out
+}
+
+// runtimePlatformFromAWS maps the SDK runtimePlatform to the persisted subset.
+// Pure echo: nothing in v1 enforces CPU architecture or OS family selection.
+func runtimePlatformFromAWS(in *ecs.RuntimePlatform) *taskdefinition.RuntimePlatform {
+	if in == nil {
+		return nil
+	}
+	return &taskdefinition.RuntimePlatform{
+		CPUArchitecture:       aws.StringValue(in.CpuArchitecture),
+		OperatingSystemFamily: aws.StringValue(in.OperatingSystemFamily),
+	}
+}
+
+func containerToAWS(c taskdefinition.Container) *ecs.ContainerDefinition {
+	cd := &ecs.ContainerDefinition{
+		Name:      aws.String(c.Name),
+		Image:     aws.String(c.Image),
+		Essential: aws.Bool(c.Essential),
+	}
+	if c.CPU > 0 {
+		cd.Cpu = aws.Int64(int64(c.CPU))
+	}
+	if c.MemoryMiB > 0 {
+		cd.Memory = aws.Int64(int64(c.MemoryMiB))
+	}
+	if c.GPU > 0 {
+		cd.ResourceRequirements = []*ecs.ResourceRequirement{{
+			Type:  aws.String(ecs.ResourceTypeGpu),
+			Value: aws.String(strconv.Itoa(c.GPU)),
+		}}
+	}
+	for _, cmd := range c.Command {
+		cd.Command = append(cd.Command, aws.String(cmd))
+	}
+	if c.Environment != nil {
+		cd.Environment = []*ecs.KeyValuePair{}
+	}
+	for k, v := range c.Environment {
+		cd.Environment = append(cd.Environment, &ecs.KeyValuePair{Name: aws.String(k), Value: aws.String(v)})
+	}
+	for _, p := range c.PortMappings {
+		pm := &ecs.PortMapping{ContainerPort: aws.Int64(int64(p.ContainerPort))}
+		if p.HostPort > 0 {
+			pm.HostPort = aws.Int64(int64(p.HostPort))
+		}
+		if p.Protocol != "" {
+			pm.Protocol = aws.String(p.Protocol)
+		}
+		if p.Name != "" {
+			pm.Name = aws.String(p.Name)
+		}
+		cd.PortMappings = append(cd.PortMappings, pm)
+	}
+	if c.LogDriver != "" {
+		lc := &ecs.LogConfiguration{LogDriver: aws.String(c.LogDriver)}
+		if len(c.LogOptions) > 0 {
+			lc.Options = map[string]*string{}
+			for k, v := range c.LogOptions {
+				lc.Options[k] = aws.String(v)
+			}
+		}
+		cd.LogConfiguration = lc
+	}
+	if c.User != "" {
+		cd.User = aws.String(c.User)
+	}
+	cd.ReadonlyRootFilesystem = c.ReadonlyRootFilesystem
+	cd.Privileged = c.Privileged
+	cd.PseudoTerminal = c.PseudoTerminal
+	cd.Interactive = c.Interactive
+	if c.SystemControls != nil {
+		cd.SystemControls = []*ecs.SystemControl{}
+	}
+	for _, sc := range c.SystemControls {
+		cd.SystemControls = append(cd.SystemControls, &ecs.SystemControl{
+			Namespace: aws.String(sc.Namespace),
+			Value:     aws.String(sc.Value),
+		})
+	}
+	if c.MountPointsSet {
+		cd.MountPoints = []*ecs.MountPoint{}
+	}
+	if c.VolumesFromSet {
+		cd.VolumesFrom = []*ecs.VolumeFrom{}
+	}
+	if len(c.CapAdd) > 0 || len(c.CapDrop) > 0 || c.InitProcessEnabled != nil {
+		lp := &ecs.LinuxParameters{InitProcessEnabled: c.InitProcessEnabled}
+		if len(c.CapAdd) > 0 || len(c.CapDrop) > 0 {
+			caps := &ecs.KernelCapabilities{}
+			if len(c.CapAdd) > 0 {
+				caps.Add = aws.StringSlice(c.CapAdd)
+			}
+			if len(c.CapDrop) > 0 {
+				caps.Drop = aws.StringSlice(c.CapDrop)
+			}
+			lp.Capabilities = caps
+		}
+		cd.LinuxParameters = lp
+	}
+	cd.StartTimeout = c.StartTimeout
+	cd.StopTimeout = c.StopTimeout
+	return cd
+}
+
+// containerToAssign maps a persisted container def to its bus assign payload.
+func containerToAssign(c taskdefinition.Container) ecsv1.AssignContainer {
+	return ecsv1.AssignContainer{
+		Name:                   c.Name,
+		Image:                  c.Image,
+		CPU:                    c.CPU,
+		MemoryMiB:              c.MemoryMiB,
+		GPU:                    c.GPU,
+		Essential:              c.Essential,
+		Command:                c.Command,
+		Environment:            c.Environment,
+		PortMappings:           portMappingsToAssign(c.PortMappings),
+		LogDriver:              c.LogDriver,
+		User:                   c.User,
+		ReadonlyRootFilesystem: c.ReadonlyRootFilesystem,
+		Privileged:             c.Privileged,
+		PseudoTerminal:         c.PseudoTerminal,
+		Interactive:            c.Interactive,
+		SystemControls:         systemControlsToAssign(c.SystemControls),
+		CapAdd:                 c.CapAdd,
+		CapDrop:                c.CapDrop,
+		StartTimeout:           c.StartTimeout,
+		StopTimeout:            c.StopTimeout,
+	}
+}
+
+func portMappingsToAssign(in []taskdefinition.PortMapping) []ecsv1.PortMapping {
+	if in == nil {
+		return nil
+	}
+	out := make([]ecsv1.PortMapping, len(in))
+	for i, p := range in {
+		out[i] = ecsv1.PortMapping{ContainerPort: p.ContainerPort, HostPort: p.HostPort, Protocol: p.Protocol, Name: p.Name}
+	}
+	return out
+}
+
+func systemControlsToAssign(in []taskdefinition.SystemControl) []ecsv1.SystemControl {
+	if in == nil {
+		return nil
+	}
+	out := make([]ecsv1.SystemControl, len(in))
+	for i, sc := range in {
+		out[i] = ecsv1.SystemControl{Namespace: sc.Namespace, Value: sc.Value}
+	}
+	return out
+}

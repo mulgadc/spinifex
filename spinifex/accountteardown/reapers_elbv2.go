@@ -5,7 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/nats-io/nats.go"
 )
 
@@ -15,7 +15,7 @@ import (
 // groups, so it has to go before either can be deleted. Target groups follow
 // their balancers because a group still referenced by a listener refuses.
 func ELBv2Reapers(nc *nats.Conn) []Reaper {
-	svc := handlers_elbv2.NewNATSELBv2Service(nc)
+	svc := elbv2domain.NewNATSELBv2Service(nc)
 	return []Reaper{
 		&loadBalancerReaper{svc: svc},
 		&targetGroupReaper{svc: svc},
@@ -23,7 +23,7 @@ func ELBv2Reapers(nc *nats.Conn) []Reaper {
 }
 
 type loadBalancerReaper struct {
-	svc handlers_elbv2.ELBv2Service
+	svc elbv2domain.ELBv2Service
 }
 
 func (r *loadBalancerReaper) Kind() string { return "load-balancer" }
@@ -58,7 +58,7 @@ func (r *loadBalancerReaper) Delete(ctx context.Context, accountID string, resou
 }
 
 type targetGroupReaper struct {
-	svc handlers_elbv2.ELBv2Service
+	svc elbv2domain.ELBv2Service
 }
 
 func (r *targetGroupReaper) Kind() string { return "target-group" }

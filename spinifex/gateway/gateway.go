@@ -33,15 +33,15 @@ import (
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -147,13 +147,13 @@ type GatewayConfig struct {
 	// stopped answering, which would otherwise drop out of the answer entirely.
 	// Zero value keeps the pre-existing fan-out-only behaviour.
 	InstanceStatus ec2instanceapi.StatusSynthesis
-	IAMService     handlers_iam.IAMService
+	IAMService     iamdomain.IAMService
 	// BucketStore reaps a tenant's S3 buckets during account teardown. It
 	// signs with the config service credential, which predastore already
 	// trusts to reach any bucket, so this grants enumeration, not access.
 	// Nil makes DeleteAccount refuse rather than tear down around the data.
 	BucketStore accountteardown.BucketStore
-	STSService  handlers_sts.STSService
+	STSService  stsdomain.STSService
 	RateLimiter *authlimit.AuthRateLimiter // Per-IP auth failure rate limiter
 	Throttler   *ratelimit.Throttler       // Per-account+action API request throttler
 	// accountStatus caches which accounts are ACTIVE, so enforcing account
@@ -175,7 +175,7 @@ type GatewayConfig struct {
 	ECRTokenVerifier *ecrauth.Verifier
 	// BedrockCredentials resolves per-account provider API keys for bedrock
 	// routes. Nil falls back to no external providers (self-host models only).
-	BedrockCredentials *gateway_bedrock.CredentialStore
+	BedrockCredentials *ochre.CredentialStore
 	// BedrockEndpoints maps a self-hosted modelId to its OpenAI-compatible base
 	// URL. These endpoints are pinned/always-resident, so this is static
 	// config, and they resolve ahead of the dynamic registry so a pinned
@@ -185,36 +185,36 @@ type GatewayConfig struct {
 	// registry, requesting a launch for a model that has no endpoint yet. Nil
 	// falls back to BedrockEndpoints alone, under which a model that was never
 	// pinned is never reachable.
-	BedrockEndpointResolver gateway_bedrock.EndpointResolver
+	BedrockEndpointResolver ochre.EndpointResolver
 	// BedrockLoggingConfig persists per-account invocation-logging preferences
 	// (PutModelInvocationLoggingConfiguration and friends). Nil falls back to
 	// an unconfigured store, under which reads/writes error rather than panic.
-	BedrockLoggingConfig *gateway_bedrock.LoggingConfigStore
+	BedrockLoggingConfig *ochre.LoggingConfigStore
 	// BedrockRecorder durably records every Bedrock invocation. Nil falls back
 	// to a no-op recorder, so routes stay safe to exercise before the
 	// invocation stream is wired in (e.g. unit tests of unrelated routes).
-	BedrockRecorder gateway_bedrock.Recorder
+	BedrockRecorder ochre.Recorder
 	// BedrockAccess resolves per-account model-access grants. Access is
 	// deny-by-default, so nil means no account may list or invoke any model.
 	// It is the AccessResolver interface rather than the concrete store so a
 	// test can inject a fixed grant set without standing up JetStream.
-	BedrockAccess gateway_bedrock.AccessResolver
+	BedrockAccess ochre.AccessResolver
 	// BedrockAccessAdmin is the writable side of the same grant store, used by
 	// the spinifex admin actions. Nil disables grant administration, which is
 	// how a gateway with an injected read-only resolver behaves.
-	BedrockAccessAdmin *gateway_bedrock.ModelAccessStore
+	BedrockAccessAdmin *ochre.ModelAccessStore
 	// BedrockProvisioned persists provisioned-throughput commitments and
 	// drives the pinned endpoint underneath each one. Nil falls back to an
 	// unconfigured store, under which reads/writes error rather than panic.
-	BedrockProvisioned *gateway_bedrock.ProvisionedStore
+	BedrockProvisioned *ochre.ProvisionedStore
 	// BedrockGuardrails persists guardrail control-plane records (CreateGuardrail
 	// and friends). Nil falls back to an unconfigured store, under which
 	// reads/writes error rather than panic.
-	BedrockGuardrails *gateway_bedrock.GuardrailStore
+	BedrockGuardrails *ochre.GuardrailStore
 	// BedrockEmbedder drives guardrail topicPolicy's semantic match, reusing
 	// the same embedding endpoint the Ochre KB path resolves models through.
 	// Nil leaves topicPolicy on its literal (word-boundary) matcher alone.
-	BedrockEmbedder gateway_bedrock.Embedder
+	BedrockEmbedder ochre.Embedder
 
 	// SignupMaxAccounts caps how many accounts /admin/CreateAccount will allow
 	// to exist. Zero means uncapped, which is the behaviour of every cluster
@@ -778,7 +778,7 @@ func (gw *GatewayConfig) principalUser(principal principalContext) (userID, user
 	if principal.identity == "" || principal.accountID == "" {
 		return "", "", nil
 	}
-	userID, userARN, err = gateway_sts.ResolveCallerUser(principal.accountID, principal.principalType,
+	userID, userARN, err = stsawsapi.ResolveCallerUser(principal.accountID, principal.principalType,
 		principal.identity, principal.assumedRoleID, gw.IAMService)
 	switch {
 	case err == nil:
@@ -824,7 +824,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 	// type. Identity-sensitive decisions (root bypass, resolver selection) are
 	// fully inside their branch so an assumed-role SessionName of "root" cannot
 	// reach the user-branch root short-circuit.
-	var resolve func() ([]handlers_iam.PolicyDocument, error)
+	var resolve func() ([]iamdomain.PolicyDocument, error)
 	var logIdentity string
 
 	switch principal.principalType {
@@ -833,7 +833,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 			// Global root bypass — user branch only.
 			return nil
 		}
-		resolve = func() ([]handlers_iam.PolicyDocument, error) {
+		resolve = func() ([]iamdomain.PolicyDocument, error) {
 			return gw.IAMService.GetUserPolicies(principal.accountID, principal.identity)
 		}
 		logIdentity = principal.identity
@@ -849,7 +849,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 				"err", perr)
 			return errors.New(awserrors.ErrorAccessDenied)
 		}
-		resolve = func() ([]handlers_iam.PolicyDocument, error) {
+		resolve = func() ([]iamdomain.PolicyDocument, error) {
 			return gw.IAMService.GetRolePolicies(principal.accountID, roleName)
 		}
 		logIdentity = principal.assumedRoleARN
@@ -859,7 +859,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 	}
 
 	// Resolve policies, retrying transient NATS errors. Fail-closed on non-transient errors.
-	var policies []handlers_iam.PolicyDocument
+	var policies []iamdomain.PolicyDocument
 	var err error
 	for attempt := range 3 {
 		policies, err = resolve()

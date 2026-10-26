@@ -10,26 +10,26 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// ecrMockIAMService implements handlers_iam.IAMService for ECR principal
+// ecrMockIAMService implements iamdomain.IAMService for ECR principal
 // rehydration tests. Only the methods resolveECRPrincipal calls are wired;
 // any other method nil-panics on the embedded nil interface, surfacing an
 // unexpected call rather than silently returning a zero value.
 type ecrMockIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
-	accessKeys   map[string]*handlers_iam.AccessKey
+	accessKeys   map[string]*iamdomain.AccessKey
 	users        map[string]*iam.User
 	roles        map[string]*iam.Role
-	accounts     map[string]*handlers_iam.Account
-	userPolicies map[string][]handlers_iam.PolicyDocument
-	rolePolicies map[string][]handlers_iam.PolicyDocument
+	accounts     map[string]*iamdomain.Account
+	userPolicies map[string][]iamdomain.PolicyDocument
+	rolePolicies map[string][]iamdomain.PolicyDocument
 
 	// genericErr, when set, is returned by LookupAccessKey/GetUser/GetRole/
 	// GetAccount/GetUserPolicies/GetRolePolicies instead of the usual
@@ -40,16 +40,16 @@ type ecrMockIAMService struct {
 
 func newECRMockIAMService() *ecrMockIAMService {
 	return &ecrMockIAMService{
-		accessKeys:   map[string]*handlers_iam.AccessKey{},
+		accessKeys:   map[string]*iamdomain.AccessKey{},
 		users:        map[string]*iam.User{},
 		roles:        map[string]*iam.Role{},
-		accounts:     map[string]*handlers_iam.Account{},
-		userPolicies: map[string][]handlers_iam.PolicyDocument{},
-		rolePolicies: map[string][]handlers_iam.PolicyDocument{},
+		accounts:     map[string]*iamdomain.Account{},
+		userPolicies: map[string][]iamdomain.PolicyDocument{},
+		rolePolicies: map[string][]iamdomain.PolicyDocument{},
 	}
 }
 
-func (m *ecrMockIAMService) LookupAccessKey(accessKeyID string) (*handlers_iam.AccessKey, error) {
+func (m *ecrMockIAMService) LookupAccessKey(accessKeyID string) (*iamdomain.AccessKey, error) {
 	if m.genericErr != nil {
 		return nil, m.genericErr
 	}
@@ -82,7 +82,7 @@ func (m *ecrMockIAMService) GetRole(accountID string, input *iam.GetRoleInput) (
 	return &iam.GetRoleOutput{Role: r}, nil
 }
 
-func (m *ecrMockIAMService) GetAccount(accountID string) (*handlers_iam.Account, error) {
+func (m *ecrMockIAMService) GetAccount(accountID string) (*iamdomain.Account, error) {
 	if m.genericErr != nil {
 		return nil, m.genericErr
 	}
@@ -93,31 +93,31 @@ func (m *ecrMockIAMService) GetAccount(accountID string) (*handlers_iam.Account,
 	return a, nil
 }
 
-func (m *ecrMockIAMService) GetUserPolicies(accountID, userName string) ([]handlers_iam.PolicyDocument, error) {
+func (m *ecrMockIAMService) GetUserPolicies(accountID, userName string) ([]iamdomain.PolicyDocument, error) {
 	if m.genericErr != nil {
 		return nil, m.genericErr
 	}
 	return m.userPolicies[accountID+"|"+userName], nil
 }
 
-func (m *ecrMockIAMService) GetRolePolicies(accountID, roleName string) ([]handlers_iam.PolicyDocument, error) {
+func (m *ecrMockIAMService) GetRolePolicies(accountID, roleName string) ([]iamdomain.PolicyDocument, error) {
 	if m.genericErr != nil {
 		return nil, m.genericErr
 	}
 	return m.rolePolicies[accountID+"|"+roleName], nil
 }
 
-// ecrMockSTSService implements handlers_sts.STSService for ECR principal
+// ecrMockSTSService implements stsdomain.STSService for ECR principal
 // rehydration tests. Only LookupSessionCredential and VerifySessionPrincipal
 // are wired.
 type ecrMockSTSService struct {
-	handlers_sts.STSService
+	stsdomain.STSService
 
-	sessions map[string]*handlers_sts.SessionCredential
+	sessions map[string]*stsdomain.SessionCredential
 
 	// principalErr is the continuity verdict (or dependency fault) the check
 	// returns. Detection itself is exercised against real IAM/STS services in
-	// handlers/sts; what these tests pin is how this door maps the answer.
+	// domains/sts; what these tests pin is how this door maps the answer.
 	principalErr error
 
 	// liveUserARN is the stored ARN the continuity read returns for a user session.
@@ -125,14 +125,14 @@ type ecrMockSTSService struct {
 }
 
 func newECRMockSTSService() *ecrMockSTSService {
-	return &ecrMockSTSService{sessions: map[string]*handlers_sts.SessionCredential{}}
+	return &ecrMockSTSService{sessions: map[string]*stsdomain.SessionCredential{}}
 }
 
-func (m *ecrMockSTSService) LookupSessionCredential(accessKeyID string) (*handlers_sts.SessionCredential, error) {
+func (m *ecrMockSTSService) LookupSessionCredential(accessKeyID string) (*stsdomain.SessionCredential, error) {
 	return m.sessions[accessKeyID], nil
 }
 
-func (m *ecrMockSTSService) VerifySessionPrincipal(cred *handlers_sts.SessionCredential) (*handlers_sts.SessionPrincipal, error) {
+func (m *ecrMockSTSService) VerifySessionPrincipal(cred *stsdomain.SessionCredential) (*stsdomain.SessionPrincipal, error) {
 	if m.principalErr != nil {
 		return nil, m.principalErr
 	}
@@ -150,18 +150,18 @@ const (
 )
 
 func seedECRTestUser(iamSvc *ecrMockIAMService, accountID, userName, akid string) {
-	iamSvc.accessKeys[akid] = &handlers_iam.AccessKey{
+	iamSvc.accessKeys[akid] = &iamdomain.AccessKey{
 		AccessKeyID: akid,
 		UserName:    userName,
 		AccountID:   accountID,
-		Status:      handlers_iam.AccessKeyStatusActive,
+		Status:      iamdomain.AccessKeyStatusActive,
 	}
 	iamSvc.users[accountID+"|"+userName] = &iam.User{
 		UserName: aws.String(userName),
 		UserId:   aws.String("AIDA" + strings.ToUpper(userName)),
 		Arn:      aws.String("arn:aws:iam::" + accountID + ":user/" + userName),
 	}
-	iamSvc.accounts[accountID] = &handlers_iam.Account{AccountID: accountID, Status: handlers_iam.AccountStatusActive}
+	iamSvc.accounts[accountID] = &iamdomain.Account{AccountID: accountID, Status: iamdomain.AccountStatusActive}
 }
 
 func TestResolveECRPrincipal_LongLivedUser(t *testing.T) {
@@ -278,7 +278,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 	t.Run("suspended account", func(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-		iamSvc.accounts[ecrPrincipalTestAccount].Status = handlers_iam.AccountStatusSuspended
+		iamSvc.accounts[ecrPrincipalTestAccount].Status = iamdomain.AccountStatusSuspended
 		gw := &GatewayConfig{IAMService: iamSvc}
 		_, err := gw.resolveECRPrincipal(validClaims())
 		require.Error(t, err)
@@ -290,7 +290,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 	t.Run("terminating account", func(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-		iamSvc.accounts[ecrPrincipalTestAccount].Status = handlers_iam.AccountStatusTerminating
+		iamSvc.accounts[ecrPrincipalTestAccount].Status = iamdomain.AccountStatusTerminating
 		gw := &GatewayConfig{IAMService: iamSvc}
 		_, err := gw.resolveECRPrincipal(validClaims())
 		require.Error(t, err)
@@ -340,8 +340,8 @@ func seedECRSessionUser(iamSvc *ecrMockIAMService, stsSvc *ecrMockSTSService, ac
 		UserId:   aws.String("AIDA" + strings.ToUpper(userName)),
 		Arn:      aws.String("arn:aws:iam::" + accountID + ":user/" + userName),
 	}
-	iamSvc.accounts[accountID] = &handlers_iam.Account{AccountID: accountID, Status: handlers_iam.AccountStatusActive}
-	stsSvc.sessions[asid] = &handlers_sts.SessionCredential{
+	iamSvc.accounts[accountID] = &iamdomain.Account{AccountID: accountID, Status: iamdomain.AccountStatusActive}
+	stsSvc.sessions[asid] = &stsdomain.SessionCredential{
 		AccessKeyID:   asid,
 		AccountID:     accountID,
 		PrincipalType: principalTypeUser,
@@ -400,9 +400,9 @@ func TestResolveECRPrincipal_SessionToken_User_StalePrincipalRejected(t *testing
 		name string
 		err  error
 	}{
-		{"user deleted", handlers_sts.ErrSessionPrincipalGone},
-		{"user recreated same name", handlers_sts.ErrSessionPrincipalReplaced},
-		{"legacy record with no immutable UserID", handlers_sts.ErrSessionPrincipalLegacy},
+		{"user deleted", stsdomain.ErrSessionPrincipalGone},
+		{"user recreated same name", stsdomain.ErrSessionPrincipalReplaced},
+		{"legacy record with no immutable UserID", stsdomain.ErrSessionPrincipalLegacy},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -464,12 +464,12 @@ func seedECRAssumedRole(iamSvc *ecrMockIAMService, stsSvc *ecrMockSTSService, ac
 		Arn:      aws.String(roleARN),
 		RoleId:   aws.String(roleID),
 	}
-	iamSvc.accounts[accountID] = &handlers_iam.Account{AccountID: accountID, Status: handlers_iam.AccountStatusActive}
+	iamSvc.accounts[accountID] = &iamdomain.Account{AccountID: accountID, Status: iamdomain.AccountStatusActive}
 	// AssumeRole session ARNs use the "assumed-role" resource type; the
 	// underlying role (resolved via GetRole) stays a role/ ARN, matching the
 	// production shape.
 	assumedRoleARN := "arn:aws:sts::" + accountID + ":assumed-role/" + roleName + "/" + sessionName
-	stsSvc.sessions[asid] = &handlers_sts.SessionCredential{
+	stsSvc.sessions[asid] = &stsdomain.SessionCredential{
 		AccessKeyID:       asid,
 		AccountID:         accountID,
 		PrincipalType:     principalTypeAssumedRole,
@@ -538,9 +538,9 @@ func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
 	// client to retry a credential that will never work again.
 	t.Run("continuity verdicts are invalid-principal, not dependency failures", func(t *testing.T) {
 		verdicts := map[string]error{
-			"role deleted":                           handlers_sts.ErrSessionPrincipalGone,
-			"role replaced (RoleId changed)":         handlers_sts.ErrSessionPrincipalReplaced,
-			"legacy record with no immutable RoleID": handlers_sts.ErrSessionPrincipalLegacy,
+			"role deleted":                           stsdomain.ErrSessionPrincipalGone,
+			"role replaced (RoleId changed)":         stsdomain.ErrSessionPrincipalReplaced,
+			"legacy record with no immutable RoleID": stsdomain.ErrSessionPrincipalLegacy,
 		}
 		for name, verdict := range verdicts {
 			t.Run(name, func(t *testing.T) {

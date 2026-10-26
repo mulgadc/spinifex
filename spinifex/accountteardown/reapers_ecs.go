@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	"github.com/nats-io/nats.go"
 )
 
@@ -18,7 +18,7 @@ import (
 // leaves an INACTIVE record that still lists, so a stage waiting for services
 // to disappear would never drain.
 func ECSReapers(nc *nats.Conn) []Reaper {
-	return []Reaper{&ecsClusterReaper{svc: handlers_ecs.NewNATSECSService(nc)}}
+	return []Reaper{&ecsClusterReaper{svc: ecsdomain.NewNATSECSService(nc)}}
 }
 
 // ecsClusterReaper removes the account's ECS clusters.
@@ -27,7 +27,7 @@ func ECSReapers(nc *nats.Conn) []Reaper {
 // so the instance reaper takes them — but only after this one has stopped the
 // tasks riding on them, which is why this is registered first.
 type ecsClusterReaper struct {
-	svc handlers_ecs.ECSService
+	svc ecsdomain.ECSService
 }
 
 func (r *ecsClusterReaper) Kind() string { return "ecs-cluster" }

@@ -11,7 +11,7 @@ import (
 
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	ctrruntime "github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 )
 
 // defaultStopTimeout is applied when a container carries no explicit
@@ -413,10 +413,10 @@ func (a *Agent) reportTaskState(as *ecsv1.Assign, status, reason string, contain
 // container in the report that has them, so DescribeTasks can surface gpuIds.
 // A no-op when nothing was pinned (the common non-GPU-task case).
 func (a *Agent) reportTaskGPUs(taskID string, containers []ecsv1.ContainerStatus) {
-	reports := make([]handlers_ecs.ContainerGPUReport, 0, len(containers))
+	reports := make([]ecsdomain.ContainerGPUReport, 0, len(containers))
 	for _, c := range containers {
 		if len(c.GPUIDs) > 0 {
-			reports = append(reports, handlers_ecs.ContainerGPUReport{Name: c.Name, GPUIDs: c.GPUIDs})
+			reports = append(reports, ecsdomain.ContainerGPUReport{Name: c.Name, GPUIDs: c.GPUIDs})
 		}
 	}
 	if len(reports) == 0 {

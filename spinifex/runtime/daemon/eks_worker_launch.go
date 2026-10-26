@@ -1,0 +1,175 @@
+package daemon
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"log/slog"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
+)
+
+// Compile-time check that Daemon satisfies the EKS worker-launch surface.
+var _ ekscluster.WorkerLauncher = (*Daemon)(nil)
+
+// terminateRetrySleep is the backoff seam between NoResponders retries; tests override it.
+var terminateRetrySleep = time.Sleep
+
+// RunWorkerInstance launches a nodegroup worker on the local node.
+func (d *Daemon) RunWorkerInstance(ctx context.Context, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
+	return d.RunWorkerInstanceOnNode(ctx, "", input, accountID)
+}
+
+// RunWorkerInstanceOnNode launches a nodegroup worker via the normal RunInstances
+// path. UserData is base64-encoded before forwarding; the worker is
+// customer-visible. A non-empty nodeID pins the worker to that host for nodegroup
+// spread by publishing the node-targeted ec2.RunInstances.<type>.<node> request
+// (the node stays subscribed even at capacity); an empty nodeID launches on the
+// local node in process, preserving the original behaviour.
+func (d *Daemon) RunWorkerInstanceOnNode(ctx context.Context, nodeID string, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
+	if input == nil {
+		return nil, errors.New("eks worker: nil RunInstancesInput")
+	}
+	if input.UserData != nil && *input.UserData != "" {
+		input.UserData = aws.String(base64.StdEncoding.EncodeToString([]byte(*input.UserData)))
+	}
+	if nodeID == "" {
+		if d.instanceService == nil {
+			return nil, errors.New("eks worker: instance service not initialized")
+		}
+		return d.instanceService.RunInstances(ctx, input, accountID)
+	}
+	if d.natsConn == nil {
+		return nil, errors.New("eks worker: NATS connection not initialized")
+	}
+	subject := fmt.Sprintf("ec2.RunInstances.%s.%s", aws.StringValue(input.InstanceType), nodeID)
+	return natsmsg.NATSRequest[ec2.Reservation](ctx, d.natsConn, subject, input, 5*time.Minute, accountID)
+}
+
+// TerminateWorkerInstances terminates nodegroup workers by routing a terminate
+// command to whichever node owns each VM (per-instance ec2.cmd.<id>), mirroring
+// the gateway TerminateInstances path. The owning daemon runs the full teardown
+// — detach + force-delete the worker's primary ENI and clear its
+// spinifex-vpc-enis record — so a dangling in-use ENI cannot pin the customer
+// VPC/subnet undeletable. A local-only vmMgr.Get would skip any
+// worker placed on another node, stranding both the VM and its ENI. An instance
+// with no owner (no responder, not found) is already gone, so a retried
+// DeleteNodegroup stays idempotent.
+func (d *Daemon) TerminateWorkerInstances(ctx context.Context, instanceIDs []string, accountID string) error {
+	if d.natsConn == nil {
+		return errors.New("eks worker: NATS connection not initialized")
+	}
+	var errs []error
+	for _, id := range instanceIDs {
+		if id == "" {
+			continue
+		}
+		if err := d.terminateWorkerInstance(ctx, id, accountID); err != nil {
+			errs = append(errs, fmt.Errorf("terminate worker %s: %w", id, err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+// terminateWorkerInstance routes a single worker terminate to its owning node.
+// StopInstance is set alongside TerminateInstance so the owner does not restart
+// it. A NoResponders reply means no daemon owns the instance: it is already
+// gone, which a retried teardown treats as success. A NotFound error payload
+// from the owner is likewise idempotent.
+func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accountID string) error {
+	cmd := ec2v1.EC2InstanceCommand{
+		ID: instanceID,
+		Attributes: ec2v1.EC2CommandAttributes{
+			StopInstance:      true,
+			TerminateInstance: true,
+		},
+	}
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal terminate command: %w", err)
+	}
+
+	subject := ec2v1.InstanceCommandSubject(instanceID)
+	var msg *nats.Msg
+	for attempt := range 3 {
+		reqMsg := nats.NewMsg(subject)
+		reqMsg.Data = data
+		reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+		natsmsg.InjectTraceContext(ctx, reqMsg.Header)
+		msg, err = d.natsConn.RequestMsg(reqMsg, 5*time.Second)
+		if err == nil || !errors.Is(err, nats.ErrNoResponders) {
+			break
+		}
+		if attempt < 2 {
+			terminateRetrySleep(time.Duration(attempt+1) * time.Second)
+		}
+	}
+	if errors.Is(err, nats.ErrNoResponders) {
+		// No live ec2.cmd owner: the worker is stopped — its per-instance
+		// subscription is torn down at stop, including a stopped+wedged VM whose
+		// volume remount broke. Fall back to the ec2.terminate queue group, which
+		// runs TerminateStoppedInstance against shared KV (deleting the worker's
+		// volumes, IP, and ENI) so the ENI cannot pin the customer subnet/VPC
+		// undeletable. Without this a DeleteCluster wedges in DELETING on
+		// DependencyViolation until the operator manually terminates the node.
+		return d.terminateStoppedWorker(ctx, instanceID, accountID)
+	}
+	if err != nil {
+		return err
+	}
+	if errPayload, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
+		if *errPayload.Code == awserrors.ErrorInvalidInstanceIDNotFound {
+			slog.DebugContext(ctx, "TerminateWorkerInstances: owner reports instance gone, idempotent", "instanceId", instanceID)
+			return nil
+		}
+		return errors.New(*errPayload.Code)
+	}
+	return nil
+}
+
+// terminateStoppedWorker tears down a worker that has no live ec2.cmd owner via
+// the ec2.terminate queue group, mirroring the gateway TerminateInstances
+// fallback. Any worker daemon services it from shared KV, so a stopped (incl.
+// stopped+wedged) worker is reaped regardless of which node ran the teardown. A
+// NotFound payload — or no responder at all — means the instance is already
+// gone, which a retried teardown treats as idempotent success.
+func (d *Daemon) terminateStoppedWorker(ctx context.Context, instanceID, accountID string) error {
+	req, err := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: instanceID})
+	if err != nil {
+		return fmt.Errorf("marshal stopped-terminate request: %w", err)
+	}
+	reqMsg := nats.NewMsg("ec2.terminate")
+	reqMsg.Data = req
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
+	msg, err := d.natsConn.RequestMsg(reqMsg, 30*time.Second)
+	if errors.Is(err, nats.ErrNoResponders) {
+		slog.DebugContext(ctx, "TerminateWorkerInstances: no ec2.terminate responder, instance already gone", "instanceId", instanceID)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("ec2.terminate stopped worker %s: %w", instanceID, err)
+	}
+	if errPayload, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
+		if *errPayload.Code == awserrors.ErrorInvalidInstanceIDNotFound {
+			slog.DebugContext(ctx, "TerminateWorkerInstances: stopped worker already gone, idempotent", "instanceId", instanceID)
+			return nil
+		}
+		return errors.New(*errPayload.Code)
+	}
+	slog.InfoContext(ctx, "TerminateWorkerInstances: terminated stopped worker via ec2.terminate", "instanceId", instanceID)
+	return nil
+}

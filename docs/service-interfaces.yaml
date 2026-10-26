@@ -52,13 +52,13 @@ services:
     # Translates VPC / EBS / S3 operations into vpc.* / ebs.* / s3.* and
     # forwards to vpcd / viperblockd / predastore.
     #
-    # Source layout: spinifex/runtime/roles/spinifex (entry), spinifex/daemon
+    # Source layout: spinifex/runtime/roles/spinifex (entry), spinifex/runtime/daemon
     # (subscribe registration), spinifex/domains/<domain> and the legacy
     # spinifex/handlers/{ecs,eks,elbv2,iam,rds} packages (per-subject handler
     # bodies). Selector treats these paths as belonging to this service via
     # the `additional_paths` field.
     additional_paths:
-      - spinifex/daemon
+      - spinifex/runtime/daemon
       - spinifex/domains/ec2/account
       - spinifex/domains/ec2/eigw
       - spinifex/domains/ec2/eip
@@ -76,17 +76,17 @@ services:
       - spinifex/domains/ec2/volume
       - spinifex/domains/ec2/volumestate
       - spinifex/domains/ec2/vpc
-      - spinifex/handlers/elbv2
+      - spinifex/domains/elbv2
       - spinifex/domains/acm
       - spinifex/domains/route53
-      - spinifex/handlers/iam
-      - spinifex/handlers/ecs
-      - spinifex/handlers/rds
+      - spinifex/domains/iam
+      - spinifex/domains/ecs
+      - spinifex/domains/rds/instance
       - spinifex/domains/rds/subnetgroup
       - spinifex/domains/rds/parametergroup
       - spinifex/domains/rds/engine
       - spinifex/domains/ecs/taskdefinition
-      - spinifex/handlers/eks
+      - spinifex/domains/eks/cluster
       - spinifex/domains/eks/access
       - spinifex/domains/eks/addon
       # Guest add-on wire contract (subject, report, staged-manifest body).
@@ -139,7 +139,7 @@ services:
       - "spinifex.cluster.shutdown.infra"
       # Operator-plane Predastore topology contract (contracts/operator/v1).
       - "spinifex.storage.config"
-      # ELBv2 control plane (handlers/elbv2/service_nats.go topic map).
+      # ELBv2 control plane (domains/elbv2/service_nats.go topic map).
       - "elbv2.CreateLoadBalancer"
       - "elbv2.DeleteLoadBalancer"
       - "elbv2.DescribeLoadBalancers"
@@ -165,12 +165,12 @@ services:
       - "elbv2.RemoveListenerCertificates"
       - "elbv2.DescribeListenerCertificates"
       - "elbv2.DescribeSSLPolicies"
-      # RDS control plane (handlers/rds/subjects.go). One wildcard rather than
+      # RDS control plane (domains/rds/instance/subjects.go). One wildcard rather than
       # 30 literals: every action subject is registered from a constant, so a
       # per-subject list would be a hand-mirror of that file with nothing
       # checking it.
       - "rds.*"
-      # ECS control plane (handlers/ecs/service_nats.go, registered in
+      # ECS control plane (domains/ecs/service_nats.go, registered in
       # daemon.go). One wildcard, as for RDS: every action subject is a literal
       # in those two files, so a per-subject list would only mirror them.
       - "ecs.*"
@@ -227,7 +227,7 @@ services:
       - "vpc.gate-subnet-egress"
       - "vpc.ungate-subnet-egress"
       # Egress-only reroute removal for a single system instance
-      # (handlers/eks). Fire-and-forget. vpc.add-system-egress has no
+      # (domains/eks/cluster). Fire-and-forget. vpc.add-system-egress has no
       # current producer.
       - "vpc.delete-system-egress"
       # → viperblockd
@@ -410,7 +410,7 @@ suites:
   e2e-lb:
     path: tests/e2e/lb
     covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
-    # Exercises full ELBv2 control plane (handlers/elbv2) + data plane
+    # Exercises full ELBv2 control plane (domains/elbv2) + data plane
     # (LB agent on the system VM). ELBv2 is part of spinifex_daemon in
     # this manifest; revisit if it splits into a standalone service.
 
@@ -443,7 +443,7 @@ suites:
     path: tests/e2e/bedrock
     covers: [awsgw]
     # Ochre (AWS-Bedrock) control plane: static catalog list/get served
-    # straight from awsgw (gateway/bedrock.go, gateway/bedrock/) — no NATS
+    # straight from awsgw (gateway/bedrock.go, domains/ochre/) — no NATS
     # hop to spinifex_daemon. Converse (Anthropic-direct / self-host vLLM)
     # subtests are gated on backend availability and skip by default.
 

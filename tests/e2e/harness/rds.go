@@ -13,8 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/daemon"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -32,7 +32,7 @@ const (
 	DBSnapshotAvailable = "available"
 )
 
-// Mirrors the tag handlers/rds stamps on the volumes and ENIs it creates, which
+// Mirrors the tag domains/rds/instance stamps on the volumes and ENIs it creates, which
 // is the only link from a DB identifier back to them. Duplicated rather than
 // imported because the control plane keeps the key unexported.
 const rdsDBInstanceTagKey = "spinifex:rds-db-instance"
@@ -42,7 +42,7 @@ const rdsDBInstanceTagKey = "spinifex:rds-db-instance"
 // longest; the rest are control-plane transitions with no bootstrap in them.
 //
 // available must outlast the control plane's own bootstrap timeout (20m,
-// handlers/rds defaultBootstrapTimeout), or the two expire together and a
+// domains/rds/instance defaultBootstrapTimeout), or the two expire together and a
 // wedged instance is reported as a bare wait expiry rather than as the failed
 // status the reconciler was about to publish, with its reason attached.
 //
@@ -190,23 +190,23 @@ func AgeAutomatedBackup(t *testing.T, env *Env, accountID, snapshotID string, by
 	if err != nil {
 		t.Fatalf("AgeAutomatedBackup %s: jetstream context: %v", snapshotID, err)
 	}
-	kv, err := js.KeyValue(t.Context(), handlers_rds.AccountBucketName(accountID))
+	kv, err := js.KeyValue(t.Context(), rdsinstance.AccountBucketName(accountID))
 	if err != nil {
 		t.Fatalf("AgeAutomatedBackup %s: open account KV: %v", snapshotID, err)
 	}
-	key := handlers_rds.DBSnapshotKey(snapshotID)
+	key := rdsinstance.DBSnapshotKey(snapshotID)
 	entry, err := kv.Get(t.Context(), key)
 	if err != nil {
 		t.Fatalf("AgeAutomatedBackup %s: read %s: %v", snapshotID, key, err)
 	}
 
-	var rec handlers_rds.DBSnapshotRecord
+	var rec rdsinstance.DBSnapshotRecord
 	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 		t.Fatalf("AgeAutomatedBackup %s: decode %s: %v", snapshotID, key, err)
 	}
-	if rec.SnapshotType != handlers_rds.SnapshotTypeAutomated {
+	if rec.SnapshotType != rdsinstance.SnapshotTypeAutomated {
 		t.Fatalf("AgeAutomatedBackup %s: snapshot type is %q, want %q",
-			snapshotID, rec.SnapshotType, handlers_rds.SnapshotTypeAutomated)
+			snapshotID, rec.SnapshotType, rdsinstance.SnapshotTypeAutomated)
 	}
 	if rec.CreatedAt.IsZero() {
 		t.Fatalf("AgeAutomatedBackup %s: snapshot has no creation time", snapshotID)

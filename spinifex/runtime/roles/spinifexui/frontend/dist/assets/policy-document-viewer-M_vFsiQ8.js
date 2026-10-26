@@ -1,1 +1,0 @@
-import{L as e,R as t}from"./httpRequest-K6vx2e6z.js";import{n}from"./json-DzHSEHlf.js";var r=e(),i=t();function a(e){let t=(0,r.c)(4),{document:a}=e,o;t[0]===a?o=t[1]:(o=n(a)??a,t[0]=a,t[1]=o);let s;return t[2]===o?s=t[3]:(s=(0,i.jsx)(`pre`,{className:`overflow-auto rounded-md border bg-muted p-4 font-mono text-sm`,children:o}),t[2]=o,t[3]=s),s}export{a as t};

@@ -130,12 +130,12 @@ func (p *Provider) pidFilePath(volumeID string) string {
 	return filepath.Join(p.baseDir, "sockets", volumeID+".pid")
 }
 
-// checkVersion mirrors ebsprovider's own unexported check: the wire schema
-// version must match exactly, since this provider does not translate between
-// versions.
+// checkVersion mirrors ebsprovider's supported schema window. qemunbdd's
+// normal operations have the same representation in both versions; the NATS
+// server owns the version-specific PublishVolume wire conversion.
 func checkVersion(version uint16) error {
-	if version != ebsprovider.SchemaVersion {
-		return fmt.Errorf("%w: got %d, want %d", ebsprovider.ErrUnsupportedVersion, version, ebsprovider.SchemaVersion)
+	if !ebsprovider.SupportsSchemaVersion(version) {
+		return fmt.Errorf("%w: got %d, supported versions are %d and %d", ebsprovider.ErrUnsupportedVersion, version, ebsprovider.LegacySchemaVersion, ebsprovider.SchemaVersion)
 	}
 	return nil
 }
@@ -688,7 +688,7 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 		if pub.nodeID != req.NodeID {
 			return nil, fmt.Errorf("%w: volume %s is published to %s", ebsprovider.ErrVolumeInUse, req.VolumeID, pub.nodeID)
 		}
-		return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: pub.nodeID, NBDURI: nbd.FormatNBDSocketURI(pub.socketPath)}, nil
+		return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: pub.nodeID, Export: ebsprovider.NewNBDExport(nbd.FormatNBDSocketURI(pub.socketPath))}, nil
 	}
 
 	sockPath := p.socketPath(req.VolumeID)
@@ -718,7 +718,7 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 
 	pid := readPID(pidPath)
 	p.published[req.VolumeID] = &publication{nodeID: req.NodeID, socketPath: sockPath, pid: pid}
-	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, NBDURI: nbd.FormatNBDSocketURI(sockPath)}, nil
+	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, Export: ebsprovider.NewNBDExport(nbd.FormatNBDSocketURI(sockPath))}, nil
 }
 
 // readPID best-effort reads the PID qemu-nbd's --fork wrote to pidPath. A

@@ -11,29 +11,13 @@ import (
 // completed move whose line must be deleted.
 var frozenLegacyPackages = []string{
 	"accountteardown",
-	"daemon",
 	"gateway",
-	"gateway/bedrock",
-	"gateway/ecs",
-	"gateway/eks",
-	"gateway/elbv2",
-	"gateway/iam",
-	"gateway/rds",
 	"gateway/spx",
-	"gateway/sts",
-	"handlers/ecs",
-	"handlers/eks",
-	"handlers/elbv2",
-	"handlers/iam",
-	"handlers/iam/mock",
-	"handlers/rds",
-	"handlers/sts",
-	"lbagent",
 }
 
 // retiredLegacyRoots were legacy roots whose every package has moved to its
 // ADR-0001 target; recreating one would reopen a closed migration row.
-var retiredLegacyRoots = []string{"admin", "services", "utils", "vpcd"}
+var retiredLegacyRoots = []string{"admin", "daemon", "handlers", "lbagent", "services", "utils", "vpcd"}
 
 // TestADR0001_LegacyRootsFrozen: the current-to-target map gives every legacy
 // root a destination, so none may gain a package and no retired root may return.

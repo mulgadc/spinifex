@@ -18,10 +18,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre/hfhub"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
@@ -468,9 +468,9 @@ func TestResolveHFToken_FallsBackToStoredPlatformCredential(t *testing.T) {
 	baseDir := t.TempDir()
 	masterKey := bytes32Key()
 	require.NoError(t, os.MkdirAll(filepath.Join(baseDir, "config"), 0750))
-	require.NoError(t, handlers_iam.SaveMasterKey(filepath.Join(baseDir, "config", "master.key"), masterKey))
+	require.NoError(t, iamdomain.SaveMasterKey(filepath.Join(baseDir, "config", "master.key"), masterKey))
 
-	credStore := gateway_bedrock.NewCredentialStore(js, masterKey, nil)
+	credStore := ochre.NewCredentialStore(js, masterKey, nil)
 	require.NoError(t, credStore.PutCredential(context.Background(), awsidentifiers.GlobalAccountID, vendorHuggingFace, "hf_stored_token"))
 
 	cmd := newOchreWeightsPullTestCmd(t, selfHostModelID, testHFRepo, "main", "", "")
@@ -602,7 +602,7 @@ func TestRunOchreCredentialsSet_RoundTripsAndDefaultsToPlatformAccount(t *testin
 	baseDir := t.TempDir()
 	masterKey := bytes32Key()
 	require.NoError(t, os.MkdirAll(filepath.Join(baseDir, "config"), 0750))
-	require.NoError(t, handlers_iam.SaveMasterKey(filepath.Join(baseDir, "config", "master.key"), masterKey))
+	require.NoError(t, iamdomain.SaveMasterKey(filepath.Join(baseDir, "config", "master.key"), masterKey))
 	cfg := &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{"node1": {BaseDir: baseDir}}}
 	stubConnect(t, cfg, nc, nil)
 
@@ -621,7 +621,7 @@ func TestRunOchreCredentialsSet_RoundTripsAndDefaultsToPlatformAccount(t *testin
 	defer verifyConn.Close()
 	verifyJS := testutil.NewJetStream(t, verifyConn)
 
-	credStore := gateway_bedrock.NewCredentialStore(verifyJS, masterKey, nil)
+	credStore := ochre.NewCredentialStore(verifyJS, masterKey, nil)
 	token, ok, err := credStore.Resolve(context.Background(), awsidentifiers.GlobalAccountID, vendorHuggingFace)
 	require.NoError(t, err)
 	require.True(t, ok)

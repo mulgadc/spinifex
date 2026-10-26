@@ -16,10 +16,10 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/rdsgw"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
-	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,33 +29,33 @@ import (
 type fakeControlPlane struct {
 	mu sync.Mutex
 
-	registerOut  *handlers_rds.RegisterDBInstanceOutput
+	registerOut  *rdsinstance.RegisterDBInstanceOutput
 	registerErrs []error
 	registerReqs []identity
 
-	bootstrapOut  *handlers_rds.GetDBBootstrapConfigOutput
+	bootstrapOut  *rdsinstance.GetDBBootstrapConfigOutput
 	bootstrapErrs []error
 	// Returned once bootstrapErrs is drained, for a failure no retry heals.
 	bootstrapErr  error
 	bootstrapReqs []identity
 	// Scripted responses ahead of bootstrapOut, so a test can answer the first
 	// fetch differently from the ones the agent retries with.
-	bootstrapQueue []*handlers_rds.GetDBBootstrapConfigOutput
+	bootstrapQueue []*rdsinstance.GetDBBootstrapConfigOutput
 
 	ackErrs []error
 	ackReqs []pendingBootstrap
 
 	states []submittedState
 
-	pollReplies [][]handlers_rds.CommandReply
-	pollQueue   [][]handlers_rds.Command
+	pollReplies [][]rdsinstance.CommandReply
+	pollQueue   [][]rdsinstance.Command
 	pollErr     error
 	polled      chan struct{}
 }
 
 type submittedState struct {
 	id      identity
-	health  handlers_rds.EngineHealth
+	health  rdsinstance.EngineHealth
 	message string
 }
 
@@ -63,7 +63,7 @@ var _ controlPlane = (*fakeControlPlane)(nil)
 
 func newFakeControlPlane() *fakeControlPlane {
 	return &fakeControlPlane{
-		registerOut: &handlers_rds.RegisterDBInstanceOutput{
+		registerOut: &rdsinstance.RegisterDBInstanceOutput{
 			DBInstanceIdentifier: "db-resolved", HeartbeatIntervalSeconds: 30,
 		},
 		polled: make(chan struct{}, 64),
@@ -81,7 +81,7 @@ func nextErr(errs *[]error) error {
 	return err
 }
 
-func (f *fakeControlPlane) Register(_ context.Context, id identity) (*handlers_rds.RegisterDBInstanceOutput, error) {
+func (f *fakeControlPlane) Register(_ context.Context, id identity) (*rdsinstance.RegisterDBInstanceOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.registerReqs = append(f.registerReqs, id)
@@ -91,16 +91,16 @@ func (f *fakeControlPlane) Register(_ context.Context, id identity) (*handlers_r
 	return f.registerOut, nil
 }
 
-func (f *fakeControlPlane) SubmitState(_ context.Context, id identity, health handlers_rds.EngineHealth, message string) (*handlers_rds.SubmitDBStateChangeOutput, error) {
+func (f *fakeControlPlane) SubmitState(_ context.Context, id identity, health rdsinstance.EngineHealth, message string) (*rdsinstance.SubmitDBStateChangeOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.states = append(f.states, submittedState{id: id, health: health, message: message})
 	// Zero means "keep the cadence you have", so a test's fast interval is not
 	// reset by every beat.
-	return &handlers_rds.SubmitDBStateChangeOutput{Acknowledged: true}, nil
+	return &rdsinstance.SubmitDBStateChangeOutput{Acknowledged: true}, nil
 }
 
-func (f *fakeControlPlane) GetBootstrapConfig(_ context.Context, id identity) (*handlers_rds.GetDBBootstrapConfigOutput, error) {
+func (f *fakeControlPlane) GetBootstrapConfig(_ context.Context, id identity) (*rdsinstance.GetDBBootstrapConfigOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.bootstrapReqs = append(f.bootstrapReqs, id)
@@ -125,11 +125,11 @@ func (f *fakeControlPlane) AcknowledgeBootstrap(_ context.Context, _ identity, p
 	return nextErr(&f.ackErrs)
 }
 
-func (f *fakeControlPlane) PollCommands(ctx context.Context, _ identity, replies []handlers_rds.CommandReply, _ time.Duration) ([]handlers_rds.Command, error) {
+func (f *fakeControlPlane) PollCommands(ctx context.Context, _ identity, replies []rdsinstance.CommandReply, _ time.Duration) ([]rdsinstance.Command, error) {
 	f.mu.Lock()
 	f.pollReplies = append(f.pollReplies, slices.Clone(replies))
 	err := f.pollErr
-	var out []handlers_rds.Command
+	var out []rdsinstance.Command
 	if len(f.pollQueue) > 0 {
 		out, f.pollQueue = f.pollQueue[0], f.pollQueue[1:]
 	}
@@ -163,10 +163,10 @@ func (f *fakeControlPlane) snapshotStates() []submittedState {
 	return append([]submittedState(nil), f.states...)
 }
 
-func (f *fakeControlPlane) snapshotReplies() [][]handlers_rds.CommandReply {
+func (f *fakeControlPlane) snapshotReplies() [][]rdsinstance.CommandReply {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([][]handlers_rds.CommandReply, len(f.pollReplies))
+	out := make([][]rdsinstance.CommandReply, len(f.pollReplies))
 	for i := range f.pollReplies {
 		out[i] = slices.Clone(f.pollReplies[i])
 	}
@@ -200,12 +200,12 @@ func staticProbe(code int) probeRunner {
 	return func(context.Context, string, ...string) (int, string, error) { return code, "", nil }
 }
 
-func bootstrapOutput(password *string) *handlers_rds.GetDBBootstrapConfigOutput {
-	mode := handlers_rds.BootstrapModeAttach
+func bootstrapOutput(password *string) *rdsinstance.GetDBBootstrapConfigOutput {
+	mode := rdsinstance.BootstrapModeAttach
 	if password != nil {
-		mode = handlers_rds.BootstrapModeInitialize
+		mode = rdsinstance.BootstrapModeInitialize
 	}
-	return &handlers_rds.GetDBBootstrapConfigOutput{
+	return &rdsinstance.GetDBBootstrapConfigOutput{
 		Mode:                 mode,
 		DBInstanceIdentifier: "db-resolved",
 		Engine:               "postgres",
@@ -369,7 +369,7 @@ func TestBootstrap_RetriesHandoffWithoutRefetching(t *testing.T) {
 	a := newTestAgent(t, cfg, cp, staticProbe(0))
 
 	writes := 0
-	a.handoffWriter = func(_ string, got *handlers_rds.GetDBBootstrapConfigOutput) error {
+	a.handoffWriter = func(_ string, got *rdsinstance.GetDBBootstrapConfigOutput) error {
 		writes++
 		if got.MasterUserPassword == nil || *got.MasterUserPassword != password {
 			t.Fatalf("handoff attempt %d lost the initialize password", writes)
@@ -401,16 +401,16 @@ func TestBootstrap_RetriesInitializeWithNoPassword(t *testing.T) {
 	cp := newFakeControlPlane()
 	empty := ""
 	password := "staged-secret"
-	cp.bootstrapQueue = []*handlers_rds.GetDBBootstrapConfigOutput{{
-		Mode: handlers_rds.BootstrapModeInitialize, DBInstanceIdentifier: "db-resolved",
+	cp.bootstrapQueue = []*rdsinstance.GetDBBootstrapConfigOutput{{
+		Mode: rdsinstance.BootstrapModeInitialize, DBInstanceIdentifier: "db-resolved",
 		MasterUsername: "master", MasterUserPassword: &empty,
 	}}
 	cp.bootstrapOut = bootstrapOutput(&password)
 	cfg := testConfig(t)
 	a := newTestAgent(t, cfg, cp, staticProbe(0))
 
-	var handed []*handlers_rds.GetDBBootstrapConfigOutput
-	a.handoffWriter = func(_ string, got *handlers_rds.GetDBBootstrapConfigOutput) error {
+	var handed []*rdsinstance.GetDBBootstrapConfigOutput
+	a.handoffWriter = func(_ string, got *rdsinstance.GetDBBootstrapConfigOutput) error {
 		handed = append(handed, got)
 		return nil
 	}
@@ -530,7 +530,7 @@ func TestRun_RefusesAnEngineTheImageDoesNotBake(t *testing.T) {
 	// Reported rather than only logged, so the control plane learns why the
 	// instance never came up rather than only that it never did.
 	states := cp.snapshotStates()
-	if len(states) != 1 || states[0].health != handlers_rds.EngineHealthUnhealthy {
+	if len(states) != 1 || states[0].health != rdsinstance.EngineHealthUnhealthy {
 		t.Fatalf("submitted states = %+v, want a single unhealthy report", states)
 	}
 }
@@ -692,7 +692,7 @@ func TestRun_HeartbeatsEngineHealth(t *testing.T) {
 	<-done
 
 	beat := cp.snapshotStates()[0]
-	if beat.health != handlers_rds.EngineHealthHealthy {
+	if beat.health != rdsinstance.EngineHealthHealthy {
 		t.Errorf("heartbeat health = %q, want healthy", beat.health)
 	}
 	if beat.id.DBInstanceIdentifier != "db-resolved" {
@@ -747,7 +747,7 @@ func TestRun_HeartbeatReportsDownEngine(t *testing.T) {
 	<-done
 
 	beat := cp.snapshotStates()[0]
-	if beat.health != handlers_rds.EngineHealthUnhealthy {
+	if beat.health != rdsinstance.EngineHealthUnhealthy {
 		t.Errorf("heartbeat health = %q, want unhealthy while the agent is up", beat.health)
 	}
 	if beat.message == "" {
@@ -761,11 +761,11 @@ func TestPollDBCommandsOutput_MatchesGatewayShape(t *testing.T) {
 	issued := time.Date(2026, 7, 28, 1, 2, 3, 0, time.UTC)
 	// Rendered exactly as the gateway's typed adapter renders it, so a change to
 	// either side's tags fails here.
-	payload := awsxml.QueryResponsePayload("PollDBCommands", &gateway_rds.PollDBCommandsOutput{
-		Commands: []handlers_rds.Command{{
+	payload := awsxml.QueryResponsePayload("PollDBCommands", &rdsawsapi.PollDBCommandsOutput{
+		Commands: []rdsinstance.Command{{
 			CommandID:  "cmd-1",
 			Type:       "reload-parameters",
-			Parameters: []handlers_rds.Parameter{{Name: "work_mem", Value: "8MB"}},
+			Parameters: []rdsinstance.Parameter{{Name: "work_mem", Value: "8MB"}},
 			IssuedAt:   &issued,
 		}},
 	})

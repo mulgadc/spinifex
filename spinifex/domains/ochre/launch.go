@@ -18,7 +18,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
 // vllmServePort is the vLLM OpenAI-compatible server's listen port, baked
@@ -68,7 +67,7 @@ type LaunchDeps struct {
 	Image     amiResolver
 	Volume    launchVolumeProvisioner
 	Attacher  volumeAttacher
-	Weights   gateway_bedrock.WeightsResolver
+	Weights   WeightsResolver
 	// HostPort installs this daemon's own port into the system VPC. Without it
 	// nothing the launch produces is reachable, so a launch refuses to run.
 	HostPort hostPortPlumber
@@ -168,7 +167,7 @@ func assignMemberPorts(members []LaunchMemberInput) map[string]int {
 	ports := make(map[string]int, len(members))
 	next := teiBasePort
 	for _, m := range members {
-		if m.Family == gateway_bedrock.FamilyMeta {
+		if m.Family == FamilyMeta {
 			ports[m.ModelID] = vllmServePort
 			continue
 		}
@@ -335,7 +334,7 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 			return nil, fmt.Errorf("bedrock: attach weights volume %s to %s: %w", weightsVolumeID, instanceID, err)
 		}
 		memberOut[m.ModelID] = LaunchMemberOutput{Port: ports[m.ModelID], WeightsVolumeID: weightsVolumeID, Family: m.Family}
-		if m.Family == gateway_bedrock.FamilyMeta {
+		if m.Family == FamilyMeta {
 			primaryModelID = m.ModelID
 		}
 		slog.InfoContext(ctx, "bedrock: member weights volume attached",

@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/eksgw"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 )
 
 // Config is the webhook's runtime configuration; the binary sources it from
@@ -103,20 +103,20 @@ type tokenReviewRequest struct {
 // the gateway and decode the resolved identity. A non-2xx / transport error is
 // surfaced (handle() turns it into a 5xx so the apiserver retries) rather than a
 // silent deny, distinguishing "webhook broker down" from "token rejected".
-func gatewayReviewer(client *eksgw.Client, clusterName, accountID string) func(string) (handlers_eks.WebhookTokenReviewResult, error) {
+func gatewayReviewer(client *eksgw.Client, clusterName, accountID string) func(string) (ekscluster.WebhookTokenReviewResult, error) {
 	path := "/clusters/" + clusterName + "/token-review"
-	return func(token string) (handlers_eks.WebhookTokenReviewResult, error) {
+	return func(token string) (ekscluster.WebhookTokenReviewResult, error) {
 		body, err := json.Marshal(tokenReviewRequest{AccountID: accountID, Token: token})
 		if err != nil {
-			return handlers_eks.WebhookTokenReviewResult{}, fmt.Errorf("marshal request: %w", err)
+			return ekscluster.WebhookTokenReviewResult{}, fmt.Errorf("marshal request: %w", err)
 		}
 		respBody, err := client.Post(path, body)
 		if err != nil {
-			return handlers_eks.WebhookTokenReviewResult{}, err
+			return ekscluster.WebhookTokenReviewResult{}, err
 		}
-		var res handlers_eks.WebhookTokenReviewResult
+		var res ekscluster.WebhookTokenReviewResult
 		if err := json.Unmarshal(respBody, &res); err != nil {
-			return handlers_eks.WebhookTokenReviewResult{}, fmt.Errorf("decode response: %w", err)
+			return ekscluster.WebhookTokenReviewResult{}, fmt.Errorf("decode response: %w", err)
 		}
 		return res, nil
 	}
@@ -126,7 +126,7 @@ func gatewayReviewer(client *eksgw.Client, clusterName, accountID string) func(s
 type authenticator struct {
 	accountID   string
 	clusterName string
-	review      func(token string) (handlers_eks.WebhookTokenReviewResult, error)
+	review      func(token string) (ekscluster.WebhookTokenReviewResult, error)
 }
 
 func (a *authenticator) handle(w http.ResponseWriter, r *http.Request) {

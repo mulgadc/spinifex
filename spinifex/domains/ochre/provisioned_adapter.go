@@ -2,21 +2,15 @@ package ochre
 
 import (
 	"context"
-
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
-// ProvisionedEndpointAdapter adapts EndpointService to gateway_bedrock's
-// EndpointProvisioner, the narrow surface the provisioned-throughput ops
-// need. It exists because gateway_bedrock cannot import this package back
-// (domains/ochre already imports gateway_bedrock for LookupServingSpec),
-// so EndpointProvisioner is declared there with primitive-typed methods and
-// this adapter is what actually calls EndpointService underneath.
+// ProvisionedEndpointAdapter adapts EndpointService to EndpointProvisioner,
+// the narrow primitive-typed surface the provisioned-throughput ops need.
 type ProvisionedEndpointAdapter struct {
 	svc EndpointService
 }
 
-var _ gateway_bedrock.EndpointProvisioner = (*ProvisionedEndpointAdapter)(nil)
+var _ EndpointProvisioner = (*ProvisionedEndpointAdapter)(nil)
 
 // NewProvisionedEndpointAdapter constructs an adapter over svc.
 func NewProvisionedEndpointAdapter(svc EndpointService) *ProvisionedEndpointAdapter {

@@ -202,7 +202,7 @@ func TestRequestSpotInstances_Lifecycle(t *testing.T) {
 		"cancelled SIR must keep its InstanceId — the instance itself is untouched")
 
 	// Terminate-triggered close: a live daemon's teardown cleaner calls CloseForInstance
-	// in-process when a spot-backed instance is terminated (spinifex/daemon/vm_adapters.go
+	// in-process when a spot-backed instance is terminated (spinifex/runtime/daemon/vm_adapters.go
 	// RemoveFromSpotRequest) — that one-line delegation is already covered by
 	// TestRemoveFromSpotRequest_NoService_NoOp plus CloseForInstance's own unit tests
 	// (spinifex/domains/ec2/spotinstance/service_impl_test.go). What those unit tests can't

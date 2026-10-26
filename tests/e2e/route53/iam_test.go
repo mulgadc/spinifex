@@ -45,12 +45,14 @@ func TestRoute53ScopedIAMUsers(t *testing.T) {
 	}})
 
 	var zoneID string
+	// The zone outlives this subtest, so its cleanup belongs to the parent.
+	parent := t
 	t.Run("FullAccessManagesZonesAndRecords", func(t *testing.T) {
 		c := full.Route53
 		created, err := c.CreateHostedZone(&r53.CreateHostedZoneInput{Name: aws.String(name), CallerReference: aws.String(name)})
 		require.NoError(t, err)
 		zoneID = aws.StringValue(created.HostedZone.Id)
-		t.Cleanup(func() { deleteZone(t, tenant.Client.Route53, zoneID) })
+		parent.Cleanup(func() { deleteZone(parent, tenant.Client.Route53, zoneID) })
 		waitInSync(t, c, created.ChangeInfo.Id)
 
 		change, err := c.ChangeResourceRecordSets(&r53.ChangeResourceRecordSetsInput{

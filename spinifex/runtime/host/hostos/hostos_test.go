@@ -44,7 +44,12 @@ func (h *fakeHost) onPath(names ...string) {
 
 func (h *fakeHost) installQEMUKVM(t *testing.T, mode os.FileMode) {
 	t.Helper()
-	p := filepath.Join(h.root, QEMUKVMPath)
+	h.install(t, QEMUKVMPath, mode)
+}
+
+func (h *fakeHost) install(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	p := filepath.Join(h.root, path)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -291,6 +296,31 @@ func TestSystemBootTools(t *testing.T) {
 			}
 			if got.Bootloader.Name != tc.wantBootloader || got.Initramfs.Name != tc.wantInitramfs {
 				t.Fatalf("got %+v, want %s and %s", got, tc.wantBootloader, tc.wantInitramfs)
+			}
+		})
+	}
+}
+
+// strongSwan's charon is not pluto, so only libreswan's own daemon counts, and
+// a pluto that cannot run is not an IPsec stack.
+func TestHasLibreswan(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		install map[string]os.FileMode
+		want    bool
+	}{
+		{name: "pluto", install: map[string]os.FileMode{LibreswanPlutoPath: 0o755}, want: true},
+		{name: "strongSwan charon only", install: map[string]os.FileMode{"/usr/lib/ipsec/charon": 0o755}},
+		{name: "pluto not executable", install: map[string]os.FileMode{LibreswanPlutoPath: 0o644}},
+		{name: "neither"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFakeHost(t)
+			for path, mode := range tc.install {
+				h.install(t, path, mode)
+			}
+			if got := h.resolver("x86_64").hasLibreswan(); got != tc.want {
+				t.Fatalf("hasLibreswan() = %v, want %v", got, tc.want)
 			}
 		})
 	}

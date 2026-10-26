@@ -133,6 +133,12 @@ distro_ovs_logrotate() {
     return 1
 }
 
+# libreswan's IKE daemon. EL's openvswitch-ipsec drives libreswan even beside
+# strongSwan, so this is a presence check rather than one of a pair.
+distro_has_libreswan() {
+    [ -x "${DISTRO_ROOT:-}/usr/libexec/ipsec/pluto" ]
+}
+
 # The OVS and OVN units the given unit files depend on or order against that
 # are not installed, one per line; prints nothing when all are. Fails only
 # when a unit file cannot be read.

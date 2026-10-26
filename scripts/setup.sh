@@ -409,7 +409,12 @@ case "$1" in
         exec systemctl start openvswitch-ipsec.service
         ;;
     off)
-        exec systemctl mask --now openvswitch-ipsec.service
+        systemctl mask --now openvswitch-ipsec.service
+        # libreswan's pluto listens on UDP 500/4500 whenever ipsec.service runs.
+        # On Debian that name is strongswan-starter's alias, masked above.
+        if [ -x /usr/libexec/ipsec/pluto ]; then
+            systemctl mask --now ipsec.service
+        fi
         ;;
     *)
         echo "state not permitted: $1" >&2

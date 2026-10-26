@@ -151,6 +151,20 @@ fixture ovslr-none; probe distro_ovs_logrotate
 expect_fail "OVS logrotate: neither fails naming both" /etc/logrotate.d/openvswitch-switch /etc/logrotate.d/openvswitch
 
 # --------------------------------------------------------------------------
+# libreswan.
+# --------------------------------------------------------------------------
+# expect_rc <desc> <want> — for the predicates, which print nothing.
+expect_rc() {
+    if [ "$RC" = "$2" ]; then pass "$1"; else fail "$1 (rc=$RC, want $2)"; fi
+}
+fixture ls-pluto; file /usr/libexec/ipsec/pluto; chmod +x "$ROOT/usr/libexec/ipsec/pluto"; probe distro_has_libreswan
+expect_rc "libreswan: an executable pluto" 0
+fixture ls-noexec; file /usr/libexec/ipsec/pluto; probe distro_has_libreswan
+expect_rc "libreswan: a pluto that cannot run is not libreswan" 1
+fixture ls-charon; file /usr/lib/ipsec/charon; chmod +x "$ROOT/usr/lib/ipsec/charon"; probe distro_has_libreswan
+expect_rc "libreswan: strongSwan's charon is not libreswan" 1
+
+# --------------------------------------------------------------------------
 # OVS and OVN units the shipped Spinifex units name. Run against the real unit
 # files, so a unit that names a Debian-only OVS unit fails on the EL fixture.
 # --------------------------------------------------------------------------

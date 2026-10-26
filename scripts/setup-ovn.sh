@@ -1902,18 +1902,34 @@ echo ""
 echo "Step 10: Enabling OVN auto-start on boot..."
 sudo systemctl enable "$OVS_UNIT" 2>/dev/null || true
 sudo systemctl enable ovn-controller 2>/dev/null || true
-# ovs-monitor-ipsec drives strongSwan from OVS DB cert pointers. The daemon's
-# enableOVNIPSec() flips ipsec_encapsulation=true at runtime and silently drops
-# tunnel traffic if this unit isn't already up — enable at provision time so
-# daemon never needs systemd-write capability (only is-active read).
-sudo systemctl enable openvswitch-ipsec.service 2>/dev/null || true
-# When openvswitch-ipsec is installed before strongswan-starter, the deb
-# post-install starts the service against a missing /usr/sbin/ipsec and
-# leaves it in 'failed' state. Clear the failure and restart unconditionally
-# now that strongswan-starter is present.
-sudo systemctl reset-failed openvswitch-ipsec.service 2>/dev/null || true
-sudo systemctl restart openvswitch-ipsec.service 2>/dev/null || true
-printf '  %-21s enabled on boot\n' "${OVS_UNIT%.service}:" ovn-controller: openvswitch-ipsec:
+printf '  %-21s enabled on boot\n' "${OVS_UNIT%.service}:" ovn-controller:
+if distro_has_libreswan; then
+    # OVN IPsec does not run on libreswan yet, so it stays off here. Starting
+    # openvswitch-ipsec would also start pluto, which listens on UDP 500/4500.
+    IPSEC_UNITS=(ipsec.service)
+    distro_unit_exists openvswitch-ipsec.service && IPSEC_UNITS+=(openvswitch-ipsec.service)
+    if ! sudo systemctl mask --now "${IPSEC_UNITS[@]}" >/dev/null; then
+        echo "ERROR: could not stop and mask ${IPSEC_UNITS[*]}; IPsec must stay off on libreswan" >&2
+        exit 1
+    fi
+    printf '  %-21s %s\n' openvswitch-ipsec: "masked: IPsec stays off on libreswan" ipsec: "masked: IPsec stays off on libreswan"
+elif [ "$(systemctl is-enabled openvswitch-ipsec.service 2>/dev/null)" = masked ]; then
+    # The daemon masks it while IPsec is off and unmasks it to turn IPsec on.
+    printf '  %-21s %s\n' openvswitch-ipsec: "masked: IPsec is off, left to the daemon"
+else
+    # ovs-monitor-ipsec drives strongSwan from OVS DB cert pointers. The daemon's
+    # enableOVNIPSec() flips ipsec_encapsulation=true at runtime and silently drops
+    # tunnel traffic if this unit isn't already up — enable at provision time so
+    # daemon never needs systemd-write capability (only is-active read).
+    sudo systemctl enable openvswitch-ipsec.service 2>/dev/null || true
+    # When openvswitch-ipsec is installed before strongswan-starter, the deb
+    # post-install starts the service against a missing /usr/sbin/ipsec and
+    # leaves it in 'failed' state. Clear the failure and restart unconditionally
+    # now that strongswan-starter is present.
+    sudo systemctl reset-failed openvswitch-ipsec.service 2>/dev/null || true
+    sudo systemctl restart openvswitch-ipsec.service 2>/dev/null || true
+    printf '  %-21s enabled on boot\n' openvswitch-ipsec:
+fi
 
 # Applied now, outside the hostnet lock, so the daemon and vpcd find its
 # readiness marker; on the networkd backend the apply does nothing.

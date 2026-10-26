@@ -84,6 +84,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -1815,7 +1816,7 @@ func (d *Daemon) startCluster() error {
 	// background because the first attempt routinely loses the race with
 	// ovn-central accepting connections, and a node that gives up there stays
 	// unconfigured while a peer may already require encryption cluster-wide.
-	go host.MaintainIPSec(d.ctx, d.configPath, d.clusterConfig, d.ipsecBarrier())
+	go host.MaintainIPSec(d.ctx, d.configPath, d.clusterConfig, d.ipsecBarrier(), hostos.HasLibreswan())
 
 	// Keep the host firewall's peer sets in step with cluster membership. Every
 	// formation path reaches this, which none of the installers do. Runs in the

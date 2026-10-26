@@ -17,6 +17,10 @@ import (
 // guests of the host's own architecture.
 const QEMUKVMPath = "/usr/libexec/qemu-kvm"
 
+// LibreswanPlutoPath is libreswan's IKE daemon on Debian and EL alike. EL's
+// openvswitch-ipsec drives libreswan even when strongSwan is also installed.
+const LibreswanPlutoPath = "/usr/libexec/ipsec/pluto"
+
 // QEMU guest processes are named qemu-system-<arch> (comm truncates it to 15
 // bytes, so qemu-system-x86_64 reads qemu-system-x86) or qemu-kvm.
 const (
@@ -90,6 +94,11 @@ func SystemCATrust() (CATrust, error) {
 // SystemBootTools returns the host's bootloader and initramfs tools.
 func SystemBootTools() (BootTools, error) {
 	return std.bootTools()
+}
+
+// HasLibreswan reports whether the host's IPsec stack is libreswan.
+func HasLibreswan() bool {
+	return std.hasLibreswan()
 }
 
 // resolver holds the host lookups behind fields so tests run against a temp
@@ -213,6 +222,10 @@ func (r *resolver) pickOne(what string, candidates ...string) (Tool, error) {
 		}
 		return Tool{}, fmt.Errorf("ambiguous %s: found %s; cannot tell which one this host uses", what, strings.Join(names, " and "))
 	}
+}
+
+func (r *resolver) hasLibreswan() bool {
+	return r.isExecutable(LibreswanPlutoPath)
 }
 
 func (r *resolver) isExecutable(path string) bool {

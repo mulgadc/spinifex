@@ -7,8 +7,8 @@ import (
 	"maps"
 	"slices"
 
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
@@ -181,7 +181,7 @@ func ResourceARNs(action, region, accountID string, body []byte) ([]string, erro
 func resolve(source resourceSource, action, region, accountID string, scope bodyscope.Scope) ([]string, error) {
 	// The handler resolves an omitted cluster to "default", so the gate must
 	// too, or a fence on the default cluster never fires.
-	cluster := handlers_ecs.ClusterShortName(scope.String("cluster"))
+	cluster := ecsdomain.ClusterShortName(scope.String("cluster"))
 
 	switch source {
 	case sourceAny:
@@ -191,7 +191,7 @@ func resolve(source resourceSource, action, region, accountID string, scope body
 		return one(clusterARN(region, accountID, cluster)), nil
 
 	case sourceNewCluster:
-		name := handlers_ecs.ClusterShortName(scope.String("clusterName"))
+		name := ecsdomain.ClusterShortName(scope.String("clusterName"))
 		return one(clusterARN(region, accountID, name)), nil
 
 	case sourceClusters:
@@ -202,7 +202,7 @@ func resolve(source resourceSource, action, region, accountID string, scope body
 			return one(clusterARN(region, accountID, cluster)), nil
 		}
 		return each(refs, func(ref string) string {
-			return clusterARN(region, accountID, handlers_ecs.ClusterShortName(ref))
+			return clusterARN(region, accountID, ecsdomain.ClusterShortName(ref))
 		})
 
 	case sourceService:
@@ -283,39 +283,39 @@ func clusterARN(region, accountID, cluster string) string {
 	if region == "" || accountID == "" || cluster == "" {
 		return anyResource
 	}
-	return handlers_ecs.ClusterARN(region, accountID, cluster)
+	return ecsdomain.ClusterARN(region, accountID, cluster)
 }
 
 func serviceARN(region, accountID, cluster, ref string) string {
-	name := handlers_ecs.ServiceShortName(ref)
+	name := ecsdomain.ServiceShortName(ref)
 	if region == "" || accountID == "" || cluster == "" || name == "" {
 		return anyResource
 	}
-	return handlers_ecs.ServiceARN(region, accountID, cluster, name)
+	return ecsdomain.ServiceARN(region, accountID, cluster, name)
 }
 
 func taskARN(region, accountID, cluster, ref string) string {
-	id := handlers_ecs.TaskShortID(ref)
+	id := ecsdomain.TaskShortID(ref)
 	if region == "" || accountID == "" || cluster == "" || id == "" {
 		return anyResource
 	}
-	return handlers_ecs.TaskARN(region, accountID, cluster, id)
+	return ecsdomain.TaskARN(region, accountID, cluster, id)
 }
 
 func containerInstanceARN(region, accountID, cluster, ref string) string {
-	id := handlers_ecs.ContainerInstanceShortID(ref)
+	id := ecsdomain.ContainerInstanceShortID(ref)
 	if region == "" || accountID == "" || cluster == "" || id == "" {
 		return anyResource
 	}
-	return handlers_ecs.ContainerInstanceARN(region, accountID, cluster, id)
+	return ecsdomain.ContainerInstanceARN(region, accountID, cluster, id)
 }
 
 func capacityProviderARN(region, accountID, ref string) string {
-	name := handlers_ecs.CapacityProviderShortName(ref)
+	name := ecsdomain.CapacityProviderShortName(ref)
 	if region == "" || accountID == "" || name == "" {
 		return anyResource
 	}
-	return handlers_ecs.CapacityProviderARN(region, accountID, name)
+	return ecsdomain.CapacityProviderARN(region, accountID, name)
 }
 
 // taskDefARN resolves "family", "family:revision" or a full ARN the way the
@@ -342,7 +342,7 @@ func tagARN(region, accountID, resourceARN string) string {
 	if region == "" || accountID == "" {
 		return anyResource
 	}
-	segment, err := handlers_ecs.ResourceARNSegment(resourceARN)
+	segment, err := ecsdomain.ResourceARNSegment(resourceARN)
 	if err != nil {
 		// An ARN the tag handler rejects stays its own validation fault.
 		return anyResource

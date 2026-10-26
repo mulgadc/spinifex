@@ -1,0 +1,165 @@
+package ecs
+
+import (
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
+	"testing"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestARNBuilders(t *testing.T) {
+	assert.Equal(t, "arn:aws:ecs:ap-southeast-2:123456789012:cluster/web",
+		ClusterARN("ap-southeast-2", "123456789012", "web"))
+	assert.Equal(t, "arn:aws:ecs:ap-southeast-2:123456789012:task-definition/nginx:3",
+		taskdefinition.ARN("ap-southeast-2", "123456789012", "nginx", 3))
+	assert.Equal(t, "arn:aws:ecs:ap-southeast-2:123456789012:task/web/t-1",
+		TaskARN("ap-southeast-2", "123456789012", "web", "t-1"))
+	assert.Equal(t, "arn:aws:ecs:ap-southeast-2:123456789012:container-instance/web/i-1",
+		ContainerInstanceARN("ap-southeast-2", "123456789012", "web", "i-1"))
+}
+
+func TestTaskDefReservedSums(t *testing.T) {
+	td := &taskdefinition.Record{Containers: []taskdefinition.Container{
+		{CPU: 128, MemoryMiB: 256},
+		{CPU: 64, MemoryMiB: 128},
+	}}
+	assert.Equal(t, 192, td.ReservedCPU())
+	assert.Equal(t, 384, td.ReservedMemory())
+}
+
+func TestClusterShortName(t *testing.T) {
+	assert.Equal(t, defaultCluster, ClusterShortName(""))
+	assert.Equal(t, "web", ClusterShortName("web"))
+	assert.Equal(t, "web", ClusterShortName("arn:aws:ecs:r:a:cluster/web"))
+}
+
+func TestContainerInstanceShortID(t *testing.T) {
+	assert.Equal(t, "i-1", ContainerInstanceShortID("i-1"))
+	assert.Equal(t, "i-1", ContainerInstanceShortID("arn:aws:ecs:r:a:container-instance/web/i-1"))
+}
+
+func TestAWSStringSlice(t *testing.T) {
+	got := awsStringSlice([]*string{aws.String("a"), nil, aws.String(""), aws.String("b")})
+	assert.Equal(t, []string{"a", "b"}, got)
+}
+
+// containerDefsFromAWS → toAWS / toAssignContainer must preserve image, command,
+// env, and port mappings (the fields the agent actually runs on).
+func TestContainerDefRoundTrip(t *testing.T) {
+	in := []*ecs.ContainerDefinition{{
+		Name:         aws.String("web"),
+		Image:        aws.String("registry/web:1"),
+		Cpu:          aws.Int64(128),
+		Memory:       aws.Int64(256),
+		Essential:    aws.Bool(true),
+		Command:      []*string{aws.String("/bin/sh"), aws.String("-c")},
+		Environment:  []*ecs.KeyValuePair{{Name: aws.String("FOO"), Value: aws.String("bar")}},
+		PortMappings: []*ecs.PortMapping{{ContainerPort: aws.Int64(80), HostPort: aws.Int64(8080), Protocol: aws.String("tcp"), Name: aws.String("http")}},
+	}}
+	defs := containerDefsFromAWS(in)
+	require.Len(t, defs, 1)
+	d := defs[0]
+	assert.Equal(t, "registry/web:1", d.Image)
+	assert.Equal(t, 128, d.CPU)
+	assert.Equal(t, []string{"/bin/sh", "-c"}, d.Command)
+	assert.Equal(t, "bar", d.Environment["FOO"])
+	require.Len(t, d.PortMappings, 1)
+	assert.Equal(t, 8080, d.PortMappings[0].HostPort)
+	assert.Equal(t, "http", d.PortMappings[0].Name)
+
+	back := containerToAWS(d)
+	assert.Equal(t, "registry/web:1", aws.StringValue(back.Image))
+	assert.Equal(t, int64(80), aws.Int64Value(back.PortMappings[0].ContainerPort))
+	assert.Equal(t, "http", aws.StringValue(back.PortMappings[0].Name))
+
+	ac := containerToAssign(d)
+	assert.Equal(t, "web", ac.Name)
+	assert.Equal(t, "registry/web:1", ac.Image)
+	assert.Equal(t, "bar", ac.Environment["FOO"])
+}
+
+// TestContainerDefRoundTrip_PortNameOmittedWhenUnset covers the AWS-parity
+// path: a port mapping with no name must not grow one on the way back out.
+func TestContainerDefRoundTrip_PortNameOmittedWhenUnset(t *testing.T) {
+	in := []*ecs.ContainerDefinition{{
+		Name: aws.String("web"), Image: aws.String("registry/web:1"), Essential: aws.Bool(true),
+		PortMappings: []*ecs.PortMapping{{ContainerPort: aws.Int64(80)}},
+	}}
+	defs := containerDefsFromAWS(in)
+	require.Len(t, defs, 1)
+	assert.Empty(t, defs[0].PortMappings[0].Name)
+	back := containerToAWS(defs[0])
+	assert.Nil(t, back.PortMappings[0].Name)
+}
+
+func TestContainerDefsFromAWS_SkipsNil(t *testing.T) {
+	assert.Empty(t, containerDefsFromAWS([]*ecs.ContainerDefinition{nil}))
+}
+
+// TestContainerDefsFromAWS_GPU verifies that a
+// resourceRequirements entry of type=GPU is parsed as a whole-GPU count and
+// carried onto taskdefinition.Container, its AWS round trip, and the bus AssignContainer.
+func TestContainerDefsFromAWS_GPU(t *testing.T) {
+	in := []*ecs.ContainerDefinition{{
+		Name: aws.String("gpu-app"), Image: aws.String("registry/gpu-app:1"), Essential: aws.Bool(true),
+		ResourceRequirements: []*ecs.ResourceRequirement{
+			{Type: aws.String(ecs.ResourceTypeGpu), Value: aws.String("2")},
+		},
+	}}
+	defs := containerDefsFromAWS(in)
+	require.Len(t, defs, 1)
+	assert.Equal(t, 2, defs[0].GPU)
+
+	back := containerToAWS(defs[0])
+	require.Len(t, back.ResourceRequirements, 1)
+	assert.Equal(t, ecs.ResourceTypeGpu, aws.StringValue(back.ResourceRequirements[0].Type))
+	assert.Equal(t, "2", aws.StringValue(back.ResourceRequirements[0].Value))
+
+	ac := containerToAssign(defs[0])
+	assert.Equal(t, 2, ac.GPU)
+}
+
+// TestContainerDefsFromAWS_NoGPU_Regression covers the non-GPU path: no
+// resourceRequirements means GPU stays 0 and toAWS omits the field.
+func TestContainerDefsFromAWS_NoGPU_Regression(t *testing.T) {
+	in := []*ecs.ContainerDefinition{{Name: aws.String("web"), Image: aws.String("registry/web:1"), Essential: aws.Bool(true)}}
+	defs := containerDefsFromAWS(in)
+	require.Len(t, defs, 1)
+	assert.Zero(t, defs[0].GPU)
+	assert.Empty(t, containerToAWS(defs[0]).ResourceRequirements)
+	assert.Zero(t, containerToAssign(defs[0]).GPU)
+}
+
+// TestGPUCountFromResourceRequirements covers the extraction edge cases: nil
+// entries, non-GPU types, multiple GPU entries summed, and an invalid value
+// (non-numeric or negative) skipped rather than erroring.
+func TestGPUCountFromResourceRequirements(t *testing.T) {
+	assert.Zero(t, gpuCountFromResourceRequirements(nil))
+	assert.Zero(t, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{nil}))
+	assert.Zero(t, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{
+		{Type: aws.String(ecs.ResourceTypeInferenceAccelerator), Value: aws.String("device1")},
+	}))
+	assert.Equal(t, 3, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{
+		{Type: aws.String(ecs.ResourceTypeGpu), Value: aws.String("1")},
+		{Type: aws.String(ecs.ResourceTypeGpu), Value: aws.String("2")},
+	}))
+	assert.Zero(t, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{
+		{Type: aws.String(ecs.ResourceTypeGpu), Value: aws.String("not-a-number")},
+	}))
+	assert.Zero(t, gpuCountFromResourceRequirements([]*ecs.ResourceRequirement{
+		{Type: aws.String(ecs.ResourceTypeGpu), Value: aws.String("-1")},
+	}))
+}
+
+// TestTaskDefReservedGPU covers the task-level GPU aggregate (sum across
+// container defs), mirroring TestTaskDefReservedSums for CPU/memory.
+func TestTaskDefReservedGPU(t *testing.T) {
+	td := &taskdefinition.Record{Containers: []taskdefinition.Container{{GPU: 1}, {GPU: 3}}}
+	assert.Equal(t, 4, td.ReservedGPU())
+
+	empty := &taskdefinition.Record{Containers: []taskdefinition.Container{{CPU: 128}}}
+	assert.Zero(t, empty.ReservedGPU())
+}

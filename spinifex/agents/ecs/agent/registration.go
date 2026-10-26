@@ -6,7 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 )
 
 // identity is the container instance's stable identity, assembled at boot from
@@ -34,8 +34,8 @@ func instanceAttributes(id identity) []*ecs.Attribute {
 		}
 		attrs = append(attrs, &ecs.Attribute{Name: aws.String(name), Value: aws.String(value)})
 	}
-	add(handlers_ecs.AttrInstanceType, id.InstanceType)
-	add(handlers_ecs.AttrAvailabilityZone, id.AZ)
+	add(ecsdomain.AttrInstanceType, id.InstanceType)
+	add(ecsdomain.AttrAvailabilityZone, id.AZ)
 	return attrs
 }
 

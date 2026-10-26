@@ -166,7 +166,7 @@ func WithRenewalClock(now func() time.Time) WorkerOption {
 
 // NewWorker builds a renewal worker over svc. holderID identifies this node
 // in the per-certificate lease (the daemon passes its node ID, mirroring
-// handlers_ecs.NewScheduler's holder identity).
+// ecs.NewScheduler's holder identity).
 func NewWorker(svc *ACMServiceImpl, holderID string, opts ...WorkerOption) *Worker {
 	w := &Worker{
 		svc:          svc,

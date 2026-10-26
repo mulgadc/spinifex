@@ -8,7 +8,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -47,6 +47,6 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	t.Cleanup(eks.Shutdown)
 	subscribeServiceMethods(t, nc, "eks", eks)
 
-	subscribeServiceMethods(t, nc, "ecs", handlers_ecs.NewService(nc, testRegion, ""))
+	subscribeServiceMethods(t, nc, "ecs", ecsdomain.NewService(nc, testRegion, ""))
 	subscribeServiceMethods(t, nc, "rds", rdsinstance.NewService(nc, testRegion))
 }

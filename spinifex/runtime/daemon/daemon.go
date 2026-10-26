@@ -63,6 +63,7 @@ import (
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -79,7 +80,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
@@ -167,8 +167,8 @@ type Daemon struct {
 	eipService            ec2eip.EIPService
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
 	eksService            *ekscluster.EKSServiceImpl
-	ecsService            *handlers_ecs.Service
-	ecsScheduler          *handlers_ecs.Scheduler
+	ecsService            *ecsdomain.Service
+	ecsScheduler          *ecsdomain.Scheduler
 	rdsService            *rdsinstance.Service
 	rdsReconciler         *rdsinstance.Reconciler
 	bedrockService        *ochre.Service
@@ -2106,13 +2106,13 @@ func (d *Daemon) startCluster() error {
 	// scheduler goroutine that owns the Layer-2 bus subscriptions and heartbeat
 	// reaper. The scheduler is disabled (handlers still serve) when JetStream is
 	// unavailable.
-	d.ecsService = handlers_ecs.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.ServicesDomain).WithDeps(d.buildECSServiceDeps())
+	d.ecsService = ecsdomain.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.ServicesDomain).WithDeps(d.buildECSServiceDeps())
 	if js, jsErr := jetstream.New(d.natsConn); jsErr != nil {
 		slog.Warn("ECS scheduler disabled: JetStream unavailable", "err", jsErr)
-	} else if _, lbErr := handlers_ecs.InitLeaderBucket(d.ctx, js); lbErr != nil {
+	} else if _, lbErr := ecsdomain.InitLeaderBucket(d.ctx, js); lbErr != nil {
 		slog.Warn("ECS scheduler disabled: leader bucket init failed", "err", lbErr)
 	} else {
-		d.ecsScheduler = handlers_ecs.NewScheduler(d.natsConn, d.ecsService, d.node)
+		d.ecsScheduler = ecsdomain.NewScheduler(d.natsConn, d.ecsService, d.node)
 		d.shutdownWg.Go(func() {
 			defer func() {
 				if r := recover(); r != nil {

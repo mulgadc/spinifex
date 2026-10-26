@@ -207,7 +207,7 @@ Spinifex's own **host** firewall is separate, and already carries this policy �
 
 Choose one method and apply it to **every** server in the cluster.
 
-**Option A — existing OS.** On a server already running Ubuntu 26.04 or Debian 13:
+**Option A — existing OS.** On a server already running Ubuntu 26.04 or Debian 13 (Oracle Linux runs a single node only for now, see [Oracle Linux Hosts](/docs/install-oracle-linux)):
 
 ```bash
 curl -fsSL https://install.mulgadc.com | bash

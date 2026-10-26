@@ -1,7 +1,7 @@
 ---
 title: "Air-Gapped Install"
 seoTitle: "Install Spinifex in an Air-Gapped Network — Spinifex Docs"
-description: "Deploy Spinifex in environments without internet connectivity. Covers using a pre-built release tarball, mirrored APT packages, and locally-staged cloud images."
+description: "Deploy Spinifex without internet access, using a pre-built release tarball, APT or RPM packages staged on a connected machine, and locally staged cloud images."
 category: "Install"
 tags:
   - install
@@ -50,6 +50,8 @@ sha256sum -c "spinifex-${TAG}-linux-${ARCH}.tar.gz.sha256"
 ```
 
 ## Step 2. Stage Dependencies (on the connected machine)
+
+On an Oracle Linux target, stage RPMs instead of the APT packages below, as in [Oracle Linux Hosts](#oracle-linux-hosts); the AWS CLI and cloud image steps are the same.
 
 Pre-download the APT packages installed by the production setup. `apt install --download-only` writes `.deb` files to `/var/cache/apt/archives/` without installing them, so the connected machine isn't modified:
 
@@ -164,6 +166,39 @@ aws ec2 describe-images
 
 If both calls return data, your air-gapped install is working. Continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to launch your first instance.
 
+## Oracle Linux Hosts
+
+This path has not been run end to end on an air-gapped Oracle Linux host yet.
+It replaces the APT parts of Steps 2 to 4; every other step is the same.
+
+With `INSTALL_SPINIFEX_SKIP_APT=1`, `setup.sh` installs no packages and sets up no repositories on Oracle Linux, so the RPMs must come from a connected Oracle Linux machine that already has them configured.
+Use a connected Oracle Linux 10 host on the same minor release as the target, and run the online installer on it once, or `SETUP_STAGES=deps bash setup.sh`, which adds the UEK R8, KVM Utilities and NFV SIG repositories and the AppStream QEMU exclude.
+Then download the package list from `OL_RUNTIME_PACKAGES` in `setup.sh` with all its dependencies, together with the modules for the kernel the target runs (`uname -r` on the target):
+
+```bash
+TARGET_KERNEL=6.12.0-...el10uek.x86_64   # uname -r on the target
+mkdir -p rpms
+sudo dnf download --resolve --alldeps --destdir rpms   nbdkit nbdkit-basic-filters   qemu-kvm qemu-img edk2-ovmf seabios-bin less pciutils   jq curl iproute ethtool nmap-ncat wget unzip xz file   ovn25.03-central ovn25.03-host openvswitch3.5 openvswitch3.5-ipsec libreswan dhcpcd   chrony nftables iptables-nft systemd-resolved   "kernel-uek-modules-${TARGET_KERNEL}"
+```
+
+Copy `rpms/` to the transfer media in place of `apt-packages/`.
+On the target, disable the network repositories before installing, so that neither dnf nor the installer tries to reach them:
+
+```bash
+sudo dnf config-manager --set-disabled '*'
+sudo dnf install -y --disablerepo='*' /mnt/usb/rpms/*.rpm
+```
+
+Then run `setup.sh` as in Step 4, with `INSTALL_SPINIFEX_SKIP_APT=1`.
+
+The installer's DNS handover to systemd-resolved still runs.
+It waits up to 10 seconds for `resolvectl dns` to list a DNS server, so the target's `br-wan` profile needs one, such as the site's internal resolver.
+With every repository disabled, it warns that there is no repository host to look up and carries on.
+
+Because the installer skipped the repository setup, the target has no NFV SIG repository and no AppStream QEMU exclude.
+If the host later reaches a repository mirror, run `setup.sh` once without `INSTALL_SPINIFEX_SKIP_APT` before updating, so a later AppStream QEMU cannot replace the KVM Utilities one.
+Every new `kernel-uek` brought across needs its `kernel-uek-modules` too; see [Oracle Linux Hosts](/docs/install-oracle-linux) for keeping the host updated.
+
 ## Troubleshooting
 
 ### Missing APT Dependencies
@@ -186,6 +221,11 @@ sudo INSTALL_SPINIFEX_TARBALL=/mnt/usb/tarball/spinifex-...tar.gz \
      INSTALL_SPINIFEX_SKIP_AWS=1 \
      bash -x /mnt/usb/setup.sh
 ```
+
+### Oracle Linux: the package repository host no longer resolves
+
+The installer checks that the first enabled repository's host still resolves after it hands DNS to systemd-resolved.
+On an air-gapped host that host is unreachable by design: disable the network repositories with `sudo dnf config-manager --set-disabled '*'` and run `setup.sh` again.
 
 ### Init Telemetry Attempted
 

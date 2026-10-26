@@ -145,6 +145,16 @@ Spinifex nodes initiate a small, fixed set of outbound connections.
 | `https://d2yp8ipz5jfqcw.cloudfront.net` | Alpine image for managed HAProxy load-balancer | HTTPS | TLS + checksum verification |
 | `https://install.mulgadc.com/install` | One-shot install telemetry POST on `spx admin init` / `join`. | HTTPS | TLS |
 
+**During install and package updates on Oracle Linux hosts:**
+
+| Destination | Purpose | Protocol | Verification |
+|-------------|---------|----------|--------------|
+| `https://yum.oracle.com` | Oracle Linux BaseOS, AppStream, UEK R8 and KVM Utilities repositories | HTTPS | TLS + Oracle RPM signatures |
+| `https://mirror.stream.centos.org/SIGs/10-stream/nfv/` | Open vSwitch and OVN from the CentOS NFV SIG, limited by `includepkgs=` | HTTPS | TLS + NFV SIG RPM signatures |
+| `https://www.centos.org/keys/RPM-GPG-KEY-CentOS-SIG-NFV` | NFV SIG signing key, fetched once at install | HTTPS | TLS + fingerprint pinned in `setup.sh` |
+
+Debian and Ubuntu hosts reach their distribution's own mirrors for the same purpose.
+
 **To peer nodes (cluster-internal):** NATS federation (4248), Predastore S3 (8443), OVN NB/SB (6641/6642), northstar DNS forwarding (5300), and the Geneve/IPsec overlay (6081, 500, 4500, ESP) — see [§3](#3-cross-node-internal-connections) for encryption and verification of each. The daemon also polls local NATS monitoring at `127.0.0.1:8222/varz` (loopback HTTP). It opens no connection to Predastore for status: the storage topology it reports comes from reading `predastore.toml`, and no Predastore node serves a status endpoint.
 
 **Update checks and metadata.** Spinifex does not check for updates and does not consume a cloud metadata service (`169.254.169.254` is served *by* the cluster to guest VMs). Node software updates come from the operator's OS package channel. The install-telemetry endpoint above is the only vendor-operated destination contacted by a node; closed-egress deployments should disable it and record the opt-out in the security plan.

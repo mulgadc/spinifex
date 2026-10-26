@@ -58,6 +58,17 @@ What it does:
 6. Loads the vfio modules from the initramfs: through `/etc/initramfs-tools/modules` and `update-initramfs -u`, or through `/etc/dracut.conf.d/spinifex-vfio.conf` and `dracut -f --regenerate-all`. With dracut, each rebuilt image is checked with `lsinitrd` for `vfio_pci`, its early-load line and the `modprobe.d` files, and setup stops naming whatever is missing.
 
 The command finds its boot tools before changing anything, and stops naming them if the host has neither or both of `update-grub` and `grubby`, or of `update-initramfs` and `dracut`.
+
+**Oracle Linux hosts** take the `grubby` and `dracut` path: Oracle Linux keeps kernel arguments in BLS boot entries and has no `GRUB_CMDLINE_LINUX_DEFAULT`.
+`grubby --update-kernel=ALL` writes the IOMMU arguments to every entry and to `/etc/kernel/cmdline`, from which a kernel installed later builds its own entry, and dracut applies `spinifex-vfio.conf` to every initramfs it builds.
+After installing a new `kernel-uek`, check its entry before rebooting into it:
+
+```bash
+sudo grubby --info=ALL | grep -E '^(kernel|args)'
+sudo lsinitrd -k <new-kernel-version> | grep vfio
+```
+
+Whole-GPU passthrough is supported on Oracle Linux; NVIDIA MIG is not.
 If any change requires a reboot, the command prints instructions and exits:
 
 ```
@@ -176,7 +187,7 @@ The command signals the daemon and waits for confirmation. The GPU is released b
 
 ### IOMMU not active after reboot
 
-Verify IOMMU is enabled in BIOS/UEFI (`Intel VT-d` or `AMD-Vi`). Then check GRUB picked up the parameters:
+Verify IOMMU is enabled in BIOS/UEFI (`Intel VT-d` or `AMD-Vi`). Then check the boot loader picked up the parameters (on Oracle Linux, `sudo grubby --info=DEFAULT` lists them for the default entry):
 
 ```bash
 cat /proc/cmdline | grep iommu

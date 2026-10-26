@@ -12,8 +12,6 @@ import (
 var frozenLegacyPackages = []string{
 	"accountteardown",
 	"gateway",
-	"gateway/ecs",
-	"gateway/elbv2",
 	"gateway/spx",
 }
 

@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +22,7 @@ import (
 // check ran ahead of the resource existing at all.
 func dispatchECS(t *testing.T, gw *GatewayConfig, action, body string) error {
 	t.Helper()
-	req := setupECSRequest(gateway_ecs.TargetPrefix+"."+action, body)
+	req := setupECSRequest(ecsawsapi.TargetPrefix+"."+action, body)
 	return gw.ECS_Request(httptest.NewRecorder(), req)
 }
 
@@ -143,9 +143,9 @@ func TestECSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 		`"containerInstance":"ci-1","taskDefinition":"app:1","name":"cp","capacityProvider":"cp",` +
 		`"clusterName":"prod","resourceArn":"` + ecsResourceARN("cluster/prod") + `"}`)
 
-	for _, action := range gateway_ecs.ScopedActions() {
+	for _, action := range ecsawsapi.ScopedActions() {
 		t.Run(action, func(t *testing.T) {
-			resources, err := gateway_ecs.ResourceARNs(action, authzRegion, authzAccountID, body)
+			resources, err := ecsawsapi.ResourceARNs(action, authzRegion, authzAccountID, body)
 			require.NoError(t, err)
 			assert.NoError(t, gw.checkPolicyResources(req, "ecs", action, resources))
 		})
@@ -157,7 +157,7 @@ func TestECSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 func TestECSRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "ecs:*", "*"))
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
-	req.Header.Set("X-Amz-Target", gateway_ecs.TargetPrefix+".ListClusters")
+	req.Header.Set("X-Amz-Target", ecsawsapi.TargetPrefix+".ListClusters")
 	req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxService, "ecs")))
 
 	err := gw.ECS_Request(httptest.NewRecorder(), req)

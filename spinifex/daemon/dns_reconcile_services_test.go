@@ -7,8 +7,8 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +19,7 @@ import (
 func TestDNSDesiredSet_ServicesWithoutBaseDomain(t *testing.T) {
 	d := &Daemon{
 		elbv2Service: &handlers_elbv2.ELBv2ServiceImpl{},
-		eksService:   &handlers_eks.EKSServiceImpl{},
+		eksService:   &ekscluster.EKSServiceImpl{},
 		rdsService:   &rdsinstance.Service{},
 	}
 
@@ -38,7 +38,7 @@ func TestDNSDesiredSet_ServicesEnumerateCompletely(t *testing.T) {
 	elb, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(cfg, nc, bytes.Repeat([]byte{0x42}, masterkey.MasterKeySize))
 	require.NoError(t, err)
 	t.Cleanup(elb.Close)
-	eks, err := handlers_eks.NewEKSServiceImpl(handlers_eks.EKSServiceDeps{NATSConn: nc, Config: cfg})
+	eks, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Config: cfg})
 	require.NoError(t, err)
 	t.Cleanup(eks.Shutdown)
 	rds := rdsinstance.NewService(nc, cfg.Region).WithDeps(rdsinstance.Deps{BaseDomain: "example.internal"})

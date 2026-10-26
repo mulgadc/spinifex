@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,7 +109,7 @@ func (f *fakeEKS) requestAt(t *testing.T, subject string, index int, into any) {
 }
 
 func newEKSReapers(nc *nats.Conn) (*eksNodegroupReaper, *eksClusterReaper) {
-	svc := handlers_eks.NewNATSEKSService(nc)
+	svc := ekscluster.NewNATSEKSService(nc)
 	return &eksNodegroupReaper{svc: svc}, &eksClusterReaper{svc: svc}
 }
 

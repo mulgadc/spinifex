@@ -8,8 +8,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 )
 
@@ -36,10 +36,10 @@ type publishInternalOutput struct{}
 // validBootstrapKinds is the closed set of bootstrap subject suffixes the
 // broker will relay, preventing arbitrary subject injection.
 var validBootstrapKinds = map[string]struct{}{
-	handlers_eks.BootstrapSubjectToken:      {},
-	handlers_eks.BootstrapSubjectKubeconfig: {},
-	handlers_eks.BootstrapSubjectJWKS:       {},
-	handlers_eks.BootstrapSubjectCA:         {},
+	ekscluster.BootstrapSubjectToken:      {},
+	ekscluster.BootstrapSubjectKubeconfig: {},
+	ekscluster.BootstrapSubjectJWKS:       {},
+	ekscluster.BootstrapSubjectCA:         {},
 }
 
 // decodeInternalPublish is the one reading of the body that both AuthorizeInternal
@@ -83,9 +83,9 @@ func PublishInternal(ctx context.Context, natsConn *nats.Conn, clusterName strin
 			slog.DebugContext(ctx, "PublishInternal: unknown bootstrap kind", "cluster", clusterName, "kind", req.Kind)
 			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
-		subject = handlers_eks.BootstrapSubject(req.AccountID, clusterName, req.Kind)
+		subject = ekscluster.BootstrapSubject(req.AccountID, clusterName, req.Kind)
 	case internalChannelState:
-		subject = handlers_eks.StateSubject(req.AccountID, clusterName)
+		subject = ekscluster.StateSubject(req.AccountID, clusterName)
 	case internalChannelAddon:
 		subject = eksv1.AddonStatusSubject(req.AccountID, clusterName)
 	default:

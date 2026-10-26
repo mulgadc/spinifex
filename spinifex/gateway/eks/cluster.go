@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/nats-io/nats.go"
 )
 
@@ -17,24 +17,24 @@ func CreateCluster(ctx context.Context, natsConn *nats.Conn, accountID, callerPr
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_eks.NewNATSEKSService(natsConn).CreateCluster(ctx, input, accountID, callerPrincipalARN)
+	return ekscluster.NewNATSEKSService(natsConn).CreateCluster(ctx, input, accountID, callerPrincipalARN)
 }
 
 // DescribeCluster — GET /clusters/{name}.
 func DescribeCluster(ctx context.Context, natsConn *nats.Conn, accountID, name string) (*eks.DescribeClusterOutput, error) {
 	input := &eks.DescribeClusterInput{Name: aws.String(name)}
-	return handlers_eks.NewNATSEKSService(natsConn).DescribeCluster(ctx, input, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).DescribeCluster(ctx, input, accountID)
 }
 
 // ListClusters — GET /clusters.
 func ListClusters(ctx context.Context, natsConn *nats.Conn, accountID string) (*eks.ListClustersOutput, error) {
-	return handlers_eks.NewNATSEKSService(natsConn).ListClusters(ctx, &eks.ListClustersInput{}, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).ListClusters(ctx, &eks.ListClustersInput{}, accountID)
 }
 
 // DeleteCluster — DELETE /clusters/{name}.
 func DeleteCluster(ctx context.Context, natsConn *nats.Conn, accountID, name string) (*eks.DeleteClusterOutput, error) {
 	input := &eks.DeleteClusterInput{Name: aws.String(name)}
-	return handlers_eks.NewNATSEKSService(natsConn).DeleteCluster(ctx, input, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).DeleteCluster(ctx, input, accountID)
 }
 
 // unmarshalIfBody decodes body into out only when non-empty.

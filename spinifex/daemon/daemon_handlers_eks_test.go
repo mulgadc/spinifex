@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,7 +20,7 @@ import (
 func setupEKSDaemon(t *testing.T) (*Daemon, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := handlers_eks.NewEKSServiceImpl(handlers_eks.EKSServiceDeps{NATSConn: nc})
+	svc, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc})
 	require.NoError(t, err)
 	return &Daemon{eksService: svc}, nc
 }

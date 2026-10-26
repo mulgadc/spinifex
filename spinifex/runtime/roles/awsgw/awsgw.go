@@ -33,6 +33,7 @@ import (
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
@@ -43,7 +44,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
@@ -57,8 +57,8 @@ import (
 var serviceName = "awsgw"
 
 // OIDCJWKSReader is wired into STS here, not beside its own definition in
-// handlers/eks, because handlers/eks must not import domains/sts.
-var _ stsdomain.ClusterJWKSResolver = (*handlers_eks.OIDCJWKSReader)(nil)
+// domains/eks/cluster, because domains/eks/cluster must not import domains/sts.
+var _ stsdomain.ClusterJWKSResolver = (*ekscluster.OIDCJWKSReader)(nil)
 
 // AccountStatusReader also serves as the quota override seal's TERMINATING
 // precondition, wired here because domains/iam must not import
@@ -228,12 +228,12 @@ func launchService(config *config.ClusterConfig) error {
 	}
 
 	// STS's web-identity verification resolves EKS-published JWKS through this
-	// reader; handlers/eks owns the account-bucket and JWKS-key layout.
+	// reader; domains/eks/cluster owns the account-bucket and JWKS-key layout.
 	jwksJS, err := jetstream.New(natsConn)
 	if err != nil {
 		return fmt.Errorf("jetstream client for OIDC JWKS resolver: %w", err)
 	}
-	jwksResolver := handlers_eks.NewOIDCJWKSReader(jwksJS)
+	jwksResolver := ekscluster.NewOIDCJWKSReader(jwksJS)
 
 	// STS service shares the IAM master key (single envelope for at-rest
 	// secrets + session-token HMACs) and resolves roles via IAMService.

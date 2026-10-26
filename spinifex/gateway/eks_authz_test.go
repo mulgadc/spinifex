@@ -20,10 +20,10 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -185,7 +185,7 @@ func TestEKSRequest_InternalRoutesRejectTenantPrincipal(t *testing.T) {
 // field mapping rather than a hand-built Caller.
 func dispatchEKSAsCPAgent(t *testing.T, gw *GatewayConfig, path, instanceID string) error {
 	t.Helper()
-	roleName := handlers_eks.CPInstanceRoleName
+	roleName := ekscluster.CPInstanceRoleName
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
 	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.GlobalAccountID)
@@ -206,12 +206,12 @@ func TestEKSRequest_InternalRoutesAdmitTheCPAgentPrincipal(t *testing.T) {
 	const cpInstanceID = "i-cp0000000000001"
 	_, nc, js := testutil.StartTestJetStream(t)
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
-		Bucket: handlers_eks.AccountBucketName(authzAccountID),
+		Bucket: ekscluster.AccountBucketName(authzAccountID),
 	})
 	require.NoError(t, err)
-	require.NoError(t, handlers_eks.PutClusterMeta(t.Context(), kv, &handlers_eks.ClusterMeta{
+	require.NoError(t, ekscluster.PutClusterMeta(t.Context(), kv, &ekscluster.ClusterMeta{
 		Name:              "prod",
-		ControlPlaneNodes: []handlers_eks.ControlPlaneNode{{InstanceID: cpInstanceID}},
+		ControlPlaneNodes: []ekscluster.ControlPlaneNode{{InstanceID: cpInstanceID}},
 	}))
 
 	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
@@ -265,11 +265,11 @@ func newPublishFixture(t *testing.T) *publishFixture {
 		{authzAccountID, "beta", publishCPBeta},
 		{publishOtherAcct, "gamma", publishCPGamma},
 	} {
-		kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, c.acct)
+		kv, err := ekscluster.GetOrCreateAccountBucket(t.Context(), js, c.acct)
 		require.NoError(t, err)
-		require.NoError(t, handlers_eks.PutClusterMeta(t.Context(), kv, &handlers_eks.ClusterMeta{
+		require.NoError(t, ekscluster.PutClusterMeta(t.Context(), kv, &ekscluster.ClusterMeta{
 			Name:              c.cluster,
-			ControlPlaneNodes: []handlers_eks.ControlPlaneNode{{InstanceID: c.member}},
+			ControlPlaneNodes: []ekscluster.ControlPlaneNode{{InstanceID: c.member}},
 		}))
 	}
 	sub, err := nc.SubscribeSync("eks.>")
@@ -299,7 +299,7 @@ func (f *publishFixture) requireNothingPublished(t *testing.T) {
 
 // cpAgentContext is the auth context a CP VM's IMDS credentials produce.
 func cpAgentContext(instanceID string) context.Context {
-	roleName := handlers_eks.CPInstanceRoleName
+	roleName := ekscluster.CPInstanceRoleName
 	ctx := context.WithValue(context.Background(), ctxService, "eks")
 	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.GlobalAccountID)
 	ctx = context.WithValue(ctx, ctxIdentity, instanceID)
@@ -326,18 +326,18 @@ type publishChannel struct {
 
 func publishChannels() []publishChannel {
 	channels := []publishChannel{
-		{"state", `"channel":"state"`, handlers_eks.StateSubject},
+		{"state", `"channel":"state"`, ekscluster.StateSubject},
 		{"addon", `"channel":"addon"`, eksv1.AddonStatusSubject},
 	}
 	for _, kind := range []string{
-		handlers_eks.BootstrapSubjectToken, handlers_eks.BootstrapSubjectKubeconfig,
-		handlers_eks.BootstrapSubjectJWKS, handlers_eks.BootstrapSubjectCA,
+		ekscluster.BootstrapSubjectToken, ekscluster.BootstrapSubjectKubeconfig,
+		ekscluster.BootstrapSubjectJWKS, ekscluster.BootstrapSubjectCA,
 	} {
 		channels = append(channels, publishChannel{
 			name:   "bootstrap " + kind,
 			fields: `"channel":"bootstrap","kind":"` + kind + `"`,
 			subject: func(accountID, cluster string) string {
-				return handlers_eks.BootstrapSubject(accountID, cluster, kind)
+				return ekscluster.BootstrapSubject(accountID, cluster, kind)
 			},
 		})
 	}
@@ -428,7 +428,7 @@ func TestEKSRequest_PublishInternalRedirectionIsDenied(t *testing.T) {
 	require.NoError(t, err)
 	msg, err := f.sub.NextMsg(2 * time.Second)
 	require.NoError(t, err)
-	assert.Equal(t, handlers_eks.StateSubject(authzAccountID, "alpha"), msg.Subject)
+	assert.Equal(t, ekscluster.StateSubject(authzAccountID, "alpha"), msg.Subject)
 	f.requireNothingPublished(t)
 }
 
@@ -475,7 +475,7 @@ func newTokenReviewFixture(t *testing.T) *tokenReviewFixture {
 	for _, c := range []struct{ acct, cluster string }{
 		{authzAccountID, "alpha"}, {authzAccountID, "beta"}, {publishOtherAcct, "gamma"},
 	} {
-		kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, c.acct)
+		kv, err := ekscluster.GetOrCreateAccountBucket(t.Context(), js, c.acct)
 		require.NoError(t, err)
 		_, err = access.New(authzRegion).Create(t.Context(), kv, c.acct, access.Spec{
 			Cluster: c.cluster, PrincipalARN: tokenReviewPrincipal,
@@ -485,11 +485,11 @@ func newTokenReviewFixture(t *testing.T) *tokenReviewFixture {
 	}
 
 	verified := make(chan string, 16)
-	sub, err := f.nc.Subscribe(handlers_eks.TokenVerifySubject, func(m *nats.Msg) {
-		var req handlers_eks.TokenVerifyRequest
+	sub, err := f.nc.Subscribe(ekscluster.TokenVerifySubject, func(m *nats.Msg) {
+		var req ekscluster.TokenVerifyRequest
 		_ = json.Unmarshal(m.Data, &req)
 		verified <- req.ClusterName
-		resp, _ := json.Marshal(handlers_eks.TokenVerifyResponse{
+		resp, _ := json.Marshal(ekscluster.TokenVerifyResponse{
 			AccountID: authzAccountID, ARN: tokenReviewPrincipal, UserID: "AROAEXAMPLE:session",
 		})
 		_ = m.Respond(resp)

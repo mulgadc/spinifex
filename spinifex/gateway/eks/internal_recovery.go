@@ -4,15 +4,15 @@ import (
 	"context"
 	"errors"
 
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 )
 
 // internalRecoveryOutput is the body returned to the on-VM k3s-recovery agent:
 // the member's current recovery directive.
 type internalRecoveryOutput struct {
-	Directive handlers_eks.RecoveryDirective `json:"directive"`
+	Directive ekscluster.RecoveryDirective `json:"directive"`
 }
 
 // GetRecoveryDirective — GET /clusters/{name}/internal-recovery/{acct}/{instanceId}.
@@ -28,8 +28,8 @@ func GetRecoveryDirective(ctx context.Context, natsConn *nats.Conn, clusterName,
 	if clusterName == "" || accountID == "" || instanceID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	out, err := handlers_eks.NewNATSEKSService(natsConn).GetRecoveryDirective(
-		ctx, &handlers_eks.GetRecoveryDirectiveInput{ClusterName: clusterName, InstanceID: instanceID}, accountID)
+	out, err := ekscluster.NewNATSEKSService(natsConn).GetRecoveryDirective(
+		ctx, &ekscluster.GetRecoveryDirectiveInput{ClusterName: clusterName, InstanceID: instanceID}, accountID)
 	if err != nil {
 		return nil, err
 	}

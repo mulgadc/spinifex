@@ -150,7 +150,7 @@ type CertRecord struct {
 	ACMEAttemptCount   int       `json:"acme_attempt_count,omitempty"`
 	ACMENextAttemptAt  time.Time `json:"acme_next_attempt_at"`
 
-	// --- Per-certificate issuance lease (see handlers/eks/cluster_reconciler.go
+	// --- Per-certificate issuance lease (see domains/eks/cluster/cluster_reconciler.go
 	// for the pattern this follows). Only the holder may drive this
 	// certificate's order; empty/zero when unleased.
 	LeaseHolder    string    `json:"lease_holder,omitempty"`
@@ -513,7 +513,7 @@ func (s *Store) UpdateTags(ctx context.Context, certArn string, mutate func(tags
 // AcquireLease attempts to take the per-certificate issuance/renewal lease on
 // certArn for holderID, valid until now+ttl. The lease lives on the record
 // itself (CertRecord.LeaseHolder/LeaseExpiresAt) rather than in a separate
-// leader-election bucket — contrast handlers/eks/cluster_reconciler.go, which
+// leader-election bucket — contrast domains/eks/cluster/cluster_reconciler.go, which
 // leases a whole cluster for the life of a Run loop — because the unit of
 // work here is one certificate, reissued and released in a single pass.
 //

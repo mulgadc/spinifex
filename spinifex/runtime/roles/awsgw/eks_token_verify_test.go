@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,9 +39,9 @@ func TestEKSTokenVerify_ResolvesPrincipal(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	req := handlers_eks.TokenVerifyRequest{PresignedURL: "https://sts/?x=1", ClusterName: "alpha"}
-	resp, err := natsmsg.NATSRequest[handlers_eks.TokenVerifyResponse](context.Background(),
-		nc, handlers_eks.TokenVerifySubject, req, 2*time.Second, "")
+	req := ekscluster.TokenVerifyRequest{PresignedURL: "https://sts/?x=1", ClusterName: "alpha"}
+	resp, err := natsmsg.NATSRequest[ekscluster.TokenVerifyResponse](context.Background(),
+		nc, ekscluster.TokenVerifySubject, req, 2*time.Second, "")
 	require.NoError(t, err)
 
 	assert.Equal(t, "arn:aws:iam::111122223333:role/admin", resp.ARN)
@@ -58,9 +58,9 @@ func TestEKSTokenVerify_RejectedTokenIsError(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
-	req := handlers_eks.TokenVerifyRequest{PresignedURL: "https://sts/?x=1", ClusterName: "alpha"}
-	_, err = natsmsg.NATSRequest[handlers_eks.TokenVerifyResponse](context.Background(),
-		nc, handlers_eks.TokenVerifySubject, req, 2*time.Second, "")
+	req := ekscluster.TokenVerifyRequest{PresignedURL: "https://sts/?x=1", ClusterName: "alpha"}
+	_, err = natsmsg.NATSRequest[ekscluster.TokenVerifyResponse](context.Background(),
+		nc, ekscluster.TokenVerifySubject, req, 2*time.Second, "")
 	require.Error(t, err, "a verify failure must surface as a NATS error payload")
 }
 
@@ -72,9 +72,9 @@ func TestEKSTokenVerify_RejectsEmptyFields(t *testing.T) {
 	defer func() { _ = sub.Unsubscribe() }()
 
 	// Missing ClusterName — responder rejects before calling the verifier.
-	req := handlers_eks.TokenVerifyRequest{PresignedURL: "https://sts/?x=1"}
-	_, err = natsmsg.NATSRequest[handlers_eks.TokenVerifyResponse](context.Background(),
-		nc, handlers_eks.TokenVerifySubject, req, 2*time.Second, "")
+	req := ekscluster.TokenVerifyRequest{PresignedURL: "https://sts/?x=1"}
+	_, err = natsmsg.NATSRequest[ekscluster.TokenVerifyResponse](context.Background(),
+		nc, ekscluster.TokenVerifySubject, req, 2*time.Second, "")
 	require.Error(t, err)
 	assert.Empty(t, fake.gotURL, "verifier must not run on an invalid request")
 }

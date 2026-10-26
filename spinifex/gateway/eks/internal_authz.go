@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"slices"
 
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -125,7 +125,7 @@ var internalBodyAccounts = map[string]func(body []byte) (string, error){
 func requireCPAgent(ctx context.Context, action string, caller Caller) error {
 	if caller.PrincipalType != principalTypeAssumedRole ||
 		caller.AccountID != awsidentifiers.GlobalAccountID ||
-		caller.RoleName != handlers_eks.CPInstanceRoleName ||
+		caller.RoleName != ekscluster.CPInstanceRoleName ||
 		caller.SessionName == "" {
 		slog.WarnContext(ctx, "EKS: internal route rejected for non-CP-agent caller",
 			"action", action, "principalType", caller.PrincipalType,
@@ -140,7 +140,7 @@ func requireCPAgent(ctx context.Context, action string, caller Caller) error {
 // for the bucket handle. A nil meta is returned for an account with no clusters,
 // for a cluster that is absent, and for a name no bucket or key can hold; all
 // are denials rather than failures.
-func lookupClusterMeta(ctx context.Context, natsConn *nats.Conn, accountID, clusterName string) (*handlers_eks.ClusterMeta, error) {
+func lookupClusterMeta(ctx context.Context, natsConn *nats.Conn, accountID, clusterName string) (*ekscluster.ClusterMeta, error) {
 	if natsConn == nil {
 		return nil, errors.New("gateway NATS connection not initialised")
 	}
@@ -148,21 +148,21 @@ func lookupClusterMeta(ctx context.Context, natsConn *nats.Conn, accountID, clus
 	if err != nil {
 		return nil, err
 	}
-	kv, err := js.KeyValue(ctx, handlers_eks.AccountBucketName(accountID))
+	kv, err := js.KeyValue(ctx, ekscluster.AccountBucketName(accountID))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrBucketNotFound) || errors.Is(err, jetstream.ErrInvalidBucketName) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	entry, err := kv.Get(ctx, handlers_eks.ClusterMetaKey(clusterName))
+	entry, err := kv.Get(ctx, ekscluster.ClusterMetaKey(clusterName))
 	if errors.Is(err, jetstream.ErrKeyNotFound) || errors.Is(err, jetstream.ErrInvalidKey) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var meta handlers_eks.ClusterMeta
+	var meta ekscluster.ClusterMeta
 	if err := json.Unmarshal(entry.Value(), &meta); err != nil {
 		return nil, fmt.Errorf("unmarshal cluster meta %s: %w", clusterName, err)
 	}

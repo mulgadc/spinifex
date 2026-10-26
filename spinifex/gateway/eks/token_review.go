@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 )
 
@@ -40,7 +40,7 @@ func decodeWebhookTokenReview(body []byte) (webhookTokenReviewRequest, error) {
 // WebhookTokenReview — POST /clusters/{name}/token-review. Resolves an
 // `aws eks get-token` bearer token to a K8s identity via the AWSGW, once
 // AuthorizeInternal has bound the caller to this cluster and account.
-func WebhookTokenReview(ctx context.Context, natsConn *nats.Conn, clusterName string, body []byte) (*handlers_eks.WebhookTokenReviewResult, error) {
+func WebhookTokenReview(ctx context.Context, natsConn *nats.Conn, clusterName string, body []byte) (*ekscluster.WebhookTokenReviewResult, error) {
 	if natsConn == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -57,7 +57,7 @@ func WebhookTokenReview(ctx context.Context, natsConn *nats.Conn, clusterName st
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	res, err := handlers_eks.ResolveTokenReview(ctx, natsConn, req.AccountID, clusterName, req.Token, tokenReviewVerifyTimeout)
+	res, err := ekscluster.ResolveTokenReview(ctx, natsConn, req.AccountID, clusterName, req.Token, tokenReviewVerifyTimeout)
 	if err != nil {
 		slog.ErrorContext(ctx, "WebhookTokenReview: resolve failed", "cluster", clusterName, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

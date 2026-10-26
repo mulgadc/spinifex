@@ -152,23 +152,26 @@ func waitInSync(t *testing.T, c *r53.Route53, id *string) {
 // the Spinifex extension, called as a custom SDK operation.
 func activation(t *testing.T, c *r53.Route53, zoneID string, verify bool) (a struct{ State, Reason string }) {
 	t.Helper()
-	id := aws.String(strings.TrimPrefix(zoneID, "/hostedzone/"))
-	path := "/2013-04-01/hostedzone/{Id}/activation"
-	var got *ext.Activation
-	if verify {
-		out := &ext.VerifyHostedZoneDelegationOutput{}
-		op := &request.Operation{Name: ext.ActionVerifyHostedZoneDelegation, HTTPMethod: http.MethodPost, HTTPPath: path}
-		require.NoError(t, c.NewRequest(op, &ext.VerifyHostedZoneDelegationInput{Id: id}, out).Send())
-		got = out.Activation
-	} else {
-		out := &ext.GetHostedZoneActivationOutput{}
-		op := &request.Operation{Name: ext.ActionGetHostedZoneActivation, HTTPMethod: http.MethodGet, HTTPPath: path}
-		require.NoError(t, c.NewRequest(op, &ext.GetHostedZoneActivationInput{Id: id}, out).Send())
-		got = out.Activation
-	}
+	got, err := callActivation(c, zoneID, verify)
+	require.NoError(t, err)
 	require.NotNil(t, got)
 	a.State, a.Reason = aws.StringValue(got.State), aws.StringValue(got.Reason)
 	return a
+}
+
+func callActivation(c *r53.Route53, zoneID string, verify bool) (*ext.Activation, error) {
+	id := aws.String(strings.TrimPrefix(zoneID, "/hostedzone/"))
+	path := "/2013-04-01/hostedzone/{Id}/activation"
+	if verify {
+		out := &ext.VerifyHostedZoneDelegationOutput{}
+		op := &request.Operation{Name: ext.ActionVerifyHostedZoneDelegation, HTTPMethod: http.MethodPost, HTTPPath: path}
+		err := c.NewRequest(op, &ext.VerifyHostedZoneDelegationInput{Id: id}, out).Send()
+		return out.Activation, err
+	}
+	out := &ext.GetHostedZoneActivationOutput{}
+	op := &request.Operation{Name: ext.ActionGetHostedZoneActivation, HTTPMethod: http.MethodGet, HTTPPath: path}
+	err := c.NewRequest(op, &ext.GetHostedZoneActivationInput{Id: id}, out).Send()
+	return out.Activation, err
 }
 
 // deleteZone removes every record set but the apex NS and SOA, then the zone.

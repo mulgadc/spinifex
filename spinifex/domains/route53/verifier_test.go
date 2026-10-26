@@ -179,6 +179,23 @@ func TestVerifierTreatsAnUnreachableParentAsUnknown(t *testing.T) {
 	assert.Contains(t, z.StateReason, "could not be checked: i/o timeout")
 }
 
+// A lookup that never answers, as on a cluster with no route to the roots, is
+// cut off so "Check now" reports the zone pending instead of timing out.
+func TestVerifierBoundsAPublicLookupThatHangs(t *testing.T) {
+	svc, v, _, _ := newVerifier(t)
+	v.Public = func(ctx context.Context, _ string) (route53.Delegation, error) {
+		<-ctx.Done()
+		return route53.Delegation{}, ctx.Err()
+	}
+	v.PublicBound = 50 * time.Millisecond
+	id := createZone(t, svc, acctA, "offline.example")
+
+	z, err := v.Verify(ctx, acctA, zoneID(id))
+	require.NoError(t, err)
+	assert.Equal(t, route53.StatePendingNameservers, z.State)
+	assert.Contains(t, z.StateReason, "could not be checked")
+}
+
 // A subdomain of an active zone is decided by that zone's records, never by
 // public DNS, so account B cannot take a name under account A's domain.
 func TestVerifierReadsAnActiveParentZoneLocally(t *testing.T) {

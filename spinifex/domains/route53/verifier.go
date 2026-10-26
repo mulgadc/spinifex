@@ -14,6 +14,9 @@ import (
 
 const (
 	defaultVerifyInterval = time.Minute
+	// defaultPublicBound limits one walk from the roots, well inside the
+	// gateway's 30 s wait, so an unreachable internet reads as unknown.
+	defaultPublicBound = 15 * time.Second
 	// A new zone is checked every pass for this long, while its owner is most
 	// likely changing the registrar, and hourly after it.
 	newZoneWindow = 48 * time.Hour
@@ -49,6 +52,8 @@ type Verifier struct {
 	Now   func() time.Time
 	// Interval is the pass period; zero means one minute.
 	Interval time.Duration
+	// PublicBound limits one Public lookup; zero means 15 s.
+	PublicBound time.Duration
 }
 
 // NewVerifier returns a Verifier over store.
@@ -236,6 +241,12 @@ func (v *Verifier) delegation(ctx context.Context, all []ZoneRecord, z *ZoneReco
 	if v.Public == nil {
 		return Delegation{}, errors.New("no public DNS lookup is configured")
 	}
+	bound := v.PublicBound
+	if bound <= 0 {
+		bound = defaultPublicBound
+	}
+	ctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
 	return v.Public(ctx, z.Name)
 }
 

@@ -170,9 +170,10 @@ func TestRoute53ManagedShims(t *testing.T) {
 	require.True(t, ok)
 
 	reads := []string{"route53:GetHostedZone", "route53:ListHostedZones", "route53:ListResourceRecordSets",
-		"route53:GetChange", "route53:ListTagsForResource"}
+		"route53:GetChange", "route53:ListTagsForResource", "route53:GetHostedZoneActivation"}
+	// VerifyHostedZoneDelegation can activate a zone, so a read grant must not reach it.
 	writes := []string{"route53:CreateHostedZone", "route53:DeleteHostedZone",
-		"route53:ChangeResourceRecordSets", "route53:ChangeTagsForResource"}
+		"route53:ChangeResourceRecordSets", "route53:ChangeTagsForResource", "route53:VerifyHostedZoneDelegation"}
 	for _, action := range append(append([]string{}, reads...), writes...) {
 		assert.Equal(t, iampolicy.Allow, iampolicy.EvaluateWithKeys(action, "*", []PolicyDocument{full}, nil),
 			"AmazonRoute53FullAccess must grant %s", action)

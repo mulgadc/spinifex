@@ -7,22 +7,21 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // bundleLaunchInput mirrors the real ochre-demo-bundle: one vLLM generative
 // member plus two TEI members sharing the VM, standing in for what
-// Service.runLaunch actually builds from gateway_bedrock.LookupCoServeGroup.
+// Service.runLaunch actually builds from LookupCoServeGroup.
 func bundleLaunchInput() LaunchInput {
 	return LaunchInput{
 		GroupID:      "ochre-demo-bundle",
 		InstanceType: "g5.xlarge",
 		Members: []LaunchMemberInput{
-			{ModelID: "nomic-embed-text-v1.5", Family: gateway_bedrock.FamilyTEI},
-			{ModelID: testModelID, Family: gateway_bedrock.FamilyMeta, VLLMArgs: []string{"--dtype=bfloat16", "--gpu-memory-utilization=0.45"}},
-			{ModelID: "bge-reranker-v2-m3", Family: gateway_bedrock.FamilyTEI},
+			{ModelID: "nomic-embed-text-v1.5", Family: FamilyTEI},
+			{ModelID: testModelID, Family: FamilyMeta, VLLMArgs: []string{"--dtype=bfloat16", "--gpu-memory-utilization=0.45"}},
+			{ModelID: "bge-reranker-v2-m3", Family: FamilyTEI},
 		},
 	}
 }

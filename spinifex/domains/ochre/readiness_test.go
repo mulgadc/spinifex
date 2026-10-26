@@ -10,8 +10,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
 func TestWaitReady_ImmediateSuccess(t *testing.T) {
@@ -84,14 +82,14 @@ func TestWaitReady_TEIProbesHealthNotModels(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err := waitReady(ctx, ts.Client(), readinessTarget{BaseURL: ts.URL, Path: readinessPath(gateway_bedrock.FamilyTEI)}, 10*time.Millisecond)
+	err := waitReady(ctx, ts.Client(), readinessTarget{BaseURL: ts.URL, Path: readinessPath(FamilyTEI)}, 10*time.Millisecond)
 	require.NoError(t, err)
 	assert.Equal(t, "/health", gotPath)
 }
 
 func TestReadinessPath(t *testing.T) {
-	assert.Equal(t, "/v1/models", readinessPath(gateway_bedrock.FamilyMeta))
-	assert.Equal(t, "/health", readinessPath(gateway_bedrock.FamilyTEI))
+	assert.Equal(t, "/v1/models", readinessPath(FamilyMeta))
+	assert.Equal(t, "/health", readinessPath(FamilyTEI))
 	// An unrecognised family is treated the same as TEI (every non-vLLM
 	// engine, mirroring engineForFamily's own default), not as vLLM.
 	assert.Equal(t, "/health", readinessPath("some-future-family"))
@@ -111,8 +109,8 @@ func TestWaitReadyAll_MixedEnginesProbeTheirOwnRoute(t *testing.T) {
 	defer teiTS.Close()
 
 	targets := map[string]readinessTarget{
-		"vllm-model": {BaseURL: vllmTS.URL, Path: readinessPath(gateway_bedrock.FamilyMeta)},
-		"tei-model":  {BaseURL: teiTS.URL, Path: readinessPath(gateway_bedrock.FamilyTEI)},
+		"vllm-model": {BaseURL: vllmTS.URL, Path: readinessPath(FamilyMeta)},
+		"tei-model":  {BaseURL: teiTS.URL, Path: readinessPath(FamilyTEI)},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

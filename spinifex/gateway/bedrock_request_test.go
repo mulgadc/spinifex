@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +21,7 @@ const bedrockTestAccount = "123456789012"
 const bedrockTestLlamaModelID = "meta.llama3-2-1b-instruct-v1:0"
 
 // newVLLMStub stands up an httptest server that answers the OpenAI
-// chat-completions wire, mirroring gateway/bedrock/vllm_test.go's stub.
+// chat-completions wire, mirroring domains/ochre/vllm_test.go's stub.
 func newVLLMStub(t *testing.T) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +37,7 @@ func newVLLMStub(t *testing.T) *httptest.Server {
 }
 
 // newLlamaCompletionsStub stands up an httptest server that answers the
-// OpenAI completions wire, mirroring gateway/bedrock/invoke_llama_test.go's
+// OpenAI completions wire, mirroring domains/ochre/invoke_llama_test.go's
 // stub, for the InvokeModel self-host path.
 func newLlamaCompletionsStub(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -84,8 +84,8 @@ func (grantAllModels) Granted(_ context.Context, _, _ string) (bool, error) { re
 func newBedrockRequestGateway(t *testing.T, vllmURL string) *GatewayConfig {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	gateway_bedrock.SetWeightsResolver(bedrockRequestWeightsStub{})
-	t.Cleanup(func() { gateway_bedrock.SetWeightsResolver(nil) })
+	ochre.SetWeightsResolver(bedrockRequestWeightsStub{})
+	t.Cleanup(func() { ochre.SetWeightsResolver(nil) })
 	return &GatewayConfig{
 		NATSConn:       nc,
 		DisableLogging: true,
@@ -109,7 +109,7 @@ func bedrockRequestWithAccount(method, path, body string) *http.Request {
 // access resolver configured, which is what a deployment that has granted
 // nothing looks like: the catalog is empty and every runtime route refuses.
 // This is the end-to-end guard on deny-by-default, one layer above the
-// per-function access tests in gateway/bedrock.
+// per-function access tests in domains/ochre.
 func TestBedrockRequest_DenyByDefault(t *testing.T) {
 	ts := newVLLMStub(t)
 	gw := newBedrockRequestGateway(t, ts.URL)

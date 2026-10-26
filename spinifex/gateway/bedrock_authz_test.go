@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -143,9 +143,9 @@ func TestBedrockFamily_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 		`{"knowledgeBaseConfiguration":{"knowledgeBaseId":"kb-1"}}}`)
 
 	for _, service := range []string{"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime"} {
-		for _, action := range gateway_bedrock.ScopedActions(service) {
+		for _, action := range ochre.ScopedActions(service) {
 			t.Run(service+"/"+action, func(t *testing.T) {
-				resources, err := gateway_bedrock.ResourceARNs(service, action, authzRegion, authzAccountID,
+				resources, err := ochre.ResourceARNs(service, action, authzRegion, authzAccountID,
 					[]string{"id-1", "id-2", "id-3"}, body)
 				require.NoError(t, err)
 				assert.NoError(t, gw.checkPolicyResources(req, service, action, resources))

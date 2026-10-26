@@ -16,9 +16,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockagent"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/nats-io/nats.go"
 )
 
@@ -123,7 +123,7 @@ func (gw *GatewayConfig) BedrockAgent_Request(w http.ResponseWriter, r *http.Req
 	}
 
 	// Every bedrock-agent action names its knowledge base in the path.
-	resources, err := gateway_bedrock.ResourceARNs("bedrock-agent", action, gw.Region, accountID, params, nil)
+	resources, err := ochre.ResourceARNs("bedrock-agent", action, gw.Region, accountID, params, nil)
 	if err != nil {
 		return err
 	}
@@ -146,13 +146,13 @@ func (gw *GatewayConfig) BedrockAgent_Request(w http.ResponseWriter, r *http.Req
 		return err
 	}
 
-	gateway_bedrock.WriteJSONResponse(w, output)
+	ochre.WriteJSONResponse(w, output)
 	return nil
 }
 
 // nonEmptyStringPtr returns nil for an empty string, so an optional field
 // AWS omits when unset stays omitted here too, mirroring
-// gateway_bedrock.nonEmptyStringPtr (unexported there, so not reusable).
+// ochre.nonEmptyStringPtr (unexported there, so not reusable).
 func nonEmptyStringPtr(s string) *string {
 	if s == "" {
 		return nil
@@ -294,7 +294,7 @@ func kbRecordToOutput(region, accountID string, rec ochrevector.KBRecord) (*bedr
 	return &bedrockagent.KnowledgeBase{
 		CreatedAt:        aws.Time(rec.CreatedAt),
 		Description:      nonEmptyStringPtr(rec.Description),
-		KnowledgeBaseArn: aws.String(gateway_bedrock.FormatKnowledgeBaseARN(region, accountID, rec.ID)),
+		KnowledgeBaseArn: aws.String(ochre.FormatKnowledgeBaseARN(region, accountID, rec.ID)),
 		KnowledgeBaseConfiguration: &bedrockagent.KnowledgeBaseConfiguration{
 			Type: aws.String(bedrockagent.KnowledgeBaseTypeVector),
 			VectorKnowledgeBaseConfiguration: &bedrockagent.VectorKnowledgeBaseConfiguration{
@@ -424,7 +424,7 @@ func GetKnowledgeBase(ctx context.Context, accountID, region string, kb *ochreve
 
 // ListKnowledgeBases returns the caller account's own knowledge bases,
 // sorted by creation time (id as a deterministic tie-breaker), mirroring
-// gateway_bedrock.ListGuardrails.
+// ochre.ListGuardrails.
 func ListKnowledgeBases(ctx context.Context, accountID string, kb *ochrevector.KBStore, _ *bedrockagent.ListKnowledgeBasesInput) (*bedrockagent.ListKnowledgeBasesOutput, error) {
 	recs, err := kb.List(ctx, accountID)
 	if err != nil {
@@ -453,7 +453,7 @@ func ListKnowledgeBases(ctx context.Context, accountID string, kb *ochrevector.K
 // under it (D-arch: the gateway owns bedrock-agent resource metadata, so the
 // cascade lives here rather than in a daemon-side operator), then removes the
 // KB record itself. Not idempotent on a foreign/unknown id (reports
-// ResourceNotFoundException), unlike gateway_bedrock.DeleteGuardrail's
+// ResourceNotFoundException), unlike ochre.DeleteGuardrail's
 // idempotent-delete contract, because AWS's own DeleteKnowledgeBase does the
 // same.
 func DeleteKnowledgeBase(ctx context.Context, accountID string, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService, input *bedrockagent.DeleteKnowledgeBaseInput) (*bedrockagent.DeleteKnowledgeBaseOutput, error) {

@@ -26,7 +26,7 @@ import (
 // way as newBedrockAgentRequestGateway (real JetStream-backed KB/DataSource
 // stores, allow-everything IAMService) plus newBedrockRequestGateway's vLLM
 // routing (BedrockEndpoints/BedrockAccess), since RetrieveAndGenerate's
-// generation step reaches gateway_bedrock.Converse in-process.
+// generation step reaches ochre.Converse in-process.
 func newBedrockAgentRuntimeRequestGateway(t *testing.T, vector ochrevector.VectorService, vllmURL string) *GatewayConfig {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)

@@ -2,7 +2,7 @@
 
 // Package bedrock is the Ochre (AWS-Bedrock) E2E suite. Hermetic API-shape and
 // provider-translation parity (Anthropic Messages / vLLM OpenAI wire formats)
-// is covered by the gateway_bedrock unit tests; this suite exercises
+// is covered by the domains/ochre unit tests; this suite exercises
 // ListFoundationModels/GetFoundationModel against any running cluster and
 // gates real Converse calls on backend availability (self-host GPU or a live
 // Anthropic key), so CI parity holds without requiring either to be present.

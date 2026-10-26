@@ -16,16 +16,16 @@ import (
 )
 
 // Embedder is the local seam for batch text embedding: the same method set
-// as gateway_bedrock.Embedder, restated here rather than imported so this
+// as ochre.Embedder, restated here rather than imported so this
 // package never depends on the gateway. The real embedder (an
-// *gateway_bedrock adapter) satisfies this structurally; wiring it in is a
+// *ochre adapter) satisfies this structurally; wiring it in is a
 // later stage's job.
 type Embedder interface {
 	Embed(ctx context.Context, modelID string, inputs []string) ([][]float32, error)
 }
 
 // TokenLimiter is the local seam for embedder token-budget introspection:
-// the same method set as gateway_bedrock.TokenLimiter's MaxInputLength,
+// the same method set as ochre.TokenLimiter's MaxInputLength,
 // restated here rather than imported so this package never depends on the
 // gateway. It is optional -- ingestObject type-asserts s.Embedder against
 // it rather than requiring it on Embedder, so a test double Embedder still

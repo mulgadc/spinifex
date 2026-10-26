@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Catalog model IDs mirror the static Phase-1 catalog in gateway_bedrock.
+// Catalog model IDs mirror the static Phase-1 catalog in ochre.
 const (
 	modelSelfHostLlama = "meta.llama3-2-1b-instruct-v1:0"
 	modelAnthropic     = "anthropic.claude-3-5-sonnet-20240620-v1:0"

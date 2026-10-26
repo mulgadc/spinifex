@@ -89,8 +89,9 @@ var allowlist = []allowance{
 	{From: "domains/network/reconcile", To: "runtime/compute/vm", Debt: "domains/network", Reason: "domain-to-runtime import"},
 
 	{From: "domains/ochre", To: "domains/ec2/systeminstance", Debt: "Cross-domain", Reason: "consumes another domain's implementation rather than a capability"},
+	{From: "domains/ochre", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "secret encrypt/decrypt helpers; needs a shared crypto boundary"},
 	{From: "domains/ochre", To: "domains/network/systemvpc", Debt: "Cross-domain", Reason: "consumes another domain's implementation rather than a capability"},
-	{From: "domains/ochre", To: "gateway/bedrock", Debt: "gateway/bedrock", Reason: "Ochre domain core still lives in gateway/bedrock; needs the recorded split"},
+	{From: "domains/ochre", To: "ingress/aws/bodyscope", Debt: "domains/ochre (action adapters)", Reason: "Bedrock action adapters still live in the Ochre package; they move to domains/ochre/awsapi"},
 	{From: "domains/ochre", To: "runtime/compute/gpu", Debt: "Domain → runtime", Reason: "GPU runtime state read directly; needs a domain-owned projection"},
 
 	{From: "domains/ochre/vector", To: "domains/iam", Debt: "Cross-domain", Reason: "consumes another domain's implementation rather than a capability"},
@@ -115,8 +116,6 @@ var allowlist = []allowance{
 	{From: "gateway", To: "domains/ec2/awsapi/volume", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
 	{From: "gateway", To: "domains/ec2/awsapi/vpc", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
 	{From: "gateway", To: "domains/ec2/awsapi/zone", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-
-	{From: "gateway/bedrock", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "secret encrypt/decrypt helpers; needs a shared crypto boundary"},
 
 	{From: "domains/rds/awsapi", To: "domains/ec2/awsapi/instance", Debt: "Instance adapter consumers outside EC2", Reason: "enginecatalog.go calls the instance adapter; needs an EC2 capability"},
 
@@ -162,5 +161,4 @@ var allowlist = []allowance{
 	{From: "operator/cli", To: "accountteardown", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "daemon", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "gateway", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
-	{From: "operator/cli", To: "gateway/bedrock", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 }

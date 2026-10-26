@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
 // defaultStartupTimeout bounds how long Ensure's launch goroutine polls a
@@ -34,7 +32,7 @@ const readinessPollInterval = 2 * time.Second
 // vLLM (familyMeta) serves OpenAI /v1/models; TEI has no such route, so every
 // other family is probed on /health. Mirrors engineForFamily's selection.
 func readinessPath(family string) string {
-	if family == gateway_bedrock.FamilyMeta {
+	if family == FamilyMeta {
 		return "/v1/models"
 	}
 	return "/health"

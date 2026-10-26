@@ -34,6 +34,7 @@ import (
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
@@ -41,7 +42,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -175,7 +175,7 @@ type GatewayConfig struct {
 	ECRTokenVerifier *ecrauth.Verifier
 	// BedrockCredentials resolves per-account provider API keys for bedrock
 	// routes. Nil falls back to no external providers (self-host models only).
-	BedrockCredentials *gateway_bedrock.CredentialStore
+	BedrockCredentials *ochre.CredentialStore
 	// BedrockEndpoints maps a self-hosted modelId to its OpenAI-compatible base
 	// URL. These endpoints are pinned/always-resident, so this is static
 	// config, and they resolve ahead of the dynamic registry so a pinned
@@ -185,36 +185,36 @@ type GatewayConfig struct {
 	// registry, requesting a launch for a model that has no endpoint yet. Nil
 	// falls back to BedrockEndpoints alone, under which a model that was never
 	// pinned is never reachable.
-	BedrockEndpointResolver gateway_bedrock.EndpointResolver
+	BedrockEndpointResolver ochre.EndpointResolver
 	// BedrockLoggingConfig persists per-account invocation-logging preferences
 	// (PutModelInvocationLoggingConfiguration and friends). Nil falls back to
 	// an unconfigured store, under which reads/writes error rather than panic.
-	BedrockLoggingConfig *gateway_bedrock.LoggingConfigStore
+	BedrockLoggingConfig *ochre.LoggingConfigStore
 	// BedrockRecorder durably records every Bedrock invocation. Nil falls back
 	// to a no-op recorder, so routes stay safe to exercise before the
 	// invocation stream is wired in (e.g. unit tests of unrelated routes).
-	BedrockRecorder gateway_bedrock.Recorder
+	BedrockRecorder ochre.Recorder
 	// BedrockAccess resolves per-account model-access grants. Access is
 	// deny-by-default, so nil means no account may list or invoke any model.
 	// It is the AccessResolver interface rather than the concrete store so a
 	// test can inject a fixed grant set without standing up JetStream.
-	BedrockAccess gateway_bedrock.AccessResolver
+	BedrockAccess ochre.AccessResolver
 	// BedrockAccessAdmin is the writable side of the same grant store, used by
 	// the spinifex admin actions. Nil disables grant administration, which is
 	// how a gateway with an injected read-only resolver behaves.
-	BedrockAccessAdmin *gateway_bedrock.ModelAccessStore
+	BedrockAccessAdmin *ochre.ModelAccessStore
 	// BedrockProvisioned persists provisioned-throughput commitments and
 	// drives the pinned endpoint underneath each one. Nil falls back to an
 	// unconfigured store, under which reads/writes error rather than panic.
-	BedrockProvisioned *gateway_bedrock.ProvisionedStore
+	BedrockProvisioned *ochre.ProvisionedStore
 	// BedrockGuardrails persists guardrail control-plane records (CreateGuardrail
 	// and friends). Nil falls back to an unconfigured store, under which
 	// reads/writes error rather than panic.
-	BedrockGuardrails *gateway_bedrock.GuardrailStore
+	BedrockGuardrails *ochre.GuardrailStore
 	// BedrockEmbedder drives guardrail topicPolicy's semantic match, reusing
 	// the same embedding endpoint the Ochre KB path resolves models through.
 	// Nil leaves topicPolicy on its literal (word-boundary) matcher alone.
-	BedrockEmbedder gateway_bedrock.Embedder
+	BedrockEmbedder ochre.Embedder
 
 	// SignupMaxAccounts caps how many accounts /admin/CreateAccount will allow
 	// to exist. Zero means uncapped, which is the behaviour of every cluster

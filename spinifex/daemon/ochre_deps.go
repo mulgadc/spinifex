@@ -14,7 +14,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -118,13 +117,13 @@ func (d *Daemon) startOchreVector() {
 	// each model id to the co-resident bundle VM's own port, in-process
 	// against d.bedrockService rather than a NATS round trip to itself.
 	endpointResolver := ochre.NewDynamicEndpointResolver(d.bedrockService, nil, 0)
-	embedder := gateway_bedrock.NewEmbedder(endpointResolver)
+	embedder := ochre.NewEmbedder(endpointResolver)
 
 	// RerankModel unset leaves reranker nil: Query degrades to plain KNN
 	// rather than resolving a default rerank model nobody asked for.
 	var reranker ochrevector.Reranker
 	if cfg.RerankModel != "" {
-		reranker = gateway_bedrock.NewReranker(endpointResolver, cfg.RerankModel)
+		reranker = ochre.NewReranker(endpointResolver, cfg.RerankModel)
 	}
 
 	store := objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(d.config.Predastore.Host),

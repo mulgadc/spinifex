@@ -14,7 +14,7 @@ import (
 // kbBucket is the cluster-replicated KV bucket holding bedrock-agent
 // knowledge-base records, per-account, mirroring registryBucket's pattern.
 // Unencrypted: knowledge-base metadata (name, status, bound index) carries no
-// secrets, unlike the credentials gateway_bedrock.CredentialStore protects.
+// secrets, unlike the credentials ochre.CredentialStore protects.
 const kbBucket = "ochre-kb"
 
 // dataSourceBucket is the cluster-replicated KV bucket holding bedrock-agent

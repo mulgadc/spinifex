@@ -17,17 +17,17 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 // Compile-time check that Daemon implements SystemInstanceLauncher.
-var _ handlers_elbv2.SystemInstanceLauncher = (*Daemon)(nil)
+var _ elbv2domain.SystemInstanceLauncher = (*Daemon)(nil)
 
 // resolveENIAccount returns owner when set, else fallback. A cross-account ENI
 // (e.g. an EKS cluster NLB fronting a customer-VPC ENI) carries its own account;
@@ -80,7 +80,7 @@ func (d *Daemon) attachExtraENI(eniAccountID string, extra systeminstance.ExtraE
 // customer DescribeInstances calls, and always boots via direct kernel boot
 // (bundled vmlinuz+initramfs, fw_cfg-delivered config). There is no AMI,
 // volume, or cloud-init path.
-func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput) (*handlers_elbv2.SystemInstanceOutput, error) {
+func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*elbv2domain.SystemInstanceOutput, error) {
 	if input.BootMode == systeminstance.BootAMI {
 		return d.launchAMISystemInstance(input)
 	}
@@ -229,7 +229,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	// DescribeAddresses and their provisioning flow hangs. Falls back to
 	// direct IPAM allocation for daemons where the EIP service isn't wired.
 	publicIP := ""
-	if input.Scheme == handlers_elbv2.SchemeInternetFacing && d.vpcService != nil && instance.ENIId != "" {
+	if input.Scheme == elbv2domain.SchemeInternetFacing && d.vpcService != nil && instance.ENIId != "" {
 		if d.eipService != nil {
 			allocOut, allocErr := d.eipService.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, eniAccountID)
 			if allocErr != nil {
@@ -349,7 +349,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 
 		mgmtIP, allocErr := d.mgmtIPAllocator.Allocate(instance.ID)
 		if allocErr != nil {
-			if input.Scheme == handlers_elbv2.SchemeInternal {
+			if input.Scheme == elbv2domain.SchemeInternal {
 				d.cleanupFailedSystemInstance(instance, instanceType)
 				return nil, fmt.Errorf("allocate mgmt IP for internal-scheme ALB: %w", allocErr)
 			}
@@ -372,7 +372,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				d.mgmtIPAllocator.Release(instance.ID)
 				instance.MgmtMAC = ""
 				instance.MgmtIP = ""
-				if input.Scheme == handlers_elbv2.SchemeInternal {
+				if input.Scheme == elbv2domain.SchemeInternal {
 					d.cleanupFailedSystemInstance(instance, instanceType)
 					return nil, fmt.Errorf("setup mgmt tap for internal-scheme ALB: %w", tapErr)
 				}
@@ -417,7 +417,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		"scheme", input.Scheme,
 	)
 
-	return &handlers_elbv2.SystemInstanceOutput{
+	return &elbv2domain.SystemInstanceOutput{
 		InstanceID: instance.ID,
 		PrivateIP:  privateIP,
 		PublicIP:   publicIP,
@@ -681,7 +681,7 @@ func (d *Daemon) refreshSystemInstanceState(inst *vm.VM) error {
 	if d.elbv2Service == nil {
 		return fmt.Errorf("elbv2 service unavailable: cannot refresh fw_cfg blobs for system VM %s", inst.ID)
 	}
-	ctx := handlers_elbv2.RecoveryContext{
+	ctx := elbv2domain.RecoveryContext{
 		InstanceID:   inst.ID,
 		InstanceType: inst.InstanceType,
 		ENIMac:       inst.ENIMac,
@@ -781,7 +781,7 @@ func (d *Daemon) WaitForSystemInstance(instanceID string, timeout time.Duration)
 //
 // Network topology from input.NICs is serialised to three fw_cfg tmpfiles
 // (netcfg, lb-agent-env, ca-cert) under hostprocess.RuntimeDir().
-func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.SystemInstanceInput) (vm.Config, error) {
+func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.SystemInstanceInput) (vm.Config, error) {
 	it := d.resourceMgr.instanceTypes[input.InstanceType]
 	architecture := "x86_64"
 	if it != nil && it.ProcessorInfo != nil && len(it.ProcessorInfo.SupportedArchitectures) > 0 && it.ProcessorInfo.SupportedArchitectures[0] != nil {
@@ -879,7 +879,7 @@ func microvmMachineType() string {
 // net1 = mgmt (if present), net2+ = extra ENIs. Extra ENIs beyond the primary
 // are only included when corresponding ExtraENIs entries exist. A gap at
 // net1 (single-node hosts with no br-mgmt) is expected and fine for QEMU.
-func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInput, machineType string, guestMTU int) nicNetdevResult {
+func buildNICNetdevs(instanceID string, input *elbv2domain.SystemInstanceInput, machineType string, guestMTU int) nicNetdevResult {
 	var res nicNetdevResult
 
 	for i, nic := range input.NICs {
@@ -903,13 +903,13 @@ func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInpu
 // launch (LaunchSystemInstance); single-node hosts without br-mgmt leave it
 // blank, so it must be excluded from netdevs, mmio slots, and guest config —
 // not just any empty-MAC NIC, only this specific, expected slot.
-func nicProvisioned(i int, nic handlers_elbv2.NICConfig) bool {
+func nicProvisioned(i int, nic elbv2domain.NICConfig) bool {
 	return i != 1 || nic.MAC != ""
 }
 
 // tapNameForNIC returns the Linux tap device name for a NIC at the given index.
 // Index 0 → primary ENI tap, index 1 → mgmt tap, index 2+ → extra ENI taps.
-func tapNameForNIC(idx int, _ handlers_elbv2.NICConfig, instanceID string, input *handlers_elbv2.SystemInstanceInput) string {
+func tapNameForNIC(idx int, _ elbv2domain.NICConfig, instanceID string, input *elbv2domain.SystemInstanceInput) string {
 	switch idx {
 	case 0:
 		return vm.TapDeviceName(input.ENIID)
@@ -928,7 +928,7 @@ func tapNameForNIC(idx int, _ handlers_elbv2.NICConfig, instanceID string, input
 // per-VM tmpfiles under hostprocess.RuntimeDir(). Returns the fw_cfg entries for the
 // three blobs and an error if any write fails or the NIC default invariant is
 // violated.
-func (d *Daemon) writeFwCfgBlobs(instanceID string, input *handlers_elbv2.SystemInstanceInput) ([]vm.FwCfgEntry, error) {
+func (d *Daemon) writeFwCfgBlobs(instanceID string, input *elbv2domain.SystemInstanceInput) ([]vm.FwCfgEntry, error) {
 	runtimeDir := hostprocess.RuntimeDir()
 
 	netcfgPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-netcfg.tmp", instanceID))
@@ -938,7 +938,7 @@ func (d *Daemon) writeFwCfgBlobs(instanceID string, input *handlers_elbv2.System
 	// Exclude any unprovisioned mgmt NIC so the guest is only ever told about
 	// interfaces that physically exist — mirrors the netdev/mmio-slot skip
 	// in buildNICNetdevs/buildDirectBootConfig.
-	provisionedNICs := make([]handlers_elbv2.NICConfig, 0, len(input.NICs))
+	provisionedNICs := make([]elbv2domain.NICConfig, 0, len(input.NICs))
 	for i, nic := range input.NICs {
 		if nicProvisioned(i, nic) {
 			provisionedNICs = append(provisionedNICs, nic)
@@ -981,7 +981,7 @@ func (d *Daemon) writeFwCfgBlobs(instanceID string, input *handlers_elbv2.System
 // buildNetcfgBlob serialises a slice of NICConfig entries to the shell KEY=value
 // format consumed by the initramfs init script. Exactly one NIC must have
 // IsDefault=true; returns an error otherwise.
-func buildNetcfgBlob(nics []handlers_elbv2.NICConfig) (string, error) {
+func buildNetcfgBlob(nics []elbv2domain.NICConfig) (string, error) {
 	defaultCount := 0
 	for _, n := range nics {
 		if n.IsDefault {

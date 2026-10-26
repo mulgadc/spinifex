@@ -16,11 +16,11 @@ import (
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -161,7 +161,7 @@ func TestVerifySystemInstanceLaunched_AfterMarkFailedIsAnError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildNetcfgBlob_NoDefault(t *testing.T) {
-	nics := []handlers_elbv2.NICConfig{
+	nics := []elbv2domain.NICConfig{
 		{MAC: "02:aa:bb:cc:dd:01", CIDR: "10.0.1.5/24", IsDefault: false},
 	}
 	_, err := buildNetcfgBlob(nics)
@@ -170,7 +170,7 @@ func TestBuildNetcfgBlob_NoDefault(t *testing.T) {
 }
 
 func TestBuildNetcfgBlob_TwoDefaults(t *testing.T) {
-	nics := []handlers_elbv2.NICConfig{
+	nics := []elbv2domain.NICConfig{
 		{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 		{MAC: "02:aa:bb:cc:dd:02", IsDefault: true},
 	}
@@ -180,7 +180,7 @@ func TestBuildNetcfgBlob_TwoDefaults(t *testing.T) {
 }
 
 func TestBuildNetcfgBlob_SingleNICMinimal(t *testing.T) {
-	nics := []handlers_elbv2.NICConfig{
+	nics := []elbv2domain.NICConfig{
 		{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 	}
 	got, err := buildNetcfgBlob(nics)
@@ -193,7 +193,7 @@ func TestBuildNetcfgBlob_SingleNICMinimal(t *testing.T) {
 }
 
 func TestBuildNetcfgBlob_FullNIC(t *testing.T) {
-	nics := []handlers_elbv2.NICConfig{
+	nics := []elbv2domain.NICConfig{
 		{
 			MAC:       "02:aa:bb:cc:dd:01",
 			CIDR:      "10.0.1.5/24",
@@ -214,7 +214,7 @@ func TestBuildNetcfgBlob_FullNIC(t *testing.T) {
 }
 
 func TestBuildNetcfgBlob_MultiNIC_DefaultFlags(t *testing.T) {
-	nics := []handlers_elbv2.NICConfig{
+	nics := []elbv2domain.NICConfig{
 		{MAC: "02:aa:bb:cc:dd:01", CIDR: "10.0.1.5/24", Gateway: "10.0.1.1", IsDefault: true},
 		{MAC: "02:aa:bb:cc:dd:02", CIDR: "192.168.100.5/24", IsDefault: false},
 	}
@@ -240,42 +240,42 @@ func TestResolveENIAccount_FallsBackWhenEmpty(t *testing.T) {
 }
 
 func TestTapNameForNIC_PrimaryENI(t *testing.T) {
-	input := &handlers_elbv2.SystemInstanceInput{
+	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-0123456789abcdef0",
 	}
-	got := tapNameForNIC(0, handlers_elbv2.NICConfig{}, "i-abc123", input)
+	got := tapNameForNIC(0, elbv2domain.NICConfig{}, "i-abc123", input)
 	// TapDeviceName strips "eni-" prefix → "tap0123456789abcde" (15 chars max)
 	assert.True(t, strings.HasPrefix(got, "tap"), "expected tap prefix, got %q", got)
 	assert.LessOrEqual(t, len(got), 15)
 }
 
 func TestTapNameForNIC_MgmtNIC(t *testing.T) {
-	input := &handlers_elbv2.SystemInstanceInput{ENIID: "eni-aaa"}
-	got := tapNameForNIC(1, handlers_elbv2.NICConfig{}, "i-deadbeef", input)
+	input := &elbv2domain.SystemInstanceInput{ENIID: "eni-aaa"}
+	got := tapNameForNIC(1, elbv2domain.NICConfig{}, "i-deadbeef", input)
 	// MgmtTapName strips "i-" prefix → "mgdeadbeef" (10 chars)
 	assert.True(t, strings.HasPrefix(got, "mg"), "expected mg prefix, got %q", got)
 	assert.LessOrEqual(t, len(got), 15)
 }
 
 func TestTapNameForNIC_ExtraENI(t *testing.T) {
-	input := &handlers_elbv2.SystemInstanceInput{
+	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-primary",
-		ExtraENIs: []handlers_elbv2.ExtraENIInput{
+		ExtraENIs: []elbv2domain.ExtraENIInput{
 			{ENIID: "eni-extra0"},
 			{ENIID: "eni-extra1"},
 		},
 	}
-	got := tapNameForNIC(2, handlers_elbv2.NICConfig{}, "i-inst", input)
+	got := tapNameForNIC(2, elbv2domain.NICConfig{}, "i-inst", input)
 	assert.True(t, strings.HasPrefix(got, "tap"), "expected tap prefix for extra ENI, got %q", got)
 }
 
 func TestTapNameForNIC_ExtraENI_OutOfRange(t *testing.T) {
-	input := &handlers_elbv2.SystemInstanceInput{
+	input := &elbv2domain.SystemInstanceInput{
 		ENIID:     "eni-primary",
-		ExtraENIs: []handlers_elbv2.ExtraENIInput{},
+		ExtraENIs: []elbv2domain.ExtraENIInput{},
 	}
 	// idx=2 → extraIdx=0 but no ExtraENIs → fallback name
-	got := tapNameForNIC(2, handlers_elbv2.NICConfig{}, "i-inst", input)
+	got := tapNameForNIC(2, elbv2domain.NICConfig{}, "i-inst", input)
 	assert.Equal(t, fmt.Sprintf("tap-unknown-%d", 2), got)
 }
 
@@ -284,9 +284,9 @@ func TestTapNameForNIC_ExtraENI_OutOfRange(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildNICNetdevs_SingleNIC(t *testing.T) {
-	input := &handlers_elbv2.SystemInstanceInput{
+	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-000000000000000a",
-		NICs: []handlers_elbv2.NICConfig{
+		NICs: []elbv2domain.NICConfig{
 			{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 		},
 	}
@@ -300,9 +300,9 @@ func TestBuildNICNetdevs_SingleNIC(t *testing.T) {
 }
 
 func TestBuildNICNetdevs_TwoNICs(t *testing.T) {
-	input := &handlers_elbv2.SystemInstanceInput{
+	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-000000000000000b",
-		NICs: []handlers_elbv2.NICConfig{
+		NICs: []elbv2domain.NICConfig{
 			{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 			{MAC: "02:aa:bb:cc:dd:02", IsDefault: false},
 		},
@@ -317,7 +317,7 @@ func TestBuildNICNetdevs_TwoNICs(t *testing.T) {
 }
 
 func TestBuildNICNetdevs_EmptyNICs(t *testing.T) {
-	input := &handlers_elbv2.SystemInstanceInput{ENIID: "eni-empty"}
+	input := &elbv2domain.SystemInstanceInput{ENIID: "eni-empty"}
 	res := buildNICNetdevs("i-empty", input, microvmMachineType(), 0)
 	assert.Empty(t, res.netdevs)
 	assert.Empty(t, res.devices)
@@ -325,9 +325,9 @@ func TestBuildNICNetdevs_EmptyNICs(t *testing.T) {
 
 func TestBuildNICNetdevs_UnprovisionedMgmtNIC_Skipped(t *testing.T) {
 	// Single-node host with no br-mgmt: NIC[1] (mgmt) never got a MAC/tap.
-	input := &handlers_elbv2.SystemInstanceInput{
+	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-000000000000000c",
-		NICs: []handlers_elbv2.NICConfig{
+		NICs: []elbv2domain.NICConfig{
 			{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 			{MAC: ""},
 		},
@@ -341,9 +341,9 @@ func TestBuildNICNetdevs_UnprovisionedMgmtNIC_Skipped(t *testing.T) {
 
 func TestBuildNICNetdevs_ProvisionedMgmtNIC_Included(t *testing.T) {
 	// Multi-node host with br-mgmt: NIC[1] (mgmt) has a real MAC/tap.
-	input := &handlers_elbv2.SystemInstanceInput{
+	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-000000000000000d",
-		NICs: []handlers_elbv2.NICConfig{
+		NICs: []elbv2domain.NICConfig{
 			{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 			{MAC: "02:aa:bb:cc:dd:02"},
 		},
@@ -360,12 +360,12 @@ func TestBuildNICNetdevs_UnprovisionedMgmtNIC_ExtraENIUnaffected(t *testing.T) {
 	// NIC[1] mgmt unprovisioned + NIC[2] extra ENI provisioned: net1 must be
 	// skipped but the extra ENI's tap name resolution (index-based) must not
 	// be shifted/renumbered.
-	input := &handlers_elbv2.SystemInstanceInput{
+	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-primary000000000",
-		ExtraENIs: []handlers_elbv2.ExtraENIInput{
+		ExtraENIs: []elbv2domain.ExtraENIInput{
 			{ENIID: "eni-extra000000000000"},
 		},
-		NICs: []handlers_elbv2.NICConfig{
+		NICs: []elbv2domain.NICConfig{
 			{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 			{MAC: ""},
 			{MAC: "02:aa:bb:cc:dd:03"},
@@ -389,19 +389,19 @@ func TestBuildNICNetdevs_UnprovisionedMgmtNIC_ExtraENIUnaffected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNicProvisioned_MgmtSlotEmptyMAC(t *testing.T) {
-	assert.False(t, nicProvisioned(1, handlers_elbv2.NICConfig{MAC: ""}))
+	assert.False(t, nicProvisioned(1, elbv2domain.NICConfig{MAC: ""}))
 }
 
 func TestNicProvisioned_MgmtSlotWithMAC(t *testing.T) {
-	assert.True(t, nicProvisioned(1, handlers_elbv2.NICConfig{MAC: "02:aa:bb:cc:dd:02"}))
+	assert.True(t, nicProvisioned(1, elbv2domain.NICConfig{MAC: "02:aa:bb:cc:dd:02"}))
 }
 
 func TestNicProvisioned_NonMgmtSlotsAlwaysTrue(t *testing.T) {
 	// Only the mgmt slot (index 1) is ever gated on MAC presence — an empty
 	// MAC anywhere else (e.g. primary, not expected in practice) is not
 	// treated as "unprovisioned" by this guard.
-	assert.True(t, nicProvisioned(0, handlers_elbv2.NICConfig{MAC: ""}))
-	assert.True(t, nicProvisioned(2, handlers_elbv2.NICConfig{MAC: ""}))
+	assert.True(t, nicProvisioned(0, elbv2domain.NICConfig{MAC: ""}))
+	assert.True(t, nicProvisioned(2, elbv2domain.NICConfig{MAC: ""}))
 }
 
 // ---------------------------------------------------------------------------
@@ -425,8 +425,8 @@ func TestWriteFwCfgBlobs_HappyPath(t *testing.T) {
 
 	d := &Daemon{}
 	instanceID := "i-fwcfg-test"
-	input := &handlers_elbv2.SystemInstanceInput{
-		NICs: []handlers_elbv2.NICConfig{
+	input := &elbv2domain.SystemInstanceInput{
+		NICs: []elbv2domain.NICConfig{
 			{MAC: "02:aa:bb:cc:dd:01", CIDR: "10.0.1.5/24", Gateway: "10.0.1.1", IsDefault: true},
 		},
 		LBAgentEnv: "LB_BACKEND=10.0.1.10:8080\n",
@@ -469,8 +469,8 @@ func TestWriteFwCfgBlobs_UnprovisionedMgmtNIC_ExcludedFromGuestConfig(t *testing
 
 	d := &Daemon{}
 	instanceID := "i-fwcfg-nomgmt"
-	input := &handlers_elbv2.SystemInstanceInput{
-		NICs: []handlers_elbv2.NICConfig{
+	input := &elbv2domain.SystemInstanceInput{
+		NICs: []elbv2domain.NICConfig{
 			{MAC: "02:aa:bb:cc:dd:01", CIDR: "10.0.1.5/24", Gateway: "10.0.1.1", IsDefault: true},
 			{MAC: ""},
 		},
@@ -500,8 +500,8 @@ func TestWriteFwCfgBlobs_ProvisionedMgmtNIC_IncludedInGuestConfig(t *testing.T) 
 
 	d := &Daemon{}
 	instanceID := "i-fwcfg-mgmt"
-	input := &handlers_elbv2.SystemInstanceInput{
-		NICs: []handlers_elbv2.NICConfig{
+	input := &elbv2domain.SystemInstanceInput{
+		NICs: []elbv2domain.NICConfig{
 			{MAC: "02:aa:bb:cc:dd:01", CIDR: "10.0.1.5/24", Gateway: "10.0.1.1", IsDefault: true},
 			{MAC: "02:aa:bb:cc:dd:02", CIDR: "192.168.100.5/24"},
 		},
@@ -525,8 +525,8 @@ func TestWriteFwCfgBlobs_InvalidNICs_NoDefault(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 
 	d := &Daemon{}
-	input := &handlers_elbv2.SystemInstanceInput{
-		NICs: []handlers_elbv2.NICConfig{
+	input := &elbv2domain.SystemInstanceInput{
+		NICs: []elbv2domain.NICConfig{
 			{MAC: "02:aa:bb:cc:dd:01", IsDefault: false},
 		},
 	}
@@ -554,12 +554,12 @@ func TestBuildDirectBootConfig_MmioSlotsPacked_MgmtSkipped(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 
 	d := &Daemon{resourceMgr: &ResourceManager{instanceTypes: map[string]*ec2.InstanceTypeInfo{}}}
-	input := &handlers_elbv2.SystemInstanceInput{
+	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-mmio000000000001",
-		ExtraENIs: []handlers_elbv2.ExtraENIInput{
+		ExtraENIs: []elbv2domain.ExtraENIInput{
 			{ENIID: "eni-mmio-extra00000001"},
 		},
-		NICs: []handlers_elbv2.NICConfig{
+		NICs: []elbv2domain.NICConfig{
 			{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 			{MAC: ""},
 			{MAC: "02:aa:bb:cc:dd:03"},
@@ -589,9 +589,9 @@ func TestBuildDirectBootConfig_MmioSlotsUnchanged_MgmtProvisioned(t *testing.T) 
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 
 	d := &Daemon{resourceMgr: &ResourceManager{instanceTypes: map[string]*ec2.InstanceTypeInfo{}}}
-	input := &handlers_elbv2.SystemInstanceInput{
+	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-mmio000000000002",
-		NICs: []handlers_elbv2.NICConfig{
+		NICs: []elbv2domain.NICConfig{
 			{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 			{MAC: "02:aa:bb:cc:dd:02"},
 		},
@@ -625,7 +625,7 @@ func newRefreshTestDaemon(t *testing.T) (*Daemon, *nats.Conn, string) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
+	svc, err := elbv2domain.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
 	t.Cleanup(svc.Close)
 	return &Daemon{vmMgr: vm.NewManager(), elbv2Service: svc}, nc, tmpDir
@@ -666,14 +666,14 @@ func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
 	d.elbv2Service.GatewayURL = "https://10.0.0.1:9999"
 	d.elbv2Service.CACert = "-----BEGIN CERTIFICATE-----\nfake-ca\n-----END CERTIFICATE-----\n"
 
-	seedStore, err := handlers_elbv2.NewStore(t.Context(), nc)
+	seedStore, err := elbv2domain.NewStore(t.Context(), nc)
 	require.NoError(t, err)
-	require.NoError(t, seedStore.PutLoadBalancer(t.Context(), &handlers_elbv2.LoadBalancerRecord{
+	require.NoError(t, seedStore.PutLoadBalancer(t.Context(), &elbv2domain.LoadBalancerRecord{
 		LoadBalancerID: "lb-recover",
 		Name:           "recover-alb",
-		Scheme:         handlers_elbv2.SchemeInternal,
-		Type:           handlers_elbv2.LoadBalancerTypeApplication,
-		State:          handlers_elbv2.StateActive,
+		Scheme:         elbv2domain.SchemeInternal,
+		Type:           elbv2domain.LoadBalancerTypeApplication,
+		State:          elbv2domain.StateActive,
 		Subnets:        []string{"subnet-aaa"},
 		ENIs:           []string{"eni-primary"},
 		InstanceID:     "i-recover-blobs",
@@ -712,14 +712,14 @@ func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
 func TestRefreshSystemInstanceState_WriteErrorPropagates(t *testing.T) {
 	d, nc, tmpDir := newRefreshTestDaemon(t)
 
-	seedStore, err := handlers_elbv2.NewStore(t.Context(), nc)
+	seedStore, err := elbv2domain.NewStore(t.Context(), nc)
 	require.NoError(t, err)
-	require.NoError(t, seedStore.PutLoadBalancer(t.Context(), &handlers_elbv2.LoadBalancerRecord{
+	require.NoError(t, seedStore.PutLoadBalancer(t.Context(), &elbv2domain.LoadBalancerRecord{
 		LoadBalancerID: "lb-werr",
 		Name:           "werr-alb",
-		Scheme:         handlers_elbv2.SchemeInternal,
-		Type:           handlers_elbv2.LoadBalancerTypeApplication,
-		State:          handlers_elbv2.StateActive,
+		Scheme:         elbv2domain.SchemeInternal,
+		Type:           elbv2domain.LoadBalancerTypeApplication,
+		State:          elbv2domain.StateActive,
 		Subnets:        []string{"subnet-aaa"},
 		ENIs:           []string{"eni-primary"},
 		InstanceID:     "i-werr",
@@ -810,10 +810,10 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = delSub.Unsubscribe() })
 
-	input := &handlers_elbv2.SystemInstanceInput{
+	input := &elbv2domain.SystemInstanceInput{
 		InstanceType: getTestInstanceType(t),
 		SubnetID:     aws.StringValue(subnetOut.Subnet.SubnetId),
-		Scheme:       handlers_elbv2.SchemeInternetFacing,
+		Scheme:       elbv2domain.SchemeInternetFacing,
 		AccountID:    testAccountID,
 		ENIID:        eniID,
 		ENIMac:       eniMac,

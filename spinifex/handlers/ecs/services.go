@@ -16,8 +16,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -43,7 +43,7 @@ func newNATSTargetRegistrar(nc *nats.Conn) *natsTargetRegistrar {
 }
 
 func (r *natsTargetRegistrar) Register(ctx context.Context, accountID, tgARN, ip string, port int) error {
-	_, err := handlers_elbv2.NewNATSELBv2Service(r.nc).RegisterTargets(ctx, &elbv2.RegisterTargetsInput{
+	_, err := elbv2domain.NewNATSELBv2Service(r.nc).RegisterTargets(ctx, &elbv2.RegisterTargetsInput{
 		TargetGroupArn: aws.String(tgARN),
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String(ip), Port: aws.Int64(int64(port))}},
 	}, accountID)
@@ -51,7 +51,7 @@ func (r *natsTargetRegistrar) Register(ctx context.Context, accountID, tgARN, ip
 }
 
 func (r *natsTargetRegistrar) Deregister(ctx context.Context, accountID, tgARN, ip string, port int) error {
-	_, err := handlers_elbv2.NewNATSELBv2Service(r.nc).DeregisterTargets(ctx, &elbv2.DeregisterTargetsInput{
+	_, err := elbv2domain.NewNATSELBv2Service(r.nc).DeregisterTargets(ctx, &elbv2.DeregisterTargetsInput{
 		TargetGroupArn: aws.String(tgARN),
 		Targets:        []*elbv2.TargetDescription{{Id: aws.String(ip), Port: aws.Int64(int64(port))}},
 	}, accountID)

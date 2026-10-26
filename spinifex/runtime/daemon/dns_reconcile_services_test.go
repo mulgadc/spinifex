@@ -8,8 +8,8 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ import (
 // claim prune authority over the zone.
 func TestDNSDesiredSet_ServicesWithoutBaseDomain(t *testing.T) {
 	d := &Daemon{
-		elbv2Service: &handlers_elbv2.ELBv2ServiceImpl{},
+		elbv2Service: &elbv2domain.ELBv2ServiceImpl{},
 		eksService:   &ekscluster.EKSServiceImpl{},
 		rdsService:   &rdsinstance.Service{},
 	}
@@ -35,7 +35,7 @@ func TestDNSDesiredSet_ServicesEnumerateCompletely(t *testing.T) {
 	cfg := &config.Config{Region: "ap-southeast-2"}
 	cfg.Northstar.DefaultDomain = "example.internal"
 
-	elb, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(cfg, nc, bytes.Repeat([]byte{0x42}, masterkey.MasterKeySize))
+	elb, err := elbv2domain.NewELBv2ServiceImplWithNATS(cfg, nc, bytes.Repeat([]byte{0x42}, masterkey.MasterKeySize))
 	require.NoError(t, err)
 	t.Cleanup(elb.Close)
 	eks, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Config: cfg})

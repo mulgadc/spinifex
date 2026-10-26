@@ -7,10 +7,10 @@ import (
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
@@ -118,10 +118,10 @@ var elbv2Actions = map[string]elbv2Action{
 	"RemoveTags": elbv2Handler(func(ctx context.Context, input *elbv2.RemoveTagsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.RemoveTags(ctx, input, gw.NATSConn, accountID)
 	}),
-	"LBAgentHeartbeat": elbv2Handler(func(ctx context.Context, input *handlers_elbv2.LBAgentHeartbeatInput, gw *GatewayConfig, accountID string) (any, error) {
+	"LBAgentHeartbeat": elbv2Handler(func(ctx context.Context, input *elbv2domain.LBAgentHeartbeatInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.LBAgentHeartbeat(ctx, input, gw.NATSConn, accountID)
 	}),
-	"GetLBConfig": elbv2Handler(func(ctx context.Context, input *handlers_elbv2.GetLBConfigInput, gw *GatewayConfig, accountID string) (any, error) {
+	"GetLBConfig": elbv2Handler(func(ctx context.Context, input *elbv2domain.GetLBConfigInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.GetLBConfig(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyTargetGroup": elbv2Handler(func(ctx context.Context, input *elbv2.ModifyTargetGroupInput, gw *GatewayConfig, accountID string) (any, error) {

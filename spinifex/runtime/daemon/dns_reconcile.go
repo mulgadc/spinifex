@@ -10,10 +10,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 )
 
 // dnsWatchSources names the buckets whose changes should wake the DNS
@@ -23,7 +23,7 @@ import (
 func (d *Daemon) dnsWatchSources() []reconciler.Source {
 	return []reconciler.Source{
 		reconciler.Dynamic(d.instanceStateWatchBuckets, instanceStateWatchFilter),
-		reconciler.Dynamic(d.elbv2WatchBuckets, handlers_elbv2.KeyPrefixLB+"*"),
+		reconciler.Dynamic(d.elbv2WatchBuckets, elbv2domain.KeyPrefixLB+"*"),
 		reconciler.Dynamic(d.eksWatchBuckets, ">"),
 		reconciler.Dynamic(d.rdsWatchBuckets, ">"),
 	}

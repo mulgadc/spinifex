@@ -48,8 +48,8 @@ import (
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
@@ -4523,7 +4523,7 @@ func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
 		{name: "externalIPAM", set: func(d *Daemon) { d.externalIPAM = &ec2vpc.ExternalIPAM{} }, wantMsg: "externalIPAM"},
 		{name: "eipService", set: func(d *Daemon) { d.eipService = &ec2eip.EIPServiceImpl{} }, wantMsg: "eipService"},
 		{name: "accountService", set: func(d *Daemon) { d.accountService = &ec2account.AccountSettingsServiceImpl{} }, wantMsg: "accountService"},
-		{name: "elbv2Service", set: func(d *Daemon) { d.elbv2Service = &handlers_elbv2.ELBv2ServiceImpl{} }, wantMsg: "elbv2Service"},
+		{name: "elbv2Service", set: func(d *Daemon) { d.elbv2Service = &elbv2domain.ELBv2ServiceImpl{} }, wantMsg: "elbv2Service"},
 	}
 
 	for _, tc := range cases {

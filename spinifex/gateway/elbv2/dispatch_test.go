@@ -10,9 +10,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -139,15 +139,15 @@ func dispatchCases() []dispatchCase {
 	sslIn := &elbv2.DescribeSSLPoliciesInput{Names: []*string{aws.String("ELBSecurityPolicy-2016-08")}}
 	sslOut := elbv2.DescribeSSLPoliciesOutput{SslPolicies: []*elbv2.SslPolicy{{Name: aws.String("ELBSecurityPolicy-2016-08")}}}
 
-	heartbeatIn := &handlers_elbv2.LBAgentHeartbeatInput{
+	heartbeatIn := &elbv2domain.LBAgentHeartbeatInput{
 		LBID: aws.String("lb-1"),
-		Servers: []*handlers_elbv2.LBAgentServerStatus{{
+		Servers: []*elbv2domain.LBAgentServerStatus{{
 			Backend: aws.String("be1"), Server: aws.String("srv1"), Status: aws.String("UP"),
 		}},
 	}
-	heartbeatOut := handlers_elbv2.LBAgentHeartbeatOutput{Status: aws.String("ok"), ConfigHash: aws.String("h1")}
-	lbConfigIn := &handlers_elbv2.GetLBConfigInput{LBID: aws.String("lb-1")}
-	lbConfigOut := handlers_elbv2.GetLBConfigOutput{
+	heartbeatOut := elbv2domain.LBAgentHeartbeatOutput{Status: aws.String("ok"), ConfigHash: aws.String("h1")}
+	lbConfigIn := &elbv2domain.GetLBConfigInput{LBID: aws.String("lb-1")}
+	lbConfigOut := elbv2domain.GetLBConfigOutput{
 		ConfigText: aws.String("global\n"), ConfigHash: aws.String("h1"), Engine: aws.String("haproxy"),
 	}
 
@@ -576,7 +576,7 @@ func TestGatewayDispatch_ValidationGuards(t *testing.T) {
 			return err
 		}},
 		{"LBAgentHeartbeat/MissingLBID", awserrors.ErrorMissingParameter, func() error {
-			_, err := gateway_elbv2.LBAgentHeartbeat(context.Background(), &handlers_elbv2.LBAgentHeartbeatInput{}, nil, testAccountID)
+			_, err := gateway_elbv2.LBAgentHeartbeat(context.Background(), &elbv2domain.LBAgentHeartbeatInput{}, nil, testAccountID)
 			return err
 		}},
 		{"GetLBConfig/NilInput", awserrors.ErrorInvalidParameterValue, func() error {
@@ -584,7 +584,7 @@ func TestGatewayDispatch_ValidationGuards(t *testing.T) {
 			return err
 		}},
 		{"GetLBConfig/MissingLBID", awserrors.ErrorMissingParameter, func() error {
-			_, err := gateway_elbv2.GetLBConfig(context.Background(), &handlers_elbv2.GetLBConfigInput{}, nil, testAccountID)
+			_, err := gateway_elbv2.GetLBConfig(context.Background(), &elbv2domain.GetLBConfigInput{}, nil, testAccountID)
 			return err
 		}},
 	}

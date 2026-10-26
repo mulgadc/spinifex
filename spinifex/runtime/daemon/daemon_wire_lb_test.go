@@ -7,8 +7,8 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,7 +22,7 @@ func newWireLBTestDaemon(t *testing.T, cfg *config.Config) *Daemon {
 
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
+	svc, err := elbv2domain.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Close() })
 
@@ -205,7 +205,7 @@ func newSubscribeTestDaemon(t *testing.T, nc *nats.Conn, gatewayURL, accessKey s
 	t.Helper()
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
+	svc, err := elbv2domain.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Close() })
 	svc.GatewayURL = gatewayURL

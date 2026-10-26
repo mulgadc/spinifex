@@ -74,7 +74,7 @@ services:
       - spinifex/domains/ec2/volume
       - spinifex/domains/ec2/volumestate
       - spinifex/domains/ec2/vpc
-      - spinifex/handlers/elbv2
+      - spinifex/domains/elbv2
       - spinifex/domains/acm
       - spinifex/domains/iam
       - spinifex/handlers/ecs
@@ -136,7 +136,7 @@ services:
       - "spinifex.cluster.shutdown.infra"
       # Operator-plane Predastore topology contract (contracts/operator/v1).
       - "spinifex.storage.config"
-      # ELBv2 control plane (handlers/elbv2/service_nats.go topic map).
+      # ELBv2 control plane (domains/elbv2/service_nats.go topic map).
       - "elbv2.CreateLoadBalancer"
       - "elbv2.DeleteLoadBalancer"
       - "elbv2.DescribeLoadBalancers"
@@ -403,7 +403,7 @@ suites:
   e2e-lb:
     path: tests/e2e/lb
     covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
-    # Exercises full ELBv2 control plane (handlers/elbv2) + data plane
+    # Exercises full ELBv2 control plane (domains/elbv2) + data plane
     # (LB agent on the system VM). ELBv2 is part of spinifex_daemon in
     # this manifest; revisit if it splits into a standalone service.
 

@@ -16,7 +16,6 @@ var frozenLegacyPackages = []string{
 	"gateway/elbv2",
 	"gateway/spx",
 	"handlers/ecs",
-	"handlers/elbv2",
 }
 
 // retiredLegacyRoots were legacy roots whose every package has moved to its

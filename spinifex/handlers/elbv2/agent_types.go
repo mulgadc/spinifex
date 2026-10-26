@@ -2,7 +2,7 @@ package handlers_elbv2
 
 import (
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/mulgadc/spinifex/spinifex/lbagent"
+	lbagent "github.com/mulgadc/spinifex/spinifex/agents/elbv2"
 )
 
 // LBAgentHeartbeatInput is sent by the LB agent on each heartbeat tick,

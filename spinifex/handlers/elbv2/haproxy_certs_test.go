@@ -14,11 +14,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	lbagent "github.com/mulgadc/spinifex/spinifex/agents/elbv2"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
-	"github.com/mulgadc/spinifex/spinifex/lbagent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

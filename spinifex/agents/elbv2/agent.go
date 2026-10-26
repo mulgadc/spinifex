@@ -1,7 +1,7 @@
-// Package lbagent implements the LB config agent that runs inside load balancer VMs.
+// Package elbv2 implements the LB config agent that runs inside load balancer VMs.
 // It polls the AWS gateway for config updates and reports health via heartbeats.
 // All communication uses SigV4-signed HTTP requests to the gateway.
-package lbagent
+package elbv2
 
 import (
 	"bytes"

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/lbagent"
+	lbagent "github.com/mulgadc/spinifex/spinifex/agents/elbv2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

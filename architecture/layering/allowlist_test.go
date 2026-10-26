@@ -146,7 +146,7 @@ var allowlist = []allowance{
 	{From: "handlers/elbv2", To: "domains/ec2/vpc", Debt: "handlers/elbv2 (cross-domain)", Reason: "legacy ELBv2 cross-domain import; clears when ELBv2 is extracted behind consumer-owned capabilities"},
 	{From: "handlers/elbv2", To: "domains/network/topology", Debt: "handlers/elbv2 (cross-domain)", Reason: "legacy ELBv2 cross-domain import; clears when ELBv2 is extracted behind consumer-owned capabilities"},
 	{From: "handlers/elbv2", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "system-instance role ensurer; needs an IAM capability"},
-	{From: "handlers/elbv2", To: "lbagent", Debt: "handlers/elbv2/{agent_types,haproxy,health_checker,nginx}.go import lbagent", Reason: "health-report and cert/PID-path vocabulary; needs a guest/controller contract"},
+	{From: "handlers/elbv2", To: "agents/elbv2", Debt: "handlers/elbv2/{agent_types,haproxy,health_checker,nginx}.go import lbagent", Reason: "health-report and cert/PID-path vocabulary; needs a guest/controller contract"},
 
 	{From: "domains/rds/instance", To: "domains/dns", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
 	{From: "domains/rds/instance", To: "domains/ec2/instance", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},

@@ -134,6 +134,20 @@ keep_args() {
               -o -path "$1/firewall/custom.nft")
 }
 
+# --- BEGIN at-stake counts ---
+# Copied between node-reset.sh and uninstall-spx.sh; node-reset_test.sh keeps them equal.
+# Instances are the daemon's local state records; volumes are Viperblock's
+# volume directories, less each volume's EFI variable store.
+count_instances() {
+    local state="$1/state/instance-state.json"
+    sudo test -e "$state" || { echo 0; return 0; }
+    sudo jq -r '.vms // {} | length' "$state" 2>/dev/null || echo unknown
+}
+count_volumes() {
+    sudo find "$1/viperblock" -maxdepth 1 -mindepth 1 -type d -name 'vol-*' ! -name '*-efi' 2>/dev/null | wc -l || true
+}
+# --- END at-stake counts ---
+
 # Report what is at stake in figures rather than adjectives. An operator who
 # reads "3 instances, 12 volumes, 840G" makes a better decision than one who
 # reads a warning banner.
@@ -141,8 +155,8 @@ keep_args() {
 # created fails the whole pipeline, and a node with nothing to report is the
 # most ordinary case there is.
 if [ -d "$DATA_DIR" ]; then
-    instances=$(sudo find "$DATA_DIR/instances" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l || true)
-    volumes=$(sudo find "$DATA_DIR/volumes" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l || true)
+    instances=$(count_instances "$DATA_DIR")
+    volumes=$(count_volumes "$DATA_DIR")
     size=$(sudo du -sh "$DATA_DIR" 2>/dev/null | cut -f1 || true)
     log "on $(hostname): $instances instance(s), $volumes volume(s), ${size:-unknown} under $DATA_DIR"
     $KEEP_DATA && log "  --keep-data: $DATA_DIR will be preserved"
@@ -150,7 +164,7 @@ fi
 log "removing: ${WIPE_DIRS[*]}"
 
 if ! $ASSUME_YES && ! $DRY_RUN; then
-    read -r -p "Destroy this node's state? Type 'destroy' to continue: " reply
+    read -r -p "Destroy this node's state? Type 'destroy' to continue: " reply || reply=""
     [ "$reply" = "destroy" ] || { log "aborted"; exit 1; }
 fi
 

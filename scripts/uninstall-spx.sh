@@ -169,6 +169,20 @@ EOF
     exit 1
 fi
 
+# --- BEGIN at-stake counts ---
+# Copied between node-reset.sh and uninstall-spx.sh; node-reset_test.sh keeps them equal.
+# Instances are the daemon's local state records; volumes are Viperblock's
+# volume directories, less each volume's EFI variable store.
+count_instances() {
+    local state="$1/state/instance-state.json"
+    sudo test -e "$state" || { echo 0; return 0; }
+    sudo jq -r '.vms // {} | length' "$state" 2>/dev/null || echo unknown
+}
+count_volumes() {
+    sudo find "$1/viperblock" -maxdepth 1 -mindepth 1 -type d -name 'vol-*' ! -name '*-efi' 2>/dev/null | wc -l || true
+}
+# --- END at-stake counts ---
+
 # ---------------------------------------------------------------------------
 # 2. Report what is at stake, then confirm.
 # ---------------------------------------------------------------------------
@@ -178,8 +192,8 @@ if command -v spx >/dev/null 2>&1; then
 fi
 if [ -d "$DATA_DIR" ]; then
     size=$(sudo du -sh "$DATA_DIR" 2>/dev/null | cut -f1 || true)
-    instances=$(sudo find "$DATA_DIR/instances" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l || true)
-    volumes=$(sudo find "$DATA_DIR/volumes" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l || true)
+    instances=$(count_instances "$DATA_DIR")
+    volumes=$(count_volumes "$DATA_DIR")
     if $PURGE_DATA; then
         log "  --purge-data: DESTROYING $instances instance(s), $volumes volume(s), ${size:-unknown} under $DATA_DIR"
     else
@@ -189,7 +203,7 @@ fi
 $PURGE_DEPS && log "  --purge-deps: $PKG_MANAGER packages will be removed (confirmed separately below)"
 
 if ! $ASSUME_YES && ! $DRY_RUN; then
-    read -r -p "Remove the Spinifex install from this node? Type 'uninstall' to continue: " reply
+    read -r -p "Remove the Spinifex install from this node? Type 'uninstall' to continue: " reply || reply=""
     [ "$reply" = "uninstall" ] || { log "aborted"; exit 1; }
 fi
 
@@ -205,7 +219,7 @@ if $PURGE_DATA && ! $DRY_RUN; then
     if [ "${SPX_PURGE_CONFIRM:-}" = "destroy" ]; then
         log "SPX_PURGE_CONFIRM=destroy: proceeding without a prompt"
     else
-        read -r -p "Also destroy every volume and object under $DATA_DIR? Type 'destroy' to continue: " reply
+        read -r -p "Also destroy every volume and object under $DATA_DIR? Type 'destroy' to continue: " reply || reply=""
         [ "$reply" = "destroy" ] || { log "aborted"; exit 1; }
     fi
 fi
@@ -573,7 +587,7 @@ chrony nftables"
     elif $DRY_RUN; then
         echo "  would run: $REMOVE_CMD <the above>"
     else
-        read -r -p "Remove these packages? Type 'remove' to continue: " reply
+        read -r -p "Remove these packages? Type 'remove' to continue: " reply || reply=""
         if [ "$reply" = "remove" ]; then
             # shellcheck disable=SC2086
             sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y $PACKAGES || \

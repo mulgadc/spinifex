@@ -30,7 +30,9 @@
 # /usr/share/spinifex, every spinifex systemd unit and slice, the eight
 # spinifex-* service users, the sudoers grant, the sysctl/logrotate/chrony/udev
 # drop-ins, the host firewall policy and its loaded nft table, the OVS bridges
-# and OVN databases, and the Spinifex CA from the host trust store.
+# and OVN databases, and the Spinifex CA from the host trust store. Where
+# setup.sh turned on systemd-resolved, it restores /etc/resolv.conf and turns
+# resolved off.
 #
 # WHAT THIS LEAVES ALONE
 #
@@ -38,7 +40,8 @@
 # /swapfile, which setup.sh may have created but cannot be told apart from one
 # the host already had. Anything the operator configured around us: netplan,
 # /etc/iptables/rules.v4, hand-written bridges. firewalld, which setup.sh
-# masked, is unmasked but not started. /etc/modules-load.d/spinifex.conf.
+# masked, is unmasked but not started. /etc/modules-load.d/spinifex.conf, and
+# the confdir line setup.sh appends to an EL /etc/chrony.conf.
 set -euo pipefail
 
 ETC_DIR="${SPX_ETC_DIR:-/etc/spinifex}"
@@ -389,6 +392,10 @@ rm_path /usr/local/bin/spx \
         /usr/local/share/spinifex \
         /usr/local/lib/spinifex \
         /usr/share/spinifex
+# setup.sh adds this link where sudo's PATH leaves out /usr/local/bin.
+if [ "$(readlink /usr/bin/spx 2>/dev/null)" = /usr/local/bin/spx ]; then
+    rm_path /usr/bin/spx
+fi
 
 # ---------------------------------------------------------------------------
 # 9. Drop-ins. Globbed, not listed: 99-spinifex-vpc.conf is written at runtime
@@ -400,6 +407,7 @@ log "removing configuration drop-ins"
 rm_path /etc/sysctl.d/*spinifex* \
         /etc/sudoers.d/spinifex-network \
         /etc/chrony/conf.d/spinifex.conf \
+        /etc/chrony.d/spinifex.conf \
         /etc/logrotate.d/spinifex \
         /etc/udev/rules.d/*spinifex* \
         /etc/NetworkManager/conf.d/*spinifex*
@@ -457,14 +465,31 @@ done
 # 12. The CA in the host trust store. Leaving it means the host trusts a CA
 # whose key no longer exists anywhere.
 # ---------------------------------------------------------------------------
-if [ -f /usr/local/share/ca-certificates/spinifex-ca.crt ]; then
+CA_TRUST=$(distro_ca_trust) || { echo "ERROR: cannot tell which trust store to remove the Spinifex CA from" >&2; exit 1; }
+CA_ANCHOR="${CA_TRUST#* }/spinifex-ca.crt"
+if [ -f "$CA_ANCHOR" ]; then
     log "removing the Spinifex CA from the host trust store"
-    rm_path /usr/local/share/ca-certificates/spinifex-ca.crt
-    run sudo update-ca-certificates >/dev/null 2>&1 || true
+    rm_path "$CA_ANCHOR"
+    run sudo "${CA_TRUST%% *}"
 fi
 
 # ---------------------------------------------------------------------------
-# 13. Swap is reported, never removed.
+# 13. Host DNS. setup.sh saved /etc/resolv.conf only where it turned on
+# systemd-resolved, so the saved copy is what says to turn it off again.
+# ---------------------------------------------------------------------------
+RESOLV_CONF_SAVED=/var/lib/spinifex-reset/resolv.conf.orig
+if exists "$RESOLV_CONF_SAVED"; then
+    log "restoring /etc/resolv.conf and turning systemd-resolved off, as before the install"
+    run sudo systemctl disable --now systemd-resolved.service
+    run sudo cp -a --remove-destination "$RESOLV_CONF_SAVED" /etc/resolv.conf
+    if systemctl is-active --quiet NetworkManager.service 2>/dev/null; then
+        run sudo systemctl restart NetworkManager.service
+    fi
+    rm_path "$RESOLV_CONF_SAVED"
+fi
+
+# ---------------------------------------------------------------------------
+# 14. Swap is reported, never removed.
 #
 # setup_swap creates an 8G /swapfile with the fstab line `/swapfile none swap sw
 # 0 0` — which is byte-identical to the line a host would already have if it
@@ -481,7 +506,7 @@ if [ -f /swapfile ] && grep -q '^/swapfile ' /etc/fstab 2>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# 14. apt packages, only when asked, and only after naming them.
+# 15. apt packages, only when asked, and only after naming them.
 #
 # This is the one irreversible thing in the script. On a dedicated node these
 # are ours; on the host a curl|bash install actually lands on they are someone
@@ -514,7 +539,7 @@ chrony nftables"
 fi
 
 # ---------------------------------------------------------------------------
-# 15. Verify. An uninstaller that reports success over a surviving unit file is
+# 16. Verify. An uninstaller that reports success over a surviving unit file is
 # worse than one that refuses, because the next install silently inherits it.
 # ---------------------------------------------------------------------------
 if ! $DRY_RUN; then
@@ -523,9 +548,10 @@ if ! $DRY_RUN; then
     for p in /usr/local/bin/spx /usr/local/share/spinifex /usr/local/lib/spinifex \
              /usr/share/spinifex "$ETC_DIR" "$LOG_DIR" \
              /etc/sudoers.d/spinifex-network /etc/logrotate.d/spinifex \
-             /etc/chrony/conf.d/spinifex.conf; do
+             /etc/chrony/conf.d/spinifex.conf /etc/chrony.d/spinifex.conf "$RESOLV_CONF_SAVED"; do
         exists "$p" && LEFT+=("$p")
     done
+    [ "$(readlink /usr/bin/spx 2>/dev/null)" = /usr/local/bin/spx ] && LEFT+=(/usr/bin/spx)
     for p in /etc/systemd/system/spinifex-*.service /etc/systemd/system/spinifex*.slice \
              /etc/systemd/system/spinifex.target /etc/sysctl.d/*spinifex* \
              /etc/systemd/network/1[5-8]-spinifex-* \

@@ -15,7 +15,7 @@
 #                              skip systemctl daemon-reload + enable, short-circuit setup_sudo.
 #   VERBOSE                    Set to 1 to echo "[setup] <stage>" before each top-level step.
 #   SETUP_STAGES               Comma-separated subset of stages to run:
-#                                deps, aws, users, sudoers, firewall, timesync, files,
+#                                deps, aws, dns, users, sudoers, firewall, timesync, files,
 #                                directories, env, systemd, sysctl, modules, logrotate,
 #                                udev, fixown, migrations
 #                              Unset = run every stage appropriate for the current mode.
@@ -76,6 +76,30 @@ distro_pkg_manager() {
     if $apt; then echo apt; return 0; fi
     if $dnf; then echo dnf; return 0; fi
     echo "distro.sh: package manager: found neither apt-get nor dnf on PATH" >&2
+    return 1
+}
+
+distro_unit_exists() {
+    local dir
+    for dir in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+        if [ -e "${DISTRO_ROOT:-}$dir/$1" ] || [ -L "${DISTRO_ROOT:-}$dir/$1" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+distro_chrony_conf() {
+    local deb=false el=false
+    [ -f "${DISTRO_ROOT:-}/etc/chrony/chrony.conf" ] && deb=true
+    [ -f "${DISTRO_ROOT:-}/etc/chrony.conf" ] && el=true
+    if $deb && $el; then
+        echo "distro.sh: chrony config: found both /etc/chrony/chrony.conf and /etc/chrony.conf; cannot tell which one chronyd reads" >&2
+        return 1
+    fi
+    if $deb; then echo /etc/chrony/chrony.conf; return 0; fi
+    if $el; then echo /etc/chrony.conf; return 0; fi
+    echo "distro.sh: chrony config: found neither /etc/chrony/chrony.conf nor /etc/chrony.conf; is chrony installed?" >&2
     return 1
 }
 # --- END distro.sh probes ---
@@ -817,21 +841,171 @@ APPLY
     fi
 }
 
+# --- Host DNS ---
+# The one resolver setup supported on a host with systemd-resolved installed:
+# NetworkManager hands link DNS to resolved, and /etc/resolv.conf is its stub.
+RESOLV_CONF="${SPINIFEX_RESOLV_CONF:-/etc/resolv.conf}"
+RESOLVED_STUB=/run/systemd/resolve/stub-resolv.conf
+# node-reset.sh keeps /var/lib/spinifex-reset, so the copy survives until uninstall.
+RESOLV_CONF_SAVED="${SPINIFEX_RESOLV_CONF_SAVED:-/var/lib/spinifex-reset/resolv.conf.orig}"
+
+# systemd-resolved ships resolvconf as a link to resolvectl, which only works
+# while resolved runs, so that one is not a resolvconf backend.
+real_resolvconf() {
+    local path
+    path=$(command -v resolvconf) || return 1
+    [ "$(basename "$(readlink -f "$path")")" != resolvectl ]
+}
+
+# Prints the NetworkManager setting that keeps it from handing DNS to resolved,
+# or nothing. Only explicitly set keys are uncommented in --print-config.
+nm_dns_blocker() {
+    local config
+    config=$($SUDO NetworkManager --print-config) || return 1
+    printf '%s\n' "$config" | awk -F= '
+        /^\[/ { main = ($0 == "[main]"); next }
+        !main || /^#/ { next }
+        $1 == "dns" && $2 != "default" && $2 != "systemd-resolved" { print; exit }
+        $1 == "systemd-resolved" && ($2 == "false" || $2 == "no" || $2 == "0" || $2 == "off") { print; exit }'
+}
+
+# The URL of the first enabled package repository, which the install has
+# reached unless system packages were skipped.
+first_repo_url() {
+    # shellcheck disable=SC2016  # apt's own $(FIELD) template, not a shell expansion
+    case "$(distro_pkg_manager 2>/dev/null)" in
+        apt) apt-get indextargets --format '$(REPO_URI)' 2>/dev/null | head -n 1 ;;
+        dnf) dnf config-manager --dump '*' 2>/dev/null | awk '
+                function flush() { if (enabled == "1" && url != "") { print url; done = 1; exit } }
+                /^\[/ { flush(); enabled = ""; url = ""; next }
+                /^(baseurl|mirrorlist|metalink) = / { v = $3; sub(/,.*/, "", v); if (url == "") url = v }
+                /^enabled = / { enabled = $3 }
+                END { if (!done) flush() }' ;;
+    esac
+}
+
+# The host part of a URL. Prints nothing for a file:// or schemeless URL.
+url_host() {
+    local rest="${1#*://}"
+    case "$1" in file://* | "$rest") return 0 ;; esac
+    rest="${rest%%/*}"
+    rest="${rest##*@}"
+    case "$rest" in
+        \[*) echo "${rest%%]*}]" ;;
+        *) echo "${rest%%:*}" ;;
+    esac
+}
+
+dns_handover_failed() {
+    fatal "Host DNS through systemd-resolved does not work: $1.
+    To put host DNS back as it was before this installer:
+      sudo systemctl disable --now systemd-resolved
+      sudo cp -a --remove-destination $RESOLV_CONF_SAVED $RESOLV_CONF
+      sudo systemctl restart NetworkManager"
+}
+
+# Checks resolved has upstream servers and still resolves the package
+# repository host, the one name this host is known to have resolved.
+check_resolved_dns() {
+    local i url host
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        resolvectl dns 2>/dev/null | grep -q ':[[:space:]]*[^[:space:]]' && break
+        [ "$i" = 10 ] && dns_handover_failed "'resolvectl dns' lists no DNS servers 10 seconds after NetworkManager restarted"
+        sleep 1
+    done
+
+    url=$(first_repo_url)
+    host=$(url_host "$url")
+    case "$host" in
+        "")
+            warn "No package repository with a host name to look up (${url:-none found}); not checking that names resolve"
+            return 0 ;;
+        \[*) ;;
+        *[!0-9.]*)
+            getent ahosts "$host" > /dev/null || dns_handover_failed "the package repository host $host no longer resolves"
+            return 0 ;;
+    esac
+    warn "The package repository host $host is an IP address; not checking that names resolve"
+}
+
+# Where systemd-resolved is installed but not running and nothing else manages
+# DNS, turns it on behind NetworkManager. The original resolv.conf is saved
+# once, so a rerun never replaces it with one this installer wrote.
+hand_dns_to_resolved() {
+    stage "handing host DNS to systemd-resolved"
+    local blocker
+    [ "${ISO_BUILD:-0}" = "1" ] && return 0
+
+    if systemctl is-active --quiet systemd-resolved.service; then
+        # A handover made by an earlier run is checked again on every run.
+        if [ -e "$RESOLV_CONF_SAVED" ] || [ -L "$RESOLV_CONF_SAVED" ]; then
+            check_resolved_dns
+        fi
+        return 0
+    fi
+    if ! distro_unit_exists systemd-resolved.service; then
+        return 0
+    fi
+    if real_resolvconf; then
+        info "resolvconf manages host DNS; leaving it as it is"
+        return 0
+    fi
+    if ! systemctl is-active --quiet NetworkManager.service; then
+        warn "systemd-resolved is installed but not running, and NetworkManager is not running to hand it DNS. Leaving host DNS as it is: Spinifex names will not resolve on this host until its resolver forwards them to northstar"
+        return 0
+    fi
+    blocker=$(nm_dns_blocker) || fatal "Cannot read NetworkManager's configuration with 'NetworkManager --print-config'"
+    if [ -n "$blocker" ]; then
+        fatal "NetworkManager sets $blocker, so it cannot hand DNS to systemd-resolved. Remove that setting ('NetworkManager --print-config' shows the files it reads) and re-run this installer"
+    fi
+
+    info "Handing host DNS to systemd-resolved..."
+    if [ ! -e "$RESOLV_CONF_SAVED" ] && [ ! -L "$RESOLV_CONF_SAVED" ]; then
+        $SUDO mkdir -p "$(dirname "$RESOLV_CONF_SAVED")"
+        $SUDO cp -a "$RESOLV_CONF" "$RESOLV_CONF_SAVED" || fatal "Cannot save $RESOLV_CONF to $RESOLV_CONF_SAVED"
+        info "  saved $RESOLV_CONF to $RESOLV_CONF_SAVED"
+    fi
+    $SUDO systemctl enable --now systemd-resolved.service > /dev/null 2>&1 \
+        || dns_handover_failed "systemd-resolved did not start"
+    $SUDO systemctl restart NetworkManager.service || dns_handover_failed "NetworkManager did not restart"
+    $SUDO ln -sfn "$RESOLVED_STUB" "$RESOLV_CONF"
+    check_resolved_dns
+    info "  $RESOLV_CONF -> $RESOLVED_STUB"
+}
+
 # Debian's stock chrony.conf carries `makestep 1 3`: step the clock only for the
 # first three updates, then slew at ~83us/s, which is roughly 7 seconds of
 # correction per day. A node that burns those three before the network is usable
 # then crawls toward correct time for days, and SigV4 rejects its requests the
 # whole time. A drop-in rather than an edit to chrony.conf, which is a dpkg
 # conffile and would prompt on every future upgrade.
+#
+# EL's chrony.conf reads no drop-ins, so a confdir line is appended to it.
+# chronyd keeps the last makestep it reads, so drop-ins must come after the
+# stock line. DISTRO_ROOT prefixes the paths here as it does for the probes.
 install_chrony_conf() {
     stage "installing chrony drop-in"
+    local root="${DISTRO_ROOT:-}" conf dir="" confdir_line=0 makestep_line
 
-    if [ ! -d /etc/chrony/conf.d ]; then
-        warn "No /etc/chrony/conf.d — skipping chrony drop-in"
+    if ! conf=$(distro_chrony_conf); then
+        warn "Skipping the chrony drop-in"
         return
     fi
+    read -r confdir_line dir < <(awk '$1 == "confdir" { print NR, $2; exit }' "$root$conf") || true
+    if [ -z "$dir" ]; then
+        dir=/etc/chrony.d
+        printf '\n# Added by the Spinifex installer. Last, so a drop-in overrides the settings above.\nconfdir %s\n' "$dir" \
+            | $SUDO tee -a "$root$conf" > /dev/null
+        confdir_line=$(wc -l < "$root$conf")
+        info "  $conf: confdir $dir"
+    fi
+    makestep_line=$(awk '$1 == "makestep" { n = NR } END { print n + 0 }' "$root$conf")
+    if [ "$makestep_line" -gt "$confdir_line" ]; then
+        warn "$conf sets makestep on line $makestep_line, after its confdir line, which overrides the Spinifex drop-in. Move the confdir line to the end of $conf"
+    fi
 
-    $SUDO tee /etc/chrony/conf.d/spinifex.conf > /dev/null << 'CHRONY'
+    $SUDO mkdir -p "$root$dir"
+    $SUDO tee "$root$dir/spinifex.conf" > /dev/null << 'CHRONY'
 # Managed by scripts/setup.sh — edits are overwritten.
 # Step at any offset over a second, however many times it takes. The clock can
 # jump backwards under load, which is the accepted cost: everything
@@ -839,8 +1013,8 @@ install_chrony_conf() {
 # step fails every signed request until it converges.
 makestep 1 -1
 CHRONY
-    $SUDO chmod 0644 /etc/chrony/conf.d/spinifex.conf
-    info "  /etc/chrony/conf.d/spinifex.conf"
+    $SUDO chmod 0644 "$root$dir/spinifex.conf"
+    info "  $dir/spinifex.conf"
 }
 
 install_sudoers() {
@@ -1186,6 +1360,34 @@ download_spinifex() {
     EXTRACT_DIR="$SPINIFEX_TMPDIR"
 }
 
+# OL's sudo secure_path leaves out /usr/local/bin, so `sudo spx` would find
+# nothing there. A link in /usr/bin changes sudo for nothing else on the host.
+link_spx_for_sudo() {
+    local sudo_path
+    [ "${ISO_BUILD:-0}" = "1" ] && return 0
+    command -v sudo > /dev/null 2>&1 || return 0
+    sudo_path=$(sudo -n /usr/bin/env 2> /dev/null | sed -n 's/^PATH=//p') || true
+    if [ -z "$sudo_path" ]; then
+        warn "Cannot read the PATH sudo gives commands. If 'sudo spx' is not found, run: sudo ln -s /usr/local/bin/spx /usr/bin/spx"
+        return 0
+    fi
+    case ":$sudo_path:" in *:/usr/local/bin:*) return 0 ;; esac
+    if [ -e /usr/bin/spx ] || [ -L /usr/bin/spx ]; then
+        [ "$(readlink /usr/bin/spx)" = /usr/local/bin/spx ] && return 0
+        fatal "/usr/bin/spx exists and is not a link to /usr/local/bin/spx. sudo's PATH ($sudo_path) leaves out /usr/local/bin, so 'sudo spx' would run that file. Remove it and re-run this installer"
+    fi
+    $SUDO ln -s /usr/local/bin/spx /usr/bin/spx
+    info "  /usr/bin/spx -> /usr/local/bin/spx (sudo's PATH leaves out /usr/local/bin)"
+}
+
+# Sets NBDKIT_PLUGINDIR from nbdkit itself; no guessed path is safe, since the
+# daemon loads the plugin from wherever systemd.env says it is.
+resolve_nbdkit_plugindir() {
+    NBDKIT_PLUGINDIR=$(nbdkit --dump-config 2> /dev/null | sed -n 's/^plugindir=//p') || true
+    [ -n "$NBDKIT_PLUGINDIR" ] \
+        || fatal "Cannot find nbdkit's plugin directory: 'nbdkit --dump-config' printed no plugindir. Check that nbdkit is installed and runs, then re-run this installer"
+}
+
 # --- Place files ---
 install_files() {
     stage "installing binaries and scripts"
@@ -1195,19 +1397,13 @@ install_files() {
     $SUDO install -m 0755 "$EXTRACT_DIR/spx" /usr/local/bin/spx
     info "  /usr/local/bin/spx"
 
+    link_spx_for_sudo
+
     # nbdkit plugin
-    PLUGINDIR=$(nbdkit --dump-config 2>/dev/null | grep ^plugindir= | cut -d= -f2)
-    if [ -z "$PLUGINDIR" ]; then
-        warn "Could not detect nbdkit plugin directory, using default"
-        if [ "$ARCH" = "arm64" ]; then
-            PLUGINDIR="/usr/lib/aarch64-linux-gnu/nbdkit/plugins"
-        else
-            PLUGINDIR="/usr/lib/x86_64-linux-gnu/nbdkit/plugins"
-        fi
-    fi
-    $SUDO mkdir -p "$PLUGINDIR"
-    $SUDO install -m 0755 "$EXTRACT_DIR/nbdkit-viperblock-plugin.so" "$PLUGINDIR/nbdkit-viperblock-plugin.so"
-    info "  $PLUGINDIR/nbdkit-viperblock-plugin.so"
+    resolve_nbdkit_plugindir
+    $SUDO mkdir -p "$NBDKIT_PLUGINDIR"
+    $SUDO install -m 0755 "$EXTRACT_DIR/nbdkit-viperblock-plugin.so" "$NBDKIT_PLUGINDIR/nbdkit-viperblock-plugin.so"
+    info "  $NBDKIT_PLUGINDIR/nbdkit-viperblock-plugin.so"
 
     # Setup scripts
     $SUDO mkdir -p /usr/local/share/spinifex
@@ -1394,23 +1590,13 @@ TMPEOF
 install_systemd_env() {
     stage "generating /etc/spinifex/systemd.env"
 
-    # nbdkit plugin path is arch-dependent (`nbdkit --dump-config` returns
-    # /usr/lib/{x86_64,aarch64}-linux-gnu/nbdkit/plugins). Resolve it here so
-    # systemd.env always matches wherever install_files placed the .so.
-    local plugindir
-    plugindir=$(nbdkit --dump-config 2>/dev/null | grep ^plugindir= | cut -d= -f2)
-    if [ -z "$plugindir" ]; then
-        if [ "${ARCH:-}" = "arm64" ]; then
-            plugindir="/usr/lib/aarch64-linux-gnu/nbdkit/plugins"
-        else
-            plugindir="/usr/lib/x86_64-linux-gnu/nbdkit/plugins"
-        fi
-    fi
+    # The same directory install_files placed the plugin in.
+    resolve_nbdkit_plugindir
 
     $SUDO mkdir -p /etc/spinifex
     $SUDO tee /etc/spinifex/systemd.env > /dev/null << EOF
 # Generated by setup.sh — install-specific environment variables
-SPINIFEX_VIPERBLOCK_PLUGIN_PATH=${plugindir}/nbdkit-viperblock-plugin.so
+SPINIFEX_VIPERBLOCK_PLUGIN_PATH=${NBDKIT_PLUGINDIR}/nbdkit-viperblock-plugin.so
 EOF
     $SUDO chown "spinifex-viperblock:${SPINIFEX_GROUP:-spinifex}" /etc/spinifex/systemd.env
     $SUDO chmod 0640 /etc/spinifex/systemd.env
@@ -1793,6 +1979,7 @@ main() {
 
     stage_enabled deps       && install_deps
     stage_enabled aws        && install_aws_cli
+    stage_enabled dns        && hand_dns_to_resolved
     stage_enabled users      && create_service_users
     stage_enabled sudoers    && install_sudoers
     stage_enabled firewall   && install_firewall

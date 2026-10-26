@@ -449,10 +449,12 @@ fi
 
 # The next init writes a fresh CA. Leaving the old one trusted means the host
 # trusts a CA nobody holds the key for.
-if [ -f /usr/local/share/ca-certificates/spinifex-ca.crt ]; then
+CA_TRUST=$(distro_ca_trust) || { echo "ERROR: cannot tell which trust store holds the stale CA" >&2; exit 1; }
+CA_ANCHOR="${CA_TRUST#* }/spinifex-ca.crt"
+if [ -f "$CA_ANCHOR" ]; then
     log "removing the stale CA from the trust store"
-    run sudo rm -f /usr/local/share/ca-certificates/spinifex-ca.crt
-    run sudo update-ca-certificates
+    run sudo rm -f "$CA_ANCHOR"
+    run sudo "${CA_TRUST%% *}"
 fi
 
 log "done — node is installed but uninitialized, ready to init or join"

@@ -115,6 +115,18 @@ fixture ca-none; probe distro_ca_trust
 expect_fail "CA trust: neither fails naming both" update-ca-certificates update-ca-trust
 
 # --------------------------------------------------------------------------
+# chrony config file.
+# --------------------------------------------------------------------------
+fixture chrony-deb; file /etc/chrony/chrony.conf; probe distro_chrony_conf
+expect_ok "chrony config: Debian file" /etc/chrony/chrony.conf
+fixture chrony-el; file /etc/chrony.conf; probe distro_chrony_conf
+expect_ok "chrony config: EL file" /etc/chrony.conf
+fixture chrony-both; file /etc/chrony/chrony.conf; file /etc/chrony.conf; probe distro_chrony_conf
+expect_fail "chrony config: both fails naming both" /etc/chrony/chrony.conf /etc/chrony.conf
+fixture chrony-none; probe distro_chrony_conf
+expect_fail "chrony config: neither fails naming both" /etc/chrony/chrony.conf /etc/chrony.conf
+
+# --------------------------------------------------------------------------
 # OVN logrotate file.
 # --------------------------------------------------------------------------
 fixture lr-deb; file /etc/logrotate.d/ovn-common; probe distro_ovn_logrotate

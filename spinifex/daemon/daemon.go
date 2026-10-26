@@ -1395,14 +1395,17 @@ func (d *Daemon) startLocal() error {
 		slog.Warn("Failed to set daemon OOM score", "err", err)
 	}
 
-	// Warn on host assets this build expects but that are missing, stale, or
-	// ungranted, so drift surfaces as a named log line rather than a later
-	// cryptic failure. Never fatal — unrelated asset problems must not ground a node.
-	// A Failed check is a host fault rather than asset drift, and its detail names the fix.
+	// Log host assets that are missing, stale or ungranted, and host faults whose
+	// detail names the fix, so drift surfaces as a named line rather than a later
+	// cryptic failure. Never fatal: an unrelated asset problem must not ground a node.
 	for _, r := range preflight.CheckHost() {
-		if r.Status == preflight.Failed {
+		switch r.Status {
+		case preflight.OK:
+		case preflight.Failed:
 			slog.Error("Host preflight check failed", "path", r.Path, "kind", r.Kind, "detail", r.Detail)
-		} else if r.Status != preflight.OK {
+		case preflight.Warning:
+			slog.Warn("Host preflight warning", "path", r.Path, "kind", r.Kind, "detail", r.Detail)
+		default:
 			slog.Warn("Host asset preflight problem", "path", r.Path, "kind", r.Kind,
 				"status", r.Status.String(), "detail", r.Detail,
 				"remediation", "run scripts/update-nodes.sh or make reinstall")

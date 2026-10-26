@@ -90,6 +90,21 @@ distro_ca_trust() {
     return 1
 }
 
+# chrony's main config file: /etc/chrony/chrony.conf on Debian, /etc/chrony.conf on EL.
+distro_chrony_conf() {
+    local deb=false el=false
+    [ -f "${DISTRO_ROOT:-}/etc/chrony/chrony.conf" ] && deb=true
+    [ -f "${DISTRO_ROOT:-}/etc/chrony.conf" ] && el=true
+    if $deb && $el; then
+        echo "distro.sh: chrony config: found both /etc/chrony/chrony.conf and /etc/chrony.conf; cannot tell which one chronyd reads" >&2
+        return 1
+    fi
+    if $deb; then echo /etc/chrony/chrony.conf; return 0; fi
+    if $el; then echo /etc/chrony.conf; return 0; fi
+    echo "distro.sh: chrony config: found neither /etc/chrony/chrony.conf nor /etc/chrony.conf; is chrony installed?" >&2
+    return 1
+}
+
 distro_ovn_logrotate() {
     local deb=false el=false
     [ -f "${DISTRO_ROOT:-}/etc/logrotate.d/ovn-common" ] && deb=true

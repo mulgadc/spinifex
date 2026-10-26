@@ -28,6 +28,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
 	toml "github.com/pelletier/go-toml/v2"
 	"gopkg.in/ini.v1"
 )
@@ -245,8 +246,12 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, a
 		// Print manual instructions only when not root (root gets auto-install)
 		if os.Getuid() != 0 {
 			fmt.Println("\n📋 To trust the Spinifex CA system-wide (recommended):")
-			fmt.Printf("   sudo cp %s /usr/local/share/ca-certificates/spinifex-ca.crt\n", caCertPath)
-			fmt.Println("   sudo update-ca-certificates")
+			if trust, err := hostos.SystemCATrust(); err == nil {
+				fmt.Printf("   sudo cp %s %s\n", caCertPath, filepath.Join(trust.AnchorDir, "spinifex-ca.crt"))
+				fmt.Printf("   sudo %s\n", trust.Update.Name)
+			} else {
+				fmt.Printf("   Add %s to the host trust store (%v)\n", caCertPath, err)
+			}
 			fmt.Println("\n   This allows AWS CLI and other tools to trust Spinifex services automatically.")
 		}
 	} else {

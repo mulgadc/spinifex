@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -19,6 +20,8 @@ type fakeNetworkPlumber struct {
 	detachHook          func()
 	cleanupHook         func()
 	repairHook          func()
+	repairCtxHook       func(context.Context) error // runs inside a repair; its error is the repair's
+	statesHook          func(context.Context) error // runs inside a state read; its error is the read's
 	setupCalls          []TapSpec
 	cleanupCalls        []string
 	imdsAttachCalls     []imdsAttachCall
@@ -85,7 +88,12 @@ func (p *fakeNetworkPlumber) DetachIMDSDatapath(eniID string) error {
 	return p.imdsDetachErr
 }
 
-func (p *fakeNetworkPlumber) IMDSDatapathStates(eniIDs []string) (map[string]IMDSDatapathState, error) {
+func (p *fakeNetworkPlumber) IMDSDatapathStates(ctx context.Context, eniIDs []string) (map[string]IMDSDatapathState, error) {
+	if p.statesHook != nil {
+		if err := p.statesHook(ctx); err != nil {
+			return nil, err
+		}
+	}
 	if p.imdsStatesErr != nil {
 		return nil, p.imdsStatesErr
 	}
@@ -98,9 +106,14 @@ func (p *fakeNetworkPlumber) IMDSDatapathStates(eniIDs []string) (map[string]IMD
 	return out, nil
 }
 
-func (p *fakeNetworkPlumber) RepairIMDSDatapath(eniID, mac, subnetID string) error {
+func (p *fakeNetworkPlumber) RepairIMDSDatapath(ctx context.Context, eniID, mac, subnetID string) error {
 	if p.repairHook != nil {
 		p.repairHook()
+	}
+	if p.repairCtxHook != nil {
+		if err := p.repairCtxHook(ctx); err != nil {
+			return err
+		}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()

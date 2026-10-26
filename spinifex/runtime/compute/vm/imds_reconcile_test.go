@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -93,7 +94,7 @@ func TestReconcileIMDSDatapaths_LeavesIntactGuestAlone(t *testing.T) {
 	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
 	m.Insert(imdsTestVM("i-ok", "eni-ok", StateRunning))
 
-	m.reconcileIMDSDatapaths()
+	m.reconcileIMDSDatapaths(context.Background())
 
 	if len(plumber.imdsRepairCalls) != 0 {
 		t.Errorf("intact datapath was repaired: %+v", plumber.imdsRepairCalls)
@@ -114,7 +115,7 @@ func TestReconcileIMDSDatapaths_RepairsLostDatapath(t *testing.T) {
 	m.Insert(lost)
 	m.Insert(imdsTestVM("i-stop", "eni-stop", StateStopped))
 
-	m.reconcileIMDSDatapaths()
+	m.reconcileIMDSDatapaths(context.Background())
 
 	want := []imdsAttachCall{{eniID: "eni-lost", mac: "02:00:00:00:00:99", subnetID: "subnet-0lost"}}
 	if len(plumber.imdsRepairCalls) != 1 || plumber.imdsRepairCalls[0] != want[0] {
@@ -129,7 +130,7 @@ func TestReconcileIMDSDatapaths_ReadFailureRepairsNothing(t *testing.T) {
 	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
 	m.Insert(imdsTestVM("i-a", "eni-a", StateRunning))
 
-	m.reconcileIMDSDatapaths()
+	m.reconcileIMDSDatapaths(context.Background())
 
 	if len(plumber.imdsRepairCalls) != 0 {
 		t.Errorf("read failure triggered repairs: %+v", plumber.imdsRepairCalls)
@@ -156,7 +157,7 @@ func TestRepairIMDSDatapath_RechecksGuestUnderLock(t *testing.T) {
 			target, _ := imdsTargetOf(v)
 
 			tc.mutate(m)
-			m.repairIMDSDatapath(target, imdsFlushed)
+			m.repairIMDSDatapath(context.Background(), target, imdsFlushed)
 
 			if len(plumber.imdsRepairCalls) != 0 {
 				t.Errorf("repaired a guest no longer running with that ENI: %+v", plumber.imdsRepairCalls)
@@ -177,7 +178,7 @@ func TestRepairIMDSDatapath_WaitsForTeardownLock(t *testing.T) {
 	unlock := m.imdsLocks.lock("eni-a")
 	done := make(chan struct{})
 	go func() {
-		m.repairIMDSDatapath(target, imdsFlushed)
+		m.repairIMDSDatapath(context.Background(), target, imdsFlushed)
 		close(done)
 	}()
 
@@ -210,7 +211,7 @@ func TestCleanupTapDevices_HoldsENILockAcrossDetachAndCleanup(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Go(func() { m.cleanupTapDevices(v) })
 	<-inDetach
-	wg.Go(func() { m.repairIMDSDatapath(target, imdsFlushed) })
+	wg.Go(func() { m.repairIMDSDatapath(context.Background(), target, imdsFlushed) })
 	for _, step := range []struct {
 		name    string
 		release chan struct{}
@@ -264,7 +265,7 @@ func TestReconcileIMDSDatapaths_RepairsConcurrentlyUpToLimit(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		m.reconcileIMDSDatapaths()
+		m.reconcileIMDSDatapaths(context.Background())
 		close(done)
 	}()
 	select {
@@ -290,7 +291,7 @@ func TestRepairIMDSDatapath_DetachedTapIsNotAnError(t *testing.T) {
 	m.Insert(v)
 	target, _ := imdsTargetOf(v)
 
-	m.repairIMDSDatapath(target, imdsFlushed)
+	m.repairIMDSDatapath(context.Background(), target, imdsFlushed)
 
 	if len(plumber.imdsRepairCalls) != 1 {
 		t.Errorf("repair calls = %d, want 1", len(plumber.imdsRepairCalls))
@@ -305,5 +306,97 @@ func TestKeyedMutex_DropsUnheldKeys(t *testing.T) {
 	unlockB()
 	if len(k.locks) != 0 {
 		t.Errorf("unheld keys retained: %d", len(k.locks))
+	}
+}
+
+// shortenIMDSTimeouts makes a hung read or repair give up quickly.
+func shortenIMDSTimeouts(t *testing.T) {
+	t.Helper()
+	read, repair := imdsStateReadTimeout, imdsRepairTimeout
+	imdsStateReadTimeout, imdsRepairTimeout = 50*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { imdsStateReadTimeout, imdsRepairTimeout = read, repair })
+}
+
+// blockUntilDone stands in for an OVS command that hangs on a dead ovs-vswitchd.
+func blockUntilDone(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// A repair hung on an ovs-vswitchd that died again must give up and release
+// the ENI lock, or that guest's stop or terminate blocks behind it forever.
+func TestRepairIMDSDatapath_HungRepairReleasesENILock(t *testing.T) {
+	shortenIMDSTimeouts(t)
+	plumber := &fakeNetworkPlumber{imdsStates: map[string]IMDSDatapathState{"eni-a": imdsFlushed}, repairCtxHook: blockUntilDone}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	v := imdsTestVM("i-a", "eni-a", StateRunning)
+	m.Insert(v)
+
+	passDone := make(chan struct{})
+	go func() {
+		m.reconcileIMDSDatapaths(context.Background())
+		close(passDone)
+	}()
+	teardownDone := make(chan struct{})
+	go func() {
+		m.cleanupTapDevices(v)
+		close(teardownDone)
+	}()
+
+	for name, done := range map[string]chan struct{}{"reconcile pass": passDone, "teardown": teardownDone} {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s still blocked behind a hung repair", name)
+		}
+	}
+	if len(plumber.imdsDetachCalls) != 1 {
+		t.Errorf("teardown detach calls = %d, want 1", len(plumber.imdsDetachCalls))
+	}
+}
+
+// A state read hung on ovs-vswitchd must end the pass, not stall the loop, and
+// must not be taken as every guest having lost its flows.
+func TestReconcileIMDSDatapaths_HungReadRepairsNothing(t *testing.T) {
+	shortenIMDSTimeouts(t)
+	plumber := &fakeNetworkPlumber{imdsStates: map[string]IMDSDatapathState{"eni-a": imdsFlushed}, statesHook: blockUntilDone}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	m.Insert(imdsTestVM("i-a", "eni-a", StateRunning))
+
+	done := make(chan struct{})
+	go func() {
+		m.reconcileIMDSDatapaths(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconcile pass still blocked on a hung state read")
+	}
+	if n := plumber.repairCount(); n != 0 {
+		t.Errorf("hung read triggered %d repairs", n)
+	}
+}
+
+// Daemon shutdown cancels the loop's context, which must reach a repair in
+// flight rather than wait out its own deadline.
+func TestRepairIMDSDatapath_DaemonShutdownCancelsRepair(t *testing.T) {
+	plumber := &fakeNetworkPlumber{repairCtxHook: blockUntilDone}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	v := imdsTestVM("i-a", "eni-a", StateRunning)
+	m.Insert(v)
+	target, _ := imdsTargetOf(v)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.repairIMDSDatapath(ctx, target, imdsFlushed)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(imdsRepairTimeout / 2):
+		t.Fatal("repair ignored the daemon's cancellation")
 	}
 }

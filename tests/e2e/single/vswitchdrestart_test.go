@@ -48,11 +48,6 @@ func runIMDSDatapathSurvivesVswitchdRestart(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, vpc.SGID, "default SG ID required")
 	harness.AuthorizeSSHIngress(t, c, vpc.SGID)
 
-	// Whatever happens below, the node must not be left without ovs-vswitchd.
-	t.Cleanup(func() {
-		_ = exec.Command("sudo", "-n", "systemctl", "start", unit).Run()
-	})
-
 	harness.Step(t, "launch guest")
 	instanceID := launchBaselineInstance(t, fix, amiID, instType, keyName, vpc.SubnetID, []string{vpc.SGID})
 
@@ -81,6 +76,14 @@ func runIMDSDatapathSurvivesVswitchdRestart(t *testing.T, fix *Fixture) {
 	require.NoError(t, guestIMDSAnswers(t, tgt, instanceID), "IMDS before any restart")
 	require.Equal(t, host.IMDSTapFlowCount, guestIMDSFlowCount(t, cookie), "guest's br-imds flows before any restart")
 	harness.Detail(t, "eip", eipIP, "unit", unit, "cookie", cookie)
+
+	// Registered after the guest and EIP cleanups so it runs before them: with
+	// ovs-vswitchd down, terminate cannot tear the guest's ports down and hangs.
+	t.Cleanup(func() {
+		if err := ensureVswitchdUp(unit); err != nil {
+			t.Errorf("node left without ovs-vswitchd: %v", err)
+		}
+	})
 
 	for _, disruption := range []struct {
 		name string
@@ -136,6 +139,21 @@ func guestIMDSFlowCount(t *testing.T, cookie string) int {
 		return -1
 	}
 	return strings.Count(string(out), "cookie=")
+}
+
+// ensureVswitchdUp starts unit and waits until ovs-vswitchd answers, so a
+// disruption the test caused cannot outlive it.
+func ensureVswitchdUp(unit string) error {
+	if out, err := exec.Command("sudo", "-n", "systemctl", "start", unit).CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl start %s: %s: %w", unit, strings.TrimSpace(string(out)), err)
+	}
+	var err error
+	for deadline := time.Now().Add(vswitchdRecoveryBudget); time.Now().Before(deadline); time.Sleep(time.Second) {
+		if err = exec.Command("sudo", "-n", "ovs-appctl", "-t", "ovs-vswitchd", "version").Run(); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("ovs-vswitchd not answering %s after starting %s: %w", vswitchdRecoveryBudget, unit, err)
 }
 
 // openvswitchUnit returns the unit that runs ovs-vswitchd on this host.

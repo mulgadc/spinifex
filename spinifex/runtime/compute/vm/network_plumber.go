@@ -1,6 +1,9 @@
 package vm
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 // ErrIMDSServingDegraded marks an AttachIMDSDatapath failure after the
 // connectivity-critical datapath (patch + forward flows) was installed — only the
@@ -52,12 +55,12 @@ type NetworkPlumber interface {
 
 	// IMDSDatapathStates reports, per primary ENI, what survives of its IMDS
 	// datapath. One pass covers every ENI; an error means nothing was read.
-	IMDSDatapathStates(eniIDs []string) (map[string]IMDSDatapathState, error)
+	IMDSDatapathStates(ctx context.Context, eniIDs []string) (map[string]IMDSDatapathState, error)
 
 	// RepairIMDSDatapath re-installs the IMDS datapath of a running guest whose
 	// state was lost. Returns ErrIMDSTapDetached, changing nothing, when the tap
-	// is no longer on br-imds.
-	RepairIMDSDatapath(eniID, mac, subnetID string) error
+	// is no longer on br-imds. Gives up when ctx ends.
+	RepairIMDSDatapath(ctx context.Context, eniID, mac, subnetID string) error
 
 	// EnsureVPCHostPort gives the host a routed presence in a managed VPC subnet
 	// by binding an ENI the daemon itself owns to an internal port on br-int.

@@ -20,6 +20,14 @@ var IMDSDatapathReconcileInterval = 10 * time.Second
 // would keep the last guest dark for the sum of everyone else's install.
 const imdsRepairConcurrency = 8
 
+// imdsStateReadTimeout and imdsRepairTimeout bound a pass's read and each repair.
+// An ovs-vswitchd that dies mid-repair would otherwise hang the repair while it
+// holds the ENI lock, blocking that guest's stop or terminate. Vars for tests.
+var (
+	imdsStateReadTimeout = 10 * time.Second
+	imdsRepairTimeout    = 30 * time.Second
+)
+
 // imdsDatapathTarget is a running guest whose primary ENI has an IMDS datapath,
 // copied out of the manager lock with everything a re-install needs.
 type imdsDatapathTarget struct {
@@ -37,7 +45,7 @@ func (m *Manager) StartIMDSDatapathReconcile(ctx context.Context) {
 		return
 	}
 	go func() {
-		m.reconcileIMDSDatapaths()
+		m.reconcileIMDSDatapaths(ctx)
 		ticker := time.NewTicker(IMDSDatapathReconcileInterval)
 		defer ticker.Stop()
 		for {
@@ -45,7 +53,7 @@ func (m *Manager) StartIMDSDatapathReconcile(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				m.reconcileIMDSDatapaths()
+				m.reconcileIMDSDatapaths(ctx)
 			}
 		}
 	}()
@@ -53,7 +61,7 @@ func (m *Manager) StartIMDSDatapathReconcile(ctx context.Context) {
 
 // reconcileIMDSDatapaths runs one pass: read every running guest's datapath in
 // one query, then repair each one that is not intact.
-func (m *Manager) reconcileIMDSDatapaths() {
+func (m *Manager) reconcileIMDSDatapaths(ctx context.Context) {
 	targets := m.imdsDatapathTargets()
 	if len(targets) == 0 {
 		return
@@ -62,7 +70,9 @@ func (m *Manager) reconcileIMDSDatapaths() {
 	for i, t := range targets {
 		eniIDs[i] = t.eniID
 	}
-	states, err := m.deps.NetworkPlumber.IMDSDatapathStates(eniIDs)
+	readCtx, cancel := context.WithTimeout(ctx, imdsStateReadTimeout)
+	states, err := m.deps.NetworkPlumber.IMDSDatapathStates(readCtx, eniIDs)
+	cancel()
 	if err != nil {
 		slog.Warn("IMDS: datapath state read failed; skipping reconcile pass", "err", err)
 		return
@@ -73,7 +83,7 @@ func (m *Manager) reconcileIMDSDatapaths() {
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			m.repairIMDSDatapath(t, states[t.eniID])
+			m.repairIMDSDatapath(ctx, t, states[t.eniID])
 		})
 	}
 	wg.Wait()
@@ -121,14 +131,16 @@ func imdsDatapathsToRepair(targets []imdsDatapathTarget, states map[string]IMDSD
 // repairIMDSDatapath re-installs one guest's datapath under its ENI lock, so it
 // cannot interleave with an attach or a teardown. The guest is re-checked under
 // the lock because a teardown may have finished since the pass read it.
-func (m *Manager) repairIMDSDatapath(t imdsDatapathTarget, s IMDSDatapathState) {
+func (m *Manager) repairIMDSDatapath(ctx context.Context, t imdsDatapathTarget, s IMDSDatapathState) {
 	unlock := m.imdsLocks.lock(t.eniID)
 	defer unlock()
 
 	if !m.stillIMDSTarget(t) {
 		return
 	}
-	err := m.deps.NetworkPlumber.RepairIMDSDatapath(t.eniID, t.mac, t.subnetID)
+	repairCtx, cancel := context.WithTimeout(ctx, imdsRepairTimeout)
+	defer cancel()
+	err := m.deps.NetworkPlumber.RepairIMDSDatapath(repairCtx, t.eniID, t.mac, t.subnetID)
 	switch {
 	case errors.Is(err, ErrIMDSTapDetached):
 		slog.Debug("IMDS: tap left br-imds before repair; skipping",

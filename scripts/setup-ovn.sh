@@ -166,6 +166,10 @@ DB_CLUSTER_REMOTE_ADDR=""
 # Recreating the NB/SB DBs discards all logical network state, so it is opt-in.
 RECREATE_DB=false
 OVN_DBDIR="${OVN_DBDIR:-/var/lib/ovn}"
+# Records that --management set this node up. Nodes set up before it existed
+# carry only the legacy marker, OVN_CTL_OPTS in /etc/default/ovn-central.
+OVN_ROLE_FILE=/etc/spinifex/ovn-role
+LEGACY_OVN_ROLE_FILE=/etc/default/ovn-central
 # NODE_NAME is left empty by default. The chassis-id pin block at Step 4
 # only runs when --node-name=NAME is explicitly given. Passing nothing
 # preserves whatever system-id already lives in OVS (gold-image UUID,
@@ -769,6 +773,33 @@ set_root_service_user() {
     echo "  $file: $var=\"root:root\""
 }
 
+# write_ovn_central_opts <flags> — writes the ovn-ctl flags to the options
+# file the OVN central units read for the probed layout.
+write_ovn_central_opts() {
+    echo "$OVN_CENTRAL_OPTS_VAR=\"$1\"" | sudo tee "$OVN_CENTRAL_OPTS_FILE" >/dev/null
+    echo "  wrote $OVN_CENTRAL_OPTS_FILE"
+}
+
+record_management_role() {
+    sudo mkdir -p "$(dirname "$OVN_ROLE_FILE")"
+    echo management | sudo tee "$OVN_ROLE_FILE" >/dev/null
+}
+
+# management_role_markers — prints each file recording that a previous run set
+# this node up with --management, one per line; returns 1 when there is none.
+management_role_markers() {
+    local found=1
+    if sudo grep -qx management "$OVN_ROLE_FILE" 2>/dev/null; then
+        echo "$OVN_ROLE_FILE"
+        found=0
+    fi
+    if sudo grep -q '^OVN_CTL_OPTS=' "$LEGACY_OVN_ROLE_FILE" 2>/dev/null; then
+        echo "$LEGACY_OVN_ROLE_FILE"
+        found=0
+    fi
+    return $found
+}
+
 echo ""
 echo "Step 2: Enabling services..."
 
@@ -785,12 +816,16 @@ case "$OVN_CENTRAL_LAYOUT" in
         OVN_DB_UNITS=(ovn-ovsdb-server-nb.service ovn-ovsdb-server-sb.service)
         OVN_SERVER_UNITS=("${OVN_DB_UNITS[@]}" ovn-northd.service)
         OVN_CENTRAL_UNITS=(ovn-central.service "${OVN_SERVER_UNITS[@]}")
+        OVN_CENTRAL_OPTS_FILE=/etc/default/ovn-central
+        OVN_CENTRAL_OPTS_VAR=OVN_CTL_OPTS
         ;;
     lone-northd)
         OVN_CENTRAL_UNIT=ovn-northd.service
         OVN_DB_UNITS=(ovn-northd.service)
         OVN_SERVER_UNITS=(ovn-northd.service)
         OVN_CENTRAL_UNITS=(ovn-northd.service)
+        OVN_CENTRAL_OPTS_FILE=/etc/sysconfig/ovn-northd
+        OVN_CENTRAL_OPTS_VAR=OVN_NORTHD_OPTS
         ;;
 esac
 
@@ -815,6 +850,9 @@ echo "  ${OVS_UNIT%.service}: started"
 
 if [ "$MANAGEMENT" = true ]; then
     sudo systemctl enable "$OVN_CENTRAL_UNIT"
+    # Recorded before anything else changes, so a run that stops part way
+    # still makes a later run without --management refuse.
+    record_management_role
 
     # LAN-plane NB/SB client listener, added to the loopback one set below.
     # Guard is load-bearing: --db-nb-addr defaults to 0.0.0.0, so
@@ -827,8 +865,8 @@ if [ "$MANAGEMENT" = true ]; then
     if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
         ensure_clustered_db_storage
 
-        # Clustered NB/SB via native OVSDB RAFT. Both per-DB units source one
-        # shared OVN_CTL_OPTS from /etc/default/ovn-central; each run_*_ovsdb
+        # Clustered NB/SB via native OVSDB RAFT. Every OVN central unit reads
+        # one shared options file (write_ovn_central_opts); each run_*_ovsdb
         # consumes only its own --db-{nb,sb}-* flags. RAFT ports default to NB
         # 6643 / SB 6644. ovn-ctl creates the cluster when no remote-addr is
         # given (and no existing .db file), joins when one is.
@@ -862,21 +900,23 @@ if [ "$MANAGEMENT" = true ]; then
             echo "  NB/SB client listen: 127.0.0.1"
         fi
 
-        echo "OVN_CTL_OPTS=\"$OVN_CTL_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
-        echo "  wrote /etc/default/ovn-central"
+        write_ovn_central_opts "$OVN_CTL_OPTS"
 
         # The packaged ovn-northd.service ExecStop runs `ovn-ctl stop_northd`
         # without --ovn-manage-ovsdb=no, so restarting northd also tears down the
         # NB/SB ovsdb-server units. With the split clustered units those DBs are
         # owned by their own units, so override ExecStop to leave them alone —
         # otherwise the restart below races and kills the freshly-started DBs.
-        sudo mkdir -p /etc/systemd/system/ovn-northd.service.d
-        sudo tee /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf >/dev/null <<'EOF'
+        # EL's lone ovn-northd.service owns the DBs, so stopping them is right there.
+        if [ "$OVN_CENTRAL_LAYOUT" = split ]; then
+            sudo mkdir -p /etc/systemd/system/ovn-northd.service.d
+            sudo tee /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf >/dev/null <<'EOF'
 [Service]
 ExecStop=
 ExecStop=/usr/share/ovn/scripts/ovn-ctl stop_northd --no-monitor --ovn-manage-ovsdb=no
 EOF
-        sudo systemctl daemon-reload
+            sudo systemctl daemon-reload
+        fi
 
         # Debian's ovn-central aggregator is ExecStart=/bin/true, so restarting
         # it won't restart the children — restart the DB and northd units
@@ -889,8 +929,7 @@ EOF
         # and the RAFT flags live here rather than in the database — leaving a
         # stale file in place restarts the DB as a cluster member dialling a
         # peer that no longer exists, which looks like a hung leader election.
-        echo "OVN_CTL_OPTS=\"$OVN_DB_LISTEN_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
-        echo "  wrote /etc/default/ovn-central"
+        write_ovn_central_opts "$OVN_DB_LISTEN_OPTS"
         sudo systemctl start "$OVN_CENTRAL_UNIT"
 
         # Debian's ovn-central is ExecStart=/bin/true; restarting it does not
@@ -958,7 +997,7 @@ EOF
         done
         if [ "$(printf '%s\n' "$NB_MEMBERS" | grep -c .)" -gt 1 ]; then
             sudo sed -i "s|\"\$| --ovn-northd-nb-db=$NB_LIST --ovn-northd-sb-db=$SB_LIST\"|" \
-                /etc/default/ovn-central
+                "$OVN_CENTRAL_OPTS_FILE"
             sudo systemctl restart ovn-northd
             echo "  ovn-northd: NB=$NB_LIST SB=$SB_LIST (derived from RAFT membership)"
         else
@@ -1023,19 +1062,20 @@ else
     # 6641, and vpcd crash-loops on "connection refused" with no hint that this
     # script caused it. Seen on mulga-poc at 15,061 restarts.
     #
-    # The signal is /etc/default/ovn-central, not the presence of a database:
-    # the ovn-central *package* creates DBs on install, so every compute node
-    # has them and testing for them would refuse every legitimate compute node.
-    # Only the --management path below writes OVN_CTL_OPTS to that file.
-    if [ -f /etc/default/ovn-central ] && grep -q '^OVN_CTL_OPTS=' /etc/default/ovn-central 2>/dev/null; then
+    # The signal is a role marker, not the presence of a database: the OVN
+    # central *package* creates DBs on install, so every compute node has them
+    # and testing for them would refuse every legitimate compute node. Only the
+    # --management path above writes a marker (management_role_markers).
+    if ROLE_MARKERS=$(management_role_markers); then
+        ROLE_MARKERS=${ROLE_MARKERS//$'\n'/ }
         echo "ERROR: this node was configured as a management node by a previous run"
-        echo "  (/etc/default/ovn-central holds OVN_CTL_OPTS), but --management was"
-        echo "  not given. Re-running without it stops and disables ovn-central and"
-        echo "  takes the control plane down."
+        echo "  (recorded in $ROLE_MARKERS), but --management was not given."
+        echo "  Re-running without it stops and disables OVN central and takes the"
+        echo "  control plane down."
         echo ""
         echo "  If this is a management node, re-run with --management."
         echo "  If it is genuinely being demoted to a compute node:"
-        echo "     sudo rm -f /etc/default/ovn-central"
+        echo "     sudo rm -f $ROLE_MARKERS"
         exit 1
     fi
 
@@ -1808,23 +1848,45 @@ else
     echo "  sudoers rule: not found — run setup.sh first, or install manually"
 fi
 
-# --- Step 9: Configure OVN log rotation ---
-# The ovn-common package provides /etc/logrotate.d/ovn-common which handles
-# rotation and vlog/reopen. We just add maxsize + rotate to cap disk usage.
+# --- Step 9: Configure OVS and OVN log rotation ---
+# The packages' logrotate files handle rotation and vlog/reopen; this caps
+# disk usage and rotates as the user the daemons now run as.
 echo ""
-echo "Step 9: Configuring OVN log rotation..."
+echo "Step 9: Configuring OVS and OVN log rotation..."
 
-OVN_LOGROTATE="/etc/logrotate.d/ovn-common"
-if [ -f "$OVN_LOGROTATE" ]; then
-    if ! grep -q 'maxsize' "$OVN_LOGROTATE"; then
-        sudo sed -i '/^\/var\/log\/ovn\/\*\.log {/a\    rotate 5\n    maxsize 100M' "$OVN_LOGROTATE"
-        echo "  added maxsize 100M + rotate 5 to $OVN_LOGROTATE"
-    else
-        echo "  $OVN_LOGROTATE already has maxsize configured"
+# cap_logrotate <file> — adds maxsize 100M, and rotate 5 where the file keeps
+# no rotated logs, to its /var/log/<dir>/*.log stanza. A su line naming another
+# user becomes su root root: rotating root-owned logs as that user fails.
+cap_logrotate() {
+    local file=$1 lines='    maxsize 100M' added='maxsize 100M'
+    if sudo grep -qE '^[[:space:]]*su[[:space:]]' "$file" &&
+        ! sudo grep -qE '^[[:space:]]*su[[:space:]]+root[[:space:]]+root[[:space:]]*$' "$file"; then
+        sudo sed -i -E 's/^([[:space:]]*)su[[:space:]].*/\1su root root/' "$file"
+        echo "  $file: su root root"
     fi
-else
-    echo "  WARNING: $OVN_LOGROTATE not found — install ovn-common package"
-fi
+    if sudo grep -q 'maxsize' "$file"; then
+        echo "  $file already has maxsize configured"
+        return 0
+    fi
+    if ! sudo grep -qE '^[[:space:]]*rotate[[:space:]]' "$file"; then
+        lines='    rotate 5\n    maxsize 100M'
+        added='maxsize 100M + rotate 5'
+    fi
+    sudo sed -i "/^\/var\/log\/[a-z]*\/\*\.log {/a\\$lines" "$file"
+    if ! sudo grep -q 'maxsize' "$file"; then
+        echo "  WARNING: $file has no /var/log/<dir>/*.log stanza; log size left uncapped"
+        return 0
+    fi
+    echo "  added $added to $file"
+}
+
+for probe in distro_ovs_logrotate distro_ovn_logrotate; do
+    if LOGROTATE_FILE=$($probe); then
+        cap_logrotate "$LOGROTATE_FILE"
+    else
+        echo "  WARNING: log size left uncapped (see above)"
+    fi
+done
 
 # Remove our old custom config if present (superseded by patching ovn-common)
 if [ -f /etc/logrotate.d/ovn-spinifex ]; then

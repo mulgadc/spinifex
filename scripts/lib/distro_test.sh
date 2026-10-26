@@ -139,6 +139,18 @@ fixture lr-none; probe distro_ovn_logrotate
 expect_fail "OVN logrotate: neither fails naming both" /etc/logrotate.d/ovn-common /etc/logrotate.d/ovn
 
 # --------------------------------------------------------------------------
+# OVS logrotate file.
+# --------------------------------------------------------------------------
+fixture ovslr-deb; file /etc/logrotate.d/openvswitch-switch; probe distro_ovs_logrotate
+expect_ok "OVS logrotate: Debian file" /etc/logrotate.d/openvswitch-switch
+fixture ovslr-el; file /etc/logrotate.d/openvswitch; probe distro_ovs_logrotate
+expect_ok "OVS logrotate: EL file" /etc/logrotate.d/openvswitch
+fixture ovslr-both; file /etc/logrotate.d/openvswitch-switch; file /etc/logrotate.d/openvswitch; probe distro_ovs_logrotate
+expect_fail "OVS logrotate: both fails naming both" /etc/logrotate.d/openvswitch-switch /etc/logrotate.d/openvswitch
+fixture ovslr-none; probe distro_ovs_logrotate
+expect_fail "OVS logrotate: neither fails naming both" /etc/logrotate.d/openvswitch-switch /etc/logrotate.d/openvswitch
+
+# --------------------------------------------------------------------------
 # OVS and OVN units the shipped Spinifex units name. Run against the real unit
 # files, so a unit that names a Debian-only OVS unit fails on the EL fixture.
 # --------------------------------------------------------------------------

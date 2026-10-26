@@ -119,6 +119,20 @@ distro_ovn_logrotate() {
     return 1
 }
 
+distro_ovs_logrotate() {
+    local deb=false el=false
+    [ -f "${DISTRO_ROOT:-}/etc/logrotate.d/openvswitch-switch" ] && deb=true
+    [ -f "${DISTRO_ROOT:-}/etc/logrotate.d/openvswitch" ] && el=true
+    if $deb && $el; then
+        echo "distro.sh: OVS logrotate: found both /etc/logrotate.d/openvswitch-switch and /etc/logrotate.d/openvswitch; cannot tell which one the OVS packages own" >&2
+        return 1
+    fi
+    if $deb; then echo /etc/logrotate.d/openvswitch-switch; return 0; fi
+    if $el; then echo /etc/logrotate.d/openvswitch; return 0; fi
+    echo "distro.sh: OVS logrotate: found neither /etc/logrotate.d/openvswitch-switch nor /etc/logrotate.d/openvswitch; is Open vSwitch installed?" >&2
+    return 1
+}
+
 # The OVS and OVN units the given unit files depend on or order against that
 # are not installed, one per line; prints nothing when all are. Fails only
 # when a unit file cannot be read.

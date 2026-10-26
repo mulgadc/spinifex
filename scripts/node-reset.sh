@@ -312,10 +312,10 @@ run sudo systemctl stop ovn-central 2>/dev/null || true
 run sudo systemctl stop ovn-controller 2>/dev/null || true
 run sudo rm -f /var/lib/ovn/ovnnb_db.db /var/lib/ovn/ovnsb_db.db
 
-# The RAFT membership flags live in this file, not in the databases just
-# deleted. Left behind, ovn-central recreates the DB as a cluster member and
-# blocks dialling a peer that has itself been reset.
-run sudo rm -f /etc/default/ovn-central
+# The RAFT membership flags live in these files (Debian, EL), not in the
+# databases just deleted. Left behind, OVN central recreates the DB as a
+# cluster member and blocks dialling a peer that has itself been reset.
+run sudo rm -f /etc/default/ovn-central /etc/sysconfig/ovn-northd
 
 if ip link show veth-wan-br >/dev/null 2>&1; then
     log "  deleting veth pair: veth-wan-br <-> veth-wan-ovs"

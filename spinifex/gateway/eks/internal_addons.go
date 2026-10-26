@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 )
 
@@ -24,8 +24,8 @@ func ListInternalAddons(ctx context.Context, natsConn *nats.Conn, clusterName, a
 	if clusterName == "" || accountID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	out, err := handlers_eks.NewNATSEKSService(natsConn).ListStagedAddonManifests(ctx,
-		&handlers_eks.ListStagedAddonManifestsInput{ClusterName: clusterName}, accountID)
+	out, err := ekscluster.NewNATSEKSService(natsConn).ListStagedAddonManifests(ctx,
+		&ekscluster.ListStagedAddonManifestsInput{ClusterName: clusterName}, accountID)
 	if err != nil {
 		return nil, err
 	}

@@ -41,7 +41,7 @@ import (
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	awsdispatch "github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -148,7 +148,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	iamSvc, err := iamdomain.NewIAMServiceWithRetry(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	stsSvc, err := stsdomain.NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, handlers_eks.NewOIDCJWKSReader(js))
+	stsSvc, err := stsdomain.NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, ekscluster.NewOIDCJWKSReader(js))
 	require.NoError(t, err)
 
 	encryptedSecret, err := iamdomain.EncryptSecret(testSecretAccessKey, masterKey)

@@ -9,10 +9,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 )
 
@@ -65,7 +65,7 @@ func (d *Daemon) eksWatchBuckets(ctx context.Context) ([]*kvstore.Bucket, error)
 	if d.eksService == nil || d.natsConn == nil {
 		return nil, nil
 	}
-	return handlers_eks.AccountWatchBuckets(ctx, d.natsConn)
+	return ekscluster.AccountWatchBuckets(ctx, d.natsConn)
 }
 
 func (d *Daemon) rdsWatchBuckets(ctx context.Context) ([]*kvstore.Bucket, error) {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/nats-io/nats.go"
 )
 
@@ -15,7 +15,7 @@ func CreateNodegroup(ctx context.Context, natsConn *nats.Conn, accountID, cluste
 		return nil, err
 	}
 	input.ClusterName = aws.String(cluster)
-	return handlers_eks.NewNATSEKSService(natsConn).CreateNodegroup(ctx, input, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).CreateNodegroup(ctx, input, accountID)
 }
 
 // DescribeNodegroup — GET /clusters/{name}/node-groups/{ng}.
@@ -24,13 +24,13 @@ func DescribeNodegroup(ctx context.Context, natsConn *nats.Conn, accountID, clus
 		ClusterName:   aws.String(cluster),
 		NodegroupName: aws.String(ng),
 	}
-	return handlers_eks.NewNATSEKSService(natsConn).DescribeNodegroup(ctx, input, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).DescribeNodegroup(ctx, input, accountID)
 }
 
 // ListNodegroups — GET /clusters/{name}/node-groups.
 func ListNodegroups(ctx context.Context, natsConn *nats.Conn, accountID, cluster string) (*eks.ListNodegroupsOutput, error) {
 	input := &eks.ListNodegroupsInput{ClusterName: aws.String(cluster)}
-	return handlers_eks.NewNATSEKSService(natsConn).ListNodegroups(ctx, input, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).ListNodegroups(ctx, input, accountID)
 }
 
 // UpdateNodegroupConfig — POST /clusters/{name}/node-groups/{ng}/update-config.
@@ -41,7 +41,7 @@ func UpdateNodegroupConfig(ctx context.Context, natsConn *nats.Conn, accountID, 
 	}
 	input.ClusterName = aws.String(cluster)
 	input.NodegroupName = aws.String(ng)
-	return handlers_eks.NewNATSEKSService(natsConn).UpdateNodegroupConfig(ctx, input, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).UpdateNodegroupConfig(ctx, input, accountID)
 }
 
 // DeleteNodegroup — DELETE /clusters/{name}/node-groups/{ng}.
@@ -50,5 +50,5 @@ func DeleteNodegroup(ctx context.Context, natsConn *nats.Conn, accountID, cluste
 		ClusterName:   aws.String(cluster),
 		NodegroupName: aws.String(ng),
 	}
-	return handlers_eks.NewNATSEKSService(natsConn).DeleteNodegroup(ctx, input, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).DeleteNodegroup(ctx, input, accountID)
 }

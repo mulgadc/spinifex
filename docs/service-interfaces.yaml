@@ -83,7 +83,7 @@ services:
       - spinifex/domains/rds/parametergroup
       - spinifex/domains/rds/engine
       - spinifex/domains/ecs/taskdefinition
-      - spinifex/handlers/eks
+      - spinifex/domains/eks/cluster
       - spinifex/domains/eks/access
       - spinifex/domains/eks/addon
       # Guest add-on wire contract (subject, report, staged-manifest body).
@@ -220,7 +220,7 @@ services:
       - "vpc.gate-subnet-egress"
       - "vpc.ungate-subnet-egress"
       # Egress-only reroute removal for a single system instance
-      # (handlers/eks). Fire-and-forget. vpc.add-system-egress has no
+      # (domains/eks/cluster). Fire-and-forget. vpc.add-system-egress has no
       # current producer.
       - "vpc.delete-system-egress"
       # → viperblockd

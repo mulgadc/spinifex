@@ -63,6 +63,7 @@ import (
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
@@ -78,7 +79,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -166,7 +166,7 @@ type Daemon struct {
 	vpcService            *ec2vpc.VPCServiceImpl
 	eipService            ec2eip.EIPService
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
-	eksService            *handlers_eks.EKSServiceImpl
+	eksService            *ekscluster.EKSServiceImpl
 	ecsService            *handlers_ecs.Service
 	ecsScheduler          *handlers_ecs.Scheduler
 	rdsService            *rdsinstance.Service
@@ -2101,8 +2101,8 @@ func (d *Daemon) startCluster() error {
 
 	d.elbv2Service.StartLifecycleReaper(context.Background())
 
-	d.eksService, err = initServiceWithRetry("EKS service", func() (*handlers_eks.EKSServiceImpl, error) {
-		return handlers_eks.NewEKSServiceImpl(d.buildEKSServiceDeps())
+	d.eksService, err = initServiceWithRetry("EKS service", func() (*ekscluster.EKSServiceImpl, error) {
+		return ekscluster.NewEKSServiceImpl(d.buildEKSServiceDeps())
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize EKS service: %w", err)

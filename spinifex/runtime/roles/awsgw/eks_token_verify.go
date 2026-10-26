@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 )
 
@@ -27,12 +27,12 @@ var _ presignedVerifier = (*stsdomain.STSServiceImpl)(nil)
 // the in-cluster eks-token-webhook can resolve get-token presigned URLs over
 // NATS (STS is hosted in-process here and is not otherwise on the bus).
 func registerEKSTokenVerify(nc *nats.Conn, verifier presignedVerifier) (*nats.Subscription, error) {
-	return nc.QueueSubscribe(handlers_eks.TokenVerifySubject, eksTokenVerifyQueue, handleEKSTokenVerify(verifier))
+	return nc.QueueSubscribe(ekscluster.TokenVerifySubject, eksTokenVerifyQueue, handleEKSTokenVerify(verifier))
 }
 
 func handleEKSTokenVerify(verifier presignedVerifier) nats.MsgHandler {
 	return func(msg *nats.Msg) {
-		var req handlers_eks.TokenVerifyRequest
+		var req ekscluster.TokenVerifyRequest
 		if err := json.Unmarshal(msg.Data, &req); err != nil {
 			respondTokenVerifyErr(msg, awserrors.ErrorInvalidParameterValue)
 			return
@@ -51,7 +51,7 @@ func handleEKSTokenVerify(verifier presignedVerifier) nats.MsgHandler {
 			return
 		}
 
-		resp := handlers_eks.TokenVerifyResponse{
+		resp := ekscluster.TokenVerifyResponse{
 			AccountID:     ident.AccountID,
 			ARN:           ident.ARN,
 			UserID:        ident.UserID,

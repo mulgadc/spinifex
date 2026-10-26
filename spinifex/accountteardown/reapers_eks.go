@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/nats-io/nats.go"
 )
 
@@ -17,7 +17,7 @@ import (
 // the cluster first would strand every worker node with nothing left to
 // address it by.
 func EKSReapers(nc *nats.Conn) []Reaper {
-	svc := handlers_eks.NewNATSEKSService(nc)
+	svc := ekscluster.NewNATSEKSService(nc)
 	return []Reaper{
 		&eksNodegroupReaper{svc: svc},
 		&eksClusterReaper{svc: svc},
@@ -29,7 +29,7 @@ func EKSReapers(nc *nats.Conn) []Reaper {
 const eksNodegroupSeparator = "/"
 
 type eksNodegroupReaper struct {
-	svc handlers_eks.EKSService
+	svc ekscluster.EKSService
 }
 
 func (r *eksNodegroupReaper) Kind() string { return "eks-nodegroup" }
@@ -81,7 +81,7 @@ func (r *eksNodegroupReaper) Delete(ctx context.Context, accountID string, resou
 }
 
 type eksClusterReaper struct {
-	svc handlers_eks.EKSService
+	svc ekscluster.EKSService
 }
 
 func (r *eksClusterReaper) Kind() string { return "eks-cluster" }
@@ -115,7 +115,7 @@ const eksListPageLimit = 100
 // listEKSClusterNames pages through ListClusters. The listing is capped at 100
 // per page, so taking only the first page would silently leave every cluster
 // past it behind — and a teardown that misses one never converges.
-func listEKSClusterNames(ctx context.Context, svc handlers_eks.EKSService, accountID string) ([]string, error) {
+func listEKSClusterNames(ctx context.Context, svc ekscluster.EKSService, accountID string) ([]string, error) {
 	var names []string
 	var token *string
 

@@ -9,10 +9,10 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -103,7 +103,7 @@ func TestEksWatchBuckets_NilGuards(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, buckets)
 
-	buckets, err = (&Daemon{eksService: &handlers_eks.EKSServiceImpl{}}).eksWatchBuckets(t.Context())
+	buckets, err = (&Daemon{eksService: &ekscluster.EKSServiceImpl{}}).eksWatchBuckets(t.Context())
 	require.NoError(t, err)
 	assert.Nil(t, buckets)
 }
@@ -111,14 +111,14 @@ func TestEksWatchBuckets_NilGuards(t *testing.T) {
 func TestEksWatchBuckets_DelegatesToAccountWatchBuckets(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	_, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "111111111111")
+	_, err := ekscluster.GetOrCreateAccountBucket(t.Context(), js, "111111111111")
 	require.NoError(t, err)
 
-	d := &Daemon{eksService: &handlers_eks.EKSServiceImpl{}, natsConn: nc}
+	d := &Daemon{eksService: &ekscluster.EKSServiceImpl{}, natsConn: nc}
 	buckets, err := d.eksWatchBuckets(t.Context())
 	require.NoError(t, err)
 	require.Len(t, buckets, 1)
-	assert.Equal(t, handlers_eks.AccountBucketName("111111111111"), buckets[0].Name())
+	assert.Equal(t, ekscluster.AccountBucketName("111111111111"), buckets[0].Name())
 }
 
 // TestRdsWatchBuckets_NilGuards exercises the two halves of the guard clause

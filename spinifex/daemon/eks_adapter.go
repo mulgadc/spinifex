@@ -7,7 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 )
 
 // daemonEKSSubnetResolver adapts VPCServiceImpl to the EKS SubnetVPCResolver.
@@ -55,4 +55,4 @@ func (a *daemonEKSSubnetResolver) GetVPCCIDR(ctx context.Context, accountID, vpc
 	return "", fmt.Errorf("eks: VPC %s not found", vpcID)
 }
 
-var _ handlers_eks.SubnetVPCResolver = (*daemonEKSSubnetResolver)(nil)
+var _ ekscluster.SubnetVPCResolver = (*daemonEKSSubnetResolver)(nil)

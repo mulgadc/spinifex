@@ -4,20 +4,20 @@ import (
 	"context"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/nats-io/nats.go"
 )
 
 // ListAddons — GET /clusters/{name}/addons.
 func ListAddons(ctx context.Context, natsConn *nats.Conn, accountID, cluster string) (*eks.ListAddonsOutput, error) {
-	return handlers_eks.NewNATSEKSService(natsConn).ListAddons(ctx, &eks.ListAddonsInput{
+	return ekscluster.NewNATSEKSService(natsConn).ListAddons(ctx, &eks.ListAddonsInput{
 		ClusterName: aws.String(cluster),
 	}, accountID)
 }
 
 // DescribeAddonVersions — GET /addons/supported-versions.
 func DescribeAddonVersions(ctx context.Context, natsConn *nats.Conn, accountID string) (*eks.DescribeAddonVersionsOutput, error) {
-	return handlers_eks.NewNATSEKSService(natsConn).DescribeAddonVersions(ctx, &eks.DescribeAddonVersionsInput{}, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).DescribeAddonVersions(ctx, &eks.DescribeAddonVersionsInput{}, accountID)
 }
 
 // CreateAddon — POST /clusters/{name}/addons.
@@ -27,7 +27,7 @@ func CreateAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster st
 		return nil, err
 	}
 	input.ClusterName = aws.String(cluster)
-	return handlers_eks.NewNATSEKSService(natsConn).CreateAddon(ctx, input, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).CreateAddon(ctx, input, accountID)
 }
 
 // DeleteAddon — DELETE /clusters/{name}/addons/{addon}.
@@ -36,7 +36,7 @@ func DeleteAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster, a
 		ClusterName: aws.String(cluster),
 		AddonName:   aws.String(addon),
 	}
-	return handlers_eks.NewNATSEKSService(natsConn).DeleteAddon(ctx, input, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).DeleteAddon(ctx, input, accountID)
 }
 
 // DescribeAddon — GET /clusters/{name}/addons/{addon}.
@@ -45,7 +45,7 @@ func DescribeAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster,
 		ClusterName: aws.String(cluster),
 		AddonName:   aws.String(addon),
 	}
-	return handlers_eks.NewNATSEKSService(natsConn).DescribeAddon(ctx, input, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).DescribeAddon(ctx, input, accountID)
 }
 
 // UpdateAddon — POST /clusters/{name}/addons/{addon}/update.
@@ -56,5 +56,5 @@ func UpdateAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster, a
 	}
 	input.ClusterName = aws.String(cluster)
 	input.AddonName = aws.String(addon)
-	return handlers_eks.NewNATSEKSService(natsConn).UpdateAddon(ctx, input, accountID)
+	return ekscluster.NewNATSEKSService(natsConn).UpdateAddon(ctx, input, accountID)
 }

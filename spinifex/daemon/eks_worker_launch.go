@@ -14,13 +14,13 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 )
 
 // Compile-time check that Daemon satisfies the EKS worker-launch surface.
-var _ handlers_eks.WorkerLauncher = (*Daemon)(nil)
+var _ ekscluster.WorkerLauncher = (*Daemon)(nil)
 
 // terminateRetrySleep is the backoff seam between NoResponders retries; tests override it.
 var terminateRetrySleep = time.Sleep

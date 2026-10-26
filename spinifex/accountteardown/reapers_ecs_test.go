@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -94,7 +94,7 @@ func (c *fakeECS) request(t *testing.T, subject string, into any) {
 }
 
 func newECSReaper(nc *nats.Conn) *ecsClusterReaper {
-	return &ecsClusterReaper{svc: handlers_ecs.NewNATSECSService(nc)}
+	return &ecsClusterReaper{svc: ecsdomain.NewNATSECSService(nc)}
 }
 
 // The listing is keyed by cluster name, which is the identity ECS takes back

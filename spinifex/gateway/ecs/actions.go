@@ -8,8 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/nats-io/nats.go"
 )
 
@@ -41,7 +41,7 @@ func checkTaskDefinitionRoles(passRoleCheck PassRoleChecker, roleARNs ...*string
 // checkTaskLaunchRoles resolves taskDefinition's role ARNs and enforces
 // iam:PassRole before a launch can start tasks under them, since RunTask,
 // StartTask, CreateService and UpdateService only reference a task definition.
-func checkTaskLaunchRoles(ctx context.Context, svc handlers_ecs.ECSService, accountID string, taskDefinition *string, passRoleCheck PassRoleChecker) error {
+func checkTaskLaunchRoles(ctx context.Context, svc ecsdomain.ECSService, accountID string, taskDefinition *string, passRoleCheck PassRoleChecker) error {
 	if passRoleCheck == nil || aws.StringValue(taskDefinition) == "" {
 		return nil
 	}
@@ -64,7 +64,7 @@ func CreateCluster(ctx context.Context, nc *nats.Conn, accountID string, body []
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).CreateCluster(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).CreateCluster(ctx, input, accountID)
 }
 
 // DeleteCluster implements the ECS DeleteCluster action, deleting a cluster. The JSON body (empty
@@ -74,7 +74,7 @@ func DeleteCluster(ctx context.Context, nc *nats.Conn, accountID string, body []
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).DeleteCluster(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).DeleteCluster(ctx, input, accountID)
 }
 
 // DescribeClusters implements the ECS DescribeClusters action, describing clusters. The JSON body
@@ -84,7 +84,7 @@ func DescribeClusters(ctx context.Context, nc *nats.Conn, accountID string, body
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).DescribeClusters(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).DescribeClusters(ctx, input, accountID)
 }
 
 // ListClusters implements the ECS ListClusters action, listing cluster ARNs. The JSON body (empty
@@ -94,7 +94,7 @@ func ListClusters(ctx context.Context, nc *nats.Conn, accountID string, body []b
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).ListClusters(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).ListClusters(ctx, input, accountID)
 }
 
 // --- Task definition ---
@@ -109,7 +109,7 @@ func RegisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string
 	if err := checkTaskDefinitionRoles(passRoleCheck, input.TaskRoleArn, input.ExecutionRoleArn); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).RegisterTaskDefinition(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).RegisterTaskDefinition(ctx, input, accountID)
 }
 
 // DeregisterTaskDefinition implements the ECS DeregisterTaskDefinition action, marking a task
@@ -120,7 +120,7 @@ func DeregisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID stri
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).DeregisterTaskDefinition(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).DeregisterTaskDefinition(ctx, input, accountID)
 }
 
 // DescribeTaskDefinition implements the ECS DescribeTaskDefinition action, describing a task
@@ -131,7 +131,7 @@ func DescribeTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).DescribeTaskDefinition(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).DescribeTaskDefinition(ctx, input, accountID)
 }
 
 // ListTaskDefinitions implements the ECS ListTaskDefinitions action, listing task definition
@@ -142,7 +142,7 @@ func ListTaskDefinitions(ctx context.Context, nc *nats.Conn, accountID string, b
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).ListTaskDefinitions(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).ListTaskDefinitions(ctx, input, accountID)
 }
 
 // --- Container instance ---
@@ -155,17 +155,17 @@ func RegisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID str
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).RegisterContainerInstance(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).RegisterContainerInstance(ctx, input, accountID)
 }
 
 // ProvisionCapacity launches container-instance EC2 capacity into a cluster.
-// Input/output are the custom handlers_ecs types, not aws-sdk-go ecs shapes.
+// Input/output are the custom domains/ecs types, not aws-sdk-go ecs shapes.
 func ProvisionCapacity(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
-	input := new(handlers_ecs.ProvisionCapacityInput)
+	input := new(ecsdomain.ProvisionCapacityInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).ProvisionCapacity(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).ProvisionCapacity(ctx, input, accountID)
 }
 
 // DeregisterContainerInstance implements the ECS DeregisterContainerInstance action, removing a
@@ -176,7 +176,7 @@ func DeregisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID s
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).DeregisterContainerInstance(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).DeregisterContainerInstance(ctx, input, accountID)
 }
 
 // UpdateContainerInstancesState implements the ECS UpdateContainerInstancesState action, setting
@@ -187,7 +187,7 @@ func UpdateContainerInstancesState(ctx context.Context, nc *nats.Conn, accountID
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).UpdateContainerInstancesState(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).UpdateContainerInstancesState(ctx, input, accountID)
 }
 
 // DescribeContainerInstances implements the ECS DescribeContainerInstances action, describing
@@ -198,7 +198,7 @@ func DescribeContainerInstances(ctx context.Context, nc *nats.Conn, accountID st
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).DescribeContainerInstances(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).DescribeContainerInstances(ctx, input, accountID)
 }
 
 // ListContainerInstances implements the ECS ListContainerInstances action, listing container
@@ -209,7 +209,7 @@ func ListContainerInstances(ctx context.Context, nc *nats.Conn, accountID string
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).ListContainerInstances(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).ListContainerInstances(ctx, input, accountID)
 }
 
 // --- Task ---
@@ -222,7 +222,7 @@ func RunTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, 
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	out, err := runTaskIdempotent(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck,
+	out, err := runTaskIdempotent(ctx, ecsdomain.NewNATSECSService(nc), accountID, input, passRoleCheck,
 		func() (*runTaskStore, error) { return getRunTaskStore(ctx, nc) })
 	if err != nil {
 		// Returned as a typed nil otherwise, which is a non-nil any.
@@ -236,7 +236,7 @@ func RunTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, 
 // the bind, and so a test can supply a store without a live connection.
 func runTaskIdempotent(
 	ctx context.Context,
-	svc handlers_ecs.ECSService,
+	svc ecsdomain.ECSService,
 	accountID string,
 	input *ecs.RunTaskInput,
 	passRoleCheck PassRoleChecker,
@@ -273,7 +273,7 @@ func runTaskIdempotent(
 
 // runTask is RunTask's core, split out so tests can inject a fake ECSService
 // instead of a live NATS connection.
-func runTask(ctx context.Context, svc handlers_ecs.ECSService, accountID string, input *ecs.RunTaskInput, passRoleCheck PassRoleChecker) (*ecs.RunTaskOutput, error) {
+func runTask(ctx context.Context, svc ecsdomain.ECSService, accountID string, input *ecs.RunTaskInput, passRoleCheck PassRoleChecker) (*ecs.RunTaskOutput, error) {
 	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
 		return nil, err
 	}
@@ -287,12 +287,12 @@ func StartTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return startTask(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck)
+	return startTask(ctx, ecsdomain.NewNATSECSService(nc), accountID, input, passRoleCheck)
 }
 
 // startTask is StartTask's core, split out so tests can inject a fake
 // ECSService instead of a live NATS connection.
-func startTask(ctx context.Context, svc handlers_ecs.ECSService, accountID string, input *ecs.StartTaskInput, passRoleCheck PassRoleChecker) (any, error) {
+func startTask(ctx context.Context, svc ecsdomain.ECSService, accountID string, input *ecs.StartTaskInput, passRoleCheck PassRoleChecker) (any, error) {
 	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
 		return nil, err
 	}
@@ -306,7 +306,7 @@ func StopTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte,
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).StopTask(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).StopTask(ctx, input, accountID)
 }
 
 // DescribeTasks implements the ECS DescribeTasks action, describing tasks. The JSON body (empty
@@ -316,7 +316,7 @@ func DescribeTasks(ctx context.Context, nc *nats.Conn, accountID string, body []
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).DescribeTasks(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).DescribeTasks(ctx, input, accountID)
 }
 
 // ListTasks implements the ECS ListTasks action, listing task ARNs. The JSON body (empty means a
@@ -326,7 +326,7 @@ func ListTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).ListTasks(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).ListTasks(ctx, input, accountID)
 }
 
 // --- Service ---
@@ -342,12 +342,12 @@ func CreateService(ctx context.Context, nc *nats.Conn, accountID string, body []
 	if err := checkAZRebalancing(body); err != nil {
 		return nil, err
 	}
-	return createService(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck)
+	return createService(ctx, ecsdomain.NewNATSECSService(nc), accountID, input, passRoleCheck)
 }
 
 // createService is CreateService's core, split out so tests can inject a fake
 // ECSService instead of a live NATS connection.
-func createService(ctx context.Context, svc handlers_ecs.ECSService, accountID string, input *ecs.CreateServiceInput, passRoleCheck PassRoleChecker) (any, error) {
+func createService(ctx context.Context, svc ecsdomain.ECSService, accountID string, input *ecs.CreateServiceInput, passRoleCheck PassRoleChecker) (any, error) {
 	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
 		return nil, err
 	}
@@ -364,13 +364,13 @@ func UpdateService(ctx context.Context, nc *nats.Conn, accountID string, body []
 	if err := checkAZRebalancing(body); err != nil {
 		return nil, err
 	}
-	return updateService(ctx, handlers_ecs.NewNATSECSService(nc), accountID, input, passRoleCheck)
+	return updateService(ctx, ecsdomain.NewNATSECSService(nc), accountID, input, passRoleCheck)
 }
 
 // updateService is UpdateService's core, split out so tests can inject a fake
 // ECSService instead of a live NATS connection. A nil/empty TaskDefinition
 // (desiredCount-only update) skips the check — nothing new to pass.
-func updateService(ctx context.Context, svc handlers_ecs.ECSService, accountID string, input *ecs.UpdateServiceInput, passRoleCheck PassRoleChecker) (any, error) {
+func updateService(ctx context.Context, svc ecsdomain.ECSService, accountID string, input *ecs.UpdateServiceInput, passRoleCheck PassRoleChecker) (any, error) {
 	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
 		return nil, err
 	}
@@ -384,7 +384,7 @@ func DeleteService(ctx context.Context, nc *nats.Conn, accountID string, body []
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).DeleteService(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).DeleteService(ctx, input, accountID)
 }
 
 // DescribeServices implements the ECS DescribeServices action, describing services. The JSON body
@@ -394,7 +394,7 @@ func DescribeServices(ctx context.Context, nc *nats.Conn, accountID string, body
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).DescribeServices(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).DescribeServices(ctx, input, accountID)
 }
 
 // ListServices implements the ECS ListServices action, listing service ARNs. The JSON body (empty
@@ -404,7 +404,7 @@ func ListServices(ctx context.Context, nc *nats.Conn, accountID string, body []b
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).ListServices(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).ListServices(ctx, input, accountID)
 }
 
 // SubmitTaskStateChange is the agent's task-state report path over the gateway
@@ -415,7 +415,7 @@ func SubmitTaskStateChange(ctx context.Context, nc *nats.Conn, accountID string,
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).SubmitTaskStateChange(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).SubmitTaskStateChange(ctx, input, accountID)
 }
 
 // PollAssignments drains the calling instance's assignment inbox (replaces the
@@ -423,22 +423,22 @@ func SubmitTaskStateChange(ctx context.Context, nc *nats.Conn, accountID string,
 // shape; the response carries ecsv1.Assign with an RFC3339 time, so the gateway
 // encodes it with encoding/json (RawJSONActions), not the jsonutil marshaler.
 func PollAssignments(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
-	input := new(handlers_ecs.PollAssignmentsInput)
+	input := new(ecsdomain.PollAssignmentsInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).PollAssignments(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).PollAssignments(ctx, input, accountID)
 }
 
 // ReportTaskGPU carries the agent's local ledger's per-task GPU device
 // assignment (agent → gateway). Internal action, not an AWS SDK shape: real
 // AWS's SubmitTaskStateChange has no gpuIds field.
 func ReportTaskGPU(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
-	input := new(handlers_ecs.ReportTaskGPUInput)
+	input := new(ecsdomain.ReportTaskGPUInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).ReportTaskGPU(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).ReportTaskGPU(ctx, input, accountID)
 }
 
 // --- Tags ---
@@ -450,7 +450,7 @@ func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []by
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).TagResource(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).TagResource(ctx, input, accountID)
 }
 
 // UntagResource implements the ECS UntagResource action, removing tags from an ECS resource. The
@@ -461,7 +461,7 @@ func UntagResource(ctx context.Context, nc *nats.Conn, accountID string, body []
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).UntagResource(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).UntagResource(ctx, input, accountID)
 }
 
 // ListTagsForResource implements the ECS ListTagsForResource action, listing an ECS resource's
@@ -472,7 +472,7 @@ func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, b
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).ListTagsForResource(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).ListTagsForResource(ctx, input, accountID)
 }
 
 // --- Capacity providers ---
@@ -485,7 +485,7 @@ func PutClusterCapacityProviders(ctx context.Context, nc *nats.Conn, accountID s
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).PutClusterCapacityProviders(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).PutClusterCapacityProviders(ctx, input, accountID)
 }
 
 // CreateCapacityProvider implements the ECS CreateCapacityProvider action, creating a capacity
@@ -496,7 +496,7 @@ func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).CreateCapacityProvider(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).CreateCapacityProvider(ctx, input, accountID)
 }
 
 // DescribeCapacityProviders implements the ECS DescribeCapacityProviders action, describing
@@ -507,7 +507,7 @@ func DescribeCapacityProviders(ctx context.Context, nc *nats.Conn, accountID str
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).DescribeCapacityProviders(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).DescribeCapacityProviders(ctx, input, accountID)
 }
 
 // DeleteCapacityProvider implements the ECS DeleteCapacityProvider action, deleting a capacity
@@ -518,5 +518,5 @@ func DeleteCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_ecs.NewNATSECSService(nc).DeleteCapacityProvider(ctx, input, accountID)
+	return ecsdomain.NewNATSECSService(nc).DeleteCapacityProvider(ctx, input, accountID)
 }

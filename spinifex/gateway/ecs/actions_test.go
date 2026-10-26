@@ -8,20 +8,20 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const testTaskRoleARN = "arn:aws:iam::123456789012:role/ecs-task-role"
 
-// fakeECSService is a minimal handlers_ecs.ECSService test double. Embedding
+// fakeECSService is a minimal ecsdomain.ECSService test double. Embedding
 // the (nil) interface satisfies the contract; any method not overridden below
 // nil-panics if called, surfacing an unexpected call the same way the EC2
 // gateway tests' fakeIAMService does.
 type fakeECSService struct {
-	handlers_ecs.ECSService
+	ecsdomain.ECSService
 
 	describeOut *ecs.DescribeTaskDefinitionOutput
 	describeErr error

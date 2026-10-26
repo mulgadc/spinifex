@@ -77,7 +77,7 @@ services:
       - spinifex/domains/elbv2
       - spinifex/domains/acm
       - spinifex/domains/iam
-      - spinifex/handlers/ecs
+      - spinifex/domains/ecs
       - spinifex/domains/rds/instance
       - spinifex/domains/rds/subnetgroup
       - spinifex/domains/rds/parametergroup
@@ -163,7 +163,7 @@ services:
       # per-subject list would be a hand-mirror of that file with nothing
       # checking it.
       - "rds.*"
-      # ECS control plane (handlers/ecs/service_nats.go, registered in
+      # ECS control plane (domains/ecs/service_nats.go, registered in
       # daemon.go). One wildcard, as for RDS: every action subject is a literal
       # in those two files, so a per-subject list would only mirror them.
       - "ecs.*"

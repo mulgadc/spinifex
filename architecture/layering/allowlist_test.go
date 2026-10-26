@@ -23,7 +23,7 @@ var allowlist = []allowance{
 	{From: "accountteardown", To: "domains/ec2/awsapi/volume", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
 	{From: "accountteardown", To: "domains/ec2/awsapi/vpc", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
 
-	{From: "agents/ecs/agent", To: "handlers/ecs", Debt: "agents/ecs/agent", Reason: "assignment/state wire types from the ECS implementation; needs a guest/controller contract"},
+	{From: "agents/ecs/agent", To: "domains/ecs", Debt: "agents/ecs/agent", Reason: "assignment/state wire types from the ECS implementation; needs a guest/controller contract"},
 
 	{From: "agents/eks/tokenwebhook", To: "domains/eks/cluster", Debt: "agents/eks/tokenwebhook", Reason: "WebhookTokenReviewResult from the EKS implementation; needs an EKS contract or projection"},
 
@@ -125,11 +125,11 @@ var allowlist = []allowance{
 	{From: "gateway", To: "domains/iam/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
 	{From: "gateway", To: "domains/rds/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
 	{From: "gateway", To: "domains/sts/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
-	{From: "handlers/ecs", To: "domains/ec2/ebs/metadata", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
-	{From: "handlers/ecs", To: "domains/ec2/eip", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
-	{From: "handlers/ecs", To: "domains/ec2/instancetypes", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
-	{From: "handlers/ecs", To: "domains/elbv2", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
-	{From: "handlers/ecs", To: "domains/iam", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
+	{From: "domains/ecs", To: "domains/ec2/ebs/metadata", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
+	{From: "domains/ecs", To: "domains/ec2/eip", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
+	{From: "domains/ecs", To: "domains/ec2/instancetypes", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
+	{From: "domains/ecs", To: "domains/elbv2", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
+	{From: "domains/ecs", To: "domains/iam", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
 
 	{From: "domains/eks/cluster", To: "domains/dns", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},
 	{From: "domains/eks/cluster", To: "domains/ec2/ebs/metadata", Debt: "close-out: handlers/eks (ADR-0004 blocked-dependency list; inventory-eks boundary imports)", Reason: "legacy EKS calls another domain's or runtime implementation directly"},

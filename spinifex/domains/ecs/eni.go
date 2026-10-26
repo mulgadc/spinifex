@@ -1,0 +1,155 @@
+package ecs
+
+import (
+	"context"
+	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/nats-io/nats.go"
+)
+
+// eniRequestTimeout bounds each ENI control-plane NATS round-trip. Attach drives
+// the QMP hot-plug pipeline so it gets the same 30s budget the gateway uses.
+const eniRequestTimeout = 30 * time.Second
+
+// taskENIDeviceIndex is the secondary device index every awsvpc task ENI hot-plugs
+// onto; the primary NIC (index 0) is the instance's own ENI.
+const taskENIDeviceIndex = 1
+
+// eniAllocation is the identity of a freshly created task ENI.
+type eniAllocation struct {
+	ENIID        string
+	MacAddress   string
+	PrivateIP    string
+	SubnetID     string
+	AttachmentID string
+}
+
+// eniController is the scheduler's ENI control-plane: it owns create, attach,
+// detach, and delete for awsvpc task ENIs (single writer). The agent never calls
+// these — it only wires the guest netns once the device is hot-plugged.
+type eniController interface {
+	Allocate(ctx context.Context, accountID, subnetID string, securityGroups []*string) (eniAllocation, error)
+	Attach(ctx context.Context, accountID, instanceID, eniID string) (attachmentID string, err error)
+	Release(ctx context.Context, accountID string, rec *TaskRecord) error
+}
+
+// natsENIController drives the EC2 ENI handlers over NATS. Create/Delete are plain
+// request/response; Attach/Detach dispatch to the owning daemon via ec2.cmd.{id}
+// (the Sprint 3 hot-plug path).
+type natsENIController struct {
+	nc      *nats.Conn
+	timeout time.Duration
+}
+
+var _ eniController = (*natsENIController)(nil)
+
+func newNATSENIController(nc *nats.Conn) *natsENIController {
+	return &natsENIController{nc: nc, timeout: eniRequestTimeout}
+}
+
+// Allocate creates an ENI in subnetID with the given security groups.
+func (c *natsENIController) Allocate(ctx context.Context, accountID, subnetID string, securityGroups []*string) (eniAllocation, error) {
+	in := &ec2.CreateNetworkInterfaceInput{
+		SubnetId:    aws.String(subnetID),
+		Groups:      securityGroups,
+		Description: aws.String("ecs-awsvpc-task"),
+	}
+	out, err := natsmsg.NATSRequest[ec2.CreateNetworkInterfaceOutput](ctx, c.nc, "ec2.CreateNetworkInterface", in, c.timeout, accountID)
+	if err != nil {
+		return eniAllocation{}, fmt.Errorf("create task ENI: %w", err)
+	}
+	if out.NetworkInterface == nil || aws.StringValue(out.NetworkInterface.NetworkInterfaceId) == "" {
+		return eniAllocation{}, fmt.Errorf("create task ENI: empty response")
+	}
+	ni := out.NetworkInterface
+	return eniAllocation{
+		ENIID:      aws.StringValue(ni.NetworkInterfaceId),
+		MacAddress: strings.ToLower(aws.StringValue(ni.MacAddress)),
+		PrivateIP:  aws.StringValue(ni.PrivateIpAddress),
+		SubnetID:   subnetID,
+	}, nil
+}
+
+// Attach hot-plugs eniID onto instanceID and returns the attachment ID.
+func (c *natsENIController) Attach(ctx context.Context, accountID, instanceID, eniID string) (string, error) {
+	cmd := ec2v1.EC2InstanceCommand{
+		ID:         instanceID,
+		Attributes: ec2v1.EC2CommandAttributes{AttachENI: true},
+		AttachENIData: &ec2v1.AttachENIData{
+			NetworkInterfaceID: eniID,
+			DeviceIndex:        taskENIDeviceIndex,
+		},
+	}
+	out, err := natsmsg.NATSRequest[ec2.AttachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(instanceID), cmd, c.timeout, accountID)
+	if err != nil {
+		return "", fmt.Errorf("attach task ENI %s -> %s: %w", eniID, instanceID, err)
+	}
+	return aws.StringValue(out.AttachmentId), nil
+}
+
+// Release detaches (force) then deletes the task ENI. Both steps treat a NotFound
+// as success so the graceful-stop and reaper paths can each run idempotently.
+func (c *natsENIController) Release(ctx context.Context, accountID string, rec *TaskRecord) error {
+	if rec == nil || rec.ENIID == "" {
+		return nil
+	}
+	if rec.ENIAttachmentID != "" && rec.ContainerInstanceID != "" {
+		cmd := ec2v1.EC2InstanceCommand{
+			ID:         rec.ContainerInstanceID,
+			Attributes: ec2v1.EC2CommandAttributes{DetachENI: true},
+			DetachENIData: &ec2v1.DetachENIData{
+				AttachmentID: rec.ENIAttachmentID,
+				Force:        true,
+			},
+		}
+		_, err := natsmsg.NATSRequest[ec2.DetachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(rec.ContainerInstanceID), cmd, c.timeout, accountID)
+		if err != nil && !isENINotFound(err) {
+			return fmt.Errorf("detach task ENI %s: %w", rec.ENIID, err)
+		}
+	}
+
+	del := &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(rec.ENIID)}
+	_, err := natsmsg.NATSRequest[ec2.DeleteNetworkInterfaceOutput](ctx, c.nc, "ec2.DeleteNetworkInterface", del, c.timeout, accountID)
+	if err != nil && !isENINotFound(err) {
+		return fmt.Errorf("delete task ENI %s: %w", rec.ENIID, err)
+	}
+	return nil
+}
+
+func eniCmdSubject(instanceID string) string {
+	return ec2v1.InstanceCommandSubject(instanceID)
+}
+
+// reclaimTaskENI releases an awsvpc task's ENI on the single-writer teardown
+// path. Success marks ENIReleased so a second call is a no-op; failure leaves
+// it unset, so the stopped-task sweep keeps retrying from it. ENIID itself is
+// never cleared: DescribeTasks still needs it for the stopped-task attachment.
+func (s *Service) reclaimTaskENI(ctx context.Context, accountID string, task *TaskRecord) {
+	if s.eni == nil || task == nil || task.NetworkMode != NetworkModeAwsvpc || task.ENIID == "" || task.ENIReleased {
+		return
+	}
+	if err := s.eni.Release(ctx, accountID, task); err != nil {
+		slog.ErrorContext(ctx, "ECS: task ENI release failed",
+			"task", task.TaskID, "eni", task.ENIID, "err", err)
+		return
+	}
+	task.ENIReleased = true
+}
+
+// isENINotFound reports whether err is an idempotent already-gone signal — a
+// missing ENI or attachment means the teardown is already converged.
+func isENINotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "InvalidNetworkInterfaceID.NotFound") ||
+		strings.Contains(msg, "InvalidAttachmentID.NotFound")
+}

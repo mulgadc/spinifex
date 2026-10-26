@@ -6,15 +6,15 @@ import (
 	"path/filepath"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 )
 
 // buildECSServiceDeps assembles the ECS service Deps for ProvisionCapacity: the
 // gateway endpoint/CA seeded into container-instance user-data, the image
 // resolver, the customer RunInstances path, and (when the master key loads) a
 // KV-backed IAM service for the ecsInstanceRole instance profile.
-func (d *Daemon) buildECSServiceDeps() handlers_ecs.Deps {
+func (d *Daemon) buildECSServiceDeps() ecsdomain.Deps {
 	gatewayCA := ""
 	if d.config.NATS.CACert != "" {
 		if caBytes, readErr := os.ReadFile(d.config.NATS.CACert); readErr == nil {
@@ -25,7 +25,7 @@ func (d *Daemon) buildECSServiceDeps() handlers_ecs.Deps {
 		}
 	}
 
-	deps := handlers_ecs.Deps{
+	deps := ecsdomain.Deps{
 		GatewayBaseURL: d.resolveGatewayBaseURL(),
 		GatewayCACert:  gatewayCA,
 		Images:         d.imageService,

@@ -12,7 +12,7 @@ import (
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/internal/ecsgw"
 	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 )
 
 // controlPlane is the agent's channel to the AWS gateway. It replaces the direct
@@ -31,7 +31,7 @@ type controlPlane interface {
 	PollAssignments(cluster, instance string, ackAssigns, ackStops []string) ([]ecsv1.Assign, []ecsv1.StopDirective, error)
 	// ReportTaskGPU reports the local ledger's pinned device UUIDs for a task's
 	// containers, so the control plane can populate DescribeTasks gpuIds.
-	ReportTaskGPU(cluster, task string, containers []handlers_ecs.ContainerGPUReport) error
+	ReportTaskGPU(cluster, task string, containers []ecsdomain.ContainerGPUReport) error
 }
 
 // gatewayControlPlane implements controlPlane over the SigV4 ECS gateway client.
@@ -125,7 +125,7 @@ func (g *gatewayControlPlane) SubmitTaskState(st ecsv1.TaskState) error {
 }
 
 func (g *gatewayControlPlane) PollAssignments(cluster, instance string, ackAssigns, ackStops []string) ([]ecsv1.Assign, []ecsv1.StopDirective, error) {
-	in := &handlers_ecs.PollAssignmentsInput{
+	in := &ecsdomain.PollAssignmentsInput{
 		Cluster:           cluster,
 		ContainerInstance: instance,
 		AckTaskIDs:        ackAssigns,
@@ -139,15 +139,15 @@ func (g *gatewayControlPlane) PollAssignments(cluster, instance string, ackAssig
 	if err != nil {
 		return nil, nil, fmt.Errorf("poll: %w", err)
 	}
-	var out handlers_ecs.PollAssignmentsOutput
+	var out ecsdomain.PollAssignmentsOutput
 	if err := json.Unmarshal(resp, &out); err != nil {
 		return nil, nil, fmt.Errorf("decode poll: %w", err)
 	}
 	return out.Assignments, out.Stops, nil
 }
 
-func (g *gatewayControlPlane) ReportTaskGPU(cluster, task string, containers []handlers_ecs.ContainerGPUReport) error {
-	in := &handlers_ecs.ReportTaskGPUInput{Cluster: cluster, Task: task, Containers: containers}
+func (g *gatewayControlPlane) ReportTaskGPU(cluster, task string, containers []ecsdomain.ContainerGPUReport) error {
+	in := &ecsdomain.ReportTaskGPUInput{Cluster: cluster, Task: task, Containers: containers}
 	body, err := json.Marshal(in)
 	if err != nil {
 		return fmt.Errorf("marshal report-task-gpu: %w", err)

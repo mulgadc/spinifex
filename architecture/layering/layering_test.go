@@ -193,19 +193,23 @@ func TestADR0001_LayeringCheckerDetectsFaults(t *testing.T) {
 }
 
 // TestADR0001_InterimDaemonDirectionCoversRuntimeDaemon: the daemon left its
-// legacy root, so the interim guardrail must still reject handlers and gateway
-// importing it at runtime/daemon.
+// legacy root, so gateway importing runtime/daemon must still be rejected, and
+// the former handlers packages are held to it by R5 at their domain homes.
 func TestADR0001_InterimDaemonDirectionCoversRuntimeDaemon(t *testing.T) {
-	r := ruleByID("Interim_DaemonGatewayHandlersDirection")
 	daemon, _ := classify("spinifex/runtime/daemon")
-	for _, from := range []string{"spinifex/gateway", "spinifex/handlers/ecs"} {
-		f, _ := classify(from)
-		if !r.subject(f, from) || !r.forbids(f, daemon, from) {
-			t.Errorf("%s -> runtime/daemon is not rejected", from)
+	checks := []struct{ rule, from string }{
+		{"Interim_DaemonGatewayHandlersDirection", "spinifex/gateway"},
+		{"R5_DomainImportsNoRuntimeOrOperator", "spinifex/domains/ecs"},
+	}
+	for _, c := range checks {
+		r := ruleByID(c.rule)
+		f, _ := classify(c.from)
+		if !r.subject(f, c.from) || !r.forbids(f, daemon, c.from) {
+			t.Errorf("%s -> runtime/daemon is not rejected by %s", c.from, c.rule)
 		}
 	}
 	other, _ := classify("spinifex/runtime/host/process")
-	if gw, _ := classify("spinifex/gateway"); r.forbids(gw, other, "spinifex/gateway") {
+	if gw, _ := classify("spinifex/gateway"); ruleByID("Interim_DaemonGatewayHandlersDirection").forbids(gw, other, "spinifex/gateway") {
 		t.Error("gateway -> runtime/host/process is rejected, but it is not the daemon")
 	}
 }

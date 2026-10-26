@@ -50,7 +50,7 @@ const (
 	ecsTasksServicePrincipal = "ecs-tasks.amazonaws.com"
 
 	// ecsInstanceRoleName is the fixed role the ECS control plane attaches to every
-	// container instance. Duplicated from handlers_ecs, which cannot be imported
+	// container instance. Duplicated from domains/ecs, which cannot be imported
 	// here: it lives on the daemon side of the awsgw trust boundary.
 	ecsInstanceRoleName = "ecsInstanceRole"
 

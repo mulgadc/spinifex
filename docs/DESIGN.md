@@ -311,7 +311,6 @@ spinifex/
 │   ├── operator/            # spx CLI commands, admin use cases, installer, upgrade
 │   ├── agents/              # In-guest agent libraries (ecs, eks, elbv2, rds)
 │   ├── gateway/             # Legacy root: HTTP route assembly, SigV4 auth, legacy per-service dispatch
-│   ├── handlers/            # Legacy root: ecs service implementation
 │   └── accountteardown/     # Legacy root: account deletion cleanup
 ├── internal/                # In-guest SigV4 clients, AWS Smithy models and test kits
 ├── architecture/            # Executable architecture rules (package layering)
@@ -322,7 +321,7 @@ spinifex/
     └── e2e/                 # Live-cluster suites (see docs/testing/e2e-coverage.md)
 ```
 
-The three remaining legacy roots predate ADR-0001 and are frozen: they may shrink but not gain packages.
+The two remaining legacy roots predate ADR-0001 and are frozen: they may shrink but not gain packages.
 [`PACKAGE_BOUNDARY_MIGRATION.md`](PACKAGE_BOUNDARY_MIGRATION.md) records what remains in each and what blocks its move.
 
 ## Development

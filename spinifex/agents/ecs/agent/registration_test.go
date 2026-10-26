@@ -9,7 +9,7 @@ import (
 	"time"
 
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 )
 
 // fakeCP is a test double for the gateway control-plane. It records registers,
@@ -37,7 +37,7 @@ type fakeCP struct {
 type gpuReport struct {
 	cluster    string
 	task       string
-	containers []handlers_ecs.ContainerGPUReport
+	containers []ecsdomain.ContainerGPUReport
 }
 
 var _ controlPlane = (*fakeCP)(nil)
@@ -93,7 +93,7 @@ func (f *fakeCP) PollAssignments(_, _ string, ackAssigns, ackStops []string) ([]
 	return out, stops, nil
 }
 
-func (f *fakeCP) ReportTaskGPU(cluster, task string, containers []handlers_ecs.ContainerGPUReport) error {
+func (f *fakeCP) ReportTaskGPU(cluster, task string, containers []ecsdomain.ContainerGPUReport) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gpuReports = append(f.gpuReports, gpuReport{cluster: cluster, task: task, containers: containers})

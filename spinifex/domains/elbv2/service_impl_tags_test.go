@@ -2,11 +2,14 @@ package elbv2
 
 import (
 	"context"
+	"encoding/json"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -263,4 +266,57 @@ func TestAddTags_RepeatedARN(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"App": "nginx", "Env": "prod"}, tagsFor(t, svc, arn))
+}
+
+// hookKV runs hook once, just before the first Get of trigger.
+type hookKV struct {
+	jetstream.KeyValue
+
+	once    sync.Once
+	trigger string
+	hook    func()
+}
+
+func (k *hookKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+	if key == k.trigger {
+		k.once.Do(k.hook)
+	}
+	return k.KeyValue.Get(ctx, key)
+}
+
+func TestAddTags_KeepsWriteMadeWhileLaterARNIsValidated(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+	o1, err := svc.CreateLoadBalancer(ctx, &elbv2.CreateLoadBalancerInput{Name: aws.String("concurrent-lb1")}, testAccountID)
+	require.NoError(t, err)
+	o2, err := svc.CreateLoadBalancer(ctx, &elbv2.CreateLoadBalancerInput{Name: aws.String("concurrent-lb2")}, testAccountID)
+	require.NoError(t, err)
+	arn1, arn2 := *o1.LoadBalancers[0].LoadBalancerArn, *o2.LoadBalancers[0].LoadBalancerArn
+	lb1, err := svc.store.GetLoadBalancerByArn(ctx, arn1)
+	require.NoError(t, err)
+	lb2, err := svc.store.GetLoadBalancerByArn(ctx, arn2)
+	require.NoError(t, err)
+
+	inner := svc.store.kv
+	svc.store.kv = &hookKV{KeyValue: inner, trigger: KeyPrefixLB + lb2.LoadBalancerID, hook: func() {
+		cur, gerr := svc.store.GetLoadBalancer(ctx, lb1.LoadBalancerID)
+		require.NoError(t, gerr)
+		cur.State = "concurrent-state"
+		b, merr := json.Marshal(cur)
+		require.NoError(t, merr)
+		_, perr := inner.Put(ctx, KeyPrefixLB+lb1.LoadBalancerID, b)
+		require.NoError(t, perr)
+	}}
+
+	_, err = svc.AddTags(ctx, &elbv2.AddTagsInput{
+		ResourceArns: []*string{aws.String(arn1), aws.String(arn2)},
+		Tags:         []*elbv2.Tag{{Key: aws.String("k"), Value: aws.String("v")}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	svc.store.kv = inner
+	got, err := svc.store.GetLoadBalancer(ctx, lb1.LoadBalancerID)
+	require.NoError(t, err)
+	assert.Equal(t, "concurrent-state", got.State)
+	assert.Equal(t, map[string]string{"k": "v"}, got.Tags)
 }

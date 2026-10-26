@@ -95,17 +95,24 @@ func (s *ELBv2ServiceImpl) resolveTaggable(ctx context.Context, arn string) (h t
 	return h, notFoundError, found, nil
 }
 
-// resolvedTaggable pairs a resolved tag handle with the ARN it was loaded from.
-type resolvedTaggable struct {
-	arn string
-	h   taggable
+// resolveOwnedTaggable resolves arn and returns the per-type not-found error
+// when the resource is missing or owned by another account.
+func (s *ELBv2ServiceImpl) resolveOwnedTaggable(ctx context.Context, arn, accountID string) (taggable, error) {
+	h, notFoundError, found, err := s.resolveTaggable(ctx, arn)
+	if err != nil {
+		return taggable{}, err
+	}
+	if !found || h.owner != accountID {
+		return taggable{}, errors.New(notFoundError)
+	}
+	return h, nil
 }
 
-// resolveAllTaggable resolves every ARN and checks ownership before the caller
-// writes anything, so an unknown or cross-account ARN anywhere in the request
-// fails it with no resource modified. Repeated ARNs are resolved once.
-func (s *ELBv2ServiceImpl) resolveAllTaggable(ctx context.Context, arns []*string, accountID string) ([]resolvedTaggable, error) {
-	handles := make([]resolvedTaggable, 0, len(arns))
+// validateAllTaggable checks every ARN before the caller writes anything, so
+// an unknown or cross-account ARN anywhere in the request fails it with no
+// resource modified. It returns the ARNs with repeats removed.
+func (s *ELBv2ServiceImpl) validateAllTaggable(ctx context.Context, arns []*string, accountID string) ([]string, error) {
+	unique := make([]string, 0, len(arns))
 	seen := make(map[string]struct{}, len(arns))
 	for _, arnPtr := range arns {
 		if arnPtr == nil || *arnPtr == "" {
@@ -117,16 +124,12 @@ func (s *ELBv2ServiceImpl) resolveAllTaggable(ctx context.Context, arns []*strin
 		}
 		seen[arn] = struct{}{}
 
-		h, notFoundError, found, err := s.resolveTaggable(ctx, arn)
-		if err != nil {
+		if _, err := s.resolveOwnedTaggable(ctx, arn, accountID); err != nil {
 			return nil, err
 		}
-		if !found || h.owner != accountID {
-			return nil, errors.New(notFoundError)
-		}
-		handles = append(handles, resolvedTaggable{arn: arn, h: h})
+		unique = append(unique, arn)
 	}
-	return handles, nil
+	return unique, nil
 }
 
 // AddTags adds or overwrites tags on ELBv2 resources. Tags and every ARN are
@@ -149,19 +152,25 @@ func (s *ELBv2ServiceImpl) AddTags(ctx context.Context, input *elbv2.AddTagsInpu
 		newTags[*t.Key] = v
 	}
 
-	handles, err := s.resolveAllTaggable(ctx, input.ResourceArns, accountID)
+	arns, err := s.validateAllTaggable(ctx, input.ResourceArns, accountID)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, rh := range handles {
-		merged := rh.h.tags
+	// Re-read each resource just before its write so the whole-record save
+	// doesn't overwrite changes made while the other ARNs were validated.
+	for _, arn := range arns {
+		h, err := s.resolveOwnedTaggable(ctx, arn, accountID)
+		if err != nil {
+			return nil, err
+		}
+		merged := h.tags
 		if merged == nil {
 			merged = make(map[string]string, len(newTags))
 		}
 		maps.Copy(merged, newTags)
-		if err := rh.h.save(merged); err != nil {
-			slog.ErrorContext(ctx, "AddTags: failed to persist", "arn", rh.arn, "err", err)
+		if err := h.save(merged); err != nil {
+			slog.ErrorContext(ctx, "AddTags: failed to persist", "arn", arn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
@@ -185,20 +194,25 @@ func (s *ELBv2ServiceImpl) RemoveTags(ctx context.Context, input *elbv2.RemoveTa
 		keys = append(keys, *k)
 	}
 
-	handles, err := s.resolveAllTaggable(ctx, input.ResourceArns, accountID)
+	arns, err := s.validateAllTaggable(ctx, input.ResourceArns, accountID)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, rh := range handles {
-		if len(rh.h.tags) == 0 {
+	// Re-read each resource just before its write; see AddTags.
+	for _, arn := range arns {
+		h, err := s.resolveOwnedTaggable(ctx, arn, accountID)
+		if err != nil {
+			return nil, err
+		}
+		if len(h.tags) == 0 {
 			continue
 		}
 		for _, k := range keys {
-			delete(rh.h.tags, k)
+			delete(h.tags, k)
 		}
-		if err := rh.h.save(rh.h.tags); err != nil {
-			slog.ErrorContext(ctx, "RemoveTags: failed to persist", "arn", rh.arn, "err", err)
+		if err := h.save(h.tags); err != nil {
+			slog.ErrorContext(ctx, "RemoveTags: failed to persist", "arn", arn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}

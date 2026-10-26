@@ -106,6 +106,11 @@ if command -v ovs-vsctl >/dev/null 2>&1; then
     OVS_UNIT=$(distro_ovs_unit) || exit 1
 fi
 
+# Also resolved up front. The CA tools live in sbin, which Debian leaves off a
+# non-root PATH, and a probe that fails after the wipe leaves a half-reset node.
+CA_TRUST=$(PATH="/usr/sbin:/sbin:$PATH" distro_ca_trust) \
+    || { echo "ERROR: cannot tell which trust store holds the stale CA" >&2; exit 1; }
+
 WIPE_DIRS=("$ETC_DIR" "$LOG_DIR" "$RUN_DIR")
 $KEEP_DATA || WIPE_DIRS+=("$DATA_DIR")
 
@@ -450,7 +455,6 @@ fi
 
 # The next init writes a fresh CA. Leaving the old one trusted means the host
 # trusts a CA nobody holds the key for.
-CA_TRUST=$(distro_ca_trust) || { echo "ERROR: cannot tell which trust store holds the stale CA" >&2; exit 1; }
 CA_ANCHOR="${CA_TRUST#* }/spinifex-ca.crt"
 if [ -f "$CA_ANCHOR" ]; then
     log "removing the stale CA from the trust store"

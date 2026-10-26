@@ -107,6 +107,10 @@ if $PURGE_DEPS; then
 fi
 # A failed OVS unit is restarted after its drop-in goes; absent when OVS is.
 OVS_UNIT=$(distro_ovs_unit 2>/dev/null) || OVS_UNIT=""
+# Resolved before anything is removed. The CA tools live in sbin, which Debian
+# leaves off a non-root PATH, and failing late would stop the uninstall halfway.
+CA_TRUST=$(PATH="/usr/sbin:/sbin:$PATH" distro_ca_trust) \
+    || { echo "ERROR: cannot tell which trust store to remove the Spinifex CA from" >&2; exit 1; }
 
 log() { echo "[uninstall-spx] $*"; }
 run() {
@@ -491,7 +495,6 @@ done
 # 12. The CA in the host trust store. Leaving it means the host trusts a CA
 # whose key no longer exists anywhere.
 # ---------------------------------------------------------------------------
-CA_TRUST=$(distro_ca_trust) || { echo "ERROR: cannot tell which trust store to remove the Spinifex CA from" >&2; exit 1; }
 CA_ANCHOR="${CA_TRUST#* }/spinifex-ca.crt"
 if [ -f "$CA_ANCHOR" ]; then
     log "removing the Spinifex CA from the host trust store"

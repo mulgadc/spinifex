@@ -11,17 +11,17 @@ type allowance struct {
 // docs/PACKAGE_BOUNDARY_MIGRATION.md. It only shrinks: add an edge only with
 // recorded debt, and delete an entry as soon as its import is gone.
 var allowlist = []allowance{
-	{From: "accountteardown", To: "domains/ec2/awsapi/eip", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/igw", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/image", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/instance", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/key", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/launchtemplate", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/placementgroup", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/routetable", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/snapshot", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/volume", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/vpc", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/eip", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/igw", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/image", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/instance", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/key", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/launchtemplate", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/placementgroup", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/routetable", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/snapshot", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/volume", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/vpc", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
 
 	{From: "agents/ecs/agent", To: "domains/ecs", Debt: "agents/ecs/agent", Reason: "assignment/state wire types from the ECS implementation; needs a guest/controller contract"},
 
@@ -160,6 +160,5 @@ var allowlist = []allowance{
 
 	{From: "domains/sts", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "STS reads IAM service, trust-policy and OIDC-provider state; needs an IAM capability"},
 
-	{From: "operator/cli", To: "accountteardown", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "gateway", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 }

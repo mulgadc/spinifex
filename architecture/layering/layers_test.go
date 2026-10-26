@@ -60,8 +60,7 @@ func (c class) isLegacy(roots ...string) bool {
 
 // legacyRoots are pre-ADR-0001 application roots still standing.
 var legacyRoots = map[string]bool{
-	"gateway":         true,
-	"accountteardown": true,
+	"gateway": true,
 }
 
 // gatewayDomains names the domain each gateway/<service> adapter belongs to;
@@ -70,9 +69,6 @@ var gatewayDomains = map[string]string{
 	"bedrock": "ochre", "ecs": "ecs", "eks": "eks", "elbv2": "elbv2", "iam": "iam",
 	"rds": "rds", "sts": "sts",
 }
-
-// operatorLegacy are the legacy roots whose ADR-0001 target is operator/.
-var operatorLegacy = []string{"accountteardown"}
 
 // classify maps a module-relative package directory to its layer. ok is false
 // for a package that has no deliberate classification.

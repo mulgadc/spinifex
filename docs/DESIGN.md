@@ -308,10 +308,9 @@ spinifex/
 │   │   ├── daemon/          # Per-node daemon and its NATS subscription table
 │   │   └── compute/         # VM lifecycle, QMP, NBD, GPU
 │   ├── bootstrap/           # Cluster and node configuration structures, preflight checks
-│   ├── operator/            # spx CLI commands, admin use cases, installer, upgrade
+│   ├── operator/            # spx CLI commands, admin use cases, account lifecycle, installer, upgrade
 │   ├── agents/              # In-guest agent libraries (ecs, eks, elbv2, rds)
-│   ├── gateway/             # Legacy root: HTTP route assembly, SigV4 auth, legacy per-service dispatch
-│   └── accountteardown/     # Legacy root: account deletion cleanup
+│   └── gateway/             # Legacy root: HTTP route assembly, SigV4 auth, legacy per-service dispatch
 ├── internal/                # In-guest SigV4 clients, AWS Smithy models and test kits
 ├── architecture/            # Executable architecture rules (package layering)
 ├── build/                   # systemd units, node helper scripts, microVM build
@@ -321,8 +320,8 @@ spinifex/
     └── e2e/                 # Live-cluster suites (see docs/testing/e2e-coverage.md)
 ```
 
-The two remaining legacy roots predate ADR-0001 and are frozen: they may shrink but not gain packages.
-[`PACKAGE_BOUNDARY_MIGRATION.md`](PACKAGE_BOUNDARY_MIGRATION.md) records what remains in each and what blocks its move.
+The one remaining legacy root, `gateway`, predates ADR-0001 and is frozen: it may shrink but not gain packages.
+[`PACKAGE_BOUNDARY_MIGRATION.md`](PACKAGE_BOUNDARY_MIGRATION.md) records what remains in it and what blocks its move.
 
 ## Development
 

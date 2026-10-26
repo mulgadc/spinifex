@@ -254,6 +254,12 @@ func TestIMDS_PublicIPv4FollowsENIRecordAfterResponderStart(t *testing.T) {
 	seedENIByID(t, r, "111122223333", "eni-aaa", rec)
 	assert.Equal(t, "198.51.100.20", publicIPv4().Body.String())
 
+	refreshed, err := r.refreshENI(t.Context(), pinned)
+	require.NoError(t, err)
+	fresh, err := r.resolveENIByID(t.Context(), "eni-aaa")
+	require.NoError(t, err)
+	assert.Equal(t, fresh, refreshed, "a re-read must carry the owning account like a full resolve")
+
 	rec.PublicIpAddress = "" // DisassociateAddress clears it
 	seedENIByID(t, r, "111122223333", "eni-aaa", rec)
 	assert.Equal(t, http.StatusNotFound, publicIPv4().Code)

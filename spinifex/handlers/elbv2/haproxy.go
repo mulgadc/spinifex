@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/mulgadc/spinifex/spinifex/lbagent"
+	lbagent "github.com/mulgadc/spinifex/spinifex/agents/elbv2"
 )
 
 // All interpolated fields are regex-validated at the input boundary.

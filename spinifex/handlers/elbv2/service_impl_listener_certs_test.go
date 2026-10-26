@@ -6,8 +6,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	lbagent "github.com/mulgadc/spinifex/spinifex/agents/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/lbagent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

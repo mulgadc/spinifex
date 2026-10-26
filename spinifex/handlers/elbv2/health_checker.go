@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/mulgadc/spinifex/spinifex/lbagent"
+	lbagent "github.com/mulgadc/spinifex/spinifex/agents/elbv2"
 )
 
 // healthChecker processes target health reports from LB agents pushed via

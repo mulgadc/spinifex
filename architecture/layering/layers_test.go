@@ -61,7 +61,7 @@ func (c class) isLegacy(roots ...string) bool {
 // legacyRoots are pre-ADR-0001 application roots still standing.
 var legacyRoots = map[string]bool{
 	"handlers": true, "gateway": true,
-	"accountteardown": true, "lbagent": true,
+	"accountteardown": true,
 }
 
 // gatewayDomains names the domain each gateway/<service> adapter belongs to;

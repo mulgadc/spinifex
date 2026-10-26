@@ -33,7 +33,7 @@ EL's `openvswitch-ipsec` drives libreswan even beside strongSwan, so finding bot
 `distro_missing_ovs_deps <unit-file>...` is a check rather than a probe: it prints each OVS or OVN unit the given unit files depend on or order against that is not installed, and fails only when a file cannot be read.
 `setup-ovn.sh` runs it against the installed Spinifex units and stops when one is missing, because systemd silently drops ordering against a unit that does not exist; a missing `openvswitch-ipsec.service` is only a warning.
 
-`setup-ovn.sh`, `uninstall-spx.sh`, `install-node.sh` and `dev-install.sh` source it from `lib/` beside themselves, then from `/usr/local/share/spinifex/lib/distro.sh`, where `setup.sh` installs it, and stop naming both paths when neither exists.
+`setup-ovn.sh`, `uninstall-spx.sh` and `install-node.sh` source it from `lib/` beside themselves, then from `/usr/local/share/spinifex/lib/distro.sh`, where `setup.sh` installs it, and stop naming both paths when neither exists.
 `setup.sh` is piped from the install endpoint before the tarball is downloaded, and `install-node.sh --wipe` copies `node-reset.sh` alone to each host, so those two carry inline copies of the probes they need between `# --- BEGIN distro.sh probes ---` markers.
 `lib/distro_test.sh` fails when an inline copy differs from the library.
 Go code uses `spinifex/runtime/host/hostos` for the same purpose.

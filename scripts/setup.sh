@@ -454,8 +454,8 @@ sshd_ports() {
 }
 
 # An unset --firewall keeps the mode a previous install recorded, so a rerun
-# never disarms a node. Otherwise a host that had firewalld running is armed,
-# since masking firewalld would leave it with no firewall at all.
+# never disarms a node. The record is read as root: /etc/spinifex is closed to
+# anyone outside the spinifex group, who would otherwise see no record at all.
 resolve_firewall_mode() {
     local recorded
     case "${INSTALL_SPINIFEX_FIREWALL}" in
@@ -463,8 +463,10 @@ resolve_firewall_mode() {
         "") ;;
         *) fatal "--firewall must be 'on' or 'off', got: ${INSTALL_SPINIFEX_FIREWALL}" ;;
     esac
-    if [ -e "$FIREWALL_MODE_FILE" ]; then
-        recorded=$(tr -d '[:space:]' < "$FIREWALL_MODE_FILE")
+    if ${SUDO:-} test -e "$FIREWALL_MODE_FILE"; then
+        recorded=$(${SUDO:-} cat "$FIREWALL_MODE_FILE") \
+            || fatal "Cannot read the recorded firewall mode in $FIREWALL_MODE_FILE. Re-run with --firewall=on or --firewall=off"
+        recorded=$(printf '%s' "$recorded" | tr -d '[:space:]')
         case "$recorded" in
             on|off) INSTALL_SPINIFEX_FIREWALL="$recorded"
                 info "Host firewall: keeping the recorded mode '$recorded' ($FIREWALL_MODE_FILE)"
@@ -1962,13 +1964,12 @@ main() {
         *) fatal "--channel must be 'latest' or 'dev', got: ${INSTALL_SPINIFEX_CHANNEL} (use --version for a specific tag)" ;;
     esac
 
-    resolve_firewall_mode
-
     info "Spinifex installer"
     echo ""
 
     # Always needed: sudo resolution, OS/arch detection.
     setup_sudo
+    resolve_firewall_mode
     detect_os
     detect_arch
 

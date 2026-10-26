@@ -111,6 +111,41 @@ case "$RC:$OUT" in
     *) fail "rejects a bad mode file without naming its content: $OUT" ;;
 esac
 
+# The record sits under /etc/spinifex, which only root and the spinifex group
+# can enter, so an installer run by any other sudoer must read it through sudo.
+cat > "$TMP/bin/sudo" <<EOF
+#!/bin/sh
+echo "\$*" >> "$TMP/sudo-calls"
+exec "\$@"
+EOF
+chmod +x "$TMP/bin/sudo"
+host masked on
+rm -f "$TMP/sudo-calls"
+RC=0
+OUT=$(PATH="$TMP/bin:$PATH" SUDO=sudo SPINIFEX_FIREWALL_MODE_FILE="$TMP/mode" INSTALL_SPINIFEX_FIREWALL="" \
+    INSTALL_SPINIFEX_LIB_ONLY=1 bash -c '. "$1"; resolve_firewall_mode; echo "MODE=$INSTALL_SPINIFEX_FIREWALL"' \
+    _ "$SETUP" 2>&1) || RC=$?
+MODE=$(printf '%s\n' "$OUT" | sed -n 's/^MODE=//p')
+if [ "$RC" = 0 ] && [ "$MODE" = on ] && grep -qx "cat $TMP/mode" "$TMP/sudo-calls" 2>/dev/null; then
+    pass "a non-root rerun reads the recorded mode through sudo"
+else
+    fail "a non-root rerun did not read the recorded mode through sudo: rc=$RC mode='$MODE' calls='$(cat "$TMP/sudo-calls" 2>/dev/null)': $OUT"
+fi
+
+# A record that exists but cannot be read must stop the install, never fall
+# through to the firewalld check, which reads a masked firewalld as "off".
+if [ "$(id -u)" != 0 ]; then
+    host masked on
+    chmod 000 "$TMP/mode"
+    run resolve_firewall_mode
+    chmod 644 "$TMP/mode"
+    case "$RC:$OUT" in
+        0:*) fail "an unreadable mode file resolved to '$MODE'" ;;
+        *"Cannot read the recorded firewall mode"*) pass "an unreadable mode file stops the install" ;;
+        *) fail "an unreadable mode file stopped without saying why: $OUT" ;;
+    esac
+fi
+
 masks() { # masks <desc> <expect: masked|untouched>
     calls=$(cat "$TMP/state/calls" 2>/dev/null || true)
     if [ "$RC" != 0 ]; then

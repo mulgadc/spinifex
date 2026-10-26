@@ -25,6 +25,7 @@ const (
 	wwwAddr = "192.0.2.80"
 	apiAddr = "192.0.2.81"
 	txtMark = "r53-e2e"
+	mxPref  = 10
 
 	// A check, a publish and a reload on every node, with headroom.
 	activationTimeout = 3 * time.Minute
@@ -67,6 +68,7 @@ func TestHostedZoneServedOnceDelegated(t *testing.T) {
 		ChangeBatch: &r53.ChangeBatch{Changes: []*r53.Change{
 			rrset("CREATE", www, "A", wwwAddr),
 			rrset("CREATE", name, "TXT", `"`+txtMark+`"`),
+			rrset("CREATE", name, "MX", fmt.Sprintf("%d mail.%s.", mxPref, name)),
 		}},
 	})
 	require.NoError(t, err)
@@ -92,6 +94,7 @@ func TestHostedZoneServedOnceDelegated(t *testing.T) {
 	for _, node := range targets {
 		harness.EventuallyErr(t, func() error { return wantAddr(node, www, wwwAddr) }, syncTimeout, 5*time.Second)
 		require.NoError(t, wantTXT(node, name, txtMark))
+		require.NoError(t, wantMX(node, name, "mail."+name+"."))
 	}
 
 	harness.Phase(t, "Route 53 — a change is INSYNC only once every node serves it")
@@ -212,6 +215,21 @@ func wantTXT(node harness.Node, name, want string) error {
 		return fmt.Errorf("TXT %s via %s = %v, want %q", name, node.Name, txt, want)
 	}
 	return nil
+}
+
+func wantMX(node harness.Node, name, host string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mx, err := harness.NodeResolver(node).LookupMX(ctx, name)
+	if err != nil {
+		return fmt.Errorf("MX %s via %s: %w", name, node.Name, err)
+	}
+	for _, m := range mx {
+		if strings.EqualFold(m.Host, host) && m.Pref == mxPref {
+			return nil
+		}
+	}
+	return fmt.Errorf("MX %s via %s has no %d %s", name, node.Name, mxPref, host)
 }
 
 // newTenant creates an account the way self-service signup does, with a

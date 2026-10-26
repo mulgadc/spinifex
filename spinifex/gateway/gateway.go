@@ -36,12 +36,12 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -778,7 +778,7 @@ func (gw *GatewayConfig) principalUser(principal principalContext) (userID, user
 	if principal.identity == "" || principal.accountID == "" {
 		return "", "", nil
 	}
-	userID, userARN, err = gateway_sts.ResolveCallerUser(principal.accountID, principal.principalType,
+	userID, userARN, err = stsawsapi.ResolveCallerUser(principal.accountID, principal.principalType,
 		principal.identity, principal.assumedRoleID, gw.IAMService)
 	switch {
 	case err == nil:

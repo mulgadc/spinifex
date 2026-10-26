@@ -23,9 +23,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
-	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
-	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -388,11 +388,11 @@ func scopedServices() []scopedService {
 
 		// Same shape as ECR: the tag actions read an ARN, the rest name a
 		// cluster, nodegroup or addon by path segment.
-		{name: "eks", actions: gateway_eks.ScopedActions(), uncased: eksUncased()},
+		{name: "eks", actions: eksawsapi.ScopedActions(), uncased: eksUncased()},
 
 		{name: "elasticloadbalancing", actions: gateway_elbv2.ScopedActions(), uncased: elbv2Uncased()},
 
-		{name: "iam", actions: gateway_iam.ScopedActions(), uncased: iamUncased()},
+		{name: "iam", actions: iamawsapi.ScopedActions(), uncased: iamUncased()},
 	}
 }
 

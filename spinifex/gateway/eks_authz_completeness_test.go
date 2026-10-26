@@ -6,7 +6,7 @@ package gateway
 import (
 	"testing"
 
-	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -17,12 +17,12 @@ func TestEKSScopeTableIsExhaustive(t *testing.T) {
 	served := make(map[string]bool, len(eksRoutes))
 	for _, route := range eksRoutes {
 		served[route.Action] = true
-		assert.True(t, gateway_eks.HasScope(route.Action),
-			"eks action %q has no resource scope entry: add one to eksScopes in gateway/eks/authz.go", route.Action)
+		assert.True(t, eksawsapi.HasScope(route.Action),
+			"eks action %q has no resource scope entry: add one to eksScopes in domains/eks/awsapi/authz.go", route.Action)
 	}
 
-	for _, action := range gateway_eks.ScopedActions() {
+	for _, action := range eksawsapi.ScopedActions() {
 		assert.True(t, served[action],
-			"eksScopes has an entry for %q, which the dispatch table does not serve: remove it from gateway/eks/authz.go", action)
+			"eksScopes has an entry for %q, which the dispatch table does not serve: remove it from domains/eks/awsapi/authz.go", action)
 	}
 }

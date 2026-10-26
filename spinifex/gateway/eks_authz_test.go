@@ -20,10 +20,10 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -157,9 +157,9 @@ func TestEKSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 	req := withTestIdentity(httptest.NewRequest(http.MethodGet, "/clusters", nil).
 		WithContext(context.WithValue(context.Background(), ctxAccountID, authzAccountID)))
 
-	for _, action := range gateway_eks.ScopedActions() {
+	for _, action := range eksawsapi.ScopedActions() {
 		t.Run(action, func(t *testing.T) {
-			resources, err := gateway_eks.ResourceARNs(action, authzRegion, authzAccountID,
+			resources, err := eksawsapi.ResourceARNs(action, authzRegion, authzAccountID,
 				[]string{"prod", "workers", "extra"}, []byte(`{"name":"prod","nodegroupName":"workers","addonName":"coredns","principalArn":"arn:aws:iam::123456789012:role/app"}`))
 			require.NoError(t, err)
 			assert.NoError(t, gw.checkPolicyResources(req, "eks", action, resources))

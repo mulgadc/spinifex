@@ -122,7 +122,7 @@ ip route                       # default via ... dev br-wan
 ### Network access during install
 
 Besides `install.mulgadc.com` and the AWS CLI download, the install reaches `yum.oracle.com` for the Oracle Linux repositories, `mirror.stream.centos.org` for the NFV SIG packages, and `www.centos.org` for the NFV SIG signing key.
-For a host without internet access, see [Air-Gapped Install](/docs/install-airgapped#oracle-linux-hosts).
+An air-gapped install on Oracle Linux is not documented yet.
 
 ## Instructions
 

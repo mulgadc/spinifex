@@ -118,10 +118,14 @@ var allowlist = []allowance{
 
 	{From: "gateway/bedrock", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "secret encrypt/decrypt helpers; needs a shared crypto boundary"},
 
-	{From: "gateway/rds", To: "domains/ec2/awsapi/instance", Debt: "Instance adapter consumers outside EC2", Reason: "enginecatalog.go calls the instance adapter; needs an EC2 capability"},
+	{From: "domains/rds/awsapi", To: "domains/ec2/awsapi/instance", Debt: "Instance adapter consumers outside EC2", Reason: "enginecatalog.go calls the instance adapter; needs an EC2 capability"},
 
-	{From: "gateway/sts", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "GetCallerIdentity takes IAMService; needs an IAM capability"},
+	{From: "domains/sts/awsapi", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "GetCallerIdentity takes IAMService; needs an IAM capability"},
 
+	{From: "gateway", To: "domains/eks/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
+	{From: "gateway", To: "domains/iam/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
+	{From: "gateway", To: "domains/rds/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
+	{From: "gateway", To: "domains/sts/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
 	{From: "handlers/ecs", To: "domains/ec2/ebs/metadata", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
 	{From: "handlers/ecs", To: "domains/ec2/eip", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
 	{From: "handlers/ecs", To: "domains/ec2/instancetypes", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},

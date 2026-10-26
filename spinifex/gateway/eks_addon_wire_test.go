@@ -9,10 +9,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
-	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -83,13 +83,13 @@ func TestEKSRequest_InternalAddonsWireBody(t *testing.T) {
 // role passes nothing.
 func TestPassedRoleARNs_AddonServiceAccountRoleIsChecked(t *testing.T) {
 	body := []byte(`{"addonName":"aws-load-balancer-controller","serviceAccountRoleArn":"arn:aws:iam::123456789012:role/alb"}`)
-	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/alb"}, gateway_eks.PassedRoleARNs("CreateAddon", body))
-	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/alb"}, gateway_eks.PassedRoleARNs("UpdateAddon", body))
+	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/alb"}, eksawsapi.PassedRoleARNs("CreateAddon", body))
+	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/alb"}, eksawsapi.PassedRoleARNs("UpdateAddon", body))
 
 	roleless := []byte(`{"addonName":"spinifex-noop"}`)
-	assert.Empty(t, gateway_eks.PassedRoleARNs("CreateAddon", roleless))
-	assert.Empty(t, gateway_eks.PassedRoleARNs("UpdateAddon", roleless))
+	assert.Empty(t, eksawsapi.PassedRoleARNs("CreateAddon", roleless))
+	assert.Empty(t, eksawsapi.PassedRoleARNs("UpdateAddon", roleless))
 
 	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/node"},
-		gateway_eks.PassedRoleARNs("CreateNodegroup", []byte(`{"nodeRole":"arn:aws:iam::123456789012:role/node"}`)))
+		eksawsapi.PassedRoleARNs("CreateNodegroup", []byte(`{"nodeRole":"arn:aws:iam::123456789012:role/node"}`)))
 }

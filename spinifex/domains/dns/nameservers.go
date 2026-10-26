@@ -161,3 +161,34 @@ func isLoopbackAddr(addr string) bool {
 	ip := net.ParseIP(addr)
 	return ip != nil && ip.IsLoopback()
 }
+
+// BaseZoneNameserverChanges returns the set-valued UPSERTs that hold the base
+// zone's apex NS set and each nsK glue record to the published assignment, so a
+// node that joins or leaves moves them without rebuilding the zone.
+func BaseZoneNameserverChanges(base string, published []Nameserver) []Change {
+	base = strings.TrimSuffix(strings.TrimSpace(base), ".")
+	if base == "" || len(published) == 0 {
+		return nil
+	}
+	hosts := make([]string, 0, len(published))
+	changes := make([]Change, 0, len(published)+1)
+	for _, ns := range published {
+		hosts = append(hosts, ns.Host+"."+base+".")
+		changes = append(changes, Change{Action: ActionUpsertSet, Zone: base, Name: ns.Host + "." + base, Type: "A", Values: []string{ns.IP}})
+	}
+	return append(changes, Change{Action: ActionUpsertSet, Zone: base, Name: base, Type: "NS", Values: hosts})
+}
+
+// isNameserverGlueLabel reports whether a base-zone label is an nsK glue name.
+func isNameserverGlueLabel(label string) bool {
+	n := strings.TrimSuffix(strings.ToLower(label), ".")
+	if len(n) < 3 || !strings.HasPrefix(n, "ns") {
+		return false
+	}
+	for _, r := range n[2:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}

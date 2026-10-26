@@ -110,7 +110,21 @@ func (d *Daemon) dnsDesiredSet() dns.DesiredSet {
 		ds.Changes = append(ds.Changes, ch...)
 		ds.Prunable.ServiceEndpoint = true
 	}
+	if ch := d.desiredNameserverDNSChanges(); len(ch) > 0 {
+		ds.Changes = append(ds.Changes, ch...)
+		ds.Prunable.Nameservers = true
+	}
 	return ds
+}
+
+// desiredNameserverDNSChanges holds the base zone's apex NS and nsK glue to the
+// published nameserver assignment. Empty when the topology publishes none, as on
+// a loopback-only dev node, so the zone keeps the set it was seeded with.
+func (d *Daemon) desiredNameserverDNSChanges() []dns.Change {
+	if d.clusterConfig == nil {
+		return nil
+	}
+	return dns.BaseZoneNameserverChanges(dns.ResolveBaseDomain(d.config), dns.PublishedNameservers(d.clusterConfig))
 }
 
 // desiredServiceEndpointDNSChanges returns the set-valued UPSERT publishing

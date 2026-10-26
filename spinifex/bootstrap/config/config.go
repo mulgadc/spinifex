@@ -33,6 +33,29 @@ type ClusterConfig struct {
 // registrar has to carry.
 const MaxNameservers = 4
 
+// ServiceNorthstar in --services marks a node as one of the published
+// nameservers. Northstar runs on every node either way, so it never narrows
+// the node's service list.
+const ServiceNorthstar = "northstar"
+
+// SplitNameserverService returns services without ServiceNorthstar, and
+// whether it was named.
+func SplitNameserverService(services []string) ([]string, bool) {
+	rest := make([]string, 0, len(services))
+	named := false
+	for _, s := range services {
+		if strings.EqualFold(strings.TrimSpace(s), ServiceNorthstar) {
+			named = true
+			continue
+		}
+		rest = append(rest, s)
+	}
+	if len(rest) == 0 {
+		rest = nil
+	}
+	return rest, named
+}
+
 // NorthstarClusterConfig is the cluster-wide [northstar] block.
 type NorthstarClusterConfig struct {
 	// NameserverCount is how many nsN names to publish, 1 to MaxNameservers.

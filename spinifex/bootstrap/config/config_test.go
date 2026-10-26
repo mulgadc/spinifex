@@ -300,6 +300,27 @@ expected_nodes = 3
 
 // Tests for HasService / GetServices
 
+func TestSplitNameserverService(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in    []string
+		rest  []string
+		named bool
+	}{
+		"absent":                    {[]string{"nats", "daemon"}, []string{"nats", "daemon"}, false},
+		"alone keeps every service": {[]string{"northstar"}, nil, true},
+		"among others":              {[]string{"nats", " Northstar ", "daemon"}, []string{"nats", "daemon"}, true},
+		"empty":                     {nil, nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rest, named := SplitNameserverService(tc.in)
+			assert.Equal(t, tc.rest, rest)
+			assert.Equal(t, tc.named, named)
+		})
+	}
+	rest, _ := SplitNameserverService([]string{"northstar"})
+	assert.Equal(t, AllServices, Config{Services: rest}.GetServices(), "northstar alone must not narrow the node's services")
+}
+
 func TestHasService(t *testing.T) {
 	tests := []struct {
 		name     string

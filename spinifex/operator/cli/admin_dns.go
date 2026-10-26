@@ -29,7 +29,8 @@ var dnsNameserversCmd = &cobra.Command{
 	Long: `Print the nameservers this cluster publishes for its base domain: each nsN
 name, the node it is assigned to and that node's address. At most four are
 published however many nodes run northstar; [northstar] nameserver_count and
-nameserver_nodes in spinifex.toml set the count and pin the order.
+nameserver_nodes in spinifex.toml set the count and pin the order; a node
+given --services northstar at init or join is pinned for you.
 
 With --check, ask one of the parent zone's servers (for spx3.net, a .net
 server) for the base domain's delegation without recursion, and report for

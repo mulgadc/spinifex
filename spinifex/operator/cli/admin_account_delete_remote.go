@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
+	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/spf13/cobra"
 )
 

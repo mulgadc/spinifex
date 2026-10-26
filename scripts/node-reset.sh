@@ -231,6 +231,8 @@ fi
 # node keeping its old system-id across a reset re-registers under the old
 # chassis name and collides with the new one over the encap IP.
 log "removing OVS bridges and identity"
+# A running ovn-controller recreates br-int as soon as it is deleted.
+run sudo systemctl stop ovn-controller 2>/dev/null || true
 if [ -n "$OVS_UNIT" ]; then
     run sudo systemctl start "$OVS_UNIT" 2>/dev/null || true
     $DRY_RUN || sleep 1
@@ -315,6 +317,21 @@ if [ -e /etc/systemd/network/15-spinifex-veth-wan.netdev ] ||
     run sudo rm -f /etc/systemd/network/15-spinifex-veth-wan.netdev \
         /etc/systemd/network/15-spinifex-veth-wan.network \
         /etc/systemd/network/16-spinifex-veth-wan-ovs.network
+    run sudo networkctl reload 2>/dev/null || true
+fi
+
+# The routed-NAT transit veth keeps 100.127.0.1/24 and the routes behind it.
+if ip link show spx-nat-host >/dev/null 2>&1; then
+    log "  deleting veth pair: spx-nat-host <-> spx-nat-ovs"
+    run sudo ip link del spx-nat-host 2>/dev/null || true
+fi
+if [ -e /etc/systemd/network/17-spinifex-nat.netdev ] ||
+    [ -e /etc/systemd/network/17-spinifex-nat.network ] ||
+    [ -e /etc/systemd/network/18-spinifex-nat-ovs.network ]; then
+    log "  deleting NAT transit persistence units"
+    run sudo rm -f /etc/systemd/network/17-spinifex-nat.netdev \
+        /etc/systemd/network/17-spinifex-nat.network \
+        /etc/systemd/network/18-spinifex-nat-ovs.network
     run sudo networkctl reload 2>/dev/null || true
 fi
 

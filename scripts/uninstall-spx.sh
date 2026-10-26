@@ -429,6 +429,7 @@ rm_path /etc/sysctl.d/*spinifex* \
         /etc/chrony/conf.d/spinifex.conf \
         /etc/chrony.d/spinifex.conf \
         /etc/logrotate.d/spinifex \
+        /etc/tmpfiles.d/spinifex.conf \
         /etc/udev/rules.d/*spinifex* \
         /etc/NetworkManager/conf.d/*spinifex*
 run sudo sysctl --system >/dev/null 2>&1 || true
@@ -516,6 +517,8 @@ if exists "$RESOLV_CONF_SAVED"; then
     fi
     rm_path "$RESOLV_CONF_SAVED"
 fi
+# node-reset keeps its firewall-mode stash here too, so remove it only once empty.
+run sudo rmdir --ignore-fail-on-non-empty "$(dirname "$RESOLV_CONF_SAVED")" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 14. Swap is reported, never removed.
@@ -607,7 +610,7 @@ if ! $DRY_RUN; then
     LEFT=()
     for p in /usr/local/bin/spx /usr/local/share/spinifex /usr/local/lib/spinifex \
              /usr/share/spinifex "$ETC_DIR" "$LOG_DIR" \
-             /etc/sudoers.d/spinifex-network /etc/logrotate.d/spinifex \
+             /etc/sudoers.d/spinifex-network /etc/logrotate.d/spinifex /etc/tmpfiles.d/spinifex.conf \
              /etc/chrony/conf.d/spinifex.conf /etc/chrony.d/spinifex.conf "$RESOLV_CONF_SAVED" \
              "$RESOLVED_DROPIN"; do
         exists "$p" && LEFT+=("$p")

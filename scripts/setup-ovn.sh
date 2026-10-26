@@ -1677,6 +1677,9 @@ sudo tee /etc/sysctl.d/99-spinifex-vpc.conf >/dev/null <<'SYSCTL'
 net.ipv4.ip_forward=1
 net.ipv4.conf.all.rp_filter=0
 net.ipv4.conf.default.rp_filter=0
+# EL's 50-redhat.conf sets every interface strict, reapplied by udev on each new
+# netdev; a strict IMDS endpoint drops guest requests, so keep those loose here.
+net.ipv4.conf.ime-*.rp_filter=0
 SYSCTL
 sudo sysctl --system -q
 echo "  ip_forward=1, rp_filter=0"

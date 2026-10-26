@@ -1298,8 +1298,12 @@ install_aws_cli() {
         return
     fi
 
-    if command -v aws >/dev/null 2>&1; then
-        info "AWS CLI already installed: $(aws --version 2>&1 | head -1)"
+    # The bundled installer links /usr/local/bin/aws, which OL's sudo secure_path
+    # leaves out, so a PATH lookup alone misses it and reinstalls on every run.
+    local aws_bin
+    aws_bin=$(command -v aws 2>/dev/null || echo /usr/local/bin/aws)
+    if [ -x "$aws_bin" ]; then
+        info "AWS CLI already installed: $("$aws_bin" --version 2>&1 | head -1)"
         return
     fi
 
@@ -1310,7 +1314,7 @@ install_aws_cli() {
     $SUDO "$AWS_TMPDIR/aws/install" --update > /dev/null
     rm -rf "$AWS_TMPDIR"
 
-    info "AWS CLI installed: $(aws --version 2>&1 | head -1)"
+    info "AWS CLI installed: $(/usr/local/bin/aws --version 2>&1 | head -1)"
 }
 
 # --- Download tarball ---

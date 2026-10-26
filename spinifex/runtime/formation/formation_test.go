@@ -1,9 +1,9 @@
 package formation
 
 import (
-	"fmt"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"

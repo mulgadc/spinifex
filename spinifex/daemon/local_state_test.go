@@ -44,7 +44,7 @@ func TestWriteLocalState_RoundTrip(t *testing.T) {
 	loaded, err := ReadLocalState(path)
 	require.NoError(t, err)
 	require.NotNil(t, loaded)
-	assert.Equal(t, LocalStateSchemaVersion, loaded.SchemaVersion)
+	assert.Equal(t, legacyLocalStateSchemaVersion, loaded.SchemaVersion)
 	assert.Len(t, loaded.VMS, 2)
 	assert.Equal(t, "t3.micro", loaded.VMS["i-aaa"].InstanceType)
 	assert.Equal(t, "m5.large", loaded.VMS["i-bbb"].InstanceType)
@@ -124,6 +124,48 @@ func TestReadLocalState_UnknownSchema(t *testing.T) {
 	_, err := ReadLocalState(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown schema_version 99")
+}
+
+func TestReadLocalState_RetainsV1ForNBDRequests(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "instance-state.json")
+	legacy := &vm.VM{ID: "i-v1"}
+	legacy.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-v1", NBDURI: "nbd+unix:///?socket=/run/vol-v1.sock"}}
+	data, err := json.Marshal(LocalState{
+		SchemaVersion: legacyLocalStateSchemaVersion,
+		VMS:           map[string]*vm.VM{"i-v1": legacy},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+
+	state, err := ReadLocalState(path)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	assert.Equal(t, legacyLocalStateSchemaVersion, state.SchemaVersion)
+	require.Contains(t, state.VMS, "i-v1")
+	assert.Equal(t, legacy.EBSRequests.Requests, state.VMS["i-v1"].EBSRequests.Requests)
+
+	rewritten, err := MarshalLocalState(state.VMS)
+	require.NoError(t, err)
+	assert.Contains(t, string(rewritten), `"schema_version":1`)
+}
+
+func TestWriteLocalState_PersistsBlockExportAsV2(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "instance-state.json")
+	instance := &vm.VM{ID: "i-v2"}
+	instance.EBSRequests.Requests = []vm.EBSRequest{{
+		Name:           "vol-v2",
+		BlockDevice:    "/dev/disk/by-id/spinifex-vol-v2",
+		BlockSizeBytes: 20 << 30,
+	}}
+	require.NoError(t, writeLocalState(path, map[string]*vm.VM{"i-v2": instance}))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"schema_version":2`)
+
+	state, err := ReadLocalState(path)
+	require.NoError(t, err)
+	assert.Equal(t, instance.EBSRequests.Requests, state.VMS["i-v2"].EBSRequests.Requests)
 }
 
 func TestReadLocalState_NilVMSMapInitialized(t *testing.T) {

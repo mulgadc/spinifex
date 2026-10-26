@@ -35,6 +35,18 @@ func TestEBSRequestJSONContract(t *testing.T) {
 		"NBDURI":"nbd:unix:/run/spinifex/vol-123.sock",
 		"DeviceName":"/dev/sdf", "HotplugPort":3
 	}`, string(data))
+
+	block, err := json.Marshal(EBSRequest{
+		Name:           "vol-456",
+		BlockDevice:    "/dev/sdx",
+		BlockSizeBytes: 10 << 30,
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"Name":"vol-456", "VolType":"", "Boot":false, "EFI":false,
+		"DeleteOnTermination":false, "NBDURI":"", "DeviceName":"",
+		"BlockDevice":"/dev/sdx", "BlockSizeBytes":10737418240
+	}`, string(block))
 }
 
 func TestVolumeResponseJSONContracts(t *testing.T) {

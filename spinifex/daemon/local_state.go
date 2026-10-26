@@ -12,9 +12,14 @@ import (
 )
 
 const (
-	// LocalStateSchemaVersion guards compatibility of a node's instance state
-	// record, on disk and in KV; bump on breaking changes.
-	LocalStateSchemaVersion = 1
+	// LocalStateSchemaVersion is the newest format for a node's instance state
+	// record, on disk and in KV. Version 2 adds persisted block-export fields.
+	// An N-1 daemon must reject a v2 record rather than silently discard them.
+	LocalStateSchemaVersion = 2
+
+	// legacyLocalStateSchemaVersion remains the emitted form until state carries
+	// a block export. That keeps the inactive expansion rollback-compatible.
+	legacyLocalStateSchemaVersion = 1
 
 	// DefaultLocalStateDir is the default directory under DataDir for local state files.
 	DefaultLocalStateDir = "state"
@@ -43,11 +48,12 @@ func LocalStatePath(dataDir string) string {
 	return filepath.Join(dataDir, DefaultLocalStateDir, LocalStateFileName)
 }
 
-// MarshalLocalState produces the JSON wire form of vms with schema version.
-// Call inside a vm.Manager.View callback to avoid races on VM fields.
+// MarshalLocalState produces the JSON wire form of vms with the lowest schema
+// that preserves them. Call inside a vm.Manager.View callback to avoid races
+// on VM fields.
 func MarshalLocalState(vms map[string]*vm.VM) ([]byte, error) {
 	state := LocalState{
-		SchemaVersion: LocalStateSchemaVersion,
+		SchemaVersion: localStateSchemaVersion(vms),
 		VMS:           vms,
 	}
 	data, err := json.Marshal(state)
@@ -55,6 +61,17 @@ func MarshalLocalState(vms map[string]*vm.VM) ([]byte, error) {
 		return nil, fmt.Errorf("marshal local state: %w", err)
 	}
 	return data, nil
+}
+
+func localStateSchemaVersion(vms map[string]*vm.VM) int {
+	for _, instance := range vms {
+		for _, request := range instance.EBSRequests.Requests {
+			if request.BlockDevice != "" || request.BlockSizeBytes != 0 {
+				return LocalStateSchemaVersion
+			}
+		}
+	}
+	return legacyLocalStateSchemaVersion
 }
 
 // LocalStateFileMode is the mode of the on-disk instance state file. The daemon
@@ -109,7 +126,8 @@ func WriteLocalStateBytes(path string, data []byte) error {
 }
 
 // ReadLocalState reads instance state from path. Returns (nil, nil) if the
-// file does not exist (fresh install). Errors on JSON failure or unknown schema.
+// file does not exist (fresh install). It accepts both deployed schemas and
+// rejects every other version, including a future format it cannot preserve.
 func ReadLocalState(path string) (*LocalState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -125,12 +143,17 @@ func ReadLocalState(path string) (*LocalState, error) {
 		return nil, fmt.Errorf("parse local state %s: %w", path, err)
 	}
 
-	// Stricter than the KV read, deliberately: the file has carried a version
-	// since it was introduced, so a 0 here is corruption rather than an old
-	// record, and reading it as current would be a guess.
-	if state.SchemaVersion != LocalStateSchemaVersion {
-		return nil, fmt.Errorf("local state %s: unknown schema_version %d (expected %d)",
-			path, state.SchemaVersion, LocalStateSchemaVersion)
+	// The file has carried a version since it was introduced, so 0 is
+	// corruption rather than an old record. Version 1 had the same enclosing
+	// representation and simply lacks block-export fields, making this an
+	// idempotent expansion.
+	switch state.SchemaVersion {
+	case legacyLocalStateSchemaVersion:
+	case LocalStateSchemaVersion:
+		// Current form.
+	default:
+		return nil, fmt.Errorf("local state %s: unknown schema_version %d (supported versions are %d and %d)",
+			path, state.SchemaVersion, legacyLocalStateSchemaVersion, LocalStateSchemaVersion)
 	}
 
 	if state.VMS == nil {

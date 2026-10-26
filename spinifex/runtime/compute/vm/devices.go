@@ -355,3 +355,35 @@ func VolumeBlockdev(nodeName string, server NBDServerOpts) Blockdev {
 	opts = append(opts, "export=", fmt.Sprintf("reconnect-delay=%d", NBDReconnectDelaySeconds))
 	return Blockdev{Value: strings.Join(opts, ",")}
 }
+
+// HostDeviceOpts is a host block device export. QEMU opens Path through the
+// host_device protocol driver with O_DIRECT and native AIO, and a raw format
+// node over it exposes only the first SizeBytes to the guest.
+type HostDeviceOpts struct {
+	Path      string
+	SizeBytes uint64
+}
+
+// QMPArgs renders the blockdev-add arguments for the raw node and its nested
+// host_device file node.
+func (o HostDeviceOpts) QMPArgs(nodeName string) map[string]any {
+	return map[string]any{
+		"node-name": nodeName,
+		"driver":    "raw",
+		"size":      o.SizeBytes,
+		"file": map[string]any{
+			"driver":   "host_device",
+			"filename": o.Path,
+			"aio":      "native",
+			"cache":    map[string]any{"direct": true},
+		},
+	}
+}
+
+// VolumeHostDeviceBlockdev renders the -blockdev equivalent of QMPArgs for a
+// data volume backed by a host block device.
+func VolumeHostDeviceBlockdev(nodeName string, dev HostDeviceOpts) Blockdev {
+	return Blockdev{Value: fmt.Sprintf(
+		"driver=raw,node-name=%s,size=%d,file.driver=host_device,file.filename=%s,file.aio=native,file.cache.direct=on",
+		nodeName, dev.SizeBytes, dev.Path)}
+}

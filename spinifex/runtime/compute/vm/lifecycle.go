@@ -607,17 +607,29 @@ func (m *Manager) startQEMU(instance *VM) error {
 		refreshTelemetryMeta(instance)
 	}
 
+	// An NBD export is waited on until it accepts connections; a block export
+	// is local to the host and only has to exist. An invalid request has no
+	// endpoint to probe (buildDrives rejects it on the command-line path).
 	instance.EBSRequests.Mu.Lock()
 	nbdEndpoints := make([]struct{ name, uri string }, 0, len(instance.EBSRequests.Requests))
+	var blockDevices []struct{ name, path string }
 	for _, req := range instance.EBSRequests.Requests {
-		if req.NBDURI != "" {
+		switch kind, _ := classifyVolumeExport(req); kind {
+		case volumeExportNBD:
 			nbdEndpoints = append(nbdEndpoints, struct{ name, uri string }{req.Name, req.NBDURI})
+		case volumeExportBlock:
+			blockDevices = append(blockDevices, struct{ name, path string }{req.Name, req.BlockDevice})
 		}
 	}
 	instance.EBSRequests.Mu.Unlock()
 	for _, ep := range nbdEndpoints {
 		if err := nbd.WaitForNBDReady(ep.uri, nbdReadyTimeout); err != nil {
 			return fmt.Errorf("nbd endpoint not ready for %s: %w", ep.name, err)
+		}
+	}
+	for _, dev := range blockDevices {
+		if err := checkBlockDevice(dev.path); err != nil {
+			return fmt.Errorf("block device not present for %s: %w", dev.name, err)
 		}
 	}
 
@@ -900,11 +912,11 @@ func qmpGreetingTimeout(v *VM) time.Duration {
 
 // hasNetworkBackedDrive reports whether any of the guest's drives is served
 // over NBD, and so has to be opened across the object store before QEMU's
-// monitor answers. Every production guest boots from one; a VM without is a
-// unit test.
+// monitor answers. A host block device opens locally and does not count.
 func hasNetworkBackedDrive(v *VM) bool {
 	return slices.ContainsFunc(v.EBSRequests.Requests, func(req EBSRequest) bool {
-		return req.NBDURI != ""
+		kind, _ := classifyVolumeExport(req)
+		return kind == volumeExportNBD
 	})
 }
 
@@ -1445,8 +1457,9 @@ type driveConfig struct {
 }
 
 // buildDrives converts EBS requests into QEMU drive/iothread/device/blockdev
-// configs. Returns an error if any volume is missing its NBDURI, or if the
-// EBS hot-plug port pool is exhausted while allocating one for a data volume.
+// configs. Returns an error if any volume has no valid export (see
+// classifyVolumeExport), or if the EBS hot-plug port pool is exhausted while
+// allocating one for a data volume.
 //
 // Boot volumes keep the existing anonymous if=none -drive shape exactly as
 // before — they are not detachable (see ErrVolumeNotDetachable), so the
@@ -1471,11 +1484,17 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 
 	for i := range requests {
 		v := &requests[i]
-		if v.NBDURI == "" {
-			return driveConfig{}, fmt.Errorf("NBDURI not set for volume %s - was volume mounted?", v.Name)
+		kind, err := classifyVolumeExport(*v)
+		if err != nil {
+			return driveConfig{}, err
 		}
 
 		switch {
+		case kind == volumeExportBlock && (v.Boot || v.EFI):
+			// Boot and EFI keep the legacy -drive shape, which has no
+			// host_device form here; only data volumes take a block export.
+			return driveConfig{}, fmt.Errorf("volume %s: block device export is only supported for data volumes", v.Name)
+
 		case v.Boot:
 			drive := Drive{
 				File:   v.NBDURI,
@@ -1529,29 +1548,39 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 				v.HotplugPort = port
 			}
 
-			serverType, socketPath, nbdHost, nbdPort, err := nbd.ParseNBDURI(v.NBDURI)
-			if err != nil {
-				return driveConfig{}, fmt.Errorf("parse NBDURI for volume %s: %w", v.Name, err)
-			}
-
 			nodeName := VolumeNodeName(v.Name)
 			iothreadID := VolumeIOThreadID(v.Name)
 			bus := HotplugEBSBus(v.HotplugPort)
 
+			var blockdev Blockdev
+			if kind == volumeExportBlock {
+				blockdev = VolumeHostDeviceBlockdev(nodeName, HostDeviceOpts{Path: v.BlockDevice, SizeBytes: v.BlockSizeBytes})
+			} else {
+				serverType, socketPath, nbdHost, nbdPort, err := nbd.ParseNBDURI(v.NBDURI)
+				if err != nil {
+					return driveConfig{}, fmt.Errorf("parse NBDURI for volume %s: %w", v.Name, err)
+				}
+				blockdev = VolumeBlockdev(nodeName, NBDServerOpts{
+					Type: serverType,
+					Path: socketPath,
+					Host: nbdHost,
+					Port: nbdPort,
+				})
+			}
+
 			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})
-			cfg.Blockdevs = append(cfg.Blockdevs, VolumeBlockdev(nodeName, NBDServerOpts{
-				Type: serverType,
-				Path: socketPath,
-				Host: nbdHost,
-				Port: nbdPort,
-			}))
+			cfg.Blockdevs = append(cfg.Blockdevs, blockdev)
 			cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, bus))
 			// Deliberately no entry in cfg.Drives: the bare anonymous -drive
 			// this case used to emit (no id=, no node-name=) is exactly what
 			// left the volume undetachable.
 		}
 
-		slog.Info("Using NBD URI for drive", "volume", v.Name, "uri", v.NBDURI)
+		if kind == volumeExportBlock {
+			slog.Info("Using block device for drive", "volume", v.Name, "device", v.BlockDevice, "size_bytes", v.BlockSizeBytes)
+		} else {
+			slog.Info("Using NBD URI for drive", "volume", v.Name, "uri", v.NBDURI)
+		}
 	}
 
 	return cfg, nil

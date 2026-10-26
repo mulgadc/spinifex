@@ -82,6 +82,22 @@ func TestAreVolumeSocketsValid_OneOfManyMissing(t *testing.T) {
 		"a single dead socket is enough to invalidate the whole instance")
 }
 
+// TestAreVolumeSocketsValid_BlockDevice checks a block export is judged by its
+// device node's presence, with no NBD probe.
+func TestAreVolumeSocketsValid_BlockDevice(t *testing.T) {
+	present := filepath.Join(t.TempDir(), "dev-present")
+	require.NoError(t, os.WriteFile(present, nil, 0o600))
+	missing := filepath.Join(t.TempDir(), "dev-missing")
+
+	blockVM := func(path string) *VM {
+		v := &VM{ID: "i-blk", Status: StateRunning}
+		v.EBSRequests.Requests = []EBSRequest{{Name: "vol-blk", BlockDevice: path, BlockSizeBytes: 1 << 20}}
+		return v
+	}
+	assert.True(t, AreVolumeSocketsValid(blockVM(present)), "a present block device is valid")
+	assert.False(t, AreVolumeSocketsValid(blockVM(missing)), "a vanished block device is the orphan-QEMU signal")
+}
+
 // classifyTestManager wires a manager with an in-memory StateStore plus
 // the InstanceTypes resolver and Resources controller that
 // classifyRestoredInstances consults. Returns the manager and the

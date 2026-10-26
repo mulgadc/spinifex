@@ -55,9 +55,9 @@ func TestCurrentBehaviour_LocalStateSchemaVersionFailures(t *testing.T) {
 		content string
 		wantErr string
 	}{
-		{name: "missing", content: `{"vms":{}}`, wantErr: "unknown schema_version 0 (expected 1)"},
-		{name: "older", content: `{"schema_version":0,"vms":{}}`, wantErr: "unknown schema_version 0 (expected 1)"},
-		{name: "newer", content: `{"schema_version":2,"vms":{}}`, wantErr: "unknown schema_version 2 (expected 1)"},
+		{name: "missing", content: `{"vms":{}}`, wantErr: "unknown schema_version 0 (supported versions are 1 and 2)"},
+		{name: "older", content: `{"schema_version":0,"vms":{}}`, wantErr: "unknown schema_version 0 (supported versions are 1 and 2)"},
+		{name: "newer", content: `{"schema_version":3,"vms":{}}`, wantErr: "unknown schema_version 3 (supported versions are 1 and 2)"},
 		{name: "wrong type", content: `{"schema_version":"1","vms":{}}`, wantErr: "parse local state"},
 		{name: "truncated", content: `{"schema_version":1,"vms":{"i-1":{"id":`, wantErr: "parse local state"},
 	}

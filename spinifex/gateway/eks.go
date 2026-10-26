@@ -10,9 +10,9 @@ import (
 	"slices"
 
 	"github.com/mulgadc/bluebottle/pkg/auth"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 )
 
 // eksRoute maps one HTTP method + chi path pattern to an AWS action and handler.

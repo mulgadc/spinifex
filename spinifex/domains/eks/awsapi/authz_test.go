@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -4,8 +4,8 @@ import (
 	"maps"
 	"slices"
 
-	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 

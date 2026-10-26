@@ -7,8 +7,8 @@ import (
 	"net/http"
 
 	"github.com/mulgadc/bluebottle/pkg/auth"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // RDS_Request serves RDS, which shares the query-in/XML-out shape of ELBv2: the action comes from

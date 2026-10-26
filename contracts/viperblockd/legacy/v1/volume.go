@@ -48,6 +48,11 @@ type EBSRequest struct {
 	NBDURI              string `json:"NBDURI"`
 	DeviceName          string `json:"DeviceName"`
 	HotplugPort         int    `json:"HotplugPort,omitempty"`
+	// BlockDevice and BlockSizeBytes describe a host block device export, the
+	// alternative to NBDURI; the guest sees BlockSizeBytes of it. Exactly one
+	// of NBDURI and BlockDevice may be set.
+	BlockDevice    string `json:"BlockDevice,omitempty"`
+	BlockSizeBytes uint64 `json:"BlockSizeBytes,omitempty"`
 }
 
 // EBSMountResponse is the response to an EBSRequest on MountSubject.

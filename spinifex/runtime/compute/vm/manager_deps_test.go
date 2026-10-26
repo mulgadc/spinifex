@@ -142,6 +142,10 @@ type fakeVolumeMounter struct {
 	unmountErr               error
 	unmountOneErr            error
 	mountOneURI              string
+	// mountOneBlockDevice and mountOneBlockSize, when set, are written onto
+	// the request by MountOne as a block device export.
+	mountOneBlockDevice string
+	mountOneBlockSize   uint64
 	// onMount fires synchronously inside Mount before the configured
 	// mountErr is returned. Used by lifecycle tests to simulate a
 	// concurrent terminate flipping VM.Status while Mount is in flight.
@@ -181,12 +185,17 @@ func (f *fakeVolumeMounter) MountOne(_ context.Context, _ string, req *EBSReques
 	f.mountedOne = append(f.mountedOne, req.Name)
 	mountOneErr := f.mountOneErr
 	uri := f.mountOneURI
+	blockDevice, blockSize := f.mountOneBlockDevice, f.mountOneBlockSize
 	f.mu.Unlock()
 	if mountOneErr != nil {
 		return mountOneErr
 	}
 	if uri != "" {
 		req.NBDURI = uri
+	}
+	if blockDevice != "" {
+		req.BlockDevice = blockDevice
+		req.BlockSizeBytes = blockSize
 	}
 	return nil
 }

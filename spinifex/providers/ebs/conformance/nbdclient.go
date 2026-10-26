@@ -177,9 +177,9 @@ func nbdReachable(uri string) bool {
 	return exec.CommandContext(context.Background(), "nbdinfo", "--size", uri).Run() == nil
 }
 
-// publishForNBD creates and publishes a volume, registering cleanup so a run
-// against a real cluster does not leave volumes behind.
-func publishForNBD(t *testing.T, provider ebsprovider.EBSProvider, cfg NBDClientConfig, volumeID string, readOnly bool) *ebsprovider.PublishedVolume {
+// publishForNBD creates and publishes a volume and returns its NBD URI,
+// registering cleanup so a run against a real cluster leaves nothing behind.
+func publishForNBD(t *testing.T, provider ebsprovider.EBSProvider, cfg NBDClientConfig, volumeID string, readOnly bool) string {
 	t.Helper()
 	ctx := context.Background()
 	_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
@@ -198,7 +198,17 @@ func publishForNBD(t *testing.T, provider ebsprovider.EBSProvider, cfg NBDClient
 	})
 	require.NoError(t, err)
 	require.NotNil(t, pub)
-	return pub
+	return publishedNBDURI(t, pub)
+}
+
+// publishedNBDURI fails the test outright when a provider publishes anything
+// but an nbd export: the NBD-dialling suites have nothing to dial otherwise.
+func publishedNBDURI(t *testing.T, pub *ebsprovider.PublishedVolume) string {
+	t.Helper()
+	require.NoErrorf(t, pub.Export.Validate(), "published export for %s is invalid", pub.VolumeID)
+	require.Equalf(t, ebsprovider.ExportKindNBD, pub.Export.Kind,
+		"published export for %s is %q; this suite drives only nbd exports", pub.VolumeID, pub.Export.Kind)
+	return pub.Export.NBD.NBDURI
 }
 
 // cleanupVolume unpublishes and deletes best-effort: cleanup runs after the
@@ -234,21 +244,21 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 
 	t.Run("published URI is a standard NBD URI", func(t *testing.T) {
 		provider := newProvider(t)
-		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-uri", false)
-		assertNBDURI(t, pub.NBDURI)
+		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-uri", false)
+		assertNBDURI(t, nbdURI)
 	})
 
 	t.Run("export is connectable by a standard NBD client", func(t *testing.T) {
 		provider := newProvider(t)
-		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-connect", false)
-		export := nbdInfo(t, dialURI(t, pub.NBDURI))
+		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-connect", false)
+		export := nbdInfo(t, dialURI(t, nbdURI))
 		assert.Equal(t, cfg.VolumeBytes, export.Size)
 	})
 
 	t.Run("export advertises usable block size constraints", func(t *testing.T) {
 		provider := newProvider(t)
-		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-blocksize", false)
-		export := nbdInfo(t, dialURI(t, pub.NBDURI))
+		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-blocksize", false)
+		export := nbdInfo(t, dialURI(t, nbdURI))
 
 		require.Positivef(t, export.BlockSizeMinimum,
 			"export advertises no minimum block size, so a client cannot know how to align its requests")
@@ -261,8 +271,8 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 	// export. Publication is what holds the volume, not any one connection.
 	t.Run("export accepts a client reconnecting after the first disconnects", func(t *testing.T) {
 		provider := newProvider(t)
-		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-reconnect", false)
-		uri := dialURI(t, pub.NBDURI)
+		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-reconnect", false)
+		uri := dialURI(t, nbdURI)
 
 		first := nbdInfo(t, uri)
 
@@ -275,7 +285,7 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 
 	t.Run("data written by an external client reads back byte for byte", func(t *testing.T) {
 		provider := newProvider(t)
-		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-roundtrip", false)
+		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-roundtrip", false)
 
 		dir := t.TempDir()
 		in := filepath.Join(dir, "in.bin")
@@ -283,7 +293,7 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 		want := patternBytes(int(cfg.VolumeBytes))
 		require.NoError(t, os.WriteFile(in, want, 0o600))
 
-		uri := dialURI(t, pub.NBDURI)
+		uri := dialURI(t, nbdURI)
 		runNBDCopy(t, in, uri)
 		runNBDCopy(t, uri, out)
 
@@ -301,9 +311,9 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 	t.Run("sparse extent reporting matches the advertised capability", func(t *testing.T) {
 		provider := newProvider(t)
 		capabilities := capabilitiesOf(t, provider)
-		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-extents", false)
+		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-extents", false)
 
-		holes := slices.ContainsFunc(nbdMap(t, dialURI(t, pub.NBDURI)), func(extent nbdExtent) bool {
+		holes := slices.ContainsFunc(nbdMap(t, dialURI(t, nbdURI)), func(extent nbdExtent) bool {
 			return strings.Contains(extent.Description, "hole")
 		})
 		assert.Equalf(t, capabilities.SparseExtentReporting, holes,
@@ -334,16 +344,16 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 			return
 		}
 
-		pub := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-readonly", true)
-		export := nbdInfo(t, dialURI(t, pub.NBDURI))
+		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-readonly", true)
+		export := nbdInfo(t, dialURI(t, nbdURI))
 		assert.True(t, export.ReadOnly, "a volume published ReadOnly must set the NBD read-only transmission flag")
 	})
 
 	t.Run("unpublish tears the export down", func(t *testing.T) {
 		provider := newProvider(t)
 		volumeID := cfg.VolumePrefix + "-unpublish"
-		pub := publishForNBD(t, provider, cfg, volumeID, false)
-		uri := dialURI(t, pub.NBDURI)
+		nbdURI := publishForNBD(t, provider, cfg, volumeID, false)
+		uri := dialURI(t, nbdURI)
 		require.True(t, nbdReachable(uri), "export should be reachable before unpublish")
 
 		require.NoError(t, provider.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{

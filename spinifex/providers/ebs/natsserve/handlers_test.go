@@ -161,7 +161,7 @@ func TestHandlersRejectMalformedRequests(t *testing.T) {
 			require.NoError(t, err)
 
 			envelope := decodeEnvelope(t, msg.Data)
-			assert.Equal(t, ebsprovider.SchemaVersion, envelope.SchemaVersion)
+			assert.Equal(t, ebsprovider.LegacySchemaVersion, envelope.SchemaVersion)
 			require.NotNil(t, envelope.Error)
 			assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, envelope.Error.Code)
 			assert.True(t, strings.HasPrefix(envelope.Error.Message, "bad request: "), "got %q", envelope.Error.Message)
@@ -181,10 +181,10 @@ func TestHandlersRejectVersionSkew(t *testing.T) {
 			require.NoError(t, err)
 
 			envelope := decodeEnvelope(t, msg.Data)
-			assert.Equal(t, ebsprovider.SchemaVersion, envelope.SchemaVersion, "the refusal itself must be versioned")
+			assert.Equal(t, ebsprovider.LegacySchemaVersion, envelope.SchemaVersion, "the refusal itself must be versioned")
 			require.NotNil(t, envelope.Error)
 			assert.Equal(t, ebsprovider.ErrorCodeUnsupportedVersion, envelope.Error.Code)
-			assert.Equal(t, fmt.Sprintf("unsupported schema version 99, want %d", ebsprovider.SchemaVersion), envelope.Error.Message)
+			assert.Equal(t, fmt.Sprintf("unsupported schema version 99; supported versions are %d and %d", ebsprovider.LegacySchemaVersion, ebsprovider.SchemaVersion), envelope.Error.Message)
 		})
 	}
 }
@@ -276,7 +276,7 @@ func TestServedProviderRoundTrip(t *testing.T) {
 		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-roundtrip", NodeID: "node-1",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "nbd+unix:///?socket=/memory/vol-roundtrip.sock", published.NBDURI)
+	assert.Equal(t, ebsprovider.NewNBDExport("nbd+unix:///?socket=/memory/vol-roundtrip.sock"), published.Export)
 
 	inUse, err := client.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-roundtrip"})
 	require.NoError(t, err)
@@ -432,6 +432,88 @@ func (p *countingProvider) PublishVolume(ctx context.Context, req ebsprovider.Pu
 	return p.EBSProvider.PublishVolume(ctx, req)
 }
 
+// exportProvider publishes a fixed export, so the server's own export check
+// can be driven with a provider that returns one it must not relay.
+type exportProvider struct {
+	ebsprovider.EBSProvider
+
+	export ebsprovider.VolumeExport
+}
+
+func (p *exportProvider) PublishVolume(_ context.Context, req ebsprovider.PublishVolumeRequest) (*ebsprovider.PublishedVolume, error) {
+	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, Export: p.export}, nil
+}
+
+// TestPublishVolumeRejectsInvalidExport covers the server-side export check:
+// an unattachable export is the provider's fault and goes out as internal.
+func TestPublishVolumeRejectsInvalidExport(t *testing.T) {
+	provider := &exportProvider{
+		EBSProvider: ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}),
+		export:      ebsprovider.VolumeExport{Kind: ebsprovider.ExportKindBlock, Block: &ebsprovider.BlockExport{DevicePath: "/dev/sdb"}},
+	}
+	conn := serveProvider(t, provider, natsserve.Options{NoQueueGroup: true})
+	subject, err := ebsprovider.PublishSubject("node-1")
+	require.NoError(t, err)
+
+	payload, err := json.Marshal(ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", NodeID: "node-1"})
+	require.NoError(t, err)
+	msg, err := conn.Request(subject, payload, requestTimeout)
+	require.NoError(t, err)
+
+	var resp ebsprovider.PublishVolumeResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.Nil(t, resp.Published, "an invalid export must not be relayed")
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, ebsprovider.ErrorCodeInternal, resp.Error.Code)
+	assert.Equal(t, "provider returned an invalid export for vol-1: block export has a zero size", resp.Error.Message)
+}
+
+func TestPublishVolumeServesExactV1WireShape(t *testing.T) {
+	provider := &exportProvider{
+		EBSProvider: ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}),
+		export:      ebsprovider.NewNBDExport("nbd+unix:///?socket=/run/vol-1.sock"),
+	}
+	conn := serveProvider(t, provider, natsserve.Options{NoQueueGroup: true})
+	subject, err := ebsprovider.PublishSubject("node-1")
+	require.NoError(t, err)
+	payload, err := json.Marshal(ebsprovider.PublishVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", NodeID: "node-1",
+	})
+	require.NoError(t, err)
+
+	msg, err := conn.Request(subject, payload, requestTimeout)
+	require.NoError(t, err)
+	var response ebsprovider.PublishVolumeResponseV1
+	require.NoError(t, json.Unmarshal(msg.Data, &response))
+	require.NotNil(t, response.Published)
+	assert.Equal(t, ebsprovider.LegacySchemaVersion, response.SchemaVersion)
+	assert.Equal(t, "nbd+unix:///?socket=/run/vol-1.sock", response.Published.NBDURI)
+}
+
+func TestPublishVolumeRefusesBlockExportForV1Caller(t *testing.T) {
+	provider := &exportProvider{
+		EBSProvider: ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}),
+		export: ebsprovider.VolumeExport{Kind: ebsprovider.ExportKindBlock, Block: &ebsprovider.BlockExport{
+			DevicePath: "/dev/sdb", SizeBytes: 1 << 30,
+		}},
+	}
+	conn := serveProvider(t, provider, natsserve.Options{NoQueueGroup: true})
+	subject, err := ebsprovider.PublishSubject("node-1")
+	require.NoError(t, err)
+	payload, err := json.Marshal(ebsprovider.PublishVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", NodeID: "node-1",
+	})
+	require.NoError(t, err)
+
+	msg, err := conn.Request(subject, payload, requestTimeout)
+	require.NoError(t, err)
+	var response ebsprovider.PublishVolumeResponseV1
+	require.NoError(t, json.Unmarshal(msg.Data, &response))
+	require.NotNil(t, response.Error)
+	assert.Equal(t, ebsprovider.ErrorCodeUnsupportedVersion, response.Error.Code)
+	assert.Equal(t, "block export requires schema version 2", response.Error.Message)
+}
+
 // handlerSettle is how long a handler count is watched after it reaches the
 // expected value, to catch a delivery that should not have happened arriving
 // late. Generous, because a false pass here is a silently broken queue group.
@@ -543,7 +625,7 @@ func TestServeRejectsUnroutableNodeID(t *testing.T) {
 	assert.Contains(t, err.Error(), "build publish subject")
 	assert.Nil(t, stop)
 
-	_, err = conn.Request(ebsprovider.CapabilitiesSubject, []byte(`{"schema_version":1}`), 200*time.Millisecond)
+	_, err = conn.Request(ebsprovider.CapabilitiesSubject, []byte(fmt.Sprintf(`{"schema_version":%d}`, ebsprovider.SchemaVersion)), 200*time.Millisecond)
 	require.ErrorIs(t, err, nats.ErrNoResponders, "a failed Serve must leave no subscription behind")
 }
 
@@ -571,6 +653,6 @@ func TestServeStopIsIdempotent(t *testing.T) {
 	stop()
 	require.NoError(t, conn.Flush())
 
-	_, err = conn.Request(ebsprovider.CapabilitiesSubject, []byte(`{"schema_version":1}`), 200*time.Millisecond)
+	_, err = conn.Request(ebsprovider.CapabilitiesSubject, []byte(fmt.Sprintf(`{"schema_version":%d}`, ebsprovider.SchemaVersion)), 200*time.Millisecond)
 	require.ErrorIs(t, err, nats.ErrNoResponders, "stop must unsubscribe every subject Serve registered")
 }

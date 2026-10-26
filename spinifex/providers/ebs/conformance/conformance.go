@@ -180,10 +180,11 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 
 	t.Run("GetCapabilities", func(t *testing.T) {
 		provider := newProvider(t)
-		resp, err := provider.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()})
+		versioned := ebsprovider.NewVersioned()
+		resp, err := provider.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: versioned})
 		require.NoError(t, err)
 		require.NotNil(t, resp)
-		assert.Equal(t, ebsprovider.SchemaVersion, resp.SchemaVersion, "response must carry the negotiated schema version")
+		assert.Equal(t, versioned.SchemaVersion, resp.SchemaVersion, "response must carry the requested schema version")
 
 		// Capabilities describe the implementation, so they must not vary
 		// between calls: a caller branches on them once and caches.
@@ -791,7 +792,10 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			require.NotNil(t, pub)
 			assert.Equal(t, cfg.id("vol-pub-ok"), pub.VolumeID)
 			assert.Equal(t, cfg.node(), pub.NodeID)
-			assertNBDURI(t, pub.NBDURI)
+			require.NoError(t, pub.Export.Validate(), "published export is not attachable")
+			if pub.Export.Kind == ebsprovider.ExportKindNBD {
+				assertNBDURI(t, pub.Export.NBD.NBDURI)
+			}
 		})
 
 		t.Run("idempotent republish to the same node", func(t *testing.T) {

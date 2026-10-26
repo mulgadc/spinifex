@@ -63,6 +63,11 @@ func TestHostedZoneServedOnceDelegated(t *testing.T) {
 	}
 	waitInSync(t, c, created.ChangeInfo.Id)
 
+	harness.Phase(t, "Route 53 — the base zone publishes the same name servers")
+	for _, node := range targets {
+		harness.EventuallyErr(t, func() error { return wantNS(node, base, nameservers) }, syncTimeout, 5*time.Second)
+	}
+
 	change, err := c.ChangeResourceRecordSets(&r53.ChangeResourceRecordSetsInput{
 		HostedZoneId: aws.String(zoneID),
 		ChangeBatch: &r53.ChangeBatch{Changes: []*r53.Change{
@@ -216,6 +221,30 @@ func wantTXT(node harness.Node, name, want string) error {
 	}
 	if !slices.Contains(txt, want) {
 		return fmt.Errorf("TXT %s via %s = %v, want %q", name, node.Name, txt, want)
+	}
+	return nil
+}
+
+// wantNS checks the base zone's apex NS set is exactly the delegation set a
+// hosted zone is told to use, so a registrar given that set reaches the cluster.
+func wantNS(node harness.Node, name string, want []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ns, err := harness.NodeResolver(node).LookupNS(ctx, name)
+	if err != nil {
+		return fmt.Errorf("NS %s via %s: %w", name, node.Name, err)
+	}
+	var got, exp []string
+	for _, n := range ns {
+		got = append(got, strings.ToLower(strings.TrimSuffix(n.Host, ".")))
+	}
+	for _, n := range want {
+		exp = append(exp, strings.ToLower(strings.TrimSuffix(n, ".")))
+	}
+	slices.Sort(got)
+	slices.Sort(exp)
+	if !slices.Equal(got, exp) {
+		return fmt.Errorf("NS %s via %s = %v, want %v", name, node.Name, got, exp)
 	}
 	return nil
 }

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -193,7 +193,7 @@ func TestErrorHandler_EKSEmitsJSONNotXML(t *testing.T) {
 
 	gw.ErrorHandler(w, req, errEKSNotImpl())
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
-	assert.Equal(t, gateway_eks.JSONContentType, w.Header().Get("Content-Type"))
+	assert.Equal(t, eksawsapi.JSONContentType, w.Header().Get("Content-Type"))
 	assert.True(t, strings.HasPrefix(w.Body.String(), "{"), "expected JSON body, got %q", w.Body.String())
 
 	env := decodeJSONError(t, w.Result())

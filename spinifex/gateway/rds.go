@@ -8,7 +8,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 )
 
 // RDS_Request serves RDS, which shares the query-in/XML-out shape of ELBv2: the action comes from
@@ -26,7 +26,7 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 	}
 	// Resolved before the policy check, so an unrecognised action is rejected as
 	// InvalidAction rather than evaluated as an rds:<garbage> permission.
-	if !gateway_rds.HasAction(action) {
+	if !rdsawsapi.HasAction(action) {
 		slog.DebugContext(r.Context(), "RDS: unknown action", "action", action)
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
@@ -39,11 +39,11 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 
 	// Before the policy check, so no customer grant is ever evaluated against an
 	// internal agent action. See AuthorizeCaller.
-	if err := gateway_rds.AuthorizeCaller(r.Context(), action, caller); err != nil {
+	if err := rdsawsapi.AuthorizeCaller(r.Context(), action, caller); err != nil {
 		return err
 	}
 
-	resources, err := gateway_rds.ResourceARN(action, gw.Region, caller.AccountID, queryArgs)
+	resources, err := rdsawsapi.ResourceARN(action, gw.Region, caller.AccountID, queryArgs)
 	if err != nil {
 		return err
 	}
@@ -55,8 +55,8 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	xmlOutput, err := gateway_rds.Dispatch(r.Context(), action, queryArgs, gw.NATSConn, caller,
-		gateway_rds.Env{
+	xmlOutput, err := rdsawsapi.Dispatch(r.Context(), action, queryArgs, gw.NATSConn, caller,
+		rdsawsapi.Env{
 			ExpectedNodes: gw.ExpectedNodes,
 			QuotaCheck: func(ctx context.Context, accountID string, want int) error {
 				return gw.Quota.EnforceRDSInstances(ctx, gw.NATSConn, accountID, want)
@@ -76,12 +76,12 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 
 // The role name comes from the underlying role ARN, never the session name,
 // which the caller picks at AssumeRole time and could name its way past the gate.
-func rdsCaller(r *http.Request) (gateway_rds.Caller, error) {
+func rdsCaller(r *http.Request) (rdsawsapi.Caller, error) {
 	accountID := mustCtxString(r, ctxAccountID)
 	if accountID == "" {
-		return gateway_rds.Caller{}, errors.New(awserrors.ErrorServerInternal)
+		return rdsawsapi.Caller{}, errors.New(awserrors.ErrorServerInternal)
 	}
-	caller := gateway_rds.Caller{
+	caller := rdsawsapi.Caller{
 		AccountID:     accountID,
 		PrincipalType: mustCtxString(r, ctxPrincipalType),
 		SessionName:   mustCtxString(r, ctxIdentity),

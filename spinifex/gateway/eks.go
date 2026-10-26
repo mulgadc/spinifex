@@ -12,7 +12,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 )
 
 // eksRoute maps one HTTP method + chi path pattern to an AWS action and handler.
@@ -28,25 +28,25 @@ var eksRoutes = []eksRoute{
 	// Cluster
 	{Method: "POST", Pattern: "/clusters", Action: "CreateCluster",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.CreateCluster(ctx, gw.NATSConn, acct, callerARN, b)
+			return eksawsapi.CreateCluster(ctx, gw.NATSConn, acct, callerARN, b)
 		}},
 	{Method: "GET", Pattern: "/clusters", Action: "ListClusters",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListClusters(ctx, gw.NATSConn, acct)
+			return eksawsapi.ListClusters(ctx, gw.NATSConn, acct)
 		}},
 	// Control-plane VM broker: relays bootstrap/state/addon POSTs onto eks.bus/state/addon subjects.
 	// acct and callerARN are ignored; the cluster account comes from the body, and
 	// AuthorizeInternal binds that account and cluster to the caller's own.
 	{Method: "POST", Pattern: "/clusters/{clusterName}/internal-publish", Action: "PublishInternal",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.PublishInternal(ctx, gw.NATSConn, p[0], b)
+			return eksawsapi.PublishInternal(ctx, gw.NATSConn, p[0], b)
 		}},
 	// Token review broker: the eks-token-webhook POSTs bearer tokens here and the
 	// gateway resolves them host-side. The account comes from the body, and
 	// AuthorizeInternal binds that account and cluster to the caller's own.
 	{Method: "POST", Pattern: "/clusters/{clusterName}/token-review", Action: "WebhookTokenReview",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.WebhookTokenReview(ctx, gw.NATSConn, p[0], b)
+			return eksawsapi.WebhookTokenReview(ctx, gw.NATSConn, p[0], b)
 		}},
 	// Control-plane VM add-on delivery: the on-VM addon-sync agent GETs the set
 	// of staged add-on manifests for its cluster (system SigV4 creds) to render
@@ -56,7 +56,7 @@ var eksRoutes = []eksRoute{
 	// that segment to the caller's own cluster.
 	{Method: "GET", Pattern: "/clusters/{clusterName}/internal-addons/{accountId}", Action: "ListInternalAddons",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListInternalAddons(ctx, gw.NATSConn, p[0], p[1])
+			return eksawsapi.ListInternalAddons(ctx, gw.NATSConn, p[0], p[1])
 		}},
 
 	// Internal control-plane route: the on-VM k3s-recovery agent pulls its
@@ -64,117 +64,117 @@ var eksRoutes = []eksRoute{
 	// system-cred carve-out as internal-addons; instance ID is the third segment.
 	{Method: "GET", Pattern: "/clusters/{clusterName}/internal-recovery/{accountId}/{instanceId}", Action: "GetRecoveryDirective",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.GetRecoveryDirective(ctx, gw.NATSConn, p[0], p[1], p[2])
+			return eksawsapi.GetRecoveryDirective(ctx, gw.NATSConn, p[0], p[1], p[2])
 		}},
 
 	// Nodegroup
 	{Method: "POST", Pattern: "/clusters/{clusterName}/node-groups", Action: "CreateNodegroup",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.CreateNodegroup(ctx, gw.NATSConn, acct, p[0], b)
+			return eksawsapi.CreateNodegroup(ctx, gw.NATSConn, acct, p[0], b)
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/node-groups", Action: "ListNodegroups",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListNodegroups(ctx, gw.NATSConn, acct, p[0])
+			return eksawsapi.ListNodegroups(ctx, gw.NATSConn, acct, p[0])
 		}},
 	{Method: "POST", Pattern: "/clusters/{clusterName}/node-groups/{nodegroupName}/update-config", Action: "UpdateNodegroupConfig",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.UpdateNodegroupConfig(ctx, gw.NATSConn, acct, p[0], p[1], b)
+			return eksawsapi.UpdateNodegroupConfig(ctx, gw.NATSConn, acct, p[0], p[1], b)
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/node-groups/{nodegroupName}", Action: "DescribeNodegroup",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DescribeNodegroup(ctx, gw.NATSConn, acct, p[0], p[1])
+			return eksawsapi.DescribeNodegroup(ctx, gw.NATSConn, acct, p[0], p[1])
 		}},
 	{Method: "DELETE", Pattern: "/clusters/{clusterName}/node-groups/{nodegroupName}", Action: "DeleteNodegroup",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DeleteNodegroup(ctx, gw.NATSConn, acct, p[0], p[1])
+			return eksawsapi.DeleteNodegroup(ctx, gw.NATSConn, acct, p[0], p[1])
 		}},
 
 	// AccessEntry / AccessPolicy
 	{Method: "POST", Pattern: "/clusters/{clusterName}/access-entries", Action: "CreateAccessEntry",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.CreateAccessEntry(ctx, gw.NATSConn, acct, p[0], b)
+			return eksawsapi.CreateAccessEntry(ctx, gw.NATSConn, acct, p[0], b)
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/access-entries", Action: "ListAccessEntries",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListAccessEntries(ctx, gw.NATSConn, acct, p[0])
+			return eksawsapi.ListAccessEntries(ctx, gw.NATSConn, acct, p[0])
 		}},
 	{Method: "POST", Pattern: "/clusters/{clusterName}/access-entries/{principalArn}/access-policies", Action: "AssociateAccessPolicy",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.AssociateAccessPolicy(ctx, gw.NATSConn, acct, p[0], p[1], b)
+			return eksawsapi.AssociateAccessPolicy(ctx, gw.NATSConn, acct, p[0], p[1], b)
 		}},
 	{Method: "DELETE", Pattern: "/clusters/{clusterName}/access-entries/{principalArn}/access-policies/{policyArn}", Action: "DisassociateAccessPolicy",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DisassociateAccessPolicy(ctx, gw.NATSConn, acct, p[0], p[1], p[2])
+			return eksawsapi.DisassociateAccessPolicy(ctx, gw.NATSConn, acct, p[0], p[1], p[2])
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/access-entries/{principalArn}/access-policies", Action: "ListAssociatedAccessPolicies",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListAssociatedAccessPolicies(ctx, gw.NATSConn, acct, p[0], p[1])
+			return eksawsapi.ListAssociatedAccessPolicies(ctx, gw.NATSConn, acct, p[0], p[1])
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/access-entries/{principalArn}", Action: "DescribeAccessEntry",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DescribeAccessEntry(ctx, gw.NATSConn, acct, p[0], p[1])
+			return eksawsapi.DescribeAccessEntry(ctx, gw.NATSConn, acct, p[0], p[1])
 		}},
 	{Method: "POST", Pattern: "/clusters/{clusterName}/access-entries/{principalArn}", Action: "UpdateAccessEntry",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.UpdateAccessEntry(ctx, gw.NATSConn, acct, p[0], p[1], b)
+			return eksawsapi.UpdateAccessEntry(ctx, gw.NATSConn, acct, p[0], p[1], b)
 		}},
 	{Method: "DELETE", Pattern: "/clusters/{clusterName}/access-entries/{principalArn}", Action: "DeleteAccessEntry",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DeleteAccessEntry(ctx, gw.NATSConn, acct, p[0], p[1])
+			return eksawsapi.DeleteAccessEntry(ctx, gw.NATSConn, acct, p[0], p[1])
 		}},
 	{Method: "GET", Pattern: "/access-policies", Action: "ListAccessPolicies",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListAccessPolicies(ctx, gw.NATSConn, acct)
+			return eksawsapi.ListAccessPolicies(ctx, gw.NATSConn, acct)
 		}},
 
 	// Addons
 	{Method: "GET", Pattern: "/addons/supported-versions", Action: "DescribeAddonVersions",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DescribeAddonVersions(ctx, gw.NATSConn, acct)
+			return eksawsapi.DescribeAddonVersions(ctx, gw.NATSConn, acct)
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/addons", Action: "ListAddons",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListAddons(ctx, gw.NATSConn, acct, p[0])
+			return eksawsapi.ListAddons(ctx, gw.NATSConn, acct, p[0])
 		}},
 	{Method: "POST", Pattern: "/clusters/{clusterName}/addons", Action: "CreateAddon",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.CreateAddon(ctx, gw.NATSConn, acct, p[0], b)
+			return eksawsapi.CreateAddon(ctx, gw.NATSConn, acct, p[0], b)
 		}},
 	{Method: "POST", Pattern: "/clusters/{clusterName}/addons/{addonName}/update", Action: "UpdateAddon",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.UpdateAddon(ctx, gw.NATSConn, acct, p[0], p[1], b)
+			return eksawsapi.UpdateAddon(ctx, gw.NATSConn, acct, p[0], p[1], b)
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/addons/{addonName}", Action: "DescribeAddon",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DescribeAddon(ctx, gw.NATSConn, acct, p[0], p[1])
+			return eksawsapi.DescribeAddon(ctx, gw.NATSConn, acct, p[0], p[1])
 		}},
 	{Method: "DELETE", Pattern: "/clusters/{clusterName}/addons/{addonName}", Action: "DeleteAddon",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DeleteAddon(ctx, gw.NATSConn, acct, p[0], p[1])
+			return eksawsapi.DeleteAddon(ctx, gw.NATSConn, acct, p[0], p[1])
 		}},
 
 	// Cluster CRUD — listed after more-specific /clusters/{name}/... routes.
 	{Method: "GET", Pattern: "/clusters/{clusterName}", Action: "DescribeCluster",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DescribeCluster(ctx, gw.NATSConn, acct, p[0])
+			return eksawsapi.DescribeCluster(ctx, gw.NATSConn, acct, p[0])
 		}},
 	{Method: "DELETE", Pattern: "/clusters/{clusterName}", Action: "DeleteCluster",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DeleteCluster(ctx, gw.NATSConn, acct, p[0])
+			return eksawsapi.DeleteCluster(ctx, gw.NATSConn, acct, p[0])
 		}},
 
 	// Tags
 	{Method: "POST", Pattern: "/tags/*", Action: "TagResource",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.TagResource(ctx, gw.NATSConn, acct, p[0], b)
+			return eksawsapi.TagResource(ctx, gw.NATSConn, acct, p[0], b)
 		}},
 	{Method: "DELETE", Pattern: "/tags/*", Action: "UntagResource",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.UntagResource(ctx, gw.NATSConn, acct, p[0], b)
+			return eksawsapi.UntagResource(ctx, gw.NATSConn, acct, p[0], b)
 		}},
 	{Method: "GET", Pattern: "/tags/*", Action: "ListTagsForResource",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListTagsForResource(ctx, gw.NATSConn, acct, p[0])
+			return eksawsapi.ListTagsForResource(ctx, gw.NATSConn, acct, p[0])
 		}},
 }
 
@@ -235,15 +235,15 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 	// Ahead of the policy check: the internal routes name the target account in
 	// the path or body, so an eks:* grant evaluates as permitted and only the
 	// principal class plus the caller's own instance say whether it is its own.
-	if gateway_eks.IsInternalAction(action) {
-		if err := gateway_eks.AuthorizeInternal(r.Context(), gw.NATSConn, action, eksCaller(r), params, body); err != nil {
+	if eksawsapi.IsInternalAction(action) {
+		if err := eksawsapi.AuthorizeInternal(r.Context(), gw.NATSConn, action, eksCaller(r), params, body); err != nil {
 			return err
 		}
 	}
 
 	// After the body read: CreateCluster and the other create actions name their
 	// resource there rather than in the path.
-	resources, err := gateway_eks.ResourceARNs(action, gw.Region, accountID, params, body)
+	resources, err := eksawsapi.ResourceARNs(action, gw.Region, accountID, params, body)
 	if err != nil {
 		return err
 	}
@@ -266,7 +266,7 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	gateway_eks.WriteJSONResponse(w, output)
+	eksawsapi.WriteJSONResponse(w, output)
 	return nil
 }
 
@@ -277,7 +277,7 @@ var errForeignRole = errors.New("role is not in the caller's account")
 // the exact ARN the store holds resolves, so the grant is evaluated against the
 // role's real path and an invented one cannot match a narrower Resource.
 func (gw *GatewayConfig) checkEKSPassRole(r *http.Request, action, accountID string, body []byte) error {
-	for _, roleARN := range gateway_eks.PassedRoleARNs(action, body) {
+	for _, roleARN := range eksawsapi.PassedRoleARNs(action, body) {
 		_, _, resolveErr := auth.ResolveRoleARN(roleARN, func(roleAccount, roleName string) (string, error) {
 			if roleAccount != accountID {
 				return "", errForeignRole
@@ -306,9 +306,9 @@ func (gw *GatewayConfig) checkEKSPassRole(r *http.Request, action, accountID str
 // eksCaller reads the principal behind the request. The role name comes from the
 // underlying role ARN, never the session name, which the caller picks at
 // AssumeRole time and could name its way past the gate.
-func eksCaller(r *http.Request) gateway_eks.Caller {
+func eksCaller(r *http.Request) eksawsapi.Caller {
 	accountID := mustCtxString(r, ctxAccountID)
-	caller := gateway_eks.Caller{
+	caller := eksawsapi.Caller{
 		AccountID:     accountID,
 		PrincipalType: mustCtxString(r, ctxPrincipalType),
 		SessionName:   mustCtxString(r, ctxIdentity),

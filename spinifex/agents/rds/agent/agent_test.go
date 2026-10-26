@@ -19,7 +19,7 @@ import (
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
-	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -761,7 +761,7 @@ func TestPollDBCommandsOutput_MatchesGatewayShape(t *testing.T) {
 	issued := time.Date(2026, 7, 28, 1, 2, 3, 0, time.UTC)
 	// Rendered exactly as the gateway's typed adapter renders it, so a change to
 	// either side's tags fails here.
-	payload := awsxml.QueryResponsePayload("PollDBCommands", &gateway_rds.PollDBCommandsOutput{
+	payload := awsxml.QueryResponsePayload("PollDBCommands", &rdsawsapi.PollDBCommandsOutput{
 		Commands: []rdsinstance.Command{{
 			CommandID:  "cmd-1",
 			Type:       "reload-parameters",

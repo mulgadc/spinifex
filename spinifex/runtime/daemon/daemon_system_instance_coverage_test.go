@@ -17,9 +17,9 @@ import (
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -90,15 +90,15 @@ func (f *sysInstFixture) newENI(t *testing.T) *ec2.NetworkInterface {
 
 // input returns a direct-boot launch on a pre-created customer ENI with a
 // valid single-NIC network config.
-func (f *sysInstFixture) input(eni *ec2.NetworkInterface) *handlers_elbv2.SystemInstanceInput {
-	return &handlers_elbv2.SystemInstanceInput{
+func (f *sysInstFixture) input(eni *ec2.NetworkInterface) *elbv2domain.SystemInstanceInput {
+	return &elbv2domain.SystemInstanceInput{
 		InstanceType: f.itype,
 		SubnetID:     f.subnetID,
 		AccountID:    testAccountID,
 		ENIID:        aws.StringValue(eni.NetworkInterfaceId),
 		ENIMac:       aws.StringValue(eni.MacAddress),
 		ENIIP:        aws.StringValue(eni.PrivateIpAddress),
-		NICs:         []handlers_elbv2.NICConfig{{MAC: aws.StringValue(eni.MacAddress), CIDR: "10.81.1.5/24", IsDefault: true}},
+		NICs:         []elbv2domain.NICConfig{{MAC: aws.StringValue(eni.MacAddress), CIDR: "10.81.1.5/24", IsDefault: true}},
 	}
 }
 
@@ -172,7 +172,7 @@ func (s *sysInstReclaimingEIP) ReleaseAddressByInstanceID(id string) error {
 
 func TestLaunchSystemInstance_EarlyErrors(t *testing.T) {
 	t.Run("BootAMI dispatches to the AMI path", func(t *testing.T) {
-		_, err := (&Daemon{}).LaunchSystemInstance(&handlers_elbv2.SystemInstanceInput{BootMode: systeminstance.BootAMI})
+		_, err := (&Daemon{}).LaunchSystemInstance(&elbv2domain.SystemInstanceInput{BootMode: systeminstance.BootAMI})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "instance service not initialized")
 	})
@@ -181,7 +181,7 @@ func TestLaunchSystemInstance_EarlyErrors(t *testing.T) {
 	itype := getTestInstanceType(t)
 
 	t.Run("unknown instance type", func(t *testing.T) {
-		_, err := d.LaunchSystemInstance(&handlers_elbv2.SystemInstanceInput{InstanceType: "zz9.none"})
+		_, err := d.LaunchSystemInstance(&elbv2domain.SystemInstanceInput{InstanceType: "zz9.none"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unknown instance type: zz9.none")
 	})
@@ -197,7 +197,7 @@ func TestLaunchSystemInstance_EarlyErrors(t *testing.T) {
 			d.resourceMgr.mu.Unlock()
 		})
 
-		_, err := d.LaunchSystemInstance(&handlers_elbv2.SystemInstanceInput{InstanceType: itype})
+		_, err := d.LaunchSystemInstance(&elbv2domain.SystemInstanceInput{InstanceType: itype})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "insufficient capacity for "+itype)
 	})
@@ -214,7 +214,7 @@ func TestLaunchSystemInstance_EarlyErrors(t *testing.T) {
 		before := d.resourceMgr.allocatedVCPU
 		d.resourceMgr.mu.Unlock()
 
-		_, err := d.LaunchSystemInstance(&handlers_elbv2.SystemInstanceInput{InstanceType: itype})
+		_, err := d.LaunchSystemInstance(&elbv2domain.SystemInstanceInput{InstanceType: itype})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create instance")
 
@@ -320,10 +320,10 @@ func TestLaunchSystemInstance_AutoCreateENI(t *testing.T) {
 	sysInstLaunchRuns(d)
 
 	t.Run("creates and attaches an ENI in the system account", func(t *testing.T) {
-		out, err := d.LaunchSystemInstance(&handlers_elbv2.SystemInstanceInput{
+		out, err := d.LaunchSystemInstance(&elbv2domain.SystemInstanceInput{
 			InstanceType: f.itype,
 			SubnetID:     f.sysSubnetID,
-			NICs:         []handlers_elbv2.NICConfig{{MAC: "02:00:00:00:00:01", IsDefault: true}},
+			NICs:         []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:01", IsDefault: true}},
 		})
 		require.NoError(t, err)
 		assert.True(t, strings.HasPrefix(out.PrivateIP, "10.82.1."), "private IP %q must come from the subnet", out.PrivateIP)
@@ -337,7 +337,7 @@ func TestLaunchSystemInstance_AutoCreateENI(t *testing.T) {
 	})
 
 	t.Run("unknown subnet", func(t *testing.T) {
-		_, err := d.LaunchSystemInstance(&handlers_elbv2.SystemInstanceInput{
+		_, err := d.LaunchSystemInstance(&elbv2domain.SystemInstanceInput{
 			InstanceType: f.itype,
 			SubnetID:     "subnet-madeup",
 		})
@@ -350,9 +350,9 @@ func TestLaunchSystemInstance_EIPService(t *testing.T) {
 	f := newSysInstFixture(t)
 	d := f.d
 
-	internetFacing := func(t *testing.T) *handlers_elbv2.SystemInstanceInput {
+	internetFacing := func(t *testing.T) *elbv2domain.SystemInstanceInput {
 		in := f.input(f.newENI(t))
-		in.Scheme = handlers_elbv2.SchemeInternetFacing
+		in.Scheme = elbv2domain.SchemeInternetFacing
 		return in
 	}
 	allocated := &ec2.AllocateAddressOutput{
@@ -437,7 +437,7 @@ func TestLaunchSystemInstance_IPAM(t *testing.T) {
 		t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 		in := f.input(f.newENI(t))
-		in.Scheme = handlers_elbv2.SchemeInternetFacing
+		in.Scheme = elbv2domain.SchemeInternetFacing
 		out, err := d.LaunchSystemInstance(in)
 		require.NoError(t, err)
 		require.True(t, strings.HasPrefix(out.PublicIP, "198.51.100."), "public IP %q must come from the pool", out.PublicIP)
@@ -456,7 +456,7 @@ func TestLaunchSystemInstance_IPAM(t *testing.T) {
 		})
 
 		in := f.input(f.newENI(t))
-		in.Scheme = handlers_elbv2.SchemeInternetFacing
+		in.Scheme = elbv2domain.SchemeInternetFacing
 		_, err := d.LaunchSystemInstance(in)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "allocate public IP for internet-facing ALB")
@@ -480,13 +480,13 @@ func TestLaunchSystemInstance_MgmtNIC(t *testing.T) {
 		wantMgmt  bool
 		wantAlloc int
 	}{
-		{name: "internal allocate error", scheme: handlers_elbv2.SchemeInternal, alloc: sysInstUnboundMgmtAllocator,
+		{name: "internal allocate error", scheme: elbv2domain.SchemeInternal, alloc: sysInstUnboundMgmtAllocator,
 			wantErr: "allocate mgmt IP for internal-scheme ALB"},
 		{name: "internet-facing allocate error continues", scheme: "", alloc: sysInstUnboundMgmtAllocator},
-		{name: "internal tap error", scheme: handlers_elbv2.SchemeInternal, tapErr: tapErr,
+		{name: "internal tap error", scheme: elbv2domain.SchemeInternal, tapErr: tapErr,
 			wantErr: "setup mgmt tap for internal-scheme ALB"},
 		{name: "internet-facing tap error continues", scheme: "", tapErr: tapErr},
-		{name: "success", scheme: handlers_elbv2.SchemeInternal, wantMgmt: true, wantAlloc: 1},
+		{name: "success", scheme: elbv2domain.SchemeInternal, wantMgmt: true, wantAlloc: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -503,7 +503,7 @@ func TestLaunchSystemInstance_MgmtNIC(t *testing.T) {
 
 			in := f.input(f.newENI(t))
 			in.Scheme = tc.scheme
-			in.NICs = append(in.NICs, handlers_elbv2.NICConfig{})
+			in.NICs = append(in.NICs, elbv2domain.NICConfig{})
 
 			out, err := d.LaunchSystemInstance(in)
 			if tc.wantErr != "" {
@@ -792,10 +792,10 @@ func TestBuildDirectBootConfig_InstanceTypeShape(t *testing.T) {
 	it := rm.instanceTypes[itype]
 	d := &Daemon{resourceMgr: rm}
 
-	cfg, err := d.buildDirectBootConfig("i-shape", &handlers_elbv2.SystemInstanceInput{
+	cfg, err := d.buildDirectBootConfig("i-shape", &elbv2domain.SystemInstanceInput{
 		InstanceType: itype,
 		ENIID:        "eni-shape",
-		NICs:         []handlers_elbv2.NICConfig{{MAC: "02:00:00:00:00:02", IsDefault: true}},
+		NICs:         []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:02", IsDefault: true}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int(instanceTypeVCPUs(it)), cfg.CPUCount)
@@ -809,8 +809,8 @@ func TestBuildDirectBootConfig_FwCfgWriteError(t *testing.T) {
 	require.NoError(t, os.WriteFile(notADir, nil, 0o600))
 	t.Setenv("XDG_RUNTIME_DIR", notADir)
 
-	_, err := (&Daemon{resourceMgr: &ResourceManager{}}).buildDirectBootConfig("i-werr", &handlers_elbv2.SystemInstanceInput{
-		NICs: []handlers_elbv2.NICConfig{{MAC: "02:00:00:00:00:03", IsDefault: true}},
+	_, err := (&Daemon{resourceMgr: &ResourceManager{}}).buildDirectBootConfig("i-werr", &elbv2domain.SystemInstanceInput{
+		NICs: []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:03", IsDefault: true}},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "write fw_cfg blobs")
@@ -819,8 +819,8 @@ func TestBuildDirectBootConfig_FwCfgWriteError(t *testing.T) {
 // A directory at a blob's path fails that write; the blobs written before it
 // must be removed so no partial fw_cfg set is left behind.
 func TestWriteFwCfgBlobs_LaterWriteErrorsCleanUp(t *testing.T) {
-	input := &handlers_elbv2.SystemInstanceInput{
-		NICs: []handlers_elbv2.NICConfig{{MAC: "02:00:00:00:00:04", IsDefault: true}},
+	input := &elbv2domain.SystemInstanceInput{
+		NICs: []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:04", IsDefault: true}},
 	}
 	for _, blob := range []string{"lbenv", "cacert"} {
 		t.Run(blob, func(t *testing.T) {

@@ -22,12 +22,12 @@ import (
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 )
 
 const (
@@ -198,7 +198,7 @@ func TestEC2ARN(t *testing.T) {
 // embedded JetStream, recording the ARN count of every DescribeTags request.
 type elbv2Fixture struct {
 	nc    *nats.Conn
-	store *handlers_elbv2.Store
+	store *elbv2domain.Store
 
 	mu            sync.Mutex
 	describeCalls int
@@ -210,10 +210,10 @@ func newELBv2Fixture(t *testing.T) *elbv2Fixture {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
+	svc, err := elbv2domain.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
 	t.Cleanup(svc.Close)
-	store, err := handlers_elbv2.NewStore(t.Context(), nc)
+	store, err := elbv2domain.NewStore(t.Context(), nc)
 	require.NoError(t, err)
 
 	f := &elbv2Fixture{nc: nc, store: store}
@@ -255,7 +255,7 @@ func (f *elbv2Fixture) calls() (describes int, batches []int) {
 func (f *elbv2Fixture) putLB(t *testing.T, accountID, name, id string, tags map[string]string) string {
 	t.Helper()
 	lbARN := arn.FormatELBv2LoadBalancer(listerRegion, accountID, name, id, "application")
-	require.NoError(t, f.store.PutLoadBalancer(t.Context(), &handlers_elbv2.LoadBalancerRecord{
+	require.NoError(t, f.store.PutLoadBalancer(t.Context(), &elbv2domain.LoadBalancerRecord{
 		LoadBalancerArn: lbARN, LoadBalancerID: id, Name: name, Type: "application", AccountID: accountID, Tags: tags,
 	}))
 	return lbARN
@@ -264,7 +264,7 @@ func (f *elbv2Fixture) putLB(t *testing.T, accountID, name, id string, tags map[
 func (f *elbv2Fixture) putTG(t *testing.T, accountID, name, id string, tags map[string]string) string {
 	t.Helper()
 	tgARN := arn.FormatELBv2TargetGroup(listerRegion, accountID, name, id)
-	require.NoError(t, f.store.PutTargetGroup(t.Context(), &handlers_elbv2.TargetGroupRecord{
+	require.NoError(t, f.store.PutTargetGroup(t.Context(), &elbv2domain.TargetGroupRecord{
 		TargetGroupArn: tgARN, TargetGroupID: id, Name: name, AccountID: accountID, Tags: tags,
 	}))
 	return tgARN

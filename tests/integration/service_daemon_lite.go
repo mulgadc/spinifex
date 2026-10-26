@@ -10,7 +10,7 @@ import (
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/stretchr/testify/require"
@@ -35,7 +35,7 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	require.NoError(t, err, "create ACM tenant CA")
 	subscribeServiceMethods(t, nc, "acm", acm)
 
-	elbv2, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(cfg, nc, masterKey)
+	elbv2, err := elbv2domain.NewELBv2ServiceImplWithNATS(cfg, nc, masterKey)
 	require.NoError(t, err, "construct ELBv2 service")
 	t.Cleanup(elbv2.Close)
 	subscribeServiceMethods(t, nc, "elbv2", elbv2)

@@ -311,7 +311,7 @@ spinifex/
 │   ├── operator/            # spx CLI commands, admin use cases, installer, upgrade
 │   ├── agents/              # In-guest agent libraries (ecs, eks, elbv2, rds)
 │   ├── gateway/             # Legacy root: HTTP route assembly, SigV4 auth, legacy per-service dispatch
-│   ├── handlers/            # Legacy root: ecs and elbv2 service implementations
+│   ├── handlers/            # Legacy root: ecs service implementation
 │   └── accountteardown/     # Legacy root: account deletion cleanup
 ├── internal/                # In-guest SigV4 clients, AWS Smithy models and test kits
 ├── architecture/            # Executable architecture rules (package layering)

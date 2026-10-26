@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 )
 
@@ -25,8 +25,8 @@ const nodeSystemLaunchTimeout = 5 * time.Minute
 // system.LaunchInstance.{type}[.{nodeID}] replies. Either Output or Error
 // is set. Encoded as JSON so non-Go consumers stay possible later.
 type systemInstanceLaunchEnvelope struct {
-	Output *handlers_elbv2.SystemInstanceOutput `json:"output,omitempty"`
-	Error  string                               `json:"error,omitempty"`
+	Output *elbv2domain.SystemInstanceOutput `json:"output,omitempty"`
+	Error  string                            `json:"error,omitempty"`
 }
 
 // systemInstanceTerminateEnvelope is the wire format for
@@ -61,7 +61,7 @@ func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) string {
 // serveSystemLaunchInstance is the synchronous body of handleSystemLaunchInstance,
 // run on a per-request goroutine.
 func (d *Daemon) serveSystemLaunchInstance(msg *nats.Msg) string {
-	input := new(handlers_elbv2.SystemInstanceInput)
+	input := new(elbv2domain.SystemInstanceInput)
 	if err := json.Unmarshal(msg.Data, input); err != nil {
 		slog.Error("system.LaunchInstance: invalid JSON payload", "subject", msg.Subject, "err", err)
 		respondWithSystemLaunchError(msg, awserrors.ErrorServerInternal)
@@ -91,7 +91,7 @@ func (d *Daemon) serveSystemLaunchInstance(msg *nats.Msg) string {
 // LaunchSystemInstanceOnNode launches a system VM on a specific host.
 // An empty nodeID or the local node runs in-process; any other node is
 // reached via system.LaunchInstance.{type}.{nodeID} — the VM stays on that node.
-func (d *Daemon) LaunchSystemInstanceOnNode(nodeID string, input *handlers_elbv2.SystemInstanceInput) (*handlers_elbv2.SystemInstanceOutput, error) {
+func (d *Daemon) LaunchSystemInstanceOnNode(nodeID string, input *elbv2domain.SystemInstanceInput) (*elbv2domain.SystemInstanceOutput, error) {
 	if nodeID == "" || nodeID == d.node {
 		return d.LaunchSystemInstance(input)
 	}
@@ -243,7 +243,7 @@ func (d *Daemon) serveSystemTerminateInstance(msg *nats.Msg) {
 	respondWithSystemTerminateOK(msg)
 }
 
-func respondWithSystemLaunchOutput(msg *nats.Msg, out *handlers_elbv2.SystemInstanceOutput) {
+func respondWithSystemLaunchOutput(msg *nats.Msg, out *elbv2domain.SystemInstanceOutput) {
 	payload, err := json.Marshal(systemInstanceLaunchEnvelope{Output: out})
 	if err != nil {
 		slog.Error("system.LaunchInstance: marshal output failed", "err", err)

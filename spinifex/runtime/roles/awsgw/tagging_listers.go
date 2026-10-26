@@ -8,9 +8,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 )
 
@@ -86,13 +86,13 @@ func ec2ARN(region, accountID, fullType, id string) string {
 // elbv2Lister lists ELBv2 load balancers and target groups admitted by the
 // type filters, tagged or not, with tags from batched DescribeTags calls.
 type elbv2Lister struct {
-	svc handlers_elbv2.ELBv2Service
+	svc elbv2domain.ELBv2Service
 }
 
 var _ tagging.TaggedLister = (*elbv2Lister)(nil)
 
 func newELBv2Lister(nc *nats.Conn) *elbv2Lister {
-	return &elbv2Lister{svc: handlers_elbv2.NewNATSELBv2Service(nc)}
+	return &elbv2Lister{svc: elbv2domain.NewNATSELBv2Service(nc)}
 }
 
 func (l *elbv2Lister) ListTagged(ctx context.Context, accountID string, typeFilters map[string]bool) ([]tagging.TaggedResource, error) {

@@ -64,6 +64,7 @@ import (
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
@@ -79,7 +80,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
@@ -165,7 +165,7 @@ type Daemon struct {
 	spotInstanceService   *ec2spotinstance.SpotInstanceServiceImpl
 	vpcService            *ec2vpc.VPCServiceImpl
 	eipService            ec2eip.EIPService
-	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
+	elbv2Service          *elbv2domain.ELBv2ServiceImpl
 	eksService            *ekscluster.EKSServiceImpl
 	ecsService            *handlers_ecs.Service
 	ecsScheduler          *handlers_ecs.Scheduler
@@ -2047,12 +2047,12 @@ func (d *Daemon) startCluster() error {
 	// the identical master key: unlike EKS/ECS's IAM dependency, there is no
 	// safe degraded mode for certificate private keys, so a missing key must
 	// fail daemon startup rather than leave HTTPS listeners uncreatable.
-	d.elbv2Service, err = initServiceWithRetry("ELBv2 service", func() (*handlers_elbv2.ELBv2ServiceImpl, error) {
+	d.elbv2Service, err = initServiceWithRetry("ELBv2 service", func() (*elbv2domain.ELBv2ServiceImpl, error) {
 		masterKey, mkErr := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 		if mkErr != nil {
 			return nil, fmt.Errorf("load ELBv2 master key: %w", mkErr)
 		}
-		return handlers_elbv2.NewELBv2ServiceImplWithNATS(d.config, d.natsConn, masterKey)
+		return elbv2domain.NewELBv2ServiceImplWithNATS(d.config, d.natsConn, masterKey)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ELBv2 service: %w", err)
@@ -2072,7 +2072,7 @@ func (d *Daemon) startCluster() error {
 	}
 
 	// Route system VM launches through NATS so they fan out across the cluster.
-	d.elbv2Service.InstanceLauncher = handlers_elbv2.NewNATSSystemInstanceLauncher(d.natsConn, 0)
+	d.elbv2Service.InstanceLauncher = elbv2domain.NewNATSSystemInstanceLauncher(d.natsConn, 0)
 
 	// Provide a lazily-built KV-backed IAM service so an LB VM gets a system
 	// instance profile and authenticates with IMDS instance-role creds. The

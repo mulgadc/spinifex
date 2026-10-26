@@ -57,7 +57,7 @@ const (
 	registrationGrace = 60 * time.Second
 )
 
-// Data-plane engine names (duplicated from handlers/elbv2 to avoid an import cycle).
+// Data-plane engine names (duplicated from domains/elbv2 to avoid an import cycle).
 const (
 	EngineHAProxy = "haproxy"
 	EngineNginx   = "nginx"

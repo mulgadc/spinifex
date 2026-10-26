@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 )
 
@@ -83,7 +83,7 @@ func ValidateDescribeLoadBalancerAttributesInput(input *elbv2.DescribeLoadBalanc
 // ModifyTargetGroupAttributes implements the ELBv2 ModifyTargetGroupAttributes action, validating
 // the input and forwarding it to the NATS ELBv2 service.
 func ModifyTargetGroupAttributes(ctx context.Context, input *elbv2.ModifyTargetGroupAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyTargetGroupAttributesOutput, error) {
-	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
+	svc := elbv2domain.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateModifyTargetGroupAttributesInput,
 		func(i *elbv2.ModifyTargetGroupAttributesInput) (*elbv2.ModifyTargetGroupAttributesOutput, error) {
 			return svc.ModifyTargetGroupAttributes(ctx, i, accountID)
@@ -93,7 +93,7 @@ func ModifyTargetGroupAttributes(ctx context.Context, input *elbv2.ModifyTargetG
 // DescribeTargetGroupAttributes implements the ELBv2 DescribeTargetGroupAttributes action,
 // validating the input and forwarding it to the NATS ELBv2 service.
 func DescribeTargetGroupAttributes(ctx context.Context, input *elbv2.DescribeTargetGroupAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeTargetGroupAttributesOutput, error) {
-	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
+	svc := elbv2domain.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateDescribeTargetGroupAttributesInput,
 		func(i *elbv2.DescribeTargetGroupAttributesInput) (*elbv2.DescribeTargetGroupAttributesOutput, error) {
 			return svc.DescribeTargetGroupAttributes(ctx, i, accountID)
@@ -103,7 +103,7 @@ func DescribeTargetGroupAttributes(ctx context.Context, input *elbv2.DescribeTar
 // ModifyLoadBalancerAttributes implements the ELBv2 ModifyLoadBalancerAttributes action,
 // validating the input and forwarding it to the NATS ELBv2 service.
 func ModifyLoadBalancerAttributes(ctx context.Context, input *elbv2.ModifyLoadBalancerAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyLoadBalancerAttributesOutput, error) {
-	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
+	svc := elbv2domain.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateModifyLoadBalancerAttributesInput,
 		func(i *elbv2.ModifyLoadBalancerAttributesInput) (*elbv2.ModifyLoadBalancerAttributesOutput, error) {
 			return svc.ModifyLoadBalancerAttributes(ctx, i, accountID)
@@ -113,7 +113,7 @@ func ModifyLoadBalancerAttributes(ctx context.Context, input *elbv2.ModifyLoadBa
 // DescribeLoadBalancerAttributes implements the ELBv2 DescribeLoadBalancerAttributes action,
 // validating the input and forwarding it to the NATS ELBv2 service.
 func DescribeLoadBalancerAttributes(ctx context.Context, input *elbv2.DescribeLoadBalancerAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeLoadBalancerAttributesOutput, error) {
-	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
+	svc := elbv2domain.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateDescribeLoadBalancerAttributesInput,
 		func(i *elbv2.DescribeLoadBalancerAttributesInput) (*elbv2.DescribeLoadBalancerAttributesOutput, error) {
 			return svc.DescribeLoadBalancerAttributes(ctx, i, accountID)

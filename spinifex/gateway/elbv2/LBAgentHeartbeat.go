@@ -4,14 +4,14 @@ import (
 	"context"
 	"errors"
 
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 )
 
 // ValidateLBAgentHeartbeatInput rejects a nil input with InvalidParameterValue and a missing LBID
 // with MissingParameter.
-func ValidateLBAgentHeartbeatInput(input *handlers_elbv2.LBAgentHeartbeatInput) error {
+func ValidateLBAgentHeartbeatInput(input *elbv2domain.LBAgentHeartbeatInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -22,14 +22,14 @@ func ValidateLBAgentHeartbeatInput(input *handlers_elbv2.LBAgentHeartbeatInput) 
 }
 
 // LBAgentHeartbeat handles the ELBv2 LBAgentHeartbeat API call.
-func LBAgentHeartbeat(ctx context.Context, input *handlers_elbv2.LBAgentHeartbeatInput, natsConn *nats.Conn, accountID string) (handlers_elbv2.LBAgentHeartbeatOutput, error) {
-	var output handlers_elbv2.LBAgentHeartbeatOutput
+func LBAgentHeartbeat(ctx context.Context, input *elbv2domain.LBAgentHeartbeatInput, natsConn *nats.Conn, accountID string) (elbv2domain.LBAgentHeartbeatOutput, error) {
+	var output elbv2domain.LBAgentHeartbeatOutput
 
 	if err := ValidateLBAgentHeartbeatInput(input); err != nil {
 		return output, err
 	}
 
-	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
+	svc := elbv2domain.NewNATSELBv2Service(natsConn)
 	result, err := svc.LBAgentHeartbeat(ctx, input, accountID)
 	if err != nil {
 		return output, err

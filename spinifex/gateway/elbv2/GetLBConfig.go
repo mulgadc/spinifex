@@ -4,14 +4,14 @@ import (
 	"context"
 	"errors"
 
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 )
 
 // ValidateGetLBConfigInput rejects a nil input with InvalidParameterValue and a missing LBID with
 // MissingParameter.
-func ValidateGetLBConfigInput(input *handlers_elbv2.GetLBConfigInput) error {
+func ValidateGetLBConfigInput(input *elbv2domain.GetLBConfigInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -22,14 +22,14 @@ func ValidateGetLBConfigInput(input *handlers_elbv2.GetLBConfigInput) error {
 }
 
 // GetLBConfig handles the ELBv2 GetLBConfig API call.
-func GetLBConfig(ctx context.Context, input *handlers_elbv2.GetLBConfigInput, natsConn *nats.Conn, accountID string) (handlers_elbv2.GetLBConfigOutput, error) {
-	var output handlers_elbv2.GetLBConfigOutput
+func GetLBConfig(ctx context.Context, input *elbv2domain.GetLBConfigInput, natsConn *nats.Conn, accountID string) (elbv2domain.GetLBConfigOutput, error) {
+	var output elbv2domain.GetLBConfigOutput
 
 	if err := ValidateGetLBConfigInput(input); err != nil {
 		return output, err
 	}
 
-	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
+	svc := elbv2domain.NewNATSELBv2Service(natsConn)
 	result, err := svc.GetLBConfig(ctx, input, accountID)
 	if err != nil {
 		return output, err

@@ -10,10 +10,10 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,7 +34,7 @@ func TestDNSWatchSources_OneSourcePerDesiredSetInput(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{
 		InstanceRecordPrefix + "*",
-		handlers_elbv2.KeyPrefixLB + "*",
+		elbv2domain.KeyPrefixLB + "*",
 		">",
 		">",
 	}, filters)
@@ -73,7 +73,7 @@ func TestInstanceStateWatchBuckets_ReturnsSharedBucket(t *testing.T) {
 // TestElbv2WatchBuckets_NoStoreIsNilSafe covers a service that exists but has
 // not opened a store, distinct from the elbv2Service field itself being nil.
 func TestElbv2WatchBuckets_NoStoreIsNilSafe(t *testing.T) {
-	d := &Daemon{elbv2Service: &handlers_elbv2.ELBv2ServiceImpl{}}
+	d := &Daemon{elbv2Service: &elbv2domain.ELBv2ServiceImpl{}}
 	buckets, err := d.elbv2WatchBuckets(t.Context())
 	require.NoError(t, err)
 	assert.Nil(t, buckets)
@@ -83,7 +83,7 @@ func TestElbv2WatchBuckets_WithStoreReturnsWatchBucket(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
+	svc, err := elbv2domain.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
 	t.Cleanup(svc.Close)
 
@@ -91,7 +91,7 @@ func TestElbv2WatchBuckets_WithStoreReturnsWatchBucket(t *testing.T) {
 	buckets, err := d.elbv2WatchBuckets(t.Context())
 	require.NoError(t, err)
 	require.Len(t, buckets, 1)
-	assert.Equal(t, handlers_elbv2.KVBucketELBv2, buckets[0].Name())
+	assert.Equal(t, elbv2domain.KVBucketELBv2, buckets[0].Name())
 }
 
 // TestEksWatchBuckets_NilGuards exercises the two halves of the guard clause

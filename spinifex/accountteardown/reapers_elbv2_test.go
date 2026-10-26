@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ import (
 // The embedded interface is nil, so a reaper reaching for anything beyond the
 // four methods below panics rather than passing.
 type fakeELBv2 struct {
-	handlers_elbv2.ELBv2Service
+	elbv2domain.ELBv2Service
 
 	loadBalancers []*elbv2.LoadBalancer
 	targetGroups  []*elbv2.TargetGroup

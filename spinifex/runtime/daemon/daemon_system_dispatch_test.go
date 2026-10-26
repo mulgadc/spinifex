@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -28,7 +28,7 @@ func TestRespondWithSystemLaunchOutput(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	msg := &nats.Msg{Subject: "system.LaunchInstance.sys.micro", Reply: "test.launch.ok.reply", Sub: sub}
-	out := &handlers_elbv2.SystemInstanceOutput{InstanceID: "i-abc", PrivateIP: "10.0.0.5"}
+	out := &elbv2domain.SystemInstanceOutput{InstanceID: "i-abc", PrivateIP: "10.0.0.5"}
 	msg = msgWithConn(nc, msg)
 
 	respondWithSystemLaunchOutput(msg, out)
@@ -36,8 +36,8 @@ func TestRespondWithSystemLaunchOutput(t *testing.T) {
 	select {
 	case payload := <-replyCh:
 		var env struct {
-			Output *handlers_elbv2.SystemInstanceOutput `json:"output,omitempty"`
-			Error  string                               `json:"error,omitempty"`
+			Output *elbv2domain.SystemInstanceOutput `json:"output,omitempty"`
+			Error  string                            `json:"error,omitempty"`
 		}
 		require.NoError(t, json.Unmarshal(payload, &env))
 		require.NotNil(t, env.Output)
@@ -287,20 +287,20 @@ func TestLaunchSystemInstanceOnNode_RemoteRoundTrip(t *testing.T) {
 	d := &Daemon{natsConn: nc, node: "node-a", natsSubscriptions: make(map[string]*nats.Subscription)}
 
 	// Stand in for the remote node's owning daemon on the node-targeted subject.
-	gotCh := make(chan *handlers_elbv2.SystemInstanceInput, 1)
+	gotCh := make(chan *elbv2domain.SystemInstanceInput, 1)
 	sub, err := nc.Subscribe("system.LaunchInstance.sys.medium.node-b", func(msg *nats.Msg) {
-		var in handlers_elbv2.SystemInstanceInput
+		var in elbv2domain.SystemInstanceInput
 		_ = json.Unmarshal(msg.Data, &in)
 		gotCh <- &in
 		payload, _ := json.Marshal(systemInstanceLaunchEnvelope{
-			Output: &handlers_elbv2.SystemInstanceOutput{InstanceID: "i-remote", PrivateIP: "10.0.2.7"},
+			Output: &elbv2domain.SystemInstanceOutput{InstanceID: "i-remote", PrivateIP: "10.0.2.7"},
 		})
 		_ = msg.Respond(payload)
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	out, err := d.LaunchSystemInstanceOnNode("node-b", &handlers_elbv2.SystemInstanceInput{
+	out, err := d.LaunchSystemInstanceOnNode("node-b", &elbv2domain.SystemInstanceInput{
 		InstanceType: "sys.medium", ImageID: "ami-x",
 	})
 	require.NoError(t, err)
@@ -329,14 +329,14 @@ func TestLaunchSystemInstanceOnNode_RemoteErrorPropagated(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	_, err = d.LaunchSystemInstanceOnNode("node-b", &handlers_elbv2.SystemInstanceInput{InstanceType: "sys.medium"})
+	_, err = d.LaunchSystemInstanceOnNode("node-b", &elbv2domain.SystemInstanceInput{InstanceType: "sys.medium"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "insufficient capacity")
 }
 
 func TestLaunchSystemInstanceOnNode_RemoteWithoutConn(t *testing.T) {
 	d := &Daemon{node: "node-a"}
-	_, err := d.LaunchSystemInstanceOnNode("node-b", &handlers_elbv2.SystemInstanceInput{InstanceType: "sys.medium"})
+	_, err := d.LaunchSystemInstanceOnNode("node-b", &elbv2domain.SystemInstanceInput{InstanceType: "sys.medium"})
 	require.Error(t, err, "remote placement requires a NATS connection")
 }
 
@@ -459,7 +459,7 @@ func TestHandleSystemLaunchInstance_PanicRecovered(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	payload, err := json.Marshal(&handlers_elbv2.SystemInstanceInput{InstanceType: "sys.medium"})
+	payload, err := json.Marshal(&elbv2domain.SystemInstanceInput{InstanceType: "sys.medium"})
 	require.NoError(t, err)
 	msg := msgWithConn(nc, &nats.Msg{
 		Subject: "system.LaunchInstance.sys.medium",
@@ -596,19 +596,19 @@ func TestLaunchSystemInstanceOnNode_Failures(t *testing.T) {
 	d := &Daemon{natsConn: nc, node: "node-a", resourceMgr: rm}
 
 	t.Run("local target validates the type", func(t *testing.T) {
-		_, err := d.LaunchSystemInstanceOnNode("node-a", &handlers_elbv2.SystemInstanceInput{InstanceType: "zz9.none"})
+		_, err := d.LaunchSystemInstanceOnNode("node-a", &elbv2domain.SystemInstanceInput{InstanceType: "zz9.none"})
 		assert.ErrorContains(t, err, "unknown instance type")
 	})
 
 	t.Run("remote without a type", func(t *testing.T) {
-		_, err := d.LaunchSystemInstanceOnNode("node-b", &handlers_elbv2.SystemInstanceInput{})
+		_, err := d.LaunchSystemInstanceOnNode("node-b", &elbv2domain.SystemInstanceInput{})
 		assert.ErrorContains(t, err, "missing InstanceType")
 		_, err = d.LaunchSystemInstanceOnNode("node-b", nil)
 		assert.ErrorContains(t, err, "missing InstanceType")
 	})
 
 	t.Run("remote node not listening", func(t *testing.T) {
-		_, err := d.LaunchSystemInstanceOnNode("node-gone", &handlers_elbv2.SystemInstanceInput{InstanceType: "sys.p1"})
+		_, err := d.LaunchSystemInstanceOnNode("node-gone", &elbv2domain.SystemInstanceInput{InstanceType: "sys.p1"})
 		assert.ErrorIs(t, err, nats.ErrNoResponders)
 	})
 
@@ -629,7 +629,7 @@ func TestLaunchSystemInstanceOnNode_Failures(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-			_, err = d.LaunchSystemInstanceOnNode(node, &handlers_elbv2.SystemInstanceInput{InstanceType: "sys.p1"})
+			_, err = d.LaunchSystemInstanceOnNode(node, &elbv2domain.SystemInstanceInput{InstanceType: "sys.p1"})
 			assert.ErrorContains(t, err, wantErr[name])
 		})
 	}

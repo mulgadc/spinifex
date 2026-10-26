@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 )
 
@@ -39,7 +39,7 @@ func CreateRule(ctx context.Context, input *elbv2.CreateRuleInput, natsConn *nat
 		return output, err
 	}
 
-	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
+	svc := elbv2domain.NewNATSELBv2Service(natsConn)
 	result, err := svc.CreateRule(ctx, input, accountID)
 	if err != nil {
 		return output, err

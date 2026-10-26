@@ -32,7 +32,7 @@ var allowlist = []allowance{
 	{From: "cmd/aws-model-coverage", To: "domains/acm/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared ECR/ACM inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/ecr/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared ECR/ACM inventories; named exception, must not construct a registration"},
 
-	{From: "daemon", To: "domains/ec2/awsapi/instance", Debt: "Instance adapter consumers outside EC2", Reason: "daemon/eks_cp_control.go and rds_deps.go call the instance adapter; needs an EC2 capability"},
+	{From: "runtime/daemon", To: "domains/ec2/awsapi/instance", Debt: "Instance adapter consumers outside EC2", Reason: "runtime/daemon/eks_cp_control.go and rds_deps.go call the instance adapter; needs an EC2 capability"},
 
 	{From: "domains/acm", To: "domains/iam", Debt: "ACM: the IAM AES-GCM helper import (ACM relocation residual)", Reason: "IAM AES-GCM helpers; needs a shared crypto boundary"},
 
@@ -66,7 +66,7 @@ var allowlist = []allowance{
 	{From: "domains/ec2/instance", To: "domains/network/topology", Debt: "EC2 → network implementation", Reason: "EC2 reads network implementation; clears with the EC2-owned projection"},
 	{From: "domains/ec2/instance", To: "runtime/compute/gpu", Debt: "domains/ec2/instance", Reason: "VM/GPU runtime state read directly; needs a domain-owned projection"},
 	{From: "domains/ec2/instance", To: "runtime/compute/vm", Debt: "domains/ec2/instance", Reason: "VM/GPU runtime state read directly; needs a domain-owned projection"},
-	{From: "domains/ec2/instance/state", To: "daemon", Debt: "domains/ec2/instance/state (dependency, IMDS readers)", Reason: "wraps the daemon's local-file reader and JetStreamManager bucket open unchanged for vpcd's IMDS lookup"},
+	{From: "domains/ec2/instance/state", To: "runtime/daemon", Debt: "domains/ec2/instance/state (dependency, IMDS readers)", Reason: "wraps the daemon's local-file reader and JetStreamManager bucket open unchanged for vpcd's IMDS lookup"},
 	{From: "domains/ec2/instance/state", To: "runtime/compute/vm", Debt: "domains/ec2/instance/state (dependency)", Reason: "the vpcd IMDS local reader returns vm.VM"},
 
 	{From: "domains/ec2/volume", To: "runtime/compute/vm", Debt: "Domain → runtime", Reason: "VM runtime state read directly; needs a domain-owned projection"},
@@ -159,6 +159,5 @@ var allowlist = []allowance{
 	{From: "domains/sts", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "STS reads IAM service, trust-policy and OIDC-provider state; needs an IAM capability"},
 
 	{From: "operator/cli", To: "accountteardown", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
-	{From: "operator/cli", To: "daemon", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "gateway", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 }

@@ -132,7 +132,7 @@ func (d *Daemon) resolveGatewayHost() string {
 // pure function of one node's config plus a mgmt-bridge IP. resolveGatewayHost
 // supplies its own live-detected d.mgmtBridgeIP for the local node; the
 // service-endpoint desired-set builder calls this for every node in the
-// cluster (daemon/dns_reconcile.go), passing "" for peers since their
+// cluster (runtime/daemon/dns_reconcile.go), passing "" for peers since their
 // mgmt-bridge IP is host-local and never gossiped — the same limitation
 // NameserverSeeds and ResolverNameserverIPs already accept for peers.
 func gatewayHostForNode(node config.Config, mgmtBridgeIP string) string {

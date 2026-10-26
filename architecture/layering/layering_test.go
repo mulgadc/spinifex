@@ -191,3 +191,21 @@ func TestADR0001_LayeringCheckerDetectsFaults(t *testing.T) {
 		t.Errorf("allow-listed cross-domain edge %s was not detected by R3, so the allowlist entry would read as stale", allowedEdge)
 	}
 }
+
+// TestADR0001_InterimDaemonDirectionCoversRuntimeDaemon: the daemon left its
+// legacy root, so the interim guardrail must still reject handlers and gateway
+// importing it at runtime/daemon.
+func TestADR0001_InterimDaemonDirectionCoversRuntimeDaemon(t *testing.T) {
+	r := ruleByID("Interim_DaemonGatewayHandlersDirection")
+	daemon, _ := classify("spinifex/runtime/daemon")
+	for _, from := range []string{"spinifex/gateway", "spinifex/handlers/ecs"} {
+		f, _ := classify(from)
+		if !r.subject(f, from) || !r.forbids(f, daemon, from) {
+			t.Errorf("%s -> runtime/daemon is not rejected", from)
+		}
+	}
+	other, _ := classify("spinifex/runtime/host/process")
+	if gw, _ := classify("spinifex/gateway"); r.forbids(gw, other, "spinifex/gateway") {
+		t.Error("gateway -> runtime/host/process is rejected, but it is not the daemon")
+	}
+}

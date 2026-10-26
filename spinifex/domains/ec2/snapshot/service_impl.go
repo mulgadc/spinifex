@@ -382,7 +382,7 @@ func volumeAttachment(ctx context.Context, store objectstore.ObjectStore, bucket
 // volume-to-node resolution is needed here.
 //
 // An attachment record is not proof of a live writer: stop deliberately leaves
-// a boot volume attached (daemon/vm_adapters.go's volumeMounterAdapter.Unmount)
+// a boot volume attached (runtime/daemon/vm_adapters.go's volumeMounterAdapter.Unmount)
 // while tearing down both the NBD plugin and this subscription. The two
 // not-running signals below are therefore the stopped-instance path, not a
 // failure — treating them as one would make every stopped instance's root

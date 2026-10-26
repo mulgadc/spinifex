@@ -130,7 +130,7 @@ func TestDeleteVolume_CrossAccountDocumentIsStillNotFound(t *testing.T) {
 // UpdateVolumeState succeeds, but the document goes unreadable before
 // DeleteVolume's own read of the same key. That read failure must come back
 // as a non-NotFound error, which is exactly the signal
-// daemon/vm_adapters.go's DeleteVolumes and instance/service_impl.go's
+// runtime/daemon/vm_adapters.go's DeleteVolumes and instance/service_impl.go's
 // deleteInstanceVolumes use to tell a real failure from an already-gone
 // volume (!awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err)).
 func TestDeleteVolumeOnTerminate_DeleteReadFailureIsNotSuccess(t *testing.T) {

@@ -31,7 +31,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const daemonTracerName = "github.com/mulgadc/spinifex/spinifex/daemon"
+const daemonTracerName = "github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 
 // startOpSpan opens a child span for a named instance operation under ctx.
 func startOpSpan(ctx context.Context, op, instanceID string) (context.Context, trace.Span) {

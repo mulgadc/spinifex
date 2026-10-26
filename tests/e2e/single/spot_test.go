@@ -24,7 +24,7 @@ import (
 //     directly via WaitForInstanceState(running).
 //   - Terminating a spot-backed instance must drive the real async delegation
 //     (TerminateInstances -> daemon teardown cleaner -> RemoveFromSpotRequest ->
-//     CloseForInstance, daemon/vm_adapters.go instanceCleanerAdapter), not a
+//     CloseForInstance, runtime/daemon/vm_adapters.go instanceCleanerAdapter), not a
 //     direct CloseForInstance call. That delegation needs a real vm.Manager to
 //     run the teardown chain, which is out of DaemonLite's scope.
 //

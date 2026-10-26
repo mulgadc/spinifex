@@ -1605,7 +1605,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 // TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
 // locks the running-path half of the terminate-implies-detach fix for a
 // DeleteOnTermination=false root volume: shutdownAndUnmount's Unmount
-// (daemon/vm_adapters.go) deliberately never clears a Boot volume's
+// (runtime/daemon/vm_adapters.go) deliberately never clears a Boot volume's
 // attachment, so without this it would strand attached to the now-terminated
 // instance forever. Terminate must still detach it (AWS semantics: it
 // survives as available, it just isn't deleted).

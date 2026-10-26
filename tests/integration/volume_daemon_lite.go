@@ -33,7 +33,7 @@ const testProviderNodeName = "integration-node"
 const providerRequestTimeout = 60 * time.Second
 
 // StartVolumeDaemonLite subscribes a real ec2volume.VolumeServiceImpl
-// — the same production code a live daemon runs (daemon/daemon_handlers_volume.go)
+// — the same production code a live daemon runs (runtime/daemon/daemon_handlers_volume.go)
 // — to its ec2.* subjects, backed by a
 // real predastore daemon (testpredastore.Start) rather than the memory-backed
 // stores DaemonLite's other resources use.

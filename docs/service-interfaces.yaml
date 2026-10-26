@@ -50,13 +50,13 @@ services:
     # Translates VPC / EBS / S3 operations into vpc.* / ebs.* / s3.* and
     # forwards to vpcd / viperblockd / predastore.
     #
-    # Source layout: spinifex/runtime/roles/spinifex (entry), spinifex/daemon
+    # Source layout: spinifex/runtime/roles/spinifex (entry), spinifex/runtime/daemon
     # (subscribe registration), spinifex/domains/<domain> and the legacy
     # spinifex/handlers/{ecs,eks,elbv2,iam,rds} packages (per-subject handler
     # bodies). Selector treats these paths as belonging to this service via
     # the `additional_paths` field.
     additional_paths:
-      - spinifex/daemon
+      - spinifex/runtime/daemon
       - spinifex/domains/ec2/account
       - spinifex/domains/ec2/eigw
       - spinifex/domains/ec2/eip

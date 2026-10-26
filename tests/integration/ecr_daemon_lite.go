@@ -10,7 +10,7 @@ import (
 )
 
 // StartECRDaemonLite subscribes a real ecr.MetaServiceImpl (the same
-// production service the live daemon runs, see daemon/daemon.go)
+// production service the live daemon runs, see runtime/daemon/daemon.go)
 // to every ecr.* NATS subject the gateway's ECR control-plane handlers and
 // ECRRegistry.Meta dial for metadata — repos, policies, lifecycle policies,
 // tags, manifest records, and in-progress upload state. It is memory-backed

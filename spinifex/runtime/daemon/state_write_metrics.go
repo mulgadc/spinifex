@@ -11,7 +11,7 @@ import (
 )
 
 // stateWriteMeterName is the instrumentation scope for persistState timings.
-const stateWriteMeterName = "github.com/mulgadc/spinifex/spinifex/daemon/statewrite"
+const stateWriteMeterName = "github.com/mulgadc/spinifex/spinifex/runtime/daemon/statewrite"
 
 // Duration is reported as a sum plus an op count rather than a histogram:
 // ES|QL cannot aggregate a native histogram field, so a panel computes

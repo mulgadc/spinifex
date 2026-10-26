@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -36,9 +35,7 @@ const livenessProbeTimeout = 500 * time.Millisecond
 
 // DynamicEndpointResolver resolves a self-host model's base URL through the
 // daemon's endpoint registry, and asks for a launch when there is nothing to
-// resolve. It lives here rather than in gateway_bedrock because that package
-// cannot import this one: domains/ochre already imports it for
-// LookupServingSpec.
+// resolve.
 type DynamicEndpointResolver struct {
 	svc    EndpointService
 	static map[string]string
@@ -84,7 +81,7 @@ type livenessResult struct {
 	checkedAt time.Time
 }
 
-var _ gateway_bedrock.EndpointResolver = (*DynamicEndpointResolver)(nil)
+var _ EndpointResolver = (*DynamicEndpointResolver)(nil)
 
 // ResolverOption adjusts a DynamicEndpointResolver at construction.
 type ResolverOption func(*DynamicEndpointResolver)

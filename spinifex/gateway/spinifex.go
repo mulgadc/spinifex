@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_spx "github.com/mulgadc/spinifex/spinifex/gateway/spx"
 )
 
@@ -99,7 +99,7 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		} else {
 			err = gw.BedrockAccessAdmin.Revoke(ctx, targetAccount, modelID)
 		}
-		output = gateway_bedrock.ModelAccessChange{AccountID: targetAccount, ModelID: modelID}
+		output = ochre.ModelAccessChange{AccountID: targetAccount, ModelID: modelID}
 	case "ListModelAccess":
 		if gw.BedrockAccessAdmin == nil {
 			return errors.New(awserrors.ErrorServerInternal)
@@ -110,12 +110,12 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		}
 		var models []string
 		if models, err = gw.BedrockAccessAdmin.List(ctx, targetAccount); err == nil {
-			output = gateway_bedrock.ModelAccessList{AccountID: targetAccount, ModelIDs: models}
+			output = ochre.ModelAccessList{AccountID: targetAccount, ModelIDs: models}
 		}
 	case "ListOchreCatalog":
-		var entries []gateway_bedrock.AdminCatalogEntry
-		if entries, err = gateway_bedrock.AdminCatalog(ctx, accountID, gw.bedrockResolver(), gw.bedrockAccessResolver()); err == nil {
-			output = gateway_bedrock.AdminCatalogList{Entries: entries}
+		var entries []ochre.AdminCatalogEntry
+		if entries, err = ochre.AdminCatalog(ctx, accountID, gw.bedrockResolver(), gw.bedrockAccessResolver()); err == nil {
+			output = ochre.AdminCatalogList{Entries: entries}
 		}
 	default:
 		return errors.New(awserrors.ErrorInvalidAction)

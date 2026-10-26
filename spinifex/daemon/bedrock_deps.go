@@ -7,7 +7,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -18,11 +17,11 @@ import (
 // of.
 func (d *Daemon) buildBedrockLaunchDeps() ochre.LaunchDeps {
 	js, err := jetstream.New(d.natsConn)
-	var weights = gateway_bedrock.NoopWeightsResolver
+	var weights = ochre.NoopWeightsResolver
 	if err != nil {
 		slog.Warn("Bedrock: jetstream init failed; serving VMs cannot resolve staged weights", "err", err)
 	} else {
-		weights = gateway_bedrock.NewWeightsStore(js)
+		weights = ochre.NewWeightsStore(js)
 	}
 
 	return ochre.LaunchDeps{

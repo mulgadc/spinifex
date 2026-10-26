@@ -13,7 +13,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
 // fakeSystemVPC is the whole EC2 VPC family as the system-VPC builder sees
@@ -439,7 +438,7 @@ type launchHarness struct {
 	images   fakeAMIResolver
 	volumes  *fakeVolume
 	attacher *fakeAttacher
-	weights  gateway_bedrock.WeightsResolver
+	weights  WeightsResolver
 	hostPort *fakeHostPort
 }
 
@@ -475,7 +474,7 @@ func testLaunchInput() LaunchInput {
 		GroupID:      testModelID,
 		InstanceType: "g5.xlarge",
 		Members: []LaunchMemberInput{
-			{ModelID: testModelID, Family: gateway_bedrock.FamilyMeta, VLLMArgs: []string{"--dtype=bfloat16"}},
+			{ModelID: testModelID, Family: FamilyMeta, VLLMArgs: []string{"--dtype=bfloat16"}},
 		},
 	}
 }

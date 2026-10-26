@@ -16,10 +16,10 @@ import (
 )
 
 // BedrockUsageReader resolves accountID's current-period Bedrock token usage
-// (input+output, across every model), the counter gateway_bedrock's usage
+// (input+output, across every model), the counter ochre's usage
 // consumer maintains from the invocation stream. The
-// interface is defined here rather than importing gateway_bedrock so the two
-// packages stay decoupled; gateway_bedrock.UsageStore satisfies it
+// interface is defined here rather than importing domains/ochre so the two
+// packages stay decoupled; ochre.UsageStore satisfies it
 // structurally, and awsgw.go wires the two together at startup.
 type BedrockUsageReader interface {
 	TokensThisPeriod(ctx context.Context, accountID string) (int64, error)

@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,7 +48,7 @@ func accessGateway(t *testing.T) *GatewayConfig {
 	_, _, js := testutil.StartTestJetStream(t)
 	return &GatewayConfig{
 		DisableLogging:     true,
-		BedrockAccessAdmin: gateway_bedrock.NewModelAccessStore(js),
+		BedrockAccessAdmin: ochre.NewModelAccessStore(js),
 		IAMService:         allowAllIAMService(),
 	}
 }

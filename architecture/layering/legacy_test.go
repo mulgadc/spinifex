@@ -13,7 +13,6 @@ var frozenLegacyPackages = []string{
 	"accountteardown",
 	"daemon",
 	"gateway",
-	"gateway/bedrock",
 	"gateway/ecs",
 	"gateway/elbv2",
 	"gateway/spx",

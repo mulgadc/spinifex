@@ -15,7 +15,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -165,7 +164,7 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 	if in == nil || in.ModelID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	spec, specFound, selfHost := gateway_bedrock.LookupCoServeGroup(in.ModelID)
+	spec, specFound, selfHost := LookupCoServeGroup(in.ModelID)
 	if !specFound || !selfHost {
 		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
 	}
@@ -297,7 +296,7 @@ func (s *Service) evictForCapacity(ctx context.Context, wantModelID string, minV
 // STARTING (guaranteed by Ensure returning early for any concurrent caller
 // that observes STARTING), so no CAS-conflict retry loop is needed here. It
 // launches the VM exactly once for the whole group, never one per member.
-func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord, spec gateway_bedrock.CoServeGroupSpec) {
+func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord, spec CoServeGroupSpec) {
 	members := make([]LaunchMemberInput, 0, len(spec.Members))
 	for _, m := range spec.Members {
 		members = append(members, LaunchMemberInput{ModelID: m.ModelID, Family: m.Family, VLLMArgs: m.VLLMArgs})
@@ -363,7 +362,7 @@ func (s *Service) runLaunch(ctx context.Context, key string, rec EndpointRecord,
 // EndpointKey(accountID, modelID) always produced, so today's behaviour is
 // unchanged for a non-grouped model.
 func resolveKey(accountID, modelID string) string {
-	spec, found, selfHost := gateway_bedrock.LookupCoServeGroup(modelID)
+	spec, found, selfHost := LookupCoServeGroup(modelID)
 	if !found || !selfHost {
 		return EndpointKey(accountID, modelID)
 	}

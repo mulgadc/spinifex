@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/daemon"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )

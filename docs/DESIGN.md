@@ -124,7 +124,7 @@ refactor. It needs a versioned successor or an explicit compatibility plan.
 
 ### 5. Daemon Processing
 
-Daemons (`spinifex/daemon/daemon.go`) subscribe to NATS topics and handle requests. A table-driven `subscribeAll()` registers the static EC2/ELBv2 surface at startup:
+Daemons (`spinifex/runtime/daemon/daemon.go`) subscribe to NATS topics and handle requests. A table-driven `subscribeAll()` registers the static EC2/ELBv2 surface at startup:
 
 ```go
 // Queue group → load-balanced (one daemon handles each request)

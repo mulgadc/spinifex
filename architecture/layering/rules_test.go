@@ -73,7 +73,7 @@ var rules = []rule{
 		subject: func(f class, _ string) bool { return f.domainShaped() },
 		forbids: func(f, t class, _ string) bool {
 			return f.domainShaped() && (isLayer(t, layerRuntime, layerOperator) ||
-				t.isLegacy(runtimeLegacy...) || t.isLegacy(operatorLegacy...))
+				t.isLegacy(operatorLegacy...))
 		},
 	},
 	{
@@ -160,9 +160,9 @@ var rules = []rule{
 		forbids: func(f, t class, _ string) bool {
 			switch {
 			case f.isLegacy("handlers"):
-				return t.isLegacy("gateway", "daemon")
+				return t.isLegacy("gateway") || t.daemon
 			case f.isLegacy("gateway"):
-				return t.isLegacy("daemon")
+				return t.daemon
 			}
 			return false
 		},

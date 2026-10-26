@@ -106,7 +106,7 @@ func createTenantAccount(t *testing.T, gw *Gateway, name string) *PrincipalClien
 // Left live in account_test.go: Step2 (instance scoping) and Step3 (volume
 // scoping) — checkInstanceOwnership, the actual cross-account gate for
 // stop/start/reboot/terminate/attach-volume/etc., runs daemon-side only after
-// a real vm.Manager lookup (daemon/daemon_handlers.go handleEC2Events), so it
+// a real vm.Manager lookup (runtime/daemon/daemon_handlers.go handleEC2Events), so it
 // cannot be exercised without a live guest. Step5 (snapshot scoping) needs a
 // real backing volume for CreateSnapshot (viperblock, out of DaemonLite's
 // scope) — only its cross-account DeleteSnapshot/CreateSnapshot-of-foreign-

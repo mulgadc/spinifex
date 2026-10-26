@@ -35,7 +35,7 @@ func TestS6_FederationIsolated(t *testing.T) {
 
 	roots := []string{
 		filepath.Join(repoRoot(t), "spinifex", "domains", "network"),
-		filepath.Join(repoRoot(t), "spinifex", "daemon"),
+		filepath.Join(repoRoot(t), "spinifex", "runtime", "daemon"),
 		filepath.Join(repoRoot(t), "spinifex", "handlers"),
 	}
 	type hit struct {

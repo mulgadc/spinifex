@@ -42,6 +42,7 @@ type class struct {
 	legacy string // legacy root name when layer is layerLegacy
 	domain string // owning domain for domain-shaped and agent packages
 	kind   domainKind
+	daemon bool // runtime/daemon, the interim daemon -> gateway -> handlers root
 }
 
 func (c class) domainShaped() bool { return c.kind != notDomain }
@@ -59,7 +60,7 @@ func (c class) isLegacy(roots ...string) bool {
 
 // legacyRoots are pre-ADR-0001 application roots still standing.
 var legacyRoots = map[string]bool{
-	"handlers": true, "gateway": true, "daemon": true,
+	"handlers": true, "gateway": true,
 	"accountteardown": true, "lbagent": true,
 }
 
@@ -70,12 +71,8 @@ var gatewayDomains = map[string]string{
 	"rds": "rds", "sts": "sts",
 }
 
-// runtimeLegacy and operatorLegacy are the legacy roots whose ADR-0001 target
-// is runtime/ and operator/ respectively.
-var (
-	runtimeLegacy  = []string{"daemon"}
-	operatorLegacy = []string{"accountteardown"}
-)
+// operatorLegacy are the legacy roots whose ADR-0001 target is operator/.
+var operatorLegacy = []string{"accountteardown"}
 
 // classify maps a module-relative package directory to its layer. ok is false
 // for a package that has no deliberate classification.
@@ -112,7 +109,7 @@ func classifyApp(app []string) (class, bool) {
 	case "ingress":
 		return class{layer: layerIngress}, true
 	case "runtime":
-		return class{layer: layerRuntime}, true
+		return class{layer: layerRuntime, daemon: len(app) >= 2 && app[1] == "daemon"}, true
 	case "operator":
 		return class{layer: layerOperator}, true
 	case "providers":

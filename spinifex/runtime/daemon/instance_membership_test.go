@@ -3,8 +3,8 @@ package daemon_test
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/stretchr/testify/assert"
 )
 

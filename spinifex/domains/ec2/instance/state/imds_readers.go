@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/nats-io/nats.go"
 )
 

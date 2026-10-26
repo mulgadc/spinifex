@@ -1742,7 +1742,7 @@ func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {
 // TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes locks the
 // A DeleteOnTermination root volume left attached to a
 // stopped instance (Stop's Unmount deliberately never clears a Boot volume's
-// AttachedInstance, daemon/vm_adapters.go) hits DeleteVolume's in-use guard
+// AttachedInstance, runtime/daemon/vm_adapters.go) hits DeleteVolume's in-use guard
 // directly — see TestDeleteVolume_VolumeAttachedButAvailable above.
 // DeleteVolumeOnTerminate must clear the stale attachment first (terminate
 // implies detach) so the terminate delete actually succeeds instead of

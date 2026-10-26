@@ -210,3 +210,57 @@ func TestRemoveTags_MissingParams(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
 }
+
+func TestRemoveTags_LaterUnknownARNRemovesNothing(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name: aws.String("rmtags-atomic"),
+		Tags: []*elbv2.Tag{{Key: aws.String("App"), Value: aws.String("nginx")}},
+	}, testAccountID)
+	require.NoError(t, err)
+	arn := *lbOut.LoadBalancers[0].LoadBalancerArn
+	missing := "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":targetgroup/missing/0123456789abcdef"
+
+	_, err = svc.RemoveTags(context.Background(), &elbv2.RemoveTagsInput{
+		ResourceArns: []*string{aws.String(arn), aws.String(missing)},
+		TagKeys:      []*string{aws.String("App")},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorELBv2TargetGroupNotFound, err.Error())
+	assert.Equal(t, map[string]string{"App": "nginx"}, tagsFor(t, svc, arn))
+}
+
+func TestAddTags_LaterEmptyARNTagsNothing(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("addtags-empty-arn")}, testAccountID)
+	require.NoError(t, err)
+	arn := *lbOut.LoadBalancers[0].LoadBalancerArn
+
+	_, err = svc.AddTags(context.Background(), &elbv2.AddTagsInput{
+		ResourceArns: []*string{aws.String(arn), aws.String("")},
+		Tags:         []*elbv2.Tag{{Key: aws.String("k"), Value: aws.String("v")}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+	assert.Empty(t, tagsFor(t, svc, arn))
+}
+
+func TestAddTags_RepeatedARN(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name: aws.String("addtags-repeat"),
+		Tags: []*elbv2.Tag{{Key: aws.String("App"), Value: aws.String("nginx")}},
+	}, testAccountID)
+	require.NoError(t, err)
+	arn := *lbOut.LoadBalancers[0].LoadBalancerArn
+
+	_, err = svc.AddTags(context.Background(), &elbv2.AddTagsInput{
+		ResourceArns: []*string{aws.String(arn), aws.String(arn)},
+		Tags:         []*elbv2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"App": "nginx", "Env": "prod"}, tagsFor(t, svc, arn))
+}

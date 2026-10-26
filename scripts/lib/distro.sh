@@ -139,6 +139,29 @@ distro_has_libreswan() {
     [ -x "${DISTRO_ROOT:-}/usr/libexec/ipsec/pluto" ]
 }
 
+# The OS family of the os-release text on stdin, for install-node.sh's one-OS
+# cluster check: "debian" for Debian and Ubuntu, so mixing those is not newly
+# refused, and the ID itself for anything else.
+distro_os_family() {
+    local line id="" like=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ID=*) id=${line#ID=} ;;
+            ID_LIKE=*) like=${line#ID_LIKE=} ;;
+        esac
+    done
+    id=${id//[\"\']/}
+    like=${like//[\"\']/}
+    if [ -z "$id" ]; then
+        echo "distro.sh: OS family: /etc/os-release has no ID" >&2
+        return 1
+    fi
+    case " $id $like " in
+        *" debian "*) echo debian ;;
+        *) echo "$id" ;;
+    esac
+}
+
 # The OVS and OVN units the given unit files depend on or order against that
 # are not installed, one per line; prints nothing when all are. Fails only
 # when a unit file cannot be read.

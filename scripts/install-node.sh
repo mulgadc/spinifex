@@ -7,7 +7,7 @@
 # `spx admin join` on the rest, restarts services and verifies the result.
 #
 # It is the scripted form of docs/install/install-multi-node. It installs no
-# software — every host must already be running the version you want. Use
+# software — every host must already run the version you want, on one OS. Use
 # mulga's scripts/update-nodes.sh, or the release installer, for that first.
 #
 # Usage:
@@ -68,6 +68,19 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Host-OS capability probes: beside this script in a checkout and in the
+# installed share dir, else where setup.sh installs them.
+DISTRO_LIB=""
+for candidate in "$SCRIPT_DIR/lib/distro.sh" /usr/local/share/spinifex/lib/distro.sh; do
+    if [ -f "$candidate" ]; then DISTRO_LIB="$candidate"; break; fi
+done
+if [ -z "$DISTRO_LIB" ]; then
+    echo "ERROR: distro.sh not found at $SCRIPT_DIR/lib/distro.sh or /usr/local/share/spinifex/lib/distro.sh; re-run setup.sh to install it" >&2
+    exit 1
+fi
+# shellcheck source=lib/distro.sh
+. "$DISTRO_LIB"
 
 SSH_USER="${SSH_USER:-spinifex}"
 IDENTITY=""
@@ -284,6 +297,8 @@ resolve_plane() {
 log "preflight on $N host(s)"
 
 versions=""
+families=""
+libreswan_hosts=""
 for i in $(seq 0 $((N - 1))); do
     host="${HOSTS[$i]}"
 
@@ -302,6 +317,16 @@ for i in $(seq 0 $((N - 1))); do
     version=$(out "$host" "spx version 2>/dev/null | head -1")
     version="${version//[$'\r\n']/}"
     versions+="${version}"$'\n'
+
+    family=$(out "$host" "cat /etc/os-release" | distro_os_family) ||
+        fail "$host: cannot tell its OS from /etc/os-release"
+    families+="${host}: ${family}"$'\n'
+
+    # libreswan's pluto: Spinifex cannot run OVN IPsec on it yet, and spx admin
+    # init refuses --ipsec=true there, which would stop formation part way.
+    if [ "$(out "$host" "test -x /usr/libexec/ipsec/pluto && echo yes")" = "yes" ]; then
+        libreswan_hosts+=" $host"
+    fi
 
     # A node that is already in a multi-node cluster is one whose keys and
     # logical network state are load-bearing. Refusing here is deliberate:
@@ -351,6 +376,20 @@ if [ "$(sort -u <<<"$versions" | grep -c .)" -gt 1 ]; then
     fail "hosts are running different spx versions:
 $(sort -u <<<"$versions" | sed 's/^/         /')
        Bring them all to the same build before forming a cluster."
+fi
+
+# A cluster runs one OS. Debian and Oracle Linux ship different OVN builds and
+# IKE daemons, and nothing qualifies them against each other.
+if [ "$(cut -d' ' -f2 <<<"$families" | sort -u | grep -c .)" -gt 1 ]; then
+    fail "hosts run different operating systems:
+$(sed '/^$/d; s/^/         /' <<<"$families")
+       A cluster must run one OS on every host."
+fi
+
+if $IPSEC_ENABLED && [ -n "$libreswan_hosts" ]; then
+    fail "--ipsec on, but these hosts use libreswan for IPsec:$libreswan_hosts
+       Spinifex cannot run OVN IPsec on libreswan yet. Re-run with --ipsec off
+       only if the nodes share a trusted private link."
 fi
 
 # --- Confirm ---------------------------------------------------------------
@@ -489,10 +528,10 @@ fi
 
 # --- Wipe ------------------------------------------------------------------
 #
-# node-reset.sh is not part of the release tarball, so it is pushed from this
-# checkout the same way smoke-test.sh is. After this a node has no CA, master
-# key, OVN database or chassis identity left for the formation phase to collide
-# with — which is the whole reason --wipe exists.
+# Pushed from beside this script, as smoke-test.sh is, so the reset matches this
+# script whatever the host has installed; it carries its own probes. After this
+# a node has no CA, master key, OVN database or chassis identity left for the
+# formation phase to collide with — which is the whole reason --wipe exists.
 if $WIPE; then
     log "wiping every host back to its pre-install state"
     for host in "${HOSTS[@]}"; do
@@ -964,9 +1003,8 @@ out "${HOSTS[0]}" "sudo sed -n '/^\[\[network.external_pools\]\]/,/^$/p' /etc/sp
 if $RUN_SMOKE; then
     echo ""
     log "running the smoke test on ${HOSTS[0]}"
-    # smoke-test.sh is not part of the release tarball, so it is pushed from
-    # this checkout — which also guarantees the test and this script are the
-    # same version.
+    # Pushed from beside this script, so the test and this script are the same
+    # version whatever the host has installed.
     scp "${SSH_OPTS[@]}" -q "$SCRIPT_DIR/smoke-test.sh" "$SSH_USER@${HOSTS[0]}:/tmp/spx-smoke-test.sh"
     on "${HOSTS[0]}" "chmod 0755 /tmp/spx-smoke-test.sh && /tmp/spx-smoke-test.sh --create-vpc --nodes $N" ||
         fail "smoke test failed on ${HOSTS[0]}"

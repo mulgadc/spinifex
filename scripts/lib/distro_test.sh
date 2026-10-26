@@ -165,6 +165,35 @@ fixture ls-charon; file /usr/lib/ipsec/charon; chmod +x "$ROOT/usr/lib/ipsec/cha
 expect_rc "libreswan: strongSwan's charon is not libreswan" 1
 
 # --------------------------------------------------------------------------
+# OS family, read from os-release text on stdin.
+# --------------------------------------------------------------------------
+# family <os-release text> — runs distro_os_family on it. Sets OUT, ERR and RC.
+family() {
+    RC=0
+    OUT=$(printf '%s\n' "$1" | /bin/bash -c '. "$1"; distro_os_family' _ "$DISTRO" 2>"$TMP/err") || RC=$?
+    ERR=$(cat "$TMP/err")
+}
+family 'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+ID=debian
+VERSION_ID="13"'
+expect_ok "OS family: Debian" debian
+family 'NAME="Ubuntu"
+ID=ubuntu
+ID_LIKE=debian'
+expect_ok "OS family: Ubuntu is Debian's family" debian
+family 'NAME="Oracle Linux Server"
+ID="ol"
+ID_LIKE="fedora"
+VERSION_ID="10.2"'
+expect_ok "OS family: Oracle Linux, quoted, is its own" ol
+family 'ID=rocky
+ID_LIKE="rhel centos fedora"'
+expect_ok "OS family: another EL is not Oracle Linux" rocky
+family 'NAME=Something
+VERSION_ID=1'
+expect_fail "OS family: no ID fails naming the file" /etc/os-release ID
+
+# --------------------------------------------------------------------------
 # OVS and OVN units the shipped Spinifex units name. Run against the real unit
 # files, so a unit that names a Debian-only OVS unit fails on the EL fixture.
 # --------------------------------------------------------------------------

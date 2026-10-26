@@ -84,35 +84,6 @@ distro_ovs_unit() {
     return 1
 }
 
-distro_ovn_central_layout() {
-    local split=false lone=false unit missing=""
-    for unit in ovn-central.service ovn-ovsdb-server-nb.service ovn-ovsdb-server-sb.service; do
-        if distro_unit_exists "$unit"; then
-            split=true
-        else
-            missing="${missing:+$missing, }$unit"
-        fi
-    done
-    if distro_unit_exists ovn-northd.service && [ -f "${DISTRO_ROOT:-}/etc/sysconfig/ovn" ]; then
-        lone=true
-    fi
-    if $split && $lone; then
-        echo "distro.sh: OVN central layout: found both the split units (ovn-central.service) and a lone ovn-northd.service with /etc/sysconfig/ovn; cannot tell which one owns the OVN databases" >&2
-        return 1
-    fi
-    if $split; then
-        if [ -n "$missing" ]; then
-            echo "distro.sh: OVN central layout: ovn-central is installed but $missing is missing" >&2
-            return 1
-        fi
-        echo split
-        return 0
-    fi
-    if $lone; then echo lone-northd; return 0; fi
-    echo "distro.sh: OVN central layout: found neither ovn-central.service nor ovn-northd.service with /etc/sysconfig/ovn; is OVN central installed?" >&2
-    return 1
-}
-
 distro_ca_trust() {
     local deb=false el=false
     command -v update-ca-certificates >/dev/null 2>&1 && deb=true
@@ -127,6 +98,13 @@ distro_ca_trust() {
     return 1
 }
 # --- END distro.sh probes ---
+
+# Resolved before anything stops, so a host whose OVS unit is ambiguous is
+# refused with nothing changed.
+OVS_UNIT=""
+if command -v ovs-vsctl >/dev/null 2>&1; then
+    OVS_UNIT=$(distro_ovs_unit) || exit 1
+fi
 
 WIPE_DIRS=("$ETC_DIR" "$LOG_DIR" "$RUN_DIR")
 $KEEP_DATA || WIPE_DIRS+=("$DATA_DIR")
@@ -253,8 +231,8 @@ fi
 # node keeping its old system-id across a reset re-registers under the old
 # chassis name and collides with the new one over the encap IP.
 log "removing OVS bridges and identity"
-if command -v ovs-vsctl >/dev/null 2>&1; then
-    run sudo systemctl start openvswitch-switch 2>/dev/null || true
+if [ -n "$OVS_UNIT" ]; then
+    run sudo systemctl start "$OVS_UNIT" 2>/dev/null || true
     $DRY_RUN || sleep 1
     # Listed even under --dry-run: "which bridges" is the question an operator
     # actually has here, and br-wan is a Linux bridge so it is never in this set.
@@ -263,7 +241,7 @@ if command -v ovs-vsctl >/dev/null 2>&1; then
         run sudo ovs-vsctl --if-exists del-br "$br"
     done
     run sudo ovs-vsctl --if-exists clear Open_vSwitch . external_ids 2>/dev/null || true
-    run sudo systemctl stop openvswitch-switch 2>/dev/null || true
+    run sudo systemctl stop "$OVS_UNIT" 2>/dev/null || true
 fi
 run sudo rm -f /etc/openvswitch/system-id.conf
 
@@ -308,7 +286,13 @@ if [ -e "$ETC_DIR/firewall/custom.nft" ]; then
 fi
 
 log "removing OVN databases"
-run sudo systemctl stop ovn-central 2>/dev/null || true
+# Debian's ovn-central takes its split units down with it; EL's ovn-northd runs
+# both databases itself. A compute node has neither.
+for unit in ovn-central.service ovn-northd.service; do
+    if distro_unit_exists "$unit"; then
+        run sudo systemctl stop "$unit" 2>/dev/null || true
+    fi
+done
 run sudo systemctl stop ovn-controller 2>/dev/null || true
 run sudo rm -f /var/lib/ovn/ovnnb_db.db /var/lib/ovn/ovnsb_db.db
 

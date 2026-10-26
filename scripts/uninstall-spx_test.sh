@@ -56,6 +56,17 @@ grep -q "unknown option" "$TMP/err" \
     && pass "unknown option explains itself on stderr" \
     || fail "unknown option wrote nothing useful to stderr"
 
+# --purge-deps on a dnf host stops before anything is touched. PATH holds only
+# the tools the script needs up to that check, with dnf and no apt-get.
+mkdir -p "$TMP/dnfbin"
+for tool in bash dirname; do ln -s "$(command -v "$tool")" "$TMP/dnfbin/$tool"; done
+printf '#!/bin/sh\nexit 0\n' >"$TMP/dnfbin/dnf"
+chmod +x "$TMP/dnfbin/dnf"
+PATH="$TMP/dnfbin" "$TMP/dnfbin/bash" "$UNINSTALL" --purge-deps --yes >"$TMP/out" 2>"$TMP/err" && rc=0 || rc=$?
+[ "$rc" = 1 ] && grep -q "not supported on dnf hosts" "$TMP/err" \
+    && pass "--purge-deps is refused on a dnf host, saying why" \
+    || fail "--purge-deps on a dnf host: rc=$rc: $(cat "$TMP/err")"
+
 # --------------------------------------------------------------------------
 # The multi-node refusal.
 #

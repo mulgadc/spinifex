@@ -65,7 +65,7 @@ Both ship to `/usr/local/share/spinifex/` on every node, so they are available o
 `node-reset_test.sh` checks that match against real processes, and that `reset-dev-env.sh` uses the same pattern.
 
 `uninstall-spx.sh` keeps `/var/lib/spinifex` and every package by default — uninstalling software should not destroy data, and a `curl … | bash` install lands on hosts that were already using openvswitch, libvirt and chrony. `--purge-data` and `--purge-deps` opt into each, and both confirm separately even under `--yes` (`SPX_PURGE_CONFIRM=destroy` for unattended data removal). `--dry-run` prints the whole plan and touches nothing.
-`--purge-deps` removes with apt or dnf, by `distro_pkg_manager`. dnf also removes every package that requires one it removes, so the dnf list leaves out QEMU, OVMF, SeaBIOS, `jq` and `xz`, which QEMU or dracut require, and dnf shows its whole transaction and asks before it runs.
+`--purge-deps` removes with apt and is refused on dnf hosts, where its fixed list cannot tell what `setup.sh` installed from what the host already had, and dnf would also remove every package that requires them.
 
 **It refuses on a multi-node cluster, and `--yes` does not override that.** Uninstalling one node of a running cluster strands its guests and leaves the survivors reconciling against a chassis that will never answer. Run `spx admin cluster shutdown` first, then the uninstaller on each node.
 

@@ -12,7 +12,8 @@
 # Options:
 #   --purge-data  Also remove /var/lib/spinifex — volumes, S3 objects, JetStream.
 #                 Off by default: uninstalling software should not destroy data.
-#   --purge-deps  Also remove the packages setup.sh installed, with apt or dnf.
+#   --purge-deps  Also remove the packages setup.sh installed, with apt. Refused
+#                 on dnf hosts, where it cannot tell those from the host's own.
 #                 Names them and confirms first, even under --yes. Off by default
 #                 because a curl|bash install lands on hosts already using them.
 #   --yes         Skip the confirmation prompt. Does NOT cover --purge-data,
@@ -99,6 +100,10 @@ fi
 PKG_MANAGER=""
 if $PURGE_DEPS; then
     PKG_MANAGER=$(distro_pkg_manager) || exit 1
+    if [ "$PKG_MANAGER" = dnf ]; then
+        echo "ERROR: --purge-deps is not supported on dnf hosts: its package list cannot tell what setup.sh installed from what the host already had, and dnf also removes every package that requires them. Re-run without --purge-deps." >&2
+        exit 1
+    fi
 fi
 # A failed OVS unit is restarted after its drop-in goes; absent when OVS is.
 OVS_UNIT=$(distro_ovs_unit 2>/dev/null) || OVS_UNIT=""
@@ -546,31 +551,15 @@ fi
 # workload is a far worse outcome than a few megabytes left behind. Confirmed
 # separately even under --yes, and never autoremove, which is unbounded.
 #
-# dnf also removes every package that requires one it removes, so the EL list
-# leaves out what QEMU or dracut requires, and dnf shows the whole transaction
-# and asks again before it runs.
+# apt only: dnf hosts are refused up front.
 # ---------------------------------------------------------------------------
 if $PURGE_DEPS; then
-    case "$PKG_MANAGER" in
-        apt)
-            PACKAGES="nbdkit qemu-utils gdisk ovmf less libvirt-daemon-system libvirt-clients
+    PACKAGES="nbdkit qemu-utils gdisk ovmf less libvirt-daemon-system libvirt-clients
 pciutils jq ethtool netcat-openbsd unzip xz-utils
 ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon
 chrony nftables"
-            KEPT="curl, wget, file, iproute2, dhcpcd-base, qemu-system-*"
-            REMOVE_CMD="apt-get remove -y"
-            ;;
-        dnf)
-            PACKAGES=""
-            for p in nbdkit nbdkit-basic-filters pciutils nmap-ncat less unzip ethtool \
-                     ovn25.03-central ovn25.03-host openvswitch3.5 openvswitch3.5-ipsec \
-                     python3-openvswitch3.5 openvswitch-selinux-extra-policy libreswan chrony; do
-                rpm -q "$p" >/dev/null 2>&1 && PACKAGES="${PACKAGES:+$PACKAGES }$p"
-            done
-            KEPT="curl, wget, file, iproute, dhcpcd, jq, xz, nftables, iptables-nft, systemd-resolved, qemu-kvm, qemu-img, edk2-ovmf, seabios-bin"
-            REMOVE_CMD="dnf remove --noautoremove"
-            ;;
-    esac
+    KEPT="curl, wget, file, iproute2, dhcpcd-base, qemu-system-*"
+    REMOVE_CMD="apt-get remove -y"
     log "--purge-deps: these packages would be removed:"
     # shellcheck disable=SC2086
     for p in $PACKAGES; do echo "    $p"; done
@@ -583,18 +572,9 @@ chrony nftables"
     else
         read -r -p "Remove these packages? Type 'remove' to continue: " reply
         if [ "$reply" = "remove" ]; then
-            case "$PKG_MANAGER" in
-                apt)
-                    # shellcheck disable=SC2086
-                    sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y $PACKAGES || \
-                        log "NOTE: apt-get remove reported errors; check the output above"
-                    ;;
-                dnf)
-                    # shellcheck disable=SC2086
-                    sudo dnf remove --noautoremove $PACKAGES || \
-                        log "NOTE: dnf remove did not complete; check the output above"
-                    ;;
-            esac
+            # shellcheck disable=SC2086
+            sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y $PACKAGES || \
+                log "NOTE: apt-get remove reported errors; check the output above"
         else
             log "  skipped"
         fi

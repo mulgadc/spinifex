@@ -190,5 +190,38 @@
     "extra": "",
     "suite": "kvquorum",
     "timeout_minutes": 55
+  },
+  {
+    "cell": 34,
+    "install": "binary",
+    "topo": "single",
+    "net": "dhcp",
+    "host": "oracle-10",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "",
+    "suite": ""
+  },
+  {
+    "cell": 35,
+    "install": "binary",
+    "topo": "single",
+    "net": "static",
+    "host": "oracle-10",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "reboot-single",
+    "suite": ""
+  },
+  {
+    "cell": 36,
+    "install": "binary",
+    "topo": "single",
+    "net": "nat",
+    "host": "oracle-10",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "nat-single",
+    "suite": ""
   }
 ]

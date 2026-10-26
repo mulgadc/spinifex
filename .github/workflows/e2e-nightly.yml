@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       cells:
-        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-3, 8-10, 17-19 tofu permutation matrix, 20 baremetal, 21-22 ISO, 23 predastore throughput, 24 predastore fault injection, 25-27 service suites (eks, ecs, rds), 28 guest disk performance, 29 storage fault injection, 30 routed NAT on three nodes, 31 instance recovery on three nodes, 32 load balancer recovery on three nodes, 33 KV bucket quorum under node loss on three nodes"
+        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-3, 8-10, 17-19 tofu permutation matrix, 34-36 Oracle Linux single node (basic, reboot, routed NAT), 20 baremetal, 21-22 ISO, 23 predastore throughput, 24 predastore fault injection, 25-27 service suites (eks, ecs, rds), 28 guest disk performance, 29 storage fault injection, 30 routed NAT on three nodes, 31 instance recovery on three nodes, 32 load balancer recovery on three nodes, 33 KV bucket quorum under node loss on three nodes"
         required: false
 
 permissions:
@@ -33,6 +33,7 @@ concurrency:
 env:
   GIT_BRANCH: ${{ github.ref_name }}
   UBUNTU_GOLD_IMAGE: /mnt/disk1/gold-images/spinifex-image-builder-ubuntu-26.04.qcow2
+  ORACLE_GOLD_IMAGE: /mnt/disk1/gold-images/spinifex-image-builder-oracle-10.qcow2
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 
@@ -195,7 +196,8 @@ jobs:
           # back onto the debian gold.
           TOFU_VAR_ARGS=""
           case "$MATRIX_HOST" in
-            ubuntu-*) TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE}" ;;
+            ubuntu-*) TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE} -var=host_os=ubuntu" ;;
+            oracle-*) TOFU_VAR_ARGS="-var=host_image_override=${ORACLE_GOLD_IMAGE} -var=host_os=oracle" ;;
           esac
 
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
@@ -687,7 +689,7 @@ jobs:
               'echo "host: $(hostname)"; echo "loadavg: $(cat /proc/loadavg)";
                grep -E "^(MemTotal|MemAvailable|SwapFree):" /proc/meminfo;
                echo "cpu(steal is field 8): $(grep "^cpu " /proc/stat)";
-               echo "running qemu: $(pgrep -c qemu-system-x86 || echo 0)"' 2>&1
+               echo "running qemu: $(pgrep -c "qemu-system-x86|qemu-kvm" || echo 0)"' 2>&1
           } >> "${ARTIFACT_DIR}/node-load.txt"
           exit 0
 
@@ -858,7 +860,8 @@ jobs:
           # different image path than apply did.
           TOFU_VAR_ARGS=""
           case "$MATRIX_HOST" in
-            ubuntu-*) TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE}" ;;
+            ubuntu-*) TOFU_VAR_ARGS="-var=host_image_override=${UBUNTU_GOLD_IMAGE} -var=host_os=ubuntu" ;;
+            oracle-*) TOFU_VAR_ARGS="-var=host_image_override=${ORACLE_GOLD_IMAGE} -var=host_os=oracle" ;;
           esac
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1

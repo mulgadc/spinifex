@@ -7,8 +7,8 @@ import (
 )
 
 // IMDSBridge is the dedicated OVS bridge carrying the per-tap IMDS / VPC-DNS flows.
-// ovn-controller flushes foreign br-int flows wholesale on restart; a bridge absent
-// from ovn-bridge-mappings and not named br-int is never touched, so flows survive.
+// ovn-controller flushes foreign br-int flows on restart and never touches this
+// bridge. An ovs-vswitchd restart still drops its flows; the daemon re-installs them.
 const IMDSBridge = "br-imds"
 
 // imdsCookiePrefix tags every flow the IMDS datapath installs on IMDSBridge.

@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1030,6 +1031,14 @@ func (p *scriptedNetworkPlumber) CleanupTap(_ string) error { return nil }
 func (p *scriptedNetworkPlumber) AttachIMDSDatapath(_, _, _ string) error { return nil }
 
 func (p *scriptedNetworkPlumber) DetachIMDSDatapath(_ string) error { return nil }
+
+func (p *scriptedNetworkPlumber) IMDSDatapathStates(_ context.Context, _ []string) (map[string]IMDSDatapathState, error) {
+	return nil, nil
+}
+
+func (p *scriptedNetworkPlumber) RepairIMDSDatapath(_ context.Context, _, _, _ string) error {
+	return nil
+}
 
 func (p *scriptedNetworkPlumber) EnsureIMDSDatapathBridge() error { return nil }
 

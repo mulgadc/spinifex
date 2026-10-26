@@ -730,11 +730,14 @@ func (m *Manager) shutdownQEMU(instance *VM) {
 func (m *Manager) cleanupTapDevices(instance *VM) {
 	if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
 		// Detach the primary ENI's IMDS datapath before removing its tap, the
-		// inverse of the launch-time attach-after-SetupTap order.
+		// inverse of the launch-time attach-after-SetupTap order. Both run under
+		// the ENI's lock so a datapath repair cannot re-create what this removes.
+		unlock := m.imdsLocks.lock(instance.ENIId)
 		m.detachPrimaryIMDSDatapath(instance)
 		if err := m.deps.NetworkPlumber.CleanupTap(TapDeviceName(instance.ENIId)); err != nil {
 			slog.Warn("Failed to clean up tap device", "eni", instance.ENIId, "err", err)
 		}
+		unlock()
 		m.cleanupExtraENITaps(instance)
 	}
 

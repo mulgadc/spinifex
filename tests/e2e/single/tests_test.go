@@ -109,6 +109,10 @@ func TestGuestChurnDurability(t *testing.T) {
 	runGuestChurnDurability(t, requireSingleNodeFixture(t))
 }
 
+func TestIMDSDatapathSurvivesVswitchdRestart(t *testing.T) {
+	runIMDSDatapathSurvivesVswitchdRestart(t, requireSingleNodeFixture(t))
+}
+
 func TestSnapshotLifecycle(t *testing.T) {
 	runSnapshotLifecycle(t, requireSingleNodeFixture(t))
 }

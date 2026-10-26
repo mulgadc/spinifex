@@ -59,7 +59,7 @@ func (r *activeTapResponder) closeDNS() {
 
 // tapResponderManager runs one IMDS responder per local primary-ENI tap. Each
 // binds the shared handler to the tap's endpoint via SO_BINDTODEVICE and serves
-// it with the tap's ENI (resolved once), so overlapping guest CIDRs never collide.
+// it with the tap's ENI identity, so overlapping guest CIDRs never collide.
 type tapResponderManager struct {
 	handler http.Handler
 	resolve resolveENIFunc
@@ -86,7 +86,7 @@ func newTapResponderManager(handler http.Handler, resolve resolveENIFunc, listen
 	}
 }
 
-// start resolves the tap's ENI once, binds a listener to its endpoint, and serves
+// start resolves the tap's ENI identity, binds a listener to its endpoint, and serves
 // the shared handler with that identity. Idempotent per ENI. A missing ENI record
 // is a retryable error — it is written before the tap exists, so a miss is transient.
 func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string) error {

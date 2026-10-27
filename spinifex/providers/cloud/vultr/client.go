@@ -56,6 +56,10 @@ var (
 // attached anywhere, including to the instance named. Attach resolves which.
 var errAlreadyAttached = errors.New("vultr: reserved IP already attached")
 
+// errDetachRefused is Vultr's 400 "Unable to detach subnet" on a detach or a
+// delete. Measured as transient: the same detach succeeded moments later.
+var errDetachRefused = errors.New("vultr: detach refused")
+
 // APIError is a non-2xx response, carrying Vultr's own message.
 type APIError struct {
 	Status  int
@@ -274,8 +278,8 @@ func (c *Client) ListInstanceVPCs(ctx context.Context, instanceID string) ([]VPC
 	return vpcs, nil
 }
 
-// do runs one call, retrying throttles and server failures when retry5xx is
-// set. A 429 is always retried, since Vultr refused it before acting.
+// do runs one call, retrying throttles, server failures and a refused detach
+// when retry5xx is set. A 429 is always retried, since Vultr refused it before acting.
 func (c *Client) do(ctx context.Context, method, path string, in, out any, retry5xx bool) error {
 	var payload []byte
 	if in != nil {
@@ -289,7 +293,8 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, retry
 	for attempt := 1; ; attempt++ {
 		var status int
 		status, err = c.once(ctx, method, path, payload, out)
-		retryable := errors.Is(err, ErrUnavailable) && (retry5xx || status == http.StatusTooManyRequests)
+		retryable := (errors.Is(err, ErrUnavailable) || errors.Is(err, errDetachRefused)) &&
+			(retry5xx || status == http.StatusTooManyRequests)
 		if err == nil || !retryable || attempt >= c.cfg.Attempts {
 			return err
 		}
@@ -382,6 +387,8 @@ func classify(status int, raw []byte) error {
 		e.kind = ErrUnavailable
 	case strings.Contains(lower, "already attached"):
 		e.kind = errAlreadyAttached
+	case strings.Contains(lower, "unable to detach"):
+		e.kind = errDetachRefused
 	case strings.Contains(lower, "limit") || strings.Contains(lower, "quota") || strings.Contains(lower, "maximum"):
 		e.kind = ErrQuotaExceeded
 	}

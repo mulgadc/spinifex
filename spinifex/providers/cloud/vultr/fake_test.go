@@ -50,11 +50,14 @@ func TestFakeFidelity_DeleteAttachedSucceeds(t *testing.T) {
 
 func TestFakeFidelity_DeleteAttachedRefusedDetaches(t *testing.T) {
 	_, c := newFakeAPI(t, map[string][]reply{
-		"DELETE /reserved-ips/" + capturedID: {{http.StatusBadRequest, "delete_attached_refused.json"}},
+		"DELETE /reserved-ips/" + capturedID: {
+			{http.StatusBadRequest, "delete_attached_refused.json"},
+			{http.StatusBadRequest, "delete_attached_refused.json"},
+			{http.StatusBadRequest, "delete_attached_refused.json"},
+		},
 	})
 	err := c.DeleteReservedIP(context.Background(), capturedID)
-	require.Error(t, err)
-	require.NotErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, errDetachRefused, "a refusal that outlasts the retries is still an error")
 
 	f := NewFake("ord", 0, "a")
 	f.RefuseDeleteAttached = true

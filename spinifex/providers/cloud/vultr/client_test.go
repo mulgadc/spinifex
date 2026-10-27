@@ -174,6 +174,7 @@ func TestClassify_CapturedResponses(t *testing.T) {
 		{"attach_missing_instance.json", http.StatusNotFound, ErrNotFound},
 		{"unauthorized.json", http.StatusUnauthorized, ErrUnauthorized},
 		{"attach_already_attached.json", http.StatusBadRequest, errAlreadyAttached},
+		{"delete_attached_refused.json", http.StatusBadRequest, errDetachRefused},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
@@ -229,4 +230,16 @@ func TestEmptyKeyFileFailsBeforeCalling(t *testing.T) {
 	err := c.DeleteReservedIP(context.Background(), capturedID)
 	require.Error(t, err)
 	assert.Empty(t, f.seen)
+}
+
+// Vultr has refused a detach with "Unable to detach subnet" and accepted the
+// same detach moments later, so the refusal is retried rather than surfaced.
+func TestDetachAndDeleteRetryARefusedDetach(t *testing.T) {
+	f, c := newFakeAPI(t, map[string][]reply{
+		"POST /reserved-ips/" + capturedID + "/detach": {{http.StatusBadRequest, "delete_attached_refused.json"}, {http.StatusNoContent, ""}},
+		"DELETE /reserved-ips/" + capturedID:           {{http.StatusBadRequest, "delete_attached_refused.json"}, {http.StatusNoContent, ""}},
+	})
+	require.NoError(t, c.DetachReservedIP(context.Background(), capturedID))
+	require.NoError(t, c.DeleteReservedIP(context.Background(), capturedID))
+	assert.Len(t, f.seen, 4)
 }

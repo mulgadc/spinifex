@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -383,6 +384,15 @@ func TestTopologyTransitionKeepsExistingAllocations(t *testing.T) {
 	fresh := ns(0, 0, "fresh")
 	_, err = after.Append(ctx, fresh, message.AppendInput{Body: []byte("m")})
 	require.NoError(t, err, "a new queue uses the current layout")
+
+	read, err := after.Get(ctx, old, first.Position)
+	require.NoError(t, err, "an existing queue still reads its retained stream")
+	assert.Equal(t, []byte("first"), read.Body)
+	requireUsage(t, after, old, message.Usage{Messages: 2, States: 2})
+	require.NoError(t, after.DeleteThrough(ctx, old, first.Position))
+	requireUsage(t, after, old, message.Usage{Messages: 1, States: 2})
+	require.NoError(t, after.DeleteNamespace(ctx, old), "cleanup reaches the retained stream and bucket")
+	requireUsage(t, after, old, message.Usage{})
 }
 
 // TestNewRefusesUnsupportedClusterSize: only one node (R1) and three (R3)
@@ -402,4 +412,179 @@ func TestNewRefusesUnsupportedClusterSize(t *testing.T) {
 	t.Cleanup(func() { clustersize.DeclareForTest(t, 1) })
 	_, err := sqsjs.New(context.Background(), js, testConfig)
 	require.ErrorIs(t, err, sqsjs.ErrUnsupportedTopology, "an undeclared size is refused too")
+}
+
+func appendTo(t *testing.T, s *sqsjs.Store, q message.Namespace, body string) message.Position {
+	t.Helper()
+	res, err := s.Append(context.Background(), q, message.AppendInput{Body: []byte(body)})
+	require.NoError(t, err)
+	return res.Position
+}
+
+func requireUsage(t *testing.T, s *sqsjs.Store, q message.Namespace, want message.Usage) {
+	t.Helper()
+	got, err := s.Count(context.Background(), q)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
+func TestGet(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	a, b := ns(1, 0, "qa"), ns(1, 1, "qb")
+	res, err := s.Append(ctx, a, message.AppendInput{Body: []byte("body"), Meta: map[string]string{"sent": "1", "delay": "0"}})
+	require.NoError(t, err)
+	plain := appendTo(t, s, a, "plain")
+	neighbour := appendTo(t, s, b, "theirs")
+
+	got, err := s.Get(ctx, a, res.Position)
+	require.NoError(t, err)
+	assert.Equal(t, message.Message{Position: res.Position, Body: []byte("body"), Meta: map[string]string{"sent": "1", "delay": "0"}}, got)
+	got, err = s.Get(ctx, a, plain)
+	require.NoError(t, err)
+	assert.Nil(t, got.Meta, "no metadata reads back as none")
+
+	_, err = s.Get(ctx, a, neighbour)
+	require.ErrorIs(t, err, message.ErrNotFound, "a position on a neighbour's subject is not this namespace's")
+	_, err = s.Get(ctx, a, neighbour+100)
+	require.ErrorIs(t, err, message.ErrNotFound)
+}
+
+func TestDeleteIsNamespaceScopedAndIdempotent(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	a, b := ns(0, 0, "qa"), ns(0, 0, "qb")
+	pa := appendTo(t, s, a, "a")
+	pb := appendTo(t, s, b, "b")
+
+	require.NoError(t, s.Delete(ctx, a, pb), "a neighbour's position is absent from this namespace")
+	_, err := s.Get(ctx, b, pb)
+	require.NoError(t, err, "and the neighbour's message is untouched")
+
+	require.NoError(t, s.Delete(ctx, a, pa))
+	_, err = s.Get(ctx, a, pa)
+	require.ErrorIs(t, err, message.ErrNotFound)
+	require.NoError(t, s.Delete(ctx, a, pa), "deleting again succeeds")
+	requireUsage(t, s, a, message.Usage{})
+	requireUsage(t, s, b, message.Usage{Messages: 1})
+}
+
+func TestDeleteThroughIsSubjectScoped(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	a, b := ns(2, 1, "qa"), ns(2, 1, "qb")
+	a1 := appendTo(t, s, a, "a1")
+	b1 := appendTo(t, s, b, "b1")
+	a2 := appendTo(t, s, a, "a2")
+	b2 := appendTo(t, s, b, "b2")
+	a3 := appendTo(t, s, a, "a3")
+	_, err := s.PutState(ctx, a, a1, []byte("s"), 0)
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteThrough(ctx, a, 0), "through zero removes nothing")
+	requireUsage(t, s, a, message.Usage{Messages: 3, States: 1})
+
+	require.NoError(t, s.DeleteThrough(ctx, a, a2))
+	for _, p := range []message.Position{a1, a2} {
+		_, err := s.Get(ctx, a, p)
+		require.ErrorIs(t, err, message.ErrNotFound, "position %d is at or before the range end", p)
+	}
+	_, err = s.Get(ctx, a, a3)
+	require.NoError(t, err, "a later body stays")
+	for _, p := range []message.Position{b1, b2} {
+		_, err := s.Get(ctx, b, p)
+		require.NoError(t, err, "a neighbour's body inside the range stays")
+	}
+	_, err = s.GetState(ctx, a, a1)
+	require.NoError(t, err, "state records stay")
+	requireUsage(t, s, a, message.Usage{Messages: 1, States: 1})
+
+	require.NoError(t, s.DeleteThrough(ctx, a, math.MaxUint64))
+	requireUsage(t, s, a, message.Usage{States: 1})
+	requireUsage(t, s, b, message.Usage{Messages: 2})
+}
+
+func TestCountExcludesDeletedStateAndNeighbours(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	// Same stream and state bucket, so only the subject and key prefix
+	// separate them.
+	a, b := ns(1, 1, "qa"), ns(1, 1, "qb")
+	requireUsage(t, s, a, message.Usage{})
+	var pos []message.Position
+	var revs []message.Revision
+	for i := range 3 {
+		p := appendTo(t, s, a, fmt.Sprintf("a%d", i))
+		pos = append(pos, p)
+		if i < 2 {
+			rev, err := s.PutState(ctx, a, p, []byte("s"), 0)
+			require.NoError(t, err)
+			revs = append(revs, rev)
+		}
+	}
+	pb := appendTo(t, s, b, "b")
+	_, err := s.PutState(ctx, b, pb, []byte("s"), 0)
+	require.NoError(t, err)
+	requireUsage(t, s, a, message.Usage{Messages: 3, States: 2})
+
+	require.NoError(t, s.DeleteState(ctx, a, pos[0], revs[0]))
+	requireUsage(t, s, a, message.Usage{Messages: 3, States: 1})
+	requireUsage(t, s, b, message.Usage{Messages: 1, States: 1})
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = s.Count(cancelled, a)
+	require.Error(t, err, "a cancelled count is an error, never a short count")
+}
+
+func TestDeleteNamespaceRemovesOnlyItsData(t *testing.T) {
+	s, js := newStore(t)
+	ctx := context.Background()
+	a, b := ns(0, 1, "qa"), ns(0, 1, "qb")
+	pa := appendTo(t, s, a, "a")
+	pa2 := appendTo(t, s, a, "a2")
+	pb := appendTo(t, s, b, "b")
+	rev, err := s.PutState(ctx, a, pa, []byte("s"), 0)
+	require.NoError(t, err)
+	_, err = s.PutState(ctx, a, pa2, []byte("s"), 0)
+	require.NoError(t, err)
+	require.NoError(t, s.DeleteState(ctx, a, pa, rev), "leaves a delete marker")
+	_, err = s.PutState(ctx, b, pb, []byte("s"), 0)
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteNamespace(ctx, a))
+	requireUsage(t, s, a, message.Usage{})
+	state, err := js.Stream(ctx, "KV_sqs_state_1")
+	require.NoError(t, err)
+	info, err := state.Info(ctx, jsapi.WithSubjectFilter("$KV.sqs_state_1.q.0.qa.>"))
+	require.NoError(t, err)
+	assert.Empty(t, info.State.Subjects, "no state record or delete marker of the namespace remains")
+
+	requireUsage(t, s, b, message.Usage{Messages: 1, States: 1})
+	require.NoError(t, s.DeleteNamespace(ctx, a), "deleting again succeeds")
+}
+
+// TestUndeclaredAllocationCreatesNothing: every read and cleanup on an
+// allocation no configuration provisioned fails and creates no resource.
+func TestUndeclaredAllocationCreatesNothing(t *testing.T) {
+	s, js := newStore(t)
+	ctx := context.Background()
+	before := streamNames(t, js)
+	for _, q := range []message.Namespace{ns(7, 0, "q"), ns(0, 7, "q")} {
+		_, err := s.Count(ctx, q)
+		assert.Error(t, err, "Count %+v", q)
+		assert.Error(t, s.DeleteNamespace(ctx, q), "DeleteNamespace %+v", q)
+	}
+	missingStream := ns(7, 0, "q")
+	_, err := s.Get(ctx, missingStream, 1)
+	assert.Error(t, err)
+	assert.NotErrorIs(t, err, message.ErrNotFound)
+	assert.Error(t, s.Delete(ctx, missingStream, 1))
+	assert.Error(t, s.DeleteThrough(ctx, missingStream, 1))
+	assert.Equal(t, before, streamNames(t, js))
+}
+
+func TestLimits(t *testing.T) {
+	s, _ := newStore(t)
+	assert.Equal(t, message.Limits{RetentionBackstop: message.MinRetentionBackstop, IdempotencyWindow: testConfig.DuplicateWindow}, s.Limits())
 }

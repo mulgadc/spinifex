@@ -68,7 +68,12 @@ func Subject(ns message.Namespace) string {
 // A position is unique only within a message stream, so the key carries the
 // message shard too.
 func StateKey(ns message.Namespace, pos message.Position) string {
-	return "q." + strconv.FormatUint(uint64(ns.MessageShard), 10) + "." + string(ns.Queue) + "." + strconv.FormatUint(uint64(pos), 10)
+	return statePrefix(ns) + "." + strconv.FormatUint(uint64(pos), 10)
+}
+
+// statePrefix is the key prefix every state record of a namespace shares.
+func statePrefix(ns message.Namespace) string {
+	return "q." + strconv.FormatUint(uint64(ns.MessageShard), 10) + "." + string(ns.Queue)
 }
 
 // MessageStreamConfig is one shared message stream: limits retention, the

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -451,6 +452,8 @@ type feed struct {
 
 var _ message.Feed = (*feed)(nil)
 
+var _ message.Store = (*Store)(nil)
+
 // Next returns the next append on the shard. A record that cannot be
 // decoded is returned as ErrCorruptRecord, and the feed moves past it.
 func (f *feed) Next(ctx context.Context) (message.Change, error) {
@@ -508,4 +511,190 @@ func (f *feed) Close() error {
 		return fmt.Errorf("close feed on %s: %w", StreamName(f.shard), err)
 	}
 	return nil
+}
+
+// Namespaces lists every namespace on the message shard holding a body or a
+// live state record. Bodies give their state shard through the internal
+// header; state is found in every existing state bucket, historical included.
+func (s *Store) Namespaces(ctx context.Context, messageShard message.Shard) ([]message.NamespaceUsage, error) {
+	bodies, err := s.bodyAllocations(ctx, messageShard)
+	if err != nil {
+		return nil, err
+	}
+	states, err := s.stateAllocations(ctx, messageShard)
+	if err != nil {
+		return nil, err
+	}
+	var conflicts []error
+	rows := map[message.QueueID]*message.NamespaceUsage{}
+	for queue, b := range bodies {
+		rows[queue] = &message.NamespaceUsage{
+			Namespace: message.Namespace{MessageShard: messageShard, StateShard: b.stateShard, Queue: queue},
+			Usage:     message.Usage{Messages: b.messages},
+		}
+	}
+	for queue, byShard := range states {
+		if len(byShard) > 1 {
+			conflicts = append(conflicts, fmt.Errorf("%w: queue %s on message shard %d has state in %d state shards", ErrCorruptRecord, queue, messageShard, len(byShard)))
+			continue
+		}
+		for shard, n := range byShard {
+			row, ok := rows[queue]
+			switch {
+			case !ok:
+				rows[queue] = &message.NamespaceUsage{
+					Namespace: message.Namespace{MessageShard: messageShard, StateShard: shard, Queue: queue},
+					Usage:     message.Usage{States: n},
+				}
+			case row.Namespace.StateShard != shard:
+				conflicts = append(conflicts, fmt.Errorf("%w: queue %s on message shard %d: bodies name state shard %d, state is in %d", ErrCorruptRecord, queue, messageShard, row.Namespace.StateShard, shard))
+			default:
+				row.Usage.States = n
+			}
+		}
+	}
+	if len(conflicts) > 0 {
+		return nil, errors.Join(conflicts...)
+	}
+	out := make([]message.NamespaceUsage, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, *row)
+	}
+	slices.SortFunc(out, func(a, b message.NamespaceUsage) int {
+		return strings.Compare(string(a.Namespace.Queue), string(b.Namespace.Queue))
+	})
+	return out, nil
+}
+
+type bodyAllocation struct {
+	stateShard message.Shard
+	messages   uint64
+}
+
+// bodyAllocations counts each queue's stored bodies on the message shard and
+// reads its state shard from its first and last body, which must agree.
+func (s *Store) bodyAllocations(ctx context.Context, messageShard message.Shard) (map[message.QueueID]bodyAllocation, error) {
+	stream, err := s.stream(ctx, message.Namespace{MessageShard: messageShard, Queue: "enumerate"})
+	if err != nil {
+		return nil, err
+	}
+	prefix := "sqs.m." + strconv.FormatUint(uint64(messageShard), 10) + "."
+	info, err := stream.Info(ctx, jsapi.WithSubjectFilter(prefix+">"))
+	if err != nil {
+		return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
+	}
+	out := make(map[message.QueueID]bodyAllocation, len(info.State.Subjects))
+	for subject, n := range info.State.Subjects {
+		if n == 0 {
+			continue
+		}
+		first, err := stream.GetMsg(ctx, 1, jsapi.WithGetMsgSubject(subject))
+		if err != nil {
+			return nil, fmt.Errorf("enumerate %s: %w", subject, err)
+		}
+		last, err := stream.GetLastMsgForSubject(ctx, subject)
+		if err != nil {
+			return nil, fmt.Errorf("enumerate %s: %w", subject, err)
+		}
+		a, err := decodeNamespace(messageShard, subject, first.Header)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(messageShard), first.Sequence, err)
+		}
+		b, err := decodeNamespace(messageShard, subject, last.Header)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(messageShard), last.Sequence, err)
+		}
+		if a != b {
+			return nil, fmt.Errorf("%w: %s bodies name state shards %d and %d", ErrCorruptRecord, subject, a.StateShard, b.StateShard)
+		}
+		out[a.Queue] = bodyAllocation{stateShard: a.StateShard, messages: n}
+	}
+	return out, nil
+}
+
+// stateAllocations counts the message shard's live state keys per queue and
+// state shard across every state bucket that exists, found by listing and
+// never created, so a bucket only an earlier configuration made is included.
+func (s *Store) stateAllocations(ctx context.Context, messageShard message.Shard) (map[message.QueueID]map[message.Shard]uint64, error) {
+	shards, err := s.stateShards(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prefix := "q." + strconv.FormatUint(uint64(messageShard), 10) + "."
+	out := map[message.QueueID]map[message.Shard]uint64{}
+	for _, shard := range shards {
+		kv, err := s.bucket(ctx, message.Namespace{StateShard: shard, Queue: "enumerate"})
+		if err != nil {
+			return nil, err
+		}
+		lister, err := kv.ListKeysFiltered(ctx, prefix+">")
+		if err != nil {
+			return nil, fmt.Errorf("enumerate %s: %w", BucketName(shard), err)
+		}
+		keys := map[string]struct{}{}
+		for key := range lister.Keys() {
+			keys[key] = struct{}{}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("enumerate %s: %w", BucketName(shard), err)
+		}
+		for key := range keys {
+			queue, err := decodeStateKey(prefix, key)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %s key %q: %w", ErrCorruptRecord, BucketName(shard), key, err)
+			}
+			if out[queue] == nil {
+				out[queue] = map[message.Shard]uint64{}
+			}
+			out[queue][shard]++
+		}
+	}
+	return out, nil
+}
+
+// stateShards lists the state shards that have a bucket. A bucket whose
+// name is not exactly a canonical sqs_state_<n> is not the store's.
+func (s *Store) stateShards(ctx context.Context) ([]message.Shard, error) {
+	lister := s.js.KeyValueStoreNames(ctx)
+	var shards []message.Shard
+	for name := range lister.Name() {
+		digits, ok := strings.CutPrefix(name, "sqs_state_")
+		if !ok {
+			continue
+		}
+		n, err := strconv.ParseUint(digits, 10, 32)
+		if err != nil || strconv.FormatUint(n, 10) != digits {
+			continue
+		}
+		shards = append(shards, message.Shard(n))
+	}
+	if err := lister.Error(); err != nil {
+		return nil, fmt.Errorf("list state buckets: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("list state buckets: %w", err)
+	}
+	slices.Sort(shards)
+	return shards, nil
+}
+
+// decodeStateKey parses q.<message shard>.<queue>.<position> under prefix.
+func decodeStateKey(prefix, key string) (message.QueueID, error) {
+	rest, ok := strings.CutPrefix(key, prefix)
+	if !ok {
+		return "", errors.New("not on this message shard")
+	}
+	queue, pos, ok := strings.Cut(rest, ".")
+	if !ok {
+		return "", errors.New("no position")
+	}
+	n, err := strconv.ParseUint(pos, 10, 64)
+	if err != nil || n == 0 || strconv.FormatUint(n, 10) != pos {
+		return "", fmt.Errorf("position %q", pos)
+	}
+	ns := message.Namespace{Queue: message.QueueID(queue)}
+	if err := ns.Validate(); err != nil {
+		return "", err
+	}
+	return ns.Queue, nil
 }

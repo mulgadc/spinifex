@@ -812,3 +812,120 @@ func TestFeedAfterMaximumCursorReplaysNothing(t *testing.T) {
 	p := appendTo(t, s, q, "new")
 	assert.Equal(t, p, nextChange(t, f).Position, "only a new append is fed")
 }
+
+func namespaces(t *testing.T, s *sqsjs.Store, shard message.Shard) []message.NamespaceUsage {
+	t.Helper()
+	got, err := s.Namespaces(context.Background(), shard)
+	require.NoError(t, err)
+	return got
+}
+
+// TestNamespacesListsCompleteRows covers body and state, state only after
+// every body is deleted, bodies only, a deleted state key, two state buckets
+// and a neighbouring shard. The store holds no queue records, so every row
+// is rebuilt from stored data alone.
+func TestNamespacesListsCompleteRows(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	both, stateOnly, bodyOnly, cleared := ns(1, 1, "both"), ns(1, 0, "state-only"), ns(1, 1, "body-only"), ns(1, 0, "cleared")
+	p := appendTo(t, s, both, "a")
+	appendTo(t, s, both, "b")
+	_, err := s.PutState(ctx, both, p, []byte("s"), 0)
+	require.NoError(t, err)
+
+	p = appendTo(t, s, stateOnly, "m")
+	_, err = s.PutState(ctx, stateOnly, p, []byte("tombstone"), 0)
+	require.NoError(t, err)
+	require.NoError(t, s.Delete(ctx, stateOnly, p))
+
+	appendTo(t, s, bodyOnly, "m")
+
+	p = appendTo(t, s, cleared, "m")
+	rev, err := s.PutState(ctx, cleared, p, []byte("s"), 0)
+	require.NoError(t, err)
+	require.NoError(t, s.DeleteState(ctx, cleared, p, rev))
+	require.NoError(t, s.Delete(ctx, cleared, p))
+
+	appendTo(t, s, ns(2, 1, "both"), "neighbour shard")
+
+	assert.Equal(t, []message.NamespaceUsage{
+		{Namespace: bodyOnly, Usage: message.Usage{Messages: 1}},
+		{Namespace: both, Usage: message.Usage{Messages: 2, States: 1}},
+		{Namespace: stateOnly, Usage: message.Usage{States: 1}},
+	}, namespaces(t, s, 1))
+	for _, row := range namespaces(t, s, 1) {
+		requireUsage(t, s, row.Namespace, row.Usage)
+	}
+	assert.Empty(t, namespaces(t, s, 0))
+}
+
+// TestNamespacesFindsHistoricalBuckets: after a shrink to one stream and one
+// bucket, a state-only queue on a historical bucket and a queue on a
+// historical stream are still listed, and listing creates nothing.
+func TestNamespacesFindsHistoricalBuckets(t *testing.T) {
+	dir := t.TempDir()
+	srv, js := startServer(t, dir)
+	ctx := context.Background()
+	wide, err := sqsjs.New(ctx, js, sqsjs.Config{MessageStreams: 3, StateBuckets: 3, DuplicateWindow: time.Minute})
+	require.NoError(t, err)
+	stateOnly, historical := ns(0, 2, "state-only"), ns(2, 1, "historical")
+	p := appendTo(t, wide, stateOnly, "m")
+	_, err = wide.PutState(ctx, stateOnly, p, []byte("tombstone"), 0)
+	require.NoError(t, err)
+	require.NoError(t, wide.Delete(ctx, stateOnly, p))
+	p = appendTo(t, wide, historical, "m")
+	_, err = wide.PutState(ctx, historical, p, []byte("s"), 0)
+	require.NoError(t, err)
+	srv.Shutdown()
+	srv.WaitForShutdown()
+
+	_, js = startServer(t, dir)
+	narrow, err := sqsjs.New(ctx, js, sqsjs.Config{MessageStreams: 1, StateBuckets: 1, DuplicateWindow: time.Minute})
+	require.NoError(t, err)
+	before := streamNames(t, js)
+	assert.Equal(t, []message.NamespaceUsage{{Namespace: stateOnly, Usage: message.Usage{States: 1}}}, namespaces(t, narrow, 0))
+	assert.Equal(t, []message.NamespaceUsage{{Namespace: historical, Usage: message.Usage{Messages: 1, States: 1}}}, namespaces(t, narrow, 2))
+	_, err = narrow.Namespaces(ctx, 9)
+	require.Error(t, err, "a message shard with no stream")
+	assert.Equal(t, before, streamNames(t, js), "listing creates nothing")
+}
+
+// TestNamespacesRefusesConflictingAllocations: a queue's allocation is fixed,
+// so bodies and state that disagree, or state split across buckets, is
+// reported rather than resolved by guessing.
+func TestNamespacesRefusesConflictingAllocations(t *testing.T) {
+	ctx := context.Background()
+	t.Run("BodyAndStateDisagree", func(t *testing.T) {
+		s, _ := newStore(t)
+		p := appendTo(t, s, ns(1, 0, "q"), "m")
+		_, err := s.PutState(ctx, ns(1, 1, "q"), p, []byte("s"), 0)
+		require.NoError(t, err)
+		_, err = s.Namespaces(ctx, 1)
+		require.ErrorIs(t, err, sqsjs.ErrCorruptRecord)
+	})
+	t.Run("StateInTwoBuckets", func(t *testing.T) {
+		s, _ := newStore(t)
+		for shard := range message.Shard(2) {
+			_, err := s.PutState(ctx, ns(1, shard, "q"), 1, []byte("s"), 0)
+			require.NoError(t, err)
+		}
+		_, err := s.Namespaces(ctx, 1)
+		require.ErrorIs(t, err, sqsjs.ErrCorruptRecord)
+	})
+	t.Run("FirstAndLastBodyDisagree", func(t *testing.T) {
+		s, _ := newStore(t)
+		appendTo(t, s, ns(1, 0, "q"), "m")
+		appendTo(t, s, ns(1, 1, "q"), "m")
+		_, err := s.Namespaces(ctx, 1)
+		require.ErrorIs(t, err, sqsjs.ErrCorruptRecord)
+	})
+	t.Run("MalformedStateKey", func(t *testing.T) {
+		s, js := newStore(t)
+		kv, err := js.KeyValue(ctx, sqsjs.BucketName(0))
+		require.NoError(t, err)
+		_, err = kv.Put(ctx, "q.1.q.x", []byte("s"))
+		require.NoError(t, err)
+		_, err = s.Namespaces(ctx, 1)
+		require.ErrorIs(t, err, sqsjs.ErrCorruptRecord)
+	})
+}

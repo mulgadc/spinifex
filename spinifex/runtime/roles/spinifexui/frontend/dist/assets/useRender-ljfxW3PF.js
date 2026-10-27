@@ -1,0 +1,1 @@
+import{n as e}from"./dist-BdB_tTMf.js";function t(t){return e(t.defaultTagName??`div`,t,t)}export{t};

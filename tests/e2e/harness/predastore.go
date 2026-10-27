@@ -152,17 +152,7 @@ func newPredastoreS3(host string) (*s3.S3, error) {
 	if host == "" {
 		return nil, errors.New("predastore: empty host")
 	}
-	endpoint := fmt.Sprintf("https://%s:%d", host, predastoreHealthPort)
-	cfg := &aws.Config{
-		Endpoint:         aws.String(endpoint),
-		Region:           aws.String(getenv("SPINIFEX_AWS_REGION", "ap-southeast-2")),
-		S3ForcePathStyle: aws.Bool(true),
-		HTTPClient: &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test harness
-			},
-		},
-	}
+	cfg := predastoreS3Config(host)
 	opts := session.Options{Config: *cfg}
 	if id, secret := os.Getenv("SPINIFEX_AWS_ACCESS_KEY_ID"), os.Getenv("SPINIFEX_AWS_SECRET_ACCESS_KEY"); id != "" && secret != "" {
 		cfg.Credentials = credentials.NewStaticCredentials(id, secret, "")
@@ -176,6 +166,34 @@ func newPredastoreS3(host string) (*s3.S3, error) {
 		return nil, fmt.Errorf("predastore: s3 session: %w", err)
 	}
 	return s3.New(sess), nil
+}
+
+// PredastoreS3WithCreds builds an S3 client for predastore on host that signs
+// as one principal, so a test can assert what that principal's grant allows.
+func PredastoreS3WithCreds(host, accessKey, secretKey string) (*s3.S3, error) {
+	if host == "" {
+		return nil, errors.New("predastore: empty host")
+	}
+	cfg := predastoreS3Config(host)
+	cfg.Credentials = credentials.NewStaticCredentials(accessKey, secretKey, "")
+	sess, err := session.NewSessionWithOptions(session.Options{Config: *cfg})
+	if err != nil {
+		return nil, fmt.Errorf("predastore: s3 session: %w", err)
+	}
+	return s3.New(sess), nil
+}
+
+func predastoreS3Config(host string) *aws.Config {
+	return &aws.Config{
+		Endpoint:         aws.String(fmt.Sprintf("https://%s:%d", host, predastoreHealthPort)),
+		Region:           aws.String(getenv("SPINIFEX_AWS_REGION", "ap-southeast-2")),
+		S3ForcePathStyle: aws.Bool(true),
+		HTTPClient: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test harness
+			},
+		},
+	}
 }
 
 // servingBucketPrefix names the per-check bucket AssertPredastoreServing owns.

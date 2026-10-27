@@ -409,6 +409,19 @@ var (
 	// that exists but has not been issued yet (still PENDING_VALIDATION), so a
 	// client polling for the body can tell "not ready" apart from "not mine".
 	ErrorACMRequestInProgress = "RequestInProgressException"
+	// Route 53 REST-XML error codes, from the 2013-04-01 API reference.
+	ErrorNoSuchHostedZone          = "NoSuchHostedZone"
+	ErrorHostedZoneAlreadyExists   = "HostedZoneAlreadyExists"
+	ErrorHostedZoneNotEmpty        = "HostedZoneNotEmpty"
+	ErrorInvalidChangeBatch        = "InvalidChangeBatch"
+	ErrorNoSuchChange              = "NoSuchChange"
+	ErrorTooManyHostedZones        = "TooManyHostedZones"
+	ErrorInvalidDomainName         = "InvalidDomainName"
+	ErrorConflictingDomainExists   = "ConflictingDomainExists"
+	ErrorPriorRequestNotComplete   = "PriorRequestNotComplete"
+	ErrorRoute53InvalidArgument    = "InvalidArgument"
+	ErrorRoute53NoSuchHealthCheck  = "NoSuchHealthCheck"
+	ErrorRoute53TooManyTagsForZone = "TooManyTags"
 	// ECS JSON-1.1 exception codes. ECS clients key on the "Exception"-suffixed
 	// __type; do not cross-wire with the EC2/ACM not-found codes above.
 	ErrorECSClusterNotFound                             = "ClusterNotFoundException"
@@ -742,12 +755,16 @@ var errorLookupByService = withNeutralValidationMessages(map[string]map[string]E
 	"rds": {
 		ErrorOperationNotSupported: {HTTPCode: 400, Message: "The specified RDS action is not supported in the RDS v1 API."},
 	},
+	// Route 53 throttles with a 400, not the 503 the shared entry carries.
+	"route53": {
+		ErrorThrottling: {HTTPCode: 400, Message: "Rate exceeded."},
+	},
 })
 
 // nonEC2Services are the gateway's services other than EC2, whose validation
 // errors must not fall back to ErrorLookup's EC2 wording.
 var nonEC2Services = []string{
-	"iam", "sts", "elasticloadbalancing", "eks", "ecs", "ecr", "acm", "rds", "tagging", "spinifex",
+	"iam", "sts", "elasticloadbalancing", "eks", "ecs", "ecr", "acm", "rds", "route53", "tagging", "spinifex",
 	"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime",
 }
 
@@ -1349,4 +1366,18 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorModelErrorException:           {HTTPCode: 424, Message: "The request failed because of an error while running the model."},
 	ErrorServiceQuotaExceededException: {HTTPCode: 400, Message: "The number of requests exceeds the service quota. Resubmit your request later."},
 	ErrorConflictException:             {HTTPCode: 409, Message: "There was a conflict performing an operation."},
+
+	// Route 53.
+	ErrorNoSuchHostedZone:          {HTTPCode: 404, Message: "No hosted zone exists with the ID that you specified."},
+	ErrorHostedZoneAlreadyExists:   {HTTPCode: 409, Message: "The hosted zone you're trying to create already exists."},
+	ErrorHostedZoneNotEmpty:        {HTTPCode: 400, Message: "The hosted zone contains resource records that are not SOA or NS records."},
+	ErrorInvalidChangeBatch:        {HTTPCode: 400, Message: "This exception contains a list of messages that might contain one or more error messages."},
+	ErrorNoSuchChange:              {HTTPCode: 404, Message: "A change with the specified change ID does not exist."},
+	ErrorTooManyHostedZones:        {HTTPCode: 400, Message: "This operation can't be completed because the current account has reached the limit on the number of hosted zones."},
+	ErrorInvalidDomainName:         {HTTPCode: 400, Message: "The specified domain name is not valid."},
+	ErrorConflictingDomainExists:   {HTTPCode: 400, Message: "The domain name is already in use by another hosted zone."},
+	ErrorPriorRequestNotComplete:   {HTTPCode: 400, Message: "Route 53 is still processing a previous request for this hosted zone. Try again later."},
+	ErrorRoute53InvalidArgument:    {HTTPCode: 400, Message: "Parameter name is not valid."},
+	ErrorRoute53NoSuchHealthCheck:  {HTTPCode: 404, Message: "No health check exists with the specified ID."},
+	ErrorRoute53TooManyTagsForZone: {HTTPCode: 400, Message: "The resource has too many tags."},
 }

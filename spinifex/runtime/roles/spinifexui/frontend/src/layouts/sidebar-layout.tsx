@@ -10,6 +10,7 @@ import {
   Container,
   Crosshair,
   Database,
+  Earth,
   FileStack,
   Globe,
   HardDrive,
@@ -250,6 +251,17 @@ const NAV: readonly NavGroup[] = [
           "/rds/describe-db-parameter-groups",
           "/rds/create-db-parameter-group",
         ],
+      },
+    ],
+  },
+  {
+    label: "DNS",
+    items: [
+      {
+        label: "Hosted zones",
+        icon: Earth,
+        to: "/route53/list-hosted-zones",
+        match: ["/route53/list-hosted-zones", "/route53/create-hosted-zone"],
       },
     ],
   },

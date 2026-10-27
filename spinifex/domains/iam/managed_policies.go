@@ -258,6 +258,53 @@ var awsManagedPolicyDocs = map[string]string{
 		]
 	}`,
 
+	"arn:aws:iam::aws:policy/AmazonRoute53FullAccess": `{
+		"Version": "2012-10-17",
+		"Statement": [
+			{
+				"Effect": "Allow",
+				"Action": [
+					"route53:*",
+					"route53domains:*",
+					"cloudfront:ListDistributions",
+					"elasticloadbalancing:DescribeLoadBalancers",
+					"elasticbeanstalk:DescribeEnvironments",
+					"s3:ListBucket",
+					"s3:GetBucketLocation",
+					"s3:GetBucketWebsite",
+					"ec2:DescribeVpcs",
+					"ec2:DescribeVpcEndpoints",
+					"ec2:DescribeRegions",
+					"sns:ListTopics",
+					"sns:ListSubscriptionsByTopic",
+					"cloudwatch:DescribeAlarms",
+					"cloudwatch:GetMetricStatistics"
+				],
+				"Resource": "*"
+			},
+			{
+				"Effect": "Allow",
+				"Action": "apigateway:GET",
+				"Resource": "arn:aws:apigateway:*::/domainnames"
+			}
+		]
+	}`,
+
+	"arn:aws:iam::aws:policy/AmazonRoute53ReadOnlyAccess": `{
+		"Version": "2012-10-17",
+		"Statement": [
+			{
+				"Effect": "Allow",
+				"Action": [
+					"route53:Get*",
+					"route53:List*",
+					"route53:TestDNSAnswer"
+				],
+				"Resource": "*"
+			}
+		]
+	}`,
+
 	"arn:aws:iam::aws:policy/AmazonEKSServicePolicy": `{
 		"Version": "2012-10-17",
 		"Statement": [

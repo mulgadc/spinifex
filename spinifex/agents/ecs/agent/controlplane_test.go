@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 )
 
 // fixedCredsProvider is a static credentials.CredentialsProvider for tests
@@ -101,7 +101,7 @@ func TestGatewayControlPlane_Register_NoGPUOmitsResource(t *testing.T) {
 }
 
 // ReportTaskGPU posts the per-container device UUIDs under the ReportTaskGPU
-// action, decodable as the handlers_ecs internal shape.
+// action, decodable as the domains/ecs internal shape.
 func TestGatewayControlPlane_ReportTaskGPU(t *testing.T) {
 	var gotTarget string
 	var body []byte
@@ -113,7 +113,7 @@ func TestGatewayControlPlane_ReportTaskGPU(t *testing.T) {
 	defer srv.Close()
 
 	cp := newTestGatewayControlPlane(t, srv)
-	err := cp.ReportTaskGPU("web", "t-1", []handlers_ecs.ContainerGPUReport{
+	err := cp.ReportTaskGPU("web", "t-1", []ecsdomain.ContainerGPUReport{
 		{Name: "trainer", GPUIDs: []string{"GPU-aaa"}},
 	})
 	if err != nil {
@@ -123,7 +123,7 @@ func TestGatewayControlPlane_ReportTaskGPU(t *testing.T) {
 		t.Fatal("no X-Amz-Target header sent")
 	}
 
-	var in handlers_ecs.ReportTaskGPUInput
+	var in ecsdomain.ReportTaskGPUInput
 	if err := json.Unmarshal(body, &in); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}

@@ -126,25 +126,39 @@ func TestNATSProfileLookup_PropagatesError(t *testing.T) {
 
 const pubKeySubject = "imds.ec2.get_public_key"
 
-func TestNATSPublicKeyLookup_CachesMaterial(t *testing.T) {
+// Deleting a key pair and re-importing new material under the same name must
+// take effect on the next lookup, not after a cache expires.
+func TestNATSPublicKeyLookup_ServesReimportedMaterial(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
+	var stored atomic.Value
+	stored.Store("ssh-ed25519 AAAAold my-key")
 	var gotReq ec2key.GetPublicKeyRequest
-	calls := serveCounted(t, nc, pubKeySubject,
+	serveCounted(t, nc, pubKeySubject,
 		func(req *ec2key.GetPublicKeyRequest) (*ec2key.GetPublicKeyResponse, error) {
 			gotReq = *req
-			return &ec2key.GetPublicKeyResponse{OpenSSHKey: "ssh-ed25519 AAAA " + req.KeyName}, nil
+			material := stored.Load().(string)
+			if material == "" {
+				return nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+			}
+			return &ec2key.GetPublicKeyResponse{OpenSSHKey: material}, nil
 		})
 
 	lookup := NewNATSPublicKeyLookup(nc)
-	for range 3 {
-		got, err := lookup.GetPublicKey(context.Background(), imdsTestAccountID, "my-key")
-		require.NoError(t, err)
-		assert.Equal(t, "ssh-ed25519 AAAA my-key", got)
-	}
-	// Three lookups, one round-trip: the TTL cache suppressed the repeats.
-	assert.Equal(t, int32(1), atomic.LoadInt32(calls))
+	got, err := lookup.GetPublicKey(context.Background(), imdsTestAccountID, "my-key")
+	require.NoError(t, err)
+	assert.Equal(t, "ssh-ed25519 AAAAold my-key", got)
 	assert.Equal(t, ec2key.GetPublicKeyRequest{AccountID: imdsTestAccountID, KeyName: "my-key"}, gotReq)
+
+	stored.Store("")
+	_, err = lookup.GetPublicKey(context.Background(), imdsTestAccountID, "my-key")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
+
+	stored.Store("ssh-ed25519 AAAAnew my-key")
+	got, err = lookup.GetPublicKey(context.Background(), imdsTestAccountID, "my-key")
+	require.NoError(t, err)
+	assert.Equal(t, "ssh-ed25519 AAAAnew my-key", got)
 }
 
 // An error result is never cached: the next call must re-issue the RPC so a

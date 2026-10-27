@@ -215,7 +215,7 @@ func packChunks(pieces []piece, size, overlap int) []Chunk {
 
 // TokenCounter counts text's real tokens for a served model (e.g. TEI POST
 // /tokenize); ok is false when the endpoint can't answer, telling the caller to
-// fall back to an estimate. gateway_bedrock's TokenLimiter satisfies it structurally.
+// fall back to an estimate. ochre's TokenLimiter satisfies it structurally.
 type TokenCounter interface {
 	CountTokens(ctx context.Context, modelID, text string) (count int, ok bool)
 }

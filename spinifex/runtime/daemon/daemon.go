@@ -1,0 +1,3696 @@
+// Package daemon is the per-node Spinifex daemon: it wires the AWS service
+// handlers to their NATS topics and owns this node's VMs, volumes, ENIs and
+// the reconcilers that keep them converged.
+package daemon
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
+	"log/slog"
+	"maps"
+	"net"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"net/http"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/go-chi/chi/v5"
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
+	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
+	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
+	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
+	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
+	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/exonet"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/ocinet"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// ResourceManager handles the allocation and tracking of system resources.
+// It dynamically manages per-instance-type NATS subscriptions: when capacity
+// is available for a type, the node subscribes to ec2.RunInstances.{type};
+// when full, it unsubscribes so NATS routes requests to other nodes.
+type ResourceManager struct {
+	mu sync.RWMutex
+	// hostVCPU / hostMemGB: physical cores (not SMT threads) and total RAM.
+	// Schedulable capacity = host - reserved - allocated.
+	hostVCPU  int
+	hostMemGB float64
+	// reservedVCPU / reservedMem: resources held back for the daemon and
+	// co-located services. See hostReserve / defaultHostReserve.
+	reservedVCPU  int
+	reservedMem   float64
+	allocatedVCPU int
+	allocatedMem  float64
+	// reservedCRVCPU / reservedCRMem: compute held by capacity reservations
+	// pinned to this node. Subtracted from schedulable capacity exactly like
+	// the host reserve. In-memory only — lost on daemon restart.
+	reservedCRVCPU int
+	reservedCRMem  float64
+	// reservations: in-memory capacity reservations owned by this node, keyed
+	// by id. Mutated together with reservedCR* under mu.
+	reservations map[string]*capacityReservation
+	// nbdkitMainMiB / nbdkitAuxMiB: per-volume nbdkit memory charged at
+	// admission so nbdkit backing a guest's volumes is accounted explicitly.
+	nbdkitMainMiB int
+	nbdkitAuxMiB  int
+	instanceTypes map[string]*ec2.InstanceTypeInfo
+	gpuManager    *gpu.Manager // nil if GPU passthrough is disabled or no GPUs present
+
+	// readMemAvailableGB is the live second admission gate (MemAvailable from
+	// /proc/meminfo). Catches real overcommit the static -m accounting misses.
+	// nil disables it (SPINIFEX_ADMISSION_LIVE_MEM=0); read failure fails open.
+	readMemAvailableGB func() (float64, bool)
+
+	// Dynamic instance-type subscription management
+	subsMu        sync.Mutex
+	natsConn      *nats.Conn
+	instanceSubs  map[string]*nats.Subscription
+	handler       natsHandler
+	systemHandler natsHandler // handles system.LaunchInstance.* requests (ALB-VM fan-out)
+	nodeID        string      // node identifier for node-specific topic subscriptions
+}
+
+// Compile-time guarantee that the RouteTable service satisfies the IGW
+// handler's GatePublisher hook — the two services are wired together below.
+var _ ec2igw.GatePublisher = (*ec2routetable.RouteTableServiceImpl)(nil)
+
+// Daemon represents the main daemon service.
+type Daemon struct {
+	node              string
+	clusterConfig     *config.ClusterConfig
+	config            *config.Config
+	natsConn          *nats.Conn
+	resourceMgr       *ResourceManager
+	instanceService   *ec2instance.InstanceServiceImpl
+	dnsWriter         *dns.Writer
+	dnsReconciler     *dns.Reconciler
+	dnsBaseDomain     string
+	dnsInternalDomain string
+	keyService        *ec2key.KeyServiceImpl
+	imageService      *ec2image.ImageServiceImpl
+	volumeService     *ec2volume.VolumeServiceImpl
+	// ebsProvider is the sole EBS backend, set once during startup.
+	ebsProvider           ebsprovider.EBSProvider
+	accountService        *ec2account.AccountSettingsServiceImpl
+	snapshotService       *ec2snapshot.SnapshotServiceImpl
+	tagsService           *ec2tags.TagsServiceImpl
+	eigwService           *ec2eigw.EgressOnlyIGWServiceImpl
+	igwService            *ec2igw.IGWServiceImpl
+	placementGroupService *ec2placementgroup.PlacementGroupServiceImpl
+	launchTemplateService *ec2launchtemplate.LaunchTemplateServiceImpl
+	spotInstanceService   *ec2spotinstance.SpotInstanceServiceImpl
+	vpcService            *ec2vpc.VPCServiceImpl
+	eipService            ec2eip.EIPService
+	elbv2Service          *elbv2domain.ELBv2ServiceImpl
+	eksService            *ekscluster.EKSServiceImpl
+	ecsService            *ecsdomain.Service
+	ecsScheduler          *ecsdomain.Scheduler
+	rdsService            *rdsinstance.Service
+	rdsReconciler         *rdsinstance.Reconciler
+	bedrockService        *ochre.Service
+	bedrockReaper         *ochre.Reaper
+	acmService            *acmdomain.ACMServiceImpl
+	acmRenewalWorker      *acmdomain.Worker
+	ochreVectorService    ochrevector.VectorService
+	ochreAppliance        *ochrevector.Appliance
+	ochreBackupService    *ochrevector.BackupService
+	ecrMetaService        *ecr.MetaServiceImpl
+	routeTableService     *ec2routetable.RouteTableServiceImpl
+	natGatewayService     *ec2natgw.NatGatewayServiceImpl
+	externalIPAM          *ec2vpc.ExternalIPAM
+	// ociAllocators is every source="oci" pool on this node. Written once during
+	// startup, before anything reads it.
+	ociAllocators []ociPool
+	ctx           context.Context
+	cancel        context.CancelFunc
+	shutdownWg    sync.WaitGroup
+
+	// recoveryRetryWg tracks the post-restore retry loop, which writes the
+	// local state file when it finishes. Tests wait on it before cleanup.
+	recoveryRetryWg sync.WaitGroup
+
+	// systemDispatchWg tracks in-flight system.LaunchInstance / TerminateInstance
+	// handlers. Each runs in its own goroutine so a slow VM boot never blocks
+	// the NATS subscription. Used by tests to await dispatch completion.
+	systemDispatchWg sync.WaitGroup
+
+	// vmMgr owns the in-memory map of VMs running on this node.
+	vmMgr *vm.Manager
+
+	// NAT Subscriptions
+	natsSubscriptions map[string]*nats.Subscription
+
+	// Cluster manager
+	clusterServer *http.Server
+	startTime     time.Time
+	configPath    string
+
+	// predastoreHealth caches the /health predastore probe's verdict; see health.go.
+	predastoreHealth predastoreHealthCache
+
+	// System credentials for ALB agent SigV4 auth (loaded from system-credentials.json)
+	systemAccessKey string
+	systemSecretKey string
+
+	// JetStream manager for KV state storage (nil if JetStream disabled)
+	jsManager *JetStreamManager
+
+	// stateStore is the vm.StateStore view over jsManager, initialized after
+	// initJetStream succeeds.
+	stateStore vm.StateStore
+
+	// Delay after QMP device_del before blockdev-del (default 1s, 0 in tests).
+	// Only used as a fallback when deviceDeletedTimeout is 0.
+	detachDelay time.Duration
+
+	// deviceDeletedTimeout bounds how long DetachVolume waits for QEMU's
+	// DEVICE_DELETED event after device_del before falling back to the
+	// blockdev-del retry loop (default 15s, 0 disables the wait in tests).
+	deviceDeletedTimeout time.Duration
+
+	// NATS connect retry options (nil uses defaults: 5min max, 500ms initial delay)
+	natsRetryOpts []natsmsg.RetryOption
+
+	// requireNATSTimeout caps the first connectNATS attempt under
+	// SPINIFEX_REQUIRE_NATS=1. Default 30s; tests use a shorter value.
+	requireNATSTimeout time.Duration
+
+	// exitFunc is called when SPINIFEX_REQUIRE_NATS=1 and the first connect
+	// times out. Defaults to os.Exit; tests override to avoid killing the process.
+	exitFunc func(int)
+
+	// networkPlumber handles tap device lifecycle for VPC and management networking
+	networkPlumber vm.NetworkPlumber
+
+	// mgmtBridgeIP / mgmtIPAllocator: management NIC infrastructure for system
+	// instances. Populated at startup when br-mgmt is detected.
+	mgmtBridgeIP    string
+	mgmtIPAllocator *MgmtIPAllocator
+	// mgmtRouteVia: AWSGW bind IP system instances route via br-mgmt (multi-node).
+	mgmtRouteVia string
+
+	// gpuProbe: startup GPU hardware probe result, always populated.
+	gpuProbe gpuProbeResult
+
+	// gpuManager: VFIO bind/unbind for GPU passthrough. Nil when disabled or no GPUs found.
+	gpuManager *gpu.Manager
+
+	// shuttingDown: set during GATE or SIGTERM; daemon rejects new work and
+	// crash handlers bail out.
+	shuttingDown atomic.Bool
+
+	// ready: set once NATS, JetStream, and all services are initialized.
+	// /health reports "starting" until true.
+	ready atomic.Bool
+
+	// natsConnected: true when the NATS TCP connection is live.
+	natsConnected atomic.Bool
+	// peersReachable: true when at least one peer /health responded in the
+	// last probe cycle. Pinned true on single-node clusters.
+	peersReachable atomic.Bool
+
+	// natsRetryCount: disconnect→reconnect cycles since process start.
+	natsRetryCount atomic.Int64
+
+	// stateRevision: incremented on each successful WriteState.
+	stateRevision atomic.Uint64
+
+	// recordRepairInterval: overrides recordRepairInterval, for tests that must
+	// observe a sweep without waiting a minute. Zero uses the real bound.
+	recordRepairInterval time.Duration
+
+	// kvSyncFailures: best-effort JetStream KV sync failures since start.
+	kvSyncFailures atomic.Int64
+	// lastKVSyncAt: unix-nano timestamp of the last successful KV sync.
+	lastKVSyncAt atomic.Int64
+	// lastKVSyncError: most recent KV sync error message; "" on success.
+	lastKVSyncError atomic.Value
+
+	// reconciling: coalesces concurrent reconcileOnHeal calls.
+	reconciling atomic.Bool
+	// stateWriteMu: serialises WriteState to prevent races on the .tmp staging file.
+	stateWriteMu sync.Mutex
+
+	// iamEnsurerMu guards the lazily-built system-role IAM service (systemRoleEnsurer).
+	iamEnsurerMu     sync.Mutex
+	iamEnsurerCached iamdomain.SystemInstanceRoleEnsurer
+
+	mu sync.Mutex
+}
+
+// Daemon connectivity modes derived by Mode().
+const (
+	DaemonModeStandalone = "standalone"
+	DaemonModeCluster    = "cluster"
+)
+
+// Mode returns "cluster" iff both natsConnected and peersReachable are true;
+// otherwise "standalone". Two signals are required so a NATS-up partition
+// (DDIL Scenario C) still reports standalone when no peer responds.
+func (d *Daemon) Mode() string {
+	if d.natsConnected.Load() && d.peersReachable.Load() {
+		return DaemonModeCluster
+	}
+	return DaemonModeStandalone
+}
+
+// NATSRetryCount returns the number of disconnect→reconnect cycles observed
+// since process start.
+func (d *Daemon) NATSRetryCount() int64 {
+	return d.natsRetryCount.Load()
+}
+
+// Revision returns the local-state revision counter. Bumped on every successful
+// WriteState; observers can detect changes without diffing the full payload.
+func (d *Daemon) Revision() uint64 {
+	return d.stateRevision.Load()
+}
+
+// KVSyncFailures returns the number of best-effort JetStream KV sync failures
+// (timeout or put error) observed since process start.
+func (d *Daemon) KVSyncFailures() int64 {
+	return d.kvSyncFailures.Load()
+}
+
+// LastKVSyncAt returns the timestamp of the most recent successful best-effort
+// KV sync. Zero time means "never synced since process start".
+func (d *Daemon) LastKVSyncAt() time.Time {
+	n := d.lastKVSyncAt.Load()
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n)
+}
+
+// LastKVSyncError returns the most recent best-effort KV sync error message.
+// Empty string means the last attempt succeeded (or no attempt has been made).
+func (d *Daemon) LastKVSyncError() string {
+	v := d.lastKVSyncError.Load()
+	if v == nil {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
+// RecordKVSyncSuccess implements KVSyncObserver. The JetStream manager calls
+// this from its best-effort write path on a successful Put.
+func (d *Daemon) RecordKVSyncSuccess(_ string) {
+	d.lastKVSyncAt.Store(time.Now().UnixNano())
+	d.lastKVSyncError.Store("")
+}
+
+// RecordKVSyncFailure implements KVSyncObserver. Bumps the failure counter and
+// records the error message for /local/status.
+func (d *Daemon) RecordKVSyncFailure(_ string, err error) {
+	d.kvSyncFailures.Add(1)
+	if err != nil {
+		d.lastKVSyncError.Store(err.Error())
+	}
+}
+
+// onNATSDisconnect runs when the NATS client loses its connection. Flips
+// natsConnected to false so Mode() reports standalone and scatter-gather
+// bailouts react immediately. Must not block — runs on a NATS client goroutine.
+func (d *Daemon) onNATSDisconnect(_ *nats.Conn, _ error) {
+	d.natsConnected.Store(false)
+}
+
+// onNATSReconnect runs when the NATS client reattaches to a server. Marks
+// NATS connected, bumps the retry counter, and dispatches reconcileOnHeal
+// in a goroutine to keep this NATS client callback non-blocking.
+func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
+	d.natsConnected.Store(true)
+	d.natsRetryCount.Add(1)
+
+	go d.reconcileOnHeal("nats-reconnect")
+}
+
+// execCommand wraps exec.Command so tests can substitute a fake implementation.
+var execCommand = exec.Command
+
+// getSystemMemory returns the total system memory in GB.
+func getSystemMemory() (float64, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		// macOS: use sysctl
+		cmd := execCommand("sysctl", "-n", "hw.memsize")
+		output, err := cmd.Output()
+		if err != nil {
+			return 0, fmt.Errorf("failed to get system memory on macOS: %w", err)
+		}
+		memBytes, err := strconv.ParseInt(strings.TrimSpace(string(output)), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse memory size on macOS: %w", err)
+		}
+		return float64(memBytes) / (1024 * 1024 * 1024), nil
+
+	case "linux":
+		// Linux: read from /proc/meminfo
+		cmd := execCommand("grep", "MemTotal", "/proc/meminfo")
+		output, err := cmd.Output()
+		if err != nil {
+			return 0, fmt.Errorf("failed to read /proc/meminfo: %w", err)
+		}
+
+		// Parse the output (format: "MemTotal:       16384 kB")
+		fields := strings.Fields(string(output))
+		if len(fields) < 3 {
+			return 0, fmt.Errorf("unexpected /proc/meminfo format")
+		}
+
+		memKB, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse memory size from /proc/meminfo: %w", err)
+		}
+
+		// Convert KB to GB
+		return float64(memKB) / (1024 * 1024), nil
+
+	default:
+		return 0, fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
+	}
+}
+
+// physicalCoreCount returns the number of physical CPU cores by parsing
+// distinct (physical id, core id) pairs from /proc/cpuinfo. Falls back to
+// runtime.NumCPU() on non-Linux or when topology fields are absent.
+func physicalCoreCount() int {
+	logical := runtime.NumCPU()
+	if runtime.GOOS != "linux" {
+		return logical
+	}
+	data, err := os.ReadFile("/proc/cpuinfo")
+	if err != nil {
+		slog.Warn("physical core detection failed, scheduling against logical CPUs",
+			"err", err, "logicalCPU", logical)
+		return logical
+	}
+	if n, ok := parsePhysicalCores(data); ok {
+		return n
+	}
+	return logical
+}
+
+// parsePhysicalCores counts distinct (physical id, core id) pairs in
+// /proc/cpuinfo, collapsing SMT siblings. Returns ok=false when topology
+// fields are absent so the caller can fall back to the logical CPU count.
+func parsePhysicalCores(data []byte) (int, bool) {
+	cores := make(map[string]struct{})
+	var phys, core string
+	sawCore := false
+	flush := func() {
+		if core != "" {
+			cores[phys+":"+core] = struct{}{}
+		}
+		phys, core = "", ""
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			flush()
+			continue
+		}
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "physical id":
+			phys = strings.TrimSpace(val)
+		case "core id":
+			core = strings.TrimSpace(val)
+			sawCore = true
+		}
+	}
+	flush()
+	if !sawCore || len(cores) == 0 {
+		return 0, false
+	}
+	return len(cores), true
+}
+
+// NewResourceManager creates a new ResourceManager. Errors if memory detection
+// fails or if the host is too small to satisfy the daemon's reserve.
+func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instancetypes.MIGProfileSpec, gpuMgr *gpu.Manager) (*ResourceManager, error) {
+	// Use physical cores (not SMT threads); SPINIFEX_HOST_VCPU overrides.
+	hostVCPU := resolveHostVCPU(os.Getenv, physicalCoreCount())
+
+	totalMemGB, err := getSystemMemory()
+	if err != nil {
+		return nil, fmt.Errorf("detect system memory: %w", err)
+	}
+
+	reserve := resolveHostReserve(os.Getenv)
+	reservedVCPU, reservedMem, err := applyHostReserve(reserve, hostVCPU, totalMemGB)
+	if err != nil {
+		slog.Error("host below minimum reserve — daemon refuses to start",
+			"err", err, "hostVCPU", hostVCPU, "hostMemGB", totalMemGB,
+			"reserveVCPU", reserve.vCPU, "reserveMemGB", reserve.memGB)
+		return nil, fmt.Errorf("validate host reserve: %w", err)
+	}
+
+	arch := "x86_64"
+	if runtime.GOARCH == "arm64" {
+		arch = "arm64"
+	}
+
+	instanceTypes := instancetypes.DetectAndGenerate(instancetypes.HostCPU{}, arch, gpuModels)
+	if len(migProfiles) > 0 {
+		maps.Copy(instanceTypes, instancetypes.GenerateMIGTypes(migProfiles, arch))
+	}
+
+	slog.Info("System resources detected",
+		"hostVCPU", hostVCPU, "logicalCPU", runtime.NumCPU(), "hostMemGB", totalMemGB,
+		"reservedVCPU", reservedVCPU, "reservedMemGB", reservedMem,
+		"schedulableVCPU", hostVCPU-reservedVCPU, "schedulableMemGB", totalMemGB-reservedMem,
+		"instanceTypes", len(instanceTypes))
+
+	var memReader func() (float64, bool)
+	if liveMemAdmissionEnabled(os.Getenv) {
+		memReader = readMemAvailableGB
+	}
+
+	nbdkitMainMiB, nbdkitAuxMiB := resolveNbdkitCharge(os.Getenv)
+
+	return &ResourceManager{
+		hostVCPU:           hostVCPU,
+		hostMemGB:          totalMemGB,
+		reservedVCPU:       reservedVCPU,
+		reservedMem:        reservedMem,
+		nbdkitMainMiB:      nbdkitMainMiB,
+		nbdkitAuxMiB:       nbdkitAuxMiB,
+		instanceTypes:      instanceTypes,
+		gpuManager:         gpuMgr,
+		readMemAvailableGB: memReader,
+		reservations:       make(map[string]*capacityReservation),
+	}, nil
+}
+
+// instanceTypeVCPUs returns the default vCPU count for an instance type, or 0 if unavailable.
+func instanceTypeVCPUs(it *ec2.InstanceTypeInfo) int64 {
+	if it.VCpuInfo != nil && it.VCpuInfo.DefaultVCpus != nil {
+		return *it.VCpuInfo.DefaultVCpus
+	}
+	return 0
+}
+
+// instanceTypeMemoryMiB returns the memory in MiB for an instance type, or 0 if unavailable.
+func instanceTypeMemoryMiB(it *ec2.InstanceTypeInfo) int64 {
+	if it.MemoryInfo != nil && it.MemoryInfo.SizeInMiB != nil {
+		return *it.MemoryInfo.SizeInMiB
+	}
+	return 0
+}
+
+// instanceMemChargeMiB is the full per-instance memory charge: guest -m plus
+// nbdkit processes for its volumes. All admission gates use this value.
+func (rm *ResourceManager) instanceMemChargeMiB(it *ec2.InstanceTypeInfo) int64 {
+	return instanceTypeMemoryMiB(it) +
+		nbdkitChargeMiB(defaultMainVolumes, defaultAuxVolumes, rm.nbdkitMainMiB, rm.nbdkitAuxMiB)
+}
+
+// GetInstanceTypeInfos returns all instance types as ec2.InstanceTypeInfo for AWS API compatibility.
+func (rm *ResourceManager) GetInstanceTypeInfos() []*ec2.InstanceTypeInfo {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	var infos []*ec2.InstanceTypeInfo
+	for name, it := range rm.instanceTypes {
+		if instancetypes.IsSystemType(name) {
+			continue
+		}
+		infos = append(infos, it)
+	}
+	return infos
+}
+
+// GetAvailableInstanceTypeInfos returns instance types based on total host capacity.
+// If showCapacity is true, it returns multiple entries representing available slots.
+// If showCapacity is false, it returns each supported type only once.
+func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	var infos []*ec2.InstanceTypeInfo
+
+	for name, it := range rm.instanceTypes {
+		if instancetypes.IsSystemType(name) {
+			continue
+		}
+
+		vCPUs := instanceTypeVCPUs(it)
+		memMiB := instanceTypeMemoryMiB(it)
+
+		if vCPUs == 0 || memMiB == 0 {
+			continue
+		}
+
+		// GPU types are capacity-gated by GPU pool size, not host CPU/memory.
+		// The GPU is the scarce resource; CPU/memory on GPU-class hardware is abundant.
+		if instancetypes.IsGPUType(it) {
+			count := rm.admissibleGPUInstances(name)
+			if showCapacity {
+				for range count {
+					infos = append(infos, it)
+				}
+			} else if count > 0 {
+				infos = append(infos, it)
+			}
+			continue
+		}
+
+		count := canAllocateCount(
+			rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
+			rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
+			vCPUs, rm.instanceMemChargeMiB(it),
+			1<<30, // effectively unlimited — let resources be the constraint
+			0, false,
+		)
+
+		if showCapacity {
+			for range count {
+				infos = append(infos, it)
+			}
+		} else if count > 0 {
+			infos = append(infos, it)
+		}
+	}
+
+	slog.Info("GetAvailableInstanceTypeInfos", "total_types", len(rm.instanceTypes), "total_available_slots", len(infos),
+		"hostVCPU", rm.hostVCPU, "hostMem", rm.hostMemGB,
+		"reservedVCPU", rm.reservedVCPU, "reservedMem", rm.reservedMem,
+		"reservedCRVCPU", rm.reservedCRVCPU, "reservedCRMem", rm.reservedCRMem,
+		"showCapacity", showCapacity)
+
+	return infos
+}
+
+// GetSupportedInstanceTypeInfos returns every supported instance type regardless
+// of current capacity, mirroring AWS DescribeInstanceTypes semantics. System
+// types and entries with incomplete metadata are skipped.
+func (rm *ResourceManager) GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeInfo {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	var infos []*ec2.InstanceTypeInfo
+	for name, it := range rm.instanceTypes {
+		if instancetypes.IsSystemType(name) {
+			continue
+		}
+		if instanceTypeVCPUs(it) == 0 || instanceTypeMemoryMiB(it) == 0 {
+			continue
+		}
+		infos = append(infos, it)
+	}
+
+	slog.Info("GetSupportedInstanceTypeInfos", "total_types", len(rm.instanceTypes), "supported", len(infos))
+	return infos
+}
+
+// GetResourceStats returns host resource figures, reservation, allocation, and
+// per-type capacity caps for the node status response.
+func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64, reservedVCPU int, reservedMemGB float64, allocVCPU int, allocMemGB float64, caps []clusterv1.InstanceTypeCap) {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	totalVCPU = rm.hostVCPU
+	totalMemGB = rm.hostMemGB
+	// Fold the capacity-reservation carve-out into the reported reserve figures;
+	// The probe has no separate status field for it.
+	reservedVCPU = rm.reservedVCPU + rm.reservedCRVCPU
+	reservedMemGB = rm.reservedMem + rm.reservedCRMem
+	allocVCPU = rm.allocatedVCPU
+	allocMemGB = rm.allocatedMem
+
+	remainingVCPU := rm.hostVCPU - reservedVCPU - rm.allocatedVCPU
+	remainingMem := rm.hostMemGB - reservedMemGB - rm.allocatedMem
+	if remainingVCPU < 0 || remainingMem < 0 {
+		slog.Error("schedulable capacity negative — reserve misconfigured or allocation drift",
+			"hostVCPU", rm.hostVCPU, "reservedVCPU", reservedVCPU, "allocatedVCPU", rm.allocatedVCPU,
+			"hostMemGB", rm.hostMemGB, "reservedMem", reservedMemGB, "allocatedMem", rm.allocatedMem,
+			"remainingVCPU", remainingVCPU, "remainingMem", remainingMem)
+	}
+
+	for name, it := range rm.instanceTypes {
+		if instancetypes.IsSystemType(name) {
+			continue
+		}
+		typeCap := resourceStatsForType(remainingVCPU, remainingMem, it)
+		if typeCap.VCPU == 0 || typeCap.MemoryGB == 0 {
+			continue
+		}
+		// CPU and memory never bind first on a gpu.* shape, so without this the
+		// census calls a GPU type schedulable on a node with no free GPU. EKS
+		// host selection and reservation creation both read this figure.
+		if instancetypes.IsGPUType(it) {
+			typeCap.Available = min(typeCap.Available, rm.admissibleGPUInstances(name))
+		}
+		caps = append(caps, typeCap)
+	}
+	return totalVCPU, totalMemGB, reservedVCPU, reservedMemGB, allocVCPU, allocMemGB, caps
+}
+
+// SetConfigPath sets the configuration file path for cluster management.
+func (d *Daemon) SetConfigPath(path string) {
+	d.configPath = path
+}
+
+// NewDaemon creates a new daemon instance.
+func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// If WalDir is not set, use BaseDir
+	nodeCfg := cfg.Nodes[cfg.Node]
+	if cfg.Nodes[cfg.Node].WalDir == "" {
+		nodeCfg.WalDir = nodeCfg.BaseDir
+		cfg.Nodes[cfg.Node] = nodeCfg
+	}
+
+	// Always probe GPU hardware (no side effects, no config required).
+	gpuProbe := probeGPU()
+
+	// Activate GPU passthrough only when the operator has opted in.
+	var gpuModels []instancetypes.GPUModel
+	var gpuMigProfiles []instancetypes.MIGProfileSpec
+	var gpuMgr *gpu.Manager
+	if nodeCfg.Daemon.GPUPassthrough {
+		if !gpuProbe.Capable {
+			slog.Warn("GPU passthrough enabled in config but prerequisites not met",
+				"iommu", gpuProbe.IOMMUActive, "vfio", gpuProbe.VFIOPresent,
+				"gpus", len(gpuProbe.Devices))
+		} else {
+			gpuMgr, gpuModels, gpuMigProfiles = buildGPUPool(gpuProbe.Devices, nodeCfg.Daemon)
+		}
+	} else if gpuProbe.Capable {
+		slog.Info("GPU hardware detected, passthrough not enabled",
+			"gpus", len(gpuProbe.Devices), "hint", "run 'spx admin gpu enable' to activate")
+	}
+
+	rm, err := NewResourceManager(gpuModels, gpuMigProfiles, gpuMgr)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("initialize resource manager: %w", err)
+	}
+
+	d := &Daemon{
+		node:                 cfg.Node,
+		clusterConfig:        cfg,
+		config:               &nodeCfg,
+		resourceMgr:          rm,
+		gpuProbe:             gpuProbe,
+		gpuManager:           gpuMgr,
+		ctx:                  ctx,
+		cancel:               cancel,
+		vmMgr:                vm.NewManager(),
+		natsSubscriptions:    make(map[string]*nats.Subscription),
+		startTime:            time.Now(),
+		detachDelay:          1 * time.Second,
+		deviceDeletedTimeout: 15 * time.Second,
+		requireNATSTimeout:   30 * time.Second,
+		exitFunc:             os.Exit,
+	}
+	// Initialise peersReachable true so the first probe tick never fires a
+	// spurious reconcileOnHeal at startup. Mode() still requires natsConnected
+	// (starts false), so this can't falsely report cluster mode.
+	d.peersReachable.Store(true)
+	return d, nil
+}
+
+// Outcomes recorded on daemon request metrics. A handler that answered with an
+// error payload is outcomeError; anything else is outcomeSuccess.
+// A broadcast handler that declines because the request names another node is
+// outcomeSkipped: it neither served nor failed, and folding it into either one
+// hides a node that answered nothing.
+const (
+	outcomeSuccess = "success"
+	outcomeError   = "error"
+	outcomeSkipped = "skipped"
+
+	// outcomeClientError is a caller mistake — an unknown id, a bad parameter.
+	// Separate from outcomeError so a daemon error rate measures the daemon
+	// rather than the callers reaching it.
+	outcomeClientError = "client_error"
+
+	// outcomeDeferred tells natsMetricsHandler the handler records its own
+	// point. Handlers that answer from a goroutine must use it: timing the
+	// wrapper would measure the dispatch and call every launch an instant
+	// success.
+	outcomeDeferred = ""
+)
+
+// outcomeFor maps the reply-succeeded flag the utils serve helpers return onto
+// a metric outcome.
+func outcomeFor(replied bool) string {
+	if replied {
+		return outcomeSuccess
+	}
+	return outcomeError
+}
+
+// outcomeForError classifies a handler failure by the status its AWS code maps
+// to, through the same function the HTTP middleware uses. Anything carrying no
+// recognised code lands on 500, so an unclassifiable failure counts against the
+// daemon rather than being written off as the caller's fault.
+func outcomeForError(err error) string {
+	return otelsetup.OutcomeForStatus(awserrors.HTTPStatusForError(err))
+}
+
+// outcomeForCode classifies by an AWS error code a handler has already chosen,
+// for the paths that answer with a code rather than an error value.
+func outcomeForCode(errCode string) string {
+	return outcomeForError(errors.New(errCode))
+}
+
+// ec2CmdAction names the metric action for a per-instance command. The subject
+// carries the instance id, so the action is built from the command: an instance
+// id in a metric dimension would make one series per instance.
+func ec2CmdAction(command string) string {
+	return ec2v1.InstanceCommandSubjectPrefix + command
+}
+
+// logHandlerError reports a handler failure at a level matching its
+// classification: ERROR means the daemon failed. A client error is the caller's
+// and is logged at WARN, which is what stops an expected fan-out miss writing an
+// ERROR line on every node that was never going to answer.
+func logHandlerError(ctx context.Context, msg string, subject string, err error) {
+	code := awserrors.ValidErrorCodeFromError(err)
+	if outcomeForError(err) == outcomeClientError {
+		slog.WarnContext(ctx, msg, "subject", subject, "code", code, "err", err)
+		return
+	}
+	slog.ErrorContext(ctx, msg, "subject", subject, "code", code, "err", err)
+}
+
+// natsHandler is a NATS handler that reports how it answered. The type exists
+// so the outcome is observable at the metrics chokepoint: a plain MsgHandler
+// writes its own reply and returns nothing, which is why daemon request points
+// carried no outcome at all.
+type natsHandler func(*nats.Msg) string
+
+// natsMetricsHandler wraps a NATS handler to record request count, duration
+// and outcome under the given action.
+func natsMetricsHandler(action string, h natsHandler) nats.MsgHandler {
+	return func(msg *nats.Msg) {
+		start := time.Now()
+		outcome := h(msg)
+		if outcome == outcomeDeferred {
+			return
+		}
+		otelsetup.RecordRequest(context.Background(), action, outcome, time.Since(start))
+	}
+}
+
+// natsMetricAction strips the node name from a topic so node-targeted
+// subjects share one low-cardinality metric action across the cluster.
+func natsMetricAction(topic, node string) string {
+	if node == "" {
+		return topic
+	}
+	action := strings.ReplaceAll(topic, "."+node+".", ".")
+	return strings.TrimSuffix(action, "."+node)
+}
+
+// clusterCAKeyPath derives the CA private key path from the configured CA
+// certificate path — they are written as a pair into the same config directory.
+// Returns "" when no CA cert is configured, which disables cert minting rather
+// than guessing at a path.
+func clusterCAKeyPath(caCertPath string) string {
+	if caCertPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(caCertPath), "ca.key")
+}
+
+// natsSub defines a single NATS subscription entry for the table-driven setup.
+type natsSub struct {
+	topic      string
+	handler    natsHandler
+	queueGroup string // empty = plain Subscribe (fan-out)
+}
+
+// subscribeAll registers all NATS subscriptions using a table-driven approach.
+func (d *Daemon) subscribeAll() error {
+	subs := []natsSub{
+		// ec2.RunInstances is handled by dynamic per-instance-type subscriptions
+		// managed by ResourceManager.initSubscriptions()
+		{"ec2.CreateKeyPair", handleNATSRequest(d.node, d.keyService.CreateKeyPair), "spinifex-workers"},
+		{"ec2.DeleteKeyPair", handleNATSRequest(d.node, d.keyService.DeleteKeyPair), "spinifex-workers"},
+		{"ec2.DescribeKeyPairs", handleNATSRequest(d.node, d.keyService.DescribeKeyPairs), "spinifex-workers"},
+		{"ec2.ImportKeyPair", handleNATSRequest(d.node, d.keyService.ImportKeyPair), "spinifex-workers"},
+		{"imds.ec2.get_public_key", d.handleIMDSGetPublicKey, "spinifex-workers"},
+		{"ec2.DescribeImages", handleNATSRequest(d.node, d.imageService.DescribeImages), "spinifex-workers"},
+		{"ec2.CreateImage", d.handleEC2CreateImage, ""},
+		{"ec2.DeregisterImage", handleNATSRequest(d.node, d.imageService.DeregisterImage), "spinifex-workers"},
+		{"ec2.RegisterImage", handleNATSRequest(d.node, d.imageService.RegisterImage), "spinifex-workers"},
+		{"ec2.CopyImage", handleNATSRequest(d.node, d.imageService.CopyImage), "spinifex-workers"},
+		{"ec2.DescribeImageAttribute", handleNATSRequest(d.node, d.imageService.DescribeImageAttribute), "spinifex-workers"},
+		{"ec2.ModifyImageAttribute", handleNATSRequest(d.node, d.imageService.ModifyImageAttribute), "spinifex-workers"},
+		{"ec2.ResetImageAttribute", handleNATSRequest(d.node, d.imageService.ResetImageAttribute), "spinifex-workers"},
+		{"ec2.CreateVolume", handleNATSRequest(d.node, d.volumeService.CreateVolume), "spinifex-workers"},
+		{"ec2.DescribeVolumes", handleNATSRequest(d.node, d.volumeService.DescribeVolumes), "spinifex-workers"},
+		{"ec2.ModifyVolume", d.handleEC2ModifyVolume, "spinifex-workers"},
+		{"ec2.DeleteVolume", handleNATSRequest(d.node, d.volumeService.DeleteVolume), "spinifex-workers"},
+		// Cluster-wide on purpose: the QMP detach is instance-scoped, so a
+		// volume held by an unreachable host has no other way out.
+		{"ec2.ForceDetachVolume", handleNATSRequest(d.node, d.volumeService.ForceDetachVolume), "spinifex-workers"},
+		{"ec2.DescribeVolumeStatus", handleNATSRequest(d.node, d.volumeService.DescribeVolumeStatus), "spinifex-workers"},
+		{"ec2.DescribeVolumesModifications", handleNATSRequest(d.node, d.volumeService.DescribeVolumesModifications), "spinifex-workers"},
+		{"ec2.CreateSnapshot", handleNATSRequest(d.node, d.snapshotService.CreateSnapshot), "spinifex-workers"},
+		{"ec2.DescribeSnapshots", handleNATSRequest(d.node, d.snapshotService.DescribeSnapshots), "spinifex-workers"},
+		{"ec2.DeleteSnapshot", handleNATSRequest(d.node, d.snapshotService.DeleteSnapshot), "spinifex-workers"},
+		{"ec2.CopySnapshot", handleNATSRequest(d.node, d.snapshotService.CopySnapshot), "spinifex-workers"},
+		{"ec2.CreateTags", handleNATSRequest(d.node, d.createTags), "spinifex-workers"},
+		{"ec2.DeleteTags", handleNATSRequest(d.node, d.deleteTags), "spinifex-workers"},
+		{"ec2.DescribeTags", handleNATSRequest(d.node, d.tagsService.DescribeTags), "spinifex-workers"},
+		{"ec2.CreateEgressOnlyInternetGateway", handleNATSRequest(d.node, d.eigwService.CreateEgressOnlyInternetGateway), "spinifex-workers"},
+		{"ec2.DeleteEgressOnlyInternetGateway", handleNATSRequest(d.node, d.eigwService.DeleteEgressOnlyInternetGateway), "spinifex-workers"},
+		{"ec2.DescribeEgressOnlyInternetGateways", handleNATSRequest(d.node, d.eigwService.DescribeEgressOnlyInternetGateways), "spinifex-workers"},
+		{"ec2.CreateInternetGateway", handleNATSRequest(d.node, d.igwService.CreateInternetGateway), "spinifex-workers"},
+		{"ec2.DeleteInternetGateway", handleNATSRequest(d.node, d.igwService.DeleteInternetGateway), "spinifex-workers"},
+		{"ec2.DescribeInternetGateways", handleNATSRequest(d.node, d.igwService.DescribeInternetGateways), "spinifex-workers"},
+		{"ec2.AttachInternetGateway", handleNATSRequest(d.node, d.igwService.AttachInternetGateway), "spinifex-workers"},
+		{"ec2.DetachInternetGateway", handleNATSRequest(d.node, d.igwService.DetachInternetGateway), "spinifex-workers"},
+		{"ec2.CreatePlacementGroup", handleNATSRequest(d.node, d.placementGroupService.CreatePlacementGroup), "spinifex-workers"},
+		{"ec2.DeletePlacementGroup", handleNATSRequest(d.node, d.placementGroupService.DeletePlacementGroup), "spinifex-workers"},
+		{"ec2.DescribePlacementGroups", handleNATSRequest(d.node, d.placementGroupService.DescribePlacementGroups), "spinifex-workers"},
+		{"ec2.ReserveSpreadNodes", handleNATSRequest(d.node, d.placementGroupService.ReserveSpreadNodes), "spinifex-workers"},
+		{"ec2.FinalizeSpreadInstances", handleNATSRequest(d.node, d.placementGroupService.FinalizeSpreadInstances), "spinifex-workers"},
+		{"ec2.ReleaseSpreadNodes", handleNATSRequest(d.node, d.placementGroupService.ReleaseSpreadNodes), "spinifex-workers"},
+		{"ec2.RemoveInstanceFromPlacementGroup", handleNATSRequest(d.node, d.placementGroupService.RemoveInstance), "spinifex-workers"},
+		{"ec2.ReserveClusterNode", handleNATSRequest(d.node, d.placementGroupService.ReserveClusterNode), "spinifex-workers"},
+		{"ec2.FinalizeClusterInstances", handleNATSRequest(d.node, d.placementGroupService.FinalizeClusterInstances), "spinifex-workers"},
+		{"ec2.CreateLaunchTemplate", handleNATSRequest(d.node, d.launchTemplateService.CreateLaunchTemplate), "spinifex-workers"},
+		{"ec2.CreateLaunchTemplateVersion", handleNATSRequest(d.node, d.launchTemplateService.CreateLaunchTemplateVersion), "spinifex-workers"},
+		{"ec2.DeleteLaunchTemplate", handleNATSRequest(d.node, d.launchTemplateService.DeleteLaunchTemplate), "spinifex-workers"},
+		{"ec2.DeleteLaunchTemplateVersions", handleNATSRequest(d.node, d.launchTemplateService.DeleteLaunchTemplateVersions), "spinifex-workers"},
+		{"ec2.ModifyLaunchTemplate", handleNATSRequest(d.node, d.launchTemplateService.ModifyLaunchTemplate), "spinifex-workers"},
+		{"ec2.DescribeLaunchTemplates", handleNATSRequest(d.node, d.launchTemplateService.DescribeLaunchTemplates), "spinifex-workers"},
+		{"ec2.DescribeLaunchTemplateVersions", handleNATSRequest(d.node, d.launchTemplateService.DescribeLaunchTemplateVersions), "spinifex-workers"},
+		{ec2v1.PlatformInventorySubject, handleNATSRequest(d.node, d.platformInventory), "spinifex-workers"},
+		{"ec2.PutSpotInstanceRequests", handleNATSRequest(d.node, d.spotInstanceService.PutSpotInstanceRequests), "spinifex-workers"},
+		{"ec2.DescribeSpotInstanceRequests", handleNATSRequest(d.node, d.spotInstanceService.DescribeSpotInstanceRequests), "spinifex-workers"},
+		{"ec2.CancelSpotInstanceRequests", handleNATSRequest(d.node, d.spotInstanceService.CancelSpotInstanceRequests), "spinifex-workers"},
+		// Capacity reservations: Create is node-targeted (gateway pins one node);
+		// Describe fans out and Cancel broadcasts, so both use plain Subscribe.
+		{fmt.Sprintf("ec2.CreateCapacityReservation.%s", d.node), d.handleEC2CreateCapacityReservation, ""},
+		{"ec2.DescribeCapacityReservations", d.handleEC2DescribeCapacityReservations, ""},
+		{"ec2.CancelCapacityReservation", d.handleEC2CancelCapacityReservation, ""},
+		{"ec2.CreateNatGateway", handleNATSRequest(d.node, d.natGatewayService.CreateNatGateway), "spinifex-workers"},
+		{"ec2.DeleteNatGateway", handleNATSRequest(d.node, d.natGatewayService.DeleteNatGateway), "spinifex-workers"},
+		{"ec2.DescribeNatGateways", handleNATSRequest(d.node, d.natGatewayService.DescribeNatGateways), "spinifex-workers"},
+		{"ec2.CreateRouteTable", handleNATSRequest(d.node, d.routeTableService.CreateRouteTable), "spinifex-workers"},
+		{"ec2.DeleteRouteTable", handleNATSRequest(d.node, d.routeTableService.DeleteRouteTable), "spinifex-workers"},
+		{"ec2.DescribeRouteTables", handleNATSRequest(d.node, d.routeTableService.DescribeRouteTables), "spinifex-workers"},
+		{"ec2.CreateRoute", handleNATSRequest(d.node, d.routeTableService.CreateRoute), "spinifex-workers"},
+		{"ec2.DeleteRoute", handleNATSRequest(d.node, d.routeTableService.DeleteRoute), "spinifex-workers"},
+		{"ec2.ReplaceRoute", handleNATSRequest(d.node, d.routeTableService.ReplaceRoute), "spinifex-workers"},
+		{"ec2.AssociateRouteTable", handleNATSRequest(d.node, d.routeTableService.AssociateRouteTable), "spinifex-workers"},
+		{"ec2.DisassociateRouteTable", handleNATSRequest(d.node, d.routeTableService.DisassociateRouteTable), "spinifex-workers"},
+		{"ec2.ReplaceRouteTableAssociation", handleNATSRequest(d.node, d.routeTableService.ReplaceRouteTableAssociation), "spinifex-workers"},
+		{"ec2.CreateVpc", handleNATSRequest(d.node, d.vpcService.CreateVpc), "spinifex-workers"},
+		{"ec2.DeleteVpc", handleNATSRequest(d.node, d.vpcService.DeleteVpc), "spinifex-workers"},
+		{"ec2.DescribeVpcs", handleNATSRequest(d.node, d.vpcService.DescribeVpcs), "spinifex-workers"},
+		{"ec2.CreateSubnet", handleNATSRequest(d.node, d.vpcService.CreateSubnet), "spinifex-workers"},
+		{"ec2.DeleteSubnet", handleNATSRequest(d.node, d.vpcService.DeleteSubnet), "spinifex-workers"},
+		{"ec2.DescribeSubnets", handleNATSRequest(d.node, d.vpcService.DescribeSubnets), "spinifex-workers"},
+		{"ec2.ModifySubnetAttribute", handleNATSRequest(d.node, d.vpcService.ModifySubnetAttribute), "spinifex-workers"},
+		{"ec2.ModifyVpcAttribute", handleNATSRequest(d.node, d.vpcService.ModifyVpcAttribute), "spinifex-workers"},
+		{"ec2.DescribeVpcAttribute", handleNATSRequest(d.node, d.vpcService.DescribeVpcAttribute), "spinifex-workers"},
+		{"ec2.CreateNetworkInterface", handleNATSRequest(d.node, d.vpcService.CreateNetworkInterface), "spinifex-workers"},
+		{"ec2.DeleteNetworkInterface", handleNATSRequest(d.node, d.vpcService.DeleteNetworkInterface), "spinifex-workers"},
+		{"ec2.DescribeNetworkInterfaces", handleNATSRequest(d.node, d.vpcService.DescribeNetworkInterfaces), "spinifex-workers"},
+		{"ec2.ModifyNetworkInterfaceAttribute", handleNATSRequest(d.node, d.vpcService.ModifyNetworkInterfaceAttribute), "spinifex-workers"},
+		{"ec2.CreateSecurityGroup", handleNATSRequest(d.node, d.vpcService.CreateSecurityGroup), "spinifex-workers"},
+		{"ec2.DeleteSecurityGroup", handleNATSRequest(d.node, d.vpcService.DeleteSecurityGroup), "spinifex-workers"},
+		{"ec2.DescribeSecurityGroups", handleNATSRequest(d.node, d.vpcService.DescribeSecurityGroups), "spinifex-workers"},
+		{"ec2.DescribeSecurityGroupRules", handleNATSRequest(d.node, d.vpcService.DescribeSecurityGroupRules), "spinifex-workers"},
+		{"ec2.GetSecurityGroupsForVpc", handleNATSRequest(d.node, d.vpcService.GetSecurityGroupsForVpc), "spinifex-workers"},
+		{"ec2.AuthorizeSecurityGroupIngress", handleNATSRequest(d.node, d.vpcService.AuthorizeSecurityGroupIngress), "spinifex-workers"},
+		{"ec2.AuthorizeSecurityGroupEgress", handleNATSRequest(d.node, d.vpcService.AuthorizeSecurityGroupEgress), "spinifex-workers"},
+		{"ec2.RevokeSecurityGroupIngress", handleNATSRequest(d.node, d.vpcService.RevokeSecurityGroupIngress), "spinifex-workers"},
+		{"ec2.RevokeSecurityGroupEgress", handleNATSRequest(d.node, d.vpcService.RevokeSecurityGroupEgress), "spinifex-workers"},
+		{"ec2.UpdateSecurityGroupRuleDescriptionsIngress", handleNATSRequest(d.node, d.vpcService.UpdateSecurityGroupRuleDescriptionsIngress), "spinifex-workers"},
+		{"ec2.UpdateSecurityGroupRuleDescriptionsEgress", handleNATSRequest(d.node, d.vpcService.UpdateSecurityGroupRuleDescriptionsEgress), "spinifex-workers"},
+		{"ec2.ModifySecurityGroupRules", handleNATSRequest(d.node, d.vpcService.ModifySecurityGroupRules), "spinifex-workers"},
+		{"ec2.ModifyInstanceAttribute", handleNATSRequest(d.node, d.instanceService.ModifyInstanceAttribute), "spinifex-workers"},
+		{"ec2.ModifyInstanceMetadataOptions", handleNATSRequest(d.node, d.instanceService.ModifyInstanceMetadataOptions), "spinifex-workers"},
+		{"ec2.MonitorInstances", handleNATSRequest(d.node, d.monitorInstances), "spinifex-workers"},
+		{"ec2.UnmonitorInstances", handleNATSRequest(d.node, d.unmonitorInstances), "spinifex-workers"},
+		{"ec2.start", d.handleEC2StartStoppedInstance, "spinifex-workers"},
+		// ec2.start.{node} is the node-targeted variant: it always starts locally
+		// and never re-forwards, so it goes straight to the service (no routing loop).
+		{fmt.Sprintf("ec2.start.%s", d.node), handleNATSRequest(d.node, d.instanceService.StartStoppedInstance), ""},
+		{"ec2.terminate", handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance), "spinifex-workers"},
+		{"ec2.DescribeStoppedInstances", handleNATSRequest(d.node, d.instanceService.DescribeStoppedInstances), "spinifex-workers"},
+		{"ec2.DescribeTerminatedInstances", handleNATSRequest(d.node, d.instanceService.DescribeTerminatedInstances), "spinifex-workers"},
+		// these fan out to all nodes and gateway aggregates the results. The
+		// handler only sees per-daemon local state (vmMgr/stoppedStore), so
+		// any queue-grouped routing produces 1/N false NotFound responses.
+		{"ec2.DescribeInstances", handleNATSRequest(d.node, d.instanceService.DescribeInstances), ""},
+		{"ec2.DescribeInstanceStatus", handleNATSRequest(d.node, d.instanceService.DescribeInstanceStatus), ""},
+		{"ec2.DescribeInstanceTypes", handleNATSRequest(d.node, d.instanceService.DescribeInstanceTypes), ""},
+		{"ec2.DescribeInstanceAttribute", handleNATSRequest(d.node, d.instanceService.DescribeInstanceAttribute), ""},
+		// IAM instance profile associations: Disassociate/Replace mutate the
+		// owning daemon's vm.VM (non-owners NoOp with Found=false); Describe
+		// returns per-daemon matches that the gateway concatenates.
+		{"ec2.IamProfileAssociation.disassociate", handleNATSRequest(d.node, d.instanceService.DisassociateIamProfileAssociation), ""},
+		{"ec2.IamProfileAssociation.replace", handleNATSRequest(d.node, d.instanceService.ReplaceIamProfileAssociation), ""},
+		{"ec2.IamProfileAssociation.describe", handleNATSRequest(d.node, d.instanceService.DescribeIamProfileAssociations), ""},
+		{"ec2.EnableEbsEncryptionByDefault", handleNATSRequest(d.node, d.accountService.EnableEbsEncryptionByDefault), "spinifex-workers"},
+		{"ec2.DisableEbsEncryptionByDefault", handleNATSRequest(d.node, d.accountService.DisableEbsEncryptionByDefault), "spinifex-workers"},
+		{"ec2.GetEbsEncryptionByDefault", handleNATSRequest(d.node, d.accountService.GetEbsEncryptionByDefault), "spinifex-workers"},
+		{"ec2.GetSerialConsoleAccessStatus", handleNATSRequest(d.node, d.accountService.GetSerialConsoleAccessStatus), "spinifex-workers"},
+		{"ec2.EnableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.EnableSerialConsoleAccess), "spinifex-workers"},
+		{"ec2.DisableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.DisableSerialConsoleAccess), "spinifex-workers"},
+		{ec2v1.SealAccountSettingsSubject, handleNATSRequest(d.node, d.sealAccountSettings), "spinifex-workers"},
+		{clusterv1.NodeHealthSubject(d.node), d.handleHealthCheck, ""},
+		{clusterv1.NodesDiscoverSubject, d.handleNodeDiscover, ""},
+		{clusterv1.NodeStatusSubject, d.handleNodeStatus, ""},
+		{clusterv1.NodeVMsSubject, d.handleNodeVMs, ""},
+		{operatorv1.StorageConfigSubject, d.handleStorageConfig, ""},
+		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
+		// Account creation → create default VPC for new account
+		{"iam.account.created", d.handleAccountCreated, "spinifex-workers"},
+		{ec2v1.EnsureDefaultVpcSubject, d.handleEnsureDefaultVpc, "spinifex-workers"},
+		// Coordinated cluster shutdown phases (fan-out, no queue group)
+		{"spinifex.cluster.shutdown.gate", d.handleShutdownGate, ""},
+		{"spinifex.cluster.shutdown.drain", d.handleShutdownDrain, ""},
+		{"spinifex.cluster.shutdown.storage", d.handleShutdownStorage, ""},
+		{"spinifex.cluster.shutdown.persist", d.handleShutdownPersist, ""},
+		{"spinifex.cluster.shutdown.infra", d.handleShutdownInfra, ""},
+	}
+
+	// ELBv2 operations require a resolved gateway URL.
+	// Without a subscriber the gateway returns nats.ErrNoResponders → ServiceUnavailable.
+	if d.elbv2Service.GatewayURL != "" {
+		subs = append(subs,
+			natsSub{"elbv2.CreateLoadBalancer", handleNATSRequest(d.node, d.elbv2Service.CreateLoadBalancer), "spinifex-workers"},
+			natsSub{"elbv2.DeleteLoadBalancer", handleNATSRequest(d.node, d.elbv2Service.DeleteLoadBalancer), "spinifex-workers"},
+			natsSub{"elbv2.DescribeLoadBalancers", handleNATSRequest(d.node, d.elbv2Service.DescribeLoadBalancers), "spinifex-workers"},
+			natsSub{"elbv2.CreateTargetGroup", handleNATSRequest(d.node, d.elbv2Service.CreateTargetGroup), "spinifex-workers"},
+			natsSub{"elbv2.ModifyTargetGroup", handleNATSRequest(d.node, d.elbv2Service.ModifyTargetGroup), "spinifex-workers"},
+			natsSub{"elbv2.DeleteTargetGroup", handleNATSRequest(d.node, d.elbv2Service.DeleteTargetGroup), "spinifex-workers"},
+			natsSub{"elbv2.DescribeTargetGroups", handleNATSRequest(d.node, d.elbv2Service.DescribeTargetGroups), "spinifex-workers"},
+			natsSub{"elbv2.RegisterTargets", handleNATSRequest(d.node, d.elbv2Service.RegisterTargets), "spinifex-workers"},
+			natsSub{"elbv2.DeregisterTargets", handleNATSRequest(d.node, d.elbv2Service.DeregisterTargets), "spinifex-workers"},
+			natsSub{"elbv2.DescribeTargetHealth", handleNATSRequest(d.node, d.elbv2Service.DescribeTargetHealth), "spinifex-workers"},
+			natsSub{"elbv2.CreateListener", handleNATSRequest(d.node, d.elbv2Service.CreateListener), "spinifex-workers"},
+			natsSub{"elbv2.DeleteListener", handleNATSRequest(d.node, d.elbv2Service.DeleteListener), "spinifex-workers"},
+			natsSub{"elbv2.ModifyListener", handleNATSRequest(d.node, d.elbv2Service.ModifyListener), "spinifex-workers"},
+			natsSub{"elbv2.DescribeListeners", handleNATSRequest(d.node, d.elbv2Service.DescribeListeners), "spinifex-workers"},
+			natsSub{"elbv2.CreateRule", handleNATSRequest(d.node, d.elbv2Service.CreateRule), "spinifex-workers"},
+			natsSub{"elbv2.ModifyRule", handleNATSRequest(d.node, d.elbv2Service.ModifyRule), "spinifex-workers"},
+			natsSub{"elbv2.DeleteRule", handleNATSRequest(d.node, d.elbv2Service.DeleteRule), "spinifex-workers"},
+			natsSub{"elbv2.DescribeRules", handleNATSRequest(d.node, d.elbv2Service.DescribeRules), "spinifex-workers"},
+			natsSub{"elbv2.SetRulePriorities", handleNATSRequest(d.node, d.elbv2Service.SetRulePriorities), "spinifex-workers"},
+			natsSub{"elbv2.DescribeTags", handleNATSRequest(d.node, d.elbv2Service.DescribeTags), "spinifex-workers"},
+			natsSub{"elbv2.AddTags", handleNATSRequest(d.node, d.elbv2Service.AddTags), "spinifex-workers"},
+			natsSub{"elbv2.RemoveTags", handleNATSRequest(d.node, d.elbv2Service.RemoveTags), "spinifex-workers"},
+			natsSub{"elbv2.LBAgentHeartbeat", handleNATSRequest(d.node, d.elbv2Service.LBAgentHeartbeat), "spinifex-workers"},
+			natsSub{"elbv2.GetLBConfig", handleNATSRequest(d.node, d.elbv2Service.GetLBConfig), "spinifex-workers"},
+			natsSub{"elbv2.ModifyTargetGroupAttributes", handleNATSRequest(d.node, d.elbv2Service.ModifyTargetGroupAttributes), "spinifex-workers"},
+			natsSub{"elbv2.DescribeTargetGroupAttributes", handleNATSRequest(d.node, d.elbv2Service.DescribeTargetGroupAttributes), "spinifex-workers"},
+			natsSub{"elbv2.ModifyLoadBalancerAttributes", handleNATSRequest(d.node, d.elbv2Service.ModifyLoadBalancerAttributes), "spinifex-workers"},
+			natsSub{"elbv2.DescribeLoadBalancerAttributes", handleNATSRequest(d.node, d.elbv2Service.DescribeLoadBalancerAttributes), "spinifex-workers"},
+			natsSub{"elbv2.SetSecurityGroups", handleNATSRequest(d.node, d.elbv2Service.SetSecurityGroups), "spinifex-workers"},
+			natsSub{"elbv2.SetIpAddressType", handleNATSRequest(d.node, d.elbv2Service.SetIpAddressType), "spinifex-workers"},
+			natsSub{"elbv2.SetSubnets", handleNATSRequest(d.node, d.elbv2Service.SetSubnets), "spinifex-workers"},
+			natsSub{"elbv2.AddListenerCertificates", handleNATSRequest(d.node, d.elbv2Service.AddListenerCertificates), "spinifex-workers"},
+			natsSub{"elbv2.RemoveListenerCertificates", handleNATSRequest(d.node, d.elbv2Service.RemoveListenerCertificates), "spinifex-workers"},
+			natsSub{"elbv2.DescribeListenerCertificates", handleNATSRequest(d.node, d.elbv2Service.DescribeListenerCertificates), "spinifex-workers"},
+			natsSub{"elbv2.DescribeSSLPolicies", handleNATSRequest(d.node, d.elbv2Service.DescribeSSLPolicies), "spinifex-workers"},
+		)
+	}
+
+	// EKS gateway → daemon subscriptions.
+	if d.eksService != nil {
+		subs = append(subs,
+			natsSub{"eks.CreateCluster", handleNATSRequestWithPrincipal(d.node, d.eksService.CreateCluster), "spinifex-workers"},
+			natsSub{"eks.DescribeCluster", handleNATSRequest(d.node, d.eksService.DescribeCluster), "spinifex-workers"},
+			natsSub{"eks.ListClusters", handleNATSRequest(d.node, d.eksService.ListClusters), "spinifex-workers"},
+			natsSub{"eks.DeleteCluster", handleNATSRequest(d.node, d.eksService.DeleteCluster), "spinifex-workers"},
+			natsSub{"eks.CreateNodegroup", handleNATSRequest(d.node, d.eksService.CreateNodegroup), "spinifex-workers"},
+			natsSub{"eks.DescribeNodegroup", handleNATSRequest(d.node, d.eksService.DescribeNodegroup), "spinifex-workers"},
+			natsSub{"eks.ListNodegroups", handleNATSRequest(d.node, d.eksService.ListNodegroups), "spinifex-workers"},
+			natsSub{"eks.UpdateNodegroupConfig", handleNATSRequest(d.node, d.eksService.UpdateNodegroupConfig), "spinifex-workers"},
+			natsSub{"eks.DeleteNodegroup", handleNATSRequest(d.node, d.eksService.DeleteNodegroup), "spinifex-workers"},
+			natsSub{"eks.CreateAccessEntry", handleNATSRequest(d.node, d.eksService.CreateAccessEntry), "spinifex-workers"},
+			natsSub{"eks.DescribeAccessEntry", handleNATSRequest(d.node, d.eksService.DescribeAccessEntry), "spinifex-workers"},
+			natsSub{"eks.ListAccessEntries", handleNATSRequest(d.node, d.eksService.ListAccessEntries), "spinifex-workers"},
+			natsSub{"eks.UpdateAccessEntry", handleNATSRequest(d.node, d.eksService.UpdateAccessEntry), "spinifex-workers"},
+			natsSub{"eks.DeleteAccessEntry", handleNATSRequest(d.node, d.eksService.DeleteAccessEntry), "spinifex-workers"},
+			natsSub{"eks.AssociateAccessPolicy", handleNATSRequest(d.node, d.eksService.AssociateAccessPolicy), "spinifex-workers"},
+			natsSub{"eks.DisassociateAccessPolicy", handleNATSRequest(d.node, d.eksService.DisassociateAccessPolicy), "spinifex-workers"},
+			natsSub{"eks.ListAssociatedAccessPolicies", handleNATSRequest(d.node, d.eksService.ListAssociatedAccessPolicies), "spinifex-workers"},
+			natsSub{"eks.ListAccessPolicies", handleNATSRequest(d.node, d.eksService.ListAccessPolicies), "spinifex-workers"},
+			natsSub{"eks.ListAddons", handleNATSRequest(d.node, d.eksService.ListAddons), "spinifex-workers"},
+			natsSub{"eks.DescribeAddonVersions", handleNATSRequest(d.node, d.eksService.DescribeAddonVersions), "spinifex-workers"},
+			natsSub{"eks.CreateAddon", handleNATSRequest(d.node, d.eksService.CreateAddon), "spinifex-workers"},
+			natsSub{"eks.DeleteAddon", handleNATSRequest(d.node, d.eksService.DeleteAddon), "spinifex-workers"},
+			natsSub{"eks.DescribeAddon", handleNATSRequest(d.node, d.eksService.DescribeAddon), "spinifex-workers"},
+			natsSub{"eks.UpdateAddon", handleNATSRequest(d.node, d.eksService.UpdateAddon), "spinifex-workers"},
+			natsSub{"eks.ListStagedAddonManifests", handleNATSRequest(d.node, d.eksService.ListStagedAddonManifests), "spinifex-workers"},
+			natsSub{"eks.GetRecoveryDirective", handleNATSRequest(d.node, d.eksService.GetRecoveryDirective), "spinifex-workers"},
+			natsSub{"eks.SetRecoveryDirective", handleNATSRequest(d.node, d.eksService.SetRecoveryDirective), "spinifex-workers"},
+			natsSub{"eks.RestoreSnapshot", handleNATSRequest(d.node, d.eksService.RestoreSnapshot), "spinifex-workers"},
+			natsSub{"eks.TagResource", handleNATSRequest(d.node, d.eksService.TagResource), "spinifex-workers"},
+			natsSub{"eks.UntagResource", handleNATSRequest(d.node, d.eksService.UntagResource), "spinifex-workers"},
+			natsSub{"eks.ListTagsForResource", handleNATSRequest(d.node, d.eksService.ListTagsForResource), "spinifex-workers"},
+		)
+	}
+
+	// ECS gateway → daemon subscriptions (control plane; per-account KV).
+	if d.ecsService != nil {
+		subs = append(subs,
+			natsSub{"ecs.CreateCluster", handleNATSRequest(d.node, d.ecsService.CreateCluster), "spinifex-workers"},
+			natsSub{"ecs.DeleteCluster", handleNATSRequest(d.node, d.ecsService.DeleteCluster), "spinifex-workers"},
+			natsSub{"ecs.DescribeClusters", handleNATSRequest(d.node, d.ecsService.DescribeClusters), "spinifex-workers"},
+			natsSub{"ecs.ListClusters", handleNATSRequest(d.node, d.ecsService.ListClusters), "spinifex-workers"},
+			natsSub{"ecs.RegisterTaskDefinition", handleNATSRequest(d.node, d.ecsService.RegisterTaskDefinition), "spinifex-workers"},
+			natsSub{"ecs.DeregisterTaskDefinition", handleNATSRequest(d.node, d.ecsService.DeregisterTaskDefinition), "spinifex-workers"},
+			natsSub{"ecs.DescribeTaskDefinition", handleNATSRequest(d.node, d.ecsService.DescribeTaskDefinition), "spinifex-workers"},
+			natsSub{"ecs.ListTaskDefinitions", handleNATSRequest(d.node, d.ecsService.ListTaskDefinitions), "spinifex-workers"},
+			natsSub{"ecs.RegisterContainerInstance", handleNATSRequest(d.node, d.ecsService.RegisterContainerInstance), "spinifex-workers"},
+			natsSub{"ecs.DeregisterContainerInstance", handleNATSRequest(d.node, d.ecsService.DeregisterContainerInstance), "spinifex-workers"},
+			natsSub{"ecs.UpdateContainerInstancesState", handleNATSRequest(d.node, d.ecsService.UpdateContainerInstancesState), "spinifex-workers"},
+			natsSub{"ecs.DescribeContainerInstances", handleNATSRequest(d.node, d.ecsService.DescribeContainerInstances), "spinifex-workers"},
+			natsSub{"ecs.ListContainerInstances", handleNATSRequest(d.node, d.ecsService.ListContainerInstances), "spinifex-workers"},
+			natsSub{"ecs.RunTask", handleNATSRequest(d.node, d.ecsService.RunTask), "spinifex-workers"},
+			natsSub{"ecs.StartTask", handleNATSRequest(d.node, d.ecsService.StartTask), "spinifex-workers"},
+			natsSub{"ecs.StopTask", handleNATSRequest(d.node, d.ecsService.StopTask), "spinifex-workers"},
+			natsSub{"ecs.DescribeTasks", handleNATSRequest(d.node, d.ecsService.DescribeTasks), "spinifex-workers"},
+			natsSub{"ecs.ListTasks", handleNATSRequest(d.node, d.ecsService.ListTasks), "spinifex-workers"},
+			natsSub{"ecs.CreateService", handleNATSRequest(d.node, d.ecsService.CreateService), "spinifex-workers"},
+			natsSub{"ecs.UpdateService", handleNATSRequest(d.node, d.ecsService.UpdateService), "spinifex-workers"},
+			natsSub{"ecs.DeleteService", handleNATSRequest(d.node, d.ecsService.DeleteService), "spinifex-workers"},
+			natsSub{"ecs.DescribeServices", handleNATSRequest(d.node, d.ecsService.DescribeServices), "spinifex-workers"},
+			natsSub{"ecs.ListServices", handleNATSRequest(d.node, d.ecsService.ListServices), "spinifex-workers"},
+			natsSub{"ecs.SubmitTaskStateChange", handleNATSRequest(d.node, d.ecsService.SubmitTaskStateChange), "spinifex-workers"},
+			natsSub{"ecs.PollAssignments", handleNATSRequest(d.node, d.ecsService.PollAssignments), "spinifex-workers"},
+			natsSub{"ecs.ReportTaskGPU", handleNATSRequest(d.node, d.ecsService.ReportTaskGPU), "spinifex-workers"},
+			natsSub{"ecs.ProvisionCapacity", handleNATSRequest(d.node, d.ecsService.ProvisionCapacity), "spinifex-workers"},
+			natsSub{"ecs.TagResource", handleNATSRequest(d.node, d.ecsService.TagResource), "spinifex-workers"},
+			natsSub{"ecs.UntagResource", handleNATSRequest(d.node, d.ecsService.UntagResource), "spinifex-workers"},
+			natsSub{"ecs.ListTagsForResource", handleNATSRequest(d.node, d.ecsService.ListTagsForResource), "spinifex-workers"},
+			natsSub{"ecs.PutClusterCapacityProviders", handleNATSRequest(d.node, d.ecsService.PutClusterCapacityProviders), "spinifex-workers"},
+			natsSub{"ecs.CreateCapacityProvider", handleNATSRequest(d.node, d.ecsService.CreateCapacityProvider), "spinifex-workers"},
+			natsSub{"ecs.DescribeCapacityProviders", handleNATSRequest(d.node, d.ecsService.DescribeCapacityProviders), "spinifex-workers"},
+			natsSub{"ecs.DeleteCapacityProvider", handleNATSRequest(d.node, d.ecsService.DeleteCapacityProvider), "spinifex-workers"},
+		)
+	}
+
+	// RDS agent protocol. The register/health subjects are Layer-2 bus wildcards
+	// the gateway relays onto, addressing only — the payload is authoritative.
+	if d.rdsService != nil {
+		subs = append(subs,
+			natsSub{rdsinstance.SubjectRegisterWildcard, handleNATSRequest(d.node, d.rdsService.RegisterDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectHealthWildcard, handleNATSRequest(d.node, d.rdsService.SubmitDBStateChange), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectGetDBBootstrapConfig, handleNATSRequest(d.node, d.rdsService.GetDBBootstrapConfig), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectAcknowledgeDBBootstrap, handleNATSRequest(d.node, d.rdsService.AcknowledgeDBBootstrap), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectCreateDBInstance, handleNATSRequest(d.node, d.rdsService.CreateDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBInstances, handleNATSRequest(d.node, d.rdsService.DescribeDBInstances), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectRebootDBInstance, handleNATSRequest(d.node, d.rdsService.RebootDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectStartDBInstance, handleNATSRequest(d.node, d.rdsService.StartDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectStopDBInstance, handleNATSRequest(d.node, d.rdsService.StopDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectModifyDBInstance, handleNATSRequest(d.node, d.rdsService.ModifyDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDeleteDBInstance, handleNATSRequest(d.node, d.rdsService.DeleteDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectCreateDBSnapshot, handleNATSRequest(d.node, d.rdsService.CreateDBSnapshot), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBSnapshots, handleNATSRequest(d.node, d.rdsService.DescribeDBSnapshots), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDeleteDBSnapshot, handleNATSRequest(d.node, d.rdsService.DeleteDBSnapshot), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectRestoreDBInstanceFromDBSnapshot, handleNATSRequest(d.node, d.rdsService.RestoreDBInstanceFromDBSnapshot), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBInstanceAutomatedBackups, handleNATSRequest(d.node, d.rdsService.DescribeDBInstanceAutomatedBackups), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeEvents, handleNATSRequest(d.node, d.rdsService.DescribeEvents), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectAddTagsToResource, handleNATSRequest(d.node, d.rdsService.AddTagsToResource), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectRemoveTagsFromResource, handleNATSRequest(d.node, d.rdsService.RemoveTagsFromResource), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectListTagsForResource, handleNATSRequest(d.node, d.rdsService.ListTagsForResource), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectCreateDBSubnetGroup, handleNATSRequest(d.node, d.rdsService.CreateDBSubnetGroup), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBSubnetGroups, handleNATSRequest(d.node, d.rdsService.DescribeDBSubnetGroups), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectModifyDBSubnetGroup, handleNATSRequest(d.node, d.rdsService.ModifyDBSubnetGroup), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDeleteDBSubnetGroup, handleNATSRequest(d.node, d.rdsService.DeleteDBSubnetGroup), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectCreateDBParameterGroup, handleNATSRequest(d.node, d.rdsService.CreateDBParameterGroup), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBParameterGroups, handleNATSRequest(d.node, d.rdsService.DescribeDBParameterGroups), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectModifyDBParameterGroup, handleNATSRequest(d.node, d.rdsService.ModifyDBParameterGroup), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBParameters, handleNATSRequest(d.node, d.rdsService.DescribeDBParameters), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDeleteDBParameterGroup, handleNATSRequest(d.node, d.rdsService.DeleteDBParameterGroup), "spinifex-workers"},
+		)
+	}
+
+	// Bedrock serving-endpoint lifecycle (daemon is the sole KV writer; the
+	// gateway reads/requests transitions over these subjects instead of
+	// touching JetStream directly).
+	if d.bedrockService != nil {
+		subs = append(subs,
+			natsSub{ochre.SubjectEnsureEndpoint, handleNATSRequest(d.node, d.bedrockService.Ensure), "spinifex-workers"},
+			natsSub{ochre.SubjectDescribeEndpoint, handleNATSRequest(d.node, d.bedrockService.Describe), "spinifex-workers"},
+			natsSub{ochre.SubjectListEndpoints, handleNATSRequest(d.node, d.bedrockService.List), "spinifex-workers"},
+			natsSub{ochre.SubjectDeleteEndpoint, handleNATSRequest(d.node, d.bedrockService.Delete), "spinifex-workers"},
+		)
+	}
+
+	// ACM gateway → daemon subscriptions (certificate import and managed issuance).
+	if d.acmService != nil {
+		subs = append(subs,
+			natsSub{"acm.ImportCertificate", handleNATSRequest(d.node, d.acmService.ImportCertificate), "spinifex-workers"},
+			natsSub{"acm.RequestCertificate", handleNATSRequest(d.node, d.acmService.RequestCertificate), "spinifex-workers"},
+			natsSub{"acm.DescribeCertificate", handleNATSRequest(d.node, d.acmService.DescribeCertificate), "spinifex-workers"},
+			natsSub{"acm.GetCertificate", handleNATSRequest(d.node, d.acmService.GetCertificate), "spinifex-workers"},
+			natsSub{"acm.ListCertificates", handleNATSRequest(d.node, d.acmService.ListCertificates), "spinifex-workers"},
+			natsSub{"acm.DeleteCertificate", handleNATSRequest(d.node, d.acmService.DeleteCertificate), "spinifex-workers"},
+			natsSub{"acm.ListTagsForCertificate", handleNATSRequest(d.node, d.acmService.ListTagsForCertificate), "spinifex-workers"},
+			natsSub{"acm.AddTagsToCertificate", handleNATSRequest(d.node, d.acmService.AddTagsToCertificate), "spinifex-workers"},
+			natsSub{"acm.RemoveTagsFromCertificate", handleNATSRequest(d.node, d.acmService.RemoveTagsFromCertificate), "spinifex-workers"},
+			// ForceRenewCertificate is not an AWS API — it is the operator-
+			// triggered path `spx admin cert force-renew` uses to reissue a
+			// PRIVATE_CA certificate immediately, bypassing the renewal worker's
+			// window and failure backoff, primarily to verify the ELBv2 fan-out
+			// without waiting out the proportional window.
+			natsSub{"acm.ForceRenewCertificate", handleNATSRequest(d.node, d.acmRenewalWorker.ForceRenewCertificate), "spinifex-workers"},
+		)
+	}
+
+	// Ochre vector store tenant surface is deliberately NOT registered here:
+	// its subjects only exist once the platform appliance has finished
+	// launching (startOchreVector, run in the background after this method
+	// returns), and registering them requires this same table-driven
+	// mechanism after the fact — see registerNatsSubs.
+
+	// ECR gateway → daemon subscriptions. The daemon owns the per-account
+	// JetStream KV metadata; blob/manifest bytes never traverse these subjects.
+	if d.ecrMetaService != nil {
+		subs = append(subs,
+			natsSub{ecr.SubjectRepoCreate, handleNATSRequest(d.node, d.ecrMetaService.RepoCreate), "spinifex-workers"},
+			natsSub{ecr.SubjectRepoDescribe, handleNATSRequest(d.node, d.ecrMetaService.RepoDescribe), "spinifex-workers"},
+			natsSub{ecr.SubjectRepoList, handleNATSRequest(d.node, d.ecrMetaService.RepoList), "spinifex-workers"},
+			natsSub{ecr.SubjectRepoDelete, handleNATSRequest(d.node, d.ecrMetaService.RepoDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectPolicyPut, handleNATSRequest(d.node, d.ecrMetaService.PolicyPut), "spinifex-workers"},
+			natsSub{ecr.SubjectPolicyGet, handleNATSRequest(d.node, d.ecrMetaService.PolicyGet), "spinifex-workers"},
+			natsSub{ecr.SubjectPolicyDelete, handleNATSRequest(d.node, d.ecrMetaService.PolicyDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectLifecyclePut, handleNATSRequest(d.node, d.ecrMetaService.LifecyclePut), "spinifex-workers"},
+			natsSub{ecr.SubjectLifecycleGet, handleNATSRequest(d.node, d.ecrMetaService.LifecycleGet), "spinifex-workers"},
+			natsSub{ecr.SubjectLifecycleDelete, handleNATSRequest(d.node, d.ecrMetaService.LifecycleDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectTagPut, handleNATSRequest(d.node, d.ecrMetaService.TagPut), "spinifex-workers"},
+			natsSub{ecr.SubjectTagGet, handleNATSRequest(d.node, d.ecrMetaService.TagGet), "spinifex-workers"},
+			natsSub{ecr.SubjectTagList, handleNATSRequest(d.node, d.ecrMetaService.TagList), "spinifex-workers"},
+			natsSub{ecr.SubjectTagDelete, handleNATSRequest(d.node, d.ecrMetaService.TagDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestPut, handleNATSRequest(d.node, d.ecrMetaService.ManifestPut), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestDescribe, handleNATSRequest(d.node, d.ecrMetaService.ManifestDescribe), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestList, handleNATSRequest(d.node, d.ecrMetaService.ManifestList), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestDelete, handleNATSRequest(d.node, d.ecrMetaService.ManifestDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadCreate, handleNATSRequest(d.node, d.ecrMetaService.UploadCreate), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadGet, handleNATSRequest(d.node, d.ecrMetaService.UploadGet), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadUpdate, handleNATSRequest(d.node, d.ecrMetaService.UploadUpdate), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadDelete, handleNATSRequest(d.node, d.ecrMetaService.UploadDelete), "spinifex-workers"},
+		)
+	}
+
+	// EIP handlers are always registered: without external IPAM d.eipService is
+	// the disabled stub, so reads return empty lists and mutations a clean
+	// UnsupportedOperation instead of a NATS timeout.
+	subs = append(subs,
+		natsSub{"ec2.AllocateAddress", handleNATSRequest(d.node, d.eipService.AllocateAddress), "spinifex-workers"},
+		natsSub{"ec2.ReleaseAddress", handleNATSRequest(d.node, d.eipService.ReleaseAddress), "spinifex-workers"},
+		natsSub{"ec2.AssociateAddress", handleNATSRequest(d.node, d.eipService.AssociateAddress), "spinifex-workers"},
+		natsSub{"ec2.DisassociateAddress", handleNATSRequest(d.node, d.eipService.DisassociateAddress), "spinifex-workers"},
+		natsSub{"ec2.DescribeAddresses", handleNATSRequest(d.node, d.eipService.DescribeAddresses), "spinifex-workers"},
+		natsSub{"ec2.DescribeAddressesAttribute", handleNATSRequest(d.node, d.eipService.DescribeAddressesAttribute), "spinifex-workers"},
+		// Fan-out, no queue group: the association has to reach the node running
+		// the instance, which is rarely the one that served the request.
+		natsSub{ec2eip.SubjectENIPublicIPChanged, d.handleENIPublicIPChanged, ""},
+		// vpcd holds the leases, but the records naming those addresses live
+		// here, so the reconcile request flows daemon-ward.
+		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},
+		natsSub{dhcp.TopicOwnerCheck, d.handleDHCPOwnerCheck, "spinifex-workers"},
+		// Node-addressed with no queue group: the fenced guest is on this host,
+		// so a worker on another node would find nothing to stop.
+		natsSub{viperblocklegacyv1.VolumeFencedSubject(d.node), d.handleVolumeFenced, ""},
+	)
+
+	// Per-node, no queue group: a second daemon claiming this node ID also
+	// answers, so the teardown probe sees a duplicate and refuses to seal. An
+	// invalid node ID serves nothing, so this daemon reads as incompatible.
+	if ec2v1.ValidSealCapabilityNode(d.node) {
+		subs = append(subs, natsSub{ec2v1.AccountSettingsSealCapabilitySubject(d.node), handleNATSRequest(d.node, d.accountSettingsSealCapability), ""})
+	} else {
+		slog.Error("Not serving account-settings seal capability: node ID is not a single NATS subject token", "node", d.node)
+	}
+
+	return d.registerNatsSubs(subs)
+}
+
+// registerNatsSubs turns each entry in subs into a live NATS subscription and
+// records it in d.natsSubscriptions. Shared by subscribeAll's boot-time table
+// and any subject registered later, off the main boot goroutine (e.g. Ochre's
+// VectorService, whose subjects only exist once its platform appliance has
+// finished launching) — the map write is mutex-guarded because that later
+// registration can race the shutdown path's unsubscribe-all sweep, unlike
+// subscribeAll's own single-goroutine, boot-time-only writes.
+func (d *Daemon) registerNatsSubs(subs []natsSub) error {
+	for _, s := range subs {
+		var sub *nats.Subscription
+		var err error
+		handler := natsMetricsHandler(natsMetricAction(s.topic, d.node), s.handler)
+		if s.queueGroup != "" {
+			sub, err = d.natsConn.QueueSubscribe(s.topic, s.queueGroup, handler)
+		} else {
+			sub, err = d.natsConn.Subscribe(s.topic, handler)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to subscribe to %s: %w", s.topic, err)
+		}
+		d.mu.Lock()
+		d.natsSubscriptions[s.topic] = sub
+		d.mu.Unlock()
+		slog.Info("Subscribed to NATS topic", "topic", s.topic, "queue", s.queueGroup)
+	}
+	return nil
+}
+
+// Start bootstraps the daemon in two phases (DDIL Tier 1): startLocal brings
+// up HTTPS + local state without NATS, then startCluster retries NATS
+// indefinitely and joins the cluster once connected.
+func (d *Daemon) Start() error {
+	if err := d.startLocal(); err != nil {
+		return err
+	}
+
+	d.setupShutdown()
+
+	d.shutdownWg.Go(func() {
+		if err := d.startCluster(); err != nil {
+			slog.Warn("Cluster bootstrap aborted", "err", err)
+		}
+	})
+
+	d.awaitShutdown()
+	return nil
+}
+
+// startLocal performs the no-NATS bootstrap. Failures here are fatal (local
+// config errors that retry cannot fix). The daemon is reachable via /local/*
+// and /health once this returns.
+//
+// DDIL §1e-audit: no JetStream KV must be touched here. All KV buckets are
+// initialised in startCluster. assertNoClusterServicesInitialised enforces this.
+func (d *Daemon) startLocal() error {
+	// ClusterManager serves /health and /local/* over HTTPS. NATS-independent.
+	if err := d.ClusterManager(); err != nil {
+		return fmt.Errorf("failed to start cluster manager: %w", err)
+	}
+
+	// Detect management bridge for system instance control plane NICs.
+	mgmtBridge := d.mgmtBridgeName()
+	bridgeIP, bridgeErr := host.GetBridgeIPv4(mgmtBridge)
+	if bridgeErr != nil {
+		slog.Warn("Management bridge not detected, system instances will not get mgmt NIC", "bridge", mgmtBridge, "err", bridgeErr)
+	} else if bridgeIP == "" {
+		slog.Warn("Management bridge not found, system instances will not get mgmt NIC", "bridge", mgmtBridge)
+	} else {
+		d.mgmtBridgeIP = bridgeIP
+		alloc, allocErr := NewMgmtIPAllocator(bridgeIP)
+		if allocErr != nil {
+			slog.Error("Failed to create mgmt IP allocator", "bridgeIP", bridgeIP, "err", allocErr)
+		} else {
+			d.mgmtIPAllocator = alloc
+			slog.Info("Management bridge detected", "bridge", mgmtBridge, "ip", bridgeIP)
+		}
+	}
+
+	// Before any tap is attached: the endpoint addresses and vpcd's binds have
+	// to agree, and both read the same config keys.
+	if d.clusterConfig != nil {
+		host.SetIMDSHostAddrs(d.clusterConfig.Network.IMDSHostMetaIP, d.clusterConfig.Network.IMDSHostDNSIP)
+	}
+
+	// Initialise OVS network plumber (no NATS dep).
+	if d.networkPlumber == nil {
+		d.networkPlumber = host.NewOVSPlumber()
+	}
+
+	// Protect daemon from OOM killer (prefer killing QEMU VMs instead).
+	if err := hostprocess.SetOOMScore(os.Getpid(), -500); err != nil {
+		slog.Warn("Failed to set daemon OOM score", "err", err)
+	}
+
+	// Log host assets that are missing, stale or ungranted, and host faults whose
+	// detail names the fix, so drift surfaces as a named line rather than a later
+	// cryptic failure. Never fatal: an unrelated asset problem must not ground a node.
+	for _, r := range preflight.CheckHost() {
+		switch r.Status {
+		case preflight.OK:
+		case preflight.Failed:
+			slog.Error("Host preflight check failed", "path", r.Path, "kind", r.Kind, "detail", r.Detail)
+		case preflight.Warning:
+			slog.Warn("Host preflight warning", "path", r.Path, "kind", r.Kind, "detail", r.Detail)
+		default:
+			slog.Warn("Host asset preflight problem", "path", r.Path, "kind", r.Kind,
+				"status", r.Status.String(), "detail", r.Detail,
+				"remediation", "run scripts/update-nodes.sh or make reinstall")
+		}
+	}
+
+	// Recover local instance state from disk. Fatal on corruption — orphaned VMs.
+	if err := d.LoadState(); err != nil {
+		return fmt.Errorf("load local instance state: %w", err)
+	}
+	slog.Info("Loaded local instance state", "instance count", d.vmMgr.Count())
+
+	// Rebuild mgmt IP allocator from restored VMs.
+	if d.mgmtIPAllocator != nil {
+		d.mgmtIPAllocator.Rebuild(d.vmMgr.SnapshotMap())
+		slog.Info("Rebuilt mgmt IP allocator from restored instances", "allocated", d.mgmtIPAllocator.AllocatedCount())
+	}
+
+	if err := d.assertNoClusterServicesInitialised(); err != nil {
+		return fmt.Errorf("startLocal Tier 1 invariant violated: %w", err)
+	}
+
+	// Peer-health probe is NATS-independent (dials /health directly) and must
+	// start here so Mode() can detect partitions even if NATS never connects.
+	d.shutdownWg.Go(d.monitorPeerReachability)
+
+	d.ready.Store(true)
+	slog.Info("Daemon local-bootstrap complete", "node", d.node, "elapsed_ms", otelsetup.Millis(time.Since(d.startTime)))
+	return nil
+}
+
+// publicExternalPools filters out the routed-NAT transit pool: it carries
+// gateway plumbing addresses, never allocatable public IPs.
+func publicExternalPools(pools []config.ExternalPool) []config.ExternalPool {
+	var public []config.ExternalPool
+	for _, p := range pools {
+		if p.Name == host.NATTransitPoolName {
+			continue
+		}
+		public = append(public, p)
+	}
+	return public
+}
+
+// externalPoolConfigs converts the node's public pools into IPAM pool configs
+// and reports whether any of them leases from DHCP. The transit pool never
+// enters IPAM — its addresses are gateway-LRP plumbing, not EIPs.
+func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, anyDHCP bool) {
+	for _, p := range publicExternalPools(d.clusterConfig.Network.ExternalPools) {
+		pools = append(pools, external.ExternalPoolConfig{
+			Name:            p.Name,
+			Source:          p.Source,
+			BindBridge:      p.BindBridge,
+			DHCPMAC:         p.DHCPMAC,
+			RangeStart:      p.RangeStart,
+			RangeEnd:        p.RangeEnd,
+			Gateway:         p.Gateway,
+			GatewayIP:       p.GatewayIP,
+			PrefixLen:       p.PrefixLen,
+			Region:          p.Region,
+			AZ:              p.AZ,
+			GwLrpRangeStart: p.GwLrpRangeStart,
+			GwLrpRangeEnd:   p.GwLrpRangeEnd,
+
+			OCICompartmentID: p.OCICompartmentID,
+			OCIVNICID:        p.OCIVNICID,
+			OCIVNICIface:     p.OCIVNICIface,
+			OCISubnetID:      p.OCISubnetID,
+			OCIPublicIPPool:  p.OCIPublicIPPool,
+			OCIAuth:          p.OCIAuth,
+			OCIConfigFile:    p.OCIConfigFile,
+			OCIConfigProfile: p.OCIConfigProfile,
+
+			ExoscaleZone:       p.ExoscaleZone,
+			ExoscaleInstanceID: p.ExoscaleInstanceID,
+			ExoscaleConfigFile: p.ExoscaleConfigFile,
+			ExoscaleAccount:    p.ExoscaleAccount,
+			ExoscaleBinary:     p.ExoscaleBinary,
+		})
+		if p.Source == "dhcp" {
+			anyDHCP = true
+		}
+	}
+	return pools, anyDHCP
+}
+
+// ovnSBAddr is this node's OVN Southbound address, empty when unconfigured,
+// which leaves the local socket.
+func (d *Daemon) ovnSBAddr() string {
+	if d.clusterConfig == nil {
+		return ""
+	}
+	return d.clusterConfig.Nodes[d.clusterConfig.Node].VPCD.OVNSBAddr
+}
+
+// installOCIAllocators builds one OCI allocator per source="oci" pool and
+// reconciles it against OCI, before it serves anything unless the bindings KV
+// is not yet reachable and the pass is deferred. The reconcile is on the
+// startup path on purpose: Allocate creates OCI objects before writing its
+// record, so a crash in between leaves a reserved public IP that bills and
+// holds one of the 50 per-region slots with nothing referencing it, and this
+// pass is the only thing that ever finds it.
+func (d *Daemon) installOCIAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.JetStream) error {
+	for _, p := range ipam.PoolsWithSource(external.SourceOCI) {
+		alloc, err := ocinet.FromPoolConfig(d.ctx, js, p, d.ovnSBAddr())
+		if err != nil {
+			return fmt.Errorf("build OCI allocator for pool %q: %w", p.Name, err)
+		}
+		if err := ipam.InstallAllocator(p.Name, alloc); err != nil {
+			return err
+		}
+		// A reconcile failure is not fatal: it leaks money, not correctness,
+		// and refusing to start would take EIPs down over a transient API
+		// error. The pool joins the loops either way, so a later pass covers it.
+		pool := ociPool{name: p.Name, alloc: alloc}
+		d.ociAllocators = append(d.ociAllocators, pool)
+		if err := pool.reconcile(d.ctx, true); kvutil.IsStreamUnavailable(err) {
+			// On a cluster starting together the bindings KV can lag vpcd by
+			// moments; waiting ten minutes for the loop would leave leaks billing.
+			go pool.retryStartupReconcile(d.ctx, ociStartupReconcileInitialBackoff, ociStartupReconcileMaxBackoff)
+		}
+	}
+	if len(d.ociAllocators) > 0 {
+		go d.runOCIAffinityLoop()
+		go d.runOCIReconcileLoop()
+	}
+	return nil
+}
+
+// installExoscaleAllocators builds one allocator per source="exoscale" pool
+// and reconciles it before it serves. As with OCI, Allocate creates the EIP
+// before recording it, and this pass is the only thing that finds one a crash
+// left behind — on a five-EIP quota, one leak is a fifth of the capacity.
+func (d *Daemon) installExoscaleAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.JetStream) error {
+	for _, p := range ipam.PoolsWithSource(external.SourceExoscale) {
+		alloc, err := exonet.FromPoolConfig(d.ctx, js, p)
+		if err != nil {
+			return fmt.Errorf("build Exoscale allocator for pool %q: %w", p.Name, err)
+		}
+		if err := ipam.InstallAllocator(p.Name, alloc); err != nil {
+			return err
+		}
+		res, err := alloc.Reconcile(d.ctx)
+		if err != nil {
+			slog.Error("Exoscale allocator reconcile failed; leaked elastic IPs may be billing",
+				"pool", p.Name, "err", err)
+			continue
+		}
+		slog.Info("Exoscale allocator ready", "pool", p.Name,
+			"collected", len(res.Collected), "stale_bindings", len(res.Stale), "skipped", res.Skipped)
+	}
+	return nil
+}
+
+// ociPool pairs a pool's allocator with its name, so one pass can cover every
+// pool and reach a single verdict about each guest. Per-pool loops could not: a
+// guest is impaired or it is not, and two loops writing that answer from half the
+// evidence would take turns contradicting each other.
+type ociPool struct {
+	name  string
+	alloc *ocinet.PoolAllocator
+}
+
+// ociAffinityInterval is how often a node checks that OCI delivers its guests'
+// addresses to it. A guest that has just started elsewhere is dark until the
+// pass runs, so it is short relative to a boot — the address is back before the
+// guest has finished coming up.
+const ociAffinityInterval = 15 * time.Second
+
+// ociReconcileInterval is how often leaked OCI objects are collected. Slower
+// than the affinity pass by three orders of magnitude: a leak costs money and
+// quota, not reachability, and the pass lists a whole compartment.
+const ociReconcileInterval = 10 * time.Minute
+
+// runOCIAffinityLoop keeps OCI's idea of where an address lives in step with
+// where its guest actually runs. Every node runs its own, like the host EIP
+// loop and for the same reason: the question is about this host's guests, and a
+// node that never wins the reconcile lease would otherwise never claim the
+// addresses of the instances it is running.
+func (d *Daemon) runOCIAffinityLoop() {
+	ticker := time.NewTicker(ociAffinityInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		d.ClaimOCIAddresses(d.ctx)
+	}
+}
+
+// runOCIReconcileLoop repeats the startup reconcile for as long as the node
+// runs. An address is leaked by a release that half-failed or a guest that went
+// away, both of which happen long after start, and the startup pass alone left
+// those to accumulate against the tenancy's reserved-address quota until a
+// launch failed.
+func (d *Daemon) runOCIReconcileLoop() {
+	ticker := time.NewTicker(ociReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for _, p := range d.ociAllocators {
+			_ = p.reconcile(d.ctx, false)
+		}
+	}
+}
+
+// ociStartupReconcileInitialBackoff and ociStartupReconcileMaxBackoff pace the
+// startup reconcile's retries while the bindings KV has no responder.
+const (
+	ociStartupReconcileInitialBackoff = 500 * time.Millisecond
+	ociStartupReconcileMaxBackoff     = 30 * time.Second
+)
+
+// reconcile runs one pass and logs its outcome, returning the error so a
+// caller can tell an unreachable bindings KV, which says nothing about leaks,
+// from a pass that reached OCI and the KV and failed.
+func (p ociPool) reconcile(ctx context.Context, startup bool) error {
+	res, err := p.alloc.Reconcile(ctx)
+	switch {
+	case kvutil.IsStreamUnavailable(err) && len(res.Collected) == 0 && len(res.Orphaned) == 0:
+		slog.Warn("OCI allocator reconcile deferred: bindings KV store not reachable",
+			"pool", p.name, "err", err)
+	case err != nil:
+		slog.Error("OCI allocator reconcile failed; leaked addresses may be billing",
+			"pool", p.name, "collected", len(res.Collected), "orphaned_public_ips", len(res.Orphaned), "err", err)
+	case startup:
+		slog.Info("OCI allocator ready", "pool", p.name,
+			"collected", len(res.Collected), "stale_bindings", len(res.Stale),
+			"orphaned_public_ips", len(res.Orphaned), "skipped", res.Skipped)
+	case len(res.Collected) > 0 || len(res.Stale) > 0 || len(res.Orphaned) > 0:
+		slog.Info("OCI allocator reconcile collected leaks", "pool", p.name,
+			"collected", len(res.Collected), "stale_bindings", len(res.Stale),
+			"orphaned_public_ips", len(res.Orphaned))
+	}
+	return err
+}
+
+// retryStartupReconcile repeats the startup reconcile until the bindings KV
+// answers or ctx ends. Any other failure stops it: that pass reached the KV,
+// logged its own error, and the periodic loop owns the next attempt.
+func (p ociPool) retryStartupReconcile(ctx context.Context, initialBackoff, maxBackoff time.Duration) {
+	_, _ = retryUntilContext(ctx, initialBackoff, maxBackoff,
+		func(int, time.Duration, error) {},
+		func() (struct{}, error) {
+			if err := p.reconcile(ctx, true); kvutil.IsStreamUnavailable(err) {
+				return struct{}{}, err
+			}
+			return struct{}{}, nil
+		})
+}
+
+// ClaimOCIAddresses runs one affinity pass over every OCI pool and records which
+// guests OCI is not delivering an address to.
+//
+// Exported because the recovery path calls it in line: a guest relaunched here is
+// reported running the moment it boots, and until this has run OCI still delivers
+// its address to the node that died. Waiting for the ticker would mean up to a
+// full interval in which the records say recovered and the address says nothing.
+//
+// A pass that could not read its own inputs marks nothing. It learned that no
+// guest is reachable, not that every guest is, and clearing on that would turn an
+// OCI outage into a clean bill of health.
+func (d *Daemon) ClaimOCIAddresses(ctx context.Context) {
+	if len(d.ociAllocators) == 0 {
+		return
+	}
+
+	complete := true
+	stalled := make(map[string]string)
+	for _, p := range d.ociAllocators {
+		res, err := p.alloc.ClaimLocalAddresses(ctx)
+		if err != nil {
+			slog.Error("OCI address affinity pass failed; a guest here may be unreachable on its public address",
+				"pool", p.name, "err", err)
+			complete = false
+			continue
+		}
+		if len(res.Claimed) > 0 {
+			slog.Info("OCI addresses moved to this node", "pool", p.name,
+				"claimed", res.Claimed, "local_bindings", res.Local)
+		}
+		for _, s := range res.Stalled {
+			slog.Error("OCI is not delivering an address to the node running its guest",
+				"pool", p.name, "public_ip", s.PublicIP, "eni_id", s.ENIID, "reason", s.Reason)
+			if s.ENIID != "" {
+				stalled[s.ENIID] = s.Reason
+			}
+		}
+	}
+	if !complete || d.vmMgr == nil {
+		return
+	}
+	if marked := d.vmMgr.SetUnreachableAddresses(stalled); len(marked) > 0 {
+		slog.Error("Instances are running and unreachable on their public address",
+			"node", d.node, "instances", marked)
+	}
+}
+
+// hasPublicIPPools reports whether the cluster can allocate routable public
+// IPs: pool mode always, nat mode only with a public pool beside the transit.
+func (d *Daemon) hasPublicIPPools() bool {
+	if d.clusterConfig == nil {
+		return false
+	}
+	switch d.clusterConfig.Network.ExternalMode {
+	case "pool":
+		return true
+	case "nat":
+		return len(publicExternalPools(d.clusterConfig.Network.ExternalPools)) > 0
+	}
+	return false
+}
+
+// assertNoClusterServicesInitialised enforces the DDIL §1e-audit invariant:
+// no NATS-dependent handle may exist at the end of startLocal.
+func (d *Daemon) assertNoClusterServicesInitialised() error {
+	switch {
+	case d.natsConn != nil:
+		return errors.New("d.natsConn must be nil before startCluster")
+	case d.jsManager != nil:
+		return errors.New("d.jsManager must be nil before startCluster")
+	case d.instanceService != nil:
+		return errors.New("d.instanceService must be nil before startCluster")
+	case d.imageService != nil:
+		return errors.New("d.imageService must be nil before startCluster")
+	case d.snapshotService != nil:
+		return errors.New("d.snapshotService must be nil before startCluster")
+	case d.volumeService != nil:
+		return errors.New("d.volumeService must be nil before startCluster")
+	case d.eigwService != nil:
+		return errors.New("d.eigwService must be nil before startCluster")
+	case d.igwService != nil:
+		return errors.New("d.igwService must be nil before startCluster")
+	case d.placementGroupService != nil:
+		return errors.New("d.placementGroupService must be nil before startCluster")
+	case d.launchTemplateService != nil:
+		return errors.New("d.launchTemplateService must be nil before startCluster")
+	case d.spotInstanceService != nil:
+		return errors.New("d.spotInstanceService must be nil before startCluster")
+	case d.vpcService != nil:
+		return errors.New("d.vpcService must be nil before startCluster")
+	case d.routeTableService != nil:
+		return errors.New("d.routeTableService must be nil before startCluster")
+	case d.natGatewayService != nil:
+		return errors.New("d.natGatewayService must be nil before startCluster")
+	case d.externalIPAM != nil:
+		return errors.New("d.externalIPAM must be nil before startCluster")
+	case d.eipService != nil:
+		return errors.New("d.eipService must be nil before startCluster")
+	case d.accountService != nil:
+		return errors.New("d.accountService must be nil before startCluster")
+	case d.elbv2Service != nil:
+		return errors.New("d.elbv2Service must be nil before startCluster")
+	case d.eksService != nil:
+		return errors.New("d.eksService must be nil before startCluster")
+	}
+	return nil
+}
+
+// startCluster retries NATS indefinitely and initialises all cluster-scoped
+// services. Errors are logged, not fatal. All JetStream KV buckets (DDIL
+// §1e-audit) must be initialised here, never in startLocal.
+func (d *Daemon) startCluster() error {
+	if os.Getenv("SPINIFEX_REQUIRE_NATS") == "1" {
+		// §1d-strict opt-in: bounded first connect, abort on timeout. Restores
+		// the pre-DDIL fail-fast UX for dev/test/single-node deploys without
+		// flipping the prod default (which would re-introduce the SPOF that 1d
+		// removed).
+		if err := d.connectNATS(natsmsg.WithMaxWait(d.requireNATSTimeout)); err != nil {
+			slog.Error("SPINIFEX_REQUIRE_NATS=1 set, NATS connect failed within 30s, aborting", "err", err, "timeout_ms", otelsetup.Millis(d.requireNATSTimeout))
+			d.exitFunc(1)
+			return fmt.Errorf("connect NATS (strict): %w", err)
+		}
+	} else if err := d.connectNATS(); err != nil {
+		return fmt.Errorf("connect NATS: %w", err)
+	}
+
+	// Declared before JetStream, not after: initJetStream creates buckets, and
+	// bucket creation refuses until the count is known. A daemon assembled in a
+	// test may never have gone through config.LoadConfig, which is where a real
+	// process declares it from this same source.
+	if d.clusterConfig != nil {
+		if err := clustersize.Declare(len(d.clusterConfig.Nodes)); err != nil {
+			return err
+		}
+	}
+
+	if err := d.initJetStream(); err != nil {
+		return fmt.Errorf("initialize JetStream: %w", err)
+	}
+
+	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
+	if js, jsErr := jetstream.New(d.natsConn); jsErr == nil {
+		if err := kvutil.DeleteBucketIfExists(d.ctx, js, "spinifex-dhcp-leases"); err != nil {
+			slog.Warn("Failed to delete obsolete spinifex-dhcp-leases KV bucket", "err", err)
+		}
+	}
+
+	// Reconcile OVN native IPsec both ways (idempotent): a node that does not
+	// use it should not be left running charon on 500/4500 either. Runs in the
+	// background because the first attempt routinely loses the race with
+	// ovn-central accepting connections, and a node that gives up there stays
+	// unconfigured while a peer may already require encryption cluster-wide.
+	go host.MaintainIPSec(d.ctx, d.configPath, d.clusterConfig, d.ipsecBarrier(), hostos.HasLibreswan())
+
+	// Keep the host firewall's peer sets in step with cluster membership. Every
+	// formation path reaches this, which none of the installers do. Runs in the
+	// background because the first attempt routinely loses the race with
+	// ovn-controller registering its chassis, and blocking startup on that would
+	// hold up every service below.
+	go host.MaintainFirewall(d.ctx, d.configPath, d.clusterConfig)
+
+	// Write service manifest so other nodes know what this node runs
+	if d.jsManager != nil {
+		if err := d.jsManager.WriteServiceManifest(
+			d.node,
+			d.config.GetServices(),
+			netaddr.DialTarget(d.config.NATS.Host),
+			netaddr.DialTarget(d.config.Predastore.Host),
+		); err != nil {
+			slog.Warn("Failed to write service manifest", "error", err)
+		}
+	}
+
+	// Create services before loading/launching instances, since LaunchInstance depends on them
+	store := objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
+	d.instanceService = ec2instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
+	d.dnsWriter = dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
+	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
+	d.dnsBaseDomain = dns.ResolveBaseDomain(d.config)
+	d.dnsInternalDomain = dns.ResolveInternalDomain(d.config)
+	d.keyService = ec2key.NewKeyServiceImpl(d.config)
+	d.imageService = ec2image.NewImageServiceImpl(d.config, d.natsConn)
+
+	type snapResult struct {
+		svc *ec2snapshot.SnapshotServiceImpl
+		kv  jetstream.KeyValue
+	}
+	snap, err := initServiceWithRetry("snapshot service", func() (snapResult, error) {
+		svc, kv, err := ec2snapshot.NewSnapshotServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+		return snapResult{svc, kv}, err
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize snapshot service: %w", err)
+	}
+	d.snapshotService = snap.svc
+
+	d.volumeService = ec2volume.NewVolumeServiceImpl(d.config, d.natsConn, snap.kv)
+	if err := d.configureEBSProvider(); err != nil {
+		return fmt.Errorf("configure EBS provider: %w", err)
+	}
+	tagsKV, err := initServiceWithRetry("tags KV bucket", func() (jetstream.KeyValue, error) {
+		tagsJS, jsErr := jetstream.New(d.natsConn)
+		if jsErr != nil {
+			return nil, fmt.Errorf("jetstream handle: %w", jsErr)
+		}
+		return ec2tags.GetOrCreateTagsBucket(d.ctx, tagsJS)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get tags KV bucket: %w", err)
+	}
+	d.tagsService = ec2tags.NewTagsServiceImpl(d.config, tagsKV)
+
+	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*ec2eigw.EgressOnlyIGWServiceImpl, error) {
+		return ec2eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize EIGW service: %w", err)
+	}
+
+	d.igwService, err = initServiceWithRetry("IGW service", func() (*ec2igw.IGWServiceImpl, error) {
+		return ec2igw.NewIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize IGW service: %w", err)
+	}
+
+	d.placementGroupService, err = initServiceWithRetry("placement group service", func() (*ec2placementgroup.PlacementGroupServiceImpl, error) {
+		return ec2placementgroup.NewPlacementGroupServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize placement group service: %w", err)
+	}
+
+	d.launchTemplateService, err = initServiceWithRetry("launch template service", func() (*ec2launchtemplate.LaunchTemplateServiceImpl, error) {
+		return ec2launchtemplate.NewLaunchTemplateServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize launch template service: %w", err)
+	}
+	d.wirePlatformTagIndex()
+
+	d.spotInstanceService, err = initServiceWithRetry("spot instance service", func() (*ec2spotinstance.SpotInstanceServiceImpl, error) {
+		return ec2spotinstance.NewSpotInstanceServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize spot instance service: %w", err)
+	}
+
+	d.vpcService, err = initServiceWithRetry("VPC service", func() (*ec2vpc.VPCServiceImpl, error) {
+		return ec2vpc.NewVPCServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize VPC service: %w", err)
+	}
+	// Default subnets request a public IP on launch only when the cluster has
+	// pools that hand out routable public IPs (pool mode always; nat mode only
+	// when a public pool rides alongside the transit segment).
+	d.vpcService.SetDefaultPublicIPMapping(d.hasPublicIPPools())
+	// Keep the central tag store in step with vpc/subnet/sg/eni records, so
+	// describe-tags agrees with each resource's own describe from birth and
+	// stops answering for it once it is deleted.
+	d.vpcService.SetCentralTagStore(d.tagsService)
+	// Name interfaces as their instances are named, so the two agree.
+	region, internalDomain := d.config.Region, dns.ResolveInternalDomain(d.config)
+	d.vpcService.SetPrivateDNSNamer(func(privateIP string) string {
+		_, private := dns.EC2DNSNames(region, "", internalDomain, "", privateIP)
+		return private
+	})
+
+	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*ec2routetable.RouteTableServiceImpl, error) {
+		return ec2routetable.NewRouteTableServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize RouteTable service: %w", err)
+	}
+
+	// Wire IGW attach/detach to RT-aware per-subnet egress gate fan-out.
+	d.igwService.SetGatePublisher(d.routeTableService)
+
+	d.natGatewayService, err = initServiceWithRetry("NatGateway service", func() (*ec2natgw.NatGatewayServiceImpl, error) {
+		return ec2natgw.NewNatGatewayServiceImplWithNATS(d.ctx, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize NatGateway service: %w", err)
+	}
+
+	// A node declaring public pools must serve EIPs or refuse to start: EIP
+	// subjects are a queue group, so one node silently on the disabled stub
+	// answers cluster-wide with an empty address list on the requests it wins.
+	if d.hasPublicIPPools() {
+		pools, anyDHCP := d.externalPoolConfigs()
+		d.externalIPAM, err = initServiceWithRetry("external IPAM", func() (*ec2vpc.ExternalIPAM, error) {
+			js, jsErr := jetstream.New(d.natsConn)
+			if jsErr != nil {
+				return nil, fmt.Errorf("jetstream handle: %w", jsErr)
+			}
+			ipam, ipamErr := ec2vpc.NewExternalIPAM(d.ctx, js, pools)
+			if ipamErr != nil {
+				return nil, ipamErr
+			}
+			if anyDHCP {
+				if dhcpErr := ipam.EnableDHCP(dhcp.NewNATSClient(d.natsConn, 0)); dhcpErr != nil {
+					return nil, fmt.Errorf("enable DHCP allocator: %w", dhcpErr)
+				}
+			}
+			if ociErr := d.installOCIAllocators(ipam, js); ociErr != nil {
+				return nil, ociErr
+			}
+			if exoErr := d.installExoscaleAllocators(ipam, js); exoErr != nil {
+				return nil, exoErr
+			}
+			return ipam, nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to initialize external IPAM: %w", err)
+		}
+		slog.Info("External IPAM initialized", "mode", d.clusterConfig.Network.ExternalMode, "pools", len(pools), "dhcp", anyDHCP)
+	}
+
+	// Initialize EIP service if external IPAM is available
+	if d.externalIPAM != nil && d.vpcService != nil {
+		eipSvc, eipErr := initServiceWithRetry("EIP service", func() (*ec2eip.EIPServiceImpl, error) {
+			return ec2eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
+		})
+		if eipErr != nil {
+			return fmt.Errorf("failed to initialize EIP service: %w", eipErr)
+		}
+		d.eipService = eipSvc
+		slog.Info("EIP service initialized")
+
+		// Inject external IPAM + EIP KV into VPC service so DeleteNetworkInterface
+		// can release auto-assigned public IPs and NAT rules.
+		eipKV, eipKVErr := initServiceWithRetry("EIP KV bucket", func() (jetstream.KeyValue, error) {
+			eipJS, jsErr := jetstream.New(d.natsConn)
+			if jsErr != nil {
+				return nil, fmt.Errorf("jetstream handle: %w", jsErr)
+			}
+			return kvutil.GetOrCreateBucket(d.ctx, eipJS, ec2eip.KVBucketEIPs, 10)
+		})
+		if eipKVErr != nil {
+			return fmt.Errorf("failed to get EIP KV bucket for VPC service: %w", eipKVErr)
+		}
+		d.vpcService.SetExternalIPAM(d.externalIPAM, eipKV)
+	}
+
+	// Without external IPAM (nat mode or external disabled) serve EIP requests
+	// from the disabled stub so the API surface stays registered.
+	if d.eipService == nil {
+		d.eipService = ec2eip.NewDisabledEIPService()
+		slog.Info("EIP service disabled — no external IPAM; serving empty/unsupported responses")
+	}
+
+	// A nil *ExternalIPAM stored in an interface is not a nil interface, so hand
+	// the concrete value over only once init succeeded — otherwise the service's
+	// own nil checks pass and the allocate path derefs a nil receiver.
+	var (
+		ipAllocator ec2instance.PublicIPAllocator
+		ipReleaser  ec2instance.PublicIPReleaser
+	)
+	if d.externalIPAM != nil {
+		ipAllocator = d.externalIPAM
+		ipReleaser = d.externalIPAM
+	}
+
+	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, ipReleaser, d.tagsService)
+	d.instanceService.SetVolumeCreator(d.volumeService)
+	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, ipAllocator)
+
+	if d.gpuManager != nil {
+		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
+	}
+
+	d.accountService, err = initServiceWithRetry("account settings service", func() (*ec2account.AccountSettingsServiceImpl, error) {
+		return ec2account.NewAccountSettingsServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize account settings service: %w", err)
+	}
+	accountStatusJS, err := jetstream.New(d.natsConn)
+	if err != nil {
+		return fmt.Errorf("jetstream handle for account status reader: %w", err)
+	}
+	var _ ec2account.AccountTerminationChecker = (*iamdomain.AccountStatusReader)(nil)
+	d.accountService.SetAccountTerminationChecker(iamdomain.NewAccountStatusReader(accountStatusJS))
+
+	// ELBv2 resolves listener certificate private keys through its own ACM
+	// Store over the same JetStream bucket the ACM service writes, so it needs
+	// the identical master key: unlike EKS/ECS's IAM dependency, there is no
+	// safe degraded mode for certificate private keys, so a missing key must
+	// fail daemon startup rather than leave HTTPS listeners uncreatable.
+	d.elbv2Service, err = initServiceWithRetry("ELBv2 service", func() (*elbv2domain.ELBv2ServiceImpl, error) {
+		masterKey, mkErr := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+		if mkErr != nil {
+			return nil, fmt.Errorf("load ELBv2 master key: %w", mkErr)
+		}
+		return elbv2domain.NewELBv2ServiceImplWithNATS(d.config, d.natsConn, masterKey)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize ELBv2 service: %w", err)
+	}
+
+	// The InUseBy index is otherwise only written by listener mutations, so
+	// listeners created before it existed would never fan out a renewed
+	// certificate. Not fatal: a stale index degrades renewal, which beats
+	// refusing to start. Every node reconciles the shared bucket at its own
+	// startup; the index writes are CAS-guarded, so concurrent runs converge.
+	if err := d.elbv2Service.ReconcileCertInUseIndex(d.ctx); err != nil {
+		slog.Error("failed to reconcile the ACM InUseBy index", "err", err)
+	}
+
+	if d.vpcService != nil {
+		d.elbv2Service.VPCService = d.vpcService
+	}
+
+	// Route system VM launches through NATS so they fan out across the cluster.
+	d.elbv2Service.InstanceLauncher = elbv2domain.NewNATSSystemInstanceLauncher(d.natsConn, 0)
+
+	// Provide a lazily-built KV-backed IAM service so an LB VM gets a system
+	// instance profile and authenticates with IMDS instance-role creds. The
+	// provider is resolved at LB-launch time, not now, so it cannot race the
+	// NATS KV backend coming up; absent (no master key) the LB VM falls back to
+	// baked static creds.
+	d.elbv2Service.IAMProvider = d.systemRoleEnsurer
+
+	d.wireLBAgentConfig()
+
+	d.elbv2Service.SetSystemInstanceTypeFunc(func() string {
+		return "sys.micro"
+	})
+
+	// Invalidate stale "healthy" target state from before restart. Best-effort.
+	if err := d.elbv2Service.ResetTargetHealthOnStartup(context.Background()); err != nil {
+		slog.Warn("ELBv2: target-health reset failed; continuing with stale state",
+			"err", err)
+	}
+
+	d.elbv2Service.StartLifecycleReaper(context.Background())
+
+	d.eksService, err = initServiceWithRetry("EKS service", func() (*ekscluster.EKSServiceImpl, error) {
+		return ekscluster.NewEKSServiceImpl(d.buildEKSServiceDeps())
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize EKS service: %w", err)
+	}
+
+	// ECS control plane: per-account KV-backed handlers + a leader-elected
+	// scheduler goroutine that owns the Layer-2 bus subscriptions and heartbeat
+	// reaper. The scheduler is disabled (handlers still serve) when JetStream is
+	// unavailable.
+	d.ecsService = ecsdomain.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.ServicesDomain).WithDeps(d.buildECSServiceDeps())
+	if js, jsErr := jetstream.New(d.natsConn); jsErr != nil {
+		slog.Warn("ECS scheduler disabled: JetStream unavailable", "err", jsErr)
+	} else if _, lbErr := ecsdomain.InitLeaderBucket(d.ctx, js); lbErr != nil {
+		slog.Warn("ECS scheduler disabled: leader bucket init failed", "err", lbErr)
+	} else {
+		d.ecsScheduler = ecsdomain.NewScheduler(d.natsConn, d.ecsService, d.node)
+		d.shutdownWg.Go(func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("ECS scheduler goroutine panicked", "recover", r)
+				}
+			}()
+			d.ecsScheduler.Run(d.ctx)
+		})
+	}
+
+	// RDS control plane: KV-backed agent-protocol handlers plus the customer
+	// actions. The cluster CA signs the per-instance serving certs, minted per
+	// bootstrap fetch and never persisted; ca.key sits beside the configured ca.pem.
+	//
+	// The master key is mandatory, as it is for ACM and ELBv2 above: the staged
+	// bootstrap password is encrypted under it, and the fetch is answered by
+	// whichever node the queue group picks, so a node without it would make the
+	// first boot of a DB instance fail intermittently rather than not at all.
+	d.rdsService, err = initServiceWithRetry("RDS service", func() (*rdsinstance.Service, error) {
+		if registryErr := rdsengine.ValidateEngineRegistry(); registryErr != nil {
+			return nil, registryErr
+		}
+		deps, depsErr := d.buildRDSDeps()
+		if depsErr != nil {
+			return nil, depsErr
+		}
+		return rdsinstance.NewService(d.natsConn, d.config.Region).WithDeps(deps), nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize RDS service: %w", err)
+	}
+
+	// One leader across the cluster derives DB instance status from the agent
+	// heartbeat; every node keeps serving the API.
+	d.rdsReconciler = rdsinstance.NewReconciler(d.rdsService, d.node)
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("RDS reconciler goroutine panicked", "recover", r)
+			}
+		}()
+		d.rdsReconciler.Run(d.ctx)
+	})
+
+	// Bedrock serving-endpoint lifecycle: the request-driven
+	// ensure/describe/list/delete surface, constructed synchronously since it
+	// touches no JetStream KV until its first request.
+	d.bedrockService = ochre.NewService(d.natsConn, d.buildBedrockServiceDeps())
+
+	// One leader across the cluster scrapes each serving endpoint's vLLM metrics
+	// and hands an idle GPU back; every node keeps serving the API. Without it a
+	// launched model owns its device until an operator deletes the endpoint.
+	d.bedrockReaper = ochre.NewReaper(d.bedrockService, d.node, ochre.ReaperDeps{})
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Bedrock reaper goroutine panicked", "recover", r)
+			}
+		}()
+		d.bedrockReaper.Run(d.ctx)
+	})
+
+	// ACM certificates hold private keys, so unlike EKS/ECS's IAM dependency
+	// (which degrades to "feature disabled" without a master key) there is no
+	// safe degraded mode here: a missing key must fail daemon startup, not
+	// silently persist keys unencrypted. initServiceWithRetry still retries with
+	// backoff — the key file can legitimately not be written yet during a
+	// concurrent boot — but a master key that never arrives fails startCluster
+	// after the retry window instead of leaving acmService permanently nil.
+	d.acmService, err = initServiceWithRetry("ACM service", func() (*acmdomain.ACMServiceImpl, error) {
+		masterKey, mkErr := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+		if mkErr != nil {
+			return nil, fmt.Errorf("load ACM master key: %w", mkErr)
+		}
+		return acmdomain.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn, masterKey)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize ACM service: %w", err)
+	}
+	// Re-importing to an existing ARN must fan out to every load balancer that
+	// references it; otherwise HAProxy keeps serving the old leaf until it
+	// expires while the API reports success. ELBv2 is already up (above).
+	d.acmService.CertMaterialUpdated = d.elbv2Service.UpdateStoredConfigForCert
+
+	// deriveValidationMode needs to know whether northstar hosts a zone for a
+	// requested domain. handlers/acm deliberately does not import domains/dns
+	// (which would pull its S3/northstar-config dependencies into every acm
+	// test) — wired as a func field instead, the same pattern CertMaterialUpdated
+	// uses above to keep acm decoupled from elbv2.
+	d.acmService.NorthstarHostsZone = func(domain string) bool {
+		return dns.HostsZone(d.config, domain)
+	}
+
+	// The tenant private CA is optional, unlike the master key above: a
+	// deployment issuing only public (PROVIDER_API/MANUAL_TXT) certificates has
+	// no reason to have one, so its absence must not block daemon startup.
+	// LoadTenantCA (load-only — see privateca.go) leaves TenantCA nil rather
+	// than creating a root here, because creation needs an explicit permitted-
+	// domains list that has no safe default; a PRIVATE_CA RequestCertificate
+	// against a nil TenantCA already fails loudly with an actionable error
+	// (see ACMServiceImpl.RequestCertificate). Both states are logged here so an
+	// operator can tell at a glance, from daemon startup logs alone, which one
+	// they are in.
+	configDir := filepath.Dir(d.configPath)
+	tenantCA, tenantCAErr := acmdomain.LoadTenantCA(acmdomain.TenantCACertPath(configDir), acmdomain.TenantCAKeyPath(configDir))
+	if tenantCAErr != nil {
+		slog.Warn("ACM: tenant private CA not found; PRIVATE_CA certificate requests will fail until one is created",
+			"err", tenantCAErr)
+	} else {
+		d.acmService.TenantCA = tenantCA
+		slog.Info("ACM: tenant private CA wired", "permitted_domains", tenantCA.PermittedDomains())
+	}
+
+	// The renewal worker scans for PRIVATE_CA certificates past their
+	// proportional renewal window and reissues them under their existing ARN.
+	// It reads d.acmService.TenantCA/CertMaterialUpdated live on every scan
+	// rather than a snapshot taken here, so it starts unconditionally: a
+	// tenant CA loaded later (or never, on a public-certificates-only
+	// deployment) is not a startup dependency — the worker just finds
+	// nothing to renew until one is wired.
+	d.acmRenewalWorker = acmdomain.NewWorker(d.acmService, d.node)
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("ACM renewal worker goroutine panicked", "recover", r)
+			}
+		}()
+		d.acmRenewalWorker.Run(d.ctx)
+	})
+
+	// ECR metadata service: owns per-account JetStream KV for repos, tags,
+	// manifest records and upload-state CAS. Disabled (gateway returns NATS
+	// timeouts) when JetStream is unavailable.
+	if js, jsErr := jetstream.New(d.natsConn); jsErr != nil {
+		slog.Warn("ECR metadata service disabled: JetStream unavailable", "err", jsErr)
+	} else {
+		d.ecrMetaService = ecr.NewKVMetaService(js)
+	}
+
+	if err := d.eksService.SpawnRegisteredReconcilers(); err != nil {
+		slog.Warn("EKS: SpawnRegisteredReconcilers failed", "err", err)
+	}
+
+	// Ensure default VPC exists for system and admin accounts
+	// (matches AWS: every account has a default VPC with IGW + default SG)
+	if d.vpcService != nil {
+		failedDefaultVPCs := map[string]struct{}{}
+		for _, accountID := range []string{awsidentifiers.GlobalAccountID, awsidentifiers.DefaultAccountID()} {
+			// Pass bootstrap IDs for the admin account so EnsureDefaultVPC uses
+			// the same IDs that admin init wrote to [bootstrap] in spinifex.toml.
+			var opts []ec2vpc.BootstrapIDs
+			if accountID == awsidentifiers.DefaultAccountID() && d.clusterConfig != nil && d.clusterConfig.Bootstrap.VpcId != "" {
+				opts = append(opts, ec2vpc.BootstrapIDs{
+					VpcId:    d.clusterConfig.Bootstrap.VpcId,
+					SubnetId: d.clusterConfig.Bootstrap.SubnetId,
+					IgwId:    d.clusterConfig.Bootstrap.IgwId,
+				})
+			}
+			if _, err := d.vpcService.EnsureDefaultVPC(accountID, opts...); err != nil {
+				slog.Error("Failed to ensure default VPC", "accountID", accountID, "error", err)
+				failedDefaultVPCs[accountID] = struct{}{}
+			}
+		}
+		// Skip IGW/route setup for accounts whose default VPC failed; otherwise
+		// we'd attach infrastructure to a half-built VPC (no default SG yet).
+		d.ensureDefaultVPCInfrastructure(failedDefaultVPCs)
+	}
+
+	d.vmMgr.SetDeps(d.buildVMManagerDeps())
+
+	d.waitForClusterReady()
+	d.upgradeJetStreamReplicas()
+	if err := d.restoreInstances(); err != nil {
+		return fmt.Errorf("restore instances: %w", err)
+	}
+
+	// Bind the mgmt IP allocator to cluster KV now that JetStream is up (DDIL
+	// §1e-audit: startLocal built it KV-less). Rebuild then reconciles this
+	// node's already-running VMs into the cluster-wide record instead of
+	// just refreshing the local cache, so already-allocated IPs aren't
+	// reused by another node either.
+	if d.mgmtIPAllocator != nil && d.jsManager != nil {
+		d.mgmtIPAllocator.BindKV(d.jsManager, d.node)
+		d.mgmtIPAllocator.Rebuild(d.vmMgr.SnapshotMap())
+		slog.Info("Rebuilt mgmt IP allocator from restored instances", "allocated", d.mgmtIPAllocator.AllocatedCount())
+	}
+
+	if err := d.subscribeAll(); err != nil {
+		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
+	}
+
+	// Ochre vector store platform appliance + VectorService, backgrounded:
+	// launching the appliance can block on a cold RDS VM boot for minutes, and
+	// its own launch request needs the rds.* responders subscribeAll just
+	// registered above, so it cannot run any earlier. Gated on
+	// config.OchreVector.Enabled (default off); any failure along the way is
+	// logged and leaves the feature's subjects unregistered rather than
+	// failing startCluster or blocking daemon boot. Tracked on shutdownWg so
+	// shutdown waits for it to observe d.ctx cancellation and unwind instead
+	// of leaking; d.ctx is what bounds every NATS call it makes.
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Ochre vector store startup goroutine panicked", "recover", r)
+			}
+		}()
+		d.startOchreVector()
+	})
+
+	// Remove this node's appliance-VPC host port on shutdown. Same config gate
+	// as startOchreVector, so a disabled daemon spawns nothing. d.ochreAppliance
+	// stays nil until the retry loop succeeds, so early shutdown tears down nothing.
+	if d.config.OchreVector.Enabled {
+		d.shutdownWg.Go(func() {
+			<-d.ctx.Done()
+			d.mu.Lock()
+			appliance := d.ochreAppliance
+			d.mu.Unlock()
+			if appliance == nil {
+				return
+			}
+			if err := appliance.TeardownHostPort(); err != nil {
+				slog.Warn("Ochre vector store: daemon host port teardown failed", "err", err)
+			}
+		})
+	}
+
+	// DNS: rebuild managed records from the live cross-tenant inventory and
+	// converge the zone, on a resource change or the interval. Started on every
+	// node but gated on a per-cycle leader election, so exactly one node writes a
+	// zone. No-op when northstar is not configured.
+	if d.dnsReconciler.Enabled() {
+		go d.dnsReconciler.Run(d.ctx)
+		slog.Info("Started DNS reconcile backstop", "interval_ms", otelsetup.Millis(dns.DefaultReconcileInterval))
+	}
+
+	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.
+	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.handleSystemLaunchInstance, d.node)
+
+	d.startHeartbeat()
+	d.startRecordRepair()
+	d.startInstanceRecovery()
+	d.vmMgr.StartPendingWatchdog(d.ctx)
+	// ovs-vswitchd keeps br-imds flows only in memory and nothing else restores
+	// them, so a restart would leave every guest on this node without a network.
+	d.vmMgr.StartIMDSDatapathReconcile(d.ctx)
+
+	// Reality→desired GC backstop (ADR-0003 §3): finish teardown interrupted by
+	// a node-down mid-cascade and purge completed terminated records. The volume
+	// data-safety reaper (ADR-0003:S2) rides the same backstop but only marks +
+	// alarms — it never deletes volume data.
+	if d.jsManager != nil {
+		reapers := []vm.Reaper{
+			d.vmMgr.NewTerminatedTeardownReaper(),
+			d.vmMgr.NewOrphanQEMUReaper(),
+			d.vmMgr.NewStuckTerminateReaper(),
+		}
+		if eniRec := d.newENIReconciler(); eniRec != nil {
+			reapers = append(reapers, eniRec)
+		}
+		if eniOrphan := d.newENIOrphanReaper(); eniOrphan != nil {
+			reapers = append(reapers, eniOrphan)
+		}
+		if gpuRec := d.newGPUPoolReconciler(); gpuRec != nil {
+			reapers = append(reapers, gpuRec)
+		}
+		if d.volumeService != nil {
+			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
+		}
+		if d.eksService != nil {
+			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))
+			reapers = append(reapers, d.eksService.NewDeletingReaper())
+		}
+		// The RDS automated-backup retention sweep is the one reaper here that
+		// deletes customer data, which is why it rides this backstop rather than the
+		// RDS reconciler: the KV-health gate above is what stops it reaping against a
+		// desired state it cannot read.
+		if d.rdsService != nil {
+			reapers = append(reapers, d.rdsService.NewBackupRetentionReaper())
+		}
+		gc := vm.NewGarbageCollector(d.jsManager.KVHealthy, reapers...).
+			WithLeaderElection(d.clusterSweepLease)
+		gc.Start(d.ctx)
+	}
+
+	d.ready.Store(true)
+	slog.Info("Daemon fully initialized", "node", d.node, "startup_time_ms", otelsetup.Millis(time.Since(d.startTime)))
+
+	// Return once bootstrap is done. Start already installed the signal handler
+	// and owns the single awaitShutdown; waiting here would block on the wait
+	// group this goroutine is itself a member of, which never resolves.
+	d.setupReload()
+
+	return nil
+}
+
+// ebsProviderRequestTimeout bounds the ebs.provider.v1.* subjects that answer
+// from state already held. The provider raises it for the subjects that move
+// data, so this is a floor rather than the budget every call gets.
+const ebsProviderRequestTimeout = 30 * time.Second
+
+// ebsProviderProbeTimeout bounds the startup reachability check. Short because
+// a missing responder must be reported promptly, and the check is advisory.
+const ebsProviderProbeTimeout = 2 * time.Second
+
+// configureEBSProvider wires a single NATSProvider into every EBS-adjacent
+// service. The control plane never constructs a provider implementation
+// itself, so this always runs regardless of which daemon answers on the wire.
+func (d *Daemon) configureEBSProvider() error {
+	provider := ebsprovider.NewNATSProvider(d.natsConn, ebsProviderRequestTimeout)
+	d.ebsProvider = provider
+	d.instanceService.SetEBSProvider(provider)
+	d.imageService.SetEBSProvider(provider)
+	d.snapshotService.SetEBSProvider(provider)
+	d.volumeService.SetEBSProvider(provider)
+	slog.Info("EBS provider path active", "provider", d.config.EBS.ResolvedProvider())
+	d.probeEBSProvider(provider)
+	return nil
+}
+
+// probeEBSProvider reports whether anything is serving the provider contract.
+// Advisory rather than fatal: this daemon and viperblockd start independently,
+// so an unanswered probe here can simply mean viperblockd has not come up yet.
+func (d *Daemon) probeEBSProvider(provider ebsprovider.EBSProvider) {
+	// Own base context rather than the daemon's: the probe is bounded well
+	// below any shutdown deadline, and startCluster runs before d.ctx is set
+	// on some construction paths.
+	ctx, cancel := context.WithTimeout(context.Background(), ebsProviderProbeTimeout)
+	defer cancel()
+
+	capabilities, err := provider.GetCapabilities(ctx, ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()})
+	if err != nil {
+		slog.Warn("EBS provider did not answer the capability probe; EBS calls will fail until it does",
+			"provider", d.config.EBS.ResolvedProvider(), "err", err)
+		return
+	}
+	slog.Info("EBS provider reachable", "provider", d.config.EBS.ResolvedProvider(),
+		"capabilities", capabilities.Capabilities)
+}
+
+// clusterSweepLease gates the GC's cluster-wide reapers so exactly one node runs
+// them. The RDS reconciler's lease is that election — cluster-singular, held
+// continuously, and re-evaluated on its own ticker — so being its holder is the
+// whole answer. Without it every ClusterWide reaper is skipped outright.
+func (d *Daemon) clusterSweepLease() (func(), bool) {
+	if d.rdsReconciler == nil {
+		return func() {}, false
+	}
+	return d.rdsReconciler.AcquireClusterLease()
+}
+
+// leakedVolumeInstances returns the set of instance IDs this node owns whose
+// teardown leaked a volume — terminated here with a failed volumes-teardown.
+// The volume data-safety reaper marks (never deletes) volumes still attached to
+// these definitively-gone instances. Keying on this node's terminated set keeps
+// the shared-store scan from false-marking another node's live-instance volume.
+func (d *Daemon) leakedVolumeInstances() (map[string]bool, error) {
+	terminated, err := d.jsManager.ListTerminatedInstances()
+	if err != nil {
+		return nil, err
+	}
+	leaked := make(map[string]bool)
+	for _, v := range terminated {
+		if v.LastNode == d.node && v.Teardown[vm.TeardownVolumes] == string(vm.TeardownFailed) {
+			leaked[v.ID] = true
+		}
+	}
+	return leaked, nil
+}
+
+// nodeRunningVMs returns this node's running VMs for the EKS billable reaper to
+// scan. A nil stateStore (early init / test) yields an empty set. The reaper
+// only ever acts on VMs in this list, so a missing record fails closed and the
+// absence flag adds nothing.
+func (d *Daemon) nodeRunningVMs() ([]*vm.VM, error) {
+	if d.stateStore == nil {
+		return nil, nil
+	}
+	running, _, err := d.stateStore.LoadRunningState(d.node)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Collect(maps.Values(running)), nil
+}
+
+// connectNATS connects to NATS with infinite retry (cap 60s backoff). Tests
+// override d.natsRetryOpts; extraOpts override any conflicting fields.
+func (d *Daemon) connectNATS(extraOpts ...natsmsg.RetryOption) error {
+	opts := append([]natsmsg.RetryOption{
+		natsmsg.WithMaxWait(0), // infinite retry; cancelled via d.ctx
+		natsmsg.WithMaxRetryDelay(60 * time.Second),
+		natsmsg.WithContext(d.ctx),
+		natsmsg.WithDisconnectHandler(d.onNATSDisconnect),
+		natsmsg.WithReconnectHandler(d.onNATSReconnect),
+		natsmsg.WithAttemptErrHandler(func(_ error, _ int) {
+			d.natsRetryCount.Add(1)
+		}),
+	}, d.natsRetryOpts...)
+	opts = append(opts, extraOpts...)
+	nc, err := natsmsg.ConnectNATSWithRetry(netaddr.DialTarget(d.config.NATS.Host), d.config.NATS.ACL.Token, d.config.NATS.CACert, opts...)
+	if err != nil {
+		return err
+	}
+	d.natsConn = nc
+	d.natsConnected.Store(true)
+	return nil
+}
+
+// initJetStream initialises JetStream KV stores, retrying up to 5 minutes to
+// allow late-joining nodes to reach quorum.
+func (d *Daemon) initJetStream() error {
+	const maxWait = 5 * time.Minute
+	retryDelay := 500 * time.Millisecond
+	start := time.Now()
+	attempt := 0
+
+	for {
+		attempt++
+		var err error
+		d.jsManager, err = NewJetStreamManager(d.natsConn)
+		if err == nil {
+			err = d.jsManager.InitKVBucket()
+		}
+
+		if err == nil {
+			err = d.jsManager.InitClusterStateBucket()
+		}
+
+		if err == nil {
+			err = d.jsManager.InitTerminatedInstanceBucket()
+		}
+
+		if err == nil {
+			d.jsManager.SetSyncObserver(d)
+			// Replicas cannot be undeclared here: bucket creation refuses
+			// before it, so reaching this line means it was declared.
+			replicas, _ := clustersize.Replicas()
+			slog.Info("JetStream KV stores initialized successfully", "replicas", replicas, "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
+			break
+		}
+
+		// A misdeclared cluster size is not something quorum arrives and fixes,
+		// so waiting for it spends the whole budget and then reports a quorum
+		// problem that was never the cause.
+		if clustersize.Permanent(err) {
+			return fmt.Errorf("initialize JetStream: %w", err)
+		}
+
+		elapsed := time.Since(start)
+		if elapsed >= maxWait {
+			return fmt.Errorf("failed to initialize JetStream after %s (%d attempts): %w", elapsed.Round(time.Second), attempt, err)
+		}
+
+		slog.Warn("JetStream not ready (waiting for cluster quorum)", "error", err, "attempt", attempt, "elapsed_ms", otelsetup.Millis(elapsed), "retry_in_ms", otelsetup.Millis(retryDelay))
+		time.Sleep(retryDelay)
+		retryDelay = min(retryDelay*2, 10*time.Second)
+	}
+
+	d.stateStore = newStateStoreAdapter(d.jsManager, d.persistState)
+
+	return nil
+}
+
+// upgradeJetStreamReplicas raises every KV bucket to the cluster's replica
+// count. Runs after all buckets are created and the cluster is ready, which is
+// when a bucket created by whichever node got there first can be repaired.
+func (d *Daemon) upgradeJetStreamReplicas() {
+	if d.jsManager == nil || d.jsManager.js == nil {
+		return
+	}
+	raised, err := kvutil.RaiseAllBucketReplicas(d.ctx, d.jsManager.js)
+	if err != nil {
+		slog.Warn("Failed to raise KV bucket replicas to the cluster's node count", "error", err)
+		return
+	}
+	if raised > 0 {
+		slog.Info("Raised KV buckets to the cluster's replica count", "buckets", raised)
+	}
+}
+
+// initRetrySleep is the sleep seam used by initServiceWithRetry; tests override it.
+var initRetrySleep = time.Sleep
+
+// initServiceWithRetry initialises a service with exponential backoff (500ms→10s)
+// for up to 5 minutes, allowing time for JetStream quorum during cluster restarts.
+func initServiceWithRetry[T any](name string, initFn func() (T, error)) (T, error) {
+	const maxWait = 5 * time.Minute
+	retryDelay := 500 * time.Millisecond
+	start := time.Now()
+	attempt := 0
+
+	for {
+		attempt++
+		result, err := initFn()
+		if err == nil {
+			if attempt > 1 {
+				slog.Info(name+" initialized successfully", "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
+			}
+			return result, nil
+		}
+
+		elapsed := time.Since(start)
+		if elapsed >= maxWait {
+			var zero T
+			return zero, fmt.Errorf("%s unavailable after %s (%d attempts): %w", name, elapsed.Round(time.Second), attempt, err)
+		}
+
+		slog.Warn("Failed to init "+name, "error", err, "attempt", attempt, "elapsed_ms", otelsetup.Millis(elapsed))
+		initRetrySleep(retryDelay)
+		retryDelay = min(retryDelay*2, 10*time.Second)
+	}
+}
+
+// clusterReadySleep is the poll delay seam used by waitForClusterReady, and
+// clusterReadyMaxWait bounds the loop; tests override both.
+var (
+	clusterReadySleep   = time.Sleep
+	clusterReadyMaxWait = 2 * time.Minute
+)
+
+// waitForClusterReady blocks until viperblock and predastore are reachable,
+// preventing races during VM recovery.
+func (d *Daemon) waitForClusterReady() {
+	slog.Info("Waiting for cluster readiness...")
+	maxWait := clusterReadyMaxWait
+	start := time.Now()
+	interval := 2 * time.Second
+
+	for time.Since(start) < maxWait {
+		ready := true
+		var reason string
+
+		// Viperblock must be reachable (local or remote)
+		if ready && !d.checkViperblockReady() {
+			ready = false
+			reason = "viperblock not ready"
+		}
+
+		// Predastore must be reachable (local or remote)
+		if ready && !d.checkPredastoreReady() {
+			ready = false
+			reason = "predastore not ready"
+		}
+
+		if ready {
+			slog.Info("Cluster readiness check passed", "elapsed_ms", otelsetup.Millis(time.Since(start)))
+			return
+		}
+
+		slog.Debug("Cluster not ready, waiting...", "reason", reason, "elapsed_ms", otelsetup.Millis(time.Since(start)))
+		clusterReadySleep(interval)
+	}
+
+	slog.Warn("Cluster readiness timeout, proceeding with recovery anyway", "max_wait_ms", otelsetup.Millis(maxWait))
+}
+
+// checkViperblockReady reports whether viperblock can actually serve a mount,
+// which needs more than a live NATS socket: mounting claims a JetStream KV
+// lease before it reads any state, so JetStream must be serving too.
+//
+// Testing only IsConnected was why waitForClusterReady did not prevent the
+// race it exists to prevent. The client reconnects as soon as nats-server
+// accepts TCP, which is well before JetStream has quorum, so readiness passed
+// roughly 30 seconds before the first lease claim could have succeeded — and
+// every guest recovering in that window was failed and latched.
+//
+// AccountInfo is the probe because it is the cheapest round trip that proves
+// JetStream is answering, and it changes nothing.
+func (d *Daemon) checkViperblockReady() bool {
+	if d.natsConn == nil || !d.natsConn.IsConnected() {
+		return false
+	}
+
+	js, err := jetstream.New(d.natsConn)
+	if err != nil {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	_, err = js.AccountInfo(ctx)
+	return err == nil
+}
+
+// checkPredastoreReady reports whether predastore is serving HTTPS, not just
+// listening. Any response counts as ready, including the 401/403 an S3
+// endpoint returns for this deliberately unsigned request.
+func (d *Daemon) checkPredastoreReady() bool {
+	host := netaddr.DialTarget(d.config.Predastore.Host)
+	if host == "" {
+		return true // no predastore configured, skip check
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	rootCAs, err := loadClusterTrustRoot(d)
+	if err != nil {
+		slog.Warn("predastore readiness probe: could not load cluster CA", "err", err)
+		return false
+	}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: rootCAs}}}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host+"/", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return true
+}
+
+// LoadState loads instance state from disk. Missing file → empty map (fresh
+// install). Corrupt or unknown-schema files are fatal.
+func (d *Daemon) LoadState() error {
+	path := d.localStatePath()
+	state, err := ReadLocalState(path)
+	if err != nil {
+		slog.Error("Local state load failed", "path", path, "error", err)
+		return fmt.Errorf("read local state: %w", err)
+	}
+
+	if state == nil {
+		d.vmMgr.Replace(map[string]*vm.VM{})
+		slog.Info("No local state file, starting with empty instance map", "path", path)
+		return nil
+	}
+
+	d.vmMgr.Replace(state.VMS)
+	slog.Info("Loaded local state", "path", path, "instances", len(state.VMS))
+	return nil
+}
+
+// restoreInstances delegates to vm.Manager.Restore and syncs the local state
+// file so it matches in-memory state.
+//
+// It then starts the recovery retry loop in the background. Restore is a single
+// pass: any instance whose relaunch lost a race with a still-starting dependency
+// is parked in StateError and, before this, stayed there until an operator
+// noticed. The loop reconsiders exactly those, once the backing store is
+// confirmed ready, and returns as soon as there is nothing left to retry.
+//
+// Backgrounded because it must not hold up the rest of daemon start: the guests
+// it is recovering are already down, and blocking here would keep the API from
+// coming up while it waits.
+func (d *Daemon) restoreInstances() error {
+	d.forgetSupersededInstances()
+	d.vmMgr.Restore()
+	if err := d.WriteState(); err != nil {
+		slog.Error("Failed to persist local state after restore", "error", err)
+	}
+
+	d.recoveryRetryWg.Go(func() {
+		d.vmMgr.RunRecoveryRetryLoop(d.shuttingDown.Load)
+		if err := d.WriteState(); err != nil {
+			slog.Error("Failed to persist local state after recovery retry", "error", err)
+		}
+	})
+
+	return nil
+}
+
+// awaitShutdown blocks until the daemon's shutdown wait group completes.
+func (d *Daemon) awaitShutdown() {
+	done := make(chan struct{})
+	go func() {
+		d.shutdownWg.Wait()
+		close(done)
+	}()
+	<-done
+}
+
+// computeConfigHash computes a SHA256 hash of the shared cluster config.
+func (d *Daemon) computeConfigHash() (string, error) {
+	sharedData := sharedClusterData{
+		Epoch:   d.clusterConfig.Epoch,
+		Version: d.clusterConfig.Version,
+		Nodes:   d.clusterConfig.Nodes,
+	}
+
+	configJSON, err := json.Marshal(sharedData)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(configJSON)
+	return hex.EncodeToString(hash[:]), nil
+}
+
+// routeActionMiddleware names cluster API requests by chi route pattern for
+// request metrics, keeping metric attribute cardinality bounded.
+func routeActionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+		if rc := chi.RouteContext(r.Context()); rc != nil {
+			if pattern := rc.RoutePattern(); pattern != "" {
+				otelsetup.SetRequestAction(r.Context(), r.Method+" "+pattern)
+			}
+		}
+	})
+}
+
+// ClusterManager starts the HTTPS cluster management server.
+func (d *Daemon) ClusterManager() error {
+	daemonHost := d.config.Daemon.Host
+	if daemonHost == "" {
+		return fmt.Errorf("daemon.host not configured")
+	}
+
+	r := chi.NewRouter()
+	r.Use(otelsetup.HTTPMiddleware("spinifex-daemon"))
+	r.Use(routeActionMiddleware)
+
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		configHash, err := d.computeConfigHash()
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"failed to compute config hash"}`))
+			return
+		}
+
+		serviceHealth := d.probeServiceHealth(r.Context())
+		if !d.config.HasService("nats") {
+			if d.natsConn != nil && d.natsConn.IsConnected() {
+				serviceHealth["nats"] = "remote_ok"
+			} else {
+				serviceHealth["nats"] = "remote_unreachable"
+			}
+		}
+
+		ovnHealth := host.HealthStatus()
+		if ovnHealth.BrIntExists {
+			serviceHealth["br-int"] = "ok"
+		} else {
+			serviceHealth["br-int"] = "missing"
+		}
+		if ovnHealth.OVNControllerUp {
+			serviceHealth["ovn-controller"] = "ok"
+		} else {
+			serviceHealth["ovn-controller"] = "not_running"
+		}
+
+		status := "running"
+		if !d.ready.Load() {
+			status = "starting"
+		}
+
+		response := clusterv1.NodeHealthResponse{
+			Node:          d.node,
+			Status:        status,
+			ConfigHash:    configHash,
+			Epoch:         d.clusterConfig.Epoch,
+			Uptime:        int64(time.Since(d.startTime).Seconds()),
+			Services:      d.config.GetServices(),
+			ServiceHealth: serviceHealth,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			slog.Error("Failed to encode health response", "error", err)
+		}
+	})
+
+	d.registerLocalRoutes(r)
+
+	// Resolve relative cert paths against the config directory.
+	tlsCert := d.config.Daemon.TLSCert
+	tlsKey := d.config.Daemon.TLSKey
+	if tlsCert == "" || tlsKey == "" {
+		return fmt.Errorf("cluster manager TLS not configured: set daemon.tlscert and daemon.tlskey in config")
+	}
+	if d.configPath != "" {
+		configDir := filepath.Dir(d.configPath)
+		if !filepath.IsAbs(tlsCert) {
+			tlsCert = filepath.Join(configDir, filepath.Base(tlsCert))
+		}
+		if !filepath.IsAbs(tlsKey) {
+			tlsKey = filepath.Join(configDir, filepath.Base(tlsKey))
+		}
+	}
+	cert, err := tls.LoadX509KeyPair(tlsCert, tlsKey)
+	if err != nil {
+		return fmt.Errorf("cluster manager load TLS cert: %w", err)
+	}
+
+	tlsConfig := &tls.Config{
+		Certificates:     []tls.Certificate{cert},
+		MinVersion:       tls.VersionTLS13,
+		CurvePreferences: tlsconfig.Curves,
+	}
+
+	d.clusterServer = &http.Server{
+		Addr:              daemonHost,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		TLSConfig:         tlsConfig,
+	}
+
+	ln, err := tls.Listen("tcp", daemonHost, tlsConfig)
+	if err != nil {
+		return fmt.Errorf("cluster manager listen on %s: %w", daemonHost, err)
+	}
+
+	go func() {
+		slog.Info("Starting cluster manager (TLS)", "host", daemonHost)
+		if err := d.clusterServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			slog.Error("Cluster manager failed", "error", err)
+		}
+	}()
+
+	return nil
+}
+
+// kvSyncTimeout caps the best-effort KV sync; 1s is above healthy Put latency.
+const kvSyncTimeout = time.Second
+
+// localStatePath returns the on-disk path to this daemon's instance state file.
+func (d *Daemon) localStatePath() string {
+	if d.config == nil {
+		return LocalStatePath("")
+	}
+	return LocalStatePath(d.config.DataDir)
+}
+
+// WriteState persists instance state. Local file is the source of truth; KV is
+// best-effort. Both forms are marshalled inside vmMgr.View to avoid data races.
+func (d *Daemon) WriteState() error {
+	var err error
+	d.vmMgr.View(func(vms map[string]*vm.VM) {
+		err = d.persistState(d.node, vms)
+	})
+	return err
+}
+
+// persistState is the single path both stores move through: every caller that
+// changes the running set reaches it, so the file cannot fall behind the map.
+// Callers hold the manager lock, so vms cannot change mid-encode; the two locks
+// are always taken manager-first to keep one order across every writer.
+func (d *Daemon) persistState(nodeID string, vms map[string]*vm.VM) error {
+	d.stateWriteMu.Lock()
+	defer d.stateWriteMu.Unlock()
+
+	localData, err := MarshalLocalState(vms)
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
+	}
+	// The KV write is independent of local disk health (JetStream, not this
+	// disk), so a local failure must not skip it — attempt both, then report
+	// the local failure. Revision only advances when the local write (the
+	// source of truth Revision() describes) actually landed.
+	path := d.localStatePath()
+	localStart := time.Now()
+	localErr := WriteLocalStateBytes(path, localData)
+	recordStateWrite("local", len(vms), time.Since(localStart))
+	if localErr != nil {
+		slog.Error("Local state write failed", "path", path, "error", localErr)
+	} else {
+		d.stateRevision.Add(1)
+	}
+
+	// The marker is written before the records so a reader that sees the node
+	// at all can only under-report it, never conclude it has no instances from
+	// a set that has not been written yet. vms is the caller's snapshot and
+	// cannot change underneath either write.
+	if d.jsManager != nil {
+		kvStart := time.Now()
+		d.jsManager.WriteNodeMarkerBestEffort(nodeID, kvSyncTimeout)
+		res := d.jsManager.WriteRunningSet(nodeID, d.config.AZ, vms)
+		// The digest guard means only changed records are written, so the KV
+		// write's cost tracks that count, not the whole set the local write
+		// rewrites.
+		recordStateWrite("kv", res.Written+res.Retired, time.Since(kvStart))
+	}
+
+	if localErr != nil {
+		return fmt.Errorf("write local state: %w", localErr)
+	}
+	return nil
+}
+
+// setupReload registers a SIGHUP handler that reloads GPU config without restarting.
+func (d *Daemon) setupReload() {
+	d.shutdownWg.Go(func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGHUP)
+		defer signal.Stop(sigChan)
+		for {
+			select {
+			case <-d.ctx.Done():
+				return
+			case <-sigChan:
+				slog.Info("SIGHUP received — reloading GPU config")
+				d.reloadConfig()
+			}
+		}
+	})
+}
+
+// reloadConfig re-reads spinifex.toml and applies any GPU passthrough changes.
+func (d *Daemon) reloadConfig() {
+	if d.configPath == "" {
+		slog.Warn("SIGHUP: no config path set, cannot reload")
+		return
+	}
+	newCfg, err := config.LoadConfig(d.configPath)
+	if err != nil {
+		slog.Error("SIGHUP: config reload failed", "err", err)
+		return
+	}
+	newNodeCfg := newCfg.Nodes[d.node]
+	d.applyGPUConfig(newNodeCfg.Daemon.GPUPassthrough)
+}
+
+// applyGPUConfig activates or deactivates GPU passthrough at runtime.
+// Transition false→true: re-probes hardware, initialises gpuManager, adds g5 types.
+// Transition true→false: refused when GPU instances are running; otherwise tears down.
+func (d *Daemon) applyGPUConfig(enabled bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	wasEnabled := d.gpuManager != nil
+	if enabled == wasEnabled {
+		slog.Debug("GPU passthrough state unchanged on reload", "passthrough", enabled)
+		return
+	}
+
+	if enabled {
+		probe := probeGPU()
+		d.gpuProbe = probe
+		if !probe.Capable {
+			slog.Warn("GPU passthrough enable failed: prerequisites not met",
+				"iommu", probe.IOMMUActive, "vfio", probe.VFIOPresent, "gpus", len(probe.Devices))
+			return
+		}
+		mgr, models, migProfiles := buildGPUPool(probe.Devices, d.config.Daemon)
+		d.gpuManager = mgr
+		// Claimer before types: reloadGPUTypes starts advertising GPU types and
+		// admitting against them, and a launch landing before the claimer is
+		// wired would otherwise boot without the GPUs it was admitted for.
+		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
+		d.resourceMgr.reloadGPUTypes(models, migProfiles, mgr)
+		slog.Info("GPU passthrough enabled via config reload", "gpus", len(probe.Devices))
+		return
+	}
+
+	// true → false: refuse if instances are running
+	if d.gpuManager.AllocatedCount() > 0 {
+		slog.Warn("GPU passthrough disable refused: GPU instances are running",
+			"allocated", d.gpuManager.AllocatedCount())
+		return
+	}
+	d.gpuManager = nil
+	d.instanceService.SetGPUClaimer(nil)
+	d.resourceMgr.reloadGPUTypes(nil, nil, nil)
+	slog.Info("GPU passthrough disabled via config reload")
+}
+
+func (d *Daemon) setupShutdown() {
+	d.shutdownWg.Go(func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+		<-sigChan
+		slog.Info("Received shutdown signal, cleaning up...")
+
+		d.cancel()
+
+		// DDIL Tier 1: SIGTERM alone never stops VMs — the new daemon reattaches
+		// via the local state file. VMs stop only after coordinated DRAIN.
+		if d.shuttingDown.Load() {
+			slog.Info("Coordinated shutdown in progress, skipping VM stop (already handled by DRAIN phase)")
+		} else {
+			slog.Info("SIGTERM with no coordinated drain — leaving local VMs running for restart recovery")
+			d.shuttingDown.Store(true)
+		}
+
+		if d.elbv2Service != nil {
+			d.elbv2Service.Close()
+		}
+
+		if d.eksService != nil {
+			d.eksService.Shutdown()
+		}
+
+		// Snapshotted under d.mu rather than ranged over live: a background
+		// registration (e.g. Ochre's VectorService, registered off the boot
+		// goroutine once its appliance finishes launching) can still be
+		// writing to this map concurrently with shutdown.
+		d.mu.Lock()
+		subsSnapshot := make(map[string]*nats.Subscription, len(d.natsSubscriptions))
+		maps.Copy(subsSnapshot, d.natsSubscriptions)
+		d.mu.Unlock()
+		for _, sub := range subsSnapshot {
+			slog.Info("Unsubscribing from NATS", "subject", sub.Subject)
+			if err := sub.Unsubscribe(); err != nil {
+				if errors.Is(err, nats.ErrBadSubscription) {
+					slog.Debug("NATS subscription already invalid during shutdown", "subject", sub.Subject)
+				} else {
+					slog.Error("Error unsubscribing from NATS", "err", err)
+				}
+			}
+		}
+
+		if d.jsManager != nil {
+			if err := d.jsManager.WriteShutdownMarker(d.node); err != nil {
+				slog.Error("Failed to write shutdown marker", "err", err)
+			}
+		}
+
+		err := d.WriteState()
+		if err != nil {
+			slog.Error("Failed to write state", "err", err)
+		}
+
+		// natsConn is nil when NATS was unreachable at startup (DDIL Scenario B).
+		if d.natsConn != nil {
+			d.natsConn.Close()
+		}
+
+		if d.clusterServer != nil {
+			slog.Info("Shutting down cluster manager...")
+			if err := d.clusterServer.Shutdown(context.Background()); err != nil {
+				slog.Error("Error shutting down cluster manager", "err", err)
+			}
+		}
+
+		slog.Info("Shutdown complete")
+	})
+}
+
+// respondWithVolumeAttachment builds an ec2.VolumeAttachment, marshals it to JSON, and
+// responds on the NATS message. Used by both AttachVolume and DetachVolume handlers.
+func (d *Daemon) respondWithVolumeAttachment(msg *nats.Msg, volumeID, instanceID, device, state string) {
+	attachment := ec2.VolumeAttachment{
+		VolumeId:            aws.String(volumeID),
+		InstanceId:          aws.String(instanceID),
+		Device:              aws.String(device),
+		State:               aws.String(state),
+		AttachTime:          aws.Time(time.Now()),
+		DeleteOnTermination: aws.Bool(false),
+	}
+
+	jsonResp, err := json.Marshal(attachment)
+	if err != nil {
+		slog.Error("Failed to marshal VolumeAttachment response", "err", err)
+		respondWithError(d.node, msg, awserrors.ErrorServerInternal)
+		return
+	}
+
+	if err := msg.Respond(jsonResp); err != nil {
+		slog.Error("Failed to respond to NATS request", "err", err)
+	}
+}
+
+// canAllocate checks how many instances of the given type can be allocated.
+// Returns the count that can actually be allocated (0 to count).
+func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count int) int {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	return rm.canAllocateLocked(instanceType, count)
+}
+
+// canAllocateLocked is the lock-free body of canAllocate. Caller must already
+// hold rm.mu for read or write. Extracted so allocate can re-check capacity
+// while holding the write lock without dropping it.
+//
+// GPU instance types (whole-GPU and MIG alike) are gated on BOTH the cpu/mem
+// calc AND GPU-slot availability. cpu/mem still applies to whole-GPU types —
+// the guest still consumes real host vCPU/RAM even though a GPU backs it —
+// and GPU-slot count is an additional hard constraint layered on top, so
+// admission never advertises more instances than there are GPU slots to
+// back them.
+func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo, count int) int {
+	n, _ := rm.admitLocked(instanceType, count)
+	return n
+}
+
+// admit is admitLocked under the read lock.
+func (rm *ResourceManager) admit(instanceType *ec2.InstanceTypeInfo, count int) (int, string) {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	return rm.admitLocked(instanceType, count)
+}
+
+// admitLocked returns the admission count and which gate bound it. A refusal
+// that names its gate is the difference between "the node is full" and "the
+// host is short of free memory right now", which have different fixes and are
+// otherwise indistinguishable from InsufficientInstanceCapacity.
+func (rm *ResourceManager) admitLocked(instanceType *ec2.InstanceTypeInfo, count int) (int, string) {
+	instanceTypeName := ""
+	if instanceType.InstanceType != nil {
+		instanceTypeName = *instanceType.InstanceType
+	}
+
+	requiresGPU := instancetypes.IsGPUType(instanceType)
+	availGPU := 0
+	if requiresGPU {
+		availGPU = rm.admissibleGPUInstances(instanceTypeName)
+	}
+
+	budget := canAllocateCount(
+		rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
+		rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
+		instanceTypeVCPUs(instanceType),
+		rm.instanceMemChargeMiB(instanceType),
+		count,
+		availGPU, requiresGPU,
+	)
+	n := rm.liveMemGate(budget, instanceType)
+	if n < budget {
+		return n, "live-memory"
+	}
+	return n, "budget"
+}
+
+// admissibleGPUInstances returns how many instances of a GPU type the free pool
+// can back. Whole GPUs and MIG slices count separately, so a node with free
+// slices and no free whole GPU refuses a whole-GPU type rather than failing it.
+func (rm *ResourceManager) admissibleGPUInstances(instanceTypeName string) int {
+	if rm.gpuManager == nil {
+		return 0
+	}
+	gpusNeeded := instancetypes.GPUCountForType(instanceTypeName)
+	if gpusNeeded <= 0 {
+		return 0
+	}
+	if instancetypes.IsMIGType(instanceTypeName) {
+		profile := instancetypes.MIGProfileFromType(instanceTypeName)
+		return rm.gpuManager.AvailableSlices(profile) / gpusNeeded
+	}
+	return rm.gpuManager.AvailableWhole() / gpusNeeded
+}
+
+// liveMemGate clamps n by current MemAvailable, catching overcommit that the
+// static -m budget misses. Returns n unchanged when disabled or on read error.
+func (rm *ResourceManager) liveMemGate(n int, instanceType *ec2.InstanceTypeInfo) int {
+	if rm.readMemAvailableGB == nil || n <= 0 {
+		return n
+	}
+	availGB, ok := rm.readMemAvailableGB()
+	if !ok {
+		return n
+	}
+	memGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
+	return liveMemCount(n, availGB, rm.reservedMem+rm.reservedCRMem, memGB)
+}
+
+// allocate reserves resources for one instance and updates NATS subscriptions.
+// Check and commit run under a single write-lock acquisition; without this,
+// two concurrent callers could both observe free capacity through the read
+// lock and then both commit, overcommitting the host. Multi-instance launch
+// paths loop on allocate per VM, relying on this per-call atomicity.
+func (rm *ResourceManager) allocate(instanceType *ec2.InstanceTypeInfo) error {
+	rm.mu.Lock()
+	if rm.canAllocateLocked(instanceType, 1) < 1 {
+		rm.mu.Unlock()
+		instanceTypeName := ""
+		if instanceType.InstanceType != nil {
+			instanceTypeName = *instanceType.InstanceType
+		}
+		return fmt.Errorf("insufficient resources for instance type %s", instanceTypeName)
+	}
+	vCPUs := instanceTypeVCPUs(instanceType)
+	memoryGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
+	rm.allocatedVCPU += int(vCPUs)
+	rm.allocatedMem += memoryGB
+	rm.mu.Unlock()
+
+	rm.updateInstanceSubscriptions()
+	return nil
+}
+
+// deallocate releases resources for an instance and updates NATS subscriptions.
+func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
+	rm.mu.Lock()
+	vCPUs := instanceTypeVCPUs(instanceType)
+	memoryGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
+	rm.allocatedVCPU -= int(vCPUs)
+	rm.allocatedMem -= memoryGB
+	rm.mu.Unlock()
+
+	rm.updateInstanceSubscriptions()
+}
+
+var _ ec2instance.InstanceTypeAllocator = (*ResourceManager)(nil)
+
+// Allocate reserves host capacity for one instance of type it, erroring when
+// the node lacks room. With Deallocate and CanAllocate it satisfies
+// ec2instance.InstanceTypeAllocator.
+func (rm *ResourceManager) Allocate(it *ec2.InstanceTypeInfo) error { return rm.allocate(it) }
+func (rm *ResourceManager) Deallocate(it *ec2.InstanceTypeInfo)     { rm.deallocate(it) }
+func (rm *ResourceManager) CanAllocate(it *ec2.InstanceTypeInfo, count int) int {
+	return rm.canAllocate(it, count)
+}
+
+// InstanceTypes returns the shared instance-type map. Callers must not mutate
+// the returned map; reloadGPUTypes mutates it in place under rm.mu.
+func (rm *ResourceManager) InstanceTypes() map[string]*ec2.InstanceTypeInfo {
+	return rm.instanceTypes
+}
+
+// reloadGPUTypes replaces GPU instance types in the shared map (in-place, so
+// all holders see the update) and refreshes NATS subscriptions. Called on SIGHUP.
+func (rm *ResourceManager) reloadGPUTypes(models []instancetypes.GPUModel, migProfiles []instancetypes.MIGProfileSpec, mgr *gpu.Manager) {
+	arch := "x86_64"
+	if runtime.GOARCH == "arm64" {
+		arch = "arm64"
+	}
+
+	rm.mu.Lock()
+	for name, it := range rm.instanceTypes {
+		if instancetypes.IsGPUType(it) {
+			delete(rm.instanceTypes, name)
+		}
+	}
+	if len(models) > 0 {
+		maps.Copy(rm.instanceTypes, instancetypes.GenerateGPUTypes(models, arch))
+	}
+	if len(migProfiles) > 0 {
+		maps.Copy(rm.instanceTypes, instancetypes.GenerateMIGTypes(migProfiles, arch))
+	}
+	rm.gpuManager = mgr
+	rm.mu.Unlock()
+
+	rm.updateInstanceSubscriptions()
+}
+
+func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler natsHandler, systemHandler natsHandler, nodeID string) {
+	rm.natsConn = nc
+	rm.handler = handler
+	rm.systemHandler = systemHandler
+	rm.nodeID = nodeID
+	rm.instanceSubs = make(map[string]*nats.Subscription)
+	rm.updateInstanceSubscriptions()
+}
+
+// updateInstanceSubscriptions subscribes/unsubscribes per-type NATS topics
+// based on current capacity. Customer types use ec2.RunInstances.*; system
+// types use system.LaunchInstance.*. Each gets a queue-group and a node-targeted topic.
+func (rm *ResourceManager) updateInstanceSubscriptions() {
+	if rm.natsConn == nil {
+		return
+	}
+
+	rm.subsMu.Lock()
+	defer rm.subsMu.Unlock()
+
+	for typeName, typeInfo := range rm.instanceTypes {
+		fits, gate := rm.admit(typeInfo, 1)
+		canFit := fits >= 1
+
+		subjectRoot := "ec2.RunInstances"
+		handler := rm.handler
+		queueGroup := "spinifex-workers"
+		if instancetypes.IsSystemType(typeName) {
+			// System types (sys.micro, etc.) are internal-only — not exposed
+			// via the customer EC2 API and use a dedicated subject root so
+			// ELBv2 can fan out ALB-VM launches across the cluster.
+			if rm.systemHandler == nil {
+				continue
+			}
+			subjectRoot = "system.LaunchInstance"
+			handler = rm.systemHandler
+		}
+
+		queueTopic := fmt.Sprintf("%s.%s", subjectRoot, typeName)
+		measured := natsMetricsHandler(queueTopic, handler)
+		_, subscribed := rm.instanceSubs[queueTopic]
+		if canFit && !subscribed {
+			sub, err := rm.natsConn.QueueSubscribe(queueTopic, queueGroup, measured)
+			if err != nil {
+				slog.Error("Failed to subscribe to instance type topic", "topic", queueTopic, "err", err)
+				continue
+			}
+			rm.instanceSubs[queueTopic] = sub
+			slog.Debug("Subscribed to instance type", "topic", queueTopic)
+		} else if !canFit && subscribed {
+			if err := rm.instanceSubs[queueTopic].Unsubscribe(); err != nil {
+				slog.Error("Failed to unsubscribe from instance type topic", "topic", queueTopic, "err", err)
+			}
+			delete(rm.instanceSubs, queueTopic)
+			slog.Info("Unsubscribed from instance type (capacity full)", "topic", queueTopic, "gate", gate)
+		}
+
+		if rm.nodeID != "" {
+			// Node-targeted topic stays subscribed even when capacity is full:
+			// a committed reservation (e.g. spread placement) must not fail with
+			// "no responders". Capacity is enforced at launch time by allocate().
+			nodeTopic := fmt.Sprintf("%s.%s.%s", subjectRoot, typeName, rm.nodeID)
+			if _, nodeSubscribed := rm.instanceSubs[nodeTopic]; canFit && !nodeSubscribed {
+				sub, err := rm.natsConn.Subscribe(nodeTopic, measured)
+				if err != nil {
+					slog.Error("Failed to subscribe to node-specific topic", "topic", nodeTopic, "err", err)
+					continue
+				}
+				rm.instanceSubs[nodeTopic] = sub
+				slog.Debug("Subscribed to node-specific instance type", "topic", nodeTopic)
+			}
+		}
+	}
+}
+
+// wireLBAgentConfig loads system credentials, resolves the gateway URL,
+// and wires them into the ELBv2 service for LB VM cloud-init injection.
+func (d *Daemon) wireLBAgentConfig() {
+	if d.config.Predastore.AccessKey != "" && d.config.Predastore.SecretKey != "" {
+		d.systemAccessKey = d.config.Predastore.AccessKey
+		d.systemSecretKey = d.config.Predastore.SecretKey
+		d.elbv2Service.SystemAccessKey = d.config.Predastore.AccessKey
+		d.elbv2Service.SystemSecretKey = d.config.Predastore.SecretKey
+		slog.Info("System credentials loaded for LB agent auth")
+	} else {
+		slog.Warn("System credentials missing from spinifex.toml predastore section — LB VMs will not have SigV4 credentials for agent auth")
+	}
+
+	awsgwBindIP := ""
+	if d.config.AWSGW.Host != "" {
+		if h, _, splitErr := net.SplitHostPort(d.config.AWSGW.Host); splitErr == nil {
+			awsgwBindIP = h
+		}
+	}
+
+	advertiseIP := d.config.AdvertiseIP
+
+	gatewayHost := d.resolveGatewayHost()
+
+	// Set mgmtRouteVia when AWSGW is only reachable via br-mgmt (multi-node).
+	if gatewayHost != "" && gatewayHost == awsgwBindIP && d.mgmtBridgeIP != "" && awsgwBindIP != advertiseIP {
+		d.mgmtRouteVia = awsgwBindIP
+	}
+
+	gatewayPort := "9999"
+	if d.config.AWSGW.Host != "" {
+		if _, port, splitErr := net.SplitHostPort(d.config.AWSGW.Host); splitErr == nil && port != "" {
+			gatewayPort = port
+		}
+	}
+
+	if gatewayHost != "" {
+		gatewayURL := "https://" + net.JoinHostPort(gatewayHost, gatewayPort)
+		d.elbv2Service.GatewayURL = gatewayURL
+		slog.Info("LB agent gateway URL configured", "url", gatewayURL)
+	} else {
+		slog.Error("LB agent gateway URL not configured: no reachable host found — CreateLoadBalancer will fail until --advertise or br-mgmt is configured",
+			"awsgwBindIP", awsgwBindIP, "mgmtBridgeIP", d.mgmtBridgeIP, "advertiseIP", advertiseIP)
+	}
+
+	if d.mgmtRouteVia != "" {
+		d.elbv2Service.MgmtRouteGateway = d.mgmtBridgeIP
+		d.elbv2Service.MgmtRouteTarget = d.mgmtRouteVia
+	}
+
+	d.elbv2Service.MgmtBridgeIP = d.mgmtBridgeIP
+	d.elbv2Service.AdvertiseIP = advertiseIP
+
+	if d.config.NATS.CACert != "" {
+		if caBytes, err := os.ReadFile(d.config.NATS.CACert); err == nil {
+			d.elbv2Service.CACert = string(caBytes)
+			slog.Info("CA cert loaded for LB agent TLS", "path", d.config.NATS.CACert)
+		} else {
+			slog.Warn("Failed to read CA cert for LB agent TLS", "path", d.config.NATS.CACert, "err", err)
+		}
+	} else {
+		slog.Warn("NATS CACert not configured — direct-boot LB VMs will not verify AWSGW TLS")
+	}
+}
+
+// buildGPUPool partitions GPU devices into whole-GPU and MIG entries, constructs
+// a Manager, and returns models and MIG profile specs for instance-type generation.
+func buildGPUPool(devices []gpu.GPUDevice, cfg config.DaemonConfig) (*gpu.Manager, []instancetypes.GPUModel, []instancetypes.MIGProfileSpec) {
+	type migEntry struct {
+		dev      gpu.GPUDevice
+		existing []gpu.MIGInstance // non-nil = restart recovery; nil = fresh free GPU
+	}
+
+	var wholeGPU []gpu.GPUDevice
+	var migEntries []migEntry
+	var migProfiles []instancetypes.MIGProfileSpec
+	seenProfiles := make(map[string]bool)
+	recoveredSlices, freeMIGGPUs := 0, 0
+
+	for _, dev := range devices {
+		if !dev.MIGCapable || !dev.MIGEnabled {
+			if dev.MIGCapable && !dev.MIGEnabled {
+				slog.Warn("MIG-capable GPU but MIG mode not active; using whole-GPU passthrough",
+					"gpu", dev.PCIAddress, "hint", "run 'spx admin gpu mig enable'")
+			}
+			wholeGPU = append(wholeGPU, dev)
+			continue
+		}
+
+		// Collect available profiles for MIG instance-type generation.
+		profiles, err := gpu.ListProfiles(dev.PCIAddress)
+		if err != nil {
+			slog.Warn("Could not list MIG profiles; GPU will not advertise MIG types",
+				"gpu", dev.PCIAddress, "err", err)
+		}
+		for _, p := range profiles {
+			if !seenProfiles[p.Name] {
+				seenProfiles[p.Name] = true
+				migProfiles = append(migProfiles, instancetypes.MIGProfileSpec{
+					Name: p.Name, MemoryMiB: p.MemoryMiB,
+				})
+			}
+		}
+
+		// Re-discover existing instances from a previous daemon run.
+		existing, listErr := gpu.ListInstances(dev.PCIAddress)
+		if listErr != nil {
+			slog.Error("MIG list instances failed, falling back to whole-GPU passthrough",
+				"gpu", dev.PCIAddress, "err", listErr)
+			wholeGPU = append(wholeGPU, dev)
+			continue
+		}
+		migEntries = append(migEntries, migEntry{dev: dev, existing: existing})
+		if len(existing) > 0 {
+			recoveredSlices += len(existing)
+		} else {
+			freeMIGGPUs++
+		}
+	}
+
+	var models []instancetypes.GPUModel
+	for _, dev := range wholeGPU {
+		models = append(models, resolveGPUModel(dev, cfg.GPUModelOverrides))
+	}
+
+	// Apply MemoryMiB overrides to the raw devices too, not just the advertised
+	// model above, so a configured override reaches admission checks (e.g.
+	// Bedrock capacity) that read Device.MemoryMiB straight from the pool.
+	applyGPUModelOverrides(wholeGPU, cfg.GPUModelOverrides)
+
+	mgr := gpu.NewManager(wholeGPU)
+	for _, me := range migEntries {
+		if len(me.existing) > 0 {
+			mgr.AddMIGInstances(me.dev, me.existing)
+		} else {
+			mgr.AddMIGGPU(me.dev)
+		}
+	}
+
+	slog.Info("GPU pool built",
+		"whole_gpu", len(wholeGPU), "mig_free", freeMIGGPUs,
+		"mig_slices_recovered", recoveredSlices, "mig_profiles", len(migProfiles))
+	return mgr, models, migProfiles
+}
+
+// applyGPUModelOverrides sets MemoryMiB on each device matched by a
+// GPUModelOverride, in place, so a corrected VRAM figure reaches admission
+// checks and not just the advertised model.
+func applyGPUModelOverrides(devices []gpu.GPUDevice, overrides []config.GPUModelOverride) {
+	for i := range devices {
+		dev := &devices[i]
+		for _, o := range overrides {
+			if o.VendorID != dev.VendorID || o.DeviceID != dev.DeviceID {
+				continue
+			}
+			// Only a positive value applies. An override set purely for
+			// xvga_off or mig_profile leaves memory_mib at 0, which the struct
+			// cannot distinguish from a deliberate 0 — so treat it as "not
+			// specified" rather than wiping discovered VRAM.
+			if o.MemoryMiB > 0 {
+				dev.MemoryMiB = o.MemoryMiB
+			}
+			break
+		}
+	}
+}
+
+// resolveGPUModel maps a GPU device to an instance type model. Overrides take
+// priority, then the production model list, then a g5 default.
+func resolveGPUModel(dev gpu.GPUDevice, overrides []config.GPUModelOverride) instancetypes.GPUModel {
+	for i := range overrides {
+		o := &overrides[i]
+		if o.VendorID == dev.VendorID && o.DeviceID == dev.DeviceID {
+			return instancetypes.GPUModel{
+				VendorID:     o.VendorID,
+				DeviceID:     o.DeviceID,
+				Family:       o.Family,
+				Manufacturer: o.Manufacturer,
+				Name:         o.Name,
+				MemoryMiB:    o.MemoryMiB,
+			}
+		}
+	}
+	if m := instancetypes.GPUModelForVendorDevice(dev.VendorID, dev.DeviceID); m != nil {
+		return *m
+	}
+	name := dev.Model
+	if name == "" {
+		name = fmt.Sprintf("GPU %s:%s", dev.VendorID, dev.DeviceID)
+	}
+	return instancetypes.GPUModel{
+		VendorID:     dev.VendorID,
+		DeviceID:     dev.DeviceID,
+		Family:       "g5",
+		Manufacturer: gpuVendorDisplayName(dev.Vendor),
+		Name:         name,
+		MemoryMiB:    dev.MemoryMiB,
+	}
+}
+
+// gpuXVGAEnabled returns true when the QEMU device should include x-vga=on.
+// Consumer GPUs default to true; known datacenter/compute cards default to false.
+// A GPUModelOverride with XVGAOff=true forces false regardless of the model table.
+func gpuXVGAEnabled(dev *gpu.GPUDevice, overrides []config.GPUModelOverride) bool {
+	for _, o := range overrides {
+		if o.VendorID == dev.VendorID && o.DeviceID == dev.DeviceID {
+			return !o.XVGAOff
+		}
+	}
+	return !gpu.IsComputeGPU(dev.VendorID, dev.DeviceID)
+}
+
+func gpuVendorDisplayName(v gpu.Vendor) string {
+	switch v {
+	case gpu.VendorNVIDIA:
+		return "NVIDIA"
+	case gpu.VendorAMD:
+		return "AMD"
+	case gpu.VendorIntel:
+		return "Intel"
+	default:
+		return "Unknown"
+	}
+}
+
+// gpuProbeResult holds the outcome of the startup GPU hardware probe.
+type gpuProbeResult struct {
+	Capable     bool // true when Devices, IOMMUActive, and VFIOPresent are all satisfied
+	IOMMUActive bool
+	VFIOPresent bool
+	Devices     []gpu.GPUDevice
+}
+
+// probeGPU discovers GPU hardware and checks passthrough prerequisites (read-only).
+func probeGPU() gpuProbeResult {
+	var r gpuProbeResult
+
+	devices, err := gpu.Discover()
+	if err != nil {
+		slog.Debug("GPU probe: discover failed", "err", err)
+	}
+	r.Devices = devices
+
+	// IOMMU is active when the kernel has populated iommu_groups in sysfs.
+	groups, err := os.ReadDir("/sys/kernel/iommu_groups")
+	r.IOMMUActive = err == nil && len(groups) > 0
+
+	// vfio_pci module is present when its sysfs module directory exists.
+	_, err = os.Stat("/sys/module/vfio_pci")
+	r.VFIOPresent = err == nil
+
+	// MIG-enabled GPUs are capable without vfio-pci: the NVIDIA driver owns
+	// isolation via the mdev subsystem, so vfio-pci is not required.
+	hasMIG := slices.ContainsFunc(r.Devices, func(d gpu.GPUDevice) bool {
+		return d.MIGEnabled
+	})
+	r.Capable = len(r.Devices) > 0 && ((r.IOMMUActive && r.VFIOPresent) || hasMIG)
+	return r
+}
+
+// wirePlatformTagIndex gives the key-pair, placement-group and launch-template
+// owners the tag index their deletes clear; key pairs also project their
+// metadata-held creation tags into it so describe-tags sees them.
+func (d *Daemon) wirePlatformTagIndex() {
+	d.keyService.SetCentralTagStore(d.tagsService)
+	d.placementGroupService.SetCentralTagStore(d.tagsService)
+	d.launchTemplateService.SetCentralTagStore(d.tagsService)
+}

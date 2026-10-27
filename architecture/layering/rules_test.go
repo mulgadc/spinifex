@@ -72,8 +72,7 @@ var rules = []rule{
 		hint:    "expose the runtime or operator state through a domain-owned projection or a capability wired at the composition root",
 		subject: func(f class, _ string) bool { return f.domainShaped() },
 		forbids: func(f, t class, _ string) bool {
-			return f.domainShaped() && (isLayer(t, layerRuntime, layerOperator) ||
-				t.isLegacy(runtimeLegacy...) || t.isLegacy(operatorLegacy...))
+			return f.domainShaped() && isLayer(t, layerRuntime, layerOperator)
 		},
 	},
 	{
@@ -121,7 +120,7 @@ var rules = []rule{
 				return false
 			}
 			switch {
-			case t.layer == layerAgents || t.isLegacy("lbagent"):
+			case t.layer == layerAgents:
 				return true
 			case t.layer == layerIngress:
 				return f.kind != domainAWSAPI && f.kind != legacyAdapter
@@ -137,9 +136,9 @@ var rules = []rule{
 		id:      "Agents_ImportNoDomainOrLegacyImplementation",
 		clause:  "area table: agents/<domain> own in-guest and service-role behaviour, not tenant API authority or another domain's private state",
 		hint:    "move the shared wire vocabulary behind a guest/controller contract under contracts/",
-		subject: func(f class, _ string) bool { return f.layer == layerAgents || f.isLegacy("lbagent") },
+		subject: func(f class, _ string) bool { return f.layer == layerAgents },
 		forbids: func(f, t class, _ string) bool {
-			return (f.layer == layerAgents || f.isLegacy("lbagent")) && (t.domainShaped() || t.isLegacy())
+			return f.layer == layerAgents && (t.domainShaped() || t.isLegacy())
 		},
 	},
 	{
@@ -160,9 +159,9 @@ var rules = []rule{
 		forbids: func(f, t class, _ string) bool {
 			switch {
 			case f.isLegacy("handlers"):
-				return t.isLegacy("gateway", "daemon")
+				return t.isLegacy("gateway") || t.daemon
 			case f.isLegacy("gateway"):
-				return t.isLegacy("daemon")
+				return t.daemon
 			}
 			return false
 		},

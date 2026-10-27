@@ -13,7 +13,7 @@ import (
 	"time"
 	"uuid"
 
-	"github.com/mulgadc/spinifex/spinifex/accountteardown"
+	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/spf13/cobra"
 )

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,7 +54,7 @@ func TestLookupBedrockRuntimeAction_UnknownReturnsFalse(t *testing.T) {
 // preference test needs no NATS connection.
 type stubEndpointResolver struct{ baseURL string }
 
-var _ gateway_bedrock.EndpointResolver = stubEndpointResolver{}
+var _ ochre.EndpointResolver = stubEndpointResolver{}
 
 func (s stubEndpointResolver) Endpoint(context.Context, string) (string, bool, error) {
 	return s.baseURL, s.baseURL != "", nil

@@ -1,6 +1,9 @@
 package awsapi
 
 import (
+	"errors"
+	"time"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -321,6 +324,37 @@ func TestGetUser(t *testing.T) {
 			}
 		})
 	}
+}
+
+// accountService serves one account record, or NoSuchEntity when it is nil.
+type accountService struct {
+	stubIAMService
+
+	account *iamdomain.Account
+}
+
+func (s *accountService) GetAccount(_ string) (*iamdomain.Account, error) {
+	if s.account == nil {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	return s.account, nil
+}
+
+func TestGetRootUser(t *testing.T) {
+	svc := &accountService{account: &iamdomain.Account{AccountID: testAccountID, CreatedAt: "2026-01-02T03:04:05Z"}}
+	out, err := GetRootUser(testAccountID, svc)
+	require.NoError(t, err)
+	assert.Equal(t, &iam.User{
+		UserId:     aws.String(testAccountID),
+		Arn:        aws.String("arn:aws:iam::" + testAccountID + ":root"),
+		CreateDate: aws.Time(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)),
+	}, out.User)
+
+	_, err = GetRootUser(testAccountID, &accountService{})
+	require.EqualError(t, err, awserrors.ErrorInternalError)
+
+	_, err = GetRootUser(testAccountID, &accountService{account: &iamdomain.Account{CreatedAt: "not-a-time"}})
+	require.EqualError(t, err, awserrors.ErrorInternalError)
 }
 
 func TestListUsers(t *testing.T) {

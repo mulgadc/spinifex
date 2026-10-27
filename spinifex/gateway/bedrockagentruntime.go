@@ -14,12 +14,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockagentruntime"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
-// converseFn is gateway_bedrock.Converse partially applied over the request's
+// converseFn is ochre.Converse partially applied over the request's
 // resolved dependencies (credential/endpoint/access/provisioned/guardrail
 // resolvers), so a route handler needs only this one parameter to reach the
 // RetrieveAndGenerate generation step, mirroring how BedrockRuntime_Request
@@ -36,7 +36,7 @@ type bedrockAgentRuntimeRoute = rest.Route[bedrockAgentRuntimeRouteHandler]
 // SDK input because RetrievalFilter's leaf operators must be recovered from
 // it directly (see wireFilter). kb/vector are gw.BedrockAgentKB/
 // gw.BedrockAgentVector, the same stores bedrock-agent's control plane uses.
-// converse reaches gateway_bedrock.Converse for RetrieveAndGenerate's
+// converse reaches ochre.Converse for RetrieveAndGenerate's
 // generation step.
 type bedrockAgentRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, kb *ochrevector.KBStore, vector ochrevector.VectorService, converse converseFn) (any, error)
 
@@ -74,7 +74,7 @@ var bedrockAgentRuntimeRouter = rest.NewRouter("bedrock-agent-runtime", bedrockA
 // REST-JSON requests: resolves method+path to an action, reads the body,
 // calls the handler, and serialises the output as JSON, mirroring
 // BedrockAgent_Request. RetrieveAndGenerate is metered the same way Converse
-// is on bedrock-runtime (it ends up calling gateway_bedrock.Converse
+// is on bedrock-runtime (it ends up calling ochre.Converse
 // in-process); Retrieve never reaches a model, so it is not metered.
 func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *http.Request) error {
 	action, params, handler, ok := bedrockAgentRuntimeRouter.Lookup(r.Method, r.URL.EscapedPath())
@@ -100,7 +100,7 @@ func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *h
 		return err
 	}
 
-	resources, err := gateway_bedrock.ResourceARNs("bedrock-agent-runtime", action, gw.Region, accountID, params, body)
+	resources, err := ochre.ResourceARNs("bedrock-agent-runtime", action, gw.Region, accountID, params, body)
 	if err != nil {
 		return err
 	}
@@ -122,7 +122,7 @@ func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *h
 	}
 
 	converse := func(ctx context.Context, acct, modelID string, input *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {
-		return gateway_bedrock.Converse(ctx, acct, modelID, input, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
+		return ochre.Converse(ctx, acct, modelID, input, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
 	}
 
 	output, err := handler(r.Context(), accountID, params, body, gw.BedrockAgentKB, gw.BedrockAgentVector, converse)
@@ -130,7 +130,7 @@ func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *h
 		return err
 	}
 
-	gateway_bedrock.WriteJSONResponse(w, output)
+	ochre.WriteJSONResponse(w, output)
 	return nil
 }
 

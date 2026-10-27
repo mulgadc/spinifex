@@ -4,7 +4,6 @@ package tagmirror
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -77,32 +76,23 @@ func RemoveTagsMut(input *ec2.DeleteTagsInput) func(map[string]string) {
 	}
 }
 
+// errRecordAbsent marks a resource absent from this store inside the CAS loop.
+var errRecordAbsent = errors.New("tagmirror: record absent")
+
 // UpdateKVRecordTags read-modify-writes a typed account-scoped KV record,
-// applying mut. A resource absent from this store is skipped (its tags live
-// elsewhere).
+// applying mut and committing at the read revision, retrying on conflict so a
+// concurrent write is never reverted. An absent resource is skipped.
 func UpdateKVRecordTags[R any](ctx context.Context, kv jetstream.KeyValue, accountID, resourceID string, mut func(*R)) error {
 	key := kvutil.AccountKey(accountID, resourceID)
-	entry, err := kv.Get(ctx, key)
+	_, err := kvutil.Update(ctx, kv, key, kvutil.CASConfig{NotFound: errRecordAbsent}, func(rec *R) (bool, error) {
+		mut(rec)
+		return true, nil
+	})
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, errRecordAbsent) {
 			return nil
 		}
-		slog.Error("UpdateKVRecordTags: KV read failed", "key", key, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	var rec R
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-		slog.Error("UpdateKVRecordTags: record unmarshal failed", "key", key, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	mut(&rec)
-	data, err := json.Marshal(&rec)
-	if err != nil {
-		slog.Error("UpdateKVRecordTags: record marshal failed", "key", key, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	if _, err := kv.Put(ctx, key, data); err != nil {
-		slog.Error("UpdateKVRecordTags: KV write failed", "key", key, "err", err)
+		slog.Error("UpdateKVRecordTags: KV update failed", "key", key, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	return nil

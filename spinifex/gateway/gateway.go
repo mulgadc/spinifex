@@ -21,19 +21,18 @@ import (
 	"uuid"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
@@ -41,10 +40,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
+	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -175,7 +175,7 @@ type GatewayConfig struct {
 	ECRTokenVerifier *ecrauth.Verifier
 	// BedrockCredentials resolves per-account provider API keys for bedrock
 	// routes. Nil falls back to no external providers (self-host models only).
-	BedrockCredentials *gateway_bedrock.CredentialStore
+	BedrockCredentials *ochre.CredentialStore
 	// BedrockEndpoints maps a self-hosted modelId to its OpenAI-compatible base
 	// URL. These endpoints are pinned/always-resident, so this is static
 	// config, and they resolve ahead of the dynamic registry so a pinned
@@ -185,36 +185,36 @@ type GatewayConfig struct {
 	// registry, requesting a launch for a model that has no endpoint yet. Nil
 	// falls back to BedrockEndpoints alone, under which a model that was never
 	// pinned is never reachable.
-	BedrockEndpointResolver gateway_bedrock.EndpointResolver
+	BedrockEndpointResolver ochre.EndpointResolver
 	// BedrockLoggingConfig persists per-account invocation-logging preferences
 	// (PutModelInvocationLoggingConfiguration and friends). Nil falls back to
 	// an unconfigured store, under which reads/writes error rather than panic.
-	BedrockLoggingConfig *gateway_bedrock.LoggingConfigStore
+	BedrockLoggingConfig *ochre.LoggingConfigStore
 	// BedrockRecorder durably records every Bedrock invocation. Nil falls back
 	// to a no-op recorder, so routes stay safe to exercise before the
 	// invocation stream is wired in (e.g. unit tests of unrelated routes).
-	BedrockRecorder gateway_bedrock.Recorder
+	BedrockRecorder ochre.Recorder
 	// BedrockAccess resolves per-account model-access grants. Access is
 	// deny-by-default, so nil means no account may list or invoke any model.
 	// It is the AccessResolver interface rather than the concrete store so a
 	// test can inject a fixed grant set without standing up JetStream.
-	BedrockAccess gateway_bedrock.AccessResolver
+	BedrockAccess ochre.AccessResolver
 	// BedrockAccessAdmin is the writable side of the same grant store, used by
 	// the spinifex admin actions. Nil disables grant administration, which is
 	// how a gateway with an injected read-only resolver behaves.
-	BedrockAccessAdmin *gateway_bedrock.ModelAccessStore
+	BedrockAccessAdmin *ochre.ModelAccessStore
 	// BedrockProvisioned persists provisioned-throughput commitments and
 	// drives the pinned endpoint underneath each one. Nil falls back to an
 	// unconfigured store, under which reads/writes error rather than panic.
-	BedrockProvisioned *gateway_bedrock.ProvisionedStore
+	BedrockProvisioned *ochre.ProvisionedStore
 	// BedrockGuardrails persists guardrail control-plane records (CreateGuardrail
 	// and friends). Nil falls back to an unconfigured store, under which
 	// reads/writes error rather than panic.
-	BedrockGuardrails *gateway_bedrock.GuardrailStore
+	BedrockGuardrails *ochre.GuardrailStore
 	// BedrockEmbedder drives guardrail topicPolicy's semantic match, reusing
 	// the same embedding endpoint the Ochre KB path resolves models through.
 	// Nil leaves topicPolicy on its literal (word-boundary) matcher alone.
-	BedrockEmbedder gateway_bedrock.Embedder
+	BedrockEmbedder ochre.Embedder
 
 	// SignupMaxAccounts caps how many accounts /admin/CreateAccount will allow
 	// to exist. Zero means uncapped, which is the behaviour of every cluster
@@ -342,10 +342,10 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))
-	r.Use(requestAuditMiddleware)
+	r.Use(audit.Middleware)
 
 	if !gw.DisableLogging {
-		r.Use(slogRequestLogger)
+		r.Use(audit.RequestLogger)
 	}
 
 	// Anonymous STS (AssumeRoleWithWebIdentity) is dispatched ahead of SigV4 —
@@ -1119,7 +1119,7 @@ func recordResolvedAction(ctx context.Context, service, action string) {
 	span.SetName(name)
 	span.SetAttributes(attribute.String("aws.action", action))
 	otelsetup.SetRequestAction(ctx, name)
-	auditFrom(ctx).setAction(service, action)
+	audit.From(ctx).SetAction(service, action)
 }
 
 // traceActionEnricher renames the server span to the resolved SigV4
@@ -1141,17 +1141,5 @@ func traceActionEnricher(next http.Handler) http.Handler {
 			span.SetAttributes(attribute.String("aws.region", region))
 		}
 		next.ServeHTTP(w, r)
-	})
-}
-
-// slogRequestLogger is a middleware that logs each request via slog. The audit
-// record carries the caller and the auth verdict onto the same line, so a
-// failing request is answerable without joining it to a separate auth log.
-func slogRequestLogger(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-		next.ServeHTTP(ww, r)
-		logRequest(r, ww.Status(), time.Since(start))
 	})
 }

@@ -40,7 +40,7 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
@@ -166,7 +166,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	signingKey, verifyKeys, err := ecrauth.LoadOrCreateSigningKey(t.Context(), js, masterKey)
 	require.NoError(t, err)
 
-	bedrockAccess := gateway_bedrock.NewModelAccessStore(js)
+	bedrockAccess := ochre.NewModelAccessStore(js)
 
 	// ECR's control plane is composed as the awsgw role composes it, sharing
 	// the OCI registry, meta store and token issuer the /v2 data plane uses.
@@ -269,7 +269,7 @@ func (gw *Gateway) ECRClient(t *testing.T) *ecr.ECR {
 // BedrockClient returns an aws-sdk-go v1 Bedrock (control-plane) client
 // pointed at the gateway's httptest server, signed with the seeded root
 // credentials. ListFoundationModels/GetFoundationModel are pure gateway-side
-// catalog logic (gateway/bedrock/catalog.go) with no NATS/daemon hop, so no
+// catalog logic (domains/ochre/catalog.go) with no NATS/daemon hop, so no
 // DaemonLite wiring is needed to exercise them.
 func (gw *Gateway) BedrockClient(t *testing.T) *bedrock.Bedrock {
 	t.Helper()

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 )
 
 // ecsActionFromTarget extracts the action suffix from an X-Amz-Target header.
@@ -29,7 +29,7 @@ func (gw *GatewayConfig) ECS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorMissingAction)
 	}
 
-	handler, ok := gateway_ecs.Actions[action]
+	handler, ok := ecsawsapi.Actions[action]
 	if !ok {
 		slog.DebugContext(r.Context(), "ECS: unknown action", "action", action)
 		return errors.New(awserrors.ErrorInvalidAction)
@@ -51,7 +51,7 @@ func (gw *GatewayConfig) ECS_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	resources, err := gateway_ecs.ResourceARNs(action, gw.Region, accountID, body)
+	resources, err := ecsawsapi.ResourceARNs(action, gw.Region, accountID, body)
 	if err != nil {
 		return err
 	}
@@ -71,10 +71,10 @@ func (gw *GatewayConfig) ECS_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	if gateway_ecs.RawJSONActions[action] {
-		gateway_ecs.WriteRawJSONResponse(w, output)
+	if ecsawsapi.RawJSONActions[action] {
+		ecsawsapi.WriteRawJSONResponse(w, output)
 		return nil
 	}
-	gateway_ecs.WriteJSONResponse(w, output)
+	ecsawsapi.WriteJSONResponse(w, output)
 	return nil
 }

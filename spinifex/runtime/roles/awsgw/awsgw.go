@@ -24,7 +24,6 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/daemon"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
@@ -43,11 +42,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -369,19 +368,19 @@ func launchService(config *config.ClusterConfig) error {
 	if key := os.Getenv("OCHRE_ANTHROPIC_API_KEY"); key != "" {
 		bedrockPlatformDefaults["anthropic"] = key
 	}
-	bedrockCredentials := gateway_bedrock.NewCredentialStore(js, masterKey, bedrockPlatformDefaults)
+	bedrockCredentials := ochre.NewCredentialStore(js, masterKey, bedrockPlatformDefaults)
 
 	// Bedrock self-host weights: a model's serving spec (VRAM, instance type,
 	// vLLM args) ships in-tree, but which staged snapshot serves it is
 	// deployment-local state. tieredCatalog/GetFoundationModel read this
 	// through the package-level resolver rather than a parameter, since they
 	// are called from gateway/bedrock.go's fixed-arity route table.
-	gateway_bedrock.SetWeightsResolver(gateway_bedrock.NewWeightsStore(js))
+	ochre.SetWeightsResolver(ochre.NewWeightsStore(js))
 
 	// Bedrock model access: grants live in the bedrock-model-access KV bucket
 	// and are deny-by-default, so a fresh deployment serves no models until an
 	// operator grants them (spx admin ochre access grant).
-	bedrockAccess := gateway_bedrock.NewModelAccessStore(js)
+	bedrockAccess := ochre.NewModelAccessStore(js)
 
 	// Deny-by-default would otherwise leave a fresh install with a catalog
 	// nobody can see, so seed the platform admin account — the operator's own
@@ -389,12 +388,12 @@ func launchService(config *config.ClusterConfig) error {
 	// start. Tenant accounts are unaffected and still begin with no access.
 	// Best-effort: the gateway must serve even if this fails, and because the
 	// marker is written only on success, the next start retries.
-	if seeded, err := bedrockAccess.SeedAccountGrants(context.Background(), awsidentifiers.DefaultAccountID(), gateway_bedrock.CatalogModelIDs()); err != nil {
+	if seeded, err := bedrockAccess.SeedAccountGrants(context.Background(), awsidentifiers.DefaultAccountID(), ochre.CatalogModelIDs()); err != nil {
 		slog.Warn("Bedrock model access: seeding admin grants failed, will retry on next start",
 			"accountID", awsidentifiers.DefaultAccountID(), "err", err)
 	} else if seeded {
 		slog.Info("Bedrock model access: seeded admin account with the model catalog",
-			"accountID", awsidentifiers.DefaultAccountID(), "models", len(gateway_bedrock.CatalogModelIDs()))
+			"accountID", awsidentifiers.DefaultAccountID(), "models", len(ochre.CatalogModelIDs()))
 	}
 
 	// Bedrock self-host endpoints: OCHRE_VLLM_ENDPOINTS pins a modelId=baseURL
@@ -421,25 +420,23 @@ func launchService(config *config.ClusterConfig) error {
 	// NewEmbedder background-probes it and fails closed cleanly instead of
 	// dialing a connection-refused port.
 	var bedrockEmbedderWarmupEndpoints []string
-	if baseURL, ok := bedrockEndpoints[gateway_bedrock.DefaultEmbeddingModel]; ok {
+	if baseURL, ok := bedrockEndpoints[ochre.DefaultEmbeddingModel]; ok {
 		bedrockEmbedderWarmupEndpoints = append(bedrockEmbedderWarmupEndpoints, baseURL)
 	}
-	bedrockEmbedder := gateway_bedrock.NewEmbedder(bedrockEndpointResolver, bedrockEmbedderWarmupEndpoints...)
+	bedrockEmbedder := ochre.NewEmbedder(bedrockEndpointResolver, bedrockEmbedderWarmupEndpoints...)
 
 	// Bedrock provisioned throughput: commitment metadata lives in the
 	// bedrock-provisioned KV bucket (gateway control plane), while the pinned
 	// endpoint it commits to is requested through the same NATS endpoint
 	// service the dynamic resolver above uses, via an adapter satisfying
-	// gateway_bedrock's narrow EndpointProvisioner (see provisioned_adapter.go
-	// for why the adapter, not ochre.EndpointService, is what
-	// gateway_bedrock depends on).
-	bedrockProvisioned := gateway_bedrock.NewProvisionedStore(js, nodeConfig.Region,
+	// the narrow EndpointProvisioner.
+	bedrockProvisioned := ochre.NewProvisionedStore(js, nodeConfig.Region,
 		ochre.NewProvisionedEndpointAdapter(bedrockEndpointSvc))
 
 	// Bedrock guardrails: control-plane CRUD only at this stage — the record
 	// stores the full policy config so a later stage's filter engine and
 	// inference enforcement can read it back, but nothing enforces it yet.
-	bedrockGuardrails := gateway_bedrock.NewGuardrailStore(js, nodeConfig.Region)
+	bedrockGuardrails := ochre.NewGuardrailStore(js, nodeConfig.Region)
 
 	// bedrock-agent knowledge-base + data-source resource metadata: gateway-
 	// owned (D-arch), opened directly against JetStream the same way the
@@ -455,29 +452,29 @@ func launchService(config *config.ClusterConfig) error {
 	// deliveryConsumer to any account with a configured destination bucket
 	// and a metadata-only log line. bedrockLoggingConfig separately gates
 	// whether the record written to that bucket includes body text.
-	bedrockLoggingConfig := gateway_bedrock.NewLoggingConfigStore(js)
-	if _, err := gateway_bedrock.EnsureInvocationStream(janitorCtx, js); err != nil {
+	bedrockLoggingConfig := ochre.NewLoggingConfigStore(js)
+	if _, err := ochre.EnsureInvocationStream(janitorCtx, js); err != nil {
 		return fmt.Errorf("bedrock: ensure invocation stream: %w", err)
 	}
-	deliveryConsumer, err := gateway_bedrock.EnsureDeliveryConsumer(janitorCtx, js)
+	deliveryConsumer, err := ochre.EnsureDeliveryConsumer(janitorCtx, js)
 	if err != nil {
 		return fmt.Errorf("bedrock: ensure invocation delivery consumer: %w", err)
 	}
-	bedrockRecorder := gateway_bedrock.NewStreamRecorder(js, bedrockLoggingConfig)
-	go gateway_bedrock.NewDeliveryConsumer(objStore, bedrockLoggingConfig).Run(janitorCtx, deliveryConsumer)
+	bedrockRecorder := ochre.NewStreamRecorder(js, bedrockLoggingConfig)
+	go ochre.NewDeliveryConsumer(objStore, bedrockLoggingConfig).Run(janitorCtx, deliveryConsumer)
 
 	// Bedrock usage/cost metering: a second durable consumer on the same
 	// invocation stream (LimitsPolicy retention lets both see every message)
 	// updates per-account/model/period counters, deduping on RequestID so
 	// at-least-once redelivery never double-counts. bedrockPrices resolves
 	// KV price overrides over the catalog's in-tree defaults.
-	bedrockUsage := gateway_bedrock.NewUsageStore(js)
-	bedrockPrices := gateway_bedrock.NewPriceStore(js)
-	usageConsumer, err := gateway_bedrock.EnsureUsageConsumer(janitorCtx, js)
+	bedrockUsage := ochre.NewUsageStore(js)
+	bedrockPrices := ochre.NewPriceStore(js)
+	usageConsumer, err := ochre.EnsureUsageConsumer(janitorCtx, js)
 	if err != nil {
 		return fmt.Errorf("bedrock: ensure usage metering consumer: %w", err)
 	}
-	go gateway_bedrock.NewUsageConsumer(bedrockUsage, bedrockPrices).Run(janitorCtx, usageConsumer)
+	go ochre.NewUsageConsumer(bedrockUsage, bedrockPrices).Run(janitorCtx, usageConsumer)
 
 	// nodeIDs is the configured cluster node set, in the same namespace as the
 	// daemon reply header, so a fan-out's completeness can be judged by

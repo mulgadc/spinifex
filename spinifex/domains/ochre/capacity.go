@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 )
 
@@ -109,7 +108,7 @@ func admitCapacity(snapshotter gpuSnapshotter, minVRAMMiB int) error {
 // the degenerate one-member case, so it admits exactly as admitCapacity does
 // today — this is bundle-of-one, not a second code path.
 func admitBundleCapacity(snapshotter gpuSnapshotter, modelID string) error {
-	total, _, found := gateway_bedrock.CoServeGroupVRAMMiB(modelID)
+	total, _, found := CoServeGroupVRAMMiB(modelID)
 	if !found {
 		return awserrors.Errorf(awserrors.ErrorResourceNotFoundException, "bedrock: unknown model %s", modelID)
 	}

@@ -106,7 +106,7 @@ type CertRecord struct {
 	ImportedAt       time.Time         `json:"imported_at"`
 	Tags             map[string]string `json:"tags,omitempty"`
 	// InUseBy is the set of load balancer ARNs whose listeners currently
-	// reference this certificate. Maintained by handlers/elbv2 as listeners are
+	// reference this certificate. Maintained by domains/elbv2 as listeners are
 	// created, modified and deleted; also surfaces as the public
 	// CertificateDetail.InUseBy field.
 	InUseBy []string `json:"in_use_by,omitempty"`
@@ -443,7 +443,7 @@ const maxInUseByCASAttempts = 50
 // No-op if the certificate does not exist or already lists resourceArn.
 //
 // InUseBy is the sole mechanism by which a re-imported certificate reaches
-// the data plane (see UpdateStoredConfigForCert in handlers/elbv2), so a lost
+// the data plane (see UpdateStoredConfigForCert in domains/elbv2), so a lost
 // update here is not a cosmetic race: it silently drops a load balancer from
 // fan-out, and that load balancer's certificate expires in HAProxy while ACM
 // still reports it as renewed. Two listeners on different load balancers can

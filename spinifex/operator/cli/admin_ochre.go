@@ -20,9 +20,9 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre/hfhub"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -369,7 +369,7 @@ func weightsStagingRefusal(modelID, operation string, found, _ bool) error {
 // touches the weights KV store; 'stage' consumes the printed s3:// URI
 // separately. A failure removes every object already written (D5).
 func runPullWeights(ctx context.Context, hf *hfhub.Client, store objectstore.ObjectStore, modelID, hfRepo, revision string, revisionExplicit bool, s3URIFlag string) (string, error) {
-	spec, found, selfHost := gateway_bedrock.LookupServingSpec(modelID)
+	spec, found, selfHost := ochre.LookupServingSpec(modelID)
 	if !found || !selfHost {
 		return "", weightsStagingRefusal(modelID, "pull", found, selfHost)
 	}
@@ -669,8 +669,8 @@ type weightsSnapshotChecker func(ctx context.Context, snapshotID string) (bool, 
 // dependency of its own, so tests drive it directly against a fake object
 // store, a real WeightsStore backed by an embedded JetStream server, and a
 // fake materializer.
-func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weightsStore *gateway_bedrock.WeightsStore, tmpDirFlag, modelID, s3URI string, materialize weightsMaterializer, checkSnapshotLive weightsSnapshotChecker) (string, error) {
-	if _, found, selfHost := gateway_bedrock.LookupServingSpec(modelID); !found || !selfHost {
+func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weightsStore *ochre.WeightsStore, tmpDirFlag, modelID, s3URI string, materialize weightsMaterializer, checkSnapshotLive weightsSnapshotChecker) (string, error) {
+	if _, found, selfHost := ochre.LookupServingSpec(modelID); !found || !selfHost {
 		return "", weightsStagingRefusal(modelID, "staging", found, selfHost)
 	}
 
@@ -850,7 +850,7 @@ func runOchreWeightsStage(cmd *cobra.Command, _ []string) {
 		ochreExit(1)
 		return
 	}
-	weightsStore := gateway_bedrock.NewWeightsStore(js)
+	weightsStore := ochre.NewWeightsStore(js)
 	store := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
 
 	provider := ebsprovider.NewNATSProvider(nc, imageImportTimeout)
@@ -882,7 +882,7 @@ const (
 // but the snapshot it names does not, so an operator sees at a glance which
 // staged models can actually serve. Split out from runOchreWeightsList so it
 // is testable against a real WeightsStore without a NATS connection.
-func listWeightsOutput(ctx context.Context, weightsStore *gateway_bedrock.WeightsStore, checkSnapshotLive weightsSnapshotChecker) (string, error) {
+func listWeightsOutput(ctx context.Context, weightsStore *ochre.WeightsStore, checkSnapshotLive weightsSnapshotChecker) (string, error) {
 	entries, err := weightsStore.ListWeights(ctx)
 	if err != nil {
 		return "", err
@@ -926,7 +926,7 @@ func runOchreWeightsList(_ *cobra.Command, _ []string) {
 		ochreExit(1)
 		return
 	}
-	weightsStore := gateway_bedrock.NewWeightsStore(js)
+	weightsStore := ochre.NewWeightsStore(js)
 	store := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
 	checkSnapshotLive := newWeightsSnapshotChecker(store, node.Predastore.Bucket)
 
@@ -945,17 +945,17 @@ func runOchreWeightsList(_ *cobra.Command, _ []string) {
 // weightsStore.DeleteWeights's KV key is affected. Split out from
 // runOchreWeightsRemove so it is testable against a real WeightsStore
 // without a NATS connection.
-func removeWeights(ctx context.Context, weightsStore *gateway_bedrock.WeightsStore, modelID string) (gateway_bedrock.WeightsEntry, error) {
+func removeWeights(ctx context.Context, weightsStore *ochre.WeightsStore, modelID string) (ochre.WeightsEntry, error) {
 	entry, ok, err := weightsStore.GetWeights(ctx, modelID)
 	if err != nil {
-		return gateway_bedrock.WeightsEntry{}, err
+		return ochre.WeightsEntry{}, err
 	}
 	if !ok {
-		return gateway_bedrock.WeightsEntry{}, fmt.Errorf("%s has no staged weights entry", modelID)
+		return ochre.WeightsEntry{}, fmt.Errorf("%s has no staged weights entry", modelID)
 	}
 
 	if err := weightsStore.DeleteWeights(ctx, modelID); err != nil {
-		return gateway_bedrock.WeightsEntry{}, err
+		return ochre.WeightsEntry{}, err
 	}
 	return entry, nil
 }
@@ -977,7 +977,7 @@ func runOchreWeightsRemove(cmd *cobra.Command, _ []string) {
 		ochreExit(1)
 		return
 	}
-	weightsStore := gateway_bedrock.NewWeightsStore(js)
+	weightsStore := ochre.NewWeightsStore(js)
 
 	entry, err := removeWeights(context.Background(), weightsStore, modelID)
 	if err != nil {
@@ -1010,7 +1010,7 @@ func resolveHFToken(ctx context.Context, cmd *cobra.Command, cfg *config.Cluster
 	if err != nil {
 		return ""
 	}
-	credStore := gateway_bedrock.NewCredentialStore(js, masterKey, nil)
+	credStore := ochre.NewCredentialStore(js, masterKey, nil)
 	token, ok, err := credStore.Resolve(ctx, awsidentifiers.GlobalAccountID, vendorHuggingFace)
 	if err != nil || !ok {
 		return ""
@@ -1068,7 +1068,7 @@ func readTokenFromStdin(r io.Reader) (string, error) {
 // ochreCredentialsStore connects to the cluster, loads the node's IAM master
 // key from disk -- the same on-disk key initIAMServiceFromConfig uses -- and
 // returns a CredentialStore ready for PutCredential/Resolve.
-func ochreCredentialsStore() (*gateway_bedrock.CredentialStore, func(), error) {
+func ochreCredentialsStore() (*ochre.CredentialStore, func(), error) {
 	cfg, nc, err := loadConfigAndConnectFn()
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect to cluster: %w", err)
@@ -1084,7 +1084,7 @@ func ochreCredentialsStore() (*gateway_bedrock.CredentialStore, func(), error) {
 		nc.Close()
 		return nil, nil, fmt.Errorf("jetstream context: %w", err)
 	}
-	return gateway_bedrock.NewCredentialStore(js, masterKey, nil), func() { nc.Close() }, nil
+	return ochre.NewCredentialStore(js, masterKey, nil), func() { nc.Close() }, nil
 }
 
 func runOchreCredentialsSet(cmd *cobra.Command, _ []string) {
@@ -1181,7 +1181,7 @@ func init() {
 
 // ochreAccessStore connects to the cluster and returns the grant store along
 // with a cleanup that closes the connection.
-func ochreAccessStore() (*gateway_bedrock.ModelAccessStore, func(), error) {
+func ochreAccessStore() (*ochre.ModelAccessStore, func(), error) {
 	_, nc, err := loadConfigAndConnectFn()
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect to cluster: %w", err)
@@ -1191,7 +1191,7 @@ func ochreAccessStore() (*gateway_bedrock.ModelAccessStore, func(), error) {
 		nc.Close()
 		return nil, nil, fmt.Errorf("jetstream context: %w", err)
 	}
-	return gateway_bedrock.NewModelAccessStore(js), func() { nc.Close() }, nil
+	return ochre.NewModelAccessStore(js), func() { nc.Close() }, nil
 }
 
 // ochreTargetModels resolves the --model-id / --all-models pair into the model
@@ -1205,7 +1205,7 @@ func ochreTargetModels(cmd *cobra.Command) ([]string, error) {
 	case allModels && modelID != "":
 		return nil, fmt.Errorf("--model-id and --all-models are mutually exclusive")
 	case allModels:
-		return gateway_bedrock.CatalogModelIDs(), nil
+		return ochre.CatalogModelIDs(), nil
 	case modelID != "":
 		return []string{modelID}, nil
 	default:
@@ -1290,7 +1290,7 @@ func runOchreAccessList(cmd *cobra.Command, _ []string) {
 }
 
 func runOchreModels(_ *cobra.Command, _ []string) {
-	models := gateway_bedrock.CatalogModelIDs()
+	models := ochre.CatalogModelIDs()
 	sort.Strings(models)
 	for _, modelID := range models {
 		fmt.Println(modelID)

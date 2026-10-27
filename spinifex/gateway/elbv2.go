@@ -7,10 +7,10 @@ import (
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
-	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
@@ -56,134 +56,134 @@ var elbv2Actions = map[string]elbv2Action{
 		if err := gw.Quota.EnforceLoadBalancers(ctx, gw.NATSConn, accountID, 1); err != nil {
 			return nil, err
 		}
-		return gateway_elbv2.CreateLoadBalancer(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.CreateLoadBalancer(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteLoadBalancer": elbv2Handler(func(ctx context.Context, input *elbv2.DeleteLoadBalancerInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DeleteLoadBalancer(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DeleteLoadBalancer(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeLoadBalancers": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeLoadBalancersInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DescribeLoadBalancers(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DescribeLoadBalancers(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateTargetGroup": elbv2Handler(func(ctx context.Context, input *elbv2.CreateTargetGroupInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.CreateTargetGroup(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.CreateTargetGroup(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteTargetGroup": elbv2Handler(func(ctx context.Context, input *elbv2.DeleteTargetGroupInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DeleteTargetGroup(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DeleteTargetGroup(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeTargetGroups": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeTargetGroupsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DescribeTargetGroups(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DescribeTargetGroups(ctx, input, gw.NATSConn, accountID)
 	}),
 	"RegisterTargets": elbv2Handler(func(ctx context.Context, input *elbv2.RegisterTargetsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.RegisterTargets(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.RegisterTargets(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeregisterTargets": elbv2Handler(func(ctx context.Context, input *elbv2.DeregisterTargetsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DeregisterTargets(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DeregisterTargets(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeTargetHealth": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeTargetHealthInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DescribeTargetHealth(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DescribeTargetHealth(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateListener": elbv2Handler(func(ctx context.Context, input *elbv2.CreateListenerInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.CreateListener(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.CreateListener(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteListener": elbv2Handler(func(ctx context.Context, input *elbv2.DeleteListenerInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DeleteListener(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DeleteListener(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyListener": elbv2Handler(func(ctx context.Context, input *elbv2.ModifyListenerInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.ModifyListener(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.ModifyListener(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeListeners": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeListenersInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DescribeListeners(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DescribeListeners(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateRule": elbv2Handler(func(ctx context.Context, input *elbv2.CreateRuleInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.CreateRule(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.CreateRule(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyRule": elbv2Handler(func(ctx context.Context, input *elbv2.ModifyRuleInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.ModifyRule(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.ModifyRule(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteRule": elbv2Handler(func(ctx context.Context, input *elbv2.DeleteRuleInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DeleteRule(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DeleteRule(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeRules": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeRulesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DescribeRules(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DescribeRules(ctx, input, gw.NATSConn, accountID)
 	}),
 	"SetRulePriorities": elbv2Handler(func(ctx context.Context, input *elbv2.SetRulePrioritiesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.SetRulePriorities(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.SetRulePriorities(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeTags": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeTagsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DescribeTags(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DescribeTags(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AddTags": elbv2Handler(func(ctx context.Context, input *elbv2.AddTagsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.AddTags(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.AddTags(ctx, input, gw.NATSConn, accountID)
 	}),
 	"RemoveTags": elbv2Handler(func(ctx context.Context, input *elbv2.RemoveTagsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.RemoveTags(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.RemoveTags(ctx, input, gw.NATSConn, accountID)
 	}),
-	"LBAgentHeartbeat": elbv2Handler(func(ctx context.Context, input *handlers_elbv2.LBAgentHeartbeatInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.LBAgentHeartbeat(ctx, input, gw.NATSConn, accountID)
+	"LBAgentHeartbeat": elbv2Handler(func(ctx context.Context, input *elbv2domain.LBAgentHeartbeatInput, gw *GatewayConfig, accountID string) (any, error) {
+		return elbv2awsapi.LBAgentHeartbeat(ctx, input, gw.NATSConn, accountID)
 	}),
-	"GetLBConfig": elbv2Handler(func(ctx context.Context, input *handlers_elbv2.GetLBConfigInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.GetLBConfig(ctx, input, gw.NATSConn, accountID)
+	"GetLBConfig": elbv2Handler(func(ctx context.Context, input *elbv2domain.GetLBConfigInput, gw *GatewayConfig, accountID string) (any, error) {
+		return elbv2awsapi.GetLBConfig(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyTargetGroup": elbv2Handler(func(ctx context.Context, input *elbv2.ModifyTargetGroupInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.ModifyTargetGroup(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.ModifyTargetGroup(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyTargetGroupAttributes": elbv2Handler(func(ctx context.Context, input *elbv2.ModifyTargetGroupAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.ModifyTargetGroupAttributes(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.ModifyTargetGroupAttributes(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeTargetGroupAttributes": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeTargetGroupAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DescribeTargetGroupAttributes(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DescribeTargetGroupAttributes(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyLoadBalancerAttributes": elbv2Handler(func(ctx context.Context, input *elbv2.ModifyLoadBalancerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.ModifyLoadBalancerAttributes(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.ModifyLoadBalancerAttributes(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeLoadBalancerAttributes": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeLoadBalancerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DescribeLoadBalancerAttributes(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DescribeLoadBalancerAttributes(ctx, input, gw.NATSConn, accountID)
 	}),
 	"SetSecurityGroups": elbv2Handler(func(ctx context.Context, input *elbv2.SetSecurityGroupsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.SetSecurityGroups(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.SetSecurityGroups(ctx, input, gw.NATSConn, accountID)
 	}),
 	"SetIpAddressType": elbv2Handler(func(ctx context.Context, input *elbv2.SetIpAddressTypeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.SetIpAddressType(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.SetIpAddressType(ctx, input, gw.NATSConn, accountID)
 	}),
 	"SetSubnets": elbv2Handler(func(ctx context.Context, input *elbv2.SetSubnetsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.SetSubnets(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.SetSubnets(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AddListenerCertificates": elbv2Handler(func(ctx context.Context, input *elbv2.AddListenerCertificatesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.AddListenerCertificates(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.AddListenerCertificates(ctx, input, gw.NATSConn, accountID)
 	}),
 	"RemoveListenerCertificates": elbv2Handler(func(ctx context.Context, input *elbv2.RemoveListenerCertificatesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.RemoveListenerCertificates(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.RemoveListenerCertificates(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeListenerCertificates": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeListenerCertificatesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DescribeListenerCertificates(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DescribeListenerCertificates(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeSSLPolicies": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeSSLPoliciesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DescribeSSLPolicies(ctx, input, gw.NATSConn, accountID)
+		return elbv2awsapi.DescribeSSLPolicies(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeAccountLimits": elbv2Handler(func(ctx context.Context, input *elbv2.DescribeAccountLimitsInput, gw *GatewayConfig, accountID string) (any, error) {
 		loadBalancers, err := accountLoadBalancerLimit(ctx, gw, accountID)
 		if err != nil {
 			return nil, err
 		}
-		return gateway_elbv2.DescribeAccountLimits(input, loadBalancers), nil
+		return elbv2awsapi.DescribeAccountLimits(input, loadBalancers), nil
 	}),
-	"DescribeListenerAttributes": elbv2Handler(func(ctx context.Context, input *gateway_elbv2.DescribeListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.DescribeListenerAttributes(input, accountID)
+	"DescribeListenerAttributes": elbv2Handler(func(ctx context.Context, input *elbv2awsapi.DescribeListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return elbv2awsapi.DescribeListenerAttributes(input, accountID)
 	}),
-	"ModifyListenerAttributes": elbv2Handler(func(ctx context.Context, input *gateway_elbv2.ModifyListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.ModifyListenerAttributes(input, accountID)
+	"ModifyListenerAttributes": elbv2Handler(func(ctx context.Context, input *elbv2awsapi.ModifyListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return elbv2awsapi.ModifyListenerAttributes(input, accountID)
 	}),
 }
 
 // accountLoadBalancerLimit resolves the load balancer cap DescribeAccountLimits
 // reports. It is read here rather than in the operation file because
-// domains/admission/quota imports gateway/elbv2 to count live load balancers, so the
-// operation file cannot import it back.
+// domains/admission/quota imports domains/elbv2/awsapi to count live load
+// balancers, so the operation file cannot import it back.
 func accountLoadBalancerLimit(ctx context.Context, gw *GatewayConfig, accountID string) (int, error) {
 	// An exempt account has no cap enforced against it, so the AWS default is a
 	// truer answer than a configured limit nothing consults.
 	if gw.Quota.Exempt(accountID) {
-		return gateway_elbv2.DefaultLoadBalancerLimit, nil
+		return elbv2awsapi.DefaultLoadBalancerLimit, nil
 	}
 	_, limits, err := gw.Quota.GetAccountQuota(ctx, accountID)
 	if err != nil {
@@ -231,7 +231,7 @@ func (gw *GatewayConfig) ELBv2_Request(w http.ResponseWriter, r *http.Request) e
 		return err
 	}
 
-	resources, err := gateway_elbv2.ResourceARNs(action, gw.Region, accountID, input)
+	resources, err := elbv2awsapi.ResourceARNs(action, gw.Region, accountID, input)
 	if err != nil {
 		return err
 	}

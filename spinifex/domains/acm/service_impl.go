@@ -82,7 +82,7 @@ type ACMServiceImpl struct {
 	// SAN) by deriveValidationMode. Wired by the daemon post-construction
 	// (mirroring CertMaterialUpdated below) to domains/dns.HostsZone. A func
 	// field stands in for a direct import of domains/dns, the same pattern
-	// CertMaterialUpdated uses for handlers/elbv2, so this package and its
+	// CertMaterialUpdated uses for domains/elbv2, so this package and its
 	// tests stay decoupled from domains/dns's S3/northstar-config
 	// dependencies. Nil means "northstar hosts nothing" — the safe default for
 	// tests and any deployment that never wires it, so an unwired service can
@@ -91,7 +91,7 @@ type ACMServiceImpl struct {
 
 	// CertMaterialUpdated, when set, is invoked after new certificate material
 	// is written under an existing ARN so the caller can re-render every load
-	// balancer that references it (see handlers/elbv2.UpdateStoredConfigForCert).
+	// balancer that references it (see domains/elbv2.UpdateStoredConfigForCert).
 	// Wired by the daemon post-construction to avoid an elbv2 -> acm import
 	// cycle; nil-safe — skipped in tests and whenever ELBv2 isn't wired up.
 	// Fan-out errors are logged, never propagated: a rendering problem on one

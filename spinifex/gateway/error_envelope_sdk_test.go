@@ -55,6 +55,7 @@ func sdkApp(t *testing.T, dispatchErr error) aws.Config {
 	_, app := dispatchSeamApp(t, allowAllECRDocs(),
 		envelopeRegistration("sqs", dispatch.ErrorEnvelopeJSON10Query, c, func(r *dispatch.Registration) {
 			r.QueryErrorCodes = map[string]string{"QueueDoesNotExist": "AWS.SimpleQueueService.NonExistentQueue"}
+			r.ErrorNamespace = "com.amazonaws.sqs"
 		}),
 		envelopeRegistration("lambda", dispatch.ErrorEnvelopeRESTJSON, c, nil))
 	srv := httptest.NewServer(app)
@@ -67,7 +68,8 @@ func throttleApp(t *testing.T) aws.Config {
 	t.Helper()
 	c := &dispatchCapture{}
 	b := dispatch.NewBuilder()
-	require.NoError(t, b.Register(envelopeRegistration("sqs", dispatch.ErrorEnvelopeJSON10Query, c, nil)))
+	require.NoError(t, b.Register(envelopeRegistration("sqs", dispatch.ErrorEnvelopeJSON10Query, c,
+		func(r *dispatch.Registration) { r.ErrorNamespace = "com.amazonaws.sqs" })))
 	require.NoError(t, b.Register(envelopeRegistration("lambda", dispatch.ErrorEnvelopeRESTJSON, c, nil)))
 	gw := &GatewayConfig{DisableLogging: true, Services: b.Build()}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -322,6 +322,21 @@ func TestWriteJSON_WireBytesPerProtocol(t *testing.T) {
 			body:         `{"__type":"QueueDoesNotExist","message":"gone"}`,
 		},
 		{
+			name:        "JSON 1.0 namespaces a verbatim type only in the body",
+			p:           ProtocolJSON10Query,
+			e:           JSONError{Code: "QueueDoesNotExist", Verbatim: true, Namespace: "com.amazonaws.sqs", Message: "gone", Status: 400},
+			contentType: "application/x-amz-json-1.0",
+			headers:     map[string]string{"X-Amzn-Query-Error": "QueueDoesNotExist;Sender"},
+			body:        `{"__type":"com.amazonaws.sqs#QueueDoesNotExist","message":"gone"}`,
+		},
+		{
+			name:        "JSON 1.0 leaves a suffixed common error unnamespaced",
+			p:           ProtocolJSON10Query,
+			e:           JSONError{Code: "ServiceUnavailable", Namespace: "com.amazonaws.sqs", Message: "down", Status: 503},
+			contentType: "application/x-amz-json-1.0",
+			body:        `{"__type":"ServiceUnavailableException","message":"down"}`,
+		},
+		{
 			name:        "JSON 1.0 query code defaults to the code and a 5xx is a Receiver",
 			p:           ProtocolJSON10Query,
 			e:           JSONError{Code: "InternalError", Verbatim: true, Message: "boom", Status: 500},

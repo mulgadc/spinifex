@@ -73,6 +73,9 @@ func TestErrorEnvelope_Throttle(t *testing.T) {
 		envelopeRegistration(xmlRegisteredSvc, dispatch.ErrorEnvelopeXML, c, nil),
 	)
 
+	namespaced := throttleResponse(t, envelopeRegistration(json10Service, dispatch.ErrorEnvelopeJSON10Query, c,
+		func(r *dispatch.Registration) { r.ErrorNamespace = "com.amazonaws.sqs" }))
+
 	t.Run("REST-JSON registration gets TooManyRequestsException with Reason", func(t *testing.T) {
 		resp := throttle(restJSONService)
 		assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
@@ -88,6 +91,12 @@ func TestErrorEnvelope_Throttle(t *testing.T) {
 		assert.Equal(t, "application/x-amz-json-1.0", resp.Header.Get("Content-Type"))
 		assert.Equal(t, "RequestThrottled;Sender", resp.Header.Get("X-Amzn-Query-Error"))
 		assert.JSONEq(t, `{"__type":"RequestThrottled","message":"Rate exceeded."}`, bodyString(t, resp))
+	})
+
+	t.Run("JSON 1.0 namespaced throttle", func(t *testing.T) {
+		resp := namespaced(json10Service)
+		assert.Equal(t, "RequestThrottled;Sender", resp.Header.Get("X-Amzn-Query-Error"))
+		assert.JSONEq(t, `{"__type":"com.amazonaws.sqs#RequestThrottled","message":"Rate exceeded."}`, bodyString(t, resp))
 	})
 
 	t.Run("JSON 1.1 registration keeps its current throttle", func(t *testing.T) {
@@ -159,6 +168,16 @@ func TestErrorEnvelope_DispatcherError(t *testing.T) {
 		assert.Equal(t, "AWS.Simple.InvalidParameterValue;Sender", resp.Header.Get("X-Amzn-Query-Error"))
 		assert.Empty(t, resp.Header.Get("X-Amzn-Errortype"))
 		assert.Equal(t, `{"__type":"InvalidParameterValue","message":"bad value"}`, bodyString(t, resp))
+	})
+
+	t.Run("JSON 1.0 namespaces __type but not the query header", func(t *testing.T) {
+		c := &dispatchCapture{dispatchErr: awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "bad value")}
+		_, app := dispatchSeamApp(t, allowAllECRDocs(), envelopeRegistration(json10Service, dispatch.ErrorEnvelopeJSON10Query, c,
+			func(r *dispatch.Registration) { r.ErrorNamespace = "com.amazonaws.sqs" }))
+		resp := doRequest(app, signDispatchRequest(t, json10Service, []byte("{}")))
+
+		assert.Equal(t, "InvalidParameterValue;Sender", resp.Header.Get("X-Amzn-Query-Error"))
+		assert.Equal(t, `{"__type":"com.amazonaws.sqs#InvalidParameterValue","message":"bad value"}`, bodyString(t, resp))
 	})
 
 	t.Run("JSON 1.0 unmapped server fault is Receiver with InternalFailure", func(t *testing.T) {

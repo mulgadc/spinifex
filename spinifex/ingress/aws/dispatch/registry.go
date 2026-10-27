@@ -130,7 +130,11 @@ type Registration struct {
 	// code. Unset, a REST-JSON registration sends ServiceException and a JSON
 	// 1.0 one InternalFailure. JSON 1.1 and XML keep InternalError.
 	InternalErrorCode string
-	Inventory         Inventory
+	// ErrorNamespace is the Smithy shape namespace (e.g. "com.amazonaws.sqs")
+	// prefixed to the __type of service-defined errors as "<namespace>#<code>".
+	// Unset, __type is the bare code. JSON 1.0 only.
+	ErrorNamespace string
+	Inventory      Inventory
 }
 
 // UnknownService returns the client-visible code and message for a credential
@@ -192,6 +196,7 @@ func (b *Builder) Register(reg Registration) error {
 		throttle:   reg.Throttle,
 		queryCodes: maps.Clone(reg.QueryErrorCodes),
 		internal:   reg.InternalErrorCode,
+		namespace:  reg.ErrorNamespace,
 	}
 	for _, n := range names {
 		b.entries[n] = e
@@ -255,6 +260,9 @@ func validateErrorSpecs(reg Registration) error {
 	}
 	if reg.InternalErrorCode != "" && reg.Errors != ErrorEnvelopeRESTJSON && reg.Errors != ErrorEnvelopeJSON10Query {
 		return errors.New("internal error code needs the REST-JSON or JSON 1.0 error envelope")
+	}
+	if reg.ErrorNamespace != "" && reg.Errors != ErrorEnvelopeJSON10Query {
+		return errors.New("error namespace needs the JSON 1.0 error envelope")
 	}
 	for code, legacy := range reg.QueryErrorCodes {
 		if code == "" || legacy == "" {
@@ -346,6 +354,7 @@ type Entry struct {
 	throttle   *ErrorSpec
 	queryCodes map[string]string
 	internal   string
+	namespace  string
 }
 
 // Service returns the registration's primary credential-scope name.
@@ -393,6 +402,10 @@ func (e *Entry) InternalErrorCode() (code string, ok bool) {
 	}
 	return "", false
 }
+
+// ErrorNamespace returns the Smithy namespace prefixed to service-defined
+// error types, or "" when none is declared.
+func (e *Entry) ErrorNamespace() string { return e.namespace }
 
 // QueryErrorCode returns the legacy query code sent in x-amzn-query-error for
 // code, which is code itself unless the registration maps it.

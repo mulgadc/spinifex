@@ -202,6 +202,9 @@ type JSONError struct {
 	Status   int
 	// Fields are extra top-level body keys; they never replace a reserved key.
 	Fields map[string]string
+	// Namespace is the Smithy shape namespace prefixed to __type as
+	// "<namespace>#<code>" on ProtocolJSON10Query, for a Verbatim code only.
+	Namespace string
 	// QueryCode is the legacy query code for ProtocolJSON10Query; Code is used
 	// when empty.
 	QueryCode string
@@ -233,6 +236,9 @@ func JSONContentTypeFor(p Protocol) string {
 // JSONErrorBody renders e's body for p.
 func JSONErrorBody(p Protocol, e JSONError) []byte {
 	typeKey, typeVal := "__type", e.wireType()
+	if p == ProtocolJSON10Query && e.Verbatim && e.Namespace != "" {
+		typeVal = e.Namespace + "#" + typeVal
+	}
 	if p == ProtocolRESTJSON {
 		typeKey, typeVal = "Type", "User"
 		if !e.senderFault() {

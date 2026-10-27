@@ -233,6 +233,7 @@ func TestRegisterValidatesErrorSpecs(t *testing.T) {
 		"throttle without code":   func(r *Registration) { r.Throttle = &ErrorSpec{Status: 429} },
 		"throttle with 2xx":       func(r *Registration) { r.Throttle = &ErrorSpec{Code: "X", Status: 200} },
 		"query codes on JSON 1.1": func(r *Registration) { r.QueryErrorCodes = map[string]string{"A": "B"} },
+		"namespace on JSON 1.1":   func(r *Registration) { r.ErrorNamespace = "com.amazonaws.sqs" },
 		"empty query code": func(r *Registration) {
 			r.Errors = ErrorEnvelopeJSON10Query
 			r.QueryErrorCodes = map[string]string{"A": ""}

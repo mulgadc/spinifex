@@ -779,11 +779,9 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 	}
 
 	// Check if any volumes were created from this snapshot
-	inUse, volumeID, err := s.snapshotInUseByVolumes(ctx, snapshotID, accountID)
-	if err != nil {
-		slog.ErrorContext(ctx, "DeleteSnapshot failed to check snapshot usage", "snapshotId", snapshotID, "err", err)
-		return nil, err
-	}
+	// A scan's failure is held until both have run, so a readable reference
+	// found by either answers InvalidSnapshot.InUse.
+	inUse, volumeID, volumeErr := s.snapshotInUseByVolumes(ctx, snapshotID, accountID)
 	if inUse {
 		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by volume", "snapshotId", snapshotID, "volumeId", volumeID)
 		// The registered message blames AMIs. Name the volume only when the
@@ -795,14 +793,18 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 	}
 
 	// Check if any registered AMI names this snapshot as its root device
-	amiInUse, err := s.amiInUseBySnapshot(ctx, snapshotID, accountID)
-	if err != nil {
-		slog.ErrorContext(ctx, "DeleteSnapshot failed to check AMI usage", "snapshotId", snapshotID, "err", err)
-		return nil, err
-	}
+	amiInUse, amiErr := s.amiInUseBySnapshot(ctx, snapshotID, accountID)
 	if amiInUse {
 		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by registered AMI", "snapshotId", snapshotID)
 		return nil, errors.New(awserrors.ErrorInvalidSnapshotInUse)
+	}
+	if volumeErr != nil {
+		slog.ErrorContext(ctx, "DeleteSnapshot failed to check snapshot usage", "snapshotId", snapshotID, "err", volumeErr)
+		return nil, volumeErr
+	}
+	if amiErr != nil {
+		slog.ErrorContext(ctx, "DeleteSnapshot failed to check AMI usage", "snapshotId", snapshotID, "err", amiErr)
+		return nil, amiErr
 	}
 	if s.provider == nil {
 		slog.ErrorContext(ctx, "no EBS provider configured", "op", "DeleteSnapshot")

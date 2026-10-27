@@ -127,6 +127,21 @@ func TestDeleteSnapshot_RegisteredAMIWinsOverUnreadableAMI(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
 }
 
+// A registered AMI naming the snapshot is the AWS refusal even when the volume
+// scan, which runs first, could not read a record.
+func TestDeleteSnapshot_RegisteredAMIWinsOverUnreadableVolume(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	snapshotID := unreferencedSnapshot(t, svc, store)
+	key, err := ebsmetadata.VolumeKey(otherAccountID, "vol-foreign-corrupt")
+	require.NoError(t, err)
+	putCorruptDocument(t, store, key)
+	require.NoError(t, svc.metadata.PutAMI(context.Background(), ebsmetadata.AMI{ImageID: "ami-registered", SnapshotID: snapshotID}))
+
+	code, _ := clientErrorDetail(t, deleteSnapshot(svc, snapshotID))
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
+	requireSnapshotSurvives(t, svc, snapshotID)
+}
+
 // vanishingObjectStore lists keys whose documents have already been deleted,
 // as a listing racing a DeleteVolume or DeregisterImage sees them.
 type vanishingObjectStore struct {
@@ -184,6 +199,8 @@ func TestDeleteSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
 		{"provider unavailable", &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnavailable, Message: "busy"}, awserrors.ErrorServiceUnavailable},
 		{"no provider responding", errors.Join(errors.New("request ebs.provider.v1.snapshot.delete"), nats.ErrNoResponders), awserrors.ErrorServiceUnavailable},
 		{"request timed out", context.DeadlineExceeded, awserrors.ErrorServiceUnavailable},
+		{"connection closed", nats.ErrConnectionClosed, awserrors.ErrorServiceUnavailable},
+		{"nats timeout", nats.ErrTimeout, awserrors.ErrorServiceUnavailable},
 		{"backend reports in use", &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeVolumeInUse, Message: "clone"}, awserrors.ErrorInvalidSnapshotInUse},
 		{"internal failure", &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: "delete snapshot objects: boom"}, awserrors.ErrorServerInternal},
 	}

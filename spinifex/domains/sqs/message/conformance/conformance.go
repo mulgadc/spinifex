@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,6 +67,7 @@ func Run(t *testing.T, newHarness Factory) {
 		{"NamespaceIsolation", testNamespaceIsolation},
 		{"ShardIsolation", testShardIsolation},
 		{"CountAndEnumerate", testCountAndEnumerate},
+		{"EnumerateStateOnlyNamespace", testEnumerateStateOnly},
 		{"DeleteNamespace", testDeleteNamespace},
 		{"CrashBetweenAppendAndStateWrite", testCrashAfterAppend},
 		{"CrashBetweenTombstoneAndBodyDelete", testCrashAfterTombstone},
@@ -445,23 +447,58 @@ func testShardIsolation(t *testing.T, h Harness) {
 	assert.Equal(t, pb, nextIn(t, f, b).Position, "a shard's feed carries only that shard's appends")
 }
 
+// otherStateShard is a state shard other than zero when the store serves
+// one, so a store that drops or zeroes StateShard is caught.
+func otherStateShard(h Harness) message.Shard {
+	if h.StateShards >= 2 {
+		return message.Shard(safecast.IntToUint32(h.StateShards - 1))
+	}
+	return 0
+}
+
+func enumerate(t *testing.T, s message.Store, messageShard message.Shard) map[message.Namespace]message.Usage {
+	t.Helper()
+	listed, err := s.Namespaces(context.Background(), messageShard)
+	require.NoError(t, err)
+	found := map[message.Namespace]message.Usage{}
+	for _, n := range listed {
+		found[n.Namespace] = n.Usage
+	}
+	return found
+}
+
 func testCountAndEnumerate(t *testing.T, h Harness) {
 	ctx := context.Background()
 	ns, unused := newNamespace(t, 0), newNamespace(t, 0)
+	ns.StateShard = otherStateShard(h)
 	p := appendBody(t, h.Store, ns, "a")
 	appendBody(t, h.Store, ns, "b")
 	_, err := h.Store.PutState(ctx, ns, p, []byte("s"), 0)
 	require.NoError(t, err)
 	requireCount(t, h.Store, ns, message.Usage{Messages: 2, States: 1})
 
-	listed, err := h.Store.Namespaces(ctx, 0)
-	require.NoError(t, err)
-	found := map[message.QueueID]message.Usage{}
-	for _, n := range listed {
-		found[n.Queue] = n.Usage
+	found := enumerate(t, h.Store, 0)
+	assert.Equal(t, message.Usage{Messages: 2, States: 1}, found[ns], "enumeration reports the complete namespace and its usage")
+	for n := range found {
+		assert.NotEqual(t, unused.Queue, n.Queue, "a namespace never written is not enumerated")
 	}
-	assert.Equal(t, message.Usage{Messages: 2, States: 1}, found[ns.Queue], "enumeration reports the namespace's usage")
-	assert.NotContains(t, found, unused.Queue, "a namespace never written is not enumerated")
+}
+
+// testEnumerateStateOnly: after a tombstone and the body delete, only state
+// remains, and enumeration must still name its exact allocations so a
+// caller without the queue record can count and clean it.
+func testEnumerateStateOnly(t *testing.T, h Harness) {
+	ctx := context.Background()
+	ns := newNamespace(t, 0)
+	ns.StateShard = otherStateShard(h)
+	p := appendBody(t, h.Store, ns, "m")
+	_, err := h.Store.PutState(ctx, ns, p, []byte("tombstone"), 0)
+	require.NoError(t, err)
+	require.NoError(t, h.Store.Delete(ctx, ns, p))
+
+	found := enumerate(t, h.Store, 0)
+	require.Contains(t, found, ns, "a state-only namespace is enumerated with its exact StateShard")
+	assert.Equal(t, message.Usage{States: 1}, found[ns])
 }
 
 func testDeleteNamespace(t *testing.T, h Harness) {
@@ -479,7 +516,7 @@ func testDeleteNamespace(t *testing.T, h Harness) {
 	listed, err := h.Store.Namespaces(ctx, 0)
 	require.NoError(t, err)
 	for _, n := range listed {
-		assert.NotEqual(t, ns.Queue, n.Queue, "a deleted namespace is not enumerated")
+		assert.NotEqual(t, ns.Queue, n.Namespace.Queue, "a deleted namespace is not enumerated")
 	}
 	require.NoError(t, h.Store.DeleteNamespace(ctx, ns), "namespace deletion is idempotent")
 }

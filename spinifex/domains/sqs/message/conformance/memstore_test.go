@@ -233,7 +233,7 @@ func (s *memStore) Namespaces(_ context.Context, shard message.Shard) ([]message
 			}
 			seen[ns] = true
 			if u := s.usage(ns); u != (message.Usage{}) {
-				out = append(out, message.NamespaceUsage{Queue: ns.Queue, Usage: u})
+				out = append(out, message.NamespaceUsage{Namespace: ns, Usage: u})
 			}
 		}
 	}

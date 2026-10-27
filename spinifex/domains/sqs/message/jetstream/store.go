@@ -54,6 +54,9 @@ func New(ctx context.Context, js jsapi.JetStream, cfg Config) (*Store, error) {
 			Name:        BucketName(shard),
 			Description: "SQS per-message state, shared by every queue allocated this state shard",
 			History:     1,
+			// Every record is written after its body, so this backstop
+			// never expires a record before the body it describes.
+			TTL: message.MinRetentionBackstop,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("provision state bucket %s: %w", BucketName(shard), err)

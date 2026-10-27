@@ -124,10 +124,12 @@ type Usage struct {
 	States   uint64
 }
 
-// NamespaceUsage is one namespace in a message shard enumeration.
+// NamespaceUsage is one namespace in a message shard enumeration. It carries
+// the complete namespace, both allocations included, so a caller without the
+// queue record can still count and clean a namespace holding only state.
 type NamespaceUsage struct {
-	Queue QueueID
-	Usage Usage
+	Namespace Namespace
+	Usage     Usage
 }
 
 // Limits are the store's configured guarantees.
@@ -175,7 +177,8 @@ type Store interface {
 	// written to.
 	Count(ctx context.Context, ns Namespace) (Usage, error)
 	// Namespaces enumerates every namespace whose MessageShard is
-	// messageShard and that holds any message or state record.
+	// messageShard and that holds any message or state record, including
+	// one whose bodies are all deleted but whose state remains.
 	Namespaces(ctx context.Context, messageShard Shard) ([]NamespaceUsage, error)
 
 	// Limits reports the store's configured guarantees.

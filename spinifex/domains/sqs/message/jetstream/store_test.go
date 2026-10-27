@@ -132,6 +132,14 @@ func TestNewProvisionsOnlyTheFixedLayout(t *testing.T) {
 	assert.Equal(t, 1, info.CachedInfo().Config.Replicas, "one node is R1")
 	assert.Equal(t, message.MinRetentionBackstop, info.CachedInfo().Config.MaxAge)
 	assert.Zero(t, info.CachedInfo().State.Consumers)
+	for _, bucket := range []string{"sqs_state_0", "sqs_state_1"} {
+		kv, err := js.KeyValue(ctx, bucket)
+		require.NoError(t, err)
+		status, err := kv.Status(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, message.MinRetentionBackstop, status.TTL(), "%s has the state backstop", bucket)
+		assert.Equal(t, 1, status.Config().Replicas, "%s is R1 on one node", bucket)
+	}
 
 	_, err = sqsjs.New(ctx, js, testConfig)
 	require.NoError(t, err, "provisioning again is idempotent")

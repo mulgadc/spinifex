@@ -83,8 +83,9 @@ func TestMultinodeClusterRestartResumesGuests(t *testing.T) {
 	runClusterRestartResumesGuests(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeOVNRaft is sequential: stops ovn-central on the NB leader to
-// prove DB failover, restoring it in cleanup before later tests run.
+// TestMultinodeOVNRaft is sequential: restarts each node's OVN central in turn,
+// then stops ovn-central on the NB leader to prove DB failover, restoring it
+// in cleanup before later tests run.
 func TestMultinodeOVNRaft(t *testing.T) {
 	runOVNRaft(t, requireMultiNodeFixture(t))
 }

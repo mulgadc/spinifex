@@ -172,6 +172,8 @@ OVN_DBDIR="${OVN_DBDIR:-/var/lib/ovn}"
 # Seconds to wait for the database servers to exit, then for a SIGKILL to land.
 OVN_DB_STOP_WAIT="${OVN_DB_STOP_WAIT:-30}"
 OVN_DB_KILL_WAIT="${OVN_DB_KILL_WAIT:-10}"
+# Seconds to wait for a restarted clustered NB or SB member to rejoin its cluster.
+OVN_RAFT_REJOIN_WAIT="${OVN_RAFT_REJOIN_WAIT:-60}"
 # Records that --management set this node up. Nodes set up before it existed
 # carry only the legacy marker, OVN_CTL_OPTS in /etc/default/ovn-central.
 OVN_ROLE_FILE=/etc/spinifex/ovn-role
@@ -757,6 +759,23 @@ stop_ovn_databases() {
     exit 1
 }
 
+# wait_for_raft_member <ctl> <schema> — waits until this server is a cluster
+# member that knows its leader, which a restarted member is once it rejoins.
+# Returns 1 on timeout.
+wait_for_raft_member() {
+    local ctl=$1 schema=$2 status i
+    for i in $(seq 1 "$OVN_RAFT_REJOIN_WAIT"); do
+        status=$(sudo ovs-appctl -t "$ctl" cluster/status "$schema" 2>/dev/null || true)
+        if grep -qx 'Status: cluster member' <<<"$status" &&
+            grep -q '^Leader: ' <<<"$status" && ! grep -qx 'Leader: unknown' <<<"$status"; then
+            return 0
+        fi
+        echo "  Waiting for $schema to rejoin its RAFT cluster... ($i/$OVN_RAFT_REJOIN_WAIT)"
+        sleep 1
+    done
+    return 1
+}
+
 # --- Step 2: Enable services ---
 # ovn-ctl consults the RAFT flags only when it creates a database, so any
 # existing DB file is served as it stands and the cluster flags are ignored.
@@ -1067,22 +1086,28 @@ EOF
     # with no join step to absorb the window — attaching before the leader is
     # elected (and before northd writes the gateway logical flows) leaves it with
     # a partial datapath that never reconverges. Gate on SB reachable and, when
-    # clustered, an elected leader.
+    # clustered, both members back in their clusters under an elected leader.
     for i in $(seq 1 30); do
-        if sudo "${SBCTL[@]}" --timeout=2 show >/dev/null 2>&1; then
-            if [ -z "$DB_CLUSTER_LOCAL_ADDR" ]; then
-                break
-            fi
-            SB_LEADER=$(sudo ovs-appctl -t /var/run/ovn/ovnsb_db.ctl \
-                cluster/status OVN_Southbound 2>/dev/null \
-                | awk '/^Leader:/{print $2; exit}')
-            if [ -n "$SB_LEADER" ] && [ "$SB_LEADER" != "unknown" ]; then
-                break
-            fi
-        fi
-        echo "  Waiting for OVN SB DB leader... ($i/30)"
+        sudo "${SBCTL[@]}" --timeout=2 show >/dev/null 2>&1 && break
+        echo "  Waiting for OVN SB DB... ($i/30)"
         sleep 1
     done
+
+    # The restart above took both of this node's members down at once. Returning
+    # before they rejoin lets a rerun on the next database node take a second
+    # member of each cluster down, and one of three left is below quorum.
+    if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
+        for member in "/var/run/ovn/ovnnb_db.ctl OVN_Northbound" "/var/run/ovn/ovnsb_db.ctl OVN_Southbound"; do
+            # shellcheck disable=SC2086 # two words: the ctl socket and the schema
+            if ! wait_for_raft_member $member; then
+                echo "ERROR: this node's ${member#* } server is not back in its RAFT cluster after ${OVN_RAFT_REJOIN_WAIT}s." >&2
+                echo "       Restarting OVN central on another database node now would leave the cluster" >&2
+                echo "       without quorum. Check: sudo ovs-appctl -t ${member% *} cluster/status ${member#* }" >&2
+                exit 1
+            fi
+        done
+        echo "  RAFT: NB and SB members rejoined, leader elected"
+    fi
 
     # set-connection replicates through RAFT, so it only runs on the create
     # node. Scoped to loopback, not a wildcard ptcp:6641, because 127.0.0.1

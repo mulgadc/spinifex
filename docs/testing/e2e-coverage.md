@@ -50,6 +50,9 @@ Three nightly cells run it: `nat-single` (cell 19), its Oracle Linux twin (cell 
 
 **`TestMultinodeDNS` convergence budgets are env-tunable.** `SPINIFEX_MULTINODE_DNS_TOPOLOGY_TIMEOUT` (default `90s`) bounds every node agreeing on the NS topology, `SPINIFEX_MULTINODE_DNS_TIMEOUT` (default `2m`) bounds a record becoming answerable from a guest or a node, and `SPINIFEX_MULTINODE_DNS_POLL` (default `3s`) is the poll interval for both. Values are Go durations; a malformed or non-positive value panics rather than falling back to the default.
 
+**`TestMultinodeOVNRaft` restarts each node's OVN central in turn before it kills the NB leader.**
+A `setup-ovn.sh` rerun restarts a node's NB and SB members together, on EL through the one `ovn-northd.service`, so the test does the same on every database node in turn, waits for both members to be back as cluster members under a known leader, and requires an NB write to land after each step and the full quorum with one leader at the end.
+
 **`TestMultinodeIPSec` proves guest traffic is encrypted on the wire, not only that IPsec is configured.**
 It first requires every node to carry the OVS certificate, key and CA pointers, `NB_Global.ipsec=true` never asserted over an unconfigured chassis, and an AES-GCM SA in `ip xfrm state`.
 None of those fails when SAs exist but traffic bypasses them, so it then launches two instances on distinct nodes and sends 200 pings of 1000 bytes between them.

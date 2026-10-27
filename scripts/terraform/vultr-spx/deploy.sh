@@ -268,17 +268,19 @@ wait_api() {
 # public addresses over SSH and is told to put the cluster and Geneve planes on
 # the VPC NIC, which must have the same name on every node.
 form_cluster() {
-    local hosts_file="$STATE_DIR/hosts" vpc_if="" if_here ip_here
+    local hosts_file="$STATE_DIR/hosts" vpc_if="" if_here ip_here pinned
     printf '%s\n' "${IPS[@]}" > "$hosts_file"
     for IP in "${IPS[@]}"; do
         read -r if_here ip_here <<<"$(vpc_addr)"
         [ -n "$ip_here" ] || die "no VPC address on $IP"
         [ -z "$vpc_if" ] || [ "$vpc_if" = "$if_here" ] || die "VPC NIC is $vpc_if on one node and $if_here on $IP"
         vpc_if="$if_here"
-        # install-node.sh reads ~/.ssh/known_hosts; Vultr reuses addresses, so
+        # install-node.sh reads ~/.ssh/known_hosts and Vultr reuses addresses, so
         # replace any older key for this one with the key this deployment pinned.
+        # -F, not grep: ssh_config usually hashes the entries.
+        pinned="$(ssh-keygen -F "$IP" -f "$KNOWN_HOSTS" | grep -v '^#')" || die "no pinned host key for $IP in $KNOWN_HOSTS"
         ssh-keygen -R "$IP" >/dev/null 2>&1 || true
-        grep "^$IP " "$KNOWN_HOSTS" >> "$HOME/.ssh/known_hosts"
+        printf '%s\n' "$pinned" >> "$HOME/.ssh/known_hosts"
     done
     log "forming ${#IPS[@]} nodes with install-node.sh (cluster plane $vpc_if)"
     "$SPINIFEX_SRC/scripts/install-node.sh" --hosts-file "$hosts_file" --user root --identity "$SSH_KEY" \

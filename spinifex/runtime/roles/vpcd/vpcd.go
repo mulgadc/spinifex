@@ -145,6 +145,9 @@ type Config struct {
 	// to scope its IntentState scan to local-AZ KV records; new VPC records
 	// are stamped with this value at create time.
 	AZ string
+	// Region is this node's configured region. IMDS serves it as
+	// placement/region and in the identity document and hostnames.
+	Region string
 	// NorthstarBaseDomain is the cluster's authoritative base domain (northstar
 	// default_domain, e.g. "spx3.net"). IMDS uses it to serve public-hostname.
 	// Empty disables the public-hostname metadata key.
@@ -605,6 +608,7 @@ func launchService(cfg *Config) error {
 		cfg.LocalVMs,
 		records,
 		listTaps,
+		cfg.Region,
 		cfg.NorthstarBaseDomain,
 		cfg.NorthstarInternalDomain,
 		cfg.ServicesDomain,

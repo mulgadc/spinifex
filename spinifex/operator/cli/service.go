@@ -816,6 +816,7 @@ var vpcdStartCmd = &cobra.Command{
 			ExternalInterface:       nodeConfig.VPCD.ExternalInterface,
 			BridgeMode:              nodeConfig.VPCD.BridgeMode,
 			AZ:                      nodeConfig.AZ,
+			Region:                  nodeConfig.Region,
 			NorthstarBaseDomain:     dns.ResolveBaseDomain(&nodeConfig),
 			NorthstarInternalDomain: dns.ResolveInternalDomain(&nodeConfig),
 			ServicesDomain:          clusterConfig.AWS.ServicesDomain,

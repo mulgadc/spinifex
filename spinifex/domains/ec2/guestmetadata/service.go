@@ -75,6 +75,7 @@ type IMDSServiceImpl struct {
 	tapResp        *tapResponderManager
 	listTaps       listTapsFunc
 	now            func() time.Time
+	region         string
 	baseDomain     string
 	internalDomain string
 	servicesDomain string
@@ -82,7 +83,9 @@ type IMDSServiceImpl struct {
 }
 
 // NewIMDSServiceImpl wires the IMDS service. listTaps is injected to avoid a
-// network/host import cycle. baseDomain and internalDomain are the cluster's
+// network/host import cycle. region is this node's configured region, served as
+// placement/region and in the identity document and hostnames; it is not
+// derived from the zone name. baseDomain and internalDomain are the cluster's
 // authoritative public and private (AWS-parity) DNS domains, used for
 // public-hostname and local-hostname so IMDS matches the records the DNS writer
 // publishes. servicesDomain is the cluster's configured AWS.ServicesDomain,
@@ -99,7 +102,7 @@ type IMDSServiceImpl struct {
 // nil, degrading that source to a miss rather than failing IMDS to start —
 // the caller (vpcd) owns their construction and availability.
 // ctx bounds the bucket opens only; each served request carries its own.
-func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState LocalStateReader, records RecordLoader, listTaps listTapsFunc, baseDomain, internalDomain, servicesDomain, caCertPath string, resolverIPs []string, bind HostBindAddrs) (*IMDSServiceImpl, error) {
+func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState LocalStateReader, records RecordLoader, listTaps listTapsFunc, region, baseDomain, internalDomain, servicesDomain, caCertPath string, resolverIPs []string, bind HostBindAddrs) (*IMDSServiceImpl, error) {
 	if bind.Meta == "" || bind.DNS == "" {
 		return nil, errors.New("IMDS host bind addresses required (use NewHostBindAddrs)")
 	}
@@ -173,6 +176,7 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 		pubKeys:        pubKeys,
 		listTaps:       listTaps,
 		now:            time.Now,
+		region:         region,
 		baseDomain:     baseDomain,
 		internalDomain: internalDomain,
 		servicesDomain: servicesDomain,

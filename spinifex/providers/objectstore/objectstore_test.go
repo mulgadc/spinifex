@@ -110,13 +110,15 @@ func TestMemoryObjectStore_Delete(t *testing.T) {
 func TestMemoryObjectStore_DeleteNonExistent(t *testing.T) {
 	store := NewMemoryObjectStore()
 
-	// Deleting non-existent should not error (matches S3 behavior)
+	// Predastore answers NoSuchKey for an absent key; the fake must too.
 	deleteInput := &s3.DeleteObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("never-existed"),
 	}
 	_, err := store.DeleteObject(t.Context(), deleteInput)
-	assert.NoError(t, err)
+	var noSuchKey *NoSuchKeyError
+	require.ErrorAs(t, err, &noSuchKey)
+	assert.Equal(t, "never-existed", noSuchKey.Key)
 }
 
 func TestMemoryObjectStore_ListObjects(t *testing.T) {

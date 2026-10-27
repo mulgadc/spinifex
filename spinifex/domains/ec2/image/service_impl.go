@@ -1161,7 +1161,7 @@ func (s *ImageServiceImpl) DeregisterImage(ctx context.Context, input *ec2.Dereg
 		return nil, err
 	}
 
-	if err := s.metadata.DeleteAMI(ctx, imageID); err != nil {
+	if err := s.metadata.DeleteAMI(ctx, imageID); err != nil && !objectstore.IsNoSuchKeyError(err) {
 		slog.ErrorContext(ctx, "DeregisterImage: failed to delete AMI document", "imageId", imageID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}

@@ -12,21 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// strictDeleteStore answers a delete of an absent key with NoSuchKey, which is
-// what Predastore does. MemoryObjectStore silently succeeds instead, so a
-// handler that treats a missing key as a failure passes every test and still
-// breaks in production.
-type strictDeleteStore struct {
-	*objectstore.MemoryObjectStore
-}
-
-func (s strictDeleteStore) DeleteObject(ctx context.Context, input *awss3.DeleteObjectInput) (*awss3.DeleteObjectOutput, error) {
-	if _, err := s.HeadObject(ctx, &awss3.HeadObjectInput{Bucket: input.Bucket, Key: input.Key}); err != nil {
-		return nil, err
-	}
-	return s.MemoryObjectStore.DeleteObject(ctx, input)
-}
-
 // TestDeregisterImage_NoLegacyConfig covers every AMI created since the
 // metadata store landed: they have no {imageID}/config.json, so deleting one
 // answers NoSuchKey. Treating that as a failure returned InternalError after
@@ -34,7 +19,7 @@ func (s strictDeleteStore) DeleteObject(ctx context.Context, input *awss3.Delete
 // InvalidAMIID.NotFound for an image it had just been told it could not delete.
 func TestDeregisterImage_NoLegacyConfig(t *testing.T) {
 	mem := objectstore.NewMemoryObjectStore()
-	svc := NewImageServiceImplWithStore(strictDeleteStore{MemoryObjectStore: mem}, testBucket)
+	svc := NewImageServiceImplWithStore(mem, testBucket)
 
 	amiID := "ami-nolegacy001"
 	createTestAMIConfigWithOwner(t, mem, amiID, "no-legacy-config", testAccountID)
@@ -49,4 +34,28 @@ func TestDeregisterImage_NoLegacyConfig(t *testing.T) {
 	})
 	require.Error(t, getErr)
 	assert.True(t, objectstore.IsNoSuchKeyError(getErr), "the AMI document must still be deleted")
+}
+
+// racingDeleteStore lets a concurrent deleter win every DeleteObject, so the
+// caller's own delete answers NoSuchKey as Predastore would.
+type racingDeleteStore struct {
+	*objectstore.MemoryObjectStore
+}
+
+func (s racingDeleteStore) DeleteObject(ctx context.Context, input *awss3.DeleteObjectInput) (*awss3.DeleteObjectOutput, error) {
+	_, _ = s.MemoryObjectStore.DeleteObject(ctx, input)
+	return s.MemoryObjectStore.DeleteObject(ctx, input)
+}
+
+// Two deregisters that both pass the ownership read race to delete the
+// document; the loser's NoSuchKey means the image is already gone.
+func TestDeregisterImage_ConcurrentlyDeletedDocumentIsSuccess(t *testing.T) {
+	mem := objectstore.NewMemoryObjectStore()
+	svc := NewImageServiceImplWithStore(racingDeleteStore{MemoryObjectStore: mem}, testBucket)
+
+	amiID := "ami-racing00001"
+	createTestAMIConfigWithOwner(t, mem, amiID, "racing-deregister", testAccountID)
+
+	_, err := svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
+	require.NoError(t, err)
 }

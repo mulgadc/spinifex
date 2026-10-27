@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/message"
@@ -20,8 +22,25 @@ import (
 // server acts on.
 const metaHeaderPrefix = "Sqs-Meta-"
 
-// ErrUnsupportedTopology reports a cluster size the store does not run on.
-var ErrUnsupportedTopology = errors.New("sqs message store: unsupported topology")
+// stateShardHeader records a message's StateShard, so a feed reader can
+// rebuild the complete namespace. It is outside metaHeaderPrefix and is
+// never returned as metadata.
+const stateShardHeader = "Sqs-State-Shard"
+
+// feedInactiveThreshold bounds how long the server keeps a feed's
+// ephemeral consumer after its reader vanishes without Close.
+const feedInactiveThreshold = time.Minute
+
+// feedCloseTimeout bounds Close's consumer delete.
+const feedCloseTimeout = 5 * time.Second
+
+var (
+	// ErrUnsupportedTopology reports a cluster size the store does not run on.
+	ErrUnsupportedTopology = errors.New("sqs message store: unsupported topology")
+	// ErrCorruptRecord reports a stored message whose subject or internal
+	// header cannot be decoded into a namespace.
+	ErrCorruptRecord = errors.New("sqs message store: corrupt record")
+)
 
 // Store is the JetStream message store over one dedicated server connection.
 type Store struct {
@@ -95,7 +114,9 @@ func (s *Store) Append(ctx context.Context, ns message.Namespace, in message.App
 	if err := ns.Validate(); err != nil {
 		return message.AppendResult{}, err
 	}
-	msg := &nats.Msg{Subject: Subject(ns), Data: in.Body, Header: nats.Header{}}
+	msg := &nats.Msg{Subject: Subject(ns), Data: in.Body, Header: nats.Header{
+		stateShardHeader: []string{strconv.FormatUint(uint64(ns.StateShard), 10)},
+	}}
 	for k, v := range in.Meta {
 		if err := validMeta(k, v); err != nil {
 			return message.AppendResult{}, err
@@ -255,8 +276,14 @@ func (s *Store) Get(ctx context.Context, ns message.Namespace, pos message.Posit
 	if err != nil {
 		return message.Message{}, err
 	}
+	return message.Message{Position: pos, Body: raw.Data, Meta: domainMeta(raw.Header)}, nil
+}
+
+// domainMeta returns only the domain's metadata headers, never the store's
+// internal ones; nil when there are none.
+func domainMeta(h nats.Header) map[string]string {
 	var meta map[string]string
-	for k, v := range raw.Header {
+	for k, v := range h {
 		if name, ok := strings.CutPrefix(k, metaHeaderPrefix); ok && len(v) > 0 {
 			if meta == nil {
 				meta = map[string]string{}
@@ -264,7 +291,7 @@ func (s *Store) Get(ctx context.Context, ns message.Namespace, pos message.Posit
 			meta[name] = v[0]
 		}
 	}
-	return message.Message{Position: pos, Body: raw.Data, Meta: meta}, nil
+	return meta
 }
 
 // Delete removes one message of the namespace. A position that is absent
@@ -364,3 +391,121 @@ func (s *Store) DeleteNamespace(ctx context.Context, ns message.Namespace) error
 
 // Limits reports the configured duplicate window and the stream backstop.
 func (s *Store) Limits() message.Limits { return s.limits }
+
+// Feed reads the message shard's stream after the cursor through an
+// ephemeral, in-memory, AckNone, headers-only ordered consumer that Close
+// deletes. It opens a retained historical stream but never creates one.
+func (s *Store) Feed(ctx context.Context, messageShard message.Shard, after message.Cursor) (message.Feed, error) {
+	// Any valid queue ID resolves the stream; only the shard selects it.
+	stream, err := s.stream(ctx, message.Namespace{MessageShard: messageShard, Queue: "feed"})
+	if err != nil {
+		return nil, err
+	}
+	cfg := jsapi.OrderedConsumerConfig{
+		DeliverPolicy:     jsapi.DeliverAllPolicy,
+		HeadersOnly:       true,
+		InactiveThreshold: feedInactiveThreshold,
+	}
+	switch {
+	case after == math.MaxUint64:
+		// No position follows the maximum cursor; only new appends can.
+		cfg.DeliverPolicy = jsapi.DeliverNewPolicy
+	case after > 0:
+		cfg.DeliverPolicy = jsapi.DeliverByStartSequencePolicy
+		cfg.OptStartSeq = uint64(after) + 1
+	}
+	consumer, err := stream.OrderedConsumer(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("open feed on %s: %w", StreamName(messageShard), err)
+	}
+	it, err := consumer.Messages()
+	if err != nil {
+		// The consumer already exists server-side and no Feed owns it.
+		_ = deleteFeedConsumer(stream, consumer)
+		return nil, fmt.Errorf("open feed on %s: %w", StreamName(messageShard), err)
+	}
+	return &feed{shard: messageShard, stream: stream, consumer: consumer, it: it}, nil
+}
+
+// deleteFeedConsumer removes a feed's server-side consumer, if it was
+// created, within feedCloseTimeout.
+func deleteFeedConsumer(stream jsapi.Stream, consumer jsapi.Consumer) error {
+	info := consumer.CachedInfo()
+	if info == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), feedCloseTimeout)
+	defer cancel()
+	if err := stream.DeleteConsumer(ctx, info.Name); err != nil && !errors.Is(err, jsapi.ErrConsumerNotFound) {
+		return err
+	}
+	return nil
+}
+
+type feed struct {
+	shard    message.Shard
+	stream   jsapi.Stream
+	consumer jsapi.Consumer
+	it       jsapi.MessagesContext
+}
+
+var _ message.Feed = (*feed)(nil)
+
+// Next returns the next append on the shard. A record that cannot be
+// decoded is returned as ErrCorruptRecord, and the feed moves past it.
+func (f *feed) Next(ctx context.Context) (message.Change, error) {
+	msg, err := f.it.Next(jsapi.NextContext(ctx))
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return message.Change{}, ctxErr
+		}
+		return message.Change{}, fmt.Errorf("feed on %s: %w", StreamName(f.shard), err)
+	}
+	md, err := msg.Metadata()
+	if err != nil {
+		return message.Change{}, fmt.Errorf("feed on %s: %w", StreamName(f.shard), err)
+	}
+	ns, err := decodeNamespace(f.shard, msg.Subject(), msg.Headers())
+	if err != nil {
+		return message.Change{}, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(f.shard), md.Sequence.Stream, err)
+	}
+	return message.Change{
+		Namespace: ns,
+		Position:  message.Position(md.Sequence.Stream),
+		Meta:      domainMeta(msg.Headers()),
+		Cursor:    message.Cursor(md.Sequence.Stream),
+	}, nil
+}
+
+// decodeNamespace rebuilds a namespace from a stored subject and header,
+// refusing anything it would have to guess.
+func decodeNamespace(shard message.Shard, subject string, h nats.Header) (message.Namespace, error) {
+	prefix := "sqs.m." + strconv.FormatUint(uint64(shard), 10) + "."
+	queue, ok := strings.CutPrefix(subject, prefix)
+	if !ok {
+		return message.Namespace{}, fmt.Errorf("subject %q is not on message shard %d", subject, shard)
+	}
+	values := h.Values(stateShardHeader)
+	if len(values) != 1 {
+		return message.Namespace{}, fmt.Errorf("%d %s headers", len(values), stateShardHeader)
+	}
+	state, err := strconv.ParseUint(values[0], 10, 32)
+	if err != nil {
+		return message.Namespace{}, fmt.Errorf("%s %q: %w", stateShardHeader, values[0], err)
+	}
+	ns := message.Namespace{MessageShard: shard, StateShard: message.Shard(state), Queue: message.QueueID(queue)}
+	if err := ns.Validate(); err != nil {
+		return message.Namespace{}, err
+	}
+	return ns, nil
+}
+
+// Close stops the feed and deletes its server-side consumer, which would
+// otherwise linger until its inactive threshold.
+func (f *feed) Close() error {
+	f.it.Stop()
+	if err := deleteFeedConsumer(f.stream, f.consumer); err != nil {
+		return fmt.Errorf("close feed on %s: %w", StreamName(f.shard), err)
+	}
+	return nil
+}

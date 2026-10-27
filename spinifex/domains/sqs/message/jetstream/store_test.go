@@ -612,3 +612,203 @@ func TestDeleteNamespaceWithUndeclaredStateShardDeletesNothing(t *testing.T) {
 	requireUsage(t, s, valid, message.Usage{Messages: 1, States: 1})
 	assert.Equal(t, before, streamNames(t, js), "the resource layout is unchanged")
 }
+
+func openFeed(t *testing.T, s *sqsjs.Store, shard message.Shard, after message.Cursor) message.Feed {
+	t.Helper()
+	f, err := s.Feed(context.Background(), shard, after)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+	return f
+}
+
+func nextChange(t *testing.T, f message.Feed) message.Change {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := f.Next(ctx)
+	require.NoError(t, err)
+	return c
+}
+
+func requireFeedIdle(t *testing.T, f message.Feed) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := f.Next(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func consumerCount(t *testing.T, js jsapi.JetStream, stream string) int {
+	t.Helper()
+	info, err := js.Stream(context.Background(), stream)
+	require.NoError(t, err)
+	si, err := info.Info(context.Background())
+	require.NoError(t, err)
+	return si.State.Consumers
+}
+
+// TestFeedReconstructsNamespaces: one shared stream carries several queues
+// with different state shards; each change names its complete namespace and
+// only domain metadata.
+func TestFeedReconstructsNamespaces(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	a, b, other := ns(1, 0, "qa"), ns(1, 1, "qb"), ns(2, 1, "qa")
+	pa, err := s.Append(ctx, a, message.AppendInput{Body: []byte("secret-a"), Meta: map[string]string{"sent": "1"}})
+	require.NoError(t, err)
+	appendTo(t, s, other, "other shard")
+	pb := appendTo(t, s, b, "secret-b")
+
+	f := openFeed(t, s, 1, 0)
+	assert.Equal(t, message.Change{Namespace: a, Position: pa.Position, Meta: map[string]string{"sent": "1"}, Cursor: message.Cursor(pa.Position)}, nextChange(t, f))
+	assert.Equal(t, message.Change{Namespace: b, Position: pb, Cursor: message.Cursor(pb)}, nextChange(t, f))
+	requireFeedIdle(t, f)
+
+	got, err := s.Get(ctx, a, pa.Position)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"sent": "1"}, got.Meta, "the internal state shard header is not metadata")
+}
+
+// TestFeedDeliversNoBody: the feed is headers-only; a body never reaches it.
+func TestFeedDeliversNoBody(t *testing.T) {
+	s, js := newStore(t)
+	appendTo(t, s, ns(0, 0, "q"), "body bytes")
+	f := openFeed(t, s, 0, 0)
+	nextChange(t, f)
+
+	stream, err := js.Stream(context.Background(), sqsjs.StreamName(0))
+	require.NoError(t, err)
+	consumers := stream.ListConsumers(context.Background())
+	var seen int
+	for info := range consumers.Info() {
+		seen++
+		assert.True(t, info.Config.HeadersOnly, "headers only")
+		assert.Equal(t, jsapi.AckNonePolicy, info.Config.AckPolicy, "no acknowledgement state")
+		assert.Empty(t, info.Config.Durable, "ephemeral")
+		assert.True(t, info.Config.MemoryStorage, "in memory")
+	}
+	require.NoError(t, consumers.Err())
+	assert.Equal(t, 1, seen)
+}
+
+func TestFeedOrderResumeAndDeletedOmission(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	q := ns(0, 1, "q")
+	p1, p2, p3 := appendTo(t, s, q, "1"), appendTo(t, s, q, "2"), appendTo(t, s, q, "3")
+	require.NoError(t, s.Delete(ctx, q, p2))
+
+	f := openFeed(t, s, 0, 0)
+	c1 := nextChange(t, f)
+	assert.Equal(t, p1, c1.Position)
+	assert.Equal(t, p3, nextChange(t, f).Position, "a deleted body is not fed")
+	requireFeedIdle(t, f)
+
+	resumed := openFeed(t, s, 0, c1.Cursor)
+	assert.Equal(t, p3, nextChange(t, resumed).Position, "resume starts after the cursor")
+	requireFeedIdle(t, resumed)
+}
+
+func TestFeedWakesOnLiveAppend(t *testing.T) {
+	s, _ := newStore(t)
+	q := ns(2, 0, "q")
+	f := openFeed(t, s, 2, 0)
+	got := make(chan message.Change, 1)
+	go func() {
+		c, err := f.Next(context.Background())
+		if err == nil {
+			got <- c
+		}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	p := appendTo(t, s, q, "live")
+	select {
+	case c := <-got:
+		assert.Equal(t, message.Change{Namespace: q, Position: p, Cursor: message.Cursor(p)}, c)
+	case <-time.After(5 * time.Second):
+		t.Fatal("feed did not wake for a live append")
+	}
+}
+
+func TestFeedNextHonoursContext(t *testing.T) {
+	s, _ := newStore(t)
+	f := openFeed(t, s, 0, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := f.Next(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+
+	p := appendTo(t, s, ns(0, 0, "q"), "after cancel")
+	assert.Equal(t, p, nextChange(t, f).Position, "a cancelled Next does not end the feed")
+}
+
+func TestFeedCloseLeavesNoConsumer(t *testing.T) {
+	s, js := newStore(t)
+	appendTo(t, s, ns(1, 0, "q"), "x")
+	f, err := s.Feed(context.Background(), 1, 0)
+	require.NoError(t, err)
+	nextChange(t, f)
+	require.Equal(t, 1, consumerCount(t, js, sqsjs.StreamName(1)))
+	require.NoError(t, f.Close())
+	assert.Equal(t, 0, consumerCount(t, js, sqsjs.StreamName(1)))
+}
+
+func TestFeedRejectsMalformedStateShardHeader(t *testing.T) {
+	s, js := newStore(t)
+	ctx := context.Background()
+	q := ns(0, 0, "q")
+	subject := sqsjs.Subject(q)
+	for _, h := range []nats.Header{
+		{},
+		{"Sqs-State-Shard": []string{"x"}},
+		{"Sqs-State-Shard": []string{"1", "2"}},
+	} {
+		_, err := js.PublishMsg(ctx, &nats.Msg{Subject: subject, Header: h})
+		require.NoError(t, err)
+	}
+	good := appendTo(t, s, q, "good")
+
+	f := openFeed(t, s, 0, 0)
+	for range 3 {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := f.Next(ctx)
+		cancel()
+		require.ErrorIs(t, err, sqsjs.ErrCorruptRecord)
+	}
+	assert.Equal(t, good, nextChange(t, f).Position, "the feed moves past a corrupt record")
+}
+
+func TestFeedOpensRetainedStreamButCreatesNone(t *testing.T) {
+	dir := t.TempDir()
+	srv, js := startServer(t, dir)
+	ctx := context.Background()
+	wide, err := sqsjs.New(ctx, js, testConfig)
+	require.NoError(t, err)
+	old := ns(2, 1, "old")
+	p := appendTo(t, wide, old, "kept")
+	srv.Shutdown()
+	srv.WaitForShutdown()
+
+	_, js = startServer(t, dir)
+	narrow, err := sqsjs.New(ctx, js, sqsjs.Config{MessageStreams: 1, StateBuckets: 1, DuplicateWindow: time.Minute})
+	require.NoError(t, err)
+	f := openFeed(t, narrow, 2, 0)
+	assert.Equal(t, message.Change{Namespace: old, Position: p, Cursor: message.Cursor(p)}, nextChange(t, f))
+
+	before := streamNames(t, js)
+	_, err = narrow.Feed(ctx, 9, 0)
+	require.Error(t, err)
+	assert.Equal(t, before, streamNames(t, js))
+}
+
+// TestFeedAfterMaximumCursorReplaysNothing: no position follows the maximum
+// cursor, so the feed must not wrap to the start of the stream.
+func TestFeedAfterMaximumCursorReplaysNothing(t *testing.T) {
+	s, _ := newStore(t)
+	q := ns(0, 0, "q")
+	appendTo(t, s, q, "existing")
+	f := openFeed(t, s, 0, message.Cursor(math.MaxUint64))
+	requireFeedIdle(t, f)
+	p := appendTo(t, s, q, "new")
+	assert.Equal(t, p, nextChange(t, f).Position, "only a new append is fed")
+}

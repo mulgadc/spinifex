@@ -1384,3 +1384,24 @@ func TestNodegroupCalls_MissingNodegroupVsMissingCluster(t *testing.T) {
 		})
 	}
 }
+
+func TestNodegroupCalls_UnreadableClusterSurfacesError(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	ctx := t.Context()
+	_, err := f.kv.Put(ctx, ClusterMetaKey("c1"), []byte("{not json"))
+	require.NoError(t, err)
+	require.NoError(t, PutNodegroupRecord(ctx, f.kv, &NodegroupRecord{ClusterName: "c1", Name: "ng1"}))
+
+	_, err = f.svc.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
+		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
+	}, testAccountID)
+	require.ErrorContains(t, err, "unmarshal cluster meta")
+
+	_, err = f.svc.DeleteNodegroup(ctx, &eks.DeleteNodegroupInput{
+		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
+	}, testAccountID)
+	require.ErrorContains(t, err, "unmarshal cluster meta")
+	_, err = GetNodegroupRecord(ctx, f.kv, "c1", "ng1")
+	require.NoError(t, err, "a failed cluster read must not delete the node group")
+}

@@ -1941,6 +1941,11 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	// Only IPv4 targets are supported, matching SetIpAddressType on the LB.
+	if input.IpAddressType != nil && *input.IpAddressType != "" && *input.IpAddressType != IPAddressTypeIPv4 {
+		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
+	}
+
 	// Use NLB health check defaults for NLB protocols.
 	var hc HealthCheckConfig
 	switch protocol {
@@ -2011,7 +2016,7 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 	slog.InfoContext(ctx, "CreateTargetGroup completed", "name", name, "tgArn", tgArn, "accountID", accountID)
 
 	return &elbv2.CreateTargetGroupOutput{
-		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(record)},
+		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(record, nil)},
 	}, nil
 }
 
@@ -2069,8 +2074,14 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.M
 
 	slog.InfoContext(ctx, "ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
 
+	tgLBs, err := s.targetGroupLoadBalancers(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "ModifyTargetGroup: failed to resolve load balancers", "arn", tg.TargetGroupArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	return &elbv2.ModifyTargetGroupOutput{
-		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(tg)},
+		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(tg, tgLBs[tg.TargetGroupArn])},
 	}, nil
 }
 
@@ -2153,6 +2164,12 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	tgLBs, err := s.targetGroupLoadBalancers(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "DescribeTargetGroups: failed to resolve load balancers", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	arnFilter := make(map[string]bool)
 	for _, arn := range input.TargetGroupArns {
 		if arn != nil {
@@ -2193,7 +2210,7 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 				continue
 			}
 		}
-		result = append(result, s.tgRecordToSDK(tg))
+		result = append(result, s.tgRecordToSDK(tg, tgLBs[tg.TargetGroupArn]))
 	}
 
 	return &elbv2.DescribeTargetGroupsOutput{
@@ -3230,10 +3247,65 @@ func (s *ELBv2ServiceImpl) lbRecordToSDK(ctx context.Context, r *LoadBalancerRec
 	return lb
 }
 
-func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord) *elbv2.TargetGroup {
+// targetGroupLoadBalancers maps each target group ARN to the live load
+// balancers whose listener default actions or rules forward to it.
+func (s *ELBv2ServiceImpl) targetGroupLoadBalancers(ctx context.Context) (map[string][]string, error) {
+	lbs, err := s.store.ListLoadBalancers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	liveLB := make(map[string]bool, len(lbs))
+	for _, lb := range lbs {
+		liveLB[lb.LoadBalancerArn] = true
+	}
+	listeners, err := s.store.ListListeners(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := s.store.ListRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string][]string)
+	seen := make(map[[2]string]bool)
+	add := func(tgArn, lbArn string) {
+		key := [2]string{tgArn, lbArn}
+		if tgArn == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		result[tgArn] = append(result[tgArn], lbArn)
+	}
+
+	listenerLB := make(map[string]string, len(listeners))
+	for _, l := range listeners {
+		if !liveLB[l.LoadBalancerArn] {
+			continue
+		}
+		listenerLB[l.ListenerArn] = l.LoadBalancerArn
+		for _, a := range l.DefaultActions {
+			add(a.TargetGroupArn, l.LoadBalancerArn)
+		}
+	}
+	for _, r := range rules {
+		lbArn, ok := listenerLB[r.ListenerArn]
+		if !ok {
+			continue
+		}
+		for _, a := range r.Actions {
+			add(a.TargetGroupArn, lbArn)
+		}
+	}
+	return result, nil
+}
+
+func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord, lbArns []string) *elbv2.TargetGroup {
 	tg := &elbv2.TargetGroup{
 		TargetGroupArn:             aws.String(r.TargetGroupArn),
 		TargetGroupName:            aws.String(r.Name),
+		IpAddressType:              aws.String(IPAddressTypeIPv4),
+		LoadBalancerArns:           aws.StringSlice(lbArns),
 		Protocol:                   aws.String(r.Protocol),
 		Port:                       aws.Int64(r.Port),
 		VpcId:                      aws.String(r.VpcId),

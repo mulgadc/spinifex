@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/route53"
+	"github.com/miekg/dns"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -179,6 +180,9 @@ func toRRSet(zone string, in *route53.ResourceRecordSet) (RRSet, error) {
 	if err := validateRecordName(name, zone); err != nil {
 		return RRSet{}, awserrors.Errorf(awserrors.ErrorInvalidChangeBatch, "%s", messageOf(err))
 	}
+	if strings.HasPrefix(name, "*.") && name != "*."+zone {
+		return RRSet{}, awserrors.Errorf(awserrors.ErrorInvalidInput, "wildcard records are supported only directly below the zone apex, as *.%s", zone)
+	}
 	if in.TTL == nil {
 		return RRSet{}, awserrors.Errorf(awserrors.ErrorInvalidChangeBatch, "Invalid request: Expected exactly one of [AliasTarget, all of [TTL, and ResourceRecords]], but found none in Change with [Name=%s, Type=%s, SetIdentifier=null]", name, rrType)
 	}
@@ -240,6 +244,9 @@ func validateValue(rrType, v string) error {
 	case "SOA":
 		if len(f) != 7 {
 			return fmt.Errorf("value %q is not a seven-field SOA", v)
+		}
+		if _, err := dns.NewRR(". 0 IN SOA " + v); err != nil {
+			return fmt.Errorf("value %q is not a valid SOA", v)
 		}
 	case "TXT", "SPF":
 		if _, err := characterStrings(v); err != nil {

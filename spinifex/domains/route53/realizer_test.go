@@ -345,6 +345,25 @@ func TestRealizerQualifiesTargetsWithoutATrailingDot(t *testing.T) {
 	assert.Equal(t, "10 mail.example.com", *out.ResourceRecordSets[0].ResourceRecords[0].Value, "the stored value stays as entered, as in AWS")
 }
 
+// Route 53 serves the SOA record set as stored, so an edit to it is served too.
+func TestRealizerPublishesTheStoredSOA(t *testing.T) {
+	svc := newService(t)
+	ns := newFakeNorthstar(1)
+	r := newRealizer(svc, ns)
+	id := createZone(t, svc, acctA, "example.com")
+	setState(t, svc, acctA, id, route53.StateActive)
+	const soa = "ns1.spx3.net. ops.example.com. 7 3600 600 604800 300"
+	_, err := apply(svc, acctA, id, change("UPSERT", "example.com", "SOA", 1200, soa))
+	require.NoError(t, err)
+
+	_, err = r.Reconcile(ctx)
+	require.NoError(t, err)
+	domain := ns.zone(t, "example.com").Domain
+	assert.Equal(t, soa, domain.SOARecord)
+	assert.Equal(t, uint32(1200), domain.SOATTL)
+	assert.Equal(t, "ns1.spx3.net.", domain.SOA)
+}
+
 func TestTXTValuesAreValidatedAsCharacterStrings(t *testing.T) {
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")

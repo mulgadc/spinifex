@@ -259,6 +259,8 @@ func TestChangeBatchValidation(t *testing.T) {
 		{"unsupported type", change("CREATE", "ds.example.com", "DS", 60, "1 2 3 abc"), awserrors.ErrorInvalidInput, "not supported"},
 		{"negative TTL", change("CREATE", "t.example.com", "A", -1, "192.0.2.1"), awserrors.ErrorInvalidInput, "out of range"},
 		{"no values", change("CREATE", "e.example.com", "A", 60), awserrors.ErrorInvalidInput, "at least one record"},
+		{"wildcard below apex", change("CREATE", "*.sub.example.com", "A", 60, "192.0.2.1"), awserrors.ErrorInvalidInput, "directly below the zone apex"},
+		{"malformed SOA", change("UPSERT", "example.com", "SOA", 900, "ns1.spx3.net. hostmaster.spx3.net. one 7200 900 1209600 86400"), awserrors.ErrorInvalidChangeBatch, "not a valid SOA"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

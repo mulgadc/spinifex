@@ -15,8 +15,8 @@ import (
 // output depends only on its inputs, so the same version always renders to
 // the same bytes and its digest identifies what northstar should be serving.
 //
-// Northstar synthesizes the SOA from the first field of the stored SOA value,
-// so the record set itself is not emitted.
+// The SOA record set goes into the zone header rather than the records, which
+// is where northstar reads the SOA it serves.
 func renderZone(zone *ZoneRecord, doc *RRSetsDoc) ([]byte, error) {
 	apex := strings.TrimSuffix(zone.Name, ".")
 	cfg := nsconfig.ConfigArr{
@@ -37,6 +37,8 @@ func renderZone(zone *ZoneRecord, doc *RRSetsDoc) ([]byte, error) {
 			if f := strings.Fields(set.Values[0]); len(f) > 0 {
 				cfg.Domain.SOA = f[0]
 			}
+			cfg.Domain.SOARecord = set.Values[0]
+			cfg.Domain.SOATTL = uint32(set.TTL) //nolint:gosec // TTL is validated to at most maxTTL
 			continue
 		}
 		rtype, ok := dns.StringToType[set.Type]

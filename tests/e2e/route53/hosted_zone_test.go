@@ -49,7 +49,7 @@ func TestHostedZoneServedOnceDelegated(t *testing.T) {
 	owner := newTenant(t, env, "r53-owner")
 	c := owner.Client.Route53
 	name := fmt.Sprintf("z%d.r53e2e.%s", time.Now().UnixNano()%1_000_000_000, base)
-	www, api := "www."+name, "api."+name
+	www, api, alias := "www."+name, "api."+name, "alias."+name
 
 	harness.Phase(t, "Route 53 — create %s", name)
 	created, err := c.CreateHostedZone(&r53.CreateHostedZoneInput{Name: aws.String(name), CallerReference: aws.String(name)})
@@ -74,6 +74,7 @@ func TestHostedZoneServedOnceDelegated(t *testing.T) {
 			rrset("CREATE", www, "A", wwwAddr),
 			rrset("CREATE", name, "TXT", `"`+txtMark+`"`),
 			rrset("CREATE", name, "MX", fmt.Sprintf("%d mail.%s.", mxPref, name)),
+			rrset("CREATE", alias, "CNAME", www),
 		}},
 	})
 	require.NoError(t, err)
@@ -100,6 +101,8 @@ func TestHostedZoneServedOnceDelegated(t *testing.T) {
 		harness.EventuallyErr(t, func() error { return wantAddr(node, www, wwwAddr) }, syncTimeout, 5*time.Second)
 		require.NoError(t, wantTXT(node, name, txtMark))
 		require.NoError(t, wantMX(node, name, "mail."+name+"."))
+		require.NoError(t, wantAddr(node, alias, wwwAddr), "an A query at a CNAME with an undotted target")
+		require.NoError(t, wantNS(node, name, nameservers), "the zone's NS set, not merged with the delegation")
 	}
 
 	harness.Phase(t, "Route 53 — a change is INSYNC only once every node serves it")

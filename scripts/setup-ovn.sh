@@ -1958,16 +1958,21 @@ echo "Step 10: Enabling OVN auto-start on boot..."
 sudo systemctl enable "$OVS_UNIT" 2>/dev/null || true
 sudo systemctl enable ovn-controller 2>/dev/null || true
 printf '  %-21s enabled on boot\n' "${OVS_UNIT%.service}:" ovn-controller:
-if distro_has_libreswan; then
-    # OVN IPsec does not run on libreswan yet, so it stays off here. Starting
-    # openvswitch-ipsec would also start pluto, which listens on UDP 500/4500.
+if distro_has_libreswan && [ "$(systemctl is-active openvswitch-ipsec.service 2>/dev/null)" = active ]; then
+    # The daemon turned IPsec on; stopping it here would drop live tunnels.
+    printf '  %-21s %s\n' openvswitch-ipsec: "active: IPsec is on, left to the daemon" ipsec: "active: IPsec is on, left to the daemon"
+elif distro_has_libreswan; then
+    # Off until the daemon asks: pluto listens on UDP 500/4500 once started.
+    # Enabled under the mask, so the daemon's unmask also brings both back on boot.
     IPSEC_UNITS=(ipsec.service)
     distro_unit_exists openvswitch-ipsec.service && IPSEC_UNITS+=(openvswitch-ipsec.service)
-    if ! sudo systemctl mask --now "${IPSEC_UNITS[@]}" >/dev/null; then
-        echo "ERROR: could not stop and mask ${IPSEC_UNITS[*]}; IPsec must stay off on libreswan" >&2
+    if ! sudo systemctl unmask "${IPSEC_UNITS[@]}" >/dev/null 2>&1 ||
+        ! sudo systemctl enable "${IPSEC_UNITS[@]}" >/dev/null 2>&1 ||
+        ! sudo systemctl mask --now "${IPSEC_UNITS[@]}" >/dev/null; then
+        echo "ERROR: could not enable, stop and mask ${IPSEC_UNITS[*]}; IPsec must stay off until the daemon turns it on" >&2
         exit 1
     fi
-    printf '  %-21s %s\n' openvswitch-ipsec: "masked: IPsec stays off on libreswan" ipsec: "masked: IPsec stays off on libreswan"
+    printf '  %-21s %s\n' openvswitch-ipsec: "masked: IPsec is off, left to the daemon" ipsec: "masked: IPsec is off, left to the daemon"
 elif [ "$(systemctl is-enabled openvswitch-ipsec.service 2>/dev/null)" = masked ]; then
     # The daemon masks it while IPsec is off and unmasks it to turn IPsec on.
     printf '  %-21s %s\n' openvswitch-ipsec: "masked: IPsec is off, left to the daemon"

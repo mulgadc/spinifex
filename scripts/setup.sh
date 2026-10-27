@@ -401,12 +401,24 @@ fi
 
 # ovs-monitor-ipsec execs the strongSwan starter itself rather than going through
 # this unit, so leaving it enabled only contends for UDP 500/4500. Off in both
-# states. Absent on a host without strongswan, which is not an error.
-systemctl mask --now strongswan-starter.service >/dev/null 2>&1 || true
+# states. Masking a unit no package ships leaves a stray /dev/null link, so a
+# host without strongSwan gets none, and loses one an older helper left.
+if [ -e /usr/lib/systemd/system/strongswan-starter.service ] || [ -e /lib/systemd/system/strongswan-starter.service ]; then
+    systemctl mask --now strongswan-starter.service >/dev/null 2>&1 || true
+elif [ "$(systemctl is-enabled strongswan-starter.service 2>/dev/null)" = masked ]; then
+    systemctl unmask strongswan-starter.service >/dev/null 2>&1 || true
+fi
 
 case "$1" in
     on)
-        systemctl unmask openvswitch-ipsec.service
+        if [ -x /usr/libexec/ipsec/pluto ]; then
+            # ovs-monitor-ipsec drives pluto over its control socket but does
+            # not start it, so pluto comes up first under its own unit.
+            systemctl unmask ipsec.service openvswitch-ipsec.service
+            systemctl start ipsec.service
+        else
+            systemctl unmask openvswitch-ipsec.service
+        fi
         exec systemctl start openvswitch-ipsec.service
         ;;
     off)

@@ -68,16 +68,17 @@ type IPSecBarrier interface {
 }
 
 const (
-	// ovsIPSecUnit owns charon: ovs-monitor-ipsec execs the strongSwan starter
-	// itself rather than going through the starter's own unit.
+	// ovsIPSecUnit owns charon on strongSwan: ovs-monitor-ipsec execs the
+	// starter itself rather than going through the starter's own unit.
 	ovsIPSecUnit = "openvswitch-ipsec.service"
 
 	// strongswanStarterUnit would start a second charon competing for UDP
 	// 500/4500. Nothing here needs it, so it stays off in both states.
 	strongswanStarterUnit = "strongswan-starter.service"
 
-	// libreswanUnit runs pluto, which listens on UDP 500/4500 once started. On
-	// Debian the same name is an alias of strongswanStarterUnit.
+	// libreswanUnit runs pluto, which ovs-monitor-ipsec drives but does not
+	// start, so it is on exactly while IPsec is. On Debian the same name is an
+	// alias of strongswanStarterUnit.
 	libreswanUnit = "ipsec.service"
 )
 
@@ -94,17 +95,15 @@ var ipsecStateHelper = "/usr/local/lib/spinifex/spinifex-set-ipsec-state"
 // unconfigured until something restarts the daemon — while another node may
 // already have made encryption mandatory cluster-wide.
 //
-// libreswan reports that the host's IPsec stack is libreswan, which OVN IPsec
-// does not run on yet, so such a host keeps IPsec off whatever the cluster asks.
+// libreswan reports that the host's IPsec stack is libreswan, whose pluto runs
+// under its own unit rather than being execed by ovs-monitor-ipsec.
 func MaintainIPSec(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig, barrier IPSecBarrier, libreswan bool) {
 	// Said once, because a pass that reconciles to nothing logs nothing, which in
 	// a journal is indistinguishable from a node that armed.
 	switch {
 	case clusterConfig == nil:
 		slog.Info("ipsec: cluster membership unknown, leaving the host's IPsec services alone")
-	case ipsecRequested(clusterConfig) && libreswan:
-		slog.Error("ipsec: the cluster requires IPsec, but this host's IPsec stack is libreswan, which Spinifex cannot run OVN IPsec on yet; IPsec stays off here")
-	case !ipsecWanted(clusterConfig, libreswan):
+	case !ipsecRequested(clusterConfig):
 		slog.Info("ipsec: not in use on this cluster, IKE and NAT-T listeners stay stopped")
 	}
 
@@ -119,7 +118,7 @@ func MaintainIPSec(ctx context.Context, configPath string, clusterConfig *config
 			// Only the first success is news. The steady state re-runs every
 			// interval for the lifetime of the daemon, and saying so each time
 			// buries the passes that changed something.
-			if !announced && ipsecWanted(clusterConfig, libreswan) {
+			if !announced && ipsecRequested(clusterConfig) {
 				slog.Info("ipsec: local IPsec configuration complete on this node")
 				announced = true
 			}
@@ -132,12 +131,6 @@ func MaintainIPSec(ctx context.Context, configPath string, clusterConfig *config
 		case <-time.After(delay):
 		}
 	}
-}
-
-// ipsecWanted reports whether this host turns IPsec on: the cluster asks for
-// it and the host's IPsec stack can run it.
-func ipsecWanted(clusterConfig *config.ClusterConfig, libreswan bool) bool {
-	return ipsecRequested(clusterConfig) && !libreswan
 }
 
 // ipsecRequested reports the cluster's intent. Single-node clusters have no Geneve
@@ -157,7 +150,7 @@ func ReconcileOVNIPSec(ctx context.Context, configPath string, clusterConfig *co
 		return nil
 	}
 
-	want := ipsecWanted(clusterConfig, libreswan)
+	want := ipsecRequested(clusterConfig)
 
 	if err := ensureIPSecServices(want, libreswan); err != nil {
 		return err
@@ -221,14 +214,21 @@ func ensureIPSecServices(want, libreswan bool) error {
 	return nil
 }
 
+// ipsecServicesMatch reads only the units the host's stack has: on libreswan
+// pluto runs under its own unit and follows the wanted state with
+// openvswitch-ipsec, while on Debian ipsec.service is strongSwan's alias.
 func ipsecServicesMatch(want, libreswan bool) bool {
 	if unitIsEnabled(strongswanStarterUnit) || unitIsActive(strongswanStarterUnit) {
 		return false
 	}
-	if !want && libreswan && (unitIsEnabled(libreswanUnit) || unitIsActive(libreswanUnit)) {
+	if libreswan && !unitInState(libreswanUnit, want) {
 		return false
 	}
-	return unitIsEnabled(ovsIPSecUnit) == want && unitIsActive(ovsIPSecUnit) == want
+	return unitInState(ovsIPSecUnit, want)
+}
+
+func unitInState(unit string, want bool) bool {
+	return unitIsEnabled(unit) == want && unitIsActive(unit) == want
 }
 
 // unitIsEnabled treats every state other than enabled as not enabled, which

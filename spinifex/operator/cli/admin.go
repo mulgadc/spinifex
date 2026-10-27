@@ -411,7 +411,7 @@ func init() {
 	adminInitCmd.Flags().StringSlice("external-dns", nil, "Comma-separated IPv4 DNS servers handed to guests on the external pool, at most 3 (auto-detected from the host resolver when omitted)")
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
-	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab. Defaults to false, and true is refused, on a host whose IPsec stack is libreswan")
+	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
 	adminInitCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
 
 	// Flags for admin join
@@ -1274,20 +1274,6 @@ func validateNodeCount(nodes int) error {
 	return nil
 }
 
-// resolveIPSecForHost applies the host's IPsec stack to the --ipsec choice. On
-// libreswan IPsec defaults to off and an explicit request for it is refused, so
-// nobody builds a cluster believing its underlay is encrypted.
-func resolveIPSecForHost(requested, explicit, libreswan bool) (bool, error) {
-	if !libreswan {
-		return requested, nil
-	}
-	if explicit && requested {
-		return false, fmt.Errorf("true is refused: this host's IPsec stack is libreswan (%s), and Spinifex cannot run OVN IPsec on libreswan yet; run without --ipsec, which defaults to false here",
-			hostos.LibreswanPlutoPath)
-	}
-	return false, nil
-}
-
 // TODO: Move all logic to a module, use minimal application logic in viper commands.
 func runAdminInit(cmd *cobra.Command, args []string) {
 	if os.Getuid() != 0 {
@@ -1355,15 +1341,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	gatewayIP, _ := cmd.Flags().GetString("gateway-ip")
 	gpuPassthrough, _ := cmd.Flags().GetBool("gpu-passthrough")
 	ipsecEnabled, _ := cmd.Flags().GetBool("ipsec")
-	libreswan := hostos.HasLibreswan()
-	ipsecEnabled, err := resolveIPSecForHost(ipsecEnabled, cmd.Flags().Changed("ipsec"), libreswan)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "--ipsec: %v\n", err)
-		os.Exit(1)
-	}
-	if libreswan && !cmd.Flags().Changed("ipsec") {
-		fmt.Println("IPsec: off, because this host's IPsec stack is libreswan, which Spinifex cannot run OVN IPsec on yet")
-	}
 
 	// Fire telemetry in background (completes during init work, waited at end)
 	noTelemetry, _ := cmd.Flags().GetBool("no-telemetry")
@@ -1746,7 +1723,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	if ipsecEnabled {
 		caCertPath := filepath.Join(configDir, "ca.pem")
 		caKeyPath := filepath.Join(configDir, "ca.key")
-		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP, hostos.HasLibreswan()); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
 			os.Exit(1)
 		}
@@ -2757,7 +2734,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	if ipsecEnabled {
 		caCertPath := filepath.Join(configDir, "ca.pem")
 		caKeyPath := filepath.Join(configDir, "ca.key")
-		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP, hostos.HasLibreswan()); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
 			os.Exit(1)
 		}

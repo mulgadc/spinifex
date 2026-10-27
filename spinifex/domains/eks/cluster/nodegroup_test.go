@@ -768,7 +768,9 @@ func TestDescribeAndListNodegroups(t *testing.T) {
 	_, err = f.svc.DescribeNodegroup(context.Background(), &eks.DescribeNodegroupInput{
 		ClusterName: aws.String("c1"), NodegroupName: aws.String("ghost"),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
 }
 
 func TestUpdateNodegroupConfig_ScaleUpAndDown(t *testing.T) {
@@ -922,7 +924,9 @@ func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
 	_, err = f.svc.DeleteNodegroup(context.Background(), &eks.DeleteNodegroupInput{
 		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
 }
 
 // TestSelectWorkerHost_NoSchedulerOrCapacity returns "" so the caller falls back
@@ -1334,4 +1338,70 @@ func TestUpdateNodegroupConfig_HonoursTaintsAndUpdateConfig(t *testing.T) {
 	rec, err = GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Empty(t, rec.Taints)
+}
+
+func TestNodegroupCalls_MissingNodegroupVsMissingCluster(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	ctx := context.Background()
+
+	calls := map[string]func(cluster string) error{
+		"DescribeNodegroup": func(cluster string) error {
+			_, err := f.svc.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
+				ClusterName: aws.String(cluster), NodegroupName: aws.String("ghost"),
+			}, testAccountID)
+			return err
+		},
+		"UpdateNodegroupConfig": func(cluster string) error {
+			_, err := f.svc.UpdateNodegroupConfig(ctx, &eks.UpdateNodegroupConfigInput{
+				ClusterName: aws.String(cluster), NodegroupName: aws.String("ghost"),
+				ScalingConfig: &eks.NodegroupScalingConfig{DesiredSize: aws.Int64(1)},
+			}, testAccountID)
+			return err
+		},
+		"DeleteNodegroup": func(cluster string) error {
+			_, err := f.svc.DeleteNodegroup(ctx, &eks.DeleteNodegroupInput{
+				ClusterName: aws.String(cluster), NodegroupName: aws.String("ghost"),
+			}, testAccountID)
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name+"/missing nodegroup", func(t *testing.T) {
+			t.Parallel()
+			code, msg, ok := awserrors.ResolveErrorDetail(call("c1"))
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
+			assert.Equal(t, "No node group found for name: ghost.", msg)
+		})
+		t.Run(name+"/missing cluster", func(t *testing.T) {
+			t.Parallel()
+			code, msg, ok := awserrors.ResolveErrorDetail(call("nope"))
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
+			assert.Empty(t, msg, "a missing cluster keeps the default cluster message")
+		})
+	}
+}
+
+func TestNodegroupCalls_UnreadableClusterSurfacesError(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	ctx := t.Context()
+	_, err := f.kv.Put(ctx, ClusterMetaKey("c1"), []byte("{not json"))
+	require.NoError(t, err)
+	require.NoError(t, PutNodegroupRecord(ctx, f.kv, &NodegroupRecord{ClusterName: "c1", Name: "ng1"}))
+
+	_, err = f.svc.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
+		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
+	}, testAccountID)
+	require.ErrorContains(t, err, "unmarshal cluster meta")
+
+	_, err = f.svc.DeleteNodegroup(ctx, &eks.DeleteNodegroupInput{
+		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
+	}, testAccountID)
+	require.ErrorContains(t, err, "unmarshal cluster meta")
+	_, err = GetNodegroupRecord(ctx, f.kv, "c1", "ng1")
+	require.NoError(t, err, "a failed cluster read must not delete the node group")
 }

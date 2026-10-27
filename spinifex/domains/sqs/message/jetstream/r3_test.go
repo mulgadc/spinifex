@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,13 +27,15 @@ import (
 type cluster struct {
 	t       *testing.T
 	dirs    [3]string
+	client  [3]int
 	route   [3]int
+	logDir  string
 	servers [3]*server.Server
 	js      jsapi.JetStream
 }
 
 // routePorts reserves three distinct ports at once. Route ports must stay
-// fixed across restarts; client ports are chosen by each server instead.
+// fixed across restarts; client ports are chosen by each server's first start.
 func routePorts(t *testing.T) [3]int {
 	t.Helper()
 	var ports [3]int
@@ -46,7 +50,13 @@ func routePorts(t *testing.T) [3]int {
 
 func startCluster(t *testing.T) *cluster {
 	t.Helper()
-	c := &cluster{t: t}
+	return startClusterLogged(t, "")
+}
+
+// startClusterLogged writes each node's server log under logDir, when set.
+func startClusterLogged(t *testing.T, logDir string) *cluster {
+	t.Helper()
+	c := &cluster{t: t, logDir: logDir}
 	for i := range 3 {
 		c.dirs[i] = t.TempDir()
 	}
@@ -64,22 +74,36 @@ func (c *cluster) start() {
 		routes[i] = &url.URL{Scheme: "nats", Host: fmt.Sprintf("127.0.0.1:%d", c.route[i])}
 	}
 	for i := range 3 {
-		srv, err := server.NewServer(&server.Options{
-			ServerName: fmt.Sprintf("sqs-%d", i), Host: "127.0.0.1", Port: server.RANDOM_PORT,
+		port := c.client[i]
+		if port == 0 {
+			port = server.RANDOM_PORT
+		}
+		opts := &server.Options{
+			ServerName: fmt.Sprintf("sqs-%d", i), Host: "127.0.0.1", Port: port,
 			JetStream: true, StoreDir: c.dirs[i], NoLog: true, NoSigs: true,
 			Cluster: server.ClusterOpts{Name: "sqs-r3", Host: "127.0.0.1", Port: c.route[i]},
 			Routes:  routes,
-		})
+		}
+		if c.logDir != "" {
+			opts.NoLog, opts.LogFile = false, filepath.Join(c.logDir, fmt.Sprintf("sqs-%d.log", i))
+			opts.Debug = os.Getenv("SQS_R3_SERVER_DEBUG") != ""
+		}
+		srv, err := server.NewServer(opts)
 		require.NoError(t, err)
+		if c.logDir != "" {
+			srv.ConfigureLogger()
+		}
 		go srv.Start()
 		c.servers[i] = srv
 	}
 	urls := make([]string, 3)
 	for i, srv := range c.servers {
 		require.True(t, srv.ReadyForConnections(10*time.Second), "node %d not ready", i)
+		// Keep the client port across restarts so open connections reconnect.
+		c.client[i] = srv.Addr().(*net.TCPAddr).Port
 		urls[i] = srv.ClientURL()
 	}
-	nc, err := nats.Connect(strings.Join(urls, ","))
+	nc, err := nats.Connect(strings.Join(urls, ","), nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond))
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 	js, err := jsapi.New(nc)

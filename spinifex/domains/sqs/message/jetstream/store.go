@@ -32,6 +32,10 @@ const stateShardHeader = "Sqs-State-Shard"
 // ephemeral consumer after its reader vanishes without Close.
 const feedInactiveThreshold = time.Minute
 
+// feedPullExpiry replaces nats.go's 30s default pull expiry, under which an
+// ordered feed was seen to idle for a whole expiry with stored changes pending.
+const feedPullExpiry = 2 * time.Second
+
 // feedCloseTimeout bounds Close's consumer delete.
 const feedCloseTimeout = 5 * time.Second
 
@@ -407,7 +411,7 @@ func (s *Store) Feed(ctx context.Context, messageShard message.Shard, after mess
 	if err != nil {
 		return nil, fmt.Errorf("open feed on %s: %w", StreamName(messageShard), err)
 	}
-	it, err := consumer.Messages()
+	it, err := consumer.Messages(jsapi.PullExpiry(feedPullExpiry))
 	if err != nil {
 		// The consumer already exists server-side and no Feed owns it.
 		_ = deleteFeedConsumer(stream, consumer)

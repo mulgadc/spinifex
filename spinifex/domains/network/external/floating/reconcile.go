@@ -66,7 +66,7 @@ func (a *PoolAllocator) Reconcile(ctx context.Context) (ReconcileResult, error) 
 			suspects[addr.ID] = struct{}{}
 			continue
 		}
-		if err := a.provider.Delete(ctx, addr.ID); err != nil && !errors.Is(err, ErrNotFound) {
+		if err := a.destroy(ctx, addr.ID); err != nil {
 			suspects[addr.ID] = struct{}{}
 			errs = append(errs, fmt.Errorf("collect leaked %s: %w", addr.ID, err))
 			continue

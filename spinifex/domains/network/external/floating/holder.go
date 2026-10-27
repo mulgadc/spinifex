@@ -103,7 +103,13 @@ func (a *PoolAllocator) claim(ctx context.Context, key string, b Binding, addr A
 		stall(fmt.Sprintf("provider accepted the attach of %s to %s and reports holder %q", b.AddrID, host, got.HolderID))
 		return
 	}
-	slog.WarnContext(ctx, "floating claimed an address whose owner runs here",
+	// A move from another host is worth an operator's attention; a first
+	// attach after allocation is routine.
+	level := slog.LevelInfo
+	if addr.HolderID != "" {
+		level = slog.LevelWarn
+	}
+	slog.Log(ctx, level, "floating claimed an address whose owner runs here",
 		"pool", a.cfg.Pool.Name, "public_ip", key, "addr_id", b.AddrID,
 		"eni_id", b.ENIID, "gateway_vpc_id", b.GatewayVPCID, "from_host", addr.HolderID, "to_host", host)
 	a.recordHolder(ctx, key, b.AddrID, host)

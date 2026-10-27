@@ -170,6 +170,18 @@ func TestRelease_DeletesAnAttachedAddress(t *testing.T) {
 	assert.Empty(t, fake.IDs())
 }
 
+func TestRelease_DetachesBeforeDeleting(t *testing.T) {
+	fake, _, a, _ := setup(t)
+	fake.RefuseDeleteAttached = true
+	ip := allocENI(t, a, "eni-1")
+	a.plug("eni-1")
+	_, err := a.alloc.ClaimLocalAddresses(context.Background())
+	require.NoError(t, err)
+
+	require.NoError(t, a.alloc.Release(context.Background(), pool, ip, "eni-1"))
+	assert.Empty(t, fake.IDs(), "an attached address must still be deleted when Vultr refuses an implicit detach")
+}
+
 func TestRelease_StaleOwnerIsANoop(t *testing.T) {
 	fake, _, a, _ := setup(t)
 	ip := allocENI(t, a, "eni-1")

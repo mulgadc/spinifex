@@ -11,7 +11,8 @@ import (
 // Fake is an in-memory stand-in for Client with the semantics measured against
 // the live API: Vultr picks the address, an address has at most one holder,
 // re-attaching to the holder succeeds, detaching an unattached address
-// succeeds, and deleting an attached address detaches it.
+// succeeds, and deleting an attached address detaches it unless
+// RefuseDeleteAttached is set.
 type Fake struct {
 	mu        sync.Mutex
 	region    string
@@ -26,6 +27,9 @@ type Fake struct {
 	Fail map[string]error
 	// Calls records operation names in order.
 	Calls []string
+	// RefuseDeleteAttached makes deleting an attached address fail with 400
+	// and detach it, as the live API has been measured to do intermittently.
+	RefuseDeleteAttached bool
 }
 
 // NewFake returns a fake for region with the given quota; zero is unlimited.
@@ -178,8 +182,14 @@ func (f *Fake) DeleteReservedIP(_ context.Context, id string) error {
 	if err := f.fail("delete"); err != nil {
 		return err
 	}
-	if _, ok := f.ips[id]; !ok {
+	r, ok := f.ips[id]
+	if !ok {
 		return notFound("reserved-ip", id)
+	}
+	if f.RefuseDeleteAttached && r.InstanceID != "" {
+		r.InstanceID = ""
+		f.ips[id] = r
+		return &APIError{Status: 400, Message: "Unable to detach subnet, please restart your server from the control panel"}
 	}
 	delete(f.ips, id)
 	return nil

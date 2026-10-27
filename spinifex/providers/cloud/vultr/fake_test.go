@@ -48,6 +48,24 @@ func TestFakeFidelity_DeleteAttachedSucceeds(t *testing.T) {
 	assert.Empty(t, f.IDs())
 }
 
+func TestFakeFidelity_DeleteAttachedRefusedDetaches(t *testing.T) {
+	_, c := newFakeAPI(t, map[string][]reply{
+		"DELETE /reserved-ips/" + capturedID: {{http.StatusBadRequest, "delete_attached_refused.json"}},
+	})
+	err := c.DeleteReservedIP(context.Background(), capturedID)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrNotFound)
+
+	f := NewFake("ord", 0, "a")
+	f.RefuseDeleteAttached = true
+	r, err := f.CreateReservedIP(context.Background(), "l")
+	require.NoError(t, err)
+	require.NoError(t, f.AttachReservedIP(context.Background(), r.ID, "a"))
+	require.Error(t, f.DeleteReservedIP(context.Background(), r.ID))
+	assert.Empty(t, f.HolderOf(r.ID), "the refused delete still detached the address")
+	require.NoError(t, f.DeleteReservedIP(context.Background(), r.ID))
+}
+
 func TestFakeFidelity_DetachUnattachedSucceeds(t *testing.T) {
 	_, c := newFakeAPI(t, map[string][]reply{
 		"POST /reserved-ips/" + capturedID + "/detach": {{http.StatusNoContent, ""}},

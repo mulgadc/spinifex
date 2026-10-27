@@ -186,7 +186,7 @@ func (a *PoolAllocator) Release(ctx context.Context, poolName string, ip netip.A
 		return err
 	}
 
-	if err := a.provider.Delete(ctx, released.AddrID); err != nil && !errors.Is(err, ErrNotFound) {
+	if err := a.destroy(ctx, released.AddrID); err != nil {
 		return fmt.Errorf("floating: delete address %s: %w", released.AddrID, err)
 	}
 	slog.InfoContext(ctx, "floating released external IP",
@@ -233,10 +233,23 @@ func (a *PoolAllocator) BindingFor(ctx context.Context, ip netip.Addr) (Binding,
 // undo deletes an address a failed Allocate made. Failures are logged, not
 // returned: the caller is already failing, and the label marks it for Reconcile.
 func (a *PoolAllocator) undo(ctx context.Context, addr Address) {
-	if err := a.provider.Delete(ctx, addr.ID); err != nil && !errors.Is(err, ErrNotFound) {
+	if err := a.destroy(ctx, addr.ID); err != nil {
 		slog.WarnContext(ctx, "floating: could not roll back address; reconcile will collect it",
 			"addr_id", addr.ID, "public_ip", addr.IP.String(), "error", err)
 	}
+}
+
+// destroy detaches and then deletes an address; a missing one is already gone.
+// Vultr documents delete as detaching implicitly, but has been measured to
+// refuse it with "Unable to detach subnet" while the address is attached.
+func (a *PoolAllocator) destroy(ctx context.Context, addrID string) error {
+	if err := a.provider.Detach(ctx, addrID); err != nil && !errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("detach: %w", err)
+	}
+	if err := a.provider.Delete(ctx, addrID); err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	return nil
 }
 
 // labelPrefix starts the label of every address this deployment makes.

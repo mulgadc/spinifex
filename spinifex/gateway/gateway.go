@@ -419,13 +419,19 @@ func jsonErrorService(svc string) bool {
 	return false
 }
 
-// jsonErrorService reports whether svc's errors render in the AWS JSON 1.1
-// envelope: a registered service's own declared envelope, or the legacy
-// table for every service not yet registered through the seam. Every error
-// emitter calls this method, never the free function, so the two can never
-// disagree on a registered service.
-func (gw *GatewayConfig) jsonErrorService(svc string) bool {
-	return gw.selector().JSONErrors(svc)
+// errorProtocol reports the JSON wire format svc's errors use; ok is false when
+// they render as XML. A registered service's declared envelope wins.
+func (gw *GatewayConfig) errorProtocol(svc string) (p envelope.Protocol, ok bool) {
+	return gw.selector().ErrorProtocol(svc)
+}
+
+// writeJSONError renders a gateway-raised error in svc's JSON protocol. The
+// code gets the common-error "Exception" suffix unless verbatim.
+func (gw *GatewayConfig) writeJSONError(w http.ResponseWriter, p envelope.Protocol, svc string, e envelope.JSONError) {
+	if entry, ok := gw.registered(svc); ok {
+		e.QueryCode = entry.QueryErrorCode(e.Code)
+	}
+	envelope.WriteJSON(w, p, e)
 }
 
 // clusterUnavailableMsg is the 503 body when NATS is disconnected. Points
@@ -437,15 +443,13 @@ const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check 
 func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.Request, svc string) {
 	requestID := uuid.NewV4().String()
 
-	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
-	if gw.jsonErrorService(svc) {
-		body := envelope.JSONBody(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg)
-		w.Header().Set("Content-Type", envelope.JSONContentType)
-		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(awserrors.ErrorServiceUnavailable))
-		w.WriteHeader(http.StatusServiceUnavailable)
-		if _, err := w.Write(body); err != nil {
-			slog.Error("Failed to write JSON cluster-unavailable response", "err", err)
-		}
+	// JSON services get a body in their own protocol.
+	if p, ok := gw.errorProtocol(svc); ok {
+		gw.writeJSONError(w, p, svc, envelope.JSONError{
+			Code:    awserrors.ErrorServiceUnavailable,
+			Message: clusterUnavailableMsg,
+			Status:  http.StatusServiceUnavailable,
+		})
 		return
 	}
 
@@ -469,15 +473,18 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	}
 	errorMsg := awserrors.LookupErrorMessage(svc, errorCode)
 
-	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
-	if gw.jsonErrorService(svc) {
-		body := envelope.JSONBody(errorCode, errorMsg.Message)
-		w.Header().Set("Content-Type", envelope.JSONContentType)
-		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(errorCode))
-		w.WriteHeader(errorMsg.HTTPCode)
-		if _, err := w.Write(body); err != nil {
-			slog.Error("Failed to write JSON throttle error response", "err", err)
+	// JSON services get a body in their own protocol.
+	if p, ok := gw.errorProtocol(svc); ok {
+		je := envelope.JSONError{Code: errorCode, Message: errorMsg.Message, Status: errorMsg.HTTPCode}
+		if entry, reg := gw.registered(svc); reg {
+			if spec, own := entry.ThrottleError(); own {
+				je = envelope.JSONError{
+					Code: spec.Code, Verbatim: true, Message: spec.Message,
+					Status: spec.Status, Fields: spec.Fields,
+				}
+			}
 		}
+		gw.writeJSONError(w, p, svc, je)
 		return
 	}
 
@@ -945,17 +952,15 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())))
 	}
 
-	// EKS, ECR, ACM, ECS, tagging, and the bedrock family use AWS JSON 1.1;
-	// query/XML services fall through.
-	if gw.jsonErrorService(svc) {
-		body := envelope.JSONBody(code, errorMsg.Message)
-		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
-		w.Header().Set("Content-Type", envelope.JSONContentType)
-		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(code))
-		w.WriteHeader(errorMsg.HTTPCode)
-		if _, err := w.Write(body); err != nil {
-			slog.Error("Failed to write EKS error response", "err", err)
-		}
+	// JSON services answer in their own protocol; query/XML services fall
+	// through.
+	if p, ok := gw.errorProtocol(svc); ok {
+		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "requestId", requestId)
+		gw.writeJSONError(w, p, svc, envelope.JSONError{
+			Code: code, Verbatim: p != envelope.ProtocolJSON11,
+			Message: errorMsg.Message, Status: errorMsg.HTTPCode,
+			Fields: awserrors.ResolveFields(err),
+		})
 		return
 	}
 

@@ -532,16 +532,27 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 	}
 
 	svc := signedService(r)
+	if svc == "" {
+		// A request rejected while its signature was still being parsed has no
+		// service in context; its claimed scope still picks a registration's
+		// envelope, and nothing else.
+		if hint := credentialScopeService(r); hint != "" {
+			if _, ok := gw.registered(hint); ok {
+				svc = hint
+			}
+		}
+	}
 
-	// AWS JSON 1.1 services (bedrock family, EKS, …) need a JSON error body, or
-	// the SDK chokes deserializing our XML into its shape. An unserved scope is
-	// absent from jsonErrorService by definition, so its protocol is read off
-	// the request itself instead.
-	if gw.jsonErrorService(svc) || envelope.RequestSignalsJSONProtocol(r) {
-		w.Header().Set("Content-Type", envelope.JSONContentType)
-		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(errorCode))
-		w.WriteHeader(errorMsg.HTTPCode)
-		_, _ = w.Write(envelope.JSONBody(errorCode, errorMsg.Message))
+	// JSON services (bedrock family, EKS, registered JSON services, …) need a
+	// JSON error body in their own protocol, or the SDK chokes deserializing
+	// our XML into its shape. An unserved scope is absent from the tables by
+	// definition, so its protocol is read off the request itself instead.
+	p, isJSON := gw.errorProtocol(svc)
+	if !isJSON && envelope.RequestSignalsJSONProtocol(r) {
+		p, isJSON = envelope.ProtocolJSON11, true
+	}
+	if isJSON {
+		gw.writeJSONError(w, p, svc, envelope.JSONError{Code: errorCode, Message: errorMsg.Message, Status: errorMsg.HTTPCode})
 		return
 	}
 
@@ -550,6 +561,21 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Content-Type", envelope.XMLContentType)
 	w.WriteHeader(errorMsg.HTTPCode)
 	_, _ = w.Write(xmlError)
+}
+
+// credentialScopeService returns the service named in the request's
+// Authorization credential scope, unverified, or "" when it has none.
+func credentialScopeService(r *http.Request) string {
+	_, rest, ok := strings.Cut(r.Header.Get("Authorization"), "Credential=")
+	if !ok {
+		return ""
+	}
+	scope, _, _ := strings.Cut(rest, ",")
+	parts := strings.Split(strings.TrimSpace(scope), "/")
+	if len(parts) != 5 {
+		return ""
+	}
+	return parts[3]
 }
 
 // signedService returns the credential-scope service the client signed with,

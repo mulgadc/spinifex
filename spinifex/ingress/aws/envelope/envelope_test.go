@@ -270,3 +270,80 @@ func TestRequestSignalsJSONProtocol(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteJSON_WireBytesPerProtocol(t *testing.T) {
+	cases := []struct {
+		name         string
+		p            Protocol
+		e            JSONError
+		contentType  string
+		headers      map[string]string
+		absentHeader string
+		body         string
+	}{
+		{
+			name:        "JSON 1.1 appends Exception",
+			p:           ProtocolJSON11,
+			e:           JSONError{Code: "Throttling", Message: "slow", Status: 400},
+			contentType: "application/x-amz-json-1.1",
+			headers:     map[string]string{"X-Amzn-Errortype": "ThrottlingException"},
+			body:        `{"__type":"ThrottlingException","message":"slow"}`,
+		},
+		{
+			name:        "REST-JSON keeps a verbatim type and sorts extra fields",
+			p:           ProtocolRESTJSON,
+			e:           JSONError{Code: "TooManyRequestsException", Verbatim: true, Message: "Rate Exceeded.", Status: 429, Fields: map[string]string{"Reason": "CallerRateLimitExceeded"}},
+			contentType: "application/json",
+			headers:     map[string]string{"X-Amzn-Errortype": "TooManyRequestsException"},
+			body:        `{"Reason":"CallerRateLimitExceeded","Type":"User","message":"Rate Exceeded."}`,
+		},
+		{
+			name:        "REST-JSON common error gets Exception and a 5xx is a Service fault",
+			p:           ProtocolRESTJSON,
+			e:           JSONError{Code: "ServiceUnavailable", Message: "down", Status: 503},
+			contentType: "application/json",
+			headers:     map[string]string{"X-Amzn-Errortype": "ServiceUnavailableException"},
+			body:        `{"Type":"Service","message":"down"}`,
+		},
+		{
+			name:        "REST-JSON extra fields cannot replace reserved keys",
+			p:           ProtocolRESTJSON,
+			e:           JSONError{Code: "X", Verbatim: true, Message: "m", Status: 400, Fields: map[string]string{"Type": "Evil", "message": "evil"}},
+			contentType: "application/json",
+			body:        `{"Type":"User","message":"m"}`,
+		},
+		{
+			name:         "JSON 1.0 never suffixes and sends the query header",
+			p:            ProtocolJSON10Query,
+			e:            JSONError{Code: "QueueDoesNotExist", Verbatim: true, Message: "gone", Status: 400, QueryCode: "AWS.SimpleQueueService.NonExistentQueue"},
+			contentType:  "application/x-amz-json-1.0",
+			headers:      map[string]string{"X-Amzn-Query-Error": "AWS.SimpleQueueService.NonExistentQueue;Sender"},
+			absentHeader: "X-Amzn-Errortype",
+			body:         `{"__type":"QueueDoesNotExist","message":"gone"}`,
+		},
+		{
+			name:        "JSON 1.0 query code defaults to the code and a 5xx is a Receiver",
+			p:           ProtocolJSON10Query,
+			e:           JSONError{Code: "InternalError", Verbatim: true, Message: "boom", Status: 500},
+			contentType: "application/x-amz-json-1.0",
+			headers:     map[string]string{"X-Amzn-Query-Error": "InternalError;Receiver"},
+			body:        `{"__type":"InternalError","message":"boom"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			WriteJSON(w, tc.p, tc.e)
+			resp := w.Result()
+			assert.Equal(t, tc.e.Status, resp.StatusCode)
+			assert.Equal(t, tc.contentType, resp.Header.Get("Content-Type"))
+			for k, v := range tc.headers {
+				assert.Equal(t, v, resp.Header.Get(k), k)
+			}
+			if tc.absentHeader != "" {
+				assert.Empty(t, resp.Header.Get(tc.absentHeader))
+			}
+			assert.Equal(t, tc.body, w.Body.String())
+		})
+	}
+}

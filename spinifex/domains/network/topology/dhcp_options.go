@@ -48,6 +48,15 @@ func SubnetMTU(underlayMTU int, ipsecEnabled bool) int {
 	return mtu
 }
 
+// internetPathMTU is the path MTU of the public internet and WAN links.
+const internetPathMTU = 1500
+
+// GatewayMTU returns the MTU for the VPC gateway's external-facing side:
+// the guest MTU, capped at the internet path MTU since no WAN path carries more.
+func GatewayMTU(underlayMTU int, ipsecEnabled bool) int {
+	return min(SubnetMTU(underlayMTU, ipsecEnabled), internetPathMTU)
+}
+
 // BuildSubnetDHCPOptions returns the OVN DHCPOptions map for a subnet. Shared
 // by the live manager and reconciler to prevent dns_server drift. IMDS is not
 // steered via option 121: a guest either routes to it via the gateway, where the

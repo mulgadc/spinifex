@@ -91,13 +91,14 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []taskdefinition.Contai
 		if c == nil {
 			continue
 		}
+		// AWS assumes a container is essential when the parameter is omitted.
 		def := taskdefinition.Container{
 			Name:      aws.StringValue(c.Name),
 			Image:     aws.StringValue(c.Image),
 			CPU:       int(aws.Int64Value(c.Cpu)),
 			MemoryMiB: int(aws.Int64Value(c.Memory)),
 			GPU:       gpuCountFromResourceRequirements(c.ResourceRequirements),
-			Essential: aws.BoolValue(c.Essential),
+			Essential: c.Essential == nil || *c.Essential,
 			Command:   awsStringSlice(c.Command),
 		}
 		if c.Environment != nil {

@@ -1135,7 +1135,7 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 		// it gets back, so a bare code makes a persistent fault unreadable.
 		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume %s: %v", volumeID, err)
 	}
-	if err := s.metadata.DeleteVolume(ctx, accountID, volumeID); err != nil {
+	if err := s.metadata.DeleteVolume(ctx, accountID, volumeID); err != nil && !objectstore.IsNoSuchKeyError(err) {
 		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume metadata %s: %v", volumeID, err)
 	}
 

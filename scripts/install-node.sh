@@ -460,7 +460,7 @@ done
 # Matched on the service argv so the ssh shell running this cannot match itself.
 for host in "${HOSTS[@]}"; do
     $DRY_RUN && { echo "  [dry-run] $host: wait for every 'spx service' process to exit"; continue; }
-    on "$host" "for u in spinifex-predastore spinifex-viperblock spinifex-nats; do
+    on "$host" "for u in spinifex-predastore spinifex-viperblock spinifex-sqs-store spinifex-nats; do
             systemctl is-active --quiet \$u && sudo systemctl stop \$u
         done
         for _ in \$(seq 1 45); do

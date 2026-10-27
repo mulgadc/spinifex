@@ -258,6 +258,11 @@ func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInp
 			Status:    ClusterStatusActive,
 			CreatedAt: time.Now().UTC(),
 		}
+		settings, err := clusterSettingsFromAWS(input.Settings)
+		if err != nil {
+			return nil, err
+		}
+		rec.Settings = settings
 		if len(input.Tags) > 0 {
 			rec.Tags = map[string]string{}
 			for _, t := range input.Tags {
@@ -271,8 +276,8 @@ func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInp
 	return &ecs.CreateClusterOutput{Cluster: rec.toAWS()}, nil
 }
 
-// DescribeClusters returns meta for the named clusters; unknown names are
-// silently skipped (AWS returns them under "failures", omitted here in v1).
+// DescribeClusters returns meta for the named clusters; unknown names surface
+// as MISSING failures. Settings are only returned under Include=SETTINGS.
 func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error) {
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
@@ -282,6 +287,7 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 	if len(names) == 0 {
 		names = []string{defaultCluster}
 	}
+	includeSettings := slices.Contains(awsStringSlice(input.Include), ecs.ClusterFieldSettings)
 	out := &ecs.DescribeClustersOutput{}
 	for _, name := range names {
 		name = ClusterShortName(name)
@@ -291,9 +297,13 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 			return nil, err
 		}
 		if !found {
+			out.Failures = append(out.Failures, &ecs.Failure{Arn: aws.String(ClusterARN(s.region, accountID, name)), Reason: aws.String("MISSING")})
 			continue
 		}
 		c := rec.toAWS()
+		if !includeSettings {
+			c.Settings = nil
+		}
 		if err := s.applyClusterCounts(ctx, kv, name, c); err != nil {
 			return nil, err
 		}
@@ -382,8 +392,30 @@ func (r *ClusterRecord) toAWS() *ecs.Cluster {
 	for _, item := range r.DefaultCapacityProviderStrategy {
 		c.DefaultCapacityProviderStrategy = append(c.DefaultCapacityProviderStrategy, item.toAWS())
 	}
+	for _, st := range r.Settings {
+		c.Settings = append(c.Settings, &ecs.ClusterSetting{Name: aws.String(st.Name), Value: aws.String(st.Value)})
+	}
 	return c
 }
+
+// clusterSettingsFromAWS validates CreateCluster settings against the names
+// and values AWS accepts, so an unsupported setting is refused, not dropped.
+func clusterSettingsFromAWS(in []*ecs.ClusterSetting) ([]ClusterSetting, error) {
+	var out []ClusterSetting
+	for _, st := range in {
+		if st == nil {
+			continue
+		}
+		name, value := aws.StringValue(st.Name), aws.StringValue(st.Value)
+		if name != ecs.ClusterSettingNameContainerInsights || !slices.Contains(containerInsightsValues, value) {
+			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		}
+		out = append(out, ClusterSetting{Name: name, Value: value})
+	}
+	return out, nil
+}
+
+var containerInsightsValues = []string{"enabled", "disabled", "enhanced"}
 
 // tagsToAWS converts a stored tag map into the AWS list form with a stable
 // key order so Describe output is deterministic.
@@ -548,7 +580,16 @@ func (s *Service) DescribeTaskDefinition(ctx context.Context, input *ecs.Describ
 	if err != nil {
 		return nil, err
 	}
-	rec, err := s.taskDefs.Resolve(ctx, kv, aws.StringValue(input.TaskDefinition))
+	ref := aws.StringValue(input.TaskDefinition)
+	if family, _ := taskdefinition.ParseRef(ref); family == "" {
+		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+	}
+	// AWS answers an unknown revision with ClientException, not the
+	// InvalidParameterException that launches get for the same reference.
+	rec, err := s.taskDefs.Resolve(ctx, kv, ref)
+	if err != nil && err.Error() == awserrors.ErrorECSInvalidParameter {
+		return nil, errors.New(awserrors.ErrorECSClientException)
+	}
 	if err != nil {
 		return nil, err
 	}

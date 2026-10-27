@@ -88,7 +88,7 @@ func TestSelectorLegacyFallback(t *testing.T) {
 
 	assert.True(t, s.Served("ec2"))
 	assert.True(t, s.Served("acm"))
-	assert.False(t, s.Served("route53"))
+	assert.False(t, s.Served("sqs"))
 	assert.Equal(t, "LegacyAction", s.ResolveAction(req, "ec2"))
 	assert.False(t, s.JSONErrors("ec2"))
 	assert.True(t, s.JSONErrors("acm"))

@@ -92,6 +92,42 @@ func TestDeleteVolume_UnreadableDocumentIsInternalError(t *testing.T) {
 	require.NotNil(t, provVol, "the provider's data must survive a failed delete")
 }
 
+// racingDeleteStore lets a concurrent deleter win every DeleteObject, so the
+// caller's own delete answers NoSuchKey as Predastore would.
+type racingDeleteStore struct {
+	*objectstore.MemoryObjectStore
+}
+
+func (s *racingDeleteStore) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+	_, _ = s.MemoryObjectStore.DeleteObject(ctx, input)
+	return s.MemoryObjectStore.DeleteObject(ctx, input)
+}
+
+// A document another delete removed after this one read it is deleted, so the
+// call must succeed rather than answer InternalError for a finished delete.
+func TestDeleteVolume_ConcurrentlyDeletedDocumentIsSuccess(t *testing.T) {
+	memory := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", memory)
+	svc.snapshotKV = setupTestVolumeKV(t)
+
+	volumeID := "vol-racingdelete00"
+	createVolumeInStoreWithMeta(t, svc, memory, volumeID, ebsmetadata.Volume{
+		VolumeID: volumeID, CapacityGiB: 10, State: "available",
+	})
+
+	racing := &racingDeleteStore{MemoryObjectStore: memory}
+	svc.store = racing
+	svc.metadata = ebsmetadata.NewStore(racing, "test-bucket")
+
+	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
+		VolumeId: aws.String(volumeID),
+	}, testVolAccountID)
+	require.NoError(t, err)
+
+	_, getErr := ebsmetadata.NewStore(memory, "test-bucket").GetVolume(context.Background(), testVolAccountID, volumeID)
+	assert.True(t, objectstore.IsNoSuchKeyError(getErr), "the document must be gone, got %v", getErr)
+}
+
 // TestDeleteVolume_AbsentDocumentIsStillNotFound guards the other side of the
 // fix: absence (NoSuchKey) must keep returning InvalidVolume.NotFound, not be
 // swept up into the new InternalError branch.

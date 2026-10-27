@@ -409,8 +409,22 @@ var (
 	// that exists but has not been issued yet (still PENDING_VALIDATION), so a
 	// client polling for the body can tell "not ready" apart from "not mine".
 	ErrorACMRequestInProgress = "RequestInProgressException"
+	// Route 53 REST-XML error codes, from the 2013-04-01 API reference.
+	ErrorNoSuchHostedZone          = "NoSuchHostedZone"
+	ErrorHostedZoneAlreadyExists   = "HostedZoneAlreadyExists"
+	ErrorHostedZoneNotEmpty        = "HostedZoneNotEmpty"
+	ErrorInvalidChangeBatch        = "InvalidChangeBatch"
+	ErrorNoSuchChange              = "NoSuchChange"
+	ErrorTooManyHostedZones        = "TooManyHostedZones"
+	ErrorInvalidDomainName         = "InvalidDomainName"
+	ErrorConflictingDomainExists   = "ConflictingDomainExists"
+	ErrorPriorRequestNotComplete   = "PriorRequestNotComplete"
+	ErrorRoute53InvalidArgument    = "InvalidArgument"
+	ErrorRoute53NoSuchHealthCheck  = "NoSuchHealthCheck"
+	ErrorRoute53TooManyTagsForZone = "TooManyTags"
 	// ECS JSON-1.1 exception codes. ECS clients key on the "Exception"-suffixed
 	// __type; do not cross-wire with the EC2/ACM not-found codes above.
+	ErrorECSClientException                             = "ClientException"
 	ErrorECSClusterNotFound                             = "ClusterNotFoundException"
 	ErrorECSInvalidParameter                            = "InvalidParameterException"
 	ErrorECSServiceNotFound                             = "ServiceNotFoundException"
@@ -711,6 +725,33 @@ func ResolveRetryAfter(err error) (time.Duration, bool) {
 	return 0, false
 }
 
+// fieldsError attaches extra response-body fields to an error without changing
+// its text, for protocols that carry them (e.g. a REST-JSON throttle Reason).
+type fieldsError struct {
+	err    error
+	fields map[string]string
+}
+
+func (e *fieldsError) Error() string { return e.err.Error() }
+func (e *fieldsError) Unwrap() error { return e.err }
+
+// WithFields attaches extra top-level response-body fields to err. Protocols
+// without extra fields ignore them.
+func WithFields(err error, fields map[string]string) error {
+	if err == nil || len(fields) == 0 {
+		return err
+	}
+	return &fieldsError{err: err, fields: fields}
+}
+
+// ResolveFields returns the fields attached to err via WithFields, if any.
+func ResolveFields(err error) map[string]string {
+	if fe, ok := errors.AsType[*fieldsError](err); ok {
+		return fe.fields
+	}
+	return nil
+}
+
 // errorLookupByService overrides ErrorLookup's message and HTTP status for a
 // (service, code) pair whose wire code is shared by services with different
 // canonical wording — e.g. ACM and EKS both use "ResourceInUseException".
@@ -742,12 +783,16 @@ var errorLookupByService = withNeutralValidationMessages(map[string]map[string]E
 	"rds": {
 		ErrorOperationNotSupported: {HTTPCode: 400, Message: "The specified RDS action is not supported in the RDS v1 API."},
 	},
+	// Route 53 throttles with a 400, not the 503 the shared entry carries.
+	"route53": {
+		ErrorThrottling: {HTTPCode: 400, Message: "Rate exceeded."},
+	},
 })
 
 // nonEC2Services are the gateway's services other than EC2, whose validation
 // errors must not fall back to ErrorLookup's EC2 wording.
 var nonEC2Services = []string{
-	"iam", "sts", "elasticloadbalancing", "eks", "ecs", "ecr", "acm", "rds", "tagging", "spinifex",
+	"iam", "sts", "elasticloadbalancing", "eks", "ecs", "ecr", "acm", "rds", "route53", "tagging", "spinifex",
 	"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime",
 }
 
@@ -1197,6 +1242,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorResourceNotFound:                                      {HTTPCode: 404, Message: "The specified resource was not found."},
 	ErrorEKSResourceInUse:                                      {HTTPCode: 409, Message: "A cluster with this name already exists in this account and Region. Delete the existing cluster, or choose a different name."},
 	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified cluster could not be found. You can view your available clusters with ListClusters. Amazon EKS clusters are Region specific."},
+	ErrorECSClientException:                                    {HTTPCode: 400, Message: "Unable to describe task definition."},
 	ErrorECSClusterNotFound:                                    {HTTPCode: 400, Message: "The specified cluster was not found. You can view your available clusters with ListClusters. Amazon ECS clusters are Region specific."},
 	ErrorECSInvalidParameter:                                   {HTTPCode: 400, Message: "The specified parameter is not valid. Review the available parameters for the API request."},
 	ErrorECSServiceNotFound:                                    {HTTPCode: 400, Message: "The specified service was not found. You can view your available services with ListServices. Amazon ECS services are cluster specific and Region specific."},
@@ -1349,4 +1395,18 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorModelErrorException:           {HTTPCode: 424, Message: "The request failed because of an error while running the model."},
 	ErrorServiceQuotaExceededException: {HTTPCode: 400, Message: "The number of requests exceeds the service quota. Resubmit your request later."},
 	ErrorConflictException:             {HTTPCode: 409, Message: "There was a conflict performing an operation."},
+
+	// Route 53.
+	ErrorNoSuchHostedZone:          {HTTPCode: 404, Message: "No hosted zone exists with the ID that you specified."},
+	ErrorHostedZoneAlreadyExists:   {HTTPCode: 409, Message: "The hosted zone you're trying to create already exists."},
+	ErrorHostedZoneNotEmpty:        {HTTPCode: 400, Message: "The hosted zone contains resource records that are not SOA or NS records."},
+	ErrorInvalidChangeBatch:        {HTTPCode: 400, Message: "This exception contains a list of messages that might contain one or more error messages."},
+	ErrorNoSuchChange:              {HTTPCode: 404, Message: "A change with the specified change ID does not exist."},
+	ErrorTooManyHostedZones:        {HTTPCode: 400, Message: "This operation can't be completed because the current account has reached the limit on the number of hosted zones."},
+	ErrorInvalidDomainName:         {HTTPCode: 400, Message: "The specified domain name is not valid."},
+	ErrorConflictingDomainExists:   {HTTPCode: 400, Message: "The domain name is already in use by another hosted zone."},
+	ErrorPriorRequestNotComplete:   {HTTPCode: 400, Message: "Route 53 is still processing a previous request for this hosted zone. Try again later."},
+	ErrorRoute53InvalidArgument:    {HTTPCode: 400, Message: "Parameter name is not valid."},
+	ErrorRoute53NoSuchHealthCheck:  {HTTPCode: 404, Message: "No health check exists with the specified ID."},
+	ErrorRoute53TooManyTagsForZone: {HTTPCode: 400, Message: "The resource has too many tags."},
 }

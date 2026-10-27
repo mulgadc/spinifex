@@ -37,6 +37,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -528,7 +529,8 @@ func launchService(config *config.ClusterConfig) error {
 		NATS:               natsConn,
 	})
 	acmControlPlane := acmawsapi.NewRegistration(acmawsapi.Deps{NATS: natsConn})
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane); err != nil {
+	route53ControlPlane := route53awsapi.NewRegistration(route53awsapi.Deps{NATS: natsConn})
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
 

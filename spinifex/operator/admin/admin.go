@@ -56,9 +56,16 @@ type ConfigSettings struct {
 	AccountID string
 	Region    string
 	NatsToken string
-	DataDir   string
-	LogDir    string
-	ConfigDir string
+	// SQSStoreToken authenticates clients and routes of the dedicated SQS
+	// message store. It is distinct from NatsToken and is rendered only into
+	// sqs-store.conf. Empty skips the store's config.
+	SQSStoreToken string
+	// SQSStoreRoutes are the "host:port" cluster routes of the SQS store;
+	// empty on a single node.
+	SQSStoreRoutes []string
+	DataDir        string
+	LogDir         string
+	ConfigDir      string
 	// PredastoreDataDir is the [[host]] data_dir rendered into predastore.toml.
 	// Derived from DataDir via PredastoreDataDir when left unset.
 	PredastoreDataDir string
@@ -91,6 +98,10 @@ type ConfigSettings struct {
 
 	// Node capabilities
 	Services []string
+
+	// NameserverNodes pins the published nameservers, rendered as
+	// [northstar] nameserver_nodes. Empty leaves the key out.
+	NameserverNodes []string
 
 	// OVN Northbound DB address — "tcp:127.0.0.1:6641" on the primary node,
 	// "tcp:<primary-mgmt-ip>:6641" on joining nodes.
@@ -317,6 +328,7 @@ func CreateServiceDirectories(spxRoot string) {
 		filepath.Join(spxRoot, "state"),
 		filepath.Join(spxRoot, "logs"),
 		filepath.Join(spxRoot, "nats"),
+		filepath.Join(spxRoot, "sqs-store"),
 		filepath.Join(spxRoot, "predastore"),
 		filepath.Join(spxRoot, "viperblock"),
 		filepath.Join(spxRoot, "vpcd"),
@@ -394,6 +406,8 @@ func ChownRecursive(path, username string) error {
 var servicePaths = map[string]string{
 	"/etc/spinifex/nats":           "spinifex-nats",
 	"/var/lib/spinifex/nats":       "spinifex-nats",
+	"/etc/spinifex/sqs-store":      "spinifex-sqsstore",
+	"/var/lib/spinifex/sqs-store":  "spinifex-sqsstore",
 	"/etc/spinifex/predastore":     "spinifex-storage",
 	"/var/lib/spinifex/predastore": "spinifex-storage",
 	"/etc/spinifex/northstar":      "spinifex-northstar",
@@ -635,6 +649,24 @@ type NorthstarCredentials struct {
 	AccessKey string
 	SecretKey string
 	Bucket    string
+}
+
+// SQSStoreClusterPort is the route port of the SQS store, distinct from the
+// control-plane NATS cluster port 4248.
+const SQSStoreClusterPort = "4249"
+
+// SQSStoreRoutes maps control-plane NATS cluster routes ("host:4248") to the
+// SQS store's route addresses on the same hosts.
+func SQSStoreRoutes(natsRoutes []string) []string {
+	var out []string
+	for _, r := range natsRoutes {
+		host, _, err := net.SplitHostPort(strings.TrimSpace(r))
+		if err != nil || host == "" {
+			continue
+		}
+		out = append(out, net.JoinHostPort(host, SQSStoreClusterPort))
+	}
+	return out
 }
 
 // GenerateNATSToken generates a secure random token for NATS.

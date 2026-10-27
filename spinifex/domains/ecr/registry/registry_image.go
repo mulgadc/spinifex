@@ -273,7 +273,7 @@ func (reg *Registry) reclaimManifest(ctx context.Context, account, repo, digest 
 	if _, err := reg.Store.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(ecr.AccountBucket(account)),
 		Key:    aws.String(ecr.ManifestKey(repo, digest)),
-	}); err != nil {
+	}); err != nil && !objectstore.IsNoSuchKeyError(err) {
 		slog.WarnContext(ctx, "ECR/GC: manifest object delete failed", "repo", repo, "digest", digest, "err", err)
 	}
 
@@ -292,7 +292,7 @@ func (reg *Registry) reclaimManifest(ctx context.Context, account, repo, digest 
 		if _, err := reg.Store.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: aws.String(ecr.AccountBucket(account)),
 			Key:    aws.String(ecr.BlobKey(child)),
-		}); err != nil {
+		}); err != nil && !objectstore.IsNoSuchKeyError(err) {
 			slog.WarnContext(ctx, "ECR/GC: blob delete failed", "digest", child, "err", err)
 		}
 	}

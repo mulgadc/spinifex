@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qemunbdd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/sqsstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/vpcd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/service"
 	"github.com/spf13/cobra"
@@ -69,6 +70,11 @@ var viperblockCmd = &cobra.Command{
 var natsCmd = &cobra.Command{
 	Use:   "nats",
 	Short: "Manage the nats service",
+}
+
+var sqsStoreCmd = &cobra.Command{
+	Use:   "sqs-store",
+	Short: "Manage the dedicated SQS message store (JetStream) service",
 }
 
 var spinifexCmd = &cobra.Command{
@@ -488,6 +494,27 @@ var natsStartCmd = &cobra.Command{
 			return fmt.Errorf("start nats service: %w", err)
 		}
 		fmt.Println("NATS service started")
+		return nil
+	},
+}
+
+var sqsStoreStartCmd = &cobra.Command{
+	Use:           "start",
+	Short:         "Start the dedicated SQS message store service",
+	SilenceErrors: true,
+	SilenceUsage:  true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer initTelemetry("sqs-store", false)()
+
+		service, err := service.New("sqs-store", &sqsstore.Config{
+			ConfigFile: viper.GetString("config"),
+		})
+		if err != nil {
+			return fmt.Errorf("create sqs-store service: %w", err)
+		}
+		if _, err = service.Start(); err != nil {
+			return fmt.Errorf("start sqs-store service: %w", err)
+		}
 		return nil
 	},
 }
@@ -914,6 +941,7 @@ func runNorthstarStart(options northstarStartOptions, deps northstarStartDepende
 	svc, err := deps.newService(&northstar.Config{
 		ConfigPath: configPath,
 		BasePath:   baseDir,
+		NodeName:   clusterConfig.Node,
 		NatsHost:   nodeConfig.NATS.Host,
 		NatsToken:  nodeConfig.NATS.ACL.Token,
 		NatsCACert: nodeConfig.NATS.CACert,
@@ -1147,6 +1175,9 @@ func init() {
 	serviceCmd.AddCommand(natsCmd)
 
 	natsCmd.AddCommand(natsStartCmd)
+
+	serviceCmd.AddCommand(sqsStoreCmd)
+	sqsStoreCmd.AddCommand(sqsStoreStartCmd)
 
 	// Add NATS flags
 	natsCmd.PersistentFlags().Int("port", 4222, "NATS server port")

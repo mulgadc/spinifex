@@ -99,6 +99,9 @@ behavior in other words.
 | 4432 | Formation server | HTTPS | Cluster (bootstrap only) | Cluster join coordination; active only while a join token is valid. Binds the node's `--bind` (lan) address. See *Formation port lifecycle* below. | Short-lived bearer token + TLS¹ |
 | 4222 | spinifex-nats (client) | NATS + TLS | Cluster | Internal service bus for EC2/EBS/VPC/S3 handlers | Token + mutual TLS (cluster CA) |
 | 4248 | spinifex-nats (cluster) | NATS + TLS | Cluster | Inter-node NATS federation | Token + mutual TLS (cluster CA) |
+| 4223 | spinifex-sqs-store (client) | NATS + TLS | Cluster | SQS message data, separate from the control-plane bus | Store-only token + TLS |
+| 4249 | spinifex-sqs-store (cluster) | NATS + TLS | Cluster | Inter-node SQS store replication | Store-only token + mutual TLS (cluster CA) |
+| 8223 | spinifex-sqs-store (monitor) | HTTP | Loopback | varz and jsz for the store | Loopback only |
 | 5300 | northstar | DNS (UDP + TCP) | Cluster | Forward target for every node's per-instance DNS shim, dialled cross-node. Binds the wildcard by design. | None — restrict by firewall |
 | 6660 | predastore (blob node) | QUIC / UDP | Cluster | Erasure-coded object shard transport between hosts. Multi-node clusters only — see *Predastore ports* below. | TLS 1.3, server certificate verified against the cluster CA |
 | 7660 | predastore (meta node) | QUIC / UDP | Cluster | Raft consensus over global state — buckets and the object index — between hosts. Multi-node clusters only. | TLS 1.3, server certificate verified against the cluster CA |
@@ -221,7 +224,7 @@ table inet spinifex_filter {
 
     # Cluster, from peer nodes only. Replace with your nodes' lan-plane
     # addresses — a CIDR does not generalise to nodes on different subnets.
-    ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
+    ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } tcp dport { 4222, 4223, 4248, 4249, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
     ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } udp dport { 5300, 6660, 7660 } accept
 
     # Encap, from peer chassis only. Replace with your nodes' vpc-plane

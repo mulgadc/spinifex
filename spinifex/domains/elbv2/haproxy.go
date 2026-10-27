@@ -46,7 +46,8 @@ backend {{.Name}}
     http-request return status {{.FixedResponse.StatusCode}}{{if .FixedResponse.ContentType}} content-type "{{.FixedResponse.ContentType}}"{{end}}{{if .FixedResponse.Body}} string "{{.FixedResponse.Body}}"{{end}}
 {{- else}}
     balance roundrobin{{if .HealthCheckPath}}
-    option httpchk GET {{.HealthCheckPath}}
+    option httpchk
+    http-check send meth GET ver HTTP/1.1 hdr Host %[bc_dst]%[bc_dst_port,regsub(^,:),regsub(^:{{.HealthCheckDefaultPort}}$,)] hdr User-Agent ELB-HealthChecker/2.0 uri {{.HealthCheckPath}}
     http-check expect status {{.HealthCheckMatcher}}{{end}}
 {{- range .Servers}}
     server {{.Name}} {{.Addr}}:{{.Port}} check{{if .Secure}} check-ssl ssl verify none{{end}} inter {{.CheckInterval}}s fall {{.Fall}} rise {{.Rise}}
@@ -102,9 +103,12 @@ type HAProxyBackend struct {
 	Name               string
 	HealthCheckPath    string
 	HealthCheckMatcher string
-	Servers            []HAProxyServer
-	FixedResponse      *HAProxyFixedResponse
-	Redirect           *HAProxyRedirect
+	// HealthCheckDefaultPort is left out of the check's Host header, as AWS
+	// sends "Host: <ip>" on the scheme's default port and "<ip>:<port>" otherwise.
+	HealthCheckDefaultPort int64
+	Servers                []HAProxyServer
+	FixedResponse          *HAProxyFixedResponse
+	Redirect               *HAProxyRedirect
 }
 
 // HAProxyFixedResponse renders an `http-request return` directive. All fields are validated before use.
@@ -185,10 +189,15 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 			return
 		}
 
+		secure := strings.EqualFold(tg.Protocol, ProtocolHTTPS)
 		backend := HAProxyBackend{
-			Name:               backendName,
-			HealthCheckPath:    tg.HealthCheck.Path,
-			HealthCheckMatcher: tg.HealthCheck.Matcher,
+			Name:                   backendName,
+			HealthCheckPath:        tg.HealthCheck.Path,
+			HealthCheckMatcher:     tg.HealthCheck.Matcher,
+			HealthCheckDefaultPort: 80,
+		}
+		if secure {
+			backend.HealthCheckDefaultPort = 443
 		}
 
 		for _, target := range tg.Targets {
@@ -202,7 +211,7 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 				CheckInterval: tg.HealthCheck.IntervalSeconds,
 				Fall:          tg.HealthCheck.UnhealthyThreshold,
 				Rise:          tg.HealthCheck.HealthyThreshold,
-				Secure:        strings.EqualFold(tg.Protocol, ProtocolHTTPS),
+				Secure:        secure,
 			})
 		}
 		cfg.Backends = append(cfg.Backends, backend)

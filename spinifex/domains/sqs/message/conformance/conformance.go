@@ -64,6 +64,10 @@ func Run(t *testing.T, newHarness Factory) {
 		{"FeedWakesOnLiveAppend", testFeedLive},
 		{"FeedOmitsDeletedAppends", testFeedOmitsDeleted},
 		{"FeedHonoursContext", testFeedContext},
+		{"ScanPagesInOrder", testScanPagesInOrder},
+		{"ScanAdvancesAcrossDeletedPositions", testScanAcrossDeleted},
+		{"ScanExcludesAppendsAfterBound", testScanBound},
+		{"ScanRejectsBadInput", testScanBadInput},
 		{"NamespaceIsolation", testNamespaceIsolation},
 		{"ShardIsolation", testShardIsolation},
 		{"CountAndEnumerate", testCountAndEnumerate},
@@ -610,4 +614,114 @@ func testRetentionBackstop(t *testing.T, h Harness) {
 	require.ErrorIs(t, err, message.ErrNotFound, "a message past the backstop is dropped")
 	_, err = h.Store.Get(ctx, ns, young)
 	require.NoError(t, err, "a message inside the backstop is kept")
+}
+
+// scanPass runs one complete scan pass of shard at limit per page, failing
+// on any duplicate or out-of-order position, and returns every change.
+func scanPass(t *testing.T, s message.Store, shard message.Shard, limit int, afterFirst func()) []message.Change {
+	t.Helper()
+	var (
+		all  []message.Change
+		from message.ScanCursor
+		last message.Cursor
+	)
+	for page := 0; ; page++ {
+		require.Less(t, page, 10_000, "scan pass never finished")
+		got, err := s.Scan(context.Background(), shard, from, limit)
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(got.Changes), limit)
+		if page > 0 {
+			require.Equal(t, from.Bound, got.Next.Bound, "a pass keeps its bound")
+		}
+		for _, c := range got.Changes {
+			require.Greater(t, c.Cursor, last, "positions come once each, in order")
+			require.LessOrEqual(t, c.Cursor, got.Next.Bound, "nothing after the bound")
+			last = c.Cursor
+		}
+		all = append(all, got.Changes...)
+		if got.Done {
+			require.Equal(t, got.Next.Bound, got.Next.After)
+			return all
+		}
+		require.Greater(t, got.Next.After, from.After, "an unfinished page advances")
+		from = got.Next
+		if page == 0 && afterFirst != nil {
+			afterFirst()
+		}
+	}
+}
+
+func positionsIn(changes []message.Change, nss ...message.Namespace) []message.Position {
+	want := map[message.Namespace]bool{}
+	for _, ns := range nss {
+		want[ns] = true
+	}
+	var out []message.Position
+	for _, c := range changes {
+		if want[c.Namespace] {
+			out = append(out, c.Position)
+		}
+	}
+	return out
+}
+
+func testScanPagesInOrder(t *testing.T, h Harness) {
+	a, b := newNamespace(t, 0), newNamespace(t, 0)
+	b.StateShard = otherStateShard(h)
+	var want []message.Position
+	for i := range 7 {
+		ns := a
+		if i%2 == 1 {
+			ns = b
+		}
+		want = append(want, appendBody(t, h.Store, ns, fmt.Sprintf("m%d", i)))
+	}
+	all := scanPass(t, h.Store, 0, 2, nil)
+	assert.Equal(t, want, positionsIn(all, a, b), "every surviving append, once, in order")
+	for _, c := range all {
+		if c.Namespace == b {
+			assert.Equal(t, b.StateShard, c.Namespace.StateShard, "complete namespace")
+			assert.Equal(t, map[string]string{"body": c.Meta["body"]}, c.Meta, "domain metadata only")
+		}
+	}
+}
+
+func testScanAcrossDeleted(t *testing.T, h Harness) {
+	ctx := context.Background()
+	ns := newNamespace(t, 0)
+	var ps []message.Position
+	for i := range 6 {
+		ps = append(ps, appendBody(t, h.Store, ns, fmt.Sprintf("m%d", i)))
+	}
+	for _, p := range ps[1:5] {
+		require.NoError(t, h.Store.Delete(ctx, ns, p))
+	}
+	assert.Equal(t, []message.Position{ps[0], ps[5]}, positionsIn(scanPass(t, h.Store, 0, 1, nil), ns), "a deleted run is skipped, not a stop")
+
+	require.NoError(t, h.Store.Delete(ctx, ns, ps[5]))
+	assert.Equal(t, []message.Position{ps[0]}, positionsIn(scanPass(t, h.Store, 0, 1, nil), ns), "a deleted tail ends the pass")
+}
+
+func testScanBound(t *testing.T, h Harness) {
+	ns := newNamespace(t, 0)
+	before := []message.Position{appendBody(t, h.Store, ns, "a"), appendBody(t, h.Store, ns, "b"), appendBody(t, h.Store, ns, "c")}
+	var after []message.Position
+	// The second page holds the bound and has room for one more, so a store
+	// that reads past its bound is caught.
+	all := scanPass(t, h.Store, 0, 2, func() {
+		after = append(after, appendBody(t, h.Store, ns, "d"), appendBody(t, h.Store, ns, "e"))
+	})
+	got := positionsIn(all, ns)
+	assert.Equal(t, before, got, "appends after the bound are not in the pass")
+	assert.Equal(t, append(before, after...), positionsIn(scanPass(t, h.Store, 0, 3, nil), ns), "a new pass has a new bound")
+}
+
+func testScanBadInput(t *testing.T, h Harness) {
+	ctx := context.Background()
+	for _, limit := range []int{0, -1} {
+		_, err := h.Store.Scan(ctx, 0, message.ScanCursor{}, limit)
+		assert.ErrorIsf(t, err, message.ErrInvalidArgument, "limit %d", limit)
+	}
+	_, err := h.Store.Scan(ctx, 0, message.ScanCursor{After: 5, Bound: 4}, 1)
+	assert.ErrorIs(t, err, message.ErrInvalidArgument, "a cursor past its bound")
 }

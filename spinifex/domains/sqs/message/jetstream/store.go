@@ -347,24 +347,8 @@ func (s *Store) Count(ctx context.Context, ns message.Namespace) (message.Usage,
 	if err != nil {
 		return message.Usage{}, fmt.Errorf("count messages %s: %w", ns.Queue, err)
 	}
-	kv, err := s.bucket(ctx, ns)
+	keys, err := s.liveStateKeys(ctx, ns.StateShard, statePrefix(ns)+".")
 	if err != nil {
-		return message.Usage{}, err
-	}
-	// Listing keys skips delete markers, which a subject count would include.
-	lister, err := kv.ListKeysFiltered(ctx, statePrefix(ns)+".>")
-	if err != nil {
-		return message.Usage{}, fmt.Errorf("count state %s: %w", ns.Queue, err)
-	}
-	// The lister may report a key more than once under concurrent writes,
-	// so distinct names are counted, not events.
-	keys := map[string]struct{}{}
-	for key := range lister.Keys() {
-		keys[key] = struct{}{}
-	}
-	// The lister closes early on cancellation without an error, which
-	// would otherwise read as a short count.
-	if err := ctx.Err(); err != nil {
 		return message.Usage{}, fmt.Errorf("count state %s: %w", ns.Queue, err)
 	}
 	return message.Usage{Messages: info.State.Subjects[Subject(ns)], States: uint64(len(keys))}, nil
@@ -576,8 +560,8 @@ type bodyAllocation struct {
 }
 
 // bodyAllocations reads the header of every stored body on the message
-// shard in one headers-only ordered pass, counting each queue's bodies and
-// requiring every body of a queue to name the same state shard.
+// shard in one bounded pass, counting each queue's bodies and requiring
+// every body of a queue to name the same state shard.
 func (s *Store) bodyAllocations(ctx context.Context, messageShard message.Shard) (map[message.QueueID]bodyAllocation, error) {
 	stream, err := s.stream(ctx, message.Namespace{MessageShard: messageShard, Queue: "enumerate"})
 	if err != nil {
@@ -588,54 +572,136 @@ func (s *Store) bodyAllocations(ctx context.Context, messageShard message.Shard)
 		return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
 	}
 	out := map[message.QueueID]bodyAllocation{}
-	if info.State.Msgs == 0 {
-		return out, nil
-	}
-	consumer, err := stream.OrderedConsumer(ctx, jsapi.OrderedConsumerConfig{
-		HeadersOnly:       true,
-		InactiveThreshold: feedInactiveThreshold,
+	_, _, err = readRange(ctx, stream, shardFilter(messageShard), 0, info.State.LastSeq, func(msg jsapi.Msg, seq uint64) (bool, error) {
+		ns, err := decodeNamespace(messageShard, msg.Subject(), msg.Headers())
+		if err != nil {
+			return false, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(messageShard), seq, err)
+		}
+		a, seen := out[ns.Queue]
+		if seen && a.stateShard != ns.StateShard {
+			return false, fmt.Errorf("%w: %s bodies name state shards %d and %d (position %d)", ErrCorruptRecord, msg.Subject(), a.stateShard, ns.StateShard, seq)
+		}
+		out[ns.Queue] = bodyAllocation{stateShard: ns.StateShard, messages: a.messages + 1}
+		return true, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
 	}
+	return out, nil
+}
+
+// liveStateKeys reads every state key under keyPrefix in the state shard's
+// bucket in one bounded pass over its stream, skipping delete markers. It
+// replaces the client's key lister, which ends on consumer state.
+func (s *Store) liveStateKeys(ctx context.Context, shard message.Shard, keyPrefix string) (map[string]struct{}, error) {
+	bucket := BucketName(shard)
+	stream, err := s.js.Stream(ctx, "KV_"+bucket)
+	if err != nil {
+		return nil, fmt.Errorf("open state bucket %s: %w", bucket, err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read state bucket %s: %w", bucket, err)
+	}
+	subjectPrefix := "$KV." + bucket + "."
+	keys := map[string]struct{}{}
+	_, _, err = readRange(ctx, stream, subjectPrefix+keyPrefix+">", 0, info.State.LastSeq, func(msg jsapi.Msg, _ uint64) (bool, error) {
+		key := strings.TrimPrefix(msg.Subject(), subjectPrefix)
+		switch msg.Headers().Get("KV-Operation") {
+		case "DEL", "PURGE":
+			delete(keys, key)
+		default:
+			keys[key] = struct{}{}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// shardFilter matches every message subject on a message shard.
+func shardFilter(shard message.Shard) string {
+	return "sqs.m." + strconv.FormatUint(uint64(shard), 10) + ".>"
+}
+
+// readRange calls fn, in order and headers only, for each stored match of
+// filter in (after, bound] until fn returns false. Completion rests on a
+// direct get of the next match, never on consumer state.
+func readRange(ctx context.Context, stream jsapi.Stream, filter string, after, bound uint64, fn func(jsapi.Msg, uint64) (bool, error)) (uint64, bool, error) {
+	for {
+		if after >= bound {
+			return bound, true, nil
+		}
+		next, err := stream.GetMsg(ctx, after+1, jsapi.WithGetMsgSubject(filter))
+		switch {
+		case errors.Is(err, jsapi.ErrMsgNotFound):
+			return bound, true, nil
+		case err != nil:
+			return after, false, err
+		case next.Sequence > bound:
+			return bound, true, nil
+		}
+		last, done, more, err := readFrom(ctx, stream, filter, next.Sequence, bound, fn)
+		if last > after {
+			after = last
+		}
+		if err != nil || done || !more {
+			return after, done, err
+		}
+	}
+}
+
+// readFrom drains one headers-only ordered consumer from start. more reports
+// the consumer went idle before the bound, so readRange must probe again.
+func readFrom(ctx context.Context, stream jsapi.Stream, filter string, start, bound uint64, fn func(jsapi.Msg, uint64) (bool, error)) (last uint64, done, more bool, err error) {
+	consumer, err := stream.OrderedConsumer(ctx, jsapi.OrderedConsumerConfig{
+		FilterSubjects:    []string{filter},
+		DeliverPolicy:     jsapi.DeliverByStartSequencePolicy,
+		OptStartSeq:       start,
+		HeadersOnly:       true,
+		InactiveThreshold: feedInactiveThreshold,
+	})
+	if err != nil {
+		return 0, false, false, err
+	}
 	defer func() { _ = deleteFeedConsumer(stream, consumer) }()
 	it, err := consumer.Messages()
 	if err != nil {
-		return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
+		return 0, false, false, err
 	}
 	defer it.Stop()
 	for {
 		msg, err := nextOrIdle(ctx, it)
 		if err != nil {
-			return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
+			return last, false, false, err
 		}
 		if msg == nil {
-			// Idle: done only once the consumer has nothing left to deliver,
-			// as when the remaining bodies were deleted mid-pass.
-			ci, err := consumer.Info(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
-			}
-			if ci.NumPending == 0 {
-				return out, nil
-			}
-			continue
+			return last, false, true, nil
 		}
 		md, err := msg.Metadata()
 		if err != nil {
-			return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
+			return last, false, false, err
 		}
-		ns, err := decodeNamespace(messageShard, msg.Subject(), msg.Headers())
+		seq := md.Sequence.Stream
+		if seq > bound {
+			return bound, true, false, nil
+		}
+		cont, err := fn(msg, seq)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(messageShard), md.Sequence.Stream, err)
+			return last, false, false, err
 		}
-		a, seen := out[ns.Queue]
-		if seen && a.stateShard != ns.StateShard {
-			return nil, fmt.Errorf("%w: %s bodies name state shards %d and %d (position %d)", ErrCorruptRecord, msg.Subject(), a.stateShard, ns.StateShard, md.Sequence.Stream)
+		last = seq
+		if seq == bound {
+			return bound, true, false, nil
 		}
-		out[ns.Queue] = bodyAllocation{stateShard: ns.StateShard, messages: a.messages + 1}
+		if !cont {
+			return last, false, false, nil
+		}
+		// A hint only: readRange's probe decides whether anything remains.
 		if md.NumPending == 0 {
-			return out, nil
+			return last, false, true, nil
 		}
 	}
 }
@@ -669,19 +735,8 @@ func (s *Store) stateAllocations(ctx context.Context, messageShard message.Shard
 	prefix := "q." + strconv.FormatUint(uint64(messageShard), 10) + "."
 	out := map[message.QueueID]map[message.Shard]uint64{}
 	for _, shard := range shards {
-		kv, err := s.bucket(ctx, message.Namespace{StateShard: shard, Queue: "enumerate"})
+		keys, err := s.liveStateKeys(ctx, shard, prefix)
 		if err != nil {
-			return nil, err
-		}
-		lister, err := kv.ListKeysFiltered(ctx, prefix+">")
-		if err != nil {
-			return nil, fmt.Errorf("enumerate %s: %w", BucketName(shard), err)
-		}
-		keys := map[string]struct{}{}
-		for key := range lister.Keys() {
-			keys[key] = struct{}{}
-		}
-		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("enumerate %s: %w", BucketName(shard), err)
 		}
 		for key := range keys {
@@ -743,4 +798,40 @@ func decodeStateKey(prefix, key string) (message.QueueID, error) {
 		return "", err
 	}
 	return ns.Queue, nil
+}
+
+// Scan reads one page of a bounded pass over the message shard's stream,
+// headers only. The first page bounds the pass at the stream's last
+// sequence; deleted positions are skipped by the stream itself.
+func (s *Store) Scan(ctx context.Context, messageShard message.Shard, from message.ScanCursor, limit int) (message.ScanPage, error) {
+	if err := message.ValidateScan(from, limit); err != nil {
+		return message.ScanPage{}, err
+	}
+	stream, err := s.stream(ctx, message.Namespace{MessageShard: messageShard, Queue: "scan"})
+	if err != nil {
+		return message.ScanPage{}, err
+	}
+	if from.Bound == 0 {
+		info, err := stream.Info(ctx)
+		if err != nil {
+			return message.ScanPage{}, fmt.Errorf("scan %s: %w", StreamName(messageShard), err)
+		}
+		from.Bound = message.Cursor(info.State.LastSeq)
+	}
+	page := message.ScanPage{Next: from}
+	last, done, err := readRange(ctx, stream, shardFilter(messageShard), uint64(from.After), uint64(from.Bound), func(msg jsapi.Msg, seq uint64) (bool, error) {
+		ns, err := decodeNamespace(messageShard, msg.Subject(), msg.Headers())
+		if err != nil {
+			return false, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(messageShard), seq, err)
+		}
+		page.Changes = append(page.Changes, message.Change{
+			Namespace: ns, Position: message.Position(seq), Meta: domainMeta(msg.Headers()), Cursor: message.Cursor(seq),
+		})
+		return len(page.Changes) < limit, nil
+	})
+	if err != nil {
+		return message.ScanPage{}, fmt.Errorf("scan %s: %w", StreamName(messageShard), err)
+	}
+	page.Next.After, page.Done = message.Cursor(last), done
+	return page, nil
 }

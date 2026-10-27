@@ -194,6 +194,37 @@ func (s *memStore) Feed(_ context.Context, shard message.Shard, after message.Cu
 	return &memFeed{d: s.d, shard: shard, after: after}, nil
 }
 
+func (s *memStore) Scan(_ context.Context, shard message.Shard, from message.ScanCursor, limit int) (message.ScanPage, error) {
+	if err := message.ValidateScan(from, limit); err != nil {
+		return message.ScanPage{}, err
+	}
+	s.d.mu.Lock()
+	defer s.d.mu.Unlock()
+	s.expire()
+	if from.Bound == 0 {
+		from.Bound = message.Cursor(s.d.seq[shard])
+	}
+	page := message.ScanPage{Next: from}
+	for _, c := range s.d.log[shard] {
+		if c.Cursor <= from.After || c.Cursor > from.Bound {
+			continue
+		}
+		if _, ok := s.d.messages[c.Namespace][c.Position]; !ok {
+			continue
+		}
+		if len(page.Changes) == limit {
+			page.Done = page.Next.After >= page.Next.Bound
+			return page, nil
+		}
+		c.Meta = maps.Clone(c.Meta)
+		page.Changes = append(page.Changes, c)
+		page.Next.After = c.Cursor
+	}
+	page.Next.After = from.Bound
+	page.Done = true
+	return page, nil
+}
+
 func (s *memStore) DeleteNamespace(_ context.Context, ns message.Namespace) error {
 	if err := s.check(ns); err != nil {
 		return err

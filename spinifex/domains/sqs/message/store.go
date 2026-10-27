@@ -169,6 +169,11 @@ type Store interface {
 	// namespace changes arrive in position order; an append deleted before
 	// delivery may be omitted. The feed carries no acknowledgement state.
 	Feed(ctx context.Context, messageShard Shard, after Cursor) (Feed, error)
+	// Scan returns a page of at most limit surviving appends on a message
+	// shard, headers only and in position order, within a bounded pass.
+	// The zero ScanCursor starts a pass and fixes its bound at the shard's
+	// latest position; pass each page's Next to continue it.
+	Scan(ctx context.Context, messageShard Shard, from ScanCursor, limit int) (ScanPage, error)
 
 	// DeleteNamespace removes every message and state record of the
 	// namespace. It is idempotent and leaves other namespaces untouched.
@@ -185,9 +190,40 @@ type Store interface {
 	Limits() Limits
 }
 
+// ScanCursor is a point in a bounded scan pass. A zero Bound starts a new
+// pass; every later page of that pass carries the same Bound.
+type ScanCursor struct {
+	// After is the last position the pass has covered.
+	After Cursor
+	// Bound is the shard's latest position when the pass started; an
+	// append after it is never returned by this pass.
+	Bound Cursor
+}
+
+// ScanPage is one page of a scan pass. Changes skip deleted positions, so a
+// page may be short or empty before the pass is Done.
+type ScanPage struct {
+	Changes []Change
+	Next    ScanCursor
+	// Done is true once Next has reached the pass's Bound.
+	Done bool
+}
+
 // Feed is an open change feed.
 type Feed interface {
 	// Next blocks until the next change or until ctx is done.
 	Next(ctx context.Context) (Change, error)
 	Close() error
+}
+
+// ValidateScan rejects a scan request no store can serve: a non-positive
+// limit, or a cursor already past its pass's bound.
+func ValidateScan(from ScanCursor, limit int) error {
+	switch {
+	case limit < 1:
+		return fmt.Errorf("%w: scan limit %d", ErrInvalidArgument, limit)
+	case from.After > from.Bound:
+		return fmt.Errorf("%w: scan cursor after %d is past its bound %d", ErrInvalidArgument, from.After, from.Bound)
+	}
+	return nil
 }

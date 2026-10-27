@@ -246,13 +246,13 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "security-groups":
 		writeText(w, strings.Join(s.resolver.resolveSGNames(ctx, eni.accountID, eni.securityGroupIDs), "\n"))
 	case prefixMetaData + "hostname", prefixMetaData + "local-hostname":
-		writeText(w, s.privateHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
+		writeText(w, s.privateHostname(eni.privateIP, s.region))
 	case prefixMetaData + "placement", prefixMetaData + "placement/":
 		writeText(w, "availability-zone\nregion")
 	case prefixMetaData + "placement/availability-zone":
 		writeText(w, eni.availabilityZone)
 	case prefixMetaData + "placement/region":
-		writeText(w, regionFromAZ(eni.availabilityZone))
+		writeText(w, s.region)
 	case prefixMetaData + "instance-type":
 		s.serveInstanceField(ctx, w, eni, func(i *instanceFacts) string { return i.instanceType })
 	case prefixMetaData + "ami-id":
@@ -419,7 +419,7 @@ func (s *IMDSServiceImpl) serveInstanceIdentityDocument(ctx context.Context, w h
 		InstanceType:     inst.instanceType,
 		PendingTime:      inst.pendingTime.UTC().Format("2006-01-02T15:04:05Z"),
 		PrivateIP:        eni.privateIP,
-		Region:           regionFromAZ(eni.availabilityZone),
+		Region:           s.region,
 		Version:          identityDocSchemaVersion,
 	}
 	writeIdentityDocument(w, doc)
@@ -587,7 +587,7 @@ func (s *IMDSServiceImpl) serveNetworkInterface(ctx context.Context, w http.Resp
 	case "local-ipv4s":
 		writeText(w, eni.privateIP)
 	case "local-hostname":
-		writeText(w, s.privateHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
+		writeText(w, s.privateHostname(eni.privateIP, s.region))
 	case "security-group-ids":
 		writeText(w, strings.Join(eni.securityGroupIDs, "\n"))
 	case "security-groups":
@@ -697,7 +697,7 @@ func (s *IMDSServiceImpl) servePublicHostname(w http.ResponseWriter, eni *eniFac
 		w.WriteHeader(http.StatusNotFound) // no public IP → no public hostname
 		return
 	}
-	if h := s.publicHostname(eni.publicIP, regionFromAZ(eni.availabilityZone)); h != "" {
+	if h := s.publicHostname(eni.publicIP, s.region); h != "" {
 		writeText(w, h)
 		return
 	}
@@ -770,18 +770,6 @@ func parseTokenTTL(raw string) (time.Duration, bool) {
 		return 0, false
 	}
 	return time.Duration(n) * time.Second, true
-}
-
-// regionFromAZ strips the trailing AZ letter from an AZ name to get the region.
-func regionFromAZ(az string) string {
-	if az == "" {
-		return ""
-	}
-	last := az[len(az)-1]
-	if last >= 'a' && last <= 'z' {
-		return az[:len(az)-1]
-	}
-	return az
 }
 
 // privateHostname is the AWS-parity local hostname (ip-<dashed>.<region>.<internal

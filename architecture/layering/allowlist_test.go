@@ -29,8 +29,9 @@ var allowlist = []allowance{
 
 	{From: "agents/rds/agent", To: "domains/rds/instance", Debt: "agents/rds/agent (dependency, narrowed)", Reason: "command protocol, wire and record types; needs a guest/controller wire contract"},
 
-	{From: "cmd/aws-model-coverage", To: "domains/acm/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared ECR/ACM inventories; named exception, must not construct a registration"},
-	{From: "cmd/aws-model-coverage", To: "domains/ecr/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared ECR/ACM inventories; named exception, must not construct a registration"},
+	{From: "cmd/aws-model-coverage", To: "domains/acm/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared ECR/ACM/Route 53 inventories; named exception, must not construct a registration"},
+	{From: "cmd/aws-model-coverage", To: "domains/ecr/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared ECR/ACM/Route 53 inventories; named exception, must not construct a registration"},
+	{From: "cmd/aws-model-coverage", To: "domains/route53/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared ECR/ACM/Route 53 inventories; named exception, must not construct a registration"},
 
 	{From: "runtime/daemon", To: "domains/ec2/awsapi/instance", Debt: "Instance adapter consumers outside EC2", Reason: "runtime/daemon/eks_cp_control.go and rds_deps.go call the instance adapter; needs an EC2 capability"},
 

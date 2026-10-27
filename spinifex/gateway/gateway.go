@@ -21,7 +21,6 @@ import (
 	"uuid"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
@@ -41,6 +40,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -342,10 +342,10 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))
-	r.Use(requestAuditMiddleware)
+	r.Use(audit.Middleware)
 
 	if !gw.DisableLogging {
-		r.Use(slogRequestLogger)
+		r.Use(audit.RequestLogger)
 	}
 
 	// Anonymous STS (AssumeRoleWithWebIdentity) is dispatched ahead of SigV4 —
@@ -1119,7 +1119,7 @@ func recordResolvedAction(ctx context.Context, service, action string) {
 	span.SetName(name)
 	span.SetAttributes(attribute.String("aws.action", action))
 	otelsetup.SetRequestAction(ctx, name)
-	auditFrom(ctx).setAction(service, action)
+	audit.From(ctx).SetAction(service, action)
 }
 
 // traceActionEnricher renames the server span to the resolved SigV4
@@ -1141,17 +1141,5 @@ func traceActionEnricher(next http.Handler) http.Handler {
 			span.SetAttributes(attribute.String("aws.region", region))
 		}
 		next.ServeHTTP(w, r)
-	})
-}
-
-// slogRequestLogger is a middleware that logs each request via slog. The audit
-// record carries the caller and the auth verdict onto the same line, so a
-// failing request is answerable without joining it to a separate auth log.
-func slogRequestLogger(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-		next.ServeHTTP(ww, r)
-		logRequest(r, ww.Status(), time.Since(start))
 	})
 }

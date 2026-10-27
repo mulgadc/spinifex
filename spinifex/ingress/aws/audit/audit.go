@@ -1,4 +1,6 @@
-package gateway
+// Package audit records who called the AWS gateway, what they asked for and how
+// the request was decided, for the access log and the server span.
+package audit
 
 import (
 	"context"
@@ -8,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -15,17 +18,18 @@ import (
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 )
 
-// ctxAudit carries the per-request audit record. It is a pointer, unlike every
-// other value in this file's sibling context keys, because the request logger
-// is the OUTERMOST middleware and a context derived downstream never propagates
-// back up to it. The record is the only way the logger sees who called.
+// ctxAudit carries the per-request audit record. It is a pointer, unlike the
+// gateway's other context keys, because the request logger is the OUTERMOST
+// middleware and a context derived downstream never propagates back up to it.
 const ctxAudit contextKey = "gateway.audit"
 
-// requestAudit is what the gateway knows about a request by the time it answers
+type contextKey string
+
+// Record is what the gateway knows about a request by the time it answers
 // it: who called, what they asked for, and how it was decided. It holds an
 // access key id and an error code, never a secret key, a session token or an
 // Authorization header — nothing here may carry a credential.
-type requestAudit struct {
+type Record struct {
 	mu            sync.Mutex
 	clientIP      string
 	requestID     string
@@ -38,12 +42,12 @@ type requestAudit struct {
 	authError     string
 }
 
-// requestAuditMiddleware attaches an audit record to every request. It is
+// Middleware attaches an audit record to every request. It is
 // registered unconditionally: span enrichment must not depend on whether access
 // logging happens to be enabled.
-func requestAuditMiddleware(next http.Handler) http.Handler {
+func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		audit := &requestAudit{clientIP: ingresshttp.RequestClientIP(r), requestID: requestIDFrom(r)}
+		audit := &Record{clientIP: ingresshttp.RequestClientIP(r), requestID: requestIDFrom(r)}
 		ctx := context.WithValue(r.Context(), ctxAudit, audit)
 		next.ServeHTTP(w, r.WithContext(ctx))
 		audit.annotate(ctx)
@@ -64,17 +68,17 @@ func requestIDFrom(r *http.Request) string {
 	return id
 }
 
-// auditFrom returns the request's audit record, or nil when there is none. Every
+// From returns the request's audit record, or nil when there is none. Every
 // method below is nil-safe, so a handler called directly by a test behaves
 // exactly as it did before this record existed.
-func auditFrom(ctx context.Context) *requestAudit {
-	audit, _ := ctx.Value(ctxAudit).(*requestAudit)
+func From(ctx context.Context) *Record {
+	audit, _ := ctx.Value(ctxAudit).(*Record)
 	return audit
 }
 
-// setIdentity records the authenticated caller. Called once, where the auth
+// SetIdentity records the authenticated caller. Called once, where the auth
 // middleware already puts the same values into the context.
-func (a *requestAudit) setIdentity(accessKeyID, accountID, region, service, principalType string) {
+func (a *Record) SetIdentity(accessKeyID, accountID, region, service, principalType string) {
 	if a == nil {
 		return
 	}
@@ -87,9 +91,9 @@ func (a *requestAudit) setIdentity(accessKeyID, accountID, region, service, prin
 	a.principalType = principalType
 }
 
-// setAction records the resolved AWS action. Query-protocol services resolve it
+// SetAction records the resolved AWS action. Query-protocol services resolve it
 // before dispatch, REST-JSON services once their dispatcher has run.
-func (a *requestAudit) setAction(service, action string) {
+func (a *Record) SetAction(service, action string) {
 	if a == nil || action == "" {
 		return
 	}
@@ -101,10 +105,10 @@ func (a *requestAudit) setAction(service, action string) {
 	}
 }
 
-// setAuthError records the AWS error code a request was rejected with. Every
+// SetAuthError records the AWS error code a request was rejected with. Every
 // auth rejection funnels through writeSigV4Error, including a rate-limit
 // lockout, so recording it there covers all of them.
-func (a *requestAudit) setAuthError(errorCode string) {
+func (a *Record) SetAuthError(errorCode string) {
 	if a == nil {
 		return
 	}
@@ -113,9 +117,9 @@ func (a *requestAudit) setAuthError(errorCode string) {
 	a.authError = errorCode
 }
 
-// setAccessKeyID records the key a request presented even when authentication
+// SetAccessKeyID records the key a request presented even when authentication
 // failed, so a rejected caller is still identifiable.
-func (a *requestAudit) setAccessKeyID(accessKeyID string) {
+func (a *Record) SetAccessKeyID(accessKeyID string) {
 	if a == nil || accessKeyID == "" {
 		return
 	}
@@ -124,10 +128,10 @@ func (a *requestAudit) setAccessKeyID(accessKeyID string) {
 	a.accessKeyID = accessKeyID
 }
 
-// fields returns the non-empty audit values as alternating key/value pairs for
+// Fields returns the non-empty audit values as alternating key/value pairs for
 // slog. Empty values are omitted rather than logged blank, so an unauthenticated
 // request does not carry a row of empty identity fields.
-func (a *requestAudit) fields() []any {
+func (a *Record) Fields() []any {
 	if a == nil {
 		return nil
 	}
@@ -146,7 +150,7 @@ func (a *requestAudit) fields() []any {
 // annotate copies the audit values onto the server span, so a trace search for
 // failing requests answers from where, doing what and rejected why without
 // having to join against the log stream.
-func (a *requestAudit) annotate(ctx context.Context) {
+func (a *Record) annotate(ctx context.Context) {
 	if a == nil {
 		return
 	}
@@ -171,7 +175,7 @@ type auditField struct {
 }
 
 // pairs names each field once for both sinks. Callers hold a.mu.
-func (a *requestAudit) pairs() []auditField {
+func (a *Record) pairs() []auditField {
 	return []auditField{
 		{"sourceIP", "client.address", a.clientIP},
 		{"accessKeyID", "aws.access_key_id", a.accessKeyID},
@@ -189,5 +193,17 @@ func (a *requestAudit) pairs() []auditField {
 // audit fields alongside the HTTP result.
 func logRequest(r *http.Request, status int, duration time.Duration) {
 	attrs := []any{"method", r.Method, "path", r.URL.Path, "status", status, "duration_ms", otelsetup.Millis(duration)}
-	slog.InfoContext(r.Context(), "request", append(attrs, auditFrom(r.Context()).fields()...)...)
+	slog.InfoContext(r.Context(), "request", append(attrs, From(r.Context()).Fields()...)...)
+}
+
+// RequestLogger is a middleware that logs each request via slog. The audit
+// record carries the caller and the auth verdict onto the same line, so a
+// failing request is answerable without joining it to a separate auth log.
+func RequestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r)
+		logRequest(r, ww.Status(), time.Since(start))
+	})
 }

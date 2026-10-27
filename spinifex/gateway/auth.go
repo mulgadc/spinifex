@@ -17,6 +17,7 @@ import (
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -101,7 +102,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			// The key a request presented, recorded before it is known to be valid:
 			// a rejected caller has to be identifiable, and this is the last point
 			// every rejection below still shares.
-			auditFrom(r.Context()).setAccessKeyID(sig.Credential.AccessKeyID)
+			audit.From(r.Context()).SetAccessKeyID(sig.Credential.AccessKeyID)
 
 			// Carry the signed service now, so a rejection below (a signature
 			// mismatch on a bedrock Converse) renders in the client's format —
@@ -158,9 +159,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			// Region is pinned to the gateway; service is the client-claimed scope,
-			// already gated against supportedServices above.
-			if _, err := sig.Verify(secret, gw.Region, sig.Credential.Service); err != nil {
+			// Region is the gateway's, or a global service's fixed signing region;
+			// service is the client-claimed scope, gated against supportedServices above.
+			if _, err := sig.Verify(secret, gw.expectedSigningRegion(sig.Credential.Service, sig.Credential.Region), sig.Credential.Service); err != nil {
 				// A mismatch means our canonical request differs from the one the client
 				// signed, so log ours to diff against the SDK's. Warn, not Debug: these
 				// failures are intermittent and never reproduce on demand.
@@ -220,7 +221,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, ctxRegion, sig.Credential.Region)
 			ctx = context.WithValue(ctx, ctxAccessKey, sig.Credential.AccessKeyID)
 			ctx = context.WithValue(ctx, ctxPrincipalType, principal.principalType)
-			auditFrom(ctx).setIdentity(sig.Credential.AccessKeyID, principal.accountID,
+			audit.From(ctx).SetIdentity(sig.Credential.AccessKeyID, principal.accountID,
 				sig.Credential.Region, sig.Credential.Service, principal.principalType)
 			if principal.assumedRoleARN != "" {
 				ctx = context.WithValue(ctx, ctxAssumedRoleARN, principal.assumedRoleARN)
@@ -520,7 +521,7 @@ func (gw *GatewayConfig) checkSessionPrincipal(principal principalContext, acces
 // registry text unchanged.
 func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request, errorCode, message string) {
 	requestID := uuid.NewV4().String()
-	auditFrom(r.Context()).setAuthError(errorCode)
+	audit.From(r.Context()).SetAuthError(errorCode)
 
 	errorMsg, exists := awserrors.ErrorLookup[errorCode]
 	if !exists {
@@ -531,16 +532,31 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 	}
 
 	svc := signedService(r)
+	if svc == "" {
+		// A request rejected while its signature was still being parsed has no
+		// service in context; its claimed scope still picks a registration's
+		// envelope, and nothing else.
+		if hint := credentialScopeService(r); hint != "" {
+			if _, ok := gw.registered(hint); ok {
+				svc = hint
+			}
+		}
+	}
 
-	// AWS JSON 1.1 services (bedrock family, EKS, …) need a JSON error body, or
-	// the SDK chokes deserializing our XML into its shape. An unserved scope is
-	// absent from jsonErrorService by definition, so its protocol is read off
-	// the request itself instead.
-	if gw.jsonErrorService(svc) || envelope.RequestSignalsJSONProtocol(r) {
-		w.Header().Set("Content-Type", envelope.JSONContentType)
-		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(errorCode))
-		w.WriteHeader(errorMsg.HTTPCode)
-		_, _ = w.Write(envelope.JSONBody(errorCode, errorMsg.Message))
+	// JSON services (bedrock family, EKS, registered JSON services, …) need a
+	// JSON error body in their own protocol, or the SDK chokes deserializing
+	// our XML into its shape. An unserved scope is absent from the tables by
+	// definition, so its protocol is read off the request itself instead.
+	p, isJSON := gw.errorProtocol(svc)
+	if !isJSON && envelope.RequestSignalsJSONProtocol(r) {
+		p, isJSON = envelope.ProtocolJSON11, true
+	}
+	if isJSON {
+		if p == envelope.ProtocolJSON10Query && errorCode == awserrors.ErrorRequestEntityTooLarge {
+			envelope.WriteTooLargeText(w, int64(sigv4.MaxPayloadLen))
+			return
+		}
+		gw.writeJSONError(w, p, svc, envelope.JSONError{Code: errorCode, Message: errorMsg.Message, Status: errorMsg.HTTPCode})
 		return
 	}
 
@@ -551,10 +567,42 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 	_, _ = w.Write(xmlError)
 }
 
+// credentialScopeService returns the service named in the request's
+// Authorization credential scope, unverified, or "" when it has none.
+func credentialScopeService(r *http.Request) string {
+	_, rest, ok := strings.Cut(r.Header.Get("Authorization"), "Credential=")
+	if !ok {
+		return ""
+	}
+	scope, _, _ := strings.Cut(rest, ",")
+	parts := strings.Split(strings.TrimSpace(scope), "/")
+	if len(parts) != 5 {
+		return ""
+	}
+	return parts[3]
+}
+
 // signedService returns the credential-scope service the client signed with,
 // including a scope the gateway does not serve. A rejection has to render in
 // the client's format, and GetService reports those scopes as empty.
 func signedService(r *http.Request) string {
 	svc, _ := r.Context().Value(ctxService).(string)
 	return svc
+}
+
+// globalSigningRegions maps a global AWS service to the region its clients sign
+// with when they use the default endpoint. A client given an endpoint override
+// signs with its own configured region instead, so both are accepted.
+var globalSigningRegions = map[string]string{
+	"route53": "us-east-1",
+}
+
+// expectedSigningRegion returns the credential-scope region a request for
+// service must carry: the global service's signing region when the client
+// claimed it, else the gateway's own region.
+func (gw *GatewayConfig) expectedSigningRegion(service, claimed string) string {
+	if global, ok := globalSigningRegions[service]; ok && claimed == global {
+		return global
+	}
+	return gw.Region
 }

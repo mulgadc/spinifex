@@ -8,6 +8,7 @@ import (
 	"fmt"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"io"
 	"maps"
@@ -241,8 +242,9 @@ func TestErrorHandler_NonEC2ValidationDefaults_DropEC2Wording(t *testing.T) {
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
 	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
+	require.NoError(t, b.Register(route53awsapi.NewRegistration(route53awsapi.Deps{})))
 	gw.Services = b.Build()
-	services := append(slices.Collect(maps.Keys(supportedServices)), awsapi.ServiceName, acmawsapi.ServiceName)
+	services := append(slices.Collect(maps.Keys(supportedServices)), awsapi.ServiceName, acmawsapi.ServiceName, route53awsapi.ServiceName)
 	for _, svc := range services {
 		if svc == "ec2" {
 			continue
@@ -1456,6 +1458,23 @@ func TestWriteThrottleError_IAM(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	// AWS returns 503 for Throttling on every service; TF respects 503 + Retry-After but gives up on 400.
 	assert.Equal(t, 503, resp.StatusCode)
+	assert.Contains(t, string(body), "<Code>Throttling</Code>")
+	assert.Contains(t, string(body), "<ErrorResponse>")
+}
+
+// Route 53 throttles with a 400 carrying the Throttling code, which SDK
+// retryers classify by code rather than status.
+func TestWriteThrottleError_Route53(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+	req := httptest.NewRequest(http.MethodGet, "/2013-04-01/hostedzone", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxService, "route53"))
+	w := httptest.NewRecorder()
+
+	gw.writeThrottleError(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.Contains(t, string(body), "<Code>Throttling</Code>")
 	assert.Contains(t, string(body), "<ErrorResponse>")
 }

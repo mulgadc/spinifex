@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -394,7 +394,7 @@ func init() {
 	adminInitCmd.Flags().String("cluster-name", "spinifex", "NATS cluster name")
 	adminInitCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during init (default: enabled)")
 	adminInitCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
-	adminInitCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all). Valid: nats,predastore,viperblock,daemon,awsgw,ui")
+	adminInitCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all). Valid: nats,predastore,viperblock,daemon,awsgw,ui. northstar publishes this node as one of up to 4 nameservers; it runs on every node regardless")
 
 	// External networking flags
 	adminInitCmd.Flags().String("external-mode", "", "External network mode: 'pool' (default when WAN detected), 'nat' (routed; non-bridgeable uplinks; add --external-pool or --external-source=dhcp for public IPs), or '' (disabled)")
@@ -424,7 +424,7 @@ func init() {
 	adminJoinCmd.Flags().String("token", "", "Join token from the init node (required)")
 	adminJoinCmd.Flags().Bool("force", false, "Join even though this node is already initialized, discarding its own CA and master key")
 	adminJoinCmd.Flags().Duration("join-timeout", 20*time.Minute, "How long to keep retrying while the formation server is unreachable")
-	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all)")
+	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all). northstar publishes this node as one of up to 4 nameservers; it runs on every node regardless")
 	adminJoinCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during join (default: enabled)")
 	adminJoinCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
 	adminJoinCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
@@ -1300,6 +1300,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
 	clusterName, _ := cmd.Flags().GetString("cluster-name")
 	services, _ := cmd.Flags().GetStringSlice("services")
+	services, nameserver := config.SplitNameserverService(services)
 
 	// Rejected before anything is written, because a two-node cluster has no
 	// correct answer rather than a worse one: no layer of the stack has a
@@ -1792,7 +1793,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey,
 			masterKey, viperblockKey, natsToken, clusterName,
 			configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email,
-			port, nodes, formationTimeoutStr, tokenTTLStr, services, networkConfig, northstarCreds)
+			port, nodes, formationTimeoutStr, tokenTTLStr, services, nameserver, networkConfig, northstarCreds)
 		return
 	}
 
@@ -1891,6 +1892,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		PredastoreAdminPort:       admin.PredastoreAdminPort,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
+		NameserverNodes:           singleNodeNameservers(node, nameserver),
 
 		OVNNBAddr: "tcp:127.0.0.1:6641",
 		OVNSBAddr: "tcp:127.0.0.1:6642",
@@ -2000,7 +2002,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey string,
 	masterKey, viperblockKey []byte, natsToken, clusterName,
 	configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email string,
-	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, networkConfig *formation.NetworkConfig,
+	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, nameserver bool, networkConfig *formation.NetworkConfig,
 	northstarCreds admin.NorthstarCredentials) {
 	formationTimeout, err := time.ParseDuration(formationTimeoutStr)
 	if err != nil {
@@ -2078,6 +2080,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		Region:      region,
 		AZ:          az,
 		Port:        port,
+		Nameserver:  nameserver,
 	}
 	if err := fs.RegisterNode(selfNode); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Error registering self: %v\n", err)
@@ -2204,6 +2207,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		PredastoreAdminPort:       admin.PredastoreAdminPort,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
+		NameserverNodes:           formation.NameserverNodes(allNodes),
 		RemoteNodes:               buildRemoteNodes(allNodes, node, northstarConfigPath),
 
 		OperatorEmail: email,
@@ -2344,6 +2348,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	configDir, _ := cmd.Flags().GetString("config-dir")
 	clusterBind, _ := cmd.Flags().GetString("cluster-bind")
 	services, _ := cmd.Flags().GetStringSlice("services")
+	services, nameserver := config.SplitNameserverService(services)
 	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
 	force, _ := cmd.Flags().GetBool("force")
 	joinTimeout, _ := cmd.Flags().GetDuration("join-timeout")
@@ -2431,6 +2436,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 			Region:      region,
 			AZ:          az,
 			Port:        port,
+			Nameserver:  nameserver,
 		},
 	}
 
@@ -2781,6 +2787,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		PredastoreAdminPort:       admin.PredastoreAdminPort,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
+		NameserverNodes:           formation.NameserverNodes(statusResp.Nodes),
 		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node, northstarConfigPath),
 
 		OperatorEmail: email,
@@ -2848,6 +2855,14 @@ func resolveAdvertiseIP(bindIP, advertiseFlag string, detected *admin.DetectedNe
 		"⚠️  Could not auto-detect a WAN IP. Off-host clients (ALB VMs, remote operators) "+
 			"will not be able to reach this node. Re-run with --advertise <IP> to fix.")
 	return "127.0.0.1", nil
+}
+
+// singleNodeNameservers pins a lone node that named northstar in --services.
+func singleNodeNameservers(node string, nameserver bool) []string {
+	if !nameserver {
+		return nil
+	}
+	return []string{node}
 }
 
 // buildRemoteNodes converts formation NodeInfo into RemoteNode entries,

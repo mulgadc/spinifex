@@ -72,8 +72,7 @@ var rules = []rule{
 		hint:    "expose the runtime or operator state through a domain-owned projection or a capability wired at the composition root",
 		subject: func(f class, _ string) bool { return f.domainShaped() },
 		forbids: func(f, t class, _ string) bool {
-			return f.domainShaped() && (isLayer(t, layerRuntime, layerOperator) ||
-				t.isLegacy(operatorLegacy...))
+			return f.domainShaped() && isLayer(t, layerRuntime, layerOperator)
 		},
 	},
 	{

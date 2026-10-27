@@ -9,8 +9,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -119,7 +119,7 @@ func TestELBv2AccountLoadBalancerLimitDefaultsForExemptAccount(t *testing.T) {
 
 	limit, err := accountLoadBalancerLimit(t.Context(), gw, "000000000042")
 	require.NoError(t, err)
-	assert.Equal(t, gateway_elbv2.DefaultLoadBalancerLimit, limit)
+	assert.Equal(t, elbv2awsapi.DefaultLoadBalancerLimit, limit)
 }
 
 // A sealed override must refuse the load balancer cap with Blocked rather
@@ -153,6 +153,6 @@ func TestELBv2DescribeAccountLimitsAcceptsPaging(t *testing.T) {
 
 	var decoded accountLimitsResponse
 	require.NoError(t, xml.Unmarshal(body, &decoded))
-	assert.Len(t, decoded.Limits, len(gateway_elbv2.DescribeAccountLimits(&elbv2.DescribeAccountLimitsInput{}, 2).Limits))
+	assert.Len(t, decoded.Limits, len(elbv2awsapi.DescribeAccountLimits(&elbv2.DescribeAccountLimitsInput{}, 2).Limits))
 	assert.NotContains(t, string(body), "NextMarker")
 }

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"uuid"
 
-	"github.com/mulgadc/spinifex/spinifex/accountteardown"
+	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/mulgadc/spinifex/spinifex/operator/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

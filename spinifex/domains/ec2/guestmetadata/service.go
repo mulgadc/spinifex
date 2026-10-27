@@ -54,6 +54,7 @@ var _ IMDSService = (*IMDSServiceImpl)(nil)
 // eniResolver maps a tap's ENI ID to ENI + instance facts.
 type eniResolver interface {
 	resolveENIByID(ctx context.Context, eniID string) (*eniFacts, error)
+	refreshENI(ctx context.Context, pinned *eniFacts) (*eniFacts, error)
 	resolveInstance(ctx context.Context, eni *eniFacts) (*instanceFacts, error)
 	resolveSGNames(ctx context.Context, accountID string, sgIDs []string) []string
 	resolveSubnetCIDR(ctx context.Context, accountID, subnetID string) (string, error)

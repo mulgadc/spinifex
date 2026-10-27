@@ -1,0 +1,49 @@
+package awsapi
+
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go/service/elbv2"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
+)
+
+// ValidateCreateRuleInput rejects a nil input with InvalidParameterValue and returns
+// MissingParameter unless ListenerArn, Priority, Conditions and Actions are all present.
+func ValidateCreateRuleInput(input *elbv2.CreateRuleInput) error {
+	if input == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if input.ListenerArn == nil || *input.ListenerArn == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.Priority == nil {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.Conditions) == 0 {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.Actions) == 0 {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	return nil
+}
+
+// CreateRule handles the ELBv2 CreateRule API call.
+func CreateRule(ctx context.Context, input *elbv2.CreateRuleInput, natsConn *nats.Conn, accountID string) (elbv2.CreateRuleOutput, error) {
+	var output elbv2.CreateRuleOutput
+
+	if err := ValidateCreateRuleInput(input); err != nil {
+		return output, err
+	}
+
+	svc := elbv2domain.NewNATSELBv2Service(natsConn)
+	result, err := svc.CreateRule(ctx, input, accountID)
+	if err != nil {
+		return output, err
+	}
+
+	return *result, nil
+}

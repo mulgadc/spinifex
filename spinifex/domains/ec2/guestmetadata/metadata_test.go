@@ -24,6 +24,7 @@ import (
 type fakeResolver struct {
 	eni        *eniFacts
 	eniErr     error
+	refreshErr error // refreshENI fails with this; otherwise the pinned ENI is current
 	inst       *instanceFacts
 	instErr    error
 	sgNames    map[string]string // sg-id → group name; absent IDs fall back to the ID
@@ -35,6 +36,13 @@ type fakeResolver struct {
 
 func (f *fakeResolver) resolveENIByID(_ context.Context, _ string) (*eniFacts, error) {
 	return f.eni, f.eniErr
+}
+
+func (f *fakeResolver) refreshENI(_ context.Context, pinned *eniFacts) (*eniFacts, error) {
+	if f.refreshErr != nil {
+		return nil, f.refreshErr
+	}
+	return pinned, nil
 }
 
 func (f *fakeResolver) resolveInstance(_ context.Context, _ *eniFacts) (*instanceFacts, error) {
@@ -265,6 +273,26 @@ func TestHTTP_ENIMissReturns404(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// A failed re-read of the caller's ENI is a server fault: it must not be served
+// as a missing ENI, nor answered from the facts pinned when the tap came up.
+func TestHTTP_ENIRefreshErrorIs500(t *testing.T) {
+	res := &fakeResolver{eni: testENI()}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+
+	res.refreshErr = errors.New("kv unavailable")
+	assert.Equal(t, http.StatusInternalServerError, get(t, h, prefixMetaData+"public-ipv4", token).Code)
+
+	req := httptest.NewRequest(http.MethodPut, "http://"+MetaDataServerIP+pathToken, nil)
+	req.Header.Set(hdrTokenTTL, "60")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+
+	assert.Equal(t, http.StatusInternalServerError, get(t, h, pathSpinifexCACert, "").Code)
 }
 
 // ----- version discovery -------------------------------------------------

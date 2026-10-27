@@ -2580,14 +2580,14 @@ func TestRedactedCanonicalRequest_MasksSessionToken(t *testing.T) {
 // credentials, must carry InvalidAction (the same code an unimplemented
 // action on a served service already returns) rather than a signature
 // failure that never happened, and must render in the generic REST-XML
-// envelope rather than the EC2 query shape a REST-XML client like route53's
-// cannot deserialize.
+// envelope rather than the EC2 query shape a non-query client cannot
+// deserialize.
 func TestSigV4Auth_UnservedServiceNamesServiceNotCredentials(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "route53", time.Now().UTC())
+	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "sqs", time.Now().UTC())
 
 	resp := doRequest(handler, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -2606,7 +2606,7 @@ func TestSigV4Auth_UnservedServiceNamesServiceNotCredentials(t *testing.T) {
 
 	assert.Equal(t, "ErrorResponse", xmlRootName(t, body))
 	assert.Equal(t, awserrors.ErrorInvalidAction, parsed.Error.Code)
-	assert.Contains(t, parsed.Error.Message, "route53")
+	assert.Contains(t, parsed.Error.Message, "sqs")
 	assert.NotContains(t, parsed.Error.Message, "credentials",
 		"nothing was wrong with the credentials, which were never checked")
 }
@@ -2801,5 +2801,22 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 				"throttle bucket must not fall back to the shared unknown key")
 			assert.Equal(t, tc.wantAction, gotThrottleKey)
 		})
+	}
+}
+
+// Route 53 is global: the AWS CLI and SDKs sign it for us-east-1 against the
+// default endpoint and for the configured region against an override. Every
+// other service stays pinned to the gateway's region.
+func TestExpectedSigningRegion(t *testing.T) {
+	gw := &GatewayConfig{Region: "ap-southeast-2"}
+	for _, tc := range []struct {
+		service, claimed, want string
+	}{
+		{"route53", "us-east-1", "us-east-1"},
+		{"route53", "ap-southeast-2", "ap-southeast-2"},
+		{"route53", "eu-west-1", "ap-southeast-2"},
+		{"ec2", "us-east-1", "ap-southeast-2"},
+	} {
+		assert.Equalf(t, tc.want, gw.expectedSigningRegion(tc.service, tc.claimed), "%s signed for %s", tc.service, tc.claimed)
 	}
 }

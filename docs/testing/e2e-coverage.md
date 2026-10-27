@@ -50,6 +50,14 @@ Three nightly cells run it: `nat-single` (cell 19), its Oracle Linux twin (cell 
 
 **`TestMultinodeDNS` convergence budgets are env-tunable.** `SPINIFEX_MULTINODE_DNS_TOPOLOGY_TIMEOUT` (default `90s`) bounds every node agreeing on the NS topology, `SPINIFEX_MULTINODE_DNS_TIMEOUT` (default `2m`) bounds a record becoming answerable from a guest or a node, and `SPINIFEX_MULTINODE_DNS_POLL` (default `3s`) is the poll interval for both. Values are Go durations; a malformed or non-positive value panics rather than falling back to the default.
 
+**`TestMultinodeIPSec` proves guest traffic is encrypted on the wire, not only that IPsec is configured.**
+It first requires every node to carry the OVS certificate, key and CA pointers, `NB_Global.ipsec=true` never asserted over an unconfigured chassis, and an AES-GCM SA in `ip xfrm state`.
+None of those fails when SAs exist but traffic bypasses them, so it then launches two instances on distinct nodes and sends 200 pings of 1000 bytes between them.
+For each direction of that pair it fails unless the outbound SAs to the peer's `ovn-encap-ip` carried at least the payload sent, an outbound-only capture on the interface routing to the peer saw ESP (raw or UDP/4500-encapsulated), and that capture saw no plaintext Geneve (UDP/6081).
+The capture is outbound-only because inbound ESP is decrypted and seen again as Geneve on the same interface, which would read as plaintext on a healthy node.
+It proves the node pair the guests landed on; the SA check covers every node.
+It skips when the node config sets `network.ipsec_enabled=false`, or when the scheduler places all four launches on one node.
+
 ### `kvquorum` — the cluster's own state survives losing a node (multi-node, needs three)
 
 **The control plane keeps its state in JetStream KV buckets, and this is the suite that proves those buckets are actually replicated.** A bucket on one replica lives on one JetStream-chosen server recorded in no config, so losing that node makes it return `nats: no responders available for request` from *every* node at once — a cluster-wide outage caused by a single-node event. Leader leases are the worst case: acquiring one is a write, so a lease bucket without a quorum cannot be acquired by anyone, and every reconciler sharing it stops cluster-wide at exactly the moment a node has failed and there is repair work to do.

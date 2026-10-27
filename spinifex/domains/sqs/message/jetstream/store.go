@@ -324,33 +324,37 @@ func (s *Store) Count(ctx context.Context, ns message.Namespace) (message.Usage,
 	if err != nil {
 		return message.Usage{}, fmt.Errorf("count state %s: %w", ns.Queue, err)
 	}
-	var states uint64
-	for range lister.Keys() {
-		states++
+	// The lister may report a key more than once under concurrent writes,
+	// so distinct names are counted, not events.
+	keys := map[string]struct{}{}
+	for key := range lister.Keys() {
+		keys[key] = struct{}{}
 	}
 	// The lister closes early on cancellation without an error, which
 	// would otherwise read as a short count.
 	if err := ctx.Err(); err != nil {
 		return message.Usage{}, fmt.Errorf("count state %s: %w", ns.Queue, err)
 	}
-	return message.Usage{Messages: info.State.Subjects[Subject(ns)], States: states}, nil
+	return message.Usage{Messages: info.State.Subjects[Subject(ns)], States: uint64(len(keys))}, nil
 }
 
 // DeleteNamespace purges the namespace's subject from its message stream
 // and its key prefix from its state bucket, markers included. Both purges
 // are subject-scoped, so neighbours are untouched and a repeat is a no-op.
+// Both resources are resolved before either purge, so a wrong allocation
+// fails without deleting anything.
 func (s *Store) DeleteNamespace(ctx context.Context, ns message.Namespace) error {
 	stream, err := s.stream(ctx, ns)
 	if err != nil {
 		return err
 	}
-	if err := stream.Purge(ctx, jsapi.WithPurgeSubject(Subject(ns))); err != nil {
-		return fmt.Errorf("purge messages %s: %w", ns.Queue, err)
-	}
 	bucket := BucketName(ns.StateShard)
 	state, err := s.js.Stream(ctx, "KV_"+bucket)
 	if err != nil {
 		return fmt.Errorf("open state bucket %s: %w", bucket, err)
+	}
+	if err := stream.Purge(ctx, jsapi.WithPurgeSubject(Subject(ns))); err != nil {
+		return fmt.Errorf("purge messages %s: %w", ns.Queue, err)
 	}
 	if err := state.Purge(ctx, jsapi.WithPurgeSubject("$KV."+bucket+"."+statePrefix(ns)+".>")); err != nil {
 		return fmt.Errorf("purge state %s: %w", ns.Queue, err)

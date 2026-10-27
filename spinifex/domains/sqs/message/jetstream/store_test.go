@@ -588,3 +588,27 @@ func TestLimits(t *testing.T) {
 	s, _ := newStore(t)
 	assert.Equal(t, message.Limits{RetentionBackstop: message.MinRetentionBackstop, IdempotencyWindow: testConfig.DuplicateWindow}, s.Limits())
 }
+
+// TestDeleteNamespaceWithUndeclaredStateShardDeletesNothing: a call naming a
+// real queue's message shard and queue ID but a state shard with no bucket
+// must fail before it purges the queue's bodies.
+func TestDeleteNamespaceWithUndeclaredStateShardDeletesNothing(t *testing.T) {
+	s, js := newStore(t)
+	ctx := context.Background()
+	valid := ns(1, 1, "q")
+	p := appendTo(t, s, valid, "body")
+	_, err := s.PutState(ctx, valid, p, []byte("s"), 0)
+	require.NoError(t, err)
+	before := streamNames(t, js)
+
+	wrong := ns(valid.MessageShard, 7, string(valid.Queue))
+	require.Error(t, s.DeleteNamespace(ctx, wrong))
+
+	got, err := s.Get(ctx, valid, p)
+	require.NoError(t, err, "the body survives the failed call")
+	assert.Equal(t, []byte("body"), got.Body)
+	_, err = s.GetState(ctx, valid, p)
+	require.NoError(t, err, "the state survives the failed call")
+	requireUsage(t, s, valid, message.Usage{Messages: 1, States: 1})
+	assert.Equal(t, before, streamNames(t, js), "the resource layout is unchanged")
+}

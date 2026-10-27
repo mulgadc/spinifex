@@ -1,7 +1,7 @@
 #!/bin/sh
 # node-reset_test.sh — tests the QEMU process match node-reset.sh uses to stop
 # guests before it deletes Viperblock state, against real processes, and the
-# instance and volume counts it and uninstall-spx.sh report before deleting.
+# instance and mounted-volume counts it and uninstall-spx.sh report before deleting.
 #
 # Each fake guest is a copy of sleep named like a QEMU binary, so the kernel
 # gives it the same comm, including the 15-character truncation.
@@ -122,12 +122,12 @@ if command -v jq >/dev/null 2>&1; then
 else
     echo "  skip - jq is not installed; the instance counts need it"
 fi
-expect "counts volumes, not EFI stores or AMIs" "$(count count_volumes "$data")" 2
+expect "counts mounted volumes, not EFI stores or AMIs" "$(count count_mounted_volumes "$data")" 2
 
 empty="$TMP/empty"
 mkdir -p "$empty"
 expect "counts no instances without a state file" "$(count count_instances "$empty")" 0
-expect "counts no volumes without a viperblock directory" "$(count count_volumes "$empty")" 0
+expect "counts no mounted volumes without a viperblock directory" "$(count count_mounted_volumes "$empty")" 0
 
 if [ "$fails" -gt 0 ]; then
     echo "$fails failure(s)"

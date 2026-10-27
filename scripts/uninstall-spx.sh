@@ -171,14 +171,14 @@ fi
 
 # --- BEGIN at-stake counts ---
 # Copied between node-reset.sh and uninstall-spx.sh; node-reset_test.sh keeps them equal.
-# Instances are the daemon's local state records; volumes are Viperblock's
-# volume directories, less each volume's EFI variable store.
+# Instances are the daemon's local state records. Only mounted volumes have a
+# local directory under viperblock/; the rest live only in Predastore.
 count_instances() {
     local state="$1/state/instance-state.json"
     sudo test -e "$state" || { echo 0; return 0; }
     sudo jq -r '.vms // {} | length' "$state" 2>/dev/null || echo unknown
 }
-count_volumes() {
+count_mounted_volumes() {
     sudo find "$1/viperblock" -maxdepth 1 -mindepth 1 -type d -name 'vol-*' ! -name '*-efi' 2>/dev/null | wc -l || true
 }
 # --- END at-stake counts ---
@@ -193,11 +193,11 @@ fi
 if [ -d "$DATA_DIR" ]; then
     size=$(sudo du -sh "$DATA_DIR" 2>/dev/null | cut -f1 || true)
     instances=$(count_instances "$DATA_DIR")
-    volumes=$(count_volumes "$DATA_DIR")
+    volumes=$(count_mounted_volumes "$DATA_DIR")
     if $PURGE_DATA; then
-        log "  --purge-data: DESTROYING $instances instance(s), $volumes volume(s), ${size:-unknown} under $DATA_DIR"
+        log "  --purge-data: DESTROYING $instances instance(s), $volumes mounted volume(s), ${size:-unknown} under $DATA_DIR"
     else
-        log "  keeping $DATA_DIR ($instances instance(s), $volumes volume(s), ${size:-unknown}) — pass --purge-data to remove it"
+        log "  keeping $DATA_DIR ($instances instance(s), $volumes mounted volume(s), ${size:-unknown}) — pass --purge-data to remove it"
     fi
 fi
 $PURGE_DEPS && log "  --purge-deps: $PKG_MANAGER packages will be removed (confirmed separately below)"

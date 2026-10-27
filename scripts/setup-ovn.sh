@@ -53,11 +53,14 @@
 #   --db-cluster-remote-addr=IP  An existing cluster DB node's IP to join. Omit
 #                        on the first (init) DB node that forms the cluster.
 #   --recreate-db        Destroy and recreate the NB/SB DBs so they can be
-#                        created in clustered format. Required when converting
-#                        a node that has already run a standalone ovn-central
-#                        (which is every node — the ovn-central package starts
-#                        one on install). DISCARDS ALL LOGICAL NETWORK STATE:
-#                        safe on a fresh node, destroys every VPC on a live one.
+#                        created in clustered format. Removes whatever is there,
+#                        standalone or clustered: the first covers a node that
+#                        has run the package's standalone ovn-central, which is
+#                        every node, and the second covers re-forming a cluster
+#                        over one that already exists, which would otherwise be
+#                        rejoined rather than replaced. DISCARDS ALL LOGICAL
+#                        NETWORK STATE: safe on a fresh node, destroys every VPC
+#                        on a live one.
 #   --teardown           Remove the host wiring this script builds — veth pairs,
 #                        systemd-networkd persistence, routed-NAT egress rules,
 #                        the OVS bridges and the ovn-* external_ids — and exit.
@@ -166,6 +169,9 @@ DB_CLUSTER_REMOTE_ADDR=""
 # Recreating the NB/SB DBs discards all logical network state, so it is opt-in.
 RECREATE_DB=false
 OVN_DBDIR="${OVN_DBDIR:-/var/lib/ovn}"
+# Seconds to wait for the database servers to exit, then for a SIGKILL to land.
+OVN_DB_STOP_WAIT="${OVN_DB_STOP_WAIT:-30}"
+OVN_DB_KILL_WAIT="${OVN_DB_KILL_WAIT:-10}"
 # Records that --management set this node up. Nodes set up before it existed
 # carry only the legacy marker, OVN_CTL_OPTS in /etc/default/ovn-central.
 OVN_ROLE_FILE=/etc/spinifex/ovn-role
@@ -494,8 +500,8 @@ if [ -n "$DB_CLUSTER_REMOTE_ADDR" ] && [ -z "$DB_CLUSTER_LOCAL_ADDR" ]; then
     exit 1
 fi
 if [ "$RECREATE_DB" = true ] && [ -z "$DB_CLUSTER_LOCAL_ADDR" ]; then
-    echo "ERROR: --recreate-db requires --db-cluster-local-addr (it exists to allow"
-    echo "       clustered DB creation over an existing standalone DB)"
+    echo "ERROR: --recreate-db requires --db-cluster-local-addr (it exists to purge"
+    echo "       whatever NB/SB state is present so a clustered DB can be created)"
     exit 1
 fi
 
@@ -718,45 +724,91 @@ if [ -d /etc/apparmor.d/local ]; then
     sudo apparmor_parser -r /etc/apparmor.d/usr.lib.ipsec.charon 2>/dev/null || true
 fi
 
-# --- Step 2: Enable services ---
-# ovn-ctl consults the RAFT flags only when it creates a database. The
-# ovn-central package starts a standalone ovsdb-server on install, so a
-# standalone-format DB is always already present by the time this script first
-# runs: without this check ovn-ctl serves that DB, silently ignores the cluster
-# flags, and the script reports success on a cluster that was never formed.
-ensure_clustered_db_storage() {
-    local db
-    local standalone=()
-    for db in "$OVN_DBDIR/ovnnb_db.db" "$OVN_DBDIR/ovnsb_db.db"; do
-        if [ -f "$db" ] && ! sudo ovsdb-tool db-is-clustered "$db" 2>/dev/null; then
-            standalone+=("$db")
-        fi
-    done
-    if [ ${#standalone[@]} -eq 0 ]; then
-        return 0
-    fi
-
-    if [ "$RECREATE_DB" != true ]; then
-        echo "ERROR: clustered DBs requested, but these are in standalone format:" >&2
-        printf '         %s\n' "${standalone[@]}" >&2
-        echo "" >&2
-        echo "  A clustered DB can only be created from scratch, so these must be" >&2
-        echo "  removed first. That DISCARDS ALL LOGICAL NETWORK STATE — every logical" >&2
-        echo "  switch, router, port and ACL, and so every VPC on this node." >&2
-        echo "" >&2
-        echo "  A freshly installed node has nothing to lose: re-run with --recreate-db." >&2
-        echo "  A node running workloads does: do not." >&2
-        exit 1
-    fi
-
-    echo "  --recreate-db: removing standalone DBs so ovn-ctl can create clustered ones"
+# stop_ovn_databases — stop the OVN database units and wait for the servers to
+# go with them. systemctl returns once the unit is inactive, not once the
+# processes are gone, so without the wait a purge unlinks the files under a
+# running ovsdb-server that keeps serving the old database from its open fds.
+# The pattern is anchored on $OVN_DBDIR so it can never match the OVS conf.db
+# server, which runs the switch and must survive.
+stop_ovn_databases() {
+    local pattern="ovsdb-server.*$OVN_DBDIR/ovn"
+    local i
 
     # ovn-controller must go down with them. Left running, it reconnects to the
     # fresh SB and re-registers under whatever system-id it started with — which
     # on a renamed node is the old one, and that row then holds this node's encap
     # IP so the correctly-named chassis can never commit. Step 5 restarts it.
     sudo systemctl stop "${OVN_CENTRAL_UNITS[@]}" ovn-controller 2>/dev/null || true
-    sudo rm -f "${standalone[@]}"
+
+    for i in $(seq 1 "$OVN_DB_STOP_WAIT"); do
+        pgrep -f "$pattern" >/dev/null 2>&1 || return 0
+        sleep 1
+    done
+
+    echo "  ovn-central: database servers outlived their units, sending SIGKILL"
+    sudo pkill -KILL -f "$pattern" 2>/dev/null || true
+    for i in $(seq 1 "$OVN_DB_KILL_WAIT"); do
+        pgrep -f "$pattern" >/dev/null 2>&1 || return 0
+        sleep 1
+    done
+
+    echo "ERROR: an ovsdb-server is still serving $OVN_DBDIR after SIGKILL:" >&2
+    pgrep -af "$pattern" >&2
+    exit 1
+}
+
+# --- Step 2: Enable services ---
+# ovn-ctl consults the RAFT flags only when it creates a database, so any
+# existing DB file is served as it stands and the cluster flags are ignored.
+# Two ways in, and both end with the script reporting success on a cluster it
+# never formed: the ovn-central package starts a standalone ovsdb-server on
+# install, so a standalone DB is present the first time this runs, and a node
+# that has been formed before still holds a clustered DB carrying the previous
+# member list and server ID, which it rejoins rather than replaces.
+ensure_clustered_db_storage() {
+    local db
+    local present=()
+    local standalone=()
+    for db in "$OVN_DBDIR/ovnnb_db.db" "$OVN_DBDIR/ovnsb_db.db"; do
+        [ -f "$db" ] || continue
+        present+=("$db")
+        sudo ovsdb-tool db-is-clustered "$db" 2>/dev/null || standalone+=("$db")
+    done
+
+    if [ "$RECREATE_DB" = true ]; then
+        if [ ${#present[@]} -eq 0 ]; then
+            return 0
+        fi
+        echo "  --recreate-db: discarding the existing NB/SB databases so ovn-ctl creates clustered ones"
+        stop_ovn_databases
+        sudo rm -f "${present[@]}"
+        # Leftovers of the same state, each of which outlives a purge that names
+        # only the live DBs: the lock files, the compute-node path's move-aside,
+        # and the backup an earlier --recreate-db took.
+        sudo rm -f "$OVN_DBDIR/.ovnnb_db.db.~lock~" "$OVN_DBDIR/.ovnsb_db.db.~lock~"
+        sudo rm -f "$OVN_DBDIR/ovnnb_db.db.standalone-disabled" "$OVN_DBDIR/ovnsb_db.db.standalone-disabled"
+        sudo rm -f "$OVN_DBDIR/standalone-backup/ovnnb_db.db" "$OVN_DBDIR/standalone-backup/ovnsb_db.db"
+        sudo rmdir "$OVN_DBDIR/standalone-backup" 2>/dev/null || true
+        return 0
+    fi
+
+    # Without --recreate-db a clustered DB is the steady state and is left
+    # alone. Only a standalone one has to be refused, because serving it would
+    # ignore the RAFT flags.
+    if [ ${#standalone[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    echo "ERROR: clustered DBs requested, but these are in standalone format:" >&2
+    printf '         %s\n' "${standalone[@]}" >&2
+    echo "" >&2
+    echo "  A clustered DB can only be created from scratch, so these must be" >&2
+    echo "  removed first. That DISCARDS ALL LOGICAL NETWORK STATE — every logical" >&2
+    echo "  switch, router, port and ACL, and so every VPC on this node." >&2
+    echo "" >&2
+    echo "  A freshly installed node has nothing to lose: re-run with --recreate-db." >&2
+    echo "  A node running workloads does: do not." >&2
+    exit 1
 }
 
 # set_root_service_user <file> <var> — sets <var>="root:root" in <file> when

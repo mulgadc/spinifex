@@ -377,6 +377,107 @@ case "$RC:$OUT" in
     *) fail "logrotate: unexpected stanza gave rc=$RC out=$OUT" ;;
 esac
 
+# --------------------------------------------------------------------------
+# Clustered DB storage, and what --recreate-db purges.
+# --------------------------------------------------------------------------
+# install-node.sh passes --recreate-db on every database node on every run, so
+# re-forming a cluster has to replace a clustered DB as readily as a standalone
+# one. Left in place, ovn-ctl serves it, ignores the RAFT flags and rejoins the
+# previous cluster under the member list the old DB carries.
+for fn in stop_ovn_databases ensure_clustered_db_storage; do
+    awk -v f="$fn() {" '$0 == f { on = 1 } on { print } on && $0 == "}" { exit }' "$SETUP" >>"$TMP/db_fn.sh"
+done
+
+# db-is-clustered reports on the fixture's own contents, so a test writes
+# "clustered" or "standalone" into the file to choose the format.
+printf '#!/bin/sh\n[ "$1" = db-is-clustered ] || exit 2\ngrep -q clustered "$2"\n' >"$TMP/bin/ovsdb-tool"
+printf '#!/bin/sh\nexit 0\n' >"$TMP/bin/systemctl"
+printf '#!/bin/sh\nexit 1\n' >"$TMP/bin/pgrep"
+printf '#!/bin/sh\necho "pkill $*" >>"%s"\nexit 0\n' "$TMP/pkill.log" >"$TMP/bin/pkill"
+chmod +x "$TMP/bin/ovsdb-tool" "$TMP/bin/systemctl" "$TMP/bin/pgrep" "$TMP/bin/pkill"
+
+# db_fixture <format> — a DB directory in <format> with every leftover present.
+db_fixture() {
+    rm -rf "$TMP/dbdir"
+    mkdir -p "$TMP/dbdir/standalone-backup"
+    for f in ovnnb_db.db ovnsb_db.db; do
+        echo "$1" >"$TMP/dbdir/$f"
+        echo "$1" >"$TMP/dbdir/$f.standalone-disabled"
+        echo "$1" >"$TMP/dbdir/standalone-backup/$f"
+        : >"$TMP/dbdir/.$f.~lock~"
+    done
+}
+
+# ensure_db <recreate:true|false> — runs ensure_clustered_db_storage; sets RC, OUT.
+ensure_db() {
+    RC=0
+    OUT=$(PATH="$TMP/bin:$PATH" bash -c '
+        OVN_DBDIR="$1"; RECREATE_DB="$2"; OVN_CENTRAL_UNITS=(ovn-central)
+        OVN_DB_STOP_WAIT=2; OVN_DB_KILL_WAIT=1
+        . "$3"; ensure_clustered_db_storage' _ "$TMP/dbdir" "$1" "$TMP/db_fn.sh" 2>&1) || RC=$?
+}
+
+db_fixture clustered
+ensure_db true
+if [ "$RC" = 0 ] && [ ! -e "$TMP/dbdir/ovnnb_db.db" ] && [ ! -e "$TMP/dbdir/ovnsb_db.db" ]; then
+    pass "recreate-db: a clustered DB is discarded, so re-forming does not rejoin the old cluster"
+else
+    fail "recreate-db: clustered DB rc=$RC left [$(ls -A "$TMP/dbdir")] out=$OUT"
+fi
+if [ -z "$(ls -A "$TMP/dbdir")" ]; then
+    pass "recreate-db: the lock files, move-asides and standalone backup go with it"
+else
+    fail "recreate-db: leftovers survived: $(ls -A "$TMP/dbdir" | tr '\n' ' ')"
+fi
+
+db_fixture standalone
+ensure_db true
+if [ "$RC" = 0 ] && [ ! -e "$TMP/dbdir/ovnnb_db.db" ]; then
+    pass "recreate-db: a standalone DB is discarded as before"
+else
+    fail "recreate-db: standalone DB rc=$RC left [$(ls -A "$TMP/dbdir")] out=$OUT"
+fi
+
+db_fixture clustered
+ensure_db false
+if [ "$RC" = 0 ] && [ -e "$TMP/dbdir/ovnnb_db.db" ]; then
+    pass "no recreate-db: a clustered DB is the steady state and is kept"
+else
+    fail "no recreate-db: clustered DB rc=$RC left [$(ls -A "$TMP/dbdir")] out=$OUT"
+fi
+
+db_fixture standalone
+ensure_db false
+case "$RC:$OUT" in
+    0:*) fail "no recreate-db: a standalone DB was accepted, so the RAFT flags would be ignored" ;;
+    *:*"standalone format"*) pass "no recreate-db: a standalone DB is refused by name" ;;
+    *) fail "no recreate-db: standalone DB rc=$RC out=$OUT" ;;
+esac
+
+rm -rf "$TMP/dbdir"
+mkdir -p "$TMP/dbdir"
+ensure_db true
+if [ "$RC" = 0 ]; then pass "recreate-db: an empty DB directory is already what it wants"; else fail "recreate-db: empty directory rc=$RC out=$OUT"; fi
+
+# A server that outlives its unit must be killed by a pattern anchored on the
+# OVN database directory. Matching ovsdb-server alone would reap the OVS
+# conf.db server, which runs the switch.
+db_fixture clustered
+printf '#!/bin/sh\nexit 0\n' >"$TMP/bin/pgrep"
+: >"$TMP/pkill.log"
+ensure_db true
+if grep -q -- "$TMP/dbdir/ovn" "$TMP/pkill.log" 2>/dev/null; then
+    pass "recreate-db: a surviving server is killed by a pattern scoped to the OVN database directory"
+else
+    fail "recreate-db: pkill was called as [$(cat "$TMP/pkill.log" 2>/dev/null)]"
+fi
+if [ "$RC" != 0 ] && [ -e "$TMP/dbdir/ovnnb_db.db" ]; then
+    pass "recreate-db: a server that survives SIGKILL fails the run rather than unlinking under it"
+else
+    fail "recreate-db: unkillable server gave rc=$RC and left [$(ls -A "$TMP/dbdir")]"
+fi
+printf '#!/bin/sh\nexit 1\n' >"$TMP/bin/pgrep"
+
 if [ "$fails" -ne 0 ]; then
     echo "  setup-ovn.sh: $fails failure(s)"
     exit 1

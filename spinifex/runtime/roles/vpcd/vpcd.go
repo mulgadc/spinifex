@@ -688,6 +688,7 @@ func launchService(cfg *Config) error {
 		NATMode:       natMode,
 		FlowsBarrier:  flowsBarrier,
 		RoutedIngress: routedIngress,
+		GatewayMTU:    topology.GatewayMTU(cfg.UnderlayMTU, cfg.IPSecEnabled),
 		NexthopSeed: func(ctx context.Context, lrpName, nexthopIP string) error {
 			return host.SeedNexthopMAC(ctx, host.NewExecRunner(), cfg.OVNNBAddr, lrpName, nexthopIP)
 		},

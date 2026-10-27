@@ -396,6 +396,10 @@ var (
 	// ErrorECRInvalidParameter aliases ErrorECSInvalidParameter: every ECR
 	// operation declares the AWS JSON 1.1 wire code "InvalidParameterException".
 	ErrorECRInvalidParameter = ErrorECSInvalidParameter
+	// ErrorTaggingInvalidParameter aliases ErrorECSInvalidParameter: the Resource
+	// Groups Tagging API reports out-of-range and malformed input as the AWS JSON
+	// 1.1 wire code "InvalidParameterException".
+	ErrorTaggingInvalidParameter = ErrorECSInvalidParameter
 	// ErrorACMResourceInUse aliases ErrorEKSResourceInUse: real ACM's
 	// DeleteCertificate and real EKS's CreateCluster both legitimately use the
 	// wire code "ResourceInUseException", so this is a distinct, self-documenting

@@ -6,12 +6,15 @@ package tagging
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	rgt "github.com/aws/aws-sdk-go/service/resourcegroupstaggingapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 const testAccountID = "123456789012"
@@ -110,9 +113,42 @@ func TestPaginate(t *testing.T) {
 	assert.Len(t, page, 5)
 	assert.Empty(t, next)
 
-	// Bad token is rejected.
-	_, _, err = paginate(all, aws.String("not-a-number"), nil)
-	require.Error(t, err)
+	// The page-size bounds themselves are accepted.
+	page, next, err = paginate(all, nil, aws.Int64(1))
+	require.NoError(t, err)
+	assert.Len(t, page, 1)
+	assert.Equal(t, "1", next)
+
+	page, next, err = paginate(all, nil, aws.Int64(100))
+	require.NoError(t, err)
+	assert.Len(t, page, 5)
+	assert.Empty(t, next)
+}
+
+// AWS accepts ResourcesPerPage of 1 to 100 and reports out-of-range or
+// malformed pagination input as InvalidParameterException.
+func TestPaginate_RejectsInvalidInputAsInvalidParameterException(t *testing.T) {
+	all := []*rgt.ResourceTagMapping{mapping("arn:0"), mapping("arn:1")}
+
+	cases := map[string]struct {
+		token   *string
+		perPage *int64
+	}{
+		"zero page size":             {perPage: aws.Int64(0)},
+		"negative page size":         {perPage: aws.Int64(-1)},
+		"page size above 100":        {perPage: aws.Int64(101)},
+		"max int64 page with offset": {token: aws.String("1"), perPage: aws.Int64(math.MaxInt64)},
+		"non-numeric token":          {token: aws.String("not-a-number")},
+		"negative token":             {token: aws.String("-1")},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := paginate(all, tc.token, tc.perPage)
+			code, ok := awserrors.ResolveErrorCode(err)
+			require.True(t, ok, "error %v carries no AWS code", err)
+			assert.Equal(t, "InvalidParameterException", code)
+		})
+	}
 }
 func TestGetResources_MergesFiltersSortsPaginates(t *testing.T) {
 	elbv2 := &fakeLister{out: []TaggedResource{

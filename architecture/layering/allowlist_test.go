@@ -11,17 +11,17 @@ type allowance struct {
 // docs/PACKAGE_BOUNDARY_MIGRATION.md. It only shrinks: add an edge only with
 // recorded debt, and delete an entry as soon as its import is gone.
 var allowlist = []allowance{
-	{From: "accountteardown", To: "domains/ec2/awsapi/eip", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/igw", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/image", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/instance", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/key", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/launchtemplate", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/placementgroup", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/routetable", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/snapshot", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/volume", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "accountteardown", To: "domains/ec2/awsapi/vpc", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/eip", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/igw", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/image", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/instance", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/key", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/launchtemplate", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/placementgroup", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/routetable", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/snapshot", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/volume", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
+	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/vpc", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
 
 	{From: "agents/ecs/agent", To: "domains/ecs", Debt: "agents/ecs/agent", Reason: "assignment/state wire types from the ECS implementation; needs a guest/controller contract"},
 
@@ -41,7 +41,7 @@ var allowlist = []allowance{
 	{From: "domains/admission/quota", To: "domains/ec2/awsapi/volume", Debt: "domains/admission/quota (dependency, moved from handlers/quota unchanged)", Reason: "describe adapter used as a counter; needs a reader capability"},
 	{From: "domains/admission/quota", To: "domains/ec2/awsapi/vpc", Debt: "domains/admission/quota (dependency, moved from handlers/quota unchanged)", Reason: "describe adapter used as a counter; needs a reader capability"},
 	{From: "domains/admission/quota", To: "domains/ec2/instancetypes", Debt: "domains/admission/quota → domains/ec2/instancetypes", Reason: "DefaultVCPUs sizing; needs a consumer-owned capability or EC2 projection"},
-	{From: "domains/admission/quota", To: "gateway/elbv2", Debt: "domains/admission/quota (dependency, moved from handlers/quota unchanged)", Reason: "live ELBv2 counter; needs a reader capability"},
+	{From: "domains/admission/quota", To: "domains/elbv2/awsapi", Debt: "domains/admission/quota (dependency, moved from handlers/quota unchanged)", Reason: "live ELBv2 counter; needs a reader capability"},
 	{From: "domains/admission/quota", To: "domains/rds/instance", Debt: "domains/admission/quota (dependency, moved from handlers/quota unchanged)", Reason: "live RDS counter; needs a reader capability"},
 	{From: "domains/admission/quota", To: "runtime/compute/vm", Debt: "domains/admission/quota (dependency, moved from handlers/quota unchanged)", Reason: "instance-record vCPU sweep; needs a reader capability"},
 
@@ -125,6 +125,8 @@ var allowlist = []allowance{
 	{From: "gateway", To: "domains/iam/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
 	{From: "gateway", To: "domains/rds/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
 	{From: "gateway", To: "domains/sts/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
+	{From: "gateway", To: "domains/ecs/awsapi", Debt: "gateway (service registration)", Reason: "ECS and ELBv2 dispatch stays in gateway until the ingress registration seam"},
+	{From: "gateway", To: "domains/elbv2/awsapi", Debt: "gateway (service registration)", Reason: "ECS and ELBv2 dispatch stays in gateway until the ingress registration seam"},
 	{From: "domains/ecs", To: "domains/ec2/ebs/metadata", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
 	{From: "domains/ecs", To: "domains/ec2/eip", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
 	{From: "domains/ecs", To: "domains/ec2/instancetypes", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
@@ -158,6 +160,5 @@ var allowlist = []allowance{
 
 	{From: "domains/sts", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "STS reads IAM service, trust-policy and OIDC-provider state; needs an IAM capability"},
 
-	{From: "operator/cli", To: "accountteardown", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "gateway", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 }

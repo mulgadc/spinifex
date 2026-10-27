@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -217,9 +218,11 @@ func (f *fakeNLBProvisioner) DescribeTargetGroups(_ context.Context, input *elbv
 		if n == nil {
 			continue
 		}
-		if tg, ok := f.tgByName[*n]; ok {
-			out.TargetGroups = append(out.TargetGroups, tg)
+		tg, ok := f.tgByName[*n]
+		if !ok {
+			return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
 		}
+		out.TargetGroups = append(out.TargetGroups, tg)
 	}
 	return out, nil
 }

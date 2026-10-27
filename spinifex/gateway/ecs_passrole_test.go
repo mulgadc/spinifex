@@ -17,7 +17,7 @@ import (
 // TestECSRegisterTaskDefinition_PassRole exercises the full gw.ECS_Request
 // dispatch (X-Amz-Target parsing, action-level checkPolicy, then the
 // iam:PassRole resource check gateway/ecs.go builds and threads through
-// gateway_ecs.Handler) with a real authenticated user identity, so the IAM
+// ecsawsapi.Handler) with a real authenticated user identity, so the IAM
 // policy is actually evaluated rather than taking the pre-IAM bypass.
 const testECSPassRoleTargetARN = "arn:aws:iam::123456789012:role/ecs-task-role"
 

@@ -3,7 +3,7 @@ package gateway_test
 import (
 	"testing"
 
-	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -11,14 +11,14 @@ import (
 // with a silent account-wide grant. It asserts both directions, so a scope left
 // behind by a deleted or renamed action fails too.
 func TestECSScopeTableIsExhaustive(t *testing.T) {
-	for action := range gateway_ecs.Actions {
-		assert.True(t, gateway_ecs.HasScope(action),
-			"ecs action %q has no resource scope entry: add one to ecsScopes in gateway/ecs/authz.go", action)
+	for action := range ecsawsapi.Actions {
+		assert.True(t, ecsawsapi.HasScope(action),
+			"ecs action %q has no resource scope entry: add one to ecsScopes in domains/ecs/awsapi/authz.go", action)
 	}
 
-	for _, action := range gateway_ecs.ScopedActions() {
-		_, ok := gateway_ecs.Actions[action]
+	for _, action := range ecsawsapi.ScopedActions() {
+		_, ok := ecsawsapi.Actions[action]
 		assert.True(t, ok,
-			"ecsScopes has an entry for %q, which the dispatch table does not serve: remove it from gateway/ecs/authz.go", action)
+			"ecsScopes has an entry for %q, which the dispatch table does not serve: remove it from domains/ecs/awsapi/authz.go", action)
 	}
 }

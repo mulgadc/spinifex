@@ -270,7 +270,8 @@ func TestResolveCaller_PerTapENIWins(t *testing.T) {
 	req.RemoteAddr = "10.9.9.9:40000"
 	req = req.WithContext(context.WithValue(req.Context(), ctxKeyENI, want))
 
-	got := svc.resolveCaller(req)
+	got, err := svc.resolveCaller(req)
+	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "eni-tap", got.eniID, "threaded ENI must be the caller identity")
 }

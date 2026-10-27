@@ -3,6 +3,7 @@ package formation
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -519,4 +520,26 @@ func TestFullFormationFlow_WithToken(t *testing.T) {
 	pnodes := BuildPredastoreNodes(sr.Nodes)
 	assert.Len(t, pnodes, 3)
 	assert.Equal(t, 1, pnodes[0].ID)
+}
+
+// At most four nodes may ask to be nameservers; a fifth is refused at join,
+// before anything is written, rather than silently left unpublished.
+func TestRegisterNodeRefusesAFifthNameserver(t *testing.T) {
+	t.Parallel()
+	fs := NewFormationServer(6, testCreds(), "", "", nil, testToken, testTokenTTL)
+	for i := 1; i <= 4; i++ {
+		n := testNode(fmt.Sprintf("node%d", i), fmt.Sprintf("10.0.0.%d", i))
+		n.Nameserver = true
+		require.NoError(t, fs.RegisterNode(n))
+	}
+
+	fifth := testNode("node5", "10.0.0.5")
+	fifth.Nameserver = true
+	err := fs.RegisterNode(fifth)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "node1, node2, node3, node4 already are")
+	assert.NotContains(t, fs.Nodes(), "node5")
+
+	require.NoError(t, fs.RegisterNode(testNode("node5", "10.0.0.5")), "a node that does not ask still joins")
+	assert.Equal(t, []string{"node1", "node2", "node3", "node4"}, NameserverNodes(fs.Nodes()))
 }

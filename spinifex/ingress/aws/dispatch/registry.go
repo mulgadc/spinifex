@@ -13,6 +13,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // ErrorEnvelope selects which generic error rendering a service's errors use.
@@ -25,7 +26,42 @@ const (
 	ErrorEnvelopeXML
 	// ErrorEnvelopeJSON is the AWS JSON 1.1 error body with X-Amzn-Errortype.
 	ErrorEnvelopeJSON
+	// ErrorEnvelopeRESTJSON is the REST-JSON error body: application/json,
+	// x-amzn-ErrorType, Type and message keys and any service-supplied fields.
+	ErrorEnvelopeRESTJSON
+	// ErrorEnvelopeJSON10Query is the AWS JSON 1.0 error body with the
+	// awsQueryCompatible x-amzn-query-error header.
+	ErrorEnvelopeJSON10Query
 )
+
+// IsJSON reports whether the envelope is one of the JSON protocols.
+func (e ErrorEnvelope) IsJSON() bool {
+	return e == ErrorEnvelopeJSON || e == ErrorEnvelopeRESTJSON || e == ErrorEnvelopeJSON10Query
+}
+
+// Protocol returns the JSON wire format for a JSON envelope; ok is false for
+// XML and for an unset envelope.
+func (e ErrorEnvelope) Protocol() (p envelope.Protocol, ok bool) {
+	switch e {
+	case ErrorEnvelopeJSON:
+		return envelope.ProtocolJSON11, true
+	case ErrorEnvelopeRESTJSON:
+		return envelope.ProtocolRESTJSON, true
+	case ErrorEnvelopeJSON10Query:
+		return envelope.ProtocolJSON10Query, true
+	}
+	return envelope.ProtocolJSON11, false
+}
+
+// ErrorSpec is an error a registration defines for ingress to raise before its
+// dispatcher runs. The code is sent as the wire error type unchanged.
+type ErrorSpec struct {
+	Code    string
+	Message string
+	Status  int
+	// Fields are extra top-level body keys on protocols that carry them.
+	Fields map[string]string
+}
 
 // Inventory classifies a service's dispatched operations. Registered minus
 // Stubbed and Unsupported are implemented; Stubbed and Unsupported are
@@ -82,7 +118,26 @@ type Registration struct {
 	ResolveAction ActionResolver
 	Dispatch      Dispatcher
 	Errors        ErrorEnvelope
-	Inventory     Inventory
+	// Throttle replaces the error returned when a request is rate limited.
+	// Unset, a REST-JSON or JSON 1.0 registration gets the protocol's own
+	// throttle error and any other keeps the gateway default. JSON only.
+	Throttle *ErrorSpec
+	// QueryErrorCodes maps an error code to the legacy query code sent in
+	// x-amzn-query-error; a code absent from it is sent as itself. JSON 1.0
+	// only.
+	QueryErrorCodes map[string]string
+	// InternalErrorCode is the wire code sent for an error with no registered
+	// code. Unset, a REST-JSON registration sends ServiceException and a JSON
+	// 1.0 one InternalFailure. JSON 1.1 and XML keep InternalError.
+	InternalErrorCode string
+	// ErrorNamespace is the Smithy shape namespace (e.g. "com.amazonaws.sqs")
+	// prefixed to the __type of service-defined errors as "<namespace>#<code>".
+	// Unset, __type is the bare code. JSON 1.0 only.
+	ErrorNamespace string
+	// ErrorNamespaces overrides ErrorNamespace for individual codes, e.g. to
+	// send a framework error under "com.amazon.coral.service". JSON 1.0 only.
+	ErrorNamespaces map[string]string
+	Inventory       Inventory
 }
 
 // UnknownService returns the client-visible code and message for a credential
@@ -137,10 +192,15 @@ func (b *Builder) Register(reg Registration) error {
 	}
 
 	e := &Entry{
-		service: reg.Service,
-		resolve: reg.ResolveAction,
-		handle:  reg.Dispatch,
-		errors:  reg.Errors,
+		service:    reg.Service,
+		resolve:    reg.ResolveAction,
+		handle:     reg.Dispatch,
+		errors:     reg.Errors,
+		throttle:   reg.Throttle,
+		queryCodes: maps.Clone(reg.QueryErrorCodes),
+		internal:   reg.InternalErrorCode,
+		namespace:  reg.ErrorNamespace,
+		namespaces: maps.Clone(reg.ErrorNamespaces),
 	}
 	for _, n := range names {
 		b.entries[n] = e
@@ -178,13 +238,42 @@ func validate(reg Registration) ([]string, error) {
 	if reg.Dispatch == nil {
 		return nil, fmt.Errorf("dispatch: %s: nil dispatcher", reg.Service)
 	}
-	if reg.Errors != ErrorEnvelopeXML && reg.Errors != ErrorEnvelopeJSON {
+	if reg.Errors != ErrorEnvelopeXML && !reg.Errors.IsJSON() {
 		return nil, fmt.Errorf("dispatch: %s: error envelope not set", reg.Service)
+	}
+	if err := validateErrorSpecs(reg); err != nil {
+		return nil, fmt.Errorf("dispatch: %s: %w", reg.Service, err)
 	}
 	if err := validateInventory(reg.Inventory); err != nil {
 		return nil, fmt.Errorf("dispatch: %s: %w", reg.Service, err)
 	}
 	return names, nil
+}
+
+func validateErrorSpecs(reg Registration) error {
+	if t := reg.Throttle; t != nil {
+		if !reg.Errors.IsJSON() {
+			return errors.New("throttle error needs a JSON error envelope")
+		}
+		if t.Code == "" || t.Status < 400 || t.Status > 599 {
+			return fmt.Errorf("throttle error needs a code and a 4xx or 5xx status, got %q and %d", t.Code, t.Status)
+		}
+	}
+	if len(reg.QueryErrorCodes) > 0 && reg.Errors != ErrorEnvelopeJSON10Query {
+		return errors.New("query error codes need the JSON 1.0 error envelope")
+	}
+	if reg.InternalErrorCode != "" && reg.Errors != ErrorEnvelopeRESTJSON && reg.Errors != ErrorEnvelopeJSON10Query {
+		return errors.New("internal error code needs the REST-JSON or JSON 1.0 error envelope")
+	}
+	if (reg.ErrorNamespace != "" || len(reg.ErrorNamespaces) > 0) && reg.Errors != ErrorEnvelopeJSON10Query {
+		return errors.New("error namespace needs the JSON 1.0 error envelope")
+	}
+	for code, legacy := range reg.QueryErrorCodes {
+		if code == "" || legacy == "" {
+			return errors.New("query error codes must not be empty")
+		}
+	}
+	return nil
 }
 
 func validateInventory(inv Inventory) error {
@@ -265,6 +354,12 @@ type Entry struct {
 	resolve ActionResolver
 	handle  Dispatcher
 	errors  ErrorEnvelope
+
+	throttle   *ErrorSpec
+	queryCodes map[string]string
+	internal   string
+	namespace  string
+	namespaces map[string]string
 }
 
 // Service returns the registration's primary credential-scope name.
@@ -272,6 +367,64 @@ func (e *Entry) Service() string { return e.service }
 
 // ErrorEnvelope returns the envelope the service's errors render in.
 func (e *Entry) ErrorEnvelope() ErrorEnvelope { return e.errors }
+
+// ThrottleError returns the error to send when a request to this service is
+// rate limited; ok is false when the gateway default applies.
+func (e *Entry) ThrottleError() (spec ErrorSpec, ok bool) {
+	if e.throttle != nil {
+		return cloneSpec(*e.throttle), true
+	}
+	switch e.errors {
+	case ErrorEnvelopeRESTJSON:
+		return ErrorSpec{
+			Code:    "TooManyRequestsException",
+			Message: "Rate Exceeded.",
+			Status:  http.StatusTooManyRequests,
+			Fields:  map[string]string{"Reason": "CallerRateLimitExceeded"},
+		}, true
+	case ErrorEnvelopeJSON10Query:
+		return ErrorSpec{Code: "RequestThrottled", Message: "Rate exceeded.", Status: http.StatusBadRequest}, true
+	}
+	return ErrorSpec{}, false
+}
+
+func cloneSpec(s ErrorSpec) ErrorSpec {
+	s.Fields = maps.Clone(s.Fields)
+	return s
+}
+
+// InternalErrorCode returns the wire code for an error carrying no registered
+// code; ok is false when the gateway's InternalError applies.
+func (e *Entry) InternalErrorCode() (code string, ok bool) {
+	if e.internal != "" {
+		return e.internal, true
+	}
+	switch e.errors {
+	case ErrorEnvelopeRESTJSON:
+		return "ServiceException", true
+	case ErrorEnvelopeJSON10Query:
+		return "InternalFailure", true
+	}
+	return "", false
+}
+
+// ErrorNamespace returns the Smithy namespace prefixed to code's error type,
+// or "" when none is declared.
+func (e *Entry) ErrorNamespace(code string) string {
+	if ns, ok := e.namespaces[code]; ok {
+		return ns
+	}
+	return e.namespace
+}
+
+// QueryErrorCode returns the legacy query code sent in x-amzn-query-error for
+// code, which is code itself unless the registration maps it.
+func (e *Entry) QueryErrorCode(code string) string {
+	if q, ok := e.queryCodes[code]; ok {
+		return q
+	}
+	return code
+}
 
 // ResolveAction returns the advisory action label for r, or "" when the
 // registration has no resolver or cannot name the action.

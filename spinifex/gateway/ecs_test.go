@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -56,7 +56,7 @@ func TestECSActionsMap_NamespaceRegistered(t *testing.T) {
 		"TagResource", "UntagResource", "ListTagsForResource",
 	}
 	for _, action := range namespace {
-		_, ok := gateway_ecs.Actions[action]
+		_, ok := ecsawsapi.Actions[action]
 		assert.True(t, ok, "action %q should be registered", action)
 	}
 }

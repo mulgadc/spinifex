@@ -93,7 +93,11 @@ func (s *IMDSServiceImpl) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eni := s.resolveCaller(r)
+	eni, err := s.resolveCaller(r)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	if eni == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -135,7 +139,11 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	eni := s.resolveCaller(r)
+	eni, err := s.resolveCaller(r)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	if eni == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -152,12 +160,20 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 	s.dispatch(w, r, eni)
 }
 
-// resolveCaller returns the request's owning ENI, threaded in via ctxKeyENI by the
-// per-tap responder (resolved once from the tap's bound device). The tap is unique,
-// so source IP is never consulted. Returns nil on miss, producing a 404 not a 500.
-func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
-	eni, _ := r.Context().Value(ctxKeyENI).(*eniFacts)
-	return eni
+// resolveCaller returns the request's owning ENI as its record reads now. The
+// identity is the one the per-tap responder pinned (the tap is unique, so source
+// IP is never consulted); nil on miss or a deleted record, producing a 404.
+func (s *IMDSServiceImpl) resolveCaller(r *http.Request) (*eniFacts, error) {
+	pinned, _ := r.Context().Value(ctxKeyENI).(*eniFacts)
+	if pinned == nil {
+		return nil, nil
+	}
+	eni, err := s.resolver.refreshENI(r.Context(), pinned)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "IMDS: re-reading the caller's ENI failed", "eni_id", pinned.eniID, "err", err)
+		return nil, err
+	}
+	return eni, nil
 }
 
 // dispatch routes a token-validated GET to the right metadata producer.
@@ -819,8 +835,8 @@ func writeJSON(w http.ResponseWriter, v any) {
 type ctxKey int
 
 const (
-	// ctxKeyENI carries a *eniFacts resolved once per per-tap responder — the
-	// authoritative caller identity for every request it serves.
+	// ctxKeyENI carries the *eniFacts a per-tap responder resolved at start: the
+	// caller identity for every request it serves, re-read per request.
 	ctxKeyENI ctxKey = iota
 	// ctxKeyConnTTL carries the connTTLSetter for the request's accepted socket,
 	// threaded per connection by the per-tap responder's ConnContext.

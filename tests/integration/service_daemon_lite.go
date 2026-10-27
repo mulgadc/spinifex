@@ -13,10 +13,12 @@ import (
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
+	route53domain "github.com/mulgadc/spinifex/spinifex/domains/route53"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
 
-// StartServiceDaemonLite subscribes the real ACM, ECS, EKS, ELBv2 and RDS
+// StartServiceDaemonLite subscribes the real ACM, ECS, EKS, ELBv2, RDS and Route 53
 // services to their "<service>.<Method>" subjects. ECS and RDS run without
 // their provisioning dependencies, so checks that need them do not run.
 func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
@@ -49,4 +51,10 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 
 	subscribeServiceMethods(t, nc, "ecs", ecsdomain.NewService(nc, testRegion, ""))
 	subscribeServiceMethods(t, nc, "rds", rdsinstance.NewService(nc, testRegion))
+
+	js, err := jetstream.New(nc)
+	require.NoError(t, err, "open JetStream for Route 53")
+	route53 := route53domain.NewService(route53domain.NewStore(js))
+	route53.Nameservers = func() []string { return []string{"ns1.spx3.net"} }
+	subscribeServiceMethods(t, nc, "route53", route53)
 }

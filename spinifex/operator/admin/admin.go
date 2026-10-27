@@ -91,6 +91,10 @@ type ConfigSettings struct {
 	// Node capabilities
 	Services []string
 
+	// NameserverNodes pins the published nameservers, rendered as
+	// [northstar] nameserver_nodes. Empty leaves the key out.
+	NameserverNodes []string
+
 	// OVN Northbound DB address — "tcp:127.0.0.1:6641" on the primary node,
 	// "tcp:<primary-mgmt-ip>:6641" on joining nodes.
 	OVNNBAddr string

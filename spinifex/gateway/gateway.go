@@ -433,7 +433,7 @@ func (gw *GatewayConfig) writeJSONError(w http.ResponseWriter, p envelope.Protoc
 			e.Code, e.Verbatim = internal, true
 		}
 		e.QueryCode = entry.QueryErrorCode(e.Code)
-		e.Namespace = entry.ErrorNamespace()
+		e.Namespace = entry.ErrorNamespace(e.Code)
 	}
 	envelope.WriteJSON(w, p, e)
 }

@@ -233,6 +233,7 @@ func TestRegisterValidatesErrorSpecs(t *testing.T) {
 		"throttle without code":   func(r *Registration) { r.Throttle = &ErrorSpec{Status: 429} },
 		"throttle with 2xx":       func(r *Registration) { r.Throttle = &ErrorSpec{Code: "X", Status: 200} },
 		"query codes on JSON 1.1": func(r *Registration) { r.QueryErrorCodes = map[string]string{"A": "B"} },
+		"namespaces on JSON 1.1":  func(r *Registration) { r.ErrorNamespaces = map[string]string{"A": "ns"} },
 		"namespace on JSON 1.1":   func(r *Registration) { r.ErrorNamespace = "com.amazonaws.sqs" },
 		"empty query code": func(r *Registration) {
 			r.Errors = ErrorEnvelopeJSON10Query
@@ -350,4 +351,16 @@ func TestEntryInternalErrorCode(t *testing.T) {
 	r := validReg("svc")
 	r.InternalErrorCode = "Mine"
 	require.Error(t, NewBuilder().Register(r), "JSON 1.1 cannot set an internal error code")
+}
+
+func TestEntryErrorNamespacePerCodeOverride(t *testing.T) {
+	b := NewBuilder()
+	r := validReg("svc")
+	r.Errors = ErrorEnvelopeJSON10Query
+	r.ErrorNamespace = "com.amazonaws.sqs"
+	r.ErrorNamespaces = map[string]string{"SerializationException": "com.amazon.coral.service"}
+	require.NoError(t, b.Register(r))
+	e, _ := b.Build().Lookup("svc")
+	assert.Equal(t, "com.amazonaws.sqs", e.ErrorNamespace("QueueDoesNotExist"))
+	assert.Equal(t, "com.amazon.coral.service", e.ErrorNamespace("SerializationException"))
 }

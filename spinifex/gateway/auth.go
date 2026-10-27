@@ -552,6 +552,10 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 		p, isJSON = envelope.ProtocolJSON11, true
 	}
 	if isJSON {
+		if p == envelope.ProtocolJSON10Query && errorCode == awserrors.ErrorRequestEntityTooLarge {
+			envelope.WriteTooLargeText(w, int64(sigv4.MaxPayloadLen))
+			return
+		}
 		gw.writeJSONError(w, p, svc, envelope.JSONError{Code: errorCode, Message: errorMsg.Message, Status: errorMsg.HTTPCode})
 		return
 	}

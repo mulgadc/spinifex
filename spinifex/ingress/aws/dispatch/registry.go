@@ -134,7 +134,10 @@ type Registration struct {
 	// prefixed to the __type of service-defined errors as "<namespace>#<code>".
 	// Unset, __type is the bare code. JSON 1.0 only.
 	ErrorNamespace string
-	Inventory      Inventory
+	// ErrorNamespaces overrides ErrorNamespace for individual codes, e.g. to
+	// send a framework error under "com.amazon.coral.service". JSON 1.0 only.
+	ErrorNamespaces map[string]string
+	Inventory       Inventory
 }
 
 // UnknownService returns the client-visible code and message for a credential
@@ -197,6 +200,7 @@ func (b *Builder) Register(reg Registration) error {
 		queryCodes: maps.Clone(reg.QueryErrorCodes),
 		internal:   reg.InternalErrorCode,
 		namespace:  reg.ErrorNamespace,
+		namespaces: maps.Clone(reg.ErrorNamespaces),
 	}
 	for _, n := range names {
 		b.entries[n] = e
@@ -261,7 +265,7 @@ func validateErrorSpecs(reg Registration) error {
 	if reg.InternalErrorCode != "" && reg.Errors != ErrorEnvelopeRESTJSON && reg.Errors != ErrorEnvelopeJSON10Query {
 		return errors.New("internal error code needs the REST-JSON or JSON 1.0 error envelope")
 	}
-	if reg.ErrorNamespace != "" && reg.Errors != ErrorEnvelopeJSON10Query {
+	if (reg.ErrorNamespace != "" || len(reg.ErrorNamespaces) > 0) && reg.Errors != ErrorEnvelopeJSON10Query {
 		return errors.New("error namespace needs the JSON 1.0 error envelope")
 	}
 	for code, legacy := range reg.QueryErrorCodes {
@@ -355,6 +359,7 @@ type Entry struct {
 	queryCodes map[string]string
 	internal   string
 	namespace  string
+	namespaces map[string]string
 }
 
 // Service returns the registration's primary credential-scope name.
@@ -403,9 +408,14 @@ func (e *Entry) InternalErrorCode() (code string, ok bool) {
 	return "", false
 }
 
-// ErrorNamespace returns the Smithy namespace prefixed to service-defined
-// error types, or "" when none is declared.
-func (e *Entry) ErrorNamespace() string { return e.namespace }
+// ErrorNamespace returns the Smithy namespace prefixed to code's error type,
+// or "" when none is declared.
+func (e *Entry) ErrorNamespace(code string) string {
+	if ns, ok := e.namespaces[code]; ok {
+		return ns
+	}
+	return e.namespace
+}
 
 // QueryErrorCode returns the legacy query code sent in x-amzn-query-error for
 // code, which is code itself unless the registration maps it.

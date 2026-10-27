@@ -10,12 +10,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -180,6 +182,17 @@ func TestErrorEnvelope_DispatcherError(t *testing.T) {
 		assert.Equal(t, `{"__type":"com.amazonaws.sqs#InvalidParameterValue","message":"bad value"}`, bodyString(t, resp))
 	})
 
+	t.Run("JSON 1.0 per-code namespace and query code for a framework error", func(t *testing.T) {
+		c := &dispatchCapture{dispatchErr: awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "bad value")}
+		_, app := dispatchSeamApp(t, allowAllECRDocs(), envelopeRegistration(json10Service, dispatch.ErrorEnvelopeJSON10Query, c,
+			func(r *dispatch.Registration) {
+				r.ErrorNamespace = "com.amazonaws.sqs"
+				r.ErrorNamespaces = map[string]string{awserrors.ErrorInvalidParameterValue: envelope.CoralNamespace}
+			}))
+		resp := doRequest(app, signDispatchRequest(t, json10Service, []byte("{}")))
+		assert.Equal(t, `{"__type":"com.amazon.coral.service#InvalidParameterValue","message":"bad value"}`, bodyString(t, resp))
+	})
+
 	t.Run("JSON 1.0 unmapped server fault is Receiver with InternalFailure", func(t *testing.T) {
 		c := &dispatchCapture{dispatchErr: awserrors.Errorf(awserrors.ErrorInternalError, "boom")}
 		_, app := dispatchSeamApp(t, allowAllECRDocs(), envelopeRegistration(json10Service, dispatch.ErrorEnvelopeJSON10Query, c, nil))
@@ -243,7 +256,7 @@ func TestErrorEnvelope_ClusterUnavailable(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 	assert.Equal(t, "application/x-amz-json-1.0", resp.Header.Get("Content-Type"))
 	assert.Equal(t, "ServiceUnavailable;Receiver", resp.Header.Get("X-Amzn-Query-Error"))
-	assert.JSONEq(t, `{"__type":"ServiceUnavailableException","message":"`+clusterUnavailableMsg+`"}`, bodyString(t, resp))
+	assert.JSONEq(t, `{"__type":"com.amazon.coral.service#ServiceUnavailableException","message":"`+clusterUnavailableMsg+`"}`, bodyString(t, resp))
 }
 
 func TestErrorEnvelope_OversizeBody(t *testing.T) {
@@ -267,9 +280,9 @@ func TestErrorEnvelope_OversizeBody(t *testing.T) {
 
 	resp = send(t, app, json10Service)
 	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
-	assert.Equal(t, "application/x-amz-json-1.0", resp.Header.Get("Content-Type"))
-	assert.Equal(t, "RequestEntityTooLarge;Sender", resp.Header.Get("X-Amzn-Query-Error"))
-	assert.Contains(t, bodyString(t, resp), `"__type":"RequestEntityTooLargeException"`)
+	assert.Equal(t, "text; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Empty(t, resp.Header.Get("X-Amzn-Query-Error"))
+	assert.Equal(t, "HTTP content length exceeded "+strconv.Itoa(int(sigv4.MaxPayloadLen))+" bytes.", bodyString(t, resp))
 }
 
 func TestCredentialScopeService(t *testing.T) {

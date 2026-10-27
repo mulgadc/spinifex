@@ -176,6 +176,18 @@ const (
 // an awsQueryCompatible JSON 1.0 response, as "<code>;<Sender|Receiver>".
 const QueryErrorHeader = "X-Amzn-Query-Error"
 
+// CoralNamespace is the __type namespace of errors the AWS framework raises
+// ahead of a service, as opposed to errors the service model defines.
+const CoralNamespace = "com.amazon.coral.service"
+
+// coralTypes maps a gateway error code to the framework error AWS JSON 1.0
+// services send for it. A code absent here becomes "<code>Exception".
+var coralTypes = map[string]string{
+	"SignatureDoesNotMatch": "InvalidSignatureException",
+	"InvalidClientTokenId":  "UnrecognizedClientException",
+	"InvalidAction":         "UnknownOperationException",
+}
+
 // Protocol selects a JSON error wire format.
 type Protocol int
 
@@ -204,6 +216,8 @@ type JSONError struct {
 	Fields map[string]string
 	// Namespace is the Smithy shape namespace prefixed to __type as
 	// "<namespace>#<code>" on ProtocolJSON10Query, for a Verbatim code only.
+	// A code that is not Verbatim is a framework error and always takes
+	// CoralNamespace on that protocol.
 	Namespace string
 	// QueryCode is the legacy query code for ProtocolJSON10Query; Code is used
 	// when empty.
@@ -213,6 +227,22 @@ type JSONError struct {
 // senderFault reports whether the error is the caller's ("Sender"/"User") or
 // the service's ("Receiver"/"Service"), derived from the HTTP status.
 func (e JSONError) senderFault() bool { return e.Status < http.StatusInternalServerError }
+
+// json10Type is the __type of e on JSON 1.0: a framework error is a coral
+// type, a service error its code under the service namespace when it has one.
+func (e JSONError) json10Type() string {
+	if !e.Verbatim {
+		name, ok := coralTypes[e.Code]
+		if !ok {
+			name = JSONErrorType(e.Code)
+		}
+		return CoralNamespace + "#" + name
+	}
+	if e.Namespace != "" {
+		return e.Namespace + "#" + e.Code
+	}
+	return e.Code
+}
 
 func (e JSONError) wireType() string {
 	if e.Verbatim {
@@ -236,8 +266,8 @@ func JSONContentTypeFor(p Protocol) string {
 // JSONErrorBody renders e's body for p.
 func JSONErrorBody(p Protocol, e JSONError) []byte {
 	typeKey, typeVal := "__type", e.wireType()
-	if p == ProtocolJSON10Query && e.Verbatim && e.Namespace != "" {
-		typeVal = e.Namespace + "#" + typeVal
+	if p == ProtocolJSON10Query {
+		typeVal = e.json10Type()
 	}
 	if p == ProtocolRESTJSON {
 		typeKey, typeVal = "Type", "User"
@@ -248,7 +278,10 @@ func JSONErrorBody(p Protocol, e JSONError) []byte {
 	body := map[string]string{}
 	maps.Copy(body, e.Fields)
 	body[typeKey] = typeVal
-	body["message"] = e.Message
+	// AWS sends no message key at all for some JSON 1.0 errors.
+	if e.Message != "" || p != ProtocolJSON10Query {
+		body["message"] = e.Message
+	}
 	out, err := json.Marshal(body)
 	if err != nil {
 		slog.Error("envelope: failed to marshal JSON error", "code", e.Code, "err", err)
@@ -277,5 +310,17 @@ func WriteJSON(w http.ResponseWriter, p Protocol, e JSONError) {
 	w.WriteHeader(e.Status)
 	if _, err := w.Write(JSONErrorBody(p, e)); err != nil {
 		slog.Error("envelope: failed to write JSON error response", "err", err)
+	}
+}
+
+// WriteTooLargeText writes the oversize-request rejection AWS JSON 1.0
+// services send: a plain-text 413 with no error type and no query header.
+func WriteTooLargeText(w http.ResponseWriter, limit int64) {
+	h := w.Header()
+	h.Set("Content-Type", "text; charset=utf-8")
+	h.Set("Connection", "close")
+	w.WriteHeader(http.StatusRequestEntityTooLarge)
+	if _, err := fmt.Fprintf(w, "HTTP content length exceeded %d bytes.", limit); err != nil {
+		slog.Error("envelope: failed to write oversize response", "err", err)
 	}
 }

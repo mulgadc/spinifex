@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -93,10 +94,17 @@ func describeTagsResourceType(resourceID string) string {
 // ARN type is named by a parameter rather than derived from the id.
 var untypedTaggablePrefixes = []string{"lt-", "cr-", "sir-"}
 
+// A recognised prefix followed by characters that cannot break the tag store's
+// KV key, which a wildcard, space or dot in the id would.
+var taggableIDShape = regexp.MustCompile(`^[a-z]+-[A-Za-z0-9_-]+$`)
+
 // isTaggableID reports whether CreateTags accepts resourceID. Only new writes
 // are checked: entries already stored under an untypable id are left in place
 // and stay visible to DescribeTags and removable by DeleteTags.
 func isTaggableID(resourceID string) bool {
+	if !taggableIDShape.MatchString(resourceID) {
+		return false
+	}
 	if _, ok := arn.EC2TypeForID(resourceID); ok {
 		return true
 	}

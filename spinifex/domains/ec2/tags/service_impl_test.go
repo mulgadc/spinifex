@@ -145,7 +145,7 @@ func TestCreateTags_MissingResources(t *testing.T) {
 func TestCreateTags_UnrecognisedPrefixIsInvalidID(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
-	for _, id := range []string{"not-a-real-id", "", "vpc"} {
+	for _, id := range []string{"not-a-real-id", "", "vpc", "vpc-", "vpc-*", "vpc-a b", "vpc->", "vpc-a.b"} {
 		_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
 			Resources: []*string{aws.String("vpc-0abc"), aws.String(id)},
 			Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("x")}},
@@ -160,12 +160,12 @@ func TestCreateTags_UnrecognisedPrefixIsInvalidID(t *testing.T) {
 }
 
 // Launch templates, capacity reservations and spot requests have no ARN-type
-// prefix mapping but are still taggable resources.
+// prefix mapping but are still taggable resources. A nil entry is skipped.
 func TestCreateTags_AcceptsTaggablePrefixesWithoutARNType(t *testing.T) {
 	svc, _ := setupTestTagsService(t)
 
 	ids := []string{"lt-0abc", "cr-0abc", "sir-0abc", "eipalloc-0abc", "pg-0abc"}
-	resources := make([]*string, 0, len(ids))
+	resources := []*string{nil}
 	for _, id := range ids {
 		resources = append(resources, aws.String(id))
 	}

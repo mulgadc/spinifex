@@ -29,7 +29,7 @@ type Reaper interface {
 	Sweep(ctx context.Context) (reaped int, err error)
 }
 
-// GarbageCollector is the shared reconciler GC backstop (ADR-0003 §3): the
+// GarbageCollector is the shared reconciler GC backstop (historic PROP-LIFECYCLE-003 §3): the
 // inverse of Restore. It runs every registered Reaper on startup and on a
 // periodic tick, gated on KV health so it never reaps against a desired-state
 // it cannot trust. ClusterWide reapers run only on the elected leader;
@@ -81,7 +81,7 @@ func (g *GarbageCollector) Start(ctx context.Context) {
 func (g *GarbageCollector) SweepOnce(ctx context.Context) {
 	if g.kvHealthy != nil && !g.kvHealthy() {
 		// Hold, do not reap: an unreadable/partial desired-state cannot be
-		// trusted to declare any actual resource an orphan (ADR-0003 §3).
+		// trusted to declare any actual resource an orphan (historic PROP-LIFECYCLE-003 §3).
 		slog.Warn("vm/gc: KV unhealthy, holding sweep (will not reap against untrusted desired-state)")
 		return
 	}

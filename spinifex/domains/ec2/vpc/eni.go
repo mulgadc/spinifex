@@ -239,7 +239,7 @@ func (s *VPCServiceImpl) DeleteNetworkInterface(ctx context.Context, input *ec2.
 
 // ForceDeleteInstanceENI deletes an instance's own ENI, bypassing the in-use
 // guard. The guard protects against deleting an ENI a *different* live instance
-// holds; an instance tearing down its own ENI is always permitted (ADR-0003 §2),
+// holds; an instance tearing down its own ENI is always permitted (historic PROP-LIFECYCLE-003 §2),
 // which breaks the un-terminable-ENI deadlock. Absent is success (idempotent).
 func (s *VPCServiceImpl) ForceDeleteInstanceENI(ctx context.Context, accountID, eniId string) error {
 	if eniId == "" {
@@ -257,7 +257,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			// Internal teardown (force) tolerates an already-gone ENI so
-			// instance terminate converges (ADR-0003 §2); the public API is
+			// instance terminate converges (historic PROP-LIFECYCLE-003 §2); the public API is
 			// AWS-faithful and returns NotFound.
 			if force {
 				return &ec2.DeleteNetworkInterfaceOutput{}, nil
@@ -274,7 +274,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 
 	// Cannot delete an ENI that is a live attachment unless the owning
 	// instance forces teardown. An ENI whose instance is gone is detached by
-	// terminate (0003 §2) and falls through as deletable.
+	// terminate (historic PROP-LIFECYCLE-003 §2) and falls through as deletable.
 	if !force && eniIsLiveAttachment(&record) {
 		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
 	}

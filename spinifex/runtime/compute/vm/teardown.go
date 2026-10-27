@@ -3,7 +3,7 @@ package vm
 // TeardownState is the per-dependent teardown progress recorded on a VM's KV
 // record during terminate. A record is fully reapable only once every tracked
 // dependent is TeardownDone; pending/failed entries are completed by the GC
-// backstop (ADR-0003 §1).
+// backstop (ADR-0003:S2).
 type TeardownState string
 
 const (

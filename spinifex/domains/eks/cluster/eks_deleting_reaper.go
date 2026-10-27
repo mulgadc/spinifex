@@ -17,7 +17,7 @@ import (
 // teardown (failed first attempt with no client retry) is re-driven. Var for tests.
 var deletingReapMinAge = 90 * time.Second
 
-// EKSDeletingReaper is the ADR-0004 tracked-async-teardown backstop. A
+// EKSDeletingReaper is the ADR-0003:S2 tracked-async-teardown backstop. A
 // DeleteCluster whose synchronous teardown fails leaves the cluster in DELETING
 // with its billable infra (NAT-GW EIP, NLB, CP VPC) still allocated and nothing
 // to re-drive it: the per-cluster reconciler exits on DELETING and the billable

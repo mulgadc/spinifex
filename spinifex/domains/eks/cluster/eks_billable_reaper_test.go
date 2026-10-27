@@ -33,7 +33,7 @@ func cpVM(id, eniID string) *vm.VM {
 	return &vm.VM{ID: id, ManagedBy: tags.ManagedByEKS, ENIId: eniID, AccountID: reaperSysAccount, LastNode: "node-1"}
 }
 
-// TestRLC5_EKSBillableReaperTerminatesOrphanCPVM exercises ADR-0003:S2 (behaviour; mechanism from historic PROP-LIFECYCLE-006 §5)'s
+// TestRLC5_EKSBillableReaperTerminatesOrphanCPVM exercises the historic PROP-LIFECYCLE-006 §5 (behaviour per ADR-0003:S2)
 // meta-independent billable cleanup: a running EKS control-plane VM whose
 // cluster meta is DEFINITIVELY GONE is a billable orphan and must be terminated
 // by the GC backstop — the real fix for the orphan CP VM surviving a

@@ -27,7 +27,7 @@ func TestRLC1_EKSDeleteClusterIdempotentOnAbsent(t *testing.T) {
 	assert.Empty(t, f.inst.terminateCalls, "an absent cluster must trigger no billable teardown")
 }
 
-// TestRLC2_EKSBillableTeardownBeforeKVSweep exercises ADR-0003:S2 (behaviour; mechanism from historic PROP-LIFECYCLE-006 §6)'s billable-before-
+// TestRLC2_EKSBillableTeardownBeforeKVSweep exercises the historic PROP-LIFECYCLE-006 §6 (behaviour per ADR-0003:S2) billable-before-
 // sweep ordering: the KV sweep (DeleteClusterPrefix) must NOT run while any
 // billable teardown (OIDC / NLB / VM / EIP) returned an error. A failed VM
 // terminate must leave the cluster meta in DELETING — its resource ARNs/IDs
@@ -43,11 +43,11 @@ func TestRLC2_EKSBillableTeardownBeforeKVSweep(t *testing.T) {
 
 	require.Len(t, f.inst.terminateCalls, 1, "the VM teardown must have been attempted")
 	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
-	require.NoErrorf(t, getErr, "ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-006 §6 mechanism billable-before-sweep: the KV sweep must NOT run while a billable teardown is failing — the meta must survive for retry")
+	require.NoErrorf(t, getErr, "ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-006 §6 mechanism, billable-before-sweep: the KV sweep must NOT run while a billable teardown is failing — the meta must survive for retry")
 	assert.Equal(t, ClusterStatusDeleting, meta.Status, "a cluster with failed teardown must stay DELETING")
 }
 
-// TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete exercises ADR-0003:S2 (behaviour; mechanism from historic PROP-LIFECYCLE-006 §6)'s NLB
+// TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete exercises the historic PROP-LIFECYCLE-006 §6 (behaviour per ADR-0003:S2) NLB
 // no-orphan (riding historic PROP-LIFECYCLE-002 cascade composition): after a
 // successful DeleteCluster, the eks-{cluster}-cp target group must be gone — an
 // orphaned EKS NLB target group would pin itself as ResourceInUse exactly as a
@@ -73,5 +73,5 @@ func TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete(t *testing.T) {
 	_, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
 	require.ErrorIs(t, getErr, ErrClusterNotFound, "a fully torn-down cluster must be swept")
 	assert.NotContainsf(t, f.nlb.tgByName, tgName,
-		"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-006 §6 mechanism NLB no-orphan: the eks-{cluster}-cp target group must not survive DeleteCluster (rides historic PROP-LIFECYCLE-002 / mulga-siv-172)")
+		"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-006 §6 mechanism, NLB no-orphan: the eks-{cluster}-cp target group must not survive DeleteCluster (rides historic PROP-LIFECYCLE-002 / mulga-siv-172)")
 }

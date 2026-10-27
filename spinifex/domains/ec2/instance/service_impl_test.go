@@ -2004,7 +2004,7 @@ func TestTerminateStoppedInstance_StampsTeardownVolumesDone(t *testing.T) {
 
 	require.NotNil(t, store.WroteTerminated[id])
 	assert.Equal(t, string(vm.TeardownDone), store.WroteTerminated[id].Teardown[vm.TeardownVolumes],
-		"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism semantics: a successful volume delete must stamp Teardown[volumes]=done")
+		"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism, semantics: a successful volume delete must stamp Teardown[volumes]=done")
 	assert.Equal(t, []string{"vol-root-001"}, vd.deleted, "the still-attached root volume must actually be deleted")
 }
 

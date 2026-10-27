@@ -13,7 +13,7 @@ import (
 // 1(b): once the owning instance is definitively terminated (this node's
 // leaked set), the reaper reconciles ONLY the attachment record — via
 // UpdateVolumeState to available/detached — never the volume data. This
-// unblocks an explicit operator DeleteVolume without weakening ADR-0003:S2 (behaviour; mechanism from historic PROP-LIFECYCLE-005 §3)'s
+// unblocks an explicit operator DeleteVolume without weakening the historic PROP-LIFECYCLE-005 §3 (behaviour per ADR-0003:S2)
 // mark-and-alarm, never-delete contract (TestRLC5).
 func TestVolumeLeakReaper_ReconcilesAttachmentNeverDeletesData(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()

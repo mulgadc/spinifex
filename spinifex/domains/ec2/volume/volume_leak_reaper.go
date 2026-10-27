@@ -15,7 +15,7 @@ const (
 	orphanInstanceTagKey = "spinifex:orphaned-instance"
 )
 
-// VolumeLeakReaper is ADR-0003:S2 (behaviour; mechanism from historic PROP-LIFECYCLE-005 §3)'s data-safety GC override. The shared GC backstop
+// VolumeLeakReaper is the data-safety GC override from historic PROP-LIFECYCLE-005 §3 (behaviour per ADR-0003:S2). The shared GC backstop
 // reaps actual−desired for every other resource class; for volumes that default
 // is forbidden. This reaper finds a volume left attached to an instance that is
 // definitively gone and MARKS it orphaned + ALARMS — it never issues a delete.

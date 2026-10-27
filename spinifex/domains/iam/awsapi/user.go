@@ -2,10 +2,13 @@ package awsapi
 
 import (
 	"errors"
+	"log/slog"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -18,13 +21,33 @@ func CreateUser(accountID string, input *iam.CreateUserInput, svc iamdomain.IAMS
 	return svc.CreateUser(accountID, input)
 }
 
-// GetUser implements the IAM GetUser action. UserName is required (MissingParameter); the AWS
-// default of describing the calling user is not supported.
+// GetUser implements the IAM GetUser action. The gateway defaults an absent UserName to the
+// calling user before authorization, so one still absent here is MissingParameter.
 func GetUser(accountID string, input *iam.GetUserInput, svc iamdomain.IAMService) (*iam.GetUserOutput, error) {
 	if input.UserName == nil || *input.UserName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 	return svc.GetUser(accountID, input)
+}
+
+// GetRootUser answers GetUser without UserName for root as AWS does: the account ID as UserId,
+// the root ARN and the account's creation date, with no UserName or Path.
+func GetRootUser(accountID string, svc iamdomain.IAMService) (*iam.GetUserOutput, error) {
+	account, err := svc.GetAccount(accountID)
+	if err != nil {
+		slog.Error("GetUser: account lookup for root caller failed", "account_id", accountID, "err", err)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+	created, err := time.Parse(time.RFC3339, account.CreatedAt)
+	if err != nil {
+		slog.Error("GetUser: account creation date unparseable", "account_id", accountID, "created_at", account.CreatedAt, "err", err)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+	return &iam.GetUserOutput{User: &iam.User{
+		UserId:     aws.String(accountID),
+		Arn:        aws.String(arn.FormatIAMRoot(accountID)),
+		CreateDate: aws.Time(created),
+	}}, nil
 }
 
 // ListUsers implements the IAM ListUsers action, listing the account's users. It validates

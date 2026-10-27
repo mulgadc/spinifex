@@ -300,6 +300,27 @@ expected_nodes = 3
 
 // Tests for HasService / GetServices
 
+func TestSplitNameserverService(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in    []string
+		rest  []string
+		named bool
+	}{
+		"absent":                    {[]string{"nats", "daemon"}, []string{"nats", "daemon"}, false},
+		"alone keeps every service": {[]string{"northstar"}, nil, true},
+		"among others":              {[]string{"nats", " Northstar ", "daemon"}, []string{"nats", "daemon"}, true},
+		"empty":                     {nil, nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rest, named := SplitNameserverService(tc.in)
+			assert.Equal(t, tc.rest, rest)
+			assert.Equal(t, tc.named, named)
+		})
+	}
+	rest, _ := SplitNameserverService([]string{"northstar"})
+	assert.Equal(t, AllServices, Config{Services: rest}.GetServices(), "northstar alone must not narrow the node's services")
+}
+
 func TestHasService(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1421,6 +1442,46 @@ exoscale_instance_id = "0f1e2d3c-0000-4000-8000-000000000001"
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := loadOCIPool(t, tc.mode, tc.body)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestLoadConfig_NorthstarNameservers(t *testing.T) {
+	load := func(t *testing.T, block string) (*ClusterConfig, error) {
+		t.Helper()
+		resetViper(t)
+		path := filepath.Join(t.TempDir(), "spinifex.toml")
+		body := "node = \"n1\"\n\n" + block + "\n[nodes.n1]\nregion = \"us-east-1\"\n\n[nodes.n2]\nregion = \"us-east-1\"\n"
+		require.NoError(t, os.WriteFile(path, []byte(body), 0600))
+		return LoadConfig(path)
+	}
+
+	t.Run("absent block means automatic", func(t *testing.T) {
+		cfg, err := load(t, "")
+		require.NoError(t, err)
+		assert.Zero(t, cfg.Northstar.NameserverCount)
+		assert.Empty(t, cfg.Northstar.NameserverNodes)
+	})
+
+	t.Run("count and pin load", func(t *testing.T) {
+		cfg, err := load(t, "[northstar]\nnameserver_count = 2\nnameserver_nodes = [\"n2\", \"n1\"]\n")
+		require.NoError(t, err)
+		assert.Equal(t, 2, cfg.Northstar.NameserverCount)
+		assert.Equal(t, []string{"n2", "n1"}, cfg.Northstar.NameserverNodes)
+	})
+
+	for name, tc := range map[string]struct{ block, want string }{
+		"count above the cap":       {"[northstar]\nnameserver_count = 5\n", "nameserver_count=5"},
+		"negative count":            {"[northstar]\nnameserver_count = -1\n", "nameserver_count=-1"},
+		"pin longer than count":     {"[northstar]\nnameserver_count = 1\nnameserver_nodes = [\"n1\", \"n2\"]\n", "nameserver_count is 1"},
+		"pin names an unknown node": {"[northstar]\nnameserver_nodes = [\"n9\"]\n", `"n9"`},
+		"pin repeats a node":        {"[northstar]\nnameserver_nodes = [\"n1\", \"n1\"]\n", "twice"},
+		"pin above the cap":         {"[northstar]\nnameserver_nodes = [\"n1\", \"n2\", \"n3\", \"n4\", \"n5\"]\n", "at most 4"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := load(t, tc.block)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
 		})

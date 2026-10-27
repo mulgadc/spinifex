@@ -21,6 +21,7 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
@@ -169,7 +170,7 @@ func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...disp
 	}
 
 	r := chi.NewRouter()
-	r.Use(requestAuditMiddleware)
+	r.Use(audit.Middleware)
 	r.Use(gw.SigV4AuthMiddleware())
 	r.Use(traceActionEnricher)
 	r.HandleFunc("/*", gw.Request)
@@ -215,17 +216,17 @@ func TestDispatchSeam_ResolvedActionReachesThrottleTraceAndAudit(t *testing.T) {
 	gw, _ := dispatchSeamApp(t, allowAllECRDocs(), fakeJSONRegistration(capt))
 
 	var gotCtxAction string
-	var gotAudit *requestAudit
+	var gotAudit *audit.Record
 	r := chi.NewRouter()
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))
-	r.Use(requestAuditMiddleware)
+	r.Use(audit.Middleware)
 	r.Use(gw.SigV4AuthMiddleware())
 	r.Use(traceActionEnricher)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotCtxAction, _ = r.Context().Value(ctxAction).(string)
 			next.ServeHTTP(w, r)
-			gotAudit = auditFrom(r.Context())
+			gotAudit = audit.From(r.Context())
 		})
 	})
 	r.HandleFunc("/*", gw.Request)
@@ -246,7 +247,7 @@ func TestDispatchSeam_ResolvedActionReachesThrottleTraceAndAudit(t *testing.T) {
 	assert.Equal(t, fakeJSONService, got["aws.service"])
 
 	require.NotNil(t, gotAudit)
-	assert.Equal(t, fakeAction, gotAudit.action)
+	assert.Equal(t, fakeAction, auditField(gotAudit, "action"))
 }
 
 // --- c. Authorize denies or allows ------------------------------------------
@@ -385,7 +386,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "route53", time.Now().UTC())
+	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "sqs", time.Now().UTC())
 
 	resp := doRequest(r, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -400,7 +401,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 	}
 	require.NoError(t, xml.Unmarshal(body, &parsed))
 	assert.Equal(t, awserrors.ErrorInvalidAction, parsed.Error.Code)
-	assert.Contains(t, parsed.Error.Message, "route53")
+	assert.Contains(t, parsed.Error.Message, "sqs")
 }
 
 // --- h. ValidateServices overlap guard --------------------------------------

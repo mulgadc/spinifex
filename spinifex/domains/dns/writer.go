@@ -19,14 +19,18 @@ import (
 // of zone TOML files in s3://northstar/ using the system predastore credentials.
 // Only the reconcile's elected node calls it, so a zone has one writer at a time.
 type Writer struct {
-	enabled      bool
-	s3cfg        *nsconfig.S3Config
-	baseDomain   string
-	nameservers  []nsconfig.NameserverSeed
-	ttl          uint32
-	nc           *nats.Conn
-	quotaEnabled bool
-	quotas       Quotas
+	enabled    bool
+	s3cfg      *nsconfig.S3Config
+	baseDomain string
+	// internalDomain is the private zone and servicesDomain the service-endpoint
+	// zone, for refusing reserved delegations.
+	internalDomain string
+	servicesDomain string
+	nameservers    []nsconfig.NameserverSeed
+	ttl            uint32
+	nc             *nats.Conn
+	quotaEnabled   bool
+	quotas         Quotas
 }
 
 // NewWriter resolves the northstar S3 endpoint/bucket from the node's
@@ -45,6 +49,8 @@ func NewWriter(cfg *config.Config, cluster *config.ClusterConfig, nc *nats.Conn)
 	w.enabled = true
 	w.s3cfg = zoneCfg.s3
 	w.baseDomain = strings.TrimSpace(zoneCfg.server.DefaultDomain)
+	w.internalDomain = ResolveInternalDomain(cfg)
+	w.servicesDomain = localCluster(cluster, cfg).AWS.ServicesDomain
 	// Share the bootstrap's derivation so a zone this writer materialises carries
 	// the same NS topology as one the bootstrap seeds; whichever wins the race,
 	// the zone is correct.

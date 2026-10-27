@@ -67,3 +67,13 @@ type ChangeResult struct {
 type ZoneReload struct {
 	Zone string `json:"zone"`
 }
+
+// ZoneReloadAck is one northstar server's reply to a ZoneReload sent with a
+// reply subject. ETag is the version of the zone it now serves, "" when the
+// zone is absent; Error is set when the reload failed.
+type ZoneReloadAck struct {
+	Zone  string `json:"zone"`
+	Node  string `json:"node"`
+	ETag  string `json:"etag,omitempty"`
+	Error string `json:"error,omitempty"`
+}

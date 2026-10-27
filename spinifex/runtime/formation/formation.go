@@ -14,11 +14,13 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 )
 
 // NodeInfo describes a node participating in cluster formation.
@@ -34,6 +36,8 @@ type NodeInfo struct {
 	AZ          string   `json:"az"`
 	Port        int      `json:"port"`
 	Services    []string `json:"services,omitempty"`
+	// Nameserver asks for this node to be one of the published nameservers.
+	Nameserver bool `json:"nameserver,omitempty"`
 }
 
 // PredastoreNodeConfig identifies one formed node in the generated Predastore
@@ -209,6 +213,19 @@ func (fs *FormationServer) RegisterNode(info NodeInfo) error {
 	for _, n := range fs.nodes {
 		if n.BindIP == info.BindIP {
 			return fmt.Errorf("bind IP %s already registered by node %q", info.BindIP, n.Name)
+		}
+	}
+
+	if info.Nameserver {
+		var pinned []string
+		for _, n := range fs.nodes {
+			if n.Nameserver {
+				pinned = append(pinned, n.Name)
+			}
+		}
+		if len(pinned) >= config.MaxNameservers {
+			slices.Sort(pinned)
+			return fmt.Errorf("node %q asks to be a nameserver, but %s already are and at most %d are published; join it without northstar in --services", info.Name, strings.Join(pinned, ", "), config.MaxNameservers)
 		}
 	}
 

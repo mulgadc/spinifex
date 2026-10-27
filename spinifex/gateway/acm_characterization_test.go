@@ -19,6 +19,7 @@ import (
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -298,18 +299,18 @@ func TestACMPipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T) {
 
 // TestACMPipeline_RequestAudit_RecordsResolvedAction pins that the audit
 // record's action field carries the resolved ACM action once a real request
-// runs through requestAuditMiddleware, SigV4AuthMiddleware and Request.
+// runs through audit.Middleware, SigV4AuthMiddleware and Request.
 func TestACMPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 	gw, _ := acmPipelineApp(t, allowAllACMDocs())
 	subscribeACMCounter(t, gw.NATSConn, "acm.ListCertificates", []byte(`{}`))
 
-	var got *requestAudit
+	var got *audit.Record
 	r := chi.NewRouter()
-	r.Use(requestAuditMiddleware)
+	r.Use(audit.Middleware)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			next.ServeHTTP(w, r)
-			got = auditFrom(r.Context())
+			got = audit.From(r.Context())
 		})
 	})
 	r.Use(gw.SigV4AuthMiddleware())
@@ -319,7 +320,7 @@ func TestACMPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 	doRequest(r, signACMRequest(t, target, []byte("{}")))
 
 	require.NotNil(t, got)
-	assert.Equal(t, "ListCertificates", got.action)
+	assert.Equal(t, "ListCertificates", auditField(got, "action"))
 }
 
 // --- Inventory pin ----------------------------------------------------------

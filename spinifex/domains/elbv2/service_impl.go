@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1922,6 +1923,17 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 		vpcID = *input.VpcId
 	}
 
+	// AWS rejects a VPC the caller does not own with ValidationError.
+	if vpcID != "" && s.VPCService != nil {
+		if _, err := s.VPCService.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, accountID); err != nil {
+			if awserrors.IsNotFound(err) {
+				return nil, errors.New(awserrors.ErrorValidationError)
+			}
+			slog.ErrorContext(ctx, "CreateTargetGroup: failed to look up VPC", "vpcId", vpcID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+
 	// Check duplicate name within VPC
 	existing, err := s.store.GetTargetGroupByName(ctx, name, vpcID)
 	if err != nil {
@@ -1939,6 +1951,15 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 	if targetType != TargetTypeInstance && targetType != TargetTypeIP {
 		slog.WarnContext(ctx, "CreateTargetGroup: unsupported target type", "targetType", targetType)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	// Only IPv4 targets are supported; ipv6 is a valid AWS value we cannot serve.
+	switch aws.StringValue(input.IpAddressType) {
+	case "", IPAddressTypeIPv4:
+	case "ipv6":
+		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
+	default:
+		return nil, errors.New(awserrors.ErrorValidationError)
 	}
 
 	// Use NLB health check defaults for NLB protocols.
@@ -2011,13 +2032,20 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 	slog.InfoContext(ctx, "CreateTargetGroup completed", "name", name, "tgArn", tgArn, "accountID", accountID)
 
 	return &elbv2.CreateTargetGroupOutput{
-		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(record)},
+		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(record, nil)},
 	}, nil
 }
 
 func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	// Resolved before the write, so a lookup failure cannot report a saved change as failed.
+	tgLBs, err := s.targetGroupLoadBalancers(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "ModifyTargetGroup: failed to resolve load balancers", "arn", *input.TargetGroupArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Under CAS, so a health-check change and a concurrent target registration
@@ -2070,7 +2098,7 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.M
 	slog.InfoContext(ctx, "ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
 
 	return &elbv2.ModifyTargetGroupOutput{
-		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(tg)},
+		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(tg, tgLBs[tg.TargetGroupArn])},
 	}, nil
 }
 
@@ -2153,6 +2181,12 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	tgLBs, err := s.targetGroupLoadBalancers(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "DescribeTargetGroups: failed to resolve load balancers", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	arnFilter := make(map[string]bool)
 	for _, arn := range input.TargetGroupArns {
 		if arn != nil {
@@ -2177,28 +2211,61 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 		if len(nameFilter) > 0 && !nameFilter[tg.Name] {
 			continue
 		}
-		// Filter by LB ARN if specified
-		if input.LoadBalancerArn != nil && *input.LoadBalancerArn != "" {
-			// Check if any listener on this LB references this TG
-			listeners, _ := s.store.ListListenersByLB(ctx, *input.LoadBalancerArn)
-			found := false
-			for _, l := range listeners {
-				for _, a := range l.DefaultActions {
-					if a.TargetGroupArn == tg.TargetGroupArn {
-						found = true
-					}
-				}
-			}
-			if !found {
-				continue
-			}
+		if lbArn := aws.StringValue(input.LoadBalancerArn); lbArn != "" && !slices.Contains(tgLBs[tg.TargetGroupArn], lbArn) {
+			continue
 		}
-		result = append(result, s.tgRecordToSDK(tg))
+		result = append(result, s.tgRecordToSDK(tg, tgLBs[tg.TargetGroupArn]))
+	}
+
+	// AWS fails the whole call when any requested ARN or name is unknown.
+	if len(arnFilter) > 0 || len(nameFilter) > 0 {
+		for _, tg := range result {
+			delete(arnFilter, aws.StringValue(tg.TargetGroupArn))
+			delete(nameFilter, aws.StringValue(tg.TargetGroupName))
+		}
+		if len(arnFilter) > 0 || len(nameFilter) > 0 {
+			return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+		}
+	}
+
+	slices.SortFunc(result, func(a, b *elbv2.TargetGroup) int {
+		return strings.Compare(aws.StringValue(a.TargetGroupName), aws.StringValue(b.TargetGroupName))
+	})
+	page, nextMarker, err := pageTargetGroups(result, input.Marker, input.PageSize)
+	if err != nil {
+		return nil, err
 	}
 
 	return &elbv2.DescribeTargetGroupsOutput{
-		TargetGroups: result,
+		TargetGroups: page,
+		NextMarker:   nextMarker,
 	}, nil
+}
+
+// pageTargetGroups slices one page out of the sorted result. The marker is an
+// opaque offset and AWS allows a PageSize of 1 to 400; without one the whole
+// result is returned so internal callers that never page see every group.
+func pageTargetGroups(items []*elbv2.TargetGroup, marker *string, pageSize *int64) ([]*elbv2.TargetGroup, *string, error) {
+	start := 0
+	if aws.StringValue(marker) != "" {
+		n, err := strconv.Atoi(*marker)
+		if err != nil || n < 0 {
+			return nil, nil, errors.New(awserrors.ErrorValidationError)
+		}
+		start = min(n, len(items))
+	}
+	size := len(items)
+	if pageSize != nil {
+		if *pageSize < 1 || *pageSize > 400 {
+			return nil, nil, errors.New(awserrors.ErrorValidationError)
+		}
+		size = int(*pageSize)
+	}
+	end := start + size
+	if end >= len(items) {
+		return items[start:], nil, nil
+	}
+	return items[start:end], aws.String(strconv.Itoa(end)), nil
 }
 
 // --- Target registration ---
@@ -3230,10 +3297,65 @@ func (s *ELBv2ServiceImpl) lbRecordToSDK(ctx context.Context, r *LoadBalancerRec
 	return lb
 }
 
-func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord) *elbv2.TargetGroup {
+// targetGroupLoadBalancers maps each target group ARN to the live load
+// balancers whose listener default actions or rules forward to it.
+func (s *ELBv2ServiceImpl) targetGroupLoadBalancers(ctx context.Context) (map[string][]string, error) {
+	lbs, err := s.store.ListLoadBalancers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	liveLB := make(map[string]bool, len(lbs))
+	for _, lb := range lbs {
+		liveLB[lb.LoadBalancerArn] = true
+	}
+	listeners, err := s.store.ListListeners(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := s.store.ListRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string][]string)
+	seen := make(map[[2]string]bool)
+	add := func(tgArn, lbArn string) {
+		key := [2]string{tgArn, lbArn}
+		if tgArn == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		result[tgArn] = append(result[tgArn], lbArn)
+	}
+
+	listenerLB := make(map[string]string, len(listeners))
+	for _, l := range listeners {
+		if !liveLB[l.LoadBalancerArn] {
+			continue
+		}
+		listenerLB[l.ListenerArn] = l.LoadBalancerArn
+		for _, a := range l.DefaultActions {
+			add(a.TargetGroupArn, l.LoadBalancerArn)
+		}
+	}
+	for _, r := range rules {
+		lbArn, ok := listenerLB[r.ListenerArn]
+		if !ok {
+			continue
+		}
+		for _, a := range r.Actions {
+			add(a.TargetGroupArn, lbArn)
+		}
+	}
+	return result, nil
+}
+
+func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord, lbArns []string) *elbv2.TargetGroup {
 	tg := &elbv2.TargetGroup{
 		TargetGroupArn:             aws.String(r.TargetGroupArn),
 		TargetGroupName:            aws.String(r.Name),
+		IpAddressType:              aws.String(IPAddressTypeIPv4),
+		LoadBalancerArns:           aws.StringSlice(lbArns),
 		Protocol:                   aws.String(r.Protocol),
 		Port:                       aws.Int64(r.Port),
 		VpcId:                      aws.String(r.VpcId),

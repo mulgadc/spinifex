@@ -18,7 +18,7 @@ describe("resolveSSHLogin", () => {
     ["ami-oracle-10.1-x86_64", "cloud-user", "oracle"],
     ["ami-oracle-9.8-arm64", "cloud-user", "oracle"],
     ["ami-rocky-10-x86_64", "rocky", "rocky"],
-    ["ami-alpine-3.24.1-x86_64", "alpine", "alpine"],
+    ["ami-alpine-3.24.3-x86_64", "alpine", "alpine"],
   ])("maps %s to %s", (name, user, distro) => {
     expect(resolveSSHLogin({ Name: name })).toStrictEqual({ user, distro })
   })

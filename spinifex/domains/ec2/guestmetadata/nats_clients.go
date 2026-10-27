@@ -21,9 +21,6 @@ const (
 
 	// profileCacheTTL memoises profile/role lookups to avoid per-request NATS round-trips.
 	profileCacheTTL = 5 * time.Minute
-
-	// pubKeyCacheTTL memoises SSH public-key material (immutable for a key's lifetime).
-	pubKeyCacheTTL = 5 * time.Minute
 )
 
 // NATSSTSAssumer is the NATS-backed stsAssumer for minting instance-role credentials.
@@ -97,35 +94,27 @@ func (p *NATSProfileLookup) GetRole(ctx context.Context, accountID string, input
 	return out, nil
 }
 
-// NATSPublicKeyLookup is the NATS-backed publicKeyLookup with a success-only TTL cache.
+// NATSPublicKeyLookup is the NATS-backed publicKeyLookup. It does not cache:
+// a key name can be deleted and re-imported with new material at any time.
 type NATSPublicKeyLookup struct {
-	nc    *nats.Conn
-	cache *ttlCache[string]
+	nc *nats.Conn
 }
 
 var _ publicKeyLookup = (*NATSPublicKeyLookup)(nil)
 
 // NewNATSPublicKeyLookup constructs a NATSPublicKeyLookup over nc.
 func NewNATSPublicKeyLookup(nc *nats.Conn) *NATSPublicKeyLookup {
-	return &NATSPublicKeyLookup{
-		nc:    nc,
-		cache: newTTLCache[string](pubKeyCacheTTL),
-	}
+	return &NATSPublicKeyLookup{nc: nc}
 }
 
 func (p *NATSPublicKeyLookup) GetPublicKey(ctx context.Context, accountID, keyName string) (string, error) {
-	key := accountID + "\x00" + keyName
-	if v, ok := p.cache.get(key); ok {
-		return v, nil
-	}
 	out, err := natsmsg.NATSRequest[ec2key.GetPublicKeyResponse](ctx, p.nc, "imds.ec2.get_public_key", ec2key.GetPublicKeyRequest{
 		AccountID: accountID,
 		KeyName:   keyName,
 	}, imdsRPCTimeout, accountID)
 	if err != nil {
-		return "", err // errors not cached: transient miss must not pin key as absent
+		return "", err
 	}
-	p.cache.put(key, out.OpenSSHKey)
 	return out.OpenSSHKey, nil
 }
 

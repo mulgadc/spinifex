@@ -108,3 +108,16 @@ func sortedNodes(nodes map[string]NodeInfo) []NodeInfo {
 	}
 	return sorted
 }
+
+// NameserverNodes returns the nodes that asked to be published nameservers, in
+// name order so every node renders the same pins.
+func NameserverNodes(nodes map[string]NodeInfo) []string {
+	var names []string
+	for name, n := range nodes {
+		if n.Nameserver {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}

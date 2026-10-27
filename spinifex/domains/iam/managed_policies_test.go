@@ -159,3 +159,31 @@ func TestResolveAttachedPolicy_UnmodeledRDSManagedARNGrantsNothing(t *testing.T)
 		assert.Empty(t, doc.Statement)
 	}
 }
+
+// Terraform users commonly carry only a Route 53 managed policy, so both must
+// resolve, and the read-only one must not reach a mutation.
+func TestRoute53ManagedShims(t *testing.T) {
+	t.Parallel()
+	full, ok := builtinManagedPolicyDoc("arn:aws:iam::aws:policy/AmazonRoute53FullAccess")
+	require.True(t, ok)
+	readOnly, ok := builtinManagedPolicyDoc("arn:aws:iam::aws:policy/AmazonRoute53ReadOnlyAccess")
+	require.True(t, ok)
+
+	reads := []string{"route53:GetHostedZone", "route53:ListHostedZones", "route53:ListResourceRecordSets",
+		"route53:GetChange", "route53:ListTagsForResource", "route53:GetHostedZoneActivation"}
+	// VerifyHostedZoneDelegation can activate a zone, so a read grant must not reach it.
+	writes := []string{"route53:CreateHostedZone", "route53:DeleteHostedZone",
+		"route53:ChangeResourceRecordSets", "route53:ChangeTagsForResource", "route53:VerifyHostedZoneDelegation"}
+	for _, action := range append(append([]string{}, reads...), writes...) {
+		assert.Equal(t, iampolicy.Allow, iampolicy.EvaluateWithKeys(action, "*", []PolicyDocument{full}, nil),
+			"AmazonRoute53FullAccess must grant %s", action)
+	}
+	for _, action := range reads {
+		assert.Equal(t, iampolicy.Allow, iampolicy.EvaluateWithKeys(action, "*", []PolicyDocument{readOnly}, nil),
+			"AmazonRoute53ReadOnlyAccess must grant %s", action)
+	}
+	for _, action := range writes {
+		assert.Equal(t, iampolicy.Deny, iampolicy.EvaluateWithKeys(action, "*", []PolicyDocument{readOnly}, nil),
+			"AmazonRoute53ReadOnlyAccess must not grant %s", action)
+	}
+}

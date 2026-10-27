@@ -254,24 +254,17 @@ func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput
 		return nil, err
 	}
 
-	role, err := s.getRole(ctx, accountID, roleName)
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
+		if input.Description != nil {
+			role.Description = *input.Description
+		}
+		if input.MaxSessionDuration != nil {
+			role.MaxSessionDuration = *input.MaxSessionDuration
+		}
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if input.Description != nil {
-		role.Description = *input.Description
-	}
-	if input.MaxSessionDuration != nil {
-		role.MaxSessionDuration = *input.MaxSessionDuration
-	}
-
-	data, err := json.Marshal(role)
-	if err != nil {
-		return nil, fmt.Errorf("marshal role: %w", err)
-	}
-	if _, err := s.rolesBucket.Put(ctx, accountID+"."+roleName, data); err != nil {
-		return nil, fmt.Errorf("update role: %w", err)
 	}
 
 	slog.Info("IAM role updated", "accountID", accountID, "roleName", roleName)
@@ -287,19 +280,14 @@ func (s *IAMServiceImpl) UpdateRoleDescription(accountID string, input *iam.Upda
 		return nil, err
 	}
 
-	role, err := s.getRole(ctx, accountID, roleName)
+	var role *Role
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(r *Role) (bool, error) {
+		r.Description = *input.Description
+		role = r
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	role.Description = *input.Description
-
-	data, err := json.Marshal(role)
-	if err != nil {
-		return nil, fmt.Errorf("marshal role: %w", err)
-	}
-	if _, err := s.rolesBucket.Put(ctx, accountID+"."+roleName, data); err != nil {
-		return nil, fmt.Errorf("update role description: %w", err)
 	}
 
 	slog.Info("IAM role description updated", "accountID", accountID, "roleName", roleName)
@@ -315,19 +303,12 @@ func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.Upd
 			"trust policy for role %q: %w", roleName, err)
 	}
 
-	role, err := s.getRole(ctx, accountID, roleName)
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
+		role.AssumeRolePolicyDocument = *input.PolicyDocument
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	role.AssumeRolePolicyDocument = *input.PolicyDocument
-
-	data, err := json.Marshal(role)
-	if err != nil {
-		return nil, fmt.Errorf("marshal role: %w", err)
-	}
-	if _, err := s.rolesBucket.Put(ctx, accountID+"."+roleName, data); err != nil {
-		return nil, fmt.Errorf("update role trust policy: %w", err)
 	}
 
 	slog.Info("IAM role trust policy updated", "accountID", accountID, "roleName", roleName)

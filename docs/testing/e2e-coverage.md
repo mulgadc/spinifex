@@ -6,8 +6,8 @@ Suites live in `tests/e2e/<name>/` and build to `tests/e2e/_bin/<name>.test`. Ev
 
 | Set | Suites |
 | --- | --- |
-| `E2E_SUITES_SINGLE` | `single iam cert eks ecs storagegrowth partialblock rds quota storagefault` |
-| `E2E_SUITES_MULTI` | `multinode lb cert quota kvquorum lbrecovery instancerecovery storagefault` |
+| `E2E_SUITES_SINGLE` | `single iam cert eks ecs storagegrowth partialblock rds quota route53 storagefault` |
+| `E2E_SUITES_MULTI` | `multinode lb cert quota route53 kvquorum lbrecovery instancerecovery storagefault` |
 | `E2E_SUITES_NIGHTLY_SINGLE` | `single cert iam` |
 | `E2E_SUITES_NIGHTLY_MULTI` | `multinode cert lb` |
 
@@ -123,6 +123,7 @@ The create/describe/connect path against a live cluster: a DB VM that actually b
 ### Other
 
 - **`quota`** — every enforced dimension refuses with the same `quotaExceeded` code; a launch is charged for every instance it asks for; one instance wider than the cap is refused.
+- **`route53`** — hosted zones as northstar serves them, on every node. `TestNorthstarServesZonesBeyondFirstListPage` writes 1,100 zone objects (more than one `ListObjectsV2` page), requires the last one to resolve on every node and the platform base zone to survive the sync, then requires the deleted zones to stop resolving.
 - **`gpu`** — device visible in the guest, driver access, launch.
 - **`bedrock`** — `ListFoundationModels`/`GetFoundationModel` against a running cluster. Wire-format parity is unit-tested, not here.
 - **`ddil`** — Denied, Disrupted, Intermittent, Limited network scenarios.

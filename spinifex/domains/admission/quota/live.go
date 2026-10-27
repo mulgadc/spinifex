@@ -9,9 +9,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
 	"github.com/nats-io/nats.go"
 )
 
@@ -85,7 +85,7 @@ func (s *Service) EnforceLoadBalancers(ctx context.Context, natsConn *nats.Conn,
 	if s.Exempt(accountID) {
 		return nil
 	}
-	out, err := gateway_elbv2.DescribeLoadBalancers(ctx, &elbv2.DescribeLoadBalancersInput{}, natsConn, accountID)
+	out, err := elbv2awsapi.DescribeLoadBalancers(ctx, &elbv2.DescribeLoadBalancersInput{}, natsConn, accountID)
 	if err != nil {
 		return err
 	}

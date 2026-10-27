@@ -163,3 +163,20 @@ func TestTaskDefReservedGPU(t *testing.T) {
 	empty := &taskdefinition.Record{Containers: []taskdefinition.Container{{CPU: 128}}}
 	assert.Zero(t, empty.ReservedGPU())
 }
+
+// AWS assumes a container is essential when the essential parameter is omitted,
+// so an omitted value must describe back as true while explicit values are kept.
+func TestContainerDefsFromAWS_EssentialDefaultsTrue(t *testing.T) {
+	defs := containerDefsFromAWS([]*ecs.ContainerDefinition{
+		{Name: aws.String("omitted"), Image: aws.String("registry/app:1")},
+		{Name: aws.String("sidecar"), Image: aws.String("registry/side:1"), Essential: aws.Bool(false)},
+		{Name: aws.String("explicit"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true)},
+	})
+	require.Len(t, defs, 3)
+	assert.True(t, defs[0].Essential)
+	assert.True(t, aws.BoolValue(containerToAWS(defs[0]).Essential))
+	assert.True(t, containerToAssign(defs[0]).Essential)
+	assert.False(t, defs[1].Essential)
+	assert.False(t, aws.BoolValue(containerToAWS(defs[1]).Essential))
+	assert.True(t, defs[2].Essential)
+}

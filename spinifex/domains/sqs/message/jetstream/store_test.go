@@ -929,3 +929,28 @@ func TestNamespacesRefusesConflictingAllocations(t *testing.T) {
 		require.ErrorIs(t, err, sqsjs.ErrCorruptRecord)
 	})
 }
+
+// TestNamespacesRefusesAMiddleBodyWithAnotherStateShard: every body is
+// checked, not only the first and last.
+func TestNamespacesRefusesAMiddleBodyWithAnotherStateShard(t *testing.T) {
+	s, _ := newStore(t)
+	appendTo(t, s, ns(1, 0, "q"), "first")
+	appendTo(t, s, ns(1, 1, "q"), "middle")
+	appendTo(t, s, ns(1, 0, "q"), "last")
+	_, err := s.Namespaces(context.Background(), 1)
+	require.ErrorIs(t, err, sqsjs.ErrCorruptRecord)
+}
+
+// TestNamespacesLeavesNoConsumer: the enumeration pass removes its consumer.
+func TestNamespacesLeavesNoConsumer(t *testing.T) {
+	s, js := newStore(t)
+	for i := range 600 {
+		appendTo(t, s, ns(1, 0, fmt.Sprintf("q%d", i%3)), "m")
+	}
+	got := namespaces(t, s, 1)
+	require.Len(t, got, 3)
+	for _, row := range got {
+		assert.Equal(t, uint64(200), row.Usage.Messages)
+	}
+	assert.Equal(t, 0, consumerCount(t, js, sqsjs.StreamName(1)))
+}

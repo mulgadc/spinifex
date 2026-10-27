@@ -35,6 +35,10 @@ const feedInactiveThreshold = time.Minute
 // feedCloseTimeout bounds Close's consumer delete.
 const feedCloseTimeout = 5 * time.Second
 
+// enumerateIdle is how long the headers-only pass Namespaces makes over a
+// message stream waits for a body before checking whether any remain.
+const enumerateIdle = time.Second
+
 var (
 	// ErrUnsupportedTopology reports a cluster size the store does not run on.
 	ErrUnsupportedTopology = errors.New("sqs message store: unsupported topology")
@@ -571,45 +575,87 @@ type bodyAllocation struct {
 	messages   uint64
 }
 
-// bodyAllocations counts each queue's stored bodies on the message shard and
-// reads its state shard from its first and last body, which must agree.
+// bodyAllocations reads the header of every stored body on the message
+// shard in one headers-only ordered pass, counting each queue's bodies and
+// requiring every body of a queue to name the same state shard.
 func (s *Store) bodyAllocations(ctx context.Context, messageShard message.Shard) (map[message.QueueID]bodyAllocation, error) {
 	stream, err := s.stream(ctx, message.Namespace{MessageShard: messageShard, Queue: "enumerate"})
 	if err != nil {
 		return nil, err
 	}
-	prefix := "sqs.m." + strconv.FormatUint(uint64(messageShard), 10) + "."
-	info, err := stream.Info(ctx, jsapi.WithSubjectFilter(prefix+">"))
+	info, err := stream.Info(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
 	}
-	out := make(map[message.QueueID]bodyAllocation, len(info.State.Subjects))
-	for subject, n := range info.State.Subjects {
-		if n == 0 {
+	out := map[message.QueueID]bodyAllocation{}
+	if info.State.Msgs == 0 {
+		return out, nil
+	}
+	consumer, err := stream.OrderedConsumer(ctx, jsapi.OrderedConsumerConfig{
+		HeadersOnly:       true,
+		InactiveThreshold: feedInactiveThreshold,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
+	}
+	defer func() { _ = deleteFeedConsumer(stream, consumer) }()
+	it, err := consumer.Messages()
+	if err != nil {
+		return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
+	}
+	defer it.Stop()
+	for {
+		msg, err := nextOrIdle(ctx, it)
+		if err != nil {
+			return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
+		}
+		if msg == nil {
+			// Idle: done only once the consumer has nothing left to deliver,
+			// as when the remaining bodies were deleted mid-pass.
+			ci, err := consumer.Info(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
+			}
+			if ci.NumPending == 0 {
+				return out, nil
+			}
 			continue
 		}
-		first, err := stream.GetMsg(ctx, 1, jsapi.WithGetMsgSubject(subject))
+		md, err := msg.Metadata()
 		if err != nil {
-			return nil, fmt.Errorf("enumerate %s: %w", subject, err)
+			return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
 		}
-		last, err := stream.GetLastMsgForSubject(ctx, subject)
+		ns, err := decodeNamespace(messageShard, msg.Subject(), msg.Headers())
 		if err != nil {
-			return nil, fmt.Errorf("enumerate %s: %w", subject, err)
+			return nil, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(messageShard), md.Sequence.Stream, err)
 		}
-		a, err := decodeNamespace(messageShard, subject, first.Header)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(messageShard), first.Sequence, err)
+		a, seen := out[ns.Queue]
+		if seen && a.stateShard != ns.StateShard {
+			return nil, fmt.Errorf("%w: %s bodies name state shards %d and %d (position %d)", ErrCorruptRecord, msg.Subject(), a.stateShard, ns.StateShard, md.Sequence.Stream)
 		}
-		b, err := decodeNamespace(messageShard, subject, last.Header)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(messageShard), last.Sequence, err)
+		out[ns.Queue] = bodyAllocation{stateShard: ns.StateShard, messages: a.messages + 1}
+		if md.NumPending == 0 {
+			return out, nil
 		}
-		if a != b {
-			return nil, fmt.Errorf("%w: %s bodies name state shards %d and %d", ErrCorruptRecord, subject, a.StateShard, b.StateShard)
-		}
-		out[a.Queue] = bodyAllocation{stateShard: a.StateShard, messages: n}
 	}
-	return out, nil
+}
+
+// nextOrIdle returns the next message, or nil when none arrives within
+// enumerateIdle while ctx is still live.
+func nextOrIdle(ctx context.Context, it jsapi.MessagesContext) (jsapi.Msg, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, enumerateIdle)
+	defer cancel()
+	msg, err := it.Next(jsapi.NextContext(waitCtx))
+	switch {
+	case err == nil:
+		return msg, nil
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
+	case waitCtx.Err() != nil:
+		return nil, nil
+	default:
+		return nil, err
+	}
 }
 
 // stateAllocations counts the message shard's live state keys per queue and

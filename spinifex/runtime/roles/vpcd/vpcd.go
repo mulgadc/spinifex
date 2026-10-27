@@ -25,6 +25,7 @@ import (
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/floating"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
@@ -564,6 +565,10 @@ func launchService(cfg *Config) error {
 		slog.Info("vpcd: OCI address pairs in use; NAT rules and host routes follow the private half",
 			"pools", ociPools)
 	}
+	if fPools := floatingPoolNames(cfg.ExternalPools); len(fPools) > 0 {
+		binder := floating.NewGatewayBinder(floating.NewKVStore(js), fPools)
+		bindGatewayVPC = chainGatewayBinders(bindGatewayVPC, binder.BindGateway)
+	}
 	natMgr, err := policy.NewNATManager(liveClient, natMode, natOpts...)
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
@@ -1006,6 +1011,41 @@ func selectExternalPools(externalMode string, pools []external.ExternalPoolConfi
 		}
 	}
 	return igwPool, publicPool
+}
+
+// floatingPoolNames lists the pools whose addresses are floating objects moved
+// between hosts, whose NAT gateway addresses must learn their VPC.
+func floatingPoolNames(pools []external.ExternalPoolConfig) []string {
+	var names []string
+	for _, p := range pools {
+		if p.IsVultr() {
+			names = append(names, p.Name)
+		}
+	}
+	return names
+}
+
+// chainGatewayBinders calls each non-nil binder, so OCI and floating pools in
+// one cluster both learn a NAT gateway's VPC.
+func chainGatewayBinders(binders ...func(ctx context.Context, externalIP, vpcID string) error) func(ctx context.Context, externalIP, vpcID string) error {
+	var live []func(ctx context.Context, externalIP, vpcID string) error
+	for _, b := range binders {
+		if b != nil {
+			live = append(live, b)
+		}
+	}
+	if len(live) == 0 {
+		return nil
+	}
+	return func(ctx context.Context, externalIP, vpcID string) error {
+		var errs []error
+		for _, b := range live {
+			if err := b(ctx, externalIP, vpcID); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
+	}
 }
 
 // ociPoolNames lists the pools whose addresses are OCI pairs, and so need the

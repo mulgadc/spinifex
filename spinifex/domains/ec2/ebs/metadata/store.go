@@ -8,6 +8,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -97,6 +98,16 @@ func (s *Store) ListAllVolumesStrict(ctx context.Context) ([]Volume, error) {
 		return nil, errors.New("metadata store is not configured")
 	}
 	return listDocuments(ctx, s, volumePrefix, "volume", UnmarshalVolume, false)
+}
+
+// ListAllVolumesPartial is ListAllVolumes that hands back what it skipped
+// instead of logging it, for a caller that must decide what an unreadable
+// document means for its own answer. A document deleted mid-listing is absent.
+func (s *Store) ListAllVolumesPartial(ctx context.Context) ([]Volume, []UnreadableDocument, error) {
+	if s == nil || s.objects == nil {
+		return nil, nil, errors.New("metadata store is not configured")
+	}
+	return collectDocuments(ctx, s, volumePrefix, UnmarshalVolume, listPartial)
 }
 
 func (s *Store) listVolumeDocuments(ctx context.Context, accountID string, skipCorrupt bool) ([]Volume, error) {
@@ -219,6 +230,14 @@ func (s *Store) ListAMIsStrict(ctx context.Context) ([]AMI, error) {
 	return s.listAMIDocuments(ctx, false)
 }
 
+// ListAMIsPartial is ListAllVolumesPartial for AMI documents.
+func (s *Store) ListAMIsPartial(ctx context.Context) ([]AMI, []UnreadableDocument, error) {
+	if s == nil || s.objects == nil {
+		return nil, nil, errors.New("metadata store is not configured")
+	}
+	return collectDocuments(ctx, s, amiPrefix, UnmarshalAMI, listPartial)
+}
+
 func (s *Store) listAMIDocuments(ctx context.Context, skipCorrupt bool) ([]AMI, error) {
 	return listDocuments(ctx, s, amiPrefix, "AMI", UnmarshalAMI, skipCorrupt)
 }
@@ -285,15 +304,43 @@ func listKeys(ctx context.Context, objects objectstore.ObjectStore, bucket, pref
 	return nil, fmt.Errorf("listing %s did not finish within %d pages", prefix, maxListPages)
 }
 
+// UnreadableDocument is a document a partial listing could not use. AccountID
+// is empty for an unpartitioned kind. Err wraps ErrCorruptDocument when the
+// bytes arrived but would not decode.
+type UnreadableDocument struct {
+	Key       string
+	AccountID string
+	ID        string
+	Err       error
+}
+
+// documentIdentity recovers the account and ID a document key was built from.
+func documentIdentity(prefix, key string) (accountID, id string) {
+	rest := strings.TrimSuffix(strings.TrimPrefix(key, prefix), ".json")
+	if account, docID, found := strings.Cut(rest, "/"); found {
+		return account, docID
+	}
+	return "", rest
+}
+
+// listMode says what a listing does with a document it cannot use.
+type listMode int
+
+const (
+	// listStrict fails the listing.
+	listStrict listMode = iota
+	// listTolerant skips it and logs the skip.
+	listTolerant
+	// listPartial skips it and reports it, treating a deleted one as absent.
+	listPartial
+)
+
 // listDocuments reads and decodes every document under prefix.
 //
 // skipCorrupt tolerates a document that cannot be fetched as well as one that
 // cannot be decoded: an object whose shards no longer join is exactly as
 // unusable as one whose bytes will not parse, and either kind read wholesale
 // as a failure turns a single bad document into a cluster-wide outage.
-//
-// Fetches run concurrently but results are assembled in key order, so a strict
-// listing fails on the same document it would have failed on serially.
 func listDocuments[T any](
 	ctx context.Context,
 	s *Store,
@@ -301,9 +348,35 @@ func listDocuments[T any](
 	unmarshal func([]byte) (T, error),
 	skipCorrupt bool,
 ) ([]T, error) {
+	if !skipCorrupt {
+		documents, _, err := collectDocuments(ctx, s, prefix, unmarshal, listStrict)
+		return documents, err
+	}
+	documents, skipped, err := collectDocuments(ctx, s, prefix, unmarshal, listTolerant)
+	for _, doc := range skipped {
+		if errors.Is(doc.Err, ErrCorruptDocument) {
+			slog.WarnContext(ctx, "skipping undecodable "+kind+" document", "key", doc.Key, "err", doc.Err)
+		} else {
+			slog.WarnContext(ctx, "skipping unreadable "+kind+" document", "key", doc.Key, "err", doc.Err)
+		}
+	}
+	return documents, err
+}
+
+// collectDocuments is listDocuments returning the documents it skipped.
+//
+// Fetches run concurrently but results are assembled in key order, so a strict
+// listing fails on the same document it would have failed on serially.
+func collectDocuments[T any](
+	ctx context.Context,
+	s *Store,
+	prefix string,
+	unmarshal func([]byte) (T, error),
+	mode listMode,
+) ([]T, []UnreadableDocument, error) {
 	keys, err := listKeys(ctx, s.objects, s.bucket, prefix)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// fetchErr and decodeErr are kept apart because they are tolerated on
@@ -341,23 +414,31 @@ func listDocuments[T any](
 	wg.Wait()
 
 	documents := make([]T, 0, len(results))
+	var skipped []UnreadableDocument
+	skip := func(key string, err error) {
+		accountID, id := documentIdentity(prefix, key)
+		skipped = append(skipped, UnreadableDocument{Key: key, AccountID: accountID, ID: id, Err: err})
+	}
 	for _, r := range results {
 		switch {
 		case r.fetchErr != nil:
-			if !skipCorrupt {
-				return nil, r.fetchErr
+			if mode == listStrict {
+				return nil, nil, r.fetchErr
 			}
-			slog.WarnContext(ctx, "skipping unreadable "+kind+" document", "key", r.key, "err", r.fetchErr)
+			if mode == listPartial && objectstore.IsNoSuchKeyError(r.fetchErr) {
+				continue
+			}
+			skip(r.key, r.fetchErr)
 		case r.decodeErr != nil:
-			if !skipCorrupt || !errors.Is(r.decodeErr, ErrCorruptDocument) {
-				return nil, r.decodeErr
+			if mode == listStrict || !errors.Is(r.decodeErr, ErrCorruptDocument) {
+				return nil, nil, r.decodeErr
 			}
-			slog.WarnContext(ctx, "skipping undecodable "+kind+" document", "key", r.key, "err", r.decodeErr)
+			skip(r.key, r.decodeErr)
 		default:
 			documents = append(documents, r.document)
 		}
 	}
-	return documents, nil
+	return documents, skipped, nil
 }
 
 // FetchResult is one document from an explicit-ID fan-out. Err is that ID's

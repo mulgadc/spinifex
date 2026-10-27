@@ -123,7 +123,7 @@ aws eks describe-cluster --name demo --query 'cluster.status'
 aws eks create-nodegroup \
   --cluster-name demo \
   --nodegroup-name default \
-  --node-role-arn arn:aws:iam::000000000000:role/eks-node-role \
+  --node-role arn:aws:iam::000000000000:role/eks-node-role \
   --subnets subnet-aaaa subnet-bbbb \
   --scaling-config minSize=1,maxSize=2,desiredSize=1 \
   --instance-types t3.medium

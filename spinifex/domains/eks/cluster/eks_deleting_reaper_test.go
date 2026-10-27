@@ -126,8 +126,8 @@ func TestDeletingReaper_BacksOffAfterFailedAttempt(t *testing.T) {
 // TestDeletingReaper_ExhaustsAfterMaxAttempts guards the terminal give-up: a
 // purge that keeps failing the same way forever (e.g. an unretriable
 // DependencyViolation) must stop being re-driven after maxDeleteReapAttempts,
-// not loop forever on every GC tick. It also checks ADR-0003:S2's incomplete-cleanup
-// invariant: an exhausted cluster must stay DELETING — its infra stays tracked
+// not loop forever on every GC tick. It also checks the incomplete-cleanup
+// invariant (historic PROP-LIFECYCLE-006 §6; behaviour per ADR-0003:S2): an exhausted cluster must stay DELETING — its infra stays tracked
 // and billable — not silently vanish or move to some other status.
 func TestDeletingReaper_ExhaustsAfterMaxAttempts(t *testing.T) {
 	t.Parallel()
@@ -158,7 +158,7 @@ func TestDeletingReaper_ExhaustsAfterMaxAttempts(t *testing.T) {
 	require.NoError(t, getErr)
 	assert.True(t, meta.DeleteReapExhausted, "the backstop must give up after maxDeleteReapAttempts")
 	assert.Equal(t, ClusterStatusDeleting, meta.Status,
-		"ADR-0003:S2 incomplete-cleanup invariant: an exhausted cluster must stay DELETING")
+		"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-006 §6 mechanism, incomplete-cleanup invariant: an exhausted cluster must stay DELETING")
 
 	terminateCallsAtExhaustion := len(f.inst.terminateCalls)
 

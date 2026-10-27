@@ -83,7 +83,7 @@ func TestRLC1_VPCDeleteNotFoundOnAbsent(t *testing.T) {
 	}
 }
 
-// TestRLC_ENINonDeadlock enforces ADR-0003 §2 (break the un-terminable-ENI
+// TestRLC_ENINonDeadlock enforces historic PROP-LIFECYCLE-003 §2 (break the un-terminable-ENI
 // deadlock). The public DeleteNetworkInterface guard must keep rejecting an
 // in-use ENI — that protects an ENI a *different* live instance holds — while
 // ForceDeleteInstanceENI must delete the owning instance's in-use ENI anyway.
@@ -107,11 +107,11 @@ func TestRLC_ENINonDeadlock(t *testing.T) {
 		NetworkInterfaceId: aws.String(eniId),
 	}, testAccountID)
 	assert.ErrorContainsf(t, err, "InvalidNetworkInterface.InUse",
-		"ADR-0003 §2: the in-use guard must still protect an ENI held by a different live instance")
+		"historic PROP-LIFECYCLE-003 §2: the in-use guard must still protect an ENI held by a different live instance")
 
 	// The owning instance's force teardown must break the deadlock.
 	require.NoErrorf(t, svc.ForceDeleteInstanceENI(context.Background(), testAccountID, eniId),
-		"ADR-0003 §2: ForceDeleteInstanceENI must delete the owning instance's in-use ENI to break the un-terminable-ENI deadlock")
+		"historic PROP-LIFECYCLE-003 §2: ForceDeleteInstanceENI must delete the owning instance's in-use ENI to break the un-terminable-ENI deadlock")
 
 	_, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(eniId)},
@@ -120,7 +120,7 @@ func TestRLC_ENINonDeadlock(t *testing.T) {
 
 	// Idempotent: forcing teardown of an already-gone ENI is success.
 	require.NoErrorf(t, svc.ForceDeleteInstanceENI(context.Background(), testAccountID, eniId),
-		"ADR-0003 §2 / RLC rule #1: ForceDeleteInstanceENI on an absent ENI must be idempotent success")
+		"historic PROP-LIFECYCLE-003 §2 / RLC rule #1: ForceDeleteInstanceENI on an absent ENI must be idempotent success")
 }
 
 // TestRLC3_VPCFamilyDeleteGuardsLiveDependents enforces the Common Resource
@@ -141,7 +141,7 @@ func TestRLC3_VPCFamilyDeleteGuardsLiveDependents(t *testing.T) {
 
 		_, err = svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetId)}, testAccountID)
 		assert.ErrorContainsf(t, err, awserrors.ErrorDependencyViolation,
-			"ADR-0004 §2: DeleteSubnet must return DependencyViolation while a live ENI attachment (a resident instance) remains (rule #3)")
+			"Q-61 / Q-78: DeleteSubnet must return DependencyViolation while a live ENI attachment (a resident instance) remains (rule #3)")
 	})
 
 	t.Run("DeleteSubnet allowed with only an available ENI", func(t *testing.T) {
@@ -153,7 +153,7 @@ func TestRLC3_VPCFamilyDeleteGuardsLiveDependents(t *testing.T) {
 
 		_, err := svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetId)}, testAccountID)
 		require.NoErrorf(t, err,
-			"ADR-0004 §2/rule #3: an available (orphan) ENI must not pin its subnet — it is itself deletable and GC-reaped")
+			"Q-61 / Q-78/rule #3: an available (orphan) ENI must not pin its subnet — it is itself deletable and GC-reaped")
 	})
 
 	t.Run("DeleteNetworkInterface blocked while attached", func(t *testing.T) {
@@ -167,7 +167,7 @@ func TestRLC3_VPCFamilyDeleteGuardsLiveDependents(t *testing.T) {
 
 		_, err = svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(eniId)}, testAccountID)
 		assert.ErrorContainsf(t, err, awserrors.ErrorInvalidNetworkInterfaceInUse,
-			"ADR-0004 §2: a plain DeleteNetworkInterface must reject an ENI attached to a live instance")
+			"Q-61 / Q-78: a plain DeleteNetworkInterface must reject an ENI attached to a live instance")
 	})
 
 	t.Run("DeleteNetworkInterface allowed once detached", func(t *testing.T) {
@@ -182,6 +182,6 @@ func TestRLC3_VPCFamilyDeleteGuardsLiveDependents(t *testing.T) {
 
 		_, err = svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(eniId)}, testAccountID)
 		require.NoErrorf(t, err,
-			"ADR-0004 §2/rule #3: an ENI whose instance is gone (detached) must be deletable")
+			"Q-61 / Q-78/rule #3: an ENI whose instance is gone (detached) must be deletable")
 	})
 }

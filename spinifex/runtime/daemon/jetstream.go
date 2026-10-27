@@ -105,7 +105,7 @@ func (m *JetStreamManager) SetSyncObserver(obs KVSyncObserver) {
 
 // KVHealthy reports whether JetStream is reachable and quorate via a cheap
 // AccountInfo round-trip. The GC backstop gates every sweep on this so it never
-// reaps against a desired-state it cannot trust (ADR-0003 §3).
+// reaps against a desired-state it cannot trust (historic PROP-LIFECYCLE-003 §3).
 func (m *JetStreamManager) KVHealthy() bool {
 	if m.js == nil {
 		return false

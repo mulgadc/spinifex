@@ -2407,9 +2407,9 @@ func (d *Daemon) startCluster() error {
 	// them, so a restart would leave every guest on this node without a network.
 	d.vmMgr.StartIMDSDatapathReconcile(d.ctx)
 
-	// Reality→desired GC backstop (ADR-0003 §3): finish teardown interrupted by
+	// Reality→desired GC backstop (historic PROP-LIFECYCLE-003 §3): finish teardown interrupted by
 	// a node-down mid-cascade and purge completed terminated records. The volume
-	// data-safety reaper (ADR-0003:S2) rides the same backstop but only marks +
+	// data-safety reaper (ADR-0003:S2 behaviour; mechanism from historic PROP-LIFECYCLE-005 §3) rides the same backstop but only marks +
 	// alarms — it never deletes volume data.
 	if d.jsManager != nil {
 		reapers := []vm.Reaper{

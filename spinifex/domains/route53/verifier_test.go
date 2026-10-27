@@ -46,7 +46,6 @@ func newVerifier(t *testing.T) (*route53.Service, *route53.Verifier, *fakeDNS, *
 	svc.Now = c.now
 	dns := &fakeDNS{parents: map[string][]string{}}
 	v := route53.NewVerifier(svc.Store())
-	v.Nameservers = ours
 	v.Public = dns.lookup
 	v.Now = c.now
 	return svc, v, dns, c
@@ -266,15 +265,29 @@ func TestVerifyChecksImmediately(t *testing.T) {
 	require.ErrorIs(t, err, kvstore.ErrNotFound, "another account's zone is not found")
 }
 
-func TestVerifierNeedsPublishedNameservers(t *testing.T) {
+// A zone keeps the delegation set it was created with, so a cluster that
+// publishes fewer name servers later neither fails an existing delegation nor
+// lets a new zone accept a server it was never handed.
+func TestVerifierChecksTheZonesOwnDelegationSet(t *testing.T) {
 	svc, v, dns, _ := newVerifier(t)
-	v.Nameservers = func() []string { return nil }
-	dns.parents["any.example"] = ours()
-	id := createZone(t, svc, acctA, "any.example")
+	dns.parents["before.example"] = ours()
+	dns.parents["after.example"] = ours()
+	before := createZone(t, svc, acctA, "before.example")
 	pass(t, v)
-	z := zone(t, svc, acctA, id)
+	require.Equal(t, route53.StateActive, zone(t, svc, acctA, before).State)
+
+	svc.Nameservers = func() []string { return []string{"ns1.spx3.net"} }
+	after := createZone(t, svc, acctA, "after.example")
+	_, err := v.Verify(ctx, acctA, zoneID(before))
+	require.NoError(t, err)
+	pass(t, v)
+
+	z := zone(t, svc, acctA, before)
+	assert.Equal(t, route53.StateActive, z.State)
+	assert.Empty(t, z.StateReason)
+	z = zone(t, svc, acctA, after)
 	assert.Equal(t, route53.StatePendingNameservers, z.State)
-	assert.Equal(t, "this cluster publishes no name servers", z.StateReason)
+	assert.Contains(t, z.StateReason, "not this cluster's: ns2.spx3.net")
 }
 
 func TestActivatedZoneChangesWaitForSync(t *testing.T) {
@@ -288,4 +301,32 @@ func TestActivatedZoneChangesWaitForSync(t *testing.T) {
 	}, acctA)
 	require.NoError(t, err)
 	assert.Equal(t, "PENDING", aws.StringValue(out.ChangeInfo.Status))
+}
+
+// A race can activate two zones of one name. The newer one is returned to
+// pending on the next pass, and the change it took while ACTIVE, which
+// northstar will never load, is settled rather than left PENDING for good.
+func TestDuplicateActiveZoneReturnsToPendingAndItsChangesSettle(t *testing.T) {
+	svc, v, dns, c := newVerifier(t)
+	dns.parents["race.example"] = ours()
+	first := createZone(t, svc, acctA, "race.example")
+	c.advance(time.Minute)
+	second := createZone(t, svc, acctB, "race.example")
+	pass(t, v)
+	require.Equal(t, route53.StateActive, zone(t, svc, acctA, first).State)
+	setState(t, svc, acctB, second, route53.StateActive)
+
+	out, err := apply(svc, acctB, second, change("CREATE", "www.race.example", "A", 60, "198.51.100.1"))
+	require.NoError(t, err)
+	require.Equal(t, "PENDING", aws.StringValue(out.ChangeInfo.Status))
+
+	pass(t, v)
+	z := zone(t, svc, acctB, second)
+	assert.Equal(t, route53.StatePendingNameservers, z.State)
+	assert.Equal(t, "the domain is active in another account", z.StateReason)
+	assert.Equal(t, route53.StateActive, zone(t, svc, acctA, first).State)
+
+	_, err = newRealizer(svc, newFakeNorthstar(1)).Reconcile(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "INSYNC", changeStatus(t, svc, acctB, aws.StringValue(out.ChangeInfo.Id)))
 }

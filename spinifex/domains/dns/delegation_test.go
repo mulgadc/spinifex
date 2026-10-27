@@ -39,6 +39,21 @@ func TestDelegateWritesAndWithdrawsPlatformDelegations(t *testing.T) {
 	assert.Len(t, servers, 2, "withdrawing one delegation leaves the others")
 }
 
+// Withdrawing a delegation removes every NS record at the name, including
+// servers written while the cluster published a larger set.
+func TestDelegateRemoveWithdrawsServersFromAnEarlierSet(t *testing.T) {
+	w, _ := newMultiNodeTestWriter(t)
+	_, err := w.Delegate(t.Context(), nil, "node1", []string{"a.r53e2e.spx3.net"}, false)
+	require.NoError(t, err)
+
+	w.nameservers = w.nameservers[:1]
+	_, err = w.Delegate(t.Context(), nil, "node1", []string{"a.r53e2e.spx3.net"}, true)
+	require.NoError(t, err)
+	servers, _, _, err := w.PlatformDelegation("a.r53e2e.spx3.net")
+	require.NoError(t, err)
+	assert.Empty(t, servers)
+}
+
 func TestPlatformDelegationIgnoresNamesOutsideTheBaseDomain(t *testing.T) {
 	w, _ := newMultiNodeTestWriter(t)
 	for _, name := range []string{"example.com", "spx3.net", "notspx3.net"} {

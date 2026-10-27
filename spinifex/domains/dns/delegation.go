@@ -67,9 +67,9 @@ func (w *Writer) Delegate(ctx context.Context, nc *nats.Conn, holder string, nam
 			return nil, fmt.Errorf("%s is a platform name and cannot be delegated", name)
 		}
 		if remove {
-			for _, v := range values {
-				batch.Changes = append(batch.Changes, Change{Action: ActionDelete, Zone: base, Name: n + ".", Type: "NS", Value: v})
-			}
+			// An empty value withdraws the whole NS set, including servers
+			// written under a published set the cluster has since changed.
+			batch.Changes = append(batch.Changes, Change{Action: ActionDelete, Zone: base, Name: n + ".", Type: "NS"})
 			continue
 		}
 		batch.Changes = append(batch.Changes, Change{Action: ActionUpsertSet, Zone: base, Name: n + ".", Type: "NS", Values: values})

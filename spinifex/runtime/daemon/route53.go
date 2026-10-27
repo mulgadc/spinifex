@@ -64,7 +64,6 @@ func (d *Daemon) startRoute53Realizer() {
 // servers otherwise.
 func (d *Daemon) newRoute53Verifier() *route53domain.Verifier {
 	v := route53domain.NewVerifier(d.route53Service.Store())
-	v.Nameservers = d.route53Service.Nameservers
 	if d.dnsWriter.Enabled() {
 		v.Platform = func(_ context.Context, name string) (route53domain.Delegation, bool, error) {
 			servers, zone, ok, err := d.dnsWriter.PlatformDelegation(name)

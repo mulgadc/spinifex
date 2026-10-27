@@ -445,6 +445,9 @@ func TestRealizerPublishesEveryZoneAtScale(t *testing.T) {
 // same value, still reaches INSYNC, or Terraform would wait on it forever.
 func TestRealizerSyncsAChangeThatAltersNothing(t *testing.T) {
 	svc := newService(t)
+	// The render carries the document's update time, so both changes must land
+	// at one instant for their zones to match.
+	svc.Now = func() time.Time { return time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC) }
 	ns := newFakeNorthstar(2)
 	r := newRealizer(svc, ns)
 	id := createZone(t, svc, acctA, "example.com")

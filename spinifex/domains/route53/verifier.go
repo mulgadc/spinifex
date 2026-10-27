@@ -40,8 +40,6 @@ type Delegation struct {
 type Verifier struct {
 	store *Store
 
-	// Nameservers are this cluster's published name servers.
-	Nameservers func() []string
 	// Platform reads a delegation from a platform zone this cluster serves; ok
 	// is false when the name lies under none of them.
 	Platform func(ctx context.Context, name string) (d Delegation, ok bool, err error)
@@ -85,14 +83,35 @@ func (v *Verifier) Reconcile(ctx context.Context) (time.Duration, error) {
 		return 0, fmt.Errorf("list hosted zones: %w", err)
 	}
 	now := v.Now().UTC()
+	holders := activeHolders(zones)
 	var due []*ZoneRecord
 	for i := range zones {
-		if checkDue(&zones[i], now) {
-			due = append(due, &zones[i])
+		z := &zones[i]
+		if checkDue(z, now) || (z.Override == "" && z.State == StateActive && holders[z.Name] != zoneRef(z)) {
+			due = append(due, z)
 		}
 	}
 	return 0, v.verify(ctx, zones, due, now)
 }
+
+// activeHolders maps each name to the oldest ACTIVE zone of it, which is the
+// one the realizer serves when a race has activated more than one.
+func activeHolders(zones []ZoneRecord) map[string]string {
+	oldest := map[string]*ZoneRecord{}
+	for i := range zones {
+		z := &zones[i]
+		if cur, ok := oldest[z.Name]; z.State == StateActive && (!ok || olderFirst(z, cur) < 0) {
+			oldest[z.Name] = z
+		}
+	}
+	out := make(map[string]string, len(oldest))
+	for name, z := range oldest {
+		out[name] = zoneRef(z)
+	}
+	return out
+}
+
+func zoneRef(z *ZoneRecord) string { return z.AccountID + "/" + z.ID }
 
 // Verify checks one zone now, whatever its schedule, and returns it updated.
 func (v *Verifier) Verify(ctx context.Context, account, id string) (*ZoneRecord, error) {
@@ -137,13 +156,12 @@ type outcome struct {
 }
 
 func (v *Verifier) verify(ctx context.Context, all []ZoneRecord, due []*ZoneRecord, now time.Time) error {
-	ours := v.ourNameservers()
 	results := make([]outcome, 0, len(due))
 	for _, z := range due {
 		d, err := v.delegation(ctx, all, z)
 		o := outcome{zone: z, d: d, err: err}
 		if err == nil {
-			o.reason = compareDelegation(z.Name, d, ours)
+			o.reason = compareDelegation(z.Name, d, zoneNameservers(z))
 		}
 		results = append(results, o)
 	}
@@ -151,16 +169,11 @@ func (v *Verifier) verify(ctx context.Context, all []ZoneRecord, due []*ZoneReco
 	// First match wins: the earliest-created zone of a name that passes is the
 	// one activated, and no zone activates while another of its name is active.
 	slices.SortStableFunc(results, func(a, b outcome) int { return olderFirst(a.zone, b.zone) })
-	active := map[string]string{}
-	for _, z := range all {
-		if z.State == StateActive {
-			active[z.Name] = z.AccountID + "/" + z.ID
-		}
-	}
+	active := activeHolders(all)
 
 	var errs []error
 	for _, o := range results {
-		self := o.zone.AccountID + "/" + o.zone.ID
+		self := zoneRef(o.zone)
 		contested := false
 		if holder, ok := active[o.zone.Name]; ok && holder != self {
 			contested = true
@@ -189,6 +202,13 @@ func (v *Verifier) verify(ctx context.Context, all []ZoneRecord, due []*ZoneReco
 // applyOutcome moves a zone's activation state for one check.
 func applyOutcome(z *ZoneRecord, o outcome, contested bool, now time.Time) {
 	z.CheckedAt = now
+	if contested && z.State == StateActive {
+		// A race activated a second zone of this name. The older one is served,
+		// so this one waits again rather than report a state it does not have.
+		z.State, z.StateReason, z.FailingSince = StatePendingNameservers, reasonContested, time.Time{}
+		slog.Warn("route53: duplicate active zone returned to pending", "zone", z.Name, "zone_id", z.ID)
+		return
+	}
 	if o.err != nil {
 		// Not knowing is not failing: an unreachable parent moves nothing.
 		z.StateReason = "the delegation could not be checked: " + o.err.Error()
@@ -266,12 +286,12 @@ func enclosingZone(all []ZoneRecord, z *ZoneRecord) *ZoneRecord {
 	return best
 }
 
-func (v *Verifier) ourNameservers() map[string]bool {
-	ours := map[string]bool{}
-	if v.Nameservers != nil {
-		for _, ns := range v.Nameservers() {
-			ours[normalizeName(ns)] = true
-		}
+// zoneNameservers is the name servers the zone was handed at creation. A change
+// to the cluster's published set must not fail a delegation made to them.
+func zoneNameservers(z *ZoneRecord) map[string]bool {
+	ours := make(map[string]bool, len(z.Nameservers))
+	for _, ns := range z.Nameservers {
+		ours[normalizeName(ns)] = true
 	}
 	return ours
 }
@@ -281,7 +301,7 @@ func (v *Verifier) ourNameservers() map[string]bool {
 // set, a share of resolvers would get answers we do not control.
 func compareDelegation(name string, d Delegation, ours map[string]bool) string {
 	if len(ours) == 0 {
-		return "this cluster publishes no name servers"
+		return "the zone has no delegation set"
 	}
 	if len(d.Servers) == 0 {
 		return fmt.Sprintf("%s does not delegate %s", d.Source, strings.TrimSuffix(name, "."))

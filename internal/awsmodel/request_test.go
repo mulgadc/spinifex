@@ -131,7 +131,8 @@ func TestGeneratedRequestsBreakOnlyTheirConstraint(t *testing.T) {
 				for _, request := range plan.Cases {
 					require.False(t, rejecting && request.Acceptance(), "%s acceptance %s follows a rejection", operationName, request.Path)
 					rejecting = !request.Acceptance()
-					if model.Metadata().Protocol != "rest-xml" {
+					// Predastore serves S3, so its requests are never sent.
+					if service != S3 {
 						_, err := EncodeRequest(service, operationName, request.Input)
 						require.NoError(t, err, "%s %s %s encodes", operationName, request.Constraint, request.Path)
 					}
@@ -238,6 +239,17 @@ func TestGenerateRequestsTargetsFixturesOutsideCreateAndDelete(t *testing.T) {
 			}
 			require.Equal(t, wantFixture, request.Input["RoleName"] == "fixture", "%s %s %s", operation, request.Constraint, request.Path)
 		}
+	}
+}
+
+func TestGenerateRequestsPrefersOperationScopedFixtures(t *testing.T) {
+	options := testRequestOptions
+	options.Fixtures = map[string]string{"Id": "Z0FIXTURE", "GetChange.Id": "C0FIXTURE"}
+	for operation, want := range map[string]string{"GetChange": "C0FIXTURE", "GetHostedZone": "Z0FIXTURE"} {
+		plan, err := GenerateRequests(Route53, operation, options)
+		require.NoError(t, err)
+		require.True(t, plan.Cases[0].Acceptance())
+		require.Equal(t, want, plan.Cases[0].Input["Id"], operation)
 	}
 }
 

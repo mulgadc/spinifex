@@ -281,6 +281,9 @@ func (t *smithyTranslator) metadata() (Metadata, error) {
 	if _, err := service.Traits.decode("aws.auth#sigv4", &sigv4); err != nil {
 		return Metadata{}, err
 	}
+	if _, err := service.Traits.decode("smithy.api#xmlNamespace", &metadata.XMLNamespace); err != nil {
+		return Metadata{}, err
+	}
 	metadata.EndpointPrefix = awsService.EndpointPrefix
 	metadata.ServiceID = awsService.SDKID
 	metadata.ServiceFullName = title
@@ -441,6 +444,9 @@ func (t *smithyTranslator) applyShapeTraits(shape *Shape, traits smithyTraits) e
 		return err
 	}
 	if shape.LocationName, err = traits.string("smithy.api#xmlName"); err != nil {
+		return err
+	}
+	if _, err := traits.decode("smithy.api#xmlNamespace", &shape.XMLNamespace); err != nil {
 		return err
 	}
 	if shape.TimestampFormat, err = timestampFormat(traits); err != nil {

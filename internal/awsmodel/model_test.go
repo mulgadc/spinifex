@@ -8,7 +8,7 @@ import (
 )
 
 func TestServices(t *testing.T) {
-	want := []Service{ACM, EC2, ECR, ECS, EKS, ElasticLoadBalancingV2, IAM, RDS, S3, STS}
+	want := []Service{ACM, EC2, ECR, ECS, EKS, ElasticLoadBalancingV2, IAM, RDS, Route53, S3, STS}
 	if got := Services(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Services() = %v, want %v", got, want)
 	}
@@ -28,6 +28,7 @@ func TestLoadAllModels(t *testing.T) {
 		ElasticLoadBalancingV2: {"2015-12-01", 51, 418},
 		IAM:                    {"2010-05-08", 180, 624},
 		RDS:                    {"2014-10-31", 164, 791},
+		Route53:                {"2013-04-01", 71, 409},
 		S3:                     {"2006-03-01", 112, 710},
 		STS:                    {"2011-06-15", 11, 101},
 	}

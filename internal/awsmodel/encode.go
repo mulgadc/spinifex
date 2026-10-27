@@ -39,7 +39,7 @@ func (r *EncodedRequest) URL(endpoint string) string {
 }
 
 // EncodeRequest serializes input, as produced by GenerateRequests, for the
-// service's protocol. S3's rest-xml is not supported.
+// service's protocol. rest-xml, used by S3 and Route 53, is not supported.
 func EncodeRequest(service Service, operationName string, input map[string]any) (*EncodedRequest, error) {
 	model, err := Load(service)
 	if err != nil {

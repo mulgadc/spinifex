@@ -1243,6 +1243,71 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 - `DescribeOptionGroups`
 - `ModifyOptionGroup`
 
+## route53
+
+`2013-04-01` — 13 of 71 modelled operations implemented (18.3%), 0 stubbed, 0 not applicable, 0 registered outside the pinned model.
+
+### Not implemented
+
+- `ActivateKeySigningKey`
+- `AssociateVPCWithHostedZone`
+- `ChangeCidrCollection`
+- `CreateCidrCollection`
+- `CreateHealthCheck`
+- `CreateKeySigningKey`
+- `CreateQueryLoggingConfig`
+- `CreateReusableDelegationSet`
+- `CreateTrafficPolicy`
+- `CreateTrafficPolicyInstance`
+- `CreateTrafficPolicyVersion`
+- `CreateVPCAssociationAuthorization`
+- `DeactivateKeySigningKey`
+- `DeleteCidrCollection`
+- `DeleteHealthCheck`
+- `DeleteKeySigningKey`
+- `DeleteQueryLoggingConfig`
+- `DeleteReusableDelegationSet`
+- `DeleteTrafficPolicy`
+- `DeleteTrafficPolicyInstance`
+- `DeleteVPCAssociationAuthorization`
+- `DisableHostedZoneDNSSEC`
+- `DisassociateVPCFromHostedZone`
+- `EnableHostedZoneDNSSEC`
+- `GetAccountLimit`
+- `GetCheckerIpRanges`
+- `GetDNSSEC`
+- `GetGeoLocation`
+- `GetHealthCheck`
+- `GetHealthCheckCount`
+- `GetHealthCheckLastFailureReason`
+- `GetHealthCheckStatus`
+- `GetHostedZoneLimit`
+- `GetQueryLoggingConfig`
+- `GetReusableDelegationSet`
+- `GetReusableDelegationSetLimit`
+- `GetTrafficPolicy`
+- `GetTrafficPolicyInstance`
+- `GetTrafficPolicyInstanceCount`
+- `ListCidrBlocks`
+- `ListCidrCollections`
+- `ListCidrLocations`
+- `ListGeoLocations`
+- `ListHealthChecks`
+- `ListHostedZonesByVPC`
+- `ListQueryLoggingConfigs`
+- `ListReusableDelegationSets`
+- `ListTrafficPolicies`
+- `ListTrafficPolicyInstances`
+- `ListTrafficPolicyInstancesByHostedZone`
+- `ListTrafficPolicyInstancesByPolicy`
+- `ListTrafficPolicyVersions`
+- `ListVPCAssociationAuthorizations`
+- `TestDNSAnswer`
+- `UpdateHealthCheck`
+- `UpdateHostedZoneFeatures`
+- `UpdateTrafficPolicyComment`
+- `UpdateTrafficPolicyInstance`
+
 ## s3
 
 `2006-03-01` — 26 of 112 modelled operations implemented (23.2%), 0 stubbed, 6 not applicable, 0 registered outside the pinned model.

@@ -4,11 +4,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/mulgadc/predastore/s3api"
 	"github.com/mulgadc/spinifex/internal/awsmodel"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 
@@ -49,9 +51,17 @@ func compareAll() ([]awsmodel.OperationCoverage, error) {
 	// Registered services contribute their declared inventory, which needs no
 	// live dependencies; nothing here serves a request.
 	inventories := gateway.AWSOperationInventory(map[string]dispatch.Inventory{
-		awsapi.ServiceName:    awsapi.OperationInventory(),
-		acmawsapi.ServiceName: acmawsapi.OperationInventory(),
+		awsapi.ServiceName:        awsapi.OperationInventory(),
+		acmawsapi.ServiceName:     acmawsapi.OperationInventory(),
+		route53awsapi.ServiceName: route53awsapi.OperationInventory(),
 	})
+	// The loop below walks the embedded models, so a served service with no
+	// model would otherwise drop out of the report without a word.
+	for name := range inventories {
+		if !slices.Contains(awsmodel.Services(), awsmodel.Service(name)) {
+			return nil, fmt.Errorf("no embedded AWS model for served service %s", name)
+		}
+	}
 	coverages := make([]awsmodel.OperationCoverage, 0, len(awsmodel.Services()))
 	for _, service := range awsmodel.Services() {
 		inventory, ok := inventories[string(service)]

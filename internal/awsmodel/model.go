@@ -34,6 +34,7 @@ const (
 	ElasticLoadBalancingV2 Service = "elasticloadbalancingv2"
 	IAM                    Service = "iam"
 	RDS                    Service = "rds"
+	Route53                Service = "route53"
 	S3                     Service = "s3"
 	STS                    Service = "sts"
 )

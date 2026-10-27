@@ -131,7 +131,7 @@ func TestGeneratedRequestsBreakOnlyTheirConstraint(t *testing.T) {
 				for _, request := range plan.Cases {
 					require.False(t, rejecting && request.Acceptance(), "%s acceptance %s follows a rejection", operationName, request.Path)
 					rejecting = !request.Acceptance()
-					if service != S3 {
+					if model.Metadata().Protocol != "rest-xml" {
 						_, err := EncodeRequest(service, operationName, request.Input)
 						require.NoError(t, err, "%s %s %s encodes", operationName, request.Constraint, request.Path)
 					}

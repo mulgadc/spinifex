@@ -101,7 +101,10 @@ func TestEC2IndexLister_ListsCallerIndexEntriesAsRegionalARNs(t *testing.T) {
 	nc, svc := newEC2IndexFixture(t)
 	seedEC2Tags(t, svc, listerAccount, []string{"sg-0000000000000000a"}, map[string]string{"env": "prod", "Name": "web"})
 	seedEC2Tags(t, svc, listerAccount, []string{"subnet-0000000000000000b"}, map[string]string{"env": "dev"})
-	seedEC2Tags(t, svc, listerAccount, []string{"not-a-real-id", "vol-00000000000000000"}, map[string]string{"env": "orphan"})
+	seedEC2Tags(t, svc, listerAccount, []string{"vol-00000000000000000"}, map[string]string{"env": "orphan"})
+	// CreateTags rejects an unrecognised prefix, but an entry stored before it
+	// did is still in the index and still listed.
+	require.NoError(t, svc.PutResourceTags(t.Context(), listerAccount, "not-a-real-id", map[string]string{"env": "orphan"}))
 	seedEC2Tags(t, svc, foreignAccount, []string{"sg-0000000000000000f"}, map[string]string{"env": "other"})
 
 	got, err := newEC2IndexLister(nc, listerRegion).ListTagged(t.Context(), listerAccount, nil)

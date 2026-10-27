@@ -428,7 +428,10 @@ var unitBodyHashes = map[string]map[int]string{
 	},
 	"spinifex-firewall.service": {1: "01d0a7a79f47eedca02aaab3ff97a0b6462d61b7834e16c7336a7b96034dc392"},
 	"spinifex-guests.slice":     {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},
-	"spinifex-hostnet.service":  {1: "4a110daac63b652aef49e358f22ac8a27a7797261b231d5b1184e171cccb8f87"},
+	"spinifex-hostnet.service": {
+		1: "4a110daac63b652aef49e358f22ac8a27a7797261b231d5b1184e171cccb8f87",
+		2: "13fd4231bb850198616ba31f25dfc2ec0aa9edb2c3f170320aa6f7cc6142ba77",
+	},
 	"spinifex-nats-watchdog.service": {
 		1: "b778e398da37c4cb3c170781f074c76555cb6a137a7f96f8dc692457b12aa9b8",
 		2: "c31eb4fa964060e1681113a3de4f8f3ee4336aee96469380aac5fc77480c964a",
@@ -560,8 +563,9 @@ func TestHostnetIsWantedNotRequired(t *testing.T) {
 }
 
 // TestHostnetFollowsOVS asserts spinifex-hostnet re-applies whenever
-// ovs-vswitchd starts, and runs even when its state file is gone: a unit
-// skipped by a condition still satisfies the daemon and vpcd ordering on it.
+// ovs-vswitchd starts, brings back the ovn-controller an OVS stop took down,
+// and runs even when its state file is gone: a unit skipped by a condition
+// still satisfies the daemon and vpcd ordering on it.
 func TestHostnetFollowsOVS(t *testing.T) {
 	dir := unitsDir(t)
 	u := readUnit(t, dir, "spinifex-hostnet.service")
@@ -569,6 +573,7 @@ func TestHostnetFollowsOVS(t *testing.T) {
 		"Requires": {"ovs-vswitchd.service"},
 		"After":    {"ovs-vswitchd.service", "NetworkManager-wait-online.service"},
 		"PartOf":   {"ovs-vswitchd.service"},
+		"Wants":    {"ovn-controller.service"},
 		"Before":   {"spinifex.target"},
 		"WantedBy": {"spinifex.target", "ovs-vswitchd.service"},
 	} {

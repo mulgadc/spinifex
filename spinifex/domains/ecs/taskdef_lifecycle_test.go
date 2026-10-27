@@ -71,11 +71,15 @@ func TestDescribeTaskDefinition_ResolvesEveryReferenceForm(t *testing.T) {
 		assert.Equal(t, want, aws.Int64Value(out.TaskDefinition.Revision), ref)
 	}
 
-	for _, ref := range []string{"app:3", "ghost", ""} {
+	for ref, want := range map[string]string{
+		"app:3": awserrors.ErrorECSClientException,
+		"ghost": awserrors.ErrorECSClientException,
+		"":      awserrors.ErrorECSInvalidParameter,
+	} {
 		_, err := svc.DescribeTaskDefinition(context.Background(),
 			&ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String(ref)}, testAccountID)
 		require.Error(t, err, ref)
-		assert.Equal(t, awserrors.ErrorECSInvalidParameter, err.Error(), ref)
+		assert.Equal(t, want, err.Error(), ref)
 	}
 }
 

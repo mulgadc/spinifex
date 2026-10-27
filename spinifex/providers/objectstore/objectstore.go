@@ -266,6 +266,8 @@ func (m *MemoryObjectStore) PutObject(_ context.Context, input *s3.PutObjectInpu
 	return &s3.PutObjectOutput{}, nil
 }
 
+// DeleteObject answers NoSuchKeyError for an absent key, matching what
+// S3ObjectStore returns against Predastore.
 func (m *MemoryObjectStore) DeleteObject(_ context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
 	if err := checkKey(input.Key); err != nil {
 		return nil, err
@@ -274,6 +276,9 @@ func (m *MemoryObjectStore) DeleteObject(_ context.Context, input *s3.DeleteObje
 	defer m.mu.Unlock()
 
 	storageKey := makeKey(*input.Bucket, *input.Key)
+	if _, ok := m.objects[storageKey]; !ok {
+		return nil, &NoSuchKeyError{Key: *input.Key}
+	}
 	delete(m.objects, storageKey)
 	delete(m.modified, storageKey)
 

@@ -853,7 +853,10 @@ func (reg *Registry) deleteUploadBytesAt(ctx context.Context, key string) error 
 		Bucket: aws.String(reg.bucket()),
 		Key:    aws.String(key),
 	})
-	return err
+	if err != nil && !objectstore.IsNoSuchKeyError(err) {
+		return err
+	}
+	return nil
 }
 
 func (reg *Registry) writeJSON(ctx context.Context, w http.ResponseWriter, status int, v any) {

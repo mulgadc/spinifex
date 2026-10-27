@@ -793,7 +793,7 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 			Bucket: aws.String(s.config.Predastore.Bucket),
 			Key:    obj.Key,
 		})
-		if err != nil {
+		if err != nil && !objectstore.IsNoSuchKeyError(err) {
 			slog.ErrorContext(ctx, "DeleteSnapshot failed to delete object", "key", *obj.Key, "err", err)
 			sweepErr = errors.Join(sweepErr, err)
 		}
@@ -808,7 +808,7 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 	// explicitly, and last: a crash with it still present leaves a snapshot that
 	// DescribeSnapshots shows and DeleteSnapshot can retry, rather than chunks
 	// nothing enumerates.
-	if err := s.metadata.DeleteSnapshot(ctx, accountID, snapshotID); err != nil {
+	if err := s.metadata.DeleteSnapshot(ctx, accountID, snapshotID); err != nil && !objectstore.IsNoSuchKeyError(err) {
 		slog.ErrorContext(ctx, "DeleteSnapshot failed to delete metadata document", "snapshotId", snapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}

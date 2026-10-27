@@ -23,6 +23,12 @@
 #
 # Options:
 #   --management         Also start OVN central services (NB DB, SB DB, ovn-northd)
+#   --demote             Allow demoting a node a previous run made a management
+#                        node, clearing its role marker. Without this a run that
+#                        omits --management on such a node is refused, because
+#                        demoting one takes the cluster's database down. Pass it
+#                        only from a caller that assigns roles, as
+#                        install-node.sh does for nodes past the DB quorum.
 #   --wan-bridge=NAME    OVS bridge for WAN traffic (default: auto-detect from default route)
 #   --wan-iface=NAME     Physical NIC to add to the WAN bridge (use with --wan-bridge)
 #   --dhcp               Obtain gateway IP via DHCP on the WAN bridge interface
@@ -147,6 +153,7 @@ fi
 
 # Defaults
 MANAGEMENT=false
+DEMOTE=false
 WAN_BRIDGE=""
 WAN_IFACE=""
 EXTERNAL_DHCP=false
@@ -193,6 +200,7 @@ DRY_RUN=false
 for arg in "$@"; do
     case "$arg" in
         --management)       MANAGEMENT=true ;;
+        --demote)           DEMOTE=true ;;
         --dhcp)             EXTERNAL_DHCP=true ;;
         --nat-uplink)       NAT_UPLINK=true ;;
         --wan-bridge=*)     WAN_BRIDGE="${arg#*=}" ;;
@@ -852,6 +860,43 @@ management_role_markers() {
     return $found
 }
 
+# Refuse to demote a node a previous run set up as a management node, because
+# demoting one stops and disables OVN central and takes the cluster's database
+# away. The symptom lands three layers off: nothing listens on 6641, and vpcd
+# crash-loops on "connection refused" with no hint that this script caused it.
+# Seen on mulga-poc at 15,061 restarts.
+#
+# --demote is how a caller that assigns roles says it meant it. install-node.sh
+# passes it for every node past the database quorum, and clearing the marker is
+# the demotion: left behind it names a role the node no longer has, and the next
+# run without --demote would refuse all over again.
+#
+# The signal is a role marker rather than the presence of a database. The OVN
+# central package creates databases on install, so every compute node has them
+# and testing for those would refuse every legitimate compute node.
+assert_demotion_allowed() {
+    local markers
+    markers=$(management_role_markers) || return 0
+    markers=${markers//$'\n'/ }
+
+    if [ "$DEMOTE" != true ]; then
+        echo "ERROR: this node was configured as a management node by a previous run"
+        echo "  (recorded in $markers), but neither --management nor --demote was given."
+        echo "  Re-running without either stops and disables OVN central and takes"
+        echo "  the control plane down."
+        echo ""
+        echo "  If this is a management node, re-run with --management."
+        echo "  If it is genuinely being demoted to a compute node, re-run with"
+        echo "  --demote, or clear the marker by hand:"
+        echo "     sudo rm -f $markers"
+        exit 1
+    fi
+
+    echo "  --demote: clearing the management role marker ($markers)"
+    # shellcheck disable=SC2086  # deliberately word-split: one or both markers.
+    sudo rm -f $markers
+}
+
 echo ""
 echo "Step 2: Enabling services..."
 
@@ -1107,29 +1152,7 @@ else
     # wrong database — a `--wait=hv` there can never be acknowledged and burns
     # its whole timeout instead.
     #
-    # Refuse to demote a node this script previously set up as a management
-    # node. --management is the only record of the role and is re-asserted on
-    # every run, so a re-run that forgets it silently takes the cluster's
-    # database away. The symptom lands three layers off: nothing listens on
-    # 6641, and vpcd crash-loops on "connection refused" with no hint that this
-    # script caused it. Seen on mulga-poc at 15,061 restarts.
-    #
-    # The signal is a role marker, not the presence of a database: the OVN
-    # central *package* creates DBs on install, so every compute node has them
-    # and testing for them would refuse every legitimate compute node. Only the
-    # --management path above writes a marker (management_role_markers).
-    if ROLE_MARKERS=$(management_role_markers); then
-        ROLE_MARKERS=${ROLE_MARKERS//$'\n'/ }
-        echo "ERROR: this node was configured as a management node by a previous run"
-        echo "  (recorded in $ROLE_MARKERS), but --management was not given."
-        echo "  Re-running without it stops and disables OVN central and takes the"
-        echo "  control plane down."
-        echo ""
-        echo "  If this is a management node, re-run with --management."
-        echo "  If it is genuinely being demoted to a compute node:"
-        echo "     sudo rm -f $ROLE_MARKERS"
-        exit 1
-    fi
+    assert_demotion_allowed
 
     if [ -n "$OVN_CENTRAL_LAYOUT" ] && { systemctl is-enabled "$OVN_CENTRAL_UNIT" >/dev/null 2>&1 ||
         systemctl is-active "$OVN_CENTRAL_UNIT" >/dev/null 2>&1; }; then

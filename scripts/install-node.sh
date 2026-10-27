@@ -622,9 +622,15 @@ else
 fi
 
 # Compute nodes: no database of their own, pointed at every database node.
+#
+# --demote because these hosts may already carry a management role marker:
+# provision-iso-cluster.sh promotes every host during --reset-to-iso, since that
+# is what firstboot leaves behind, and formation is what decides which of them
+# hold the database. Without it setup-ovn.sh refuses the fourth host and the run
+# stops with every node left a standalone single-node cluster.
 if [ "$N" -gt "$DB_NODES" ]; then
     for i in $(seq "$DB_NODES" $((N - 1))); do
-        on "${HOSTS[$i]}" "sudo $SETUP_OVN \
+        on "${HOSTS[$i]}" "sudo $SETUP_OVN --demote \
             --node-name=${NODE_NAMES[$i]} \
             --ovn-remote=$OVN_REMOTE $OVN_UPLINK_ARGS \
             --encap-ip=${VPC_IPS[$i]}" || fail "${HOSTS[$i]}: setup-ovn.sh failed"

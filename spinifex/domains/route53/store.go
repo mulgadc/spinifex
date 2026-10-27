@@ -152,8 +152,31 @@ func refKey(account, ref string) string {
 	return keyPrefixCallerRf + kvutil.AccountKey(account, refDigest(ref))
 }
 
+// maxIssuedIDLength bounds the IDs a caller can look up. An overlong key
+// exceeds the NATS control line, and the server closes the connection.
+const maxIssuedIDLength = 64
+
+// issuable reports whether id has the form of a zone or change ID, which is
+// all a lookup key may hold. Anything else names nothing.
+func issuable(id string) bool {
+	if id == "" || len(id) > maxIssuedIDLength {
+		return false
+	}
+	for _, r := range id {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func notIssued(id string) error { return fmt.Errorf("%w: %.64q", kvstore.ErrNotFound, id) }
+
 // GetZone returns an account's zone, or kvstore.ErrNotFound.
 func (s *Store) GetZone(ctx context.Context, account, id string) (*ZoneRecord, error) {
+	if !issuable(id) {
+		return nil, notIssued(id)
+	}
 	z, _, err := s.zones.Get(ctx, zoneKey(account, id))
 	return z, err
 }
@@ -171,11 +194,17 @@ func (s *Store) ListAllZones(ctx context.Context) ([]ZoneRecord, error) {
 
 // MutateZone applies fn to a zone under CAS.
 func (s *Store) MutateZone(ctx context.Context, account, id string, fn func(*ZoneRecord) (bool, error)) error {
+	if !issuable(id) {
+		return notIssued(id)
+	}
 	return s.zones.Mutate(ctx, zoneKey(account, id), fn)
 }
 
 // GetRRSets returns a zone's record sets and the revision to CAS against.
 func (s *Store) GetRRSets(ctx context.Context, account, id string) (*RRSetsDoc, uint64, error) {
+	if !issuable(id) {
+		return nil, 0, notIssued(id)
+	}
 	return s.rrsets.Get(ctx, rrsetsKey(account, id))
 }
 
@@ -187,6 +216,9 @@ func (s *Store) CommitRRSets(ctx context.Context, account string, doc *RRSetsDoc
 
 // GetChange returns an account's change, or kvstore.ErrNotFound.
 func (s *Store) GetChange(ctx context.Context, account, id string) (*ChangeRecord, error) {
+	if !issuable(id) {
+		return nil, notIssued(id)
+	}
 	c, _, err := s.changes.Get(ctx, changeKey(account, id))
 	return c, err
 }

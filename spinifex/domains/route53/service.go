@@ -26,6 +26,8 @@ const (
 	maxListRecordSets         = 300
 	maxTagsPerResource        = 50
 	maxTagResources           = 10
+	maxTagsPerChange          = 10
+	maxTagKeyLength           = 128
 	changeRetention           = 7 * 24 * time.Hour
 	commitAttempts            = 3
 )
@@ -380,10 +382,20 @@ func (s *Service) ChangeTagsForResource(ctx context.Context, in *route53.ChangeT
 	if err != nil {
 		return nil, err
 	}
+	// A list that is sent carries 1 to 10 entries, as the model bounds it.
+	if in.AddTags != nil && (len(in.AddTags) == 0 || len(in.AddTags) > maxTagsPerChange) ||
+		in.RemoveTagKeys != nil && (len(in.RemoveTagKeys) == 0 || len(in.RemoveTagKeys) > maxTagsPerChange) {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "AddTags and RemoveTagKeys must each hold 1 to %d entries", maxTagsPerChange)
+	}
 	for _, t := range in.AddTags {
 		key := aws.StringValue(t.Key)
-		if key == "" || len(key) > 128 || len(aws.StringValue(t.Value)) > 256 {
+		if key == "" || len(key) > maxTagKeyLength || len(aws.StringValue(t.Value)) > 256 {
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "tag keys must be 1 to 128 characters and values at most 256")
+		}
+	}
+	for _, k := range in.RemoveTagKeys {
+		if len(aws.StringValue(k)) > maxTagKeyLength {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "tag keys must be at most %d characters", maxTagKeyLength)
 		}
 	}
 	err = s.store.MutateZone(ctx, account, id, func(z *ZoneRecord) (bool, error) {

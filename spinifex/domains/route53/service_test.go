@@ -454,12 +454,45 @@ func TestHostedZoneTags(t *testing.T) {
 	_, err = svc.ListTagsForResource(ctx, &r53.ListTagsForResourceInput{ResourceType: aws.String("healthcheck"), ResourceId: aws.String("hc")}, acctA)
 	requireCode(t, err, awserrors.ErrorRoute53NoSuchHealthCheck)
 
-	var tags []*r53.Tag
-	for i := range 51 {
-		tags = append(tags, &r53.Tag{Key: aws.String(fmt.Sprintf("k%d", i)), Value: aws.String("v")})
+	tagged := func(keys ...string) *r53.ChangeTagsForResourceInput {
+		in := &r53.ChangeTagsForResourceInput{ResourceType: aws.String("hostedzone"), ResourceId: aws.String(bare)}
+		for _, k := range keys {
+			in.AddTags = append(in.AddTags, &r53.Tag{Key: aws.String(k), Value: aws.String("v")})
+		}
+		return in
 	}
-	_, err = svc.ChangeTagsForResource(ctx, &r53.ChangeTagsForResourceInput{ResourceType: aws.String("hostedzone"), ResourceId: aws.String(bare), AddTags: tags}, acctA)
+	// One change carries at most 10 tags; with env, 49 more fill the zone.
+	for first := 0; first < 49; first += 10 {
+		var keys []string
+		for i := first; i < min(first+10, 49); i++ {
+			keys = append(keys, fmt.Sprintf("k%d", i))
+		}
+		_, err = svc.ChangeTagsForResource(ctx, tagged(keys...), acctA)
+		require.NoError(t, err)
+	}
+	_, err = svc.ChangeTagsForResource(ctx, tagged("k49"), acctA)
 	requireCode(t, err, awserrors.ErrorRoute53TooManyTagsForZone)
+}
+
+func TestChangeTagsForResourceBoundsItsLists(t *testing.T) {
+	svc := newService(t)
+	bare := strings.TrimPrefix(createZone(t, svc, acctA, "example.com"), "/hostedzone/")
+	eleven := make([]*r53.Tag, 11)
+	for i := range eleven {
+		eleven[i] = &r53.Tag{Key: aws.String(fmt.Sprintf("k%d", i)), Value: aws.String("v")}
+	}
+	for name, in := range map[string]*r53.ChangeTagsForResourceInput{
+		"empty AddTags":       {AddTags: []*r53.Tag{}},
+		"11 AddTags":          {AddTags: eleven},
+		"empty RemoveTagKeys": {RemoveTagKeys: []*string{}},
+		"11 RemoveTagKeys":    {RemoveTagKeys: aws.StringSlice(strings.Split("a b c d e f g h i j k", " "))},
+		"long RemoveTagKey":   {RemoveTagKeys: aws.StringSlice([]string{strings.Repeat("k", 129)})},
+	} {
+		in.ResourceType, in.ResourceId = aws.String("hostedzone"), aws.String(bare)
+		_, err := svc.ChangeTagsForResource(ctx, in, acctA)
+		require.Error(t, err, name)
+		requireCode(t, err, awserrors.ErrorInvalidInput)
+	}
 }
 
 func TestChangesOnAnActiveZoneWaitForSync(t *testing.T) {
@@ -509,4 +542,21 @@ func TestChangeRecordsArePrunedAfterRetention(t *testing.T) {
 	require.NoError(t, err)
 	_, err = svc.GetChange(ctx, &r53.GetChangeInput{Id: first.ChangeInfo.Id}, acctA)
 	requireCode(t, err, awserrors.ErrorNoSuchChange)
+}
+
+func TestLookupsOfUnissuableIDsNameNothing(t *testing.T) {
+	svc := newService(t)
+	id := createZone(t, svc, acctA, "example.com")
+
+	// A key this long would exceed the NATS control line and close the
+	// connection every later request shares.
+	_, err := svc.GetChange(ctx, &r53.GetChangeInput{Id: aws.String(strings.Repeat("C", 6500))}, acctA)
+	requireCode(t, err, awserrors.ErrorNoSuchChange)
+	for _, bad := range []string{strings.Repeat("Z", 65), "Z1.*", "Z1 >"} {
+		_, err = svc.GetHostedZone(ctx, &r53.GetHostedZoneInput{Id: aws.String(bad)}, acctA)
+		requireCode(t, err, awserrors.ErrorNoSuchHostedZone)
+	}
+
+	_, err = svc.GetHostedZone(ctx, &r53.GetHostedZoneInput{Id: aws.String(id)}, acctA)
+	require.NoError(t, err)
 }

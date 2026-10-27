@@ -74,7 +74,7 @@ func TestR3ExternalConformance(t *testing.T) {
 
 	conformance.Run(t, func(t *testing.T) conformance.Harness {
 		h := conformance.Harness{
-			Store:         externalStore(t, js),
+			Store:         externalStore(t, connectExternal(t, urls)),
 			MessageShards: testConfig.MessageStreams,
 			StateShards:   testConfig.StateBuckets,
 		}
@@ -82,8 +82,7 @@ func TestR3ExternalConformance(t *testing.T) {
 			h.Reopen = func(t *testing.T) message.Store {
 				out, err := exec.Command("sh", "-c", restart).CombinedOutput()
 				require.NoError(t, err, "restart: %s", out)
-				js = connectExternal(t, urls)
-				return externalStore(t, js)
+				return externalStore(t, connectExternal(t, urls))
 			}
 		}
 		return h

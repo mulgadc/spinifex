@@ -25,26 +25,32 @@ import (
 type cluster struct {
 	t       *testing.T
 	dirs    [3]string
-	client  [3]int
 	route   [3]int
 	servers [3]*server.Server
 	js      jsapi.JetStream
 }
 
-func freePort(t *testing.T) int {
+// routePorts reserves three distinct ports at once. Route ports must stay
+// fixed across restarts; client ports are chosen by each server instead.
+func routePorts(t *testing.T) [3]int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	var ports [3]int
+	for i := range ports {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer l.Close()
+		ports[i] = l.Addr().(*net.TCPAddr).Port
+	}
+	return ports
 }
 
 func startCluster(t *testing.T) *cluster {
 	t.Helper()
 	c := &cluster{t: t}
 	for i := range 3 {
-		c.dirs[i], c.client[i], c.route[i] = t.TempDir(), freePort(t), freePort(t)
+		c.dirs[i] = t.TempDir()
 	}
+	c.route = routePorts(t)
 	clustersize.RedeclareForTest(t, 3)
 	c.start()
 	t.Cleanup(c.stop)
@@ -59,7 +65,7 @@ func (c *cluster) start() {
 	}
 	for i := range 3 {
 		srv, err := server.NewServer(&server.Options{
-			ServerName: fmt.Sprintf("sqs-%d", i), Host: "127.0.0.1", Port: c.client[i],
+			ServerName: fmt.Sprintf("sqs-%d", i), Host: "127.0.0.1", Port: server.RANDOM_PORT,
 			JetStream: true, StoreDir: c.dirs[i], NoLog: true, NoSigs: true,
 			Cluster: server.ClusterOpts{Name: "sqs-r3", Host: "127.0.0.1", Port: c.route[i]},
 			Routes:  routes,
@@ -113,9 +119,20 @@ func (c *cluster) stop() {
 
 func (c *cluster) store(t *testing.T) *sqsjs.Store {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	s, err := sqsjs.New(ctx, c.js, testConfig)
+	// R3 placement fails until the meta leader has every peer's config and
+	// stats, which can trail its election on a loaded host; New is idempotent.
+	var s *sqsjs.Store
+	var err error
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		s, err = sqsjs.New(ctx, c.js, testConfig)
+		cancel()
+		if err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 	require.NoError(t, err)
 	return s
 }

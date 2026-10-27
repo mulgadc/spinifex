@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1922,6 +1923,17 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 		vpcID = *input.VpcId
 	}
 
+	// AWS rejects a VPC the caller does not own with ValidationError.
+	if vpcID != "" && s.VPCService != nil {
+		if _, err := s.VPCService.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, accountID); err != nil {
+			if awserrors.IsNotFound(err) {
+				return nil, errors.New(awserrors.ErrorValidationError)
+			}
+			slog.ErrorContext(ctx, "CreateTargetGroup: failed to look up VPC", "vpcId", vpcID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+
 	// Check duplicate name within VPC
 	existing, err := s.store.GetTargetGroupByName(ctx, name, vpcID)
 	if err != nil {
@@ -1941,9 +1953,13 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	// Only IPv4 targets are supported, matching SetIpAddressType on the LB.
-	if input.IpAddressType != nil && *input.IpAddressType != "" && *input.IpAddressType != IPAddressTypeIPv4 {
+	// Only IPv4 targets are supported; ipv6 is a valid AWS value we cannot serve.
+	switch aws.StringValue(input.IpAddressType) {
+	case "", IPAddressTypeIPv4:
+	case "ipv6":
 		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
+	default:
+		return nil, errors.New(awserrors.ErrorValidationError)
 	}
 
 	// Use NLB health check defaults for NLB protocols.
@@ -2025,6 +2041,13 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.M
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
+	// Resolved before the write, so a lookup failure cannot report a saved change as failed.
+	tgLBs, err := s.targetGroupLoadBalancers(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "ModifyTargetGroup: failed to resolve load balancers", "arn", *input.TargetGroupArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	// Under CAS, so a health-check change and a concurrent target registration
 	// on the same group cannot discard each other.
 	tg, err := s.updateTargetGroupCAS(ctx, *input.TargetGroupArn, accountID, "ModifyTargetGroup", func(rec *TargetGroupRecord) (bool, error) {
@@ -2073,12 +2096,6 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.M
 	}
 
 	slog.InfoContext(ctx, "ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
-
-	tgLBs, err := s.targetGroupLoadBalancers(ctx)
-	if err != nil {
-		slog.ErrorContext(ctx, "ModifyTargetGroup: failed to resolve load balancers", "arn", tg.TargetGroupArn, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
 
 	return &elbv2.ModifyTargetGroupOutput{
 		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(tg, tgLBs[tg.TargetGroupArn])},
@@ -2194,28 +2211,61 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 		if len(nameFilter) > 0 && !nameFilter[tg.Name] {
 			continue
 		}
-		// Filter by LB ARN if specified
-		if input.LoadBalancerArn != nil && *input.LoadBalancerArn != "" {
-			// Check if any listener on this LB references this TG
-			listeners, _ := s.store.ListListenersByLB(ctx, *input.LoadBalancerArn)
-			found := false
-			for _, l := range listeners {
-				for _, a := range l.DefaultActions {
-					if a.TargetGroupArn == tg.TargetGroupArn {
-						found = true
-					}
-				}
-			}
-			if !found {
-				continue
-			}
+		if lbArn := aws.StringValue(input.LoadBalancerArn); lbArn != "" && !slices.Contains(tgLBs[tg.TargetGroupArn], lbArn) {
+			continue
 		}
 		result = append(result, s.tgRecordToSDK(tg, tgLBs[tg.TargetGroupArn]))
 	}
 
+	// AWS fails the whole call when any requested ARN or name is unknown.
+	if len(arnFilter) > 0 || len(nameFilter) > 0 {
+		for _, tg := range result {
+			delete(arnFilter, aws.StringValue(tg.TargetGroupArn))
+			delete(nameFilter, aws.StringValue(tg.TargetGroupName))
+		}
+		if len(arnFilter) > 0 || len(nameFilter) > 0 {
+			return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+		}
+	}
+
+	slices.SortFunc(result, func(a, b *elbv2.TargetGroup) int {
+		return strings.Compare(aws.StringValue(a.TargetGroupName), aws.StringValue(b.TargetGroupName))
+	})
+	page, nextMarker, err := pageTargetGroups(result, input.Marker, input.PageSize)
+	if err != nil {
+		return nil, err
+	}
+
 	return &elbv2.DescribeTargetGroupsOutput{
-		TargetGroups: result,
+		TargetGroups: page,
+		NextMarker:   nextMarker,
 	}, nil
+}
+
+// pageTargetGroups slices one page out of the sorted result. The marker is an
+// opaque offset and AWS allows a PageSize of 1 to 400; without one the whole
+// result is returned so internal callers that never page see every group.
+func pageTargetGroups(items []*elbv2.TargetGroup, marker *string, pageSize *int64) ([]*elbv2.TargetGroup, *string, error) {
+	start := 0
+	if aws.StringValue(marker) != "" {
+		n, err := strconv.Atoi(*marker)
+		if err != nil || n < 0 {
+			return nil, nil, errors.New(awserrors.ErrorValidationError)
+		}
+		start = min(n, len(items))
+	}
+	size := len(items)
+	if pageSize != nil {
+		if *pageSize < 1 || *pageSize > 400 {
+			return nil, nil, errors.New(awserrors.ErrorValidationError)
+		}
+		size = int(*pageSize)
+	}
+	end := start + size
+	if end >= len(items) {
+		return items[start:], nil, nil
+	}
+	return items[start:end], aws.String(strconv.Itoa(end)), nil
 }
 
 // --- Target registration ---

@@ -18,7 +18,7 @@ import (
 // older than the window when the GC finishes their teardown are purged inline.
 const terminatedVisibilityWindow = 15 * time.Minute
 
-// TerminatedTeardownReaper completes interrupted instance teardown (ADR-0003:S2;
+// TerminatedTeardownReaper completes interrupted instance teardown (ADR-0003:S2 behaviour; mechanism from historic PROP-LIFECYCLE-003 §1;
 // historic PROP-LIFECYCLE-003 §3). It scans the terminated KV bucket for records this node owns whose
 // per-dependent teardown is not all `done`, re-drives each outstanding
 // dependent through the now-idempotent cleaner, and purges the terminated

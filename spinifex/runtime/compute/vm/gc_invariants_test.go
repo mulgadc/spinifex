@@ -30,7 +30,7 @@ func seedTerminated(t *testing.T, marks map[string]string) (*Manager, *recording
 	return m, cleaner, store, m.NewTerminatedTeardownReaper(), v
 }
 
-// TestRLC5_GCRetriesPendingTeardownToDoneThenPurges enforces ADR-0003:S2 and historic PROP-LIFECYCLE-003 §3
+// TestRLC5_GCRetriesPendingTeardownToDoneThenPurges enforces ADR-0003:S2 behaviour; mechanism from historic PROP-LIFECYCLE-003 §1 and §3
 // (retry pending teardown): a terminated record left with outstanding
 // pending/failed dependents by an interrupted terminate must be driven to all
 // `done` by the GC and then purged — never abandoned.
@@ -46,7 +46,7 @@ func TestRLC5_GCRetriesPendingTeardownToDoneThenPurges(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, reaped, "historic PROP-LIFECYCLE-003 §3: the GC must complete and purge the record")
-	assert.True(t, v.TeardownComplete(), "ADR-0003:S2: every dependent must reach done")
+	assert.True(t, v.TeardownComplete(), "ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism: every dependent must reach done")
 	remaining, err := store.ListTerminatedInstances()
 	require.NoError(t, err)
 	assert.Empty(t, remaining, "historic PROP-LIFECYCLE-003 §3: a record whose teardown the GC completed must be purged")
@@ -81,7 +81,7 @@ func TestRLC5_GCRetainsRecentlyCompletedForVisibility(t *testing.T) {
 	require.Len(t, remaining, 1, "the terminated instance must stay describable inside the window")
 }
 
-// TestRLC5_GCNeverPurgesIncompleteRecord enforces ADR-0003:S2 (no-orphan
+// TestRLC5_GCNeverPurgesIncompleteRecord enforces ADR-0003:S2 behaviour; mechanism from historic PROP-LIFECYCLE-003 §4 (no-orphan
 // completeness / never abandon): a dependent that keeps failing must leave the
 // terminated record present and marked, not purged, so a later sweep retries it.
 func TestRLC5_GCNeverPurgesIncompleteRecord(t *testing.T) {
@@ -95,12 +95,12 @@ func TestRLC5_GCNeverPurgesIncompleteRecord(t *testing.T) {
 	reaped, err := reaper.Sweep(context.Background())
 	require.NoError(t, err)
 
-	assert.Equal(t, 0, reaped, "ADR-0003:S2: a record with a still-failing dependent must not be purged")
+	assert.Equal(t, 0, reaped, "ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism: a record with a still-failing dependent must not be purged")
 	assert.False(t, v.TeardownComplete())
 	assert.Equal(t, string(TeardownFailed), v.Teardown[TeardownENI], "a failed retry must stay Failed, not silently drop")
 	remaining, err := store.ListTerminatedInstances()
 	require.NoError(t, err)
-	require.Len(t, remaining, 1, "ADR-0003:S2: an incomplete record must be retained (GC-visible) for the next sweep")
+	require.Len(t, remaining, 1, "ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism: an incomplete record must be retained (GC-visible) for the next sweep")
 	_ = m
 }
 

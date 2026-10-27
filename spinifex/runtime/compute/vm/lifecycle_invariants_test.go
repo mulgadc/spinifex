@@ -47,7 +47,7 @@ func TestRLC1_TerminateIdempotentOnAbsent(t *testing.T) {
 	}
 }
 
-// TestRLC4_TerminateStampsTeardownMap enforces ADR-0003:S2 (deterministic
+// TestRLC4_TerminateStampsTeardownMap enforces ADR-0003:S2 behaviour; mechanism from historic PROP-LIFECYCLE-003 §1 (deterministic
 // tracked teardown): a successful terminate must record a Teardown entry for
 // every dependency it touches so the GC backstop (historic PROP-LIFECYCLE-003 §3) can later
 // distinguish a fully-reaped instance from one with lingering async teardown.
@@ -82,14 +82,14 @@ func TestRLC4_TerminateStampsTeardownMap(t *testing.T) {
 	}
 	for dep, state := range want {
 		assert.Equalf(t, string(state), v.Teardown[dep],
-			"ADR-0003:S2: terminate must stamp Teardown[%q]=%s; an unstamped dependency is untracked and the GC reaper could purge the terminated record while it still dangles", dep, state)
+			"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism: terminate must stamp Teardown[%q]=%s; an unstamped dependency is untracked and the GC reaper could purge the terminated record while it still dangles", dep, state)
 	}
 	// No GPU was attached, so the GPU dependency must not be stamped.
 	_, gpuStamped := v.Teardown[TeardownGPU]
-	assert.Falsef(t, gpuStamped, "ADR-0003:S2: dependency that does not apply (no GPU attached) must not be stamped")
+	assert.Falsef(t, gpuStamped, "ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism: dependency that does not apply (no GPU attached) must not be stamped")
 }
 
-// TestRLC4_TerminateMarksFailedDependency enforces ADR-0003:S2: a teardown
+// TestRLC4_TerminateMarksFailedDependency enforces ADR-0003:S2 (behaviour; mechanism from historic PROP-LIFECYCLE-003 §1): a teardown
 // step that errors is recorded as Failed, never silently dropped or marked
 // Done. TeardownComplete must then report false so the GC backstop retains
 // the record for a later sweep rather than declaring the instance fully reaped.
@@ -109,7 +109,7 @@ func TestRLC4_TerminateMarksFailedDependency(t *testing.T) {
 	require.NoError(t, m.Terminate(v.ID))
 
 	assert.Equalf(t, string(TeardownFailed), v.Teardown[TeardownENI],
-		"ADR-0003:S2: a failed teardown step must be stamped Failed, not Done or dropped")
+		"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism: a failed teardown step must be stamped Failed, not Done or dropped")
 	assert.Falsef(t, v.TeardownComplete(),
-		"ADR-0003:S2: TeardownComplete must be false while any dependency is Failed/Pending so the GC backstop retains the record for retry")
+		"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism: TeardownComplete must be false while any dependency is Failed/Pending so the GC backstop retains the record for retry")
 }

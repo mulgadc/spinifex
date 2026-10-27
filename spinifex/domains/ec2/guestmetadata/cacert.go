@@ -68,7 +68,11 @@ func (s *IMDSServiceImpl) handleCACert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eni := s.resolveCaller(r)
+	eni, err := s.resolveCaller(r)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	if eni == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return

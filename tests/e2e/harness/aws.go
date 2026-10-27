@@ -24,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/aws/aws-sdk-go/service/sts"
 )
 
@@ -43,6 +44,7 @@ type AWSClient struct {
 	ECR            *ecr.ECR
 	ECS            *ecs.ECS
 	RDS            *rds.RDS
+	Route53        *route53.Route53
 	Bedrock        *bedrock.Bedrock
 	BedrockRuntime *bedrockruntime.BedrockRuntime
 }
@@ -144,6 +146,7 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey, sessionToken str
 		ECR:            ecr.New(sess),
 		ECS:            ecs.New(sess),
 		RDS:            rds.New(sess),
+		Route53:        route53.New(sess),
 		Bedrock:        bedrock.New(sess),
 		BedrockRuntime: bedrockruntime.New(sess),
 	}

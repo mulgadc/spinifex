@@ -6,7 +6,7 @@ package gateway
 import (
 	"testing"
 
-	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -15,13 +15,13 @@ import (
 // scope left behind by a deleted or renamed action fails too.
 func TestELBv2ScopeTableIsExhaustive(t *testing.T) {
 	for action := range elbv2Actions {
-		assert.True(t, gateway_elbv2.HasScope(action),
-			"elbv2 action %q has no resource scope entry: add one to elbv2Scopes in gateway/elbv2/authz.go", action)
+		assert.True(t, elbv2awsapi.HasScope(action),
+			"elbv2 action %q has no resource scope entry: add one to elbv2Scopes in domains/elbv2/awsapi/authz.go", action)
 	}
 
-	for _, action := range gateway_elbv2.ScopedActions() {
+	for _, action := range elbv2awsapi.ScopedActions() {
 		_, ok := elbv2Actions[action]
 		assert.True(t, ok,
-			"elbv2Scopes has an entry for %q, which the dispatch table does not serve: remove it from gateway/elbv2/authz.go", action)
+			"elbv2Scopes has an entry for %q, which the dispatch table does not serve: remove it from domains/elbv2/awsapi/authz.go", action)
 	}
 }

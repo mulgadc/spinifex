@@ -1,11 +1,8 @@
 package gateway
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,61 +16,12 @@ import (
 
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 )
-
-// A handler reached outside the middleware chain — a direct call from a test —
-// has no audit record, so every accessor has to tolerate a nil receiver.
-func TestRequestAuditNilSafe(t *testing.T) {
-	audit := auditFrom(context.Background())
-	require.Nil(t, audit)
-
-	assert.NotPanics(t, func() {
-		audit.setIdentity("AKIA", "123456789012", "ap-southeast-2", "ec2", "user")
-		audit.setAction("ec2", "DescribeInstances")
-		audit.setAuthError(awserrors.ErrorInvalidClientTokenId)
-		audit.setAccessKeyID("AKIA")
-		audit.annotate(context.Background())
-	})
-	assert.Nil(t, audit.fields())
-}
-
-// Empty values are omitted rather than logged blank, so an unauthenticated
-// request does not carry a row of empty identity fields.
-func TestRequestAuditOmitsEmptyFields(t *testing.T) {
-	audit := &requestAudit{clientIP: "10.15.8.11"}
-	assert.Equal(t, []any{"sourceIP", "10.15.8.11"}, audit.fields())
-
-	audit.setIdentity("AKIAEXAMPLE", "123456789012", "ap-southeast-2", "ec2", "user")
-	audit.setAction("ec2", "DescribeInstances")
-	assert.Equal(t, []any{
-		"sourceIP", "10.15.8.11",
-		"accessKeyID", "AKIAEXAMPLE",
-		"accountID", "123456789012",
-		"region", "ap-southeast-2",
-		"service", "ec2",
-		"action", "DescribeInstances",
-		"principalType", "user",
-	}, audit.fields())
-}
-
-// The record may carry an access key id and an error code and nothing else that
-// could hold a credential. This asserts the field set so a later addition of a
-// session token or an Authorization header fails here first.
-func TestRequestAuditCarriesNoSecret(t *testing.T) {
-	audit := &requestAudit{}
-	var keys []string
-	for _, kv := range audit.pairs() {
-		keys = append(keys, kv.key)
-	}
-	assert.Equal(t, []string{
-		"sourceIP", "accessKeyID", "accountID", "region", "service", "action",
-		"principalType", "authError", "requestID",
-	}, keys)
-}
 
 // auditRouter wires the audit middleware ahead of SigV4 auth the way
 // SetupRoutes does, and hands back the record for the request just served.
-func auditRouter(t *testing.T, keys map[string]*iamdomain.AccessKey) (http.Handler, func() *requestAudit) {
+func auditRouter(t *testing.T, keys map[string]*iamdomain.AccessKey) (http.Handler, func() *audit.Record) {
 	t.Helper()
 
 	rl := authlimit.NewAuthRateLimiter()
@@ -86,12 +34,12 @@ func auditRouter(t *testing.T, keys map[string]*iamdomain.AccessKey) (http.Handl
 		RateLimiter:    rl,
 	}
 
-	var got *requestAudit
+	var got *audit.Record
 	r := chi.NewRouter()
-	r.Use(requestAuditMiddleware)
+	r.Use(audit.Middleware)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			got = auditFrom(r.Context())
+			got = audit.From(r.Context())
 			next.ServeHTTP(w, r)
 		})
 	})
@@ -100,23 +48,23 @@ func auditRouter(t *testing.T, keys map[string]*iamdomain.AccessKey) (http.Handl
 		_, _ = w.Write([]byte("OK"))
 	})
 
-	return r, func() *requestAudit { return got }
+	return r, func() *audit.Record { return got }
 }
 
 // A request that never presented credentials is still attributable to where it
 // came from, and carries the verdict it was answered with.
 func TestRequestAuditRecordsUnauthenticatedRejection(t *testing.T) {
-	handler, audit := auditRouter(t, nil)
+	handler, record := auditRouter(t, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.15.8.11:54321"
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	require.NotNil(t, audit())
-	assert.Equal(t, "10.15.8.11", audit().clientIP)
-	assert.Equal(t, awserrors.ErrorMissingAuthenticationToken, audit().authError)
-	assert.Empty(t, audit().accessKeyID)
+	require.NotNil(t, record())
+	assert.Equal(t, "10.15.8.11", auditField(record(), "sourceIP"))
+	assert.Equal(t, awserrors.ErrorMissingAuthenticationToken, auditField(record(), "authError"))
+	assert.Empty(t, auditField(record(), "accessKeyID"))
 }
 
 // signedRequest builds a request whose signature is wrong but whose envelope
@@ -143,21 +91,21 @@ func signedRequestForKey(remoteAddr, accessKeyID string) *http.Request {
 // A rejected caller is identifiable: the key it presented is recorded even
 // though authentication failed on it.
 func TestRequestAuditRecordsRejectedAccessKey(t *testing.T) {
-	handler, audit := auditRouter(t, map[string]*iamdomain.AccessKey{})
+	handler, record := auditRouter(t, map[string]*iamdomain.AccessKey{})
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, signedRequest("10.15.8.12:54321"))
 
-	require.NotNil(t, audit())
-	assert.Equal(t, "10.15.8.12", audit().clientIP)
-	assert.Equal(t, "AKIAINVALIDKEY000000", audit().accessKeyID)
-	assert.Equal(t, awserrors.ErrorInvalidClientTokenId, audit().authError)
+	require.NotNil(t, record())
+	assert.Equal(t, "10.15.8.12", auditField(record(), "sourceIP"))
+	assert.Equal(t, "AKIAINVALIDKEY000000", auditField(record(), "accessKeyID"))
+	assert.Equal(t, awserrors.ErrorInvalidClientTokenId, auditField(record(), "authError"))
 }
 
 // The lockout that answers 503 is the case that motivated this: without the
 // record, the response carries no client address and no reason at all.
 func TestRequestAuditRecordsRateLimitLockout(t *testing.T) {
-	handler, audit := auditRouter(t, map[string]*iamdomain.AccessKey{})
+	handler, record := auditRouter(t, map[string]*iamdomain.AccessKey{})
 
 	// Distinct key ids: one key id repeated is one fault and never locks out.
 	send := func(accessKeyID string) int {
@@ -171,16 +119,16 @@ func TestRequestAuditRecordsRateLimitLockout(t *testing.T) {
 	}
 	assert.Equal(t, http.StatusServiceUnavailable, send("AKIAINVALIDKEY000000"))
 
-	require.NotNil(t, audit())
-	assert.Equal(t, "10.15.8.13", audit().clientIP)
-	assert.Equal(t, awserrors.ErrorRequestLimitExceeded, audit().authError)
+	require.NotNil(t, record())
+	assert.Equal(t, "10.15.8.13", auditField(record(), "sourceIP"))
+	assert.Equal(t, awserrors.ErrorRequestLimitExceeded, auditField(record(), "authError"))
 }
 
 // sourceIP must not be something a direct caller can choose. X-Real-IP is the
 // edge's word only on a loopback connection; from anywhere else both it and
 // X-Forwarded-For are ignored.
 func TestRequestAuditClientIPIgnoresSpoofedHeadersFromNonLoopback(t *testing.T) {
-	handler, audit := auditRouter(t, nil)
+	handler, record := auditRouter(t, nil)
 
 	for _, remote := range []string{"203.0.113.9:5555", "10.2.0.3:5555", "[2001:db8::9]:5555"} {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -189,17 +137,17 @@ func TestRequestAuditClientIPIgnoresSpoofedHeadersFromNonLoopback(t *testing.T) 
 		req.Header.Set("X-Forwarded-For", "198.51.100.1")
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 
-		require.NotNil(t, audit())
+		require.NotNil(t, record())
 		host, _, err := net.SplitHostPort(remote)
 		require.NoError(t, err)
-		assert.Equal(t, host, audit().clientIP, "spoofed headers from %s must not be logged as the source", remote)
+		assert.Equal(t, host, auditField(record(), "sourceIP"), "spoofed headers from %s must not be logged as the source", remote)
 	}
 }
 
 // Through the edge (or the console proxy) the connection is loopback, and the
 // edge's X-Real-IP is the real client.
 func TestRequestAuditClientIPTrustsRealIPFromLoopback(t *testing.T) {
-	handler, audit := auditRouter(t, nil)
+	handler, record := auditRouter(t, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "127.0.0.1:40000"
@@ -207,14 +155,14 @@ func TestRequestAuditClientIPTrustsRealIPFromLoopback(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "203.0.113.1")
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
-	require.NotNil(t, audit())
-	assert.Equal(t, "198.51.100.7", audit().clientIP)
+	require.NotNil(t, record())
+	assert.Equal(t, "198.51.100.7", auditField(record(), "sourceIP"))
 }
 
 // The edge's request ID joins an awsgw line to its access-log line; a value that
 // does not look like an ID is dropped rather than written into the log.
 func TestRequestAuditRecordsRequestID(t *testing.T) {
-	handler, audit := auditRouter(t, nil)
+	handler, record := auditRouter(t, nil)
 
 	cases := map[string]string{
 		"4f1c2b7e9a0d4e6f8b3c5a7d9e1f2a3b": "4f1c2b7e9a0d4e6f8b3c5a7d9e1f2a3b",
@@ -230,28 +178,20 @@ func TestRequestAuditRecordsRequestID(t *testing.T) {
 		}
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 
-		require.NotNil(t, audit())
-		assert.Equal(t, want, audit().requestID, "X-Request-ID %q", header)
+		require.NotNil(t, record())
+		assert.Equal(t, want, auditField(record(), "requestID"), "X-Request-ID %q", header)
 	}
 }
 
-// slog renders a bare time.Duration as unitless nanoseconds, so the access line
-// carries duration_ms instead.
-func TestLogRequestDurationInMilliseconds(t *testing.T) {
-	buf := &bytes.Buffer{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	audit := &requestAudit{clientIP: "198.51.100.7", requestID: "abc123"}
-	req = req.WithContext(context.WithValue(req.Context(), ctxAudit, audit))
-
-	logRequest(req, http.StatusOK, 1500*time.Millisecond)
-
-	out := buf.String()
-	assert.Contains(t, out, "duration_ms=1500")
-	assert.NotContains(t, out, "duration=")
-	assert.Contains(t, out, "sourceIP=198.51.100.7")
-	assert.Contains(t, out, "requestID=abc123")
+// auditField returns one value from the record's log fields, or "" when the
+// record omits it as empty.
+func auditField(rec *audit.Record, key string) string {
+	f := rec.Fields()
+	for i := 0; i+1 < len(f); i += 2 {
+		if f[i] == key {
+			v, _ := f[i+1].(string)
+			return v
+		}
+	}
+	return ""
 }

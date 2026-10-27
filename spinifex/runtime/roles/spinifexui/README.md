@@ -8,12 +8,12 @@ Note: This is not needed for actually building spinifex-ui and running it. We co
 
 1. **Install Node.js using nvm**
 
-This project uses Node.js 24.12.0 (specified in `.nvmrc`).
+This project uses the Node.js version pinned in `frontend/.nvmrc`.
 
    ```sh
    cd frontend
    # Install nvm if you don't have it
-   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
 
    # Restart source nvm
    \. "$HOME/.nvm/nvm.sh"

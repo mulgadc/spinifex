@@ -24,6 +24,7 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -487,17 +488,17 @@ func TestECRPipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T) {
 
 // TestECRPipeline_RequestAudit_RecordsResolvedAction pins that the audit
 // record's action field carries the resolved ECR action once a real request
-// runs through requestAuditMiddleware, SigV4AuthMiddleware and Request.
+// runs through audit.Middleware, SigV4AuthMiddleware and Request.
 func TestECRPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 	gw, _ := ecrPipelineApp(t, allowAllECRDocs())
 
-	var got *requestAudit
+	var got *audit.Record
 	r := chi.NewRouter()
-	r.Use(requestAuditMiddleware)
+	r.Use(audit.Middleware)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			next.ServeHTTP(w, r)
-			got = auditFrom(r.Context())
+			got = audit.From(r.Context())
 		})
 	})
 	r.Use(gw.SigV4AuthMiddleware())
@@ -507,7 +508,7 @@ func TestECRPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 	doRequest(r, signECRRequest(t, target, []byte("{}")))
 
 	require.NotNil(t, got)
-	assert.Equal(t, "ListRepositories", got.action)
+	assert.Equal(t, "ListRepositories", auditField(got, "action"))
 }
 
 // --- Inventory pin --------------------------------------------------------

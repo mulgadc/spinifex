@@ -21,14 +21,12 @@ import (
 	"uuid"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
@@ -42,9 +40,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
+	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -342,10 +342,10 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))
-	r.Use(requestAuditMiddleware)
+	r.Use(audit.Middleware)
 
 	if !gw.DisableLogging {
-		r.Use(slogRequestLogger)
+		r.Use(audit.RequestLogger)
 	}
 
 	// Anonymous STS (AssumeRoleWithWebIdentity) is dispatched ahead of SigV4 —
@@ -419,13 +419,23 @@ func jsonErrorService(svc string) bool {
 	return false
 }
 
-// jsonErrorService reports whether svc's errors render in the AWS JSON 1.1
-// envelope: a registered service's own declared envelope, or the legacy
-// table for every service not yet registered through the seam. Every error
-// emitter calls this method, never the free function, so the two can never
-// disagree on a registered service.
-func (gw *GatewayConfig) jsonErrorService(svc string) bool {
-	return gw.selector().JSONErrors(svc)
+// errorProtocol reports the JSON wire format svc's errors use; ok is false when
+// they render as XML. A registered service's declared envelope wins.
+func (gw *GatewayConfig) errorProtocol(svc string) (p envelope.Protocol, ok bool) {
+	return gw.selector().ErrorProtocol(svc)
+}
+
+// writeJSONError renders a gateway-raised error in svc's JSON protocol. The
+// code gets the common-error "Exception" suffix unless verbatim.
+func (gw *GatewayConfig) writeJSONError(w http.ResponseWriter, p envelope.Protocol, svc string, e envelope.JSONError) {
+	if entry, ok := gw.registered(svc); ok {
+		if internal, own := entry.InternalErrorCode(); own && e.Code == awserrors.ErrorInternalError {
+			e.Code, e.Verbatim = internal, true
+		}
+		e.QueryCode = entry.QueryErrorCode(e.Code)
+		e.Namespace = entry.ErrorNamespace(e.Code)
+	}
+	envelope.WriteJSON(w, p, e)
 }
 
 // clusterUnavailableMsg is the 503 body when NATS is disconnected. Points
@@ -437,15 +447,13 @@ const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check 
 func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.Request, svc string) {
 	requestID := uuid.NewV4().String()
 
-	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
-	if gw.jsonErrorService(svc) {
-		body := envelope.JSONBody(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg)
-		w.Header().Set("Content-Type", envelope.JSONContentType)
-		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(awserrors.ErrorServiceUnavailable))
-		w.WriteHeader(http.StatusServiceUnavailable)
-		if _, err := w.Write(body); err != nil {
-			slog.Error("Failed to write JSON cluster-unavailable response", "err", err)
-		}
+	// JSON services get a body in their own protocol.
+	if p, ok := gw.errorProtocol(svc); ok {
+		gw.writeJSONError(w, p, svc, envelope.JSONError{
+			Code:    awserrors.ErrorServiceUnavailable,
+			Message: clusterUnavailableMsg,
+			Status:  http.StatusServiceUnavailable,
+		})
 		return
 	}
 
@@ -464,20 +472,23 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	svc, _ := r.Context().Value(ctxService).(string)
 
 	errorCode := awserrors.ErrorRequestLimitExceeded
-	if svc == "iam" || svc == "sts" || svc == "eks" {
+	if svc == "iam" || svc == "sts" || svc == "eks" || svc == "route53" {
 		errorCode = awserrors.ErrorThrottling
 	}
-	errorMsg := awserrors.ErrorLookup[errorCode]
+	errorMsg := awserrors.LookupErrorMessage(svc, errorCode)
 
-	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
-	if gw.jsonErrorService(svc) {
-		body := envelope.JSONBody(errorCode, errorMsg.Message)
-		w.Header().Set("Content-Type", envelope.JSONContentType)
-		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(errorCode))
-		w.WriteHeader(errorMsg.HTTPCode)
-		if _, err := w.Write(body); err != nil {
-			slog.Error("Failed to write JSON throttle error response", "err", err)
+	// JSON services get a body in their own protocol.
+	if p, ok := gw.errorProtocol(svc); ok {
+		je := envelope.JSONError{Code: errorCode, Message: errorMsg.Message, Status: errorMsg.HTTPCode}
+		if entry, reg := gw.registered(svc); reg {
+			if spec, own := entry.ThrottleError(); own {
+				je = envelope.JSONError{
+					Code: spec.Code, Verbatim: true, Message: spec.Message,
+					Status: spec.Status, Fields: spec.Fields,
+				}
+			}
 		}
+		gw.writeJSONError(w, p, svc, je)
 		return
 	}
 
@@ -945,17 +956,15 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())))
 	}
 
-	// EKS, ECR, ACM, ECS, tagging, and the bedrock family use AWS JSON 1.1;
-	// query/XML services fall through.
-	if gw.jsonErrorService(svc) {
-		body := envelope.JSONBody(code, errorMsg.Message)
-		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
-		w.Header().Set("Content-Type", envelope.JSONContentType)
-		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(code))
-		w.WriteHeader(errorMsg.HTTPCode)
-		if _, err := w.Write(body); err != nil {
-			slog.Error("Failed to write EKS error response", "err", err)
-		}
+	// JSON services answer in their own protocol; query/XML services fall
+	// through.
+	if p, ok := gw.errorProtocol(svc); ok {
+		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "requestId", requestId)
+		gw.writeJSONError(w, p, svc, envelope.JSONError{
+			Code: code, Verbatim: p != envelope.ProtocolJSON11,
+			Message: errorMsg.Message, Status: errorMsg.HTTPCode,
+			Fields: awserrors.ResolveFields(err),
+		})
 		return
 	}
 
@@ -1119,7 +1128,7 @@ func recordResolvedAction(ctx context.Context, service, action string) {
 	span.SetName(name)
 	span.SetAttributes(attribute.String("aws.action", action))
 	otelsetup.SetRequestAction(ctx, name)
-	auditFrom(ctx).setAction(service, action)
+	audit.From(ctx).SetAction(service, action)
 }
 
 // traceActionEnricher renames the server span to the resolved SigV4
@@ -1141,17 +1150,5 @@ func traceActionEnricher(next http.Handler) http.Handler {
 			span.SetAttributes(attribute.String("aws.region", region))
 		}
 		next.ServeHTTP(w, r)
-	})
-}
-
-// slogRequestLogger is a middleware that logs each request via slog. The audit
-// record carries the caller and the auth verdict onto the same line, so a
-// failing request is answerable without joining it to a separate auth log.
-func slogRequestLogger(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-		next.ServeHTTP(ww, r)
-		logRequest(r, ww.Status(), time.Since(start))
 	})
 }

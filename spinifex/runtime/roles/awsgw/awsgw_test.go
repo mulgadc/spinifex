@@ -8,6 +8,7 @@ import (
 
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/assert"
@@ -48,15 +49,16 @@ func TestWireServiceRegistry(t *testing.T) {
 		require.Error(t, wireServiceRegistry(gw, reg, reg))
 	})
 
-	t.Run("ECR and ACM registrations wire together, as production does", func(t *testing.T) {
+	t.Run("ECR, ACM and Route 53 registrations wire together, as production does", func(t *testing.T) {
 		gw := &gateway.GatewayConfig{}
 		require.NoError(t, wireServiceRegistry(gw,
-			awsapi.NewRegistration(awsapi.Deps{}), acmawsapi.NewRegistration(acmawsapi.Deps{})))
+			awsapi.NewRegistration(awsapi.Deps{}), acmawsapi.NewRegistration(acmawsapi.Deps{}),
+			route53awsapi.NewRegistration(route53awsapi.Deps{})))
 		require.NotNil(t, gw.Services)
-		_, ecrOK := gw.Services.Lookup("ecr")
-		_, acmOK := gw.Services.Lookup("acm")
-		assert.True(t, ecrOK)
-		assert.True(t, acmOK)
+		for _, svc := range []string{"ecr", "acm", "route53"} {
+			_, ok := gw.Services.Lookup(svc)
+			assert.True(t, ok, svc)
+		}
 	})
 
 	t.Run("a registration claiming a legacy name fails startup", func(t *testing.T) {

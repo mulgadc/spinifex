@@ -12,6 +12,7 @@ import (
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
@@ -365,6 +366,11 @@ func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) err
 	if err != nil {
 		return err
 	}
+	if in, ok := input.(*iam.GetUserInput); ok && aws.StringValue(in.UserName) == "" {
+		if handler, err = getUserForCaller(r, accountID, in); err != nil {
+			return err
+		}
+	}
 	resources, err := iamawsapi.ResourceARNs(action, accountID, input, gw.IAMService)
 	if err != nil {
 		return err
@@ -389,6 +395,36 @@ func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) err
 		slog.Error("Failed to write IAM response", "err", err)
 	}
 	return nil
+}
+
+// getRootUser answers GetUser without UserName for root, which has no IAM user
+// record of the shape AWS returns.
+var getRootUser = iamHandler(func(accountID string, _ *iam.GetUserInput, gw *GatewayConfig) (any, error) {
+	return iamawsapi.GetRootUser(accountID, gw.IAMService)
+})
+
+// getUserForCaller applies AWS's default for GetUser without UserName before
+// authorization: a user is treated as naming themselves, root is described as
+// the account root, and a role session must name a user.
+func getUserForCaller(r *http.Request, accountID string, in *iam.GetUserInput) (iamAction, error) {
+	identity := mustCtxString(r, ctxIdentity)
+	switch mustCtxString(r, ctxPrincipalType) {
+	case principalTypeUser:
+		if identity == "root" && accountID == awsidentifiers.GlobalAccountID {
+			return getRootUser, nil
+		}
+		in.UserName = aws.String(identity)
+		return iamActions["GetUser"], nil
+	case principalTypeRoot:
+		return getRootUser, nil
+	case principalTypeAssumedRole:
+		return iamAction{}, awserrors.Errorf(awserrors.ErrorValidationError,
+			"Must specify userName when calling with non-User credentials")
+	default:
+		slog.Error("IAM GetUser: unknown principal type, cannot default UserName",
+			"principal_type", mustCtxString(r, ctxPrincipalType))
+		return iamAction{}, errors.New(awserrors.ErrorInternalError)
+	}
 }
 
 // checkInstanceProfilePassRole requires iam:PassRole on the role being added to

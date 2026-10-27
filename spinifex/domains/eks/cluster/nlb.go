@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -496,6 +497,9 @@ func lookupTGByName(ctx context.Context, nlbp nlbProvisioner, accountID, name st
 		Names: aws.StringSlice([]string{name}),
 	}, accountID)
 	if err != nil {
+		if strings.Contains(err.Error(), awserrors.ErrorELBv2TargetGroupNotFound) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("describe TG %s: %w", name, err)
 	}
 	for _, tg := range out.TargetGroups {

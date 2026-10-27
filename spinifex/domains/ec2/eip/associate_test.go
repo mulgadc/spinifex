@@ -219,3 +219,71 @@ func TestEIP_DisassociateAfterAssociate(t *testing.T) {
 	assert.Nil(t, addr.AssociationId)
 	assert.Equal(t, publicIP, *addr.PublicIp)
 }
+
+// autoAssignPublicIP gives eni an auto-assigned address the way launch does:
+// allocated from the pool under its ENI, then stamped on the record.
+func autoAssignPublicIP(t *testing.T, ipam *ec2vpc.ExternalIPAM, vpcSvc *ec2vpc.VPCServiceImpl, eni *ec2.NetworkInterface) string {
+	t.Helper()
+	ip, err := ipam.AllocateFromPool(t.Context(), testPool().Name, ec2vpc.PurposeENIPublic, "", *eni.NetworkInterfaceId, "")
+	require.NoError(t, err)
+	require.NoError(t, vpcSvc.UpdateENIPublicIP(testAccountID, *eni.NetworkInterfaceId, ip, testPool().Name))
+	return ip
+}
+
+func poolHolds(t *testing.T, ipam *ec2vpc.ExternalIPAM, ip string) bool {
+	t.Helper()
+	rec, err := ipam.GetPoolRecord(testPool().Name)
+	require.NoError(t, err)
+	_, ok := rec.Allocated[ip]
+	return ok
+}
+
+// AWS releases an instance's auto-assigned public IP when an Elastic IP is
+// associated with it. Keeping it leaves an address nothing refers to, which a
+// cloud-backed pool keeps billing for.
+func TestEIP_AssociateReleasesAutoAssignedPublicIP(t *testing.T) {
+	svc, ipam, vpcSvc := setupTestEIP(t)
+	eni := createAssocENI(t, vpcSvc)
+	autoIP := autoAssignPublicIP(t, ipam, vpcSvc, eni)
+	allocID, eipIP := allocateEIP(t, svc)
+
+	sub, err := svc.natsConn.SubscribeSync("vpc.delete-nat")
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{
+		AllocationId:       aws.String(allocID),
+		NetworkInterfaceId: eni.NetworkInterfaceId,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	assert.False(t, poolHolds(t, ipam, autoIP), "the displaced auto-assigned address must go back to the pool")
+	assert.True(t, poolHolds(t, ipam, eipIP))
+
+	msg, err := sub.NextMsg(2 * time.Second)
+	require.NoError(t, err)
+	var got networkv1.NATEvent
+	require.NoError(t, json.Unmarshal(msg.Data, &got))
+	assert.Equal(t, autoIP, got.ExternalIP, "the displaced address's NAT rule must be withdrawn")
+	assert.Equal(t, *eni.PrivateIpAddress, got.LogicalIP)
+}
+
+// Associating a second Elastic IP to an interface that already holds one must
+// not free the first: it is the customer's allocation, not an auto address.
+func TestEIP_AssociateKeepsAnotherElasticIP(t *testing.T) {
+	svc, ipam, vpcSvc := setupTestEIP(t)
+	eni := createAssocENI(t, vpcSvc)
+	firstID, firstIP := allocateEIP(t, svc)
+	secondID, _ := allocateEIP(t, svc)
+
+	for _, id := range []string{firstID, secondID} {
+		_, err := svc.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{
+			AllocationId:       aws.String(id),
+			NetworkInterfaceId: eni.NetworkInterfaceId,
+		}, testAccountID)
+		require.NoError(t, err)
+	}
+
+	assert.True(t, poolHolds(t, ipam, firstIP), "an Elastic IP is freed only by ReleaseAddress")
+	assert.Equal(t, firstIP, *describeEIP(t, svc, firstID).PublicIp)
+}

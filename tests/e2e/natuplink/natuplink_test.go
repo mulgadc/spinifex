@@ -676,9 +676,9 @@ func phaseEIPIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egre
 		return eipHostPlumbingGone(eip)
 	}, 2*time.Minute, 3*time.Second)
 
-	// The auto-assigned address went back to the pool at associate time, so
-	// disassociating leaves the instance with no public delivery at all. It does
-	// not come back — matching EC2, where a stop/start is what issues a new one.
+	// The auto-assigned address went back to the pool at associate time and does
+	// not come back. EC2 assigns a new public IPv4 on disassociate; Spinifex does
+	// not yet, so this asserts the current divergence, not parity.
 	harness.Step(t, "no public delivery remains after the EIP teardown")
 	require.NoError(t, eipHostPlumbingGone(probe.publicIP))
 }

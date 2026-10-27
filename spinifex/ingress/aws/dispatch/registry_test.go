@@ -322,3 +322,31 @@ func TestEntryQueryErrorCode(t *testing.T) {
 	assert.Equal(t, "AWS.SimpleQueueService.NonExistentQueue", e.QueryErrorCode("QueueDoesNotExist"))
 	assert.Equal(t, "OverLimit", e.QueryErrorCode("OverLimit"))
 }
+
+func TestEntryInternalErrorCode(t *testing.T) {
+	entry := func(env ErrorEnvelope, code string) *Entry {
+		b := NewBuilder()
+		r := validReg("svc")
+		r.Errors = env
+		r.InternalErrorCode = code
+		require.NoError(t, b.Register(r))
+		e, _ := b.Build().Lookup("svc")
+		return e
+	}
+	code, ok := entry(ErrorEnvelopeRESTJSON, "").InternalErrorCode()
+	assert.True(t, ok)
+	assert.Equal(t, "ServiceException", code)
+	code, ok = entry(ErrorEnvelopeJSON10Query, "").InternalErrorCode()
+	assert.True(t, ok)
+	assert.Equal(t, "InternalFailure", code)
+	code, _ = entry(ErrorEnvelopeRESTJSON, "Mine").InternalErrorCode()
+	assert.Equal(t, "Mine", code)
+	_, ok = entry(ErrorEnvelopeJSON, "").InternalErrorCode()
+	assert.False(t, ok)
+	_, ok = entry(ErrorEnvelopeXML, "").InternalErrorCode()
+	assert.False(t, ok)
+
+	r := validReg("svc")
+	r.InternalErrorCode = "Mine"
+	require.Error(t, NewBuilder().Register(r), "JSON 1.1 cannot set an internal error code")
+}

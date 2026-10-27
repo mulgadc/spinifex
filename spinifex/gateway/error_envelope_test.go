@@ -6,6 +6,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -141,6 +142,7 @@ func TestErrorEnvelope_DispatcherError(t *testing.T) {
 		resp := doRequest(app, signDispatchRequest(t, restJSONService, []byte("{}")))
 
 		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+		assert.Equal(t, "ServiceException", resp.Header.Get("X-Amzn-Errortype"))
 		assert.JSONEq(t, `{"Type":"Service","message":"boom"}`, bodyString(t, resp))
 	})
 
@@ -159,13 +161,31 @@ func TestErrorEnvelope_DispatcherError(t *testing.T) {
 		assert.Equal(t, `{"__type":"InvalidParameterValue","message":"bad value"}`, bodyString(t, resp))
 	})
 
-	t.Run("JSON 1.0 unmapped server fault is Receiver with the code itself", func(t *testing.T) {
+	t.Run("JSON 1.0 unmapped server fault is Receiver with InternalFailure", func(t *testing.T) {
 		c := &dispatchCapture{dispatchErr: awserrors.Errorf(awserrors.ErrorInternalError, "boom")}
 		_, app := dispatchSeamApp(t, allowAllECRDocs(), envelopeRegistration(json10Service, dispatch.ErrorEnvelopeJSON10Query, c, nil))
 		resp := doRequest(app, signDispatchRequest(t, json10Service, []byte("{}")))
 
 		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-		assert.Equal(t, "InternalError;Receiver", resp.Header.Get("X-Amzn-Query-Error"))
+		assert.Equal(t, "InternalFailure;Receiver", resp.Header.Get("X-Amzn-Query-Error"))
+		assert.Contains(t, bodyString(t, resp), `"__type":"InternalFailure"`)
+	})
+
+	t.Run("unknown code takes the registration's internal error code", func(t *testing.T) {
+		c := &dispatchCapture{dispatchErr: errors.New("not a registered code")}
+		_, app := dispatchSeamApp(t, allowAllECRDocs(), envelopeRegistration(restJSONService, dispatch.ErrorEnvelopeRESTJSON, c,
+			func(r *dispatch.Registration) { r.InternalErrorCode = "CustomInternal" }))
+		resp := doRequest(app, signDispatchRequest(t, restJSONService, []byte("{}")))
+
+		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+		assert.Equal(t, "CustomInternal", resp.Header.Get("X-Amzn-Errortype"))
+	})
+
+	t.Run("JSON 1.1 and XML keep InternalError", func(t *testing.T) {
+		c := &dispatchCapture{dispatchErr: errors.New("not a registered code")}
+		_, app := dispatchSeamApp(t, allowAllECRDocs(), envelopeRegistration(json11Service, dispatch.ErrorEnvelopeJSON, c, nil))
+		resp := doRequest(app, signDispatchRequest(t, json11Service, []byte("{}")))
+		assert.Equal(t, "InternalErrorException", resp.Header.Get("X-Amzn-Errortype"))
 	})
 
 	t.Run("JSON 1.1 still appends Exception", func(t *testing.T) {

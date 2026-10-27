@@ -126,7 +126,11 @@ type Registration struct {
 	// x-amzn-query-error; a code absent from it is sent as itself. JSON 1.0
 	// only.
 	QueryErrorCodes map[string]string
-	Inventory       Inventory
+	// InternalErrorCode is the wire code sent for an error with no registered
+	// code. Unset, a REST-JSON registration sends ServiceException and a JSON
+	// 1.0 one InternalFailure. JSON 1.1 and XML keep InternalError.
+	InternalErrorCode string
+	Inventory         Inventory
 }
 
 // UnknownService returns the client-visible code and message for a credential
@@ -187,6 +191,7 @@ func (b *Builder) Register(reg Registration) error {
 		errors:     reg.Errors,
 		throttle:   reg.Throttle,
 		queryCodes: maps.Clone(reg.QueryErrorCodes),
+		internal:   reg.InternalErrorCode,
 	}
 	for _, n := range names {
 		b.entries[n] = e
@@ -247,6 +252,9 @@ func validateErrorSpecs(reg Registration) error {
 	}
 	if len(reg.QueryErrorCodes) > 0 && reg.Errors != ErrorEnvelopeJSON10Query {
 		return errors.New("query error codes need the JSON 1.0 error envelope")
+	}
+	if reg.InternalErrorCode != "" && reg.Errors != ErrorEnvelopeRESTJSON && reg.Errors != ErrorEnvelopeJSON10Query {
+		return errors.New("internal error code needs the REST-JSON or JSON 1.0 error envelope")
 	}
 	for code, legacy := range reg.QueryErrorCodes {
 		if code == "" || legacy == "" {
@@ -337,6 +345,7 @@ type Entry struct {
 
 	throttle   *ErrorSpec
 	queryCodes map[string]string
+	internal   string
 }
 
 // Service returns the registration's primary credential-scope name.
@@ -368,6 +377,21 @@ func (e *Entry) ThrottleError() (spec ErrorSpec, ok bool) {
 func cloneSpec(s ErrorSpec) ErrorSpec {
 	s.Fields = maps.Clone(s.Fields)
 	return s
+}
+
+// InternalErrorCode returns the wire code for an error carrying no registered
+// code; ok is false when the gateway's InternalError applies.
+func (e *Entry) InternalErrorCode() (code string, ok bool) {
+	if e.internal != "" {
+		return e.internal, true
+	}
+	switch e.errors {
+	case ErrorEnvelopeRESTJSON:
+		return "ServiceException", true
+	case ErrorEnvelopeJSON10Query:
+		return "InternalFailure", true
+	}
+	return "", false
 }
 
 // QueryErrorCode returns the legacy query code sent in x-amzn-query-error for

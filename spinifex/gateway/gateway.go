@@ -429,6 +429,9 @@ func (gw *GatewayConfig) errorProtocol(svc string) (p envelope.Protocol, ok bool
 // code gets the common-error "Exception" suffix unless verbatim.
 func (gw *GatewayConfig) writeJSONError(w http.ResponseWriter, p envelope.Protocol, svc string, e envelope.JSONError) {
 	if entry, ok := gw.registered(svc); ok {
+		if internal, own := entry.InternalErrorCode(); own && e.Code == awserrors.ErrorInternalError {
+			e.Code, e.Verbatim = internal, true
+		}
 		e.QueryCode = entry.QueryErrorCode(e.Code)
 	}
 	envelope.WriteJSON(w, p, e)

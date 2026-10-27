@@ -106,9 +106,9 @@ func TestMultinodeVPCNetworking(t *testing.T) {
 	runVPCNetworking(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeIPSec is read-only over SSH; launches no AWS resources.
+// TestMultinodeIPSec is sequential: it launches a cross-node instance pair and
+// captures each node's outbound underlay while the pair exchanges traffic.
 func TestMultinodeIPSec(t *testing.T) {
-	t.Parallel()
 	runIPSec(t, requireMultiNodeFixture(t))
 }
 

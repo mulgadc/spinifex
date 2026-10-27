@@ -724,6 +724,33 @@ func ResolveRetryAfter(err error) (time.Duration, bool) {
 	return 0, false
 }
 
+// fieldsError attaches extra response-body fields to an error without changing
+// its text, for protocols that carry them (e.g. a REST-JSON throttle Reason).
+type fieldsError struct {
+	err    error
+	fields map[string]string
+}
+
+func (e *fieldsError) Error() string { return e.err.Error() }
+func (e *fieldsError) Unwrap() error { return e.err }
+
+// WithFields attaches extra top-level response-body fields to err. Protocols
+// without extra fields ignore them.
+func WithFields(err error, fields map[string]string) error {
+	if err == nil || len(fields) == 0 {
+		return err
+	}
+	return &fieldsError{err: err, fields: fields}
+}
+
+// ResolveFields returns the fields attached to err via WithFields, if any.
+func ResolveFields(err error) map[string]string {
+	if fe, ok := errors.AsType[*fieldsError](err); ok {
+		return fe.fields
+	}
+	return nil
+}
+
 // errorLookupByService overrides ErrorLookup's message and HTTP status for a
 // (service, code) pair whose wire code is shared by services with different
 // canonical wording — e.g. ACM and EKS both use "ResourceInUseException".

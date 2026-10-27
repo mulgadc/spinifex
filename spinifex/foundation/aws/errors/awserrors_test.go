@@ -335,3 +335,21 @@ func TestIsNotFound(t *testing.T) {
 		})
 	}
 }
+
+func TestWithFields_SurvivesWrappingAndKeepsTheCode(t *testing.T) {
+	err := fmt.Errorf("handler: %w", WithFields(Errorf(ErrorInvalidParameterValue, "bad"), map[string]string{"Reason": "R"}))
+
+	code, message, ok := ResolveErrorDetail(err)
+	if !ok || code != ErrorInvalidParameterValue || message != "bad" {
+		t.Errorf("ResolveErrorDetail = %q, %q, %v", code, message, ok)
+	}
+	if got := ResolveFields(err); len(got) != 1 || got["Reason"] != "R" {
+		t.Errorf("ResolveFields = %v", got)
+	}
+	if got := ResolveFields(errors.New(ErrorInvalidParameterValue)); got != nil {
+		t.Errorf("unattached ResolveFields = %v", got)
+	}
+	if WithFields(nil, map[string]string{"a": "b"}) != nil {
+		t.Error("WithFields(nil) must stay nil")
+	}
+}

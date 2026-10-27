@@ -23,9 +23,11 @@ import (
 // Harness is one store under test and the hooks its implementation can offer.
 type Harness struct {
 	Store message.Store
-	// Shards is how many shards the store serves, numbered from zero; the
-	// cross-shard cases need at least two.
-	Shards int
+	// MessageShards and StateShards are how many of each allocation the
+	// store serves, numbered from zero; the cross-shard case needs two
+	// message shards.
+	MessageShards int
+	StateShards   int
 	// Reopen discards Store without closing it, as a crash would, and
 	// returns a store over the same durable data. Nil skips the crash cases.
 	Reopen func(t *testing.T) message.Store
@@ -84,14 +86,14 @@ var nsCounter atomic.Uint64
 
 // newNamespace returns a queue ID no other case or run has used, so a shared
 // store needs no cleanup between cases.
-func newNamespace(t *testing.T, shard message.Shard) message.Namespace {
+func newNamespace(t *testing.T, messageShard message.Shard) message.Namespace {
 	t.Helper()
 	var b [6]byte
 	_, err := rand.Read(b[:])
 	require.NoError(t, err)
 	return message.Namespace{
-		Shard: shard,
-		Queue: message.QueueID(fmt.Sprintf("cf-%s-%d", hex.EncodeToString(b[:]), nsCounter.Add(1))),
+		MessageShard: messageShard,
+		Queue:        message.QueueID(fmt.Sprintf("cf-%s-%d", hex.EncodeToString(b[:]), nsCounter.Add(1))),
 	}
 }
 
@@ -336,9 +338,9 @@ func nextIn(t *testing.T, f message.Feed, ns message.Namespace) message.Change {
 	}
 }
 
-func openFeed(t *testing.T, s message.Store, shard message.Shard, after message.Cursor) message.Feed {
+func openFeed(t *testing.T, s message.Store, messageShard message.Shard, after message.Cursor) message.Feed {
 	t.Helper()
-	f, err := s.Feed(context.Background(), shard, after)
+	f, err := s.Feed(context.Background(), messageShard, after)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = f.Close() })
 	return f
@@ -420,15 +422,22 @@ func testNamespaceIsolation(t *testing.T, h Harness) {
 }
 
 func testShardIsolation(t *testing.T, h Harness) {
-	if h.Shards < 2 {
-		t.Skip("store serves one shard")
+	if h.MessageShards < 2 {
+		t.Skip("store serves one message shard")
 	}
 	ctx := context.Background()
 	a := newNamespace(t, 0)
-	b := message.Namespace{Shard: 1, Queue: a.Queue}
+	b := message.Namespace{MessageShard: 1, Queue: a.Queue}
+	if h.StateShards >= 2 {
+		b.StateShard = 1
+	}
 	pa := appendBody(t, h.Store, a, "a")
-	_, err := h.Store.Get(ctx, b, pa)
+	_, err := h.Store.PutState(ctx, a, pa, []byte("a"), 0)
+	require.NoError(t, err)
+	_, err = h.Store.Get(ctx, b, pa)
 	require.ErrorIs(t, err, message.ErrNotFound, "the same queue ID on another shard is another namespace")
+	_, err = h.Store.GetState(ctx, b, pa)
+	require.ErrorIs(t, err, message.ErrNotFound, "state is scoped to the whole namespace")
 	requireCount(t, h.Store, b, message.Usage{})
 
 	f := openFeed(t, h.Store, 1, 0)

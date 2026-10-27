@@ -52,8 +52,8 @@ func newStore(t *testing.T) (*sqsjs.Store, jsapi.JetStream) {
 	return s, js
 }
 
-func ns(shard message.Shard, queue string) message.Namespace {
-	return message.Namespace{Shard: shard, Queue: message.QueueID(queue)}
+func ns(messageShard, stateShard message.Shard, queue string) message.Namespace {
+	return message.Namespace{MessageShard: messageShard, StateShard: stateShard, Queue: message.QueueID(queue)}
 }
 
 func streamNames(t *testing.T, js jsapi.JetStream) []string {
@@ -104,11 +104,10 @@ func TestMessageStreamConfigPerReplicaCount(t *testing.T) {
 }
 
 func TestNamesAndKeys(t *testing.T) {
-	q := ns(5, "q-1")
+	q := ns(5, 1, "q-1")
 	assert.Equal(t, "sqs.m.5.q-1", sqsjs.Subject(q))
 	assert.Equal(t, "q.5.q-1.42", sqsjs.StateKey(q, 42))
 	assert.Equal(t, "sqs_state_1", sqsjs.BucketName(1))
-	assert.Equal(t, 1, testConfig.BucketIndex(5))
 }
 
 // TestNewProvisionsOnlyTheFixedLayout holds ADR-0011:S9: no stream, bucket
@@ -120,7 +119,7 @@ func TestNewProvisionsOnlyTheFixedLayout(t *testing.T) {
 
 	ctx := context.Background()
 	for i := range 20 {
-		q := ns(message.Shard(i%3), fmt.Sprintf("q%d", i))
+		q := ns(message.Shard(i%3), message.Shard(i%2), fmt.Sprintf("q%d", i))
 		res, err := s.Append(ctx, q, message.AppendInput{Body: []byte("m")})
 		require.NoError(t, err)
 		_, err = s.PutState(ctx, q, res.Position, []byte("s"), 0)
@@ -142,7 +141,7 @@ func TestNewProvisionsOnlyTheFixedLayout(t *testing.T) {
 func TestAppendSubjectPerNamespace(t *testing.T) {
 	s, js := newStore(t)
 	ctx := context.Background()
-	a, b, otherShard := ns(1, "qa"), ns(1, "qb"), ns(2, "qa")
+	a, b, otherShard := ns(1, 0, "qa"), ns(1, 1, "qb"), ns(2, 0, "qa")
 
 	ra, err := s.Append(ctx, a, message.AppendInput{Body: []byte("body-a"), Meta: map[string]string{"sent": "1"}})
 	require.NoError(t, err)
@@ -173,24 +172,37 @@ func TestAppendSubjectPerNamespace(t *testing.T) {
 func TestAppendRejectsBadInput(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
-	_, err := s.Append(ctx, ns(3, "q"), message.AppendInput{})
-	require.ErrorIs(t, err, message.ErrInvalidArgument, "shard past the configured streams")
-	_, err = s.Append(ctx, ns(0, "a.b"), message.AppendInput{})
+	_, err := s.Append(ctx, ns(0, 0, "a.b"), message.AppendInput{})
 	require.ErrorIs(t, err, message.ErrInvalidArgument)
 	for _, meta := range []map[string]string{{"": "v"}, {"a:b": "v"}, {"a b": "v"}, {"k": "v\r\n"}} {
-		_, err = s.Append(ctx, ns(0, "q"), message.AppendInput{Meta: meta})
+		_, err = s.Append(ctx, ns(0, 0, "q"), message.AppendInput{Meta: meta})
 		require.ErrorIs(t, err, message.ErrInvalidArgument, "meta %v", meta)
 	}
-	_, err = s.PutState(ctx, ns(3, "q"), 1, nil, 0)
+	_, err = s.PutState(ctx, ns(0, 0, "a.b"), 1, nil, 0)
 	require.ErrorIs(t, err, message.ErrInvalidArgument)
-	_, err = s.GetState(ctx, ns(3, "q"), 1)
+	_, err = s.GetState(ctx, ns(0, 0, "a.b"), 1)
 	require.ErrorIs(t, err, message.ErrInvalidArgument)
+}
+
+// TestAllocationWithNoResourceFails: an allocation no configuration ever
+// provisioned is an error, never a silent create or a not-found.
+func TestAllocationWithNoResourceFails(t *testing.T) {
+	s, js := newStore(t)
+	ctx := context.Background()
+	_, err := s.Append(ctx, ns(7, 0, "q"), message.AppendInput{Body: []byte("m")})
+	require.Error(t, err)
+	_, err = s.GetState(ctx, ns(0, 7, "q"), 1)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, message.ErrNotFound)
+	_, err = s.PutState(ctx, ns(0, 7, "q"), 1, []byte("s"), 0)
+	require.Error(t, err)
+	assert.Equal(t, []string{"KV_sqs_state_0", "KV_sqs_state_1", "SQS_M_0", "SQS_M_1", "SQS_M_2"}, streamNames(t, js), "nothing was created for the allocation")
 }
 
 func TestIdempotentAppend(t *testing.T) {
 	s, js := newStore(t)
 	ctx := context.Background()
-	q, neighbour := ns(0, "qa"), ns(0, "qb")
+	q, neighbour := ns(0, 0, "qa"), ns(0, 1, "qb")
 
 	first, err := s.Append(ctx, q, message.AppendInput{Body: []byte("one"), IdempotencyKey: "k"})
 	require.NoError(t, err)
@@ -219,7 +231,7 @@ func TestAppendSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 	s, err := sqsjs.New(ctx, js, testConfig)
 	require.NoError(t, err)
-	q := ns(1, "durable")
+	q := ns(1, 1, "durable")
 	res, err := s.Append(ctx, q, message.AppendInput{Body: []byte("kept"), IdempotencyKey: "k"})
 	require.NoError(t, err)
 	rev, err := s.PutState(ctx, q, res.Position, []byte("state"), 0)
@@ -247,7 +259,7 @@ func TestAppendSurvivesRestart(t *testing.T) {
 func TestStateCompareAndSet(t *testing.T) {
 	s, js := newStore(t)
 	ctx := context.Background()
-	q := ns(2, "q")
+	q := ns(2, 1, "q")
 	const pos message.Position = 7
 
 	_, err := s.GetState(ctx, q, pos)
@@ -261,10 +273,10 @@ func TestStateCompareAndSet(t *testing.T) {
 	_, err = s.PutState(ctx, q, pos, []byte("x"), r1)
 	require.ErrorIs(t, err, message.ErrRevisionMismatch)
 
-	kv, err := js.KeyValue(ctx, "sqs_state_0")
+	kv, err := js.KeyValue(ctx, "sqs_state_1")
 	require.NoError(t, err)
 	e, err := kv.Get(ctx, "q.2.q.7")
-	require.NoError(t, err, "shard 2 of 2 buckets lives in bucket 0 under its namespaced key")
+	require.NoError(t, err, "state lives in the bucket its StateShard names, keyed by message shard, queue and position")
 	assert.Equal(t, []byte("v2"), e.Value())
 
 	require.ErrorIs(t, s.DeleteState(ctx, q, pos, r1), message.ErrRevisionMismatch)
@@ -282,8 +294,9 @@ func TestStateCompareAndSet(t *testing.T) {
 func TestStateIsolatedAcrossSharedBucket(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
-	// Shards 0 and 2 share bucket 0 with testConfig's two buckets.
-	a, b := ns(0, "q"), ns(2, "q")
+	// Same queue ID and state bucket, different message shards: a position
+	// is unique only within a message stream.
+	a, b := ns(0, 0, "q"), ns(2, 0, "q")
 	_, err := s.PutState(ctx, a, 1, []byte("a"), 0)
 	require.NoError(t, err)
 	_, err = s.GetState(ctx, b, 1)
@@ -298,7 +311,7 @@ func TestStateIsolatedAcrossSharedBucket(t *testing.T) {
 func TestConcurrentStateWrites(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
-	q := ns(1, "q")
+	q := ns(1, 1, "q")
 	race := func(expected message.Revision) message.Revision {
 		var wg sync.WaitGroup
 		var wins atomic.Int32
@@ -322,4 +335,63 @@ func TestConcurrentStateWrites(t *testing.T) {
 		return message.Revision(won.Load())
 	}
 	race(race(0))
+}
+
+// TestTopologyTransitionKeepsExistingAllocations holds ADR-0011:S10: a
+// changed count applies to new queues, and an existing queue keeps the
+// stream and bucket its record names.
+func TestTopologyTransitionKeepsExistingAllocations(t *testing.T) {
+	_, js := startServer(t, t.TempDir())
+	ctx := context.Background()
+	before, err := sqsjs.New(ctx, js, sqsjs.Config{MessageStreams: 3, StateBuckets: 3, DuplicateWindow: time.Minute})
+	require.NoError(t, err)
+	old := ns(2, 2, "old")
+	first, err := before.Append(ctx, old, message.AppendInput{Body: []byte("first")})
+	require.NoError(t, err)
+	rev, err := before.PutState(ctx, old, first.Position, []byte("claimed"), 0)
+	require.NoError(t, err)
+
+	after, err := sqsjs.New(ctx, js, sqsjs.Config{MessageStreams: 1, StateBuckets: 1, DuplicateWindow: time.Minute})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"KV_sqs_state_0", "KV_sqs_state_1", "KV_sqs_state_2", "SQS_M_0", "SQS_M_1", "SQS_M_2"}, streamNames(t, js), "a reduced count deletes nothing")
+
+	second, err := after.Append(ctx, old, message.AppendInput{Body: []byte("second")})
+	require.NoError(t, err, "an existing queue still appends to its retained stream")
+	assert.Greater(t, second.Position, first.Position)
+	stream, err := js.Stream(ctx, "SQS_M_2")
+	require.NoError(t, err)
+	got, err := stream.GetMsg(ctx, uint64(second.Position))
+	require.NoError(t, err)
+	assert.Equal(t, "sqs.m.2.old", got.Subject)
+
+	st, err := after.GetState(ctx, old, first.Position)
+	require.NoError(t, err, "an existing queue still reads its retained bucket")
+	assert.Equal(t, message.State{Value: []byte("claimed"), Revision: rev}, st)
+	_, err = after.PutState(ctx, old, first.Position, []byte("visible"), rev)
+	require.NoError(t, err)
+	_, err = after.PutState(ctx, old, second.Position, []byte("new"), 0)
+	require.NoError(t, err)
+
+	fresh := ns(0, 0, "fresh")
+	_, err = after.Append(ctx, fresh, message.AppendInput{Body: []byte("m")})
+	require.NoError(t, err, "a new queue uses the current layout")
+}
+
+// TestNewRefusesUnsupportedClusterSize: only one node (R1) and three (R3)
+// are supported, so no other size reaches provisioning, which would
+// otherwise create R5 on five nodes.
+func TestNewRefusesUnsupportedClusterSize(t *testing.T) {
+	_, js := startServer(t, t.TempDir())
+	for _, nodes := range []int{2, 4, 5} {
+		t.Run(fmt.Sprintf("%d nodes", nodes), func(t *testing.T) {
+			clustersize.RedeclareForTest(t, nodes)
+			_, err := sqsjs.New(context.Background(), js, testConfig)
+			require.ErrorIs(t, err, sqsjs.ErrUnsupportedTopology)
+			assert.Empty(t, streamNames(t, js), "nothing is provisioned")
+		})
+	}
+	clustersize.ResetForTest()
+	t.Cleanup(func() { clustersize.DeclareForTest(t, 1) })
+	_, err := sqsjs.New(context.Background(), js, testConfig)
+	require.ErrorIs(t, err, sqsjs.ErrUnsupportedTopology, "an undeclared size is refused too")
 }

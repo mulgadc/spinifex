@@ -27,8 +27,9 @@ var (
 	ErrInvalidArgument = errors.New("message: invalid argument")
 )
 
-// Shard is the opaque shard a queue was assigned when it was created. The
-// domain records it in the queue record; the store maps it to its own layout.
+// Shard is an opaque allocation a queue was given when it was created. The
+// domain records it in the queue record and it never changes, whatever the
+// store's later topology (ADR-0011:S10); the store maps it to its own layout.
 type Shard uint32
 
 // QueueID is the opaque per-CreateQueue identifier. It is never the queue
@@ -36,14 +37,17 @@ type Shard uint32
 type QueueID string
 
 // Namespace scopes every message and state record to one queue. It needs no
-// store call to exist: the first append to it is its creation.
+// store call to exist: the first append to it is its creation. MessageShard
+// places its messages and StateShard its state records, independently.
 type Namespace struct {
-	Shard Shard
-	Queue QueueID
+	MessageShard Shard
+	StateShard   Shard
+	Queue        QueueID
 }
 
 // Validate rejects a namespace a store could not key safely. A QueueID is
-// 1 to MaxQueueIDLen characters of [A-Za-z0-9_-].
+// 1 to MaxQueueIDLen characters of [A-Za-z0-9_-]. Neither shard is checked
+// against a current topology: an allocation outlives a count change.
 func (n Namespace) Validate() error {
 	if n.Queue == "" || len(n.Queue) > MaxQueueIDLen {
 		return fmt.Errorf("%w: queue ID length %d outside 1..%d", ErrInvalidArgument, len(n.Queue), MaxQueueIDLen)
@@ -105,7 +109,7 @@ type State struct {
 	Revision Revision
 }
 
-// Change is one append observed on a shard's change feed.
+// Change is one append observed on a message shard's change feed.
 type Change struct {
 	Namespace Namespace
 	Position  Position
@@ -120,7 +124,7 @@ type Usage struct {
 	States   uint64
 }
 
-// NamespaceUsage is one namespace in a shard enumeration.
+// NamespaceUsage is one namespace in a message shard enumeration.
 type NamespaceUsage struct {
 	Queue QueueID
 	Usage Usage
@@ -159,10 +163,10 @@ type Store interface {
 	// equals expected; else ErrRevisionMismatch or ErrNotFound.
 	DeleteState(ctx context.Context, ns Namespace, pos Position, expected Revision) error
 
-	// Feed opens the shard's ordered change feed after cursor. Within a
+	// Feed opens a message shard's ordered change feed after cursor. Within a
 	// namespace changes arrive in position order; an append deleted before
 	// delivery may be omitted. The feed carries no acknowledgement state.
-	Feed(ctx context.Context, shard Shard, after Cursor) (Feed, error)
+	Feed(ctx context.Context, messageShard Shard, after Cursor) (Feed, error)
 
 	// DeleteNamespace removes every message and state record of the
 	// namespace. It is idempotent and leaves other namespaces untouched.
@@ -170,9 +174,9 @@ type Store interface {
 	// Count reports what the namespace holds; zero for a namespace never
 	// written to.
 	Count(ctx context.Context, ns Namespace) (Usage, error)
-	// Namespaces enumerates every namespace in the shard holding any
-	// message or state record.
-	Namespaces(ctx context.Context, shard Shard) ([]NamespaceUsage, error)
+	// Namespaces enumerates every namespace whose MessageShard is
+	// messageShard and that holds any message or state record.
+	Namespaces(ctx context.Context, messageShard Shard) ([]NamespaceUsage, error)
 
 	// Limits reports the store's configured guarantees.
 	Limits() Limits

@@ -11,12 +11,13 @@ const fakeShards = 2
 
 func freshHarness(t *testing.T) conformance.Harness {
 	t.Helper()
-	d := newMemData(fakeShards)
+	d := newMemData()
 	return conformance.Harness{
-		Store:   &memStore{d: d},
-		Shards:  fakeShards,
-		Reopen:  func(*testing.T) message.Store { return &memStore{d: d} },
-		Advance: d.advance,
+		Store:         &memStore{d: d},
+		MessageShards: fakeShards,
+		StateShards:   fakeShards,
+		Reopen:        func(*testing.T) message.Store { return &memStore{d: d} },
+		Advance:       d.advance,
 	}
 }
 
@@ -35,6 +36,6 @@ func TestReferenceFakeSharedInstanceConformance(t *testing.T) {
 // second-shard hooks, as a store that offers none of them would.
 func TestReferenceFakeMinimalHarnessConformance(t *testing.T) {
 	conformance.Run(t, func(*testing.T) conformance.Harness {
-		return conformance.Harness{Store: &memStore{d: newMemData(1)}, Shards: 1}
+		return conformance.Harness{Store: &memStore{d: newMemData()}, MessageShards: 1, StateShards: 1}
 	})
 }

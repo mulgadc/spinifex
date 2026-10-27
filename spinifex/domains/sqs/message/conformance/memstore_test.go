@@ -15,7 +15,6 @@ import (
 type memData struct {
 	mu       sync.Mutex
 	limits   message.Limits
-	shards   int
 	clock    time.Duration
 	seq      map[message.Shard]uint64
 	messages map[message.Namespace]map[message.Position]memMessage
@@ -43,10 +42,9 @@ type memStore struct{ d *memData }
 
 var _ message.Store = (*memStore)(nil)
 
-func newMemData(shards int) *memData {
+func newMemData() *memData {
 	return &memData{
 		limits:   message.Limits{RetentionBackstop: message.MinRetentionBackstop, IdempotencyWindow: 2 * time.Minute},
-		shards:   shards,
 		seq:      map[message.Shard]uint64{},
 		messages: map[message.Namespace]map[message.Position]memMessage{},
 		states:   map[message.Namespace]map[message.Position]message.State{},
@@ -62,14 +60,10 @@ func (d *memData) advance(by time.Duration) {
 	d.clock += by
 }
 
+// check validates only the queue ID: memory has a slot for every shard, so
+// no allocation is ever out of range.
 func (s *memStore) check(ns message.Namespace) error {
-	if err := ns.Validate(); err != nil {
-		return err
-	}
-	if int(ns.Shard) >= s.d.shards {
-		return message.ErrInvalidArgument
-	}
-	return nil
+	return ns.Validate()
 }
 
 // expire drops messages past the backstop; callers hold the lock.
@@ -93,8 +87,8 @@ func (s *memStore) Append(_ context.Context, ns message.Namespace, in message.Ap
 			return message.AppendResult{Position: k.pos, Duplicate: true}, nil
 		}
 	}
-	d.seq[ns.Shard]++
-	pos := message.Position(d.seq[ns.Shard])
+	d.seq[ns.MessageShard]++
+	pos := message.Position(d.seq[ns.MessageShard])
 	if d.messages[ns] == nil {
 		d.messages[ns] = map[message.Position]memMessage{}
 	}
@@ -105,7 +99,7 @@ func (s *memStore) Append(_ context.Context, ns message.Namespace, in message.Ap
 		}
 		d.keys[ns][in.IdempotencyKey] = memKey{pos: pos, at: d.clock}
 	}
-	d.log[ns.Shard] = append(d.log[ns.Shard], message.Change{
+	d.log[ns.MessageShard] = append(d.log[ns.MessageShard], message.Change{
 		Namespace: ns, Position: pos, Meta: maps.Clone(in.Meta), Cursor: message.Cursor(pos),
 	})
 	close(d.wake)
@@ -197,9 +191,6 @@ func (s *memStore) DeleteState(_ context.Context, ns message.Namespace, pos mess
 }
 
 func (s *memStore) Feed(_ context.Context, shard message.Shard, after message.Cursor) (message.Feed, error) {
-	if int(shard) >= s.d.shards {
-		return nil, message.ErrInvalidArgument
-	}
 	return &memFeed{d: s.d, shard: shard, after: after}, nil
 }
 
@@ -230,9 +221,6 @@ func (s *memStore) usage(ns message.Namespace) message.Usage {
 }
 
 func (s *memStore) Namespaces(_ context.Context, shard message.Shard) ([]message.NamespaceUsage, error) {
-	if int(shard) >= s.d.shards {
-		return nil, message.ErrInvalidArgument
-	}
 	s.d.mu.Lock()
 	defer s.d.mu.Unlock()
 	s.expire()
@@ -240,7 +228,7 @@ func (s *memStore) Namespaces(_ context.Context, shard message.Shard) ([]message
 	var out []message.NamespaceUsage
 	for _, set := range []map[message.Namespace]bool{nsKeys(s.d.messages), nsKeys(s.d.states)} {
 		for ns := range set {
-			if ns.Shard != shard || seen[ns] {
+			if ns.MessageShard != shard || seen[ns] {
 				continue
 			}
 			seen[ns] = true

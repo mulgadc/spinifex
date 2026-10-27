@@ -16,9 +16,9 @@ import (
 // is the window an idempotent append holds for.
 const DefaultDuplicateWindow = 2 * time.Minute
 
-// Config sizes the shared layout. Counts are per topology (ADR-0011:S10);
-// replica counts are not here because clustersize decides them for the
-// whole cluster: R1 on one node, R3 on three.
+// Config sizes the shared layout new queues are allocated from. Counts are
+// per topology (ADR-0011:S10) and may change; a queue's recorded allocation
+// does not. Replicas follow the cluster size: R1 on one node, R3 on three.
 type Config struct {
 	MessageStreams  int
 	StateBuckets    int
@@ -53,25 +53,22 @@ func StreamName(shard message.Shard) string {
 	return "SQS_M_" + strconv.FormatUint(uint64(shard), 10)
 }
 
-// BucketName is the shared state bucket at index i.
-func BucketName(i int) string {
-	return "sqs_state_" + strconv.Itoa(i)
+// BucketName is the shared state bucket serving a state shard.
+func BucketName(shard message.Shard) string {
+	return "sqs_state_" + strconv.FormatUint(uint64(shard), 10)
 }
 
-// Subject is where a namespace's messages are published: sqs.m.<shard>.<queue>.
+// Subject is where a namespace's messages are published:
+// sqs.m.<message shard>.<queue>.
 func Subject(ns message.Namespace) string {
-	return "sqs.m." + strconv.FormatUint(uint64(ns.Shard), 10) + "." + string(ns.Queue)
+	return "sqs.m." + strconv.FormatUint(uint64(ns.MessageShard), 10) + "." + string(ns.Queue)
 }
 
-// StateKey is a message's state key in its bucket. The shard is part of the
-// key because one bucket serves several shards.
+// StateKey is a message's state key in the bucket named by its StateShard.
+// A position is unique only within a message stream, so the key carries the
+// message shard too.
 func StateKey(ns message.Namespace, pos message.Position) string {
-	return "q." + strconv.FormatUint(uint64(ns.Shard), 10) + "." + string(ns.Queue) + "." + strconv.FormatUint(uint64(pos), 10)
-}
-
-// BucketIndex is the state bucket a shard's state records live in.
-func (c Config) BucketIndex(shard message.Shard) int {
-	return int(shard) % c.StateBuckets
+	return "q." + strconv.FormatUint(uint64(ns.MessageShard), 10) + "." + string(ns.Queue) + "." + strconv.FormatUint(uint64(pos), 10)
 }
 
 // MessageStreamConfig is one shared message stream: limits retention, the

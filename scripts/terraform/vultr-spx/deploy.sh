@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# deploy.sh — build a single-node Spinifex deployment on Vultr, or tear it down.
+# deploy.sh — build a one- or three-node Spinifex deployment on Vultr, or tear it down.
 #
 #   deploy.sh up      --name v1 --distro ./spinifex.tar.gz
+#   deploy.sh up      --name v3 --nodes 3 --distro ./spinifex.tar.gz
 #   deploy.sh up      --name v1 --channel dev
 #   deploy.sh destroy --name v1
 #   deploy.sh status  --name v1
 #
-# VULTR_API_KEY must be set. Terraform creates the VPC, the VM and its boot
-# volume; this script installs and forms Spinifex over SSH, and records each
+# VULTR_API_KEY must be set. Terraform creates the VPC, the VMs and their boot
+# volumes; this script installs and forms Spinifex over SSH, and records each
 # step under the state directory so a rerun resumes rather than re-initialising.
+# Three nodes are formed by install-node.sh with cluster and Geneve traffic on
+# the VPC, after each has come up as an armed single node.
 #
 # The API key is copied to the node over SSH, so it is in neither the Terraform
 # state nor the instance metadata. Destroy also deletes what Terraform never
@@ -34,10 +37,11 @@ SSH_KEY="$HOME/.ssh/id_ed25519"
 IMAGE="ubuntu-26.04-x86_64"
 VPC_SUBNET="10.10.8.0"
 STATE_ROOT="$HOME/.spinifex/vultr"
+NODES=1
 YES=0
 
 usage() {
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
     cat <<EOF
 
 Options:
@@ -51,6 +55,7 @@ Options:
   --ssh-key PATH       private key; PATH.pub is installed (default $SSH_KEY)
   --image NAME         AMI to import (default $IMAGE)
   --vpc-subnet ADDR    the deployment VPC's /24 (default $VPC_SUBNET)
+  --nodes N            1 or 3 (default $NODES)
   --yes                destroy without asking
 EOF
 }
@@ -67,6 +72,7 @@ while [ $# -gt 0 ]; do
         --ssh-key) SSH_KEY="$2"; shift ;;
         --image) IMAGE="$2"; shift ;;
         --vpc-subnet) VPC_SUBNET="$2"; shift ;;
+        --nodes) NODES="$2"; shift ;;
         --yes) YES=1 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -79,6 +85,7 @@ die() { log "ERROR: $*"; exit 1; }
 
 [ -n "$NAME" ] || { usage >&2; exit 2; }
 [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,23}$ ]] || die "--name must be 1-24 lowercase letters, digits or hyphens"
+[ "$NODES" = 1 ] || [ "$NODES" = 3 ] || die "--nodes must be 1 or 3"
 [ -n "${VULTR_API_KEY:-}" ] || die "VULTR_API_KEY is not set"
 command -v tofu >/dev/null || die "tofu is not installed"
 
@@ -107,14 +114,33 @@ vultr() {
 tf() {
     tofu -chdir="$SCRIPT_DIR" "$@" -state="$TF_STATE" \
         -var "deployment_name=$NAME" -var "region=$REGION" -var "plan=$PLAN" \
-        -var "ssh_public_key_path=$SSH_KEY.pub" -var "vpc_subnet=$VPC_SUBNET"
+        -var "ssh_public_key_path=$SSH_KEY.pub" -var "vpc_subnet=$VPC_SUBNET" \
+        -var "node_count=$NODES"
 }
 
 done_step() { [ -f "$STATE_DIR/step.$1" ]; }
 mark_step() { date -u +%FT%TZ > "$STATE_DIR/step.$1"; }
 
-node_ip() { tofu -chdir="$SCRIPT_DIR" output -state="$TF_STATE" -json nodes | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["public_ip"])'; }
-node_id() { tofu -chdir="$SCRIPT_DIR" output -state="$TF_STATE" -json nodes | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["provider_host_id"])'; }
+# node_field FIELD prints FIELD of every node, in node order.
+node_field() {
+    tofu -chdir="$SCRIPT_DIR" output -state="$TF_STATE" -json nodes |
+        python3 -c 'import json,sys; [print(n[sys.argv[1]]) for n in json.load(sys.stdin)]' "$1"
+}
+
+# for_nodes STEP FN runs FN once per node with IP and NODE_NAME set,
+# recording STEP.<node> so a rerun skips the nodes already done.
+for_nodes() {
+    local step="$1" fn="$2" i
+    for i in "${!IPS[@]}"; do
+        IP="${IPS[$i]}" NODE_NAME="node$((i + 1))"
+        done_step "$step.$NODE_NAME" && continue
+        "$fn"
+        mark_step "$step.$NODE_NAME"
+    done
+}
+
+# vpc_addr prints the VPC NIC's name and address on the current node.
+vpc_addr() { on 'ip -4 -o addr show' | awk -v p="${VPC_SUBNET%.*}." 'index($4, p) == 1 {sub(/\/.*/, "", $4); print $2, $4; exit}'; }
 
 on() {
     ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
@@ -171,19 +197,21 @@ install_spinifex() {
     fi
 }
 
+# form brings a node up as its own one-node cluster, the state an ISO install
+# leaves and the one install-node.sh forms a larger cluster from.
 form() {
-    local vpc_ip
-    vpc_ip="$(on 'ip -4 -o addr show' | awk -v p="${VPC_SUBNET%.*}." 'index($4, p) == 1 {sub(/\/.*/, "", $4); print $4; exit}')"
+    local vpc_if vpc_ip
+    read -r vpc_if vpc_ip <<<"$(vpc_addr)"
     [ -n "$vpc_ip" ] || die "no VPC address on $IP"
-    log "forming node1 (encap $vpc_ip, region $SPX_REGION)"
+    log "initialising $NODE_NAME on $IP (VPC $vpc_if $vpc_ip, region $SPX_REGION)"
     on "/usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink --encap-ip=$vpc_ip >/root/setup-ovn.log 2>&1" ||
         die "setup-ovn.sh failed; see /root/setup-ovn.log on $IP"
-    on "spx admin init --node node1 --nodes 1 --region $SPX_REGION --az $SPX_AZ --ipsec=false --external-mode=nat >/root/init.log 2>&1" ||
+    on "spx admin init --node $NODE_NAME --nodes 1 --region $SPX_REGION --az $SPX_AZ --ipsec=false --external-mode=nat >/root/init.log 2>&1" ||
         die "spx admin init failed; see /root/init.log on $IP"
 }
 
 install_key() {
-    log "installing the API key"
+    log "installing the API key on $NODE_NAME"
     printf '%s' "$VULTR_API_KEY" | on 'install -d -m 0700 -o spinifex-daemon -g spinifex /etc/spinifex/vultr &&
         umask 077 && cat > /etc/spinifex/vultr/api-key &&
         chown spinifex-daemon:spinifex /etc/spinifex/vultr/api-key && chmod 0600 /etc/spinifex/vultr/api-key'
@@ -191,11 +219,16 @@ install_key() {
         die "the node's API calls are refused; add $IP to the key's allowlist"
 }
 
+# configure_pool adds the pool and every node's instance ID: the config is
+# validated against all [nodes.*] tables, and a takeover attaches to the
+# taking node's own ID.
 configure_pool() {
-    log "adding the vultr pool (label prefix $LABEL_PREFIX)"
-    on "python3 - '$REGION' '$LABEL_PREFIX' '$NODE_ID'" <<'PY'
+    log "adding the vultr pool on $NODE_NAME (label prefix $LABEL_PREFIX)"
+    local ids="" i
+    for i in "${!IDS[@]}"; do ids+="node$((i + 1))=${IDS[$i]},"; done
+    on "python3 - '$REGION' '$LABEL_PREFIX' '${ids%,}'" <<'PY'
 import re, sys
-region, prefix, host_id = sys.argv[1:]
+region, prefix, ids = sys.argv[1:]
 p = "/etc/spinifex/spinifex.toml"
 s = open(p).read()
 if 'source       = "vultr"' not in s:
@@ -203,26 +236,67 @@ if 'source       = "vultr"' not in s:
             f'vultr_region = "{region}"\nlabel_prefix = "{prefix}"\n\n[bootstrap]')
     assert s.count("\n[bootstrap]") == 1, "expected one [bootstrap] table"
     s = s.replace("\n[bootstrap]", "\n" + pool, 1)
-if "provider_host_id" not in s:
-    s, n = re.subn(r'^\[nodes\.node1\]\n', '[nodes.node1]\nprovider_host_id = "%s"\n' % host_id, s, count=1, flags=re.M)
-    assert n == 1, "could not find [nodes.node1]"
+for pair in ids.split(","):
+    node, host_id = pair.split("=")
+    head = "[nodes.%s]\n" % node
+    m = re.search(r"^" + re.escape(head) + r"(.*?)(?=^\[|\Z)", s, flags=re.M | re.S)
+    assert m, "could not find [nodes.%s]" % node
+    if "provider_host_id" not in m.group(1):
+        s = s[:m.start()] + head + 'provider_host_id = "%s"\n' % host_id + s[m.start() + len(head):]
 open(p, "w").write(s)
 PY
 }
 
 start_spinifex() {
-    log "arming the firewall and starting"
+    log "arming the firewall and starting $NODE_NAME"
     on 'env SETUP_STAGES=firewall /usr/local/share/spinifex/setup.sh --firewall on >/root/firewall.log 2>&1' ||
         die "arming the firewall failed; see /root/firewall.log on $IP"
     on 'systemctl start spinifex.target'
+    wait_api
+}
+
+wait_api() {
     local i
     for i in $(seq 1 30); do
         on 'curl -sk -o /dev/null -w "%{http_code}" https://127.0.0.1:9999/' 2>/dev/null | grep -q '^[34]' && break
         [ "$i" = 30 ] && die "the API did not come up on $IP"
         sleep 10
     done
-    on 'journalctl -u spinifex-daemon -b --no-pager | grep -q "floating using Vultr reserved IPs"' ||
-        log "WARNING: the daemon has not logged its Vultr allocator yet"
+}
+
+# form_cluster hands the armed single nodes to install-node.sh. It dials the
+# public addresses over SSH and is told to put the cluster and Geneve planes on
+# the VPC NIC, which must have the same name on every node.
+form_cluster() {
+    local hosts_file="$STATE_DIR/hosts" vpc_if="" if_here ip_here
+    printf '%s\n' "${IPS[@]}" > "$hosts_file"
+    for IP in "${IPS[@]}"; do
+        read -r if_here ip_here <<<"$(vpc_addr)"
+        [ -n "$ip_here" ] || die "no VPC address on $IP"
+        [ -z "$vpc_if" ] || [ "$vpc_if" = "$if_here" ] || die "VPC NIC is $vpc_if on one node and $if_here on $IP"
+        vpc_if="$if_here"
+        # install-node.sh reads ~/.ssh/known_hosts; Vultr reuses addresses, so
+        # replace any older key for this one with the key this deployment pinned.
+        ssh-keygen -R "$IP" >/dev/null 2>&1 || true
+        grep "^$IP " "$KNOWN_HOSTS" >> "$HOME/.ssh/known_hosts"
+    done
+    log "forming ${#IPS[@]} nodes with install-node.sh (cluster plane $vpc_if)"
+    "$SPINIFEX_SRC/scripts/install-node.sh" --hosts-file "$hosts_file" --user root --identity "$SSH_KEY" \
+        --external-mode nat --ipsec off --region "$SPX_REGION" --az "$SPX_AZ" \
+        --lan-bridge "$vpc_if" --vpc-bridge "$vpc_if" --yes >"$STATE_DIR/form.log" 2>&1 ||
+        die "formation failed; see $STATE_DIR/form.log"
+}
+
+restart_spinifex() {
+    log "restarting $NODE_NAME with the pool"
+    on 'systemctl restart spinifex.target'
+    wait_api
+    local i
+    for i in $(seq 1 30); do
+        on 'journalctl -u spinifex-daemon --since "-10min" --no-pager | grep -q "floating using Vultr reserved IPs"' && return 0
+        sleep 10
+    done
+    die "$NODE_NAME never logged its Vultr allocator; see journalctl -u spinifex-daemon on $IP"
 }
 
 import_image() {
@@ -250,14 +324,20 @@ write_profile() {
 cmd_up() {
     preflight
     done_step terraform || { provision; mark_step terraform; }
-    IP="$(node_ip)"
-    NODE_ID="$(node_id)"
-    done_step host || { wait_host; mark_step host; }
-    done_step install || { install_spinifex; mark_step install; }
-    done_step form || { form; mark_step form; }
-    done_step key || { install_key; mark_step key; }
-    done_step pool || { configure_pool; mark_step pool; }
-    done_step start || { start_spinifex; mark_step start; }
+    mapfile -t IPS < <(node_field public_ip)
+    mapfile -t IDS < <(node_field provider_host_id)
+    [ "${#IPS[@]}" = "$NODES" ] || die "the state holds ${#IPS[@]} node(s), not $NODES; destroy it or pass --nodes ${#IPS[@]}"
+    for_nodes host wait_host
+    for_nodes install install_spinifex
+    for_nodes form form
+    for_nodes start start_spinifex
+    if [ "$NODES" -gt 1 ]; then
+        done_step cluster || { form_cluster; mark_step cluster; }
+    fi
+    for_nodes key install_key
+    for_nodes pool configure_pool
+    for_nodes restart restart_spinifex
+    IP="${IPS[0]}"
     done_step image || { import_image; mark_step image; }
     write_profile
     log "ready: https://$IP:9999 (profile $PROFILE)"

@@ -75,6 +75,10 @@ const (
 	// strongswanStarterUnit would start a second charon competing for UDP
 	// 500/4500. Nothing here needs it, so it stays off in both states.
 	strongswanStarterUnit = "strongswan-starter.service"
+
+	// libreswanUnit runs pluto, which listens on UDP 500/4500 once started. On
+	// Debian the same name is an alias of strongswanStarterUnit.
+	libreswanUnit = "ipsec.service"
 )
 
 // ipsecStateHelper is the fixed-verb root helper installed by setup.sh. The
@@ -89,19 +93,24 @@ var ipsecStateHelper = "/usr/local/lib/spinifex/spinifex-set-ipsec-state"
 // accepting connections, and dropping that attempt leaves the node's IPsec
 // unconfigured until something restarts the daemon — while another node may
 // already have made encryption mandatory cluster-wide.
-func MaintainIPSec(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig, barrier IPSecBarrier) {
+//
+// libreswan reports that the host's IPsec stack is libreswan, which OVN IPsec
+// does not run on yet, so such a host keeps IPsec off whatever the cluster asks.
+func MaintainIPSec(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig, barrier IPSecBarrier, libreswan bool) {
 	// Said once, because a pass that reconciles to nothing logs nothing, which in
 	// a journal is indistinguishable from a node that armed.
 	switch {
 	case clusterConfig == nil:
 		slog.Info("ipsec: cluster membership unknown, leaving the host's IPsec services alone")
-	case !ipsecWanted(clusterConfig):
+	case ipsecRequested(clusterConfig) && libreswan:
+		slog.Error("ipsec: the cluster requires IPsec, but this host's IPsec stack is libreswan, which Spinifex cannot run OVN IPsec on yet; IPsec stays off here")
+	case !ipsecWanted(clusterConfig, libreswan):
 		slog.Info("ipsec: not in use on this cluster, IKE and NAT-T listeners stay stopped")
 	}
 
 	delay, announced := ipsecRetryDelay, false
 	for {
-		err := ReconcileOVNIPSec(ctx, configPath, clusterConfig, barrier)
+		err := ReconcileOVNIPSec(ctx, configPath, clusterConfig, barrier, libreswan)
 		switch {
 		case err != nil:
 			delay = min(delay*2, ipsecReconcileInterval)
@@ -110,7 +119,7 @@ func MaintainIPSec(ctx context.Context, configPath string, clusterConfig *config
 			// Only the first success is news. The steady state re-runs every
 			// interval for the lifetime of the daemon, and saying so each time
 			// buries the passes that changed something.
-			if !announced && ipsecWanted(clusterConfig) {
+			if !announced && ipsecWanted(clusterConfig, libreswan) {
 				slog.Info("ipsec: local IPsec configuration complete on this node")
 				announced = true
 			}
@@ -125,26 +134,32 @@ func MaintainIPSec(ctx context.Context, configPath string, clusterConfig *config
 	}
 }
 
-// ipsecWanted reports the cluster's intent. Single-node clusters have no Geneve
+// ipsecWanted reports whether this host turns IPsec on: the cluster asks for
+// it and the host's IPsec stack can run it.
+func ipsecWanted(clusterConfig *config.ClusterConfig, libreswan bool) bool {
+	return ipsecRequested(clusterConfig) && !libreswan
+}
+
+// ipsecRequested reports the cluster's intent. Single-node clusters have no Geneve
 // tunnels to protect, so charon must not be left listening on 500/4500 there
 // even though ipsec_enabled defaults to true.
-func ipsecWanted(clusterConfig *config.ClusterConfig) bool {
+func ipsecRequested(clusterConfig *config.ClusterConfig) bool {
 	return clusterConfig != nil && clusterConfig.Network.IPSecEnabled && len(clusterConfig.Nodes) > 1
 }
 
 // ReconcileOVNIPSec brings the host's IPsec services in line with the cluster
 // config, then enables OVN IPsec if it is wanted. Runs on every startup so the
 // disabled case is reached too, which EnableOVNIPSec alone never is.
-func ReconcileOVNIPSec(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig, barrier IPSecBarrier) error {
+func ReconcileOVNIPSec(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig, barrier IPSecBarrier, libreswan bool) error {
 	// A nil config means the intent is unknown; leave the host's services alone
 	// rather than guessing and tearing down working tunnels.
 	if clusterConfig == nil {
 		return nil
 	}
 
-	want := ipsecWanted(clusterConfig)
+	want := ipsecWanted(clusterConfig, libreswan)
 
-	if err := ensureIPSecServices(want); err != nil {
+	if err := ensureIPSecServices(want, libreswan); err != nil {
 		return err
 	}
 	if !want {
@@ -189,8 +204,8 @@ func skipUnlessNBReadable(err error) error {
 
 // ensureIPSecServices runs the helper only when the host does not already match
 // the wanted state, so a steady-state startup executes nothing.
-func ensureIPSecServices(want bool) error {
-	if ipsecServicesMatch(want) {
+func ensureIPSecServices(want, libreswan bool) error {
+	if ipsecServicesMatch(want, libreswan) {
 		return nil
 	}
 
@@ -206,8 +221,11 @@ func ensureIPSecServices(want bool) error {
 	return nil
 }
 
-func ipsecServicesMatch(want bool) bool {
+func ipsecServicesMatch(want, libreswan bool) bool {
 	if unitIsEnabled(strongswanStarterUnit) || unitIsActive(strongswanStarterUnit) {
+		return false
+	}
+	if !want && libreswan && (unitIsEnabled(libreswanUnit) || unitIsActive(libreswanUnit)) {
 		return false
 	}
 	return unitIsEnabled(ovsIPSecUnit) == want && unitIsActive(ovsIPSecUnit) == want

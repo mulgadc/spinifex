@@ -85,6 +85,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -1423,11 +1424,17 @@ func (d *Daemon) startLocal() error {
 		slog.Warn("Failed to set daemon OOM score", "err", err)
 	}
 
-	// Warn on host assets this build expects but that are missing, stale, or
-	// ungranted, so drift surfaces as a named log line rather than a later
-	// cryptic failure. Never fatal — unrelated asset problems must not ground a node.
+	// Log host assets that are missing, stale or ungranted, and host faults whose
+	// detail names the fix, so drift surfaces as a named line rather than a later
+	// cryptic failure. Never fatal: an unrelated asset problem must not ground a node.
 	for _, r := range preflight.CheckHost() {
-		if r.Status != preflight.OK {
+		switch r.Status {
+		case preflight.OK:
+		case preflight.Failed:
+			slog.Error("Host preflight check failed", "path", r.Path, "kind", r.Kind, "detail", r.Detail)
+		case preflight.Warning:
+			slog.Warn("Host preflight warning", "path", r.Path, "kind", r.Kind, "detail", r.Detail)
+		default:
 			slog.Warn("Host asset preflight problem", "path", r.Path, "kind", r.Kind,
 				"status", r.Status.String(), "detail", r.Detail,
 				"remediation", "run scripts/update-nodes.sh or make reinstall")
@@ -1837,7 +1844,7 @@ func (d *Daemon) startCluster() error {
 	// background because the first attempt routinely loses the race with
 	// ovn-central accepting connections, and a node that gives up there stays
 	// unconfigured while a peer may already require encryption cluster-wide.
-	go host.MaintainIPSec(d.ctx, d.configPath, d.clusterConfig, d.ipsecBarrier())
+	go host.MaintainIPSec(d.ctx, d.configPath, d.clusterConfig, d.ipsecBarrier(), hostos.HasLibreswan())
 
 	// Keep the host firewall's peer sets in step with cluster membership. Every
 	// formation path reaches this, which none of the installers do. Runs in the

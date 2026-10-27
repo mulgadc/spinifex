@@ -804,6 +804,37 @@ func TestBuildDirectBootConfig_InstanceTypeShape(t *testing.T) {
 	assert.Len(t, cfg.FwCfg, 3)
 }
 
+func TestBuildDirectBootConfig_BootsTheShippedQboot(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	d := &Daemon{resourceMgr: &ResourceManager{}}
+
+	cfg, err := d.buildDirectBootConfig("i-qboot", &elbv2domain.SystemInstanceInput{
+		NICs: []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:05", IsDefault: true}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(microvmDir, vm.MicroVMFirmware), cfg.BIOS)
+	for _, e := range cfg.FwCfg {
+		assert.NoError(t, os.Remove(e.File))
+	}
+}
+
+func TestBuildDirectBootConfig_MissingFirmwareFailsByName(t *testing.T) {
+	runtimeDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	orig := microvmDir
+	microvmDir = t.TempDir()
+	t.Cleanup(func() { microvmDir = orig })
+
+	_, err := (&Daemon{resourceMgr: &ResourceManager{}}).buildDirectBootConfig("i-nofw", &elbv2domain.SystemInstanceInput{
+		NICs: []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:06", IsDefault: true}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), filepath.Join(microvmDir, vm.MicroVMFirmware))
+	entries, readErr := os.ReadDir(runtimeDir)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "a launch refused for missing firmware must leave no fw_cfg blobs behind")
+}
+
 func TestBuildDirectBootConfig_FwCfgWriteError(t *testing.T) {
 	notADir := filepath.Join(t.TempDir(), "file")
 	require.NoError(t, os.WriteFile(notADir, nil, 0o600))

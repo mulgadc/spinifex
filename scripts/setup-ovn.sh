@@ -4,11 +4,19 @@
 #
 # This script bootstraps a compute node for OVN-based VPC networking:
 #   1. Installs OVN/OVS packages (if not present)
-#   2. Enables required services (openvswitch-switch, ovn-controller)
+#   2. Enables required services (Open vSwitch, ovn-controller)
 #   3. Creates br-int with secure fail-mode
 #   4. Configures WAN bridge for public subnet uplink (auto-detected or manual)
 #   5. Configures OVS external_ids for OVN chassis identity
 #   6. Applies sysctl tuning for overlay networking
+#
+# Host network persistence: the links this script creates are kernel-only. On
+# a host where systemd-networkd is enabled, or that already has Spinifex
+# networkd files, they persist in /etc/systemd/network. Otherwise (for example
+# a NetworkManager host) the topology goes to /etc/spinifex/hostnet.json and
+# spinifex-hostnet.service re-creates it at boot and on every OVS start. The
+# first run records which in /etc/spinifex/hostnet-backend; it never changes.
+# Where NetworkManager runs, the links Spinifex owns are made unmanaged.
 #
 # Usage:
 #   ./scripts/setup-ovn.sh [options]
@@ -121,6 +129,19 @@
 
 set -e
 
+# Host-OS capability probes: beside this script in a checkout and in the
+# installed share dir, else where setup.sh installs them.
+DISTRO_LIB=""
+for candidate in "$(dirname "${BASH_SOURCE[0]}")/lib/distro.sh" /usr/local/share/spinifex/lib/distro.sh; do
+    if [ -f "$candidate" ]; then DISTRO_LIB="$candidate"; break; fi
+done
+if [ -z "$DISTRO_LIB" ]; then
+    echo "ERROR: distro.sh not found at $(dirname "${BASH_SOURCE[0]}")/lib/distro.sh or /usr/local/share/spinifex/lib/distro.sh; re-run setup.sh to install it" >&2
+    exit 1
+fi
+# shellcheck source=lib/distro.sh
+. "$DISTRO_LIB"
+
 # Defaults
 MANAGEMENT=false
 WAN_BRIDGE=""
@@ -145,6 +166,10 @@ DB_CLUSTER_REMOTE_ADDR=""
 # Recreating the NB/SB DBs discards all logical network state, so it is opt-in.
 RECREATE_DB=false
 OVN_DBDIR="${OVN_DBDIR:-/var/lib/ovn}"
+# Records that --management set this node up. Nodes set up before it existed
+# carry only the legacy marker, OVN_CTL_OPTS in /etc/default/ovn-central.
+OVN_ROLE_FILE=/etc/spinifex/ovn-role
+LEGACY_OVN_ROLE_FILE=/etc/default/ovn-central
 # NODE_NAME is left empty by default. The chassis-id pin block at Step 4
 # only runs when --node-name=NAME is explicitly given. Passing nothing
 # preserves whatever system-id already lives in OVS (gold-image UUID,
@@ -220,6 +245,152 @@ iface_master() {
     local m
     m=$(ip -o link show "$1" 2>/dev/null | sed -n 's/.* master \([^ ]*\) .*/\1/p')
     printf '%s' "$m"
+}
+
+# --- Host network persistence ---
+#
+# Links this script creates are kernel-only and vanish on reboot. The first run
+# picks how they persist and records it: networkd where systemd-networkd is
+# enabled, else hostnet (spinifex-hostnet.service replays HOSTNET_STATE at boot
+# and on every ovs-vswitchd start). There is no switching; reset the node.
+HOSTNET_BACKEND_FILE=/etc/spinifex/hostnet-backend
+HOSTNET_STATE=/etc/spinifex/hostnet.json
+HOSTNET_LOCK=/run/spinifex/hostnet.lock
+NETWORKD_DIR=/etc/systemd/network
+NM_UNMANAGED_CONF=/etc/NetworkManager/conf.d/00-spinifex-unmanaged.conf
+NM_UNMANAGED_RULE=/etc/udev/rules.d/90-spinifex-nm-unmanaged.rules
+# System-instance management TAPs: "mg" plus 13 hex digits of the instance ID.
+# NetworkManager globs have no character classes, so this match goes to udev.
+MGMT_TAP_GLOB='mg[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+
+# Prints the recorded backend, or picks one and records it. A node with
+# Spinifex networkd files and no record was set up before the record existed.
+select_hostnet_backend() {
+    local backend
+    if sudo test -e "$HOSTNET_BACKEND_FILE"; then
+        backend=$(sudo cat "$HOSTNET_BACKEND_FILE" | tr -d '[:space:]')
+        case "$backend" in
+            networkd|hostnet) printf '%s\n' "$backend"; return 0 ;;
+        esac
+        echo "ERROR: $HOSTNET_BACKEND_FILE says '$backend'; expected networkd or hostnet" >&2
+        return 1
+    fi
+    if compgen -G "$NETWORKD_DIR/*-spinifex-*.network" >/dev/null || compgen -G "$NETWORKD_DIR/*-spinifex-*.netdev" >/dev/null; then
+        backend=networkd
+    elif systemctl is-enabled --quiet systemd-networkd.service 2>/dev/null; then
+        backend=networkd
+    else
+        backend=hostnet
+    fi
+    sudo mkdir -p "$(dirname "$HOSTNET_BACKEND_FILE")"
+    printf '%s\n' "$backend" | sudo tee "$HOSTNET_BACKEND_FILE" >/dev/null
+    # Read by `spx admin hostnet check`, which the daemon and vpcd run unprivileged.
+    sudo chmod 0644 "$HOSTNET_BACKEND_FILE"
+    printf '%s\n' "$backend"
+}
+
+# write_hostnet_state <true|false> — records the topology for
+# `spx admin hostnet apply`, atomically. true marks it pending: apply refuses
+# it until the run that wrote it finishes.
+write_hostnet_state() {
+    local pending="$1" body
+    body=$(printf '{\n  "version": 1,\n  "pending": %s,\n  "int_bridge": "br-int"' "$pending")
+    case "$WAN_BRIDGE_MODE" in
+        existing)
+            body="$body"$(printf ',\n  "wan": {"mode": "existing", "ovs_bridge": "%s"}' "$WAN_BRIDGE") ;;
+        veth)
+            body="$body"$(printf ',\n  "wan": {"mode": "veth", "ovs_bridge": "%s", "linux_bridge": "%s", "host_end": "veth-wan-br", "ovs_end": "veth-wan-ovs"}' "$WAN_BRIDGE" "$LINUX_BRIDGE") ;;
+        direct)
+            body="$body"$(printf ',\n  "wan": {"mode": "direct", "ovs_bridge": "%s", "nic": "%s"}' "$WAN_BRIDGE" "$WAN_IFACE") ;;
+        nat)
+            body="$body"$(printf ',\n  "wan": {"mode": "nat", "ovs_bridge": "%s", "host_end": "spx-nat-host", "ovs_end": "spx-nat-ovs", "host_mac": "%s", "host_cidr": "%s"}' "$WAN_BRIDGE" "$NAT_TRANSIT_HOST_MAC" "$NAT_TRANSIT_GW_CIDR") ;;
+    esac
+    if [ "$MGMT_BRIDGE_ENABLED" = true ]; then
+        body="$body"$(printf ',\n  "mgmt": {"bridge": "%s", "cidr": "%s", "nic": "%s"}' "$MGMT_BRIDGE" "$MGMT_CIDR" "$MGMT_IFACE")
+    fi
+    if [ -n "${ENCAP_ROUTE_DST:-}" ]; then
+        body="$body"$(printf ',\n  "encap_route": {"dst": "%s", "dev": "%s", "src": "%s", "metric": %s}' \
+            "$ENCAP_ROUTE_DST" "$ENCAP_ROUTE_DEV" "$ENCAP_IP" "$ENCAP_ROUTE_METRIC")
+    fi
+    sudo mkdir -p "$(dirname "$HOSTNET_STATE")"
+    printf '%s\n}\n' "$body" | sudo tee "$HOSTNET_STATE.tmp" >/dev/null
+    sudo chmod 0644 "$HOSTNET_STATE.tmp"
+    sudo mv -f "$HOSTNET_STATE.tmp" "$HOSTNET_STATE"
+}
+
+# Holds the lock `spx admin hostnet apply` takes, from a root flock process fed
+# by a pipe, so an apply started by an OVS restart waits for this run's links.
+# Never run systemctl against OVS or spinifex-hostnet while holding it.
+hostnet_lock() {
+    local reply=""
+    sudo mkdir -p "$(dirname "$HOSTNET_LOCK")"
+    coproc HOSTNET_LOCK_HOLDER { exec sudo flock -w 120 "$HOSTNET_LOCK" sh -c 'echo locked; read -r _'; }
+    read -r reply <&"${HOSTNET_LOCK_HOLDER[0]}" || true
+    if [ "$reply" != locked ]; then
+        echo "ERROR: $HOSTNET_LOCK still held after 120 s; is spx admin hostnet apply stuck? (systemctl status spinifex-hostnet)" >&2
+        exit 1
+    fi
+}
+
+hostnet_unlock() {
+    local fd="${HOSTNET_LOCK_HOLDER[1]}" pid="$HOSTNET_LOCK_HOLDER_PID"
+    exec {fd}>&-
+    wait "$pid" 2>/dev/null || true
+}
+
+nm_running() {
+    systemctl is-active --quiet NetworkManager.service 2>/dev/null
+}
+
+# nm_release_nic <nic> — before a NIC moves into OVS, refuse the one carrying
+# the default route or this SSH session, then take it from NetworkManager. Its
+# profiles are left alone: once unmanaged, none can activate on it.
+nm_release_nic() {
+    local nic="$1" ssh_ip state
+    if sudo ovs-vsctl port-to-br "$nic" >/dev/null 2>&1; then
+        return 0
+    fi
+    if ip -4 route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev") print $(i+1)}' | grep -qx "$nic"; then
+        echo "ERROR: $nic carries the default route; moving it into OVS would cut this host off" >&2
+        exit 1
+    fi
+    ssh_ip=$(printf '%s\n' "${SSH_CONNECTION:-}" | awk '{print $3}')
+    if [ -n "$ssh_ip" ] && ip -o -4 addr show dev "$nic" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$ssh_ip"; then
+        echo "ERROR: this SSH session arrived on $nic ($ssh_ip); moving it into OVS would drop it" >&2
+        exit 1
+    fi
+    state=$(nmcli -g GENERAL.STATE device show "$nic" 2>/dev/null || true)
+    case "$state" in
+        *"(connect"*)
+            sudo nmcli device disconnect "$nic" >/dev/null
+            echo "  $nic: disconnected from NetworkManager"
+            ;;
+    esac
+}
+
+# Writes the NetworkManager config and udev rule that leave every link Spinifex
+# owns unmanaged, then has NetworkManager and udev reread them. The host uplink
+# (a Linux bridge such as br-wan, and its NIC) stays NetworkManager's.
+write_nm_unmanaged() {
+    local names=(br-int "$WAN_BRIDGE" 'veth-wan-*' 'spx-nat-*' 'tap*' 'ime-*' 'imi-*' 'vhp-*' br-imds 'genev_sys_*')
+    local list="" name
+    if [ "$MGMT_BRIDGE_ENABLED" = true ]; then
+        names+=("$MGMT_BRIDGE" "$MGMT_IFACE")
+    fi
+    if [ "$WAN_BRIDGE_MODE" = direct ]; then
+        names+=("$WAN_IFACE")
+    fi
+    for name in "${names[@]}"; do
+        [ -n "$name" ] && list="${list:+$list;}interface-name:$name"
+    done
+    sudo mkdir -p "$(dirname "$NM_UNMANAGED_CONF")" "$(dirname "$NM_UNMANAGED_RULE")"
+    printf '# Written by setup-ovn.sh on every run: links Spinifex owns.\n[keyfile]\nunmanaged-devices+=%s\n' "$list" \
+        | sudo tee "$NM_UNMANAGED_CONF" >/dev/null
+    printf '# Written by setup-ovn.sh: system-instance management TAPs.\nSUBSYSTEM=="net", KERNEL=="%s", ENV{NM_UNMANAGED}="1"\n' "$MGMT_TAP_GLOB" \
+        | sudo tee "$NM_UNMANAGED_RULE" >/dev/null
+    sudo udevadm control --reload
+    sudo udevadm trigger --action=change --subsystem-match=net --sysname-match='mg*'
+    sudo nmcli general reload conf
 }
 
 teardown() {
@@ -469,6 +640,15 @@ else
     detect_wan_bridge
 fi
 
+# Routed NAT transit, used by nat mode and recorded for spinifex-hostnet.
+NAT_TRANSIT_CIDR="100.127.0.0/24"
+NAT_TRANSIT_GW_CIDR="100.127.0.1/24"
+# Same on every node. OVN keeps one MAC binding for the transit nexthop
+# cluster-wide, so a random per-node MAC sends every chassis's egress to
+# whichever node seeded it; the pair is node-local, so one address everywhere
+# is unambiguous.
+NAT_TRANSIT_HOST_MAC="02:00:64:7f:00:01"
+
 # Auto-detect encap IP if not specified
 if [ -z "$ENCAP_IP" ]; then
     # Prefer br-vpc IP if it exists (dedicated VPC data plane)
@@ -575,19 +755,104 @@ ensure_clustered_db_storage() {
     # fresh SB and re-registers under whatever system-id it started with — which
     # on a renamed node is the old one, and that row then holds this node's encap
     # IP so the correctly-named chassis can never commit. Step 5 restarts it.
-    sudo systemctl stop ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-central ovn-controller 2>/dev/null || true
+    sudo systemctl stop "${OVN_CENTRAL_UNITS[@]}" ovn-controller 2>/dev/null || true
     sudo rm -f "${standalone[@]}"
+}
+
+# set_root_service_user <file> <var> — sets <var>="root:root" in <file> when
+# the file exists. Returns 0 only when it changed the file.
+set_root_service_user() {
+    local file=$1 var=$2
+    [ -f "$file" ] || return 1
+    grep -qx "$var=\"root:root\"" "$file" && return 1
+    if grep -q "^$var=" "$file"; then
+        sudo sed -i "s|^$var=.*|$var=\"root:root\"|" "$file"
+    else
+        echo "$var=\"root:root\"" | sudo tee -a "$file" >/dev/null
+    fi
+    echo "  $file: $var=\"root:root\""
+}
+
+# write_ovn_central_opts <flags> — writes the ovn-ctl flags to the options
+# file the OVN central units read for the probed layout.
+write_ovn_central_opts() {
+    echo "$OVN_CENTRAL_OPTS_VAR=\"$1\"" | sudo tee "$OVN_CENTRAL_OPTS_FILE" >/dev/null
+    echo "  wrote $OVN_CENTRAL_OPTS_FILE"
+}
+
+record_management_role() {
+    sudo mkdir -p "$(dirname "$OVN_ROLE_FILE")"
+    echo management | sudo tee "$OVN_ROLE_FILE" >/dev/null
+}
+
+# management_role_markers — prints each file recording that a previous run set
+# this node up with --management, one per line; returns 1 when there is none.
+management_role_markers() {
+    local found=1
+    if sudo grep -qx management "$OVN_ROLE_FILE" 2>/dev/null; then
+        echo "$OVN_ROLE_FILE"
+        found=0
+    fi
+    if sudo grep -q '^OVN_CTL_OPTS=' "$LEGACY_OVN_ROLE_FILE" 2>/dev/null; then
+        echo "$LEGACY_OVN_ROLE_FILE"
+        found=0
+    fi
+    return $found
 }
 
 echo ""
 echo "Step 2: Enabling services..."
 
-sudo systemctl enable openvswitch-switch
-sudo systemctl start openvswitch-switch
-echo "  openvswitch-switch: started"
+# Unit names differ by distro: the OVS umbrella, and whether the OVN databases
+# have units of their own (Debian) or are started by ovn-northd.service (EL).
+OVS_UNIT=$(distro_ovs_unit) || exit 1
+OVN_CENTRAL_LAYOUT=""
+if [ "$MANAGEMENT" = true ] || distro_unit_exists ovn-central.service || distro_unit_exists ovn-northd.service; then
+    OVN_CENTRAL_LAYOUT=$(distro_ovn_central_layout) || exit 1
+fi
+case "$OVN_CENTRAL_LAYOUT" in
+    split)
+        OVN_CENTRAL_UNIT=ovn-central.service
+        OVN_DB_UNITS=(ovn-ovsdb-server-nb.service ovn-ovsdb-server-sb.service)
+        OVN_SERVER_UNITS=("${OVN_DB_UNITS[@]}" ovn-northd.service)
+        OVN_CENTRAL_UNITS=(ovn-central.service "${OVN_SERVER_UNITS[@]}")
+        OVN_CENTRAL_OPTS_FILE=/etc/default/ovn-central
+        OVN_CENTRAL_OPTS_VAR=OVN_CTL_OPTS
+        ;;
+    lone-northd)
+        OVN_CENTRAL_UNIT=ovn-northd.service
+        OVN_DB_UNITS=(ovn-northd.service)
+        OVN_SERVER_UNITS=(ovn-northd.service)
+        OVN_CENTRAL_UNITS=(ovn-northd.service)
+        OVN_CENTRAL_OPTS_FILE=/etc/sysconfig/ovn-northd
+        OVN_CENTRAL_OPTS_VAR=OVN_NORTHD_OPTS
+        ;;
+esac
+
+# OVS and OVN run as root, as on Debian: the service users reach the sockets
+# through the spinifex group, a model tested only against root-owned daemons.
+# EL ships non-root users and re-chowns the run dirs to them on every start.
+OVS_USER_CHANGED=false
+if set_root_service_user /etc/sysconfig/openvswitch OVS_USER_ID; then
+    OVS_USER_CHANGED=true
+fi
+# Takes effect below: ovn-northd and ovn-controller are restarted either way.
+set_root_service_user /etc/sysconfig/ovn OVN_USER_ID || true
+
+sudo systemctl enable "$OVS_UNIT"
+if [ "$OVS_USER_CHANGED" = true ]; then
+    # start is a no-op on a running OVS, which would keep its old user.
+    sudo systemctl restart "$OVS_UNIT"
+else
+    sudo systemctl start "$OVS_UNIT"
+fi
+echo "  ${OVS_UNIT%.service}: started"
 
 if [ "$MANAGEMENT" = true ]; then
-    sudo systemctl enable ovn-central
+    sudo systemctl enable "$OVN_CENTRAL_UNIT"
+    # Recorded before anything else changes, so a run that stops part way
+    # still makes a later run without --management refuse.
+    record_management_role
 
     # LAN-plane NB/SB client listener, added to the loopback one set below.
     # Guard is load-bearing: --db-nb-addr defaults to 0.0.0.0, so
@@ -600,8 +865,8 @@ if [ "$MANAGEMENT" = true ]; then
     if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
         ensure_clustered_db_storage
 
-        # Clustered NB/SB via native OVSDB RAFT. Both per-DB units source one
-        # shared OVN_CTL_OPTS from /etc/default/ovn-central; each run_*_ovsdb
+        # Clustered NB/SB via native OVSDB RAFT. Every OVN central unit reads
+        # one shared options file (write_ovn_central_opts); each run_*_ovsdb
         # consumes only its own --db-{nb,sb}-* flags. RAFT ports default to NB
         # 6643 / SB 6644. ovn-ctl creates the cluster when no remote-addr is
         # given (and no existing .db file), joins when one is.
@@ -635,26 +900,28 @@ if [ "$MANAGEMENT" = true ]; then
             echo "  NB/SB client listen: 127.0.0.1"
         fi
 
-        echo "OVN_CTL_OPTS=\"$OVN_CTL_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
-        echo "  wrote /etc/default/ovn-central"
+        write_ovn_central_opts "$OVN_CTL_OPTS"
 
         # The packaged ovn-northd.service ExecStop runs `ovn-ctl stop_northd`
         # without --ovn-manage-ovsdb=no, so restarting northd also tears down the
         # NB/SB ovsdb-server units. With the split clustered units those DBs are
         # owned by their own units, so override ExecStop to leave them alone —
         # otherwise the restart below races and kills the freshly-started DBs.
-        sudo mkdir -p /etc/systemd/system/ovn-northd.service.d
-        sudo tee /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf >/dev/null <<'EOF'
+        # EL's lone ovn-northd.service owns the DBs, so stopping them is right there.
+        if [ "$OVN_CENTRAL_LAYOUT" = split ]; then
+            sudo mkdir -p /etc/systemd/system/ovn-northd.service.d
+            sudo tee /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf >/dev/null <<'EOF'
 [Service]
 ExecStop=
 ExecStop=/usr/share/ovn/scripts/ovn-ctl stop_northd --no-monitor --ovn-manage-ovsdb=no
 EOF
-        sudo systemctl daemon-reload
+            sudo systemctl daemon-reload
+        fi
 
-        # The ovn-central aggregator is ExecStart=/bin/true, so restarting it
-        # won't restart the children — restart the per-DB units directly to
-        # pick up the new OVN_CTL_OPTS.
-        sudo systemctl restart ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd
+        # Debian's ovn-central aggregator is ExecStart=/bin/true, so restarting
+        # it won't restart the children — restart the DB and northd units
+        # directly to pick up the new OVN_CTL_OPTS.
+        sudo systemctl restart "${OVN_SERVER_UNITS[@]}"
         echo "  ovn-central: started clustered (NB DB + SB DB + ovn-northd)"
     else
         # Always write the file, even when there is nothing to put in it. This
@@ -662,14 +929,13 @@ EOF
         # and the RAFT flags live here rather than in the database — leaving a
         # stale file in place restarts the DB as a cluster member dialling a
         # peer that no longer exists, which looks like a hung leader election.
-        echo "OVN_CTL_OPTS=\"$OVN_DB_LISTEN_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
-        echo "  wrote /etc/default/ovn-central"
-        sudo systemctl start ovn-central
+        write_ovn_central_opts "$OVN_DB_LISTEN_OPTS"
+        sudo systemctl start "$OVN_CENTRAL_UNIT"
 
-        # ovn-central is ExecStart=/bin/true; restarting it does not restart
-        # its children, so a re-run with changed options needs the per-DB units
-        # restarted directly to pick them up.
-        sudo systemctl restart ovn-ovsdb-server-nb ovn-ovsdb-server-sb
+        # Debian's ovn-central is ExecStart=/bin/true; restarting it does not
+        # restart its children, so a re-run with changed options needs the DB
+        # units restarted directly to pick them up.
+        sudo systemctl restart "${OVN_DB_UNITS[@]}"
         echo "  ovn-central: started (NB DB + SB DB + ovn-northd)"
         if [ -n "$LAN_ADDR" ]; then
             echo "  NB/SB client listen: 127.0.0.1, $LAN_ADDR"
@@ -731,7 +997,7 @@ EOF
         done
         if [ "$(printf '%s\n' "$NB_MEMBERS" | grep -c .)" -gt 1 ]; then
             sudo sed -i "s|\"\$| --ovn-northd-nb-db=$NB_LIST --ovn-northd-sb-db=$SB_LIST\"|" \
-                /etc/default/ovn-central
+                "$OVN_CENTRAL_OPTS_FILE"
             sudo systemctl restart ovn-northd
             echo "  ovn-northd: NB=$NB_LIST SB=$SB_LIST (derived from RAFT membership)"
         else
@@ -796,26 +1062,27 @@ else
     # 6641, and vpcd crash-loops on "connection refused" with no hint that this
     # script caused it. Seen on mulga-poc at 15,061 restarts.
     #
-    # The signal is /etc/default/ovn-central, not the presence of a database:
-    # the ovn-central *package* creates DBs on install, so every compute node
-    # has them and testing for them would refuse every legitimate compute node.
-    # Only the --management path below writes OVN_CTL_OPTS to that file.
-    if [ -f /etc/default/ovn-central ] && grep -q '^OVN_CTL_OPTS=' /etc/default/ovn-central 2>/dev/null; then
+    # The signal is a role marker, not the presence of a database: the OVN
+    # central *package* creates DBs on install, so every compute node has them
+    # and testing for them would refuse every legitimate compute node. Only the
+    # --management path above writes a marker (management_role_markers).
+    if ROLE_MARKERS=$(management_role_markers); then
+        ROLE_MARKERS=${ROLE_MARKERS//$'\n'/ }
         echo "ERROR: this node was configured as a management node by a previous run"
-        echo "  (/etc/default/ovn-central holds OVN_CTL_OPTS), but --management was"
-        echo "  not given. Re-running without it stops and disables ovn-central and"
-        echo "  takes the control plane down."
+        echo "  (recorded in $ROLE_MARKERS), but --management was not given."
+        echo "  Re-running without it stops and disables OVN central and takes the"
+        echo "  control plane down."
         echo ""
         echo "  If this is a management node, re-run with --management."
         echo "  If it is genuinely being demoted to a compute node:"
-        echo "     sudo rm -f /etc/default/ovn-central"
+        echo "     sudo rm -f $ROLE_MARKERS"
         exit 1
     fi
 
-    if systemctl is-enabled ovn-central >/dev/null 2>&1 ||
-        systemctl is-active ovn-central >/dev/null 2>&1; then
-        sudo systemctl stop ovn-central ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb 2>/dev/null || true
-        sudo systemctl disable ovn-central ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb 2>/dev/null || true
+    if [ -n "$OVN_CENTRAL_LAYOUT" ] && { systemctl is-enabled "$OVN_CENTRAL_UNIT" >/dev/null 2>&1 ||
+        systemctl is-active "$OVN_CENTRAL_UNIT" >/dev/null 2>&1; }; then
+        sudo systemctl stop "${OVN_CENTRAL_UNITS[@]}" 2>/dev/null || true
+        sudo systemctl disable "${OVN_CENTRAL_UNITS[@]}" 2>/dev/null || true
         echo "  ovn-central: stopped and disabled (compute node runs no database)"
     fi
     for db in "$OVN_DBDIR/ovnnb_db.db" "$OVN_DBDIR/ovnsb_db.db"; do
@@ -823,6 +1090,34 @@ else
         sudo mv "$db" "$db.standalone-disabled"
         echo "  moved aside $db (left by the package's standalone ovn-central)"
     done
+fi
+
+# --- Step 2b: Host network persistence and NetworkManager ---
+echo ""
+echo "Step 2b: Host network persistence..."
+HOSTNET_BACKEND=$(select_hostnet_backend)
+echo "  backend: $HOSTNET_BACKEND (recorded in $HOSTNET_BACKEND_FILE)"
+
+if nm_running; then
+    if [ "$MGMT_BRIDGE_ENABLED" = true ] && [ -n "$MGMT_IFACE" ]; then
+        nm_release_nic "$MGMT_IFACE"
+    fi
+    if [ "$WAN_BRIDGE_MODE" = direct ]; then
+        nm_release_nic "$WAN_IFACE"
+    fi
+    write_nm_unmanaged
+    echo "  NetworkManager: Spinifex links unmanaged ($NM_UNMANAGED_CONF, $NM_UNMANAGED_RULE)"
+fi
+
+# Held until the wiring below is complete; a run that dies before then leaves
+# the state pending, and spinifex-hostnet refuses it until this script is rerun.
+ENCAP_ROUTE_DST=""
+ENCAP_ROUTE_DEV=""
+ENCAP_ROUTE_METRIC=50
+if [ "$HOSTNET_BACKEND" = hostnet ]; then
+    hostnet_lock
+    write_hostnet_state true
+    echo "  $HOSTNET_STATE: pending until this run finishes wiring"
 fi
 
 # --- Step 3: Create and configure br-int ---
@@ -842,7 +1137,7 @@ echo "  br-int: created, fail-mode=secure, up"
 # still forwards, but ovn-controller flow programming and any tooling that
 # probes link state misbehave. Unmanaged=yes keeps OVS in sole control.
 OVS_INTERNAL_NET=/etc/systemd/network/05-spinifex-ovs-internal.network
-if [ ! -f "$OVS_INTERNAL_NET" ]; then
+if [ "$HOSTNET_BACKEND" = networkd ] && [ ! -f "$OVS_INTERNAL_NET" ]; then
     sudo tee "$OVS_INTERNAL_NET" >/dev/null <<'NETWORK'
 [Match]
 Name=br-int br-ext
@@ -956,23 +1251,24 @@ if [ -n "$WAN_BRIDGE" ]; then
             # existing networkd config. networkd searches /etc, /run, /usr/lib;
             # check all three. Our own file is excluded so idempotent re-runs
             # still rewrite when needed.
-            BR_WAN_NETDEV="/etc/systemd/network/14-spinifex-br-wan.netdev"
-            VETH_NETDEV="/etc/systemd/network/15-spinifex-veth-wan.netdev"
-            VETH_NETWORK="/etc/systemd/network/15-spinifex-veth-wan.network"
-            VETH_OVS_NETWORK="/etc/systemd/network/16-spinifex-veth-wan-ovs.network"
-            EXISTING_BR_NETDEV=$(grep -rls --include="*.netdev" -E "^\s*Name=$LINUX_BRIDGE\s*$" \
-                /etc/systemd/network /run/systemd/network /usr/lib/systemd/network 2>/dev/null \
-                | grep -v "^$BR_WAN_NETDEV$" || true)
-            if [ -n "$EXISTING_BR_NETDEV" ]; then
-                echo "  skipping $BR_WAN_NETDEV — operator-managed NetDev already declares $LINUX_BRIDGE: $EXISTING_BR_NETDEV"
-            else
-                sudo tee "$BR_WAN_NETDEV" >/dev/null <<NETDEV
+            if [ "$HOSTNET_BACKEND" = networkd ]; then
+                BR_WAN_NETDEV="/etc/systemd/network/14-spinifex-br-wan.netdev"
+                VETH_NETDEV="/etc/systemd/network/15-spinifex-veth-wan.netdev"
+                VETH_NETWORK="/etc/systemd/network/15-spinifex-veth-wan.network"
+                VETH_OVS_NETWORK="/etc/systemd/network/16-spinifex-veth-wan-ovs.network"
+                EXISTING_BR_NETDEV=$(grep -rls --include="*.netdev" -E "^\s*Name=$LINUX_BRIDGE\s*$" \
+                    /etc/systemd/network /run/systemd/network /usr/lib/systemd/network 2>/dev/null \
+                    | grep -v "^$BR_WAN_NETDEV$" || true)
+                if [ -n "$EXISTING_BR_NETDEV" ]; then
+                    echo "  skipping $BR_WAN_NETDEV — operator-managed NetDev already declares $LINUX_BRIDGE: $EXISTING_BR_NETDEV"
+                else
+                    sudo tee "$BR_WAN_NETDEV" >/dev/null <<NETDEV
 [NetDev]
 Name=$LINUX_BRIDGE
 Kind=bridge
 NETDEV
-            fi
-            sudo tee "$VETH_NETDEV" >/dev/null <<NETDEV
+                fi
+                sudo tee "$VETH_NETDEV" >/dev/null <<NETDEV
 [NetDev]
 Name=veth-wan-br
 Kind=veth
@@ -980,7 +1276,7 @@ Kind=veth
 [Peer]
 Name=veth-wan-ovs
 NETDEV
-            sudo tee "$VETH_NETWORK" >/dev/null <<NETWORK
+                sudo tee "$VETH_NETWORK" >/dev/null <<NETWORK
 [Match]
 Name=veth-wan-br
 
@@ -988,12 +1284,12 @@ Name=veth-wan-br
 Bridge=$LINUX_BRIDGE
 ConfigureWithoutCarrier=yes
 NETWORK
-            # Second unit admin-ups the OVS end of the pair. OVS owns the port
-            # (enslaved via ovs-vsctl add-port above) but does not flip admin
-            # state on external ports — that's networkd's job. Without this,
-            # veth-wan-ovs stays DOWN after reboot, peer goes LOWERLAYERDOWN,
-            # br-wan loses carrier.
-            sudo tee "$VETH_OVS_NETWORK" >/dev/null <<NETWORK
+                # Second unit admin-ups the OVS end of the pair. OVS owns the port
+                # (enslaved via ovs-vsctl add-port above) but does not flip admin
+                # state on external ports — that's networkd's job. Without this,
+                # veth-wan-ovs stays DOWN after reboot, peer goes LOWERLAYERDOWN,
+                # br-wan loses carrier.
+                sudo tee "$VETH_OVS_NETWORK" >/dev/null <<NETWORK
 [Match]
 Name=veth-wan-ovs
 
@@ -1003,8 +1299,9 @@ RequiredForOnline=no
 [Network]
 ConfigureWithoutCarrier=yes
 NETWORK
-            sudo networkctl reload 2>/dev/null || true
-            echo "  wrote $VETH_NETDEV + $VETH_NETWORK + $VETH_OVS_NETWORK (veth persists on reboot)"
+                sudo networkctl reload 2>/dev/null || true
+                echo "  wrote $VETH_NETDEV + $VETH_NETWORK + $VETH_OVS_NETWORK (veth persists on reboot)"
+            fi
             ;;
 
         direct)
@@ -1038,14 +1335,6 @@ NETWORK
             # forwards and masquerades the transit /24 out whatever uplink it
             # has. OVN SNATs each VPC CIDR to its gateway LRP transit IP, so
             # the masquerade rule below is the only host-side NAT state.
-            NAT_TRANSIT_CIDR="100.127.0.0/24"
-            NAT_TRANSIT_GW_CIDR="100.127.0.1/24"
-            # Same on every node. OVN keeps one MAC binding for the transit
-            # nexthop cluster-wide, so a random per-node MAC sends every
-            # chassis's egress to whichever node seeded it; the pair is
-            # node-local, so one address everywhere is unambiguous.
-            NAT_TRANSIT_HOST_MAC="02:00:64:7f:00:01"
-
             if ! sudo ovs-vsctl br-exists "$WAN_BRIDGE" 2>/dev/null; then
                 sudo ovs-vsctl --may-exist add-br "$WAN_BRIDGE"
                 echo "  created OVS bridge: $WAN_BRIDGE"
@@ -1073,10 +1362,11 @@ NETWORK
 
             # Persist the veth pair + transit IP across reboot (veths are
             # kernel-only; same rationale as veth mode above).
-            NAT_NETDEV="/etc/systemd/network/17-spinifex-nat.netdev"
-            NAT_NETWORK="/etc/systemd/network/17-spinifex-nat.network"
-            NAT_OVS_NETWORK="/etc/systemd/network/18-spinifex-nat-ovs.network"
-            sudo tee "$NAT_NETDEV" >/dev/null <<NETDEV
+            if [ "$HOSTNET_BACKEND" = networkd ]; then
+                NAT_NETDEV="/etc/systemd/network/17-spinifex-nat.netdev"
+                NAT_NETWORK="/etc/systemd/network/17-spinifex-nat.network"
+                NAT_OVS_NETWORK="/etc/systemd/network/18-spinifex-nat-ovs.network"
+                sudo tee "$NAT_NETDEV" >/dev/null <<NETDEV
 [NetDev]
 Name=spx-nat-host
 Kind=veth
@@ -1085,7 +1375,7 @@ MACAddress=$NAT_TRANSIT_HOST_MAC
 [Peer]
 Name=spx-nat-ovs
 NETDEV
-            sudo tee "$NAT_NETWORK" >/dev/null <<NETWORK
+                sudo tee "$NAT_NETWORK" >/dev/null <<NETWORK
 [Match]
 Name=spx-nat-host
 
@@ -1093,9 +1383,9 @@ Name=spx-nat-host
 Address=$NAT_TRANSIT_GW_CIDR
 ConfigureWithoutCarrier=yes
 NETWORK
-            # Admin-up the OVS end after reboot (OVS owns the port but does
-            # not flip admin state on external ports — same as veth mode).
-            sudo tee "$NAT_OVS_NETWORK" >/dev/null <<NETWORK
+                # Admin-up the OVS end after reboot (OVS owns the port but does
+                # not flip admin state on external ports — same as veth mode).
+                sudo tee "$NAT_OVS_NETWORK" >/dev/null <<NETWORK
 [Match]
 Name=spx-nat-ovs
 
@@ -1105,8 +1395,9 @@ RequiredForOnline=no
 [Network]
 ConfigureWithoutCarrier=yes
 NETWORK
-            sudo networkctl reload 2>/dev/null || true
-            echo "  wrote $NAT_NETDEV + $NAT_NETWORK + $NAT_OVS_NETWORK (transit veth persists on reboot)"
+                sudo networkctl reload 2>/dev/null || true
+                echo "  wrote $NAT_NETDEV + $NAT_NETWORK + $NAT_OVS_NETWORK (transit veth persists on reboot)"
+            fi
 
             # Kernel egress: masquerade the transit /24 out any uplink and
             # accept forwarded transit traffic. vpcd re-ensures these on every
@@ -1261,8 +1552,9 @@ if [ "$MGMT_BRIDGE_ENABLED" = true ]; then
         # Persist the IP across reboots via a systemd-networkd drop-in. The
         # OVS bridge definition itself survives in ovsdb; only the L3 IP
         # needs re-applying on boot.
-        MGMT_NETD_UNIT="/etc/systemd/network/10-spinifex-mgmt.network"
-        sudo tee "$MGMT_NETD_UNIT" >/dev/null <<NETD
+        if [ "$HOSTNET_BACKEND" = networkd ]; then
+            MGMT_NETD_UNIT="/etc/systemd/network/10-spinifex-mgmt.network"
+            sudo tee "$MGMT_NETD_UNIT" >/dev/null <<NETD
 [Match]
 Name=$MGMT_BRIDGE
 
@@ -1270,7 +1562,8 @@ Name=$MGMT_BRIDGE
 Address=$MGMT_CIDR
 ConfigureWithoutCarrier=yes
 NETD
-        echo "  wrote $MGMT_NETD_UNIT (IP persists on reboot via systemd-networkd)"
+            echo "  wrote $MGMT_NETD_UNIT (IP persists on reboot via systemd-networkd)"
+        fi
     fi
 fi
 
@@ -1384,6 +1677,9 @@ sudo tee /etc/sysctl.d/99-spinifex-vpc.conf >/dev/null <<'SYSCTL'
 net.ipv4.ip_forward=1
 net.ipv4.conf.all.rp_filter=0
 net.ipv4.conf.default.rp_filter=0
+# EL's 50-redhat.conf sets every interface strict, reapplied by udev on each new
+# netdev; a strict IMDS endpoint drops guest requests, so keep those loose here.
+net.ipv4.conf.ime-*.rp_filter=0
 SYSCTL
 sudo sysctl --system -q
 echo "  ip_forward=1, rp_filter=0"
@@ -1401,13 +1697,21 @@ DATA_IFACE=$(ip -o -4 addr show | awk -v ip="$ENCAP_IP" '$0 ~ ip"/" {print $2}')
 if [ -n "$DATA_IFACE" ]; then
     SUBNET=$(ip -o -4 route show dev "$DATA_IFACE" proto kernel scope link | awk '{print $1}' | head -1)
     if [ -n "$SUBNET" ]; then
-        sudo ip route replace "$SUBNET" dev "$DATA_IFACE" src "$ENCAP_IP" metric 50
-        echo "  data route: $SUBNET via $DATA_IFACE src $ENCAP_IP (metric 50)"
+        sudo ip route replace "$SUBNET" dev "$DATA_IFACE" src "$ENCAP_IP" metric "$ENCAP_ROUTE_METRIC"
+        echo "  data route: $SUBNET via $DATA_IFACE src $ENCAP_IP (metric $ENCAP_ROUTE_METRIC)"
+        ENCAP_ROUTE_DST="$SUBNET"
+        ENCAP_ROUTE_DEV="$DATA_IFACE"
     else
         echo "  skipped: no kernel route found for $DATA_IFACE"
     fi
 else
     echo "  skipped: could not find interface for $ENCAP_IP"
+fi
+
+if [ "$HOSTNET_BACKEND" = hostnet ]; then
+    write_hostnet_state false
+    hostnet_unlock
+    echo "  $HOSTNET_STATE: recorded for spinifex-hostnet"
 fi
 
 # --- Step 7: Verify Geneve kernel support ---
@@ -1509,17 +1813,24 @@ echo "  OVS/OVN sockets: 0660 root:spinifex (group-scoped, no world access)"
 # file is the old 0666 override, and skipping would leave that exposure in place.
 # openvswitch-ipsec is included because Step 10 restarts it after this sweep,
 # so its ctl socket would otherwise be the one file left at the shipped mode.
-for unit in openvswitch-switch:/var/run/openvswitch/db.sock \
-    "ovn-controller:/var/run/ovn/*.ctl" \
-    "openvswitch-ipsec:/var/run/openvswitch/ovs-monitor-ipsec.*.ctl"; do
+# ovs-vswitchd starts after ovsdb-server and restarts with it (Requires=), so
+# its hook sees both daemons' sockets and fires on a restart of either.
+PERMS_UNITS=("ovs-vswitchd:/var/run/openvswitch/ovs-vswitchd.*.ctl"
+    "ovn-controller:/var/run/ovn/*.ctl"
+    "openvswitch-ipsec:/var/run/openvswitch/ovs-monitor-ipsec.*.ctl")
+# EL's ovn-northd.service starts the NB and SB databases as well as northd.
+if [ "$OVN_CENTRAL_LAYOUT" = lone-northd ]; then
+    PERMS_UNITS+=("ovn-northd:/var/run/ovn/ovn-northd.*.ctl")
+fi
+for unit in "${PERMS_UNITS[@]}"; do
     UNIT="${unit%%:*}"
     WAIT_GLOB="${unit#*:}"
     OVERRIDE_DIR="/etc/systemd/system/${UNIT}.service.d"
     sudo mkdir -p "$OVERRIDE_DIR"
     # `ExecStartPost=-` so a failure here cannot stop the unit. This drop-in goes
     # into another package's service, and tightening a socket mode is hardening,
-    # not a liveness requirement — it must never be the reason openvswitch-switch
-    # or ovn-controller will not start. Without the dash, removing the helper
+    # not a liveness requirement — it must never be the reason OVS or
+    # ovn-controller will not start. Without the dash, removing the helper
     # (an uninstall, a partial re-run that has not reached this step yet) takes
     # OVS down across the whole host with `Failed at step EXEC`, which reads as
     # an OVS fault and is nothing of the sort.
@@ -1540,23 +1851,45 @@ else
     echo "  sudoers rule: not found — run setup.sh first, or install manually"
 fi
 
-# --- Step 9: Configure OVN log rotation ---
-# The ovn-common package provides /etc/logrotate.d/ovn-common which handles
-# rotation and vlog/reopen. We just add maxsize + rotate to cap disk usage.
+# --- Step 9: Configure OVS and OVN log rotation ---
+# The packages' logrotate files handle rotation and vlog/reopen; this caps
+# disk usage and rotates as the user the daemons now run as.
 echo ""
-echo "Step 9: Configuring OVN log rotation..."
+echo "Step 9: Configuring OVS and OVN log rotation..."
 
-OVN_LOGROTATE="/etc/logrotate.d/ovn-common"
-if [ -f "$OVN_LOGROTATE" ]; then
-    if ! grep -q 'maxsize' "$OVN_LOGROTATE"; then
-        sudo sed -i '/^\/var\/log\/ovn\/\*\.log {/a\    rotate 5\n    maxsize 100M' "$OVN_LOGROTATE"
-        echo "  added maxsize 100M + rotate 5 to $OVN_LOGROTATE"
-    else
-        echo "  $OVN_LOGROTATE already has maxsize configured"
+# cap_logrotate <file> — adds maxsize 100M, and rotate 5 where the file keeps
+# no rotated logs, to its /var/log/<dir>/*.log stanza. A su line naming another
+# user becomes su root root: rotating root-owned logs as that user fails.
+cap_logrotate() {
+    local file=$1 lines='    maxsize 100M' added='maxsize 100M'
+    if sudo grep -qE '^[[:space:]]*su[[:space:]]' "$file" &&
+        ! sudo grep -qE '^[[:space:]]*su[[:space:]]+root[[:space:]]+root[[:space:]]*$' "$file"; then
+        sudo sed -i -E 's/^([[:space:]]*)su[[:space:]].*/\1su root root/' "$file"
+        echo "  $file: su root root"
     fi
-else
-    echo "  WARNING: $OVN_LOGROTATE not found — install ovn-common package"
-fi
+    if sudo grep -q 'maxsize' "$file"; then
+        echo "  $file already has maxsize configured"
+        return 0
+    fi
+    if ! sudo grep -qE '^[[:space:]]*rotate[[:space:]]' "$file"; then
+        lines='    rotate 5\n    maxsize 100M'
+        added='maxsize 100M + rotate 5'
+    fi
+    sudo sed -i "/^\/var\/log\/[a-z]*\/\*\.log {/a\\$lines" "$file"
+    if ! sudo grep -q 'maxsize' "$file"; then
+        echo "  WARNING: $file has no /var/log/<dir>/*.log stanza; log size left uncapped"
+        return 0
+    fi
+    echo "  added $added to $file"
+}
+
+for probe in distro_ovs_logrotate distro_ovn_logrotate; do
+    if LOGROTATE_FILE=$($probe); then
+        cap_logrotate "$LOGROTATE_FILE"
+    else
+        echo "  WARNING: log size left uncapped (see above)"
+    fi
+done
 
 # Remove our old custom config if present (superseded by patching ovn-common)
 if [ -f /etc/logrotate.d/ovn-spinifex ]; then
@@ -1570,22 +1903,72 @@ fi
 # to prevent log spam during those retries.
 echo ""
 echo "Step 10: Enabling OVN auto-start on boot..."
-sudo systemctl enable openvswitch-switch 2>/dev/null || true
+sudo systemctl enable "$OVS_UNIT" 2>/dev/null || true
 sudo systemctl enable ovn-controller 2>/dev/null || true
-# ovs-monitor-ipsec drives strongSwan from OVS DB cert pointers. The daemon's
-# enableOVNIPSec() flips ipsec_encapsulation=true at runtime and silently drops
-# tunnel traffic if this unit isn't already up — enable at provision time so
-# daemon never needs systemd-write capability (only is-active read).
-sudo systemctl enable openvswitch-ipsec.service 2>/dev/null || true
-# When openvswitch-ipsec is installed before strongswan-starter, the deb
-# post-install starts the service against a missing /usr/sbin/ipsec and
-# leaves it in 'failed' state. Clear the failure and restart unconditionally
-# now that strongswan-starter is present.
-sudo systemctl reset-failed openvswitch-ipsec.service 2>/dev/null || true
-sudo systemctl restart openvswitch-ipsec.service 2>/dev/null || true
-echo "  openvswitch-switch:   enabled on boot"
-echo "  ovn-controller:       enabled on boot"
-echo "  openvswitch-ipsec:    enabled on boot"
+printf '  %-21s enabled on boot\n' "${OVS_UNIT%.service}:" ovn-controller:
+if distro_has_libreswan; then
+    # OVN IPsec does not run on libreswan yet, so it stays off here. Starting
+    # openvswitch-ipsec would also start pluto, which listens on UDP 500/4500.
+    IPSEC_UNITS=(ipsec.service)
+    distro_unit_exists openvswitch-ipsec.service && IPSEC_UNITS+=(openvswitch-ipsec.service)
+    if ! sudo systemctl mask --now "${IPSEC_UNITS[@]}" >/dev/null; then
+        echo "ERROR: could not stop and mask ${IPSEC_UNITS[*]}; IPsec must stay off on libreswan" >&2
+        exit 1
+    fi
+    printf '  %-21s %s\n' openvswitch-ipsec: "masked: IPsec stays off on libreswan" ipsec: "masked: IPsec stays off on libreswan"
+elif [ "$(systemctl is-enabled openvswitch-ipsec.service 2>/dev/null)" = masked ]; then
+    # The daemon masks it while IPsec is off and unmasks it to turn IPsec on.
+    printf '  %-21s %s\n' openvswitch-ipsec: "masked: IPsec is off, left to the daemon"
+else
+    # ovs-monitor-ipsec drives strongSwan from OVS DB cert pointers. The daemon's
+    # enableOVNIPSec() flips ipsec_encapsulation=true at runtime and silently drops
+    # tunnel traffic if this unit isn't already up — enable at provision time so
+    # daemon never needs systemd-write capability (only is-active read).
+    sudo systemctl enable openvswitch-ipsec.service 2>/dev/null || true
+    # When openvswitch-ipsec is installed before strongswan-starter, the deb
+    # post-install starts the service against a missing /usr/sbin/ipsec and
+    # leaves it in 'failed' state. Clear the failure and restart unconditionally
+    # now that strongswan-starter is present.
+    sudo systemctl reset-failed openvswitch-ipsec.service 2>/dev/null || true
+    sudo systemctl restart openvswitch-ipsec.service 2>/dev/null || true
+    printf '  %-21s enabled on boot\n' openvswitch-ipsec:
+fi
+
+# Applied now, outside the hostnet lock, so the daemon and vpcd find its
+# readiness marker; on the networkd backend the apply does nothing.
+if [ -f /etc/systemd/system/spinifex-hostnet.service ]; then
+    sudo systemctl enable spinifex-hostnet.service >/dev/null 2>&1
+    if ! sudo systemctl restart spinifex-hostnet.service; then
+        echo "ERROR: spinifex-hostnet could not apply the host network: journalctl -u spinifex-hostnet" >&2
+        exit 1
+    fi
+    printf '  %-21s enabled on boot, applied (%s backend)\n' spinifex-hostnet: "$HOSTNET_BACKEND"
+else
+    echo "  spinifex-hostnet: not installed yet — run setup.sh, then re-run this script"
+fi
+
+# systemd silently drops ordering against a unit that is not installed, so a
+# missing OVS or OVN unit would leave Spinifex starting unordered against OVS.
+SPINIFEX_UNITS=()
+for f in /etc/systemd/system/spinifex.target /etc/systemd/system/spinifex-*.service; do
+    [ -f "$f" ] && SPINIFEX_UNITS+=("$f")
+done
+if [ ${#SPINIFEX_UNITS[@]} -eq 0 ]; then
+    echo "  Spinifex units: not installed yet — run setup.sh, then re-run this script"
+else
+    MISSING_DEPS=$(distro_missing_ovs_deps "${SPINIFEX_UNITS[@]}") || exit 1
+    DEPS_OK=true
+    for dep in $MISSING_DEPS; do
+        if [ "$dep" = openvswitch-ipsec.service ]; then
+            echo "  WARNING: $dep is not installed; IPsec cannot be turned on"
+        else
+            echo "ERROR: the Spinifex units order against $dep, which is not installed" >&2
+            DEPS_OK=false
+        fi
+    done
+    [ "$DEPS_OK" = true ] || exit 1
+    echo "  OVS/OVN units the Spinifex units name: installed"
+fi
 
 # --- Step 11: Health check ---
 echo ""

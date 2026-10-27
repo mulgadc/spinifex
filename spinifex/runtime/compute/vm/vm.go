@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
 )
 
 // InstanceHealthState tracks crash detection and auto-restart metadata for a VM.
@@ -408,6 +409,11 @@ type Config struct {
 	SMBIOSManufacturer string `json:"smbios_manufacturer,omitempty"`
 	SMBIOSAssetTag     string `json:"smbios_asset_tag,omitempty"`
 
+	// BIOS is a firmware image passed with -bios. The microvm machine needs
+	// one: its default, bios-microvm.bin, is not shipped under that name by
+	// every distro.
+	BIOS string `json:"bios,omitempty"`
+
 	KernelImage   string       `json:"kernel_image,omitempty"`   // path to vmlinuz; emits -kernel when set
 	Initrd        string       `json:"initrd,omitempty"`         // path to initramfs; emits -initrd when set
 	KernelCmdline string       `json:"kernel_cmdline,omitempty"` // emits -append when set
@@ -419,6 +425,9 @@ type FwCfgEntry struct {
 	Name string `json:"name"`
 	File string `json:"file"`
 }
+
+// resolveQEMUBinary is a variable so tests run without QEMU installed.
+var resolveQEMUBinary = hostos.QEMUBinary
 
 func (cfg *Config) Execute() (*exec.Cmd, error) {
 	args := []string{}
@@ -593,6 +602,10 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-netdev", netdev.Value)
 	}
 
+	if cfg.BIOS != "" {
+		args = append(args, "-bios", cfg.BIOS)
+	}
+
 	if cfg.KernelImage != "" {
 		args = append(args, "-kernel", cfg.KernelImage)
 	}
@@ -609,17 +622,12 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-fw_cfg", fmt.Sprintf("name=%s,file=%s", fw.Name, fw.File))
 	}
 
-	var qemuArchitecture string
-
-	switch cfg.Architecture {
-	case "arm64":
-		qemuArchitecture = "qemu-system-aarch64"
-
-	case "x86_64":
-		qemuArchitecture = "qemu-system-x86_64"
-
-	default:
+	if cfg.Architecture == "" {
 		return nil, fmt.Errorf("architecture missing")
+	}
+	qemuBinary, err := resolveQEMUBinary(cfg.Architecture)
+	if err != nil {
+		return nil, err
 	}
 
 	// arm64 q35 is incompatible with the q35 PC machine; override to virt.
@@ -632,9 +640,9 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-M", cfg.MachineType)
 	}
 
-	slog.Info("Executing QEMU command:", "cmd", qemuArchitecture, "args", args)
+	slog.Info("Executing QEMU command:", "cmd", qemuBinary, "args", args)
 
-	cmd := exec.Command(qemuArchitecture, args...)
+	cmd := exec.Command(qemuBinary, args...)
 
 	//cmd.Stdout = os.Stdout
 	//cmd.Stderr = os.Stderr

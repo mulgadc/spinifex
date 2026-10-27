@@ -4,13 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 )
 
 // fakeNetworkPlumber records calls so tests can assert per-spec behaviour.
@@ -165,6 +169,32 @@ func TestMgmtTapName(t *testing.T) {
 				t.Errorf("MgmtTapName(%q) = %q (len %d), exceeds IFNAMSIZ", tt.instanceID, got, len(got))
 			}
 		})
+	}
+}
+
+// TestMgmtTapNameMatchesNMUnmanagedGlob checks the udev glob setup-ovn.sh uses
+// to keep NetworkManager off management TAPs matches every real TAP name, and
+// not a host NIC that merely starts with "mg".
+func TestMgmtTapNameMatchesNMUnmanagedGlob(t *testing.T) {
+	data, err := os.ReadFile("../../../../scripts/setup-ovn.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^MGMT_TAP_GLOB='([^']+)'$`).FindSubmatch(data)
+	if m == nil {
+		t.Fatal("setup-ovn.sh: no MGMT_TAP_GLOB")
+	}
+	glob := string(m[1])
+	for range 1000 {
+		tap := MgmtTapName(identifiers.GenerateResourceID("i"))
+		if ok, err := path.Match(glob, tap); err != nil || !ok {
+			t.Fatalf("glob %q does not match TAP %q (err %v)", glob, tap, err)
+		}
+	}
+	for _, name := range []string{"mgmt0", "mgmt", "br-mgmt", "mg0123456789abcdef"} {
+		if ok, _ := path.Match(glob, name); ok {
+			t.Errorf("glob %q matches %q, which is not a management TAP", glob, name)
+		}
 	}
 }
 

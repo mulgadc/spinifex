@@ -12,9 +12,10 @@
 # Options:
 #   --purge-data  Also remove /var/lib/spinifex — volumes, S3 objects, JetStream.
 #                 Off by default: uninstalling software should not destroy data.
-#   --purge-deps  Also apt-remove the packages setup.sh installed. Names them and
-#                 confirms first, even under --yes. Off by default because a
-#                 curl|bash install lands on hosts that were already using them.
+#   --purge-deps  Also remove the packages setup.sh installed, with apt. Refused
+#                 on dnf hosts, where it cannot tell those from the host's own.
+#                 Names them and confirms first, even under --yes. Off by default
+#                 because a curl|bash install lands on hosts already using them.
 #   --yes         Skip the confirmation prompt. Does NOT cover --purge-data,
 #                 --purge-deps, or the multi-node refusal.
 #   --dry-run     Print the whole plan, touch nothing, exit 0.
@@ -30,14 +31,22 @@
 # /usr/share/spinifex, every spinifex systemd unit and slice, the eight
 # spinifex-* service users, the sudoers grant, the sysctl/logrotate/chrony/udev
 # drop-ins, the host firewall policy and its loaded nft table, the OVS bridges
-# and OVN databases, and the Spinifex CA from the host trust store.
+# and OVN databases, the Spinifex resolved drop-in, and the Spinifex CA from the
+# host trust store. Where setup.sh turned on systemd-resolved, it restores
+# /etc/resolv.conf and turns resolved off.
 #
 # WHAT THIS LEAVES ALONE
 #
-# /var/lib/spinifex unless --purge-data. Every apt package unless --purge-deps.
+# /var/lib/spinifex unless --purge-data. Every package unless --purge-deps.
 # /swapfile, which setup.sh may have created but cannot be told apart from one
 # the host already had. Anything the operator configured around us: netplan,
-# /etc/iptables/rules.v4, hand-written bridges.
+# /etc/iptables/rules.v4, hand-written bridges. firewalld, which setup.sh
+# masked, is unmasked but not started. Host settings setup.sh changed and other
+# software may now rely on: /etc/modules-load.d/spinifex.conf, the confdir line
+# appended to an EL /etc/chrony.conf, the dnf repositories and AppStream QEMU
+# exclude, OVS_USER_ID and OVN_USER_ID, the OVS and OVN logrotate edits, masked
+# IPsec units, the SELinux mode, and the GPU passthrough config spx admin gpu
+# wrote. The run ends by listing each of these it finds.
 set -euo pipefail
 
 ETC_DIR="${SPX_ETC_DIR:-/etc/spinifex}"
@@ -72,6 +81,36 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+# Host-OS capability probes: beside this script in a checkout and in the
+# installed share dir, else where setup.sh installs them.
+DISTRO_LIB=""
+for candidate in "$(dirname "${BASH_SOURCE[0]}")/lib/distro.sh" /usr/local/share/spinifex/lib/distro.sh; do
+    if [ -f "$candidate" ]; then DISTRO_LIB="$candidate"; break; fi
+done
+if [ -z "$DISTRO_LIB" ]; then
+    echo "ERROR: distro.sh not found at $(dirname "${BASH_SOURCE[0]}")/lib/distro.sh or /usr/local/share/spinifex/lib/distro.sh; re-run setup.sh to install it" >&2
+    exit 1
+fi
+# shellcheck source=lib/distro.sh
+. "$DISTRO_LIB"
+
+# Resolved before anything is removed, so --purge-deps on a host with no package
+# manager, or two, stops with nothing changed.
+PKG_MANAGER=""
+if $PURGE_DEPS; then
+    PKG_MANAGER=$(distro_pkg_manager) || exit 1
+    if [ "$PKG_MANAGER" = dnf ]; then
+        echo "ERROR: --purge-deps is not supported on dnf hosts: its package list cannot tell what setup.sh installed from what the host already had, and dnf also removes every package that requires them. Re-run without --purge-deps." >&2
+        exit 1
+    fi
+fi
+# A failed OVS unit is restarted after its drop-in goes; absent when OVS is.
+OVS_UNIT=$(distro_ovs_unit 2>/dev/null) || OVS_UNIT=""
+# Resolved before anything is removed. The CA tools live in sbin, which Debian
+# leaves off a non-root PATH, and failing late would stop the uninstall halfway.
+CA_TRUST=$(PATH="/usr/sbin:/sbin:$PATH" distro_ca_trust) \
+    || { echo "ERROR: cannot tell which trust store to remove the Spinifex CA from" >&2; exit 1; }
 
 log() { echo "[uninstall-spx] $*"; }
 run() {
@@ -130,6 +169,20 @@ EOF
     exit 1
 fi
 
+# --- BEGIN at-stake counts ---
+# Copied between node-reset.sh and uninstall-spx.sh; node-reset_test.sh keeps them equal.
+# Instances are the daemon's local state records. Only mounted volumes have a
+# local directory under viperblock/; the rest live only in Predastore.
+count_instances() {
+    local state="$1/state/instance-state.json"
+    sudo test -e "$state" || { echo 0; return 0; }
+    sudo jq -r '.vms // {} | length' "$state" 2>/dev/null || echo unknown
+}
+count_mounted_volumes() {
+    sudo find "$1/viperblock" -maxdepth 1 -mindepth 1 -type d -name 'vol-*' ! -name '*-efi' 2>/dev/null | wc -l || true
+}
+# --- END at-stake counts ---
+
 # ---------------------------------------------------------------------------
 # 2. Report what is at stake, then confirm.
 # ---------------------------------------------------------------------------
@@ -139,18 +192,18 @@ if command -v spx >/dev/null 2>&1; then
 fi
 if [ -d "$DATA_DIR" ]; then
     size=$(sudo du -sh "$DATA_DIR" 2>/dev/null | cut -f1 || true)
-    instances=$(sudo find "$DATA_DIR/instances" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l || true)
-    volumes=$(sudo find "$DATA_DIR/volumes" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l || true)
+    instances=$(count_instances "$DATA_DIR")
+    volumes=$(count_mounted_volumes "$DATA_DIR")
     if $PURGE_DATA; then
-        log "  --purge-data: DESTROYING $instances instance(s), $volumes volume(s), ${size:-unknown} under $DATA_DIR"
+        log "  --purge-data: DESTROYING $instances instance(s), $volumes mounted volume(s), ${size:-unknown} under $DATA_DIR"
     else
-        log "  keeping $DATA_DIR ($instances instance(s), $volumes volume(s), ${size:-unknown}) — pass --purge-data to remove it"
+        log "  keeping $DATA_DIR ($instances instance(s), $volumes mounted volume(s), ${size:-unknown}) — pass --purge-data to remove it"
     fi
 fi
-$PURGE_DEPS && log "  --purge-deps: apt packages will be removed (confirmed separately below)"
+$PURGE_DEPS && log "  --purge-deps: $PKG_MANAGER packages will be removed (confirmed separately below)"
 
 if ! $ASSUME_YES && ! $DRY_RUN; then
-    read -r -p "Remove the Spinifex install from this node? Type 'uninstall' to continue: " reply
+    read -r -p "Remove the Spinifex install from this node? Type 'uninstall' to continue: " reply || reply=""
     [ "$reply" = "uninstall" ] || { log "aborted"; exit 1; }
 fi
 
@@ -166,7 +219,7 @@ if $PURGE_DATA && ! $DRY_RUN; then
     if [ "${SPX_PURGE_CONFIRM:-}" = "destroy" ]; then
         log "SPX_PURGE_CONFIRM=destroy: proceeding without a prompt"
     else
-        read -r -p "Also destroy every volume and object under $DATA_DIR? Type 'destroy' to continue: " reply
+        read -r -p "Also destroy every volume and object under $DATA_DIR? Type 'destroy' to continue: " reply || reply=""
         [ "$reply" = "destroy" ] || { log "aborted"; exit 1; }
     fi
 fi
@@ -208,7 +261,7 @@ fi
 #
 # It handles the guests, the OVS bridges, the OVN databases and the JetStream
 # store, and it carries correctness that is invisible in its code: QEMU matched
-# as ^qemu-system because comm truncates at 15 characters, a wait for QEMU to
+# by a comm prefix because comm truncates at 15 characters, a wait for QEMU to
 # exit rather than for the signal, and the firewall-mode stash that stops an
 # interrupted run leaving the node unarmed. A second copy of that would drift,
 # and the failure mode of the drift is data loss.
@@ -265,6 +318,16 @@ if command -v iptables-save >/dev/null 2>&1 && ! $DRY_RUN; then
 elif $DRY_RUN; then
     echo "  would remove iptables rules commented spinifex-nat-egress / spinifex-eip-ingress / spinifex-imds / spinifex-imds-remap"
 fi
+# setup.sh masks firewalld. Unmasked but left disabled: its rules were never
+# migrated, so starting it is the operator's decision. A mask keeps the enable
+# links, so without the disable it would start again at the next boot.
+FIREWALLD_UNMASKED=false
+if [ "$(systemctl is-enabled firewalld.service 2>/dev/null)" = masked ]; then
+    run sudo systemctl unmask firewalld.service
+    run sudo systemctl disable firewalld.service 2>/dev/null || true
+    FIREWALLD_UNMASKED=true
+    $DRY_RUN || log "  firewalld unmasked, left disabled"
+fi
 
 # ---------------------------------------------------------------------------
 # 6. systemd units.
@@ -294,12 +357,14 @@ rm_path /etc/systemd/system/spinifex-*.service \
 # exactly that way on the first dev-oci round trip.
 log "removing drop-ins written into other units"
 rm_path /etc/systemd/system/openvswitch-switch.service.d/spinifex-perms.conf \
+        /etc/systemd/system/ovs-vswitchd.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-controller.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-controller.service.d/log-level.conf \
         /etc/systemd/system/openvswitch-ipsec.service.d/spinifex-perms.conf \
+        /etc/systemd/system/ovn-northd.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf
 # Only if we emptied them — another package may own the same override dir.
-for d in openvswitch-switch ovn-controller openvswitch-ipsec ovn-northd; do
+for d in openvswitch-switch ovs-vswitchd ovn-controller openvswitch-ipsec ovn-northd; do
     dir="/etc/systemd/system/${d}.service.d"
     if sudo test -d "$dir" && [ -z "$(sudo ls -A "$dir" 2>/dev/null)" ]; then
         rm_path "$dir"
@@ -313,8 +378,11 @@ run sudo systemctl reset-failed 2>/dev/null || true
 # attempt. Restarting them here is not housekeeping: openvswitch-switch failing
 # is how the operator discovers the drop-in problem, and leaving it failed after
 # an uninstall that claims success is the same silent failure one step later.
+# Each unit that carried one of the drop-ins above, under this host's OVS name.
+RESTART_UNITS=(ovs-vswitchd ovn-controller ovn-northd)
+[ -n "$OVS_UNIT" ] && RESTART_UNITS=("$OVS_UNIT" "${RESTART_UNITS[@]}")
 if ! $DRY_RUN; then
-    for u in openvswitch-switch ovn-controller; do
+    for u in "${RESTART_UNITS[@]}"; do
         if systemctl is-failed --quiet "$u" 2>/dev/null; then
             log "  restarting $u, which our drop-in had failed"
             sudo systemctl reset-failed "$u" 2>/dev/null || true
@@ -367,6 +435,10 @@ rm_path /usr/local/bin/spx \
         /usr/local/share/spinifex \
         /usr/local/lib/spinifex \
         /usr/share/spinifex
+# setup.sh adds this link where sudo's PATH leaves out /usr/local/bin.
+if [ "$(readlink /usr/bin/spx 2>/dev/null)" = /usr/local/bin/spx ]; then
+    rm_path /usr/bin/spx
+fi
 
 # ---------------------------------------------------------------------------
 # 9. Drop-ins. Globbed, not listed: 99-spinifex-vpc.conf is written at runtime
@@ -378,9 +450,15 @@ log "removing configuration drop-ins"
 rm_path /etc/sysctl.d/*spinifex* \
         /etc/sudoers.d/spinifex-network \
         /etc/chrony/conf.d/spinifex.conf \
+        /etc/chrony.d/spinifex.conf \
         /etc/logrotate.d/spinifex \
-        /etc/udev/rules.d/*spinifex*
+        /etc/tmpfiles.d/spinifex.conf \
+        /etc/udev/rules.d/*spinifex* \
+        /etc/NetworkManager/conf.d/*spinifex*
 run sudo sysctl --system >/dev/null 2>&1 || true
+if systemctl is-active --quiet NetworkManager.service 2>/dev/null; then
+    run sudo nmcli general reload conf 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # 10. Spinifex directories.
@@ -431,14 +509,41 @@ done
 # 12. The CA in the host trust store. Leaving it means the host trusts a CA
 # whose key no longer exists anywhere.
 # ---------------------------------------------------------------------------
-if [ -f /usr/local/share/ca-certificates/spinifex-ca.crt ]; then
+CA_ANCHOR="${CA_TRUST#* }/spinifex-ca.crt"
+if [ -f "$CA_ANCHOR" ]; then
     log "removing the Spinifex CA from the host trust store"
-    rm_path /usr/local/share/ca-certificates/spinifex-ca.crt
-    run sudo update-ca-certificates >/dev/null 2>&1 || true
+    rm_path "$CA_ANCHOR"
+    run sudo "${CA_TRUST%% *}"
 fi
 
 # ---------------------------------------------------------------------------
-# 13. Swap is reported, never removed.
+# 13. Host DNS. setup.sh saved /etc/resolv.conf only where it turned on
+# systemd-resolved, so the saved copy is what says to turn it off again.
+# ---------------------------------------------------------------------------
+RESOLV_CONF_SAVED=/var/lib/spinifex-reset/resolv.conf.orig
+# The daemon's drop-in routes the cluster zones to a northstar that is gone now.
+RESOLVED_DROPIN=/etc/systemd/resolved.conf.d/spinifex-dns.conf
+if exists "$RESOLVED_DROPIN"; then
+    log "removing the systemd-resolved drop-in for the cluster zones"
+    rm_path "$RESOLVED_DROPIN"
+    if systemctl is-active --quiet systemd-resolved.service 2>/dev/null; then
+        run sudo systemctl restart systemd-resolved.service
+    fi
+fi
+if exists "$RESOLV_CONF_SAVED"; then
+    log "restoring /etc/resolv.conf and turning systemd-resolved off, as before the install"
+    run sudo systemctl disable --now systemd-resolved.service
+    run sudo cp -a --remove-destination "$RESOLV_CONF_SAVED" /etc/resolv.conf
+    if systemctl is-active --quiet NetworkManager.service 2>/dev/null; then
+        run sudo systemctl restart NetworkManager.service
+    fi
+    rm_path "$RESOLV_CONF_SAVED"
+fi
+# node-reset keeps its firewall-mode stash here too, so remove it only once empty.
+run sudo rmdir --ignore-fail-on-non-empty "$(dirname "$RESOLV_CONF_SAVED")" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# 14. Swap is reported, never removed.
 #
 # setup_swap creates an 8G /swapfile with the fstab line `/swapfile none swap sw
 # 0 0` — which is byte-identical to the line a host would already have if it
@@ -455,28 +560,34 @@ if [ -f /swapfile ] && grep -q '^/swapfile ' /etc/fstab 2>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# 14. apt packages, only when asked, and only after naming them.
+# 15. Packages, only when asked, and only after naming them.
 #
 # This is the one irreversible thing in the script. On a dedicated node these
 # are ours; on the host a curl|bash install actually lands on they are someone
 # else's, and openvswitch/libvirt/qemu/chrony going away underneath a running
 # workload is a far worse outcome than a few megabytes left behind. Confirmed
 # separately even under --yes, and never autoremove, which is unbounded.
+#
+# apt only: dnf hosts are refused up front.
 # ---------------------------------------------------------------------------
 if $PURGE_DEPS; then
     PACKAGES="nbdkit qemu-utils gdisk ovmf less libvirt-daemon-system libvirt-clients
 pciutils jq ethtool netcat-openbsd unzip xz-utils
 ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon
 chrony nftables"
+    KEPT="curl, wget, file, iproute2, dhcpcd-base, qemu-system-*"
+    REMOVE_CMD="apt-get remove -y"
     log "--purge-deps: these packages would be removed:"
     # shellcheck disable=SC2086
     for p in $PACKAGES; do echo "    $p"; done
-    log "  NOT removed: curl, wget, file, iproute2, dhcpcd-base, qemu-system-* — too"
+    log "  NOT removed: $KEPT — too"
     log "  widely depended on to remove from a host we do not own."
-    if $DRY_RUN; then
-        echo "  would run: apt-get remove -y <the above>"
+    if [ -z "$PACKAGES" ]; then
+        log "  none of them is installed"
+    elif $DRY_RUN; then
+        echo "  would run: $REMOVE_CMD <the above>"
     else
-        read -r -p "Remove these packages? Type 'remove' to continue: " reply
+        read -r -p "Remove these packages? Type 'remove' to continue: " reply || reply=""
         if [ "$reply" = "remove" ]; then
             # shellcheck disable=SC2086
             sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y $PACKAGES || \
@@ -488,7 +599,7 @@ chrony nftables"
 fi
 
 # ---------------------------------------------------------------------------
-# 15. Verify. An uninstaller that reports success over a surviving unit file is
+# 16. Verify. An uninstaller that reports success over a surviving unit file is
 # worse than one that refuses, because the next install silently inherits it.
 # ---------------------------------------------------------------------------
 if ! $DRY_RUN; then
@@ -496,21 +607,26 @@ if ! $DRY_RUN; then
     LEFT=()
     for p in /usr/local/bin/spx /usr/local/share/spinifex /usr/local/lib/spinifex \
              /usr/share/spinifex "$ETC_DIR" "$LOG_DIR" \
-             /etc/sudoers.d/spinifex-network /etc/logrotate.d/spinifex \
-             /etc/chrony/conf.d/spinifex.conf; do
+             /etc/sudoers.d/spinifex-network /etc/logrotate.d/spinifex /etc/tmpfiles.d/spinifex.conf \
+             /etc/chrony/conf.d/spinifex.conf /etc/chrony.d/spinifex.conf "$RESOLV_CONF_SAVED" \
+             "$RESOLVED_DROPIN"; do
         exists "$p" && LEFT+=("$p")
     done
+    [ "$(readlink /usr/bin/spx 2>/dev/null)" = /usr/local/bin/spx ] && LEFT+=(/usr/bin/spx)
     for p in /etc/systemd/system/spinifex-*.service /etc/systemd/system/spinifex*.slice \
              /etc/systemd/system/spinifex.target /etc/sysctl.d/*spinifex* \
              /etc/systemd/network/1[5-8]-spinifex-* \
+             /etc/NetworkManager/conf.d/*spinifex* \
              /etc/systemd/system/*.service.d/spinifex-perms.conf \
              /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf \
              /etc/systemd/system/ovn-controller.service.d/log-level.conf; do
         exists "$p" && LEFT+=("$p")
     done
+    $FIREWALLD_UNMASKED && systemctl is-enabled --quiet firewalld.service 2>/dev/null &&
+        LEFT+=("firewalld.service is enabled")
     # A unit we broke and could not restart is a failed uninstall, not a wart.
-    for u in openvswitch-switch ovn-controller; do
-        systemctl is-failed --quiet "$u" 2>/dev/null && LEFT+=("$u.service is failed")
+    for u in "${RESTART_UNITS[@]}"; do
+        systemctl is-failed --quiet "$u" 2>/dev/null && LEFT+=("${u%.service}.service is failed")
     done
     for svc in nats sqsstore gw daemon storage northstar viperblock vpcd ui; do
         id -u "spinifex-${svc}" >/dev/null 2>&1 && LEFT+=("user spinifex-${svc}")
@@ -527,7 +643,51 @@ if ! $DRY_RUN; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# 17. Host settings setup.sh changed and this leaves, each listed only where it
+# is found, so the operator can see what to undo by hand.
+# ---------------------------------------------------------------------------
+KEPT_SETTINGS=()
+kept() { KEPT_SETTINGS+=("$1"); }
+$FIREWALLD_UNMASKED && kept "firewalld: unmasked but disabled, with the rules it had before Spinifex"
+exists /etc/modules-load.d/spinifex.conf && kept "/etc/modules-load.d/spinifex.conf: openvswitch geneve vhost_net tun load at boot"
+CHRONY_CONF=$(distro_chrony_conf 2>/dev/null) || CHRONY_CONF=""
+if [ -n "$CHRONY_CONF" ] && grep -q '^# Added by the Spinifex installer' "$CHRONY_CONF" 2>/dev/null; then
+    kept "$CHRONY_CONF: the confdir line the installer appended"
+fi
+if command -v dnf >/dev/null 2>&1; then
+    exists /etc/yum.repos.d/spinifex-nfv-sig.repo &&
+        kept "dnf: the CentOS NFV SIG repository (/etc/yum.repos.d/spinifex-nfv-sig.repo) and its key in /etc/pki/rpm-gpg"
+    for repo in ol10_kvm_utils ol10_UEKR8; do
+        dnf config-manager --dump "$repo" 2>/dev/null | grep -qx 'enabled = 1' && kept "dnf: $repo enabled"
+    done
+    dnf config-manager --dump ol10_appstream 2>/dev/null | grep -q '^excludepkgs = .*qemu-kvm' &&
+        kept "dnf: ol10_appstream excludes qemu-kvm* and qemu-img*, so QEMU stays on KVM Utilities"
+fi
+for setting in /etc/sysconfig/openvswitch:OVS_USER_ID /etc/sysconfig/ovn:OVN_USER_ID; do
+    grep -q "^${setting#*:}=\"root:root\"" "${setting%%:*}" 2>/dev/null &&
+        kept "${setting%%:*}: ${setting#*:}=\"root:root\""
+done
+for lr in "$(distro_ovs_logrotate 2>/dev/null)" "$(distro_ovn_logrotate 2>/dev/null)"; do
+    [ -n "$lr" ] && grep -q 'maxsize 100M' "$lr" 2>/dev/null && kept "$lr: the rotate, maxsize and su edits setup-ovn.sh made"
+done
+IPSEC_UNITS=(openvswitch-ipsec.service strongswan-starter.service)
+distro_has_libreswan && IPSEC_UNITS+=(ipsec.service)
+for u in "${IPSEC_UNITS[@]}"; do
+    [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ] && kept "$u: masked, as IPsec was off"
+done
+command -v getenforce >/dev/null 2>&1 && kept "SELinux: $(getenforce 2>/dev/null); setup.sh refuses enforcing, so it was set for the install"
+GPU_FILES=""
+for gpu in /etc/modprobe.d/vfio-pci.conf /etc/dracut.conf.d/spinifex-vfio.conf; do
+    exists "$gpu" && GPU_FILES="${GPU_FILES:+$GPU_FILES, }$gpu"
+done
+[ -n "$GPU_FILES" ] && kept "GPU passthrough: $GPU_FILES and the IOMMU kernel arguments, written by spx admin gpu setup"
+if [ "${#KEPT_SETTINGS[@]}" -gt 0 ]; then
+    log "left in place, as other software on the host may rely on them:"
+    for k in "${KEPT_SETTINGS[@]}"; do log "  - $k"; done
+fi
+
 log "done — Spinifex is removed from this node"
 $PURGE_DATA || { [ -d "$DATA_DIR" ] && log "      $DATA_DIR was kept (--purge-data removes it)"; }
-$PURGE_DEPS || log "      apt dependencies were kept (--purge-deps removes them)"
+$PURGE_DEPS || log "      package dependencies were kept (--purge-deps removes them)"
 exit 0

@@ -42,9 +42,16 @@ RUN COMMIT=$(cd spinifex && git rev-parse --short HEAD 2>/dev/null || echo "unkn
 # Build nbdkit viperblock plugin (.so)
 RUN cd viperblock && GOFIPS140=v1.0.0 go build -o /out/nbdkit-viperblock-plugin.so -buildmode=c-shared nbd/viperblock.go
 
+# One tarball ships to every OS. The ceiling is what both binaries need today,
+# so a rise is a decision rather than an accident; every supported OS has 2.39+.
+RUN spinifex/scripts/check-glibc-ceiling.sh 2.34 /out/spx /out/nbdkit-viperblock-plugin.so
+
 # Copy setup scripts and systemd units
 RUN cp spinifex/scripts/setup.sh /out/setup.sh 2>/dev/null || true
 RUN cp spinifex/scripts/setup-ovn.sh /out/setup-ovn.sh
+RUN cd spinifex/scripts && cp install-node.sh smoke-test.sh node-reset.sh uninstall-spx.sh /out/
+RUN mkdir -p /out/udev && cp spinifex/build/udev/* /out/udev/
+RUN mkdir -p /out/lib && cp spinifex/scripts/lib/distro.sh /out/lib/distro.sh
 RUN mkdir -p /out/systemd && cp spinifex/build/systemd/* /out/systemd/
 RUN mkdir -p /out/scripts && cp spinifex/build/scripts/* /out/scripts/
 RUN cp spinifex/build/logrotate/spinifex /out/logrotate-spinifex

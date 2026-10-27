@@ -19,6 +19,12 @@ const (
 	ovnSBSock = "/var/run/ovn/ovnsb_db.ctl"
 )
 
+// ovnCentralUnits expands, on the node, to debianUnits where ovn-central.service
+// exists. EL has no such unit: ovn-northd.service runs both databases too.
+func ovnCentralUnits(debianUnits string) string {
+	return "$(systemctl cat ovn-central.service >/dev/null 2>&1 && echo " + debianUnits + " || echo ovn-northd)"
+}
+
 // runOVNRaft asserts the clustered OVN control plane: every DB node's NB and SB
 // RAFT cluster reports the full quorum with exactly one leader, then kills the
 // NB leader's ovn-central and proves NB writes still land via a surviving
@@ -68,14 +74,12 @@ func runOVNRaft(t *testing.T, fix *Fixture) {
 	harness.Step(t, "stop ovn-central on NB leader %s (%s)", leader.Name, leader.Addr)
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stopCancel()
-	_, err := ssh.Run(stopCtx, leader.Addr,
-		"sudo systemctl stop ovn-central ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd")
+	_, err := ssh.Run(stopCtx, leader.Addr, "sudo systemctl stop "+ovnCentralUnits("ovn-central ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd"))
 	require.NoErrorf(t, err, "stop ovn-central on %s", leader.Name)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		if _, e := ssh.Run(ctx, leader.Addr,
-			"sudo systemctl start ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd"); e != nil {
+		if _, e := ssh.Run(ctx, leader.Addr, "sudo systemctl start "+ovnCentralUnits("ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd")); e != nil {
 			t.Logf("cleanup: restart ovn-central on %s: %v", leader.Name, e)
 		}
 	})

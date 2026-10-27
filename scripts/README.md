@@ -6,11 +6,51 @@ Node installation, dev-environment lifecycle, guest image builds, and verificati
 
 | Script | What it does |
 |---|---|
-| `setup.sh` | The production binary installer, served from `install.mulgadc.com`. Installs deps, users, sudoers, files, systemd units, logrotate and udev rules. `SETUP_STAGES` runs a subset; `ISO_BUILD=1` runs it inside the ISO builder's chroot. |
-| `setup-ovn.sh` | Bootstraps a compute node for OVN VPC networking: installs OVN/OVS, creates `br-int`, configures the WAN bridge (bridged, DHCP, or routed-NAT uplink), sets the chassis identity, and applies overlay sysctls. `--management` also starts the OVN central services. |
-| `install-node.sh` | Forms a multi-node cluster across hosts that are already running Spinifex: rebuilds the OVN database in clustered form, runs `spx admin init` on the first host and `spx admin join` on the rest, then verifies. The scripted form of [install-multi-node](../docs/install/install-multi-node/README.md). Destroys the joining nodes' logical network state and crypto — see its `--help`. |
+| `setup.sh` | The production binary installer, served from `install.mulgadc.com`. Installs deps, users, sudoers, the host firewall policy, files, systemd units, logrotate and udev rules, and loads `openvswitch`, `geneve`, `vhost_net` and `tun`, listing them in `/etc/modules-load.d/spinifex.conf` for later boots. It masks firewalld wherever it is installed, since the Spinifex nftables policy is the only supported node firewall. An unset `--firewall` keeps the mode recorded in `/etc/spinifex/firewall/mode`, and otherwise arms the policy when firewalld was active. Where systemd-resolved is installed but not running, resolvconf is absent and NetworkManager runs, it hands host DNS to resolved: it saves `/etc/resolv.conf` once to `/var/lib/spinifex-reset/resolv.conf.orig`, links `/etc/resolv.conf` to the resolved stub, and stops unless resolved has upstream servers and the package repository host still resolves. It links `/usr/bin/spx` to `/usr/local/bin/spx` where sudo's PATH leaves out `/usr/local/bin`, and takes the nbdkit plugin directory from `nbdkit --dump-config`, stopping when nbdkit cannot say. `SETUP_STAGES` runs a subset; `ISO_BUILD=1` runs it inside the ISO builder's chroot. |
+| `setup-ovn.sh` | Bootstraps a compute node for OVN VPC networking: installs OVN/OVS, creates `br-int`, configures the WAN bridge (bridged, DHCP, or routed-NAT uplink), sets the chassis identity, and applies overlay sysctls. It runs OVS and OVN as root, setting `OVS_USER_ID` and `OVN_USER_ID` where `/etc/sysconfig` holds them, and hooks the socket-permission helper onto `ovs-vswitchd`, `ovn-controller`, `openvswitch-ipsec` and, on EL, `ovn-northd`. `--management` also starts the OVN central services, writes their `ovn-ctl` flags to `/etc/default/ovn-central` (Debian) or `/etc/sysconfig/ovn-northd` (EL), and records the role in `/etc/spinifex/ovn-role`. A later run without `--management` refuses while that file, or the `OVN_CTL_OPTS` line older nodes carry in `/etc/default/ovn-central`, records the role. It adds `maxsize 100M` to the OVS and OVN logrotate files, plus `rotate 5` where the file sets no count, and rotates as root, matching the daemons. On a host whose IPsec stack is libreswan it stops and masks `openvswitch-ipsec.service` and `ipsec.service`, because OVN IPsec does not run on libreswan yet; elsewhere it enables and starts `openvswitch-ipsec.service`, unless the daemon has masked it to keep IPsec off. The links it creates persist through systemd-networkd where that is enabled, and otherwise through `/etc/spinifex/hostnet.json`, which `spinifex-hostnet.service` (`spx admin hostnet apply`) replays at boot and on every OVS start, starting `ovn-controller` again when an OVS stop took it down; the first run records the choice in `/etc/spinifex/hostnet-backend`. Where NetworkManager runs, it leaves the links Spinifex owns unmanaged. |
+| `install-node.sh` | Forms a multi-node cluster across hosts that are already running Spinifex: rebuilds the OVN database in clustered form, runs `spx admin init` on the first host and `spx admin join` on the rest, then verifies. Before touching any host it refuses hosts of different OS families (`distro_os_family`) or `spx` versions, and `--ipsec on` when any host uses libreswan. The scripted form of [install-multi-node](../docs/install/install-multi-node/README.md). Destroys the joining nodes' logical network state and crypto — see its `--help`. |
 | `dev-install.sh` | Full local dev setup through the production installer: builds from source, packs a tarball, runs `setup.sh`, initialises the cluster, and starts services under systemd. |
 | `clone-deps.sh` | Clones or updates the viperblock and predastore checkouts alongside spinifex for cross-repo development. |
+
+### `lib/distro.sh`: host-OS capability probes
+
+The node scripts select host-OS behaviour by probing for the capability, not by reading `/etc/os-release`; only `setup.sh`'s supported-OS gate keys on the OS ID.
+Each probe prints its answer, or names every candidate it tried on stderr and returns 1, which it also does when it finds both candidates of a pair.
+
+| Probe | Answers |
+|---|---|
+| `distro_pkg_manager` | `apt` or `dnf` |
+| `distro_ovs_unit` | `openvswitch-switch.service` (Debian, Ubuntu) or `openvswitch.service` (EL) |
+| `distro_ovn_central_layout` | `split` (Debian's `ovn-central` plus separate NB and SB units) or `lone-northd` (EL's single `ovn-northd.service`) |
+| `distro_ca_trust` | the trust-store update command and its anchor directory |
+| `distro_ovs_logrotate` | `/etc/logrotate.d/openvswitch-switch` or `/etc/logrotate.d/openvswitch` |
+| `distro_ovn_logrotate` | `/etc/logrotate.d/ovn-common` or `/etc/logrotate.d/ovn` |
+| `distro_os_family` | the OS family of the `/etc/os-release` text on stdin: `debian` for Debian and Ubuntu, otherwise the `ID` |
+
+`distro_has_libreswan` is a predicate rather than a probe: it succeeds when libreswan's IKE daemon, `/usr/libexec/ipsec/pluto`, is installed.
+EL's `openvswitch-ipsec` drives libreswan even beside strongSwan, so finding both is not an error.
+
+`distro_missing_ovs_deps <unit-file>...` is a check rather than a probe: it prints each OVS or OVN unit the given unit files depend on or order against that is not installed, and fails only when a file cannot be read.
+`setup-ovn.sh` runs it against the installed Spinifex units and stops when one is missing, because systemd silently drops ordering against a unit that does not exist; a missing `openvswitch-ipsec.service` is only a warning.
+
+`setup-ovn.sh`, `uninstall-spx.sh` and `install-node.sh` source it from `lib/` beside themselves, then from `/usr/local/share/spinifex/lib/distro.sh`, where `setup.sh` installs it, and stop naming both paths when neither exists.
+`setup.sh` is piped from the install endpoint before the tarball is downloaded, and `install-node.sh --wipe` copies `node-reset.sh` alone to each host, so those two carry inline copies of the probes they need between `# --- BEGIN distro.sh probes ---` markers.
+`lib/distro_test.sh` fails when an inline copy differs from the library.
+Go code uses `spinifex/runtime/host/hostos` for the same purpose.
+
+### System packages
+
+`setup.sh` installs `APT_RUNTIME_PACKAGES` with apt, or on Oracle Linux `OL_RUNTIME_PACKAGES` with dnf, choosing by `distro_pkg_manager`.
+Before the dnf install it enables `ol10_UEKR8` and `ol10_kvm_utils`, excludes `qemu-kvm*` and `qemu-img*` from `ol10_appstream` so QEMU always comes from KVM Utilities, and writes `/etc/yum.repos.d/spinifex-nfv-sig.repo` for OVS 3.5 and OVN 25.03 from the CentOS NFV SIG.
+That repo carries an `includepkgs=` allowlist, and its key is refused unless its fingerprint matches `NFV_SIG_KEY_FPR`.
+It then installs `kernel-uek-modules` for the running kernel, stopping with a reboot instruction if that version has left the repositories, and loads `openvswitch`, `geneve`, `vhost_net` and `tun`.
+`make install-system` takes the same dnf path, adding the build packages from CodeReady Builder.
+
+| Script | What it does |
+|---|---|
+| `lint-apt-packages.sh <image>` | Resolves the apt list against a Debian or Ubuntu image's real indices with `apt-get install -s`. |
+| `lint-dnf-packages.sh [image]` | Runs `setup.sh`'s Oracle Linux repository setup in an `oraclelinux:10` container, resolves the dnf list, and fails unless QEMU comes from KVM Utilities and OVS and OVN from the NFV SIG. |
+| `check-glibc-ceiling.sh <ceiling> <elf>...` | Fails when an ELF file needs a glibc symbol version newer than the ceiling, naming the symbols. `build/Dockerfile.distro` runs it on `spx` and the nbdkit plugin with 2.34, so the one release tarball keeps loading on every supported OS. |
 
 ## Teardown
 
@@ -18,10 +58,14 @@ Both ship to `/usr/local/share/spinifex/` on every node, so they are available o
 
 | Script | What it does |
 |---|---|
-| `node-reset.sh` | Clears **state** and leaves the node installed: stops services, destroys guests, wipes `/etc/spinifex`, `/var/lib/spinifex`, `/var/log/spinifex` and the OVN databases, and removes the OVS bridges. The node is then ready for a fresh `spx admin init`. `--keep-data` preserves `/var/lib/spinifex`; `SPX_RESET_CONFIRM=reset` runs it unattended. |
-| `uninstall-spx.sh` | Removes the **software** — the inverse of `setup.sh`. Delegates the state teardown above to `node-reset.sh` rather than reimplementing it, then removes the binary, the nbdkit plugin, the systemd units and slices, the service users, the sudoers grant, the sysctl/logrotate/chrony/udev drop-ins, the `systemd-networkd` units, the host firewall policy and its loaded nft table, and the Spinifex CA from the host trust store. Verifies afterwards and exits non-zero naming anything that survived. |
+| `node-reset.sh` | Clears **state** and leaves the node installed: stops services, destroys guests, wipes `/etc/spinifex`, `/var/lib/spinifex`, `/var/log/spinifex` and the OVN databases, and removes the OVS bridges. It stops OVS and OVN central by the unit names the host's packages use. It leaves the NetworkManager unmanaged-device config, which the next `setup-ovn.sh` run rewrites, so NetworkManager cannot take a NIC back in between. The node is then ready for a fresh `spx admin init`. `--keep-data` preserves `/var/lib/spinifex`; `SPX_RESET_CONFIRM=reset` runs it unattended. |
+| `uninstall-spx.sh` | Removes the **software** — the inverse of `setup.sh`. Delegates the state teardown above to `node-reset.sh` rather than reimplementing it, then removes the binary, the nbdkit plugin, the systemd units and slices, the service users, the sudoers grant, the sysctl/logrotate/chrony/udev drop-ins, the `systemd-networkd` units, the host firewall policy and its loaded nft table, the Spinifex systemd-resolved drop-in, and the Spinifex CA from the host trust store. It unmasks firewalld and leaves it disabled. Where `setup.sh` handed DNS to systemd-resolved, it restores the saved `/etc/resolv.conf` and turns resolved off. Verifies afterwards and exits non-zero naming anything that survived, then lists the host settings `setup.sh` changed that it leaves in place, such as the dnf repositories, `OVS_USER_ID`, masked IPsec units and the SELinux mode. |
 
-`uninstall-spx.sh` keeps `/var/lib/spinifex` and every apt package by default — uninstalling software should not destroy data, and a `curl … | bash` install lands on hosts that were already using openvswitch, libvirt and chrony. `--purge-data` and `--purge-deps` opt into each, and both confirm separately even under `--yes` (`SPX_PURGE_CONFIRM=destroy` for unattended data removal). `--dry-run` prints the whole plan and touches nothing.
+`node-reset.sh` finds guests by process name, `qemu-system-*` or `qemu-kvm`, owned by the daemon's service user, and waits for them to exit before it deletes any state.
+`node-reset_test.sh` checks that match against real processes, and that `reset-dev-env.sh` uses the same pattern.
+
+`uninstall-spx.sh` keeps `/var/lib/spinifex` and every package by default — uninstalling software should not destroy data, and a `curl … | bash` install lands on hosts that were already using openvswitch, libvirt and chrony. `--purge-data` and `--purge-deps` opt into each, and both confirm separately even under `--yes` (`SPX_PURGE_CONFIRM=destroy` for unattended data removal). `--dry-run` prints the whole plan and touches nothing.
+`--purge-deps` removes with apt and is refused on dnf hosts, where its fixed list cannot tell what `setup.sh` installed from what the host already had, and dnf would also remove every package that requires them.
 
 **It refuses on a multi-node cluster, and `--yes` does not override that.** Uninstalling one node of a running cluster strands its guests and leaves the survivors reconciling against a chassis that will never answer. Run `spx admin cluster shutdown` first, then the uninstaller on each node.
 
@@ -36,7 +80,7 @@ Both ship to `/usr/local/share/spinifex/` on every node, so they are available o
 
 | Script | What it does |
 |---|---|
-| `smoke-test.sh` | End-to-end sanity check on a running node: imports an SSH keypair and the Ubuntu AMI, then launches an instance. `--create-vpc` builds the VPC, gateway, subnet and routes first and tears them down after; `--nodes N` launches through a spread placement group so each instance lands on a different physical server. `TEST_GPU=1` adds GPU passthrough checks. |
+| `smoke-test.sh` | End-to-end sanity check on a running node: imports an SSH keypair and the Ubuntu AMI, then launches an instance. `--create-vpc` builds the VPC, gateway, subnet and routes first and tears them down after; `--nodes N` launches through a spread placement group so each instance lands on a different physical server. `TEST_GPU=1` adds GPU passthrough checks. It runs the AWS CLI by absolute path, since sudo's `secure_path` leaves out `/usr/local/bin` on Oracle Linux. |
 | `verify-network.sh` | Asserts a node's datapath matches its declared planes — EIP reachability, which plane carries Geneve, and which interfaces services bind. Catches what `smoke-test.sh` cannot, since none of its traffic leaves the box. |
 | `check-coverage.sh` | Fails the build if total Go coverage falls below the minimum threshold, excluding packages exempt from the requirement. |
 | `diff-coverage.sh` | Coverage check scoped to changed lines only, against an auto-detected base ref (`HEAD~1` on main, `origin/main` on dev, otherwise `origin/dev`). |
@@ -52,6 +96,7 @@ Both ship to `/usr/local/share/spinifex/` on every node, so they are available o
 | `build-system-image.sh` | Builds a minimal system AMI (Alpine or Ubuntu) from a manifest. All customisation happens inside the libguestfs appliance, so the build touches no host block device, no host mount, and needs no sudo. `--import` also registers it as an AMI. |
 | `publish-system-image.sh` | Converts a built raw image to compressed qcow2, writes the `.sha256` sidecar the catalog verifier expects, and uploads both to the R2 bucket behind `iso.mulgadc.com/system-ami/`. |
 | `build-microvm-image.sh` | Builds the minimal Alpine kernel + initramfs used by the QEMU microvm machine type and the lb-agent, carrying haproxy (ALB) and nginx-stream (NLB) data planes. |
+| `build-qboot.sh` | Builds qboot, the firmware the daemon passes to every microvm with `-bios`, from a pinned upstream commit in a digest-pinned Debian container. Fails unless the output matches the recorded sha256, which is also Debian 13's `qboot.rom`. Writes `qboot.rom` and its GPL-2.0 licence beside the microvm kernel, and the matching source tarball, which releases publish, under `build/qboot/`. `make build-microvm-image` runs it. |
 | `mkosi-build.sh` | Runs an mkosi system-image build inside the pinned builder container, so a runner needs only Docker and the toolchain cannot drift. `--image` names an output and expands to the right profile list. |
 | `mkosi-publish.sh` | Publishes an mkosi-built image to R2 from inside the same pinned container — qcow2 conversion, `.sha256` sidecar, and upload. |
 | `mkosi-common.sh` | Shared plumbing sourced by both mkosi scripts. Builds the toolchain image once, with the builder account matched to the invoking user so bind-mounted output is not written back as root. |

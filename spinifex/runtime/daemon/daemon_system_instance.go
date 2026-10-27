@@ -774,10 +774,14 @@ func (d *Daemon) WaitForSystemInstance(instanceID string, timeout time.Duration)
 	return fmt.Errorf("instance %s did not reach running state within %s", instanceID, timeout)
 }
 
+// microvmDir holds the microvm kernel, initramfs and firmware. A variable so
+// tests can supply their own.
+var microvmDir = vm.MicroVMDir
+
 // buildDirectBootConfig constructs a vm.Config for a direct-boot microVM
 // launch. It does not call buildBaseVMConfig — the microvm machine type
-// requires no PCIe root ports, no UEFI/BIOS, and no drives. Runtime paths
-// (PID file, console log, serial socket) are filled in later by startQEMU.
+// requires no PCIe root ports, no UEFI, and no drives; it boots qboot. Runtime
+// paths (PID file, console log, serial socket) are filled in later by startQEMU.
 //
 // Network topology from input.NICs is serialised to three fw_cfg tmpfiles
 // (netcfg, lb-agent-env, ca-cert) under hostprocess.RuntimeDir().
@@ -794,7 +798,10 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 		memMiB = int(instanceTypeMemoryMiB(it))
 	}
 
-	const imagePath = "/usr/share/spinifex/microvm"
+	firmware := filepath.Join(microvmDir, vm.MicroVMFirmware)
+	if _, err := os.Stat(firmware); err != nil {
+		return vm.Config{}, fmt.Errorf("microvm firmware %s is missing, so load balancer instances cannot boot; reinstall Spinifex to restore it: %w", firmware, err)
+	}
 
 	fwCfg, err := d.writeFwCfgBlobs(instanceID, input)
 	if err != nil {
@@ -846,8 +853,9 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 		CPUCount:      vcpus,
 		Memory:        memMiB,
 		MachineType:   machineType,
-		KernelImage:   filepath.Join(imagePath, "vmlinuz"),
-		Initrd:        filepath.Join(imagePath, "initramfs.cpio.gz"),
+		BIOS:          firmware,
+		KernelImage:   filepath.Join(microvmDir, "vmlinuz"),
+		Initrd:        filepath.Join(microvmDir, "initramfs.cpio.gz"),
 		KernelCmdline: cmdline,
 		FwCfg:         fwCfg,
 	}

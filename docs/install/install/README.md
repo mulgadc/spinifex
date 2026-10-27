@@ -1,7 +1,7 @@
 ---
 title: "Single-Node Install"
 seoTitle: "Install Spinifex on a Single Server — Spinifex Docs"
-description: "Install Spinifex on one Ubuntu or Debian server with the binary installer and get an AWS-compatible EC2, S3, and VPC stack running on your own hardware."
+description: "Install Spinifex on one Debian, Ubuntu or Oracle Linux server with the binary installer and run an AWS-compatible EC2, S3 and VPC stack on your hardware."
 category: "Install"
 tags:
   - install
@@ -39,6 +39,7 @@ This guide installs Spinifex on a single server using the binary installer. For 
 
 - Ubuntu 26.04
 - Debian 13
+- Oracle Linux 10.2 or a later 10.x, on UEK R8, x86_64 only, as a single node. Open vSwitch and OVN come from the CentOS NFV SIG, a community repository that Oracle does not support. Prepare the host with [Oracle Linux Hosts](/docs/install-oracle-linux) first.
 
 **What Gets Installed:**
 
@@ -139,17 +140,31 @@ Continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to import a
 
 ### spx Command Not Found
 
+The installer puts `spx` in `/usr/local/bin`.
+Where `sudo`'s `secure_path` leaves that directory out, as on Oracle Linux, the installer also links `/usr/bin/spx` to it, so `sudo spx` works; changing `PATH` in your shell does not reach commands run with `sudo`.
+Check both:
+
 ```bash
-export PATH=$PATH:/usr/local/bin
+ls -l /usr/local/bin/spx /usr/bin/spx
+sudo sh -c 'command -v spx'
 ```
+
+If `sudo` still finds no `spx`, run the installer again, or call `sudo /usr/local/bin/spx` meanwhile.
 
 ### CA Certificate Not Trusted
 
-`sudo spx admin init` installs the CA automatically. If you need to re-install it manually:
+`sudo spx admin init` installs the CA automatically. If you need to re-install it manually on Debian or Ubuntu:
 
 ```bash
 sudo cp /etc/spinifex/ca.pem /usr/local/share/ca-certificates/spinifex-ca.crt
 sudo update-ca-certificates
+```
+
+On Oracle Linux:
+
+```bash
+sudo cp /etc/spinifex/ca.pem /etc/pki/ca-trust/source/anchors/spinifex-ca.crt
+sudo update-ca-trust
 ```
 
 ### OVN Services Not Starting

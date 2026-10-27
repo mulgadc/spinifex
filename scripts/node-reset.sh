@@ -57,6 +57,60 @@ run() {
     "$@"
 }
 
+# --- BEGIN distro.sh probes ---
+# Copied from scripts/lib/distro.sh: install-node.sh --wipe copies this script
+# alone to each host, so it cannot source the library. distro_test.sh keeps them equal.
+distro_unit_exists() {
+    local dir
+    for dir in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+        if [ -e "${DISTRO_ROOT:-}$dir/$1" ] || [ -L "${DISTRO_ROOT:-}$dir/$1" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+distro_ovs_unit() {
+    local deb=false el=false
+    distro_unit_exists openvswitch-switch.service && deb=true
+    distro_unit_exists openvswitch.service && el=true
+    if $deb && $el; then
+        echo "distro.sh: OVS unit: found both openvswitch-switch.service and openvswitch.service; cannot tell which one owns OVS" >&2
+        return 1
+    fi
+    if $deb; then echo openvswitch-switch.service; return 0; fi
+    if $el; then echo openvswitch.service; return 0; fi
+    echo "distro.sh: OVS unit: found neither openvswitch-switch.service nor openvswitch.service; is Open vSwitch installed?" >&2
+    return 1
+}
+
+distro_ca_trust() {
+    local deb=false el=false
+    command -v update-ca-certificates >/dev/null 2>&1 && deb=true
+    command -v update-ca-trust >/dev/null 2>&1 && el=true
+    if $deb && $el; then
+        echo "distro.sh: CA trust: found both update-ca-certificates and update-ca-trust; cannot tell which trust store TLS clients read" >&2
+        return 1
+    fi
+    if $deb; then echo "update-ca-certificates /usr/local/share/ca-certificates"; return 0; fi
+    if $el; then echo "update-ca-trust /etc/pki/ca-trust/source/anchors"; return 0; fi
+    echo "distro.sh: CA trust: found neither update-ca-certificates nor update-ca-trust on PATH" >&2
+    return 1
+}
+# --- END distro.sh probes ---
+
+# Resolved before anything stops, so a host whose OVS unit is ambiguous is
+# refused with nothing changed.
+OVS_UNIT=""
+if command -v ovs-vsctl >/dev/null 2>&1; then
+    OVS_UNIT=$(distro_ovs_unit) || exit 1
+fi
+
+# Also resolved up front. The CA tools live in sbin, which Debian leaves off a
+# non-root PATH, and a probe that fails after the wipe leaves a half-reset node.
+CA_TRUST=$(PATH="/usr/sbin:/sbin:$PATH" distro_ca_trust) \
+    || { echo "ERROR: cannot tell which trust store holds the stale CA" >&2; exit 1; }
+
 WIPE_DIRS=("$ETC_DIR" "$LOG_DIR" "$RUN_DIR")
 $KEEP_DATA || WIPE_DIRS+=("$DATA_DIR")
 
@@ -80,6 +134,20 @@ keep_args() {
               -o -path "$1/firewall/custom.nft")
 }
 
+# --- BEGIN at-stake counts ---
+# Copied between node-reset.sh and uninstall-spx.sh; node-reset_test.sh keeps them equal.
+# Instances are the daemon's local state records. Only mounted volumes have a
+# local directory under viperblock/; the rest live only in Predastore.
+count_instances() {
+    local state="$1/state/instance-state.json"
+    sudo test -e "$state" || { echo 0; return 0; }
+    sudo jq -r '.vms // {} | length' "$state" 2>/dev/null || echo unknown
+}
+count_mounted_volumes() {
+    sudo find "$1/viperblock" -maxdepth 1 -mindepth 1 -type d -name 'vol-*' ! -name '*-efi' 2>/dev/null | wc -l || true
+}
+# --- END at-stake counts ---
+
 # Report what is at stake in figures rather than adjectives. An operator who
 # reads "3 instances, 12 volumes, 840G" makes a better decision than one who
 # reads a warning banner.
@@ -87,21 +155,24 @@ keep_args() {
 # created fails the whole pipeline, and a node with nothing to report is the
 # most ordinary case there is.
 if [ -d "$DATA_DIR" ]; then
-    instances=$(sudo find "$DATA_DIR/instances" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l || true)
-    volumes=$(sudo find "$DATA_DIR/volumes" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l || true)
+    instances=$(count_instances "$DATA_DIR")
+    volumes=$(count_mounted_volumes "$DATA_DIR")
     size=$(sudo du -sh "$DATA_DIR" 2>/dev/null | cut -f1 || true)
-    log "on $(hostname): $instances instance(s), $volumes volume(s), ${size:-unknown} under $DATA_DIR"
+    log "on $(hostname): $instances instance(s), $volumes mounted volume(s), ${size:-unknown} under $DATA_DIR"
     $KEEP_DATA && log "  --keep-data: $DATA_DIR will be preserved"
 fi
 log "removing: ${WIPE_DIRS[*]}"
 
 if ! $ASSUME_YES && ! $DRY_RUN; then
-    read -r -p "Destroy this node's state? Type 'destroy' to continue: " reply
+    read -r -p "Destroy this node's state? Type 'destroy' to continue: " reply || reply=""
     [ "$reply" = "destroy" ] || { log "aborted"; exit 1; }
 fi
 
 log "stopping services"
 run sudo systemctl stop spinifex.target 2>/dev/null || true
+# spinifex-hostnet starts with OVS, which is started below to delete bridges; it
+# would rebuild the old veth pairs. setup-ovn.sh enables it again.
+run sudo systemctl disable --now spinifex-hostnet.service 2>/dev/null || true
 run sudo systemctl reset-failed 'spinifex-*' 2>/dev/null || true
 
 # Stopping the target is not the same as its services being stopped.
@@ -134,8 +205,9 @@ fi
 # `pgrep -x` and `pkill -x` match against comm, which the kernel truncates to 15
 # characters, so `qemu-system-x86_64` is stored as `qemu-system-x86` and an -x
 # match on the full name can never fire. Match the prefix instead: it is 11
-# characters, well under the limit, and covers both x86_64 and aarch64. This is
-# the same rule qemuProcessPrefix applies in spinifex/runtime/compute/vm/orphan_scan.go.
+# characters, well under the limit, and covers both x86_64 and aarch64. EL-family
+# hosts run /usr/libexec/qemu-kvm, whose comm is exactly `qemu-kvm`. This is the
+# rule hostos.IsQEMUProcess applies in spinifex/runtime/host/hostos.
 #
 # Deliberately not -f. That matches the whole command line, where argv[0] may
 # carry a path, so an anchored pattern misses the process it was written for.
@@ -144,7 +216,7 @@ fi
 # ones has both under the same comm and an unscoped kill would take the wrong
 # set down. The daemon runs guests as its own service user on an installed node;
 # a dev install runs them as whoever invoked spx.
-QEMU_PGREP=('^qemu-system')
+QEMU_PGREP=('^(qemu-system|qemu-kvm$)')
 for qemu_user in spinifex-daemon spinifex "${SUDO_USER:-$(id -un)}"; do
     if id -u "$qemu_user" >/dev/null 2>&1; then
         QEMU_PGREP=(-u "$qemu_user" "${QEMU_PGREP[@]}")
@@ -178,8 +250,10 @@ fi
 # node keeping its old system-id across a reset re-registers under the old
 # chassis name and collides with the new one over the encap IP.
 log "removing OVS bridges and identity"
-if command -v ovs-vsctl >/dev/null 2>&1; then
-    run sudo systemctl start openvswitch-switch 2>/dev/null || true
+# A running ovn-controller recreates br-int as soon as it is deleted.
+run sudo systemctl stop ovn-controller 2>/dev/null || true
+if [ -n "$OVS_UNIT" ]; then
+    run sudo systemctl start "$OVS_UNIT" 2>/dev/null || true
     $DRY_RUN || sleep 1
     # Listed even under --dry-run: "which bridges" is the question an operator
     # actually has here, and br-wan is a Linux bridge so it is never in this set.
@@ -188,7 +262,7 @@ if command -v ovs-vsctl >/dev/null 2>&1; then
         run sudo ovs-vsctl --if-exists del-br "$br"
     done
     run sudo ovs-vsctl --if-exists clear Open_vSwitch . external_ids 2>/dev/null || true
-    run sudo systemctl stop openvswitch-switch 2>/dev/null || true
+    run sudo systemctl stop "$OVS_UNIT" 2>/dev/null || true
 fi
 run sudo rm -f /etc/openvswitch/system-id.conf
 
@@ -233,14 +307,20 @@ if [ -e "$ETC_DIR/firewall/custom.nft" ]; then
 fi
 
 log "removing OVN databases"
-run sudo systemctl stop ovn-central 2>/dev/null || true
+# Debian's ovn-central takes its split units down with it; EL's ovn-northd runs
+# both databases itself. A compute node has neither.
+for unit in ovn-central.service ovn-northd.service; do
+    if distro_unit_exists "$unit"; then
+        run sudo systemctl stop "$unit" 2>/dev/null || true
+    fi
+done
 run sudo systemctl stop ovn-controller 2>/dev/null || true
 run sudo rm -f /var/lib/ovn/ovnnb_db.db /var/lib/ovn/ovnsb_db.db
 
-# The RAFT membership flags live in this file, not in the databases just
-# deleted. Left behind, ovn-central recreates the DB as a cluster member and
-# blocks dialling a peer that has itself been reset.
-run sudo rm -f /etc/default/ovn-central
+# The RAFT membership flags live in these files (Debian, EL), not in the
+# databases just deleted. Left behind, OVN central recreates the DB as a
+# cluster member and blocks dialling a peer that has itself been reset.
+run sudo rm -f /etc/default/ovn-central /etc/sysconfig/ovn-northd
 
 if ip link show veth-wan-br >/dev/null 2>&1; then
     log "  deleting veth pair: veth-wan-br <-> veth-wan-ovs"
@@ -256,6 +336,21 @@ if [ -e /etc/systemd/network/15-spinifex-veth-wan.netdev ] ||
     run sudo rm -f /etc/systemd/network/15-spinifex-veth-wan.netdev \
         /etc/systemd/network/15-spinifex-veth-wan.network \
         /etc/systemd/network/16-spinifex-veth-wan-ovs.network
+    run sudo networkctl reload 2>/dev/null || true
+fi
+
+# The routed-NAT transit veth keeps 100.127.0.1/24 and the routes behind it.
+if ip link show spx-nat-host >/dev/null 2>&1; then
+    log "  deleting veth pair: spx-nat-host <-> spx-nat-ovs"
+    run sudo ip link del spx-nat-host 2>/dev/null || true
+fi
+if [ -e /etc/systemd/network/17-spinifex-nat.netdev ] ||
+    [ -e /etc/systemd/network/17-spinifex-nat.network ] ||
+    [ -e /etc/systemd/network/18-spinifex-nat-ovs.network ]; then
+    log "  deleting NAT transit persistence units"
+    run sudo rm -f /etc/systemd/network/17-spinifex-nat.netdev \
+        /etc/systemd/network/17-spinifex-nat.network \
+        /etc/systemd/network/18-spinifex-nat-ovs.network
     run sudo networkctl reload 2>/dev/null || true
 fi
 
@@ -378,10 +473,11 @@ fi
 
 # The next init writes a fresh CA. Leaving the old one trusted means the host
 # trusts a CA nobody holds the key for.
-if [ -f /usr/local/share/ca-certificates/spinifex-ca.crt ]; then
+CA_ANCHOR="${CA_TRUST#* }/spinifex-ca.crt"
+if [ -f "$CA_ANCHOR" ]; then
     log "removing the stale CA from the trust store"
-    run sudo rm -f /usr/local/share/ca-certificates/spinifex-ca.crt
-    run sudo update-ca-certificates
+    run sudo rm -f "$CA_ANCHOR"
+    run sudo "${CA_TRUST%% *}"
 fi
 
 log "done — node is installed but uninitialized, ready to init or join"

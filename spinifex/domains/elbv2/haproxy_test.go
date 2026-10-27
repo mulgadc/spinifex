@@ -57,8 +57,13 @@ func TestGenerateHAProxyConfig_SingleListenerAndBackend(t *testing.T) {
 	assert.Contains(t, config, "default_backend")
 
 	// Verify backend
-	assert.Contains(t, config, "option httpchk GET /health")
-	assert.Contains(t, config, "http-check expect status 200")
+	// AWS shape: HTTP/1.1, Host is the target IP (plus port when not 80), ELB User-Agent.
+	assert.Contains(t, config, "    option httpchk\n"+
+		"    http-check send meth GET ver HTTP/1.1"+
+		" hdr Host %[bc_dst]%[bc_dst_port,regsub(^,:),regsub(^:80$,)]"+
+		" hdr User-Agent ELB-HealthChecker/2.0 uri /health\n"+
+		"    http-check expect status 200\n")
+	assert.NotContains(t, config, "option httpchk GET")
 	assert.Contains(t, config, "10.0.1.10:8080")
 	assert.Contains(t, config, "10.0.1.11:8080")
 	assert.Contains(t, config, "check inter 30s fall 2 rise 5")
@@ -97,6 +102,28 @@ func TestGenerateHAProxyConfig_HTTPSBackendReencrypts(t *testing.T) {
 	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "10.0.2.5", nil)
 	require.NoError(t, err)
 	assert.Contains(t, config, "10.0.2.10:30081 check check-ssl ssl verify none inter 10s")
+	// 443 is the HTTPS default port, so AWS omits it from the Host header.
+	assert.Contains(t, config, "hdr Host %[bc_dst]%[bc_dst_port,regsub(^,:),regsub(^:443$,)]")
+}
+
+// A '#' starts a comment in haproxy config, so uri must come last on the send
+// line: a fragment in the path then only trims the uri, not the headers.
+func TestGenerateHAProxyConfig_HealthCheckURIIsLastOnSendLine(t *testing.T) {
+	t.Parallel()
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-frag"}
+	tgArn := "arn:tg-frag"
+	listeners := []*ListenerRecord{
+		{ListenerArn: "arn:lst-frag", Port: 80, DefaultActions: []ListenerAction{{Type: ActionTypeForward, TargetGroupArn: tgArn}}},
+	}
+	hc := DefaultHealthCheck()
+	hc.Path = "/healthz?probe=lb#frag"
+	tgByArn := map[string]*TargetGroupRecord{
+		tgArn: {HealthCheck: hc, Targets: []Target{{Id: "i-f", Port: 80, PrivateIP: "10.0.0.9", HealthState: TargetHealthHealthy}}},
+	}
+
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "0.0.0.0", nil)
+	require.NoError(t, err)
+	assert.Contains(t, config, "hdr User-Agent ELB-HealthChecker/2.0 uri /healthz?probe=lb#frag\n")
 }
 
 func TestGenerateHAProxyConfig_MultipleListeners(t *testing.T) {
@@ -519,8 +546,8 @@ func TestGenerateALBConfig_StillWorks(t *testing.T) {
 
 	assert.Contains(t, config, "mode http")
 	assert.Contains(t, config, "option httplog")
-	assert.Contains(t, config, "option httpchk GET /health")
-	assert.Contains(t, config, "http-check expect status 200")
+	assert.Contains(t, config, "ver HTTP/1.1 hdr Host %[bc_dst]")
+	assert.Contains(t, config, "uri /health\n    http-check expect status 200\n")
 	assert.NotContains(t, config, "mode tcp")
 	assert.NotContains(t, config, "option tcplog")
 }

@@ -30,10 +30,19 @@ distro_pkg_manager() {
 }
 
 # The OVS umbrella unit: openvswitch-switch.service on Debian, openvswitch.service on EL.
+# Ubuntu's openvswitch-switch declares Alias=openvswitch.service; the symlink that
+# enabling it leaves points back at openvswitch-switch.service and is not the EL unit.
 distro_ovs_unit() {
-    local deb=false el=false
+    local deb=false el=false dir
     distro_unit_exists openvswitch-switch.service && deb=true
-    distro_unit_exists openvswitch.service && el=true
+    for dir in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+        if [ -e "${DISTRO_ROOT:-}$dir/openvswitch.service" ] || [ -L "${DISTRO_ROOT:-}$dir/openvswitch.service" ]; then
+            case $(readlink "${DISTRO_ROOT:-}$dir/openvswitch.service" || true) in
+                openvswitch-switch.service | */openvswitch-switch.service) ;;
+                *) el=true ;;
+            esac
+        fi
+    done
     if $deb && $el; then
         echo "distro.sh: OVS unit: found both openvswitch-switch.service and openvswitch.service; cannot tell which one owns OVS" >&2
         return 1

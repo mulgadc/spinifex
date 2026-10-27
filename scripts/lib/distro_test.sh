@@ -26,6 +26,8 @@ fixture() {
 unit() { mkdir -p "$ROOT/usr/lib/systemd/system" && : > "$ROOT/usr/lib/systemd/system/$1"; }
 file() { mkdir -p "$ROOT$(dirname "$1")" && : > "$ROOT$1"; }
 cmd() { printf '#!/bin/sh\nexit 0\n' > "$BIN/$1" && chmod +x "$BIN/$1"; }
+# realcmd <name> — the host's real command, for probes that read the fixture with it.
+realcmd() { ln -s "$(command -v "$1")" "$BIN/$1"; }
 
 # probe <fn> [arg...] — runs one probe in bash against the current fixture,
 # with only the stub dir on PATH. Sets OUT, ERR and RC.
@@ -73,13 +75,22 @@ expect_ok "OVS unit: Debian name" openvswitch-switch.service
 fixture ovs-el; unit openvswitch.service; probe distro_ovs_unit
 expect_ok "OVS unit: EL name" openvswitch.service
 fixture ovs-masked; mkdir -p "$ROOT/etc/systemd/system"
-ln -s /dev/null "$ROOT/etc/systemd/system/openvswitch.service"; probe distro_ovs_unit
+ln -s /dev/null "$ROOT/etc/systemd/system/openvswitch.service"; realcmd readlink; probe distro_ovs_unit
 expect_ok "OVS unit: a masked unit in /etc counts" openvswitch.service
 fixture ovs-lib; mkdir -p "$ROOT/lib/systemd/system"
 : > "$ROOT/lib/systemd/system/openvswitch-switch.service"; probe distro_ovs_unit
 expect_ok "OVS unit: found under /lib on an unmerged-/usr host" openvswitch-switch.service
 fixture ovs-both; unit openvswitch-switch.service; unit openvswitch.service; probe distro_ovs_unit
 expect_fail "OVS unit: both fails naming both" openvswitch-switch.service openvswitch.service
+fixture ovs-ubuntu-alias; unit openvswitch-switch.service; mkdir -p "$ROOT/etc/systemd/system"
+ln -s /usr/lib/systemd/system/openvswitch-switch.service "$ROOT/etc/systemd/system/openvswitch.service"; realcmd readlink; probe distro_ovs_unit
+expect_ok "OVS unit: Ubuntu's openvswitch.service alias is the Debian unit" openvswitch-switch.service
+fixture ovs-relative-alias; unit openvswitch-switch.service; mkdir -p "$ROOT/etc/systemd/system"
+ln -s openvswitch-switch.service "$ROOT/etc/systemd/system/openvswitch.service"; realcmd readlink; probe distro_ovs_unit
+expect_ok "OVS unit: a relative alias symlink is the Debian unit" openvswitch-switch.service
+fixture ovs-alias-and-el; unit openvswitch-switch.service; unit openvswitch.service; mkdir -p "$ROOT/etc/systemd/system"
+ln -s /usr/lib/systemd/system/openvswitch-switch.service "$ROOT/etc/systemd/system/openvswitch.service"; realcmd readlink; probe distro_ovs_unit
+expect_fail "OVS unit: an alias beside a real EL unit still fails naming both" openvswitch-switch.service openvswitch.service
 fixture ovs-none; probe distro_ovs_unit
 expect_fail "OVS unit: neither fails naming both" openvswitch-switch.service openvswitch.service
 

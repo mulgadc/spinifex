@@ -15,7 +15,7 @@ import (
 
 // GetHostedZoneActivation reports whether a zone is served and why not.
 func (s *Service) GetHostedZoneActivation(ctx context.Context, in *ext.GetHostedZoneActivationInput, account string) (*ext.GetHostedZoneActivationOutput, error) {
-	id := bareZoneID(aws.StringValue(in.Id))
+	id := BareZoneID(aws.StringValue(in.Id))
 	zone, err := s.store.GetZone(ctx, account, id)
 	if err != nil {
 		return nil, s.zoneErr(id, err)
@@ -26,7 +26,7 @@ func (s *Service) GetHostedZoneActivation(ctx context.Context, in *ext.GetHosted
 // VerifyHostedZoneDelegation checks a zone's delegation now, the console's
 // "Check now", rather than at its next scheduled check.
 func (s *Service) VerifyHostedZoneDelegation(ctx context.Context, in *ext.VerifyHostedZoneDelegationInput, account string) (*ext.VerifyHostedZoneDelegationOutput, error) {
-	id := bareZoneID(aws.StringValue(in.Id))
+	id := BareZoneID(aws.StringValue(in.Id))
 	if s.Verifier == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorServiceUnavailable, "delegation checks are not available on this cluster")
 	}
@@ -94,7 +94,7 @@ func (s *Service) AdminFindZones(ctx context.Context, q *AdminZoneQuery, _ strin
 	if err != nil {
 		return nil, internal("list hosted zones", err)
 	}
-	id, name := bareZoneID(q.ZoneID), normalizeName(q.Name)
+	id, name := BareZoneID(q.ZoneID), normalizeName(q.Name)
 	out := &AdminZones{Zones: []ZoneRecord{}}
 	for _, z := range zones {
 		if (id == "" || z.ID == id) && (name == "" || z.Name == name) {
@@ -133,6 +133,9 @@ func (s *Service) AdminOverride(ctx context.Context, in *AdminOverrideInput, _ s
 	}
 	switch in.Override {
 	case StateActive:
+		if s.Reserved != nil && s.Reserved(z.Name) {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidDomainName, "%s is reserved by this cluster and cannot be activated", strings.TrimSuffix(z.Name, "."))
+		}
 		zones, err := s.store.ListAllZones(ctx)
 		if err != nil {
 			return nil, internal("list hosted zones", err)
@@ -172,7 +175,7 @@ func (s *Service) AdminOverride(ctx context.Context, in *AdminOverrideInput, _ s
 }
 
 func (s *Service) adminZone(ctx context.Context, rawID string) (*ZoneRecord, error) {
-	id := bareZoneID(rawID)
+	id := BareZoneID(rawID)
 	if id == "" {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "a hosted zone ID is required")
 	}

@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/route53"
 
+	route53domain "github.com/mulgadc/spinifex/spinifex/domains/route53"
 	"github.com/mulgadc/spinifex/spinifex/domains/route53/ext"
 )
 
@@ -32,7 +33,7 @@ func ResourceARNs(input any) []string {
 	case *ext.VerifyHostedZoneDelegationInput:
 		return zoneARN(in.Id)
 	case *route53.GetChangeInput:
-		return []string{arnPrefix + "change/" + strings.TrimPrefix(aws.StringValue(in.Id), "/change/")}
+		return []string{arnPrefix + "change/" + route53domain.BareChangeID(aws.StringValue(in.Id))}
 	case *route53.ChangeTagsForResourceInput:
 		return tagARNs(in.ResourceType, in.ResourceId)
 	case *route53.ListTagsForResourceInput:
@@ -51,10 +52,15 @@ func ResourceARNs(input any) []string {
 	}
 }
 
+// zoneARN names the zone by the ID the daemon looks up, so a padded or
+// prefixed ID cannot be authorized as one zone and act on another.
 func zoneARN(id *string) []string {
-	return []string{arnPrefix + "hostedzone/" + strings.TrimPrefix(aws.StringValue(id), "/hostedzone/")}
+	return []string{arnPrefix + "hostedzone/" + route53domain.BareZoneID(aws.StringValue(id))}
 }
 
 func tagARNs(resourceType, id *string) []string {
-	return []string{arnPrefix + aws.StringValue(resourceType) + "/" + aws.StringValue(id)}
+	if aws.StringValue(resourceType) == route53.TagResourceTypeHostedzone {
+		return zoneARN(id)
+	}
+	return []string{arnPrefix + aws.StringValue(resourceType) + "/" + strings.TrimSpace(aws.StringValue(id))}
 }

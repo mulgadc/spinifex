@@ -32,7 +32,11 @@ func (d *Daemon) newRoute53Service(js jetstream.JetStream) *route53domain.Servic
 		return hosts
 	}
 	svc.Reserved = func(name string) bool {
-		return dns.ReservedZoneName(name, dns.ResolveBaseDomain(d.config), dns.ResolveInternalDomain(d.config))
+		var services string
+		if d.clusterConfig != nil {
+			services = d.clusterConfig.AWS.ServicesDomain
+		}
+		return dns.ReservedZoneName(name, dns.ResolveBaseDomain(d.config), dns.ResolveInternalDomain(d.config), services)
 	}
 	return svc
 }

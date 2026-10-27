@@ -130,10 +130,43 @@ func (r *Realizer) Reconcile(ctx context.Context) (time.Duration, error) {
 			revisit = realizeRetry
 		}
 	}
+	if err := r.settleUnservedDeletions(ctx, zones, published, pending); err != nil {
+		errs = append(errs, err)
+	}
 	if err := r.pruneOrphanChanges(ctx, zones, changes); err != nil {
 		errs = append(errs, err)
 	}
 	return revisit, errors.Join(errs...)
+}
+
+// settleUnservedDeletions marks in sync the pending changes of a deleted zone
+// that northstar does not serve. A deletion recorded after this pass's withdraw
+// read the changes, or of a zone never published, has nothing left to wait on.
+func (r *Realizer) settleUnservedDeletions(ctx context.Context, zones []ZoneRecord, published map[string]PublishedZone, pending map[string][]ChangeRecord) error {
+	known := make(map[string]bool, len(zones)+len(published))
+	for _, z := range zones {
+		known[z.AccountID+"/"+z.ID] = true
+	}
+	for _, p := range published {
+		known[p.AccountID+"/"+p.ZoneID] = true
+	}
+	var errs []error
+	for key, waiting := range pending {
+		if known[key] {
+			continue
+		}
+		c := waiting[0]
+		if _, err := r.store.GetZone(ctx, c.AccountID, c.ZoneID); !errors.Is(err, kvstore.ErrNotFound) {
+			if err != nil {
+				errs = append(errs, fmt.Errorf("look up zone %s: %w", c.ZoneID, err))
+			}
+			continue // created since the listing
+		}
+		if err := r.store.MarkInSync(ctx, waiting, math.MaxUint64); err != nil {
+			errs = append(errs, fmt.Errorf("mark changes of deleted zone %s in sync: %w", c.ZoneID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // servedZones picks, for each zone name, the ACTIVE zone northstar serves. Only

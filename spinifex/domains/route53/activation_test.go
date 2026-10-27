@@ -10,6 +10,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/domains/route53"
 	"github.com/mulgadc/spinifex/spinifex/domains/route53/ext"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 func TestActivationIsReportedAndCheckedOnDemand(t *testing.T) {
@@ -108,4 +109,19 @@ func TestAdminVerifyChecksInTheOwningAccount(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, route53.StateActive, out.Zones[0].State)
 	assert.Equal(t, acctB, out.Zones[0].AccountID)
+}
+
+// A zone that names a platform zone, such as one created before its name was
+// reserved, cannot be activated by the operator either.
+func TestAdminOverrideRefusesAReservedName(t *testing.T) {
+	svc := newService(t)
+	id := createZone(t, svc, acctA, "services.example")
+	svc.Reserved = func(name string) bool { return name == "services.example." }
+
+	_, err := svc.AdminOverride(ctx, &route53.AdminOverrideInput{ZoneID: id, Override: route53.StateActive, Reason: "air-gapped root"}, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidDomainName)
+	z, err := svc.Store().GetZone(ctx, acctA, route53.BareZoneID(id))
+	require.NoError(t, err)
+	assert.Equal(t, route53.StatePendingNameservers, z.State)
 }

@@ -12,15 +12,17 @@ var managedLabels = map[string]bool{"compute": true, "elb": true, "eks": true, "
 var nameserverLabel = regexp.MustCompile(`^ns[0-9]+$`)
 
 // ReservedZoneName reports whether a tenant may not create a hosted zone named
-// name. It refuses the base and internal domains, any ancestor of them, every
-// name below the internal domain, and any name below the base domain that falls
-// under a platform-managed label or a published nameserver.
-func ReservedZoneName(name, baseDomain, internalDomain string) bool {
+// name. It refuses the base, internal and service-endpoint domains, any ancestor
+// of them, every name below the internal and service-endpoint domains, and any
+// name below the base domain under a platform-managed label or a nameserver.
+func ReservedZoneName(name, baseDomain, internalDomain, servicesDomain string) bool {
 	name = normalizeZone(name)
 	if name == "" {
 		return true
 	}
-	for _, zone := range []string{normalizeZone(baseDomain), normalizeZone(privateZoneOrDefault(internalDomain))} {
+	internal := normalizeZone(privateZoneOrDefault(internalDomain))
+	services := normalizeZone(servicesDomain)
+	for _, zone := range []string{normalizeZone(baseDomain), internal, services} {
 		if zone == "" {
 			continue
 		}
@@ -28,8 +30,10 @@ func ReservedZoneName(name, baseDomain, internalDomain string) bool {
 			return true
 		}
 	}
-	if internal := normalizeZone(privateZoneOrDefault(internalDomain)); strings.HasSuffix(name, "."+internal) {
-		return true
+	for _, zone := range []string{internal, services} {
+		if zone != "" && strings.HasSuffix(name, "."+zone) {
+			return true
+		}
 	}
 	if base := normalizeZone(baseDomain); base != "" && strings.HasSuffix(name, "."+base) {
 		labels := strings.Split(strings.TrimSuffix(name, "."+base), ".")

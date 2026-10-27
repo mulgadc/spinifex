@@ -198,6 +198,45 @@ func TestRealizerWithdrawsDeletedAndDeactivatedZones(t *testing.T) {
 	assert.Empty(t, published)
 }
 
+// Terraform polls GetChange after DeleteHostedZone, so a deletion must reach
+// INSYNC even when no published entry is left to withdraw.
+func TestRealizerSettlesTheDeletionOfAnUnservedZone(t *testing.T) {
+	t.Run("never published", func(t *testing.T) {
+		svc := newService(t)
+		r := newRealizer(svc, newFakeNorthstar(1))
+		id := createZone(t, svc, acctA, "early.com")
+		setState(t, svc, acctA, id, route53.StateActive)
+
+		del, err := svc.DeleteHostedZone(ctx, &r53.DeleteHostedZoneInput{Id: aws.String(id)}, acctA)
+		require.NoError(t, err)
+		require.Equal(t, "PENDING", aws.StringValue(del.ChangeInfo.Status))
+
+		_, err = r.Reconcile(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "INSYNC", changeStatus(t, svc, acctA, aws.StringValue(del.ChangeInfo.Id)))
+	})
+	t.Run("withdrawn before the deletion was recorded", func(t *testing.T) {
+		svc := newService(t)
+		ns := newFakeNorthstar(1)
+		r := newRealizer(svc, ns)
+		id := createZone(t, svc, acctA, "racy.com")
+		setState(t, svc, acctA, id, route53.StateActive)
+		_, err := r.Reconcile(ctx)
+		require.NoError(t, err)
+		require.True(t, ns.has("racy.com"))
+
+		del, err := svc.DeleteHostedZone(ctx, &r53.DeleteHostedZoneInput{Id: aws.String(id)}, acctA)
+		require.NoError(t, err)
+		// A pass that read the changes before the deletion's was written has
+		// withdrawn the zone and forgotten it without marking the change.
+		require.NoError(t, svc.Store().DeletePublished(ctx, "racy.com"))
+
+		_, err = r.Reconcile(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "INSYNC", changeStatus(t, svc, acctA, aws.StringValue(del.ChangeInfo.Id)))
+	})
+}
+
 func TestRealizerNeverWritesAReservedZone(t *testing.T) {
 	svc := newService(t)
 	ns := newFakeNorthstar(1)
@@ -275,6 +314,35 @@ func TestRealizerRendersEveryRecordType(t *testing.T) {
 	assert.Contains(t, records, nsconfig.Records{Domain: "dkim.", Type: 16, Class: 1, TTL: 300, Strings: []string{`say \"hi\"`}})
 	assert.Contains(t, records, nsconfig.Records{Domain: "*.", Type: 5, Class: 1, TTL: 300, Address: "www.example.com."})
 	assert.Contains(t, records, nsconfig.Records{Domain: "v6.", Type: 28, Class: 1, TTL: 300, Address: "2001:db8::1"})
+}
+
+// Route 53 accepts a target host without its trailing dot and serves it fully
+// qualified; northstar refuses to pack a name that is not.
+func TestRealizerQualifiesTargetsWithoutATrailingDot(t *testing.T) {
+	svc := newService(t)
+	ns := newFakeNorthstar(1)
+	r := newRealizer(svc, ns)
+	id := createZone(t, svc, acctA, "example.com")
+	setState(t, svc, acctA, id, route53.StateActive)
+	_, err := apply(svc, acctA, id,
+		change("CREATE", "example.com", "MX", 300, "10 mail.example.com"),
+		change("CREATE", "_sip._tcp.example.com", "SRV", 300, "1 10 5060 sip.example.com"),
+		change("CREATE", "www.example.com", "CNAME", 300, "web.example.net"),
+		change("CREATE", "sub.example.com", "NS", 300, "ns1.example.net"),
+	)
+	require.NoError(t, err)
+
+	_, err = r.Reconcile(ctx)
+	require.NoError(t, err)
+	records := ns.zone(t, "example.com").Records
+	assert.Contains(t, records, nsconfig.Records{Domain: "", Type: 15, Class: 1, TTL: 300, Preference: 10, Address: "mail.example.com."})
+	assert.Contains(t, records, nsconfig.Records{Domain: "_sip._tcp.", Type: 33, Class: 1, TTL: 300, Priority: 1, Weight: 10, Port: 5060, Address: "sip.example.com."})
+	assert.Contains(t, records, nsconfig.Records{Domain: "www.", Type: 5, Class: 1, TTL: 300, Address: "web.example.net."})
+	assert.Contains(t, records, nsconfig.Records{Domain: "sub.", Type: 2, Class: 1, TTL: 300, Address: "ns1.example.net."})
+
+	out, err := svc.ListResourceRecordSets(ctx, &r53.ListResourceRecordSetsInput{HostedZoneId: &id, StartRecordName: new("example.com."), StartRecordType: new("MX")}, acctA)
+	require.NoError(t, err)
+	assert.Equal(t, "10 mail.example.com", *out.ResourceRecordSets[0].ResourceRecords[0].Value, "the stored value stays as entered, as in AWS")
 }
 
 func TestTXTValuesAreValidatedAsCharacterStrings(t *testing.T) {

@@ -173,7 +173,7 @@ func (s *Service) ListHostedZones(ctx context.Context, in *route53.ListHostedZon
 	if aws.StringValue(in.HostedZoneType) == route53.HostedZoneTypePrivateHostedZone {
 		zones = nil
 	}
-	marker := bareZoneID(aws.StringValue(in.Marker))
+	marker := BareZoneID(aws.StringValue(in.Marker))
 	start := 0
 	if marker != "" {
 		start = slices.IndexFunc(zones, func(z ZoneRecord) bool { return z.ID >= marker })
@@ -203,7 +203,7 @@ func (s *Service) ListHostedZonesByName(ctx context.Context, in *route53.ListHos
 		return nil, err
 	}
 	dnsName := normalizeName(aws.StringValue(in.DNSName))
-	startID := bareZoneID(aws.StringValue(in.HostedZoneId))
+	startID := BareZoneID(aws.StringValue(in.HostedZoneId))
 	if startID != "" && dnsName == "" {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "HostedZoneId requires DNSName")
 	}
@@ -240,7 +240,7 @@ func (s *Service) UpdateHostedZoneComment(ctx context.Context, in *route53.Updat
 	if len(comment) > maxCommentLength {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "Comment must be at most %d characters", maxCommentLength)
 	}
-	id := bareZoneID(aws.StringValue(in.Id))
+	id := BareZoneID(aws.StringValue(in.Id))
 	err := s.store.MutateZone(ctx, account, id, func(z *ZoneRecord) (bool, error) {
 		if z.Comment == comment {
 			return false, nil
@@ -364,7 +364,7 @@ func (s *Service) ListResourceRecordSets(ctx context.Context, in *route53.ListRe
 }
 
 func (s *Service) GetChange(ctx context.Context, in *route53.GetChangeInput, account string) (*route53.GetChangeOutput, error) {
-	id := bareChangeID(aws.StringValue(in.Id))
+	id := BareChangeID(aws.StringValue(in.Id))
 	c, err := s.store.GetChange(ctx, account, id)
 	if errors.Is(err, kvstore.ErrNotFound) {
 		return nil, awserrors.Errorf(awserrors.ErrorNoSuchChange, "A change with the specified change ID does not exist: %s", id)
@@ -440,7 +440,7 @@ func (s *Service) ListTagsForResources(ctx context.Context, in *route53.ListTags
 
 // zoneWithSets loads an account's zone and its record-set document.
 func (s *Service) zoneWithSets(ctx context.Context, account, rawID string) (*ZoneRecord, *RRSetsDoc, uint64, error) {
-	id := bareZoneID(rawID)
+	id := BareZoneID(rawID)
 	if id == "" {
 		return nil, nil, 0, awserrors.Errorf(awserrors.ErrorInvalidInput, "a hosted zone ID is required")
 	}
@@ -538,7 +538,7 @@ func maxItems(raw *string, ceiling int) (int, error) {
 func taggedZoneID(resourceType, id string) (string, error) {
 	switch resourceType {
 	case route53.TagResourceTypeHostedzone:
-		return bareZoneID(id), nil
+		return BareZoneID(id), nil
 	case route53.TagResourceTypeHealthcheck:
 		return "", awserrors.Errorf(awserrors.ErrorRoute53NoSuchHealthCheck, "No health check exists with the ID %s", id)
 	default:

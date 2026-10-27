@@ -22,8 +22,10 @@ type Writer struct {
 	enabled    bool
 	s3cfg      *nsconfig.S3Config
 	baseDomain string
-	// internalDomain is the private zone, for refusing reserved delegations.
+	// internalDomain is the private zone and servicesDomain the service-endpoint
+	// zone, for refusing reserved delegations.
 	internalDomain string
+	servicesDomain string
 	nameservers    []nsconfig.NameserverSeed
 	ttl            uint32
 	nc             *nats.Conn
@@ -48,6 +50,7 @@ func NewWriter(cfg *config.Config, cluster *config.ClusterConfig, nc *nats.Conn)
 	w.s3cfg = zoneCfg.s3
 	w.baseDomain = strings.TrimSpace(zoneCfg.server.DefaultDomain)
 	w.internalDomain = ResolveInternalDomain(cfg)
+	w.servicesDomain = localCluster(cluster, cfg).AWS.ServicesDomain
 	// Share the bootstrap's derivation so a zone this writer materialises carries
 	// the same NS topology as one the bootstrap seeds; whichever wins the race,
 	// the zone is correct.

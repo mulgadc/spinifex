@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	route53sdk "github.com/aws/aws-sdk-go/service/route53"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/route53"
@@ -59,5 +60,23 @@ func nameResources(v reflect.Value) {
 		case name == "ResourceIds":
 			f.Set(reflect.ValueOf([]*string{new("ZTEST")}))
 		}
+	}
+}
+
+// The daemon trims whitespace and the "/hostedzone/" or "/change/" prefix from
+// an ID, so the ARN must name the same zone, or a Deny on it can be sidestepped.
+func TestResourceARNsNameTheZoneTheDaemonActsOn(t *testing.T) {
+	for _, id := range []string{"Z2", " Z2", "Z2\n", "/hostedzone/Z2", " /hostedzone/Z2 "} {
+		for _, in := range []any{
+			&route53sdk.GetHostedZoneInput{Id: &id},
+			&route53sdk.ListResourceRecordSetsInput{HostedZoneId: &id},
+			&route53sdk.ChangeTagsForResourceInput{ResourceType: new("hostedzone"), ResourceId: &id},
+			&route53sdk.ListTagsForResourcesInput{ResourceType: new("hostedzone"), ResourceIds: []*string{&id}},
+		} {
+			assert.Equal(t, []string{"arn:aws:route53:::hostedzone/Z2"}, awsapi.ResourceARNs(in), "%T with ID %q", in, id)
+		}
+	}
+	for _, id := range []string{"C2", " C2", "/change/C2"} {
+		assert.Equal(t, []string{"arn:aws:route53:::change/C2"}, awsapi.ResourceARNs(&route53sdk.GetChangeInput{Id: &id}), "change ID %q", id)
 	}
 }

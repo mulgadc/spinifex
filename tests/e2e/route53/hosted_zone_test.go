@@ -126,7 +126,9 @@ func TestHostedZoneServedOnceDelegated(t *testing.T) {
 	require.Error(t, err, "one account must not see another's zone")
 
 	harness.Phase(t, "Route 53 — a deleted zone stops resolving")
-	deleteZone(t, c, zoneID)
+	deleted := deleteZone(t, c, zoneID)
+	require.NotNil(t, deleted, "DeleteHostedZone must succeed")
+	waitInSync(t, c, deleted)
 	for _, node := range targets {
 		harness.EventuallyErr(t, func() error { return wantGone(node, www) }, syncTimeout, 5*time.Second)
 	}
@@ -180,17 +182,18 @@ func callActivation(c *r53.Route53, zoneID string, verify bool) (*ext.Activation
 }
 
 // deleteZone removes every record set but the apex NS and SOA, then the zone.
-// A zone already gone is not an error, so it serves as a cleanup too.
-func deleteZone(t *testing.T, c *r53.Route53, zoneID string) {
+// A zone already gone is not an error, so it serves as a cleanup too. It
+// returns the deletion's change, or nil when nothing was deleted.
+func deleteZone(t *testing.T, c *r53.Route53, zoneID string) (changeID *string) {
 	t.Helper()
 	zone, err := c.GetHostedZone(&r53.GetHostedZoneInput{Id: aws.String(zoneID)})
 	if err != nil {
-		return
+		return nil
 	}
 	sets, err := c.ListResourceRecordSets(&r53.ListResourceRecordSetsInput{HostedZoneId: aws.String(zoneID)})
 	if err != nil {
 		t.Logf("list record sets of %s: %v", zoneID, err)
-		return
+		return nil
 	}
 	apex := aws.StringValue(zone.HostedZone.Name)
 	var changes []*r53.Change
@@ -207,9 +210,12 @@ func deleteZone(t *testing.T, c *r53.Route53, zoneID string) {
 			t.Logf("delete record sets of %s: %v", zoneID, err)
 		}
 	}
-	if _, err := c.DeleteHostedZone(&r53.DeleteHostedZoneInput{Id: aws.String(zoneID)}); err != nil {
+	out, err := c.DeleteHostedZone(&r53.DeleteHostedZoneInput{Id: aws.String(zoneID)})
+	if err != nil {
 		t.Logf("delete hosted zone %s: %v", zoneID, err)
+		return nil
 	}
+	return out.ChangeInfo.Id
 }
 
 func wantTXT(node harness.Node, name, want string) error {

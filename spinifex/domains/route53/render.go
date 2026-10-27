@@ -61,10 +61,10 @@ func renderRecord(label string, rtype uint16, ttl uint32, v string) (nsconfig.Re
 	switch rtype {
 	case dns.TypeMX:
 		rec.Preference = parseUint16(f[0])
-		rec.Address = f[1]
+		rec.Address = dns.Fqdn(f[1])
 	case dns.TypeSRV:
 		rec.Priority, rec.Weight, rec.Port = parseUint16(f[0]), parseUint16(f[1]), parseUint16(f[2])
-		rec.Address = f[3]
+		rec.Address = dns.Fqdn(f[3])
 	case dns.TypeCAA:
 		flag, _ := strconv.ParseUint(f[0], 10, 8)
 		rec.CAAFlag = uint8(flag)
@@ -76,6 +76,10 @@ func renderRecord(label string, rtype uint16, ttl uint32, v string) (nsconfig.Re
 			return rec, err
 		}
 		rec.Strings = strs
+	case dns.TypeCNAME, dns.TypeNS, dns.TypePTR:
+		// Route 53 reads a host without the trailing dot as fully qualified, and
+		// northstar cannot pack a name that is not.
+		rec.Address = dns.Fqdn(v)
 	default:
 		rec.Address = v
 	}

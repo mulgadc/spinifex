@@ -32,11 +32,12 @@ func newID(prefix byte) string {
 	return string(out)
 }
 
-// bareZoneID strips the "/hostedzone/" prefix, which AWS accepts on input and
-// returns on output.
-func bareZoneID(id string) string { return strings.TrimPrefix(strings.TrimSpace(id), hostedZonePrefix) }
+// BareZoneID strips the "/hostedzone/" prefix, which AWS accepts on input and
+// returns on output. The gateway authorizes against the same form.
+func BareZoneID(id string) string { return strings.TrimPrefix(strings.TrimSpace(id), hostedZonePrefix) }
 
-func bareChangeID(id string) string { return strings.TrimPrefix(strings.TrimSpace(id), changePrefix) }
+// BareChangeID strips the "/change/" prefix, as BareZoneID does for zones.
+func BareChangeID(id string) string { return strings.TrimPrefix(strings.TrimSpace(id), changePrefix) }
 
 // refDigest keys a caller reference, which may hold characters a KV key
 // cannot.

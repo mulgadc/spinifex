@@ -63,7 +63,7 @@ func (w *Writer) Delegate(ctx context.Context, nc *nats.Conn, holder string, nam
 		if !strings.HasSuffix(n, "."+base) {
 			return nil, fmt.Errorf("%s is not below the base domain %s", name, base)
 		}
-		if ReservedZoneName(n, base, w.internalDomain) {
+		if ReservedZoneName(n, base, w.internalDomain, w.servicesDomain) {
 			return nil, fmt.Errorf("%s is a platform name and cannot be delegated", name)
 		}
 		if remove {

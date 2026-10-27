@@ -180,17 +180,25 @@ func TestCurrentBehaviour_Tagging_GetResourcesOffsetTokenRepeatsAfterInterleaved
 	assert.Equal(t, pageARNs(first), pageARNs(second), "the second page repeats the first")
 }
 
-// A token that is not a non-negative integer is InvalidParameterValue, and a
-// page size above 100 is accepted rather than refused.
+// A token that is not a non-negative integer, and a page size outside 1 to
+// 100, are both refused with InvalidParameterException, as AWS does.
 func TestCurrentBehaviour_Tagging_GetResourcesPaginationValidation(t *testing.T) {
 	agg, tags := newTaggingCBAggregator(t)
 	createTags(t, tags, []string{"sg-0000000000000000a"}, map[string]string{"env": "prod"})
 
-	_, err := getResources(t, agg, `{"PaginationToken":"not-a-token","ResourceTypeFilters":["ec2"]}`)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	for _, body := range []string{
+		`{"PaginationToken":"not-a-token","ResourceTypeFilters":["ec2"]}`,
+		`{"ResourcesPerPage":500,"ResourceTypeFilters":["ec2"]}`,
+		`{"ResourcesPerPage":0,"ResourceTypeFilters":["ec2"]}`,
+		`{"ResourcesPerPage":9223372036854775807,"PaginationToken":"1","ResourceTypeFilters":["ec2"]}`,
+	} {
+		_, err := getResources(t, agg, body)
+		code, ok := awserrors.ResolveErrorCode(err)
+		require.True(t, ok, "%s: error %v carries no AWS code", body, err)
+		assert.Equal(t, "InvalidParameterException", code, body)
+	}
 
-	page, err := getResources(t, agg, `{"ResourcesPerPage":500,"ResourceTypeFilters":["ec2"]}`)
+	page, err := getResources(t, agg, `{"ResourcesPerPage":100,"ResourceTypeFilters":["ec2"]}`)
 	require.NoError(t, err)
 	assert.Len(t, page.ResourceTagMappingList, 1)
 }

@@ -73,37 +73,53 @@ func ValidateOptions(opts *natsserver.Options) error {
 	return nil
 }
 
-func launch(cfg *Config) error {
-	opts, err := natsserver.ProcessConfigFile(cfg.ConfigFile)
-	if err != nil {
-		return fmt.Errorf("process sqs-store config: %w", err)
-	}
-	if err := ValidateOptions(opts); err != nil {
-		return err
-	}
-
+// applyMemoryLimit sets the soft Go heap limit unless the environment already
+// chose one.
+func applyMemoryLimit() {
 	if os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(MemoryLimitBytes)
 	}
+}
+
+// startServer validates the config and starts the server, returning it with
+// a function that stops the store-reserve upkeep.
+func startServer(cfg *Config) (*natsserver.Server, func(), error) {
+	opts, err := natsserver.ProcessConfigFile(cfg.ConfigFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("process sqs-store config: %w", err)
+	}
+	if err := ValidateOptions(opts); err != nil {
+		return nil, nil, err
+	}
+
+	applyMemoryLimit()
 
 	reserve := &nats.StoreReserve{Dir: opts.StoreDir, Size: nats.DefaultStoreReserveBytes}
 	reserve.Apply()
 
 	ns, err := natsserver.NewServer(opts)
 	if err != nil {
-		return fmt.Errorf("create sqs-store server: %w", err)
+		return nil, nil, fmt.Errorf("create sqs-store server: %w", err)
 	}
 	ns.ConfigureLogger()
 
 	if err := natsserver.Run(ns); err != nil {
-		return fmt.Errorf("run sqs-store server: %w", err)
+		return nil, nil, fmt.Errorf("run sqs-store server: %w", err)
 	}
 
 	stop := make(chan struct{})
-	defer close(stop)
 	go reserve.Maintain(stop)
+	return ns, func() { close(stop) }, nil
+}
 
-	slog.Info("SQS store server started", "server_name", opts.ServerName, "store_dir", opts.StoreDir)
+func launch(cfg *Config) error {
+	ns, stopReserve, err := startServer(cfg)
+	if err != nil {
+		return err
+	}
+	defer stopReserve()
+
+	slog.Info("SQS store server started", "server_name", ns.Name(), "store_dir", ns.StoreDir())
 	ns.WaitForShutdown()
 	return nil
 }

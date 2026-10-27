@@ -8,6 +8,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/predastore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/sqsstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/vpcd"
 	"github.com/stretchr/testify/assert"
 )
@@ -44,8 +45,12 @@ func TestNew(t *testing.T) {
 		assert.NotNil(t, svc)
 	}
 
+	svc, err := New("sqs-store", &sqsstore.Config{ConfigFile: "/etc/spinifex/sqs-store/sqs-store.conf"})
+	assert.NoError(t, err)
+	assert.NotNil(t, svc)
+
 	// Test unknown service type
-	svc, err := New("unknownservice", nil)
+	svc, err = New("unknownservice", nil)
 	assert.Error(t, err)
 	assert.Nil(t, svc)
 }

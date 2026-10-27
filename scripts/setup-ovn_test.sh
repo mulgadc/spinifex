@@ -478,6 +478,70 @@ else
 fi
 printf '#!/bin/sh\nexit 1\n' >"$TMP/bin/pgrep"
 
+# --------------------------------------------------------------------------
+# Demoting a management node to a compute node.
+# --------------------------------------------------------------------------
+# install-node.sh assigns roles: past a three-node quorum the rest are compute
+# nodes, and provision-iso-cluster.sh has already promoted every host because
+# that is what firstboot leaves behind. Formation has to be able to say a
+# demotion is deliberate, while an operator who re-runs and forgets
+# --management is still refused.
+for fn in management_role_markers assert_demotion_allowed; do
+    awk -v f="$fn() {" '$0 == f { on = 1 } on { print } on && $0 == "}" { exit }' "$SETUP" >>"$TMP/demote_fn.sh"
+done
+
+# demote_fixture <role|legacy...> — writes the named role markers and no others.
+demote_fixture() {
+    rm -f "$TMP/ovn-role" "$TMP/ovn-central"
+    for m in "$@"; do
+        case "$m" in
+            role) echo management >"$TMP/ovn-role" ;;
+            legacy) echo 'OVN_CTL_OPTS=--db-nb-addr=10.0.0.1' >"$TMP/ovn-central" ;;
+        esac
+    done
+}
+
+# demote <demote:true|false> — runs assert_demotion_allowed; sets RC, OUT.
+demote() {
+    RC=0
+    OUT=$(PATH="$TMP/bin:$PATH" bash -c '
+        OVN_ROLE_FILE="$1"; LEGACY_OVN_ROLE_FILE="$2"; DEMOTE="$3"
+        . "$4"; assert_demotion_allowed' _ \
+        "$TMP/ovn-role" "$TMP/ovn-central" "$1" "$TMP/demote_fn.sh" 2>&1) || RC=$?
+}
+
+demote_fixture role legacy
+demote false
+if [ "$RC" != 0 ] && [ -e "$TMP/ovn-role" ] && [ -e "$TMP/ovn-central" ]; then
+    pass "demote: a management node is refused without --demote, and its markers are left alone"
+else
+    fail "demote: no --demote gave rc=$RC, markers remaining [$(ls -A "$TMP" | grep -c 'ovn-role\|ovn-central')]"
+fi
+
+demote_fixture role legacy
+demote true
+if [ "$RC" = 0 ] && [ ! -e "$TMP/ovn-role" ] && [ ! -e "$TMP/ovn-central" ]; then
+    pass "demote: --demote allows the demotion and clears both role markers"
+else
+    fail "demote: --demote gave rc=$RC, out=[$OUT], remaining [$(ls -A "$TMP" | grep 'ovn-role\|ovn-central' | tr '\n' ' ')]"
+fi
+
+demote_fixture legacy
+demote true
+if [ "$RC" = 0 ] && [ ! -e "$TMP/ovn-central" ]; then
+    pass "demote: --demote clears a legacy-only marker, which is what an older node carries"
+else
+    fail "demote: legacy-only marker gave rc=$RC, remaining [$(ls -A "$TMP" | grep 'ovn-central' | tr '\n' ' ')]"
+fi
+
+demote_fixture
+demote false
+if [ "$RC" = 0 ]; then
+    pass "demote: a node that was never a management node needs no flag"
+else
+    fail "demote: unmarked node without --demote gave rc=$RC, out=[$OUT]"
+fi
+
 if [ "$fails" -ne 0 ]; then
     echo "  setup-ovn.sh: $fails failure(s)"
     exit 1

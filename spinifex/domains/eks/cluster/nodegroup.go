@@ -86,6 +86,23 @@ const ngCASMaxRetries = 16
 // service boundary.
 var ErrNodegroupNotFound = errors.New("eks: nodegroup not found")
 
+// nodegroupNotFound is the AWS answer for a missing node group on an existing
+// cluster; a missing cluster keeps the code's default cluster message.
+func nodegroupNotFound(ng string) error {
+	return awserrors.Errorf(awserrors.ErrorEKSResourceNotFound, "No node group found for name: %s.", ng)
+}
+
+// requireCluster returns ResourceNotFoundException when the cluster is absent.
+func requireCluster(ctx context.Context, kv jetstream.KeyValue, cluster string) error {
+	if _, err := GetClusterMeta(ctx, kv, cluster); err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			return errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return err
+	}
+	return nil
+}
+
 // PutNodegroupRecord writes the record unconditionally.
 func PutNodegroupRecord(ctx context.Context, kv jetstream.KeyValue, rec *NodegroupRecord) error {
 	if rec == nil {
@@ -841,10 +858,13 @@ func (s *EKSServiceImpl) describeNodegroup(ctx context.Context, acctKV jetstream
 	if cluster == "" || ng == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+	if err := requireCluster(ctx, acctKV, cluster); err != nil {
+		return nil, err
+	}
 	rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
 	if err != nil {
 		if errors.Is(err, ErrNodegroupNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, nodegroupNotFound(ng)
 		}
 		return nil, err
 	}
@@ -914,7 +934,7 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstrea
 		rec, rev, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
 		if err != nil {
 			if errors.Is(err, ErrNodegroupNotFound) {
-				return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+				return nil, nodegroupNotFound(ng)
 			}
 			return nil, err
 		}
@@ -1124,10 +1144,13 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.K
 	if cluster == "" || ng == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+	if err := requireCluster(ctx, acctKV, cluster); err != nil {
+		return nil, err
+	}
 	rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
 	if err != nil {
 		if errors.Is(err, ErrNodegroupNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, nodegroupNotFound(ng)
 		}
 		return nil, err
 	}

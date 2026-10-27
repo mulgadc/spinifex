@@ -505,6 +505,7 @@ func TestEKSServiceImpl_NodegroupTagRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	const arn = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/ng1/abc123"
+	require.NoError(t, PutClusterMeta(t.Context(), kv, &ClusterMeta{Name: "c1", Status: ClusterStatusActive}))
 	require.NoError(t, PutNodegroupRecord(t.Context(), kv, &NodegroupRecord{
 		ClusterName: "c1",
 		Name:        "ng1",

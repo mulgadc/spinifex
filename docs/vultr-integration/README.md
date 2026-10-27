@@ -127,8 +127,6 @@ On a three-node deployment, with the workbook above running:
 
 In our measurement the instance was `running` on another node 2½ minutes after the stop, with its reserved IP moved to that node's VM, and answered HTTP once the guest had booted, 4¾ minutes after the stop. Start the stopped VM again and it rejoins without taking the instance back.
 
-The guest restarts from its disk, so writes it made in its last 30 seconds or so before the failure may be missing. See [Limits](#limits).
-
 ---
 
 ## Tear it down
@@ -161,6 +159,5 @@ This deletes the VMs and the VPC, plus two things Terraform never created and Vu
 - **At least 16 vCPU per node.** Smaller VX plans report their vCPUs as hyperthreads and Spinifex schedules half of them.
 - **The API key lives on the nodes**, at `/etc/spinifex/vultr/api-key`, readable only by the Spinifex daemon. It is never in the Terraform state or the instance metadata.
 - **A deleted reserved IP keeps its quota slot for 24 hours**, by Vultr's documentation, so creating and deleting many addresses in a day can reach the account's limit.
-- **A failover can lose the guest's most recent writes**, up to about 30 seconds of them, because a volume is copied off the failed node every 30 seconds. AWS does not lose acknowledged EBS writes when a host fails.
 - **Disassociating an Elastic IP leaves the instance with no public address.** AWS gives it a new one. Stopping and starting the instance gets it one.
 - **Do not run `apt upgrade` on a live node.** The deploy turns off unattended upgrades because an upgrade can restart the Spinifex daemon repeatedly until it stops.

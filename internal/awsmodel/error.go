@@ -119,7 +119,7 @@ func (m *Model) decodeErrorCode(body []byte) (string, error) {
 			return "", fmt.Errorf("JSON error envelope has no code")
 		}
 		return code, nil
-	case "ec2", "query":
+	case "ec2", "query", "rest-xml":
 		root, err := parseXML(body)
 		if err != nil {
 			return "", err

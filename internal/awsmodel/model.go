@@ -51,6 +51,14 @@ type Metadata struct {
 	ServiceID       string
 	SigningName     string
 	TargetPrefix    string
+	XMLNamespace    XMLNamespace
+}
+
+// XMLNamespace is the namespace an XML element is serialized in. URI is empty
+// when none is declared.
+type XMLNamespace struct {
+	URI    string `json:"uri"`
+	Prefix string `json:"prefix"`
 }
 
 // Operation describes an AWS API operation and the shapes used by its input,
@@ -85,6 +93,7 @@ type Shape struct {
 	Pattern         string
 	LocationName    string
 	TimestampFormat string
+	XMLNamespace    XMLNamespace
 	Payload         string
 	Flattened       bool
 	Sensitive       bool

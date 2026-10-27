@@ -374,6 +374,10 @@ func (g *requestGenerator) structure(name string, path []pathStep, depth int) (m
 	for _, member := range slices.Sorted(maps.Keys(shape.Members)) {
 		ref := shape.Members[member]
 		memberPath := append(slices.Clone(path), member)
+		if !required[member] && slices.Contains(exclusiveMembers[g.model.service][name], member) {
+			g.skip(memberPath, "AWS refuses it alongside the members a valid request carries")
+			continue
+		}
 		memberValue, ok := g.value(ref, memberPath, depth)
 		if !ok {
 			if required[member] {

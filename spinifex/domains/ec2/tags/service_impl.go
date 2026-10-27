@@ -89,6 +89,22 @@ func describeTagsResourceType(resourceID string) string {
 	return string(kind)
 }
 
+// Taggable resources whose ids arn.EC2TypeForID does not type, because their
+// ARN type is named by a parameter rather than derived from the id.
+var untypedTaggablePrefixes = []string{"lt-", "cr-", "sir-"}
+
+// isTaggableID reports whether CreateTags accepts resourceID. Only new writes
+// are checked: entries already stored under an untypable id are left in place
+// and stay visible to DescribeTags and removable by DeleteTags.
+func isTaggableID(resourceID string) bool {
+	if _, ok := arn.EC2TypeForID(resourceID); ok {
+		return true
+	}
+	return slices.ContainsFunc(untypedTaggablePrefixes, func(p string) bool {
+		return strings.HasPrefix(resourceID, p)
+	})
+}
+
 // getTagsKey returns the S3 key for storing tags for a resource, scoped by account.
 func getTagsKey(accountID, resourceID string) string {
 	return "tags/" + accountID + "/" + resourceID + ".json"
@@ -206,6 +222,13 @@ func (s *TagsServiceImpl) CreateTags(ctx context.Context, input *ec2.CreateTagsI
 	}
 
 	slog.InfoContext(ctx, "CreateTags request", "resources", len(input.Resources), "tags", len(input.Tags))
+
+	for _, resourceID := range input.Resources {
+		if resourceID != nil && !isTaggableID(*resourceID) {
+			slog.InfoContext(ctx, "CreateTags rejected unrecognised resource id", "resourceId", *resourceID)
+			return nil, errors.New(awserrors.ErrorInvalidID)
+		}
+	}
 
 	for _, resourceID := range input.Resources {
 		if resourceID == nil {

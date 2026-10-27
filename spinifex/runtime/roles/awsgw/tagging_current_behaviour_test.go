@@ -121,19 +121,23 @@ func pageARNs(p getResourcesPage) []string {
 	return out
 }
 
-// GetResources lists whatever the central index holds: an ID with no
-// recognised prefix is reported with resource type "unknown", and a
-// well-formed ID naming no resource is reported as that resource.
+// GetResources lists whatever the central index holds: a well-formed ID naming
+// no resource is reported as that resource. An ID with no recognised prefix
+// never reaches the index, because CreateTags rejects it as InvalidID.
 func TestCurrentBehaviour_Tagging_GetResourcesListsUnresolvedEC2IDs(t *testing.T) {
 	agg, tags := newTaggingCBAggregator(t)
 
-	createTags(t, tags, []string{"not-a-real-id", "vol-00000000000000000"}, map[string]string{"env": "prod"})
+	_, err := tags.CreateTags(t.Context(), &ec2.CreateTagsInput{
+		Resources: aws.StringSlice([]string{"not-a-real-id"}),
+		Tags:      []*ec2.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+	}, authzAccountID)
+	require.EqualError(t, err, awserrors.ErrorInvalidID)
+	createTags(t, tags, []string{"vol-00000000000000000"}, map[string]string{"env": "prod"})
 
 	page, err := getResources(t, agg, `{"ResourceTypeFilters":["ec2"]}`)
 	require.NoError(t, err)
 	prefix := "arn:aws:ec2:" + authzRegion + ":" + authzAccountID + ":"
 	assert.ElementsMatch(t, []string{
-		prefix + "unknown/not-a-real-id",
 		prefix + "volume/vol-00000000000000000",
 	}, pageARNs(page))
 }

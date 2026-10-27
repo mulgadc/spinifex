@@ -140,6 +140,63 @@ func TestCreateTags_MissingResources(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
 }
 
+// An id with no recognised prefix is rejected before any resource in the
+// request is written, so a valid id alongside it is not tagged either.
+func TestCreateTags_UnrecognisedPrefixIsInvalidID(t *testing.T) {
+	svc, _ := setupTestTagsService(t)
+
+	for _, id := range []string{"not-a-real-id", "", "vpc"} {
+		_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
+			Resources: []*string{aws.String("vpc-0abc"), aws.String(id)},
+			Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("x")}},
+		}, testAccountID)
+		require.Error(t, err, id)
+		assert.Equal(t, awserrors.ErrorInvalidID, err.Error(), id)
+	}
+
+	out, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Tags)
+}
+
+// Launch templates, capacity reservations and spot requests have no ARN-type
+// prefix mapping but are still taggable resources.
+func TestCreateTags_AcceptsTaggablePrefixesWithoutARNType(t *testing.T) {
+	svc, _ := setupTestTagsService(t)
+
+	ids := []string{"lt-0abc", "cr-0abc", "sir-0abc", "eipalloc-0abc", "pg-0abc"}
+	resources := make([]*string, 0, len(ids))
+	for _, id := range ids {
+		resources = append(resources, aws.String(id))
+	}
+	_, err := svc.CreateTags(context.Background(), &ec2.CreateTagsInput{
+		Resources: resources,
+		Tags:      []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("x")}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.Tags, len(ids))
+}
+
+// Tags stored for an untypable id before validation existed stay removable.
+func TestDeleteTags_UntypableIDStillDeletable(t *testing.T) {
+	svc, _ := setupTestTagsService(t)
+	require.NoError(t, svc.mutateTags(context.Background(), testAccountID, "not-a-real-id", func(tags map[string]string) {
+		tags["Name"] = "residue"
+	}))
+
+	_, err := svc.DeleteTags(context.Background(), &ec2.DeleteTagsInput{
+		Resources: []*string{aws.String("not-a-real-id")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeTags(context.Background(), &ec2.DescribeTagsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Tags)
+}
+
 // TestCreateTags_MissingTags tests creating tags without tags.
 func TestCreateTags_MissingTags(t *testing.T) {
 	svc, _ := setupTestTagsService(t)

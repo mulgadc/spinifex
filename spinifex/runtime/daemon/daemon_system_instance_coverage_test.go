@@ -808,8 +808,8 @@ func TestBuildDirectBootConfig_BootsTheShippedQboot(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	d := &Daemon{resourceMgr: &ResourceManager{}}
 
-	cfg, err := d.buildDirectBootConfig("i-qboot", &handlers_elbv2.SystemInstanceInput{
-		NICs: []handlers_elbv2.NICConfig{{MAC: "02:00:00:00:00:05", IsDefault: true}},
+	cfg, err := d.buildDirectBootConfig("i-qboot", &elbv2domain.SystemInstanceInput{
+		NICs: []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:05", IsDefault: true}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(microvmDir, vm.MicroVMFirmware), cfg.BIOS)
@@ -825,8 +825,8 @@ func TestBuildDirectBootConfig_MissingFirmwareFailsByName(t *testing.T) {
 	microvmDir = t.TempDir()
 	t.Cleanup(func() { microvmDir = orig })
 
-	_, err := (&Daemon{resourceMgr: &ResourceManager{}}).buildDirectBootConfig("i-nofw", &handlers_elbv2.SystemInstanceInput{
-		NICs: []handlers_elbv2.NICConfig{{MAC: "02:00:00:00:00:06", IsDefault: true}},
+	_, err := (&Daemon{resourceMgr: &ResourceManager{}}).buildDirectBootConfig("i-nofw", &elbv2domain.SystemInstanceInput{
+		NICs: []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:06", IsDefault: true}},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), filepath.Join(microvmDir, vm.MicroVMFirmware))

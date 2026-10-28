@@ -223,6 +223,9 @@ Limits:
 
 - `cosign copy` does not copy v3 signatures to the destination repository.
   This is client behaviour; sign the copy again.
+  `oras cp -r <source> <mirror>` copies the image and its referrers, signatures included, in one command.
+  Alternatively, `crane copy` the signature manifest by digest after the image, so the registry indexes it by subject.
+  Both were checked on env24 with a keyless-signed index: `cosign verify` on the mirror by digest passed.
 - Referrers pushed before this version are not listed.
   Push them again to add them to the index.
 - A crash between deleting an image and deleting its referrers can leave referrers behind that nothing lists.

@@ -545,6 +545,18 @@ function RuleDialog({
   )
 }
 
+const CONDITION_FIELD_TEXT: Record<
+  RuleConditionField,
+  { label: string; placeholder: string }
+> = {
+  "path-pattern": { label: "Path pattern", placeholder: "/api/*" },
+  "host-header": { label: "Host header", placeholder: "*.example.com" },
+  "http-header": { label: "HTTP header", placeholder: "acme" },
+  "http-request-method": { label: "HTTP method", placeholder: "GET, POST" },
+  "source-ip": { label: "Source IP CIDR", placeholder: "10.0.0.0/8" },
+  "query-string": { label: "Query string", placeholder: "key=value" },
+}
+
 interface ConditionRowProps {
   form: ReturnType<typeof useForm<CreateRuleFormData>>
   index: number
@@ -632,18 +644,6 @@ function ConditionRow({ form, index, onRemove }: ConditionRowProps) {
       </Field>
     </div>
   )
-}
-
-const CONDITION_FIELD_TEXT: Record<
-  RuleConditionField,
-  { label: string; placeholder: string }
-> = {
-  "path-pattern": { label: "Path pattern", placeholder: "/api/*" },
-  "host-header": { label: "Host header", placeholder: "*.example.com" },
-  "http-header": { label: "HTTP header", placeholder: "acme" },
-  "http-request-method": { label: "HTTP method", placeholder: "GET, POST" },
-  "source-ip": { label: "Source IP CIDR", placeholder: "10.0.0.0/8" },
-  "query-string": { label: "Query string", placeholder: "key=value" },
 }
 
 function isSupportedField(

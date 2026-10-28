@@ -37,7 +37,7 @@ export default defineConfig({
     ],
     "eslint/no-console": "error",
     "eslint/no-plusplus": ["error", { allowForLoopAfterthoughts: true }],
-    "eslint/no-use-before-define": "off",
+    "eslint/no-use-before-define": ["error", { functions: false }],
     "eslint/require-unicode-regexp": "off",
     "eslint/sort-keys": "off",
     "import/consistent-type-specifier-style": "off",

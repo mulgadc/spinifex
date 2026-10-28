@@ -65,6 +65,7 @@ func Run(t *testing.T, newHarness Factory) {
 		{"FeedWakesOnLiveAppend", testFeedLive},
 		{"FeedOmitsDeletedAppends", testFeedOmitsDeleted},
 		{"FeedHonoursContext", testFeedContext},
+		{"FeedOpenHonoursContext", testFeedOpenContext},
 		{"FeedNextAfterCloseIsClosed", testFeedNextAfterClose},
 		{"FeedCloseEndsBlockedNext", testFeedCloseEndsNext},
 		{"FeedResumesAfterClose", testFeedResumesAfterClose},
@@ -451,6 +452,14 @@ func testFeedContext(t *testing.T, h Harness) {
 			return
 		}
 	}
+}
+
+func testFeedOpenContext(t *testing.T, h Harness) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f, err := h.Store.Feed(ctx, 0, 0)
+	require.ErrorIs(t, err, context.Canceled, "a feed is not opened after ctx ended")
+	assert.Nil(t, f)
 }
 
 func testNamespaceIsolation(t *testing.T, h Harness) {

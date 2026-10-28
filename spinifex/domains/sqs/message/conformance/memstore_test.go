@@ -190,7 +190,10 @@ func (s *memStore) DeleteState(_ context.Context, ns message.Namespace, pos mess
 	return nil
 }
 
-func (s *memStore) Feed(_ context.Context, shard message.Shard, after message.Cursor) (message.Feed, error) {
+func (s *memStore) Feed(ctx context.Context, shard message.Shard, after message.Cursor) (message.Feed, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return &memFeed{d: s.d, shard: shard, after: after, done: make(chan struct{})}, nil
 }
 

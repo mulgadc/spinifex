@@ -31,7 +31,8 @@ const metaHeaderPrefix = "Sqs-Meta-"
 const stateShardHeader = "Sqs-State-Shard"
 
 // feedInactiveThreshold bounds how long the server keeps a feed's
-// ephemeral consumer after its reader vanishes without Close.
+// ephemeral consumer without a reader: after a vanished reader, or a create
+// that timed out yet landed after every delete of its name.
 const feedInactiveThreshold = time.Minute
 
 // feedIdleCheck is how long Next waits on the consumer before checking the
@@ -400,9 +401,9 @@ func (s *Store) DeleteNamespace(ctx context.Context, ns message.Namespace) error
 // Limits reports the configured duplicate window and the stream backstop.
 func (s *Store) Limits() message.Limits { return s.limits }
 
-// Feed reads the message shard's stream after the cursor through an
-// ephemeral, in-memory, AckNone, headers-only ordered consumer that Close
-// deletes. It opens a retained historical stream but never creates one.
+// Feed reads the shard's stream, never creating one, through an ephemeral
+// in-memory headers-only ordered consumer that Close deletes. If Feed fails, a
+// consumer an ambiguous create lands later is left to feedInactiveThreshold.
 func (s *Store) Feed(ctx context.Context, messageShard message.Shard, after message.Cursor) (message.Feed, error) {
 	// Any valid queue ID resolves the stream; only the shard selects it.
 	stream, err := s.stream(ctx, message.Namespace{MessageShard: messageShard, Queue: "feed"})
@@ -419,12 +420,31 @@ func (s *Store) Feed(ctx context.Context, messageShard message.Shard, after mess
 		}
 		f.cursor = info.State.LastSeq
 	}
-	consumer, it, err := f.open(ctx)
-	if err != nil {
+	if err := f.start(ctx); err != nil {
+		f.closeNow()
 		return nil, err
 	}
-	f.consumer, f.it = consumer, it
 	return f, nil
+}
+
+// start opens the first consumer. A create already started finishes even if
+// ctx ends meanwhile; that consumer is then released and ctx's error returned.
+func (f *feed) start(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	consumer, it, err := f.open(ctx)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		f.mu.Lock()
+		f.begin()
+		f.mu.Unlock()
+		return errors.Join(err, f.discard(consumer, it))
+	}
+	f.consumer, f.it = consumer, it
+	return nil
 }
 
 // open starts a headers-only ordered consumer just after the cursor. Its name
@@ -518,19 +538,24 @@ func (f *feed) end() {
 	}
 }
 
-// reopen opens a consumer from the cursor as tracked work, so Close waits for
-// it and a consumer created after Close began is deleted.
+// reopen opens a consumer from the cursor as tracked work. One that finishes
+// after Close began, or after ctx ended, is released rather than kept; Close
+// wins over ctx when both apply.
 func (f *feed) reopen(ctx context.Context) (jsapi.MessagesContext, error) {
 	f.mu.Lock()
 	if f.closed {
 		f.mu.Unlock()
 		return nil, message.ErrFeedClosed
 	}
+	if err := ctx.Err(); err != nil {
+		f.mu.Unlock()
+		return nil, err
+	}
 	f.begin()
 	f.mu.Unlock()
 	consumer, it, err := f.open(ctx)
 	f.mu.Lock()
-	if err == nil && !f.closed {
+	if err == nil && !f.closed && ctx.Err() == nil {
 		f.consumer, f.it = consumer, it
 		f.end()
 		f.mu.Unlock()
@@ -541,9 +566,13 @@ func (f *feed) reopen(ctx context.Context) (jsapi.MessagesContext, error) {
 		f.mu.Unlock()
 		return nil, f.interrupted(ctx, err)
 	}
+	closed := f.closed
 	f.mu.Unlock()
-	_ = f.discard(consumer, it)
-	return nil, message.ErrFeedClosed
+	derr := f.discard(consumer, it)
+	if closed {
+		return nil, message.ErrFeedClosed
+	}
+	return nil, errors.Join(ctx.Err(), derr)
 }
 
 // detach takes the live consumer as tracked work, leaving the feed with none.
@@ -762,9 +791,9 @@ func decodeNamespace(shard message.Shard, subject string, h nats.Header) (messag
 	return ns, nil
 }
 
-// Close stops the feed and deletes its server-side consumers, which would
-// otherwise linger until their inactive threshold. It waits, within closeWait,
-// for opens and releases in progress, and retries deletes that failed.
+// Close deletes every consumer the feed knows of, waiting within closeWait for
+// opens and releases in progress and retrying failed deletes. A timed-out
+// create landing after its last delete is left to feedInactiveThreshold.
 func (f *feed) Close() error {
 	deadline := time.Now().Add(f.closeWait)
 	f.mu.Lock()

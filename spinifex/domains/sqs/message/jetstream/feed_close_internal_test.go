@@ -39,8 +39,9 @@ func (b *blockingStream) DeleteConsumer(ctx context.Context, name string) error 
 }
 
 // recoverInto wedges f with a change stored after its cursor and starts a
-// Next that reopens through a blockingStream; it returns once the open blocks.
-func recoverInto(t *testing.T, s *Store, f *feed) (*blockingStream, chan error) {
+// Next under ctx that reopens through a blockingStream; it returns once the
+// open blocks.
+func recoverInto(ctx context.Context, t *testing.T, s *Store, f *feed) (*blockingStream, chan error) {
 	t.Helper()
 	ns := message.Namespace{Queue: "q"}
 	appendAt(t, s, ns)
@@ -56,7 +57,7 @@ func recoverInto(t *testing.T, s *Store, f *feed) (*blockingStream, chan error) 
 	wedge(f)
 	done := make(chan error, 1)
 	go func() {
-		_, err := f.Next(context.Background())
+		_, err := f.Next(ctx)
 		done <- err
 	}()
 	<-b.entered
@@ -177,7 +178,7 @@ func TestFeedCloseInterruptsRecoveryProbe(t *testing.T) {
 func TestFeedCloseWaitsForInFlightOpen(t *testing.T) {
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
-	b, next := recoverInto(t, s, f)
+	b, next := recoverInto(context.Background(), t, s, f)
 	closed := make(chan error, 1)
 	go func() { closed <- f.Close() }()
 	select {
@@ -204,7 +205,7 @@ func TestFeedCloseReportsStuckOpen(t *testing.T) {
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	f.closeWait = 200 * time.Millisecond
-	b, next := recoverInto(t, s, f)
+	b, next := recoverInto(context.Background(), t, s, f)
 	err := f.Close()
 	require.ErrorIs(t, err, errCleanupPending)
 	close(b.release)
@@ -228,7 +229,7 @@ func TestFeedCloseReportsStuckOpen(t *testing.T) {
 func TestFeedCloseReportsLateDeleteFailure(t *testing.T) {
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
-	b, next := recoverInto(t, s, f)
+	b, next := recoverInto(context.Background(), t, s, f)
 	injected := errors.New("injected delete failure")
 	b.deleteErr = injected
 	closed := make(chan error, 1)

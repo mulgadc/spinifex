@@ -278,7 +278,7 @@ run sudo rm -f /etc/openvswitch/system-id.conf
 # `certutil -L` on stdin: ovs_certkey_* is this node's certificate and key,
 # ovs_cert_* the CA and any peer certificates. Everything else is someone else's.
 ovs_nss_nicknames() {
-    awk '$1 ~ /^ovs_cert(key)?_/ {print $1}' | sort -u
+    awk '$1 ~ /^ovs_cert(key)?_/ {print $1}' | LC_ALL=C sort -u
 }
 # --- END ovs nss nicknames ---
 

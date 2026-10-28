@@ -864,6 +864,26 @@ func TestDeleteVpc_RejectsAttachedInternetGateway(t *testing.T) {
 	require.Len(t, desc.Vpcs, 1, "VPC must persist so the caller can detach the gateway and retry")
 }
 
+// AWS refuses DeleteVpc while an egress-only internet gateway names the VPC;
+// deleting it anyway leaves the gateway pointing at a VPC that no longer exists.
+func TestDeleteVpc_RejectsEgressOnlyInternetGateway(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.66.0.0/16")
+
+	_, err := svc.eigwKV.Put(t.Context(), testAccountID+".eigw-attached",
+		[]byte(`{"egress_only_internet_gateway_id":"eigw-attached","vpc_id":"`+vpcID+`","state":"attached"}`))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.Error(t, err)
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The vpc '"+vpcID+"' has dependencies and cannot be deleted.")
+
+	desc, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Vpcs, 1, "VPC must persist so the caller can delete the gateway and retry")
+}
+
 // A gateway attached to some other VPC must not block this one.
 func TestDeleteVpc_IgnoresInternetGatewayOnAnotherVPC(t *testing.T) {
 	t.Parallel()

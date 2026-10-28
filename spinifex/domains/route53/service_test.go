@@ -658,4 +658,7 @@ func TestModelBoundViolationsAreInvalidInput(t *testing.T) {
 			assert.Contains(t, requireCode(t, call(), awserrors.ErrorInvalidInput), "failed to satisfy constraint")
 		})
 	}
+
+	_, err := svc.ListResourceRecordSets(ctx, &r53.ListResourceRecordSetsInput{HostedZoneId: aws.String(id), StartRecordName: aws.String("example.com"), StartRecordType: aws.String("HTTPS")}, acctA)
+	require.NoError(t, err, "the model's RRType includes types the v1 SDK predates")
 }

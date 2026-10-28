@@ -345,7 +345,7 @@ func (s *Service) ListResourceRecordSets(ctx context.Context, in *route53.ListRe
 	if in.StartRecordIdentifier != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "StartRecordIdentifier is not supported: no record set has a SetIdentifier")
 	}
-	if err := cmp.Or(checkLength("startRecordName", in.StartRecordName, maxDNSNameLength), checkEnum("startRecordType", in.StartRecordType, route53.RRType_Values())); err != nil {
+	if err := cmp.Or(checkLength("startRecordName", in.StartRecordName, maxDNSNameLength), checkEnum("startRecordType", in.StartRecordType, rrTypes)); err != nil {
 		return nil, err
 	}
 	startType := aws.StringValue(in.StartRecordType)

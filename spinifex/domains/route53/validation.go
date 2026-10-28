@@ -19,6 +19,10 @@ const (
 	maxRDataLength      = 4000
 )
 
+// rrTypes is RRType as the current Route 53 model lists it; the v1 SDK's list
+// predates TLSA, SSHFP, SVCB and HTTPS.
+var rrTypes = append(route53.RRType_Values(), "TLSA", "SSHFP", "SVCB", "HTTPS")
+
 func invalidMember(field, value, constraint string) error {
 	return awserrors.Errorf(awserrors.ErrorInvalidInput,
 		"1 validation error detected: Value %s at '%s' failed to satisfy constraint: Member must %s", value, field, constraint)

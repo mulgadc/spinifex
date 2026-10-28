@@ -297,6 +297,18 @@ func VolumeBlkDevice(volumeID, nodeName, iothreadID, bus string) Device {
 	return Device{Value: strings.Join(args, ",")}
 }
 
+// volumeMMIOBlkDevice renders a microvm data volume as virtio-blk-device with
+// VolumeBlkDeviceArgs' identity and error policy; MMIO has no PCI bus to name.
+func volumeMMIOBlkDevice(volumeID, nodeName, iothreadID string) Device {
+	args := []string{"virtio-blk-device"}
+	for _, arg := range VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, "") {
+		if !strings.HasPrefix(arg, "bus=") {
+			args = append(args, arg)
+		}
+	}
+	return Device{Value: strings.Join(args, ",")}
+}
+
 // VolumeBlkDeviceQMPArgs renders the same virtio-blk-pci arguments as a
 // device_add argument map for AttachVolume's QMP hot-attach path. See
 // VolumeBlkDeviceArgs for why werror/rerror are set here.

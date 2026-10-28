@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -120,7 +121,9 @@ func TestZonePublisherReloadCountsEveryNorthstarNode(t *testing.T) {
 				return acks
 			})
 
-			served, complete, err := pub.Reload(context.Background(), "example.com")
+			ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+			defer cancel()
+			served, complete, err := pub.Reload(ctx, "example.com")
 			require.NoError(t, err)
 			assert.Equal(t, tc.complete, complete)
 			assert.ElementsMatch(t, tc.served, served)

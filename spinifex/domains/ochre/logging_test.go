@@ -143,6 +143,7 @@ func TestModelInvocationLoggingConfiguration_RoundTripsViaSDKStructs(t *testing.
 // failure must never fail the invocation" contract: Record has no error
 // return at all, so the only way to observe a failed publish is Dropped().
 func TestStreamRecorder_DropsAndCountsWhenStreamMissing(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	// Deliberately skip EnsureInvocationStream: publishing to a subject no
 	// stream captures must fail cleanly (no responders), not panic or block.

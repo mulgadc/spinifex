@@ -5,7 +5,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
-	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 )
 
 // peerRegistryPort is the awsgw port the install template gives every node.
@@ -27,7 +26,7 @@ func registryHostsForCluster(cc *config.ClusterConfig, local *config.Config) []s
 		if host == "" {
 			return
 		}
-		uri := awsapi.RepositoryEndpoint{RegistryHost: host, RegistryPort: port}.RegistryURIHost("")
+		uri := ecr.RegistryURIHost(host, port)
 		if !seen[uri] {
 			seen[uri] = true
 			hosts = append(hosts, uri)

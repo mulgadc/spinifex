@@ -31,3 +31,18 @@ func TestRegistryAddress(t *testing.T) {
 		})
 	}
 }
+
+func TestRegistryURIHost(t *testing.T) {
+	tests := []struct {
+		host, port, want string
+	}{
+		{"10.0.0.1", "9999", "10.0.0.1:9999"},
+		{"10.0.0.1", "443", "10.0.0.1"},
+		{"10.0.0.1", "", "10.0.0.1"},
+	}
+	for _, tt := range tests {
+		if got := RegistryURIHost(tt.host, tt.port); got != tt.want {
+			t.Errorf("RegistryURIHost(%q, %q) = %q, want %q", tt.host, tt.port, got, tt.want)
+		}
+	}
+}

@@ -18,6 +18,15 @@ func RegistryAddress(awsgwHost, advertiseIP string) (host, port string) {
 	return host, port
 }
 
+// RegistryURIHost joins a registry host and port the way a repositoryUri
+// carries them: the standard HTTPS port 443 is omitted.
+func RegistryURIHost(host, port string) string {
+	if port != "" && port != "443" {
+		return host + ":" + port
+	}
+	return host
+}
+
 // isConcreteRegistryHost reports whether host is a non-empty, non-wildcard
 // literal, so a registry URI never carries 0.0.0.0 or ::.
 func isConcreteRegistryHost(host string) bool {

@@ -33,14 +33,24 @@ func recordAPI(t *testing.T, url string) *apiRecorder {
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 	r := &apiRecorder{sentinel: make(chan struct{}, 1)}
-	_, err = nc.Subscribe("$JS.API.>", func(m *nats.Msg) {
-		r.mu.Lock()
-		r.subjects = append(r.subjects, m.Subject)
-		r.mu.Unlock()
-	})
+	// One channel for both subjects keeps arrival order; separate async
+	// subscriptions deliver on separate goroutines and can reorder.
+	msgs := make(chan *nats.Msg, 1<<12)
+	_, err = nc.ChanSubscribe("$JS.API.>", msgs)
 	require.NoError(t, err)
-	_, err = nc.Subscribe(recorderSentinel, func(*nats.Msg) { r.sentinel <- struct{}{} })
+	_, err = nc.ChanSubscribe(recorderSentinel, msgs)
 	require.NoError(t, err)
+	go func() {
+		for m := range msgs {
+			if m.Subject == recorderSentinel {
+				r.sentinel <- struct{}{}
+				continue
+			}
+			r.mu.Lock()
+			r.subjects = append(r.subjects, m.Subject)
+			r.mu.Unlock()
+		}
+	}()
 	require.NoError(t, nc.Flush())
 	return r
 }

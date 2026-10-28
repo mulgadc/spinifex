@@ -3,6 +3,7 @@ package jetstream
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -23,19 +24,59 @@ type msgGetResponse struct {
 	} `json:"message,omitempty"`
 }
 
+// msgGetRequest selects one message for a stream message get.
+type msgGetRequest struct {
+	Seq     uint64 `json:"seq,omitempty"`
+	LastFor string `json:"last_by_subj,omitempty"`
+	NextFor string `json:"next_by_subj,omitempty"`
+}
+
 // leaderLastMsg returns the last message on subject through a stream
 // message get, which only the stream leader answers. nats.go switches to a
 // direct get, which followers also answer, whenever the stream allows it.
 func leaderLastMsg(ctx context.Context, js jsapi.JetStream, stream, subject string) (*jsapi.RawStreamMsg, error) {
+	return leaderMsgGet(ctx, js, stream, msgGetRequest{LastFor: subject})
+}
+
+// leaderStateKeys lists the live keys under keyPrefix in a state bucket up
+// to sequence bound, with one leader message get per record.
+func leaderStateKeys(ctx context.Context, js jsapi.JetStream, bucket, keyPrefix string, bound uint64) (map[string]struct{}, error) {
+	stream, subjectPrefix := "KV_"+bucket, "$KV."+bucket+"."
+	req := msgGetRequest{NextFor: subjectPrefix + keyPrefix + ">"}
+	keys := map[string]struct{}{}
+	for after := uint64(0); after < bound; {
+		req.Seq = after + 1
+		m, err := leaderMsgGet(ctx, js, stream, req)
+		switch {
+		case errors.Is(err, jsapi.ErrMsgNotFound):
+			return keys, nil
+		case err != nil:
+			return nil, fmt.Errorf("read state bucket %s: %w", bucket, err)
+		case m.Sequence <= after:
+			return nil, fmt.Errorf("read state bucket %s: %w", bucket, jsapi.ErrInvalidJetStreamResponse)
+		case m.Sequence > bound:
+			return keys, nil
+		}
+		key := strings.TrimPrefix(m.Subject, subjectPrefix)
+		if kvRemoved(m.Header) {
+			delete(keys, key)
+		} else {
+			keys[key] = struct{}{}
+		}
+		after = m.Sequence
+	}
+	return keys, nil
+}
+
+// leaderMsgGet sends one stream message get, answered by the stream leader.
+func leaderMsgGet(ctx context.Context, js jsapi.JetStream, stream string, sel msgGetRequest) (*jsapi.RawStreamMsg, error) {
 	opts := js.Options()
 	if _, ok := ctx.Deadline(); !ok && opts.DefaultTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.DefaultTimeout)
 		defer cancel()
 	}
-	req, err := json.Marshal(struct {
-		LastFor string `json:"last_by_subj"`
-	}{subject})
+	req, err := json.Marshal(sel)
 	if err != nil {
 		return nil, err
 	}

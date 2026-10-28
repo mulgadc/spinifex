@@ -598,9 +598,9 @@ func (s *Store) bodyAllocations(ctx context.Context, messageShard message.Shard)
 	return out, nil
 }
 
-// liveStateKeys reads every state key under keyPrefix in the state shard's
-// bucket in one bounded pass over its stream, skipping delete markers. It
-// replaces the client's key lister, which ends on consumer state.
+// liveStateKeys reads the live state keys under keyPrefix in the state
+// shard's bucket, through its last sequence at the call, from the stream
+// leader: a follower's direct get or consumer may lag applied deletes.
 func (s *Store) liveStateKeys(ctx context.Context, shard message.Shard, keyPrefix string) (map[string]struct{}, error) {
 	bucket := BucketName(shard)
 	stream, err := s.js.Stream(ctx, "KV_"+bucket)
@@ -611,22 +611,7 @@ func (s *Store) liveStateKeys(ctx context.Context, shard message.Shard, keyPrefi
 	if err != nil {
 		return nil, fmt.Errorf("read state bucket %s: %w", bucket, err)
 	}
-	subjectPrefix := "$KV." + bucket + "."
-	keys := map[string]struct{}{}
-	_, _, err = readRange(ctx, stream, subjectPrefix+keyPrefix+">", 0, info.State.LastSeq, func(msg jsapi.Msg, _ uint64) (bool, error) {
-		key := strings.TrimPrefix(msg.Subject(), subjectPrefix)
-		switch msg.Headers().Get("KV-Operation") {
-		case "DEL", "PURGE":
-			delete(keys, key)
-		default:
-			keys[key] = struct{}{}
-		}
-		return true, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return keys, nil
+	return leaderStateKeys(ctx, s.js, bucket, keyPrefix, info.State.LastSeq)
 }
 
 // shardFilter matches every message subject on a message shard.

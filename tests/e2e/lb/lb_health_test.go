@@ -156,6 +156,7 @@ func runALBFailOpenSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 // check is an HTTP GET to the toggle endpoint, separate from the data port.
 func createHealthCheckedTCPTargetGroup(t *testing.T, c *harness.AWSClient, f *sharedFixture, name string) string {
 	t.Helper()
+	// e2e:allow-create — the health-check settings are the subject under test.
 	out, err := c.ELBv2.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
 		Name:                       aws.String(name),
 		Protocol:                   aws.String("TCP"),

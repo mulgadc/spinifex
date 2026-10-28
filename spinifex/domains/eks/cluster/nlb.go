@@ -62,6 +62,10 @@ const lbcClusterOwnershipTagKey = "elbv2.k8s.aws/cluster"
 // agent (HA apiserver->pod/kubelet/webhook egress, EKS-parity).
 const konnectivityAgentPort int64 = 8132
 
+// webhookReadyPort is the plain-HTTP port on which the control-plane VM's token
+// webhook serves only /readyz, so the NLB can tell whether the VM can authenticate.
+const webhookReadyPort int64 = 8444
+
 // ClusterNLB is the NLB resource tuple produced by EnsureClusterNLB; ARNs are persisted to ClusterMeta.
 type ClusterNLB struct {
 	LoadBalancerArn string

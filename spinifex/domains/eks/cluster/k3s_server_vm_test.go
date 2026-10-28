@@ -489,6 +489,13 @@ func TestBuildK3sUserData_KonnectivityEnv(t *testing.T) {
 	assert.Contains(t, ud, "EKS_KONNECTIVITY_SANS=10.32.100.4,203.0.113.9,"+in.NLBDNS)
 }
 
+func TestBuildK3sUserData_WebhookReadinessListener(t *testing.T) {
+	t.Parallel()
+	ud := buildK3sUserData(validK3sInput())
+	assert.Contains(t, ud, "EKS_WEBHOOK_READY_ADDR=0.0.0.0:8444",
+		"the webhook must serve /readyz beyond loopback for the NLB health check")
+}
+
 func TestBuildK3sUserData_KonnServerCountDefaultsToOne(t *testing.T) {
 	t.Parallel()
 	in := validK3sInput()

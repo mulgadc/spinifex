@@ -19,6 +19,7 @@ import (
 // accepted connections and can be stopped and restarted on the same address.
 type tlsGateway struct {
 	t       *testing.T
+	api     *fakeAPIServer
 	addr    string
 	cert    tls.Certificate
 	caPath  string
@@ -34,7 +35,7 @@ func newTLSGateway(t *testing.T) *tlsGateway {
 	caPath := filepath.Join(dir, "ca.pem")
 	require.NoError(t, os.WriteFile(caPath, certPEM, 0o600))
 
-	g := &tlsGateway{t: t, cert: cert, caPath: caPath}
+	g := &tlsGateway{t: t, cert: cert, caPath: caPath, api: newFakeAPIServer(t)}
 	g.start("127.0.0.1:0")
 	t.Cleanup(g.stop)
 	return g
@@ -70,9 +71,47 @@ func (g *tlsGateway) stop() {
 	}
 }
 
+// fakeAPIServer is a plain TCP listener standing in for the local apiserver.
+type fakeAPIServer struct {
+	addr string
+	ln   net.Listener
+}
+
+func newFakeAPIServer(t *testing.T) *fakeAPIServer {
+	t.Helper()
+	a := &fakeAPIServer{}
+	a.start("127.0.0.1:0", t)
+	t.Cleanup(a.stop)
+	return a
+}
+
+func (a *fakeAPIServer) start(addr string, t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
+	require.NoError(t, err)
+	a.ln = ln
+	a.addr = ln.Addr().String()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+}
+
+func (a *fakeAPIServer) stop() {
+	if a.ln != nil {
+		_ = a.ln.Close()
+		a.ln = nil
+	}
+}
+
 func (g *tlsGateway) probe(t *testing.T) *gatewayProbe {
 	t.Helper()
-	p, err := newGatewayProbe("https://"+g.addr, g.caPath)
+	p, err := newGatewayProbe("https://"+g.addr, g.caPath, g.api.addr)
 	require.NoError(t, err)
 	return p
 }
@@ -117,7 +156,7 @@ func TestGatewayProbe_TimesOutOnStalledHandshake(t *testing.T) {
 		}
 	}()
 
-	p, err := newGatewayProbe("https://"+ln.Addr().String(), g.caPath)
+	p, err := newGatewayProbe("https://"+ln.Addr().String(), g.caPath, g.api.addr)
 	require.NoError(t, err)
 	p.timeout = 200 * time.Millisecond
 	p.ttl = 0
@@ -130,7 +169,7 @@ func TestGatewayProbe_TimesOutOnStalledHandshake(t *testing.T) {
 func TestGatewayProbe_RejectsUntrustedCertificate(t *testing.T) {
 	g := newTLSGateway(t)
 	other := newTLSGateway(t)
-	p, err := newGatewayProbe("https://"+g.addr, other.caPath)
+	p, err := newGatewayProbe("https://"+g.addr, other.caPath, g.api.addr)
 	require.NoError(t, err)
 	p.ttl = 0
 
@@ -172,12 +211,41 @@ func TestGatewayProbe_HandlerStatus(t *testing.T) {
 }
 
 func TestNewGatewayProbe_DefaultsPortAndRejectsBadInput(t *testing.T) {
-	p, err := newGatewayProbe("https://gw.example", "")
+	p, err := newGatewayProbe("https://gw.example", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, "gw.example:443", p.addr)
+	assert.Equal(t, defaultAPIServerAddr, p.apiAddr)
 
-	_, err = newGatewayProbe("https://", "")
+	_, err = newGatewayProbe("https://", "", "")
 	require.Error(t, err)
-	_, err = newGatewayProbe("https://gw.example:9999", "/no/such/ca.pem")
+	_, err = newGatewayProbe("https://gw.example:9999", "/no/such/ca.pem", "")
 	require.Error(t, err)
+}
+
+func TestGatewayProbe_NotReadyWhenAPIServerDown(t *testing.T) {
+	g := newTLSGateway(t)
+	p := g.probe(t)
+	p.ttl = 0
+	require.True(t, p.ready())
+
+	g.api.stop()
+	assert.False(t, p.ready(), "a dead apiserver must not look ready while the gateway is up")
+
+	w := httptest.NewRecorder()
+	p.handle(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
+func TestReadinessHandler_ServesOnlyReadyz(t *testing.T) {
+	g := newTLSGateway(t)
+	h := readinessHandler(g.probe(t))
+
+	for _, path := range []string{"/authenticate", "/healthz", "/"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, path, nil))
+		assert.Equalf(t, http.StatusNotFound, w.Code, "%s must not be served on the readiness listener", path)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	assert.Equal(t, http.StatusOK, w.Code)
 }

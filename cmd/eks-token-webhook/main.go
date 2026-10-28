@@ -29,6 +29,7 @@ func loadConfig() (tokenwebhook.Config, error) {
 		CertPath:    envOr("EKS_WEBHOOK_CERT", "/etc/spinifex-eks/token-webhook.crt"),
 		KeyPath:     envOr("EKS_WEBHOOK_KEY", "/etc/spinifex-eks/token-webhook.key"),
 		Kubeconfig:  envOr("EKS_WEBHOOK_KUBECONFIG", "/etc/spinifex-eks/token-webhook.kubeconfig"),
+		ReadyAddr:   os.Getenv("EKS_WEBHOOK_READY_ADDR"),
 	}
 	// Static SigV4 creds are optional: when absent, eksgw.New signs with the
 	// AWS SDK chain (IMDS instance-role creds), the same path the CP VM's

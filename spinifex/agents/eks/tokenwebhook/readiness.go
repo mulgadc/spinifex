@@ -20,11 +20,16 @@ const (
 	readinessTTL     = 2 * time.Second
 )
 
-// gatewayProbe reports whether the gateway this webhook relays to accepts a TLS
-// handshake. It sends no credentials and caches the result so frequent load
-// balancer probes never reach the gateway more than once per ttl.
+// defaultAPIServerAddr is the local k3s apiserver the readiness check dials.
+const defaultAPIServerAddr = "127.0.0.1:6443"
+
+// gatewayProbe reports whether this control plane can serve: the gateway it
+// relays to accepts a TLS handshake and the local apiserver accepts a TCP
+// connection. It sends no credentials and caches the result so frequent load
+// balancer probes never reach either more than once per ttl.
 type gatewayProbe struct {
 	addr    string
+	apiAddr string
 	tlsCfg  *tls.Config
 	timeout time.Duration
 	ttl     time.Duration
@@ -35,7 +40,7 @@ type gatewayProbe struct {
 	ok      bool
 }
 
-func newGatewayProbe(gatewayURL, caPath string) (*gatewayProbe, error) {
+func newGatewayProbe(gatewayURL, caPath, apiAddr string) (*gatewayProbe, error) {
 	u, err := url.Parse(gatewayURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse gateway URL %q: %w", gatewayURL, err)
@@ -59,8 +64,12 @@ func newGatewayProbe(gatewayURL, caPath string) (*gatewayProbe, error) {
 		}
 		cfg.RootCAs = pool
 	}
+	if apiAddr == "" {
+		apiAddr = defaultAPIServerAddr
+	}
 	return &gatewayProbe{
 		addr:    net.JoinHostPort(host, port),
+		apiAddr: apiAddr,
 		tlsCfg:  cfg,
 		timeout: readinessTimeout,
 		ttl:     readinessTTL,
@@ -90,15 +99,30 @@ func (p *gatewayProbe) probe() bool {
 		return false
 	}
 	_ = conn.Close()
+
+	// A control plane whose apiserver is down must leave rotation too.
+	api, err := (&net.Dialer{}).DialContext(ctx, "tcp", p.apiAddr)
+	if err != nil {
+		return false
+	}
+	_ = api.Close()
 	return true
 }
 
-// handle serves 200 when the gateway is reachable and 503 when it is not.
+// handle serves 200 when the gateway and apiserver are reachable, else 503.
 func (p *gatewayProbe) handle(w http.ResponseWriter, _ *http.Request) {
 	if p.ready() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 		return
 	}
-	http.Error(w, "gateway unreachable", http.StatusServiceUnavailable)
+	http.Error(w, "not ready", http.StatusServiceUnavailable)
+}
+
+// readinessHandler serves only /readyz; the listener it backs is plain HTTP and
+// reachable beyond loopback, so it must never expose /authenticate.
+func readinessHandler(p *gatewayProbe) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/readyz", p.handle)
+	return mux
 }

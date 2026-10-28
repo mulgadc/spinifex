@@ -290,6 +290,57 @@ func TestBuildDrives(t *testing.T) {
 			wantHotplugPorts: []int{2},
 		},
 		{
+			// microvm has no PCIe root ports, so an unset port stays unset
+			// rather than naming a bus the machine does not have.
+			name: "microvm NBD data volume renders an MMIO device and allocates no hot-plug port",
+			requests: []EBSRequest{
+				{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock"},
+			},
+			cpuCount:      2,
+			machineType:   "microvm,x-option-roms=off,pic=off",
+			wantIOThreads: []IOThread{{ID: "ioth-vol-data-a"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-device,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,werror=stop,rerror=stop"},
+			},
+			wantHotplugPorts: []int{0},
+		},
+		{
+			name: "microvm block data volume keeps its recorded port and host_device node on an MMIO device",
+			requests: []EBSRequest{
+				{Name: "vol-blk", BlockDevice: "/dev/sdx", BlockSizeBytes: 10 << 30, HotplugPort: 2},
+			},
+			cpuCount:      2,
+			machineType:   "microvm",
+			wantIOThreads: []IOThread{{ID: "ioth-vol-blk"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=nbd-vol-blk,size=10737418240,file.driver=host_device,file.filename=/dev/sdx,file.aio=native,file.cache.direct=on"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-device,id=vdisk-vol-blk,drive=nbd-vol-blk,iothread=ioth-vol-blk,serial=volblk,werror=stop,rerror=stop"},
+			},
+			wantHotplugPorts: []int{2},
+		},
+		{
+			// q35 is not a microvm: the boundary must stay on PCI allocation.
+			name: "q35 data volume with HotplugPort unset still gets a PCI hot-plug port",
+			requests: []EBSRequest{
+				{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock"},
+			},
+			cpuCount:      2,
+			machineType:   "q35",
+			wantIOThreads: []IOThread{{ID: "ioth-vol-data-a"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs1,werror=stop,rerror=stop"},
+			},
+			wantHotplugPorts: []int{1},
+		},
+		{
 			name: "NBD boot volume alongside a block data volume",
 			requests: []EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},

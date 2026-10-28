@@ -1535,12 +1535,14 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 			})
 
 		default:
+			// microvm has no PCIe root ports, so its data volumes take none.
+			mmio := IsMMIO(machineType)
 			// A data (non-boot, non-EFI) volume. Allocate a stable hot-plug
 			// port when the persisted state predates port accounting, or the
 			// volume was attached at RunInstances time without one;
 			// freeHotplugEBSPort re-scans requests as mutated so far in this
 			// loop, so two unset data volumes in one call cannot collide.
-			if v.HotplugPort == 0 {
+			if v.HotplugPort == 0 && !mmio {
 				port := freeHotplugEBSPort(requests)
 				if port == 0 {
 					return driveConfig{}, fmt.Errorf("no free EBS hot-plug port for volume %s", v.Name)
@@ -1550,7 +1552,6 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 
 			nodeName := VolumeNodeName(v.Name)
 			iothreadID := VolumeIOThreadID(v.Name)
-			bus := HotplugEBSBus(v.HotplugPort)
 
 			var blockdev Blockdev
 			if kind == volumeExportBlock {
@@ -1570,7 +1571,11 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 
 			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})
 			cfg.Blockdevs = append(cfg.Blockdevs, blockdev)
-			cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, bus))
+			if mmio {
+				cfg.Devices = append(cfg.Devices, volumeMMIOBlkDevice(v.Name, nodeName, iothreadID))
+			} else {
+				cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, HotplugEBSBus(v.HotplugPort)))
+			}
 			// Deliberately no entry in cfg.Drives: the bare anonymous -drive
 			// this case used to emit (no id=, no node-name=) is exactly what
 			// left the volume undetachable.

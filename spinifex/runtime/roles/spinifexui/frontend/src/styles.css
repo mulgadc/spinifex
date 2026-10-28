@@ -2,166 +2,135 @@
    because spinifexui.go embeds it, so auto-detection would scan the previous
    build's output and carry its dead classes into the next one. */
 @import "tailwindcss" source(".");
+@import "@fontsource-variable/archivo";
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/jetbrains-mono";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* MILITARY / TACTICAL LIGHT THEME */
+/* Base UI marks orientation with data-orientation; the primitives target it
+   through these. */
+@custom-variant data-horizontal (&[data-orientation="horizontal"]);
+@custom-variant data-vertical (&[data-orientation="vertical"]);
+
+/* Mulga brand theme. Values come from mulgadc.com; see
+   spinifex/docs/ui/design-system.md for the token reference. */
 :root {
+  color-scheme: light;
   --font-sans: "Geist Variable", sans-serif;
   --font-mono: "JetBrains Mono Variable", monospace;
+  --font-heading: "Archivo Variable", sans-serif;
 
-  /* Desert sand / tactical tan background */
-  --background: hsl(40 25% 94%);
-  --foreground: hsl(200 25% 15%);
+  --background: oklch(95.8% 0.007 88.6); /* #F3F1EC page */
+  --foreground: oklch(21.1% 0.012 254.1); /* #15191E ink */
+  --card: oklch(100% 0 0);
+  --card-foreground: oklch(21.1% 0.012 254.1);
+  --popover: oklch(100% 0 0);
+  --popover-foreground: oklch(21.1% 0.012 254.1);
 
-  /* Card - light tactical panel */
-  --card: hsl(40 20% 97%);
-  --card-foreground: hsl(200 25% 15%);
+  --primary: oklch(63.8% 0.208 36.6); /* #EE4B12 brand orange */
+  --primary-foreground: oklch(100% 0 0);
+  --secondary: oklch(92.8% 0.009 88.6);
+  --secondary-foreground: oklch(21.1% 0.012 254.1);
+  --muted: oklch(93.5% 0.007 88.6);
+  --muted-foreground: oklch(49.6% 0.017 251.3); /* #5B636C */
+  --accent: oklch(92.5% 0.009 88.6);
+  --accent-foreground: oklch(21.1% 0.012 254.1);
 
-  /* Popover */
-  --popover: hsl(40 20% 98%);
-  --popover-foreground: hsl(200 25% 15%);
+  --border: oklch(88.3% 0.014 88.7); /* #DCD8CE */
+  --input: oklch(88.3% 0.014 88.7);
+  --ring: oklch(63.8% 0.208 36.6);
+  --radius: 0.5rem;
 
-  /* Primary - Deep olive/military green */
-  --primary: hsl(120 25% 25%);
-  --primary-foreground: hsl(40 25% 95%);
+  /* Status. The base is the solid colour; -foreground is the readable tinted
+     text for that status on a -subtle background. */
+  --success: oklch(62% 0.15 155);
+  --success-foreground: oklch(45% 0.11 155);
+  --warning: oklch(81.1% 0.167 82.8); /* #F5B500 brand yellow */
+  --warning-foreground: oklch(50% 0.11 70);
+  --danger: oklch(52% 0.19 17);
+  --danger-foreground: oklch(46% 0.17 17);
+  --info: oklch(58% 0.14 245);
+  --info-foreground: oklch(45% 0.12 250);
+  --neutral: oklch(70.6% 0.013 248); /* #9AA1A8 */
+  --neutral-foreground: oklch(49.6% 0.017 251.3);
+  --destructive: var(--danger);
+  --destructive-foreground: oklch(100% 0 0);
 
-  /* Secondary - Khaki/tan */
-  --secondary: hsl(45 30% 88%);
-  --secondary-foreground: hsl(200 25% 20%);
+  /* Categorical chart palette. Lightness is spread so every pair stays apart
+     under protan, deutan and tritan simulation; label series, never rely on
+     colour alone. */
+  --chart-1: oklch(64% 0.21 37);
+  --chart-2: oklch(48% 0.11 245);
+  --chart-3: oklch(79% 0.12 179);
+  --chart-4: oklch(78% 0.16 77);
+  --chart-5: oklch(58% 0.14 301);
+  --chart-6: oklch(57% 0.13 149);
+  --chart-7: oklch(62% 0.13 356);
+  --chart-8: oklch(71% 0.03 240);
 
-  /* Muted - Light desert gray */
-  --muted: hsl(40 15% 90%);
-  --muted-foreground: hsl(200 15% 40%);
-
-  /* Accent - Neutral for sidebar hover/active */
-  --accent: hsl(40 20% 88%);
-  --accent-foreground: hsl(200 25% 15%);
-
-  /* Destructive - Alert red */
-  --destructive: hsl(0 70% 45%);
-  --destructive-foreground: hsl(0 0% 100%);
-
-  /* Border - Olive/military green tint */
-  --border: hsl(120 15% 75%);
-  --input: hsl(40 15% 85%);
-  --ring: hsl(120 30% 35%);
-
-  /* Chart colors - Military palette for light mode */
-  --chart-1: hsl(120 40% 30%); /* Olive green */
-  --chart-2: hsl(45 80% 45%); /* Amber/gold */
-  --chart-3: hsl(200 60% 40%); /* Military blue */
-  --chart-4: hsl(35 60% 50%); /* Tan/khaki */
-  --chart-5: hsl(0 60% 45%); /* Alert red */
-
-  --radius: 0.25rem;
-
-  /* Sidebar - matching light military theme */
-  --sidebar: hsl(40 20% 95%);
-  --sidebar-background: hsl(40 20% 95%);
-  --sidebar-foreground: hsl(200 25% 20%);
-  --sidebar-primary: hsl(120 25% 25%);
-  --sidebar-primary-foreground: hsl(40 25% 95%);
-  --sidebar-accent: hsl(40 20% 88%);
-  --sidebar-accent-foreground: hsl(200 25% 15%);
-  --sidebar-border: hsl(120 15% 80%);
-  --sidebar-ring: hsl(120 30% 35%);
-
-  /* Military-specific custom properties - LIGHT MODE */
-  --tactical-amber: hsl(45 90% 40%);
-  --tactical-amber-dim: hsl(45 60% 60%);
-  --tactical-green: hsl(120 50% 30%);
-  --tactical-green-dim: hsl(120 30% 60%);
-  --tactical-cyan: hsl(185 60% 35%);
-  --tactical-cyan-dim: hsl(185 40% 55%);
-  --tactical-red: hsl(0 65% 45%);
-  --tactical-olive: hsl(80 35% 35%);
-  --scanline-opacity: 0.015;
-
-  /* Status notices */
-  --success: oklch(69.6% 0.17 162.48);
-  --success-foreground: oklch(50.8% 0.118 165.612);
-  --warning: oklch(76.9% 0.188 70.08);
-  --warning-foreground: oklch(55.5% 0.163 48.998);
-  --info: oklch(62.3% 0.214 259.815);
-  --positive: oklch(62.7% 0.194 149.214);
-  --positive-foreground: oklch(62.7% 0.194 149.214);
+  --sidebar: oklch(97.5% 0.005 88.6);
+  --sidebar-foreground: oklch(21.1% 0.012 254.1);
+  --sidebar-primary: oklch(63.8% 0.208 36.6);
+  --sidebar-primary-foreground: oklch(100% 0 0);
+  --sidebar-accent: oklch(92.5% 0.009 88.6);
+  --sidebar-accent-foreground: oklch(21.1% 0.012 254.1);
+  --sidebar-border: oklch(88.3% 0.014 88.7);
+  --sidebar-ring: oklch(63.8% 0.208 36.6);
 }
 
-/* MILITARY / TACTICAL DARK THEME */
 .dark {
-  /* Deep operations dark background */
-  --background: hsl(200 15% 6%);
-  --foreground: hsl(45 20% 85%);
+  color-scheme: dark;
+  --background: oklch(20.7% 0.012 254.1); /* #14181D */
+  --foreground: oklch(93% 0.006 250);
+  --card: oklch(24.2% 0.015 256.8); /* #1B2027 */
+  --card-foreground: oklch(93% 0.006 250);
+  --popover: oklch(26% 0.015 256.8);
+  --popover-foreground: oklch(93% 0.006 250);
 
-  /* Card - slightly lighter tactical panel */
-  --card: hsl(200 12% 9%);
-  --card-foreground: hsl(45 20% 85%);
+  --primary: oklch(63.8% 0.208 36.6);
+  --primary-foreground: oklch(100% 0 0);
+  --secondary: oklch(30.3% 0.014 256.8); /* #2A2F36 */
+  --secondary-foreground: oklch(93% 0.006 250);
+  --muted: oklch(27% 0.014 256.8);
+  --muted-foreground: oklch(70.6% 0.013 248); /* #9AA1A8 */
+  --accent: oklch(30.3% 0.014 256.8);
+  --accent-foreground: oklch(93% 0.006 250);
 
-  /* Popover */
-  --popover: hsl(200 15% 8%);
-  --popover-foreground: hsl(45 20% 85%);
+  --border: oklch(100% 0 0 / 8%);
+  --input: oklch(100% 0 0 / 12%);
+  --ring: oklch(63.8% 0.208 36.6);
 
-  /* Primary - Amber/Gold accent */
-  --primary: hsl(40 100% 50%);
-  --primary-foreground: hsl(200 15% 6%);
+  --success: oklch(70% 0.16 155);
+  --success-foreground: oklch(80% 0.14 155);
+  --warning: oklch(81.1% 0.167 82.8);
+  --warning-foreground: oklch(86% 0.14 85);
+  --danger: oklch(64% 0.2 17);
+  --danger-foreground: oklch(75% 0.15 17);
+  --info: oklch(68% 0.13 245);
+  --info-foreground: oklch(80% 0.1 245);
+  --neutral: oklch(70.6% 0.013 248);
+  --neutral-foreground: oklch(80% 0.01 250);
+  --destructive: var(--danger);
+  --destructive-foreground: oklch(100% 0 0);
 
-  /* Secondary - Olive drab military green */
-  --secondary: hsl(80 25% 18%);
-  --secondary-foreground: hsl(80 30% 75%);
+  --chart-1: oklch(68% 0.19 38);
+  --chart-2: oklch(69% 0.15 254);
+  --chart-3: oklch(88% 0.17 170);
+  --chart-4: oklch(82% 0.12 98);
+  --chart-5: oklch(62% 0.11 300);
+  --chart-6: oklch(65% 0.1 133);
+  --chart-7: oklch(56% 0.1 349);
+  --chart-8: oklch(79% 0.03 255);
 
-  /* Muted - Dark tactical gray */
-  --muted: hsl(200 10% 14%);
-  --muted-foreground: hsl(200 10% 55%);
-
-  /* Accent - Neutral gray for sidebar hover/active states */
-  --accent: hsl(200 10% 18%);
-  --accent-foreground: hsl(45 20% 90%);
-
-  /* Destructive - Alert red */
-  --destructive: hsl(0 70% 45%);
-  --destructive-foreground: hsl(0 0% 100%);
-
-  /* Border - Subtle tactical lines */
-  --border: hsl(160 30% 18%);
-  --input: hsl(200 10% 18%);
-  --ring: hsl(45 100% 50%);
-
-  /* Chart colors - Military palette */
-  --chart-1: hsl(45 100% 50%); /* Amber */
-  --chart-2: hsl(160 70% 45%); /* Tactical green */
-  --chart-3: hsl(200 80% 50%); /* Cyan/radar blue */
-  --chart-4: hsl(80 50% 45%); /* Olive */
-  --chart-5: hsl(0 70% 50%); /* Alert red */
-
-  /* Sidebar - Dark tactical theme */
-  --sidebar: hsl(200 15% 8%);
-  --sidebar-background: hsl(200 15% 8%);
-  --sidebar-foreground: hsl(45 20% 85%);
-  --sidebar-primary: hsl(45 100% 50%);
-  --sidebar-primary-foreground: hsl(200 15% 6%);
-  --sidebar-accent: hsl(200 10% 18%);
-  --sidebar-accent-foreground: hsl(45 20% 90%);
-  --sidebar-border: hsl(160 30% 18%);
-  --sidebar-ring: hsl(45 100% 50%);
-
-  /* Military-specific custom properties */
-  --tactical-amber: hsl(45 100% 50%);
-  --tactical-amber-dim: hsl(45 80% 35%);
-  --tactical-green: hsl(160 70% 45%);
-  --tactical-green-dim: hsl(160 50% 25%);
-  --tactical-cyan: hsl(185 80% 45%);
-  --tactical-cyan-dim: hsl(185 60% 25%);
-  --tactical-red: hsl(0 70% 50%);
-  --tactical-olive: hsl(80 40% 30%);
-  --scanline-opacity: 0.03;
-
-  /* Status notices */
-  --success-foreground: oklch(76.5% 0.177 163.223);
-  --warning-foreground: oklch(82.8% 0.189 84.429);
-  --positive-foreground: oklch(79.2% 0.209 151.711);
+  --sidebar: oklch(18.5% 0.011 254.1);
+  --sidebar-foreground: oklch(93% 0.006 250);
+  --sidebar-primary: oklch(63.8% 0.208 36.6);
+  --sidebar-primary-foreground: oklch(100% 0 0);
+  --sidebar-accent: oklch(27% 0.014 256.8);
+  --sidebar-accent-foreground: oklch(93% 0.006 250);
+  --sidebar-border: oklch(100% 0 0 / 8%);
+  --sidebar-ring: oklch(63.8% 0.208 36.6);
 }
 
 @theme inline {
@@ -189,6 +158,9 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-chart-8: var(--chart-8);
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
@@ -202,32 +174,58 @@
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
 
-  /* Custom tactical colors */
-  --color-tactical-amber: var(--tactical-amber);
-  --color-tactical-amber-dim: var(--tactical-amber-dim);
-  --color-tactical-green: var(--tactical-green);
-  --color-tactical-green-dim: var(--tactical-green-dim);
-  --color-tactical-cyan: var(--tactical-cyan);
-  --color-tactical-cyan-dim: var(--tactical-cyan-dim);
-  --color-tactical-red: var(--tactical-red);
-  --color-tactical-olive: var(--tactical-olive);
-
-  /* Status colors */
+  /* Status colors, with -subtle backgrounds and -border outlines derived */
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
+  --color-success-subtle: color-mix(in oklch, var(--success) 12%, transparent);
+  --color-success-border: color-mix(in oklch, var(--success) 40%, transparent);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-warning-subtle: color-mix(in oklch, var(--warning) 12%, transparent);
+  --color-warning-border: color-mix(in oklch, var(--warning) 40%, transparent);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-danger-subtle: color-mix(in oklch, var(--danger) 12%, transparent);
+  --color-danger-border: color-mix(in oklch, var(--danger) 40%, transparent);
   --color-info: var(--info);
-  --color-positive: var(--positive);
-  --color-positive-foreground: var(--positive-foreground);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-subtle: color-mix(in oklch, var(--info) 12%, transparent);
+  --color-info-border: color-mix(in oklch, var(--info) 40%, transparent);
+  --color-neutral: var(--neutral);
+  --color-neutral-foreground: var(--neutral-foreground);
+  --color-neutral-subtle: color-mix(in oklch, var(--neutral) 12%, transparent);
+  --color-neutral-border: color-mix(in oklch, var(--neutral) 40%, transparent);
 
-  /* Sizes below text-xs, and code set relative to its surrounding text */
-  --text-2xs: 0.625rem;
+  /* Dense console scale: 13px body and table text, 24px page titles. Code
+     sizes are set relative to the surrounding text. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.375rem;
+  --text-lg: 1rem;
+  --text-lg--line-height: 1.5rem;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 2rem;
   --text-code-block: 0.6875rem;
   --text-code-inline: 0.85em;
 
+  --font-heading: var(--font-heading);
+
   /* Plain system font for the bootstrap failure page */
   --font-system: sans-serif;
+}
+
+/* Hides the scrollbar while keeping the element scrollable. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 @layer base {
@@ -246,13 +244,19 @@
   }
 
   body {
-    @apply min-h-svh w-full bg-background text-foreground;
+    @apply min-h-svh w-full bg-background text-sm text-foreground;
     font-family: var(--font-sans), sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 
-  /* Military monospace for data */
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-heading), sans-serif;
+  }
+
+  /* Monospace for IDs, ARNs, addresses and code */
   .font-mono {
     font-family: var(--font-mono), monospace;
   }

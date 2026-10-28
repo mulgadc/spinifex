@@ -83,7 +83,7 @@ export function DBParameterGroupDetailPage({ dbParameterGroupName }: Props) {
 
         {isDefault && (
           <div
-            className="rounded-md border border-tactical-amber/40 bg-tactical-amber/5 p-4 text-sm"
+            className="rounded-md border border-warning-border bg-warning-subtle p-4 text-sm"
             role="note"
           >
             <p className="font-medium">This is a default parameter group</p>

@@ -152,7 +152,7 @@ export function GuardrailTester({
               className={
                 action === "GUARDRAIL_INTERVENED"
                   ? "text-destructive"
-                  : "text-positive-foreground"
+                  : "text-success-foreground"
               }
             >
               {action}

@@ -51,7 +51,7 @@ export function SSHAccessCard({ instance, image }: SSHAccessCardProps) {
             type="button"
           >
             {copied ? (
-              <Check className="size-3.5 text-tactical-green" />
+              <Check className="size-3.5 text-success-foreground" />
             ) : (
               <Copy className="size-3.5" />
             )}
@@ -119,7 +119,7 @@ export function SSHAccessCard({ instance, image }: SSHAccessCardProps) {
 }
 
 const CALLOUT_TONES = {
-  amber: "border-tactical-amber/40 bg-tactical-amber/5 text-tactical-amber",
+  amber: "border-warning-border bg-warning-subtle text-warning-foreground",
   muted: "border-border bg-muted/40 text-muted-foreground",
 } as const
 

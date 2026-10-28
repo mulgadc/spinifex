@@ -282,7 +282,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
           <StateBadge state={status} />
           {instance.StatusInfos?.map((info) => (
             <span
-              className="text-xs text-tactical-amber"
+              className="text-xs text-warning-foreground"
               key={`${info.StatusType}-${info.Status}`}
             >
               {info.StatusType}: {info.Message ?? info.Status}
@@ -419,7 +419,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
             <div className="space-y-4">
               {lastBackupFailure && (
                 <div
-                  className="rounded-md border border-tactical-amber/40 bg-tactical-amber/5 p-4 text-sm"
+                  className="rounded-md border border-warning-border bg-warning-subtle p-4 text-sm"
                   role="alert"
                 >
                   <p className="font-medium">An automated backup failed</p>
@@ -432,7 +432,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
 
               {lastBackupWarning && (
                 <div
-                  className="rounded-md border border-tactical-amber/40 bg-tactical-amber/5 p-4 text-sm"
+                  className="rounded-md border border-warning-border bg-warning-subtle p-4 text-sm"
                   role="alert"
                 >
                   <p className="font-medium">A backup raised a warning</p>

@@ -481,7 +481,7 @@ func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts 
 
 	const nodegroup = "irsa-pod-e2e-ng"
 	harness.Phase(t, "Creating worker nodegroup %s", nodegroup)
-	// e2e:allow-create — the worker nodegroup is the subject under test (customer-space node the IRSA pod schedules onto).
+	// The worker nodegroup is the subject under test (customer-space node the IRSA pod schedules onto).
 	_, err = c.EKS.CreateNodegroup(&eks.CreateNodegroupInput{
 		ClusterName:   aws.String(fx.ClusterName),
 		NodegroupName: aws.String(nodegroup),
@@ -734,7 +734,7 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 
 	const nodegroup = "ebs-csi-e2e-ng"
 	harness.Phase(t, "Creating worker nodegroup %s", nodegroup)
-	// e2e:allow-create — the worker nodegroup is the subject under test (customer-space node for cross-space attach).
+	// The worker nodegroup is the subject under test (customer-space node for cross-space attach).
 	_, err = c.EKS.CreateNodegroup(&eks.CreateNodegroupInput{
 		ClusterName:   aws.String(fx.ClusterName),
 		NodegroupName: aws.String(nodegroup),

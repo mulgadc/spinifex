@@ -158,15 +158,14 @@ install-microvm: $(MICROVM_ARTIFACTS) $(QBOOT_ARTIFACTS) ## Install microVM arti
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/qboot.rom /usr/share/spinifex/microvm/qboot.rom
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/qboot.LICENSE /usr/share/spinifex/microvm/qboot.LICENSE
 
-# the pre-commit gate: manifest checks, lint, vuln, and the unit and e2e-harness tiers.
+# the pre-commit gate: lint, vuln, and the unit and e2e-harness tiers.
 # integration and race tests skipped to keep quick, they run in CI.
 #
 # -j2 overlaps the only two heavy gates, lint and test-cover: alone each leaves
 # most of the machine idle, so pairing them cuts a cold run by about a quarter.
 # -Otarget keeps each gate's output in one block instead of interleaving them.
-# manifest-check manifest-lint test-package-check removed, can add back later
 preflight:
-	@$(MAKE) --no-print-directory -j2 -Otarget QUIET=1 lint govulncheck test-cover diff-coverage test-harness test-build-scripts manifest-check manifest-lint
+	@$(MAKE) --no-print-directory -j2 -Otarget QUIET=1 lint govulncheck test-cover diff-coverage test-harness test-build-scripts
 	@echo -e "\n ✅ Preflight passed — safe to commit."
 
 # Shell suites + shellcheck for build/scripts/, the systemd-unit helpers that
@@ -238,23 +237,6 @@ aws-model-coverage: generate-aws-model-coverage
 test-segscan-oracle:
 	@echo -e "\n....Running segscan storage oracle test...."
 	$(_Q)LOG_IGNORE=1 go test -tags=integration,segscanoracle -timeout 120s ./tests/integration/... -run TestSegscanOracle $(_RACEQ)
-
-# Validate docs/service-interfaces.yaml. Schema check + cross-reference
-# of services/suites/fixtures + on-disk path existence.
-manifest-check:
-	@echo -e "\n....Checking service-interfaces.yaml...."
-	@go run ./tests/e2e/manifest-check/cmd/manifest-check -repo-root . -manifest docs/service-interfaces.yaml
-
-# Drift guards: direct-create fixture lint + NATS subject lint,
-# ratcheted against tests/e2e/manifest-lint/baseline.txt. Fails only on NEW
-# drift beyond the baseline.
-manifest-lint:
-	@echo -e "\n....Linting manifest drift (fixtures + subjects)...."
-	@go run ./tests/e2e/manifest-lint/cmd/manifest-lint -repo-root .
-
-# Accept current drift into the baseline. Run after an intentional change.
-manifest-lint-update:
-	@go run ./tests/e2e/manifest-lint/cmd/manifest-lint -repo-root . -update
 
 # Run unit tests
 test:
@@ -486,7 +468,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

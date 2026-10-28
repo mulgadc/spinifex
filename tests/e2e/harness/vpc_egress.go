@@ -14,7 +14,7 @@ import (
 // CreateVPC creates a VPC with the given CIDR and returns its ID.
 func CreateVPC(t *testing.T, c *AWSClient, cidr string) string {
 	t.Helper()
-	out, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(cidr)}) // e2e:allow-create
+	out, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(cidr)})
 	require.NoError(t, err, "create-vpc")
 	vpcID := aws.StringValue(out.Vpc.VpcId)
 	t.Logf("VPC: %s", vpcID)
@@ -35,7 +35,7 @@ func DeleteVPC(t *testing.T, c *AWSClient, vpcID string) {
 // CreateSubnet creates a subnet in vpcID with the given CIDR and returns its ID.
 func CreateSubnet(t *testing.T, c *AWSClient, vpcID, cidr string) string {
 	t.Helper()
-	out, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{ // e2e:allow-create
+	out, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String(cidr),
 	})
@@ -81,7 +81,7 @@ func CreateWorkerEgress(t *testing.T, c *AWSClient, vpcID, workerSubnetID, pubCI
 	t.Helper()
 	eg := &WorkerEgress{VPCID: vpcID, WorkerSubnetID: workerSubnetID}
 
-	igwOut, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}) // e2e:allow-create
+	igwOut, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{})
 	require.NoError(t, err, "create-internet-gateway")
 	eg.IGWID = aws.StringValue(igwOut.InternetGateway.InternetGatewayId)
 	_, err = c.EC2.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
@@ -91,14 +91,14 @@ func CreateWorkerEgress(t *testing.T, c *AWSClient, vpcID, workerSubnetID, pubCI
 	require.NoError(t, err, "attach-internet-gateway")
 
 	// Public subnet routed straight to the IGW; the NAT Gateway lives here.
-	pubOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{ // e2e:allow-create
+	pubOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String(pubCIDR),
 	})
 	require.NoError(t, err, "create-public-subnet")
 	eg.PubSubnetID = aws.StringValue(pubOut.Subnet.SubnetId)
 
-	pubRT, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(vpcID)}) // e2e:allow-create
+	pubRT, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(vpcID)})
 	require.NoError(t, err, "create-public-route-table")
 	eg.PubRTID = aws.StringValue(pubRT.RouteTable.RouteTableId)
 	_, err = c.EC2.CreateRoute(&ec2.CreateRouteInput{
@@ -115,10 +115,10 @@ func CreateWorkerEgress(t *testing.T, c *AWSClient, vpcID, workerSubnetID, pubCI
 	eg.PubRTAssocID = aws.StringValue(pubAssoc.AssociationId)
 
 	// Elastic IP + NAT Gateway in the public subnet.
-	eip, err := c.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")}) // e2e:allow-create
+	eip, err := c.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
 	require.NoError(t, err, "allocate-address")
 	eg.EIPAllocID = aws.StringValue(eip.AllocationId)
-	natOut, err := c.EC2.CreateNatGateway(&ec2.CreateNatGatewayInput{ // e2e:allow-create
+	natOut, err := c.EC2.CreateNatGateway(&ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String(eg.PubSubnetID),
 		AllocationId: aws.String(eg.EIPAllocID),
 	})
@@ -128,7 +128,7 @@ func CreateWorkerEgress(t *testing.T, c *AWSClient, vpcID, workerSubnetID, pubCI
 
 	// Worker (private) subnet default-routes to the NAT Gateway; associating
 	// the route table triggers the subnet-wide SNAT egress reroute.
-	workerRT, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(vpcID)}) // e2e:allow-create
+	workerRT, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(vpcID)})
 	require.NoError(t, err, "create-worker-route-table")
 	eg.WorkerRTID = aws.StringValue(workerRT.RouteTable.RouteTableId)
 	_, err = c.EC2.CreateRoute(&ec2.CreateRouteInput{

@@ -719,7 +719,7 @@ func runHTTPSCertSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 // and rejects them for HTTP.
 func createHTTPSListener(t *testing.T, c *harness.AWSClient, lbArn string, port int64, tgArn, certArn string) string {
 	t.Helper()
-	// e2e:allow-create — the HTTPS listener is the subject under test (ACM cert -> termination).
+	// The HTTPS listener is the subject under test (ACM cert -> termination).
 	out, err := c.ELBv2.CreateListener(&elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(lbArn),
 		Protocol:        aws.String("HTTPS"),
@@ -756,7 +756,7 @@ func createHTTPSListener(t *testing.T, c *harness.AWSClient, lbArn string, port 
 // shared VPC default SG) require an explicit dedicated SG here.
 func createScenarioSG(t *testing.T, c *harness.AWSClient, f *sharedFixture, name string, ports ...int64) string {
 	t.Helper()
-	out, err := c.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{ // e2e:allow-create — a dedicated per-scenario LB SG is the isolation under test; a shared Ensure* fixture would defeat it.
+	out, err := c.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{ // A dedicated per-scenario LB SG is the isolation under test; a shared Ensure* fixture would defeat it.
 		VpcId:       aws.String(f.VPCID),
 		GroupName:   aws.String(name),
 		Description: aws.String("lb-e2e dedicated LB-facing security group"),

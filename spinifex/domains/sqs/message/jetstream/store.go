@@ -176,19 +176,23 @@ func (s *Store) bucket(ctx context.Context, ns message.Namespace) (jsapi.KeyValu
 }
 
 // GetState reads a message's state record from its state shard's bucket.
+// The stream leader answers, so a completed write or delete is always seen;
+// a follower may not have applied it yet.
 func (s *Store) GetState(ctx context.Context, ns message.Namespace, pos message.Position) (message.State, error) {
-	kv, err := s.bucket(ctx, ns)
-	if err != nil {
+	if _, err := s.bucket(ctx, ns); err != nil {
 		return message.State{}, err
 	}
-	e, err := kv.Get(ctx, StateKey(ns, pos))
+	name := BucketName(ns.StateShard)
+	m, err := leaderLastMsg(ctx, s.js, "KV_"+name, "$KV."+name+"."+StateKey(ns, pos))
 	switch {
-	case errors.Is(err, jsapi.ErrKeyNotFound):
+	case errors.Is(err, jsapi.ErrMsgNotFound):
 		return message.State{}, message.ErrNotFound
 	case err != nil:
 		return message.State{}, fmt.Errorf("get state %s/%d: %w", ns.Queue, pos, err)
+	case kvRemoved(m.Header):
+		return message.State{}, message.ErrNotFound
 	}
-	return message.State{Value: e.Value(), Revision: message.Revision(e.Revision())}, nil
+	return message.State{Value: m.Data, Revision: message.Revision(m.Sequence)}, nil
 }
 
 // PutState is a revision compare-and-set; expected zero creates the record.

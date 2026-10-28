@@ -176,6 +176,25 @@ Then authenticate Docker and push using the `repository_url` output, following s
 
 :::
 
+## EKS workers and multiple gateways
+
+Each gateway puts its own address in the `repositoryUri` it returns, so repositories created through different gateways can carry different hosts.
+When an EKS worker launches, the daemon that launches it writes every cluster gateway into the worker's registry mirrors, TLS trust and credential-provider config.
+A pod can then pull from any `repositoryUri` host in the cluster.
+The worker tries the gateway named in the image reference first and falls back to the others in cluster order.
+
+Limits:
+
+- The gateway list comes from the cluster config the launching daemon loaded at start.
+  A gateway added later is not trusted by existing workers; restart the launching daemon and replace the worker.
+- Peer gateways are assumed to listen on port 9999.
+  A hand-edited `awsgw` bind on a peer is not covered.
+- A gateway address that does not answer costs about 30 seconds on each cold pull while the worker's connection attempt gives up.
+  A stopped gateway on a host that is still up refuses the connection, and the worker moves to the next gateway at once.
+
+Measured on a single-node environment: pulls by `repositoryUri` and by the account's ECR DNS name, a pull rejected with `x509: certificate signed by unknown authority` when the gateway host was not in the worker config, and a 31 second pull through an unreachable first endpoint.
+Measured on a 3-node environment: a pod pulling each of the three gateways' `repositoryUri` on a worker launched with this change (two of the three failed with `x509` on a worker launched without it), and a pull of the stopped gateway's own `repositoryUri` that succeeded through another gateway within one retry (the pull itself took 147 ms after the first endpoint refused).
+
 ## Troubleshooting
 
 **`docker login` fails with an authorization error.** The token is account-scoped and short-lived. Re-run `aws ecr get-login-password` to mint a fresh token, and confirm the registry host in `docker login` matches your account's endpoint (`aws ecr describe-repositories` returns it).

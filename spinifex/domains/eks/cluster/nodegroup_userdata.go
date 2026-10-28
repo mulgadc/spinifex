@@ -29,24 +29,65 @@ type agentUserDataInput struct {
 	RegistryHost  string
 	GatewayIP     string
 
+	// RegistryHosts lists every gateway's registry host[:port] as it appears in a
+	// repositoryUri, local node first. Each is trusted and pulled from directly, with
+	// the others as fallbacks. Empty keeps the single GatewayIP endpoint.
+	RegistryHosts []string
+
 	// GPUEnabled/GPUVendor gate the GPU node label + default scheduling taint;
 	// set from the owning NodegroupRecord (see gpuFieldsForInstanceTypes).
 	GPUEnabled bool
 	GPUVendor  string
 }
 
-// registryMirrorHosts returns the distinct registry hosts a worker must accept on
-// a pod image ref: the port-less parity name, the port-ful parity name (the value
-// DescribeRepositories returns), and the gateway IP:port when the gateway
-// advertises an IP. containerd matches mirror keys and the credential provider
-// matches matchImages verbatim against the image host, so every form must be
-// listed; all resolve to the single dialed gateway endpoint.
-func registryMirrorHosts(registryHost, endpointHost string) []string {
-	hosts := []string{registryHost, registryHost + ":9999"}
-	if endpointHost != registryHost {
-		hosts = append(hosts, endpointHost+":9999")
+// registryGateways returns the gateway host[:port] endpoints a worker may dial, in
+// preference order: every advertised gateway, then GatewayIP:9999 when it is not
+// already listed. With neither, the parity hostname at :9999 is the only endpoint.
+func registryGateways(in agentUserDataInput) []string {
+	var gws []string
+	seen := map[string]bool{}
+	add := func(h string) {
+		if h != "" && !seen[h] {
+			seen[h] = true
+			gws = append(gws, h)
+		}
 	}
-	return hosts
+	for _, h := range in.RegistryHosts {
+		add(h)
+	}
+	if in.GatewayIP != "" {
+		add(in.GatewayIP + ":9999")
+	}
+	if len(gws) == 0 {
+		add(in.RegistryHost + ":9999")
+	}
+	return gws
+}
+
+// registryMirrors maps every host a pod image ref may carry to the endpoints
+// containerd tries for it, and matches the credential provider's matchImages
+// verbatim against the same keys. The parity names try the gateways in order; a
+// gateway key tries itself first so a down gateway still falls back to the rest.
+func registryMirrors(registryHost string, gateways []string) (keys []string, endpoints map[string][]string) {
+	endpoints = map[string][]string{}
+	for _, k := range []string{registryHost, registryHost + ":9999"} {
+		keys = append(keys, k)
+		endpoints[k] = gateways
+	}
+	for _, g := range gateways {
+		if _, ok := endpoints[g]; ok {
+			continue
+		}
+		keys = append(keys, g)
+		ordered := []string{g}
+		for _, o := range gateways {
+			if o != g {
+				ordered = append(ordered, o)
+			}
+		}
+		endpoints[g] = ordered
+	}
+	return keys, endpoints
 }
 
 // buildAgentUserData renders the cloud-config YAML for a nodegroup worker VM.
@@ -81,32 +122,27 @@ func buildAgentUserData(in agentUserDataInput) string {
 	}
 	agentBody := strings.Join(agentLines, "\n")
 
-	// The mirror endpoint is dialed by IP when the gateway IP is known: the gateway
-	// cert carries an IP SAN, so TLS validates without DNS, and there is no internal
-	// resolver yet (cloud-init manage_etc_hosts rewrites /etc/hosts each boot). A pod
-	// image ref may carry any host the API hands out — the port-less parity name, the
-	// port-ful parity name (the repositoryUri value), or the gateway IP:port — so each
-	// is keyed as a mirror redirecting to the one endpoint host:port actually dialed,
-	// whose CA the configs tls block trusts.
-	endpointHost := in.RegistryHost
-	if in.GatewayIP != "" {
-		endpointHost = in.GatewayIP
-	}
-	endpoint := "https://" + endpointHost + ":9999"
+	// Gateways are dialed by IP: the gateway cert carries IP SANs so TLS validates
+	// without DNS, and there is no internal resolver yet (cloud-init
+	// manage_etc_hosts rewrites /etc/hosts each boot). Every endpoint is trusted via
+	// the configs tls block below.
+	gateways := registryGateways(in)
+	mirrorKeys, mirrorEndpoints := registryMirrors(in.RegistryHost, gateways)
 	registryLines := []string{"mirrors:"}
-	for _, host := range registryMirrorHosts(in.RegistryHost, endpointHost) {
+	for _, key := range mirrorKeys {
+		registryLines = append(registryLines, "  \""+key+"\":", "    endpoint:")
+		for _, ep := range mirrorEndpoints[key] {
+			registryLines = append(registryLines, "      - \"https://"+ep+"\"")
+		}
+	}
+	registryLines = append(registryLines, "configs:")
+	for _, g := range gateways {
 		registryLines = append(registryLines,
-			"  \""+host+"\":",
-			"    endpoint:",
-			"      - \""+endpoint+"\"",
+			"  \""+g+"\":",
+			"    tls:",
+			"      ca_file: "+k3sGatewayCAPath,
 		)
 	}
-	registryLines = append(registryLines,
-		"configs:",
-		"  \""+endpointHost+":9999\":",
-		"    tls:",
-		"      ca_file: "+k3sGatewayCAPath,
-	)
 	registriesYAML := strings.Join(registryLines, "\n")
 
 	credProviderDropin := strings.Join([]string{
@@ -122,7 +158,7 @@ func buildAgentUserData(in agentUserDataInput) string {
 		"  - name: ecr-credential-provider",
 		"    matchImages:",
 	}
-	for _, host := range registryMirrorHosts(in.RegistryHost, endpointHost) {
+	for _, host := range mirrorKeys {
 		credLines = append(credLines, "      - \""+host+"\"")
 	}
 	credLines = append(credLines,

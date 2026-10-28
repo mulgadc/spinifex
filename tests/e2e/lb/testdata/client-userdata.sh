@@ -34,7 +34,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not http_path.startswith("/"):
                 http_path = "/" + http_path
             host_header = body.get("host", "")
-            extra_headers = body.get("headers", [])
+            extra_headers = body.get("headers") or []
         except Exception as exc:
             self.send_response(400); self.end_headers()
             self.wfile.write(f"bad request: {exc}".encode())

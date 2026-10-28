@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,6 +65,9 @@ func Run(t *testing.T, newHarness Factory) {
 		{"FeedWakesOnLiveAppend", testFeedLive},
 		{"FeedOmitsDeletedAppends", testFeedOmitsDeleted},
 		{"FeedHonoursContext", testFeedContext},
+		{"FeedNextAfterCloseIsClosed", testFeedNextAfterClose},
+		{"FeedCloseEndsBlockedNext", testFeedCloseEndsNext},
+		{"FeedResumesAfterClose", testFeedResumesAfterClose},
 		{"ScanPagesInOrder", testScanPagesInOrder},
 		{"ScanAdvancesAcrossDeletedPositions", testScanAcrossDeleted},
 		{"ScanExcludesAppendsAfterBound", testScanBound},
@@ -393,6 +397,47 @@ func testFeedOmitsDeleted(t *testing.T, h Harness) {
 		c = nextIn(t, f, ns)
 	}
 	assert.Equal(t, kept, c.Position, "a deleted append never hides a later one")
+}
+
+func testFeedNextAfterClose(t *testing.T, h Harness) {
+	ns := newNamespace(t, 0)
+	appendBody(t, h.Store, ns, "pending")
+	f := openFeed(t, h.Store, 0, 0)
+	require.NoError(t, f.Close())
+	_, err := f.Next(context.Background())
+	require.ErrorIs(t, err, message.ErrFeedClosed, "a closed feed delivers nothing, even with changes pending")
+	assert.NoError(t, f.Close(), "a repeated Close returns nil")
+}
+
+func testFeedCloseEndsNext(t *testing.T, h Harness) {
+	f := openFeed(t, h.Store, 0, message.Cursor(math.MaxUint64))
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.Next(context.Background())
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, f.Close())
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, message.ErrFeedClosed, "Close ends a Next already waiting")
+	case <-time.After(feedWait):
+		t.Fatal("Next still blocked after Close")
+	}
+}
+
+// testFeedResumesAfterClose: a change withheld by a racing Close is not lost;
+// a feed from the last delivered cursor returns it.
+func testFeedResumesAfterClose(t *testing.T, h Harness) {
+	ns := newNamespace(t, 0)
+	first := appendBody(t, h.Store, ns, "first")
+	second := appendBody(t, h.Store, ns, "second")
+	f := openFeed(t, h.Store, 0, 0)
+	got := nextIn(t, f, ns)
+	require.Equal(t, first, got.Position)
+	require.NoError(t, f.Close())
+	resumed := openFeed(t, h.Store, 0, got.Cursor)
+	assert.Equal(t, second, nextIn(t, resumed, ns).Position)
 }
 
 func testFeedContext(t *testing.T, h Harness) {

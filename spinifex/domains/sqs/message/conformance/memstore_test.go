@@ -191,7 +191,7 @@ func (s *memStore) DeleteState(_ context.Context, ns message.Namespace, pos mess
 }
 
 func (s *memStore) Feed(_ context.Context, shard message.Shard, after message.Cursor) (message.Feed, error) {
-	return &memFeed{d: s.d, shard: shard, after: after}, nil
+	return &memFeed{d: s.d, shard: shard, after: after, done: make(chan struct{})}, nil
 }
 
 func (s *memStore) Scan(_ context.Context, shard message.Shard, from message.ScanCursor, limit int) (message.ScanPage, error) {
@@ -285,10 +285,17 @@ type memFeed struct {
 	d     *memData
 	shard message.Shard
 	after message.Cursor
+
+	mu     sync.Mutex
+	closed bool
+	done   chan struct{}
 }
 
 func (f *memFeed) Next(ctx context.Context) (message.Change, error) {
 	for {
+		if f.isClosed() {
+			return message.Change{}, message.ErrFeedClosed
+		}
 		if err := ctx.Err(); err != nil {
 			return message.Change{}, err
 		}
@@ -297,21 +304,47 @@ func (f *memFeed) Next(ctx context.Context) (message.Change, error) {
 			if c.Cursor <= f.after {
 				continue
 			}
-			f.after = c.Cursor
 			if _, live := f.d.messages[c.Namespace][c.Position]; live {
 				f.d.mu.Unlock()
-				c.Meta = maps.Clone(c.Meta)
-				return c, nil
+				return f.deliver(c)
 			}
+			f.after = c.Cursor
 		}
 		wake := f.d.wake
 		f.d.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return message.Change{}, ctx.Err()
+		case <-f.done:
 		case <-wake:
 		}
 	}
 }
 
-func (f *memFeed) Close() error { return nil }
+// deliver hands c back unless Close has begun, advancing only on delivery.
+func (f *memFeed) deliver(c message.Change) (message.Change, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return message.Change{}, message.ErrFeedClosed
+	}
+	f.after = c.Cursor
+	c.Meta = maps.Clone(c.Meta)
+	return c, nil
+}
+
+func (f *memFeed) isClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
+
+func (f *memFeed) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.closed {
+		f.closed = true
+		close(f.done)
+	}
+	return nil
+}

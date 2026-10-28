@@ -40,14 +40,19 @@ const feedIdleCheck = 2 * time.Second
 // feedCloseTimeout bounds Close's consumer delete.
 const feedCloseTimeout = 5 * time.Second
 
+// feedCloseWait bounds Close's wait for a consumer open already in progress:
+// JetStream's default API timeout plus the delete that follows it.
+const feedCloseWait = 2 * feedCloseTimeout
+
+// errOpenInProgress reports a Close that could not wait out a consumer open.
+var errOpenInProgress = errors.New("a consumer open is still in progress and is deleted when it completes")
+
 var (
 	// ErrUnsupportedTopology reports a cluster size the store does not run on.
 	ErrUnsupportedTopology = errors.New("sqs message store: unsupported topology")
 	// ErrCorruptRecord reports a stored message whose subject or internal
 	// header cannot be decoded into a namespace.
 	ErrCorruptRecord = errors.New("sqs message store: corrupt record")
-	// ErrFeedClosed is returned by Next once the feed has been closed.
-	ErrFeedClosed = errors.New("sqs message store: feed closed")
 )
 
 // Store is the JetStream message store over one dedicated server connection.
@@ -397,7 +402,7 @@ func (s *Store) Feed(ctx context.Context, messageShard message.Shard, after mess
 	if err != nil {
 		return nil, err
 	}
-	f := &feed{shard: messageShard, stream: stream, cursor: uint64(after), idleCheck: feedIdleCheck}
+	f := &feed{shard: messageShard, stream: stream, cursor: uint64(after), idleCheck: feedIdleCheck, closeWait: feedCloseWait}
 	f.closing, f.closeNow = context.WithCancel(context.Background())
 	if after == math.MaxUint64 {
 		// No position follows the maximum cursor; only later appends can.
@@ -446,17 +451,49 @@ func (f *feed) current() (jsapi.MessagesContext, bool) {
 	return f.it, f.closed
 }
 
-// install adopts a newly opened consumer, or releases it if Close won.
-func (f *feed) install(consumer jsapi.Consumer, it jsapi.MessagesContext) bool {
+// isClosed reports whether Close has begun.
+func (f *feed) isClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
+
+// reopen opens a consumer from the cursor. Close waits for it, so a consumer
+// created while Close runs is deleted before Close returns.
+func (f *feed) reopen(ctx context.Context) (jsapi.MessagesContext, error) {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return nil, message.ErrFeedClosed
+	}
+	opened := make(chan struct{})
+	f.opening = opened
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.opening = nil
+		f.mu.Unlock()
+		close(opened)
+	}()
+	// Not cancelled by Close: a create cut short can still land server-side
+	// with no owner.
+	consumer, it, err := f.open(ctx)
+	if err != nil {
+		return nil, f.interrupted(ctx, err)
+	}
 	f.mu.Lock()
 	if !f.closed {
 		f.consumer, f.it = consumer, it
 		f.mu.Unlock()
-		return true
+		return it, nil
 	}
 	f.mu.Unlock()
-	_ = release(f.stream, consumer, it)
-	return false
+	if err := release(f.stream, consumer, it); err != nil {
+		f.mu.Lock()
+		f.lateErr = err
+		f.mu.Unlock()
+	}
+	return nil, message.ErrFeedClosed
 }
 
 // detach takes ownership of the live consumer, leaving the feed with none.
@@ -498,6 +535,7 @@ type feed struct {
 	stream    jsapi.Stream
 	cursor    uint64
 	idleCheck time.Duration
+	closeWait time.Duration
 	// closing is cancelled by Close, interrupting an in-flight Next.
 	closing  context.Context
 	closeNow context.CancelFunc
@@ -506,6 +544,10 @@ type feed struct {
 	closed   bool
 	consumer jsapi.Consumer
 	it       jsapi.MessagesContext
+	// opening is closed when an in-progress reopen has finished.
+	opening chan struct{}
+	// lateErr is a reopen's failure to delete a consumer created after Close.
+	lateErr error
 }
 
 var _ message.Feed = (*feed)(nil)
@@ -535,24 +577,22 @@ func (f *feed) next(ctx context.Context) (jsapi.Msg, error) {
 	defer context.AfterFunc(f.closing, cancel)()
 	it, closed := f.current()
 	if closed {
-		return nil, ErrFeedClosed
+		return nil, message.ErrFeedClosed
 	}
 	if it == nil {
-		// Not opCtx: a create cancelled by Close can still land server-side
-		// unowned; install deletes a consumer opened after Close instead.
-		consumer, opened, err := f.open(ctx)
-		if err != nil {
-			return nil, f.interrupted(ctx, err)
+		var err error
+		if it, err = f.reopen(ctx); err != nil {
+			return nil, err
 		}
-		if !f.install(consumer, opened) {
-			return nil, ErrFeedClosed
-		}
-		it = opened
 	}
 	waitCtx, cancelWait := context.WithTimeout(opCtx, f.idleCheck)
 	msg, err := it.Next(jsapi.NextContext(waitCtx))
 	cancelWait()
 	if err == nil {
+		if f.isClosed() {
+			// The change is withheld; the caller's cursor still precedes it.
+			return nil, message.ErrFeedClosed
+		}
 		return msg, nil
 	}
 	if err := f.stopped(ctx); err != nil {
@@ -579,7 +619,7 @@ func (f *feed) next(ctx context.Context) (jsapi.Msg, error) {
 // stopped reports why Next must end early: the feed closed or ctx is done.
 func (f *feed) stopped(ctx context.Context) error {
 	if f.closing.Err() != nil {
-		return ErrFeedClosed
+		return message.ErrFeedClosed
 	}
 	return ctx.Err()
 }
@@ -634,20 +674,28 @@ func decodeNamespace(shard message.Shard, subject string, h nats.Header) (messag
 }
 
 // Close stops the feed and deletes its server-side consumer, which would
-// otherwise linger until its inactive threshold. It is terminal: a later or
-// in-flight Next returns ErrFeedClosed, and repeated Close returns nil.
+// otherwise linger until its inactive threshold. It waits, within closeWait,
+// for a consumer open in progress; a repeated Close waits for it again.
 func (f *feed) Close() error {
 	f.mu.Lock()
-	if f.closed {
-		f.mu.Unlock()
-		return nil
-	}
 	f.closed = true
-	consumer, it := f.consumer, f.it
+	consumer, it, opening := f.consumer, f.it, f.opening
 	f.consumer, f.it = nil, nil
 	f.mu.Unlock()
 	f.closeNow()
-	if err := release(f.stream, consumer, it); err != nil {
+	err := release(f.stream, consumer, it)
+	if opening != nil {
+		select {
+		case <-opening:
+			f.mu.Lock()
+			err = errors.Join(err, f.lateErr)
+			f.lateErr = nil
+			f.mu.Unlock()
+		case <-time.After(f.closeWait):
+			err = errors.Join(err, errOpenInProgress)
+		}
+	}
+	if err != nil {
 		return fmt.Errorf("close feed on %s: %w", StreamName(f.shard), err)
 	}
 	return nil

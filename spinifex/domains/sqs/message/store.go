@@ -25,6 +25,8 @@ var (
 	ErrRevisionMismatch = errors.New("message: revision mismatch")
 	// ErrInvalidArgument reports a malformed namespace, key or input.
 	ErrInvalidArgument = errors.New("message: invalid argument")
+	// ErrFeedClosed is returned by a Feed's Next once Close has begun.
+	ErrFeedClosed = errors.New("message: feed closed")
 )
 
 // Shard is an opaque allocation a queue was given when it was created. The
@@ -209,10 +211,15 @@ type ScanPage struct {
 	Done bool
 }
 
-// Feed is an open change feed.
+// Feed is an open change feed. One goroutine calls Next at a time; Close may
+// be called from any goroutine, concurrently with Next and more than once.
 type Feed interface {
-	// Next blocks until the next change or until ctx is done.
+	// Next blocks until the next change, until ctx is done or until Close.
+	// Once Close has begun, Next returns ErrFeedClosed, even a call already in
+	// progress, and never a change it received; a new feed resumes from it.
 	Next(ctx context.Context) (Change, error)
+	// Close ends the feed; nil means its resources are released. A repeated
+	// Close returns nil once they are.
 	Close() error
 }
 

@@ -52,6 +52,12 @@ backend {{.Name}}
 {{- range .Servers}}
     server {{.Name}} {{.Addr}}:{{.Port}} check{{if .Secure}} check-ssl ssl verify none{{end}} inter {{.CheckInterval}}s fall {{.Fall}} rise {{.Rise}}
 {{- end}}
+{{- if .Backups}}
+    option allbackups
+{{- range .Backups}}
+    server {{.Name}} {{.Addr}}:{{.Port}} backup{{if .Secure}} ssl verify none{{end}}
+{{- end}}
+{{- end}}
 {{- end}}
 {{end}}
 `
@@ -107,6 +113,9 @@ type HAProxyBackend struct {
 	// sends "Host: <ip>" on the scheme's default port and "<ip>:<port>" otherwise.
 	HealthCheckDefaultPort int64
 	Servers                []HAProxyServer
+	// Backups are unchecked copies of Servers that HAProxy routes to only when
+	// every checked server is down, so an all-unhealthy group fails open.
+	Backups       []HAProxyServer
 	FixedResponse          *HAProxyFixedResponse
 	Redirect               *HAProxyRedirect
 }
@@ -204,14 +213,21 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 			if target.PrivateIP == "" || target.HealthState == TargetHealthDraining {
 				continue
 			}
+			name := sanitizeName("srv", target.Id)
 			backend.Servers = append(backend.Servers, HAProxyServer{
-				Name:          sanitizeName("srv", target.Id),
+				Name:          name,
 				Addr:          target.PrivateIP,
 				Port:          target.Port,
 				CheckInterval: tg.HealthCheck.IntervalSeconds,
 				Fall:          tg.HealthCheck.UnhealthyThreshold,
 				Rise:          tg.HealthCheck.HealthyThreshold,
 				Secure:        secure,
+			})
+			backend.Backups = append(backend.Backups, HAProxyServer{
+				Name:   name + lbagent.FailoverServerSuffix,
+				Addr:   target.PrivateIP,
+				Port:   target.Port,
+				Secure: secure,
 			})
 		}
 		cfg.Backends = append(cfg.Backends, backend)

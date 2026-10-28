@@ -212,8 +212,8 @@ type ScanPage struct {
 }
 
 // Feed is an open change feed. One goroutine calls Next at a time; Close may
-// run from any goroutine, concurrently and repeatedly. Work Feed or Next began
-// may finish after ctx ends; what it acquired is released, ctx's error returned.
+// run from any goroutine, concurrently and repeatedly. An open or reopen begun
+// before ctx ended may finish; it is released best-effort and ctx's error returned.
 type Feed interface {
 	// Next blocks until the next change, until ctx is done or until Close. A
 	// change is claimed atomically against Close: claimed first, it is returned;

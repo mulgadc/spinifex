@@ -2,6 +2,7 @@ package jetstream
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -124,4 +125,32 @@ func TestFeedConsumerHasInactiveBackstop(t *testing.T) {
 	info, err := f.consumer.Info(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, time.Minute, info.Config.InactiveThreshold)
+}
+
+var errInjectedCreate = errors.New("injected create failure")
+
+// cancelThenFail ends the caller's ctx during a create, then fails it.
+type cancelThenFail struct {
+	jsapi.Stream
+
+	cancel context.CancelFunc
+}
+
+func (c cancelThenFail) OrderedConsumer(context.Context, jsapi.OrderedConsumerConfig) (jsapi.Consumer, error) {
+	c.cancel()
+	return nil, errInjectedCreate
+}
+
+// TestFeedFailedOpenAfterCancelReportsCancellation: an open that fails after
+// ctx ended still reports ctx's error, alongside the create failure.
+func TestFeedFailedOpenAfterCancelReportsCancellation(t *testing.T) {
+	s, _ := feedStore(t)
+	f := openWedgeable(t, s)
+	emptied(t, f)
+	ctx, cancel := context.WithCancel(context.Background())
+	f.stream = cancelThenFail{Stream: f.stream, cancel: cancel}
+	err := f.start(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, err, errInjectedCreate)
+	assert.Nil(t, f.it)
 }

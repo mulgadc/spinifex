@@ -435,7 +435,7 @@ func (f *feed) start(ctx context.Context) error {
 	}
 	consumer, it, err := f.open(ctx)
 	if err != nil {
-		return err
+		return errors.Join(ctx.Err(), err)
 	}
 	if err := ctx.Err(); err != nil {
 		f.mu.Lock()

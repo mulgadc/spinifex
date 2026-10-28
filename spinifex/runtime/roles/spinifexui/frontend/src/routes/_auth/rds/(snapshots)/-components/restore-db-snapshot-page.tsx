@@ -1,7 +1,12 @@
+import type { DBSnapshot } from "@aws-sdk/client-rds"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { useForm, useWatch } from "react-hook-form"
+import {
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -54,7 +59,9 @@ import {
 import {
   DeletionProtectionField,
   instanceClassOptions,
+  parameterGroupOptions,
   parameterGroupsForEngine,
+  subnetGroupOptions,
 } from "../../-components/rds-form-fields"
 
 interface Props {
@@ -81,6 +88,81 @@ const INHERITED_FIELDS: { label: string; note: string }[] = [
     note: "The restored instance takes the platform defaults; change them with a modify afterwards.",
   },
 ]
+
+function restoreDefaults(
+  snapshot: DBSnapshot | undefined,
+): RestoreDBInstanceFormData {
+  const snapshotStorage = snapshot?.AllocatedStorage ?? 0
+
+  return {
+    snapshotAllocatedStorage: snapshotStorage,
+    dbInstanceIdentifier: suggestedIdentifier(
+      snapshot?.DBInstanceIdentifier ?? "",
+      "restored",
+    ),
+    dbInstanceClass: "",
+    allocatedStorage: snapshotStorage,
+    port: snapshot?.Port ? String(snapshot.Port) : "",
+    dbSubnetGroupName: "",
+    vpcSecurityGroupIds: [],
+    dbParameterGroupName: "",
+    deletionProtection: false,
+    tags: [],
+  }
+}
+
+function securityGroupsEmptyText(vpcId: string | undefined): string {
+  return vpcId
+    ? `No security groups available in ${vpcId}.`
+    : "The snapshot does not identify a placement VPC."
+}
+
+function SnapshotSourceCard({
+  dbSnapshotIdentifier,
+  snapshot,
+}: {
+  dbSnapshotIdentifier: string
+  snapshot: DBSnapshot
+}) {
+  const snapshotStorage = snapshot.AllocatedStorage ?? 0
+
+  return (
+    <DetailCard>
+      <DetailCard.Header>Restoring From</DetailCard.Header>
+      <DetailCard.Content>
+        <DetailRow label="Snapshot" value={dbSnapshotIdentifier} />
+        <DetailRow
+          label="Source DB instance"
+          value={snapshot.DBInstanceIdentifier}
+        />
+        <DetailRow
+          label="Engine"
+          value={[snapshot.Engine ?? "", snapshot.EngineVersion]
+            .filter(Boolean)
+            .join(" ")}
+        />
+        <DetailRow label="Master username" value={snapshot.MasterUsername} />
+        <DetailRow
+          label="Snapshot storage"
+          value={snapshotStorage ? `${snapshotStorage} GiB` : undefined}
+        />
+      </DetailCard.Content>
+    </DetailCard>
+  )
+}
+
+function InheritedFieldsNote() {
+  return (
+    <div className="space-y-2 rounded-md border border-border p-4">
+      <h3 className="text-xs font-medium">Inherited from the snapshot</h3>
+      {INHERITED_FIELDS.map((entry) => (
+        <p className="text-xs text-muted-foreground" key={entry.label}>
+          <span className="font-medium">{entry.label}</span> — {entry.note}
+        </p>
+      ))}
+    </div>
+  )
+}
 
 export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   const navigate = useNavigate()
@@ -124,21 +206,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     setValue,
   } = useForm<RestoreDBInstanceFormData>({
     resolver: zodResolver(restoreDBInstanceSchema),
-    defaultValues: {
-      snapshotAllocatedStorage: snapshotStorage,
-      dbInstanceIdentifier: suggestedIdentifier(
-        snapshot?.DBInstanceIdentifier ?? "",
-        "restored",
-      ),
-      dbInstanceClass: "",
-      allocatedStorage: snapshotStorage,
-      port: snapshot?.Port ? String(snapshot.Port) : "",
-      dbSubnetGroupName: "",
-      vpcSecurityGroupIds: [],
-      dbParameterGroupName: "",
-      deletionProtection: false,
-      tags: [],
-    },
+    defaultValues: restoreDefaults(snapshot),
   })
 
   const values = useWatch({ control })
@@ -284,28 +352,10 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
       )}
 
       <div className="max-w-4xl space-y-6">
-        <DetailCard>
-          <DetailCard.Header>Restoring From</DetailCard.Header>
-          <DetailCard.Content>
-            <DetailRow label="Snapshot" value={dbSnapshotIdentifier} />
-            <DetailRow
-              label="Source DB instance"
-              value={snapshot.DBInstanceIdentifier}
-            />
-            <DetailRow
-              label="Engine"
-              value={[engine, snapshot.EngineVersion].filter(Boolean).join(" ")}
-            />
-            <DetailRow
-              label="Master username"
-              value={snapshot.MasterUsername}
-            />
-            <DetailRow
-              label="Snapshot storage"
-              value={snapshotStorage ? `${snapshotStorage} GiB` : undefined}
-            />
-          </DetailCard.Content>
-        </DetailCard>
+        <SnapshotSourceCard
+          dbSnapshotIdentifier={dbSnapshotIdentifier}
+          snapshot={snapshot}
+        />
 
         <form className="space-y-6" onSubmit={handleSubmit(onSubmit)}>
           <TextField
@@ -357,21 +407,14 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
             label="DB subnet group"
             name="dbSubnetGroupName"
             onValueChange={handleSubnetGroupChange}
-            options={subnetGroups.map((g) => ({
-              value: g.DBSubnetGroupName ?? "",
-              label: `${g.DBSubnetGroupName} (${g.VpcId})`,
-            }))}
+            options={subnetGroupOptions(subnetGroups)}
             placeholder="The snapshot's subnet group"
           />
 
           <Field>
             <FieldTitle>VPC security groups</FieldTitle>
             <SecurityGroupCheckboxes
-              emptyText={
-                placementVpcId
-                  ? `No security groups available in ${placementVpcId}.`
-                  : "The snapshot does not identify a placement VPC."
-              }
+              emptyText={securityGroupsEmptyText(placementVpcId)}
               groups={securityGroups}
               onChange={setSecurityGroups}
               selected={selectedSecurityGroups}
@@ -387,10 +430,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
             id="restore-parameter-group"
             label="DB parameter group"
             name="dbParameterGroupName"
-            options={parameterGroups.map((g) => ({
-              value: g.DBParameterGroupName ?? "",
-              label: g.DBParameterGroupName ?? "",
-            }))}
+            options={parameterGroupOptions(parameterGroups)}
             placeholder="The snapshot's parameter group"
           />
 
@@ -401,27 +441,13 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
 
           <TagsFieldArray control={control} name="tags" />
 
-          <div className="space-y-2 rounded-md border border-border p-4">
-            <h3 className="text-xs font-medium">Inherited from the snapshot</h3>
-            {INHERITED_FIELDS.map((entry) => (
-              <p className="text-xs text-muted-foreground" key={entry.label}>
-                <span className="font-medium">{entry.label}</span> —{" "}
-                {entry.note}
-              </p>
-            ))}
-          </div>
+          <InheritedFieldsNote />
 
           <CliCommandPanel
-            commands={buildRestoreCommands(dbSnapshotIdentifier, {
-              dbInstanceIdentifier: values.dbInstanceIdentifier ?? "",
-              dbInstanceClass: values.dbInstanceClass ?? "",
-              allocatedStorage: values.allocatedStorage ?? snapshotStorage,
-              port: values.port ?? "",
-              dbSubnetGroupName: selectedSubnetGroup,
-              vpcSecurityGroupIds: selectedSecurityGroups,
-              dbParameterGroupName: values.dbParameterGroupName ?? "",
-              deletionProtection: values.deletionProtection ?? false,
-            })}
+            commands={buildRestoreCommands(
+              dbSnapshotIdentifier,
+              cliValuesFromForm(values, snapshotStorage),
+            )}
           />
 
           <FormActions
@@ -445,6 +471,22 @@ type CliValues = Omit<
   RestoreDBInstanceFormData,
   "snapshotAllocatedStorage" | "tags"
 >
+
+function cliValuesFromForm(
+  values: DeepPartialSkipArrayKey<RestoreDBInstanceFormData>,
+  snapshotStorage: number,
+): CliValues {
+  return {
+    dbInstanceIdentifier: values.dbInstanceIdentifier ?? "",
+    dbInstanceClass: values.dbInstanceClass ?? "",
+    allocatedStorage: values.allocatedStorage ?? snapshotStorage,
+    port: values.port ?? "",
+    dbSubnetGroupName: values.dbSubnetGroupName ?? "",
+    vpcSecurityGroupIds: values.vpcSecurityGroupIds ?? [],
+    dbParameterGroupName: values.dbParameterGroupName ?? "",
+    deletionProtection: values.deletionProtection ?? false,
+  }
+}
 
 function buildRestoreCommands(
   dbSnapshotIdentifier: string,

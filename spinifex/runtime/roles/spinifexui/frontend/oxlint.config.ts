@@ -28,7 +28,6 @@ export default defineConfig({
     "@tanstack/router/create-route-property-order": "error",
     "@tanstack/router/route-param-names": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "off",
-    "eslint/complexity": "off",
     "eslint/func-style": [
       "error",
       "declaration",

@@ -1,3 +1,8 @@
+import type {
+  Instance,
+  Reservation,
+  VolumeAttachment,
+} from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { Camera, Link2, Link2Off } from "lucide-react"
@@ -65,6 +70,16 @@ export const Route = createFileRoute(
   component: VolumeDetail,
 })
 
+function getRunningInstances(
+  reservations: Reservation[] | undefined,
+): Instance[] {
+  return (
+    reservations?.flatMap(
+      (r) => r.Instances?.filter((i) => i.State?.Name === "running") ?? [],
+    ) ?? []
+  )
+}
+
 function VolumeDetail() {
   const { id } = Route.useParams()
   const { data } = useSuspenseQuery(ec2VolumeQueryOptions(id))
@@ -78,10 +93,7 @@ function VolumeDetail() {
   const [attachDevice, setAttachDevice] = useState("")
   const [detachForce, setDetachForce] = useState(false)
 
-  const runningInstances =
-    instancesData.Reservations?.flatMap(
-      (r) => r.Instances?.filter((i) => i.State?.Name === "running") ?? [],
-    ) ?? []
+  const runningInstances = getRunningInstances(instancesData.Reservations)
 
   const isAvailable =
     volume?.State === "available" &&
@@ -236,39 +248,7 @@ function VolumeDetail() {
           </DetailCard.Content>
         </DetailCard>
 
-        {volume.Attachments && volume.Attachments.length > 0 && (
-          <DetailCard>
-            <DetailCard.Header>Attachments</DetailCard.Header>
-            {volume.Attachments.map((attachment) => (
-              <DetailCard.Content key={attachment.InstanceId}>
-                <DetailRow
-                  label="Instance ID"
-                  value={
-                    attachment.InstanceId ? (
-                      <Link
-                        className="text-primary hover:underline"
-                        params={{ id: attachment.InstanceId }}
-                        to="/ec2/describe-instances/$id"
-                      >
-                        {attachment.InstanceId}
-                      </Link>
-                    ) : undefined
-                  }
-                />
-                <DetailRow label="Device" value={attachment.Device} />
-                <DetailRow label="Status" value={attachment.State} />
-                <DetailRow
-                  label="Attach Time"
-                  value={formatDateTime(attachment.AttachTime)}
-                />
-                <DetailRow
-                  label="Delete on Termination"
-                  value={attachment.DeleteOnTermination ? "Yes" : "No"}
-                />
-              </DetailCard.Content>
-            ))}
-          </DetailCard>
-        )}
+        <VolumeAttachmentsCard attachments={volume.Attachments} />
       </div>
 
       <AlertDialog
@@ -381,5 +361,49 @@ function VolumeDetail() {
         </AlertDialogContent>
       </AlertDialog>
     </>
+  )
+}
+
+function VolumeAttachmentsCard({
+  attachments,
+}: {
+  attachments: VolumeAttachment[] | undefined
+}) {
+  if (!attachments || attachments.length === 0) {
+    return null
+  }
+
+  return (
+    <DetailCard>
+      <DetailCard.Header>Attachments</DetailCard.Header>
+      {attachments.map((attachment) => (
+        <DetailCard.Content key={attachment.InstanceId}>
+          <DetailRow
+            label="Instance ID"
+            value={
+              attachment.InstanceId ? (
+                <Link
+                  className="text-primary hover:underline"
+                  params={{ id: attachment.InstanceId }}
+                  to="/ec2/describe-instances/$id"
+                >
+                  {attachment.InstanceId}
+                </Link>
+              ) : undefined
+            }
+          />
+          <DetailRow label="Device" value={attachment.Device} />
+          <DetailRow label="Status" value={attachment.State} />
+          <DetailRow
+            label="Attach Time"
+            value={formatDateTime(attachment.AttachTime)}
+          />
+          <DetailRow
+            label="Delete on Termination"
+            value={attachment.DeleteOnTermination ? "Yes" : "No"}
+          />
+        </DetailCard.Content>
+      ))}
+    </DetailCard>
   )
 }

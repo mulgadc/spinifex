@@ -1,7 +1,20 @@
+import type { Vpc } from "@aws-sdk/client-ec2"
+import type {
+  DBEngineVersion,
+  DBSubnetGroup,
+  OrderableDBInstanceOption,
+} from "@aws-sdk/client-rds"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery, useQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import {
+  type Control,
+  Controller,
+  type DeepPartialSkipArrayKey,
+  type FieldErrors,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -59,7 +72,9 @@ import {
 import {
   DeletionProtectionField,
   instanceClassOptions,
+  parameterGroupOptions,
   parameterGroupsForEngine,
+  subnetGroupOptions,
 } from "../../-components/rds-form-fields"
 
 // The retention the backend applies when a create names none.
@@ -85,6 +100,183 @@ const UNAVAILABLE_OPTIONS = [
     note: "Not available on Spinifex — allocated storage grows only when you ask it to.",
   },
 ] as const
+
+type FormErrors = FieldErrors<CreateDBInstanceFormData>
+
+interface EngineFieldProps {
+  control: Control<CreateDBInstanceFormData>
+  engineHasImage: (engine: string) => boolean
+  engines: string[]
+  error: FormErrors["engine"]
+  onEngineChange: (engine: string) => void
+}
+
+function EngineField({
+  control,
+  engineHasImage,
+  engines,
+  error,
+  onEngineChange,
+}: EngineFieldProps) {
+  return (
+    <Field>
+      <FieldTitle>
+        <label htmlFor="db-engine">Engine</label>
+      </FieldTitle>
+      <Controller
+        control={control}
+        name="engine"
+        render={({ field }) => (
+          <Select
+            onValueChange={(value) => {
+              onEngineChange(value ?? "")
+            }}
+            value={field.value}
+          >
+            <SelectTrigger
+              aria-invalid={!!error}
+              className="w-full"
+              id="db-engine"
+            >
+              <SelectValue placeholder="Select an engine" />
+            </SelectTrigger>
+            <SelectContent>
+              {engines.map((engine) => (
+                <SelectItem
+                  disabled={!engineHasImage(engine)}
+                  key={engine}
+                  value={engine}
+                >
+                  {engineHasImage(engine)
+                    ? engine
+                    : `${engine} — image not imported`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      />
+      <FieldError errors={[error]} />
+    </Field>
+  )
+}
+
+interface EngineVersionFieldProps {
+  control: Control<CreateDBInstanceFormData>
+  error: FormErrors["engineVersion"]
+  versionHasImage: (version: string) => boolean
+  versions: DBEngineVersion[]
+}
+
+function EngineVersionField({
+  control,
+  error,
+  versionHasImage,
+  versions,
+}: EngineVersionFieldProps) {
+  return (
+    <Field>
+      <FieldTitle>
+        <label htmlFor="db-engine-version">Engine version</label>
+      </FieldTitle>
+      <Controller
+        control={control}
+        name="engineVersion"
+        render={({ field }) => (
+          <Select onValueChange={field.onChange} value={field.value}>
+            <SelectTrigger className="w-full" id="db-engine-version">
+              <SelectValue placeholder="Engine default" />
+            </SelectTrigger>
+            <SelectContent>
+              {versions.map((version) => (
+                <SelectItem
+                  disabled={!versionHasImage(version.EngineVersion ?? "")}
+                  key={version.EngineVersion}
+                  value={version.EngineVersion ?? ""}
+                >
+                  {version.DBEngineVersionDescription ?? version.EngineVersion}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      />
+      <FieldDescription>
+        There is no in-place version upgrade, so this cannot be changed after
+        the database is created.
+      </FieldDescription>
+      <FieldError errors={[error]} />
+    </Field>
+  )
+}
+
+function UnavailableOptionsFieldset() {
+  return (
+    <fieldset className="space-y-3 rounded-md border border-border p-4">
+      <legend className="px-1 text-sm font-medium">
+        Not available on Spinifex
+      </legend>
+      {UNAVAILABLE_OPTIONS.map((option) => (
+        <label
+          className="flex items-start gap-2 text-xs text-muted-foreground"
+          key={option.id}
+        >
+          <input checked={false} disabled readOnly type="checkbox" />
+          <span>
+            {option.label}
+            <span className="mt-0.5 block">{option.note}</span>
+          </span>
+        </label>
+      ))}
+    </fieldset>
+  )
+}
+
+// A subnet group pins the placement VPC; without one the endpoint lands in the
+// account's default VPC.
+function placementVpcFor(
+  subnetGroups: DBSubnetGroup[],
+  subnetGroupName: string,
+  defaultVpcId: string | undefined,
+): string | undefined {
+  return (
+    subnetGroups.find((group) => group.DBSubnetGroupName === subnetGroupName)
+      ?.VpcId ?? defaultVpcId
+  )
+}
+
+function defaultVpcIdOf(vpcs: Vpc[] | undefined): string | undefined {
+  return vpcs?.find((vpc) => vpc.IsDefault)?.VpcId
+}
+
+function storageBoundsText(
+  bounds: OrderableDBInstanceOption | undefined,
+): string | false {
+  return (
+    bounds?.MinStorageSize !== undefined &&
+    ` This engine accepts ${bounds.MinStorageSize}–${bounds.MaxStorageSize} GiB.`
+  )
+}
+
+function classNoticeFor(
+  selectedEngine: string,
+  engineClassNotice: PickerNotice | undefined,
+): PickerNotice | undefined {
+  if (selectedEngine === "") {
+    return {
+      tone: "muted",
+      text: "Select an engine to see the instance classes this cluster can run.",
+    }
+  }
+
+  return engineClassNotice
+}
+
+function securityGroupsEmptyText(vpcId: string | undefined): string {
+  return vpcId
+    ? `No security groups available in ${vpcId}.`
+    : "No default VPC is available for security groups."
+}
 
 export function CreateDBInstancePage() {
   const navigate = useNavigate()
@@ -188,12 +380,14 @@ export function CreateDBInstancePage() {
     selectedEngine,
   )
 
-  const subnetGroupVpc = subnetGroups.find(
-    (group) => group.DBSubnetGroupName === selectedSubnetGroup,
-  )?.VpcId
+  const defaultVpcId = defaultVpcIdOf(vpcsData.Vpcs)
 
-  const defaultVpcId = vpcsData.Vpcs?.find((vpc) => vpc.IsDefault)?.VpcId
-  const placementVpcId = subnetGroupVpc ?? defaultVpcId
+  const placementVpcId = placementVpcFor(
+    subnetGroups,
+    selectedSubnetGroup,
+    defaultVpcId,
+  )
+
   const allSecurityGroups = securityGroupsData.SecurityGroups ?? []
   const securityGroups = securityGroupsForVpc(allSecurityGroups, placementVpcId)
 
@@ -209,9 +403,7 @@ export function CreateDBInstancePage() {
   }
 
   const handleSubnetGroupChange = (name: string) => {
-    const nextVpcId =
-      subnetGroups.find((group) => group.DBSubnetGroupName === name)?.VpcId ??
-      defaultVpcId
+    const nextVpcId = placementVpcFor(subnetGroups, name, defaultVpcId)
 
     setValue("dbSubnetGroupName", name, { shouldValidate: true })
     setSecurityGroups(
@@ -250,13 +442,7 @@ export function CreateDBInstancePage() {
   // selection is a callout that never appears.
   const enginesMissingImage = engines.filter((e) => !engineHasImage(e))
 
-  const classNotice: PickerNotice | undefined =
-    selectedEngine === ""
-      ? {
-          tone: "muted",
-          text: "Select an engine to see the instance classes this cluster can run.",
-        }
-      : engineClassNotice
+  const classNotice = classNoticeFor(selectedEngine, engineClassNotice)
 
   return (
     <>
@@ -280,45 +466,13 @@ export function CreateDBInstancePage() {
           {...register("dbInstanceIdentifier")}
         />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-engine">Engine</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="engine"
-            render={({ field }) => (
-              <Select
-                onValueChange={(value) => {
-                  handleEngineChange(value ?? "")
-                }}
-                value={field.value}
-              >
-                <SelectTrigger
-                  aria-invalid={!!errors.engine}
-                  className="w-full"
-                  id="db-engine"
-                >
-                  <SelectValue placeholder="Select an engine" />
-                </SelectTrigger>
-                <SelectContent>
-                  {engines.map((engine) => (
-                    <SelectItem
-                      disabled={!engineHasImage(engine)}
-                      key={engine}
-                      value={engine}
-                    >
-                      {engineHasImage(engine)
-                        ? engine
-                        : `${engine} — image not imported`}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldError errors={[errors.engine]} />
-        </Field>
+        <EngineField
+          control={control}
+          engineHasImage={engineHasImage}
+          engines={engines}
+          error={errors.engine}
+          onEngineChange={handleEngineChange}
+        />
 
         {enginesMissingImage.map((engine) => (
           <SystemImageRequired
@@ -329,44 +483,14 @@ export function CreateDBInstancePage() {
           />
         ))}
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-engine-version">Engine version</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="engineVersion"
-            render={({ field }) => (
-              <Select onValueChange={field.onChange} value={field.value}>
-                <SelectTrigger className="w-full" id="db-engine-version">
-                  <SelectValue placeholder="Engine default" />
-                </SelectTrigger>
-                <SelectContent>
-                  {versionsForEngine.map((version) => (
-                    <SelectItem
-                      disabled={
-                        !engineVersionHasImage(
-                          selectedEngine,
-                          version.EngineVersion ?? "",
-                        )
-                      }
-                      key={version.EngineVersion}
-                      value={version.EngineVersion ?? ""}
-                    >
-                      {version.DBEngineVersionDescription ??
-                        version.EngineVersion}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldDescription>
-            There is no in-place version upgrade, so this cannot be changed
-            after the database is created.
-          </FieldDescription>
-          <FieldError errors={[errors.engineVersion]} />
-        </Field>
+        <EngineVersionField
+          control={control}
+          error={errors.engineVersion}
+          versionHasImage={(version) =>
+            engineVersionHasImage(selectedEngine, version)
+          }
+          versions={versionsForEngine}
+        />
 
         <SelectField
           control={control}
@@ -382,8 +506,7 @@ export function CreateDBInstancePage() {
           description={
             <>
               gp3, encrypted. Storage grows only — it can never be shrunk.
-              {storageBounds?.MinStorageSize !== undefined &&
-                ` This engine accepts ${storageBounds.MinStorageSize}–${storageBounds.MaxStorageSize} GiB.`}
+              {storageBoundsText(storageBounds)}
             </>
           }
           error={errors.allocatedStorage}
@@ -459,21 +582,14 @@ export function CreateDBInstancePage() {
           label="DB subnet group"
           name="dbSubnetGroupName"
           onValueChange={handleSubnetGroupChange}
-          options={subnetGroups.map((g) => ({
-            value: g.DBSubnetGroupName ?? "",
-            label: `${g.DBSubnetGroupName} (${g.VpcId})`,
-          }))}
+          options={subnetGroupOptions(subnetGroups)}
           placeholder="Default VPC subnet"
         />
 
         <Field>
           <FieldTitle>VPC security groups</FieldTitle>
           <SecurityGroupCheckboxes
-            emptyText={
-              placementVpcId
-                ? `No security groups available in ${placementVpcId}.`
-                : "No default VPC is available for security groups."
-            }
+            emptyText={securityGroupsEmptyText(placementVpcId)}
             groups={securityGroups}
             onChange={setSecurityGroups}
             selected={selectedSecurityGroups}
@@ -486,10 +602,7 @@ export function CreateDBInstancePage() {
           id="db-parameter-group"
           label="DB parameter group"
           name="dbParameterGroupName"
-          options={groupsForEngine.map((g) => ({
-            value: g.DBParameterGroupName ?? "",
-            label: g.DBParameterGroupName ?? "",
-          }))}
+          options={parameterGroupOptions(groupsForEngine)}
           placeholder="Engine default group"
         />
 
@@ -526,44 +639,10 @@ export function CreateDBInstancePage() {
 
         <TagsFieldArray control={control} name="tags" />
 
-        <fieldset className="space-y-3 rounded-md border border-border p-4">
-          <legend className="px-1 text-sm font-medium">
-            Not available on Spinifex
-          </legend>
-          {UNAVAILABLE_OPTIONS.map((option) => (
-            <label
-              className="flex items-start gap-2 text-xs text-muted-foreground"
-              key={option.id}
-            >
-              <input checked={false} disabled readOnly type="checkbox" />
-              <span>
-                {option.label}
-                <span className="mt-0.5 block">{option.note}</span>
-              </span>
-            </label>
-          ))}
-        </fieldset>
+        <UnavailableOptionsFieldset />
 
         <CliCommandPanel
-          commands={buildCreateDBInstanceCommands({
-            dbInstanceIdentifier: values.dbInstanceIdentifier ?? "",
-            engine: selectedEngine,
-            engineVersion: values.engineVersion ?? "",
-            dbInstanceClass: values.dbInstanceClass ?? "",
-            allocatedStorage:
-              values.allocatedStorage ?? MIN_ALLOCATED_STORAGE_GIB,
-            masterUsername: values.masterUsername ?? "",
-            dbName: values.dbName ?? "",
-            port: values.port ?? "",
-            dbSubnetGroupName: selectedSubnetGroup,
-            vpcSecurityGroupIds: selectedSecurityGroups,
-            dbParameterGroupName: values.dbParameterGroupName ?? "",
-            deletionProtection: values.deletionProtection ?? false,
-            backupRetentionPeriod:
-              values.backupRetentionPeriod ?? DEFAULT_BACKUP_RETENTION_DAYS,
-            preferredBackupWindow: values.preferredBackupWindow ?? "",
-            preferredMaintenanceWindow: values.preferredMaintenanceWindow ?? "",
-          })}
+          commands={buildCreateDBInstanceCommands(cliValuesFromForm(values))}
         />
 
         <FormActions
@@ -586,6 +665,29 @@ type CliValues = Omit<
   CreateDBInstanceFormData,
   "masterUserPassword" | "confirmPassword" | "tags"
 >
+
+function cliValuesFromForm(
+  values: DeepPartialSkipArrayKey<CreateDBInstanceFormData>,
+): CliValues {
+  return {
+    dbInstanceIdentifier: values.dbInstanceIdentifier ?? "",
+    engine: values.engine ?? "",
+    engineVersion: values.engineVersion ?? "",
+    dbInstanceClass: values.dbInstanceClass ?? "",
+    allocatedStorage: values.allocatedStorage ?? MIN_ALLOCATED_STORAGE_GIB,
+    masterUsername: values.masterUsername ?? "",
+    dbName: values.dbName ?? "",
+    port: values.port ?? "",
+    dbSubnetGroupName: values.dbSubnetGroupName ?? "",
+    vpcSecurityGroupIds: values.vpcSecurityGroupIds ?? [],
+    dbParameterGroupName: values.dbParameterGroupName ?? "",
+    deletionProtection: values.deletionProtection ?? false,
+    backupRetentionPeriod:
+      values.backupRetentionPeriod ?? DEFAULT_BACKUP_RETENTION_DAYS,
+    preferredBackupWindow: values.preferredBackupWindow ?? "",
+    preferredMaintenanceWindow: values.preferredMaintenanceWindow ?? "",
+  }
+}
 
 function buildCreateDBInstanceCommands(values: CliValues): CliCommand[] {
   const parts: CliCommand["parts"] = [

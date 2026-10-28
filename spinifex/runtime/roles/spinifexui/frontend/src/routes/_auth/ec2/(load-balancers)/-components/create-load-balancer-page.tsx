@@ -28,7 +28,6 @@ import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
 import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
 import { TagsFieldArray } from "@/components/tags-field-array"
-import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
@@ -40,7 +39,7 @@ import {
 } from "@/components/ui/select"
 import { VpcSelectField } from "@/components/vpc-select-field"
 import { WizardFailureBanner } from "@/components/wizard-failure-banner"
-import { arnResourceId, getNameTag } from "@/lib/utils"
+import { getNameTag } from "@/lib/utils"
 import { useCreateLoadBalancerWizard } from "@/mutations/elbv2"
 import { acmCertificatesQueryOptions } from "@/queries/acm"
 import {
@@ -59,12 +58,16 @@ import {
   type ListenerProtocolValue,
   type TargetGroupProtocol,
   createLoadBalancerSchema,
-  DEFAULT_SSL_POLICY,
   createTargetGroupSchema,
   defaultProtocolForType,
   isSecureProtocol,
   protocolsForType,
 } from "@/types/elbv2"
+
+import {
+  ExistingTargetGroupField,
+  SecureListenerFields,
+} from "./create-load-balancer-listener-fields"
 
 function subnetLabel(subnet: Subnet): string {
   const name = getNameTag(subnet.Tags)
@@ -519,96 +522,16 @@ export function CreateLoadBalancerPage() {
           </Field>
 
           {isSecure && (
-            <>
-              <Field>
-                <FieldTitle>
-                  <label htmlFor="listener-certificate">Certificate</label>
-                </FieldTitle>
-                <Controller
-                  control={control}
-                  name="listener.certificateArn"
-                  render={({ field }) => (
-                    <Select
-                      onValueChange={field.onChange}
-                      value={field.value ?? ""}
-                    >
-                      <SelectTrigger
-                        aria-invalid={!!errors.listener?.certificateArn}
-                        className="w-full"
-                        id="listener-certificate"
-                      >
-                        <SelectValue placeholder="Select certificate" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {certificates.map((cert) => (
-                          <SelectItem
-                            key={cert.CertificateArn}
-                            value={cert.CertificateArn ?? ""}
-                          >
-                            {cert.DomainName ??
-                              arnResourceId(cert.CertificateArn)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                />
-                <FieldError errors={[errors.listener?.certificateArn]} />
-                <div className="mt-1 flex items-center justify-between">
-                  {certificates.length === 0 && (
-                    <p className="text-xs text-muted-foreground">
-                      No certificates imported yet.
-                    </p>
-                  )}
-                  <Button
-                    className="ml-auto"
-                    onClick={() => {
-                      setImportOpen(true)
-                    }}
-                    size="sm"
-                    type="button"
-                    variant="ghost"
-                  >
-                    Import certificate…
-                  </Button>
-                </div>
-              </Field>
-
-              {listenerProtocol === "HTTPS" && (
-                <Field>
-                  <FieldTitle>
-                    <label htmlFor="listener-ssl-policy">Security policy</label>
-                  </FieldTitle>
-                  <Controller
-                    control={control}
-                    name="listener.sslPolicy"
-                    render={({ field }) => (
-                      <Select
-                        onValueChange={field.onChange}
-                        value={field.value ?? DEFAULT_SSL_POLICY}
-                      >
-                        <SelectTrigger
-                          className="w-full"
-                          id="listener-ssl-policy"
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {sslPolicies.map((policy) => (
-                            <SelectItem
-                              key={policy.Name}
-                              value={policy.Name ?? ""}
-                            >
-                              {policy.Name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  />
-                </Field>
-              )}
-            </>
+            <SecureListenerFields
+              certificates={certificates}
+              control={control}
+              errors={errors}
+              onImportClick={() => {
+                setImportOpen(true)
+              }}
+              showSslPolicy={listenerProtocol === "HTTPS"}
+              sslPolicies={sslPolicies}
+            />
           )}
 
           <Field>
@@ -636,46 +559,11 @@ export function CreateLoadBalancerPage() {
           </Field>
 
           {tgMode === "existing" && (
-            <Field>
-              <FieldTitle>
-                <label htmlFor="tg-existing">Target group</label>
-              </FieldTitle>
-              <Controller
-                control={control}
-                name="listener.existingTargetGroupArn"
-                render={({ field }) => (
-                  <Select
-                    onValueChange={field.onChange}
-                    value={field.value ?? ""}
-                  >
-                    <SelectTrigger
-                      aria-invalid={!!errors.listener?.existingTargetGroupArn}
-                      className="w-full"
-                      id="tg-existing"
-                    >
-                      <SelectValue placeholder="Select target group" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {vpcTgs.map((tg) => (
-                        <SelectItem
-                          key={tg.TargetGroupArn}
-                          value={tg.TargetGroupArn ?? ""}
-                        >
-                          {tg.TargetGroupName} · {tg.Protocol}:{tg.Port}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-              <FieldError errors={[errors.listener?.existingTargetGroupArn]} />
-              {vpcTgs.length === 0 && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  No target groups in this VPC. Choose &ldquo;Create new&rdquo;
-                  instead.
-                </p>
-              )}
-            </Field>
+            <ExistingTargetGroupField
+              control={control}
+              errors={errors}
+              targetGroups={vpcTgs}
+            />
           )}
 
           {tgMode === "new" && (

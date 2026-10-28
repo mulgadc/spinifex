@@ -278,6 +278,19 @@ function formatConditions(
     .join(" AND ")
 }
 
+function formatHttpHeaderValues(c: RuleCondition): string[] {
+  const name = c.HttpHeaderConfig?.HttpHeaderName ?? "?"
+  const vals = c.HttpHeaderConfig?.Values ?? []
+
+  return vals.map((v) => `${name}=${v}`)
+}
+
+function formatQueryStringValues(c: RuleCondition): string[] {
+  return (c.QueryStringConfig?.Values ?? []).map((kv) =>
+    kv.Key ? `${kv.Key}=${kv.Value ?? ""}` : (kv.Value ?? ""),
+  )
+}
+
 function collectConditionValues(c: RuleCondition): string[] {
   if (c.Field === undefined) {
     return c.Values ?? []
@@ -293,10 +306,7 @@ function collectConditionValues(c: RuleCondition): string[] {
     }
 
     case "http-header": {
-      const name = c.HttpHeaderConfig?.HttpHeaderName ?? "?"
-      const vals = c.HttpHeaderConfig?.Values ?? []
-
-      return vals.map((v) => `${name}=${v}`)
+      return formatHttpHeaderValues(c)
     }
 
     case "http-request-method": {
@@ -308,9 +318,7 @@ function collectConditionValues(c: RuleCondition): string[] {
     }
 
     case "query-string": {
-      return (c.QueryStringConfig?.Values ?? []).map((kv) =>
-        kv.Key ? `${kv.Key}=${kv.Value ?? ""}` : (kv.Value ?? ""),
-      )
+      return formatQueryStringValues(c)
     }
 
     default: {

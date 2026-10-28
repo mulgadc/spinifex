@@ -1,4 +1,5 @@
 import type { Subnet } from "@aws-sdk/client-ec2"
+import type { LoadBalancer } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
@@ -86,19 +87,6 @@ export function LoadBalancerDetailPage({ arn }: Props) {
 
   const subnets = subnetsData.Subnets ?? []
 
-  const subnetLabel = (subnetId: string): string => {
-    const subnet = subnets.find((s: Subnet) => s.SubnetId === subnetId)
-
-    if (!subnet) {
-      return subnetId
-    }
-
-    const name = getNameTag(subnet.Tags)
-    const cidr = subnet.CidrBlock ? ` (${subnet.CidrBlock})` : ""
-
-    return name ? `${subnetId} — ${name}${cidr}` : `${subnetId}${cidr}`
-  }
-
   const attributes = attrsData.Attributes ?? []
 
   const lbTags =
@@ -168,53 +156,7 @@ export function LoadBalancerDetailPage({ arn }: Props) {
           </TabsList>
 
           <TabsPanel value="overview">
-            <DetailCard>
-              <DetailCard.Header>Load balancer</DetailCard.Header>
-              <DetailCard.Content>
-                <DetailRow label="ARN" value={lb.LoadBalancerArn} />
-                <DetailRow label="DNS name" value={lb.DNSName} />
-                <DetailRow
-                  label="State"
-                  value={
-                    lb.State?.Reason
-                      ? `${lb.State.Code} — ${lb.State.Reason}`
-                      : lb.State?.Code
-                  }
-                />
-                <DetailRow label="Type" value={lb.Type} />
-                <DetailRow label="Scheme" value={lb.Scheme} />
-                <DetailRow label="IP address type" value={lb.IpAddressType} />
-                <DetailRow label="VPC" value={lb.VpcId} />
-                <DetailRow
-                  label="Created at"
-                  value={formatDateTime(lb.CreatedTime)}
-                />
-              </DetailCard.Content>
-            </DetailCard>
-
-            <DetailCard>
-              <DetailCard.Header>Availability zones</DetailCard.Header>
-              <DetailCard.Content>
-                {(lb.AvailabilityZones ?? []).map((az) => (
-                  <DetailRow
-                    key={`${az.ZoneName}-${az.SubnetId}`}
-                    label={az.ZoneName ?? "—"}
-                    value={az.SubnetId ? subnetLabel(az.SubnetId) : undefined}
-                  />
-                ))}
-              </DetailCard.Content>
-            </DetailCard>
-
-            {(lb.SecurityGroups ?? []).length > 0 && (
-              <DetailCard>
-                <DetailCard.Header>Security groups</DetailCard.Header>
-                <DetailCard.Content>
-                  {(lb.SecurityGroups ?? []).map((sg) => (
-                    <DetailRow key={sg} label="Security group" value={sg} />
-                  ))}
-                </DetailCard.Content>
-              </DetailCard>
-            )}
+            <LoadBalancerOverview lb={lb} subnets={subnets} />
           </TabsPanel>
 
           <TabsPanel value="listeners">
@@ -305,6 +247,81 @@ export function LoadBalancerDetailPage({ arn }: Props) {
         open={showDeleteDialog}
         title="Delete load balancer"
       />
+    </>
+  )
+}
+
+function subnetLabel(subnets: Subnet[], subnetId: string): string {
+  const subnet = subnets.find((s) => s.SubnetId === subnetId)
+
+  if (!subnet) {
+    return subnetId
+  }
+
+  const name = getNameTag(subnet.Tags)
+  const cidr = subnet.CidrBlock ? ` (${subnet.CidrBlock})` : ""
+
+  return name ? `${subnetId} — ${name}${cidr}` : `${subnetId}${cidr}`
+}
+
+function LoadBalancerOverview({
+  lb,
+  subnets,
+}: {
+  lb: LoadBalancer
+  subnets: Subnet[]
+}) {
+  return (
+    <>
+      <DetailCard>
+        <DetailCard.Header>Load balancer</DetailCard.Header>
+        <DetailCard.Content>
+          <DetailRow label="ARN" value={lb.LoadBalancerArn} />
+          <DetailRow label="DNS name" value={lb.DNSName} />
+          <DetailRow
+            label="State"
+            value={
+              lb.State?.Reason
+                ? `${lb.State.Code} — ${lb.State.Reason}`
+                : lb.State?.Code
+            }
+          />
+          <DetailRow label="Type" value={lb.Type} />
+          <DetailRow label="Scheme" value={lb.Scheme} />
+          <DetailRow label="IP address type" value={lb.IpAddressType} />
+          <DetailRow label="VPC" value={lb.VpcId} />
+          <DetailRow
+            label="Created at"
+            value={formatDateTime(lb.CreatedTime)}
+          />
+        </DetailCard.Content>
+      </DetailCard>
+
+      <DetailCard>
+        <DetailCard.Header>Availability zones</DetailCard.Header>
+        <DetailCard.Content>
+          {(lb.AvailabilityZones ?? []).map((az) => (
+            <DetailRow
+              key={`${az.ZoneName}-${az.SubnetId}`}
+              label={az.ZoneName ?? "—"}
+              value={
+                az.SubnetId ? subnetLabel(subnets, az.SubnetId) : undefined
+              }
+            />
+          ))}
+        </DetailCard.Content>
+      </DetailCard>
+
+      {(lb.SecurityGroups ?? []).length > 0 && (
+        <DetailCard>
+          <DetailCard.Header>Security groups</DetailCard.Header>
+          <DetailCard.Content>
+            {(lb.SecurityGroups ?? []).map((sg) => (
+              <DetailRow key={sg} label="Security group" value={sg} />
+            ))}
+          </DetailCard.Content>
+        </DetailCard>
+      )}
     </>
   )
 }

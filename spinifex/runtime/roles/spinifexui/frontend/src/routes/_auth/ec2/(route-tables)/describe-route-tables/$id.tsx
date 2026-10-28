@@ -1,4 +1,9 @@
-import type { RouteTable } from "@aws-sdk/client-ec2"
+import type {
+  InternetGateway,
+  NatGateway,
+  RouteTable,
+  Subnet,
+} from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
@@ -91,6 +96,31 @@ function routeTarget(route: RouteEntry): string {
   )
 }
 
+function routeTableVpcResources(
+  rtb: RouteTable,
+  igws: InternetGateway[] | undefined,
+  nats: NatGateway[] | undefined,
+  subnets: Subnet[] | undefined,
+) {
+  const subnetAssociations = (rtb.Associations ?? []).filter((a) => a.SubnetId)
+
+  const attachedIgws = (igws ?? []).filter((igw) =>
+    igw.Attachments?.some((att) => att.VpcId === rtb.VpcId),
+  )
+
+  const vpcNatGateways = (nats ?? []).filter(
+    (nat) => nat.VpcId === rtb.VpcId && nat.State === "available",
+  )
+
+  const associatedSubnetIds = new Set(subnetAssociations.map((a) => a.SubnetId))
+
+  const availableSubnets = (subnets ?? []).filter(
+    (s) => s.VpcId === rtb.VpcId && !associatedSubnetIds.has(s.SubnetId),
+  )
+
+  return { subnetAssociations, attachedIgws, vpcNatGateways, availableSubnets }
+}
+
 function RouteTableDetail() {
   const { id } = Route.useParams()
   const { data } = useSuspenseQuery(ec2RouteTableQueryOptions(id))
@@ -147,21 +177,14 @@ function RouteTableDetail() {
   const name = getNameTag(rtb.Tags)
   const isMain = rtb.Associations?.some((a) => a.Main) ?? false
   const routes = rtb.Routes ?? []
-  const subnetAssociations = (rtb.Associations ?? []).filter((a) => a.SubnetId)
 
-  const attachedIgws = (igwData.InternetGateways ?? []).filter((igw) =>
-    igw.Attachments?.some((att) => att.VpcId === rtb.VpcId),
-  )
-
-  const vpcNatGateways = (natData.NatGateways ?? []).filter(
-    (nat) => nat.VpcId === rtb.VpcId && nat.State === "available",
-  )
-
-  const associatedSubnetIds = new Set(subnetAssociations.map((a) => a.SubnetId))
-
-  const availableSubnets = (subnetData.Subnets ?? []).filter(
-    (s) => s.VpcId === rtb.VpcId && !associatedSubnetIds.has(s.SubnetId),
-  )
+  const { subnetAssociations, attachedIgws, vpcNatGateways, availableSubnets } =
+    routeTableVpcResources(
+      rtb,
+      igwData.InternetGateways,
+      natData.NatGateways,
+      subnetData.Subnets,
+    )
 
   const handleDeleteRoute = async () => {
     if (!routeToDelete) {
@@ -235,94 +258,16 @@ function RouteTableDetail() {
           title={name ? `${rtb.RouteTableId} (${name})` : rtb.RouteTableId}
         />
 
-        <DetailCard>
-          <DetailCard.Header>Route Table Information</DetailCard.Header>
-          <DetailCard.Content>
-            <DetailRow label="Route Table ID" value={rtb.RouteTableId} />
-            <DetailRow label="Main" value={isMain ? "Yes" : "No"} />
-            <DetailRow
-              label="VPC ID"
-              value={
-                rtb.VpcId ? (
-                  <Link
-                    className="text-primary hover:underline"
-                    params={{ id: rtb.VpcId }}
-                    to="/ec2/describe-vpcs/$id"
-                  >
-                    {rtb.VpcId}
-                  </Link>
-                ) : (
-                  "—"
-                )
-              }
-            />
-            <DetailRow label="Owner ID" value={rtb.OwnerId ?? "—"} />
-          </DetailCard.Content>
-        </DetailCard>
+        <RouteTableInfoCard isMain={isMain} rtb={rtb} />
 
         <DetailCard>
           <DetailCard.Header>Routes</DetailCard.Header>
           <div className="space-y-4 p-4">
-            <div className="overflow-x-auto rounded-md border">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-left text-muted-foreground">
-                  <tr>
-                    <th className="p-2 font-medium">Destination</th>
-                    <th className="p-2 font-medium">Target</th>
-                    <th className="p-2 font-medium">Status</th>
-                    <th className="p-2">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {routes.length > 0 ? (
-                    routes.map((route) => {
-                      const destination =
-                        route.DestinationCidrBlock ??
-                        route.DestinationPrefixListId ??
-                        "—"
-
-                      const isLocal = route.GatewayId === "local"
-                      const cidr = route.DestinationCidrBlock
-
-                      return (
-                        <tr className="border-t" key={destination}>
-                          <td className="p-2 font-mono">{destination}</td>
-                          <td className="p-2 font-mono">
-                            {routeTarget(route)}
-                          </td>
-                          <td className="p-2">{route.State ?? "—"}</td>
-                          <td className="p-2 text-right">
-                            {!isLocal && cidr && (
-                              <Button
-                                disabled={deleteRoute.isPending}
-                                onClick={() => {
-                                  setRouteToDelete(cidr)
-                                }}
-                                size="sm"
-                                variant="ghost"
-                              >
-                                <Trash2 className="size-4" />
-                                <span className="sr-only">
-                                  Delete route to {cidr}
-                                </span>
-                              </Button>
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })
-                  ) : (
-                    <tr>
-                      <td className="p-2 text-muted-foreground" colSpan={4}>
-                        No routes.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <RoutesTable
+              isDeleting={deleteRoute.isPending}
+              onDelete={setRouteToDelete}
+              routes={routes}
+            />
 
             {(createRoute.error ?? deleteRoute.error) && (
               <ErrorBanner
@@ -565,5 +510,109 @@ function RouteTableDetail() {
         title="Disassociate Subnet"
       />
     </>
+  )
+}
+
+function RouteTableInfoCard({
+  rtb,
+  isMain,
+}: {
+  rtb: RouteTable
+  isMain: boolean
+}) {
+  return (
+    <DetailCard>
+      <DetailCard.Header>Route Table Information</DetailCard.Header>
+      <DetailCard.Content>
+        <DetailRow label="Route Table ID" value={rtb.RouteTableId} />
+        <DetailRow label="Main" value={isMain ? "Yes" : "No"} />
+        <DetailRow
+          label="VPC ID"
+          value={
+            rtb.VpcId ? (
+              <Link
+                className="text-primary hover:underline"
+                params={{ id: rtb.VpcId }}
+                to="/ec2/describe-vpcs/$id"
+              >
+                {rtb.VpcId}
+              </Link>
+            ) : (
+              "—"
+            )
+          }
+        />
+        <DetailRow label="Owner ID" value={rtb.OwnerId ?? "—"} />
+      </DetailCard.Content>
+    </DetailCard>
+  )
+}
+
+function RoutesTable({
+  routes,
+  isDeleting,
+  onDelete,
+}: {
+  routes: RouteEntry[]
+  isDeleting: boolean
+  onDelete: (cidr: string) => void
+}) {
+  return (
+    <div className="overflow-x-auto rounded-md border">
+      <table className="w-full text-sm">
+        <thead className="bg-muted/50 text-left text-muted-foreground">
+          <tr>
+            <th className="p-2 font-medium">Destination</th>
+            <th className="p-2 font-medium">Target</th>
+            <th className="p-2 font-medium">Status</th>
+            <th className="p-2">
+              <span className="sr-only">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {routes.length > 0 ? (
+            routes.map((route) => {
+              const destination =
+                route.DestinationCidrBlock ??
+                route.DestinationPrefixListId ??
+                "—"
+
+              const isLocal = route.GatewayId === "local"
+              const cidr = route.DestinationCidrBlock
+
+              return (
+                <tr className="border-t" key={destination}>
+                  <td className="p-2 font-mono">{destination}</td>
+                  <td className="p-2 font-mono">{routeTarget(route)}</td>
+                  <td className="p-2">{route.State ?? "—"}</td>
+                  <td className="p-2 text-right">
+                    {!isLocal && cidr && (
+                      <Button
+                        disabled={isDeleting}
+                        onClick={() => {
+                          onDelete(cidr)
+                        }}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <Trash2 className="size-4" />
+                        <span className="sr-only">Delete route to {cidr}</span>
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })
+          ) : (
+            <tr>
+              <td className="p-2 text-muted-foreground" colSpan={4}>
+                No routes.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
   )
 }

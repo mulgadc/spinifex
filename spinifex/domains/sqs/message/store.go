@@ -172,7 +172,7 @@ type Store interface {
 	// delivery may be omitted. The feed carries no acknowledgement state.
 	Feed(ctx context.Context, messageShard Shard, after Cursor) (Feed, error)
 	// Scan returns a page of at most limit surviving appends on a message
-	// shard, headers only and in position order, within a bounded pass.
+	// shard as metadata only, in position order, within a bounded pass.
 	// The zero ScanCursor starts a pass and fixes its bound at the shard's
 	// latest position; pass each page's Next to continue it.
 	Scan(ctx context.Context, messageShard Shard, from ScanCursor, limit int) (ScanPage, error)

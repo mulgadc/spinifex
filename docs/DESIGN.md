@@ -256,6 +256,29 @@ file. It does not connect to Predastore to do so, and no Predastore node
 exposes a status endpoint. This is an operator status interface, not a generic
 storage-provider contract.
 
+### SQS message store (internal)
+
+`domains/sqs/message` defines the store-neutral interface the SQS domain reaches its message store through (ADR-0011:S6), with a JetStream adapter in `domains/sqs/message/jetstream` and a shared conformance suite in `domains/sqs/message/conformance`.
+It is an internal primitive: nothing outside the SQS domain uses it, no daemon or service is wired to it, and it does not itself deliver an SQS API.
+The dedicated JetStream server ADR-0011 describes is not deployed by this code.
+
+The interface covers durable and idempotent append, body and metadata reads, conditional state writes and deletes, per-namespace counts, namespace enumeration, an ordered change feed, a bounded paginated scan, namespace deletion and a sweep of tombstoned bodies.
+A namespace carries an immutable message-shard and state-shard allocation chosen when the queue is created, so a later change in shard counts never moves an existing queue.
+
+The adapter provisions a fixed set of shared message streams (`SQS_M_<shard>`, one subject per queue) and shared state buckets (`sqs_state_<shard>`), keeps historical ones, and applies a 14-day-plus-one-hour retention backstop to both.
+It supports one node (R1) and three nodes (R3) only and refuses any other declared cluster size before provisioning.
+
+Reads that must observe a completed write or delete go to the stream leader: `GetState`, the state-key pass behind `Count` and `Namespaces`, and the body pass behind `Namespaces` and `Scan`.
+This avoids the follower-served direct gets and follower-placed consumers that returned purged data in local three-node fault-injection tests; it is not a general linearizability guarantee.
+Each leader read is one request per record, and the body pass transfers each full body internally even though `Scan` returns metadata only, which is a material cost for a large backlog.
+A state-key pass is bounded but is not a snapshot when a key is overwritten during it.
+
+The feed reads through an in-memory, headers-only ordered consumer.
+If that consumer delivers nothing for about two seconds while the stream holds a change after the feed's cursor, the feed replaces it from the cursor, so a stored change does not wait on a stalled consumer; the cause of those stalls is not established.
+`Close` is terminal, waits for consumer opens and deletes in progress and retries failed deletes, but cleanup is best effort for a create whose outcome is unknown: a consumer that lands after its last delete is removed by the server's one-minute inactive threshold.
+
+Coverage is unit and conformance tests on in-process R1 and R3 servers; there is no end-to-end or multi-host validation of this code, and earlier multi-host evidence predates the final feed.
+
 ## Configuration
 
 Cluster configuration (`spinifex/bootstrap/config/config.go`):

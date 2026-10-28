@@ -101,7 +101,7 @@ func runALBFailOpenSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	t.Helper()
 	const label = "ALB fail open"
 
-	tgArn := createTargetGroup(t, c, f, "lb-e2e-alb-failopen-tg", "HTTP", httpPort, "/index.html")
+	tgArn := createTargetGroup(t, c, f, "lb-e2e-alb-failopen-tg", "HTTP", httpPort, "/hc.html")
 	t.Cleanup(func() { deleteTargetGroup(t, c, tgArn) })
 	registerTargets(t, c, tgArn, f.AppInstanceIDs)
 	t.Cleanup(func() { deregisterTargets(t, c, tgArn, f.AppInstanceIDs) })
@@ -113,12 +113,21 @@ func runALBFailOpenSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	lbIP := privateIP(lbENI(t, c, "app", lb))
 	require.NotEmpty(t, lbIP, label+" needs private IP")
 
-	harness.Phase(t, "%s: health path stops answering 200 on every target", label)
-	_, err := c.ELBv2.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
-		TargetGroupArn:  aws.String(tgArn),
-		HealthCheckPath: aws.String("/health-check-missing"),
+	appIPs := make([]string, len(f.AppInstanceIDs))
+	for i, id := range f.AppInstanceIDs {
+		appIPs[i] = privateIP(harness.InstanceENI(t, c, id))
+		require.NotEmptyf(t, appIPs[i], "app instance %s needs a private IP", id)
+	}
+	t.Cleanup(func() {
+		for _, ip := range appIPs {
+			_, _ = probeTrigger(f, "http", ip, healthPort, "/ok", 1)
+		}
 	})
-	require.NoError(t, err, "modify-target-group health path")
+
+	harness.Phase(t, "%s: health path stops answering 200 on every target", label)
+	for _, ip := range appIPs {
+		setHealth(t, f, ip, false)
+	}
 	for _, id := range f.AppInstanceIDs {
 		waitTargetState(t, c, tgArn, id, "unhealthy", healthRoutingBound)
 	}
@@ -172,6 +181,8 @@ func setHealth(t *testing.T, f *sharedFixture, appIP string, healthy bool) {
 // waitTargetState polls DescribeTargetHealth until one target reports want.
 func waitTargetState(t *testing.T, c *harness.AWSClient, tgArn, targetID, want string, timeout time.Duration) {
 	t.Helper()
+	start := time.Now()
+	defer func() { t.Logf("target %s reached %s after %s", targetID, want, time.Since(start).Round(time.Second)) }()
 	harness.EventuallyErr(t, func() error {
 		out, err := c.ELBv2.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{TargetGroupArn: aws.String(tgArn)})
 		if err != nil {
@@ -215,6 +226,8 @@ func requireSingleTCPResponder(t *testing.T, f *sharedFixture, appIP string) str
 func requireTCPDistribution(t *testing.T, f *sharedFixture, lbIP string, timeout time.Duration, ok func(harness.TrafficResult) bool, what string) harness.TrafficResult {
 	t.Helper()
 	var last harness.TrafficResult
+	start := time.Now()
+	defer func() { t.Logf("%s after %s", what, time.Since(start).Round(time.Second)) }()
 	harness.EventuallyErr(t, func() error {
 		r, err := probeTrigger(f, "tcp", lbIP, tcpPort, "", healthProbeCount)
 		if err != nil {

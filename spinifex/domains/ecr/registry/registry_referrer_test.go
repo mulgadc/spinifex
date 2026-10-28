@@ -105,3 +105,20 @@ func TestPutManifest_MalformedSubjectDigestRejected(t *testing.T) {
 	_, err := reg.Meta.GetManifestMeta(context.Background(), testAccount, referrerRepo, digestOf([]byte(body)))
 	assert.Error(t, err, "a rejected manifest must not leave a record behind")
 }
+
+func TestPutManifest_IndexWithContentTypeParameterGetsNoConfigArtifactType(t *testing.T) {
+	reg := newTestRegistry()
+	seedRepo(t, reg, referrerRepo)
+
+	body := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"manifests":[],"subject":{"mediaType":%q,"digest":%q,"size":10}}`,
+		mediaTypeOCIIndex, mediaTypeOCIManifest, absentSubjectDgt)
+	w := do(reg, http.MethodPut, "/v2/"+referrerRepo+"/manifests/v1", []byte(body),
+		map[string]string{"Content-Type": mediaTypeOCIIndex + "; charset=utf-8"})
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, absentSubjectDgt, w.Header().Get("OCI-Subject"))
+
+	m, err := reg.Meta.GetManifestMeta(context.Background(), testAccount, referrerRepo, digestOf([]byte(body)))
+	require.NoError(t, err)
+	assert.Equal(t, mediaTypeOCIIndex, m.MediaType, "the stored type must not carry the parameter")
+	assert.Empty(t, m.ArtifactType)
+}

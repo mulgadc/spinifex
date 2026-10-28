@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"slices"
 	"strings"
@@ -52,20 +53,29 @@ type ImageRecord struct {
 // case it is detected. On a validation/size failure it returns a
 // *ManifestStoreError carrying the OCI code.
 func (reg *Registry) StoreManifest(ctx context.Context, account, repo, ref, contentType string, body []byte) (string, error) {
+	digest, _, err := reg.storeManifest(ctx, account, repo, ref, contentType, body)
+	return digest, err
+}
+
+// storeManifest is StoreManifest that also returns the subject digest the
+// manifest declares ("" when it has none).
+func (reg *Registry) storeManifest(ctx context.Context, account, repo, ref, contentType string, body []byte) (string, string, error) {
 	scoped := reg.forAccount(account)
 	if err := scoped.requireRepo(ctx, repo); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if len(body) > maxManifestBytes {
-		return "", &ManifestStoreError{http.StatusRequestEntityTooLarge, "MANIFEST_INVALID", "manifest too large"}
+		return "", "", &ManifestStoreError{http.StatusRequestEntityTooLarge, "MANIFEST_INVALID", "manifest too large"}
 	}
 	if contentType == "" {
 		contentType = detectManifestType(body)
+	} else if mt, _, err := mime.ParseMediaType(contentType); err == nil {
+		contentType = mt
 	}
 
 	digest := "sha256:" + hex.EncodeToString(sha256Sum(body))
 	if ecr.ValidateDigest(ref) && ref != digest {
-		return "", &ManifestStoreError{http.StatusBadRequest, "DIGEST_INVALID", "reference digest does not match content"}
+		return "", "", &ManifestStoreError{http.StatusBadRequest, "DIGEST_INVALID", "reference digest does not match content"}
 	}
 
 	// On an IMMUTABLE repo, re-tagging an existing tag onto a different digest is
@@ -73,27 +83,27 @@ func (reg *Registry) StoreManifest(ctx context.Context, account, repo, ref, cont
 	if ref != "" && !ecr.ValidateDigest(ref) {
 		meta, err := scoped.Meta.GetRepo(ctx, account, repo)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if meta.TagMutability() == ecr.TagMutabilityImmutable {
 			existing, err := scoped.Meta.GetTag(ctx, account, repo, ref)
 			switch {
 			case err == nil && existing != digest:
-				return "", &ManifestStoreError{http.StatusConflict, "TAG_IMMUTABLE", "tag is immutable and already resolves to a different digest"}
+				return "", "", &ManifestStoreError{http.StatusConflict, "TAG_IMMUTABLE", "tag is immutable and already resolves to a different digest"}
 			case err != nil && !errors.Is(err, ecr.ErrNotFound):
-				return "", err
+				return "", "", err
 			}
 		}
 	}
 
 	children, code, vErr := scoped.validateManifest(ctx, repo, contentType, body)
 	if vErr != nil {
-		return "", &ManifestStoreError{http.StatusBadRequest, code, vErr.Error()}
+		return "", "", &ManifestStoreError{http.StatusBadRequest, code, vErr.Error()}
 	}
 
 	subject, artifactType, rErr := referrerFields(contentType, body)
 	if rErr != nil {
-		return "", &ManifestStoreError{http.StatusBadRequest, "MANIFEST_INVALID", rErr.Error()}
+		return "", "", &ManifestStoreError{http.StatusBadRequest, "MANIFEST_INVALID", rErr.Error()}
 	}
 
 	if _, err := scoped.Store.PutObject(ctx, &s3.PutObjectInput{
@@ -102,7 +112,7 @@ func (reg *Registry) StoreManifest(ctx context.Context, account, repo, ref, cont
 		Body:        aws.ReadSeekCloser(strings.NewReader(string(body))),
 		ContentType: aws.String(contentType),
 	}); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	if err := scoped.Meta.PutManifestMeta(ctx, account, repo, ecr.ManifestMeta{
@@ -115,15 +125,15 @@ func (reg *Registry) StoreManifest(ctx context.Context, account, repo, ref, cont
 		SubjectDigest: subject,
 		ArtifactType:  artifactType,
 	}); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	if ref != "" && !ecr.ValidateDigest(ref) {
 		if err := scoped.Meta.PutTag(ctx, account, repo, ref, digest); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
-	return digest, nil
+	return digest, subject, nil
 }
 
 // GetManifest returns the verbatim manifest bytes, media type and digest for a

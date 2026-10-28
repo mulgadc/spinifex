@@ -153,7 +153,9 @@ Once the node's IPsec certificate exists, the daemon unmasks and starts `ipsec.s
 The tunnels are plain ESP (IP protocol 50), as on Debian, negotiated over UDP 500.
 Open UDP 500, UDP 4500 and ESP between nodes: libreswan moves to UDP 4500 if it detects NAT between two nodes.
 The Spinifex host firewall opens all three to cluster peers; a firewall between the nodes must allow them too.
-While IKE to a peer fails, the node drops its Geneve traffic to that peer rather than send it in clear: the daemon keeps an xfrm block on outbound UDP 6081 that only a negotiated SA overrides.
+While IKE to a peer fails, the node drops its Geneve traffic to that peer rather than send it in clear.
+The nft table `inet spinifex_ipsec_guard` drops outbound UDP 6081 from the encap address whose route carries no SA, which also covers the moments pluto flushes the xfrm policy table as it starts and stops.
+It is not persisted: `ipsec.service` puts it back at boot before ovn-controller builds the tunnels, and the daemon re-syncs it every 60 seconds.
 `spx admin init --ipsec=false` leaves the tunnels unencrypted, as on any OS.
 
 ## Step 2. Know What the Installer Changed

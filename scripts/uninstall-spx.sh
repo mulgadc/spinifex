@@ -432,8 +432,8 @@ if [ -z "$PLUGINDIR" ]; then
 fi
 [ -n "$PLUGINDIR" ] && rm_path "$PLUGINDIR/nbdkit-viperblock-plugin.so"
 
-# The helper is the only thing that knows which xfrm blocks are ours, and a
-# leftover one drops all Geneve from this host's encap address until reboot.
+# A leftover guard table drops all Geneve from this host's encap address until
+# reboot, and the helper is the one place that names it.
 if [ -x /usr/local/lib/spinifex/spinifex-set-ipsec-state ]; then
     run sudo /usr/local/lib/spinifex/spinifex-set-ipsec-state unguard || true
 fi

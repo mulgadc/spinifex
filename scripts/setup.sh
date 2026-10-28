@@ -394,49 +394,62 @@ if [ "$#" -ne 1 ]; then
     exit 2
 fi
 
-# libreswan drops a tunnel's xfrm policies while IKE fails, which sends Geneve
-# in plaintext. This catch-all block loses to its per-peer policies (priority
-# ~1360000, lower wins), so only traffic with no live SA meets it.
-GUARD_PRIORITY=4000000
-
-guard_srcs() {
-    ip xfrm policy list dir out priority "$GUARD_PRIORITY" action block |
-        awk '$1 == "src" && $4 == "0.0.0.0/0" && $0 ~ / proto udp dport 6081( |$)/ { print $2 }'
-}
+# libreswan drops a tunnel's xfrm policies while IKE fails, and pluto flushes
+# the whole xfrm table when it starts or stops, so Geneve from the encap address
+# is dropped in nft unless the route carries an SA.
+GUARD_TABLE="inet spinifex_ipsec_guard"
 
 unguard() {
-    for src in $(guard_srcs); do
-        ip xfrm policy delete src "$src" dst 0.0.0.0/0 proto udp dport 6081 dir out
-    done
+    printf 'table %s\ndelete table %s\n' "$GUARD_TABLE" "$GUARD_TABLE" | nft -f -
 }
 
-# One block per local address of a tunnel with a remote_name, which
+want=""
+want_src() {
+    case "$1" in
+        *.*.*.*) case "$1" in *[!0-9.]*) src=0.0.0.0/0 ;; *) src="$1/32" ;; esac ;;
+        *) src=0.0.0.0/0 ;;
+    esac
+    case " $want " in *" $src "*) ;; *) want="$want $src" ;; esac
+}
+
+# One source per local address of a tunnel with a remote_name, which
 # ovn-controller sets only while NB_Global.ipsec is on. A tunnel without a
 # usable local_ip is guarded from every source rather than left open.
 guard() {
     ifaces=$(ovs-vsctl --timeout=5 --bare --columns=name find Interface type=geneve)
-    want=""
     for iface in $ifaces; do
         peer=$(ovs-vsctl --timeout=5 --if-exists get Interface "$iface" options:remote_name)
         [ -n "$peer" ] || continue
-        src=$(ovs-vsctl --timeout=5 --if-exists get Interface "$iface" options:local_ip | tr -d '"')
-        case "$src" in
-            *.*.*.*) case "$src" in *[!0-9.]*) src=0.0.0.0/0 ;; *) src="$src/32" ;; esac ;;
-            *) src=0.0.0.0/0 ;;
-        esac
-        case " $want " in *" $src "*) ;; *) want="$want $src" ;; esac
+        want_src "$(ovs-vsctl --timeout=5 --if-exists get Interface "$iface" options:local_ip | tr -d '"')"
     done
-    have=$(guard_srcs)
-    for src in $want; do
-        ip xfrm policy update src "$src" dst 0.0.0.0/0 proto udp dport 6081 dir out \
-            priority "$GUARD_PRIORITY" action block
-    done
-    for src in $have; do
-        case " $want " in
-            *" $src "*) ;;
-            *) ip xfrm policy delete src "$src" dst 0.0.0.0/0 proto udp dport 6081 dir out ;;
-        esac
-    done
+    # At boot pluto is up before ovn-controller builds the tunnels, and its
+    # callers guard only while encryption is wanted, so guard the encap address
+    # until the tunnels say otherwise.
+    if [ -z "$ifaces" ]; then
+        encap=$(ovs-vsctl --timeout=5 --if-exists get Open_vSwitch . external_ids:ovn-encap-ip | tr -d '"')
+        for ip in $(echo "$encap" | tr ',' ' '); do want_src "$ip"; done
+        [ -n "$want" ] || want_src ""
+    fi
+    if [ -z "$want" ]; then
+        unguard
+        return
+    fi
+    # One transaction, so the old set is never gone before the new one is in.
+    nft -f - << NFT
+table $GUARD_TABLE
+delete table $GUARD_TABLE
+table $GUARD_TABLE {
+    set srcs {
+        type ipv4_addr
+        flags interval
+        elements = { $(echo $want | tr ' ' ',') }
+    }
+    chain out {
+        type filter hook output priority 0; policy accept;
+        ip saddr @srcs udp dport 6081 rt ipsec missing drop
+    }
+}
+NFT
 }
 
 # mask/unmask rather than disable/enable. The daemon's unit sets
@@ -1833,9 +1846,9 @@ CPUWeight=300
 EOF
     info "  /etc/systemd/system/system.slice.d/spinifex-reserve.conf"
 
-    # pluto starts with an empty xfrm policy table, so the plaintext Geneve
-    # guard goes back in as soon as it is up. `-`: the guard must never be
-    # why pluto fails to start, and the daemon re-asserts it each pass.
+    # The plaintext Geneve guard is not persisted, so it goes in when pluto
+    # starts at boot, before ovn-controller builds the tunnels. `-`: the guard
+    # must never fail the unit, and the daemon re-asserts it each pass.
     if [ -x /usr/libexec/ipsec/pluto ]; then
         $SUDO mkdir -p /etc/systemd/system/ipsec.service.d
         $SUDO tee /etc/systemd/system/ipsec.service.d/spinifex-guard.conf > /dev/null << EOF

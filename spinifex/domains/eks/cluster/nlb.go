@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strconv"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"

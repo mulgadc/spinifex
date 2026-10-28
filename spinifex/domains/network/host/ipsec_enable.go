@@ -158,7 +158,22 @@ func ReconcileOVNIPSec(ctx context.Context, configPath string, clusterConfig *co
 	if !want {
 		return DisableOVNIPSec(ctx, clusterConfig, barrier)
 	}
-	return EnableOVNIPSec(ctx, configPath, clusterConfig, barrier)
+	err := EnableOVNIPSec(ctx, configPath, clusterConfig, barrier)
+	if libreswan {
+		err = errors.Join(err, guardPlaintextGeneve())
+	}
+	return err
+}
+
+// guardPlaintextGeneve re-syncs the helper's xfrm block on Geneve, which keeps a
+// tunnel whose SA is down from falling back to plaintext. Every pass, because
+// the tunnel set follows cluster membership and NB_Global.ipsec.
+func guardPlaintextGeneve() error {
+	out, err := hostcommand.SudoCommand(ipsecStateHelper, "guard").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("guard plaintext geneve: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // DisableOVNIPSec is the off direction, and it has to reach NB_Global. Charon is

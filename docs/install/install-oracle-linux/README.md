@@ -150,8 +150,10 @@ On Oracle Linux it runs on libreswan, the IKE daemon Oracle ships, rather than s
 Once the node's IPsec certificate exists, the daemon unmasks and starts `ipsec.service` and `openvswitch-ipsec.service`.
 `ovs-monitor-ipsec` then loads the node certificate, its key and the cluster CA into libreswan's NSS database at `/var/lib/ipsec/nss`, under nicknames that start with `ovs_cert`.
 
-Between nodes, open UDP 500 for IKE and UDP 4500, which on Oracle Linux carries the tunnel traffic itself: Spinifex asks libreswan to wrap ESP in UDP rather than send it as IP protocol 50.
-The Spinifex host firewall opens both, and ESP, to cluster peers; a firewall between the nodes must allow them too.
+The tunnels are plain ESP (IP protocol 50), as on Debian, negotiated over UDP 500.
+Open UDP 500, UDP 4500 and ESP between nodes: libreswan moves to UDP 4500 if it detects NAT between two nodes.
+The Spinifex host firewall opens all three to cluster peers; a firewall between the nodes must allow them too.
+While IKE to a peer fails, the node drops its Geneve traffic to that peer rather than send it in clear: the daemon keeps an xfrm block on outbound UDP 6081 that only a negotiated SA overrides.
 `spx admin init --ipsec=false` leaves the tunnels unencrypted, as on any OS.
 
 ## Step 2. Know What the Installer Changed
@@ -254,7 +256,8 @@ sudo ipsec trafficstatus                       # one line per peer tunnel
 ```
 
 If the services are inactive, check the daemon log with `journalctl -u spinifex-daemon` for the IPsec reconcile.
-If the certificates are present but no tunnel is listed, check that UDP 500 and 4500 pass between the nodes in both directions.
+If the certificates are present but no tunnel is listed, check that UDP 500 and ESP pass between the nodes in both directions, and look for `SEC_ERROR_UNKNOWN_ISSUER` in `journalctl -u ipsec`, which means a peer's certificate is from another CA.
+Until the tunnel forms, guest traffic between those two nodes is dropped, which is the guard in [Clusters](#clusters) working.
 
 ### CA certificate not trusted
 

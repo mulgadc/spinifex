@@ -390,9 +390,54 @@ install_ipsec_state_helper() {
 set -eu
 
 if [ "$#" -ne 1 ]; then
-    echo "usage: $0 <on|off>" >&2
+    echo "usage: $0 <on|off|guard|unguard>" >&2
     exit 2
 fi
+
+# libreswan drops a tunnel's xfrm policies while IKE fails, which sends Geneve
+# in plaintext. This catch-all block loses to its per-peer policies (priority
+# ~1360000, lower wins), so only traffic with no live SA meets it.
+GUARD_PRIORITY=4000000
+
+guard_srcs() {
+    ip xfrm policy list dir out priority "$GUARD_PRIORITY" action block |
+        awk '$1 == "src" && $4 == "0.0.0.0/0" && $0 ~ / proto udp dport 6081( |$)/ { print $2 }'
+}
+
+unguard() {
+    for src in $(guard_srcs); do
+        ip xfrm policy delete src "$src" dst 0.0.0.0/0 proto udp dport 6081 dir out
+    done
+}
+
+# One block per local address of a tunnel with a remote_name, which
+# ovn-controller sets only while NB_Global.ipsec is on. A tunnel without a
+# usable local_ip is guarded from every source rather than left open.
+guard() {
+    ifaces=$(ovs-vsctl --timeout=5 --bare --columns=name find Interface type=geneve)
+    want=""
+    for iface in $ifaces; do
+        peer=$(ovs-vsctl --timeout=5 --if-exists get Interface "$iface" options:remote_name)
+        [ -n "$peer" ] || continue
+        src=$(ovs-vsctl --timeout=5 --if-exists get Interface "$iface" options:local_ip | tr -d '"')
+        case "$src" in
+            *.*.*.*) case "$src" in *[!0-9.]*) src=0.0.0.0/0 ;; *) src="$src/32" ;; esac ;;
+            *) src=0.0.0.0/0 ;;
+        esac
+        case " $want " in *" $src "*) ;; *) want="$want $src" ;; esac
+    done
+    have=$(guard_srcs)
+    for src in $want; do
+        ip xfrm policy update src "$src" dst 0.0.0.0/0 proto udp dport 6081 dir out \
+            priority "$GUARD_PRIORITY" action block
+    done
+    for src in $have; do
+        case " $want " in
+            *" $src "*) ;;
+            *) ip xfrm policy delete src "$src" dst 0.0.0.0/0 proto udp dport 6081 dir out ;;
+        esac
+    done
+}
 
 # mask/unmask rather than disable/enable. The daemon's unit sets
 # ProtectSystem=full, so /etc is read-only in the namespace its children inherit,
@@ -427,7 +472,14 @@ case "$1" in
         # On Debian that name is strongswan-starter's alias, masked above.
         if [ -x /usr/libexec/ipsec/pluto ]; then
             systemctl mask --now ipsec.service
+            unguard
         fi
+        ;;
+    guard)
+        guard
+        ;;
+    unguard)
+        unguard
         ;;
     *)
         echo "state not permitted: $1" >&2
@@ -1780,6 +1832,18 @@ MemoryMin=1G
 CPUWeight=300
 EOF
     info "  /etc/systemd/system/system.slice.d/spinifex-reserve.conf"
+
+    # pluto starts with an empty xfrm policy table, so the plaintext Geneve
+    # guard goes back in as soon as it is up. `-`: the guard must never be
+    # why pluto fails to start, and the daemon re-asserts it each pass.
+    if [ -x /usr/libexec/ipsec/pluto ]; then
+        $SUDO mkdir -p /etc/systemd/system/ipsec.service.d
+        $SUDO tee /etc/systemd/system/ipsec.service.d/spinifex-guard.conf > /dev/null << EOF
+[Service]
+ExecStartPost=-${IPSEC_STATE_HELPER} guard
+EOF
+        info "  /etc/systemd/system/ipsec.service.d/spinifex-guard.conf"
+    fi
 
     # daemon-reload / enable require a running systemd — skip inside the ISO
     # chroot. Unit files are still dropped into place; firstboot enables them.

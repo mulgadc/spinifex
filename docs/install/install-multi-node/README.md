@@ -169,7 +169,7 @@ Open between all hosts:
 | TCP 8443 | Predastore S3 gate |
 | UDP 6660, 7660 | Object shards, metadata consensus |
 
-On Oracle Linux the IPsec tunnel traffic travels in UDP 4500 rather than as ESP; see [Oracle Linux Hosts](/docs/install-oracle-linux#clusters).
+UDP 4500 carries the tunnel traffic only where IKE detects NAT between two nodes; otherwise it travels as ESP, on Oracle Linux as on Debian.
 
 Open between the three OVN database servers (servers 1 to 3) only:
 

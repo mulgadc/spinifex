@@ -362,9 +362,10 @@ rm_path /etc/systemd/system/openvswitch-switch.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-controller.service.d/log-level.conf \
         /etc/systemd/system/openvswitch-ipsec.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-northd.service.d/spinifex-perms.conf \
-        /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf
+        /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf \
+        /etc/systemd/system/ipsec.service.d/spinifex-guard.conf
 # Only if we emptied them — another package may own the same override dir.
-for d in openvswitch-switch ovs-vswitchd ovn-controller openvswitch-ipsec ovn-northd; do
+for d in openvswitch-switch ovs-vswitchd ovn-controller openvswitch-ipsec ovn-northd ipsec; do
     dir="/etc/systemd/system/${d}.service.d"
     if sudo test -d "$dir" && [ -z "$(sudo ls -A "$dir" 2>/dev/null)" ]; then
         rm_path "$dir"
@@ -431,6 +432,11 @@ if [ -z "$PLUGINDIR" ]; then
 fi
 [ -n "$PLUGINDIR" ] && rm_path "$PLUGINDIR/nbdkit-viperblock-plugin.so"
 
+# The helper is the only thing that knows which xfrm blocks are ours, and a
+# leftover one drops all Geneve from this host's encap address until reboot.
+if [ -x /usr/local/lib/spinifex/spinifex-set-ipsec-state ]; then
+    run sudo /usr/local/lib/spinifex/spinifex-set-ipsec-state unguard || true
+fi
 rm_path /usr/local/bin/spx \
         /usr/local/share/spinifex \
         /usr/local/lib/spinifex \
@@ -619,6 +625,7 @@ if ! $DRY_RUN; then
              /etc/NetworkManager/conf.d/*spinifex* \
              /etc/systemd/system/*.service.d/spinifex-perms.conf \
              /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf \
+             /etc/systemd/system/ipsec.service.d/spinifex-guard.conf \
              /etc/systemd/system/ovn-controller.service.d/log-level.conf; do
         exists "$p" && LEFT+=("$p")
     done

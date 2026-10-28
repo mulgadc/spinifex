@@ -252,6 +252,11 @@ func TestEKS(t *testing.T) {
 		require.NoError(t, err, "delete-cluster")
 		harness.WaitForEKSClusterDeleted(t, c, fx.ClusterName)
 		fx.Deleted = true
+
+		_, err = c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(fx.ClusterName)})
+		var aerr awserr.Error
+		require.ErrorAs(t, err, &aerr, "delete-cluster on a deleted cluster must fail")
+		assert.Contains(t, aerr.Code(), "ResourceNotFound")
 	})
 }
 

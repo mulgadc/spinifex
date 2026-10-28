@@ -1289,6 +1289,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{ecr.SubjectManifestDescribe, handleNATSRequest(d.node, d.ecrMetaService.ManifestDescribe), "spinifex-workers"},
 			natsSub{ecr.SubjectManifestList, handleNATSRequest(d.node, d.ecrMetaService.ManifestList), "spinifex-workers"},
 			natsSub{ecr.SubjectManifestDelete, handleNATSRequest(d.node, d.ecrMetaService.ManifestDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectReferrerList, handleNATSRequest(d.node, d.ecrMetaService.ReferrerList), "spinifex-workers"},
 			natsSub{ecr.SubjectUploadCreate, handleNATSRequest(d.node, d.ecrMetaService.UploadCreate), "spinifex-workers"},
 			natsSub{ecr.SubjectUploadGet, handleNATSRequest(d.node, d.ecrMetaService.UploadGet), "spinifex-workers"},
 			natsSub{ecr.SubjectUploadUpdate, handleNATSRequest(d.node, d.ecrMetaService.UploadUpdate), "spinifex-workers"},

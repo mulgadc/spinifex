@@ -184,6 +184,14 @@ func (s *NATSMetaStore) DeleteManifestMeta(ctx context.Context, accountID, repo,
 	return nil
 }
 
+func (s *NATSMetaStore) ListReferrers(ctx context.Context, accountID, repo, subjectDigest string) ([]ReferrerDescriptor, error) {
+	resp, err := natsmsg.NATSRequest[ReferrerListResponse](ctx, s.conn, SubjectReferrerList, &ReferrerListRequest{Repo: repo, Subject: subjectDigest}, metaRequestTimeout, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Referrers, nil
+}
+
 func (s *NATSMetaStore) PutUpload(ctx context.Context, accountID, uploadID string, state UploadState) (uint64, error) {
 	resp, err := natsmsg.NATSRequest[UploadCreateResponse](ctx, s.conn, SubjectUploadCreate, &UploadCreateRequest{UploadID: uploadID, State: state}, metaRequestTimeout, accountID)
 	if err != nil {

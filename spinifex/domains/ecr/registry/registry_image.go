@@ -101,7 +101,7 @@ func (reg *Registry) storeManifest(ctx context.Context, account, repo, ref, cont
 		return "", "", &ManifestStoreError{http.StatusBadRequest, code, vErr.Error()}
 	}
 
-	subject, artifactType, rErr := referrerFields(contentType, body)
+	subject, artifactType, annotations, rErr := referrerFields(contentType, body)
 	if rErr != nil {
 		return "", "", &ManifestStoreError{http.StatusBadRequest, "MANIFEST_INVALID", rErr.Error()}
 	}
@@ -124,6 +124,7 @@ func (reg *Registry) storeManifest(ctx context.Context, account, repo, ref, cont
 
 		SubjectDigest: subject,
 		ArtifactType:  artifactType,
+		Annotations:   annotations,
 	}); err != nil {
 		return "", "", err
 	}

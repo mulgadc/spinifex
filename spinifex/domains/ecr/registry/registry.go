@@ -640,6 +640,7 @@ func (reg *Registry) deleteManifest(ctx context.Context, w http.ResponseWriter, 
 type manifestDoc struct {
 	MediaType    string `json:"mediaType"`
 	ArtifactType string            `json:"artifactType"`
+	Annotations  map[string]string `json:"annotations"`
 	Subject      *struct {
 		Digest string `json:"digest"`
 	} `json:"subject"`
@@ -656,16 +657,16 @@ type manifestDoc struct {
 	} `json:"manifests"`
 }
 
-// referrerFields returns the subject digest and effective artifactType of a
+// referrerFields returns the subject digest, artifactType and annotations of a
 // manifest that declares a subject. mediaType is the type it is stored under;
 // an image manifest without an artifactType uses its config mediaType.
-func referrerFields(mediaType string, body []byte) (subject, artifactType string, err error) {
+func referrerFields(mediaType string, body []byte) (subject, artifactType string, annotations map[string]string, err error) {
 	var doc manifestDoc
 	if err := json.Unmarshal(body, &doc); err != nil || doc.Subject == nil {
-		return "", "", nil
+		return "", "", nil, nil
 	}
 	if !ecr.ValidateDigest(doc.Subject.Digest) {
-		return "", "", errors.New("subject references malformed digest")
+		return "", "", nil, errors.New("subject references malformed digest")
 	}
 	if mediaType == "" {
 		mediaType = doc.MediaType
@@ -674,7 +675,7 @@ func referrerFields(mediaType string, body []byte) (subject, artifactType string
 	if artifactType == "" && mediaType != mediaTypeOCIIndex && mediaType != mediaTypeDockerManifestList {
 		artifactType = doc.Config.MediaType
 	}
-	return doc.Subject.Digest, artifactType, nil
+	return doc.Subject.Digest, artifactType, doc.Annotations, nil
 }
 
 // validateManifest performs type-aware shallow validation, returning the child

@@ -122,3 +122,26 @@ func TestPutManifest_IndexWithContentTypeParameterGetsNoConfigArtifactType(t *te
 	assert.Equal(t, mediaTypeOCIIndex, m.MediaType, "the stored type must not carry the parameter")
 	assert.Empty(t, m.ArtifactType)
 }
+
+func TestDeleteReferrerManifest_RemovesItFromTheSubjectListing(t *testing.T) {
+	reg := newTestRegistry()
+	cfg := pushBlob(t, reg, referrerRepo, []byte("cfg"))
+	body := imageWithSubject(cfg, absentSubjectDgt, sigArtifactType)
+	dg := digestOf([]byte(body))
+	w := do(reg, http.MethodPut, "/v2/"+referrerRepo+"/manifests/"+dg, []byte(body),
+		map[string]string{"Content-Type": mediaTypeOCIManifest})
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+
+	listed, err := reg.Meta.ListReferrers(context.Background(), testAccount, referrerRepo, absentSubjectDgt)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, dg, listed[0].Digest)
+	assert.Equal(t, sigArtifactType, listed[0].ArtifactType)
+
+	w = do(reg, http.MethodDelete, "/v2/"+referrerRepo+"/manifests/"+dg, nil, nil)
+	require.Equal(t, http.StatusAccepted, w.Code, "body: %s", w.Body.String())
+
+	listed, err = reg.Meta.ListReferrers(context.Background(), testAccount, referrerRepo, absentSubjectDgt)
+	require.NoError(t, err)
+	assert.Empty(t, listed)
+}

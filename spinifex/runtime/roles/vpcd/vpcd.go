@@ -821,6 +821,10 @@ func launchService(cfg *Config) error {
 	// the guests it is running.
 	go runHostEIPLoop(loopCtx, rec)
 
+	// Host MSS clamp for peers behind NAT that never receive gateway_mtu's ICMP;
+	// physical uplinks have no host hop, so the loop only clears a stale table.
+	go runMSSClampLoop(loopCtx, host.NewExecRunner(), uplinkMode, topology.GatewayMTU(cfg.UnderlayMTU, cfg.IPSecEnabled))
+
 	slog.Info("vpcd service started, waiting for VPC lifecycle events",
 		"subscriptions", len(subs))
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# App instance user-data: triple-purpose responder for LB E2E tests.
+# App instance user-data: multi-purpose responder for LB E2E tests.
 #   HTTP:80   serves JSON {"instance_id": "<hostname>"} for ALB suites
 #   TCP:9000  echoes <hostname> for NLB TCP suites (also UDP-TG TCP health check)
 #   UDP:9001  echoes <hostname> for NLB UDP suites
@@ -30,3 +30,23 @@ socketserver.UDPServer.allow_reuse_address = True
 socketserver.UDPServer(("0.0.0.0", 9001), Handler).serve_forever()
 PYEOF
 nohup python3 /tmp/udp_echo.py > /dev/null 2>&1 &
+
+# TCP:8081 health endpoint whose answer the e2e driver flips: /health is 200
+# until /fail is requested, then 500 until /ok. Data ports keep accepting.
+cat > /tmp/health.py << 'PYEOF'
+import http.server, os
+FLAG = "/tmp/health-fail"
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/fail":
+            open(FLAG, "w").close()
+        elif self.path == "/ok" and os.path.exists(FLAG):
+            os.remove(FLAG)
+        code = 500 if self.path == "/health" and os.path.exists(FLAG) else 200
+        self.send_response(code); self.end_headers()
+        self.wfile.write(b"ok\n")
+    def log_message(self, *a, **kw):
+        pass
+http.server.ThreadingHTTPServer(("0.0.0.0", 8081), Handler).serve_forever()
+PYEOF
+nohup python3 /tmp/health.py > /dev/null 2>&1 &

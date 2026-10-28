@@ -728,7 +728,15 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalan
 		lb.HealthTargets = nil
 	}
 
-	if err := s.store.PutLoadBalancer(ctx, lb); err != nil {
+	// Only the rendered fields are written, under CAS, so a concurrent heartbeat
+	// or re-render of the same LB is never overwritten with a stale record.
+	if _, err := s.store.UpdateLoadBalancer(ctx, lb.LoadBalancerID, func(rec *LoadBalancerRecord) (bool, error) {
+		rec.ConfigText = lb.ConfigText
+		rec.ConfigHash = lb.ConfigHash
+		rec.CertFiles = lb.CertFiles
+		rec.HealthTargets = lb.HealthTargets
+		return true, nil
+	}); err != nil {
 		slog.ErrorContext(ctx, "updateStoredConfig: failed to persist LB", "lbId", lb.LoadBalancerID, "err", err)
 		return fmt.Errorf("persist LB: %w", err)
 	}
@@ -1110,8 +1118,21 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 	heartbeatStale := now.Sub(lb.LastHeartbeat) >= heartbeatPersistInterval
 	lb.LastHeartbeat = now
 
+	// Both writes touch only the fields this heartbeat owns, under CAS, so a
+	// concurrent config re-render of the same LB is never rolled back.
 	switch {
 	case stateChanged:
+		if _, err := s.store.UpdateLoadBalancer(ctx, lbID, func(rec *LoadBalancerRecord) (bool, error) {
+			if rec.State == StateProvisioning {
+				rec.State = StateActive
+				rec.StateReason = ""
+			}
+			rec.LastHeartbeat = now
+			return true, nil
+		}); err != nil {
+			slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to persist activation", "lbId", lbID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 		// Build data-plane config on activation: reactive calls during create
 		// no-op while InstanceID is empty, so we build it now from existing listeners/targets.
 		if err := s.updateStoredConfig(ctx, lb); err != nil {
@@ -1120,7 +1141,10 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 		}
 	case heartbeatStale:
 		// Refresh the heartbeat timestamp only; avoid writing the full record on every tick.
-		if err := s.store.PutLoadBalancer(ctx, lb); err != nil {
+		if _, err := s.store.UpdateLoadBalancer(ctx, lbID, func(rec *LoadBalancerRecord) (bool, error) {
+			rec.LastHeartbeat = now
+			return true, nil
+		}); err != nil {
 			slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to persist LB", "lbId", lbID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}

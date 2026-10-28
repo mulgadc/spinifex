@@ -222,10 +222,9 @@ cosign v2 keeps writing its `sha256-<digest>.sig` tags and is unaffected.
 Limits:
 
 - `cosign copy` does not copy v3 signatures to the destination repository.
-  This is client behaviour; sign the copy again.
-  `oras cp -r <source> <mirror>` copies the image and its referrers, signatures included, in one command.
-  Alternatively, `crane copy` the signature manifest by digest after the image, so the registry indexes it by subject.
-  Both were checked on env24 with a keyless-signed index: `cosign verify` on the mirror by digest passed.
+  This is client behaviour.
+  To keep the original signature, copy with `oras cp -r <source> <mirror>`, which copies the image and its referrers in one command, or `crane copy` the signature manifest by digest after the image.
+  Otherwise, sign the copy again.
 - Referrers pushed before this version are not listed.
   Push them again to add them to the index.
 - A crash between deleting an image and deleting its referrers can leave referrers behind that nothing lists.

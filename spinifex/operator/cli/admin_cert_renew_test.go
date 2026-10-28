@@ -35,6 +35,7 @@ func certIPs(cert *x509.Certificate) []string {
 // A renew must keep every SAN init minted, taking region and services domain
 // from the config, and add the operator's extras on top.
 func TestRenewServerCert_KeepsInitSANs(t *testing.T) {
+	admin.ShortenCertKeyBitsForTest(t, 2048)
 	configDir := t.TempDir()
 	const (
 		region   = "ap-southeast-2"
@@ -68,6 +69,7 @@ func TestRenewServerCert_KeepsInitSANs(t *testing.T) {
 // The daemon publishes service names under the node's region, so renew must
 // mint them for that region even when [aws] region says otherwise.
 func TestRenewServerCert_UsesNodeRegion(t *testing.T) {
+	admin.ShortenCertKeyBitsForTest(t, 2048)
 	configDir := t.TempDir()
 	const nodeRegion = "ap-southeast-2"
 	require.NoError(t, admin.GenerateCACert(filepath.Join(configDir, "ca.pem"), filepath.Join(configDir, "ca.key")))
@@ -87,6 +89,7 @@ func TestRenewServerCert_UsesNodeRegion(t *testing.T) {
 }
 
 func TestRenewServerCert_MissingNodeEntry(t *testing.T) {
+	admin.ShortenCertKeyBitsForTest(t, 2048)
 	configDir := t.TempDir()
 	require.NoError(t, admin.GenerateCACert(filepath.Join(configDir, "ca.pem"), filepath.Join(configDir, "ca.key")))
 

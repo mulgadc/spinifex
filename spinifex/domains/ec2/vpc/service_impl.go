@@ -896,7 +896,8 @@ func (s *VPCServiceImpl) checkSubnetResidents(ctx context.Context, accountID, su
 		}
 		var record ENIRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			continue
+			slog.ErrorContext(ctx, "DeleteSubnet: ENI unmarshal failed, blocking delete to avoid orphaning ports", "subnetId", subnetID, "key", key, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if record.SubnetId == subnetID && eniIsLiveAttachment(&record) {
 			return awserrors.HasDependencies("subnet", subnetID)

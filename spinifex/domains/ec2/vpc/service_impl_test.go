@@ -994,6 +994,28 @@ func TestDeleteSubnet_RouteTableCheckFailsClosedOnCorruptRTB(t *testing.T) {
 	require.Len(t, desc.Subnets, 1, "subnet must persist so a KV read failure never strands an association unseen")
 }
 
+// TestDeleteSubnet_ResidentCheckFailsClosedOnCorruptENI asserts an ENI
+// record that cannot be decoded blocks DeleteSubnet, since it may be a live
+// port in this subnet.
+func TestDeleteSubnet_ResidentCheckFailsClosedOnCorruptENI(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.66.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.66.1.0/24")
+	eniID := createTestENI(t, svc, subnetID)
+
+	_, err := svc.eniKV.Put(t.Context(), testAccountID+"."+eniID, []byte("{not json"))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "ServerInternal")
+
+	desc, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{SubnetIds: []*string{aws.String(subnetID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Subnets, 1)
+}
+
 // TestEnsureDefaultVPC_NoVpcdResponder simulates the daemon-startup race where
 // EnsureDefaultVPC runs before vpcd has subscribed. The SG step is best-effort,
 // so subnet and RTB must still land in KV when vpcd is absent.

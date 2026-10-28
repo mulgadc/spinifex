@@ -279,3 +279,130 @@ func TestGetReferrers_MetadataFailureIsA5xxNotA404(t *testing.T) {
 	w := do(reg, http.MethodGet, "/v2/"+referrerRepo+"/referrers/"+absentSubjectDgt, nil, nil)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
+
+// pushSubjectImage stores a plain image (no subject) and returns its digest.
+func pushSubjectImage(t *testing.T, reg *Registry, repo, blobData string) string {
+	t.Helper()
+	cfg := pushBlob(t, reg, repo, []byte(blobData))
+	body := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"config":{"mediaType":%q,"digest":%q,"size":3},"layers":[]}`,
+		mediaTypeOCIManifest, sigConfigType, cfg)
+	dg := digestOf([]byte(body))
+	w := do(reg, http.MethodPut, "/v2/"+repo+"/manifests/"+dg, []byte(body),
+		map[string]string{"Content-Type": mediaTypeOCIManifest})
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+	return dg
+}
+
+func manifestExists(reg *Registry, repo, dg string) bool {
+	_, err := reg.Meta.GetManifestMeta(context.Background(), testAccount, repo, dg)
+	return err == nil
+}
+
+func referrerDigests(t *testing.T, reg *Registry, repo, subject string) []string {
+	t.Helper()
+	refs, err := reg.Meta.ListReferrers(context.Background(), testAccount, repo, subject)
+	require.NoError(t, err)
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, r.Digest)
+	}
+	return out
+}
+
+func TestDeleteManifest_SubjectDeleteRemovesItsReferrers(t *testing.T) {
+	reg := newTestRegistry()
+	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
+	sig := pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "sig")
+	sbom := pushReferrer(t, reg, referrerRepo, subject, "application/vnd.example.sbom.v1", "sbom")
+	require.ElementsMatch(t, []string{sig, sbom}, referrerDigests(t, reg, referrerRepo, subject))
+
+	w := do(reg, http.MethodDelete, "/v2/"+referrerRepo+"/manifests/"+subject, nil, nil)
+	require.Equal(t, http.StatusAccepted, w.Code, "body: %s", w.Body.String())
+
+	assert.False(t, manifestExists(reg, referrerRepo, subject))
+	assert.False(t, manifestExists(reg, referrerRepo, sig))
+	assert.False(t, manifestExists(reg, referrerRepo, sbom))
+	assert.Empty(t, referrerDigests(t, reg, referrerRepo, subject), "index keys go with the referrers")
+}
+
+func TestDeleteManifest_NestedReferrersAreRemoved(t *testing.T) {
+	reg := newTestRegistry()
+	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
+	sig := pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "sig")
+	sigOfSig := pushReferrer(t, reg, referrerRepo, sig, sigArtifactType, "sig-of-sig")
+
+	_, err := reg.DeleteImage(context.Background(), testAccount, referrerRepo, "", subject)
+	require.NoError(t, err)
+
+	for _, dg := range []string{subject, sig, sigOfSig} {
+		assert.False(t, manifestExists(reg, referrerRepo, dg), dg)
+	}
+	assert.Empty(t, referrerDigests(t, reg, referrerRepo, sig))
+}
+
+func TestDeleteManifest_ReferrerDeleteLeavesTheSubject(t *testing.T) {
+	reg := newTestRegistry()
+	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
+	sig := pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "sig")
+	other := pushReferrer(t, reg, referrerRepo, subject, "application/vnd.example.sbom.v1", "sbom")
+
+	_, err := reg.DeleteImage(context.Background(), testAccount, referrerRepo, "", sig)
+	require.NoError(t, err)
+
+	assert.True(t, manifestExists(reg, referrerRepo, subject))
+	assert.True(t, manifestExists(reg, referrerRepo, other))
+	assert.Equal(t, []string{other}, referrerDigests(t, reg, referrerRepo, subject))
+}
+
+func TestDeleteManifest_TagDeleteDoesNotCascade(t *testing.T) {
+	reg := newTestRegistry()
+	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
+	sig := pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "sig")
+	require.NoError(t, reg.Meta.PutTag(context.Background(), testAccount, referrerRepo, "v1", subject))
+
+	w := do(reg, http.MethodDelete, "/v2/"+referrerRepo+"/manifests/v1", nil, nil)
+	require.Equal(t, http.StatusAccepted, w.Code)
+
+	assert.True(t, manifestExists(reg, referrerRepo, subject), "a tag delete only removes the pointer")
+	assert.True(t, manifestExists(reg, referrerRepo, sig))
+}
+
+func TestDeleteManifest_CascadeStaysInsideTheRepository(t *testing.T) {
+	reg := newTestRegistry()
+	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
+	pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "sig")
+	elsewhere := pushReferrer(t, reg, "team/other", subject, sigArtifactType, "sig-other")
+
+	_, err := reg.DeleteImage(context.Background(), testAccount, referrerRepo, "", subject)
+	require.NoError(t, err)
+
+	assert.True(t, manifestExists(reg, "team/other", elsewhere))
+	assert.Equal(t, []string{elsewhere}, referrerDigests(t, reg, "team/other", subject))
+}
+
+type failingDeleteStore struct {
+	ecr.MetaStore
+	failDigest string
+}
+
+func (s failingDeleteStore) DeleteManifestMeta(ctx context.Context, account, repo, digest string) error {
+	if digest == s.failDigest {
+		return errors.New("kv unavailable")
+	}
+	return s.MetaStore.DeleteManifestMeta(ctx, account, repo, digest)
+}
+
+func TestDeleteManifest_ReferrerFailureDoesNotFailTheSubjectDelete(t *testing.T) {
+	reg := newTestRegistry()
+	subject := pushSubjectImage(t, reg, referrerRepo, "subject")
+	stuck := pushReferrer(t, reg, referrerRepo, subject, sigArtifactType, "stuck")
+	fine := pushReferrer(t, reg, referrerRepo, subject, "application/vnd.example.sbom.v1", "fine")
+	reg.Meta = failingDeleteStore{MetaStore: reg.Meta, failDigest: stuck}
+
+	got, err := reg.DeleteImage(context.Background(), testAccount, referrerRepo, "", subject)
+	require.NoError(t, err)
+	assert.Equal(t, subject, got)
+	assert.False(t, manifestExists(reg, referrerRepo, subject))
+	assert.False(t, manifestExists(reg, referrerRepo, fine), "one stuck referrer does not stop the others")
+	assert.True(t, manifestExists(reg, referrerRepo, stuck))
+}

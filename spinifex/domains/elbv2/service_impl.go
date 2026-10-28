@@ -183,7 +183,7 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []
 
 	hc := newHealthChecker(store)
 
-	return &ELBv2ServiceImpl{
+	svc := &ELBv2ServiceImpl{
 		config:         cfg,
 		store:          store,
 		acmStore:       acmStore,
@@ -195,7 +195,9 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []
 		cancel:         cancel,
 		hc:             hc,
 		reaperInterval: lbReaperInterval,
-	}, nil
+	}
+	hc.onChanged = svc.reRenderForTargetGroups
+	return svc, nil
 }
 
 // Close cancels background goroutines.
@@ -734,6 +736,46 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalan
 	slog.InfoContext(ctx, "updateStoredConfig: config stored",
 		"lbId", lb.LoadBalancerID, "hash", hash[:12], "size", len(configContent), "certs", len(certFiles))
 	return nil
+}
+
+// reRenderForTargetGroups regenerates the stored config of every load balancer
+// that references one of tgIDs, so a target health change reaches the data plane.
+// The LB is re-read just before rendering and failures are logged, never returned.
+func (s *ELBv2ServiceImpl) reRenderForTargetGroups(ctx context.Context, tgIDs []string) {
+	changed := make(map[string]struct{}, len(tgIDs))
+	for _, id := range tgIDs {
+		changed[id] = struct{}{}
+	}
+	lbs, err := s.store.ListLoadBalancers(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "reRenderForTargetGroups: failed to list load balancers", "err", err)
+		return
+	}
+	for _, listed := range lbs {
+		tgs, err := s.store.TargetGroupsForLB(ctx, listed.LoadBalancerID)
+		if err != nil {
+			slog.ErrorContext(ctx, "reRenderForTargetGroups: failed to resolve target groups", "lbId", listed.LoadBalancerID, "err", err)
+			continue
+		}
+		uses := false
+		for _, tg := range tgs {
+			if _, ok := changed[tg.TargetGroupID]; ok {
+				uses = true
+				break
+			}
+		}
+		if !uses {
+			continue
+		}
+		lb, err := s.store.GetLoadBalancer(ctx, listed.LoadBalancerID)
+		if err != nil || lb == nil {
+			slog.ErrorContext(ctx, "reRenderForTargetGroups: failed to re-read load balancer", "lbId", listed.LoadBalancerID, "err", err)
+			continue
+		}
+		if err := s.updateStoredConfig(ctx, lb); err != nil {
+			slog.ErrorContext(ctx, "reRenderForTargetGroups: re-render failed", "lbId", lb.LoadBalancerID, "err", err)
+		}
+	}
 }
 
 // resolveListenerCerts resolves each distinct certificate ARN to its combined PEM.

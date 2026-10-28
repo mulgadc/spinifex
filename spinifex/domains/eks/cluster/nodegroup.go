@@ -655,6 +655,11 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 			"gatewayBaseURL", s.deps.GatewayBaseURL, "registryHost", registryHost)
 	}
 
+	var registryHosts []string
+	if s.deps.RegistryHosts != nil {
+		registryHosts = s.deps.RegistryHosts()
+	}
+
 	userData := buildAgentUserData(agentUserDataInput{
 		ClusterName:   rec.ClusterName,
 		NodegroupName: rec.Name,
@@ -667,6 +672,7 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 		AccountID:     accountID,
 		RegistryHost:  registryHost,
 		GatewayIP:     gatewayIP,
+		RegistryHosts: registryHosts,
 		GPUEnabled:    rec.GPUEnabled,
 		GPUVendor:     rec.GPUVendor,
 	})

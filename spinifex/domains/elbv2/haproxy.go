@@ -30,6 +30,9 @@ defaults
 {{range .Frontends}}
 frontend {{.Name}}
     bind *:{{.Port}}{{if .CertPaths}} ssl{{range .CertPaths}} crt {{.}}{{end}}{{end}}
+{{- range .RequestRules}}
+    {{.}}
+{{- end}}
 {{- range .Rules}}
 {{- range .ACLs}}
     acl {{.Name}} {{.Expr}}
@@ -87,6 +90,9 @@ type HAProxyFrontend struct {
 	CertPaths      []string
 	DefaultBackend string
 	Rules          []HAProxyRule
+	// RequestRules are the http-request directives rendered ahead of routing,
+	// carrying the X-Forwarded-* headers.
+	RequestRules []string
 }
 
 // HAProxyRule represents one routing rule as ACL declarations + a use_backend
@@ -284,6 +290,12 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 			Port:           l.Port,
 			Protocol:       l.Protocol,
 			DefaultBackend: defaultBackendName,
+			RequestRules: forwardedHeaderRules(
+				lb.Attributes[AttrXFFHeaderProcessing],
+				lb.Attributes[AttrXFFClientPort] == "true",
+				protocolRequiresCert(l.Protocol),
+				l.Port,
+			),
 		}
 
 		// Resolve every attached cert and stage each for delivery to the agent.

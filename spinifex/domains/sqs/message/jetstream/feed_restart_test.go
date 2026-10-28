@@ -14,63 +14,105 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/message"
 	sqsjs "github.com/mulgadc/spinifex/spinifex/domains/sqs/message/jetstream"
 	jsapi "github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// feedBacklog is the shared-shard history each restart case replays; the
+// feedBacklog is the shared-shard history each restart round adds; the
 // conformance suite leaves a few hundred appends on shard 0.
 const feedBacklog = 1500
 
-// feedProbe reads a feed until one change arrives, recording progress so a
+// feedStallAfter is the longest a restart round may wait for a change.
+const feedStallAfter = 5 * time.Second
+
+// feedProbe reads an exact sequence of changes, recording progress so a
 // failure separates a slow replay from an idle or wedged iterator.
 type feedProbe struct {
+	stallAfter time.Duration
+	// onStall, when set, runs at most once, with a snapshot, if no change
+	// arrives for stallAfter. expect waits for it before returning.
+	onStall func(snapshot string)
+
+	mu        sync.Mutex
+	start     time.Time
+	done      bool
+	elapsed   time.Duration
 	delivered int
 	last      message.Cursor
 	maxGap    time.Duration
 	gapAfter  message.Cursor
-	elapsed   time.Duration
-	// onStall, when set, runs once if no change arrives for stallAfter.
-	onStall func()
 }
 
-const stallAfter = 5 * time.Second
+func newFeedProbe() *feedProbe { return &feedProbe{stallAfter: feedStallAfter} }
 
-func (p *feedProbe) String() string {
+func (p *feedProbe) snapshot() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	elapsed := p.elapsed
+	if !p.done {
+		elapsed = time.Since(p.start)
+	}
 	return fmt.Sprintf("delivered=%d last_cursor=%d elapsed_ms=%d max_gap_ms=%d max_gap_after_cursor=%d",
-		p.delivered, p.last, p.elapsed.Milliseconds(), p.maxGap.Milliseconds(), p.gapAfter)
+		p.delivered, p.last, elapsed.Milliseconds(), p.maxGap.Milliseconds(), p.gapAfter)
 }
 
-func (p *feedProbe) until(f message.Feed, ns message.Namespace, pos message.Position, limit time.Duration) error {
+func (p *feedProbe) gap() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxGap
+}
+
+// expect reads len(want) changes and requires each to be the next wanted
+// position: every surviving change exactly once, in order.
+func (p *feedProbe) expect(f message.Feed, want []message.Position, limit time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
-	start, prev := time.Now(), time.Now()
-	defer func() { p.elapsed = time.Since(start) }()
+	p.mu.Lock()
+	p.start, p.done = time.Now(), false
+	p.mu.Unlock()
+	var stalls sync.WaitGroup
 	var once sync.Once
-	for {
-		var stall *time.Timer
+	defer func() {
+		stalls.Wait()
+		p.mu.Lock()
+		p.done, p.elapsed = true, time.Since(p.start)
+		p.mu.Unlock()
+	}()
+	prev := time.Now()
+	for i, pos := range want {
+		var timer *time.Timer
 		if p.onStall != nil {
-			stall = time.AfterFunc(stallAfter, func() { once.Do(p.onStall) })
+			stalls.Add(1)
+			timer = time.AfterFunc(p.stallAfter, func() {
+				defer stalls.Done()
+				once.Do(func() { p.onStall(p.snapshot()) })
+			})
 		}
 		c, err := f.Next(ctx)
-		if stall != nil {
-			stall.Stop()
+		if timer != nil && timer.Stop() {
+			stalls.Done()
 		}
+		p.mu.Lock()
 		if gap := time.Since(prev); gap > p.maxGap {
 			p.maxGap, p.gapAfter = gap, p.last
 		}
+		if err == nil {
+			p.delivered++
+			p.last = c.Cursor
+		}
+		p.mu.Unlock()
 		prev = time.Now()
 		if err != nil {
-			return err
+			return fmt.Errorf("change %d of %d (want position %d): %w", i+1, len(want), pos, err)
 		}
-		p.delivered++
-		p.last = c.Cursor
-		if c.Namespace == ns && c.Position == pos {
-			return nil
+		if c.Position != pos {
+			return fmt.Errorf("change %d of %d: got position %d, want %d", i+1, len(want), c.Position, pos)
 		}
 	}
+	return nil
 }
 
-func feedRounds(t *testing.T) int {
+func feedRounds() int {
 	n, err := strconv.Atoi(os.Getenv("SQS_FEED_RESTART_ROUNDS"))
 	if err != nil || n < 1 {
 		return 1
@@ -78,40 +120,49 @@ func feedRounds(t *testing.T) int {
 	return n
 }
 
-// fillShard appends n bodies across 25 queues on shard 0 and returns the
-// last one, so a feed from the start must replay the whole backlog first.
-func fillShard(t *testing.T, s message.Store, n int) (message.Namespace, message.Position) {
+// fillShard appends n bodies across 25 queues on shard 0 and returns their
+// positions in order.
+func fillShard(t *testing.T, s message.Store, n int) (message.Namespace, []message.Position) {
 	t.Helper()
 	ctx := context.Background()
 	prefix := fmt.Sprintf("fr-%d", time.Now().UnixNano())
 	var ns message.Namespace
-	var pos message.Position
+	positions := make([]message.Position, 0, n)
 	for i := range n {
 		ns = message.Namespace{Queue: message.QueueID(fmt.Sprintf("%s-%d", prefix, i%25))}
 		res, err := s.Append(ctx, ns, message.AppendInput{Body: []byte(strconv.Itoa(i))})
 		require.NoError(t, err)
-		pos = res.Position
+		positions = append(positions, res.Position)
 	}
-	return ns, pos
+	return ns, positions
 }
 
-// diagnose logs what the store and server hold when a feed misses its target.
-func diagnose(t *testing.T, c *cluster, s message.Store, ns message.Namespace, pos message.Position, p *feedProbe) {
+func appendLive(t *testing.T, s message.Store, ns message.Namespace) message.Position {
 	t.Helper()
+	res, err := s.Append(context.Background(), ns, message.AppendInput{Body: []byte("live")})
+	require.NoError(t, err)
+	return res.Position
+}
+
+// diagnose logs what the store and server hold when a feed misses a change.
+func diagnose(t *testing.T, c *cluster, s message.Store, ns message.Namespace, pos message.Position, snapshot string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	t.Logf("probe: %s want_position=%d", p, pos)
+	t.Logf("probe: %s want_position=%d", snapshot, pos)
 	m, err := s.Get(ctx, ns, pos)
-	t.Logf("direct Get: err=%v body=%q", err, m.Body)
+	t.Logf("direct Get of last wanted: err=%v body=%q", err, m.Body)
 	stream, err := c.js.Stream(ctx, sqsjs.StreamName(0))
 	if err != nil {
 		t.Logf("stream: %v", err)
 		return
 	}
-	info, err := stream.Info(ctx)
-	if err == nil {
+	if info, err := stream.Info(ctx); err == nil {
+		leader := ""
+		if info.Cluster != nil {
+			leader = info.Cluster.Leader
+		}
 		t.Logf("stream: msgs=%d first=%d last=%d consumers=%d leader=%s replicas=%s",
-			info.State.Msgs, info.State.FirstSeq, info.State.LastSeq, info.State.Consumers, info.Cluster.Leader, replicaState(info.Cluster))
+			info.State.Msgs, info.State.FirstSeq, info.State.LastSeq, info.State.Consumers, leader, replicaState(info.Cluster))
 	}
 	lister := stream.ListConsumers(ctx)
 	for ci := range lister.Info() {
@@ -121,17 +172,6 @@ func diagnose(t *testing.T, c *cluster, s message.Store, ns message.Namespace, p
 		}
 		t.Logf("consumer %s: delivered_stream=%d pending=%d waiting=%d leader=%s",
 			ci.Name, ci.Delivered.Stream, ci.NumPending, ci.NumWaiting, leader)
-	}
-	if c.logDir == "" {
-		return
-	}
-	for i := range 3 {
-		b, err := os.ReadFile(filepath.Join(c.logDir, fmt.Sprintf("sqs-%d.log", i)))
-		if err != nil {
-			continue
-		}
-		lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-		t.Logf("sqs-%d log tail:\n%s", i, strings.Join(lines[max(0, len(lines)-25):], "\n"))
 	}
 }
 
@@ -162,97 +202,104 @@ func replicaState(ci *jsapi.ClusterInfo) string {
 	return strings.Join(parts, "; ")
 }
 
-func appendLive(t *testing.T, s message.Store, ns message.Namespace) message.Position {
-	t.Helper()
-	res, err := s.Append(context.Background(), ns, message.AppendInput{Body: []byte("live")})
-	require.NoError(t, err)
-	return res.Position
+// stallReporter snapshots the store and server once a probe stalls.
+func stallReporter(t *testing.T, c *cluster, s message.Store, ns message.Namespace, want []message.Position, round int) func(string) {
+	return func(snapshot string) {
+		t.Logf("round %d: no change for %s; snapshot while stalled:", round, feedStallAfter)
+		diagnose(t, c, s, ns, want[len(want)-1], snapshot)
+		keepLogs(t, c, round)
+	}
 }
 
 // TestR3FeedOpenedAfterRestart: a feed opened from the start after a full
-// cluster restart replays a shared-shard backlog, then sees a live append.
+// cluster restart replays the whole shard once in order, then a live append.
 func TestR3FeedOpenedAfterRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts a three-node cluster")
 	}
 	c := startClusterLogged(t, t.TempDir())
 	s := c.store(t)
-	for round := range feedRounds(t) {
-		ns, pos := fillShard(t, s, feedBacklog)
+	var shard []message.Position
+	for round := range feedRounds() {
+		ns, positions := fillShard(t, s, feedBacklog)
+		shard = append(shard, positions...)
 		c.stop()
 		c.start()
 		s = c.store(t)
 
 		f, err := s.Feed(context.Background(), 0, 0)
 		require.NoError(t, err)
-		p := &feedProbe{}
-		p.onStall = func() {
-			t.Logf("round %d: no change for %s; snapshot while stalled:", round, stallAfter)
-			diagnose(t, c, s, ns, pos, p)
-			keepLogs(t, c, round)
-		}
-		if err := p.until(f, ns, pos, 60*time.Second); err != nil {
-			diagnose(t, c, s, ns, pos, p)
-			t.Fatalf("round %d: backlog replay after restart: %v", round, err)
-		}
-		t.Logf("round %d backlog: %s", round, p)
-		require.Less(t, p.maxGap, stallAfter, "round %d: feed idled after restart", round)
+		p := newFeedProbe()
+		p.onStall = stallReporter(t, c, s, ns, shard, round)
+		require.NoError(t, p.expect(f, shard, 60*time.Second), "round %d: replay after restart", round)
+		t.Logf("round %d backlog: %s", round, p.snapshot())
+		require.Less(t, p.gap(), feedStallAfter, "round %d: feed idled after restart", round)
 
 		live := appendLive(t, s, ns)
-		lp := &feedProbe{}
-		if err := lp.until(f, ns, live, 30*time.Second); err != nil {
-			diagnose(t, c, s, ns, live, lp)
-			t.Fatalf("round %d: live append after restart: %v", round, err)
-		}
-		t.Logf("round %d live: %s", round, lp)
+		shard = append(shard, live)
+		lp := newFeedProbe()
+		require.NoError(t, lp.expect(f, []message.Position{live}, 30*time.Second), "round %d: live append after restart", round)
 		require.NoError(t, f.Close())
 	}
 }
 
 // TestR3FeedOpenAcrossRestart: a feed open before a full cluster restart
-// resumes its backlog afterwards and then sees a live append.
+// delivers every change once in order across it, then a live append.
 func TestR3FeedOpenAcrossRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts a three-node cluster")
 	}
 	c := startClusterLogged(t, t.TempDir())
 	s := c.store(t)
-	for round := range feedRounds(t) {
-		ns, pos := fillShard(t, s, feedBacklog)
+	var shard []message.Position
+	for round := range feedRounds() {
+		ns, positions := fillShard(t, s, feedBacklog)
+		shard = append(shard, positions...)
 		f, err := s.Feed(context.Background(), 0, 0)
 		require.NoError(t, err)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		for range feedBacklog / 3 {
-			_, err := f.Next(ctx)
-			require.NoError(t, err, "round %d: reading before restart", round)
-		}
-		cancel()
+		before := len(shard) - feedBacklog*2/3
+		pre := newFeedProbe()
+		require.NoError(t, pre.expect(f, shard[:before], 30*time.Second), "round %d: reading before restart", round)
 
 		c.stop()
 		c.start()
 		after := c.store(t)
 
-		p := &feedProbe{}
-		p.onStall = func() {
-			t.Logf("round %d: no change for %s; snapshot while stalled:", round, stallAfter)
-			diagnose(t, c, after, ns, pos, p)
-			keepLogs(t, c, round)
-		}
-		if err := p.until(f, ns, pos, 60*time.Second); err != nil {
-			diagnose(t, c, after, ns, pos, p)
-			t.Fatalf("round %d: backlog across restart: %v", round, err)
-		}
-		t.Logf("round %d backlog: %s", round, p)
-		require.Less(t, p.maxGap, stallAfter, "round %d: feed idled across restart", round)
+		p := newFeedProbe()
+		p.onStall = stallReporter(t, c, after, ns, shard, round)
+		require.NoError(t, p.expect(f, shard[before:], 60*time.Second), "round %d: backlog across restart", round)
+		t.Logf("round %d backlog: %s", round, p.snapshot())
+		require.Less(t, p.gap(), feedStallAfter, "round %d: feed idled across restart", round)
 
 		live := appendLive(t, after, ns)
-		lp := &feedProbe{}
-		if err := lp.until(f, ns, live, 30*time.Second); err != nil {
-			diagnose(t, c, after, ns, live, lp)
-			t.Fatalf("round %d: live append across restart: %v", round, err)
-		}
-		t.Logf("round %d live: %s", round, lp)
+		shard = append(shard, live)
+		lp := newFeedProbe()
+		require.NoError(t, lp.expect(f, []message.Position{live}, 30*time.Second), "round %d: live append across restart", round)
 		require.NoError(t, f.Close())
 		s = after
 	}
+}
+
+// TestFeedProbeStallSnapshot drives the probe's stall path: the snapshot runs
+// once, sees live elapsed time, and finishes before expect returns.
+func TestFeedProbeStallSnapshot(t *testing.T) {
+	s, _ := newStore(t)
+	f, err := s.Feed(context.Background(), 0, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	p := newFeedProbe()
+	p.stallAfter = 50 * time.Millisecond
+	var calls int
+	var snapshot string
+	p.onStall = func(s string) {
+		time.Sleep(100 * time.Millisecond)
+		calls++
+		snapshot = s
+	}
+	err = p.expect(f, []message.Position{1}, 300*time.Millisecond)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Equal(t, 1, calls, "the snapshot runs once and has finished when expect returns")
+	assert.Contains(t, snapshot, "delivered=0")
+	assert.Regexp(t, `elapsed_ms=([5-9]\d|\d{3,}) `, snapshot, "elapsed is live during a stall")
 }

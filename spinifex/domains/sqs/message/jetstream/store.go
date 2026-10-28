@@ -32,9 +32,10 @@ const stateShardHeader = "Sqs-State-Shard"
 // ephemeral consumer after its reader vanishes without Close.
 const feedInactiveThreshold = time.Minute
 
-// feedPullExpiry replaces nats.go's 30s default pull expiry, under which an
-// ordered feed was seen to idle for a whole expiry with stored changes pending.
-const feedPullExpiry = 2 * time.Second
+// feedIdleCheck is how long Next waits on the consumer before checking the
+// stream; an idle feed costs one leader message get per interval on top of
+// nats.go's ordered-consumer heartbeat and pull renewal.
+const feedIdleCheck = 2 * time.Second
 
 // feedCloseTimeout bounds Close's consumer delete.
 const feedCloseTimeout = 5 * time.Second
@@ -394,30 +395,54 @@ func (s *Store) Feed(ctx context.Context, messageShard message.Shard, after mess
 	if err != nil {
 		return nil, err
 	}
+	f := &feed{shard: messageShard, stream: stream, cursor: uint64(after), idleCheck: feedIdleCheck}
+	if after == math.MaxUint64 {
+		// No position follows the maximum cursor; only later appends can.
+		info, err := stream.Info(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("open feed on %s: %w", StreamName(messageShard), err)
+		}
+		f.cursor = info.State.LastSeq
+	}
+	if err := f.open(ctx); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// open starts a headers-only ordered consumer just after the cursor.
+func (f *feed) open(ctx context.Context) error {
 	cfg := jsapi.OrderedConsumerConfig{
 		DeliverPolicy:     jsapi.DeliverAllPolicy,
 		HeadersOnly:       true,
 		InactiveThreshold: feedInactiveThreshold,
 	}
-	switch {
-	case after == math.MaxUint64:
-		// No position follows the maximum cursor; only new appends can.
-		cfg.DeliverPolicy = jsapi.DeliverNewPolicy
-	case after > 0:
+	if f.cursor > 0 {
 		cfg.DeliverPolicy = jsapi.DeliverByStartSequencePolicy
-		cfg.OptStartSeq = uint64(after) + 1
+		cfg.OptStartSeq = f.cursor + 1
 	}
-	consumer, err := stream.OrderedConsumer(ctx, cfg)
+	consumer, err := f.stream.OrderedConsumer(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("open feed on %s: %w", StreamName(messageShard), err)
+		return fmt.Errorf("open feed on %s: %w", StreamName(f.shard), err)
 	}
-	it, err := consumer.Messages(jsapi.PullExpiry(feedPullExpiry))
+	it, err := consumer.Messages()
 	if err != nil {
 		// The consumer already exists server-side and no Feed owns it.
-		_ = deleteFeedConsumer(stream, consumer)
-		return nil, fmt.Errorf("open feed on %s: %w", StreamName(messageShard), err)
+		_ = deleteFeedConsumer(f.stream, consumer)
+		return fmt.Errorf("open feed on %s: %w", StreamName(f.shard), err)
 	}
-	return &feed{shard: messageShard, stream: stream, consumer: consumer, it: it}, nil
+	f.consumer, f.it = consumer, it
+	return nil
+}
+
+// release stops the iterator and deletes its consumer.
+func (f *feed) release() error {
+	if f.it == nil {
+		return nil
+	}
+	f.it.Stop()
+	f.it = nil
+	return deleteFeedConsumer(f.stream, f.consumer)
 }
 
 // deleteFeedConsumer removes a feed's server-side consumer, if it was
@@ -436,10 +461,12 @@ func deleteFeedConsumer(stream jsapi.Stream, consumer jsapi.Consumer) error {
 }
 
 type feed struct {
-	shard    message.Shard
-	stream   jsapi.Stream
-	consumer jsapi.Consumer
-	it       jsapi.MessagesContext
+	shard     message.Shard
+	stream    jsapi.Stream
+	consumer  jsapi.Consumer
+	it        jsapi.MessagesContext
+	cursor    uint64
+	idleCheck time.Duration
 }
 
 var _ message.Feed = (*feed)(nil)
@@ -449,17 +476,59 @@ var _ message.Store = (*Store)(nil)
 // Next returns the next append on the shard. A record that cannot be
 // decoded is returned as ErrCorruptRecord, and the feed moves past it.
 func (f *feed) Next(ctx context.Context) (message.Change, error) {
-	msg, err := f.it.Next(jsapi.NextContext(ctx))
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return message.Change{}, ctxErr
+	for {
+		msg, err := f.next(ctx)
+		if err != nil {
+			return message.Change{}, err
 		}
-		return message.Change{}, fmt.Errorf("feed on %s: %w", StreamName(f.shard), err)
+		if msg != nil {
+			return f.change(msg)
+		}
 	}
+}
+
+// next waits up to idleCheck for the consumer. If it delivers nothing while
+// the stream holds a change after the cursor, the consumer is replaced from
+// the cursor, so a stored change never waits on a wedged pull.
+func (f *feed) next(ctx context.Context) (jsapi.Msg, error) {
+	if f.it == nil {
+		if err := f.open(ctx); err != nil {
+			return nil, err
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, f.idleCheck)
+	msg, err := f.it.Next(jsapi.NextContext(waitCtx))
+	cancel()
+	switch {
+	case err == nil:
+		return msg, nil
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
+	case !errors.Is(err, context.DeadlineExceeded):
+		return nil, fmt.Errorf("feed on %s: %w", StreamName(f.shard), err)
+	}
+	_, err = f.stream.GetMsg(ctx, f.cursor+1, jsapi.WithGetMsgSubject(shardFilter(f.shard)))
+	switch {
+	case errors.Is(err, jsapi.ErrMsgNotFound):
+		return nil, nil
+	case err != nil:
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("feed on %s: %w", StreamName(f.shard), err)
+	}
+	if err := f.release(); err != nil {
+		return nil, fmt.Errorf("feed on %s: %w", StreamName(f.shard), err)
+	}
+	return nil, f.open(ctx)
+}
+
+func (f *feed) change(msg jsapi.Msg) (message.Change, error) {
 	md, err := msg.Metadata()
 	if err != nil {
 		return message.Change{}, fmt.Errorf("feed on %s: %w", StreamName(f.shard), err)
 	}
+	f.cursor = md.Sequence.Stream
 	ns, err := decodeNamespace(f.shard, msg.Subject(), msg.Headers())
 	if err != nil {
 		return message.Change{}, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(f.shard), md.Sequence.Stream, err)
@@ -498,8 +567,7 @@ func decodeNamespace(shard message.Shard, subject string, h nats.Header) (messag
 // Close stops the feed and deletes its server-side consumer, which would
 // otherwise linger until its inactive threshold.
 func (f *feed) Close() error {
-	f.it.Stop()
-	if err := deleteFeedConsumer(f.stream, f.consumer); err != nil {
+	if err := f.release(); err != nil {
 		return fmt.Errorf("close feed on %s: %w", StreamName(f.shard), err)
 	}
 	return nil

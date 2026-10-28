@@ -1456,6 +1456,32 @@ type driveConfig struct {
 	Blockdevs []Blockdev
 }
 
+// directBootLaunchConfig returns a launch-only copy of a clean direct-boot base
+// with the mounted data volumes appended after its devices. Neither input is
+// modified, so composing again from the same base never accumulates entries.
+func directBootLaunchConfig(base Config, requests []EBSRequest, cpuCount int) (Config, error) {
+	if !IsMMIO(base.MachineType) {
+		return Config{}, fmt.Errorf("direct-boot launch config needs a microvm base, got machine type %q", base.MachineType)
+	}
+	for _, r := range requests {
+		if r.Boot || r.EFI {
+			return Config{}, fmt.Errorf("volume %s: a direct-boot microvm takes data volumes only", r.Name)
+		}
+	}
+	drives, err := buildDrives(slices.Clone(requests), cpuCount, base.MachineType)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg := base
+	cfg.Drives = slices.Clone(base.Drives)
+	cfg.NetDevs = slices.Clone(base.NetDevs)
+	cfg.FwCfg = slices.Clone(base.FwCfg)
+	cfg.IOThreads = append(slices.Clone(base.IOThreads), drives.IOThreads...)
+	cfg.Blockdevs = append(slices.Clone(base.Blockdevs), drives.Blockdevs...)
+	cfg.Devices = append(slices.Clone(base.Devices), drives.Devices...)
+	return cfg, nil
+}
+
 // buildDrives converts EBS requests into QEMU drive/iothread/device/blockdev
 // configs. Returns an error if any volume has no valid export (see
 // classifyVolumeExport), or if the EBS hot-plug port pool is exhausted while

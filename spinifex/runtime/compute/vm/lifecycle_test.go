@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1743,4 +1744,191 @@ func TestQMPSuccessClearsTheIOErrorBudget(t *testing.T) {
 
 	assert.Zero(t, instance.Health.IOErrorResumes)
 	assert.True(t, instance.Health.IOErrorSince.IsZero())
+}
+
+// directBootBase is a launcher-built microvm Config with one NIC and spare
+// capacity in every slice, so an append that aliased it would be caught.
+func directBootBase() Config {
+	devices := make([]Device, 1, 8)
+	devices[0] = Device{Value: "virtio-net-device,netdev=net0,mac=02:00:00:aa:bb:01"}
+	netdevs := make([]NetDev, 1, 8)
+	netdevs[0] = NetDev{Value: "tap,id=net0,ifname=tap0,script=no,downscript=no"}
+	fwcfg := make([]FwCfgEntry, 1, 8)
+	fwcfg[0] = FwCfgEntry{Name: "opt/spinifex/netcfg", File: "/run/netcfg"}
+	return Config{
+		Name:          "i-sys",
+		EnableKVM:     true,
+		NoGraphic:     true,
+		MachineType:   "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on",
+		CPUType:       "host,-pmu",
+		CPUCount:      2,
+		Memory:        512,
+		BIOS:          "/usr/share/spinifex/microvm/qboot.rom",
+		KernelImage:   "/usr/share/spinifex/microvm/vmlinuz",
+		Initrd:        "/usr/share/spinifex/microvm/initramfs.cpio.gz",
+		KernelCmdline: "console=ttyS0 quiet",
+		Drives:        make([]Drive, 0, 8),
+		IOThreads:     make([]IOThread, 0, 8),
+		Blockdevs:     make([]Blockdev, 0, 8),
+		Devices:       devices,
+		NetDevs:       netdevs,
+		FwCfg:         fwcfg,
+	}
+}
+
+func directBootRequests() []EBSRequest {
+	return []EBSRequest{
+		{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock"},
+		{Name: "vol-blk", BlockDevice: "/dev/sdx", BlockSizeBytes: 10 << 30, HotplugPort: 2},
+	}
+}
+
+// deepCopyConfig snapshots every slice so a later write through an alias
+// shows up as a difference.
+func deepCopyConfig(c Config) Config {
+	c.Drives = slices.Clone(c.Drives)
+	c.IOThreads = slices.Clone(c.IOThreads)
+	c.Blockdevs = slices.Clone(c.Blockdevs)
+	c.Devices = slices.Clone(c.Devices)
+	c.NetDevs = slices.Clone(c.NetDevs)
+	c.FwCfg = slices.Clone(c.FwCfg)
+	return c
+}
+
+func TestDirectBootLaunchConfig_AppendsDataVolumesAfterExistingDevices(t *testing.T) {
+	base := directBootBase()
+	got, err := directBootLaunchConfig(base, directBootRequests(), 2)
+	require.NoError(t, err)
+
+	assert.Equal(t, []IOThread{{ID: "ioth-vol-data-a"}, {ID: "ioth-vol-blk"}}, got.IOThreads)
+	assert.Equal(t, []Blockdev{
+		{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
+		{Value: "driver=raw,node-name=nbd-vol-blk,size=10737418240,file.driver=host_device,file.filename=/dev/sdx,file.aio=native,file.cache.direct=on"},
+	}, got.Blockdevs)
+	assert.Equal(t, []Device{
+		{Value: "virtio-net-device,netdev=net0,mac=02:00:00:aa:bb:01"},
+		{Value: "virtio-blk-device,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,werror=stop,rerror=stop"},
+		{Value: "virtio-blk-device,id=vdisk-vol-blk,drive=nbd-vol-blk,iothread=ioth-vol-blk,serial=volblk,werror=stop,rerror=stop"},
+	}, got.Devices, "the NIC keeps its MMIO slot ahead of the volumes")
+	assert.Empty(t, got.Drives, "data volumes are blockdevs, never -drive")
+
+	// Only the three volume fields differ; the kernel args and every
+	// unrelated field are the base's.
+	want := deepCopyConfig(base)
+	want.IOThreads, want.Blockdevs, want.Devices = got.IOThreads, got.Blockdevs, got.Devices
+	assert.Equal(t, want, got)
+}
+
+func TestDirectBootLaunchConfig_DoesNotMutateInputs(t *testing.T) {
+	base := directBootBase()
+	baseBefore := deepCopyConfig(base)
+	requests := directBootRequests()
+	requestsBefore := append([]EBSRequest(nil), requests...)
+
+	got, err := directBootLaunchConfig(base, requests, 2)
+	require.NoError(t, err)
+	assert.Equal(t, baseBefore, deepCopyConfig(base), "base fields are unchanged")
+	assert.Equal(t, requestsBefore, requests, "requests are unchanged")
+
+	// Spare capacity: the composition must not have written into the base's
+	// backing arrays, and neither result may see the other's later appends.
+	assert.Equal(t, Device{}, base.Devices[:2][1], "nothing was written past the base's length")
+	assert.Equal(t, IOThread{}, base.IOThreads[:1][0])
+	assert.Equal(t, Blockdev{}, base.Blockdevs[:1][0])
+
+	base.Devices = append(base.Devices, Device{Value: "virtio-rng-device"})
+	base.NetDevs = append(base.NetDevs, NetDev{Value: "tap,id=net9"})
+	base.FwCfg = append(base.FwCfg, FwCfgEntry{Name: "x"})
+	assert.Equal(t, "virtio-blk-device,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,werror=stop,rerror=stop", got.Devices[1].Value)
+	assert.Len(t, got.NetDevs, 1)
+	assert.Len(t, got.FwCfg, 1)
+
+	got.Devices[0].Value = "changed"
+	got.NetDevs = append(got.NetDevs, NetDev{Value: "tap,id=net8"})
+	got.FwCfg[0].File = "changed"
+	assert.Equal(t, baseBefore.Devices[0], base.Devices[0])
+	assert.Equal(t, NetDev{Value: "tap,id=net9"}, base.NetDevs[1])
+	assert.Equal(t, baseBefore.FwCfg[0], base.FwCfg[0])
+}
+
+func TestDirectBootLaunchConfig_RepeatedCompositionFromTheSameBase(t *testing.T) {
+	base := directBootBase()
+	first, err := directBootLaunchConfig(base, directBootRequests(), 2)
+	require.NoError(t, err)
+	second, err := directBootLaunchConfig(base, directBootRequests(), 2)
+	require.NoError(t, err)
+
+	assert.Equal(t, first, second)
+	assert.Len(t, second.Devices, 3, "one NIC and one device per volume, never accumulated")
+	assert.Len(t, second.Blockdevs, 2)
+	assert.Len(t, second.IOThreads, 2)
+}
+
+func TestDirectBootLaunchConfig_ChangedNBDURIOnALaterLaunch(t *testing.T) {
+	base := directBootBase()
+	requests := []EBSRequest{{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock"}}
+	_, err := directBootLaunchConfig(base, requests, 2)
+	require.NoError(t, err)
+
+	// A remount publishes a new export; the next launch must use only it.
+	requests[0].NBDURI = "nbd://10.0.0.7:10809"
+	got, err := directBootLaunchConfig(base, requests, 2)
+	require.NoError(t, err)
+	require.Len(t, got.Blockdevs, 1)
+	assert.Contains(t, got.Blockdevs[0].Value, "server.type=inet,server.host=10.0.0.7,server.port=10809")
+	assert.NotContains(t, got.Blockdevs[0].Value, "/tmp/data-a.sock")
+}
+
+func TestDirectBootLaunchConfig_Rejects(t *testing.T) {
+	tests := []struct {
+		name     string
+		base     func() Config
+		requests []EBSRequest
+		wantErr  string
+	}{
+		{
+			name:     "boot volume",
+			base:     directBootBase,
+			requests: []EBSRequest{{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true}},
+			wantErr:  "vol-boot",
+		},
+		{
+			name:     "EFI volume",
+			base:     directBootBase,
+			requests: []EBSRequest{{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true}},
+			wantErr:  "vol-efi",
+		},
+		{
+			name:     "unmounted data volume",
+			base:     directBootBase,
+			requests: []EBSRequest{{Name: "vol-bad"}},
+			wantErr:  "NBDURI not set for volume vol-bad",
+		},
+		{
+			name:     "both NBD and block exports",
+			base:     directBootBase,
+			requests: []EBSRequest{{Name: "vol-both", NBDURI: "nbd:unix:/tmp/x.sock", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20}},
+			wantErr:  "vol-both",
+		},
+		{
+			name: "non-microvm base",
+			base: func() Config {
+				c := directBootBase()
+				c.MachineType = "q35"
+				return c
+			},
+			requests: []EBSRequest{{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock"}},
+			wantErr:  "microvm",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := tt.base()
+			before := deepCopyConfig(base)
+			_, err := directBootLaunchConfig(base, tt.requests, 2)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Equal(t, before, deepCopyConfig(base))
+		})
+	}
 }

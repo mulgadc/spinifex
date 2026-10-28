@@ -39,8 +39,12 @@ func (s *ELBv2ServiceImpl) resolveTaggable(ctx context.Context, arn string) (h t
 		if lb != nil {
 			found = true
 			h = taggable{tags: lb.Tags, owner: lb.AccountID, save: func(t map[string]string) error {
-				lb.Tags = t
-				return s.store.PutLoadBalancer(ctx, lb)
+				// CAS the tag field alone so a concurrent config re-render survives.
+				_, uerr := s.store.UpdateLoadBalancer(ctx, lb.LoadBalancerID, func(rec *LoadBalancerRecord) (bool, error) {
+					rec.Tags = t
+					return true, nil
+				})
+				return uerr
 			}}
 		}
 	case resourcearn.ELBv2TargetGroup:

@@ -39,6 +39,7 @@ const (
 	tcpPort      = 9000
 	udpPort      = 9001
 	triggerPort  = 9090
+	healthPort   = 8081
 	probesPerRun = 20
 )
 
@@ -159,6 +160,14 @@ func TestLoadBalancer(t *testing.T) {
 			t.Parallel()
 			runListenerRulesSuite(t, client, fixture)
 		})
+		t.Run("Internal_NLB_UnhealthyTargets", func(t *testing.T) {
+			t.Parallel()
+			runNLBUnhealthyTargetsSuite(t, client, fixture)
+		})
+		t.Run("Internal_ALB_FailOpen", func(t *testing.T) {
+			t.Parallel()
+			runALBFailOpenSuite(t, client, fixture)
+		})
 		return
 	}
 
@@ -189,6 +198,14 @@ func TestLoadBalancer(t *testing.T) {
 	t.Run("Internal_ALB_ListenerRules", func(t *testing.T) {
 		skipIfInternalBroken(t)
 		runListenerRulesSuite(t, client, fixture)
+	})
+	t.Run("Internal_NLB_UnhealthyTargets", func(t *testing.T) {
+		skipIfInternalBroken(t)
+		runNLBUnhealthyTargetsSuite(t, client, fixture)
+	})
+	t.Run("Internal_ALB_FailOpen", func(t *testing.T) {
+		skipIfInternalBroken(t)
+		runALBFailOpenSuite(t, client, fixture)
 	})
 }
 
@@ -454,7 +471,7 @@ func configureDefaultSG(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 
 	// Use structured IpPermissions form — vpcd ignores the top-level shorthand fields
 	// so the OVN ACL would never be installed otherwise.
-	for _, port := range []int64{httpPort, tcpPort, triggerPort} {
+	for _, port := range []int64{httpPort, tcpPort, triggerPort, healthPort} {
 		_, err := c.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
 			GroupId: aws.String(f.SecurityGroup),
 			IpPermissions: []*ec2.IpPermission{{

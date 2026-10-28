@@ -7,23 +7,21 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestRLC1_EKSDeleteClusterIdempotentOnAbsent enforces the Common Resource
-// Lifecycle Contract rule #1 (idempotent delete), ADR-0003:S2 (behaviour; mechanism from historic PROP-LIFECYCLE-006 §1): DeleteCluster of
-// a cluster already swept from KV returns success, not ResourceNotFound, so a
-// tofu destroy retry / double-targeted graph node converges instead of failing
-// the run. The live-reference teardown is unaffected — only true absence is
-// idempotent.
-func TestRLC1_EKSDeleteClusterIdempotentOnAbsent(t *testing.T) {
+// TestRLC1_EKSDeleteClusterNotFoundOnAbsent pins AWS DeleteCluster semantics
+// (ADR-0003:S3): a cluster already swept from KV returns ResourceNotFound and
+// triggers no teardown. Internal callers treat that code as already deleted.
+func TestRLC1_EKSDeleteClusterNotFoundOnAbsent(t *testing.T) {
 	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("absent"), testAccountID)
-	require.NoErrorf(t, err, "ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-006 §1 mechanism: DeleteCluster on an absent cluster must return success, not ResourceNotFound (RLC rule #1)")
-	require.NotNil(t, out, "ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-006 §1 mechanism: DeleteCluster must return a non-nil output on absent")
+	require.EqualErrorf(t, err, awserrors.ErrorEKSResourceNotFound, "ADR-0003:S3: DeleteCluster on an absent cluster must return ResourceNotFoundException, as AWS does")
+	assert.Nil(t, out)
 	assert.Empty(t, f.inst.terminateCalls, "an absent cluster must trigger no billable teardown")
 }
 

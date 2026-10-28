@@ -640,7 +640,7 @@ func (reg *Registry) deleteManifest(ctx context.Context, w http.ResponseWriter, 
 
 // manifestDoc is the subset of an OCI image manifest the validator inspects.
 type manifestDoc struct {
-	MediaType    string `json:"mediaType"`
+	MediaType    string            `json:"mediaType"`
 	ArtifactType string            `json:"artifactType"`
 	Annotations  map[string]string `json:"annotations"`
 	Subject      *struct {
@@ -664,8 +664,10 @@ type manifestDoc struct {
 // an image manifest without an artifactType uses its config mediaType.
 func referrerFields(mediaType string, body []byte) (subject, artifactType string, annotations map[string]string, err error) {
 	var doc manifestDoc
-	// Unparseable bodies were already rejected by validateManifest.
-	if json.Unmarshal(body, &doc) != nil || doc.Subject == nil {
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return "", "", nil, fmt.Errorf("manifest is not valid JSON: %w", err)
+	}
+	if doc.Subject == nil {
 		return "", "", nil, nil
 	}
 	if !ecr.ValidateDigest(doc.Subject.Digest) {

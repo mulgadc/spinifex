@@ -382,6 +382,7 @@ func TestDeleteManifest_CascadeStaysInsideTheRepository(t *testing.T) {
 
 type failingDeleteStore struct {
 	ecr.MetaStore
+
 	failDigest string
 }
 

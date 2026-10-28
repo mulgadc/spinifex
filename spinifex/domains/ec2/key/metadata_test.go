@@ -7,10 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The two ED25519 fingerprints AWS itself returned on 2026-07-22 (account
-// 744090693897, us-east-1), one per write path. They are recorded observations,
-// not derivations, and they pin the rendering without needing the key material
-// that produced them.
+// The two ED25519 fingerprints AWS itself returned in us-east-1 on 2026-07-22, one
+// per write path. They are recorded observations, not derivations, and pin the
+// rendering without the key material that produced them.
 const (
 	awsImportedED25519Fingerprint = "8ZVMcTKqdR5hxMjZI3t6b09EPIOE5QA6G9/Z63ejNBM="
 	awsCreatedED25519Fingerprint  = "odzmoB4gyxi1jn9vGD4c+bOpt1XUX1JUyaHaWHHCO2w="

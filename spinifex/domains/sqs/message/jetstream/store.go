@@ -39,10 +39,6 @@ const feedPullExpiry = 2 * time.Second
 // feedCloseTimeout bounds Close's consumer delete.
 const feedCloseTimeout = 5 * time.Second
 
-// enumerateIdle is how long the headers-only pass Namespaces makes over a
-// message stream waits for a body before checking whether any remain.
-const enumerateIdle = time.Second
-
 var (
 	// ErrUnsupportedTopology reports a cluster size the store does not run on.
 	ErrUnsupportedTopology = errors.New("sqs message store: unsupported topology")
@@ -580,14 +576,15 @@ func (s *Store) bodyAllocations(ctx context.Context, messageShard message.Shard)
 		return nil, fmt.Errorf("enumerate %s: %w", StreamName(messageShard), err)
 	}
 	out := map[message.QueueID]bodyAllocation{}
-	_, _, err = readRange(ctx, stream, shardFilter(messageShard), 0, info.State.LastSeq, func(msg jsapi.Msg, seq uint64) (bool, error) {
-		ns, err := decodeNamespace(messageShard, msg.Subject(), msg.Headers())
+	_, _, err = readRange(ctx, s.js, info.Config.Name, shardFilter(messageShard), 0, info.State.LastSeq, func(msg *jsapi.RawStreamMsg) (bool, error) {
+		seq := msg.Sequence
+		ns, err := decodeNamespace(messageShard, msg.Subject, msg.Header)
 		if err != nil {
 			return false, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(messageShard), seq, err)
 		}
 		a, seen := out[ns.Queue]
 		if seen && a.stateShard != ns.StateShard {
-			return false, fmt.Errorf("%w: %s bodies name state shards %d and %d (position %d)", ErrCorruptRecord, msg.Subject(), a.stateShard, ns.StateShard, seq)
+			return false, fmt.Errorf("%w: %s bodies name state shards %d and %d (position %d)", ErrCorruptRecord, msg.Subject, a.stateShard, ns.StateShard, seq)
 		}
 		out[ns.Queue] = bodyAllocation{stateShard: ns.StateShard, messages: a.messages + 1}
 		return true, nil
@@ -619,102 +616,34 @@ func shardFilter(shard message.Shard) string {
 	return "sqs.m." + strconv.FormatUint(uint64(shard), 10) + ".>"
 }
 
-// readRange calls fn, in order and headers only, for each stored match of
-// filter in (after, bound] until fn returns false. Completion rests on a
-// direct get of the next match, never on consumer state.
-func readRange(ctx context.Context, stream jsapi.Stream, filter string, after, bound uint64, fn func(jsapi.Msg, uint64) (bool, error)) (uint64, bool, error) {
-	for {
-		if after >= bound {
-			return bound, true, nil
-		}
-		next, err := stream.GetMsg(ctx, after+1, jsapi.WithGetMsgSubject(filter))
+// readRange calls fn, in order, for each stored match of filter in
+// (after, bound] until fn returns false. Each match is a leader message get,
+// which returns the whole body: a follower's consumer may lag applied purges.
+func readRange(ctx context.Context, js jsapi.JetStream, stream, filter string, after, bound uint64, fn func(*jsapi.RawStreamMsg) (bool, error)) (uint64, bool, error) {
+	req := msgGetRequest{NextFor: filter}
+	for after < bound {
+		req.Seq = after + 1
+		msg, err := leaderMsgGet(ctx, js, stream, req)
 		switch {
 		case errors.Is(err, jsapi.ErrMsgNotFound):
 			return bound, true, nil
 		case err != nil:
 			return after, false, err
-		case next.Sequence > bound:
+		case msg.Sequence <= after:
+			return after, false, jsapi.ErrInvalidJetStreamResponse
+		case msg.Sequence > bound:
 			return bound, true, nil
 		}
-		last, done, more, err := readFrom(ctx, stream, filter, next.Sequence, bound, fn)
-		if last > after {
-			after = last
-		}
-		if err != nil || done || !more {
-			return after, done, err
-		}
-	}
-}
-
-// readFrom drains one headers-only ordered consumer from start. more reports
-// the consumer went idle before the bound, so readRange must probe again.
-func readFrom(ctx context.Context, stream jsapi.Stream, filter string, start, bound uint64, fn func(jsapi.Msg, uint64) (bool, error)) (last uint64, done, more bool, err error) {
-	consumer, err := stream.OrderedConsumer(ctx, jsapi.OrderedConsumerConfig{
-		FilterSubjects:    []string{filter},
-		DeliverPolicy:     jsapi.DeliverByStartSequencePolicy,
-		OptStartSeq:       start,
-		HeadersOnly:       true,
-		InactiveThreshold: feedInactiveThreshold,
-	})
-	if err != nil {
-		return 0, false, false, err
-	}
-	defer func() { _ = deleteFeedConsumer(stream, consumer) }()
-	it, err := consumer.Messages()
-	if err != nil {
-		return 0, false, false, err
-	}
-	defer it.Stop()
-	for {
-		msg, err := nextOrIdle(ctx, it)
+		cont, err := fn(msg)
 		if err != nil {
-			return last, false, false, err
+			return after, false, err
 		}
-		if msg == nil {
-			return last, false, true, nil
-		}
-		md, err := msg.Metadata()
-		if err != nil {
-			return last, false, false, err
-		}
-		seq := md.Sequence.Stream
-		if seq > bound {
-			return bound, true, false, nil
-		}
-		cont, err := fn(msg, seq)
-		if err != nil {
-			return last, false, false, err
-		}
-		last = seq
-		if seq == bound {
-			return bound, true, false, nil
-		}
-		if !cont {
-			return last, false, false, nil
-		}
-		// A hint only: readRange's probe decides whether anything remains.
-		if md.NumPending == 0 {
-			return last, false, true, nil
+		after = msg.Sequence
+		if !cont && after < bound {
+			return after, false, nil
 		}
 	}
-}
-
-// nextOrIdle returns the next message, or nil when none arrives within
-// enumerateIdle while ctx is still live.
-func nextOrIdle(ctx context.Context, it jsapi.MessagesContext) (jsapi.Msg, error) {
-	waitCtx, cancel := context.WithTimeout(ctx, enumerateIdle)
-	defer cancel()
-	msg, err := it.Next(jsapi.NextContext(waitCtx))
-	switch {
-	case err == nil:
-		return msg, nil
-	case ctx.Err() != nil:
-		return nil, ctx.Err()
-	case waitCtx.Err() != nil:
-		return nil, nil
-	default:
-		return nil, err
-	}
+	return bound, true, nil
 }
 
 // stateAllocations counts the message shard's live state keys per queue and
@@ -794,8 +723,8 @@ func decodeStateKey(prefix, key string) (message.QueueID, error) {
 }
 
 // Scan reads one page of a bounded pass over the message shard's stream,
-// headers only. The first page bounds the pass at the stream's last
-// sequence; deleted positions are skipped by the stream itself.
+// returning metadata only. The first page bounds the pass at the stream's
+// last sequence; deleted positions are skipped by the stream itself.
 func (s *Store) Scan(ctx context.Context, messageShard message.Shard, from message.ScanCursor, limit int) (message.ScanPage, error) {
 	if err := message.ValidateScan(from, limit); err != nil {
 		return message.ScanPage{}, err
@@ -812,13 +741,14 @@ func (s *Store) Scan(ctx context.Context, messageShard message.Shard, from messa
 		from.Bound = message.Cursor(info.State.LastSeq)
 	}
 	page := message.ScanPage{Next: from}
-	last, done, err := readRange(ctx, stream, shardFilter(messageShard), uint64(from.After), uint64(from.Bound), func(msg jsapi.Msg, seq uint64) (bool, error) {
-		ns, err := decodeNamespace(messageShard, msg.Subject(), msg.Headers())
+	last, done, err := readRange(ctx, s.js, stream.CachedInfo().Config.Name, shardFilter(messageShard), uint64(from.After), uint64(from.Bound), func(msg *jsapi.RawStreamMsg) (bool, error) {
+		seq := msg.Sequence
+		ns, err := decodeNamespace(messageShard, msg.Subject, msg.Header)
 		if err != nil {
 			return false, fmt.Errorf("%w: %s position %d: %w", ErrCorruptRecord, StreamName(messageShard), seq, err)
 		}
 		page.Changes = append(page.Changes, message.Change{
-			Namespace: ns, Position: message.Position(seq), Meta: domainMeta(msg.Headers()), Cursor: message.Cursor(seq),
+			Namespace: ns, Position: message.Position(seq), Meta: domainMeta(msg.Header), Cursor: message.Cursor(seq),
 		})
 		return len(page.Changes) < limit, nil
 	})

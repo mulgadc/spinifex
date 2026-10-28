@@ -505,7 +505,7 @@ func TestWebhookInitExportsReadyAddr(t *testing.T) {
 	b, err := os.ReadFile("../../../../scripts/images/eks-node/eks-token-webhook.initd")
 	require.NoError(t, err)
 	var exported bool
-	for _, line := range strings.Split(string(b), "\n") {
+	for line := range strings.SplitSeq(string(b), "\n") {
 		f := strings.Fields(line)
 		if len(f) > 1 && f[0] == "export" && slices.Contains(f[1:], "EKS_WEBHOOK_READY_ADDR") {
 			exported = true

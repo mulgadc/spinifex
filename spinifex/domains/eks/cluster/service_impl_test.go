@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -165,16 +167,29 @@ func TestDescribeCluster_NotFoundWithFullDeps(t *testing.T) {
 }
 
 // DeleteCluster on an absent cluster must reach the KV lookup with full deps
-// wired (the shim path short-circuits to ServiceUnavailable before the meta
-// read) and return idempotent success (Common Resource Lifecycle Contract #1),
-// not a teardown of nothing — so a tofu destroy retry converges.
+// wired and return ResourceNotFoundException through the public NATS path, as
+// AWS does, without tearing anything down.
 func TestDeleteCluster_NotFoundWithFullDeps(t *testing.T) {
 	t.Parallel()
 	f := newEKSServiceFixture(t)
-
-	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("ghost"), testAccountID)
+	nc := f.svc.deps.NATSConn
+	sub, err := nc.Subscribe("eks.DeleteCluster", func(msg *nats.Msg) {
+		input := &eks.DeleteClusterInput{}
+		require.NoError(t, json.Unmarshal(msg.Data, input))
+		out, svcErr := f.svc.DeleteCluster(context.Background(), input, testAccountID)
+		if svcErr != nil {
+			_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ValidErrorCodeFromError(svcErr)))
+			return
+		}
+		payload, _ := json.Marshal(out)
+		_ = msg.Respond(payload)
+	})
 	require.NoError(t, err)
-	require.NotNil(t, out)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	out, err := NewNATSEKSService(nc).DeleteCluster(context.Background(), deleteInput("ghost"), testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	assert.Nil(t, out)
 	assert.Empty(t, f.inst.terminateCalls, "absent cluster must trigger no teardown")
 }
 

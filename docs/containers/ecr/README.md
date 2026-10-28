@@ -189,10 +189,11 @@ Limits:
   A gateway added later is not trusted by existing workers; restart the launching daemon and replace the worker.
 - Peer gateways are assumed to listen on port 9999.
   A hand-edited `awsgw` bind on a peer is not covered.
-- A down gateway costs about 30 seconds on each cold pull while the worker's connection attempt gives up.
+- A gateway address that does not answer costs about 30 seconds on each cold pull while the worker's connection attempt gives up.
+  A stopped gateway on a host that is still up refuses the connection, and the worker moves to the next gateway at once.
 
 Measured on a single-node environment: pulls by `repositoryUri` and by the account's ECR DNS name, a pull rejected with `x509: certificate signed by unknown authority` when the gateway host was not in the worker config, and a 31 second pull through an unreachable first endpoint.
-A pull across a multi-node cluster was not tested.
+Measured on a 3-node environment: a pod pulling each of the three gateways' `repositoryUri` on a worker launched with this change (two of the three failed with `x509` on a worker launched without it), and a pull of the stopped gateway's own `repositoryUri` that succeeded through another gateway within one retry (the pull itself took 147 ms after the first endpoint refused).
 
 ## Troubleshooting
 

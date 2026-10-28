@@ -64,6 +64,17 @@ func TestRegistryHostsForCluster(t *testing.T) {
 			want:  []string{"10.0.0.1", "10.0.0.2:9999"},
 		},
 		{
+			name: "peer with a wildcard host is skipped",
+			cc: &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{
+				"node1": registryTestNode("10.0.0.1", "10.0.0.1", ""),
+				"node2": registryTestNode("0.0.0.0", "", ""),
+				"node3": registryTestNode("::", "", ""),
+				"node4": registryTestNode("10.0.0.4", "", ""),
+			}},
+			local: registryTestNode("10.0.0.1", "10.0.0.1", "0.0.0.0:9999"),
+			want:  []string{"10.0.0.1:9999", "10.0.0.4:9999"},
+		},
+		{
 			name: "peers sharing a host are de-duplicated",
 			cc: &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{
 				"node1": registryTestNode("10.0.0.1", "10.0.0.1", ""),

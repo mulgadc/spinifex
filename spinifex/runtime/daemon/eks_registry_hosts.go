@@ -48,7 +48,8 @@ func registryHostsForCluster(cc *config.ClusterConfig, local *config.Config) []s
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		add(cc.Nodes[name].Host, peerRegistryPort)
+		host, _ := ecr.RegistryAddress("", cc.Nodes[name].Host)
+		add(host, peerRegistryPort)
 	}
 	return hosts
 }

@@ -364,6 +364,7 @@ func TestVolumeReaperForceRetainsAVolumeALiveInstanceHolds(t *testing.T) {
 // "Cannot prove gone" is not "gone": every way the proof can fall short keeps
 // the volume and its attachment exactly as they were.
 func TestVolumeReaperForceRetainsAVolumeWhenTheHolderCannotBeProvenGone(t *testing.T) {
+	t.Parallel()
 	twoNodes := []string{fakeClusterNode, "node-2"}
 	cases := []struct {
 		name  string
@@ -396,6 +397,7 @@ func TestVolumeReaperForceRetainsAVolumeWhenTheHolderCannotBeProvenGone(t *testi
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			cluster := newFakeCluster(t)
 			volume := newHeldVolume(cluster, "vol-held", "i-held")
 			tc.setup(cluster)
@@ -966,6 +968,7 @@ func newVolumeReaper(nc *nats.Conn, nodeIDs ...string) *volumeReaper {
 // fan-out twice. A count of replies reads that as complete and the holder as
 // gone; only judging by responder identity sees that node-2 is missing.
 func TestVolumeReaperForceRetainsAVolumeWhenOneNodeAnswersTwiceAndTheHolderNodeIsSilent(t *testing.T) {
+	t.Parallel()
 	cluster := newFakeCluster(t)
 	volume := newHeldVolume(cluster, "vol-held", "i-on-silent-node")
 	cluster.echoAsNode(t, "ec2.DescribeInstances", fakeClusterNode)
@@ -984,6 +987,7 @@ func TestVolumeReaperForceRetainsAVolumeWhenOneNodeAnswersTwiceAndTheHolderNodeI
 }
 
 func TestForcedTeardownKeepsTheAccountWhenOneNodeAnswersTwiceAndTheHolderNodeIsSilent(t *testing.T) {
+	t.Parallel()
 	cluster := newFakeCluster(t)
 	volume := newHeldVolume(cluster, "vol-held", "i-on-silent-node")
 	cluster.echoAsNode(t, "ec2.DescribeInstances", fakeClusterNode)

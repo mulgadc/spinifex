@@ -212,7 +212,6 @@ Choose one method and apply it to **every** server in the cluster.
 
 **Option A — existing OS.** Use this on servers already running Ubuntu 26.04, Debian 13 or Oracle Linux 10, and prepare an Oracle Linux server with [Oracle Linux Hosts](/docs/install-oracle-linux) first.
 Every server in a cluster must run the same OS: Oracle Linux never shares a cluster with Debian or Ubuntu, and `spx admin join` does not check this for you.
-Clusters of more than three servers are not supported on Oracle Linux yet.
 
 Run the installer on each server:
 

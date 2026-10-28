@@ -36,13 +36,12 @@ Follow it alongside [Single-Node Install](/docs/install).
 
 **Supported on Oracle Linux:**
 
-- A single node, or a three-node cluster in which every node runs Oracle Linux.
+- A single node, or a cluster in which every node runs Oracle Linux; servers beyond the third join as compute nodes, as on Debian.
 - Guests, VPCs, routed NAT, Elastic IPs, and Application and Network Load Balancers.
 - Whole-GPU passthrough, on x86_64 GPU hosts (see [GPU Passthrough](/docs/gpu-passthrough)).
 
 **Not supported on Oracle Linux yet:**
 
-- Clusters of more than three nodes.
 - Clusters that mix Oracle Linux with Debian or Ubuntu nodes, on any release.
 - SELinux enforcing, aarch64, Oracle Linux 9 or earlier, the Red Hat Compatible Kernel, a ZFS root, and NVIDIA MIG.
 
@@ -138,7 +137,7 @@ curl -fsSL https://install.mulgadc.com | bash
 For a single node, continue with [Single-Node Install](/docs/install) from Step 2: `setup-ovn.sh --management`, `spx admin init` and `systemctl start spinifex.target`.
 IPsec stays off on a single node, because there is no peer to encrypt traffic to.
 
-For a cluster, prepare and install all three nodes this way, then continue with [Multi-Node Install](/docs/install-multi-node) from Step 2.
+For a cluster, prepare and install every node this way, then continue with [Multi-Node Install](/docs/install-multi-node) from Step 2.
 
 ### Clusters
 

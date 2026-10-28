@@ -185,8 +185,10 @@ The worker tries the gateway named in the image reference first and falls back t
 
 Limits:
 
-- The gateway list comes from the cluster config the launching daemon loaded at start. A gateway added later is not trusted by existing workers; restart the launching daemon and replace the worker.
-- Peer gateways are assumed to listen on port 9999. A hand-edited `awsgw` bind on a peer is not covered.
+- The gateway list comes from the cluster config the launching daemon loaded at start.
+  A gateway added later is not trusted by existing workers; restart the launching daemon and replace the worker.
+- Peer gateways are assumed to listen on port 9999.
+  A hand-edited `awsgw` bind on a peer is not covered.
 - A down gateway costs about 30 seconds on each cold pull while the worker's connection attempt gives up.
 
 Measured on a single-node environment: pulls by `repositoryUri` and by the account's ECR DNS name, a pull rejected with `x509: certificate signed by unknown authority` when the gateway host was not in the worker config, and a 31 second pull through an unreachable first endpoint.

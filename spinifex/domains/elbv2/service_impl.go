@@ -726,7 +726,10 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalan
 	// The agent re-fetches only when the hash moves, so probe settings are part of it.
 	hashed := configContent
 	if len(healthTargets) > 0 {
-		probes, _ := json.Marshal(healthTargets)
+		probes, err := json.Marshal(healthTargets)
+		if err != nil {
+			return fmt.Errorf("marshal health targets: %w", err)
+		}
 		hashed += "\n# probes " + string(probes)
 	}
 	hash := configCertHash(hashed, certFiles)

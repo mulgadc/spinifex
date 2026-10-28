@@ -55,7 +55,7 @@ func TestPutManifest_SubjectRecordedAndAdvertised(t *testing.T) {
 			w := do(reg, http.MethodPut, "/v2/"+referrerRepo+"/manifests/"+digestOf([]byte(body)), []byte(body),
 				map[string]string{"Content-Type": mediaTypeOCIManifest})
 			require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
-			assert.Equal(t, absentSubjectDgt, w.Header().Get("OCI-Subject"))
+			assert.Equal(t, absentSubjectDgt, w.Header().Get("Oci-Subject"))
 
 			subject, artifactType := storedMeta(t, reg, body)
 			assert.Equal(t, absentSubjectDgt, subject)
@@ -73,7 +73,7 @@ func TestPutManifest_IndexSubject(t *testing.T) {
 	w := do(reg, http.MethodPut, "/v2/"+referrerRepo+"/manifests/"+digestOf([]byte(body)), []byte(body),
 		map[string]string{"Content-Type": mediaTypeOCIIndex})
 	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
-	assert.Equal(t, absentSubjectDgt, w.Header().Get("OCI-Subject"))
+	assert.Equal(t, absentSubjectDgt, w.Header().Get("Oci-Subject"))
 
 	subject, artifactType := storedMeta(t, reg, body)
 	assert.Equal(t, absentSubjectDgt, subject)
@@ -89,7 +89,7 @@ func TestPutManifest_NoSubjectLeavesFieldsEmpty(t *testing.T) {
 	w := do(reg, http.MethodPut, "/v2/"+referrerRepo+"/manifests/v1", []byte(body),
 		map[string]string{"Content-Type": mediaTypeOCIManifest})
 	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
-	assert.Empty(t, w.Header().Get("OCI-Subject"))
+	assert.Empty(t, w.Header().Get("Oci-Subject"))
 
 	subject, artifactType := storedMeta(t, reg, body)
 	assert.Empty(t, subject)
@@ -119,7 +119,7 @@ func TestPutManifest_IndexWithContentTypeParameterGetsNoConfigArtifactType(t *te
 	w := do(reg, http.MethodPut, "/v2/"+referrerRepo+"/manifests/v1", []byte(body),
 		map[string]string{"Content-Type": mediaTypeOCIIndex + "; charset=utf-8"})
 	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
-	assert.Equal(t, absentSubjectDgt, w.Header().Get("OCI-Subject"))
+	assert.Equal(t, absentSubjectDgt, w.Header().Get("Oci-Subject"))
 
 	m, err := reg.Meta.GetManifestMeta(context.Background(), testAccount, referrerRepo, digestOf([]byte(body)))
 	require.NoError(t, err)
@@ -190,7 +190,7 @@ func TestGetReferrers_ListsReferrersAsAnOCIIndex(t *testing.T) {
 	w, out := getReferrersBody(t, reg, "/v2/"+referrerRepo+"/referrers/"+absentSubjectDgt)
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 	assert.Equal(t, "application/vnd.oci.image.index.v1+json", w.Header().Get("Content-Type"))
-	assert.Empty(t, w.Header().Get("OCI-Filters-Applied"))
+	assert.Empty(t, w.Header().Get("Oci-Filters-Applied"))
 	assert.Equal(t, 2, out.SchemaVersion)
 	assert.Equal(t, mediaTypeOCIIndex, out.MediaType)
 	got := map[string]string{}
@@ -218,13 +218,13 @@ func TestGetReferrers_ArtifactTypeFilter(t *testing.T) {
 
 	w, out := getReferrersBody(t, reg, "/v2/"+referrerRepo+"/referrers/"+absentSubjectDgt+"?artifactType="+sigArtifactType)
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "artifactType", w.Header().Get("OCI-Filters-Applied"))
+	assert.Equal(t, "artifactType", w.Header().Get("Oci-Filters-Applied"))
 	require.Len(t, out.Manifests, 1)
 	assert.Equal(t, dgSig, out.Manifests[0].Digest)
 
 	w, out = getReferrersBody(t, reg, "/v2/"+referrerRepo+"/referrers/"+absentSubjectDgt+"?artifactType=application/none")
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "artifactType", w.Header().Get("OCI-Filters-Applied"), "the header reports the filter even when nothing matches")
+	assert.Equal(t, "artifactType", w.Header().Get("Oci-Filters-Applied"), "the header reports the filter even when nothing matches")
 	assert.Empty(t, out.Manifests)
 	assert.Contains(t, w.Body.String(), `"manifests":[]`)
 }

@@ -89,6 +89,7 @@ func KVAccountBucket(accountID string) string {
 //	repos/{name}/meta
 //	repos/{name}/tags/{tag}
 //	repos/{name}/manifests/{digest}
+//	repos/{name}/referrers/{subject}/{referrer}
 //	uploads/{uuid}
 const (
 	kvRepoMetaKeyFmt     = "repos/%s/meta"
@@ -98,6 +99,8 @@ const (
 	kvTagKeyFmt          = "repos/%s/tags/%s"
 	kvManifestKeyFmt     = "repos/%s/manifests/%s"
 	kvManifestsPrefixFmt = "repos/%s/manifests/"
+	kvReferrersPrefixFmt = "repos/%s/referrers/"
+	kvReferrerKeyFmt     = "repos/%s/referrers/%s/%s"
 	kvReposPrefix        = "repos/"
 	kvUploadKeyFmt       = "uploads/%s"
 )
@@ -127,6 +130,21 @@ func KVManifestKey(repo, digest string) string {
 // KVManifestsPrefix returns the KV key prefix enumerating a repository's
 // manifest metadata records.
 func KVManifestsPrefix(repo string) string { return fmt.Sprintf(kvManifestsPrefixFmt, repo) }
+
+// KVReferrersPrefix returns the KV key prefix enumerating every referrer entry
+// of a repository.
+func KVReferrersPrefix(repo string) string { return fmt.Sprintf(kvReferrersPrefixFmt, repo) }
+
+// KVSubjectReferrersPrefix returns the KV key prefix enumerating the referrers
+// of one subject manifest.
+func KVSubjectReferrersPrefix(repo, subjectDigest string) string {
+	return KVReferrersPrefix(repo) + DigestToken(subjectDigest) + "/"
+}
+
+// KVReferrerKey returns the KV key of one referrer entry under its subject.
+func KVReferrerKey(repo, subjectDigest, referrerDigest string) string {
+	return fmt.Sprintf(kvReferrerKeyFmt, repo, DigestToken(subjectDigest), DigestToken(referrerDigest))
+}
 
 // KVReposPrefix is the prefix under which every repo meta key lives. Used by
 // the catalog listing to enumerate account repositories.

@@ -45,6 +45,7 @@ Each repository holds image manifests and their layers. Images are stored in obj
 
 - Repository lifecycle — `CreateRepository`, `DeleteRepository`, `DescribeRepositories`.
 - OCI push and pull — blobs, manifests, and tags, including cross-repository blob mounts.
+- OCI 1.1 referrers — the referrers API, so cosign v3 signatures and other artifacts attached to an image can be listed (see [OCI referrers and image signing](#oci-referrers-and-image-signing)).
 - Token auth — `GetAuthorizationToken` plus bearer/basic auth on `/v2/`.
 - Repository policies — set, get, and delete a repository policy document.
 
@@ -194,6 +195,52 @@ Limits:
 
 Measured on a single-node environment: pulls by `repositoryUri` and by the account's ECR DNS name, a pull rejected with `x509: certificate signed by unknown authority` when the gateway host was not in the worker config, and a 31 second pull through an unreachable first endpoint.
 Measured on a 3-node environment: a pod pulling each of the three gateways' `repositoryUri` on a worker launched with this change (two of the three failed with `x509` on a worker launched without it), and a pull of the stopped gateway's own `repositoryUri` that succeeded through another gateway within one retry (the pull itself took 147 ms after the first endpoint refused).
+
+## OCI referrers and image signing
+
+A manifest can name another manifest as its `subject`, which is how tools such as cosign v3 attach signatures and SBOMs to an image.
+The registry records the subject when the manifest is pushed and answers with an `OCI-Subject` header on the `201`.
+The `subject` does not have to exist in the repository when the referrer is pushed.
+
+`GET /v2/<name>/referrers/<digest>` lists the manifests that name `<digest>` as their subject.
+The request is authorised as `ecr:BatchGetImage` on the repository.
+The response is `200` with `Content-Type: application/vnd.oci.image.index.v1+json` and an index whose `manifests` hold each referrer's `mediaType`, `digest`, `size`, `artifactType` and annotations.
+A digest with no referrers, or one that is not stored, returns an empty index.
+A malformed digest returns `400` with `DIGEST_INVALID`.
+
+Adding `?artifactType=<type>` returns only referrers of that type and sets `OCI-Filters-Applied: artifactType`.
+The header is also set when nothing matches.
+An image manifest without an `artifactType` is listed under its config `mediaType`; an index without one has none.
+
+Deleting an image by digest (`DELETE /v2/<name>/manifests/<digest>`, `aws ecr batch-delete-image` with `imageDigest`) also deletes its referrers, and their referrers in turn.
+Deleting by tag removes only the tag and leaves the image and its referrers.
+
+cosign v3 sign and verify work against the registry, including on a child manifest of an image index copied with `cosign copy`.
+cosign v2 keeps writing its `sha256-<digest>.sig` tags and is unaffected.
+`GET` on a manifest still returns `406` when the request's `Accept` header does not include the stored `mediaType`.
+
+Limits:
+
+- `cosign copy` does not copy v3 signatures to the destination repository.
+  This is client behaviour.
+  To keep the original signature, copy with `oras cp -r <source> <mirror>`, which copies the image and its referrers in one command, or `crane copy` the signature manifest by digest after the image.
+  Otherwise, sign the copy again.
+- Referrers pushed before this version are not listed.
+  Push them again to add them to the index.
+- A crash between deleting an image and deleting its referrers can leave referrers behind that nothing lists.
+- The referrers listing is not paginated.
+- `HEAD` on the referrers route is not served.
+
+Measured on a 3-node environment with cosign v3.1.4 and v2.6.5:
+
+- cosign v3.1.4 signed a fresh image index, with one `GET /referrers` answered `200`, no `sha256-<digest>` tag written and no `406`.
+- Verify passed.
+- A copied index's child manifest signed and verified, which returned `406` before this change.
+- The listing returned the signature with its `artifactType`, the filter returned one entry for the signature's type and none for another type.
+- `aws ecr batch-delete-image` of the signed image left an empty listing and `404` for both the signature and the image.
+- cosign v2.6.5 signed and verified a fresh image.
+
+Not measured: `oras`, `notation`, a listing with many referrers, and a crash in the middle of a delete.
 
 ## Troubleshooting
 

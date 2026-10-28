@@ -176,8 +176,8 @@ func (s *Store) bucket(ctx context.Context, ns message.Namespace) (jsapi.KeyValu
 }
 
 // GetState reads a message's state record from its state shard's bucket.
-// The stream leader answers, so a completed write or delete is always seen;
-// a follower may not have applied it yet.
+// It uses a leader-answered stream message get, avoiding the direct get a
+// lagging follower can serve before it applies a write or delete.
 func (s *Store) GetState(ctx context.Context, ns message.Namespace, pos message.Position) (message.State, error) {
 	if _, err := s.bucket(ctx, ns); err != nil {
 		return message.State{}, err

@@ -664,7 +664,8 @@ type manifestDoc struct {
 // an image manifest without an artifactType uses its config mediaType.
 func referrerFields(mediaType string, body []byte) (subject, artifactType string, annotations map[string]string, err error) {
 	var doc manifestDoc
-	if err := json.Unmarshal(body, &doc); err != nil || doc.Subject == nil {
+	// Unparseable bodies were already rejected by validateManifest.
+	if json.Unmarshal(body, &doc) != nil || doc.Subject == nil {
 		return "", "", nil, nil
 	}
 	if !ecr.ValidateDigest(doc.Subject.Digest) {

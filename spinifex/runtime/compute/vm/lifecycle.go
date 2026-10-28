@@ -401,6 +401,9 @@ const (
 	qemuStartupTimeout = 5 * time.Second
 )
 
+// waitForNBDReady is a test seam over nbd.WaitForNBDReady.
+var waitForNBDReady = nbd.WaitForNBDReady
+
 // startQEMU launches the QEMU process for instance and waits for startup to
 // confirm.
 func (m *Manager) startQEMU(instance *VM) error {
@@ -607,13 +610,29 @@ func (m *Manager) startQEMU(instance *VM) error {
 		refreshTelemetryMeta(instance)
 	}
 
+	// One snapshot feeds both the readiness probes and the direct-boot command,
+	// so a concurrent remount cannot launch an endpoint that was never checked.
+	instance.EBSRequests.Mu.Lock()
+	requests := slices.Clone(instance.EBSRequests.Requests)
+	instance.EBSRequests.Mu.Unlock()
+
+	// A direct-boot Config is the launcher's saved base, so mounted data volumes
+	// go on a launch-only copy and their current endpoints are never saved.
+	launchCfg := &instance.Config
+	if instance.DirectBoot && len(requests) > 0 {
+		composed, err := directBootLaunchConfig(instance.Config, requests, instance.Config.CPUCount)
+		if err != nil {
+			return err
+		}
+		launchCfg = &composed
+	}
+
 	// An NBD export is waited on until it accepts connections; a block export
 	// is local to the host and only has to exist. An invalid request has no
 	// endpoint to probe (buildDrives rejects it on the command-line path).
-	instance.EBSRequests.Mu.Lock()
-	nbdEndpoints := make([]struct{ name, uri string }, 0, len(instance.EBSRequests.Requests))
+	nbdEndpoints := make([]struct{ name, uri string }, 0, len(requests))
 	var blockDevices []struct{ name, path string }
-	for _, req := range instance.EBSRequests.Requests {
+	for _, req := range requests {
 		switch kind, _ := classifyVolumeExport(req); kind {
 		case volumeExportNBD:
 			nbdEndpoints = append(nbdEndpoints, struct{ name, uri string }{req.Name, req.NBDURI})
@@ -621,9 +640,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 			blockDevices = append(blockDevices, struct{ name, path string }{req.Name, req.BlockDevice})
 		}
 	}
-	instance.EBSRequests.Mu.Unlock()
 	for _, ep := range nbdEndpoints {
-		if err := nbd.WaitForNBDReady(ep.uri, nbdReadyTimeout); err != nil {
+		if err := waitForNBDReady(ep.uri, nbdReadyTimeout); err != nil {
 			return fmt.Errorf("nbd endpoint not ready for %s: %w", ep.name, err)
 		}
 	}
@@ -638,7 +656,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 	startupConfirmed := make(chan bool, 1)
 
 	go func() {
-		cmd, err := instance.Config.Execute()
+		cmd, err := launchCfg.Execute()
 		if err != nil {
 			slog.Error("Failed to execute VM", "err", err)
 			processChan <- 0

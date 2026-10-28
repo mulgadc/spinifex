@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1144,14 +1145,8 @@ func TestStartQEMU_BlockDeviceMissing(t *testing.T) {
 	m := directBootManager(t, &fakeNetworkPlumber{})
 	missing := filepath.Join(t.TempDir(), "missing-dev")
 
-	instance := &VM{
-		ID:           "i-blk-missing",
-		InstanceType: "t3.nano",
-		DirectBoot:   true,
-	}
-	instance.EBSRequests.Requests = []EBSRequest{
-		{Name: "vol-blk", BlockDevice: missing, BlockSizeBytes: 1 << 20},
-	}
+	instance := directBootInstance("i-blk-missing",
+		EBSRequest{Name: "vol-blk", BlockDevice: missing, BlockSizeBytes: 1 << 20})
 
 	err := m.startQEMU(instance)
 
@@ -1931,4 +1926,252 @@ func TestDirectBootLaunchConfig_Rejects(t *testing.T) {
 			assert.Equal(t, before, deepCopyConfig(base))
 		})
 	}
+}
+
+// fakeQEMUScript is a stand-in QEMU that records each launch's argv, writes the
+// pidfile and creates the QMP socket path startQEMU waits on.
+const fakeQEMUScript = `#!/bin/sh
+pidfile=""
+qmp=""
+prev=""
+for a in "$@"; do
+	case "$prev" in
+	-pidfile) pidfile="$a" ;;
+	-qmp)
+		if [ -z "$qmp" ]; then
+			q="${a#unix:}"
+			qmp="${q%%,*}"
+		fi
+		;;
+	esac
+	prev="$a"
+done
+{
+	echo "--- launch"
+	for a in "$@"; do printf '%s\n' "$a"; done
+} >>"$0.log"
+echo $$ >"$pidfile"
+: >"$qmp"
+# Stay up like a running guest until the socket goes: a relaunch unlinks it,
+# and test cleanup removes its directory.
+while [ -e "$qmp" ]; do sleep 0.05; done
+`
+
+// withFakeQEMU points QEMU resolution at fakeQEMUScript and returns a reader
+// for the argv of every launch so far.
+func withFakeQEMU(t *testing.T) func() [][]string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "qemu-system-x86_64")
+	require.NoError(t, os.WriteFile(path, []byte(fakeQEMUScript), 0o755))
+	withQEMUResolver(t, func(string) (string, error) { return path, nil })
+	return func() [][]string {
+		data, err := os.ReadFile(path + ".log")
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		require.NoError(t, err)
+		var launches [][]string
+		for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
+			if line == "--- launch" {
+				launches = append(launches, nil)
+				continue
+			}
+			launches[len(launches)-1] = append(launches[len(launches)-1], line)
+		}
+		return launches
+	}
+}
+
+// nbdListener stands in for a mounted NBD export: startQEMU only needs it to
+// accept a connection.
+func nbdListener(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	return "nbd://" + l.Addr().String()
+}
+
+// argsContaining returns the argv entries that contain sub.
+func argsContaining(args []string, sub string) []string {
+	var out []string
+	for _, a := range args {
+		if strings.Contains(a, sub) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func directBootInstance(id string, requests ...EBSRequest) *VM {
+	instance := &VM{
+		ID:           id,
+		InstanceType: "t3.nano",
+		DirectBoot:   true,
+		Config:       directBootBase(),
+	}
+	instance.Config.Architecture = "x86_64"
+	instance.EBSRequests.Requests = requests
+	return instance
+}
+
+// assertCleanBase checks the instance's saved Config carries none of the
+// launch-only volume entries and no NBD endpoint.
+func assertCleanBase(t *testing.T, cfg Config, endpoints ...string) {
+	t.Helper()
+	base := directBootBase()
+	assert.Equal(t, base.Devices, cfg.Devices)
+	assert.Equal(t, base.Blockdevs, cfg.Blockdevs)
+	assert.Equal(t, base.IOThreads, cfg.IOThreads)
+	assert.Equal(t, base.Drives, cfg.Drives)
+	saved, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	for _, ep := range endpoints {
+		assert.NotContains(t, string(saved), strings.TrimPrefix(ep, "nbd://"))
+	}
+}
+
+func TestStartQEMU_DirectBoot_LaunchesMountedDataVolumeWithoutSavingIt(t *testing.T) {
+	m := directBootManager(t, &fakeNetworkPlumber{})
+	launches := withFakeQEMU(t)
+	first := nbdListener(t)
+	second := nbdListener(t)
+
+	instance := directBootInstance("i-db-vol", EBSRequest{Name: "vol-data-a", NBDURI: first})
+	require.NoError(t, m.startQEMU(instance))
+
+	// A later launch from the same saved base, after the volume was remounted
+	// on a different endpoint.
+	instance.EBSRequests.Requests[0].NBDURI = second
+	require.NoError(t, m.startQEMU(instance))
+
+	got := launches()
+	require.Len(t, got, 2)
+	for i, ep := range []string{first, second} {
+		args := got[i]
+		require.Len(t, argsContaining(args, "virtio-blk-device"), 1, "launch %d", i+1)
+		assert.Empty(t, argsContaining(args, "virtio-blk-pci"), "launch %d", i+1)
+		assert.Len(t, argsContaining(args, "ioth-vol-data-a"), 2, "launch %d: one iothread object and its device", i+1)
+		port := ep[strings.LastIndex(ep, ":")+1:]
+		assert.NotEmpty(t, argsContaining(args, port), "launch %d uses its current endpoint", i+1)
+		// The NIC stays ahead of the data disk.
+		nic := slices.IndexFunc(args, func(a string) bool { return strings.HasPrefix(a, "virtio-net-device") })
+		disk := slices.IndexFunc(args, func(a string) bool { return strings.HasPrefix(a, "virtio-blk-device") })
+		assert.Less(t, nic, disk, "launch %d", i+1)
+	}
+	firstPort := first[strings.LastIndex(first, ":")+1:]
+	assert.Empty(t, argsContaining(got[1], firstPort), "second launch must not carry the stale endpoint")
+
+	assertCleanBase(t, instance.Config, first, second)
+}
+
+// TestStartQEMU_DirectBoot_LaunchesTheEndpointItProbed remounts the volume
+// while its endpoint is being probed: the command must carry the endpoint that
+// was checked, not one read from the requests afterwards.
+func TestStartQEMU_DirectBoot_LaunchesTheEndpointItProbed(t *testing.T) {
+	m := directBootManager(t, &fakeNetworkPlumber{})
+	launches := withFakeQEMU(t)
+	probedEP := nbdListener(t)
+	remountedEP := nbdListener(t)
+
+	instance := directBootInstance("i-db-snap", EBSRequest{Name: "vol-data-a", NBDURI: probedEP})
+	var probed []string
+	orig := waitForNBDReady
+	t.Cleanup(func() { waitForNBDReady = orig })
+	waitForNBDReady = func(uri string, timeout time.Duration) error {
+		probed = append(probed, uri)
+		instance.EBSRequests.Mu.Lock()
+		instance.EBSRequests.Requests[0].NBDURI = remountedEP
+		instance.EBSRequests.Mu.Unlock()
+		return orig(uri, timeout)
+	}
+	require.NoError(t, m.startQEMU(instance))
+
+	assert.Equal(t, []string{probedEP}, probed)
+	got := launches()
+	require.Len(t, got, 1)
+	port := func(ep string) string { return ep[strings.LastIndex(ep, ":")+1:] }
+	assert.NotEmpty(t, argsContaining(got[0], port(probedEP)), "the probed endpoint is launched")
+	assert.Empty(t, argsContaining(got[0], port(remountedEP)), "an endpoint nobody probed is not launched")
+}
+
+func TestStartQEMU_DirectBoot_NoVolumesLaunchesTheBase(t *testing.T) {
+	m := directBootManager(t, &fakeNetworkPlumber{})
+	launches := withFakeQEMU(t)
+
+	instance := directBootInstance("i-db-novol")
+	require.NoError(t, m.startQEMU(instance))
+
+	got := launches()
+	require.Len(t, got, 1)
+	assert.Empty(t, argsContaining(got[0], "virtio-blk"))
+	assert.Len(t, argsContaining(got[0], "virtio-net-device"), 1)
+	assertCleanBase(t, instance.Config)
+}
+
+func TestStartQEMU_DirectBoot_InvalidDataRequestIsNotLaunched(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     EBSRequest
+		wantErr string
+	}{
+		{name: "no export", req: EBSRequest{Name: "vol-none"}, wantErr: "vol-none"},
+		{name: "boot volume", req: EBSRequest{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true}, wantErr: "data volumes only"},
+		{name: "efi volume", req: EBSRequest{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true}, wantErr: "data volumes only"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := directBootManager(t, &fakeNetworkPlumber{})
+			launches := withFakeQEMU(t)
+
+			instance := directBootInstance("i-db-bad", tt.req)
+			err := m.startQEMU(instance)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Empty(t, launches(), "QEMU must not start")
+			assertCleanBase(t, instance.Config)
+		})
+	}
+}
+
+func TestStartQEMU_DiskBoot_DataVolumeStaysOnThePCIPath(t *testing.T) {
+	m := directBootManager(t, &fakeNetworkPlumber{})
+	launches := withFakeQEMU(t)
+	ep := nbdListener(t)
+
+	instance := &VM{ID: "i-disk-vol", InstanceType: "t3.nano"}
+	instance.EBSRequests.Requests = []EBSRequest{
+		{Name: "vol-root", NBDURI: "nbd:unix:" + filepath.Join(t.TempDir(), "root.sock"), Boot: true},
+		{Name: "vol-data-a", NBDURI: ep},
+	}
+	require.NoError(t, os.WriteFile(strings.TrimPrefix(instance.EBSRequests.Requests[0].NBDURI, "nbd:unix:"), nil, 0o600))
+	require.NoError(t, m.startQEMU(instance))
+
+	got := launches()
+	require.Len(t, got, 1)
+	data := argsContaining(got[0], "id=vdisk-vol-data-a")
+	require.Len(t, data, 1)
+	assert.True(t, strings.HasPrefix(data[0], "virtio-blk-pci,"), data[0])
+	assert.Empty(t, argsContaining(got[0], "virtio-blk-device"))
+	// The disk-boot path keeps building the volume into the instance Config.
+	assert.Len(t, argsContaining(deviceValues(instance.Config.Devices), "id=vdisk-vol-data-a"), 1)
+	assert.Equal(t, 1, instance.EBSRequests.Requests[1].HotplugPort)
+}
+
+func deviceValues(devs []Device) []string {
+	out := make([]string, len(devs))
+	for i, d := range devs {
+		out[i] = d.Value
+	}
+	return out
 }

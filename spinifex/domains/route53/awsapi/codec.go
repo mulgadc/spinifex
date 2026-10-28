@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/private/protocol/xml/xmlutil"
+	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 )
@@ -48,7 +49,28 @@ func bindInput(input any, path map[string]string, query url.Values, body []byte)
 	if err := xmlutil.UnmarshalXML(input, xml.NewDecoder(bytes.NewReader(body)), ""); err != nil {
 		return awserrors.Errorf(awserrors.ErrorInvalidInput, "the request body is not valid XML: %v", err)
 	}
+	if in, ok := input.(*route53.ChangeTagsForResourceInput); ok {
+		keepEmptyTagLists(in, body)
+	}
 	return nil
+}
+
+// keepEmptyTagLists restores an <AddTags/> or <RemoveTagKeys/> sent with no
+// entries, which the SDK unmarshaler drops, so the service can refuse it.
+func keepEmptyTagLists(in *route53.ChangeTagsForResourceInput, body []byte) {
+	var sent struct {
+		AddTags       *struct{} `xml:"AddTags"`
+		RemoveTagKeys *struct{} `xml:"RemoveTagKeys"`
+	}
+	if xml.Unmarshal(body, &sent) != nil {
+		return
+	}
+	if sent.AddTags != nil && in.AddTags == nil {
+		in.AddTags = []*route53.Tag{}
+	}
+	if sent.RemoveTagKeys != nil && in.RemoveTagKeys == nil {
+		in.RemoveTagKeys = []*string{}
+	}
 }
 
 // writeXML renders output under a <ActionResponse> root in the Route 53

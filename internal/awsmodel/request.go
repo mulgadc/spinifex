@@ -111,7 +111,7 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 	}
 
 	for _, member := range append([]string{""}, optional...) {
-		if unguessable[member] {
+		if unguessable[member] && options.Fixtures[operationName+"."+member] == "" && options.Fixtures[member] == "" {
 			continue
 		}
 		value, _, err := generate()
@@ -157,7 +157,8 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 
 // unguessable members take values the model cannot describe: a pagination
 // token the service issued, or a filter name only its documentation lists.
-// They get rejection requests but no acceptance request.
+// They get rejection requests, and an acceptance request only when a fixture
+// supplies a value.
 var unguessable = map[string]bool{
 	"Filter":    true,
 	"Filters":   true,

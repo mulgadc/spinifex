@@ -4,6 +4,7 @@
 package route53
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -63,6 +64,9 @@ func (s *Service) CreateHostedZone(ctx context.Context, in *route53.CreateHosted
 	ref := aws.StringValue(in.CallerReference)
 	if ref == "" || len(ref) > maxCallerReferenceLength {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "CallerReference must be 1 to %d characters", maxCallerReferenceLength)
+	}
+	if err := cmp.Or(requireMember("name", in.Name), checkLength("name", in.Name, maxDNSNameLength)); err != nil {
+		return nil, err
 	}
 	if in.VPC != nil || (in.HostedZoneConfig != nil && aws.BoolValue(in.HostedZoneConfig.PrivateZone)) {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "private hosted zones are not supported")
@@ -145,7 +149,7 @@ func (s *Service) CreateHostedZone(ctx context.Context, in *route53.CreateHosted
 }
 
 func (s *Service) GetHostedZone(ctx context.Context, in *route53.GetHostedZoneInput, account string) (*route53.GetHostedZoneOutput, error) {
-	zone, doc, _, err := s.zoneWithSets(ctx, account, aws.StringValue(in.Id))
+	zone, doc, _, err := s.zoneWithSets(ctx, account, "id", in.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -163,6 +167,9 @@ func (s *Service) GetHostedZoneCount(ctx context.Context, _ *route53.GetHostedZo
 func (s *Service) ListHostedZones(ctx context.Context, in *route53.ListHostedZonesInput, account string) (*route53.ListHostedZonesOutput, error) {
 	limit, err := maxItems(in.MaxItems, maxListZones)
 	if err != nil {
+		return nil, err
+	}
+	if err := cmp.Or(checkEnum("hostedZoneType", in.HostedZoneType, route53.HostedZoneType_Values()), checkLength("marker", in.Marker, maxPageMarkerLength)); err != nil {
 		return nil, err
 	}
 	if in.DelegationSetId != nil {
@@ -204,8 +211,11 @@ func (s *Service) ListHostedZonesByName(ctx context.Context, in *route53.ListHos
 	if err != nil {
 		return nil, err
 	}
-	dnsName := normalizeName(aws.StringValue(in.DNSName))
 	startID := BareZoneID(aws.StringValue(in.HostedZoneId))
+	if err := cmp.Or(checkLength("dnsName", in.DNSName, maxDNSNameLength), checkLength("hostedZoneId", &startID, maxResourceIDLength)); err != nil {
+		return nil, err
+	}
+	dnsName := normalizeName(aws.StringValue(in.DNSName))
 	if startID != "" && dnsName == "" {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "HostedZoneId requires DNSName")
 	}
@@ -242,8 +252,11 @@ func (s *Service) UpdateHostedZoneComment(ctx context.Context, in *route53.Updat
 	if len(comment) > maxCommentLength {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "Comment must be at most %d characters", maxCommentLength)
 	}
-	id := BareZoneID(aws.StringValue(in.Id))
-	err := s.store.MutateZone(ctx, account, id, func(z *ZoneRecord) (bool, error) {
+	id, err := hostedZoneID("id", in.Id)
+	if err != nil {
+		return nil, err
+	}
+	err = s.store.MutateZone(ctx, account, id, func(z *ZoneRecord) (bool, error) {
 		if z.Comment == comment {
 			return false, nil
 		}
@@ -257,7 +270,7 @@ func (s *Service) UpdateHostedZoneComment(ctx context.Context, in *route53.Updat
 }
 
 func (s *Service) updatedZone(ctx context.Context, account, id string) (*route53.UpdateHostedZoneCommentOutput, error) {
-	zone, doc, _, err := s.zoneWithSets(ctx, account, id)
+	zone, doc, _, err := s.zoneWithSets(ctx, account, "id", &id)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +278,7 @@ func (s *Service) updatedZone(ctx context.Context, account, id string) (*route53
 }
 
 func (s *Service) DeleteHostedZone(ctx context.Context, in *route53.DeleteHostedZoneInput, account string) (*route53.DeleteHostedZoneOutput, error) {
-	zone, doc, rev, err := s.zoneWithSets(ctx, account, aws.StringValue(in.Id))
+	zone, doc, rev, err := s.zoneWithSets(ctx, account, "id", in.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -296,8 +309,11 @@ func (s *Service) ChangeResourceRecordSets(ctx context.Context, in *route53.Chan
 	if len(comment) > maxCommentLength {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "Comment must be at most %d characters", maxCommentLength)
 	}
+	if err := checkChangeBatchShape(in.ChangeBatch); err != nil {
+		return nil, err
+	}
 	for range commitAttempts {
-		zone, doc, rev, err := s.zoneWithSets(ctx, account, aws.StringValue(in.HostedZoneId))
+		zone, doc, rev, err := s.zoneWithSets(ctx, account, "hostedZoneId", in.HostedZoneId)
 		if err != nil {
 			return nil, err
 		}
@@ -329,12 +345,15 @@ func (s *Service) ListResourceRecordSets(ctx context.Context, in *route53.ListRe
 	if in.StartRecordIdentifier != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "StartRecordIdentifier is not supported: no record set has a SetIdentifier")
 	}
-	startType := strings.ToUpper(aws.StringValue(in.StartRecordType))
+	if err := cmp.Or(checkLength("startRecordName", in.StartRecordName, maxDNSNameLength), checkEnum("startRecordType", in.StartRecordType, route53.RRType_Values())); err != nil {
+		return nil, err
+	}
+	startType := aws.StringValue(in.StartRecordType)
 	startName := normalizeName(aws.StringValue(in.StartRecordName))
 	if startType != "" && startName == "" {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "The input is not valid: StartRecordType requires StartRecordName")
 	}
-	_, doc, _, err := s.zoneWithSets(ctx, account, aws.StringValue(in.HostedZoneId))
+	_, doc, _, err := s.zoneWithSets(ctx, account, "hostedZoneId", in.HostedZoneId)
 	if err != nil {
 		return nil, err
 	}
@@ -451,10 +470,10 @@ func (s *Service) ListTagsForResources(ctx context.Context, in *route53.ListTags
 }
 
 // zoneWithSets loads an account's zone and its record-set document.
-func (s *Service) zoneWithSets(ctx context.Context, account, rawID string) (*ZoneRecord, *RRSetsDoc, uint64, error) {
-	id := BareZoneID(rawID)
-	if id == "" {
-		return nil, nil, 0, awserrors.Errorf(awserrors.ErrorInvalidInput, "a hosted zone ID is required")
+func (s *Service) zoneWithSets(ctx context.Context, account, field string, rawID *string) (*ZoneRecord, *RRSetsDoc, uint64, error) {
+	id, err := hostedZoneID(field, rawID)
+	if err != nil {
+		return nil, nil, 0, err
 	}
 	zone, err := s.store.GetZone(ctx, account, id)
 	if err != nil {

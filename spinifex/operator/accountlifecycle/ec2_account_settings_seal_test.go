@@ -110,6 +110,7 @@ func TestSealReaperNoResponderKeepsAccountTerminating(t *testing.T) {
 // refusal, a timeout, and each reply shape the client rejects (wrong account,
 // wrong disposition, no revision).
 func TestSealReaperOwnerFailureKeepsAccountTerminating(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -123,6 +124,7 @@ func TestSealReaperOwnerFailureKeepsAccountTerminating(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			sealer := &fakeSealer{err: tc.err}
 			reaper := &accountSettingsSealReaper{sealer: sealer, capability: &fakeSealCapability{report: completeReport("node-1")}}
 			accounts := newFakeAccounts()

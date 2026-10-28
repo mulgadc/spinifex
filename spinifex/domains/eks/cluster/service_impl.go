@@ -59,6 +59,10 @@ type EKSServiceDeps struct {
 	// used to compose the worker's ECR registry host.
 	InternalSuffix string
 
+	// RegistryHosts returns every gateway's ECR registry host:port as it appears
+	// in a repositoryUri, local node first. Nil means only the parity name.
+	RegistryHosts func() []string
+
 	// Gateway broker config for the K3s server VM (SigV4 HTTPS to AWSGW).
 	// SystemGatewayURL is the mgmt-reachable endpoint; GatewayCACert signs its TLS cert.
 	SystemGatewayURL string

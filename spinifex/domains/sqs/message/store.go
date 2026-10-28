@@ -214,12 +214,12 @@ type ScanPage struct {
 // Feed is an open change feed. One goroutine calls Next at a time; Close may
 // be called from any goroutine, concurrently with Next and more than once.
 type Feed interface {
-	// Next blocks until the next change, until ctx is done or until Close.
-	// Once Close has begun, Next returns ErrFeedClosed, even a call already in
-	// progress, and never a change it received; a new feed resumes from it.
+	// Next blocks until the next change, until ctx is done or until Close. A
+	// change is claimed atomically against Close: claimed first, it is returned;
+	// otherwise Next returns ErrFeedClosed and a feed from the last cursor has it.
 	Next(ctx context.Context) (Change, error)
-	// Close ends the feed; nil means its resources are released. A repeated
-	// Close returns nil once they are.
+	// Close ends the feed. Nil means every resource it held is released; an
+	// error means some may remain, and a later Close retries.
 	Close() error
 }
 

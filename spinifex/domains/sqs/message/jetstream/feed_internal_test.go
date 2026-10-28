@@ -146,3 +146,8 @@ func TestFeedIdleWithNothingStoredKeepsConsumer(t *testing.T) {
 	assert.False(t, w.stopped.Load(), "nothing stored after the cursor, so no rebuild")
 	assert.Equal(t, []string{name}, consumerNames(t, s))
 }
+
+// detachForTest takes the live consumer as tracked work, for discard.
+func (f *feed) detachForTest() (jsapi.Consumer, jsapi.MessagesContext) {
+	return f.detach()
+}

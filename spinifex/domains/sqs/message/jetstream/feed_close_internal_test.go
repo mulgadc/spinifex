@@ -162,7 +162,7 @@ func TestFeedCloseInterruptsRecoveryProbe(t *testing.T) {
 	<-stall.entered
 	// Remove the iterator first, so only cancellation can end the read.
 	consumer, it := f.detach()
-	require.NoError(t, release(stall.Stream, consumer, it))
+	require.NoError(t, f.discard(consumer, it))
 	require.NoError(t, f.Close())
 	select {
 	case err := <-done:
@@ -206,7 +206,7 @@ func TestFeedCloseReportsStuckOpen(t *testing.T) {
 	f.closeWait = 200 * time.Millisecond
 	b, next := recoverInto(t, s, f)
 	err := f.Close()
-	require.ErrorIs(t, err, errOpenInProgress)
+	require.ErrorIs(t, err, errCleanupPending)
 	close(b.release)
 	<-b.created
 	f.closeWait = 5 * time.Second

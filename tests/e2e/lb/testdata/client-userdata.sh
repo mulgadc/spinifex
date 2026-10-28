@@ -34,6 +34,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not http_path.startswith("/"):
                 http_path = "/" + http_path
             host_header = body.get("host", "")
+            extra_headers = body.get("headers", [])
         except Exception as exc:
             self.send_response(400); self.end_headers()
             self.wfile.write(f"bad request: {exc}".encode())
@@ -46,6 +47,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     cmd = ["curl", "-s", "--max-time", "5"]
                     if host_header:
                         cmd += ["-H", f"Host: {host_header}"]
+                    for h in extra_headers:
+                        cmd += ["-H", h]
                     cmd.append(f"http://{ip}:{http_port}{http_path}")
                     r = subprocess.run(cmd, capture_output=True, text=True)
                     fh.write(r.stdout.strip() + "\n")

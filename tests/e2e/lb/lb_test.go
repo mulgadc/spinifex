@@ -618,6 +618,9 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 	assertInternalDNS(t, c, lb.ARN, label)
 	assertLBDNSResolves(t, lb.DNSName, priv, label)
 	runInternalTrafficViaClient(t, c, f, kind, priv)
+	if kind == kindALB {
+		runForwardedHeadersInternal(t, c, f, label, lb.ARN, priv)
+	}
 }
 
 // runHTTPSCertSuite exercises the ACM → HTTPS listener path end-to-end:
@@ -707,6 +710,8 @@ func runHTTPSCertSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 		return nil
 	}, 90*time.Second, 3*time.Second)
 	t.Logf("HTTPS GET %s -> 200 (TLS terminated at LB, forwarded to backend)", url)
+
+	runForwardedHeadersHTTPS(t, c, label, lb.ARN, pubIP, httpsPort, pool, []string{pubIP, privateIP(eni)})
 }
 
 // createHTTPSListener creates an HTTPS listener referencing certArn. Distinct

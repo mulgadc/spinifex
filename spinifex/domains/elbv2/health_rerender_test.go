@@ -293,3 +293,100 @@ func TestSetLoadBalancerIngressCIDRs_LeavesConfigHashAlone(t *testing.T) {
 	assert.Equal(t, "rendered-elsewhere", got.ConfigHash)
 	assert.Equal(t, []string{"10.0.0.0/8"}, got.NLBIngressCIDRs)
 }
+
+const modifyTGArn = "arn:aws:elasticloadbalancing:us-east-1:1:targetgroup/mod/tg-mod"
+
+// putModifyFixture stores a target group with an HTTP health check, an NLB
+// and an ALB that both forward to it, and renders their initial configs.
+func putModifyFixture(t *testing.T, svc *ELBv2ServiceImpl, protocol string) {
+	t.Helper()
+	hc := nlbHealthCheck()
+	hc.Protocol = ProtocolHTTP
+	hc.Path = "/old"
+	hc.Matcher = "200"
+	require.NoError(t, svc.store.PutTargetGroup(t.Context(), &TargetGroupRecord{
+		TargetGroupArn: modifyTGArn,
+		TargetGroupID:  "tg-mod",
+		AccountID:      testAccountID,
+		Protocol:       protocol,
+		Port:           8080,
+		HealthCheck:    hc,
+		Targets:        []Target{{Id: "i-ok", Port: 8080, PrivateIP: "10.0.1.10", HealthState: TargetHealthHealthy}},
+	}))
+}
+
+func putModifyLB(t *testing.T, svc *ELBv2ServiceImpl, lbID, lbType, protocol string) {
+	t.Helper()
+	lbArn := "arn:aws:elasticloadbalancing:us-east-1:1:loadbalancer/x/" + lbID + "/" + lbID
+	lb := &LoadBalancerRecord{
+		LoadBalancerArn: lbArn,
+		LoadBalancerID:  lbID,
+		Name:            lbID,
+		Type:            lbType,
+		State:           StateActive,
+		AccountID:       testAccountID,
+		InstanceID:      "i-" + lbID,
+	}
+	require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
+	l := tcpListener(lbArn+"/l1", lbID+"-l1", protocol, 8080, modifyTGArn)
+	l.LoadBalancerArn = lbArn
+	require.NoError(t, svc.store.PutListener(t.Context(), l))
+	require.NoError(t, svc.updateStoredConfig(t.Context(), lb))
+}
+
+func modifyPath(t *testing.T, svc *ELBv2ServiceImpl, path string) {
+	t.Helper()
+	_, err := svc.ModifyTargetGroup(t.Context(), &elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:  aws.String(modifyTGArn),
+		HealthCheckPath: aws.String(path),
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
+func TestModifyTargetGroup_ReRendersALBWithTheNewHealthPath(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	putModifyFixture(t, svc, ProtocolHTTP)
+	putModifyLB(t, svc, "alb-m", LoadBalancerTypeApplication, ProtocolHTTP)
+	before := getLB(t, svc, "alb-m")
+	require.Contains(t, before.ConfigText, "uri /old")
+
+	modifyPath(t, svc, "/new")
+
+	after := getLB(t, svc, "alb-m")
+	assert.Contains(t, after.ConfigText, "uri /new")
+	assert.NotContains(t, after.ConfigText, "uri /old")
+	assert.NotEqual(t, before.ConfigHash, after.ConfigHash)
+}
+
+func TestModifyTargetGroup_NLBProbeChangeMovesTheConfigHash(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	putModifyFixture(t, svc, ProtocolTCP)
+	putModifyLB(t, svc, "nlb-m", LoadBalancerTypeNetwork, ProtocolTCP)
+	before := getLB(t, svc, "nlb-m")
+	require.Len(t, before.HealthTargets, 1)
+	require.Equal(t, "/old", before.HealthTargets[0].Path)
+
+	modifyPath(t, svc, "/new")
+
+	// nginx has no probe settings, so only the hash input carries this change
+	// to the agent, which re-fetches health targets when the hash moves.
+	after := getLB(t, svc, "nlb-m")
+	require.Len(t, after.HealthTargets, 1)
+	assert.Equal(t, "/new", after.HealthTargets[0].Path)
+	assert.Equal(t, before.ConfigText, after.ConfigText)
+	assert.NotEqual(t, before.ConfigHash, after.ConfigHash)
+}
+
+func TestModifyTargetGroup_UnchangedSettingsLeaveTheConfigHashAlone(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	putModifyFixture(t, svc, ProtocolHTTP)
+	putModifyLB(t, svc, "alb-same", LoadBalancerTypeApplication, ProtocolHTTP)
+	before := getLB(t, svc, "alb-same")
+
+	modifyPath(t, svc, "/old")
+
+	assert.Equal(t, before.ConfigHash, getLB(t, svc, "alb-same").ConfigHash)
+}

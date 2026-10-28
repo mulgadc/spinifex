@@ -113,6 +113,14 @@ func runALBFailOpenSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	lbIP := privateIP(lbENI(t, c, "app", lb))
 	require.NotEmpty(t, lbIP, label+" needs private IP")
 
+	harness.Phase(t, "%s: a health-check path change reaches the load balancer", label)
+	setHealthPath(t, c, tgArn, "/health-check-missing")
+	for _, id := range f.AppInstanceIDs {
+		waitTargetState(t, c, tgArn, id, "unhealthy", healthRoutingBound)
+	}
+	setHealthPath(t, c, tgArn, "/hc.html")
+	harness.WaitForTargetsHealthy(t, c, tgArn, 2, label, healthRoutingBound)
+
 	appIPs := make([]string, len(f.AppInstanceIDs))
 	for i, id := range f.AppInstanceIDs {
 		appIPs[i] = privateIP(harness.InstanceENI(t, c, id))
@@ -176,6 +184,16 @@ func setHealth(t *testing.T, f *sharedFixture, appIP string, healthy bool) {
 	r, err := probeTrigger(f, "http", appIP, healthPort, path, 1)
 	require.NoErrorf(t, err, "toggle health %s on %s", path, appIP)
 	t.Logf("health %s on %s: %d responses", path, appIP, r.Total)
+}
+
+// setHealthPath changes a target group's health-check path.
+func setHealthPath(t *testing.T, c *harness.AWSClient, tgArn, path string) {
+	t.Helper()
+	_, err := c.ELBv2.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:  aws.String(tgArn),
+		HealthCheckPath: aws.String(path),
+	})
+	require.NoErrorf(t, err, "modify-target-group health path %s", path)
 }
 
 // waitTargetState polls DescribeTargetHealth until one target reports want.

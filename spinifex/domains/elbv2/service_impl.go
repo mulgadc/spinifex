@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -717,16 +718,22 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalan
 		return fmt.Errorf("generate config: %w", err)
 	}
 
-	hash := configCertHash(configContent, certFiles)
+	// NLBs: the agent actively probes targets (nginx has no upstream probing).
+	var healthTargets []HealthTargetSpec
+	if lb.Type == LoadBalancerTypeNetwork {
+		healthTargets = buildNLBHealthTargets(tgByArn)
+	}
+	// The agent re-fetches only when the hash moves, so probe settings are part of it.
+	hashed := configContent
+	if len(healthTargets) > 0 {
+		probes, _ := json.Marshal(healthTargets)
+		hashed += "\n# probes " + string(probes)
+	}
+	hash := configCertHash(hashed, certFiles)
 	lb.ConfigText = configContent
 	lb.ConfigHash = hash
 	lb.CertFiles = certFiles
-	// NLBs: the agent actively probes targets (nginx has no upstream probing).
-	if lb.Type == LoadBalancerTypeNetwork {
-		lb.HealthTargets = buildNLBHealthTargets(tgByArn)
-	} else {
-		lb.HealthTargets = nil
-	}
+	lb.HealthTargets = healthTargets
 
 	// Only the rendered fields are written, under CAS, so a concurrent heartbeat
 	// or re-render of the same LB is never overwritten with a stale record.
@@ -2160,6 +2167,8 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.M
 	if err != nil {
 		return nil, err
 	}
+
+	s.reRenderForTargetGroups(ctx, []string{tg.TargetGroupID})
 
 	slog.InfoContext(ctx, "ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
 

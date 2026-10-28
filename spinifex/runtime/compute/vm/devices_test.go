@@ -177,6 +177,19 @@ func TestVolumeBlkDevice_OnErrorStop(t *testing.T) {
 	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop", d.Value)
 }
 
+// TestVolumeMMIOBlkDevice pins the microvm data-volume device: the PCI
+// device's identity, block node, I/O thread and stop-on-error policy on
+// virtio-blk-device, with no PCI bus, which MMIO has no root port for.
+func TestVolumeMMIOBlkDevice(t *testing.T) {
+	d := volumeMMIOBlkDevice("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a")
+	assert.Equal(t, "virtio-blk-device,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,werror=stop,rerror=stop", d.Value)
+	assert.NotContains(t, d.Value, "bus=")
+
+	pci := VolumeBlkDevice("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3")
+	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop", pci.Value,
+		"the PCI device keeps its bus and shape")
+}
+
 // TestVolumeBlkDeviceQMPArgs_OnErrorStop is the hotplug counterpart: the QMP
 // device_add argument map AttachVolume sends must carry the same policy.
 func TestVolumeBlkDeviceQMPArgs_OnErrorStop(t *testing.T) {

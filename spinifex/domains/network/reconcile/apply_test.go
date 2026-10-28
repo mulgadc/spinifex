@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1626,5 +1627,79 @@ func TestPassResult_SummaryCountsPerClass(t *testing.T) {
 	want := []any{"unconverged", 3, classEIP, 2, classIGW, 1}
 	if got := res.summaryKV(); !slices.Equal(got, want) {
 		t.Errorf("summaryKV() = %v, want %v", got, want)
+	}
+}
+
+// A gateway attached before gateway_mtu existed, or under a different IPsec
+// setting, must converge on the next reconcile pass.
+func TestReconcile_ConvergesGatewayMTUOnAnAttachedVPC(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
+	nat, err := policy.NewNATManager(m, policy.NATModeDistributed)
+	if err != nil {
+		t.Fatalf("NewNATManager: %v", err)
+	}
+	routes := policy.NewRouteManager(m)
+	newRec := func(gatewayMTU int) (Reconciler, external.IGWManager) {
+		igw, err := external.NewIGWManager(external.IGWManagerConfig{
+			OVN: m, Routes: routes, NAT: nat,
+			Allocator:  external.LinkLocalAllocator{},
+			NATMode:    policy.NATModeDistributed,
+			GatewayMTU: gatewayMTU,
+		})
+		if err != nil {
+			t.Fatalf("NewIGWManager: %v", err)
+		}
+		rec, err := New(Config{
+			OVN: m, SG: sg, NAT: nat, Routes: routes, IGW: igw, Topology: topology.NewLiveManager(m),
+			LocalAZ: "us-east-1a", NodeHostname: "test-host",
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		return rec, igw
+	}
+	intent := IntentState{
+		VPCs: map[string]topology.VPCSpec{
+			"vpc-a": {VPCID: "vpc-a", CIDR: netip.MustParsePrefix("10.0.0.0/16"), VNI: 100},
+		},
+		Subnets: map[string]topology.SubnetSpec{},
+		Ports:   map[string]topology.PortSpec{},
+		SGs:     map[string]policy.SGSpec{},
+		IGWs:    map[string]external.IGWSpec{"vpc-a": {VPCID: "vpc-a", InternetGatewayID: "igw-a"}},
+		EIPs:    map[string]policy.EIPSpec{},
+		NATGWs:  map[string]policy.NATGWSpec{},
+	}
+	gwMTU := func() (string, bool) {
+		lrp, err := m.GetLogicalRouterPort(ctx, topology.GatewayRouterPort("vpc-a"))
+		if err != nil {
+			t.Fatalf("GetLogicalRouterPort: %v", err)
+		}
+		v, ok := lrp.Options["gateway_mtu"]
+		return v, ok
+	}
+
+	// Attach with the option unmanaged, as a pre-upgrade gateway would be.
+	rec, _ := newRec(0)
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("seed reconcile: %v", err)
+	}
+	if v, ok := gwMTU(); ok {
+		t.Fatalf("seeded gateway already has gateway_mtu=%q", v)
+	}
+
+	for _, want := range []string{
+		strconv.Itoa(topology.GatewayMTU(topology.DefaultUnderlayMTU, false)),
+		strconv.Itoa(topology.GatewayMTU(topology.DefaultUnderlayMTU, true)),
+	} {
+		mtu, _ := strconv.Atoi(want)
+		rec, _ := newRec(mtu)
+		if err := rec.Reconcile(ctx, intent); err != nil {
+			t.Fatalf("Reconcile with GatewayMTU %s: %v", want, err)
+		}
+		if got, _ := gwMTU(); got != want {
+			t.Errorf("gateway_mtu = %q after reconcile, want %q", got, want)
+		}
 	}
 }

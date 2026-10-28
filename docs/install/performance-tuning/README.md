@@ -269,6 +269,35 @@ ip link set <dev> mtu 9000        # both ends
 ping -M do -s 8972 -c 3 <peer>    # must succeed
 ```
 
+### The internet path
+
+A guest MTU of 1408 or 1442 sits below the 1500 bytes the internet carries, so a server can send the guest segments it cannot receive.
+The VPC gateway port carries `gateway_mtu = min(guest MTU, 1500)` and answers an oversized packet with ICMP fragmentation-needed (IPv4) or Packet Too Big (IPv6).
+It follows `ipsec_enabled` and `network.underlay_mtu` and converges on the next reconcile pass, with no VPC recreate.
+
+Path MTU discovery depends on that ICMP reaching the server, and an upstream NAT router or a CDN often drops it.
+vpcd therefore also clamps the TCP MSS on the host hop to the gateway MTU minus 40 (IPv4) or minus 60 (IPv6), and re-asserts the rule every 30 seconds so a firewall reload cannot remove it for long.
+
+| Uplink | Clamp | Table |
+| --- | --- | --- |
+| veth (distributed NAT) | yes | `bridge spinifex_mss`, matching the `veth-wan-br` port |
+| routed NAT | yes | `inet spinifex_mss`, matching `spx-nat-host` |
+| physical | no host hop exists | path MTU discovery only |
+
+On a physical uplink the only cover is path MTU discovery, which fails when the upstream drops the ICMP or the peer ignores it.
+
+Measured on one node (env12), IPsec on, Ubuntu 26.04 guest, 16 MB HTTPS download inside a Docker container at the default bridge MTU of 1500:
+
+| Uplink | Without the clamp | With the clamp |
+| --- | --- | --- |
+| veth, instance with a public IP | stalled 3/3 | completed 3/3 |
+| routed NAT | stalled 3/3, no ICMP seen on the host | completed 3/3 |
+
+An instance behind a NAT gateway on the veth uplink also completed 3/3 with the clamp; its unclamped internet run was not measured.
+The guest's own `curl` completed in every case.
+Without the clamp, `gateway_mtu` alone fixed the download only against a server on the same L2 with no NAT in between (completed 3/3), and not against the internet through the lab's upstream NAT router.
+Not measured: a physical uplink, a multi-node cluster, IPv6, and a Debian guest.
+
 ## 5. Measurement notes
 
 Throughput on this stack is **noisy** — repeated identical 20s runs varied between

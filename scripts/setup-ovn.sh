@@ -759,6 +759,25 @@ stop_ovn_databases() {
     exit 1
 }
 
+# db_clients — sets NBCTL/SBCTL. A clustered DB has no unix socket to fall back
+# on, and a follower refuses to answer at all unless leader-only is turned off;
+# writes through a follower are forwarded to the leader.
+db_clients() {
+    NBCTL=(ovn-nbctl)
+    SBCTL=(ovn-sbctl)
+    if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
+        NBCTL=(ovn-nbctl --db="tcp:$DB_CLUSTER_LOCAL_ADDR:6641" --no-leader-only)
+        SBCTL=(ovn-sbctl --db="tcp:$DB_CLUSTER_LOCAL_ADDR:6642" --no-leader-only)
+    fi
+}
+
+# set_client_connections — the loopback client listeners. A rerun's restart can
+# hand the leadership away, so this goes through NBCTL/SBCTL, not the socket.
+set_client_connections() {
+    sudo "${NBCTL[@]}" set-connection ptcp:6641:127.0.0.1
+    sudo "${SBCTL[@]}" set-connection ptcp:6642:127.0.0.1
+}
+
 # wait_for_raft_member <ctl> <schema> — waits until this server is a cluster
 # member that knows its leader, which a restarted member is once it rejoins.
 # Returns 1 on timeout.
@@ -1015,16 +1034,9 @@ EOF
         fi
     fi
 
-    # A clustered DB has no unix socket to fall back on, and a follower refuses
-    # to answer at all unless leader-only is turned off. Without both of these
-    # the waits below can never succeed on a clustered node: they burn their
-    # full timeout, gate nothing, and the run still continues.
-    NBCTL=(ovn-nbctl)
-    SBCTL=(ovn-sbctl)
-    if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then
-        NBCTL=(ovn-nbctl --db="tcp:$DB_CLUSTER_LOCAL_ADDR:6641" --no-leader-only)
-        SBCTL=(ovn-sbctl --db="tcp:$DB_CLUSTER_LOCAL_ADDR:6642" --no-leader-only)
-    fi
+    # Without these the waits below can never succeed on a clustered node:
+    # they burn their full timeout, gate nothing, and the run still continues.
+    db_clients
 
     # Wait for OVN NB DB socket to become available
     for i in $(seq 1 15); do
@@ -1113,8 +1125,7 @@ EOF
     # node. Scoped to loopback, not a wildcard ptcp:6641, because 127.0.0.1
     # is valid on every node; the differing LAN address is set above instead.
     if [ -z "$DB_CLUSTER_REMOTE_ADDR" ]; then
-        sudo ovn-nbctl set-connection ptcp:6641:127.0.0.1
-        sudo ovn-sbctl set-connection ptcp:6642:127.0.0.1
+        set_client_connections
         if [ -n "$LAN_ADDR" ]; then
             echo "  OVN NB DB listening on tcp:127.0.0.1:6641, tcp:$LAN_ADDR:6641"
             echo "  OVN SB DB listening on tcp:127.0.0.1:6642, tcp:$LAN_ADDR:6642"

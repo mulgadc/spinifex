@@ -519,6 +519,33 @@ else
 fi
 printf '#!/bin/sh\nexit 1\n' >"$TMP/bin/pgrep"
 
+# A rerun restarts this node's members, which can hand the leadership to a
+# peer, so the create node's set-connection must still land as a follower.
+for fn in db_clients set_client_connections; do
+    awk -v f="$fn() {" '$0 == f { on = 1 } on { print } on && $0 == "}" { exit }' "$SETUP" >>"$TMP/conn_fn.sh"
+done
+mkdir -p "$TMP/followerbin"
+for ctl in ovn-nbctl ovn-sbctl; do
+    cat >"$TMP/followerbin/$ctl" <<EOF
+#!/bin/sh
+case " \$* " in
+    *" --no-leader-only "*) echo "$ctl \$*" >>"$TMP/conn.log" ;;
+    *) echo "$ctl: unix:/var/run/ovn/db.sock: database connection failed ()" >&2; exit 1 ;;
+esac
+EOF
+    chmod +x "$TMP/followerbin/$ctl"
+done
+: >"$TMP/conn.log"
+RC=0
+PATH="$TMP/followerbin:$PATH" bash -c 'set -e; sudo() { "$@"; }; DB_CLUSTER_LOCAL_ADDR=10.0.0.1; . "$1"
+    db_clients; set_client_connections' _ "$TMP/conn_fn.sh" >/dev/null 2>&1 || RC=$?
+if [ "$RC" = 0 ] && [ "$(cat "$TMP/conn.log")" = "ovn-nbctl --db=tcp:10.0.0.1:6641 --no-leader-only set-connection ptcp:6641:127.0.0.1
+ovn-sbctl --db=tcp:10.0.0.1:6642 --no-leader-only set-connection ptcp:6642:127.0.0.1" ]; then
+    pass "connections: the create node sets the client listeners while a follower"
+else
+    fail "connections: as a follower rc=$RC calls [$(cat "$TMP/conn.log")]"
+fi
+
 if [ "$fails" -ne 0 ]; then
     echo "  setup-ovn.sh: $fails failure(s)"
     exit 1

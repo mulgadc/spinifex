@@ -116,8 +116,8 @@ type HAProxyBackend struct {
 	// Backups are unchecked copies of Servers that HAProxy routes to only when
 	// every checked server is down, so an all-unhealthy group fails open.
 	Backups       []HAProxyServer
-	FixedResponse          *HAProxyFixedResponse
-	Redirect               *HAProxyRedirect
+	FixedResponse *HAProxyFixedResponse
+	Redirect      *HAProxyRedirect
 }
 
 // HAProxyFixedResponse renders an `http-request return` directive. All fields are validated before use.

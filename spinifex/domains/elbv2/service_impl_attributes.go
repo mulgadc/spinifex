@@ -191,7 +191,14 @@ func (s *ELBv2ServiceImpl) lbAttrResource(ctx context.Context, arn, accountID, o
 		notFound:  awserrors.ErrorELBv2LoadBalancerNotFound,
 		// See tgAttrResource: the generic helpers carry no context.
 		fetch:       func(arn string) (*LoadBalancerRecord, error) { return s.store.GetLoadBalancerByArn(ctx, arn) },
-		save:        func(lb *LoadBalancerRecord) error { return s.store.PutLoadBalancer(ctx, lb) },
+		// CAS the attribute field alone so a concurrent config re-render survives.
+		save: func(lb *LoadBalancerRecord) error {
+			_, err := s.store.UpdateLoadBalancer(ctx, lb.LoadBalancerID, func(rec *LoadBalancerRecord) (bool, error) {
+				rec.Attributes = lb.Attributes
+				return true, nil
+			})
+			return err
+		},
 		accountIDOf: func(r *LoadBalancerRecord) string { return r.AccountID },
 		defaults:    func(r *LoadBalancerRecord) map[string]string { return DefaultLoadBalancerAttributes(r.Type) },
 		attrsOf:     func(r *LoadBalancerRecord) map[string]string { return r.Attributes },

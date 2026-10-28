@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/elbv2"
 	lbagent "github.com/mulgadc/spinifex/spinifex/agents/elbv2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -196,4 +197,99 @@ func TestHeartbeatRefresh_KeepsReRenderedConfig(t *testing.T) {
 	assert.Equal(t, rendered.ConfigHash, got.ConfigHash)
 	assert.Equal(t, rendered.ConfigText, got.ConfigText)
 	assert.True(t, got.LastHeartbeat.After(rendered.LastHeartbeat), "stale heartbeat must be refreshed")
+}
+
+const rerenderLBArn = "arn:aws:elasticloadbalancing:us-east-1:1:loadbalancer/net/lb-a/lb-a"
+
+// bumpConfigHash simulates a re-render landing after another writer read the LB.
+func bumpConfigHash(t *testing.T, svc *ELBv2ServiceImpl, lbID string) {
+	t.Helper()
+	_, err := svc.store.UpdateLoadBalancer(t.Context(), lbID, func(rec *LoadBalancerRecord) (bool, error) {
+		rec.ConfigHash = "rendered-elsewhere"
+		return true, nil
+	})
+	require.NoError(t, err)
+}
+
+func TestLBAttributeSave_KeepsConfigHashWrittenAfterRead(t *testing.T) {
+	t.Parallel()
+	svc := setupRerender(t, "lb-a")
+	res := svc.lbAttrResource(t.Context(), rerenderLBArn, testAccountID, "test")
+	stale, err := res.fetch(rerenderLBArn)
+	require.NoError(t, err)
+	require.NotNil(t, stale)
+
+	bumpConfigHash(t, svc, "lb-a")
+	stale.Attributes = map[string]string{"deletion_protection.enabled": "true"}
+	require.NoError(t, res.save(stale))
+
+	got := getLB(t, svc, "lb-a")
+	assert.Equal(t, "rendered-elsewhere", got.ConfigHash)
+	assert.Equal(t, "true", got.Attributes["deletion_protection.enabled"])
+}
+
+func TestLBTagSave_KeepsConfigHashWrittenAfterRead(t *testing.T) {
+	t.Parallel()
+	svc := setupRerender(t, "lb-a")
+	h, _, found, err := svc.resolveTaggable(t.Context(), rerenderLBArn)
+	require.NoError(t, err)
+	require.True(t, found)
+
+	bumpConfigHash(t, svc, "lb-a")
+	require.NoError(t, h.save(map[string]string{"env": "test"}))
+
+	got := getLB(t, svc, "lb-a")
+	assert.Equal(t, "rendered-elsewhere", got.ConfigHash)
+	assert.Equal(t, "test", got.Tags["env"])
+}
+
+// The next three read and write inside one call, so the hash is bumped first:
+// they prove only the fields they own change, not the interleaving itself.
+func TestSetIpAddressType_LeavesConfigHashAlone(t *testing.T) {
+	t.Parallel()
+	svc := setupRerender(t, "lb-a")
+	bumpConfigHash(t, svc, "lb-a")
+
+	_, err := svc.SetIpAddressType(t.Context(), &elbv2.SetIpAddressTypeInput{
+		LoadBalancerArn: aws.String(rerenderLBArn),
+		IpAddressType:   aws.String(IPAddressTypeIPv4),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got := getLB(t, svc, "lb-a")
+	assert.Equal(t, "rendered-elsewhere", got.ConfigHash)
+	assert.Equal(t, IPAddressTypeIPv4, got.IPAddressType)
+}
+
+func TestSetSecurityGroups_LeavesConfigHashAlone(t *testing.T) {
+	t.Parallel()
+	svc := setupRerender(t, "lb-a")
+	_, err := svc.store.UpdateLoadBalancer(t.Context(), "lb-a", func(rec *LoadBalancerRecord) (bool, error) {
+		rec.SecurityGroups = []string{"sg-old"}
+		rec.ConfigHash = "rendered-elsewhere"
+		return true, nil
+	})
+	require.NoError(t, err)
+
+	_, err = svc.SetSecurityGroups(t.Context(), &elbv2.SetSecurityGroupsInput{
+		LoadBalancerArn: aws.String(rerenderLBArn),
+		SecurityGroups:  []*string{aws.String("sg-new")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got := getLB(t, svc, "lb-a")
+	assert.Equal(t, "rendered-elsewhere", got.ConfigHash)
+	assert.Equal(t, []string{"sg-new"}, got.SecurityGroups)
+}
+
+func TestSetLoadBalancerIngressCIDRs_LeavesConfigHashAlone(t *testing.T) {
+	t.Parallel()
+	svc := setupRerender(t, "lb-a")
+	bumpConfigHash(t, svc, "lb-a")
+
+	require.NoError(t, svc.SetLoadBalancerIngressCIDRs(rerenderLBArn, []string{"10.0.0.0/8"}, testAccountID))
+
+	got := getLB(t, svc, "lb-a")
+	assert.Equal(t, "rendered-elsewhere", got.ConfigHash)
+	assert.Equal(t, []string{"10.0.0.0/8"}, got.NLBIngressCIDRs)
 }

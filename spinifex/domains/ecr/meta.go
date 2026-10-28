@@ -78,6 +78,10 @@ type ManifestMeta struct {
 	Size         int64     `json:"size"`
 	PushedAt     time.Time `json:"pushedAt"`
 	ChildDigests []string  `json:"childDigests,omitempty"`
+	// SubjectDigest and ArtifactType are set only for manifests that declare a
+	// subject, and feed the OCI referrers listing for that subject.
+	SubjectDigest string `json:"subjectDigest,omitempty"`
+	ArtifactType  string `json:"artifactType,omitempty"`
 }
 
 // UploadState tracks an in-progress chunked blob upload. The sha256 hash state

@@ -223,3 +223,12 @@ func TestMemoryMetaStore_LifecyclePolicy(t *testing.T) {
 	_, err = m.GetLifecyclePolicy(context.Background(), acct, "team/app")
 	assert.ErrorIs(t, err, ErrNotFound)
 }
+
+func TestManifestMeta_DecodesRecordWithoutReferrerFields(t *testing.T) {
+	var m ManifestMeta
+	require.NoError(t, json.Unmarshal([]byte(`{"digest":"sha256:ccc","mediaType":"application/vnd.oci.image.manifest.v1+json","size":10,"pushedAt":"2026-01-01T00:00:00Z","childDigests":["sha256:ddd"]}`), &m))
+	assert.Equal(t, "sha256:ccc", m.Digest)
+	assert.Equal(t, []string{"sha256:ddd"}, m.ChildDigests)
+	assert.Empty(t, m.SubjectDigest)
+	assert.Empty(t, m.ArtifactType)
+}

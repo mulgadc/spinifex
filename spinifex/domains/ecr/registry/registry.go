@@ -602,6 +602,9 @@ func (reg *Registry) putManifest(w http.ResponseWriter, r *http.Request, name, r
 
 	w.Header().Set("Docker-Content-Digest", digest)
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/manifests/%s", name, digest))
+	if subject, _, err := referrerFields(r.Header.Get("Content-Type"), body); err == nil && subject != "" {
+		w.Header().Set("OCI-Subject", subject)
+	}
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -635,9 +638,14 @@ func (reg *Registry) deleteManifest(ctx context.Context, w http.ResponseWriter, 
 
 // manifestDoc is the subset of an OCI image manifest the validator inspects.
 type manifestDoc struct {
-	MediaType string `json:"mediaType"`
-	Config    struct {
+	MediaType    string `json:"mediaType"`
+	ArtifactType string `json:"artifactType"`
+	Subject      *struct {
 		Digest string `json:"digest"`
+	} `json:"subject"`
+	Config struct {
+		MediaType string `json:"mediaType"`
+		Digest    string `json:"digest"`
 	} `json:"config"`
 	Layers []struct {
 		Digest string `json:"digest"`
@@ -646,6 +654,24 @@ type manifestDoc struct {
 		Digest    string `json:"digest"`
 		MediaType string `json:"mediaType"`
 	} `json:"manifests"`
+}
+
+// referrerFields returns the subject digest and effective artifactType of a
+// manifest that declares a subject. An image manifest without an artifactType
+// falls back to its config mediaType, as the OCI 1.1 referrers listing does.
+func referrerFields(contentType string, body []byte) (subject, artifactType string, err error) {
+	var doc manifestDoc
+	if err := json.Unmarshal(body, &doc); err != nil || doc.Subject == nil {
+		return "", "", nil
+	}
+	if !ecr.ValidateDigest(doc.Subject.Digest) {
+		return "", "", errors.New("subject references malformed digest")
+	}
+	artifactType = doc.ArtifactType
+	if artifactType == "" && contentType != mediaTypeOCIIndex && contentType != mediaTypeDockerManifestList {
+		artifactType = doc.Config.MediaType
+	}
+	return doc.Subject.Digest, artifactType, nil
 }
 
 // validateManifest performs type-aware shallow validation, returning the child

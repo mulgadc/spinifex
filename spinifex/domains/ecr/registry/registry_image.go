@@ -91,6 +91,11 @@ func (reg *Registry) StoreManifest(ctx context.Context, account, repo, ref, cont
 		return "", &ManifestStoreError{http.StatusBadRequest, code, vErr.Error()}
 	}
 
+	subject, artifactType, rErr := referrerFields(contentType, body)
+	if rErr != nil {
+		return "", &ManifestStoreError{http.StatusBadRequest, "MANIFEST_INVALID", rErr.Error()}
+	}
+
 	if _, err := scoped.Store.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(scoped.bucket()),
 		Key:         aws.String(ecr.ManifestKey(repo, digest)),
@@ -106,6 +111,9 @@ func (reg *Registry) StoreManifest(ctx context.Context, account, repo, ref, cont
 		Size:         int64(len(body)),
 		PushedAt:     time.Now().UTC(),
 		ChildDigests: children,
+
+		SubjectDigest: subject,
+		ArtifactType:  artifactType,
 	}); err != nil {
 		return "", err
 	}

@@ -201,7 +201,6 @@ func setHealthPath(t *testing.T, c *harness.AWSClient, tgArn, path string) {
 func waitTargetState(t *testing.T, c *harness.AWSClient, tgArn, targetID, want string, timeout time.Duration) {
 	t.Helper()
 	start := time.Now()
-	defer func() { t.Logf("target %s reached %s after %s", targetID, want, time.Since(start).Round(time.Second)) }()
 	harness.EventuallyErr(t, func() error {
 		out, err := c.ELBv2.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{TargetGroupArn: aws.String(tgArn)})
 		if err != nil {
@@ -218,6 +217,7 @@ func waitTargetState(t *testing.T, c *harness.AWSClient, tgArn, targetID, want s
 		}
 		return fmt.Errorf("target %s not listed", targetID)
 	}, timeout, 3*time.Second)
+	t.Logf("target %s reached %s after %s", targetID, want, time.Since(start).Round(time.Second))
 }
 
 // requireSingleTCPResponder returns the hostname one backend answers with on

@@ -142,6 +142,8 @@ func (reg *Registry) serve(w http.ResponseWriter, r *http.Request) {
 		reg.routeManifests(w, r, name, ref)
 	case "tags":
 		reg.routeTags(w, r, name, ref)
+	case "referrers":
+		reg.getReferrers(w, r, name, ref)
 	default:
 		WriteError(w, http.StatusNotFound, "NAME_UNKNOWN", "unrecognized registry path")
 	}
@@ -151,7 +153,7 @@ func (reg *Registry) serve(w http.ResponseWriter, r *http.Request) {
 // kind is one of blobs/manifests/tags. ref is the remainder (digest, reference,
 // "uploads", "uploads/{uuid}", or "list"). ok is false if no marker is found.
 func splitV2Path(path string) (name, kind, ref string, ok bool) {
-	for _, marker := range []string{"/blobs/", "/manifests/", "/tags/"} {
+	for _, marker := range []string{"/blobs/", "/manifests/", "/tags/", "/referrers/"} {
 		if before, after, found := strings.Cut(path, marker); found {
 			kind = strings.Trim(marker, "/")
 			return before, kind, after, before != ""
@@ -724,6 +726,57 @@ func (reg *Registry) validateManifest(ctx context.Context, name, contentType str
 			children = append(children, d)
 		}
 		return children, "", nil
+	}
+}
+
+// ---- referrers ----
+
+// referrersIndex is the OCI image index the referrers API answers with.
+type referrersIndex struct {
+	SchemaVersion int                      `json:"schemaVersion"`
+	MediaType     string                   `json:"mediaType"`
+	Manifests     []ecr.ReferrerDescriptor `json:"manifests"`
+}
+
+// getReferrers answers GET /v2/<name>/referrers/<digest> with an index of the
+// manifests that name the digest as their subject. A subject with none, or one
+// that is not stored, yields an empty index.
+func (reg *Registry) getReferrers(w http.ResponseWriter, r *http.Request, name, subject string) {
+	ctx := r.Context()
+	if !ecr.ValidateDigest(subject) {
+		WriteError(w, http.StatusBadRequest, "DIGEST_INVALID", "malformed subject digest")
+		return
+	}
+	if _, err := reg.Meta.GetRepo(ctx, reg.AccountID, name); err != nil {
+		if errors.Is(err, ecr.ErrNotFound) {
+			WriteError(w, http.StatusNotFound, "NAME_UNKNOWN", "repository unknown")
+			return
+		}
+		reg.internal(ctx, w, "get repository", err)
+		return
+	}
+	referrers, err := reg.Meta.ListReferrers(ctx, reg.AccountID, name, subject)
+	if err != nil {
+		reg.internal(ctx, w, "list referrers", err)
+		return
+	}
+	if want := r.URL.Query().Get("artifactType"); want != "" {
+		referrers = slices.DeleteFunc(referrers, func(d ecr.ReferrerDescriptor) bool { return d.ArtifactType != want })
+		w.Header().Set("OCI-Filters-Applied", "artifactType")
+	}
+	if referrers == nil {
+		referrers = []ecr.ReferrerDescriptor{}
+	}
+	out, err := json.Marshal(referrersIndex{SchemaVersion: 2, MediaType: mediaTypeOCIIndex, Manifests: referrers})
+	if err != nil {
+		reg.internal(ctx, w, "encode referrers", err)
+		return
+	}
+	w.Header().Set("Content-Type", mediaTypeOCIIndex)
+	w.Header().Set("Content-Length", strconv.Itoa(len(out)))
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(out); err != nil {
+		slog.ErrorContext(ctx, "ECR/OCI: referrers write failed", "err", err)
 	}
 }
 

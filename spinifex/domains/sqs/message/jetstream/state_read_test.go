@@ -2,6 +2,7 @@ package jetstream_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +24,8 @@ type apiRecorder struct {
 	mu       sync.Mutex
 	subjects []string
 	sentinel chan struct{}
+	// exited closes once the delivery goroutine has returned.
+	exited chan struct{}
 }
 
 const recorderSentinel = "sqs.test.recorder.sentinel"
@@ -32,25 +35,47 @@ func recordAPI(t *testing.T, url string) *apiRecorder {
 	nc, err := nats.Connect(url)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
-	r := &apiRecorder{sentinel: make(chan struct{}, 1)}
+	r := &apiRecorder{sentinel: make(chan struct{}, 1), exited: make(chan struct{})}
 	// One channel for both subjects keeps arrival order; separate async
 	// subscriptions deliver on separate goroutines and can reorder.
 	msgs := make(chan *nats.Msg, 1<<12)
-	_, err = nc.ChanSubscribe("$JS.API.>", msgs)
+	api, err := nc.ChanSubscribe("$JS.API.>", msgs)
 	require.NoError(t, err)
-	_, err = nc.ChanSubscribe(recorderSentinel, msgs)
+	sentinel, err := nc.ChanSubscribe(recorderSentinel, msgs)
 	require.NoError(t, err)
+	done := make(chan struct{})
 	go func() {
-		for m := range msgs {
-			if m.Subject == recorderSentinel {
-				r.sentinel <- struct{}{}
-				continue
+		defer close(r.exited)
+		for {
+			select {
+			case <-done:
+				return
+			case m := <-msgs:
+				if m.Subject != recorderSentinel {
+					r.mu.Lock()
+					r.subjects = append(r.subjects, m.Subject)
+					r.mu.Unlock()
+					continue
+				}
+				select {
+				case r.sentinel <- struct{}{}:
+				case <-done:
+					return
+				}
 			}
-			r.mu.Lock()
-			r.subjects = append(r.subjects, m.Subject)
-			r.mu.Unlock()
 		}
 	}()
+	// Runs before nc.Close. Once both unsubscribes return nats.go sends
+	// nothing more on msgs, so done can stop the goroutine without closing it.
+	t.Cleanup(func() {
+		for _, sub := range []*nats.Subscription{api, sentinel} {
+			if err := sub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+				t.Errorf("unsubscribe recorder: %v", err)
+			}
+		}
+		close(done)
+		<-r.exited
+	})
 	require.NoError(t, nc.Flush())
 	return r
 }
@@ -71,6 +96,34 @@ func (r *apiRecorder) drain(t *testing.T, client *nats.Conn) []string {
 	got := r.subjects
 	r.subjects = nil
 	return got
+}
+
+// TestRecorderStopsWithItsTest requires each recorder's delivery goroutine
+// to have returned once its test's cleanups finish, including one left
+// blocked on a sentinel nobody drained.
+func TestRecorderStopsWithItsTest(t *testing.T) {
+	srv, js := startServer(t, t.TempDir())
+	var idle, stuck *apiRecorder
+	t.Run("drained", func(t *testing.T) {
+		idle = recordAPI(t, srv.ClientURL())
+		idle.drain(t, js.Conn())
+	})
+	t.Run("undrained sentinels", func(t *testing.T) {
+		stuck = recordAPI(t, srv.ClientURL())
+		for range 3 {
+			require.NoError(t, js.Conn().Publish(recorderSentinel, nil))
+		}
+		require.NoError(t, js.Conn().Flush())
+		// The first fills the buffer; the next holds the goroutine in its send.
+		require.Eventually(t, func() bool { return len(stuck.sentinel) == 1 }, 5*time.Second, 10*time.Millisecond)
+	})
+	for name, r := range map[string]*apiRecorder{"drained": idle, "undrained": stuck} {
+		select {
+		case <-r.exited:
+		default:
+			t.Errorf("%s recorder goroutine still running after its test ended", name)
+		}
+	}
 }
 
 // TestGetStateIsLeaderServed pins the route: a state read is a stream

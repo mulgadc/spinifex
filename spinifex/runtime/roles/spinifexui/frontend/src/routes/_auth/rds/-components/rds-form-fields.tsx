@@ -1,4 +1,8 @@
-import type { OrderableDBInstanceOption } from "@aws-sdk/client-rds"
+import type {
+  DBParameterGroup,
+  DBSubnetGroup,
+  OrderableDBInstanceOption,
+} from "@aws-sdk/client-rds"
 import {
   type Control,
   type FieldValues,
@@ -85,4 +89,22 @@ export function instanceClassOptions(
       empty: `No instance class this cluster's nodes can run is available for ${engine}.`,
     }),
   }
+}
+
+export function subnetGroupOptions(
+  groups: DBSubnetGroup[],
+): { value: string; label: string }[] {
+  return groups.map((g) => ({
+    value: g.DBSubnetGroupName ?? "",
+    label: `${g.DBSubnetGroupName} (${g.VpcId})`,
+  }))
+}
+
+export function parameterGroupOptions(
+  groups: DBParameterGroup[],
+): { value: string; label: string }[] {
+  return groups.map((g) => ({
+    value: g.DBParameterGroupName ?? "",
+    label: g.DBParameterGroupName ?? "",
+  }))
 }

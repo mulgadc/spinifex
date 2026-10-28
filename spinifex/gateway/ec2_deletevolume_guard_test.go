@@ -22,6 +22,7 @@ import (
 // a guest there could still map the volume. The public action must refuse with
 // a retryable ServiceUnavailable and never reach the volume service.
 func TestDeleteVolumeAction_MissingConfiguredNodeIsRetryableAndDeletesNothing(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	answer := func(subject, node string) {
 		sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {

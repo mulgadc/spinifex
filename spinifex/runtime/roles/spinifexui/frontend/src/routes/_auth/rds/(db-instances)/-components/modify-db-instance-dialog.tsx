@@ -1,7 +1,7 @@
-import type { DBInstance } from "@aws-sdk/client-rds"
+import type { DBInstance, DBParameterGroup } from "@aws-sdk/client-rds"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery } from "@tanstack/react-query"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import { type Control, Controller, useForm, useWatch } from "react-hook-form"
 
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -56,6 +56,81 @@ const READ_ONLY_FIELDS: { label: string; note: string }[] = [
   },
 ]
 
+function modifyDefaults(instance: DBInstance): ModifyDBInstanceFormData {
+  const currentStorage = instance.AllocatedStorage ?? 0
+
+  const currentGroups =
+    instance.VpcSecurityGroups?.map((g) => g.VpcSecurityGroupId ?? "").filter(
+      Boolean,
+    ) ?? []
+
+  return {
+    currentAllocatedStorage: currentStorage,
+    dbInstanceClass: instance.DBInstanceClass ?? "",
+    allocatedStorage: currentStorage,
+    dbParameterGroupName:
+      instance.DBParameterGroups?.[0]?.DBParameterGroupName ?? "",
+    vpcSecurityGroupIds: currentGroups,
+    deletionProtection: instance.DeletionProtection ?? false,
+    backupRetentionPeriod: instance.BackupRetentionPeriod ?? 0,
+    preferredBackupWindow: instance.PreferredBackupWindow ?? "",
+    preferredMaintenanceWindow: instance.PreferredMaintenanceWindow ?? "",
+    masterUserPassword: "",
+    applyImmediately: false,
+  }
+}
+
+function parameterGroupOptions(
+  groups: DBParameterGroup[],
+): { value: string; label: string }[] {
+  return groups.map((g) => ({
+    value: g.DBParameterGroupName ?? "",
+    label: g.DBParameterGroupName ?? "",
+  }))
+}
+
+function ApplyImmediatelyField({
+  control,
+}: {
+  control: Control<ModifyDBInstanceFormData>
+}) {
+  return (
+    <Field>
+      <FieldTitle>Apply immediately</FieldTitle>
+      <Controller
+        control={control}
+        name="applyImmediately"
+        render={({ field }) => (
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              aria-label="Apply immediately"
+              checked={field.value}
+              onChange={(e) => {
+                field.onChange(e.target.checked)
+              }}
+              type="checkbox"
+            />
+            <span>Apply now instead of waiting for the maintenance window</span>
+          </label>
+        )}
+      />
+    </Field>
+  )
+}
+
+function FixedAtCreateNote() {
+  return (
+    <div className="space-y-2 rounded-md border border-border p-3">
+      <h3 className="text-xs font-medium">Fixed at create</h3>
+      {READ_ONLY_FIELDS.map((entry) => (
+        <p className="text-xs text-muted-foreground" key={entry.label}>
+          <span className="font-medium">{entry.label}</span> — {entry.note}
+        </p>
+      ))}
+    </div>
+  )
+}
+
 interface ModifyDBInstanceDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -72,17 +147,10 @@ export function ModifyDBInstanceDialog({
   const securityGroupsQuery = useQuery(ec2SecurityGroupsQueryOptions)
   const engineVersionsQuery = useQuery(rdsEngineVersionsQueryOptions)
 
-  const orderableQuery = useQuery(
-    rdsOrderableOptionsQueryOptions(instance.Engine ?? ""),
-  )
-
+  const engine = instance.Engine ?? ""
+  const orderableQuery = useQuery(rdsOrderableOptionsQueryOptions(engine))
   const identifier = instance.DBInstanceIdentifier ?? ""
   const currentStorage = instance.AllocatedStorage ?? 0
-
-  const currentGroups =
-    instance.VpcSecurityGroups?.map((g) => g.VpcSecurityGroupId ?? "").filter(
-      Boolean,
-    ) ?? []
 
   const {
     control,
@@ -92,20 +160,7 @@ export function ModifyDBInstanceDialog({
     setValue,
   } = useForm<ModifyDBInstanceFormData>({
     resolver: zodResolver(modifyDBInstanceSchema),
-    defaultValues: {
-      currentAllocatedStorage: currentStorage,
-      dbInstanceClass: instance.DBInstanceClass ?? "",
-      allocatedStorage: currentStorage,
-      dbParameterGroupName:
-        instance.DBParameterGroups?.[0]?.DBParameterGroupName ?? "",
-      vpcSecurityGroupIds: currentGroups,
-      deletionProtection: instance.DeletionProtection ?? false,
-      backupRetentionPeriod: instance.BackupRetentionPeriod ?? 0,
-      preferredBackupWindow: instance.PreferredBackupWindow ?? "",
-      preferredMaintenanceWindow: instance.PreferredMaintenanceWindow ?? "",
-      masterUserPassword: "",
-      applyImmediately: false,
-    },
+    defaultValues: modifyDefaults(instance),
   })
 
   const values = useWatch({ control })
@@ -115,13 +170,13 @@ export function ModifyDBInstanceDialog({
 
   const { instanceClasses, classNotice } = instanceClassOptions(
     orderableQuery,
-    instance.Engine ?? "",
+    engine,
   )
 
   const parameterGroups = parameterGroupsForEngine(
     parameterGroupsQuery.data?.DBParameterGroups ?? [],
     engineVersionsQuery.data?.DBEngineVersions ?? [],
-    instance.Engine ?? "",
+    engine,
   )
 
   // The instance's ENI is already placed, so a group from another VPC cannot be
@@ -213,10 +268,7 @@ export function ModifyDBInstanceDialog({
             label="DB parameter group"
             name="dbParameterGroupName"
             notice={parameterGroupNotice}
-            options={parameterGroups.map((g) => ({
-              value: g.DBParameterGroupName ?? "",
-              label: g.DBParameterGroupName ?? "",
-            }))}
+            options={parameterGroupOptions(parameterGroups)}
             placeholder="Engine default group"
           />
 
@@ -274,38 +326,9 @@ export function ModifyDBInstanceDialog({
             name="deletionProtection"
           />
 
-          <Field>
-            <FieldTitle>Apply immediately</FieldTitle>
-            <Controller
-              control={control}
-              name="applyImmediately"
-              render={({ field }) => (
-                <label className="flex items-center gap-2 text-xs">
-                  <input
-                    aria-label="Apply immediately"
-                    checked={field.value}
-                    onChange={(e) => {
-                      field.onChange(e.target.checked)
-                    }}
-                    type="checkbox"
-                  />
-                  <span>
-                    Apply now instead of waiting for the maintenance window
-                  </span>
-                </label>
-              )}
-            />
-          </Field>
+          <ApplyImmediatelyField control={control} />
 
-          <div className="space-y-2 rounded-md border border-border p-3">
-            <h3 className="text-xs font-medium">Fixed at create</h3>
-            {READ_ONLY_FIELDS.map((entry) => (
-              <p className="text-xs text-muted-foreground" key={entry.label}>
-                <span className="font-medium">{entry.label}</span> —{" "}
-                {entry.note}
-              </p>
-            ))}
-          </div>
+          <FixedAtCreateNote />
 
           {modifyInstance.error && (
             <ErrorBanner

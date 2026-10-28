@@ -128,3 +128,58 @@ func TestRunServesUntilCancelled(t *testing.T) {
 		t.Fatal("Run did not return after cancel")
 	}
 }
+
+func TestRunServesReadinessOnSeparateListener(t *testing.T) {
+	g := newTLSGateway(t)
+	cfg := runConfig(t, freeAddr(t))
+	cfg.GatewayURL = "https://" + g.addr
+	cfg.GatewayCA = g.caPath
+	cfg.APIServerAddr = g.api.addr
+	cfg.ReadyAddr = freeAddr(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cfg) }()
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	require.Eventually(t, func() bool {
+		resp, err := client.Get("http://" + cfg.ReadyAddr + "/readyz")
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 10*time.Second, 50*time.Millisecond, "readiness listener never reported ready")
+
+	resp, err := client.Post("http://"+cfg.ReadyAddr+"/authenticate", "application/json", strings.NewReader("{}"))
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, "the readiness listener must not serve /authenticate")
+
+	cancel()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+}
+
+func TestRunReportsReadinessListenFailure(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer l.Close()
+
+	cfg := runConfig(t, freeAddr(t))
+	cfg.ReadyAddr = l.Addr().String()
+
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), cfg) }()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.True(t, strings.HasPrefix(err.Error(), "serve readiness: "), err.Error())
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run kept serving after the readiness listener failed")
+	}
+}

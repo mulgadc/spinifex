@@ -293,8 +293,9 @@ func (f *publishFixture) publish(t *testing.T, ctx context.Context, cluster, bod
 func (f *publishFixture) requireNothingPublished(t *testing.T) {
 	t.Helper()
 	require.NoError(t, f.nc.Flush())
-	msg, err := f.sub.NextMsg(100 * time.Millisecond)
-	require.ErrorIs(t, err, nats.ErrTimeout, "relayed onto %v", msg)
+	pending, _, err := f.sub.Pending()
+	require.NoError(t, err)
+	require.Zero(t, pending, "relayed onto eks.>")
 }
 
 // cpAgentContext is the auth context a CP VM's IMDS credentials produce.
@@ -528,7 +529,7 @@ func (f *tokenReviewFixture) requireNothingVerified(t *testing.T) {
 	select {
 	case cluster := <-f.verified:
 		t.Fatalf("token verified against cluster %q", cluster)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 }
 

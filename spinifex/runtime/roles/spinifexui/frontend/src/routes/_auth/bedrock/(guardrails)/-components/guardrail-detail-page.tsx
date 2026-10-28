@@ -1,4 +1,8 @@
-import type { GuardrailSummary, GuardrailTopic } from "@aws-sdk/client-bedrock"
+import type {
+  GetGuardrailCommandOutput,
+  GuardrailSummary,
+  GuardrailTopic,
+} from "@aws-sdk/client-bedrock"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Pencil, Trash2 } from "lucide-react"
@@ -120,6 +124,67 @@ function CreateVersionForm({ guardrailId }: { guardrailId: string }) {
   )
 }
 
+function GuardrailInfoCard({
+  guardrail,
+}: {
+  guardrail: GetGuardrailCommandOutput
+}) {
+  return (
+    <DetailCard>
+      <DetailCard.Header>Guardrail Information</DetailCard.Header>
+      <DetailCard.Content>
+        <DetailRow label="Guardrail ID" value={guardrail.guardrailId} />
+        <DetailRow label="ARN" value={guardrail.guardrailArn} />
+        <DetailRow label="Version" value={guardrail.version} />
+        <DetailRow label="Description" value={guardrail.description ?? "-"} />
+        <DetailRow
+          label="Created"
+          value={formatDateTime(guardrail.createdAt)}
+        />
+        <DetailRow
+          label="Updated"
+          value={formatDateTime(guardrail.updatedAt)}
+        />
+        {guardrail.statusReasons && guardrail.statusReasons.length > 0 && (
+          <DetailRow
+            label="Status Reasons"
+            value={guardrail.statusReasons.join("; ")}
+          />
+        )}
+      </DetailCard.Content>
+    </DetailCard>
+  )
+}
+
+function OtherPoliciesSection({
+  guardrail,
+}: {
+  guardrail: GetGuardrailCommandOutput
+}) {
+  const hasWordPolicy =
+    (guardrail.wordPolicy?.words?.length ?? 0) > 0 ||
+    (guardrail.wordPolicy?.managedWordLists?.length ?? 0) > 0
+
+  const hasSensitiveInfoPolicy =
+    (guardrail.sensitiveInformationPolicy?.piiEntities?.length ?? 0) > 0 ||
+    (guardrail.sensitiveInformationPolicy?.regexes?.length ?? 0) > 0
+
+  return (
+    <div>
+      <h2 className="mb-3 font-semibold">Other policies</h2>
+      <div className="flex flex-wrap gap-2">
+        <span className="rounded-full bg-muted px-2 py-1 text-xs">
+          Word policy: {hasWordPolicy ? "configured" : "not configured"}
+        </span>
+        <span className="rounded-full bg-muted px-2 py-1 text-xs">
+          Sensitive information policy:{" "}
+          {hasSensitiveInfoPolicy ? "configured" : "not configured"}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 export function GuardrailDetailPage({ guardrailId }: GuardrailDetailPageProps) {
   const navigate = useNavigate()
   const [showDelete, setShowDelete] = useState(false)
@@ -180,32 +245,7 @@ export function GuardrailDetailPage({ guardrailId }: GuardrailDetailPageProps) {
           title={guardrail.name ?? guardrailId}
         />
 
-        <DetailCard>
-          <DetailCard.Header>Guardrail Information</DetailCard.Header>
-          <DetailCard.Content>
-            <DetailRow label="Guardrail ID" value={guardrail.guardrailId} />
-            <DetailRow label="ARN" value={guardrail.guardrailArn} />
-            <DetailRow label="Version" value={guardrail.version} />
-            <DetailRow
-              label="Description"
-              value={guardrail.description ?? "-"}
-            />
-            <DetailRow
-              label="Created"
-              value={formatDateTime(guardrail.createdAt)}
-            />
-            <DetailRow
-              label="Updated"
-              value={formatDateTime(guardrail.updatedAt)}
-            />
-            {guardrail.statusReasons && guardrail.statusReasons.length > 0 && (
-              <DetailRow
-                label="Status Reasons"
-                value={guardrail.statusReasons.join("; ")}
-              />
-            )}
-          </DetailCard.Content>
-        </DetailCard>
+        <GuardrailInfoCard guardrail={guardrail} />
 
         <div>
           <h2 className="mb-3 font-semibold">Denied topics</h2>
@@ -222,26 +262,7 @@ export function GuardrailDetailPage({ guardrailId }: GuardrailDetailPageProps) {
           )}
         </div>
 
-        <div>
-          <h2 className="mb-3 font-semibold">Other policies</h2>
-          <div className="flex flex-wrap gap-2">
-            <span className="rounded-full bg-muted px-2 py-1 text-xs">
-              Word policy:{" "}
-              {(guardrail.wordPolicy?.words?.length ?? 0) > 0 ||
-              (guardrail.wordPolicy?.managedWordLists?.length ?? 0) > 0
-                ? "configured"
-                : "not configured"}
-            </span>
-            <span className="rounded-full bg-muted px-2 py-1 text-xs">
-              Sensitive information policy:{" "}
-              {(guardrail.sensitiveInformationPolicy?.piiEntities?.length ??
-                0) > 0 ||
-              (guardrail.sensitiveInformationPolicy?.regexes?.length ?? 0) > 0
-                ? "configured"
-                : "not configured"}
-            </span>
-          </div>
-        </div>
+        <OtherPoliciesSection guardrail={guardrail} />
 
         <div>
           <h2 className="mb-3 font-semibold">Versions</h2>

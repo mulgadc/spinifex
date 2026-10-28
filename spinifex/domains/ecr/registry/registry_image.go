@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"slices"
 	"strings"
@@ -52,20 +53,29 @@ type ImageRecord struct {
 // case it is detected. On a validation/size failure it returns a
 // *ManifestStoreError carrying the OCI code.
 func (reg *Registry) StoreManifest(ctx context.Context, account, repo, ref, contentType string, body []byte) (string, error) {
+	digest, _, err := reg.storeManifest(ctx, account, repo, ref, contentType, body)
+	return digest, err
+}
+
+// storeManifest is StoreManifest that also returns the subject digest the
+// manifest declares ("" when it has none).
+func (reg *Registry) storeManifest(ctx context.Context, account, repo, ref, contentType string, body []byte) (string, string, error) {
 	scoped := reg.forAccount(account)
 	if err := scoped.requireRepo(ctx, repo); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if len(body) > maxManifestBytes {
-		return "", &ManifestStoreError{http.StatusRequestEntityTooLarge, "MANIFEST_INVALID", "manifest too large"}
+		return "", "", &ManifestStoreError{http.StatusRequestEntityTooLarge, "MANIFEST_INVALID", "manifest too large"}
 	}
 	if contentType == "" {
 		contentType = detectManifestType(body)
+	} else if mt, _, err := mime.ParseMediaType(contentType); err == nil {
+		contentType = mt
 	}
 
 	digest := "sha256:" + hex.EncodeToString(sha256Sum(body))
 	if ecr.ValidateDigest(ref) && ref != digest {
-		return "", &ManifestStoreError{http.StatusBadRequest, "DIGEST_INVALID", "reference digest does not match content"}
+		return "", "", &ManifestStoreError{http.StatusBadRequest, "DIGEST_INVALID", "reference digest does not match content"}
 	}
 
 	// On an IMMUTABLE repo, re-tagging an existing tag onto a different digest is
@@ -73,22 +83,27 @@ func (reg *Registry) StoreManifest(ctx context.Context, account, repo, ref, cont
 	if ref != "" && !ecr.ValidateDigest(ref) {
 		meta, err := scoped.Meta.GetRepo(ctx, account, repo)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if meta.TagMutability() == ecr.TagMutabilityImmutable {
 			existing, err := scoped.Meta.GetTag(ctx, account, repo, ref)
 			switch {
 			case err == nil && existing != digest:
-				return "", &ManifestStoreError{http.StatusConflict, "TAG_IMMUTABLE", "tag is immutable and already resolves to a different digest"}
+				return "", "", &ManifestStoreError{http.StatusConflict, "TAG_IMMUTABLE", "tag is immutable and already resolves to a different digest"}
 			case err != nil && !errors.Is(err, ecr.ErrNotFound):
-				return "", err
+				return "", "", err
 			}
 		}
 	}
 
 	children, code, vErr := scoped.validateManifest(ctx, repo, contentType, body)
 	if vErr != nil {
-		return "", &ManifestStoreError{http.StatusBadRequest, code, vErr.Error()}
+		return "", "", &ManifestStoreError{http.StatusBadRequest, code, vErr.Error()}
+	}
+
+	subject, artifactType, annotations, rErr := referrerFields(contentType, body)
+	if rErr != nil {
+		return "", "", &ManifestStoreError{http.StatusBadRequest, "MANIFEST_INVALID", rErr.Error()}
 	}
 
 	if _, err := scoped.Store.PutObject(ctx, &s3.PutObjectInput{
@@ -97,7 +112,7 @@ func (reg *Registry) StoreManifest(ctx context.Context, account, repo, ref, cont
 		Body:        aws.ReadSeekCloser(strings.NewReader(string(body))),
 		ContentType: aws.String(contentType),
 	}); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	if err := scoped.Meta.PutManifestMeta(ctx, account, repo, ecr.ManifestMeta{
@@ -106,16 +121,20 @@ func (reg *Registry) StoreManifest(ctx context.Context, account, repo, ref, cont
 		Size:         int64(len(body)),
 		PushedAt:     time.Now().UTC(),
 		ChildDigests: children,
+
+		SubjectDigest: subject,
+		ArtifactType:  artifactType,
+		Annotations:   annotations,
 	}); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	if ref != "" && !ecr.ValidateDigest(ref) {
 		if err := scoped.Meta.PutTag(ctx, account, repo, ref, digest); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
-	return digest, nil
+	return digest, subject, nil
 }
 
 // GetManifest returns the verbatim manifest bytes, media type and digest for a
@@ -230,40 +249,66 @@ func (reg *Registry) DeleteImage(ctx context.Context, account, repo, tag, digest
 		return resolved, nil
 	}
 
-	meta, err := scoped.Meta.GetManifestMeta(ctx, account, repo, digest)
+	if err := scoped.deleteManifestCascade(ctx, account, repo, digest, map[string]bool{}); err != nil {
+		return "", err
+	}
+	return digest, nil
+}
+
+// deleteManifestCascade deletes one manifest by digest with its tags, then the
+// referrers that name it as subject, each through this same path. Referrer
+// failures are logged, not returned: the subject is already deleted and ECR
+// removes referrers asynchronously. visited guards against subject cycles.
+func (reg *Registry) deleteManifestCascade(ctx context.Context, account, repo, digest string, visited map[string]bool) error {
+	visited[digest] = true
+	meta, err := reg.Meta.GetManifestMeta(ctx, account, repo, digest)
 	if err != nil {
 		if errors.Is(err, ecr.ErrNotFound) {
-			return "", ErrImageNotFound
+			return ErrImageNotFound
 		}
-		return "", err
+		return err
 	}
-	tags, err := scoped.Meta.ListTags(ctx, account, repo)
+	tags, err := reg.Meta.ListTags(ctx, account, repo)
 	if err != nil {
-		return "", err
+		return err
 	}
 	for _, t := range tags {
-		d, err := scoped.Meta.GetTag(ctx, account, repo, t)
+		d, err := reg.Meta.GetTag(ctx, account, repo, t)
 		if err != nil {
 			if errors.Is(err, ecr.ErrNotFound) {
 				continue
 			}
-			return "", err
+			return err
 		}
 		if d == digest {
-			if err := scoped.Meta.DeleteTag(ctx, account, repo, t); err != nil {
-				return "", err
+			if err := reg.Meta.DeleteTag(ctx, account, repo, t); err != nil {
+				return err
 			}
 		}
 	}
-	if err := scoped.Meta.DeleteManifestMeta(ctx, account, repo, digest); err != nil {
-		return "", err
+	if err := reg.Meta.DeleteManifestMeta(ctx, account, repo, digest); err != nil {
+		return err
 	}
 
 	// The KV record is gone, so the image is logically deleted. Predastore
 	// reclaim is best-effort: a failure leaks bytes (a capacity nuisance) but
 	// does not undo the delete.
-	scoped.reclaimManifest(ctx, account, repo, digest, meta.ChildDigests)
-	return digest, nil
+	reg.reclaimManifest(ctx, account, repo, digest, meta.ChildDigests)
+
+	referrers, err := reg.Meta.ListReferrers(ctx, account, repo, digest)
+	if err != nil {
+		slog.WarnContext(ctx, "ECR/referrers: listing referrers for cascade failed", "repo", repo, "subject", digest, "err", err)
+		return nil
+	}
+	for _, ref := range referrers {
+		if visited[ref.Digest] {
+			continue
+		}
+		if err := reg.deleteManifestCascade(ctx, account, repo, ref.Digest, visited); err != nil && !errors.Is(err, ErrImageNotFound) {
+			slog.WarnContext(ctx, "ECR/referrers: referrer delete failed", "repo", repo, "subject", digest, "referrer", ref.Digest, "err", err)
+		}
+	}
+	return nil
 }
 
 // reclaimManifest deletes a manifest's predastore object and any child blob no

@@ -79,6 +79,7 @@ func (d *Daemon) buildEKSServiceDeps() ekscluster.EKSServiceDeps {
 		Region:              d.config.Region,
 		HolderID:            d.node,
 		InternalSuffix:      internalSuffix,
+		RegistryHosts:       d.registryHosts,
 		SystemGatewayURL:    d.resolveSystemGatewayBaseURL(),
 		SystemAccessKey:     d.config.Predastore.AccessKey,
 		SystemSecretKey:     d.config.Predastore.SecretKey,

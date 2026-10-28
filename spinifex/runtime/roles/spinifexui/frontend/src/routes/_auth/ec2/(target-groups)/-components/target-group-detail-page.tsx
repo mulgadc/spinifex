@@ -1,3 +1,4 @@
+import type { TargetGroup } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
@@ -147,42 +148,7 @@ export function TargetGroupDetailPage({ arn }: Props) {
               Health-check settings are set at creation time. Editing lands in a
               future enhancement.
             </p>
-            <DetailCard>
-              <DetailCard.Header>Health check</DetailCard.Header>
-              <DetailCard.Content>
-                <DetailRow
-                  label="Enabled"
-                  value={
-                    tg.HealthCheckEnabled === undefined
-                      ? undefined
-                      : String(tg.HealthCheckEnabled)
-                  }
-                />
-                <DetailRow label="Protocol" value={tg.HealthCheckProtocol} />
-                <DetailRow label="Path" value={tg.HealthCheckPath} />
-                <DetailRow label="Port" value={tg.HealthCheckPort} />
-                <DetailRow
-                  label="Interval (s)"
-                  value={tg.HealthCheckIntervalSeconds?.toString()}
-                />
-                <DetailRow
-                  label="Timeout (s)"
-                  value={tg.HealthCheckTimeoutSeconds?.toString()}
-                />
-                <DetailRow
-                  label="Healthy threshold"
-                  value={tg.HealthyThresholdCount?.toString()}
-                />
-                <DetailRow
-                  label="Unhealthy threshold"
-                  value={tg.UnhealthyThresholdCount?.toString()}
-                />
-                <DetailRow
-                  label="Matcher (HTTP codes)"
-                  value={tg.Matcher?.HttpCode ?? tg.Matcher?.GrpcCode}
-                />
-              </DetailCard.Content>
-            </DetailCard>
+            <HealthCheckCard tg={tg} />
           </TabsPanel>
 
           <TabsPanel value="attributes">
@@ -232,5 +198,46 @@ export function TargetGroupDetailPage({ arn }: Props) {
         title="Delete Target Group"
       />
     </>
+  )
+}
+
+function HealthCheckCard({ tg }: { tg: TargetGroup }) {
+  return (
+    <DetailCard>
+      <DetailCard.Header>Health check</DetailCard.Header>
+      <DetailCard.Content>
+        <DetailRow
+          label="Enabled"
+          value={
+            tg.HealthCheckEnabled === undefined
+              ? undefined
+              : String(tg.HealthCheckEnabled)
+          }
+        />
+        <DetailRow label="Protocol" value={tg.HealthCheckProtocol} />
+        <DetailRow label="Path" value={tg.HealthCheckPath} />
+        <DetailRow label="Port" value={tg.HealthCheckPort} />
+        <DetailRow
+          label="Interval (s)"
+          value={tg.HealthCheckIntervalSeconds?.toString()}
+        />
+        <DetailRow
+          label="Timeout (s)"
+          value={tg.HealthCheckTimeoutSeconds?.toString()}
+        />
+        <DetailRow
+          label="Healthy threshold"
+          value={tg.HealthyThresholdCount?.toString()}
+        />
+        <DetailRow
+          label="Unhealthy threshold"
+          value={tg.UnhealthyThresholdCount?.toString()}
+        />
+        <DetailRow
+          label="Matcher (HTTP codes)"
+          value={tg.Matcher?.HttpCode ?? tg.Matcher?.GrpcCode}
+        />
+      </DetailCard.Content>
+    </DetailCard>
   )
 }

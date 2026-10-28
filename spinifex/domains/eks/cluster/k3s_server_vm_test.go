@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -487,6 +489,29 @@ func TestBuildK3sUserData_KonnectivityEnv(t *testing.T) {
 	assert.Contains(t, ud, "EKS_KONNECTIVITY_SERVER_COUNT=3",
 		"agents must learn the apiserver replica count to tunnel to every replica")
 	assert.Contains(t, ud, "EKS_KONNECTIVITY_SANS=10.32.100.4,203.0.113.9,"+in.NLBDNS)
+}
+
+func TestBuildK3sUserData_WebhookReadinessListener(t *testing.T) {
+	t.Parallel()
+	ud := buildK3sUserData(validK3sInput())
+	assert.Contains(t, ud, "EKS_WEBHOOK_READY_ADDR=0.0.0.0:8444",
+		"the webhook must serve /readyz beyond loopback for the NLB health check")
+}
+
+// The env line alone does nothing: the webhook service only passes through
+// the variables its init script exports.
+func TestWebhookInitExportsReadyAddr(t *testing.T) {
+	t.Parallel()
+	b, err := os.ReadFile("../../../../scripts/images/eks-node/eks-token-webhook.initd")
+	require.NoError(t, err)
+	var exported bool
+	for line := range strings.SplitSeq(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) > 1 && f[0] == "export" && slices.Contains(f[1:], "EKS_WEBHOOK_READY_ADDR") {
+			exported = true
+		}
+	}
+	assert.True(t, exported, "eks-token-webhook.initd must export EKS_WEBHOOK_READY_ADDR or the readiness listener never starts")
 }
 
 func TestBuildK3sUserData_KonnServerCountDefaultsToOne(t *testing.T) {

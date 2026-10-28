@@ -551,3 +551,74 @@ func TestGenerateALBConfig_StillWorks(t *testing.T) {
 	assert.NotContains(t, config, "mode tcp")
 	assert.NotContains(t, config, "option tcplog")
 }
+
+func albFailoverConfig(t *testing.T, targets ...Target) string {
+	t.Helper()
+	lb := &LoadBalancerRecord{
+		LoadBalancerArn: "arn:aws:elasticloadbalancing:us-east-1:123:loadbalancer/app/my-alb/lb-abc123",
+		LoadBalancerID:  "lb-abc123",
+		Type:            LoadBalancerTypeApplication,
+	}
+	tgArn := "arn:aws:elasticloadbalancing:us-east-1:123:targetgroup/my-tg/tg-222"
+	listeners := []*ListenerRecord{{
+		ListenerArn:     "arn:lst",
+		LoadBalancerArn: lb.LoadBalancerArn,
+		Protocol:        ProtocolHTTP,
+		Port:            80,
+		DefaultActions:  []ListenerAction{{Type: ActionTypeForward, TargetGroupArn: tgArn}},
+	}}
+	tgByArn := map[string]*TargetGroupRecord{tgArn: {
+		TargetGroupArn: tgArn,
+		HealthCheck:    HealthCheckConfig{Path: "/health", Matcher: "200", IntervalSeconds: 30, UnhealthyThreshold: 2, HealthyThreshold: 5},
+		Targets:        targets,
+	}}
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "10.0.1.5", nil)
+	require.NoError(t, err)
+	return config
+}
+
+func TestGenerateHAProxy_FailOpenBackupCopies(t *testing.T) {
+	t.Parallel()
+	config := albFailoverConfig(t,
+		Target{Id: "i-aaa111", Port: 8080, PrivateIP: "10.0.1.10", HealthState: TargetHealthHealthy},
+		Target{Id: "i-bbb222", Port: 8080, PrivateIP: "10.0.1.11", HealthState: TargetHealthUnhealthy},
+		Target{Id: "i-drain", Port: 8080, PrivateIP: "10.0.1.12", HealthState: TargetHealthDraining},
+		Target{Id: "i-noip", Port: 8080, PrivateIP: "", HealthState: TargetHealthHealthy},
+	)
+
+	assert.Contains(t, config, "    option allbackups\n")
+	// Checked servers are unchanged; the unhealthy one stays so haproxy's own check decides.
+	assert.Contains(t, config, "server srv_i-aaa111 10.0.1.10:8080 check inter 30s fall 2 rise 5\n")
+	assert.Contains(t, config, "server srv_i-bbb222 10.0.1.11:8080 check inter 30s fall 2 rise 5\n")
+	// Backup copies: same address, distinct name, no check.
+	assert.Contains(t, config, "server srv_i-aaa111.fo 10.0.1.10:8080 backup\n")
+	assert.Contains(t, config, "server srv_i-bbb222.fo 10.0.1.11:8080 backup\n")
+	// Draining and IP-less targets get neither a server nor a copy.
+	assert.NotContains(t, config, "10.0.1.12")
+	assert.NotContains(t, config, "srv_i-noip")
+}
+
+func TestGenerateHAProxy_BackupCopyKeepsTLSToHTTPSTargets(t *testing.T) {
+	t.Parallel()
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-abc123", Type: LoadBalancerTypeApplication}
+	tgArn := "arn:tg-https"
+	listeners := []*ListenerRecord{{
+		ListenerArn: "arn:lst", Protocol: ProtocolHTTP, Port: 80,
+		DefaultActions: []ListenerAction{{Type: ActionTypeForward, TargetGroupArn: tgArn}},
+	}}
+	tgByArn := map[string]*TargetGroupRecord{tgArn: {
+		TargetGroupArn: tgArn,
+		Protocol:       ProtocolHTTPS,
+		HealthCheck:    HealthCheckConfig{Path: "/", Matcher: "200", IntervalSeconds: 30, UnhealthyThreshold: 2, HealthyThreshold: 2},
+		Targets:        []Target{{Id: "i-1", Port: 8443, PrivateIP: "10.0.1.10", HealthState: TargetHealthHealthy}},
+	}}
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "10.0.1.5", nil)
+	require.NoError(t, err)
+	assert.Contains(t, config, "server srv_i-1.fo 10.0.1.10:8443 backup ssl verify none\n")
+}
+
+func TestGenerateHAProxy_NoServersNoAllBackups(t *testing.T) {
+	t.Parallel()
+	config := albFailoverConfig(t, Target{Id: "i-drain", Port: 8080, PrivateIP: "10.0.1.12", HealthState: TargetHealthDraining})
+	assert.NotContains(t, config, "allbackups")
+}

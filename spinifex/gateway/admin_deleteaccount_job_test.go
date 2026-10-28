@@ -220,6 +220,7 @@ func TestAdminDeleteAccountDryRunChangesNothing(t *testing.T) {
 // and holding the call open for it would make every timeout-and-retry start a
 // second one.
 func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
@@ -251,6 +252,7 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 // The record outlives the account it describes, so a retry that arrives after
 // the teardown finished is answered from it rather than as a missing account.
 func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	body := deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken)

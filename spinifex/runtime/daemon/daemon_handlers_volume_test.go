@@ -58,6 +58,16 @@ func TestAttachDetachErrorCode(t *testing.T) {
 			want: awserrors.ErrorIncorrectInstanceState,
 		},
 		{
+			name: "ErrHotAttachUnsupported maps to UnsupportedOperation",
+			err:  vm.ErrHotAttachUnsupported,
+			want: awserrors.ErrorUnsupportedOperation,
+		},
+		{
+			name: "wrapped ErrHotAttachUnsupported still matches",
+			err:  fmt.Errorf("%w: instance i-db", vm.ErrHotAttachUnsupported),
+			want: awserrors.ErrorUnsupportedOperation,
+		},
+		{
 			name: "ErrAttachmentLimitExceeded maps to AttachmentLimitExceeded",
 			err:  vm.ErrAttachmentLimitExceeded,
 			want: awserrors.ErrorAttachmentLimitExceeded,

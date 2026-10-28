@@ -115,6 +115,9 @@ CA installed and downloadable, fingerprint matches config, hostnames present in 
 
 Internal and internet-facing ALB and NLB, HTTPS listeners, listener rules, `ModifyListener`, and NLB UDP.
 
+Unhealthy-target routing: an NLB with an HTTP health check on a TCP target group stops sending traffic to a target that fails it while still accepting TCP, sends traffic again once it recovers, and fails open when every target is unhealthy.
+An ALB whose targets all fail their health check keeps serving from them instead of answering 503.
+
 ### `eks`, `ecs`, `ecr` — container services
 
 `eks`: cluster create/delete, access entries, addon delivery, `GetToken`, kubeconfig artifacts, the EBS CSI volume path, and an IRSA pod wired with a projected SA token. `ecs`: clusters, container instances, the three network modes (`awsvpc`, `bridge`, `host`), task-role credentials fetched from the container credentials endpoint, a service behind an ELB, and ENI release on terminate. `ecr`: control-plane CRUD plus a real OCI data plane — docker login/build/push/pull round trips, multi-layer images, and raw blob HTTP.

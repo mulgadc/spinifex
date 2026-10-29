@@ -13,6 +13,7 @@ import { SystemImageRequired } from "@/components/system-image-required"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -20,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { VpcSelectField } from "@/components/vpc-select-field"
 import { isEksSystemImage } from "@/lib/system-managed"
 import { getNameTag } from "@/lib/utils"
@@ -135,8 +137,8 @@ export function CreateClusterPage() {
   const onSubmit = async (data: CreateClusterFormData) => {
     await createCluster.mutateAsync(data)
     await navigate({
-      to: "/eks/list-clusters/$clusterName",
-      params: { clusterName: data.name },
+      to: "/eks/list-clusters",
+      search: { selected: data.name },
     })
   }
 
@@ -302,34 +304,30 @@ export function CreateClusterPage() {
             control={control}
             name="endpointPublicAccess"
             render={({ field }) => (
-              <label className="mt-2 flex items-center gap-2 text-xs">
-                <input
+              <div className="mt-2 flex items-center gap-2 text-xs">
+                <Switch
                   aria-label="Enable public access"
                   checked={field.value}
-                  onChange={(e) => {
-                    field.onChange(e.target.checked)
-                  }}
-                  type="checkbox"
+                  id="cluster-public-access"
+                  onCheckedChange={field.onChange}
                 />
-                Public
-              </label>
+                <Label htmlFor="cluster-public-access">Public</Label>
+              </div>
             )}
           />
           <Controller
             control={control}
             name="endpointPrivateAccess"
             render={({ field }) => (
-              <label className="flex items-center gap-2 text-xs">
-                <input
+              <div className="flex items-center gap-2 text-xs">
+                <Switch
                   aria-label="Enable private access"
                   checked={field.value}
-                  onChange={(e) => {
-                    field.onChange(e.target.checked)
-                  }}
-                  type="checkbox"
+                  id="cluster-private-access"
+                  onCheckedChange={field.onChange}
                 />
-                Private
-              </label>
+                <Label htmlFor="cluster-private-access">Private</Label>
+              </div>
             )}
           />
           <FieldError errors={[errors.endpointPublicAccess]} />
@@ -387,17 +385,17 @@ export function CreateClusterPage() {
             control={control}
             name="bootstrapClusterCreatorAdminPermissions"
             render={({ field }) => (
-              <label className="mt-2 flex items-center gap-2 text-xs">
-                <input
+              <div className="mt-2 flex items-center gap-2 text-xs">
+                <Switch
                   aria-label="Grant the cluster creator admin permissions"
                   checked={field.value}
-                  onChange={(e) => {
-                    field.onChange(e.target.checked)
-                  }}
-                  type="checkbox"
+                  id="cluster-creator-admin"
+                  onCheckedChange={field.onChange}
                 />
-                Grant the cluster creator admin permissions
-              </label>
+                <Label htmlFor="cluster-creator-admin">
+                  Grant the cluster creator admin permissions
+                </Label>
+              </div>
             )}
           />
         </Field>

@@ -1,24 +1,20 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react"
+import type { DBInstance } from "@aws-sdk/client-rds"
+import { fireEvent, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
-
-const { routerState } = vi.hoisted(() => ({
-  routerState: { navigate: vi.fn() },
-}))
-
-const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(mockSend)
+  return mockAwsClients(vi.fn().mockResolvedValue({}))
 })
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
 
-  return await mockRouter(importOriginal, { navigate: routerState.navigate })
+  return await mockRouter(importOriginal)
 })
 
 import { DBInstancesListPage } from "./db-instances-list-page"
@@ -34,16 +30,26 @@ const AVAILABLE_INSTANCE = {
   Endpoint: { Address: "orders-db.rds.internal", Port: 5432 },
 }
 
-function seed(instances: unknown[]) {
-  const qc = createTestQueryClient()
-  qc.setQueryData(["rds", "dbInstances"], { DBInstances: instances })
+function renderList(
+  instances: DBInstance[],
+  search: Partial<PanelSearch> = {},
+  onSearchChange = vi.fn(),
+) {
+  renderWithClient(
+    <DBInstancesListPage
+      instances={instances}
+      onSearchChange={onSearchChange}
+      search={{ ...CLOSED_PANEL, ...search }}
+    />,
+    createTestQueryClient(),
+  )
 
-  return qc
+  return onSearchChange
 }
 
 describe("DBInstancesListPage", () => {
   it("renders a DB instance row", () => {
-    renderWithClient(<DBInstancesListPage />, seed([AVAILABLE_INSTANCE]))
+    renderList([AVAILABLE_INSTANCE])
     expect(screen.getByRole("link", { name: "orders-db" })).toBeInTheDocument()
     expect(screen.getByText("postgres 18")).toBeInTheDocument()
     expect(screen.getByText("db.t3.micro")).toBeInTheDocument()
@@ -53,60 +59,38 @@ describe("DBInstancesListPage", () => {
   })
 
   it("shows the empty state with no instances", () => {
-    renderWithClient(<DBInstancesListPage />, seed([]))
+    renderList([])
     expect(screen.getByText("No DB instances found.")).toBeInTheDocument()
   })
 
-  it("enables only the actions an available instance permits", () => {
-    renderWithClient(<DBInstancesListPage />, seed([AVAILABLE_INSTANCE]))
-    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled()
-    expect(screen.getByRole("button", { name: "Reboot" })).toBeEnabled()
-    expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled()
-  })
-
-  it("enables only the actions a stopped instance permits", () => {
-    renderWithClient(
-      <DBInstancesListPage />,
-      seed([{ ...AVAILABLE_INSTANCE, DBInstanceStatus: "stopped" }]),
-    )
-    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled()
-    expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Reboot" })).toBeDisabled()
-  })
-
-  it("offers no action while the instance is creating", () => {
-    renderWithClient(
-      <DBInstancesListPage />,
-      seed([{ ...AVAILABLE_INSTANCE, DBInstanceStatus: "creating" }]),
-    )
-    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Reboot" })).toBeDisabled()
-  })
-
-  it("sends StopDBInstance when Stop is clicked", async () => {
-    renderWithClient(<DBInstancesListPage />, seed([AVAILABLE_INSTANCE]))
-    fireEvent.click(screen.getByRole("button", { name: "Stop" }))
-    await waitFor(() => {
-      expect(mockSend).toHaveBeenCalled()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      DBInstanceIdentifier: "orders-db",
+  it("selects the instance a row click opens", () => {
+    const onSearchChange = renderList([AVAILABLE_INSTANCE])
+    fireEvent.click(screen.getByText("db.t3.micro"))
+    expect(onSearchChange).toHaveBeenCalledWith({
+      ...CLOSED_PANEL,
+      selected: "orders-db",
     })
   })
 
-  it("opens the delete dialog for a row", () => {
-    renderWithClient(<DBInstancesListPage />, seed([AVAILABLE_INSTANCE]))
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
-    expect(screen.getByText(/tears down "orders-db"/)).toBeInTheDocument()
+  it("renders the selected instance's details", () => {
+    renderList([AVAILABLE_INSTANCE], { selected: "orders-db" })
+    expect(
+      screen.getByRole("region", { name: "Database details" }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Stop/u })).toBeEnabled()
   })
 
-  it("navigates to the create page from the heading action", async () => {
-    renderWithClient(<DBInstancesListPage />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Create Database" }))
-    expect(routerState.navigate).toHaveBeenCalledWith({
-      to: "/rds/create-db-instance",
-    })
+  it("opens no panel for an instance that is not in the list", () => {
+    renderList([AVAILABLE_INSTANCE], { selected: "gone-db" })
+    expect(
+      screen.queryByRole("region", { name: "Database details" }),
+    ).toBeNull()
+  })
+
+  it("links the heading action to the create page", () => {
+    renderList([])
+    expect(
+      screen.getByRole("link", { name: "Create database" }),
+    ).toHaveAttribute("href", "/rds/create-db-instance")
   })
 })

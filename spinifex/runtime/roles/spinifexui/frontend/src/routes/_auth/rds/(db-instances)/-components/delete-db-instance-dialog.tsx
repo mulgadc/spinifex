@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Field, FieldDescription, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import { useDeleteDBInstance } from "@/mutations/rds"
 import { dbSnapshotIdentifierField, suggestedIdentifier } from "@/types/rds"
 
@@ -122,22 +123,25 @@ export function DeleteDBInstanceDialog({
           </div>
         ) : (
           <div className="space-y-4">
-            <label className="flex items-start gap-2 text-sm">
-              <input
-                checked={!skipFinalSnapshot}
-                onChange={(e) => {
-                  setSkipFinalSnapshot(!e.target.checked)
-                }}
-                type="checkbox"
-              />
-              <span>
+            <div className="flex items-start gap-2 text-sm">
+              <span className="mt-0.5 flex">
+                <Switch
+                  aria-label="Take a final snapshot before deleting"
+                  checked={!skipFinalSnapshot}
+                  id="takeFinalSnapshot"
+                  onCheckedChange={(checked) => {
+                    setSkipFinalSnapshot(!checked)
+                  }}
+                />
+              </span>
+              <label htmlFor="takeFinalSnapshot">
                 Take a final snapshot before deleting
                 <span className="mt-1 block text-xs text-muted-foreground">
                   A final snapshot retains the underlying data volume until that
                   snapshot is itself deleted.
                 </span>
-              </span>
-            </label>
+              </label>
+            </div>
 
             {skipFinalSnapshot ? (
               <Field>

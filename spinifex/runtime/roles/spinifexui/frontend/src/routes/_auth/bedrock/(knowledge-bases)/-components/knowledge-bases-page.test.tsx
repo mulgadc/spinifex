@@ -1,6 +1,7 @@
 import type { KnowledgeBaseSummary } from "@aws-sdk/client-bedrock-agent"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
@@ -9,7 +10,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal)
 })
 
-import { knowledgeBasesQueryOptions } from "@/queries/bedrockAgent"
+import { CLOSED_PANEL } from "@/lib/panel-search"
 
 import { KnowledgeBasesPage } from "./knowledge-bases-page"
 
@@ -18,16 +19,19 @@ function renderSeeded(knowledgeBaseSummaries: KnowledgeBaseSummary[]) {
     defaultOptions: { queries: { retry: false } },
   })
 
-  queryClient.setQueryData(knowledgeBasesQueryOptions.queryKey, {
-    $metadata: {},
-    knowledgeBaseSummaries,
-  })
+  const onSearchChange = vi.fn()
 
-  return render(
+  render(
     <QueryClientProvider client={queryClient}>
-      <KnowledgeBasesPage />
+      <KnowledgeBasesPage
+        knowledgeBases={knowledgeBaseSummaries}
+        onSearchChange={onSearchChange}
+        search={CLOSED_PANEL}
+      />
     </QueryClientProvider>,
   )
+
+  return onSearchChange
 }
 
 const KB = {
@@ -38,23 +42,18 @@ const KB = {
 } satisfies KnowledgeBaseSummary
 
 describe("KnowledgeBasesPage", () => {
-  it("renders knowledge base cards sorted by name", () => {
+  it("lists knowledge bases sorted by name", () => {
     renderSeeded([
       { ...KB, knowledgeBaseId: "kb-2", name: "zebra" },
       { ...KB, knowledgeBaseId: "kb-1", name: "alpha" },
     ])
 
-    const links = screen
+    const names = screen
       .getAllByRole("link")
-      .filter(
-        (l) =>
-          l.getAttribute("href") !== "/bedrock/list-knowledge-bases/create",
-      )
+      .map((link) => link.textContent)
+      .filter((text) => text !== "Create knowledge base")
 
-    expect(links.map((l) => l.getAttribute("href"))).toStrictEqual([
-      "/bedrock/list-knowledge-bases/kb-1",
-      "/bedrock/list-knowledge-bases/kb-2",
-    ])
+    expect(names).toStrictEqual(["alpha", "zebra"])
   })
 
   it("shows empty state when no knowledge bases", () => {
@@ -62,12 +61,16 @@ describe("KnowledgeBasesPage", () => {
     expect(screen.getByText("No knowledge bases found.")).toBeInTheDocument()
   })
 
-  it("links each knowledge base to its detail route", () => {
-    renderSeeded([KB])
-    expect(screen.getByRole("link", { name: /docs-kb/ })).toHaveAttribute(
-      "href",
-      "/bedrock/list-knowledge-bases/kb-1",
-    )
+  it("opens a knowledge base's panel from its row", async () => {
+    const onSearchChange = renderSeeded([KB])
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText("kb-1"))
+
+    expect(onSearchChange).toHaveBeenCalledWith({
+      ...CLOSED_PANEL,
+      selected: "kb-1",
+    })
   })
 
   it("shows the knowledge base id and status", () => {

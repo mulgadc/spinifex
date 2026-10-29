@@ -1,8 +1,8 @@
 import type { SecurityGroup, Subnet } from "@aws-sdk/client-ec2"
-import type { UseFormRegisterReturn } from "react-hook-form"
 
 import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
+import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -10,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { arnResourceId } from "@/lib/utils"
 
 interface TaskDefinitionFieldProps {
@@ -54,7 +55,8 @@ export function TaskDefinitionField({
 }
 
 interface AwsvpcNetworkFieldsProps {
-  assignPublicIp: UseFormRegisterReturn
+  assignPublicIp: boolean
+  onAssignPublicIpChange: (next: boolean) => void
   onSecurityGroupsChange: (next: string[]) => void
   onSubnetsChange: (next: string[]) => void
   securityGroups: SecurityGroup[]
@@ -65,6 +67,7 @@ interface AwsvpcNetworkFieldsProps {
 
 export function AwsvpcNetworkFields({
   assignPublicIp,
+  onAssignPublicIpChange,
   onSecurityGroupsChange,
   onSubnetsChange,
   securityGroups,
@@ -117,10 +120,14 @@ export function AwsvpcNetworkFields({
           />
         </div>
       </div>
-      <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" {...assignPublicIp} />
-        <span>Assign public IP</span>
-      </label>
+      <div className="flex items-center gap-2">
+        <Switch
+          checked={assignPublicIp}
+          id="assignPublicIp"
+          onCheckedChange={onAssignPublicIpChange}
+        />
+        <Label htmlFor="assignPublicIp">Assign public IP</Label>
+      </div>
     </div>
   )
 }

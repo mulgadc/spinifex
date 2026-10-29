@@ -1,16 +1,24 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { ListCard } from "@/components/list-card"
-import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import {
+  CLOSED_PANEL,
+  type PanelSearch,
+  panelSearchFields,
+} from "@/lib/panel-search"
 import { ec2LaunchTemplatesQueryOptions } from "@/queries/ec2"
+
+import { LaunchTemplatesPage } from "../-components/launch-templates-page"
+
+const searchSchema = z.object(panelSearchFields)
 
 export const Route = createFileRoute(
   "/_auth/ec2/(launch-templates)/describe-launch-templates/",
 )({
+  validateSearch: searchSchema,
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...ec2LaunchTemplatesQueryOptions,
@@ -29,38 +37,22 @@ export const Route = createFileRoute(
 
 function LaunchTemplates() {
   const { data } = useSuspenseQuery(ec2LaunchTemplatesQueryOptions)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
 
-  const launchTemplates = data.LaunchTemplates ?? []
+  // Opening or closing a panel adds a history entry, so Back closes it.
+  function onSearchChange(next: Partial<PanelSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next || "create" in next),
+    })
+  }
 
   return (
-    <>
-      <PageHeading
-        actions={
-          <Link to="/ec2/create-launch-template">
-            <Button>Create Launch Template</Button>
-          </Link>
-        }
-        title="Launch Templates"
-      />
-
-      <ResourceList
-        empty="No launch templates found."
-        getKey={(lt) => lt.LaunchTemplateId}
-        items={launchTemplates}
-        renderItem={(lt, id) => (
-          <ListCard
-            badge={
-              <Badge variant="secondary">
-                default v{lt.DefaultVersionNumber}
-              </Badge>
-            }
-            params={{ id }}
-            subtitle={`${id} • latest v${lt.LatestVersionNumber}`}
-            title={lt.LaunchTemplateName ?? id}
-            to="/ec2/describe-launch-templates/$id"
-          />
-        )}
-      />
-    </>
+    <LaunchTemplatesPage
+      launchTemplates={data.LaunchTemplates ?? []}
+      onSearchChange={onSearchChange}
+      search={search}
+    />
   )
 }

@@ -235,9 +235,12 @@ describe("CreateDBInstancePage fields", () => {
     "renders %s as a disabled control with a note",
     (label) => {
       renderForm()
-      const control = screen.getByText(label).closest("label")
-      expect(control?.querySelector("input")).toBeDisabled()
-      expect(control).toHaveTextContent("Not available on Spinifex")
+      const toggle = screen.getByRole("switch", { name: label })
+      expect(toggle).toHaveAttribute("aria-disabled", "true")
+      expect(toggle).not.toBeChecked()
+      expect(toggle.closest("fieldset")).toHaveTextContent(
+        "Not available on Spinifex",
+      )
     },
   )
 
@@ -259,14 +262,21 @@ describe("CreateDBInstancePage fields", () => {
     expect(screen.queryByLabelText(new RegExp(label, "i"))).toBeNull()
   })
 
-  it("leaves deletion protection and security groups as the only live checkboxes", () => {
+  it("leaves deletion protection as the only live switch", () => {
     renderForm()
 
     const enabled = screen
-      .getAllByRole("checkbox")
-      .filter((box) => !(box as HTMLInputElement).disabled)
+      .getAllByRole("switch")
+      .filter((toggle) => toggle.getAttribute("aria-disabled") !== "true")
 
-    expect(enabled).toHaveLength(2)
+    expect(
+      enabled.map((toggle) => toggle.getAttribute("aria-label")),
+    ).toStrictEqual(["Enable deletion protection"])
+  })
+
+  it("keeps security groups as checkboxes, since they select from a list", () => {
+    renderForm()
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1)
   })
 
   it("offers security groups only from the default placement VPC", () => {

@@ -1,12 +1,10 @@
 import type { TargetGroup } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import { CLOSED_PANEL } from "@/lib/panel-search"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
-
-const { routerState } = vi.hoisted(() => ({
-  routerState: { navigate: vi.fn() },
-}))
 
 const sdk = await vi.hoisted(async () => {
   const { createFakeSdk } = await import("@/test/fake-sdk")
@@ -23,7 +21,7 @@ vi.mock("@/lib/awsClient", async () => {
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
 
-  return await mockRouter(importOriginal, { navigate: routerState.navigate })
+  return await mockRouter(importOriginal)
 })
 
 import { DescribeTargetGroupsPage } from "../-components/describe-target-groups-page"
@@ -47,52 +45,65 @@ const TGS: TargetGroup[] = [
   },
 ]
 
+function renderPage(targetGroups: TargetGroup[], onSearchChange = vi.fn()) {
+  renderWithClient(
+    <DescribeTargetGroupsPage
+      onSearchChange={onSearchChange}
+      search={CLOSED_PANEL}
+      targetGroups={targetGroups}
+    />,
+    createTestQueryClient(),
+  )
+
+  return onSearchChange
+}
+
 describe("describe-target-groups list route", () => {
   beforeEach(() => {
     sdk.reset()
+    sdk.setHandler(
+      "DescribeTargetHealthCommand",
+      (input: { TargetGroupArn: string }) =>
+        input.TargetGroupArn === "arn:tg:1"
+          ? {
+              TargetHealthDescriptions: [
+                { TargetHealth: { State: "healthy" } },
+                { TargetHealth: { State: "unhealthy" } },
+              ],
+            }
+          : { TargetHealthDescriptions: [] },
+    )
   })
 
   it("renders target-group rows with health summaries from the mocked SDK", async () => {
-    sdk.setHandler(
-      "DescribeTargetHealthCommand",
-      (input: { TargetGroupArn: string }) => {
-        const arn = input.TargetGroupArn
-
-        if (arn === "arn:tg:1") {
-          return {
-            TargetHealthDescriptions: [
-              { TargetHealth: { State: "healthy" } },
-              { TargetHealth: { State: "unhealthy" } },
-            ],
-          }
-        }
-
-        return { TargetHealthDescriptions: [] }
-      },
-    )
-
-    const qc = createTestQueryClient()
-    qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: TGS })
-
-    renderWithClient(<DescribeTargetGroupsPage />, qc)
+    renderPage(TGS)
 
     expect(screen.getByText("tg-one")).toBeInTheDocument()
     expect(screen.getByText("tg-two")).toBeInTheDocument()
     expect(
-      screen.getByRole("button", { name: "Create Target Group" }),
-    ).toBeInTheDocument()
+      screen.getByRole("link", { name: "Create target group" }),
+    ).toHaveAttribute("href", "/ec2/create-target-group")
 
     await waitFor(() => {
       expect(screen.getByText("1 healthy, 1 unhealthy")).toBeInTheDocument()
     })
   })
 
+  it("selects a target group by its ARN when its row is clicked", async () => {
+    const user = userEvent.setup()
+    const onSearchChange = renderPage(TGS)
+
+    await user.click(screen.getByText("8080"))
+
+    expect(onSearchChange).toHaveBeenCalledWith({
+      ...CLOSED_PANEL,
+      selected: "arn:tg:2",
+    })
+  })
+
   it("shows empty state when there are no target groups", () => {
-    const qc = createTestQueryClient()
-    qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [] })
+    renderPage([])
 
-    renderWithClient(<DescribeTargetGroupsPage />, qc)
-
-    expect(screen.getByText("No target groups found.")).toBeInTheDocument()
+    expect(screen.getByText("No target groups yet.")).toBeInTheDocument()
   })
 })

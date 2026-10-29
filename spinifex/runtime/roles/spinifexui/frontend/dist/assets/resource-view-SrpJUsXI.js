@@ -1,0 +1,1 @@
+import{D as e,O as t}from"./utils-BPvjgdb1.js";import{s as n}from"./detail-panel-BfPm0i2m.js";var r=e(),i=t();function a(e){let t=(0,r.c)(3),{children:a,panel:o}=e,s=n();if(!o)return a;if(!s)return o;let c;return t[0]!==a||t[1]!==o?(c=(0,i.jsxs)(i.Fragment,{children:[a,o]}),t[0]=a,t[1]=o,t[2]=c):c=t[2],c}export{a as t};

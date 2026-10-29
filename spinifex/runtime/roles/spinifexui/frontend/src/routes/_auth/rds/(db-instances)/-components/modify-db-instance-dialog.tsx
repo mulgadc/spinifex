@@ -16,6 +16,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Field, FieldTitle } from "@/components/ui/field"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { useModifyDBInstance } from "@/mutations/rds"
 import { ec2SecurityGroupsQueryOptions } from "@/queries/ec2"
 import {
@@ -280,19 +282,17 @@ export function ModifyDBInstanceDialog({
               control={control}
               name="applyImmediately"
               render={({ field }) => (
-                <label className="flex items-center gap-2 text-xs">
-                  <input
+                <div className="flex items-center gap-2 text-xs">
+                  <Switch
                     aria-label="Apply immediately"
                     checked={field.value}
-                    onChange={(e) => {
-                      field.onChange(e.target.checked)
-                    }}
-                    type="checkbox"
+                    id="applyImmediately"
+                    onCheckedChange={field.onChange}
                   />
-                  <span>
+                  <Label htmlFor="applyImmediately">
                     Apply now instead of waiting for the maintenance window
-                  </span>
-                </label>
+                  </Label>
+                </div>
               )}
             />
           </Field>

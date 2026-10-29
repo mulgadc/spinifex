@@ -60,6 +60,7 @@ export function RunTaskPage({ cluster }: { cluster: string }) {
 
   const selectedSubnets = useWatch({ control, name: "subnets" })
   const selectedSgs = useWatch({ control, name: "securityGroups" })
+  const assignPublicIp = useWatch({ control, name: "assignPublicIp" })
 
   function done() {
     void navigate({
@@ -127,7 +128,10 @@ export function RunTaskPage({ cluster }: { cluster: string }) {
 
         {awsvpc && (
           <AwsvpcNetworkFields
-            assignPublicIp={field("assignPublicIp")}
+            assignPublicIp={assignPublicIp}
+            onAssignPublicIpChange={(next) => {
+              setValue("assignPublicIp", next)
+            }}
             onSecurityGroupsChange={(next) => {
               setValue("securityGroups", next, { shouldValidate: true })
             }}

@@ -107,16 +107,21 @@ export function ControlsSection() {
       </Specimen>
       <Specimen label="Choices">
         <div className="flex items-center gap-2">
-          <Checkbox defaultChecked id="design-check" />
-          <Label htmlFor="design-check">Enable DNS hostnames</Label>
-        </div>
-        <div className="flex items-center gap-2">
-          <Checkbox disabled id="design-check-disabled" />
-          <Label htmlFor="design-check-disabled">Disabled</Label>
-        </div>
-        <div className="flex items-center gap-2">
           <Switch defaultChecked id="design-switch" />
-          <Label htmlFor="design-switch">Auto-assign public IP</Label>
+          <Label htmlFor="design-switch">Enable DNS hostnames</Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <Switch id="design-switch-off" />
+          <Label htmlFor="design-switch-off">Auto-assign public IP</Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <Switch disabled id="design-switch-disabled" />
+          <Label htmlFor="design-switch-disabled">Disabled</Label>
+        </div>
+        {/* A checkbox picks items from a list; a setting is a switch. */}
+        <div className="flex items-center gap-2">
+          <Checkbox defaultChecked id="design-check" />
+          <Label htmlFor="design-check">sg-0a1b2c3d (web)</Label>
         </div>
         <ToggleGroup defaultValue={["1D"]} variant="outline">
           {TIME_RANGES.map((range) => (

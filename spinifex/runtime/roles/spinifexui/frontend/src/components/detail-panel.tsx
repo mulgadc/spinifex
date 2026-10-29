@@ -4,12 +4,14 @@ import {
   Check,
   ChevronDown,
   Copy,
+  LoaderCircle,
   type LucideIcon,
   X,
 } from "lucide-react"
-import { type ReactNode, useEffect, useRef } from "react"
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 
 import { ErrorBanner } from "@/components/error-banner"
+import { InfoTip } from "@/components/info-tip"
 import { Button } from "@/components/ui/button"
 import {
   Collapsible,
@@ -89,6 +91,9 @@ function isPanelTab(value: unknown): value is PanelTab {
 const LIST_CONTROLS =
   "a, button, input, select, textarea, label, tr, [role=checkbox], [role=combobox]"
 
+// Faster than the slide in, so dismissing never feels like waiting.
+const CLOSE_MS = 150
+
 // The UniFi-style side panel: over the right of its list from lg up, and the
 // whole page below that, where there is no room to share.
 export function DetailPanel({
@@ -109,6 +114,19 @@ export function DetailPanel({
   const wideLayout = useWideLayout()
   const wide = layout === "auto" && wideLayout
   const sectionRef = useRef<HTMLElement>(null)
+  const [closing, setClosing] = useState(false)
+
+  // The panel slides out the way it slid in, then the route drops it.
+  const close = useCallback(() => {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)")
+
+    if (!wide || reduced.matches) {
+      onClose()
+    } else {
+      setClosing(true)
+      window.setTimeout(onClose, CLOSE_MS)
+    }
+  }, [wide, onClose])
 
   // Escape closes the panel, unless it is closing a dialog or menu over it. A
   // page is somewhere the user navigated to, so it ignores Escape.
@@ -124,7 +142,7 @@ export function DetailPanel({
         !event.defaultPrevented &&
         !overlay
       ) {
-        onClose()
+        close()
       }
     }
 
@@ -133,7 +151,7 @@ export function DetailPanel({
     return () => {
       document.removeEventListener("keydown", onKeyDown)
     }
-  }, [layout, onClose])
+  }, [layout, close])
 
   useEffect(() => {
     function onClick({ target }: MouseEvent) {
@@ -144,7 +162,7 @@ export function DetailPanel({
         !sectionRef.current?.contains(target) &&
         !target.closest(LIST_CONTROLS)
       ) {
-        onClose()
+        close()
       }
     }
 
@@ -153,40 +171,129 @@ export function DetailPanel({
     return () => {
       document.removeEventListener("click", onClick)
     }
-  }, [wide, onClose])
+  }, [wide, close])
 
   const current = tabs?.some((spec) => spec.id === tab) ? tab : tabs?.[0]?.id
+
+  const body = tabs ? (
+    <Tabs
+      className="min-h-0 flex-1"
+      onValueChange={(value) => {
+        if (isPanelTab(value)) {
+          onTabChange?.(value)
+        }
+      }}
+      value={current}
+    >
+      {wide ? (
+        <TabsList variant="icon">
+          {tabs.map((spec) => (
+            <Tooltip key={spec.id}>
+              <TooltipTrigger
+                render={
+                  <TabsTab
+                    aria-label={spec.label}
+                    value={spec.id}
+                    variant="icon"
+                  />
+                }
+              >
+                <spec.icon />
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{spec.label}</TooltipContent>
+            </Tooltip>
+          ))}
+        </TabsList>
+      ) : (
+        <div className="overflow-x-auto">
+          <TabsList>
+            {tabs.map((spec) => (
+              <TabsTab key={spec.id} value={spec.id}>
+                {spec.label}
+              </TabsTab>
+            ))}
+          </TabsList>
+        </div>
+      )}
+      {tabs.map((spec) => (
+        <TabsPanel
+          className="min-h-0 flex-1 data-[layout=panel]:overflow-y-auto"
+          data-layout={wide ? "panel" : "page"}
+          key={spec.id}
+          value={spec.id}
+        >
+          <div className="flex flex-col gap-3 px-3 pb-3 in-data-[layout=page]:px-0">
+            <PanelBoundary resetKey={spec.id}>{spec.content}</PanelBoundary>
+          </div>
+        </TabsPanel>
+      ))}
+    </Tabs>
+  ) : (
+    <div className="min-h-0 flex-1 overflow-y-auto p-4 in-data-[layout=page]:px-0">
+      <PanelBoundary resetKey={label}>{children}</PanelBoundary>
+    </div>
+  )
+
+  if (!wide) {
+    // The resource's own page: a standard heading, text tabs, one column.
+    return (
+      <section
+        aria-label={label}
+        className="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-4"
+        data-layout="page"
+        data-size={size}
+        ref={sectionRef}
+      >
+        <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+          <div className="flex min-w-0 items-start gap-2">
+            <Button
+              aria-label={closeLabel}
+              className="mt-1"
+              onClick={onClose}
+              size="icon-sm"
+              variant="ghost"
+            >
+              <ArrowLeft />
+            </Button>
+            <div className="min-w-0">
+              <h1 className="text-2xl font-semibold tracking-tight break-words">
+                {title}
+              </h1>
+              {subtitle && (
+                <p className="mt-1 font-mono text-xs text-muted-foreground">
+                  {subtitle}
+                </p>
+              )}
+            </div>
+            {fullPage && <span className="mt-1">{fullPage}</span>}
+          </div>
+          {summary && (
+            <div className="flex flex-wrap items-center gap-3">{summary}</div>
+          )}
+        </header>
+        {body}
+      </section>
+    )
+  }
 
   return (
     <section
       aria-label={label}
-      className="flex min-w-0 flex-col data-[layout=panel]:fixed data-[layout=panel]:top-12 data-[layout=panel]:right-0 data-[layout=panel]:bottom-0 data-[layout=panel]:z-40 data-[layout=panel]:w-110 data-[layout=panel]:border-l data-[layout=panel]:bg-card data-[layout=panel]:transition data-[layout=panel]:duration-200 data-[layout=panel]:ease-out data-[size=wide]:data-[layout=panel]:w-150 motion-reduce:transition-none data-[layout=panel]:xl:w-120 data-[size=wide]:data-[layout=panel]:xl:w-170 data-[layout=panel]:starting:translate-x-full"
-      data-layout={wide ? "panel" : "page"}
+      className="fixed top-12 right-0 bottom-0 z-40 flex w-110 min-w-0 flex-col border-l bg-card transition duration-200 ease-out data-closing:translate-x-full data-closing:duration-150 data-closing:ease-in data-[size=wide]:w-150 motion-reduce:transition-none xl:w-120 data-[size=wide]:xl:w-170 starting:translate-x-full"
+      data-closing={closing ? "" : undefined}
+      data-layout="panel"
       data-size={size}
       ref={sectionRef}
     >
-      {wide && (
-        // The shade on the list's side, so the panel reads as lying over it.
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 right-full w-10 bg-linear-to-l from-black/10 to-transparent dark:from-black/40"
-        />
-      )}
+      {/* The shade on the list's side, so the panel reads as lying over it. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-y-0 right-full w-10 bg-linear-to-l from-black/10 to-transparent dark:from-black/40"
+      />
       <header className="flex items-center gap-2 border-b px-2 py-2">
-        {wide ? (
-          <span className="flex size-8 shrink-0 items-center justify-center">
-            {fullPage}
-          </span>
-        ) : (
-          <Button
-            aria-label={closeLabel}
-            onClick={onClose}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <ArrowLeft />
-          </Button>
-        )}
+        <span className="flex size-8 shrink-0 items-center justify-center">
+          {fullPage}
+        </span>
         <div className="min-w-0 flex-1 text-center">
           <h2 className="truncate text-sm font-semibold">{title}</h2>
           {subtitle && (
@@ -195,20 +302,14 @@ export function DetailPanel({
             </p>
           )}
         </div>
-        {wide ? (
-          <Button
-            aria-label={closeLabel}
-            onClick={onClose}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <X />
-          </Button>
-        ) : (
-          <span className="flex size-8 shrink-0 items-center justify-center">
-            {fullPage}
-          </span>
-        )}
+        <Button
+          aria-label={closeLabel}
+          onClick={close}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <X />
+        </Button>
       </header>
 
       {summary && (
@@ -217,51 +318,7 @@ export function DetailPanel({
         </div>
       )}
 
-      {tabs ? (
-        <Tabs
-          className="min-h-0 flex-1"
-          onValueChange={(value) => {
-            if (isPanelTab(value)) {
-              onTabChange?.(value)
-            }
-          }}
-          value={current}
-        >
-          <TabsList variant="icon">
-            {tabs.map((spec) => (
-              <Tooltip key={spec.id}>
-                <TooltipTrigger
-                  render={
-                    <TabsTab
-                      aria-label={spec.label}
-                      value={spec.id}
-                      variant="icon"
-                    />
-                  }
-                >
-                  <spec.icon />
-                </TooltipTrigger>
-                <TooltipContent side="bottom">{spec.label}</TooltipContent>
-              </Tooltip>
-            ))}
-          </TabsList>
-          {tabs.map((spec) => (
-            <TabsPanel
-              className="min-h-0 flex-1 overflow-y-auto"
-              key={spec.id}
-              value={spec.id}
-            >
-              <div className="flex flex-col gap-3 px-3 pb-3 in-data-[layout=page]:lg:grid in-data-[layout=page]:lg:grid-cols-2 in-data-[layout=page]:lg:items-start">
-                <PanelBoundary resetKey={spec.id}>{spec.content}</PanelBoundary>
-              </div>
-            </TabsPanel>
-          ))}
-        </Tabs>
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          <PanelBoundary resetKey={label}>{children}</PanelBoundary>
-        </div>
-      )}
+      {body}
     </section>
   )
 }
@@ -270,8 +327,6 @@ interface PanelSectionProps {
   title: string
   children: ReactNode
   defaultOpen?: boolean
-  // Takes both columns when the panel is laid out as a page.
-  span?: boolean
 }
 
 // A folding card inside the panel, as UniFi groups Services, Manage, History.
@@ -279,13 +334,9 @@ export function PanelSection({
   title,
   children,
   defaultOpen = true,
-  span = false,
 }: PanelSectionProps) {
   return (
-    <div
-      className="rounded-lg border bg-background/40 data-span:in-data-[layout=page]:lg:col-span-2"
-      data-span={span ? "" : undefined}
-    >
+    <div className="rounded-lg border bg-background/40">
       <Collapsible defaultOpen={defaultOpen}>
         <CollapsibleTrigger variant="section">
           {title}
@@ -311,6 +362,8 @@ interface PanelFieldProps {
   mono?: boolean
   // The value a copy button puts on the clipboard, for IDs and addresses.
   copy?: string
+  // An (i) beside the label, for a value that needs context to be read.
+  info?: ReactNode
 }
 
 function CopyValue({ label, value }: { label: string; value: string }) {
@@ -335,10 +388,14 @@ export function PanelField({
   children,
   mono = false,
   copy,
+  info,
 }: PanelFieldProps) {
   return (
     <div className="flex items-center justify-between gap-4 py-1.5">
-      <dt className="shrink-0 text-muted-foreground">{label}</dt>
+      <dt className="flex shrink-0 items-center gap-1 text-muted-foreground">
+        {label}
+        {info && <InfoTip label={label}>{info}</InfoTip>}
+      </dt>
       <dd
         className="flex min-w-0 items-center justify-end gap-1 text-right data-mono:font-mono data-mono:text-xs"
         data-mono={mono ? "" : undefined}
@@ -371,5 +428,18 @@ export function PanelTags({ tags }: PanelTagsProps) {
         <p className="text-sm text-muted-foreground">No tags.</p>
       )}
     </PanelSection>
+  )
+}
+
+// What a panel shows while its form loads: a spinner on the panel's own
+// background, so nothing flashes a grey block before the content.
+export function PanelSpinner() {
+  return (
+    <output
+      aria-label="Loading"
+      className="flex min-h-64 flex-1 items-center justify-center"
+    >
+      <LoaderCircle className="size-6 animate-spin text-muted-foreground motion-reduce:animate-none" />
+    </output>
   )
 }

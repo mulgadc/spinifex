@@ -29,6 +29,8 @@ All colours are OKLCH and come from mulgadc.com, so product and site match.
 | `brand` | Brand orange `#EE4B12`, for the logo and decoration only. It fails text contrast, so it never carries text. |
 | `primary` | Darker orange in light, brighter orange in dark: primary button, link, focus ring, active tab. |
 | `sidebar` | The navigation column. |
+| `console`, `console-foreground` | A serial console log. Light grey on the light theme and near-black on the dark one, so the log follows the theme. |
+| `console-stamp`, `console-muted`, `console-ok`, `console-fail` | The log's tones: the kernel timestamp (brand yellow in dark, a darker amber in light), the subsystem or device that logged the line, and systemd's `[ OK ]` and `[FAILED]` markers. |
 
 ### Status
 
@@ -111,6 +113,13 @@ The Go console serves `script-src 'self'; style-src 'self'`.
 
 `src/components/ui/` holds the shadcn primitives on Base UI.
 Added in Phase 1: breadcrumb, checkbox, command (`cmdk`), dialog, hover-card, popover, resizable (`react-resizable-panels`), scroll-area, slider, switch, table, toggle and toggle-group.
+`button-group` joins buttons edge to edge, as the instance power buttons are.
+
+A disabled control stays visible and shows `cursor: not-allowed`, so it says why it does nothing rather than vanishing.
+An on/off setting is a `Switch`, orange when on; a `Checkbox` only picks items from a list, such as table rows, subnets or security groups.
+
+`InfoTip` (`src/components/info-tip.tsx`) is UniFi's (i): a small button beside a label that opens a short explanation on hover or click, with `InfoList` for the facts inside it.
+`PanelField` takes it through `info`, so the login user names the image's distribution and the image names its AMI details.
 
 Base UI marks orientation with `data-orientation`, so `styles.css` defines the `data-horizontal` and `data-vertical` variants the shadcn sources expect.
 
@@ -172,10 +181,13 @@ Modelled on UniFi's console: a click on a row opens the resource in a panel besi
 
 - **URL.** The panel is search state on the list route: `selected=<id>`, `tab=overview|monitoring|settings`, and `create=true`. Defaults are stripped, so a closed panel leaves the plain list address. Opening or closing a panel pushes a history entry, so Back closes it; a tab or filter change replaces the entry.
 - **Layout.** From `lg` (1024px) the panel is fixed to the right edge, full height below the header, flush with no outer margin, and it slides in over the list. The list keeps its width and columns underneath, so nothing reflows when a panel opens, and a soft gradient on the panel's left edge reads as the panel lying on top. Below `lg` there is no room to share, so the panel replaces the list as a full page with a back arrow. `useWideLayout` decides, through `matchMedia`.
-- **`DetailPanel`.** A header with the resource's own page (left) and close (right), the title and its ID, a summary of state and quick actions, then icon tabs with tooltips. Escape closes it unless a dialog or menu is open over it. Each tab, and a create form, sits in its own error boundary, so a failed query shows in the panel and the list keeps working.
+- **`DetailPanel`.** A header with the resource's own page (left) and close (right), the title and its ID, a summary of state and quick actions, then icon tabs with tooltips. Escape closes it unless a dialog or menu is open over it. Closing slides the panel out over 150ms, or at once under reduced motion. Each tab, and a create form, sits in its own error boundary, so a failed query shows in the panel and the list keeps working.
 - **Contents.** `PanelSection` is a folding card, `PanelFields` and `PanelField` a label and value list, with `copy` for a one-click copy of IDs and addresses, and `PanelTags` the tag list. Create forms take an `onClose(id?)` prop: embedded, they hide their back link and heading, and a create selects the new resource.
-- **One component is both the panel and the page.** Each resource has a single details component (`InstanceDetails`, `VpcDetails`, `InternetGatewayDetails`) that takes `layout="auto" | "page"`. The list renders it as the panel; `/ec2/describe-instances/$id` and its kind render the same component as a page, where the sections sit in two columns and a `span` section such as Monitoring takes both. A feature added to the panel is on the page by construction, and the page ignores Escape and has a back arrow in place of close.
-- **A click on the list's background closes the panel**, as UniFi's does. A row selects another resource instead, and links, buttons and inputs keep their own behaviour.
+- **One component is both the panel and the page.** Each resource has a single details component (`InstanceDetails`, `VpcDetails`, `InternetGatewayDetails`) that takes `layout="auto" | "page"`. The list renders it as the panel; `/ec2/describe-instances/$id` and its kind render the same component as a page, as one centred column under a standard left-aligned heading, with state and actions on the right and text tabs. A feature added to the panel is on the page by construction, and the page ignores Escape and has a back arrow in place of close. Expanding the panel to its page keeps the tab, and query results such as fetched console output come along from the cache.
+- **A click on the list's background closes the panel**, as UniFi's does. A row selects another resource instead, and links, buttons and inputs keep their own behaviour. Selecting rows for a bulk action closes it too, so the bulk bar and the panel never compete.
+- **Actions.** State actions sit in the summary as a button group, and the rest go in an Actions menu, Unikraft style. Stop, Reboot and every destructive action confirm in a dialog.
+- **Loading.** A panel or page still loading shows `PanelSpinner`, a centred spinner on the background, not a grey skeleton block.
+- **`DetailCard`, `DetailRow` and `ListCard` are retired.** Every resource page uses the panel sections instead.
 
 ## Charts
 
@@ -183,8 +195,9 @@ Modelled on UniFi's console: a click on a row opens the resource in a panel besi
 The look follows UniFi's statistics: smoothed lines over a fading fill, a light grid, a legend chip per series that reads the value under the cursor (or the latest), and `-24 hrs … Now` beneath.
 Series colours are the chart palette, and the chart redraws when the theme changes.
 
-Instance monitoring shows EC2's agentless basic metrics: CPU utilisation, network bytes in and out, and packets in and out, over 1H, 1D or 1W.
-**The data is simulated** (`src/lib/simulated-metrics.ts`, seeded by instance ID) and the panel says so with a badge, until the daemon serves samples from QEMU.
+Instance monitoring shows EC2's agentless basic metrics live: CPU utilisation, network bytes in and out, and packets in and out, one sample a second over the last five minutes, with no history to range over.
+The chart is built once and fed with `setData`, so a second's tick does not rebuild it, and polling stops while the tab is hidden.
+**The data is simulated** (`src/lib/simulated-metrics.ts`, seeded by instance ID and second) and the panel says so with a badge, until awsgw serves `GetMetricData` at a one-second period.
 
 ## Dates
 
@@ -200,11 +213,25 @@ Instance monitoring shows EC2's agentless basic metrics: CPU utilisation, networ
 `e2e/console.ts` is the fixture. It seeds a fake session and answers `/proxy/**` by action, with empty defaults for what the dashboard and shell ask for; a test adds handlers for its own data, and any call nobody answered fails the test through `api.unhandled`.
 Unhandled calls get an error in the protocol's own shape, since a plain-text body would itself trip the CSP test.
 
-Screenshot baselines live in `e2e/__screenshots__/` and are Linux Chromium renders, taken in `en-AU` and UTC so dates do not move with the host; `pnpm e2e:update` regenerates them.
+### Screenshots
 
-The `UI End-to-End` job in `.github/workflows/ui.yml` runs the suite on every pull request touching the frontend, with `--ignore-snapshots`: the runner rasterises fonts differently from the host that drew the baselines, so screenshots are compared locally and every behavioural and CSP test gates the merge.
+Screenshot baselines live in `e2e/__screenshots__/` and are Chromium renders taken in `en-AU` and UTC, so dates do not move with the host.
+They are drawn inside Playwright's own container image, because font rasterisation differs between hosts and a baseline drawn on a workstation fails on the runner.
+`playwright.image` in the frontend directory pins that image by version and digest, and is the one place it is named.
+Its version must equal the lockfile's `@playwright/test`, since the image carries the browsers for exactly one release, so bump both together.
+
+- `make ui-baselines` redraws every baseline in the pinned image, with `pnpm e2e --update-snapshots=all`, since the default mode keeps any baseline within the diff tolerance and so would keep one drawn on another host. Commit the changed files under `e2e/__screenshots__/` with the change that moved them.
+- `make ui-e2e-container` runs the suite in the same image and compares the screenshots, exactly as CI does.
+
+Both run `scripts/ui-playwright.sh`, which uses podman, or docker where podman is absent, and `CONTAINER_RUNTIME` overrides the choice.
+It mounts the frontend directory, installs with `pnpm install --frozen-lockfile` into a separate `node_modules` under `~/.cache/spinifex-ui-playwright`, so the host's `node_modules` is never touched, then builds `dist` and runs the suite.
+It refuses to run when the image's Node differs from `.nvmrc` or its Playwright differs from the lockfile's.
+`make test-ui-e2e` and `pnpm e2e` still run on the host, where screenshots compare reliably only against baselines drawn on that host, so do not commit baselines from `pnpm e2e:update`.
+
+The `UI End-to-End` job in `.github/workflows/ui.yml` runs the suite inside the pinned image on every pull request touching the frontend, and screenshots gate the merge with every behavioural and CSP test.
+A preceding `UI End-to-End Image` job reads `playwright.image`, so the workflow and the `make` targets cannot disagree about the image.
+On a failure the job uploads `test-results/` as the `ui-e2e-test-results` artifact, holding each failed screenshot's expected, actual and diff images and the trace.
 
 ## Open
 
 - **Monitoring data is simulated.** Real samples need a source in the daemon; the plan is `docs/development/feature/ec2-basic-metrics.md` in the mulga repository.
-- **Screenshots do not gate CI.** Gating them needs baselines drawn in a pinned image, such as Playwright's own container, rather than on a workstation.

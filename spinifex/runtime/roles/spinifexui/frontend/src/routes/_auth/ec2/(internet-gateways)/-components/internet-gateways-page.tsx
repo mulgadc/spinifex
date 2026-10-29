@@ -8,12 +8,11 @@ import {
   DataTable,
   type SortState,
 } from "@/components/data-table"
-import { DetailPanel } from "@/components/detail-panel"
+import { DetailPanel, PanelSpinner } from "@/components/detail-panel"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
 
@@ -125,7 +124,7 @@ export function InternetGatewaysPage({
         onClose={closePanel}
         title="Create internet gateway"
       >
-        <Suspense fallback={<Skeleton className="h-64" />}>
+        <Suspense fallback={<PanelSpinner />}>
           <CreateInternetGatewayPage
             onClose={(igwId) => {
               onSearchChange({ ...CLOSED_PANEL, selected: igwId ?? "" })

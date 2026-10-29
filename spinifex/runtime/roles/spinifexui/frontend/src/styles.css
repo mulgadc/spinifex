@@ -50,6 +50,13 @@
   --success: oklch(62% 0.15 155);
   --success-foreground: oklch(45% 0.11 155);
   --warning: oklch(81.1% 0.167 82.8); /* #F5B500 brand yellow */
+  /* Serial console: brand yellow darkened until it reads on a light ground. */
+  --console: oklch(97.5% 0.004 88.6);
+  --console-foreground: oklch(25% 0.012 254.1);
+  --console-stamp: oklch(58% 0.13 75);
+  --console-muted: oklch(55% 0.01 254);
+  --console-ok: oklch(50% 0.13 155);
+  --console-fail: oklch(52% 0.2 27);
   --warning-foreground: oklch(50% 0.11 70);
   --danger: oklch(52% 0.19 17);
   --danger-foreground: oklch(46% 0.17 17);
@@ -109,6 +116,12 @@
   --success: oklch(70% 0.16 155);
   --success-foreground: oklch(80% 0.14 155);
   --warning: oklch(81.1% 0.167 82.8);
+  --console: oklch(16.5% 0.012 254.1);
+  --console-foreground: oklch(88% 0.008 254);
+  --console-stamp: oklch(81.1% 0.167 82.8);
+  --console-muted: oklch(60% 0.01 254);
+  --console-ok: oklch(75% 0.15 155);
+  --console-fail: oklch(70% 0.18 27);
   --warning-foreground: oklch(86% 0.14 85);
   --danger: oklch(64% 0.2 17);
   --danger-foreground: oklch(75% 0.15 17);
@@ -186,6 +199,12 @@
   --color-success-subtle: color-mix(in oklch, var(--success) 12%, transparent);
   --color-success-border: color-mix(in oklch, var(--success) 40%, transparent);
   --color-warning: var(--warning);
+  --color-console: var(--console);
+  --color-console-foreground: var(--console-foreground);
+  --color-console-stamp: var(--console-stamp);
+  --color-console-muted: var(--console-muted);
+  --color-console-ok: var(--console-ok);
+  --color-console-fail: var(--console-fail);
   --color-warning-foreground: var(--warning-foreground);
   --color-warning-subtle: color-mix(in oklch, var(--warning) 12%, transparent);
   --color-warning-border: color-mix(in oklch, var(--warning) 40%, transparent);

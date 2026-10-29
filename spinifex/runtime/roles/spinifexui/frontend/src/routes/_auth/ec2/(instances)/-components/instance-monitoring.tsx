@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import {
   type MetricSeries,
@@ -6,19 +6,16 @@ import {
 } from "@/components/charts/metric-chart"
 import { PanelSection } from "@/components/detail-panel"
 import { Badge } from "@/components/ui/badge"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   formatByteRate,
   formatPacketRate,
   formatPercent,
-  METRIC_RANGES,
-  type MetricRange,
-  RANGE_LABELS,
-  simulateInstanceMetrics,
+  liveWindow,
 } from "@/lib/simulated-metrics"
 
 interface InstanceMonitoringProps {
   instanceId: string
+  running: boolean
 }
 
 interface ChartSpec {
@@ -28,17 +25,43 @@ interface ChartSpec {
   series: MetricSeries[]
 }
 
-// EC2's basic metrics, the five that need no agent in the guest. The data is
-// simulated until the daemon reports samples from QEMU, and says so.
-export function InstanceMonitoring({ instanceId }: InstanceMonitoringProps) {
-  const [range, setRange] = useState<MetricRange>("1d")
-  // Read on open and on a range change, so the window does not slide under
-  // the cursor between renders.
-  const [now, setNow] = useState(() => Date.now() / 1000)
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000)
+}
 
-  // Built once per range, so the charts are not torn down on every hover.
-  const { times, charts } = useMemo(() => {
-    const metrics = simulateInstanceMetrics(instanceId, range, now)
+// Ticks once a second while the page is visible, as the console will poll
+// GetMetricData; a hidden tab stops asking, so the host stops sampling.
+function useSecondTick(enabled: boolean): number {
+  const [now, setNow] = useState(nowSeconds)
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (enabled && document.visibilityState === "visible") {
+        setNow(nowSeconds())
+      }
+    }, 1000)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [enabled])
+
+  return now
+}
+
+// EC2's agentless metrics, live at one second over the last five minutes, as
+// Unikraft shows them. There is no history to range over yet, and the data is
+// simulated until awsgw serves it, which the badge says.
+export function InstanceMonitoring({
+  instanceId,
+  running,
+}: InstanceMonitoringProps) {
+  // When this viewer started watching: the ring holds nothing earlier.
+  const since = useMemo(() => nowSeconds(), [])
+  const now = useSecondTick(running)
+
+  const charts = useMemo(() => {
+    const metrics = liveWindow(instanceId, running ? since : now + 1, now)
 
     const specs: ChartSpec[] = [
       {
@@ -65,50 +88,39 @@ export function InstanceMonitoring({ instanceId }: InstanceMonitoringProps) {
       },
     ]
 
-    return { times: metrics.times, charts: specs }
-  }, [instanceId, range, now])
+    return { times: metrics.times, specs }
+  }, [instanceId, running, since, now])
 
   return (
-    <PanelSection span title="Instance statistics">
+    <PanelSection title="Instance statistics">
       <div className="flex flex-col gap-5">
         <div className="flex items-center justify-between gap-2">
+          {running ? (
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+              <span
+                aria-hidden
+                className="size-2 animate-pulse rounded-full bg-success motion-reduce:animate-none"
+              />
+              Live
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              Live statistics need a running instance.
+            </span>
+          )}
           <Badge variant="outline">Simulated data</Badge>
-          <ToggleGroup
-            aria-label="Time range"
-            onValueChange={(values) => {
-              const next = METRIC_RANGES.find(
-                (value) => value === values.at(-1),
-              )
-
-              if (next) {
-                setRange(next)
-                setNow(Date.now() / 1000)
-              }
-            }}
-            size="sm"
-            value={[range]}
-            variant="outline"
-          >
-            {METRIC_RANGES.map((value) => (
-              <ToggleGroupItem key={value} value={value}>
-                {RANGE_LABELS[value].button}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
         </div>
-        <div className="flex flex-col gap-5 in-data-[layout=page]:xl:grid in-data-[layout=page]:xl:grid-cols-3">
-          {charts.map((chart) => (
-            <MetricChart
-              format={chart.format}
-              key={chart.title}
-              max={chart.max}
-              series={chart.series}
-              since={RANGE_LABELS[range].since}
-              times={times}
-              title={chart.title}
-            />
-          ))}
-        </div>
+        {charts.specs.map((chart) => (
+          <MetricChart
+            format={chart.format}
+            key={chart.title}
+            max={chart.max}
+            series={chart.series}
+            since="-5 min"
+            times={charts.times}
+            title={chart.title}
+          />
+        ))}
       </div>
     </PanelSection>
   )

@@ -1,14 +1,22 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { ListCard } from "@/components/list-card"
-import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
-import { StateBadge } from "@/components/state-badge"
-import { Button } from "@/components/ui/button"
+import {
+  CLOSED_PANEL,
+  type PanelSearch,
+  panelSearchFields,
+} from "@/lib/panel-search"
 import { ec2VolumesQueryOptions } from "@/queries/ec2"
 
+import { VolumesPage } from "../-components/volumes-page"
+
+const searchSchema = z.object(panelSearchFields)
+
 export const Route = createFileRoute("/_auth/ec2/(volumes)/describe-volumes/")({
+  validateSearch: searchSchema,
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...ec2VolumesQueryOptions,
@@ -27,34 +35,22 @@ export const Route = createFileRoute("/_auth/ec2/(volumes)/describe-volumes/")({
 
 function Volumes() {
   const { data } = useSuspenseQuery(ec2VolumesQueryOptions)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
 
-  const volumes = data.Volumes ?? []
+  // Opening or closing a panel adds a history entry, so Back closes it.
+  function onSearchChange(next: Partial<PanelSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next || "create" in next),
+    })
+  }
 
   return (
-    <>
-      <PageHeading
-        actions={
-          <Link to="/ec2/create-volume">
-            <Button>Create Volume</Button>
-          </Link>
-        }
-        title="Volumes"
-      />
-
-      <ResourceList
-        empty="No volumes found."
-        getKey={(volume) => volume.VolumeId}
-        items={volumes}
-        renderItem={(volume, id) => (
-          <ListCard
-            badge={<StateBadge state={volume.State} />}
-            params={{ id }}
-            subtitle={`${volume.Size} GiB`}
-            title={id}
-            to="/ec2/describe-volumes/$id"
-          />
-        )}
-      />
-    </>
+    <VolumesPage
+      onSearchChange={onSearchChange}
+      search={search}
+      volumes={data.Volumes ?? []}
+    />
   )
 }

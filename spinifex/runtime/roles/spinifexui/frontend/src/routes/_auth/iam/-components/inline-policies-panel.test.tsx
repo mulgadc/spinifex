@@ -62,14 +62,14 @@ describe("InlinePoliciesPanel", () => {
 
   it("opens the add form seeded with the policy template", () => {
     renderWithClient(<InlinePoliciesPanel kind="user" name={USER} />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Add Inline Policy" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add inline policy" }))
     expect(screen.getByLabelText("Policy name")).toBeInTheDocument()
     expect(jsonEditor().value).toContain("2012-10-17")
   })
 
   it("blocks save when the document is invalid JSON", () => {
     renderWithClient(<InlinePoliciesPanel kind="user" name={USER} />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Add Inline Policy" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add inline policy" }))
     fireEvent.change(screen.getByLabelText("Policy name"), {
       target: { value: POLICY },
     })
@@ -83,7 +83,7 @@ describe("InlinePoliciesPanel", () => {
   it("creates an inline policy via PutUserPolicy", async () => {
     send.mockResolvedValue({})
     renderWithClient(<InlinePoliciesPanel kind="user" name={USER} />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Add Inline Policy" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add inline policy" }))
     fireEvent.change(screen.getByLabelText("Policy name"), {
       target: { value: POLICY },
     })

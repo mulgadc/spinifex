@@ -1,6 +1,11 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen } from "@testing-library/react"
+import { fireEvent, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(vi.fn())
+})
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
@@ -8,44 +13,71 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal)
 })
 
-import { eksClustersQueryOptions } from "@/queries/eks"
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 import { ClustersListPage } from "./clusters-list-page"
 
-function renderSeeded(clusters: string[]) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
+function renderPage(
+  clusters: string[],
+  search: Partial<PanelSearch> = {},
+  onSearchChange = vi.fn(),
+) {
+  const qc = createTestQueryClient()
 
-  queryClient.setQueryData(eksClustersQueryOptions.queryKey, {
-    $metadata: {},
-    clusters,
-  })
+  for (const name of clusters) {
+    qc.setQueryData(["eks", "clusters", name], {
+      cluster: { name, status: "ACTIVE", version: "1.30" },
+    })
+  }
 
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <ClustersListPage />
-    </QueryClientProvider>,
+  renderWithClient(
+    <ClustersListPage
+      clusters={clusters}
+      onSearchChange={onSearchChange}
+      search={{ ...CLOSED_PANEL, ...search }}
+    />,
+    qc,
   )
+
+  return onSearchChange
 }
 
 describe("ClustersListPage", () => {
-  it("renders cluster names sorted", () => {
-    renderSeeded(["zebra", "alpha"])
-    const links = screen.getAllByRole("link", { name: /zebra|alpha/ })
+  it("lists clusters sorted by name with each one's status and version", () => {
+    renderPage(["zebra", "alpha"])
+    const links = screen.getAllByRole("link", { name: /zebra|alpha/u })
     expect(links.map((l) => l.textContent)).toStrictEqual(["alpha", "zebra"])
+    expect(screen.getAllByText("ACTIVE")).toHaveLength(2)
+    expect(screen.getAllByText("1.30")).toHaveLength(2)
   })
 
   it("shows empty state when no clusters", () => {
-    renderSeeded([])
+    renderPage([])
     expect(screen.getByText("No EKS clusters found.")).toBeInTheDocument()
   })
 
-  it("links each cluster to its detail route", () => {
-    renderSeeded(["c1"])
-    expect(screen.getByRole("link", { name: "c1" })).toHaveAttribute(
-      "href",
-      "/eks/list-clusters/c1",
-    )
+  it("selects a cluster when its row is clicked", () => {
+    const onSearchChange = renderPage(["c1"])
+    fireEvent.click(screen.getByRole("cell", { name: "ACTIVE" }))
+    expect(onSearchChange).toHaveBeenCalledWith({
+      ...CLOSED_PANEL,
+      selected: "c1",
+    })
+  })
+
+  it("opens the selected cluster's panel, linked to its own page", () => {
+    renderPage(["c1"], { selected: "c1" })
+    const panel = screen.getByRole("region", { name: "Cluster details" })
+    expect(
+      panel.querySelector('a[href="/eks/list-clusters/c1"]'),
+    ).toBeInTheDocument()
+  })
+
+  it("ignores a selection naming no listed cluster", () => {
+    renderPage(["c1"], { selected: "gone" })
+    expect(
+      screen.queryByRole("region", { name: "Cluster details" }),
+    ).not.toBeInTheDocument()
   })
 })

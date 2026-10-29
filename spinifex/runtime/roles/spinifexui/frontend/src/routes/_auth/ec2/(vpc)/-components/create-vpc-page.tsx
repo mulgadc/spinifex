@@ -24,6 +24,7 @@ import { TagsFieldArray } from "@/components/tags-field-array"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -31,6 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { SubnetCidrInputs } from "@/components/vpc-wizard/subnet-cidr-inputs"
 import { VpcPreview } from "@/components/vpc-wizard/vpc-preview"
 import { WizardFailureBanner } from "@/components/wizard-failure-banner"
@@ -216,14 +218,21 @@ export function CreateVpcPage({ onClose }: CreateVpcPageProps) {
                 placeholder="project"
                 {...register("namePrefix")}
               />
-              <label className="flex shrink-0 items-center gap-2 text-xs">
-                <input
-                  aria-label="Auto-generate name tags"
-                  type="checkbox"
-                  {...register("autoGenerateNames")}
-                />
-                Auto-generate
-              </label>
+              <Controller
+                control={control}
+                name="autoGenerateNames"
+                render={({ field }) => (
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Switch
+                      aria-label="Auto-generate name tags"
+                      checked={field.value}
+                      id="autoGenerateNames"
+                      onCheckedChange={field.onChange}
+                    />
+                    <Label htmlFor="autoGenerateNames">Auto-generate</Label>
+                  </div>
+                )}
+              />
             </div>
           </Field>
 

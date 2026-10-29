@@ -70,13 +70,36 @@ jobs:
             exit 1
           fi
 
+  # The pinned image lives in one file that scripts/ui-playwright.sh also reads,
+  # so make ui-baselines and the job below draw screenshots in the same image.
+  ui_e2e_image:
+    name: UI End-to-End Image
+    runs-on: ubuntu-26.04
+    outputs:
+      image: ${{ steps.read.outputs.image }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: spinifex/runtime/roles/spinifexui/frontend/playwright.image
+          sparse-checkout-cone-mode: false
+
+      - name: Read Playwright Image
+        id: read
+        run: echo "image=$(tr -d '[:space:]' < spinifex/runtime/roles/spinifexui/frontend/playwright.image)" >> "$GITHUB_OUTPUT"
+
   # The browser suite: the console against a faked API on Vite dev, plus the
-  # built dist under the production CSP. Screenshots are compared locally only,
-  # since the runner rasterises fonts differently from the host that drew them.
+  # built dist under the production CSP. It runs in Playwright's own image, which
+  # carries the browsers, so screenshots rasterise as they did for the baselines.
   ui_e2e:
     name: UI End-to-End
+    needs: ui_e2e_image
     runs-on: ubuntu-26.04
     timeout-minutes: 20
+    container:
+      image: ${{ needs.ui_e2e_image.outputs.image }}
+      options: --ipc=host
     defaults:
       run:
         working-directory: spinifex/runtime/roles/spinifexui/frontend
@@ -102,11 +125,29 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+      # The image's browsers belong to one Playwright release, so a lockfile
+      # bump without an image bump would otherwise fail on a missing executable.
+      - name: Check Playwright Matches the Image
+        env:
+          IMAGE: ${{ needs.ui_e2e_image.outputs.image }}
+        run: |
+          version=$(pnpm exec playwright --version | awk '{print $2}')
+          case "$IMAGE" in
+            *":v$version-"*) ;;
+            *) echo "::error::Lockfile has Playwright $version but the image is $IMAGE. Update playwright.image."; exit 1 ;;
+          esac
 
       - name: Build Frontend
         run: pnpm build
 
       - name: Run End-to-End Suite
-        run: pnpm e2e --ignore-snapshots
+        run: pnpm e2e
+
+      - name: Upload Screenshot Diffs
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ui-e2e-test-results
+          path: spinifex/runtime/roles/spinifexui/frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

@@ -61,6 +61,14 @@ build-ui:
 test-ui-e2e: build-ui
 	cd spinifex/runtime/roles/spinifexui/frontend && pnpm e2e
 
+# The same suite inside the pinned Playwright image CI uses (podman or docker),
+# so screenshots compare as they will on the runner. ui-baselines redraws them.
+ui-e2e-container:
+	scripts/ui-playwright.sh compare
+
+ui-baselines:
+	scripts/ui-playwright.sh baselines
+
 # GO commands
 VERSION ?= $(shell git describe --tags --always --dirty --exclude '*-dev')
 COMMIT  ?= $(shell git rev-parse --short HEAD)
@@ -491,7 +499,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui test-ui-e2e build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
+.PHONY: test-package-check build build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

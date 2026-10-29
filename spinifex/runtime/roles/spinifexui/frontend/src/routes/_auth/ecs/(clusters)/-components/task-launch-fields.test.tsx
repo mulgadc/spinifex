@@ -10,18 +10,15 @@ const subnets = [
 
 const securityGroups = [{ GroupId: "sg-1", GroupName: "web" }]
 
-function renderFields(selectedSubnets: string[]) {
+function renderFields(selectedSubnets: string[], assignPublicIp = false) {
   const onSubnetsChange = vi.fn()
   const onSecurityGroupsChange = vi.fn()
+  const onAssignPublicIpChange = vi.fn()
 
   render(
     <AwsvpcNetworkFields
-      assignPublicIp={{
-        name: "assignPublicIp",
-        onBlur: vi.fn(),
-        onChange: vi.fn(),
-        ref: vi.fn(),
-      }}
+      assignPublicIp={assignPublicIp}
+      onAssignPublicIpChange={onAssignPublicIpChange}
       onSecurityGroupsChange={onSecurityGroupsChange}
       onSubnetsChange={onSubnetsChange}
       securityGroups={securityGroups}
@@ -31,7 +28,7 @@ function renderFields(selectedSubnets: string[]) {
     />,
   )
 
-  return { onSecurityGroupsChange, onSubnetsChange }
+  return { onAssignPublicIpChange, onSecurityGroupsChange, onSubnetsChange }
 }
 
 describe("AwsvpcNetworkFields", () => {
@@ -50,5 +47,17 @@ describe("AwsvpcNetworkFields", () => {
 
     fireEvent.click(screen.getByLabelText("Security group sg-1 (web)"))
     expect(onSecurityGroupsChange).toHaveBeenCalledWith(["sg-1"])
+  })
+
+  it("sets the public IP with a switch, not a checkbox", () => {
+    const { onAssignPublicIpChange } = renderFields([], true)
+    const toggle = screen.getByRole("switch", { name: "Assign public IP" })
+
+    expect(toggle).toBeChecked()
+    fireEvent.click(toggle)
+    expect(onAssignPublicIpChange).toHaveBeenCalledWith(
+      false,
+      expect.anything(),
+    )
   })
 })

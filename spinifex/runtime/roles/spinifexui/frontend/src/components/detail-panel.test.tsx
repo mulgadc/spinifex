@@ -13,7 +13,8 @@ describe("DetailPanel", () => {
     vi.spyOn(console, "error").mockReturnValue()
   })
 
-  it("closes on Escape", () => {
+  it("slides out on Escape, then closes", () => {
+    vi.useFakeTimers()
     const onClose = vi.fn()
     render(
       <DetailPanel
@@ -27,7 +28,16 @@ describe("DetailPanel", () => {
     )
 
     fireEvent.keyDown(document, { key: "Escape" })
+    expect(screen.getByRole("region", { name: "Details" })).toHaveAttribute(
+      "data-closing",
+    )
+    expect(onClose).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
     expect(onClose).toHaveBeenCalledOnce()
+    vi.useRealTimers()
   })
 
   it("leaves Escape to a dialog open over it", () => {

@@ -8,12 +8,11 @@ import {
   DataTable,
   type SortState,
 } from "@/components/data-table"
-import { DetailPanel } from "@/components/detail-panel"
+import { DetailPanel, PanelSpinner } from "@/components/detail-panel"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
 
@@ -111,7 +110,7 @@ export function VpcsPage({ vpcs, search, onSearchChange }: VpcsPageProps) {
         size="wide"
         title="Create VPC"
       >
-        <Suspense fallback={<Skeleton className="h-96" />}>
+        <Suspense fallback={<PanelSpinner />}>
           <CreateVpcPage
             onClose={(vpcId) => {
               onSearchChange({ ...CLOSED_PANEL, selected: vpcId ?? "" })

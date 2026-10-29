@@ -124,6 +124,22 @@ describe("GuardrailFormPage edit mode", () => {
     })
   })
 
+  it("sends the managed profanity list when its switch is turned on", async () => {
+    const user = userEvent.setup()
+    renderEdit()
+
+    const profanity = screen.getByRole("switch", { name: "Block profanity" })
+    expect(profanity).not.toBeChecked()
+    await user.click(profanity)
+    await user.click(screen.getByRole("button", { name: "Save Changes" }))
+
+    await screen.findByRole("button", { name: "Save Changes" })
+    const input = mockSend.mock.calls.at(-1)?.[0].input
+    expect(input.wordPolicyConfig.managedWordListsConfig).toStrictEqual([
+      { type: "PROFANITY" },
+    ])
+  })
+
   it("cancels back to the guardrail detail route", async () => {
     const user = userEvent.setup()
     renderEdit()

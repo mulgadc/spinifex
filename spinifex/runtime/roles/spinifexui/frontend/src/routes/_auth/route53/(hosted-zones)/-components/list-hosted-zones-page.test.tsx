@@ -2,6 +2,7 @@ import { screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const { routerState } = vi.hoisted(() => ({
@@ -76,15 +77,30 @@ const STATES = new Map([
   ["ZSUSP", "SUSPENDED"],
 ])
 
-function renderList(zones: unknown[] = ZONES) {
-  const qc = createTestQueryClient()
-  qc.setQueryData(["route53", "hostedZones"], zones)
-  renderWithClient(<ListHostedZonesPage />, qc)
+function renderList(
+  zones: typeof ZONES = ZONES,
+  search: PanelSearch = CLOSED_PANEL,
+) {
+  const onSearchChange = vi.fn()
+  renderWithClient(
+    <ListHostedZonesPage
+      onSearchChange={onSearchChange}
+      search={search}
+      zones={zones}
+    />,
+    createTestQueryClient(),
+  )
+
+  return onSearchChange
 }
 
 describe("list-hosted-zones page", () => {
   beforeEach(() => {
     sdk.reset()
+    sdk.setHandler("ListResourceRecordSetsCommand", () => ({
+      ResourceRecordSets: [],
+      IsTruncated: false,
+    }))
     activation.get.mockImplementation(async (id: string) => {
       const state = STATES.get(id)
 
@@ -101,7 +117,7 @@ describe("list-hosted-zones page", () => {
 
     expect(
       screen.getByRole("link", { name: "active.example." }),
-    ).toHaveAttribute("href", "/route53/list-hosted-zones/ZACTIVE")
+    ).toBeInTheDocument()
     expect(screen.getByText("7")).toBeInTheDocument()
     expect(screen.getByText("production")).toBeInTheDocument()
     await expect(screen.findByText("Active")).resolves.toBeInTheDocument()
@@ -117,27 +133,33 @@ describe("list-hosted-zones page", () => {
     expect(activation.get).toHaveBeenCalledWith("ZPENDING")
   })
 
-  it("opens the walkthrough from Add domain", async () => {
+  it("links Add domain to the walkthrough", () => {
     renderList()
-    const user = userEvent.setup()
 
-    await user.click(screen.getByRole("button", { name: "Add domain" }))
-
-    expect(routerState.navigate).toHaveBeenCalledWith({
-      to: "/route53/create-hosted-zone",
-    })
+    expect(screen.getByRole("link", { name: "Add domain" })).toHaveAttribute(
+      "href",
+      "/route53/create-hosted-zone",
+    )
   })
 
-  it("opens a zone from its row", async () => {
-    renderList()
+  it("opens a zone's panel from its row, keyed by the bare zone ID", async () => {
+    const onSearchChange = renderList()
     const user = userEvent.setup()
 
     await user.click(screen.getByText("ZPENDING"))
 
-    expect(routerState.navigate).toHaveBeenCalledWith({
-      to: "/route53/list-hosted-zones/$id",
-      params: { id: "ZPENDING" },
+    expect(onSearchChange).toHaveBeenCalledWith({
+      ...CLOSED_PANEL,
+      selected: "ZPENDING",
     })
+  })
+
+  it("shows the selected zone in the panel", () => {
+    renderList(ZONES, { ...CLOSED_PANEL, selected: "ZACTIVE" })
+
+    expect(
+      screen.getByRole("heading", { name: "active.example." }),
+    ).toBeInTheDocument()
   })
 
   it("explains what to do when there are no zones", () => {

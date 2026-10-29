@@ -1,128 +1,138 @@
-import { useSuspenseQuery } from "@tanstack/react-query"
-import { Link, useNavigate } from "@tanstack/react-router"
+import type { DBSubnetGroup } from "@aws-sdk/client-rds"
+import { Link } from "@tanstack/react-router"
+import { Plus } from "lucide-react"
 import { useState } from "react"
 
+import {
+  type DataColumn,
+  DataTable,
+  type SortState,
+} from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceView } from "@/components/resource-view"
 import { StateBadge } from "@/components/state-badge"
-import { Button } from "@/components/ui/button"
-import { rdsSubnetGroupsQueryOptions } from "@/queries/rds"
+import { buttonVariants } from "@/components/ui/button"
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 
-import { DeleteDBSubnetGroupDialog } from "./delete-db-subnet-group-dialog"
+import { DBSubnetGroupDetails } from "./db-subnet-group-details"
 
-export function DBSubnetGroupsListPage() {
-  const navigate = useNavigate()
-  const { data } = useSuspenseQuery(rdsSubnetGroupsQueryOptions)
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+const COLUMNS: DataColumn<DBSubnetGroup>[] = [
+  {
+    id: "name",
+    header: "Name",
+    sortValue: (group) => group.DBSubnetGroupName,
+    cell: (group) => (
+      <Link
+        className="block max-w-72 truncate rounded-sm font-medium text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        from="/rds/describe-db-subnet-groups/"
+        search={(previous) => ({
+          ...previous,
+          ...CLOSED_PANEL,
+          selected: group.DBSubnetGroupName ?? "",
+        })}
+        to="."
+      >
+        {group.DBSubnetGroupName}
+      </Link>
+    ),
+  },
+  {
+    id: "status",
+    header: "Status",
+    sortValue: (group) => group.SubnetGroupStatus,
+    cell: (group) => <StateBadge state={group.SubnetGroupStatus} />,
+  },
+  {
+    id: "vpc",
+    header: "VPC",
+    sortValue: (group) => group.VpcId,
+    hideBelow: "sm",
+    cell: (group) => (
+      <span className="font-mono text-xs">{group.VpcId ?? "—"}</span>
+    ),
+  },
+  {
+    id: "subnets",
+    header: "Subnets",
+    sortValue: (group) => group.Subnets?.length ?? 0,
+    hideBelow: "md",
+    cell: (group) => (
+      <span className="tabular-nums">{group.Subnets?.length ?? 0}</span>
+    ),
+  },
+  {
+    id: "description",
+    header: "Description",
+    sortValue: (group) => group.DBSubnetGroupDescription,
+    hideBelow: "lg",
+    cell: (group) => (
+      <span className="text-muted-foreground">
+        {group.DBSubnetGroupDescription}
+      </span>
+    ),
+  },
+]
 
-  const groups = data.DBSubnetGroups ?? []
+interface DBSubnetGroupsListPageProps {
+  groups: readonly DBSubnetGroup[]
+  search: PanelSearch
+  onSearchChange: (search: Partial<PanelSearch>) => void
+}
+
+export function DBSubnetGroupsListPage({
+  groups,
+  search,
+  onSearchChange,
+}: DBSubnetGroupsListPageProps) {
+  const [sort, setSort] = useState<SortState>()
+
+  const open = groups.find(
+    (group) =>
+      search.selected !== "" && group.DBSubnetGroupName === search.selected,
+  )
+
+  function closePanel() {
+    onSearchChange(CLOSED_PANEL)
+  }
 
   return (
-    <>
+    <ResourceView
+      panel={
+        open?.DBSubnetGroupName && (
+          <DBSubnetGroupDetails
+            group={open}
+            key={open.DBSubnetGroupName}
+            onClose={closePanel}
+            onTabChange={(tab) => {
+              onSearchChange({ tab })
+            }}
+            tab={search.tab}
+          />
+        )
+      }
+    >
       <PageHeading
         actions={
-          <Button
-            onClick={async () => {
-              await navigate({ to: "/rds/create-db-subnet-group" })
-            }}
-          >
+          <Link className={buttonVariants()} to="/rds/create-db-subnet-group">
+            <Plus data-icon="inline-start" />
             Create Subnet Group
-          </Button>
+          </Link>
         }
         title="DB Subnet Groups"
       />
-
-      {groups.length > 0 ? (
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-2 font-medium">Name</th>
-                <th className="px-4 py-2 font-medium">VPC</th>
-                <th className="px-4 py-2 font-medium">Subnets</th>
-                <th className="px-4 py-2 font-medium">Status</th>
-                <th className="px-4 py-2 font-medium">Description</th>
-                <th className="px-4 py-2 font-medium">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {groups.map((group) => {
-                const name = group.DBSubnetGroupName
-
-                if (!name) {
-                  return null
-                }
-
-                return (
-                  <tr
-                    className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
-                    key={name}
-                    onClick={async () => {
-                      await navigate({
-                        to: "/rds/describe-db-subnet-groups/$name",
-                        params: { name },
-                      })
-                    }}
-                  >
-                    <td className="px-4 py-2 font-medium">
-                      <Link
-                        className="text-primary hover:underline"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                        }}
-                        params={{ name }}
-                        to="/rds/describe-db-subnet-groups/$name"
-                      >
-                        {name}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-2 font-mono text-xs">
-                      {group.VpcId ?? "—"}
-                    </td>
-                    <td className="px-4 py-2">{group.Subnets?.length ?? 0}</td>
-                    <td className="px-4 py-2">
-                      <StateBadge state={group.SubnetGroupStatus} />
-                    </td>
-                    <td className="px-4 py-2 text-muted-foreground">
-                      {group.DBSubnetGroupDescription}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <Button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setDeleteTarget(name)
-                        }}
-                        size="sm"
-                        variant="destructive"
-                      >
-                        Delete
-                      </Button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="text-muted-foreground">
-          No DB subnet groups found. Without one, a database is placed in the
-          account&apos;s default VPC subnet.
-        </p>
-      )}
-
-      {deleteTarget && (
-        <DeleteDBSubnetGroupDialog
-          dbSubnetGroupName={deleteTarget}
-          onOpenChange={(open) => {
-            if (!open) {
-              setDeleteTarget(null)
-            }
-          }}
-          open={true}
-        />
-      )}
-    </>
+      <DataTable
+        activeId={open?.DBSubnetGroupName}
+        caption="DB subnet groups"
+        columns={COLUMNS}
+        empty="No DB subnet groups found. Without one, a database is placed in the account's default VPC subnet."
+        getRowId={(group) => group.DBSubnetGroupName ?? ""}
+        onRowClick={(id) => {
+          onSearchChange({ ...CLOSED_PANEL, selected: id })
+        }}
+        onSortChange={setSort}
+        rows={groups}
+        sort={sort}
+      />
+    </ResourceView>
   )
 }

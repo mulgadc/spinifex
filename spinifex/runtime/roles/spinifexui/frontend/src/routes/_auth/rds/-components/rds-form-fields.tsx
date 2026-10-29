@@ -8,6 +8,8 @@ import {
 
 import { pickerNotice } from "@/components/picker-notice"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 
 // Offered identically wherever an instance is created, restored or modified.
 export function DeletionProtectionField<T extends FieldValues>({
@@ -24,17 +26,17 @@ export function DeletionProtectionField<T extends FieldValues>({
       render={({ field, fieldState }) => (
         <Field>
           <FieldTitle>Deletion protection</FieldTitle>
-          <label className="flex items-center gap-2 text-xs">
-            <input
+          <div className="flex items-center gap-2 text-xs">
+            <Switch
               aria-label="Enable deletion protection"
               checked={field.value}
-              onChange={(e) => {
-                field.onChange(e.target.checked)
-              }}
-              type="checkbox"
+              id={name}
+              onCheckedChange={field.onChange}
             />
-            <span>Refuse DeleteDBInstance while this is on</span>
-          </label>
+            <Label htmlFor={name}>
+              Refuse DeleteDBInstance while this is on
+            </Label>
+          </div>
           <FieldError errors={[fieldState.error]} />
         </Field>
       )}

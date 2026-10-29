@@ -1,25 +1,21 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react"
+import type { DBSnapshot } from "@aws-sdk/client-rds"
+import { fireEvent, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
-
-const { routerState } = vi.hoisted(() => ({
-  routerState: { navigate: vi.fn() },
-}))
-
-const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(mockSend)
+  return mockAwsClients(vi.fn().mockResolvedValue({}))
 })
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
 
-  return await mockRouter(importOriginal, { navigate: routerState.navigate })
+  return await mockRouter(importOriginal)
 })
 
 import { DBSnapshotsListPage } from "./db-snapshots-list-page"
@@ -36,50 +32,37 @@ const MANUAL = {
 }
 
 const AUTOMATED = {
+  ...MANUAL,
   DBSnapshotIdentifier: "rds:orders-db-2026-08-17-03-00",
-  DBInstanceIdentifier: "orders-db",
   SnapshotType: "automated",
-  Status: "available",
-  Engine: "postgres",
-  EngineVersion: "18",
-  AllocatedStorage: 20,
   SnapshotCreateTime: new Date("2026-08-17T03:00:00Z"),
 }
 
-const CREATING = {
-  ...MANUAL,
-  DBSnapshotIdentifier: "orders-db-snapshot-20260817-1500",
-  Status: "creating",
-}
-
-function seed(snapshots: unknown[]) {
+function renderList(
+  snapshots: DBSnapshot[],
+  search: Partial<PanelSearch> = {},
+  onSearchChange = vi.fn(),
+) {
   const qc = createTestQueryClient()
-  qc.setQueryData(["rds", "dbSnapshots"], { DBSnapshots: snapshots })
   qc.setQueryData(["rds", "dbInstances"], { DBInstances: [] })
+  renderWithClient(
+    <DBSnapshotsListPage
+      onSearchChange={onSearchChange}
+      search={{ ...CLOSED_PANEL, ...search }}
+      snapshots={snapshots}
+    />,
+    qc,
+  )
 
-  return qc
-}
-
-function rowFor(identifier: string): HTMLElement {
-  const cell = screen.getByRole("link", { name: identifier })
-  const row = cell.closest("tr")
-
-  if (!row) {
-    throw new Error(`no row for ${identifier}`)
-  }
-
-  return row
+  return onSearchChange
 }
 
 describe("DBSnapshotsListPage", () => {
   it("renders a snapshot row", () => {
-    renderWithClient(<DBSnapshotsListPage />, seed([MANUAL]))
+    renderList([MANUAL])
     expect(
       screen.getByRole("link", { name: "orders-db-snapshot-20260817-1432" }),
-    ).toHaveAttribute(
-      "href",
-      "/rds/describe-db-snapshots/orders-db-snapshot-20260817-1432",
-    )
+    ).toBeInTheDocument()
     expect(screen.getByRole("link", { name: "orders-db" })).toHaveAttribute(
       "href",
       "/rds/describe-db-instances/orders-db",
@@ -92,12 +75,12 @@ describe("DBSnapshotsListPage", () => {
   })
 
   it("explains the fallback when no snapshot exists", () => {
-    renderWithClient(<DBSnapshotsListPage />, seed([]))
+    renderList([])
     expect(screen.getByText("No DB snapshots found.")).toBeInTheDocument()
   })
 
   it("narrows the table to the chosen snapshot type", () => {
-    renderWithClient(<DBSnapshotsListPage />, seed([MANUAL, AUTOMATED]))
+    renderList([MANUAL, AUTOMATED])
     fireEvent.click(screen.getByRole("button", { name: "Manual" }))
     expect(
       screen.getByRole("link", { name: "orders-db-snapshot-20260817-1432" }),
@@ -107,44 +90,33 @@ describe("DBSnapshotsListPage", () => {
     ).toBeNull()
   })
 
-  // DeleteDBSnapshot refuses the rds: namespace outright, so the control is
-  // never offered for one.
-  it("offers no delete for an automated backup", () => {
-    renderWithClient(<DBSnapshotsListPage />, seed([MANUAL, AUTOMATED]))
-    const automated = rowFor("rds:orders-db-2026-08-17-03-00")
-    const manual = rowFor("orders-db-snapshot-20260817-1432")
-    expect(
-      within(automated).getByRole("button", { name: "Delete" }),
-    ).toBeDisabled()
-    expect(within(manual).getByRole("button", { name: "Delete" })).toBeEnabled()
-  })
-
-  it("holds both actions back while the snapshot is still being taken", () => {
-    renderWithClient(<DBSnapshotsListPage />, seed([CREATING]))
-    const row = rowFor("orders-db-snapshot-20260817-1500")
-    expect(within(row).getByRole("button", { name: "Restore" })).toBeDisabled()
-    expect(within(row).getByRole("button", { name: "Delete" })).toBeDisabled()
-  })
-
-  it("navigates to the restore page from the row action", async () => {
-    renderWithClient(<DBSnapshotsListPage />, seed([MANUAL]))
-    fireEvent.click(screen.getByRole("button", { name: "Restore" }))
-    await waitFor(() => {
-      expect(routerState.navigate).toHaveBeenCalledWith({
-        to: "/rds/restore-db-instance-from-db-snapshot/$id",
-        params: { id: "orders-db-snapshot-20260817-1432" },
-      })
+  it("selects the snapshot a row click opens", () => {
+    const onSearchChange = renderList([MANUAL])
+    fireEvent.click(screen.getByText("manual"))
+    expect(onSearchChange).toHaveBeenCalledWith({
+      ...CLOSED_PANEL,
+      selected: "orders-db-snapshot-20260817-1432",
     })
   })
 
+  it("keeps the panel open when a filter hides its row", () => {
+    renderList([MANUAL, AUTOMATED], {
+      selected: "rds:orders-db-2026-08-17-03-00",
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Manual" }))
+    expect(
+      screen.getByRole("region", { name: "Snapshot details" }),
+    ).toBeInTheDocument()
+  })
+
   it("opens the create dialog from the heading action", () => {
-    renderWithClient(<DBSnapshotsListPage />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Take Snapshot" }))
+    renderList([])
+    fireEvent.click(screen.getByRole("button", { name: "Take snapshot" }))
     expect(screen.getByText("Take DB Snapshot")).toBeInTheDocument()
   })
 
   it("says why an automated backup cannot be removed by hand", () => {
-    renderWithClient(<DBSnapshotsListPage />, seed([AUTOMATED]))
-    expect(screen.getByText(/cannot be\s+deleted by hand/)).toBeInTheDocument()
+    renderList([AUTOMATED])
+    expect(screen.getByText(/cannot be\s+deleted by hand/u)).toBeInTheDocument()
   })
 })

@@ -1,132 +1,143 @@
-import { useSuspenseQuery } from "@tanstack/react-query"
-import { Link, useNavigate } from "@tanstack/react-router"
+import type { DBParameterGroup } from "@aws-sdk/client-rds"
+import { Link } from "@tanstack/react-router"
+import { Plus } from "lucide-react"
 import { useState } from "react"
 
+import {
+  type DataColumn,
+  DataTable,
+  type SortState,
+} from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
-import { Button } from "@/components/ui/button"
-import { rdsParameterGroupsQueryOptions } from "@/queries/rds"
+import { ResourceView } from "@/components/resource-view"
+import { buttonVariants } from "@/components/ui/button"
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { isDefaultParameterGroupName } from "@/types/rds"
 
-import { DeleteDBParameterGroupDialog } from "./delete-db-parameter-group-dialog"
+import { DBParameterGroupDetails } from "./db-parameter-group-details"
 
-export function DBParameterGroupsListPage() {
-  const navigate = useNavigate()
-  const { data } = useSuspenseQuery(rdsParameterGroupsQueryOptions)
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+function groupType(group: DBParameterGroup): string {
+  return isDefaultParameterGroupName(group.DBParameterGroupName ?? "")
+    ? "Default"
+    : "Customer"
+}
 
-  const groups = data.DBParameterGroups ?? []
+const COLUMNS: DataColumn<DBParameterGroup>[] = [
+  {
+    id: "name",
+    header: "Name",
+    sortValue: (group) => group.DBParameterGroupName,
+    cell: (group) => (
+      <Link
+        className="block max-w-72 truncate rounded-sm font-medium text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        from="/rds/describe-db-parameter-groups/"
+        search={(previous) => ({
+          ...previous,
+          ...CLOSED_PANEL,
+          selected: group.DBParameterGroupName ?? "",
+        })}
+        to="."
+      >
+        {group.DBParameterGroupName}
+      </Link>
+    ),
+  },
+  {
+    id: "family",
+    header: "Family",
+    sortValue: (group) => group.DBParameterGroupFamily,
+    cell: (group) => (
+      <span className="font-mono text-xs">{group.DBParameterGroupFamily}</span>
+    ),
+  },
+  {
+    id: "type",
+    header: "Type",
+    sortValue: groupType,
+    hideBelow: "sm",
+    cell: (group) => (
+      <span className="text-muted-foreground">{groupType(group)}</span>
+    ),
+  },
+  {
+    id: "description",
+    header: "Description",
+    sortValue: (group) => group.Description,
+    hideBelow: "lg",
+    cell: (group) => (
+      <span className="text-muted-foreground">{group.Description}</span>
+    ),
+  },
+]
+
+interface DBParameterGroupsListPageProps {
+  groups: readonly DBParameterGroup[]
+  search: PanelSearch
+  onSearchChange: (search: Partial<PanelSearch>) => void
+}
+
+export function DBParameterGroupsListPage({
+  groups,
+  search,
+  onSearchChange,
+}: DBParameterGroupsListPageProps) {
+  const [sort, setSort] = useState<SortState>()
+
+  const open = groups.find(
+    (group) =>
+      search.selected !== "" && group.DBParameterGroupName === search.selected,
+  )
+
+  function closePanel() {
+    onSearchChange(CLOSED_PANEL)
+  }
 
   return (
-    <>
+    <ResourceView
+      panel={
+        open?.DBParameterGroupName && (
+          <DBParameterGroupDetails
+            group={open}
+            key={open.DBParameterGroupName}
+            onClose={closePanel}
+            onTabChange={(tab) => {
+              onSearchChange({ tab })
+            }}
+            tab={search.tab}
+          />
+        )
+      }
+    >
       <PageHeading
         actions={
-          <Button
-            onClick={async () => {
-              await navigate({ to: "/rds/create-db-parameter-group" })
-            }}
+          <Link
+            className={buttonVariants()}
+            to="/rds/create-db-parameter-group"
           >
+            <Plus data-icon="inline-start" />
             Create Parameter Group
-          </Button>
+          </Link>
         }
         title="DB Parameter Groups"
       />
-
-      {groups.length > 0 ? (
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-2 font-medium">Name</th>
-                <th className="px-4 py-2 font-medium">Family</th>
-                <th className="px-4 py-2 font-medium">Type</th>
-                <th className="px-4 py-2 font-medium">Description</th>
-                <th className="px-4 py-2 font-medium">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {groups.map((group) => {
-                const name = group.DBParameterGroupName
-
-                if (!name) {
-                  return null
-                }
-
-                const isDefault = isDefaultParameterGroupName(name)
-
-                return (
-                  <tr
-                    className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
-                    key={name}
-                    onClick={async () => {
-                      await navigate({
-                        to: "/rds/describe-db-parameter-groups/$name",
-                        params: { name },
-                      })
-                    }}
-                  >
-                    <td className="px-4 py-2 font-medium">
-                      <Link
-                        className="text-primary hover:underline"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                        }}
-                        params={{ name }}
-                        to="/rds/describe-db-parameter-groups/$name"
-                      >
-                        {name}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-2 font-mono text-xs">
-                      {group.DBParameterGroupFamily}
-                    </td>
-                    <td className="px-4 py-2 text-muted-foreground">
-                      {isDefault ? "Default" : "Customer"}
-                    </td>
-                    <td className="px-4 py-2 text-muted-foreground">
-                      {group.Description}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <Button
-                        disabled={isDefault}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setDeleteTarget(name)
-                        }}
-                        size="sm"
-                        variant="destructive"
-                      >
-                        Delete
-                      </Button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No DB parameter groups found.</p>
-      )}
-
+      <DataTable
+        activeId={open?.DBParameterGroupName}
+        caption="DB parameter groups"
+        columns={COLUMNS}
+        empty="No DB parameter groups found."
+        getRowId={(group) => group.DBParameterGroupName ?? ""}
+        onRowClick={(id) => {
+          onSearchChange({ ...CLOSED_PANEL, selected: id })
+        }}
+        onSortChange={setSort}
+        rows={groups}
+        sort={sort}
+      />
       <p className="mt-4 text-xs text-muted-foreground">
         A default group is owned by the service. It is readable and attachable
         but cannot be modified, deleted or tagged — create your own group to
         change a value.
       </p>
-
-      {deleteTarget && (
-        <DeleteDBParameterGroupDialog
-          dbParameterGroupName={deleteTarget}
-          onOpenChange={(open) => {
-            if (!open) {
-              setDeleteTarget(null)
-            }
-          }}
-          open={true}
-        />
-      )}
-    </>
+    </ResourceView>
   )
 }

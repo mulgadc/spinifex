@@ -1,8 +1,11 @@
 import type { Cluster } from "@aws-sdk/client-eks"
 import { Link } from "@tanstack/react-router"
 
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
+import {
+  PanelField,
+  PanelFields,
+  PanelSection,
+} from "@/components/detail-panel"
 
 function ResourceLink({
   to,
@@ -16,7 +19,7 @@ function ResourceLink({
 }) {
   return (
     <Link
-      className="font-mono text-primary underline-offset-2 hover:underline"
+      className="font-mono text-xs text-primary underline-offset-2 hover:underline"
       params={{ id }}
       to={to}
     >
@@ -25,6 +28,7 @@ function ResourceLink({
   )
 }
 
+// The cluster's VPC wiring: endpoint access, subnets and security groups.
 export function NetworkingTab({ cluster }: { cluster: Cluster | undefined }) {
   const vpc = cluster?.resourcesVpcConfig
   const subnetIds = vpc?.subnetIds ?? []
@@ -33,94 +37,79 @@ export function NetworkingTab({ cluster }: { cluster: Cluster | undefined }) {
 
   return (
     <>
-      <DetailCard>
-        <DetailCard.Header>VPC</DetailCard.Header>
-        <DetailCard.Content>
-          <DetailRow
-            label="VPC"
-            value={
-              vpc?.vpcId ? (
-                <ResourceLink id={vpc.vpcId} to="/ec2/describe-vpcs/$id" />
-              ) : undefined
-            }
-          />
-          <DetailRow label="API server endpoint" value={cluster?.endpoint} />
-          <DetailRow
-            label="Public access"
-            value={vpc?.endpointPublicAccess ? "Enabled" : "Disabled"}
-          />
-          <DetailRow
-            label="Private access"
-            value={vpc?.endpointPrivateAccess ? "Enabled" : "Disabled"}
-          />
-          {vpc?.endpointPublicAccess && (
-            <DetailRow
-              label="Public access CIDRs"
-              value={
-                publicAccessCidrs.length > 0 ? (
-                  <div className="space-y-1 font-mono text-xs">
-                    {publicAccessCidrs.map((cidr) => (
-                      <div key={cidr}>{cidr}</div>
-                    ))}
-                  </div>
-                ) : (
-                  "Any (0.0.0.0/0)"
-                )
-              }
-            />
-          )}
-        </DetailCard.Content>
-      </DetailCard>
+      <PanelSection title="Networking">
+        <PanelFields>
+          <PanelField label="VPC">
+            {vpc?.vpcId && (
+              <ResourceLink id={vpc.vpcId} to="/ec2/describe-vpcs/$id" />
+            )}
+          </PanelField>
+          <PanelField copy={cluster?.endpoint} label="API server endpoint" mono>
+            {cluster?.endpoint}
+          </PanelField>
+          <PanelField label="Public access">
+            {vpc?.endpointPublicAccess ? "Enabled" : "Disabled"}
+          </PanelField>
+          <PanelField label="Private access">
+            {vpc?.endpointPrivateAccess ? "Enabled" : "Disabled"}
+          </PanelField>
+          {vpc?.endpointPublicAccess &&
+            (publicAccessCidrs.length > 0 ? (
+              publicAccessCidrs.map((cidr, index) => (
+                <PanelField
+                  key={cidr}
+                  label={index === 0 ? "Public access CIDRs" : ""}
+                  mono
+                >
+                  {cidr}
+                </PanelField>
+              ))
+            ) : (
+              <PanelField label="Public access CIDRs">
+                Any (0.0.0.0/0)
+              </PanelField>
+            ))}
+        </PanelFields>
+      </PanelSection>
 
-      <DetailCard>
-        <DetailCard.Header>Subnets</DetailCard.Header>
-        <DetailCard.Content>
-          {subnetIds.length > 0 ? (
-            <div className="space-y-1">
-              {subnetIds.map((id) => (
-                <ResourceLink id={id} key={id} to="/ec2/describe-subnets/$id" />
-              ))}
-            </div>
+      <PanelSection title={`Subnets (${subnetIds.length})`}>
+        {subnetIds.length > 0 ? (
+          <ul className="flex flex-col gap-1.5 py-1">
+            {subnetIds.map((id) => (
+              <li key={id}>
+                <ResourceLink id={id} to="/ec2/describe-subnets/$id" />
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">No subnets.</p>
+        )}
+      </PanelSection>
+
+      <PanelSection title="Security groups">
+        <PanelFields>
+          <PanelField label="Cluster security group">
+            {vpc?.clusterSecurityGroupId && (
+              <ResourceLink
+                id={vpc.clusterSecurityGroupId}
+                to="/ec2/describe-security-groups/$id"
+              />
+            )}
+          </PanelField>
+          {securityGroupIds.length > 0 ? (
+            securityGroupIds.map((id, index) => (
+              <PanelField
+                key={id}
+                label={index === 0 ? "Additional security groups" : ""}
+              >
+                <ResourceLink id={id} to="/ec2/describe-security-groups/$id" />
+              </PanelField>
+            ))
           ) : (
-            <p className="text-muted-foreground">No subnets.</p>
+            <PanelField label="Additional security groups" />
           )}
-        </DetailCard.Content>
-      </DetailCard>
-
-      <DetailCard>
-        <DetailCard.Header>Security groups</DetailCard.Header>
-        <DetailCard.Content>
-          <DetailRow
-            label="Cluster security group"
-            value={
-              vpc?.clusterSecurityGroupId ? (
-                <ResourceLink
-                  id={vpc.clusterSecurityGroupId}
-                  to="/ec2/describe-security-groups/$id"
-                />
-              ) : undefined
-            }
-          />
-          <DetailRow
-            label="Additional security groups"
-            value={
-              securityGroupIds.length > 0 ? (
-                <div className="space-y-1">
-                  {securityGroupIds.map((id) => (
-                    <ResourceLink
-                      id={id}
-                      key={id}
-                      to="/ec2/describe-security-groups/$id"
-                    />
-                  ))}
-                </div>
-              ) : (
-                "—"
-              )
-            }
-          />
-        </DetailCard.Content>
-      </DetailCard>
+        </PanelFields>
+      </PanelSection>
     </>
   )
 }

@@ -5,7 +5,7 @@ import { type ReactNode, Suspense, useState } from "react"
 
 import { type DataColumn, DataTable } from "@/components/data-table"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { DetailPanel } from "@/components/detail-panel"
+import { DetailPanel, PanelSpinner } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
@@ -16,7 +16,6 @@ import {
   InputGroupAddon,
   InputGroupInput,
 } from "@/components/ui/input-group"
-import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
@@ -360,7 +359,7 @@ export function InstancesPage({
         size="wide"
         title="Launch instance"
       >
-        <Suspense fallback={<Skeleton className="h-96" />}>
+        <Suspense fallback={<PanelSpinner />}>
           <RunInstancesPage onClose={closePanel} />
         </Suspense>
       </DetailPanel>
@@ -486,7 +485,14 @@ export function InstancesPage({
           onRowClick={(id) => {
             onSearchChange({ ...CLOSED_PANEL, selected: id })
           }}
-          onSelectedChange={setSelected}
+          onSelectedChange={(next) => {
+            setSelected(next)
+
+            // The bulk bar and the panel compete for the same attention.
+            if (next.size > 0 && search.selected !== "") {
+              closePanel()
+            }
+          }}
           onSortChange={(next) => {
             onSearchChange({
               sort: `${next.desc ? "-" : ""}${next.column}`,

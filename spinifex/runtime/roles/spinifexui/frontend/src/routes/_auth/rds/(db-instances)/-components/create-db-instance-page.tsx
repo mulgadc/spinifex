@@ -36,6 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { isRdsSystemImage, rdsImportCommand } from "@/lib/system-managed"
 import { useCreateDBInstance } from "@/mutations/rds"
 import {
@@ -531,16 +532,18 @@ export function CreateDBInstancePage() {
             Not available on Spinifex
           </legend>
           {UNAVAILABLE_OPTIONS.map((option) => (
-            <label
+            <div
               className="flex items-start gap-2 text-xs text-muted-foreground"
               key={option.id}
             >
-              <input checked={false} disabled readOnly type="checkbox" />
+              <span className="mt-0.5 flex">
+                <Switch aria-label={option.label} checked={false} disabled />
+              </span>
               <span>
                 {option.label}
                 <span className="mt-0.5 block">{option.note}</span>
               </span>
-            </label>
+            </div>
           ))}
         </fieldset>
 

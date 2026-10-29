@@ -10,6 +10,7 @@ import { PageHeading } from "@/components/page-heading"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -17,6 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { useRegisterTaskDefinition } from "@/mutations/ecs"
 import {
   NETWORK_MODES,
@@ -191,10 +193,20 @@ export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
                 <FieldError errors={[errors.containerGpuCount]} />
               </Field>
             </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" {...field("essential")} />
-              <span>Essential</span>
-            </label>
+            <div className="flex items-center gap-2">
+              <Controller
+                control={control}
+                name="essential"
+                render={({ field: { onChange, value } }) => (
+                  <Switch
+                    checked={value}
+                    id="essential"
+                    onCheckedChange={onChange}
+                  />
+                )}
+              />
+              <Label htmlFor="essential">Essential</Label>
+            </div>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">

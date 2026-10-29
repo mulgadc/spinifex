@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router"
 import { Plus, Trash2 } from "lucide-react"
 import {
   type Control,
+  Controller,
   type FieldErrors,
   type Path,
   type UseFormRegister,
@@ -26,6 +27,8 @@ import {
   FieldTitle,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { useCreateGuardrail, useUpdateGuardrail } from "@/mutations/bedrock"
 import {
@@ -192,19 +195,28 @@ function ContentFiltersFieldArray({ control }: SectionProps) {
   )
 }
 
-function ProfanityFilterField({ register }: SectionProps) {
+function ProfanityFilterField({ control }: SectionProps) {
   return (
-    <Field>
-      <FieldTitle>Managed word list</FieldTitle>
-      <label className="flex items-center gap-2 text-xs">
-        <input
-          aria-label="Block profanity"
-          type="checkbox"
-          {...register("profanityFilter")}
-        />
-        <span>Block profanity using Bedrock&apos;s managed word list</span>
-      </label>
-    </Field>
+    <Controller
+      control={control}
+      name="profanityFilter"
+      render={({ field }) => (
+        <Field>
+          <FieldTitle>Managed word list</FieldTitle>
+          <div className="flex items-center gap-2 text-xs">
+            <Switch
+              aria-label="Block profanity"
+              checked={field.value}
+              id="profanityFilter"
+              onCheckedChange={field.onChange}
+            />
+            <Label htmlFor="profanityFilter">
+              Block profanity using Bedrock&apos;s managed word list
+            </Label>
+          </div>
+        </Field>
+      )}
+    />
   )
 }
 

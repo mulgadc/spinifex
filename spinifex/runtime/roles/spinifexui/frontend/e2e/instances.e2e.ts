@@ -222,6 +222,69 @@ test.describe("instances list", () => {
     await expect(page).toHaveURL(/\/ec2\/describe-instances$/u)
   })
 
+  test("keeps the tab and the console output when the panel expands", async ({
+    api,
+    page,
+  }) => {
+    const log = "[    1.310146] pci 0000:00:08.0: enabling Extended Tags"
+    api.handle(
+      "GetConsoleOutput",
+      ec2(
+        "GetConsoleOutput",
+        `<instanceId>i-0a1b2c3d4e5f60001</instanceId><output>${btoa(log)}</output>`,
+      ),
+    )
+    await page.goto("/ec2/describe-instances?selected=i-0a1b2c3d4e5f60001")
+    const panel = page.getByRole("region", { name: "Instance details" })
+
+    await panel.getByRole("button", { name: "Actions" }).click()
+    await page.getByRole("menuitem", { name: "View console output" }).click()
+    await expect(page).toHaveURL(/tab=settings/u)
+    await expect(panel.getByText("enabling Extended Tags")).toBeVisible()
+    await expect(panel.getByText("[    1.310146]")).toHaveAttribute(
+      "data-tone",
+      "stamp",
+    )
+
+    await panel.getByRole("link", { name: "Open instance page" }).click()
+    await expect(page).toHaveURL(
+      /\/ec2\/describe-instances\/i-0a1b2c3d4e5f60001\?tab=settings$/u,
+    )
+    await expect(page.getByText("enabling Extended Tags")).toBeVisible()
+  })
+
+  test("asks before stopping or rebooting", async ({ page }) => {
+    await page.goto("/ec2/describe-instances?selected=i-0a1b2c3d4e5f60001")
+    const panel = page.getByRole("region", { name: "Instance details" })
+
+    await panel.getByRole("button", { name: "Stop", exact: true }).click()
+    const stop = page.getByRole("alertdialog", { name: "Stop instance?" })
+    await expect(stop).toBeVisible()
+    await stop.getByRole("button", { name: "Cancel" }).click()
+    await expect(stop).toBeHidden()
+
+    await panel.getByRole("button", { name: "Reboot", exact: true }).click()
+    await expect(
+      page.getByRole("alertdialog", { name: "Reboot instance?" }),
+    ).toBeVisible()
+  })
+
+  test("closes the panel when rows are selected", async ({ page }) => {
+    await page.goto("/ec2/describe-instances?selected=i-0a1b2c3d4e5f60001")
+    const panel = page.getByRole("region", { name: "Instance details" })
+    await expect(panel).toBeVisible()
+
+    await page
+      .getByRole("row")
+      .filter({ hasText: "db-primary" })
+      .getByRole("checkbox")
+      .click()
+    await expect(panel).toBeHidden()
+    await expect(
+      page.getByRole("toolbar", { name: "Selection actions" }),
+    ).toBeVisible()
+  })
+
   test("closes the panel from its close button", async ({ page }) => {
     await page.goto("/ec2/describe-instances?selected=i-0a1b2c3d4e5f60001")
     await page.getByRole("button", { name: "Close instance details" }).click()

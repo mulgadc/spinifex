@@ -1,6 +1,7 @@
 import type { GuardrailSummary } from "@aws-sdk/client-bedrock"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
@@ -9,7 +10,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal)
 })
 
-import { guardrailsQueryOptions } from "@/queries/bedrock"
+import { CLOSED_PANEL } from "@/lib/panel-search"
 
 import { GuardrailsPage } from "./guardrails-page"
 
@@ -18,16 +19,19 @@ function renderSeeded(guardrails: GuardrailSummary[]) {
     defaultOptions: { queries: { retry: false } },
   })
 
-  queryClient.setQueryData(guardrailsQueryOptions.queryKey, {
-    $metadata: {},
-    guardrails,
-  })
+  const onSearchChange = vi.fn()
 
-  return render(
+  render(
     <QueryClientProvider client={queryClient}>
-      <GuardrailsPage />
+      <GuardrailsPage
+        guardrails={guardrails}
+        onSearchChange={onSearchChange}
+        search={CLOSED_PANEL}
+      />
     </QueryClientProvider>,
   )
+
+  return onSearchChange
 }
 
 const GUARDRAIL = {
@@ -48,22 +52,18 @@ describe("GuardrailsPage", () => {
     ).toHaveAttribute("href", "/bedrock/list-guardrails/create")
   })
 
-  it("renders guardrail cards sorted by name", () => {
+  it("lists guardrails sorted by name", () => {
     renderSeeded([
       { ...GUARDRAIL, id: "gr-2", name: "zebra" },
       { ...GUARDRAIL, id: "gr-1", name: "alpha" },
     ])
 
-    const links = screen
+    const names = screen
       .getAllByRole("link")
-      .filter(
-        (l) => l.getAttribute("href") !== "/bedrock/list-guardrails/create",
-      )
+      .map((link) => link.textContent)
+      .filter((text) => text !== "Create guardrail")
 
-    expect(links.map((l) => l.getAttribute("href"))).toStrictEqual([
-      "/bedrock/list-guardrails/gr-1",
-      "/bedrock/list-guardrails/gr-2",
-    ])
+    expect(names).toStrictEqual(["alpha", "zebra"])
   })
 
   it("shows empty state when no guardrails", () => {
@@ -71,11 +71,16 @@ describe("GuardrailsPage", () => {
     expect(screen.getByText("No guardrails found.")).toBeInTheDocument()
   })
 
-  it("links each guardrail to its detail route", () => {
-    renderSeeded([GUARDRAIL])
-    expect(
-      screen.getByRole("link", { name: /content-safety/ }),
-    ).toHaveAttribute("href", "/bedrock/list-guardrails/gr-1")
+  it("opens a guardrail's panel from its row", async () => {
+    const onSearchChange = renderSeeded([GUARDRAIL])
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText("gr-1"))
+
+    expect(onSearchChange).toHaveBeenCalledWith({
+      ...CLOSED_PANEL,
+      selected: "gr-1",
+    })
   })
 
   it("shows the guardrail id and status", () => {

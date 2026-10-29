@@ -29,7 +29,9 @@ function renderWithClient() {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <DataSourceCard dataSource={DATA_SOURCE} knowledgeBaseId="kb-1" />
+      <ul>
+        <DataSourceCard dataSource={DATA_SOURCE} knowledgeBaseId="kb-1" />
+      </ul>
     </QueryClientProvider>,
   )
 }
@@ -98,7 +100,7 @@ describe("DataSourceCard", () => {
     await user.click(
       screen.getByRole("button", { name: "Remove data source s3-docs" }),
     )
-    await screen.findByText("Remove Data Source")
+    await screen.findByText("Remove data source")
     const confirmButtons = screen.getAllByRole("button", { name: "Delete" })
     await user.click(confirmButtons.at(-1)!)
 

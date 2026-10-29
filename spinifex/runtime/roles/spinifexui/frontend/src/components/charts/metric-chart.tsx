@@ -1,5 +1,11 @@
 import "uplot/dist/uPlot.min.css"
-import { useCallback, useState, useSyncExternalStore } from "react"
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react"
 import uPlot from "uplot"
 
 export const CHART_COLORS = [
@@ -14,7 +20,8 @@ export type ChartColor = (typeof CHART_COLORS)[number]
 export interface MetricSeries {
   label: string
   color: ChartColor
-  values: readonly number[]
+  // null is a second with no sample, drawn as a gap.
+  values: readonly (number | null)[]
 }
 
 interface MetricChartProps {
@@ -77,8 +84,15 @@ function areaFill(color: string) {
 // UniFi draws curves, not polylines.
 const smooth = uPlot.paths.spline?.()
 
-function latest(values: readonly number[]): number | undefined {
-  return values.at(-1)
+function latest(values: readonly (number | null)[]): number | undefined {
+  return values.findLast((value) => value !== null) ?? undefined
+}
+
+function plotData(
+  times: readonly number[],
+  series: readonly MetricSeries[],
+): uPlot.AlignedData {
+  return [[...times], ...series.map((entry) => [...entry.values])]
 }
 
 // A small UniFi-style area chart: thin strokes over a fading fill, a muted
@@ -94,6 +108,21 @@ export function MetricChart({
 }: MetricChartProps) {
   const theme = useSyncExternalStore(subscribeToRootClass, rootClass)
   const [cursor, setCursor] = useState<number>()
+  const plotRef = useRef<uPlot>(null)
+  // Read when the plot is built; later data arrives through setData, so a
+  // live chart is not torn down every second.
+  const dataRef = useRef(plotData(times, series))
+
+  const seriesKey = series
+    .map((entry) => `${entry.label}:${entry.color}`)
+    .join(",")
+
+  useEffect(() => {
+    const data = plotData(times, series)
+
+    dataRef.current = data
+    plotRef.current?.setData(data)
+  }, [times, series])
 
   // A ref callback with cleanup: the plot lives exactly as long as its element,
   // which the theme key below replaces so the canvas repaints in new colours.
@@ -144,11 +173,12 @@ export function MetricChart({
           ],
           series: [
             {},
-            ...series.map((entry) => {
-              const color = token(styles, entry.color)
+            ...seriesKey.split(",").map((key) => {
+              const [label = "", colorName = ""] = key.split(":")
+              const color = token(styles, colorName)
 
               return {
-                label: entry.label,
+                label,
                 stroke: color,
                 width: 1.5,
                 paths: smooth,
@@ -165,9 +195,11 @@ export function MetricChart({
             ],
           },
         },
-        [[...times], ...series.map((entry) => [...entry.values])],
+        dataRef.current,
         element,
       )
+
+      plotRef.current = plot
 
       const observer = new ResizeObserver(() => {
         plot.setSize({ width: element.clientWidth, height })
@@ -178,9 +210,10 @@ export function MetricChart({
       return () => {
         observer.disconnect()
         plot.destroy()
+        plotRef.current = null
       }
     },
-    [times, series, format, height, max],
+    [seriesKey, format, height, max],
   )
 
   return (
@@ -190,7 +223,9 @@ export function MetricChart({
         <span className="flex flex-wrap gap-1.5">
           {series.map((entry) => {
             const value =
-              cursor === undefined ? latest(entry.values) : entry.values[cursor]
+              cursor === undefined
+                ? latest(entry.values)
+                : (entry.values[cursor] ?? undefined)
 
             return (
               <span

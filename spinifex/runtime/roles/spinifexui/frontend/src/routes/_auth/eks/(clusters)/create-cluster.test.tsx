@@ -83,8 +83,17 @@ describe("CreateClusterPage", () => {
 
   it("defaults endpoint access to public with an open CIDR", () => {
     renderPage()
-    expect(screen.getByLabelText("Enable public access")).toBeChecked()
-    expect(screen.getByLabelText("Enable private access")).not.toBeChecked()
+    expect(
+      screen.getByRole("switch", { name: "Enable public access" }),
+    ).toBeChecked()
+    expect(
+      screen.getByRole("switch", { name: "Enable private access" }),
+    ).not.toBeChecked()
+    expect(
+      screen.getByRole("switch", {
+        name: "Grant the cluster creator admin permissions",
+      }),
+    ).toBeChecked()
     expect(screen.getByLabelText("Public access CIDR 1")).toHaveValue(
       "0.0.0.0/0",
     )
@@ -94,7 +103,9 @@ describe("CreateClusterPage", () => {
     const user = userEvent.setup()
     renderPage()
 
-    await user.click(screen.getByLabelText("Enable public access"))
+    await user.click(
+      screen.getByRole("switch", { name: "Enable public access" }),
+    )
 
     expect(
       screen.queryByLabelText("Public access CIDR 1"),

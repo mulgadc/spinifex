@@ -11,8 +11,11 @@ import {
   optionalFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
+import {
+  PanelField,
+  PanelFields,
+  PanelSection,
+} from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
@@ -284,28 +287,26 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
       )}
 
       <div className="max-w-4xl space-y-6">
-        <DetailCard>
-          <DetailCard.Header>Restoring From</DetailCard.Header>
-          <DetailCard.Content>
-            <DetailRow label="Snapshot" value={dbSnapshotIdentifier} />
-            <DetailRow
-              label="Source DB instance"
-              value={snapshot.DBInstanceIdentifier}
-            />
-            <DetailRow
-              label="Engine"
-              value={[engine, snapshot.EngineVersion].filter(Boolean).join(" ")}
-            />
-            <DetailRow
-              label="Master username"
-              value={snapshot.MasterUsername}
-            />
-            <DetailRow
-              label="Snapshot storage"
-              value={snapshotStorage ? `${snapshotStorage} GiB` : undefined}
-            />
-          </DetailCard.Content>
-        </DetailCard>
+        <PanelSection title="Restoring from">
+          <PanelFields>
+            <PanelField label="Snapshot" mono>
+              {dbSnapshotIdentifier}
+            </PanelField>
+            <PanelField label="Source DB instance" mono>
+              {snapshot.DBInstanceIdentifier}
+            </PanelField>
+            <PanelField label="Engine">
+              {[engine, snapshot.EngineVersion].filter(Boolean).join(" ") ||
+                undefined}
+            </PanelField>
+            <PanelField label="Master username">
+              {snapshot.MasterUsername}
+            </PanelField>
+            <PanelField label="Snapshot storage">
+              {snapshotStorage ? `${snapshotStorage} GiB` : undefined}
+            </PanelField>
+          </PanelFields>
+        </PanelSection>
 
         <form className="space-y-6" onSubmit={handleSubmit(onSubmit)}>
           <TextField

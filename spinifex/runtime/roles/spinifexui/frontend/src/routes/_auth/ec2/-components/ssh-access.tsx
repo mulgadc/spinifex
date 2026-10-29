@@ -2,6 +2,7 @@ import type { Image, Instance } from "@aws-sdk/client-ec2"
 import type { ReactNode } from "react"
 
 import { PanelField } from "@/components/detail-panel"
+import { InfoList } from "@/components/info-tip"
 import {
   buildSSHCommand,
   resolveSSHLogin,
@@ -25,7 +26,7 @@ function SSHNote({ children }: { children: ReactNode }) {
 // user is the part nobody can guess: it comes from the AMI, not from Spinifex.
 export function SSHAccess({ instance, image }: SSHAccessProps) {
   const { address, reachability } = resolveSSHTarget(instance)
-  const { user } = resolveSSHLogin(image)
+  const { user, distro } = resolveSSHLogin(image)
 
   if (reachability === "none") {
     return null
@@ -42,7 +43,25 @@ export function SSHAccess({ instance, image }: SSHAccessProps) {
       <PanelField copy={command} label="SSH" mono>
         <span title={command}>{command}</span>
       </PanelField>
-      <PanelField label="Login user" mono>
+      <PanelField
+        info={
+          <>
+            <p>
+              The account cloud-init creates in the guest. It comes from the
+              image, not from Spinifex.
+            </p>
+            <InfoList
+              items={[
+                ["Image", image?.Name],
+                ["Distribution", distro],
+                ["User", user || "Unknown"],
+              ]}
+            />
+          </>
+        }
+        label="Login user"
+        mono
+      >
         {user || undefined}
       </PanelField>
       {reachability === "private" && (

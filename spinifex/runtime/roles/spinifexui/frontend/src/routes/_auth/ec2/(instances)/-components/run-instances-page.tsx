@@ -1,8 +1,13 @@
-import type { LaunchTemplateVersion } from "@aws-sdk/client-ec2"
+import type {
+  InstanceTypeInfo,
+  LaunchTemplateVersion,
+  Subnet,
+} from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { ChevronDown } from "lucide-react"
+import { Cpu } from "lucide-react"
+import { useState } from "react"
 import {
   Controller,
   type DeepPartialSkipArrayKey,
@@ -20,16 +25,13 @@ import {
   optionalFlag,
   type CommandPart,
 } from "@/components/cli-command-panel"
+import { PanelSection } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { GpuInstanceTypeSelect } from "@/components/gpu-instance-type-select"
+import { InfoTip } from "@/components/info-tip"
 import { PageHeading } from "@/components/page-heading"
 import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
 import { Button } from "@/components/ui/button"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
 import {
   Field,
   FieldDescription,
@@ -37,6 +39,7 @@ import {
   FieldTitle,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -44,6 +47,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
+import { getRegion } from "@/lib/cluster-config"
+import {
+  type Architecture,
+  buildImageCatalog,
+  imageArchitecture,
+  imageArchitectures,
+  instanceTypeSupports,
+  latestOfDistro,
+  parseImageName,
+  preferredImage,
+} from "@/lib/os-images"
 import { isSystemManagedImage } from "@/lib/system-managed"
 import { formatVRAMMiB } from "@/lib/utils"
 import { useCreateInstance } from "@/mutations/ec2"
@@ -66,15 +81,20 @@ import {
   nextLaunchWizardName,
 } from "@/types/ec2"
 
+import { ChoiceTile, ChoiceTiles } from "./choice-tile"
+import { ImagePicker } from "./image-picker"
+import { LocationTile } from "./location-tile"
+
 const DEFAULT_ROOT_DEVICE_NAME = "/dev/sda1"
 const DEFAULT_VOLUME_TYPE = "gp3"
 const MIN_VOLUME_SIZE_GIB = 1
 const MAX_VOLUME_SIZE_GIB = 16_384
+const DEFAULT_SUBNET = "default"
 
-const INBOUND_RULE_CHECKBOXES = [
-  { name: "allowSsh", label: "Allow SSH", text: "Allow SSH (tcp/22)" },
-  { name: "allowHttp", label: "Allow HTTP", text: "Allow HTTP (tcp/80)" },
-  { name: "allowHttps", label: "Allow HTTPS", text: "Allow HTTPS (tcp/443)" },
+const INBOUND_RULE_SWITCHES = [
+  { name: "allowSsh", label: "Allow SSH", text: "SSH (tcp/22)" },
+  { name: "allowHttp", label: "Allow HTTP", text: "HTTP (tcp/80)" },
+  { name: "allowHttps", label: "Allow HTTPS", text: "HTTPS (tcp/443)" },
 ] as const
 
 interface RunInstancesPageProps {
@@ -120,6 +140,7 @@ export function RunInstancesPage({
     (image) => !isSystemManagedImage(image),
   )
 
+  const allInstanceTypes = instanceTypesData.InstanceTypes ?? []
   const keyPairs = keyPairsData.KeyPairs ?? []
   const subnets = subnetsData.Subnets ?? []
   const placementGroups = pgData.PlacementGroups ?? []
@@ -128,13 +149,18 @@ export function RunInstancesPage({
   const launchTemplates = ltData.LaunchTemplates ?? []
   const defaultVpcId = (vpcs.find((v) => v.IsDefault) ?? vpcs[0])?.VpcId
 
+  // RunInstances with no subnet lands in the account's default subnet, which
+  // DescribeSubnets marks DefaultForAz.
+  const defaultSubnet = subnets.find((s) => s.DefaultForAz)
+  const otherSubnets = subnets.filter((s) => s !== defaultSubnet)
+
   const defaultSgName = nextLaunchWizardName(
     securityGroups.map((sg) => sg.GroupName ?? ""),
   )
 
   const instanceTypeCounts: Record<string, number> = {}
 
-  for (const type of instanceTypesData.InstanceTypes ?? []) {
+  for (const type of allInstanceTypes) {
     const typeName = type.InstanceType
 
     if (!typeName) {
@@ -144,15 +170,26 @@ export function RunInstancesPage({
     instanceTypeCounts[typeName] = (instanceTypeCounts[typeName] ?? 0) + 1
   }
 
-  const uniqueInstanceTypes = Object.keys(instanceTypeCounts).toSorted()
+  const hasCompute = Object.keys(instanceTypeCounts).length > 0
 
-  // Compute default values from loaded data
-  const defaultImageId = images[0]?.ImageId
+  // The architecture choice appears only when the catalog holds both; it
+  // narrows the images and the instance types together, so a launch cannot
+  // pair an arm64 type with an x86_64 image.
+  const architectures = imageArchitectures(images)
+
+  const initialArch =
+    architectures.find((candidate) =>
+      allInstanceTypes.some((type) => instanceTypeSupports(type, candidate)),
+    ) ?? architectures[0]
+
+  const [arch, setArch] = useState<Architecture | undefined>(initialArch)
+  const catalog = buildImageCatalog(images, arch)
+  const archTypes = typesForArchitecture(allInstanceTypes, arch)
+  const archTypeNames = uniqueTypeNames(archTypes)
+
+  const defaultImageId = preferredImage(catalog)?.ImageId
   const defaultKeyName = keyPairs[0]?.KeyName
-
-  const defaultInstanceType =
-    uniqueInstanceTypes.find((type) => type.endsWith(".nano")) ??
-    uniqueInstanceTypes[0]
+  const defaultInstanceType = defaultTypeName(archTypeNames)
 
   const defaultRoot = getRootMapping(
     images.find((img) => img.ImageId === defaultImageId),
@@ -163,6 +200,7 @@ export function RunInstancesPage({
     handleSubmit,
     register,
     setValue,
+    getValues,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(
@@ -177,9 +215,8 @@ export function RunInstancesPage({
           },
         )
         .superRefine((data, ctx) => {
-          const minSize = getRootMapping(
-            images.find((img) => img.ImageId === data.imageId),
-          ).snapshotSize
+          const image = images.find((img) => img.ImageId === data.imageId)
+          const minSize = getRootMapping(image).snapshotSize
 
           if (
             data.rootVolumeSize !== undefined &&
@@ -190,6 +227,25 @@ export function RunInstancesPage({
               code: "custom",
               message: `Volume size must be at least ${minSize} GiB (AMI snapshot size)`,
               path: ["rootVolumeSize"],
+            })
+          }
+
+          const imageArch = image && imageArchitecture(image)
+
+          const type = allInstanceTypes.find(
+            (t) => t.InstanceType === data.instanceType,
+          )
+
+          if (
+            !data.launchTemplateId &&
+            type &&
+            imageArch &&
+            !instanceTypeSupports(type, imageArch)
+          ) {
+            ctx.addIssue({
+              code: "custom",
+              message: `${data.instanceType} cannot run a ${imageArch} image`,
+              path: ["instanceType"],
             })
           }
         }),
@@ -221,7 +277,7 @@ export function RunInstancesPage({
     ? (instanceTypeCounts[selectedInstanceType] ?? 1)
     : 1
 
-  const selectedTypeInfo = instanceTypesData.InstanceTypes?.find(
+  const selectedTypeInfo = allInstanceTypes.find(
     (t) => t.InstanceType === selectedInstanceType,
   )
 
@@ -264,12 +320,57 @@ export function RunInstancesPage({
     selectedTemplateVersion,
   )?.LaunchTemplateData
 
-  const effectiveVpcId =
-    subnets.find((s) => s.SubnetId === selectedSubnetId)?.VpcId ?? defaultVpcId
+  const effectiveSubnet = selectedSubnetId
+    ? subnets.find((s) => s.SubnetId === selectedSubnetId)
+    : defaultSubnet
+
+  const effectiveVpcId = effectiveSubnet?.VpcId ?? defaultVpcId
 
   const vpcSecurityGroups = effectiveVpcId
     ? securityGroups.filter((sg) => sg.VpcId === effectiveVpcId)
     : securityGroups
+
+  function selectImage(imageId: string) {
+    setValue("imageId", imageId, { shouldValidate: !!errors.imageId })
+    // Re-prefill DeviceName for the new AMI. Size, type and
+    // delete-on-termination stay blank so an unchanged form
+    // sends no BlockDeviceMappings.
+    setValue(
+      "rootDeviceName",
+      getRootMapping(images.find((img) => img.ImageId === imageId)).deviceName,
+    )
+  }
+
+  // Changing architecture keeps the chosen distro where the other
+  // architecture has it, and swaps any type that cannot run the new images.
+  function selectArchitecture(next: Architecture) {
+    setArch(next)
+
+    const nextCatalog = buildImageCatalog(images, next)
+    const current = images.find((img) => img.ImageId === getValues("imageId"))
+    const currentArch = current && imageArchitecture(current)
+
+    if (!current || (currentArch && currentArch !== next)) {
+      const replacement =
+        latestOfDistro(nextCatalog, parseImageName(current?.Name)?.distro) ??
+        preferredImage(nextCatalog)
+
+      selectImage(replacement?.ImageId ?? "")
+    }
+
+    const type = allInstanceTypes.find(
+      (t) => t.InstanceType === getValues("instanceType"),
+    )
+
+    if (!type || !instanceTypeSupports(type, next)) {
+      setValue(
+        "instanceType",
+        defaultTypeName(
+          uniqueTypeNames(typesForArchitecture(allInstanceTypes, next)),
+        ) ?? "",
+      )
+    }
+  }
 
   const onSubmit = async (data: CreateInstanceFormData) => {
     // Launch wholly from the template (plus count). Build params from only the
@@ -288,6 +389,28 @@ export function RunInstancesPage({
     await leave()
   }
 
+  const showTemplates = launchTemplates.length > 0 || !!launchTemplateId
+
+  const countField = (
+    <Field>
+      <FieldTitle>
+        <label htmlFor="count">Number of Instances</label>
+      </FieldTitle>
+      <Input
+        aria-describedby="count-description"
+        aria-invalid={!!errors.count}
+        id="count"
+        type="number"
+        {...register("count", { valueAsNumber: true })}
+      />
+      <p className="text-xs text-muted-foreground" id="count-description">
+        {selectedInstanceType &&
+          `Available capacity for ${selectedInstanceType}: ${maxCount}`}
+      </p>
+      <FieldError errors={[errors.count]} />
+    </Field>
+  )
+
   return (
     <>
       {!onClose && (
@@ -297,12 +420,10 @@ export function RunInstancesPage({
         </>
       )}
 
-      {/* Handle error when no instance types available */}
-      {uniqueInstanceTypes.length === 0 && !selectedTemplateId && (
+      {!hasCompute && !selectedTemplateId && (
         <ErrorBanner msg="No compute available. No new instances can be created until compute is available." />
       )}
 
-      {/* Handle error after submission */}
       {createMutation.error && (
         <ErrorBanner
           error={createMutation.error}
@@ -310,457 +431,571 @@ export function RunInstancesPage({
         />
       )}
 
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
-        {/* Launch template */}
-        <Field>
-          <FieldTitle>
-            <label htmlFor="launchTemplateId">Launch Template</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="launchTemplateId"
-            render={({ field }) => (
-              <Select
-                onValueChange={(value) => {
-                  field.onChange(value === "none" ? undefined : value)
-                }}
-                value={field.value ?? "none"}
-              >
-                <SelectTrigger className="w-full" id="launchTemplateId">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">none</SelectItem>
-                  {launchTemplates.map((lt) => (
-                    <SelectItem
-                      key={lt.LaunchTemplateId}
-                      value={lt.LaunchTemplateId ?? ""}
-                    >
-                      {lt.LaunchTemplateName ?? lt.LaunchTemplateId}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-        </Field>
-
-        {selectedTemplateId && (
-          <Field>
-            <FieldTitle>
-              <label htmlFor="launchTemplateVersion">Version</label>
-            </FieldTitle>
-            <Controller
-              control={control}
-              name="launchTemplateVersion"
-              render={({ field }) => (
-                <Select
-                  onValueChange={field.onChange}
-                  value={field.value ?? "$Default"}
-                >
-                  <SelectTrigger className="w-full" id="launchTemplateVersion">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="$Default">$Default</SelectItem>
-                    <SelectItem value="$Latest">$Latest</SelectItem>
-                    {templateVersions.map((version) => (
-                      <SelectItem
-                        key={version.VersionNumber}
-                        value={String(version.VersionNumber)}
-                      >
-                        v{version.VersionNumber}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-            {resolvedTemplateData && (
-              <div className="mt-3 space-y-1 rounded-md border border-border p-3 text-xs">
-                <p className="text-muted-foreground">
-                  Configuration from this version:
-                </p>
-                <p>
-                  Image:{" "}
-                  <span className="font-mono">
-                    {resolvedTemplateData.ImageId ?? "—"}
-                  </span>
-                </p>
-                <p>
-                  Instance type:{" "}
-                  <span className="font-mono">
-                    {resolvedTemplateData.InstanceType ?? "—"}
-                  </span>
-                </p>
-                <p>
-                  Key pair:{" "}
-                  <span className="font-mono">
-                    {resolvedTemplateData.KeyName ?? "—"}
-                  </span>
-                </p>
-              </div>
-            )}
-          </Field>
-        )}
-
-        {!selectedTemplateId && (
-          <>
-            {/* ImageSelection */}
-            <Field>
-              <FieldTitle>
-                <label htmlFor="imageId">Image</label>
-              </FieldTitle>
-              <Controller
-                control={control}
-                name="imageId"
-                render={({ field }) => {
-                  const selectedImage = images.find(
-                    (img) => img.ImageId === field.value,
-                  )
-
-                  return (
+      <form
+        className="flex max-w-4xl flex-col gap-4"
+        onSubmit={handleSubmit(onSubmit)}
+      >
+        {showTemplates && (
+          <PanelSection title="Launch template">
+            <div className="flex flex-col gap-4">
+              <Field>
+                <FieldTitle>
+                  <label htmlFor="launchTemplateId">Launch Template</label>
+                  <InfoTip label="Launch template">
+                    A template supplies the image, instance type, key pair and
+                    network settings, so those fields are hidden while one is
+                    chosen.
+                  </InfoTip>
+                </FieldTitle>
+                <Controller
+                  control={control}
+                  name="launchTemplateId"
+                  render={({ field }) => (
                     <Select
                       onValueChange={(value) => {
-                        field.onChange(value)
-                        // Re-prefill DeviceName for the new AMI. Size, type and
-                        // delete-on-termination stay blank so an unchanged form
-                        // sends no BlockDeviceMappings.
-                        setValue(
-                          "rootDeviceName",
-                          getRootMapping(
-                            images.find((img) => img.ImageId === value),
-                          ).deviceName,
-                        )
+                        field.onChange(value === "none" ? undefined : value)
                       }}
-                      value={field.value ?? ""}
+                      value={field.value ?? "none"}
                     >
-                      <SelectTrigger
-                        aria-invalid={!!errors.imageId}
-                        className="w-full"
-                        id="imageId"
-                      >
-                        <SelectValue>
-                          {selectedImage
-                            ? `${selectedImage.Name ?? "Unnamed"} (${selectedImage.Architecture})`
-                            : ""}
-                        </SelectValue>
+                      <SelectTrigger className="w-full" id="launchTemplateId">
+                        <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {images.map((image) => (
+                        <SelectItem value="none">none</SelectItem>
+                        {launchTemplates.map((lt) => (
                           <SelectItem
-                            key={image.ImageId}
-                            value={image.ImageId ?? ""}
+                            key={lt.LaunchTemplateId}
+                            value={lt.LaunchTemplateId ?? ""}
                           >
-                            {image.Name ?? "Unnamed"} ({image.Architecture})
+                            {lt.LaunchTemplateName ?? lt.LaunchTemplateId}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                  )
-                }}
-              />
-              <FieldError errors={[errors.imageId]} />
-            </Field>
+                  )}
+                />
+              </Field>
 
-            {/* Instance Type */}
-            <Field>
-              <FieldTitle>
-                <label htmlFor="instanceType">Instance Type</label>
-              </FieldTitle>
-              <Controller
-                control={control}
-                name="instanceType"
-                render={({ field }) => (
-                  <GpuInstanceTypeSelect
-                    aria-invalid={!!errors.instanceType}
-                    availabilityByType={instanceTypeCounts}
-                    className="w-full"
-                    id="instanceType"
-                    instanceTypes={instanceTypesData.InstanceTypes ?? []}
-                    onValueChange={field.onChange}
-                    value={field.value ?? ""}
-                  />
-                )}
-              />
-              {selectedGpuDevice && (
-                <FieldDescription>
-                  GPU: {selectedGpuDevice.Name}
-                  {selectedGpuDevice.MemoryInfo?.SizeInMiB !== undefined &&
-                    ` · ${formatVRAMMiB(selectedGpuDevice.MemoryInfo.SizeInMiB)} VRAM`}
-                  {selectedGpuMigProfile &&
-                    ` · MIG ${selectedGpuMigProfile} slice`}
-                </FieldDescription>
-              )}
-              <FieldError errors={[errors.instanceType]} />
-            </Field>
-
-            {/* Key Pair */}
-            <Field>
-              <FieldTitle>
-                <label htmlFor="keyName">Key Pair</label>
-              </FieldTitle>
-              <Controller
-                control={control}
-                name="keyName"
-                render={({ field }) => (
-                  <Select
-                    onValueChange={field.onChange}
-                    value={field.value ?? ""}
-                  >
-                    <SelectTrigger
-                      aria-invalid={!!errors.keyName}
-                      className="w-full"
-                      id="keyName"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {keyPairs.map((keyPair) => (
-                        <SelectItem
-                          key={keyPair.KeyPairId}
-                          value={keyPair.KeyName ?? ""}
+              {selectedTemplateId && (
+                <Field>
+                  <FieldTitle>
+                    <label htmlFor="launchTemplateVersion">Version</label>
+                  </FieldTitle>
+                  <Controller
+                    control={control}
+                    name="launchTemplateVersion"
+                    render={({ field }) => (
+                      <Select
+                        onValueChange={field.onChange}
+                        value={field.value ?? "$Default"}
+                      >
+                        <SelectTrigger
+                          className="w-full"
+                          id="launchTemplateVersion"
                         >
-                          {keyPair.KeyName}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-              <FieldError errors={[errors.keyName]} />
-            </Field>
-
-            {/* Subnet */}
-            <Field>
-              <FieldTitle>
-                <label htmlFor="subnetId">Subnet</label>
-              </FieldTitle>
-              <Controller
-                control={control}
-                name="subnetId"
-                render={({ field }) => (
-                  <Select
-                    onValueChange={(value) => {
-                      field.onChange(value === "none" ? undefined : value)
-                    }}
-                    value={field.value ?? "none"}
-                  >
-                    <SelectTrigger className="w-full" id="subnetId">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">none</SelectItem>
-                      {subnets.map((subnet) => (
-                        <SelectItem
-                          key={subnet.SubnetId}
-                          value={subnet.SubnetId ?? ""}
-                        >
-                          {subnet.SubnetId}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            </Field>
-
-            {/* Security Groups */}
-            <Field>
-              <FieldTitle>Security Group</FieldTitle>
-              <FieldDescription>
-                {effectiveVpcId
-                  ? `Applies to VPC ${effectiveVpcId}`
-                  : "No VPC resolved — select a subnet"}
-              </FieldDescription>
-              <div className="flex gap-4 text-sm">
-                <label className="flex items-center gap-2">
-                  <input
-                    aria-label="Create new security group"
-                    type="radio"
-                    value="create"
-                    {...register("securityGroupMode")}
-                  />
-                  Create new
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    aria-label="Select existing security group"
-                    type="radio"
-                    value="existing"
-                    {...register("securityGroupMode")}
-                  />
-                  Select existing
-                </label>
-              </div>
-
-              {sgMode === "create" ? (
-                <div className="mt-3 space-y-4 rounded-md border border-border p-4">
-                  <Field>
-                    <FieldTitle>
-                      <label htmlFor="newSgName">Name</label>
-                    </FieldTitle>
-                    <Input
-                      aria-invalid={!!errors.newSgName}
-                      id="newSgName"
-                      type="text"
-                      {...register("newSgName")}
-                    />
-                    <FieldError errors={[errors.newSgName]} />
-                  </Field>
-
-                  <Field>
-                    <FieldTitle>
-                      <label htmlFor="newSgDescription">Description</label>
-                    </FieldTitle>
-                    <Input
-                      id="newSgDescription"
-                      type="text"
-                      {...register("newSgDescription")}
-                    />
-                  </Field>
-
-                  <Field>
-                    <FieldTitle>Inbound rules</FieldTitle>
-                    <div className="space-y-1">
-                      {INBOUND_RULE_CHECKBOXES.map(({ name, label, text }) => (
-                        <label
-                          className="flex items-center gap-2 text-sm"
-                          key={name}
-                        >
-                          <input
-                            aria-label={label}
-                            type="checkbox"
-                            {...register(name)}
-                          />
-                          {text}
-                        </label>
-                      ))}
-                    </div>
-                  </Field>
-
-                  <Field>
-                    <FieldTitle>Source</FieldTitle>
-                    <div className="flex gap-4 text-sm">
-                      <label className="flex items-center gap-2">
-                        <input
-                          aria-label="Source anywhere"
-                          type="radio"
-                          value="anywhere"
-                          {...register("ruleSource")}
-                        />
-                        Anywhere (0.0.0.0/0)
-                      </label>
-                      <label className="flex items-center gap-2">
-                        <input
-                          aria-label="Source custom CIDR"
-                          type="radio"
-                          value="custom"
-                          {...register("ruleSource")}
-                        />
-                        Custom CIDR
-                      </label>
-                    </div>
-                    {ruleSource === "custom" && (
-                      <div className="mt-2">
-                        <Input
-                          aria-invalid={!!errors.customCidr}
-                          placeholder="203.0.113.0/24"
-                          type="text"
-                          {...register("customCidr")}
-                        />
-                        <FieldError errors={[errors.customCidr]} />
-                      </div>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="$Default">$Default</SelectItem>
+                          <SelectItem value="$Latest">$Latest</SelectItem>
+                          {templateVersions.map((version) => (
+                            <SelectItem
+                              key={version.VersionNumber}
+                              value={String(version.VersionNumber)}
+                            >
+                              v{version.VersionNumber}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     )}
-                  </Field>
-                </div>
-              ) : (
-                <div className="mt-3">
-                  <SecurityGroupCheckboxes
-                    emptyText="No security groups in the resolved VPC."
-                    groups={vpcSecurityGroups}
-                    onChange={(next) => {
-                      setValue("securityGroupIds", next, {
-                        shouldValidate: true,
-                      })
-                    }}
-                    selected={selectedSgIds}
                   />
-                  <FieldError errors={[errors.securityGroupIds]} />
-                </div>
+                  {resolvedTemplateData && (
+                    <div className="mt-3 space-y-1 rounded-md border border-border p-3 text-xs">
+                      <p className="text-muted-foreground">
+                        Configuration from this version:
+                      </p>
+                      <p>
+                        Image:{" "}
+                        <span className="font-mono">
+                          {resolvedTemplateData.ImageId ?? "—"}
+                        </span>
+                      </p>
+                      <p>
+                        Instance type:{" "}
+                        <span className="font-mono">
+                          {resolvedTemplateData.InstanceType ?? "—"}
+                        </span>
+                      </p>
+                      <p>
+                        Key pair:{" "}
+                        <span className="font-mono">
+                          {resolvedTemplateData.KeyName ?? "—"}
+                        </span>
+                      </p>
+                    </div>
+                  )}
+                </Field>
               )}
-            </Field>
 
-            {/* Placement Group */}
-            <Field>
-              <FieldTitle>
-                <label htmlFor="placementGroupName">Placement Group</label>
-              </FieldTitle>
-              <Controller
-                control={control}
-                name="placementGroupName"
-                render={({ field }) => (
-                  <Select
-                    onValueChange={(value) => {
-                      field.onChange(value === "none" ? undefined : value)
-                    }}
-                    value={field.value ?? "none"}
-                  >
-                    <SelectTrigger className="w-full" id="placementGroupName">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">none</SelectItem>
-                      {placementGroups.map((pg) => (
-                        <SelectItem key={pg.GroupId} value={pg.GroupName ?? ""}>
-                          {pg.GroupName} ({pg.Strategy})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            </Field>
-          </>
+              {selectedTemplateId && countField}
+            </div>
+          </PanelSection>
         )}
-
-        {/* Instance Count */}
-        <Field>
-          <FieldTitle>
-            <label htmlFor="count">Number of Instances</label>
-          </FieldTitle>
-          <Input
-            aria-describedby="count-description"
-            aria-invalid={!!errors.count}
-            id="count"
-            type="number"
-            {...register("count", { valueAsNumber: true })}
-          />
-          <p className="text-xs text-muted-foreground" id="count-description">
-            {selectedInstanceType &&
-              `Available capacity for ${selectedInstanceType}: ${maxCount}`}
-          </p>
-          <FieldError errors={[errors.count]} />
-        </Field>
 
         {!selectedTemplateId && (
           <>
-            {/* Block Device Mappings (root volume) — collapsed by default */}
-            <Collapsible>
-              <CollapsibleTrigger
-                className="group"
-                variant="field"
-                render={
-                  <button
-                    aria-label="Block Device Mappings (root volume)"
-                    type="button"
+            <PanelSection title="Image">
+              <div className="flex flex-col gap-4">
+                {architectures.length > 1 && (
+                  <Field>
+                    <FieldTitle>
+                      Architecture
+                      <InfoTip label="Architecture">
+                        An instance type runs one architecture, so choosing one
+                        narrows both the images and the instance types to those
+                        that can run together.
+                      </InfoTip>
+                    </FieldTitle>
+                    <ChoiceTiles columns={2} label="Architecture">
+                      {architectures.map((candidate) => (
+                        <ChoiceTile
+                          checked={arch === candidate}
+                          description={
+                            candidate === "arm64" ? "64-bit Arm" : "64-bit x86"
+                          }
+                          icon={
+                            <Cpu
+                              aria-hidden
+                              className="size-5 text-muted-foreground"
+                            />
+                          }
+                          key={candidate}
+                          label={candidate}
+                          layout="inline"
+                          onSelect={() => {
+                            selectArchitecture(candidate)
+                          }}
+                        />
+                      ))}
+                    </ChoiceTiles>
+                  </Field>
+                )}
+
+                <Field>
+                  <FieldTitle>Operating system</FieldTitle>
+                  <ImagePicker
+                    arch={arch}
+                    images={images}
+                    invalid={!!errors.imageId}
+                    onChange={selectImage}
+                    value={selectedImageId ?? ""}
                   />
-                }
-              >
-                <span>Block Device Mappings (root volume)</span>
-                <ChevronDown className="size-3.5 text-muted-foreground transition-transform group-data-[panel-open]:rotate-180" />
-              </CollapsibleTrigger>
-              <CollapsibleContent className="mt-3" variant="panel">
+                  <FieldError errors={[errors.imageId]} />
+                </Field>
+              </div>
+            </PanelSection>
+
+            <PanelSection title="Instance">
+              <div className="flex flex-col gap-4">
+                <Field>
+                  <FieldTitle>
+                    <label htmlFor="instanceType">Instance Type</label>
+                    <InfoTip label="Instance type">
+                      vCPUs and memory for the instance, with the free capacity
+                      for each type. Only types that can run the chosen
+                      image&apos;s architecture are listed.
+                    </InfoTip>
+                  </FieldTitle>
+                  <Controller
+                    control={control}
+                    name="instanceType"
+                    render={({ field }) => (
+                      <GpuInstanceTypeSelect
+                        aria-invalid={!!errors.instanceType}
+                        availabilityByType={instanceTypeCounts}
+                        className="w-full"
+                        id="instanceType"
+                        instanceTypes={archTypes}
+                        onValueChange={field.onChange}
+                        value={field.value ?? ""}
+                      />
+                    )}
+                  />
+                  {hasCompute && archTypeNames.length === 0 && arch && (
+                    <FieldDescription>
+                      No instance types on this cluster run {arch}.
+                    </FieldDescription>
+                  )}
+                  {selectedGpuDevice && (
+                    <FieldDescription>
+                      GPU: {selectedGpuDevice.Name}
+                      {selectedGpuDevice.MemoryInfo?.SizeInMiB !== undefined &&
+                        ` · ${formatVRAMMiB(selectedGpuDevice.MemoryInfo.SizeInMiB)} VRAM`}
+                      {selectedGpuMigProfile &&
+                        ` · MIG ${selectedGpuMigProfile} slice`}
+                    </FieldDescription>
+                  )}
+                  <FieldError errors={[errors.instanceType]} />
+                </Field>
+
+                {countField}
+
+                <Field>
+                  <FieldTitle>
+                    <label htmlFor="keyName">Key Pair</label>
+                  </FieldTitle>
+                  <Controller
+                    control={control}
+                    name="keyName"
+                    render={({ field }) => (
+                      <Select
+                        onValueChange={field.onChange}
+                        value={field.value ?? ""}
+                      >
+                        <SelectTrigger
+                          aria-invalid={!!errors.keyName}
+                          className="w-full"
+                          id="keyName"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {keyPairs.map((keyPair) => (
+                            <SelectItem
+                              key={keyPair.KeyPairId}
+                              value={keyPair.KeyName ?? ""}
+                            >
+                              {keyPair.KeyName}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                  <FieldError errors={[errors.keyName]} />
+                </Field>
+
+                <Field>
+                  <FieldTitle>
+                    <label htmlFor="placementGroupName">Placement Group</label>
+                  </FieldTitle>
+                  <Controller
+                    control={control}
+                    name="placementGroupName"
+                    render={({ field }) => (
+                      <Select
+                        onValueChange={(value) => {
+                          field.onChange(value === "none" ? undefined : value)
+                        }}
+                        value={field.value ?? "none"}
+                      >
+                        <SelectTrigger
+                          className="w-full"
+                          id="placementGroupName"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">none</SelectItem>
+                          {placementGroups.map((pg) => (
+                            <SelectItem
+                              key={pg.GroupId}
+                              value={pg.GroupName ?? ""}
+                            >
+                              {pg.GroupName} ({pg.Strategy})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </Field>
+              </div>
+            </PanelSection>
+
+            <PanelSection title="Network">
+              <div className="flex flex-col gap-4">
+                <Field>
+                  <FieldTitle>
+                    Location
+                    <InfoTip label="Location">
+                      The region this cluster serves. The availability zone
+                      comes from the subnet the instance launches into.
+                    </InfoTip>
+                  </FieldTitle>
+                  <LocationTile
+                    availabilityZone={effectiveSubnet?.AvailabilityZone}
+                    region={getRegion()}
+                  />
+                </Field>
+
+                <Field>
+                  <FieldTitle>
+                    <label htmlFor="subnetId">Subnet</label>
+                    <InfoTip label="Subnet">
+                      With no subnet chosen, EC2 places the instance in the
+                      default VPC&apos;s default subnet. It gets a private
+                      address there, and other instances in the VPC can reach it
+                      as its security groups allow. It gets a public address
+                      only if the subnet assigns one on launch.
+                    </InfoTip>
+                  </FieldTitle>
+                  <Controller
+                    control={control}
+                    name="subnetId"
+                    render={({ field }) => (
+                      <Select
+                        onValueChange={(value) => {
+                          field.onChange(
+                            value === DEFAULT_SUBNET ? undefined : value,
+                          )
+                        }}
+                        value={field.value ?? DEFAULT_SUBNET}
+                      >
+                        <SelectTrigger className="w-full" id="subnetId">
+                          <SelectValue>
+                            {effectiveSubnet
+                              ? `${selectedSubnetId ? "" : "Default: "}${subnetLabel(effectiveSubnet)}`
+                              : "No subnet"}
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={DEFAULT_SUBNET}>
+                            {defaultSubnet
+                              ? `Default: ${subnetLabel(defaultSubnet)}`
+                              : "No subnet"}
+                          </SelectItem>
+                          {otherSubnets.map((subnet) => (
+                            <SelectItem
+                              key={subnet.SubnetId}
+                              value={subnet.SubnetId ?? ""}
+                            >
+                              {subnetLabel(subnet)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                  <FieldDescription>
+                    {effectiveSubnet
+                      ? subnetSummary(effectiveSubnet)
+                      : "This account has no default subnet, so an instance launched without one gets no VPC network interface. Choose a subnet."}
+                  </FieldDescription>
+                </Field>
+
+                <Field>
+                  <FieldTitle>
+                    Security Group
+                    <InfoTip label="Security group">
+                      A new group allows only the inbound ports switched on
+                      below. Outbound traffic is allowed either way.
+                    </InfoTip>
+                  </FieldTitle>
+                  <FieldDescription>
+                    {effectiveVpcId
+                      ? `Applies to VPC ${effectiveVpcId}`
+                      : "No VPC resolved — select a subnet"}
+                  </FieldDescription>
+                  <div className="flex gap-4 text-sm">
+                    <label className="flex items-center gap-2">
+                      <input
+                        aria-label="Create new security group"
+                        type="radio"
+                        value="create"
+                        {...register("securityGroupMode")}
+                      />
+                      Create new
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        aria-label="Select existing security group"
+                        type="radio"
+                        value="existing"
+                        {...register("securityGroupMode")}
+                      />
+                      Select existing
+                    </label>
+                  </div>
+
+                  {sgMode === "create" ? (
+                    <div className="mt-3 space-y-4 rounded-md border border-border p-4">
+                      <Field>
+                        <FieldTitle>
+                          <label htmlFor="newSgName">Name</label>
+                        </FieldTitle>
+                        <Input
+                          aria-invalid={!!errors.newSgName}
+                          id="newSgName"
+                          type="text"
+                          {...register("newSgName")}
+                        />
+                        <FieldError errors={[errors.newSgName]} />
+                      </Field>
+
+                      <Field>
+                        <FieldTitle>
+                          <label htmlFor="newSgDescription">Description</label>
+                        </FieldTitle>
+                        <Input
+                          id="newSgDescription"
+                          type="text"
+                          {...register("newSgDescription")}
+                        />
+                      </Field>
+
+                      <Field>
+                        <FieldTitle>Inbound rules</FieldTitle>
+                        <div className="flex flex-col gap-2">
+                          {INBOUND_RULE_SWITCHES.map(
+                            ({ name, label, text }) => (
+                              <Controller
+                                control={control}
+                                key={name}
+                                name={name}
+                                render={({ field }) => (
+                                  <div className="flex items-center gap-2">
+                                    <Switch
+                                      aria-label={label}
+                                      checked={field.value ?? false}
+                                      id={name}
+                                      onCheckedChange={field.onChange}
+                                    />
+                                    <Label htmlFor={name}>{text}</Label>
+                                  </div>
+                                )}
+                              />
+                            ),
+                          )}
+                        </div>
+                      </Field>
+
+                      <Field>
+                        <FieldTitle>Source</FieldTitle>
+                        <div className="flex gap-4 text-sm">
+                          <label className="flex items-center gap-2">
+                            <input
+                              aria-label="Source anywhere"
+                              type="radio"
+                              value="anywhere"
+                              {...register("ruleSource")}
+                            />
+                            Anywhere (0.0.0.0/0)
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <input
+                              aria-label="Source custom CIDR"
+                              type="radio"
+                              value="custom"
+                              {...register("ruleSource")}
+                            />
+                            Custom CIDR
+                          </label>
+                        </div>
+                        {ruleSource === "custom" && (
+                          <div className="mt-2">
+                            <Input
+                              aria-invalid={!!errors.customCidr}
+                              placeholder="203.0.113.0/24"
+                              type="text"
+                              {...register("customCidr")}
+                            />
+                            <FieldError errors={[errors.customCidr]} />
+                          </div>
+                        )}
+                      </Field>
+                    </div>
+                  ) : (
+                    <div className="mt-3">
+                      <SecurityGroupCheckboxes
+                        emptyText="No security groups in the resolved VPC."
+                        groups={vpcSecurityGroups}
+                        onChange={(next) => {
+                          setValue("securityGroupIds", next, {
+                            shouldValidate: true,
+                          })
+                        }}
+                        selected={selectedSgIds}
+                      />
+                      <FieldError errors={[errors.securityGroupIds]} />
+                    </div>
+                  )}
+                </Field>
+              </div>
+            </PanelSection>
+
+            <PanelSection title="Root volume">
+              <div className="flex flex-col gap-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field>
+                    <FieldTitle>
+                      <label htmlFor="rootVolumeSize">Size (GiB)</label>
+                      <InfoTip label="Root volume size">
+                        Leave blank to use the image&apos;s own size. A larger
+                        size grows the root volume; it cannot be smaller than
+                        the image&apos;s snapshot.
+                      </InfoTip>
+                    </FieldTitle>
+                    <Input
+                      aria-invalid={!!errors.rootVolumeSize}
+                      id="rootVolumeSize"
+                      max={MAX_VOLUME_SIZE_GIB}
+                      min={selectedRoot.snapshotSize ?? MIN_VOLUME_SIZE_GIB}
+                      placeholder={
+                        selectedRoot.snapshotSize
+                          ? String(selectedRoot.snapshotSize)
+                          : "Image default"
+                      }
+                      type="number"
+                      {...register("rootVolumeSize", {
+                        setValueAs: (value: string) =>
+                          value === "" || value === null || value === undefined
+                            ? undefined
+                            : Number(value),
+                      })}
+                    />
+                    <FieldDescription>
+                      {selectedRoot.snapshotSize === undefined
+                        ? "The image does not report a size."
+                        : `Minimum ${selectedRoot.snapshotSize} GiB, the image's snapshot size.`}
+                    </FieldDescription>
+                    <FieldError errors={[errors.rootVolumeSize]} />
+                  </Field>
+
+                  <Field>
+                    <FieldTitle>
+                      <label htmlFor="rootVolumeType">Volume Type</label>
+                    </FieldTitle>
+                    <Controller
+                      control={control}
+                      name="rootVolumeType"
+                      render={({ field }) => (
+                        <Select
+                          onValueChange={field.onChange}
+                          value={field.value ?? DEFAULT_VOLUME_TYPE}
+                        >
+                          <SelectTrigger
+                            aria-invalid={!!errors.rootVolumeType}
+                            className="w-full"
+                            id="rootVolumeType"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {VOLUME_TYPES.map((vt) => (
+                              <SelectItem key={vt} value={vt}>
+                                {vt}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    />
+                    <FieldError errors={[errors.rootVolumeType]} />
+                  </Field>
+                </div>
+
                 <Field>
                   <FieldTitle>
                     <label htmlFor="rootDeviceName">Device Name</label>
@@ -769,94 +1004,35 @@ export function RunInstancesPage({
                     aria-invalid={!!errors.rootDeviceName}
                     id="rootDeviceName"
                     type="text"
+                    variant="code"
                     {...register("rootDeviceName")}
                   />
                   <FieldError errors={[errors.rootDeviceName]} />
                 </Field>
 
-                <Field>
-                  <FieldTitle>
-                    <label htmlFor="rootVolumeSize">Volume Size (GiB)</label>
-                  </FieldTitle>
-                  <Input
-                    aria-invalid={!!errors.rootVolumeSize}
-                    id="rootVolumeSize"
-                    max={MAX_VOLUME_SIZE_GIB}
-                    min={selectedRoot.snapshotSize ?? MIN_VOLUME_SIZE_GIB}
-                    placeholder={
-                      selectedRoot.snapshotSize
-                        ? `${selectedRoot.snapshotSize} (AMI default)`
-                        : "use AMI / backend default"
-                    }
-                    type="number"
-                    {...register("rootVolumeSize", {
-                      setValueAs: (value: string) =>
-                        value === "" || value === null || value === undefined
-                          ? undefined
-                          : Number(value),
-                    })}
-                  />
-                  {selectedRoot.snapshotSize !== undefined && (
-                    <FieldDescription>
-                      AMI snapshot size: {selectedRoot.snapshotSize} GiB
-                    </FieldDescription>
-                  )}
-                  <FieldError errors={[errors.rootVolumeSize]} />
-                </Field>
-
-                <Field>
-                  <FieldTitle>
-                    <label htmlFor="rootVolumeType">Volume Type</label>
-                  </FieldTitle>
-                  <Controller
-                    control={control}
-                    name="rootVolumeType"
-                    render={({ field }) => (
-                      <Select
-                        onValueChange={field.onChange}
-                        value={field.value ?? DEFAULT_VOLUME_TYPE}
-                      >
-                        <SelectTrigger
-                          aria-invalid={!!errors.rootVolumeType}
-                          className="w-full"
-                          id="rootVolumeType"
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {VOLUME_TYPES.map((vt) => (
-                            <SelectItem key={vt} value={vt}>
-                              {vt}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  />
-                  <FieldError errors={[errors.rootVolumeType]} />
-                </Field>
-
-                <Field>
-                  <Controller
-                    control={control}
-                    name="rootDeleteOnTermination"
-                    render={({ field }) => (
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          aria-label="Delete on termination"
-                          checked={field.value ?? true}
-                          onChange={(e) => {
-                            field.onChange(e.target.checked)
-                          }}
-                          type="checkbox"
-                        />
+                <Controller
+                  control={control}
+                  name="rootDeleteOnTermination"
+                  render={({ field }) => (
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        aria-label="Delete on termination"
+                        checked={field.value ?? true}
+                        id="rootDeleteOnTermination"
+                        onCheckedChange={field.onChange}
+                      />
+                      <Label htmlFor="rootDeleteOnTermination">
                         Delete on termination
-                      </label>
-                    )}
-                  />
-                </Field>
-              </CollapsibleContent>
-            </Collapsible>
+                      </Label>
+                      <InfoTip label="Delete on termination">
+                        When on, the root volume is deleted with the instance.
+                        Turn it off to keep the volume after termination.
+                      </InfoTip>
+                    </div>
+                  )}
+                />
+              </div>
+            </PanelSection>
           </>
         )}
 
@@ -864,7 +1040,6 @@ export function RunInstancesPage({
           commands={buildRunInstancesCommands(values, effectiveVpcId)}
         />
 
-        {/* Actions */}
         <div className="flex gap-2">
           <Button
             disabled={isSubmitting || createMutation.isPending}
@@ -878,7 +1053,7 @@ export function RunInstancesPage({
             disabled={
               isSubmitting ||
               createMutation.isPending ||
-              (!selectedTemplateId && uniqueInstanceTypes.length === 0)
+              (!selectedTemplateId && !hasCompute)
             }
             type="submit"
           >
@@ -890,6 +1065,46 @@ export function RunInstancesPage({
       </form>
     </>
   )
+}
+
+function typesForArchitecture(
+  types: readonly InstanceTypeInfo[],
+  arch: Architecture | undefined,
+): InstanceTypeInfo[] {
+  return types.filter((type) => instanceTypeSupports(type, arch))
+}
+
+function uniqueTypeNames(types: readonly InstanceTypeInfo[]): string[] {
+  return [
+    ...new Set(types.flatMap((type) => type.InstanceType ?? [])),
+  ].toSorted()
+}
+
+function defaultTypeName(names: readonly string[]): string | undefined {
+  return names.find((name) => name.endsWith(".nano")) ?? names[0]
+}
+
+function subnetName(subnet: Subnet): string | undefined {
+  return subnet.Tags?.find((tag) => tag.Key === "Name")?.Value
+}
+
+function subnetLabel(subnet: Subnet): string {
+  const name = subnetName(subnet)
+
+  return name ? `${name} (${subnet.SubnetId})` : (subnet.SubnetId ?? "")
+}
+
+function subnetSummary(subnet: Subnet): string {
+  return [
+    subnet.CidrBlock,
+    subnet.AvailabilityZone,
+    subnet.VpcId,
+    subnet.MapPublicIpOnLaunch
+      ? "public IP assigned on launch"
+      : "private address only",
+  ]
+    .filter(Boolean)
+    .join(" · ")
 }
 
 interface RootMappingDefaults {

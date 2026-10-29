@@ -41,7 +41,7 @@ export function TabsList({
 }
 
 const tabsTabVariants = cva(
-  "inline-flex items-center justify-center border-b-2 border-transparent text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 data-active:border-primary data-active:text-foreground",
+  "inline-flex items-center justify-center border-b-2 border-transparent text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 data-active:border-primary data-active:text-foreground",
   {
     variants: {
       variant: {

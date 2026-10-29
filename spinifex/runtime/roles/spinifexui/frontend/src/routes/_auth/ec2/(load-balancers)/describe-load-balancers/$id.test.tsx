@@ -1,6 +1,9 @@
-import { screen } from "@testing-library/react"
+import type { LoadBalancer } from "@aws-sdk/client-elastic-load-balancing-v2"
+import { screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import type { PanelTab } from "@/lib/panel-search"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const { routerState } = vi.hoisted(() => ({
@@ -22,46 +25,54 @@ vi.mock("@/lib/awsClient", async () => {
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
 
-  return await mockRouter(importOriginal, { navigate: routerState.navigate })
+  return await mockRouter(importOriginal, {
+    navigate: routerState.navigate,
+    params: { id: encodeURIComponent("arn:lb:1") },
+  })
 })
 
-import { LoadBalancerDetailPage } from "../-components/load-balancer-detail-page"
+import { LoadBalancerDetails } from "../-components/load-balancer-details"
+import { Route } from "./$id"
 
 const LB_ARN = "arn:lb:1"
 
-function seed() {
+const ALB: LoadBalancer = {
+  LoadBalancerArn: LB_ARN,
+  LoadBalancerName: "my-alb",
+  DNSName: "my-alb.example",
+  Type: "application",
+  Scheme: "internet-facing",
+  IpAddressType: "ipv4",
+  VpcId: "vpc-aaa",
+  State: { Code: "active" },
+  AvailabilityZones: [{ ZoneName: "az-1", SubnetId: "subnet-a" }],
+  SecurityGroups: ["sg-1"],
+}
+
+function seed(lbs: LoadBalancer[] = [ALB]) {
   const qc = createTestQueryClient()
-  qc.setQueryData(["elbv2", "loadBalancers", LB_ARN], {
-    LoadBalancers: [
-      {
-        LoadBalancerArn: LB_ARN,
-        LoadBalancerName: "my-alb",
-        DNSName: "my-alb.example",
-        Type: "application",
-        Scheme: "internet-facing",
-        IpAddressType: "ipv4",
-        VpcId: "vpc-aaa",
-        State: { Code: "active" },
-        AvailabilityZones: [{ ZoneName: "az-1", SubnetId: "subnet-a" }],
-        SecurityGroups: ["sg-1"],
-      },
-    ],
-  })
+  qc.setQueryData(["elbv2", "loadBalancers", LB_ARN], { LoadBalancers: lbs })
   qc.setQueryData(["elbv2", "loadBalancers", LB_ARN, "attributes"], {
     Attributes: [{ Key: "deletion_protection.enabled", Value: "false" }],
   })
   qc.setQueryData(["elbv2", "tags", LB_ARN], {
     TagDescriptions: [
-      {
-        ResourceArn: LB_ARN,
-        Tags: [{ Key: "env", Value: "prod" }],
-      },
+      { ResourceArn: LB_ARN, Tags: [{ Key: "env", Value: "prod" }] },
     ],
   })
   qc.setQueryData(["elbv2", "listeners", LB_ARN], { Listeners: [] })
   qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [] })
+  qc.setQueryData(["acm", "certificates"], { CertificateSummaryList: [] })
+  qc.setQueryData(["elbv2", "sslPolicies"], { SslPolicies: [] })
   qc.setQueryData(["ec2", "subnets"], {
-    Subnets: [{ SubnetId: "subnet-a", CidrBlock: "10.0.1.0/24", Tags: [] }],
+    Subnets: [
+      {
+        SubnetId: "subnet-a",
+        VpcId: "vpc-aaa",
+        CidrBlock: "10.0.1.0/24",
+        Tags: [],
+      },
+    ],
   })
   qc.setQueryData(["ec2", "securityGroups"], {
     SecurityGroups: [
@@ -72,71 +83,99 @@ function seed() {
   return qc
 }
 
+function renderDetails(lb: LoadBalancer, tab: PanelTab) {
+  renderWithClient(
+    <LoadBalancerDetails
+      layout="page"
+      lb={lb}
+      onClose={vi.fn()}
+      onTabChange={vi.fn()}
+      tab={tab}
+    />,
+    seed([lb]),
+  )
+}
+
+async function renderRoute(lbs: LoadBalancer[]) {
+  const Detail = Route.options.component
+
+  if (!Detail) {
+    throw new Error("route has no component")
+  }
+
+  // The router plugin code-splits route components, so load it before render.
+  await Detail.preload?.()
+  renderWithClient(<Detail />, seed(lbs))
+}
+
 describe("load-balancer detail route", () => {
   beforeEach(() => {
     sdk.reset()
+    routerState.navigate.mockReset()
   })
 
-  it("renders overview fields for the LB", () => {
-    renderWithClient(<LoadBalancerDetailPage arn={LB_ARN} />, seed())
+  it("renders the overview for the load balancer", async () => {
+    await renderRoute([ALB])
 
-    expect(screen.getByText("my-alb")).toBeInTheDocument()
-    expect(screen.getByText("my-alb.example")).toBeInTheDocument()
-    expect(screen.getByText("application")).toBeInTheDocument()
-    expect(screen.getByText("internet-facing")).toBeInTheDocument()
-    expect(screen.getByText("sg-1")).toBeInTheDocument()
     expect(
-      screen.getByRole("tab", { name: "Security groups" }),
+      screen.getByRole("heading", { name: "my-alb", level: 1 }),
     ).toBeInTheDocument()
+    expect(screen.getByText("internet-facing")).toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "sg-1" })).toHaveAttribute(
+      "href",
+      "/ec2/describe-security-groups/sg-1",
+    )
+    await expect(
+      screen.findByRole("link", { name: "subnet-a (10.0.1.0/24)" }),
+    ).resolves.toBeInTheDocument()
+    await expect(
+      screen.findByText("No listeners configured."),
+    ).resolves.toBeInTheDocument()
   })
 
-  it("hides the Security groups tab for a network load balancer", () => {
-    const qc = createTestQueryClient()
-    qc.setQueryData(["elbv2", "loadBalancers", LB_ARN], {
-      LoadBalancers: [
-        {
-          LoadBalancerArn: LB_ARN,
-          LoadBalancerName: "my-nlb",
-          DNSName: "my-nlb.example",
-          Type: "network",
-          Scheme: "internet-facing",
-          IpAddressType: "ipv4",
-          VpcId: "vpc-aaa",
-          State: { Code: "active" },
-          AvailabilityZones: [{ ZoneName: "az-1", SubnetId: "subnet-a" }],
-        },
-      ],
-    })
-    qc.setQueryData(["elbv2", "loadBalancers", LB_ARN, "attributes"], {
-      Attributes: [],
-    })
-    qc.setQueryData(["elbv2", "tags", LB_ARN], { TagDescriptions: [] })
-    qc.setQueryData(["elbv2", "listeners", LB_ARN], { Listeners: [] })
-    qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [] })
-    qc.setQueryData(["ec2", "subnets"], {
-      Subnets: [{ SubnetId: "subnet-a", CidrBlock: "10.0.1.0/24", Tags: [] }],
-    })
-    qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: [] })
-
-    renderWithClient(<LoadBalancerDetailPage arn={LB_ARN} />, qc)
-
-    expect(screen.getByText("my-nlb")).toBeInTheDocument()
-    expect(screen.queryByRole("tab", { name: "Security groups" })).toBeNull()
-    expect(screen.getByRole("tab", { name: "Listeners" })).toBeInTheDocument()
-  })
-
-  it("renders a not-found state when the LB ARN is unknown", () => {
-    const qc = createTestQueryClient()
-    qc.setQueryData(["elbv2", "loadBalancers", LB_ARN], { LoadBalancers: [] })
-    qc.setQueryData(["elbv2", "loadBalancers", LB_ARN, "attributes"], {
-      Attributes: [],
-    })
-    qc.setQueryData(["elbv2", "tags", LB_ARN], { TagDescriptions: [] })
-    qc.setQueryData(["ec2", "subnets"], { Subnets: [] })
-    qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: [] })
-
-    renderWithClient(<LoadBalancerDetailPage arn={LB_ARN} />, qc)
+  it("renders a not-found state when the ARN is unknown", async () => {
+    await renderRoute([])
 
     expect(screen.getByText("Load balancer not found.")).toBeInTheDocument()
+  })
+
+  it("edits security groups in Settings for an application load balancer", async () => {
+    renderDetails(ALB, "settings")
+
+    await expect(
+      screen.findByRole("button", { name: "Security groups" }),
+    ).resolves.toBeInTheDocument()
+    expect(
+      screen.getByRole("switch", { name: "Deletion protection" }),
+    ).not.toBeChecked()
+  })
+
+  it("has no security groups to edit on a network load balancer", async () => {
+    renderDetails(
+      { ...ALB, Type: "network", SecurityGroups: undefined },
+      "settings",
+    )
+
+    await expect(
+      screen.findByRole("button", { name: "Subnets" }),
+    ).resolves.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Security groups" })).toBeNull()
+  })
+
+  it("deletes only after the dialog is confirmed", async () => {
+    const user = userEvent.setup()
+    const remove = vi.fn(() => ({}))
+    sdk.setHandler("DeleteLoadBalancerCommand", remove)
+    renderDetails(ALB, "settings")
+
+    await user.click(
+      await screen.findByRole("button", { name: "Delete load balancer" }),
+    )
+    expect(remove).not.toHaveBeenCalled()
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+
+    await waitFor(() => {
+      expect(remove).toHaveBeenCalledWith({ LoadBalancerArn: LB_ARN })
+    })
   })
 })

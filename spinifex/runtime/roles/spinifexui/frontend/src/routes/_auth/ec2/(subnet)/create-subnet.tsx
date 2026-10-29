@@ -21,6 +21,7 @@ import { FormActions } from "@/components/form-actions"
 import { TextField } from "@/components/form-fields"
 import { PageHeading } from "@/components/page-heading"
 import { Field, FieldTitle } from "@/components/ui/field"
+import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -28,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { VpcSelectField } from "@/components/vpc-select-field"
 import { useCreateSubnet } from "@/mutations/ec2"
 import {
@@ -161,17 +163,16 @@ function CreateSubnet() {
             control={control}
             name="mapPublicIpOnLaunch"
             render={({ field }) => (
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  aria-label="Enable auto-assign public IPv4 address"
+              <div className="flex items-center gap-2">
+                <Switch
                   checked={field.value ?? false}
-                  onChange={(e) => {
-                    field.onChange(e.target.checked)
-                  }}
-                  type="checkbox"
+                  id="mapPublicIpOnLaunch"
+                  onCheckedChange={field.onChange}
                 />
-                Enable auto-assign public IPv4 address
-              </label>
+                <Label htmlFor="mapPublicIpOnLaunch">
+                  Enable auto-assign public IPv4 address
+                </Label>
+              </div>
             )}
           />
         </Field>

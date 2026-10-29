@@ -186,13 +186,14 @@ test-build-scripts:
 		echo "-- $$t"; \
 		sh "$$t" || exit 1; \
 	done
-	@echo -e "\n....Running scripts/*_test.sh and scripts/lib/*_test.sh...."
-	@for t in $$( (find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib -name '*_test.sh') | sort); do \
+	@echo -e "\n....Running scripts/*_test.sh, scripts/lib/*_test.sh and scripts/appliance/*_test.sh...."
+	@for t in $$( (find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib scripts/appliance -name '*_test.sh') | sort); do \
 		echo "-- $$t"; \
 		sh "$$t" || exit 1; \
 	done
 	@echo -e "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
 	shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
+	shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)
 	@echo "  test-build-scripts ok"
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the

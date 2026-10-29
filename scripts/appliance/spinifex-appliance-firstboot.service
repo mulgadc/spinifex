@@ -1,0 +1,22 @@
+[Unit]
+Description=Spinifex appliance first-boot provisioning
+After=NetworkManager.service network-online.target chronyd.service
+Wants=NetworkManager.service network-online.target
+ConditionPathExists=!/var/lib/spinifex/.appliance-firstboot-done
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+ExecStart=/usr/local/share/spinifex/appliance/firstboot.sh
+RemainAfterExit=yes
+# The banner is never enabled when first boot fails, so without this the
+# console would keep the "first boot in progress" placeholder.
+ExecStopPost=/bin/sh -c 'if [ "$EXIT_STATUS" != "0" ]; then printf "\n*** Spinifex first boot FAILED ***\nLog in as spinifex, then run:\n  sudo journalctl -u spinifex-appliance-firstboot.service\nCheck the network cable and DHCP, then reboot to retry.\n\n" > /etc/issue; fi'
+# setup-ovn.sh and spx admin init must not wedge multi-user.target and keep
+# getty from ever showing a login prompt.
+TimeoutStartSec=600s
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

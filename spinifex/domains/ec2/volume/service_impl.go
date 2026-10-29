@@ -151,6 +151,36 @@ func (s *VolumeServiceImpl) CompleteVolumePreparation(ctx context.Context, accou
 	return nil
 }
 
+// DiscardVolumePreparation deletes a volume whose preparation failed. Only an
+// unattached "creating" volume in the caller's account qualifies; the caller
+// must already know no export of it can still be live.
+func (s *VolumeServiceImpl) DiscardVolumePreparation(ctx context.Context, accountID, volumeID string) error {
+	if err := s.requireProvider(ctx, "DiscardVolumePreparation"); err != nil {
+		return err
+	}
+	meta, err := s.getVolumeMetadata(ctx, accountID, volumeID)
+	if err != nil {
+		return err
+	}
+	if meta.TenantID != accountID {
+		return errors.New(awserrors.ErrorInvalidVolumeNotFound)
+	}
+	if meta.State != string(ebsprovider.VolumeStateCreating) || meta.AttachedInstance != "" {
+		return awserrors.Errorf(awserrors.ErrorIncorrectState, "volume %s is %q, not an unattached creating volume", volumeID, meta.State)
+	}
+	// Snapshots refuse a creating volume, so none can depend on this one.
+	if err := s.provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: meta.ProviderHandle,
+	}); err != nil {
+		return awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume %s: %v", volumeID, err)
+	}
+	if err := s.metadata.DeleteVolume(ctx, accountID, volumeID); err != nil && !objectstore.IsNoSuchKeyError(err) {
+		return awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume metadata %s: %v", volumeID, err)
+	}
+	slog.InfoContext(ctx, "Volume preparation discarded", "volumeId", volumeID)
+	return nil
+}
+
 func (s *VolumeServiceImpl) createVolume(ctx context.Context, input *ec2.CreateVolumeInput, accountID string, initialState ebsprovider.VolumeState) (*ec2.Volume, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)

@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -115,4 +116,43 @@ func TestCompleteVolumePreparation_RefusesAnythingButAnUnattachedCreatingVolume(
 
 	err = svc.CompleteVolumePreparation(ctx, testVolAccountID, "vol-0000000000000dead")
 	assert.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
+}
+
+func TestDiscardVolumePreparation_DeletesTheCreatingVolumeAndItsStorage(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	id := createPreparingVolume(t, svc)
+	ctx := context.Background()
+
+	require.NoError(t, svc.DiscardVolumePreparation(ctx, testVolAccountID, id))
+	_, err := svc.metadata.GetVolume(ctx, testVolAccountID, id)
+	require.Error(t, err, "the record must be gone")
+	_, err = svc.provider.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: id})
+	require.ErrorIs(t, err, ebsprovider.ErrNotFound, "the provider volume must be gone")
+}
+
+// Discard is only for a failed preparation, so an ordinary or attached volume,
+// or one in another account, is never deleted through it.
+func TestDiscardVolumePreparation_RefusesAnythingButAnUnattachedCreatingVolume(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	ctx := context.Background()
+
+	normal, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{
+		Size: aws.Int64(4), AvailabilityZone: aws.String("ap-southeast-2a"),
+	}, testVolAccountID)
+	require.NoError(t, err)
+	normalID := aws.StringValue(normal.VolumeId)
+	err = svc.DiscardVolumePreparation(ctx, testVolAccountID, normalID)
+	require.ErrorContains(t, err, awserrors.ErrorIncorrectState)
+	requireVolumeState(t, svc, normalID, "available")
+
+	require.NoError(t, svc.UpdateVolumeState(testVolAccountID, normalID, "in-use", "i-0123456789abcdef0", "/dev/sdf"))
+	err = svc.DiscardVolumePreparation(ctx, testVolAccountID, normalID)
+	require.ErrorContains(t, err, awserrors.ErrorIncorrectState)
+
+	id := createPreparingVolume(t, svc)
+	err = svc.DiscardVolumePreparation(ctx, "000000000099", id)
+	assert.EqualError(t, err, awserrors.ErrorInvalidVolumeNotFound)
+	requireVolumeState(t, svc, id, "creating")
+	_, err = svc.provider.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: id})
+	require.NoError(t, err, "a refused discard must leave the storage")
 }

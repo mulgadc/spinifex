@@ -21,6 +21,9 @@ build/microvm/vmlinuz
 build/microvm/initramfs.cpio.gz
 build/microvm/qboot.rom
 build/microvm/qboot.LICENSE
+build/microvm/sqs-store/vmlinuz
+build/microvm/sqs-store/initramfs.cpio.gz
+build/microvm/sqs-store/.stage.*/
 build/qboot/
 !spinifex/runtime/roles/spinifexui/frontend/dist/
 tmp/

@@ -204,6 +204,10 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 	if volume.CapacityGiB == 0 {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	// A volume still being prepared has no settled contents to capture.
+	if volume.State == string(ebsprovider.VolumeStateCreating) {
+		return nil, errors.New(awserrors.ErrorIncorrectState)
+	}
 
 	// Flush the writes buffered by whichever node serves the volume, so the
 	// provider reads a current checkpoint. An attached volume that cannot be

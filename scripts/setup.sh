@@ -1542,6 +1542,41 @@ install_files() {
         $SUDO cp "$EXTRACT_DIR/microvm/"* /usr/share/spinifex/microvm/
         info "  /usr/share/spinifex/microvm/*"
     fi
+    install_sqs_store_image
+}
+
+# The SQS store image ships beside the load balancer's, not inside it: an older
+# installer copies microvm/* without -r and would stop at a subdirectory.
+install_sqs_store_image() {
+    local src="$EXTRACT_DIR/microvm-sqs-store" f
+    local dest="${SPINIFEX_MICROVM_DIR:-/usr/share/spinifex/microvm}/sqs-store"
+    # A previously installed image belongs to an older release, and this
+    # release's daemon must not boot it. Only the two image files are removed.
+    if [ ! -d "$src" ]; then
+        remove_sqs_store_image "$dest"
+        warn "This release has no SQS store microVM image; SQS store launches will be refused"
+        return 0
+    fi
+    for f in vmlinuz initramfs.cpio.gz; do
+        if [ ! -s "$src/$f" ]; then
+            remove_sqs_store_image "$dest"
+            fatal "The SQS store microVM image in this release is incomplete: $f is missing"
+        fi
+    done
+    # The initramfs goes last, so an interrupted install leaves no pair the
+    # daemon would boot: it refuses a launch while either file is missing.
+    $SUDO install -d "$dest"
+    $SUDO rm -f "$dest/initramfs.cpio.gz"
+    $SUDO install -m 0644 "$src/vmlinuz" "$dest/vmlinuz"
+    $SUDO install -m 0644 "$src/initramfs.cpio.gz" "$dest/initramfs.cpio.gz"
+    info "  $dest/vmlinuz, $dest/initramfs.cpio.gz"
+}
+
+# Running store VMs keep their already-loaded kernel; the files are read at boot.
+remove_sqs_store_image() {
+    [ -e "$1/initramfs.cpio.gz" ] || [ -e "$1/vmlinuz" ] || return 0
+    $SUDO rm -f "$1/initramfs.cpio.gz" "$1/vmlinuz"
+    warn "Removed the SQS store microVM image left by an earlier install from $1"
 }
 
 # --- Create directories ---

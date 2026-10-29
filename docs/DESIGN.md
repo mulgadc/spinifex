@@ -290,7 +290,7 @@ storage-provider contract.
 
 `domains/sqs/message` defines the store-neutral interface the SQS domain reaches its message store through (ADR-0011:S6), with a JetStream adapter in `domains/sqs/message/jetstream` and a shared conformance suite in `domains/sqs/message/conformance`.
 It is an internal primitive: nothing outside the SQS domain uses it, no daemon or service is wired to it, and it does not itself deliver an SQS API.
-The dedicated JetStream server ADR-0011 describes is not deployed by this code, and Spinifex ships no host service, unit, user or firewall rule for it.
+The dedicated JetStream server ADR-0011 describes is not deployed by this code, and Spinifex ships no host service, unit, user or firewall rule for it; the guest that could run it is described under *SQS store system instance (not wired)*.
 
 The interface covers durable and idempotent append, body and metadata reads, conditional state writes and deletes, per-namespace counts, namespace enumeration, an ordered change feed, a bounded paginated scan, namespace deletion and a sweep of tombstoned bodies.
 A namespace carries an immutable message-shard and state-shard allocation chosen when the queue is created, so a later change in shard counts never moves an existing queue.
@@ -308,6 +308,40 @@ If that consumer delivers nothing for about two seconds while the stream holds a
 `Close` is terminal, waits for consumer opens and deletes in progress and retries failed deletes, but cleanup is best effort for a create whose outcome is unknown: a consumer that lands after its last delete is removed by the server's one-minute inactive threshold.
 
 Coverage is unit and conformance tests on in-process R1 and R3 servers; there is no end-to-end or multi-host validation of this code, and earlier multi-host evidence predates the final feed.
+
+### SQS store system instance (not wired)
+
+Spinifex can build, install, launch, restart and give storage to a dedicated SQS store microVM, but nothing calls any of it.
+No SQS API, domain service, admin command or daemon start-up path creates a store, so none of this is in production use.
+
+The guest image is built by `make build-sqs-store-microvm-image`, separate from the load balancer image, and bundles the `nats-server` version pinned in `go.mod` plus the ext4 tools.
+Release tarballs carry it as `microvm-sqs-store/`, and `setup.sh` installs it to `/usr/share/spinifex/microvm/sqs-store/`.
+A release without a complete image removes any previously installed one, so a launch is then refused rather than booting a stale image.
+
+At boot the guest reads three firmware config values: the data disk's serial, an IPv4 address on one of its interfaces, and one NATS user NKey public key.
+It mounts exactly one matching disk at `/data` after `e2fsck -p`, refuses a missing, duplicate, unformatted or unrepairable disk, and never formats.
+JetStream keeps its data on `/data` with `sync_interval: always` (ADR-0011:S3), and the server listens only on that address and accepts only that key.
+On shutdown the store is stopped before `/data` is unmounted; a store that survives SIGKILL leaves every mount in place.
+
+A launch uses the versioned subject `system.LaunchSQSStore.v1`, which a daemon without this code does not serve, so it fails with no responder instead of booting another guest.
+The legacy `system.LaunchInstance` path refuses the store kind on both send and receive.
+Every input check runs before capacity is reserved, and the data volume must be an available system-account volume.
+It is mounted through the normal EBS path and detached, never deleted, on terminate, which is the protection standard EBS gives today and nothing stronger.
+CPU mitigations stay enabled for the store, unlike the load balancer.
+A successful launch means the VM is running, not that NATS is ready.
+
+The instance record keeps the store's non-secret guest settings so a restart on the node that launched it rewrites the firmware config files.
+A relaunch on any other node is refused, and cross-node recovery never claims a store.
+Both checks exist only in daemons with this code: an older daemon can still claim and relaunch a store elsewhere, and an explicit start served by another node claims the instance before its relaunch is refused.
+
+`domains/sqs/storevolume` prepares a fresh data volume, because the guest never formats.
+It checks for `mkfs.ext4` and `qemu-img` before allocating, creates the volume in `creating`, writes an empty ext4 image to it over NBD on the local node, unpublishes it, and only then makes it `available`.
+While a volume is `creating`, attach, delete, modify, force-detach and snapshot are refused.
+A volume is deleted only after a confirmed unpublish; any publish error, an unconfirmed unpublish or a failed release keeps it and reports its ID, with its state reported as unknown after a failed release.
+
+Evidence is local only: unit tests, real QEMU boots against disposable scratch disks, and one run of the preparer against the `qemunbdd` provider whose volume kept acknowledged writes across a reboot.
+Viperblock, volume encryption, the EC2 volume record path, multiple nodes and host reachability of the guest address are not tested.
+Credential issuance and rotation, store placement and NATS readiness checks do not exist, and there is no failover: a lost node leaves its store unavailable.
 
 ## Configuration
 

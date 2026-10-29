@@ -81,8 +81,22 @@ func (d *Daemon) attachExtraENI(eniAccountID string, extra systeminstance.ExtraE
 // (bundled vmlinuz+initramfs, fw_cfg-delivered config). There is no AMI,
 // volume, or cloud-init path.
 func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*elbv2domain.SystemInstanceOutput, error) {
+	if err := input.RefuseNonLoadBalancerKind(); err != nil {
+		return nil, err
+	}
 	if input.BootMode == systeminstance.BootAMI {
 		return d.launchAMISystemInstance(input)
+	}
+	return d.launchDirectSystemInstance(input, nil)
+}
+
+// launchDirectSystemInstance boots a direct-boot microVM. A nil store is the
+// load balancer; a store's volume and guest config were checked by the caller
+// before anything here allocates.
+func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInput, store *sqsStoreLaunch) (*elbv2domain.SystemInstanceOutput, error) {
+	managedBy := tags.ManagedByELBv2
+	if store != nil {
+		managedBy = tags.ManagedBySQS
 	}
 	accountID := awsidentifiers.GlobalAccountID
 	// ENI account may differ from system account — the ENI is created under
@@ -111,7 +125,7 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 			{
 				ResourceType: aws.String("instance"),
 				Tags: []*ec2.Tag{
-					{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByELBv2)},
+					{Key: aws.String(tags.ManagedByKey), Value: aws.String(managedBy)},
 				},
 			},
 		},
@@ -131,9 +145,9 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 	}
 
 	instance.AccountID = accountID
-	instance.ManagedBy = tags.ManagedByELBv2
+	instance.ManagedBy = managedBy
 	ec2Instance.Tags = []*ec2.Tag{
-		{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByELBv2)},
+		{Key: aws.String(tags.ManagedByKey), Value: aws.String(managedBy)},
 	}
 	instance.Reservation = &ec2.Reservation{}
 	instance.Reservation.SetReservationId(awsidentifiers.GenerateResourceID("r"))
@@ -391,13 +405,36 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 
 	// Direct-boot (microvm) path: build the vm.Config directly with microvm
 	// machine settings and fw_cfg blobs for network, lb-agent env, and CA cert.
-	cfg, err := d.buildDirectBootConfig(instance.ID, input)
+	cfg, err := d.buildDirectBootConfig(instance.ID, input, store)
 	if err != nil {
 		d.cleanupFailedSystemInstance(instance, instanceType)
 		return nil, fmt.Errorf("build direct-boot config: %w", err)
 	}
 	instance.Config = cfg
 	instance.DirectBoot = true
+	if store != nil {
+		netcfg, err := netcfgForInput(input)
+		if err != nil {
+			d.cleanupFailedSystemInstance(instance, instanceType)
+			return nil, fmt.Errorf("render sqs store netcfg: %w", err)
+		}
+		instance.SQSStoreGuest = &vm.SQSStoreGuest{
+			NodeID:       d.node,
+			DataVolumeID: store.volumeID,
+			ListenAddr:   store.listenAddr,
+			ClientNKey:   store.clientNKey,
+			Netcfg:       netcfg,
+		}
+		// Mounted and marked in-use by the normal launch path, and only
+		// detached when the instance terminates.
+		instance.EBSRequests.Mu.Lock()
+		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{
+			Name:                store.volumeID,
+			DeviceName:          sqsStoreDataDevice,
+			DeleteOnTermination: false,
+		})
+		instance.EBSRequests.Mu.Unlock()
+	}
 
 	// Launch QEMU VM
 	t1 := time.Now()
@@ -675,6 +712,9 @@ func (d *Daemon) prepareInstanceRelaunch(inst *vm.VM) error {
 // vm.Config still references the same paths. Customer VMs use only paths
 // under /var/lib/spinifex/ and are a no-op.
 func (d *Daemon) refreshSystemInstanceState(inst *vm.VM) error {
+	if inst.ManagedBy == tags.ManagedBySQS {
+		return d.refreshSQSStoreState(inst)
+	}
 	if inst.ManagedBy != tags.ManagedByELBv2 {
 		return nil
 	}
@@ -785,7 +825,7 @@ var microvmDir = vm.MicroVMDir
 //
 // Network topology from input.NICs is serialised to three fw_cfg tmpfiles
 // (netcfg, lb-agent-env, ca-cert) under hostprocess.RuntimeDir().
-func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.SystemInstanceInput) (vm.Config, error) {
+func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.SystemInstanceInput, store *sqsStoreLaunch) (vm.Config, error) {
 	it := d.resourceMgr.instanceTypes[input.InstanceType]
 	architecture := "x86_64"
 	if it != nil && it.ProcessorInfo != nil && len(it.ProcessorInfo.SupportedArchitectures) > 0 && it.ProcessorInfo.SupportedArchitectures[0] != nil {
@@ -807,27 +847,41 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 	if err != nil {
 		return vm.Config{}, fmt.Errorf("write fw_cfg blobs: %w", err)
 	}
+	imageDir := microvmDir
+	if store != nil {
+		storeCfg, err := writeSQSStoreFwCfg(instanceID, store)
+		if err != nil {
+			return vm.Config{}, fmt.Errorf("write sqs store fw_cfg blobs: %w", err)
+		}
+		fwCfg = append(sqsStoreNetcfgOnly(fwCfg), storeCfg...)
+		imageDir = sqsStoreImageDir()
+	}
 
 	// Build kernel cmdline.
 	//
 	// QEMU microvm maps virtio-mmio slots at 0xfeb00000 + n*0x200 with IRQ 5+n.
-	// Without virtio_mmio.device params the kernel never discovers the devices
-	// (auto-kernel-cmdline does not append when -append is specified).
+	// With acpi=on the guest also finds them through ACPI, as data disks are
+	// (they get no parameter); the NIC parameters are kept, matching that map.
 	//
 	// Boot-time performance flags:
 	//   quiet loglevel=3        — suppress printk to ttyS0 (115200 baud serial
 	//                             writes dominate boot time; warnings+errors only)
 	//   mitigations=off         — skip spectre/meltdown microcode patching at
-	//                             boot. Safe here: KVM guest on trusted host CPU,
-	//                             single-tenant LB workload, no untrusted code in
-	//                             the VM. Saves ~200-500ms.
+	//                             boot. Load balancer only: KVM guest on trusted
+	//                             host CPU, single-tenant LB workload, no untrusted
+	//                             code in the VM. Saves ~200-500ms. The SQS store
+	//                             holds tenant data and keeps mitigations on.
 	//   tsc=reliable            — skip TSC calibration loop on KVM (host already
 	//                             vouched for invariant TSC)
 	//   no_timer_check          — skip APIC/PIT cross-check; microvm has no PIT
 	//   reboot=t                — triple-fault reboot; skip ACPI/keyboard probes
 	//   i8042.no{pnp,aux,kbd}   — microvm has no PS/2; skip i8042 probe timeouts
 	var sb strings.Builder
-	sb.WriteString("console=ttyS0 quiet loglevel=3 mitigations=off tsc=reliable no_timer_check reboot=t i8042.nopnp i8042.noaux i8042.nokbd")
+	sb.WriteString("console=ttyS0 quiet loglevel=3")
+	if store == nil {
+		sb.WriteString(" mitigations=off")
+	}
+	sb.WriteString(" tsc=reliable no_timer_check reboot=t i8042.nopnp i8042.noaux i8042.nokbd")
 	// Slots must stay packed in the same order QEMU actually creates
 	// -device entries (buildNICNetdevs), so an unprovisioned mgmt NIC
 	// (skipped there) must not reserve a slot here either.
@@ -854,8 +908,8 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 		Memory:        memMiB,
 		MachineType:   machineType,
 		BIOS:          firmware,
-		KernelImage:   filepath.Join(microvmDir, "vmlinuz"),
-		Initrd:        filepath.Join(microvmDir, "initramfs.cpio.gz"),
+		KernelImage:   filepath.Join(imageDir, "vmlinuz"),
+		Initrd:        filepath.Join(imageDir, "initramfs.cpio.gz"),
 		KernelCmdline: cmdline,
 		FwCfg:         fwCfg,
 	}
@@ -939,21 +993,11 @@ func tapNameForNIC(idx int, _ elbv2domain.NICConfig, instanceID string, input *e
 func (d *Daemon) writeFwCfgBlobs(instanceID string, input *elbv2domain.SystemInstanceInput) ([]vm.FwCfgEntry, error) {
 	runtimeDir := hostprocess.RuntimeDir()
 
-	netcfgPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-netcfg.tmp", instanceID))
+	netcfgPath := netcfgFwCfgPath(instanceID)
 	lbenvPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-lbenv.tmp", instanceID))
 	cacertPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-cacert.tmp", instanceID))
 
-	// Exclude any unprovisioned mgmt NIC so the guest is only ever told about
-	// interfaces that physically exist — mirrors the netdev/mmio-slot skip
-	// in buildNICNetdevs/buildDirectBootConfig.
-	provisionedNICs := make([]elbv2domain.NICConfig, 0, len(input.NICs))
-	for i, nic := range input.NICs {
-		if nicProvisioned(i, nic) {
-			provisionedNICs = append(provisionedNICs, nic)
-		}
-	}
-
-	netcfg, err := buildNetcfgBlob(provisionedNICs)
+	netcfg, err := netcfgForInput(input)
 	if err != nil {
 		return nil, err
 	}
@@ -984,6 +1028,23 @@ func (d *Daemon) writeFwCfgBlobs(instanceID string, input *elbv2domain.SystemIns
 		{Name: "opt/spinifex/lb-agent-env", File: lbenvPath},
 		{Name: "opt/spinifex/ca-cert", File: cacertPath},
 	}, nil
+}
+
+func netcfgFwCfgPath(instanceID string) string {
+	return filepath.Join(hostprocess.RuntimeDir(), fmt.Sprintf("fwcfg-%s-netcfg.tmp", instanceID))
+}
+
+// netcfgForInput renders the guest network config. Any unprovisioned mgmt NIC
+// is excluded so the guest is only told about interfaces that exist, as in
+// buildNICNetdevs/buildDirectBootConfig.
+func netcfgForInput(input *elbv2domain.SystemInstanceInput) (string, error) {
+	provisionedNICs := make([]elbv2domain.NICConfig, 0, len(input.NICs))
+	for i, nic := range input.NICs {
+		if nicProvisioned(i, nic) {
+			provisionedNICs = append(provisionedNICs, nic)
+		}
+	}
+	return buildNetcfgBlob(provisionedNICs)
 }
 
 // buildNetcfgBlob serialises a slice of NICConfig entries to the shell KEY=value

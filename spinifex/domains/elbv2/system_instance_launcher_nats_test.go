@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -268,4 +269,45 @@ func TestNATSSystemInstanceLauncher_TerminatePropagatesRemoteError(t *testing.T)
 	err = launcher.TerminateSystemInstance("i-missing")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestNATSSystemInstanceLauncher_RefusesNonLoadBalancerKindBeforeSending(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	// A responder on the legacy subject stands in for an older daemon that
+	// would ignore the kind and boot a load balancer.
+	var mu sync.Mutex
+	received := 0
+	sub, err := nc.Subscribe("system.LaunchInstance.sys.micro", func(msg *nats.Msg) {
+		mu.Lock()
+		received++
+		mu.Unlock()
+		payload, _ := json.Marshal(struct {
+			Output *SystemInstanceOutput `json:"output,omitempty"`
+		}{Output: &SystemInstanceOutput{InstanceID: "i-0123456789abcdef0"}})
+		_ = msg.Respond(payload)
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	launcher := NewNATSSystemInstanceLauncher(nc, 2*time.Second)
+	for name, input := range map[string]*SystemInstanceInput{
+		"kind":            {InstanceType: "sys.micro", Kind: systeminstance.KindSQSStore},
+		"sqs store input": {InstanceType: "sys.micro", SQSStore: &systeminstance.SQSStoreInput{DataVolumeID: "vol-0123456789abcdef0"}},
+	} {
+		out, err := launcher.LaunchSystemInstance(input)
+		require.Error(t, err, name)
+		assert.Nil(t, out, name)
+	}
+
+	// An ownerless load balancer launch still reaches the responder, so the
+	// zero count above is the refusal, not a missing subscriber.
+	out, err := launcher.LaunchSystemInstance(&SystemInstanceInput{InstanceType: "sys.micro"})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, received, "only the load balancer launch may be sent")
 }

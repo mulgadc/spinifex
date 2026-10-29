@@ -102,9 +102,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Build microVM artifacts (lb-agent + kernel + initramfs + qboot)
+      - name: Build microVM artifacts (lb-agent + kernel + initramfs + qboot + SQS store image)
         if: steps.version.outputs.exists != 'true'
-        run: cd spinifex && make build-microvm-image
+        run: cd spinifex && make build-microvm-image build-sqs-store-microvm-image
 
       - name: Build amd64 Tarball
         if: steps.version.outputs.exists != 'true'

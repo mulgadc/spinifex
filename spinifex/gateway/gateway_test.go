@@ -862,6 +862,9 @@ func TestRequest_MalformedQueryString_EndToEnd(t *testing.T) {
 			if tc.service == "elasticloadbalancing" {
 				withELBv2(gw)
 			}
+			if tc.service == "spinifex" {
+				withOperator(gw)
+			}
 			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
 			ctx := context.WithValue(req.Context(), ctxService, tc.service)
 			ctx = context.WithValue(ctx, ctxAccountID, "123456789012")

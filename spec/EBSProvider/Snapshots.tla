@@ -19,14 +19,14 @@ DeleteSnapshotRequests == [snapshot_id : Optional(SnapshotIDs),
 
 CopySnapshot(req, val, err) ==
   (*******************************************************************************************************************)
-  (* A copy of a snapshot was requested, as a second, independently addressable snapshot over the                    *)
-  (* same data.                                                                                                      *)
+  (* A snapshot is copied under a new ID, sharing its frozen data, and the copy can be deleted independently         *)
+  (* of it.                                                                                                          *)
   (*                                                                                                                 *)
   (* Open questions:                                                                                                 *)
   (* - Should a retried copy return the existing copy, as a retried CreateVolume does, rather than                   *)
   (*   already_exists?                                                                                               *)
   (* - May a source that is not completed be copied? AWS refuses until it is.                                        *)
-  (* - What state does a copy start in? The memory provider always returns completed, while AWS starts               *)
+  (* - What state does a copy start in? The memory implementation always returns completed, while AWS starts         *)
   (*   a copy as pending.                                                                                            *)
   (*******************************************************************************************************************)
   LET srcSnapID == req.source_snapshot_id
@@ -38,8 +38,7 @@ CopySnapshot(req, val, err) ==
                                             \/ dstSnapID = None
                                             \/ volID = None
                                             \/ srcSnapID = dstSnapID
-                                            \* The volume is only compared, not looked up, since a snapshot
-                                            \* outlives the volume it was taken from.
+                                            \* Only compared, not looked up, since a snapshot outlives its volume.
                                             \/ /\ KeyExists(snapshots, srcSnapID)
                                                /\ snapshots[srcSnapID].source_volume_id /= volID,
                        already_exists   |-> KeyExists(snapshots, dstSnapID),
@@ -49,28 +48,31 @@ CopySnapshot(req, val, err) ==
 
      \* The request was rejected, or the provider failed to answer.
   IN \/ /\ val = None
-        /\ err \in Errors \union FaultErrors
+        /\ err \in Errors \union ProviderErrors
         /\ UNCHANGED vars
 
      \* The request was accepted.
      \/ /\ Errors = {}
+        \* The handle and creation time are the implementation's choice.
         /\ \E h \in SnapshotHandles \ {snapshots[x].handle : x \in DOMAIN snapshots},
               time \in Timestamps :
              /\ snapshots' = InsertKey(snapshots, dstSnapID,
                                        [created_at |-> time, handle |-> h] @@ snapshots[srcSnapID])
-             /\ val = SnapshotView(dstSnapID, snapshots'[dstSnapID])
+             /\ val = SnapshotView(dstSnapID)'
              /\ err = None
-             /\ UNCHANGED volumes
+             /\ UNCHANGED <<volumes, publications>>
 
 DeleteSnapshot(req, err) ==
   (*******************************************************************************************************************)
-  (* The deletion of a snapshot was requested, optionally naming the handle it is expected to have.                  *)
+  (* A snapshot is deleted, so that no new volume can be restored from it. Volumes already restored from it,         *)
+  (* and copies of it, are unaffected.                                                                               *)
   (*                                                                                                                 *)
   (* Open questions:                                                                                                 *)
-  (* - Is the handle check part of the contract? Viperblock ignores the handle and deletes anyway.                   *)
+  (* - Is the handle check part of the contract? The viperblock implementation ignores the handle and deletes        *)
+  (*   anyway.                                                                                                       *)
   (* - May a pending snapshot be deleted? AWS allows it.                                                             *)
-  (* - What does success promise? The Go docs say the snapshot is gone, but a snapshot whose handle did              *)
-  (*   not match is left in place.                                                                                   *)
+  (* - What does success promise? The Go docs say the snapshot is gone, but a snapshot whose handle did not          *)
+  (*   match is left in place.                                                                                       *)
   (*******************************************************************************************************************)
   LET snapID == req.snapshot_id
 
@@ -79,17 +81,19 @@ DeleteSnapshot(req, err) ==
         IN {e \in DOMAIN checks : checks[e]}
 
      \* The request was rejected, or the provider failed to answer.
-  IN \/ /\ err \in Errors \union FaultErrors
+  IN \/ /\ err \in Errors \union ProviderErrors
         /\ UNCHANGED vars
 
-     \* The request was accepted. Deleting an absent snapshot succeeds, so a retry does too. A snapshot
-     \* whose handle does not match is left in place, since it is not the one the request meant.
+     \* The request was accepted.
      \/ /\ Errors = {}
-        /\ err = None
-        /\ snapshots' = IF \/ ~KeyExists(snapshots, snapID)
-                           \/ req.handle /= None /\ snapshots[snapID].handle /= req.handle
+        /\ snapshots' = IF \* A snapshot with a different handle is not the one the request meant.
+                           /\ KeyExists(snapshots, snapID)
+                           /\ req.handle /= None
+                           /\ snapshots[snapID].handle /= req.handle
                         THEN snapshots
+                        \* Record removal is idempotent so that retries succeed.
                         ELSE RemoveKey(snapshots, snapID)
-        /\ UNCHANGED volumes
+        /\ err = None
+        /\ UNCHANGED <<volumes, publications>>
 
 =======================================================================================================================

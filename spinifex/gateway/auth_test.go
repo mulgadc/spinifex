@@ -10,6 +10,7 @@ import (
 	"fmt"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
@@ -2681,6 +2682,7 @@ func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
 	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
+	require.NoError(t, b.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{})))
 	gw.Services = b.Build()
 
 	for _, svc := range []string{"eks", "ecr", "acm", "ecs", "tagging",
@@ -2756,6 +2758,7 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
 	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
+	require.NoError(t, b.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{})))
 	gw.Services = b.Build()
 
 	var gotAction, gotThrottleKey string

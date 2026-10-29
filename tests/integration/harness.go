@@ -37,6 +37,9 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
+	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -186,6 +189,10 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	})))
 	require.NoError(t, services.Register(acmawsapi.NewRegistration(acmawsapi.Deps{NATS: nc})))
 	require.NoError(t, services.Register(route53awsapi.NewRegistration(route53awsapi.Deps{NATS: nc})))
+	// Composed as awsgw composes them. The harness has no quota service, and
+	// Tagging has no resource listers because no integration test aggregates.
+	require.NoError(t, services.Register(elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: nc})))
+	require.NoError(t, services.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: tagging.NewAggregator()})))
 
 	cfg := &gateway.GatewayConfig{
 		DisableLogging: true,

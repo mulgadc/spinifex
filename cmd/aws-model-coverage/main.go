@@ -10,6 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/awsmodel"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -54,6 +55,7 @@ func compareAll() ([]awsmodel.OperationCoverage, error) {
 		awsapi.ServiceName:        awsapi.OperationInventory(),
 		acmawsapi.ServiceName:     acmawsapi.OperationInventory(),
 		route53awsapi.ServiceName: route53awsapi.OperationInventory(),
+		elbv2awsapi.InventoryName: elbv2awsapi.OperationInventory(),
 	})
 	// The loop below walks the embedded models, so a served service with no
 	// model would otherwise drop out of the report without a word.

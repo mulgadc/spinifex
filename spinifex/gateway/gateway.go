@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,13 +35,13 @@ import (
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
@@ -238,11 +237,6 @@ type GatewayConfig struct {
 	// connection.
 	BedrockAgentVector ochrevector.VectorService
 
-	// TaggingResources serves Resource Groups Tagging API GetResources over the
-	// owner listers AWSGW wires. Nil fails Tagging_Request with ServerInternal,
-	// the same as an unconfigured gw.NATSConn.
-	TaggingResources *tagging.Aggregator
-
 	// Services holds the signed AWS services dispatched through the
 	// registration seam. Nil means nothing is registered, so every request
 	// falls through to the legacy switch in Request.
@@ -311,11 +305,9 @@ var supportedServices = map[string]bool{
 	"ec2":                   true,
 	"iam":                   true,
 	"sts":                   true,
-	"elasticloadbalancing":  true,
 	"eks":                   true,
 	"ecs":                   true,
 	"rds":                   true,
-	"tagging":               true,
 	"spinifex":              true,
 	"bedrock":               true,
 	"bedrock-runtime":       true,
@@ -415,7 +407,7 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 // XML body to these clients is an unparseable "<?xml…" deserialization error.
 func jsonErrorService(svc string) bool {
 	switch svc {
-	case "eks", "ecs", "tagging",
+	case "eks", "ecs",
 		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime":
 		return true
 	}
@@ -534,8 +526,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 			err = gw.IAM_Request(w, r)
 		case "sts":
 			err = gw.STS_Request(w, r)
-		case "elasticloadbalancing":
-			err = gw.ELBv2_Request(w, r)
 		case "eks":
 			err = gw.EKS_Request(w, r)
 		case "bedrock":
@@ -550,8 +540,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 			err = gw.ECS_Request(w, r)
 		case "rds":
 			err = gw.RDS_Request(w, r)
-		case "tagging":
-			err = gw.Tagging_Request(w, r)
 		case "spinifex":
 			err = gw.Spinifex_Request(w, r)
 		default:
@@ -1002,20 +990,8 @@ func readQueryArgs(r *http.Request) (map[string]string, error) {
 
 // ParseAWSQueryArgs parses an AWS query-protocol body. Returns an error on
 // invalid percent-encoding so callers can surface MalformedQueryString.
-func ParseAWSQueryArgs(query string) (map[string]string, error) {
-	values, err := url.ParseQuery(query)
-	if err != nil {
-		return nil, fmt.Errorf("invalid AWS query string: %w", err)
-	}
-
-	params := make(map[string]string, len(values))
-	for key, vs := range values {
-		// The query protocol indexes repeated parameters (Filter.1.Value.1), so a
-		// bare duplicate key only arrives from a non-conforming client. Take the
-		// last occurrence.
-		params[key] = vs[len(vs)-1]
-	}
-	return params, nil
+func ParseAWSQueryArgs(body string) (map[string]string, error) {
+	return query.ParseArgs(body)
 }
 
 // xmlErrorBody renders an error in the XML envelope svc's clients expect. The

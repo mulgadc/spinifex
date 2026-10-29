@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
@@ -133,4 +134,37 @@ func TestLimitsForCorruptRecordFailsClosed(t *testing.T) {
 func TestPutAccountQuotaWithoutBucket(t *testing.T) {
 	svc := New(baseLimits(), nil)
 	require.Error(t, svc.PutAccountQuota(t.Context(), "000000000002", Overrides{VCPUs: ptr(32)}, "operator"))
+}
+
+// The cap DescribeAccountLimits reports follows the account's stored override
+// and falls back to the configured baseline for an account without one.
+func TestLoadBalancerLimit_FollowsPerAccountOverride(t *testing.T) {
+	svc, _ := newOverrideService(t)
+	const upgraded, plain = "000000000002", "000000000003"
+	require.NoError(t, svc.PutAccountQuota(t.Context(), upgraded, Overrides{LoadBalancers: ptr(31)}, "operator"))
+
+	got, err := svc.LoadBalancerLimit(t.Context(), upgraded)
+	require.NoError(t, err)
+	require.Equal(t, 31, got)
+
+	got, err = svc.LoadBalancerLimit(t.Context(), plain)
+	require.NoError(t, err)
+	require.Equal(t, baseLimits().LoadBalancers, got)
+}
+
+// A sealed account is refused with Blocked, and an unreadable record is an
+// InternalError, never a made-up number.
+func TestLoadBalancerLimit_RefusesSealedAndUnreadableRecords(t *testing.T) {
+	svc, kv := newOverrideService(t)
+	const sealed, corrupt = "000000000004", "000000000005"
+	_, err := kv.Put(t.Context(), sealed, []byte(`{"state":"sealed"}`))
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), corrupt, []byte(`not json`))
+	require.NoError(t, err)
+
+	_, err = svc.LoadBalancerLimit(t.Context(), sealed)
+	require.EqualError(t, err, awserrors.ErrorBlocked)
+
+	_, err = svc.LoadBalancerLimit(t.Context(), corrupt)
+	require.EqualError(t, err, awserrors.ErrorInternalError)
 }

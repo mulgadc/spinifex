@@ -9,6 +9,7 @@ import (
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
+	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"io"
 	"maps"
@@ -243,8 +244,9 @@ func TestErrorHandler_NonEC2ValidationDefaults_DropEC2Wording(t *testing.T) {
 	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
 	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
 	require.NoError(t, b.Register(route53awsapi.NewRegistration(route53awsapi.Deps{})))
+	require.NoError(t, b.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{})))
 	gw.Services = b.Build()
-	services := append(slices.Collect(maps.Keys(supportedServices)), awsapi.ServiceName, acmawsapi.ServiceName, route53awsapi.ServiceName)
+	services := append(slices.Collect(maps.Keys(supportedServices)), awsapi.ServiceName, acmawsapi.ServiceName, route53awsapi.ServiceName, taggingawsapi.ServiceName)
 	for _, svc := range services {
 		if svc == "ec2" {
 			continue
@@ -267,7 +269,7 @@ func TestErrorHandler_NonEC2ValidationDefaults_DropEC2Wording(t *testing.T) {
 }
 
 func TestErrorHandler_ELBv2Service(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withELBv2(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "elasticloadbalancing")
@@ -656,7 +658,7 @@ func TestParseAWSQueryArgs_CapturedClientBodies(t *testing.T) {
 }
 
 func TestGetService(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withTagging(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}, nil)
 
 	tests := []struct {
 		name      string
@@ -857,6 +859,9 @@ func TestRequest_MalformedQueryString_EndToEnd(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// A live NATS connection bypasses the cluster-unavailable gate.
 			gw := &GatewayConfig{DisableLogging: true, NATSConn: connectedNATS(t), IAMService: allowAllIAMService()}
+			if tc.service == "elasticloadbalancing" {
+				withELBv2(gw)
+			}
 			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
 			ctx := context.WithValue(req.Context(), ctxService, tc.service)
 			ctx = context.WithValue(ctx, ctxAccountID, "123456789012")

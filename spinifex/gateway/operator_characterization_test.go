@@ -74,6 +74,7 @@ func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.Policy
 	if mutate != nil {
 		mutate(gw)
 	}
+	withOperator(gw)
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())

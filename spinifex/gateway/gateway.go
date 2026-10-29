@@ -308,7 +308,6 @@ var supportedServices = map[string]bool{
 	"eks":                   true,
 	"ecs":                   true,
 	"rds":                   true,
-	"spinifex":              true,
 	"bedrock":               true,
 	"bedrock-runtime":       true,
 	"bedrock-agent":         true,
@@ -540,8 +539,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 			err = gw.ECS_Request(w, r)
 		case "rds":
 			err = gw.RDS_Request(w, r)
-		case "spinifex":
-			err = gw.Spinifex_Request(w, r)
 		default:
 			err = errors.New(awserrors.ErrorUnsupportedOperation)
 		}

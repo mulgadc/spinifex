@@ -16,7 +16,7 @@ variable "region" {
 variable "plan" {
   type        = string
   default     = "vx1-g-16c-64g"
-  description = "VX plan. 16 vCPU is the supported minimum."
+  description = "VX plan, 16 vCPU at least, or a vbm- bare-metal plan such as vbm-8c-64gb-amd."
 }
 
 variable "os_id" {
@@ -28,7 +28,7 @@ variable "os_id" {
 variable "boot_disk_gb" {
   type        = number
   default     = 50
-  description = "Size of each node's bootable block volume. VX plans have no local root disk."
+  description = "Size of each VM's bootable block volume. VX plans have no local root disk; bare metal ignores it."
 }
 
 variable "node_count" {

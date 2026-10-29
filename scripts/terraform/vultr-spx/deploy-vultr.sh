@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# deploy.sh — build a one- or three-node Spinifex deployment on Vultr, or tear it down.
+# deploy-vultr.sh — build a one- or three-node Spinifex deployment on Vultr, or tear it down.
 #
-#   deploy.sh up      --name v1 --distro ./spinifex.tar.gz
-#   deploy.sh up      --name v3 --nodes 3 --distro ./spinifex.tar.gz
-#   deploy.sh up      --name v1 --channel dev
-#   deploy.sh destroy --name v1
-#   deploy.sh status  --name v1
+#   deploy-vultr.sh up --channel dev                                  one VX VM
+#   deploy-vultr.sh up --channel dev --nodes 3 --plan vbm-8c-64gb-amd three bare-metal servers
+#   deploy-vultr.sh status                 nodes, addresses and what the deployment holds
+#   deploy-vultr.sh credentials            print the AWS access key and secret
+#   deploy-vultr.sh ssh [nodeN] [command]  SSH to a node, node1 by default
+#   deploy-vultr.sh destroy
 #
-# VULTR_API_KEY must be set. Terraform creates the VPC, the VMs and their boot
-# volumes; this script installs and forms Spinifex over SSH, and records each
-# step under the state directory so a rerun resumes rather than re-initialising.
+# VULTR_API_KEY must be set. OpenTofu, or Terraform when OpenTofu is not
+# installed, creates the VPC, the nodes and any boot volumes; this script
+# installs and forms Spinifex over SSH, and records each step under the state
+# directory so a rerun resumes rather than re-initialising.
 # Three nodes are formed by install-node.sh with cluster and Geneve traffic on
 # the VPC, after each has come up as an armed single node.
 #
@@ -17,6 +19,9 @@
 # state nor the instance metadata. Destroy also deletes what Terraform never
 # created and Vultr keeps billing: the boot volume and every reserved IP the
 # node allocated under the deployment's label prefix.
+#
+# Without --name the deployment is called "default" and its AWS profile is
+# "spinifex"; a named deployment's profile is "spinifex-vultr-<name>".
 
 set -euo pipefail
 
@@ -26,7 +31,8 @@ VULTR_API="https://api.vultr.com/v2"
 
 CMD="${1:-}"
 [ $# -gt 0 ] && shift
-NAME=""
+NODE_ARG=""
+NAME="default"
 REGION="ord"
 PLAN="vx1-g-16c-64g"
 DISTRO=""
@@ -34,26 +40,26 @@ CHANNEL=""
 SPX_REGION="us-east-1"
 SPX_AZ="us-east-1a"
 SSH_KEY="$HOME/.ssh/id_ed25519"
-IMAGE="ubuntu-26.04-x86_64"
+IMAGE=""
 VPC_SUBNET="10.10.8.0"
 STATE_ROOT="$HOME/.spinifex/vultr"
 NODES=1
 YES=0
 
 usage() {
-    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
     cat <<EOF
 
 Options:
-  --name NAME          deployment name (required); labels every resource
+  --name NAME          deployment name (default $NAME); labels every resource
   --region ID          Vultr region (default $REGION)
-  --plan ID            Vultr plan (default $PLAN)
+  --plan ID            Vultr plan (default $PLAN); vbm-8c-64gb-amd for bare metal
   --distro TARBALL     install this local release tarball
   --channel CHANNEL    install from a release channel (latest, dev)
   --spx-region NAME    Spinifex region (default $SPX_REGION)
   --spx-az NAME        Spinifex availability zone (default $SPX_AZ)
   --ssh-key PATH       private key; PATH.pub is installed (default $SSH_KEY)
-  --image NAME         AMI to import (default $IMAGE)
+  --image NAME         also import this AMI, such as debian-13-x86_64 (default none)
   --vpc-subnet ADDR    the deployment VPC's /24 (default $VPC_SUBNET)
   --nodes N            1 or 3 (default $NODES)
   --yes                destroy without asking
@@ -75,7 +81,11 @@ while [ $# -gt 0 ]; do
         --nodes) NODES="$2"; shift ;;
         --yes) YES=1 ;;
         -h|--help) usage; exit 0 ;;
-        *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+        node[1-3])
+            if [ "$CMD" != ssh ] || [ -n "$NODE_ARG" ]; then usage >&2; exit 2; fi
+            NODE_ARG="$1" ;;
+        *) [ "$CMD" = ssh ] && break
+           echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
     shift
 done
@@ -83,17 +93,19 @@ done
 log() { printf '[deploy %s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
-[ -n "$NAME" ] || { usage >&2; exit 2; }
 [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,23}$ ]] || die "--name must be 1-24 lowercase letters, digits or hyphens"
 [ "$NODES" = 1 ] || [ "$NODES" = 3 ] || die "--nodes must be 1 or 3"
-[ -n "${VULTR_API_KEY:-}" ] || die "VULTR_API_KEY is not set"
-command -v tofu >/dev/null || die "tofu is not installed"
+case "$CMD" in up|destroy|status) [ -n "${VULTR_API_KEY:-}" ] || die "VULTR_API_KEY is not set" ;; esac
+if command -v tofu >/dev/null; then TF_BIN=tofu
+elif command -v terraform >/dev/null; then TF_BIN=terraform
+else die "neither OpenTofu (tofu) nor Terraform is installed"; fi
 
 STATE_DIR="$STATE_ROOT/$NAME"
 TF_STATE="$STATE_DIR/terraform.tfstate"
 KNOWN_HOSTS="$STATE_DIR/known_hosts"
 LABEL_PREFIX="spinifex-vultr-$NAME"
 PROFILE="spinifex-vultr-$NAME"
+[ "$NAME" = default ] && PROFILE="spinifex"
 CA_FILE="$HOME/.spinifex/vultr-$NAME-ca.pem"
 mkdir -p "$STATE_DIR"
 chmod 0700 "$STATE_DIR"
@@ -112,7 +124,7 @@ vultr() {
 }
 
 tf() {
-    tofu -chdir="$SCRIPT_DIR" "$@" -state="$TF_STATE" \
+    "$TF_BIN" -chdir="$SCRIPT_DIR" "$@" -state="$TF_STATE" \
         -var "deployment_name=$NAME" -var "region=$REGION" -var "plan=$PLAN" \
         -var "ssh_public_key_path=$SSH_KEY.pub" -var "vpc_subnet=$VPC_SUBNET" \
         -var "node_count=$NODES"
@@ -123,7 +135,7 @@ mark_step() { date -u +%FT%TZ > "$STATE_DIR/step.$1"; }
 
 # node_field FIELD prints FIELD of every node, in node order.
 node_field() {
-    tofu -chdir="$SCRIPT_DIR" output -state="$TF_STATE" -json nodes |
+    "$TF_BIN" -chdir="$SCRIPT_DIR" output -state="$TF_STATE" -json nodes |
         python3 -c 'import json,sys; [print(n[sys.argv[1]]) for n in json.load(sys.stdin)]' "$1"
 }
 
@@ -157,7 +169,9 @@ preflight() {
         die "pass --distro TARBALL or --channel latest|dev"
     fi
     vultr GET /account >/dev/null || die "the API key was refused; check its IP allowlist"
-    vultr GET "/regions/$REGION/availability?type=vx1" | python3 -c '
+    local type=vx1
+    [[ "$PLAN" == vbm-* ]] && type=vbm
+    vultr GET "/regions/$REGION/availability?type=$type" | python3 -c '
 import json,sys
 plan=sys.argv[1]
 if plan not in json.load(sys.stdin).get("available_plans",[]):
@@ -166,21 +180,26 @@ if plan not in json.load(sys.stdin).get("available_plans",[]):
 
 provision() {
     log "terraform apply ($PLAN in $REGION)"
-    tofu -chdir="$SCRIPT_DIR" init -input=false >/dev/null
+    "$TF_BIN" -chdir="$SCRIPT_DIR" init -input=false >/dev/null
     tf apply -input=false -auto-approve >"$STATE_DIR/apply.log" 2>&1 || {
         tail -20 "$STATE_DIR/apply.log" >&2
         die "terraform apply failed; log in $STATE_DIR/apply.log"
     }
 }
 
+# wait_host pins the host key only once the marker cloud-init writes exists:
+# bare metal first answers SSH from Vultr's installer, with a key of its own.
 wait_host() {
     log "waiting for SSH and cloud-init on $IP"
     local i
-    for i in $(seq 1 60); do
-        on 'test -f /var/lib/cloud/spinifex-host-ready' 2>/dev/null && break
-        [ "$i" = 60 ] && die "host $IP was not ready after 10 minutes"
+    for i in $(seq 1 120); do
+        ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "root@$IP" \
+            'test -f /var/lib/cloud/spinifex-host-ready' 2>/dev/null && break
+        [ "$i" = 120 ] && die "host $IP was not ready after 20 minutes"
         sleep 10
     done
+    ssh-keygen -R "$IP" -f "$KNOWN_HOSTS" >/dev/null 2>&1 || true
     on 'cloud-init status --wait >/dev/null; test -e /dev/kvm' || die "no /dev/kvm on $IP"
 }
 
@@ -340,10 +359,13 @@ cmd_up() {
     for_nodes pool configure_pool
     for_nodes restart restart_spinifex
     IP="${IPS[0]}"
-    done_step image || { import_image; mark_step image; }
+    if [ -n "$IMAGE" ]; then done_step image || { import_image; mark_step image; }; fi
     write_profile
     log "ready: https://$IP:9999 (profile $PROFILE)"
-    printf 'endpoint=https://%s:9999\nprofile=%s\nca=%s\nnode_ssh=root@%s\n' "$IP" "$PROFILE" "$CA_FILE" "$IP"
+    printf 'endpoint=https://%s:9999\nprofile=%s\nca=%s\nconsole=https://%s:3000/\n' "$IP" "$PROFILE" "$CA_FILE" "$IP"
+    local i
+    for i in "${!IPS[@]}"; do printf 'node%d=%s\n' "$((i + 1))" "${IPS[$i]}"; done
+    printf 'api_key_allowlist=%s\n' "$(printf '%s/32,' "${IPS[@]}" | sed 's/,$//')"
 }
 
 # ── destroy ──────────────────────────────────────────────────────────────────
@@ -355,6 +377,10 @@ leftovers() {
 import json,sys
 for i in json.load(sys.stdin)["instances"]:
     if "deployment:"+sys.argv[1] in i.get("tags",[]): print("instance", i["id"], i["label"])' "$NAME"
+        vultr GET "/bare-metals?per_page=500" | python3 -c '
+import json,sys
+for i in json.load(sys.stdin)["bare_metals"]:
+    if "deployment:"+sys.argv[1] in i.get("tags",[]): print("bare-metal", i["id"], i["label"])' "$NAME"
         vultr GET "/blocks?per_page=500" | python3 -c '
 import json,sys
 for b in json.load(sys.stdin)["blocks"]:
@@ -379,7 +405,7 @@ cmd_destroy() {
     fi
     if [ -f "$TF_STATE" ]; then
         log "terraform destroy"
-        tofu -chdir="$SCRIPT_DIR" init -input=false >/dev/null
+        "$TF_BIN" -chdir="$SCRIPT_DIR" init -input=false >/dev/null
         tf destroy -input=false -auto-approve >"$STATE_DIR/destroy.log" 2>&1 || {
             tail -20 "$STATE_DIR/destroy.log" >&2
             die "terraform destroy failed; log in $STATE_DIR/destroy.log"
@@ -401,8 +427,8 @@ cmd_destroy() {
                 block)
                     log "deleting block volume $label"
                     vultr DELETE "/blocks/$id" >/dev/null || true ;;
-                instance|vpc)
-                    log "deleting $kind $label left outside the state"
+                instance|bare-metal|vpc)
+                    log "deleting $kind $label, still listed after terraform destroy"
                     vultr DELETE "/${kind}s/$id" >/dev/null || true ;;
             esac
         done <<<"$left"
@@ -421,13 +447,38 @@ cmd_destroy() {
 }
 
 cmd_status() {
+    local nodes
+    if [ -f "$TF_STATE" ] && nodes="$("$TF_BIN" -chdir="$SCRIPT_DIR" output -state="$TF_STATE" -json nodes 2>/dev/null)"; then
+        python3 -c 'import json,sys; [print(n["name"], n["public_ip"]) for n in json.load(sys.stdin)]' <<<"$nodes"
+    fi
     leftovers
-    ls "$STATE_DIR"/step.* 2>/dev/null | sed 's/.*step\./done: /'
+    find "$STATE_DIR" -maxdepth 1 -name 'step.*' | sort | sed 's/.*step\./done: /'
+}
+
+# node_ip NODE prints the public address of nodeN from the Terraform state.
+node_ip() {
+    [ -f "$TF_STATE" ] || die "no deployment '$NAME'; run up first"
+    local ip
+    ip="$(node_field public_ip | sed -n "${1#node}p")"
+    [ -n "$ip" ] || die "deployment '$NAME' has no $1"
+    printf '%s' "$ip"
+}
+
+cmd_credentials() {
+    IP="$(node_ip node1)"
+    on 'awk "/^\[spinifex\]/{f=1} /^\[/&&!/^\[spinifex\]/{f=0} f" ~/.aws/credentials'
+}
+
+cmd_ssh() {
+    IP="$(node_ip "${NODE_ARG:-node1}")"
+    ssh -i "$SSH_KEY" -o UserKnownHostsFile="$KNOWN_HOSTS" "root@$IP" "$@"
 }
 
 case "$CMD" in
     up) cmd_up ;;
     destroy) cmd_destroy ;;
     status) cmd_status ;;
+    credentials) cmd_credentials ;;
+    ssh) cmd_ssh "$@" ;;
     *) usage >&2; exit 2 ;;
 esac

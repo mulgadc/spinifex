@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, Suspense, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -11,10 +12,13 @@ import {
 import { DetailPanel, PanelSpinner } from "@/components/detail-panel"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
+import { useDeleteVpc } from "@/mutations/ec2"
 
 import { CreateVpcPage } from "./create-vpc-page"
 import { VpcDetails } from "./vpc-details"
@@ -99,6 +103,16 @@ export function VpcsPage({ vpcs, search, onSearchChange }: VpcsPageProps) {
     onSearchChange(CLOSED_PANEL)
   }
 
+  const selection = useRowSelection(
+    vpcs.map((vpc) => vpc.VpcId ?? ""),
+    open !== undefined,
+    closePanel,
+  )
+
+  const deleteVpc = useDeleteVpc()
+
+  const names = new Map(vpcs.map((vpc) => [vpc.VpcId, getNameTag(vpc.Tags)]))
+
   let panel: ReactNode = null
 
   if (search.create) {
@@ -154,6 +168,22 @@ export function VpcsPage({ vpcs, search, onSearchChange }: VpcsPageProps) {
         subtitle="Isolated networks for your instances."
         title="VPCs"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteVpc.mutateAsync}
+            description="Each must have no subnets or internet gateways left. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => {
+              const name = names.get(id)
+
+              return name ? `${name} (${id})` : id
+            }}
+            noun={["VPC", "VPCs"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.VpcId}
         caption="VPCs"
@@ -163,8 +193,10 @@ export function VpcsPage({ vpcs, search, onSearchChange }: VpcsPageProps) {
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={vpcs}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

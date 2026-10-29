@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,10 +11,13 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
+import { useDeleteSubnet } from "@/mutations/ec2"
 
 import { SubnetDetails } from "./subnet-details"
 
@@ -117,6 +121,20 @@ export function SubnetsPage({
     (subnet) => search.selected !== "" && subnet.SubnetId === search.selected,
   )
 
+  const selection = useRowSelection(
+    subnets.map((subnet) => subnet.SubnetId ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const deleteSubnet = useDeleteSubnet()
+
+  const names = new Map(
+    subnets.map((subnet) => [subnet.SubnetId, getNameTag(subnet.Tags)]),
+  )
+
   let panel: ReactNode = null
 
   if (open?.SubnetId) {
@@ -147,6 +165,22 @@ export function SubnetsPage({
         subtitle="Address ranges within a VPC, each in one availability zone."
         title="Subnets"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteSubnet.mutateAsync}
+            description="Each must have no network interfaces left. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => {
+              const name = names.get(id)
+
+              return name ? `${name} (${id})` : id
+            }}
+            noun={["subnet", "subnets"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.SubnetId}
         caption="Subnets"
@@ -156,8 +190,10 @@ export function SubnetsPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={subnets}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

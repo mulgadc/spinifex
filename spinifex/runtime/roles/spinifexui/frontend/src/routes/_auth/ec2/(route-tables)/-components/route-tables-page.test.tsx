@@ -1,13 +1,26 @@
-import { screen } from "@testing-library/react"
+import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
+const { sdk } = vi.hoisted(() => {
+  interface SdkCommand {
+    readonly constructor: { name: string }
+    readonly input: object
+  }
+
+  return {
+    sdk: {
+      send: vi.fn<(command: SdkCommand) => Promise<unknown>>(async () => ({})),
+    },
+  }
+})
+
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(vi.fn(async () => ({})))
+  return mockAwsClients(sdk.send)
 })
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
@@ -84,6 +97,44 @@ describe("RouteTablesPage", () => {
     expect(
       screen.getByRole("button", { name: "Disassociate subnet-2" }),
     ).toBeInTheDocument()
+  })
+
+  it("deletes each selected route table with its own call, main ones too", async () => {
+    const user = userEvent.setup()
+    renderWithClient(
+      <RouteTablesPage
+        routeTables={[MAIN, CUSTOM]}
+        onSearchChange={vi.fn()}
+        search={CLOSED_PANEL}
+      />,
+      seed(),
+    )
+
+    await user.click(screen.getByRole("checkbox", { name: "Select rtb-main" }))
+    await user.click(screen.getByRole("checkbox", { name: "Select rtb-2" }))
+    await user.click(
+      within(
+        screen.getByRole("toolbar", { name: "Selection actions" }),
+      ).getByRole("button", { name: "Delete" }),
+    )
+
+    const dialog = screen.getByRole("alertdialog")
+
+    expect(within(dialog).getByText("rtb-main")).toBeInTheDocument()
+    expect(within(dialog).getByText("public (rtb-2)")).toBeInTheDocument()
+
+    await user.click(within(dialog).getByRole("button", { name: "Delete 2" }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    })
+    expect(
+      sdk.send.mock.calls
+        .filter(
+          ([command]) => command.constructor.name === "DeleteRouteTableCommand",
+        )
+        .map(([command]) => command.input),
+    ).toStrictEqual([{ RouteTableId: "rtb-main" }, { RouteTableId: "rtb-2" }])
   })
 })
 

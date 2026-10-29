@@ -2,6 +2,7 @@ import type { Image } from "@aws-sdk/client-ec2"
 import { Link } from "@tanstack/react-router"
 import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -9,9 +10,12 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
+import { useDeregisterImage } from "@/mutations/ec2"
 
 import { ImageDetails } from "./image-details"
 
@@ -94,6 +98,18 @@ export function ImagesPage({
     (image) => search.selected !== "" && image.ImageId === search.selected,
   )
 
+  const selection = useRowSelection(
+    images.map((image) => image.ImageId ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const deregisterImage = useDeregisterImage()
+
+  const names = new Map(images.map((image) => [image.ImageId, image.Name]))
+
   let panel: ReactNode = null
 
   if (open?.ImageId) {
@@ -115,6 +131,25 @@ export function ImagesPage({
   return (
     <ResourceView panel={panel}>
       <PageHeading title="Images" />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deregisterImage.mutateAsync}
+            description="Their backing snapshots will not be deleted."
+            ids={selection.ids}
+            label={(id) => {
+              const name = names.get(id)
+
+              return name ? `${name} (${id})` : id
+            }}
+            noun={["image", "images"]}
+            onDeleted={selection.drop}
+            pastVerb="deregistered"
+            pendingVerb="Deregistering"
+            verb="Deregister"
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.ImageId}
         caption="Images"
@@ -124,8 +159,10 @@ export function ImagesPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={images}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

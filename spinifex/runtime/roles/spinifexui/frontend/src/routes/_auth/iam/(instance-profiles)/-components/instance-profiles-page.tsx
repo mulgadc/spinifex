@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,9 +11,12 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
+import { useDeleteInstanceProfile } from "@/mutations/iam"
 
 import { InstanceProfileDetails } from "./instance-profile-details"
 
@@ -86,6 +90,23 @@ export function InstanceProfilesPage({
       search.selected !== "" && profile.InstanceProfileName === search.selected,
   )
 
+  const selection = useRowSelection(
+    instanceProfiles.map((profile) => profile.InstanceProfileName ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const remove = useDeleteInstanceProfile()
+
+  const resourceIds = new Map(
+    instanceProfiles.map((profile) => [
+      profile.InstanceProfileName,
+      profile.InstanceProfileId,
+    ]),
+  )
+
   return (
     <ResourceView
       panel={
@@ -114,6 +135,18 @@ export function InstanceProfilesPage({
         subtitle="Containers that pass a role to an EC2 instance."
         title="Instance profiles"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={remove.mutateAsync}
+            description="Remove their roles first, or the delete is refused. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => `${id} (${resourceIds.get(id) ?? ""})`}
+            noun={["instance profile", "instance profiles"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.InstanceProfileName}
         caption="Instance profiles"
@@ -123,8 +156,10 @@ export function InstanceProfilesPage({
         onRowClick={(selected) => {
           onSearchChange({ ...CLOSED_PANEL, selected })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={instanceProfiles}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

@@ -1,13 +1,16 @@
-import type { Cluster } from "@aws-sdk/client-ecs"
-import { fireEvent, screen, within } from "@testing-library/react"
+import { type Cluster, DeleteClusterCommand } from "@aws-sdk/client-ecs"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
+const mockSend = vi.hoisted(() => vi.fn())
+
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(vi.fn())
+  return mockAwsClients(mockSend)
 })
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
@@ -101,5 +104,33 @@ describe("ClustersPage", () => {
     expect(
       screen.getByRole("button", { name: "Create cluster" }),
     ).toBeDisabled()
+  })
+
+  it("deletes each selected cluster with its own call", async () => {
+    mockSend.mockReset()
+    mockSend.mockResolvedValue({})
+    renderPage({
+      clusters: [CLUSTER, { ...CLUSTER, clusterName: "api" }],
+    })
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole("checkbox", { name: "Select web" }))
+    await user.click(screen.getByRole("checkbox", { name: "Select api" }))
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+
+    const dialog = screen.getByRole("alertdialog")
+
+    expect(within(dialog).getByText("Delete 2 clusters?")).toBeInTheDocument()
+    await user.click(within(dialog).getByRole("button", { name: "Delete 2" }))
+
+    const deletes = () =>
+      mockSend.mock.calls
+        .map(([command]) => command as unknown)
+        .filter((command) => command instanceof DeleteClusterCommand)
+        .map((command) => command.input.cluster)
+
+    await waitFor(() => {
+      expect(deletes()).toStrictEqual(["web", "api"])
+    })
   })
 })

@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,10 +11,13 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
+import { useDeleteNatGateway } from "@/mutations/ec2"
 
 import { NatGatewayDetails } from "./nat-gateway-details"
 
@@ -121,6 +125,20 @@ export function NatGatewaysPage({
     (nat) => search.selected !== "" && nat.NatGatewayId === search.selected,
   )
 
+  const selection = useRowSelection(
+    natGateways.map((nat) => nat.NatGatewayId ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const deleteNatGateway = useDeleteNatGateway()
+
+  const names = new Map(
+    natGateways.map((nat) => [nat.NatGatewayId, getNameTag(nat.Tags)]),
+  )
+
   let panel: ReactNode = null
 
   if (open?.NatGatewayId) {
@@ -151,6 +169,22 @@ export function NatGatewaysPage({
         subtitle="Let private subnets reach out without being reached."
         title="NAT gateways"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteNatGateway.mutateAsync}
+            description="This cannot be undone. Their Elastic IPs are not released."
+            ids={selection.ids}
+            label={(id) => {
+              const name = names.get(id)
+
+              return name ? `${name} (${id})` : id
+            }}
+            noun={["NAT gateway", "NAT gateways"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.NatGatewayId}
         caption="NAT gateways"
@@ -160,8 +194,10 @@ export function NatGatewaysPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={natGateways}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

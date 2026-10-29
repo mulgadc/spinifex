@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,8 +11,11 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import { useDeleteSecurityGroup } from "@/mutations/ec2"
 
 import { SecurityGroupDetails } from "./security-group-details"
 
@@ -127,6 +131,18 @@ export function SecurityGroupsPage({
     (sg) => search.selected !== "" && sg.GroupId === search.selected,
   )
 
+  const selection = useRowSelection(
+    securityGroups.map((sg) => sg.GroupId ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const deleteSecurityGroup = useDeleteSecurityGroup()
+
+  const names = new Map(securityGroups.map((sg) => [sg.GroupId, sg.GroupName]))
+
   let panel: ReactNode = null
 
   if (open?.GroupId) {
@@ -157,6 +173,22 @@ export function SecurityGroupsPage({
         subtitle="Stateful firewalls for the instances in a VPC."
         title="Security groups"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteSecurityGroup.mutateAsync}
+            description="No instance or other group may still reference them. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => {
+              const name = names.get(id)
+
+              return name ? `${name} (${id})` : id
+            }}
+            noun={["security group", "security groups"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.GroupId}
         caption="Security groups"
@@ -166,8 +198,10 @@ export function SecurityGroupsPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={securityGroups}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

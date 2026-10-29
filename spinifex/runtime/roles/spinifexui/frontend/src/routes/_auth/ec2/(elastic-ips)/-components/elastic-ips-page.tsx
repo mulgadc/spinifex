@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, Suspense, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -11,10 +12,13 @@ import {
 import { DetailPanel, PanelSpinner } from "@/components/detail-panel"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
+import { useReleaseAddress } from "@/mutations/ec2"
 
 import { AllocateAddressPage } from "./allocate-address-page"
 import { associationState, ElasticIpDetails } from "./elastic-ip-details"
@@ -115,6 +119,20 @@ export function ElasticIpsPage({
       search.selected !== "" && address.AllocationId === search.selected,
   )
 
+  const selection = useRowSelection(
+    addresses.map((address) => address.AllocationId ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const releaseAddress = useReleaseAddress()
+
+  const names = new Map(
+    addresses.map((address) => [address.AllocationId, address.PublicIp]),
+  )
+
   function closePanel() {
     onSearchChange(CLOSED_PANEL)
   }
@@ -173,6 +191,25 @@ export function ElasticIpsPage({
         subtitle="Static public addresses you can move between instances."
         title="Elastic IPs"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={releaseAddress.mutateAsync}
+            description="The addresses go back to the pool and cannot be recovered."
+            ids={selection.ids}
+            label={(id) => {
+              const name = names.get(id)
+
+              return name ? `${name} (${id})` : id
+            }}
+            noun={["Elastic IP", "Elastic IPs"]}
+            onDeleted={selection.drop}
+            pastVerb="released"
+            pendingVerb="Releasing"
+            verb="Release"
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.AllocationId}
         caption="Elastic IPs"
@@ -182,8 +219,10 @@ export function ElasticIpsPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={addresses}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

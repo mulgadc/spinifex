@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, Suspense, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -11,9 +12,12 @@ import {
 import { DetailPanel, PanelSpinner } from "@/components/detail-panel"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import { useDeletePlacementGroup } from "@/mutations/ec2"
 
 import { CreatePlacementGroupPage } from "./create-placement-group-page"
 import { PlacementGroupDetails } from "./placement-group-details"
@@ -88,6 +92,18 @@ export function PlacementGroupsPage({
     (pg) => search.selected !== "" && pg.GroupId === search.selected,
   )
 
+  const selection = useRowSelection(
+    placementGroups.map((pg) => pg.GroupId ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const deletePlacementGroup = useDeletePlacementGroup()
+
+  const names = new Map(placementGroups.map((pg) => [pg.GroupId, pg.GroupName]))
+
   function closePanel() {
     onSearchChange(CLOSED_PANEL)
   }
@@ -146,6 +162,25 @@ export function PlacementGroupsPage({
         subtitle="Control how instances are spread across hosts."
         title="Placement groups"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            // DeletePlacementGroup takes the group's name, not its ID.
+            deleteOne={async (id) =>
+              await deletePlacementGroup.mutateAsync(names.get(id) ?? "")
+            }
+            description="They must have no instances in them. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => {
+              const name = names.get(id)
+
+              return name ? `${name} (${id})` : id
+            }}
+            noun={["placement group", "placement groups"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.GroupId}
         caption="Placement groups"
@@ -155,8 +190,10 @@ export function PlacementGroupsPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={placementGroups}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

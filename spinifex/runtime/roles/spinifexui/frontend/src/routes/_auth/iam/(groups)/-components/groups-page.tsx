@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,9 +11,12 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
+import { useDeleteGroup } from "@/mutations/iam"
 
 import { GroupDetails } from "./group-details"
 
@@ -71,6 +75,20 @@ export function GroupsPage({
     (group) => search.selected !== "" && group.GroupName === search.selected,
   )
 
+  const selection = useRowSelection(
+    groups.map((group) => group.GroupName ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const remove = useDeleteGroup()
+
+  const resourceIds = new Map(
+    groups.map((group) => [group.GroupName, group.GroupId]),
+  )
+
   return (
     <ResourceView
       panel={
@@ -99,6 +117,18 @@ export function GroupsPage({
         subtitle="Collections of users that share the policies attached to them."
         title="Groups"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={remove.mutateAsync}
+            description="Remove their members and detach their policies first, or the delete is refused. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => `${id} (${resourceIds.get(id) ?? ""})`}
+            noun={["group", "groups"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.GroupName}
         caption="Groups"
@@ -108,8 +138,10 @@ export function GroupsPage({
         onRowClick={(selected) => {
           onSearchChange({ ...CLOSED_PANEL, selected })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={groups}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

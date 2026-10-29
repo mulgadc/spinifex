@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, useMemo, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,9 +11,12 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import { useDeleteCluster } from "@/mutations/eks"
 import { eksClusterQueryOptions } from "@/queries/eks"
 
 import { ClusterDetails } from "./cluster-details"
@@ -86,6 +90,12 @@ export function ClustersListPage({
     (name) => search.selected !== "" && name === search.selected,
   )
 
+  const selection = useRowSelection(clusters, open !== undefined, () => {
+    onSearchChange(CLOSED_PANEL)
+  })
+
+  const deleteCluster = useDeleteCluster()
+
   let panel: ReactNode = null
 
   if (open) {
@@ -116,6 +126,17 @@ export function ClustersListPage({
         subtitle="Managed Kubernetes control planes and their node groups."
         title="Clusters"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteCluster.mutateAsync}
+            description="This permanently deletes these clusters and their control planes. This cannot be undone."
+            ids={selection.ids}
+            noun={["cluster", "clusters"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open}
         caption="EKS clusters"
@@ -125,8 +146,10 @@ export function ClustersListPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={rows}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

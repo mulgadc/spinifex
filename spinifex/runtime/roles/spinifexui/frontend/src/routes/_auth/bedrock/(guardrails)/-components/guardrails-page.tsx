@@ -1,8 +1,9 @@
 import type { GuardrailSummary } from "@aws-sdk/client-bedrock"
 import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
-import { useState } from "react"
+import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,10 +11,13 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
+import { useDeleteGuardrail } from "@/mutations/bedrock"
 
 import { GuardrailDetails } from "./guardrail-details"
 
@@ -80,24 +84,40 @@ export function GuardrailsPage({
     (guardrail) => search.selected !== "" && guardrail.id === search.selected,
   )
 
+  const selection = useRowSelection(
+    guardrails.map((guardrail) => guardrail.id ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const deleteGuardrail = useDeleteGuardrail()
+
+  const names = new Map(
+    guardrails.map((guardrail) => [guardrail.id, guardrail.name]),
+  )
+
+  let panel: ReactNode = null
+
+  if (open?.id) {
+    panel = (
+      <GuardrailDetails
+        guardrail={open}
+        key={open.id}
+        onClose={() => {
+          onSearchChange(CLOSED_PANEL)
+        }}
+        onTabChange={(tab) => {
+          onSearchChange({ tab })
+        }}
+        tab={search.tab}
+      />
+    )
+  }
+
   return (
-    <ResourceView
-      panel={
-        open && (
-          <GuardrailDetails
-            guardrail={open}
-            key={open.id}
-            onClose={() => {
-              onSearchChange(CLOSED_PANEL)
-            }}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            tab={search.tab}
-          />
-        )
-      }
-    >
+    <ResourceView panel={panel}>
       <PageHeading
         actions={
           <Link
@@ -110,6 +130,18 @@ export function GuardrailsPage({
         }
         title="Guardrails"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteGuardrail.mutateAsync}
+            description="This tears them down with all of their versions. It cannot be undone."
+            ids={selection.ids}
+            label={(id) => `${names.get(id) ?? id} (${id})`}
+            noun={["guardrail", "guardrails"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.id}
         caption="Guardrails"
@@ -119,8 +151,10 @@ export function GuardrailsPage({
         onRowClick={(selected) => {
           onSearchChange({ ...CLOSED_PANEL, selected })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={guardrails}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

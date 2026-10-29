@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,9 +11,12 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
+import { useDeleteUser } from "@/mutations/iam"
 
 import { UserDetails } from "./user-details"
 
@@ -72,6 +76,18 @@ export function UsersPage({ users, search, onSearchChange }: UsersPageProps) {
     (user) => search.selected !== "" && user.UserName === search.selected,
   )
 
+  const selection = useRowSelection(
+    users.map((user) => user.UserName ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const remove = useDeleteUser()
+
+  const resourceIds = new Map(users.map((user) => [user.UserName, user.UserId]))
+
   return (
     <ResourceView
       panel={
@@ -100,6 +116,18 @@ export function UsersPage({ users, search, onSearchChange }: UsersPageProps) {
         subtitle="People and workloads that sign requests with their own credentials."
         title="Users"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={remove.mutateAsync}
+            description="Detach their policies, delete their access keys and remove them from their groups first, or the delete is refused. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => `${id} (${resourceIds.get(id) ?? ""})`}
+            noun={["user", "users"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.UserName}
         caption="Users"
@@ -109,8 +137,10 @@ export function UsersPage({ users, search, onSearchChange }: UsersPageProps) {
         onRowClick={(userName) => {
           onSearchChange({ ...CLOSED_PANEL, selected: userName })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={users}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

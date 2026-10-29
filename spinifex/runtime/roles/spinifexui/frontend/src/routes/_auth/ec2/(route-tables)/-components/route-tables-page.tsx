@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,10 +11,13 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { Badge } from "@/components/ui/badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
+import { useDeleteRouteTable } from "@/mutations/ec2"
 
 import { isMainRouteTable, RouteTableDetails } from "./route-table-details"
 
@@ -119,6 +123,20 @@ export function RouteTablesPage({
     (rtb) => search.selected !== "" && rtb.RouteTableId === search.selected,
   )
 
+  const selection = useRowSelection(
+    routeTables.map((rtb) => rtb.RouteTableId ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const deleteRouteTable = useDeleteRouteTable()
+
+  const names = new Map(
+    routeTables.map((rtb) => [rtb.RouteTableId, getNameTag(rtb.Tags)]),
+  )
+
   let panel: ReactNode = null
 
   if (open?.RouteTableId) {
@@ -149,6 +167,22 @@ export function RouteTablesPage({
         subtitle="Decide where traffic from each subnet goes."
         title="Route tables"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteRouteTable.mutateAsync}
+            description="This cannot be undone."
+            ids={selection.ids}
+            label={(id) => {
+              const name = names.get(id)
+
+              return name ? `${name} (${id})` : id
+            }}
+            noun={["route table", "route tables"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.RouteTableId}
         caption="Route tables"
@@ -158,8 +192,10 @@ export function RouteTablesPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={routeTables}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

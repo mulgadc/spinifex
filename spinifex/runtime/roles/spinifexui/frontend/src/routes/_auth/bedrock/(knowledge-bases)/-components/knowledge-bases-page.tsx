@@ -1,8 +1,9 @@
 import type { KnowledgeBaseSummary } from "@aws-sdk/client-bedrock-agent"
 import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
-import { useState } from "react"
+import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,10 +11,13 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
+import { useDeleteKnowledgeBase } from "@/mutations/bedrockAgent"
 
 import { KnowledgeBaseDetails } from "./knowledge-base-details"
 
@@ -80,24 +84,40 @@ export function KnowledgeBasesPage({
     (kb) => search.selected !== "" && kb.knowledgeBaseId === search.selected,
   )
 
+  const selection = useRowSelection(
+    knowledgeBases.map((kb) => kb.knowledgeBaseId ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const deleteKnowledgeBase = useDeleteKnowledgeBase()
+
+  const names = new Map(
+    knowledgeBases.map((kb) => [kb.knowledgeBaseId, kb.name]),
+  )
+
+  let panel: ReactNode = null
+
+  if (open?.knowledgeBaseId) {
+    panel = (
+      <KnowledgeBaseDetails
+        key={open.knowledgeBaseId}
+        knowledgeBase={open}
+        onClose={() => {
+          onSearchChange(CLOSED_PANEL)
+        }}
+        onTabChange={(tab) => {
+          onSearchChange({ tab })
+        }}
+        tab={search.tab}
+      />
+    )
+  }
+
   return (
-    <ResourceView
-      panel={
-        open && (
-          <KnowledgeBaseDetails
-            knowledgeBase={open}
-            key={open.knowledgeBaseId}
-            onClose={() => {
-              onSearchChange(CLOSED_PANEL)
-            }}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            tab={search.tab}
-          />
-        )
-      }
-    >
+    <ResourceView panel={panel}>
       <PageHeading
         actions={
           <Link
@@ -110,6 +130,18 @@ export function KnowledgeBasesPage({
         }
         title="Knowledge bases"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteKnowledgeBase.mutateAsync}
+            description="This tears them down with all of their data sources. It cannot be undone."
+            ids={selection.ids}
+            label={(id) => `${names.get(id) ?? id} (${id})`}
+            noun={["knowledge base", "knowledge bases"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.knowledgeBaseId}
         caption="Knowledge bases"
@@ -119,8 +151,10 @@ export function KnowledgeBasesPage({
         onRowClick={(selected) => {
           onSearchChange({ ...CLOSED_PANEL, selected })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={knowledgeBases}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

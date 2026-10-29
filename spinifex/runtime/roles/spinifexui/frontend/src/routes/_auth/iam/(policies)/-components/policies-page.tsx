@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,9 +11,12 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
+import { useDeletePolicy } from "@/mutations/iam"
 
 import { PolicyDetails } from "./policy-details"
 
@@ -77,6 +81,20 @@ export function PoliciesPage({
     (policy) => search.selected !== "" && policy.Arn === search.selected,
   )
 
+  const selection = useRowSelection(
+    policies.map((policy) => policy.Arn ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const remove = useDeletePolicy()
+
+  const names = new Map(
+    policies.map((policy) => [policy.Arn, policy.PolicyName]),
+  )
+
   return (
     <ResourceView
       panel={
@@ -105,6 +123,18 @@ export function PoliciesPage({
         subtitle="Managed policies: permissions you attach to users, groups and roles."
         title="Policies"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={remove.mutateAsync}
+            description="Detach them from every user, group and role first, or the delete is refused. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => `${names.get(id) ?? id} (${id})`}
+            noun={["policy", "policies"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.Arn}
         caption="Policies"
@@ -114,8 +144,10 @@ export function PoliciesPage({
         onRowClick={(selected) => {
           onSearchChange({ ...CLOSED_PANEL, selected })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={policies}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

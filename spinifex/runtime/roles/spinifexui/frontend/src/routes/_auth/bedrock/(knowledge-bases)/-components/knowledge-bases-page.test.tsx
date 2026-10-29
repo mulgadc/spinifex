@@ -1,8 +1,16 @@
 import type { KnowledgeBaseSummary } from "@aws-sdk/client-bedrock-agent"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
+
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
@@ -84,5 +92,35 @@ describe("KnowledgeBasesPage", () => {
     expect(
       screen.getByRole("link", { name: "Create knowledge base" }),
     ).toHaveAttribute("href", "/bedrock/list-knowledge-bases/create")
+  })
+
+  it("deletes each selected knowledge base with its own call", async () => {
+    mockSend.mockClear()
+    renderSeeded([
+      { ...KB, knowledgeBaseId: "kb-1", name: "alpha" },
+      { ...KB, knowledgeBaseId: "kb-2", name: "zebra" },
+    ])
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole("checkbox", { name: "Select kb-1" }))
+    await user.click(screen.getByRole("checkbox", { name: "Select kb-2" }))
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+
+    const dialog = screen.getByRole("alertdialog")
+
+    expect(within(dialog).getByText("alpha (kb-1)")).toBeInTheDocument()
+    await user.click(within(dialog).getByRole("button", { name: "Delete 2" }))
+
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalledTimes(2)
+    })
+
+    const ids = mockSend.mock.calls.map(
+      ([command]) =>
+        (command as { input: { knowledgeBaseId: string } }).input
+          .knowledgeBaseId,
+    )
+
+    expect(ids).toStrictEqual(["kb-1", "kb-2"])
   })
 })

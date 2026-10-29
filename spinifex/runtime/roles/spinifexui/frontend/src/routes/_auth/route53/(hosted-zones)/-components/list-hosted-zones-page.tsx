@@ -1,9 +1,10 @@
 import type { HostedZone } from "@aws-sdk/client-route-53"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -12,11 +13,15 @@ import {
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
 import { ActivationBadge } from "@/components/route53/activation-badge"
+import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { bareZoneId } from "@/lib/route53-activation"
+import { useDeleteHostedZone } from "@/mutations/route53"
 import { route53ActivationQueryOptions } from "@/queries/route53"
 
+import { deleteHostedZone } from "./delete-hosted-zone"
 import { HostedZoneDetails } from "./hosted-zone-details"
 
 function ZoneActivation({ zone }: { zone: HostedZone }) {
@@ -107,6 +112,21 @@ export function ListHostedZonesPage({
       search.selected !== "" && bareZoneId(zone.Id ?? "") === search.selected,
   )
 
+  const selection = useRowSelection(
+    zones.map((zone) => bareZoneId(zone.Id ?? "")),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const queryClient = useQueryClient()
+  const remove = useDeleteHostedZone()
+
+  const names = new Map(
+    zones.map((zone) => [bareZoneId(zone.Id ?? ""), zone.Name]),
+  )
+
   return (
     <ResourceView
       panel={
@@ -135,6 +155,25 @@ export function ListHostedZonesPage({
         subtitle="Domains whose DNS this cluster serves"
         title="Hosted zones"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={async (id) =>
+              await deleteHostedZone(
+                queryClient,
+                id,
+                names.get(id) ?? id,
+                remove.mutateAsync,
+              )
+            }
+            description="Each zone's record sets besides NS and SOA are deleted first. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => `${names.get(id) ?? id} (${id})`}
+            noun={["hosted zone", "hosted zones"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open ? bareZoneId(open.Id ?? "") : undefined}
         caption="Hosted zones"
@@ -152,8 +191,10 @@ export function ListHostedZonesPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={zones}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

@@ -175,6 +175,23 @@ EC2 Instances is the reference page (`ec2/(instances)/-components/instances-page
 
 VPCs and Internet gateways follow the same pattern.
 
+### Selecting rows to delete
+
+Every list with a delete action has row checkboxes. Selecting a row shows `SelectionBar` (`src/components/selection-bar.tsx`) above the table, with the count, the actions and a way to clear, and `useRowSelection` (`src/hooks/use-row-selection.ts`) keeps the selection to rows still in the list.
+`BulkDelete` (`src/components/bulk-delete.tsx`) is the bar's destructive action, and its dialog names every selected resource before anything is sent.
+
+- **One call per resource, one at a time.** Most AWS delete calls take a single ID, so each refusal lands against its own row with AWS's message. A partial failure keeps the dialog open, and its confirm becomes "Retry N" for only the ones that failed.
+- **No pre-filtering.** The bar sends what was selected and lets AWS refuse, rather than guessing which deletes would fail. Instances are the exception, since one call takes many IDs and a mixed selection would fail as a whole.
+- **The bulk delete and the panel's delete are the same function.** Where a single delete is several calls, such as removing dependants first, the sequence lives in one place and both use it.
+- The verb follows the AWS console: Release for an Elastic IP, Deregister for an image.
+
+Key pairs is the smallest example (`ec2/(key)/-components/key-pairs-page.tsx`).
+
+### Instance launch
+
+The image picker shows each distribution's own mark from `src/assets/os/` (Ubuntu, Debian, Rocky, Alpine, CentOS), imported with `?no-inline` so it is served as a file and satisfies `img-src 'self'`. Any other distribution gets a generic server icon, and the "Other images" tile a disc.
+The instance type select states the chosen type's vCPUs and memory beneath it, from `DescribeInstanceTypes`.
+
 ## Side panels
 
 Modelled on UniFi's console: a click on a row opens the resource in a panel beside the list, and a create flow opens there too.

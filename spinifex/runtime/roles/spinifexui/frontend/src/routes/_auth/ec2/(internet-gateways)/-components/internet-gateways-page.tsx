@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, Suspense, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -11,10 +12,13 @@ import {
 import { DetailPanel, PanelSpinner } from "@/components/detail-panel"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
+import { useDeleteInternetGateway } from "@/mutations/ec2"
 
 import { CreateInternetGatewayPage } from "./create-internet-gateway-page"
 import {
@@ -114,6 +118,21 @@ export function InternetGatewaysPage({
     onSearchChange(CLOSED_PANEL)
   }
 
+  const selection = useRowSelection(
+    internetGateways.map((igw) => igw.InternetGatewayId ?? ""),
+    open !== undefined,
+    closePanel,
+  )
+
+  const deleteInternetGateway = useDeleteInternetGateway()
+
+  const names = new Map(
+    internetGateways.map((igw) => [
+      igw.InternetGatewayId,
+      getNameTag(igw.Tags),
+    ]),
+  )
+
   let panel: ReactNode = null
 
   if (search.create) {
@@ -169,6 +188,22 @@ export function InternetGatewaysPage({
         subtitle="Connect a VPC to the outside world."
         title="Internet gateways"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteInternetGateway.mutateAsync}
+            description="Each must be detached from its VPC first. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => {
+              const name = names.get(id)
+
+              return name ? `${name} (${id})` : id
+            }}
+            noun={["internet gateway", "internet gateways"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.InternetGatewayId}
         caption="Internet gateways"
@@ -178,8 +213,10 @@ export function InternetGatewaysPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={internetGateways}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

@@ -1,14 +1,17 @@
-import type { DBInstance } from "@aws-sdk/client-rds"
-import { fireEvent, screen } from "@testing-library/react"
+import { type DBInstance, DeleteDBInstanceCommand } from "@aws-sdk/client-rds"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(vi.fn().mockResolvedValue({}))
+  return mockAwsClients(mockSend)
 })
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
@@ -92,5 +95,48 @@ describe("DBInstancesListPage", () => {
     expect(
       screen.getByRole("link", { name: "Create database" }),
     ).toHaveAttribute("href", "/rds/create-db-instance")
+  })
+
+  it("deletes each selected instance with its own call, keeping a final snapshot", async () => {
+    mockSend.mockClear()
+    renderList([
+      AVAILABLE_INSTANCE,
+      { ...AVAILABLE_INSTANCE, DBInstanceIdentifier: "users-db" },
+    ])
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole("checkbox", { name: "Select orders-db" }))
+    await user.click(screen.getByRole("checkbox", { name: "Select users-db" }))
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+
+    const dialog = screen.getByRole("alertdialog")
+
+    expect(
+      within(dialog).getByText("Delete 2 DB instances?"),
+    ).toBeInTheDocument()
+    await user.click(within(dialog).getByRole("button", { name: "Delete 2" }))
+
+    const deletes = () =>
+      mockSend.mock.calls
+        .map(([command]) => command as unknown)
+        .filter((command) => command instanceof DeleteDBInstanceCommand)
+        .map((command) => command.input)
+
+    await waitFor(() => {
+      expect(deletes()).toHaveLength(2)
+    })
+
+    expect(deletes()).toStrictEqual([
+      {
+        DBInstanceIdentifier: "orders-db",
+        SkipFinalSnapshot: false,
+        FinalDBSnapshotIdentifier: expect.stringMatching(/^orders-db-final-/u),
+      },
+      {
+        DBInstanceIdentifier: "users-db",
+        SkipFinalSnapshot: false,
+        FinalDBSnapshotIdentifier: expect.stringMatching(/^users-db-final-/u),
+      },
+    ])
   })
 })

@@ -1,0 +1,1 @@
+import{n as e,r as t,t as n}from"./useBaseQuery-BSM_7Lt0.js";function r(r,i){return n({...r,enabled:!0,suspense:!0,throwOnError:e,placeholderData:void 0},t,i)}export{r as t};

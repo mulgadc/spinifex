@@ -4,6 +4,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -11,8 +12,11 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import { useDeleteTargetGroup } from "@/mutations/elbv2"
 import { elbv2TargetHealthQueryOptions } from "@/queries/elbv2"
 
 import { TargetGroupDetails } from "./target-group-details"
@@ -152,6 +156,18 @@ export function DescribeTargetGroupsPage({
     onSearchChange(CLOSED_PANEL)
   }
 
+  const selection = useRowSelection(
+    targetGroups.map((tg) => tg.TargetGroupArn ?? ""),
+    open !== undefined,
+    closePanel,
+  )
+
+  const deleteTargetGroup = useDeleteTargetGroup()
+
+  const names = new Map(
+    targetGroups.map((tg) => [tg.TargetGroupArn, tg.TargetGroupName]),
+  )
+
   return (
     <ResourceView
       panel={
@@ -178,6 +194,18 @@ export function DescribeTargetGroupsPage({
         subtitle="The instances a load balancer forwards to."
         title="Target groups"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteTargetGroup.mutateAsync}
+            description="This cannot be undone."
+            ids={selection.ids}
+            label={(id) => names.get(id) ?? id}
+            noun={["target group", "target groups"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.TargetGroupArn}
         caption="Target groups"
@@ -187,8 +215,10 @@ export function DescribeTargetGroupsPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={targetGroups}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

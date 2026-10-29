@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,11 +11,15 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import { useDeleteDBInstance } from "@/mutations/rds"
 
 import { DBInstanceDetails } from "./db-instance-details"
+import { defaultFinalSnapshotIdentifier } from "./delete-db-instance-dialog"
 
 function engineLabel(instance: DBInstance): string {
   return [instance.Engine, instance.EngineVersion].filter(Boolean).join(" ")
@@ -105,6 +110,24 @@ export function DBInstancesListPage({
     onSearchChange(CLOSED_PANEL)
   }
 
+  const selection = useRowSelection(
+    instances.map((instance) => instance.DBInstanceIdentifier ?? ""),
+    open !== undefined,
+    closePanel,
+  )
+
+  const deleteInstance = useDeleteDBInstance()
+
+  // The single delete's default: a final snapshot under its suggested name.
+  // Skipping it means typing the instance's name, so that stays per instance.
+  async function deleteWithFinalSnapshot(id: string) {
+    return await deleteInstance.mutateAsync({
+      dbInstanceIdentifier: id,
+      skipFinalSnapshot: false,
+      finalSnapshotIdentifier: defaultFinalSnapshotIdentifier(id),
+    })
+  }
+
   let panel: ReactNode = null
 
   if (open?.DBInstanceIdentifier) {
@@ -133,6 +156,17 @@ export function DBInstancesListPage({
         subtitle="Managed PostgreSQL and MariaDB instances."
         title="Databases"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteWithFinalSnapshot}
+            description="This tears them down, each after taking a final snapshot named after it, which keeps its data until that snapshot is deleted. To delete without a final snapshot, delete an instance on its own."
+            ids={selection.ids}
+            noun={["DB instance", "DB instances"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.DBInstanceIdentifier}
         caption="Databases"
@@ -142,8 +176,10 @@ export function DBInstancesListPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={instances}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

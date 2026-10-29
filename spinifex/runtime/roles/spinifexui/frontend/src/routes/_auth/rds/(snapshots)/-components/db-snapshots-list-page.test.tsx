@@ -1,15 +1,18 @@
-import type { DBSnapshot } from "@aws-sdk/client-rds"
-import { fireEvent, screen } from "@testing-library/react"
+import { type DBSnapshot, DeleteDBSnapshotCommand } from "@aws-sdk/client-rds"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(vi.fn().mockResolvedValue({}))
+  return mockAwsClients(mockSend)
 })
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
@@ -118,5 +121,46 @@ describe("DBSnapshotsListPage", () => {
   it("says why an automated backup cannot be removed by hand", () => {
     renderList([AUTOMATED])
     expect(screen.getByText(/cannot be\s+deleted by hand/u)).toBeInTheDocument()
+  })
+
+  it("deletes each selected DB snapshot with its own call", async () => {
+    mockSend.mockClear()
+    renderList([
+      MANUAL,
+      { ...MANUAL, DBSnapshotIdentifier: "orders-db-snapshot-20260818-0900" },
+    ])
+    const user = userEvent.setup()
+
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Select orders-db-snapshot-20260817-1432",
+      }),
+    )
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Select orders-db-snapshot-20260818-0900",
+      }),
+    )
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+
+    const dialog = screen.getByRole("alertdialog")
+
+    expect(
+      within(dialog).getByText("Delete 2 DB snapshots?"),
+    ).toBeInTheDocument()
+    await user.click(within(dialog).getByRole("button", { name: "Delete 2" }))
+
+    const deletes = () =>
+      mockSend.mock.calls
+        .map(([command]) => command as unknown)
+        .filter((command) => command instanceof DeleteDBSnapshotCommand)
+        .map((command) => command.input.DBSnapshotIdentifier)
+
+    await waitFor(() => {
+      expect(deletes()).toStrictEqual([
+        "orders-db-snapshot-20260817-1432",
+        "orders-db-snapshot-20260818-0900",
+      ])
+    })
   })
 })

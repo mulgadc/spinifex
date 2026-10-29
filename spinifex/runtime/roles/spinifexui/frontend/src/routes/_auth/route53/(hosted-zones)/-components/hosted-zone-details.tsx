@@ -1,5 +1,9 @@
 import type { HostedZone } from "@aws-sdk/client-route-53"
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
+import {
+  useQuery,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { Eye, Maximize2, SlidersHorizontal, Trash2 } from "lucide-react"
 import { Suspense, useState } from "react"
@@ -25,6 +29,8 @@ import {
   route53RecordSetsQueryOptions,
 } from "@/queries/route53"
 import { isZoneOwnedRecord } from "@/types/route53"
+
+import { deleteHostedZone } from "./delete-hosted-zone"
 
 function deleteErrorMessage(error: Error): string {
   return error.name === "HostedZoneNotEmpty"
@@ -92,6 +98,7 @@ function DeleteZone({
     route53RecordSetsQueryOptions(id),
   )
 
+  const queryClient = useQueryClient()
   const remove = useDeleteHostedZone()
   const [confirm, setConfirm] = useState(false)
 
@@ -101,7 +108,7 @@ function DeleteZone({
 
   async function onDelete() {
     try {
-      await remove.mutateAsync({ zoneId: id, recordSets: customerRecords })
+      await deleteHostedZone(queryClient, id, zoneName, remove.mutateAsync)
       onDeleted()
     } catch {
       // Shown by the banner above.

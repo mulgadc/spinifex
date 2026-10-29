@@ -105,6 +105,22 @@ interface RunInstancesPageProps {
   onClose?: () => void
 }
 
+// "2 vCPU · 8 GiB memory", read from DescribeInstanceTypes, which reports
+// the size of every type the cluster offers.
+export function describeTypeSize(type: InstanceTypeInfo): string {
+  const vcpus = type.VCpuInfo?.DefaultVCpus
+  const mib = type.MemoryInfo?.SizeInMiB
+
+  return [
+    vcpus === undefined ? undefined : `${vcpus} vCPU`,
+    mib === undefined
+      ? undefined
+      : `${Number((mib / 1024).toFixed(2))} GiB memory`,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+}
+
 export function RunInstancesPage({
   launchTemplateId,
   launchTemplateVersion,
@@ -625,6 +641,11 @@ export function RunInstancesPage({
                   {hasCompute && archTypeNames.length === 0 && arch && (
                     <FieldDescription>
                       No instance types on this cluster run {arch}.
+                    </FieldDescription>
+                  )}
+                  {selectedTypeInfo && (
+                    <FieldDescription data-testid="instance-type-size">
+                      {describeTypeSize(selectedTypeInfo)}
                     </FieldDescription>
                   )}
                   {selectedGpuDevice && (

@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus, Upload } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,9 +11,12 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
+import { useDeleteKeyPair } from "@/mutations/ec2"
 
 import { KeyPairDetails } from "./key-pair-details"
 
@@ -94,6 +98,20 @@ export function KeyPairsPage({
       search.selected !== "" && keyPair.KeyPairId === search.selected,
   )
 
+  const selection = useRowSelection(
+    keyPairs.map((keyPair) => keyPair.KeyPairId ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const deleteKeyPair = useDeleteKeyPair()
+
+  const names = new Map(
+    keyPairs.map((keyPair) => [keyPair.KeyPairId, keyPair.KeyName]),
+  )
+
   let panel: ReactNode = null
 
   if (open?.KeyPairId) {
@@ -133,6 +151,18 @@ export function KeyPairsPage({
         subtitle="SSH keys that instances accept at launch."
         title="Key pairs"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteKeyPair.mutateAsync}
+            description="Instances already launched with them keep the public key, but they can no longer be chosen at launch. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => `${names.get(id) ?? id} (${id})`}
+            noun={["key pair", "key pairs"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.KeyPairId}
         caption="Key pairs"
@@ -142,8 +172,10 @@ export function KeyPairsPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={keyPairs}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

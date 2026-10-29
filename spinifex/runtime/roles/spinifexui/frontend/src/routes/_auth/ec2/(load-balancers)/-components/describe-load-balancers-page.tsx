@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,10 +11,13 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
+import { useDeleteLoadBalancer } from "@/mutations/elbv2"
 
 import { LoadBalancerDetails } from "./load-balancer-details"
 
@@ -120,6 +124,18 @@ export function DescribeLoadBalancersPage({
     onSearchChange(CLOSED_PANEL)
   }
 
+  const selection = useRowSelection(
+    loadBalancers.map((lb) => lb.LoadBalancerArn ?? ""),
+    open !== undefined,
+    closePanel,
+  )
+
+  const deleteLoadBalancer = useDeleteLoadBalancer()
+
+  const names = new Map(
+    loadBalancers.map((lb) => [lb.LoadBalancerArn, lb.LoadBalancerName]),
+  )
+
   return (
     <ResourceView
       panel={
@@ -146,6 +162,18 @@ export function DescribeLoadBalancersPage({
         subtitle="Spread traffic across targets in a VPC."
         title="Load balancers"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteLoadBalancer.mutateAsync}
+            description="This cannot be undone."
+            ids={selection.ids}
+            label={(id) => names.get(id) ?? id}
+            noun={["load balancer", "load balancers"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.LoadBalancerArn}
         caption="Load balancers"
@@ -155,8 +183,10 @@ export function DescribeLoadBalancersPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={loadBalancers}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

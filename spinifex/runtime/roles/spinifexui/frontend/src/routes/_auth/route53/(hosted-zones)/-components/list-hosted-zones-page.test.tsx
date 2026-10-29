@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react"
+import { screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -160,6 +160,67 @@ describe("list-hosted-zones page", () => {
     expect(
       screen.getByRole("heading", { name: "active.example." }),
     ).toBeInTheDocument()
+  })
+
+  it("deletes the selected zones one at a time, each with its own records", async () => {
+    sdk.setHandler(
+      "ListResourceRecordSetsCommand",
+      (input: { HostedZoneId: string }) => ({
+        ResourceRecordSets:
+          input.HostedZoneId === "ZACTIVE"
+            ? [
+                { Name: "active.example.", Type: "NS", ResourceRecords: [] },
+                { Name: "www.active.example.", Type: "A", ResourceRecords: [] },
+              ]
+            : [{ Name: "lost.example.", Type: "SOA", ResourceRecords: [] }],
+        IsTruncated: false,
+      }),
+    )
+    sdk.setHandler("ChangeResourceRecordSetsCommand", () => ({}))
+    sdk.setHandler("DeleteHostedZoneCommand", () => ({}))
+    renderList()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole("checkbox", { name: "Select ZACTIVE" }))
+    await user.click(screen.getByRole("checkbox", { name: "Select ZLOST" }))
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+    expect(screen.getByText("active.example. (ZACTIVE)")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Delete 2" }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    })
+
+    const writes = sdk.send.mock.calls
+      .map(([command]) => command)
+      .filter(
+        ({ constructor }) =>
+          constructor.name !== "ListResourceRecordSetsCommand",
+      )
+      .map(({ constructor, input }) => [constructor.name, input])
+
+    expect(writes).toStrictEqual([
+      [
+        "ChangeResourceRecordSetsCommand",
+        {
+          HostedZoneId: "ZACTIVE",
+          ChangeBatch: {
+            Changes: [
+              {
+                Action: "DELETE",
+                ResourceRecordSet: {
+                  Name: "www.active.example.",
+                  Type: "A",
+                  ResourceRecords: [],
+                },
+              },
+            ],
+          },
+        },
+      ],
+      ["DeleteHostedZoneCommand", { Id: "ZACTIVE" }],
+      ["DeleteHostedZoneCommand", { Id: "ZLOST" }],
+    ])
   })
 
   it("explains what to do when there are no zones", () => {

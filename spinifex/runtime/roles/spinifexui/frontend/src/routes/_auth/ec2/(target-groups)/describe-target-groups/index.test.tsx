@@ -1,5 +1,5 @@
 import type { TargetGroup } from "@aws-sdk/client-elastic-load-balancing-v2"
-import { screen, waitFor } from "@testing-library/react"
+import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -105,5 +105,48 @@ describe("describe-target-groups list route", () => {
     renderPage([])
 
     expect(screen.getByText("No target groups yet.")).toBeInTheDocument()
+  })
+
+  it("deletes each selected target group with its own call", async () => {
+    sdk.setHandler("DeleteTargetGroupCommand", () => ({}))
+    const user = userEvent.setup()
+    renderWithClient(
+      <DescribeTargetGroupsPage
+        targetGroups={TGS}
+        onSearchChange={vi.fn()}
+        search={CLOSED_PANEL}
+      />,
+      createTestQueryClient(),
+    )
+
+    await user.click(screen.getByRole("checkbox", { name: "Select arn:tg:1" }))
+    await user.click(screen.getByRole("checkbox", { name: "Select arn:tg:2" }))
+    await user.click(
+      within(
+        screen.getByRole("toolbar", { name: "Selection actions" }),
+      ).getByRole("button", { name: "Delete" }),
+    )
+
+    const dialog = screen.getByRole("alertdialog")
+
+    expect(within(dialog).getByText("tg-one")).toBeInTheDocument()
+    expect(within(dialog).getByText("tg-two")).toBeInTheDocument()
+
+    await user.click(within(dialog).getByRole("button", { name: "Delete 2" }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    })
+    expect(
+      sdk.send.mock.calls
+        .filter(
+          ([command]) =>
+            command.constructor.name === "DeleteTargetGroupCommand",
+        )
+        .map(([command]) => command.input),
+    ).toStrictEqual([
+      { TargetGroupArn: "arn:tg:1" },
+      { TargetGroupArn: "arn:tg:2" },
+    ])
   })
 })

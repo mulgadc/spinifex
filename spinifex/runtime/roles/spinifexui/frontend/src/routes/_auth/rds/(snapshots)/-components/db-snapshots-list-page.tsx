@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Camera } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,10 +11,13 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
+import { useDeleteDBSnapshot } from "@/mutations/rds"
 import { SNAPSHOT_TYPE_AUTOMATED, SNAPSHOT_TYPE_MANUAL } from "@/types/rds"
 
 import { CreateDBSnapshotDialog } from "./create-db-snapshot-dialog"
@@ -142,6 +146,14 @@ export function DBSnapshotsListPage({
     onSearchChange(CLOSED_PANEL)
   }
 
+  const selection = useRowSelection(
+    visible.map((snapshot) => snapshot.DBSnapshotIdentifier ?? ""),
+    open !== undefined,
+    closePanel,
+  )
+
+  const deleteSnapshot = useDeleteDBSnapshot()
+
   let panel: ReactNode = null
 
   if (open?.DBSnapshotIdentifier) {
@@ -190,6 +202,18 @@ export function DBSnapshotsListPage({
         ))}
       </div>
 
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteSnapshot.mutateAsync}
+            description="This deletes the DB snapshots and the data behind them. Each is refused while an instance restored from it still exists. Deleting a final snapshot also releases the data volume its instance left behind."
+            ids={selection.ids}
+            noun={["DB snapshot", "DB snapshots"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
+
       <DataTable
         activeId={open?.DBSnapshotIdentifier}
         caption="DB snapshots"
@@ -199,8 +223,10 @@ export function DBSnapshotsListPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={visible}
+        selected={selection.selected}
         sort={sort}
       />
 

@@ -1,1 +1,0 @@
-import{Do as e,La as t,Lo as n}from"./awsClient-BZfks0Ld.js";var r=n(t,`AmazonBedrockAgentBuildTimeLambda`,`BedrockAgentClient`,e),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

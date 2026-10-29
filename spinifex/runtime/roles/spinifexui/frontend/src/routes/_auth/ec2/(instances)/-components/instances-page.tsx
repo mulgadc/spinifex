@@ -1,6 +1,6 @@
 import type { Instance } from "@aws-sdk/client-ec2"
 import { Link } from "@tanstack/react-router"
-import { Pause, Play, Plus, RotateCw, Search, Trash2, X } from "lucide-react"
+import { Pause, Play, Plus, RotateCw, Search, Trash2 } from "lucide-react"
 import { type ReactNode, Suspense, useState } from "react"
 
 import { type DataColumn, DataTable } from "@/components/data-table"
@@ -9,6 +9,7 @@ import { DetailPanel, PanelSpinner } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import {
@@ -214,14 +215,11 @@ function BulkActions({ instances, onDone }: BulkActionsProps) {
   )?.error
 
   return (
-    <div
-      aria-label="Selection actions"
-      className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2"
-      role="toolbar"
+    <SelectionBar
+      count={instances.length}
+      footer={error && <ErrorBanner error={error} />}
+      onClear={onDone}
     >
-      <span className="mr-auto text-sm font-medium">
-        {instances.length} selected
-      </span>
       {ACTION_KEYS.map((key) => {
         const action = ACTIONS[key]
         const mutation = mutations[key]
@@ -263,19 +261,6 @@ function BulkActions({ instances, onDone }: BulkActionsProps) {
         <Trash2 data-icon="inline-start" />
         Terminate
       </Button>
-      <Button
-        aria-label="Clear selection"
-        onClick={onDone}
-        size="icon-sm"
-        variant="ghost"
-      >
-        <X />
-      </Button>
-      {error && (
-        <div className="basis-full">
-          <ErrorBanner error={error} />
-        </div>
-      )}
       <DeleteConfirmationDialog
         confirmLabel={`Terminate ${terminable.length}`}
         description={
@@ -301,7 +286,7 @@ function BulkActions({ instances, onDone }: BulkActionsProps) {
         pendingLabel="Terminating…"
         title={`Terminate ${terminable.length} ${terminable.length === 1 ? "instance" : "instances"}?`}
       />
-    </div>
+    </SelectionBar>
   )
 }
 

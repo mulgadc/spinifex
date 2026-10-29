@@ -1,5 +1,9 @@
-import type { DBParameterGroup } from "@aws-sdk/client-rds"
-import { fireEvent, screen } from "@testing-library/react"
+import {
+  type DBParameterGroup,
+  DeleteDBParameterGroupCommand,
+} from "@aws-sdk/client-rds"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
@@ -89,5 +93,35 @@ describe("DBParameterGroupsListPage", () => {
     expect(
       screen.getByRole("link", { name: "Create Parameter Group" }),
     ).toHaveAttribute("href", "/rds/create-db-parameter-group")
+  })
+
+  it("deletes each selected DB parameter group with its own call", async () => {
+    mockSend.mockClear()
+    renderPage([
+      CUSTOMER_GROUP,
+      { ...CUSTOMER_GROUP, DBParameterGroupName: "users-pg" },
+    ])
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole("checkbox", { name: "Select orders-pg" }))
+    await user.click(screen.getByRole("checkbox", { name: "Select users-pg" }))
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+
+    const dialog = screen.getByRole("alertdialog")
+
+    expect(
+      within(dialog).getByText("Delete 2 DB parameter groups?"),
+    ).toBeInTheDocument()
+    await user.click(within(dialog).getByRole("button", { name: "Delete 2" }))
+
+    const deletes = () =>
+      mockSend.mock.calls
+        .map(([command]) => command as unknown)
+        .filter((command) => command instanceof DeleteDBParameterGroupCommand)
+        .map((command) => command.input.DBParameterGroupName)
+
+    await waitFor(() => {
+      expect(deletes()).toStrictEqual(["orders-pg", "users-pg"])
+    })
   })
 })

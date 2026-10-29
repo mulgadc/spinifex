@@ -1,1 +1,0 @@
-import{M as e,k as t}from"./utils-BPvjgdb1.js";import{F as n,P as r}from"./reason-parts-LtG49NmB.js";var i=e(t(),1);function a(e,t){let a=i.useRef(e),o=n(t);r(()=>{a.current!==e&&o(a.current),a.current=e},[e,o])}export{a as t};

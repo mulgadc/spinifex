@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,10 +11,13 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime, getNameTag } from "@/lib/utils"
+import { useDeleteSnapshot } from "@/mutations/ec2"
 
 import { SnapshotDetails } from "./snapshot-details"
 
@@ -122,6 +126,23 @@ export function SnapshotsPage({
       search.selected !== "" && snapshot.SnapshotId === search.selected,
   )
 
+  const selection = useRowSelection(
+    snapshots.map((snapshot) => snapshot.SnapshotId ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const deleteSnapshot = useDeleteSnapshot()
+
+  const names = new Map(
+    snapshots.map((snapshot) => [
+      snapshot.SnapshotId,
+      getNameTag(snapshot.Tags),
+    ]),
+  )
+
   let panel: ReactNode = null
 
   if (open?.SnapshotId) {
@@ -152,6 +173,22 @@ export function SnapshotsPage({
         subtitle="Point-in-time copies of volumes, to restore or register as AMIs."
         title="Snapshots"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteSnapshot.mutateAsync}
+            description="An AMI registered from one must be deregistered first. This cannot be undone."
+            ids={selection.ids}
+            label={(id) => {
+              const name = names.get(id)
+
+              return name ? `${name} (${id})` : id
+            }}
+            noun={["snapshot", "snapshots"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.SnapshotId}
         caption="Snapshots"
@@ -161,8 +198,10 @@ export function SnapshotsPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={snapshots}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

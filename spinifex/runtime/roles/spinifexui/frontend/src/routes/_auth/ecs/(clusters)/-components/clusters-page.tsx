@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,10 +11,13 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { SystemImageRequired } from "@/components/system-image-required"
 import { Button } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import { useDeleteCluster } from "@/mutations/ecs"
 
 import { ClusterDetails } from "./cluster-details"
 import { CreateClusterDialog } from "./create-cluster-dialog"
@@ -96,6 +100,14 @@ export function ClustersPage({
     onSearchChange(CLOSED_PANEL)
   }
 
+  const selection = useRowSelection(
+    named.map((cluster) => cluster.clusterName ?? ""),
+    open !== undefined,
+    closePanel,
+  )
+
+  const deleteCluster = useDeleteCluster()
+
   let panel: ReactNode = null
 
   if (open) {
@@ -131,6 +143,18 @@ export function ClustersPage({
 
       <EcsSectionNav />
 
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteCluster.mutateAsync}
+            description="This permanently deletes these clusters and force-stops every task they hold. This cannot be undone."
+            ids={selection.ids}
+            noun={["cluster", "clusters"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
+
       {!hasSystemImage && (
         <SystemImageRequired
           className="mb-6"
@@ -149,8 +173,10 @@ export function ClustersPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={named}
+        selected={selection.selected}
         sort={sort}
       />
 

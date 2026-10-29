@@ -1,8 +1,9 @@
 import type { DBSubnetGroup } from "@aws-sdk/client-rds"
 import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
-import { useState } from "react"
+import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,9 +11,12 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import { useDeleteDBSubnetGroup } from "@/mutations/rds"
 
 import { DBSubnetGroupDetails } from "./db-subnet-group-details"
 
@@ -95,22 +99,32 @@ export function DBSubnetGroupsListPage({
     onSearchChange(CLOSED_PANEL)
   }
 
+  const selection = useRowSelection(
+    groups.map((group) => group.DBSubnetGroupName ?? ""),
+    open !== undefined,
+    closePanel,
+  )
+
+  const deleteGroup = useDeleteDBSubnetGroup()
+
+  let panel: ReactNode = null
+
+  if (open?.DBSubnetGroupName) {
+    panel = (
+      <DBSubnetGroupDetails
+        group={open}
+        key={open.DBSubnetGroupName}
+        onClose={closePanel}
+        onTabChange={(tab) => {
+          onSearchChange({ tab })
+        }}
+        tab={search.tab}
+      />
+    )
+  }
+
   return (
-    <ResourceView
-      panel={
-        open?.DBSubnetGroupName && (
-          <DBSubnetGroupDetails
-            group={open}
-            key={open.DBSubnetGroupName}
-            onClose={closePanel}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            tab={search.tab}
-          />
-        )
-      }
-    >
+    <ResourceView panel={panel}>
       <PageHeading
         actions={
           <Link className={buttonVariants()} to="/rds/create-db-subnet-group">
@@ -120,6 +134,17 @@ export function DBSubnetGroupsListPage({
         }
         title="DB Subnet Groups"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteGroup.mutateAsync}
+            description="This deletes the DB subnet groups. Each is refused while any DB instance still references it, including one that is only deleting."
+            ids={selection.ids}
+            noun={["DB subnet group", "DB subnet groups"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.DBSubnetGroupName}
         caption="DB subnet groups"
@@ -129,8 +154,10 @@ export function DBSubnetGroupsListPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={groups}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

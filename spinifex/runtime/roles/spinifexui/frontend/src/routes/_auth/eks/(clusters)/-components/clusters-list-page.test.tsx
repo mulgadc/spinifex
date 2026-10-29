@@ -1,10 +1,14 @@
-import { fireEvent, screen } from "@testing-library/react"
+import { DeleteClusterCommand } from "@aws-sdk/client-eks"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
+
+const mockSend = vi.hoisted(() => vi.fn())
 
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(vi.fn())
+  return mockAwsClients(mockSend)
 })
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
@@ -79,5 +83,32 @@ describe("ClustersListPage", () => {
     expect(
       screen.queryByRole("region", { name: "Cluster details" }),
     ).not.toBeInTheDocument()
+  })
+
+  it("deletes each selected cluster with its own call", async () => {
+    mockSend.mockReset()
+    mockSend.mockResolvedValue({})
+    renderPage(["alpha", "zebra"])
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole("checkbox", { name: "Select alpha" }))
+    await user.click(screen.getByRole("checkbox", { name: "Select zebra" }))
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+
+    const dialog = screen.getByRole("alertdialog")
+
+    expect(within(dialog).getByText("Delete 2 clusters?")).toBeInTheDocument()
+    await user.click(within(dialog).getByRole("button", { name: "Delete 2" }))
+
+    // Each delete invalidates the cluster queries, so refetches interleave.
+    const deletes = () =>
+      mockSend.mock.calls
+        .map(([command]) => command as unknown)
+        .filter((command) => command instanceof DeleteClusterCommand)
+        .map((command) => command.input.name)
+
+    await waitFor(() => {
+      expect(deletes()).toStrictEqual(["alpha", "zebra"])
+    })
   })
 })

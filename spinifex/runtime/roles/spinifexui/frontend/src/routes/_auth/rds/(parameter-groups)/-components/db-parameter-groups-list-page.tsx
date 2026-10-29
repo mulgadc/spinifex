@@ -1,8 +1,9 @@
 import type { DBParameterGroup } from "@aws-sdk/client-rds"
 import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
-import { useState } from "react"
+import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,8 +11,11 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import { useDeleteDBParameterGroup } from "@/mutations/rds"
 import { isDefaultParameterGroupName } from "@/types/rds"
 
 import { DBParameterGroupDetails } from "./db-parameter-group-details"
@@ -92,22 +96,32 @@ export function DBParameterGroupsListPage({
     onSearchChange(CLOSED_PANEL)
   }
 
+  const selection = useRowSelection(
+    groups.map((group) => group.DBParameterGroupName ?? ""),
+    open !== undefined,
+    closePanel,
+  )
+
+  const deleteGroup = useDeleteDBParameterGroup()
+
+  let panel: ReactNode = null
+
+  if (open?.DBParameterGroupName) {
+    panel = (
+      <DBParameterGroupDetails
+        group={open}
+        key={open.DBParameterGroupName}
+        onClose={closePanel}
+        onTabChange={(tab) => {
+          onSearchChange({ tab })
+        }}
+        tab={search.tab}
+      />
+    )
+  }
+
   return (
-    <ResourceView
-      panel={
-        open?.DBParameterGroupName && (
-          <DBParameterGroupDetails
-            group={open}
-            key={open.DBParameterGroupName}
-            onClose={closePanel}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            tab={search.tab}
-          />
-        )
-      }
-    >
+    <ResourceView panel={panel}>
       <PageHeading
         actions={
           <Link
@@ -120,6 +134,17 @@ export function DBParameterGroupsListPage({
         }
         title="DB Parameter Groups"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteGroup.mutateAsync}
+            description="This deletes the DB parameter groups and every value stored on them. Each is refused while any DB instance references it, including one whose pending changes name it."
+            ids={selection.ids}
+            noun={["DB parameter group", "DB parameter groups"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.DBParameterGroupName}
         caption="DB parameter groups"
@@ -129,8 +154,10 @@ export function DBParameterGroupsListPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={groups}
+        selected={selection.selected}
         sort={sort}
       />
       <p className="mt-4 text-xs text-muted-foreground">

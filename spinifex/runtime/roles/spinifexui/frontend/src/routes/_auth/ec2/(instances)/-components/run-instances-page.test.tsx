@@ -74,6 +74,8 @@ function x86(name: string): InstanceTypeInfo {
   return {
     InstanceType: name as InstanceTypeInfo["InstanceType"],
     ProcessorInfo: { SupportedArchitectures: ["x86_64"] },
+    VCpuInfo: { DefaultVCpus: 2 },
+    MemoryInfo: { SizeInMiB: 512 },
   }
 }
 
@@ -298,6 +300,18 @@ describe("run-instances instance type picker", () => {
     await user.click(screen.getByRole("option", { name: /^t3\.nano/u }))
 
     expect(screen.queryByText(/^GPU:/u)).not.toBeInTheDocument()
+  })
+
+  it("states the selected type's vCPUs and memory beneath it", async () => {
+    const user = userEvent.setup()
+    setup()
+
+    await user.click(await screen.findByLabelText("Instance Type"))
+    await user.click(screen.getByRole("option", { name: /^t3\.nano/u }))
+
+    expect(screen.getByTestId("instance-type-size")).toHaveTextContent(
+      "2 vCPU · 0.5 GiB memory",
+    )
   })
 })
 

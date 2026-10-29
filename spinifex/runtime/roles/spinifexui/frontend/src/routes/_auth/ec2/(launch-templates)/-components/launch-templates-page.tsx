@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import {
   type DataColumn,
   DataTable,
@@ -10,9 +11,12 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
+import { useDeleteLaunchTemplate } from "@/mutations/ec2"
 
 import { LaunchTemplateDetails } from "./launch-template-details"
 
@@ -91,6 +95,20 @@ export function LaunchTemplatesPage({
     (lt) => search.selected !== "" && lt.LaunchTemplateId === search.selected,
   )
 
+  const selection = useRowSelection(
+    launchTemplates.map((lt) => lt.LaunchTemplateId ?? ""),
+    open !== undefined,
+    () => {
+      onSearchChange(CLOSED_PANEL)
+    },
+  )
+
+  const deleteLaunchTemplate = useDeleteLaunchTemplate()
+
+  const names = new Map(
+    launchTemplates.map((lt) => [lt.LaunchTemplateId, lt.LaunchTemplateName]),
+  )
+
   let panel: ReactNode = null
 
   if (open?.LaunchTemplateId) {
@@ -120,6 +138,22 @@ export function LaunchTemplatesPage({
         }
         title="Launch templates"
       />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteLaunchTemplate.mutateAsync}
+            description="All of their versions will be deleted. This action cannot be undone."
+            ids={selection.ids}
+            label={(id) => {
+              const name = names.get(id)
+
+              return name ? `${name} (${id})` : id
+            }}
+            noun={["launch template", "launch templates"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
+      )}
       <DataTable
         activeId={open?.LaunchTemplateId}
         caption="Launch templates"
@@ -129,8 +163,10 @@ export function LaunchTemplatesPage({
         onRowClick={(id) => {
           onSearchChange({ ...CLOSED_PANEL, selected: id })
         }}
+        onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
         rows={launchTemplates}
+        selected={selection.selected}
         sort={sort}
       />
     </ResourceView>

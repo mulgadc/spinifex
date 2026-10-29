@@ -112,6 +112,7 @@ check "config syncs JetStream on the data disk" \
     'grep -q "store_dir: \"$T/data\"" "$T/run/nats.conf" && grep -q "sync_interval: always" "$T/run/nats.conf"'
 check "config is tested by the server before ready" 'grep -qx "nats-server -t -c $T/run/nats.conf" "$T/calls.log"'
 check "no auth material on the console" '! grep -q "$NKEY" "$T/console"'
+check "prepare reports the disk and config, not a listener" 'grep -q "prepared: $T/dev/vdb mounted" "$T/console" && ! grep -qi "listening" "$T/console"'
 
 fresh fsck-corrected; echo 1 > "$T/fsck.rc"
 check "e2fsck exit 1 (corrected) proceeds" 'prepare && [ -e "$T/run/ready" ]'

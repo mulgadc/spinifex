@@ -143,7 +143,7 @@ EOF
     mkdir -p "$SQS_DATA"
     "$MOUNT" -t ext4 -o nodev,nosuid,noexec "$dev" "$SQS_DATA" || { sqs_fatal "mount $dev failed"; return 1; }
     : > "$SQS_RUN/ready"
-    sqs_log "ready: $dev mounted at $SQS_DATA, listening on $addr:$SQS_PORT"
+    sqs_log "prepared: $dev mounted at $SQS_DATA, config written for $addr:$SQS_PORT; server not started yet"
 }
 
 # sqs_run: the respawned supervisor body. Its identity is recorded before the

@@ -101,6 +101,14 @@ stage_appliance() {
     chmod 0440 /etc/sudoers.d/spinifex-admin
     visudo -cf /etc/sudoers.d/spinifex-admin >/dev/null
 
+    # OL's pwquality gives one try per login, then ends the session, so say the
+    # rules up front. spx admin banner keeps /etc/motd content above its own
+    # section, and agetty shows /etc/issue.d beside the banner in /etc/issue.
+    local hint="First login: the new password needs 8+ characters and must not contain 'spinifex'."
+    printf '%s\n' "$hint" > /etc/motd
+    install -d /etc/issue.d
+    printf '%s\n\n' "$hint" > /etc/issue.d/spinifex-password.issue
+
     # sshd takes the first value it reads, so this sorts ahead of the
     # 50-cloud-init.conf that templates ship with passwords off.
     printf 'PasswordAuthentication yes\n' > /etc/ssh/sshd_config.d/10-spinifex-appliance.conf

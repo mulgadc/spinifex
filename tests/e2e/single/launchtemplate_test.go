@@ -82,7 +82,7 @@ func runLaunchTemplateBoot(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "root_gib", rootGiB, "tag_value", tagValue)
 
 	templateName := "e2e-lt-boot-" + tagValue
-	// e2e:allow-create — the template under test; no harness fixture creates one.
+	// The template under test; no harness fixture creates one.
 	createOut, err := fix.AWS.EC2.CreateLaunchTemplate(&ec2.CreateLaunchTemplateInput{
 		LaunchTemplateName: aws.String(templateName),
 		LaunchTemplateData: &ec2.RequestLaunchTemplateData{
@@ -163,7 +163,7 @@ func runLaunchTemplateBoot(t *testing.T, fix *Fixture) {
 	require.NotEqualf(t, instType, pinnedType, "could not derive a second instance type from %q", instType)
 
 	harness.Step(t, "create-launch-template-version 2 type=%s and make it $Default", pinnedType)
-	// e2e:allow-create — v2 exists only to move $Default off the pinned version.
+	// V2 exists only to move $Default off the pinned version.
 	v2Out, err := fix.AWS.EC2.CreateLaunchTemplateVersion(&ec2.CreateLaunchTemplateVersionInput{
 		LaunchTemplateId: aws.String(templateID),
 		SourceVersion:    aws.String("1"),
@@ -206,7 +206,7 @@ func runLaunchTemplateBoot(t *testing.T, fix *Fixture) {
 // any inline parameter here would mask a merge that failed to supply it.
 func launchFromTemplate(t *testing.T, fix *Fixture, spec *ec2.LaunchTemplateSpecification) string {
 	t.Helper()
-	// e2e:allow-create — launching from the template is the subject under test.
+	// Launching from the template is the subject under test.
 	out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
 		LaunchTemplate: spec,
 		MinCount:       aws.Int64(1),

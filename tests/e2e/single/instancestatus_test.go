@@ -55,7 +55,7 @@ func runInstanceStatus(t *testing.T, fix *Fixture) {
 
 	harness.Step(t, "run-instances ami=%s type=%s (test-owned guest)", amiID, instType)
 	launchedAt := time.Now()
-	runOut, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{ // e2e:allow-create — the initializing→ok transition needs a guest launched by this test, not the long-booted singleton.
+	runOut, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{ // The initializing→ok transition needs a guest launched by this test, not the long-booted singleton.
 		ImageId:          aws.String(amiID),
 		InstanceType:     aws.String(instType),
 		KeyName:          aws.String(keyName),

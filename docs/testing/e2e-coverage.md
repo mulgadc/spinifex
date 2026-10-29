@@ -140,7 +140,6 @@ The create/describe/connect path against a live cluster: a DB VM that actually b
 - **`ddil`** — Denied, Disrupted, Intermittent, Limited network scenarios.
 - **`teardown`** — sweeps leftovers.
 - **`harness`** — shared primitives, not a suite. `harness/vpc_egress.go` carries the VPC/subnet/IGW/NAT-gateway fixtures the egress scenarios build on.
-- **`manifest-check`, `manifest-lint`** — manifest validation, not cluster behaviour.
 
 ## Keeping this honest
 

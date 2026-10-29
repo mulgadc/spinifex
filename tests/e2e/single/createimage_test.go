@@ -116,7 +116,7 @@ func runBootVerifyAMI(t *testing.T, fix *Fixture, amiID, label string) {
 	require.NotEmpty(t, vpc.SGID, "default SG ID required")
 	harness.AuthorizeSSHIngress(t, fix.AWS, vpc.SGID)
 
-	runOut, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{ // e2e:allow-create — a dedicated boot-verify probe per produced AMI, not the shared singleton.
+	runOut, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{ // A dedicated boot-verify probe per produced AMI, not the shared singleton.
 		ImageId:          aws.String(amiID),
 		InstanceType:     aws.String(instType),
 		KeyName:          aws.String(keyName),

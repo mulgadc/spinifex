@@ -56,6 +56,13 @@ The contract that every implementation of the `EBSProvider` interface must meet.
   The Viperblock implementation ignores it.
 - Is `not_found` the right error for a volume that was deleted and recreated under the same ID?
 
+#### ExpandVolume
+
+- Should a request below the current capacity succeed without change, as CSI recommends, rather than be refused with `invalid_argument`?
+  It is refused here, as AWS refuses `ModifyVolume` to a smaller size and the conformance suite tests, while CSI says the plugin should reply OK when the volume is already at least the requested size.
+- Must a block export's size follow an online expansion?
+  A published volume keeps its export's `size_bytes`, so after it grows the export reports the old size.
+
 #### PublishVolume
 
 - Should `volume_in_use` depend on the exclusion scope?

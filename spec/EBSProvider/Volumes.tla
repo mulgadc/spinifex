@@ -28,7 +28,7 @@ CreateVolume(req, val, err) ==
       \* Any warranted error may be returned, since the order of checks is not part of the contract.
       Errors ==
         LET checks == [invalid_argument       |-> \/ volID = None
-                                                  \/ capacity.required_bytes = 0
+                                                  \/ capacity.required_bytes <= 0
                                                   \/ /\ capacity.limit_bytes > 0
                                                      /\ capacity.required_bytes > capacity.limit_bytes
                                                   \/ req.seed_data > capacity.required_bytes
@@ -102,6 +102,45 @@ GetVolume(req, val, err) ==
         /\ val = VolumeView(volID)
         /\ err = None
         /\ UNCHANGED vars
+
+
+ExpandVolumeRequests == [volume_id      : Optional(VolumeIDs),
+                         handle         : Optional(VolumeHandles),
+                         capacity_range : CapacityRanges]
+
+ExpandVolume(req, val, err) ==
+  (*******************************************************************************************************************)
+  (* A volume grows to the requested capacity, keeping its data. A published volume grows only if the                *)
+  (* implementation supports online expansion, and a request for the current capacity succeeds without change.       *)
+  (*******************************************************************************************************************)
+  LET volID    == req.volume_id
+      capacity == req.capacity_range
+
+      Errors ==
+        LET checks == [invalid_argument |-> \/ volID = None
+                                            \/ capacity.required_bytes = 0
+                                            \/ /\ capacity.limit_bytes > 0
+                                               /\ capacity.required_bytes > capacity.limit_bytes
+                                            \/ /\ KeyExists(volumes, volID)
+                                               /\ capacity.required_bytes < volumes[volID].capacity_bytes,
+                       not_found        |-> \/ ~KeyExists(volumes, volID)
+                                            \/ req.handle \notin {None, volumes[volID].handle},
+                       volume_in_use    |-> /\ PublishedNodes(volID) /= {}
+                                            /\ ~Capabilities.online_expansion
+                                            /\ capacity.required_bytes > volumes[volID].capacity_bytes]
+        IN {e \in DOMAIN checks : checks[e]}
+
+     \* The request was rejected, or the provider failed to answer.
+  IN \/ /\ val = None
+        /\ err \in Errors \union ProviderErrors
+        /\ UNCHANGED vars
+
+     \* The request was accepted.
+     \/ /\ Errors = {}
+        /\ volumes' = [volumes EXCEPT ![volID].capacity_bytes = capacity.required_bytes]
+        /\ val = VolumeView(volID)'
+        /\ err = None
+        /\ UNCHANGED <<publications, snapshots>>
 
 
 PublishVolumeRequests == [volume_id : Optional(VolumeIDs),

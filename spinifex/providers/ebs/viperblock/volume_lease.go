@@ -72,8 +72,8 @@ const volumeLeaseRenewTimeout = 12 * time.Second
 const volumeLeaseValidity = 40 * time.Second
 
 // volumeLeaseAcquireMargin is the gap left between validity and the server TTL.
-// It covers scheduling delay and request latency on this side, and the entry
-// still has to age out before a peer can claim it.
+// Validity counts from when a write is sent, so request latency cannot use it
+// up; it covers scheduling delay in fencing the export on this side.
 const volumeLeaseAcquireMargin = 5 * time.Second
 
 // deviceStallBound is the longest one stalled I/O lasts under JetStream, from
@@ -143,8 +143,20 @@ type volumeLeases struct {
 	// production interval; tests shorten it to reach a deadline quickly.
 	checkEvery time.Duration
 
+	// now overrides time.Now when set, so a test can stand in for an
+	// acknowledgement that arrives long after its write was applied.
+	now func() time.Time
+
 	mu   sync.Mutex
 	held map[string]*volumeLease
+}
+
+// clock is the time validity is measured on.
+func (l *volumeLeases) clock() time.Time {
+	if l.now != nil {
+		return l.now()
+	}
+	return time.Now()
 }
 
 // checkInterval is how often a renew loop tests validity.
@@ -201,9 +213,9 @@ type volumeLease struct {
 	// lost records that the entry moved out from under this holder, which
 	// means somebody else may now be writing the volume.
 	lost bool
-	// confirmed is when the last conditional update was acknowledged by the
-	// server. An attempt still in flight does not count: only a write the
-	// server accepted proves the entry is still ours.
+	// confirmed is when the last acknowledged write was sent. The server starts
+	// its TTL when it applies the write, never earlier, so counting validity
+	// from the send keeps a slow acknowledgement from stretching it.
 	confirmed time.Time
 	// refs counts opens on this node sharing the lease. The lease is released
 	// when the last one lets go.
@@ -226,9 +238,17 @@ func (l *volumeLeases) acquire(ctx context.Context, volumeName string) (*volumeL
 	l.mu.Lock()
 	if lease, ok := l.held[volumeName]; ok {
 		lease.mu.Lock()
-		lease.refs++
+		// A lost or lapsed lease stays held until its fence releases it, and
+		// sharing it then would authorize an open the lease no longer covers.
+		usable := !lease.lost && l.clock().Sub(lease.confirmed) < volumeLeaseValidity
+		if usable {
+			lease.refs++
+		}
 		lease.mu.Unlock()
 		l.mu.Unlock()
+		if !usable {
+			return nil, fmt.Errorf("lease for %s is lost or lapsed and still being fenced: %w", volumeName, ErrLeaseStoreUnavailable)
+		}
 		return lease, nil
 	}
 	l.mu.Unlock()
@@ -239,6 +259,7 @@ func (l *volumeLeases) acquire(ctx context.Context, volumeName string) (*volumeL
 		return nil, fmt.Errorf("marshal lease: %w", err)
 	}
 
+	sent := l.clock()
 	revision, err := l.kv.Create(ctx, volumeName, payload)
 	switch {
 	case errors.Is(err, jetstream.ErrKeyExists):
@@ -258,7 +279,7 @@ func (l *volumeLeases) acquire(ctx context.Context, volumeName string) (*volumeL
 		volume:     volumeName,
 		generation: revision,
 		revision:   revision,
-		confirmed:  time.Now(),
+		confirmed:  sent,
 		done:       make(chan struct{}),
 		refs:       1,
 	}
@@ -267,11 +288,20 @@ func (l *volumeLeases) acquire(ctx context.Context, volumeName string) (*volumeL
 	// published afterwards. A failure here costs observability, not exclusion.
 	record.Generation = revision
 	if published, perr := json.Marshal(record); perr == nil {
+		publishSent := l.clock()
 		if rev, uerr := l.kv.Update(ctx, volumeName, published, revision); uerr == nil {
 			lease.revision = rev
+			lease.confirmed = publishSent
 		} else {
 			slog.Warn("volume lease: could not publish generation", "volume", volumeName, "err", uerr)
 		}
+	}
+
+	// An acknowledgement that took the whole validity window proves nothing
+	// about now: a peer may already hold the entry. It is left to expire,
+	// since a reclaimed one can still cover exports from this node's last run.
+	if l.clock().Sub(lease.confirmed) >= volumeLeaseValidity {
+		return nil, fmt.Errorf("lease for %s was acknowledged after its validity lapsed: %w", volumeName, ErrLeaseStoreUnavailable)
 	}
 
 	l.mu.Lock()
@@ -393,6 +423,11 @@ func (lease *volumeLease) renewLoop(ctx context.Context) {
 	outcome := make(chan bool, 1)
 	inFlight := false
 
+	// Fires at the validity deadline itself, so a lapse is fenced then rather
+	// than up to a check interval later, which would eat the margin.
+	deadline := time.NewTimer(lease.untilLapse())
+	defer deadline.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -402,12 +437,19 @@ func (lease *volumeLease) renewLoop(ctx context.Context) {
 			if !stillOurs {
 				return
 			}
+			deadline.Reset(lease.untilLapse())
+		case <-deadline.C:
+			if lease.expiredLocally() {
+				lease.surrender(ctx)
+				return
+			}
+			deadline.Reset(lease.untilLapse())
 		case <-ticker.C:
 			if lease.expiredLocally() {
 				lease.surrender(ctx)
 				return
 			}
-			if inFlight || time.Since(lease.lastConfirmed()) < volumeLeaseRenewInterval {
+			if inFlight || lease.leases.clock().Sub(lease.lastConfirmed()) < volumeLeaseRenewInterval {
 				continue
 			}
 			inFlight = true
@@ -422,7 +464,12 @@ func (lease *volumeLease) renewLoop(ctx context.Context) {
 // volumeLeaseValidity without a confirmed renewal, so the server may be about
 // to grant the entry to somebody else.
 func (lease *volumeLease) expiredLocally() bool {
-	return time.Since(lease.lastConfirmed()) >= volumeLeaseValidity
+	return lease.leases.clock().Sub(lease.lastConfirmed()) >= volumeLeaseValidity
+}
+
+// untilLapse is how long this holder may still write, and never negative.
+func (lease *volumeLease) untilLapse() time.Duration {
+	return max(lease.lastConfirmed().Add(volumeLeaseValidity).Sub(lease.leases.clock()), 0)
 }
 
 func (lease *volumeLease) lastConfirmed() time.Time {
@@ -436,8 +483,14 @@ func (lease *volumeLease) lastConfirmed() time.Time {
 // belong to another node.
 func (lease *volumeLease) surrender(ctx context.Context) {
 	lease.mu.Lock()
+	// Already given up by another path, which fenced it; fencing twice would
+	// report a second loss that never happened.
+	if lease.lost {
+		lease.mu.Unlock()
+		return
+	}
 	lease.lost = true
-	since := time.Since(lease.confirmed)
+	since := lease.leases.clock().Sub(lease.confirmed)
 	attempts := lease.failures
 	failingFor := time.Duration(0)
 	if attempts > 0 {
@@ -481,12 +534,27 @@ func (lease *volumeLease) renew(ctx context.Context) bool {
 	updateCtx, cancel := context.WithTimeout(ctx, volumeLeaseRenewTimeout)
 	defer cancel()
 
+	sent := lease.leases.clock()
 	renewed, err := lease.leases.kv.Update(updateCtx, lease.key, payload, revision)
 	switch {
 	case err == nil:
 		lease.mu.Lock()
+		// Once validity has lapsed the lease is over, even if the fence has not
+		// run yet; a late success must not revive it. Decided under the same
+		// lock as the update, so nothing sees a lapsed lease become valid.
+		if lease.lost {
+			lease.mu.Unlock()
+			slog.Warn("volume lease: a renewal succeeded after the lease was given up, ignoring it", "volume", lease.volume, "generation", lease.generation)
+			return false
+		}
+		if lease.leases.clock().Sub(lease.confirmed) >= volumeLeaseValidity {
+			lease.mu.Unlock()
+			slog.Warn("volume lease: a renewal succeeded after validity lapsed, giving the volume up", "volume", lease.volume, "generation", lease.generation)
+			lease.surrender(ctx)
+			return false
+		}
 		lease.revision = renewed
-		lease.confirmed = time.Now()
+		lease.confirmed = sent
 		attempts, outage := lease.failures, time.Since(lease.failingSince)
 		lease.failures, lease.failingSince = 0, time.Time{}
 		lease.mu.Unlock()
@@ -576,6 +644,10 @@ func (lease *volumeLease) readopt(ctx context.Context, cause error) bool {
 // that starts.
 func (lease *volumeLease) loseToPeer(ctx context.Context, cause error, why string) {
 	lease.mu.Lock()
+	if lease.lost {
+		lease.mu.Unlock()
+		return
+	}
 	lease.lost = true
 	lease.mu.Unlock()
 

@@ -243,6 +243,22 @@ Hot-attaching a volume to a running direct-boot microVM is not supported, becaus
 
 This covers only requests that are already mounted when the instance starts; nothing yet supplies data volumes to a system instance, and the path is verified with fake-QEMU unit tests, not with a real EBS volume in a guest.
 
+#### Volume leases
+
+Before opening an engine on a volume, the Viperblock worker takes a lease: one entry per volume in the `VIPERBLOCK_VOLUME_LEASES` JetStream KV bucket, which expires 45 seconds after its last write (`providers/ebs/viperblock/volume_lease.go`).
+A renewal becomes eligible once the last confirmed write is 10 seconds old, and the holder checks for that periodically, so the rewrite lands some time after that point.
+Each rewrite is conditioned on the revision the holder last wrote, and a refused write that finds the entry gone or naming another owner or generation fences the export as a takeover.
+It may keep writing for 40 seconds after the last write the store acknowledged, measured from when that write was sent, because the server starts the entry's expiry when it applies the write and never earlier.
+A slow acknowledgement therefore shortens the remaining validity rather than extending it, and an acquisition acknowledged after its validity has already run out is refused as retryable.
+
+For a holder that cannot renew, a timer is armed for the validity deadline, leaving a nominal 5 seconds before the entry can expire; when it fires, the export's nbdkit is fenced with SIGKILL (`volume_fence.go`).
+The fence runs on its own goroutine, so Go scheduling, that goroutine and process termination all delay the kill, and enough delay can use up the whole margin; a kill held in uninterruptible sleep, which the fence waits up to 30 seconds for, is the extreme case.
+Once a lease is lost or has lapsed it stays lost: a renewal that succeeds afterwards is ignored, and another open on the same node cannot share it while the fence runs.
+
+These rules bound only the holder's own clock.
+The storage backend does not reject a stale writer, so a paused or partitioned host that resumes after its validity can still write; generation enforcement at the write boundary is required by Q-24 in the umbrella repository's `docs/specs/viperblock/rfc3-1_overview.md` and is not implemented.
+An export that survives a daemon restart writes without a renewed lease until recovery adopts it, and a survivor that recovery cannot adopt while a guest still uses it is left running without a lease or a fence.
+
 ### Predastore (S3)
 
 Object storage used for:

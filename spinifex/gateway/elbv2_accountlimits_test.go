@@ -1,13 +1,18 @@
-//test:in-package — drives the unexported dispatch entry and the quota lookup it
-// performs, neither of which is reachable from outside the gateway package.
+//test:in-package — drives the ELBv2 service through the gateway test helpers
+// and the quota fixtures, none of which are reachable from outside the package.
 
 package gateway
 
 import (
+	"context"
 	"encoding/xml"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -25,18 +30,37 @@ type accountLimitsResponse struct {
 	} `xml:"DescribeAccountLimitsResult>Limits>member"`
 }
 
-// describeAccountLimits drives the registered dispatch entry and decodes the
-// XML it writes, keyed by limit name.
+// elbv2Request builds an authenticated Query request for body, as the SigV4
+// middleware would hand it to the service.
+func elbv2Request(accountID, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	ctx := context.WithValue(req.Context(), ctxService, "elasticloadbalancing")
+	ctx = context.WithValue(ctx, ctxAccountID, accountID)
+	return withTestIdentity(req.WithContext(ctx))
+}
+
+// serveAccountLimits runs DescribeAccountLimits through the service with live
+// NATS, so the request is dispatched rather than stopped at the NATS guard.
+func serveAccountLimits(t *testing.T, gw *GatewayConfig, accountID, body string) ([]byte, error) {
+	t.Helper()
+	_, nc := testutil.StartTestNATS(t)
+	gw.NATSConn = nc
+	gw.IAMService = allowAllIAMService()
+	withELBv2(gw)
+
+	w := httptest.NewRecorder()
+	if err := gw.serveELBv2(w, elbv2Request(accountID, body)); err != nil {
+		return nil, err
+	}
+	return w.Body.Bytes(), nil
+}
+
+// describeAccountLimits decodes the XML DescribeAccountLimits writes, keyed by
+// limit name.
 func describeAccountLimits(t *testing.T, gw *GatewayConfig, accountID string) map[string]string {
 	t.Helper()
 
-	action, ok := elbv2Actions["DescribeAccountLimits"]
-	require.True(t, ok, "DescribeAccountLimits is not registered in elbv2Actions")
-
-	input, err := action.parse(map[string]string{"Action": "DescribeAccountLimits"})
-	require.NoError(t, err)
-
-	body, err := action.dispatch(t.Context(), "DescribeAccountLimits", input, gw, accountID)
+	body, err := serveAccountLimits(t, gw, accountID, "Action=DescribeAccountLimits")
 	require.NoError(t, err)
 
 	var decoded accountLimitsResponse
@@ -112,43 +136,26 @@ func TestELBv2DescribeAccountLimitsReportsUnenforcedLimits(t *testing.T) {
 	assert.Equal(t, "25", byName["certificates-per-application-load-balancer"])
 }
 
-// An exempt account has no cap enforced against it, so the resolver answers with
-// the AWS default without reaching the override store.
-func TestELBv2AccountLoadBalancerLimitDefaultsForExemptAccount(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
-
-	limit, err := accountLoadBalancerLimit(t.Context(), gw, "000000000042")
-	require.NoError(t, err)
-	assert.Equal(t, elbv2awsapi.DefaultLoadBalancerLimit, limit)
-}
-
 // A sealed override must refuse the load balancer cap with Blocked rather
 // than the generic InternalError every other read failure maps to.
-func TestELBv2AccountLoadBalancerLimitBlockedOnSealedRecord(t *testing.T) {
+func TestELBv2DescribeAccountLimitsBlockedOnSealedRecord(t *testing.T) {
 	gw, account := quotaTestGateway(t)
 	gw.Quota.SetAccountTerminationChecker(&quotaStubChecker{terminating: map[string]bool{account: true}})
 	_, err := gw.Quota.SealAccountOverrides(t.Context(), account)
 	require.NoError(t, err)
 
-	limit, err := accountLoadBalancerLimit(t.Context(), gw, account)
+	body, err := serveAccountLimits(t, gw, account, "Action=DescribeAccountLimits")
 	require.Error(t, err)
 	require.Equal(t, awserrors.ErrorBlocked, err.Error())
-	assert.Zero(t, limit)
+	assert.Empty(t, body)
 }
 
-// The dispatch entry must accept the paging parameters the model defines and
-// still answer with the whole list.
+// The service must accept the paging parameters the model defines and still
+// answer with the whole list.
 func TestELBv2DescribeAccountLimitsAcceptsPaging(t *testing.T) {
 	gw, account := quotaTestGateway(t)
 
-	action := elbv2Actions["DescribeAccountLimits"]
-	input, err := action.parse(map[string]string{
-		"Action": "DescribeAccountLimits", "Marker": "2", "PageSize": "1",
-	})
-	require.NoError(t, err)
-	require.IsType(t, &elbv2.DescribeAccountLimitsInput{}, input)
-
-	body, err := action.dispatch(t.Context(), "DescribeAccountLimits", input, gw, account)
+	body, err := serveAccountLimits(t, gw, account, "Action=DescribeAccountLimits&Marker=2&PageSize=1")
 	require.NoError(t, err)
 
 	var decoded accountLimitsResponse

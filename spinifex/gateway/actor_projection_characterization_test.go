@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"strings"
@@ -71,10 +72,7 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 				return err
 			}
 			r := inv.Request
-			rds, err := rdsCaller(r)
-			if err != nil {
-				return err
-			}
+			rds := rdsawsapi.CallerFromActor(actor)
 			eks := eksCaller(r)
 			seen = append(seen, actorObservation{
 				Actor:             actor,

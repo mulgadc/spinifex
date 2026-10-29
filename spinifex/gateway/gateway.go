@@ -314,7 +314,6 @@ var supportedServices = map[string]bool{
 	"sts":                   true,
 	"eks":                   true,
 	"ecs":                   true,
-	"rds":                   true,
 	"bedrock":               true,
 	"bedrock-runtime":       true,
 	"bedrock-agent":         true,
@@ -544,8 +543,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 			err = gw.BedrockAgentRuntime_Request(w, r)
 		case "ecs":
 			err = gw.ECS_Request(w, r)
-		case "rds":
-			err = gw.RDS_Request(w, r)
 		default:
 			err = errors.New(awserrors.ErrorUnsupportedOperation)
 		}

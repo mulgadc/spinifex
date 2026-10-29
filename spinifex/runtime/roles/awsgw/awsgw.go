@@ -38,6 +38,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
@@ -589,6 +590,11 @@ func launchService(config *config.ClusterConfig) error {
 	// Composed after the quota service because ELBv2 enforces and reports the
 	// load balancer cap through it.
 	elbv2ControlPlane := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: natsConn, Quota: gw.Quota})
+	rdsControlPlane := rdsawsapi.NewRegistration(rdsawsapi.Deps{
+		NATS:          natsConn,
+		ExpectedNodes: len(config.Nodes),
+		Quota:         gw.Quota,
+	})
 	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
 		Version:     gw.Version,
 		Commit:      gw.Commit,
@@ -599,7 +605,7 @@ func launchService(config *config.ClusterConfig) error {
 		Credentials: bedrockCredentials,
 		Access:      bedrockAccess,
 	})
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, operatorControlPlane); err != nil {
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, operatorControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
 

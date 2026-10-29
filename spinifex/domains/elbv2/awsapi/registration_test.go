@@ -2,6 +2,7 @@ package awsapi
 
 import (
 	"context"
+	"encoding/xml"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,7 +52,27 @@ func TestDescribeAccountLimits_NoQuotaReportsDefault(t *testing.T) {
 	out, err := actions["DescribeAccountLimits"].dispatch(t.Context(), "DescribeAccountLimits",
 		&elbv2.DescribeAccountLimitsInput{}, Deps{}, "123456789012")
 	require.NoError(t, err)
-	assert.Contains(t, string(out), "<Max>50</Max><Name>application-load-balancers</Name>")
+	assert.Equal(t, "50", limitMax(t, out, "application-load-balancers"))
+}
+
+// limitMax reads one limit out of the response by name, because the members of
+// a limit are written in map order.
+func limitMax(t *testing.T, body []byte, name string) string {
+	t.Helper()
+	var resp struct {
+		Limits []struct {
+			Name string `xml:"Name"`
+			Max  string `xml:"Max"`
+		} `xml:"DescribeAccountLimitsResult>Limits>member"`
+	}
+	require.NoError(t, xml.Unmarshal(body, &resp))
+	for _, l := range resp.Limits {
+		if l.Name == name {
+			return l.Max
+		}
+	}
+	t.Fatalf("limit %q not in response", name)
+	return ""
 }
 
 type fixedQuota struct{ limit int }
@@ -68,5 +89,5 @@ func TestDescribeAccountLimits_ReportsTheQuotaLimit(t *testing.T) {
 	out, err := actions["DescribeAccountLimits"].dispatch(t.Context(), "DescribeAccountLimits",
 		&elbv2.DescribeAccountLimitsInput{}, Deps{Quota: fixedQuota{limit: 7}}, "123456789012")
 	require.NoError(t, err)
-	assert.Contains(t, string(out), "<Max>7</Max><Name>application-load-balancers</Name>")
+	assert.Equal(t, "7", limitMax(t, out, "application-load-balancers"))
 }

@@ -27,7 +27,7 @@ import {
   useTerminateInstance,
 } from "@/mutations/ec2"
 
-import { InstancePanel } from "./instance-panel"
+import { InstanceDetails } from "./instance-details"
 import { RunInstancesPage } from "./run-instances-page"
 
 export const STATE_FILTERS = ["all", "running", "stopped", "other"] as const
@@ -367,7 +367,7 @@ export function InstancesPage({
     )
   } else if (open) {
     panel = (
-      <InstancePanel
+      <InstanceDetails
         instance={open}
         key={open.InstanceId}
         name={instanceName(open)}

@@ -130,6 +130,52 @@ test.describe("instances list", () => {
     )
   })
 
+  test("renders the panel's tabs as the instance's own page", async ({
+    page,
+  }) => {
+    await page.goto("/ec2/describe-instances/i-0a1b2c3d4e5f60001")
+    const details = page.getByRole("region", { name: "Instance details" })
+
+    await expect(details.getByRole("heading", { name: "web-01" })).toBeVisible()
+    await expect(page.getByRole("table", { name: "Instances" })).toBeHidden()
+    await expect(
+      details.getByRole("link", { name: "Open instance page" }),
+    ).toBeHidden()
+    await expect(details.getByText(/^ssh -i /u)).toBeVisible()
+
+    await details.getByRole("tab", { name: "Monitoring" }).click()
+    await expect(page).toHaveURL(/\?tab=monitoring$/u)
+    await expect(details.getByRole("figure")).toHaveCount(3)
+
+    await details.getByRole("button", { name: "Back to instances" }).click()
+    await expect(page).toHaveURL(/\/ec2\/describe-instances$/u)
+  })
+
+  test("closes the panel on a click in the list's background", async ({
+    page,
+  }) => {
+    await page.goto("/ec2/describe-instances?selected=i-0a1b2c3d4e5f60001")
+    const panel = page.getByRole("region", { name: "Instance details" })
+    await expect(panel.getByText(/^ssh -i /u)).toBeVisible()
+
+    // A row selects another instance rather than closing.
+    await page
+      .getByRole("row")
+      .filter({ hasText: "db-primary" })
+      .getByRole("cell", { name: "t3.xlarge" })
+      .click()
+    await expect(
+      panel.getByRole("heading", { name: "db-primary" }),
+    ).toBeVisible()
+
+    await panel.getByRole("tab", { name: "Settings" }).click()
+    await expect(panel).toBeVisible()
+
+    await page.getByText("Virtual machines running on this cluster.").click()
+    await expect(panel).toBeHidden()
+    await expect(page).toHaveURL(/\/ec2\/describe-instances$/u)
+  })
+
   test("opens a row's panel on click and keeps the tab in the URL", async ({
     page,
   }) => {

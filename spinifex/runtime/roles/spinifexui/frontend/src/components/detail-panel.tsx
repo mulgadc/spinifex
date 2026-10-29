@@ -7,7 +7,7 @@ import {
   type LucideIcon,
   X,
 } from "lucide-react"
-import { type ReactNode, useEffect } from "react"
+import { type ReactNode, useEffect, useRef } from "react"
 
 import { ErrorBanner } from "@/components/error-banner"
 import { Button } from "@/components/ui/button"
@@ -49,6 +49,9 @@ interface DetailPanelProps {
   onTabChange?: (tab: PanelTab) => void
   // Create forms need more room than a summary does.
   size?: "default" | "wide"
+  // "page" renders the same contents as the resource's own page, whatever the
+  // width; "auto" is a side panel from lg up and a page below.
+  layout?: "auto" | "page"
   children?: ReactNode
 }
 
@@ -81,8 +84,13 @@ function isPanelTab(value: unknown): value is PanelTab {
   return PANEL_TABS.some((tab) => tab === value)
 }
 
-// The UniFi-style side panel: beside its list from lg up, and the whole page
-// below that, where there is no room to share.
+// Clicks on these inside the list do their own thing; anywhere else in the list
+// pane closes the panel, as UniFi's does.
+const LIST_CONTROLS =
+  "a, button, input, select, textarea, label, tr, [role=checkbox], [role=combobox]"
+
+// The UniFi-style side panel: over the right of its list from lg up, and the
+// whole page below that, where there is no room to share.
 export function DetailPanel({
   label,
   title,
@@ -95,18 +103,27 @@ export function DetailPanel({
   tab = "overview",
   onTabChange,
   size = "default",
+  layout = "auto",
   children,
 }: DetailPanelProps) {
-  const wide = useWideLayout()
+  const wideLayout = useWideLayout()
+  const wide = layout === "auto" && wideLayout
+  const sectionRef = useRef<HTMLElement>(null)
 
-  // Escape closes the panel, unless it is closing a dialog or menu over it.
+  // Escape closes the panel, unless it is closing a dialog or menu over it. A
+  // page is somewhere the user navigated to, so it ignores Escape.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const overlay = document.querySelector(
         "[role=dialog], [role=alertdialog], [role=menu], [role=listbox]",
       )
 
-      if (event.key === "Escape" && !event.defaultPrevented && !overlay) {
+      if (
+        layout === "auto" &&
+        event.key === "Escape" &&
+        !event.defaultPrevented &&
+        !overlay
+      ) {
         onClose()
       }
     }
@@ -116,16 +133,45 @@ export function DetailPanel({
     return () => {
       document.removeEventListener("keydown", onKeyDown)
     }
-  }, [onClose])
+  }, [layout, onClose])
+
+  useEffect(() => {
+    function onClick({ target }: MouseEvent) {
+      if (
+        wide &&
+        target instanceof Element &&
+        target.closest("main") &&
+        !sectionRef.current?.contains(target) &&
+        !target.closest(LIST_CONTROLS)
+      ) {
+        onClose()
+      }
+    }
+
+    document.addEventListener("click", onClick)
+
+    return () => {
+      document.removeEventListener("click", onClick)
+    }
+  }, [wide, onClose])
+
   const current = tabs?.some((spec) => spec.id === tab) ? tab : tabs?.[0]?.id
 
   return (
     <section
       aria-label={label}
-      className="flex min-w-0 flex-col data-[layout=panel]:sticky data-[layout=panel]:top-4 data-[layout=panel]:max-h-[calc(100svh-2rem)] data-[layout=panel]:w-100 data-[layout=panel]:shrink-0 data-[layout=panel]:overflow-hidden data-[layout=panel]:rounded-lg data-[layout=panel]:border data-[layout=panel]:bg-card data-[layout=panel]:transition data-[layout=panel]:duration-200 data-[layout=panel]:ease-out data-[size=wide]:data-[layout=panel]:w-140 data-[layout=panel]:xl:w-110 data-[size=wide]:data-[layout=panel]:xl:w-160 data-[layout=panel]:starting:translate-x-4 data-[layout=panel]:starting:opacity-0"
+      className="flex min-w-0 flex-col data-[layout=panel]:fixed data-[layout=panel]:top-12 data-[layout=panel]:right-0 data-[layout=panel]:bottom-0 data-[layout=panel]:z-40 data-[layout=panel]:w-110 data-[layout=panel]:border-l data-[layout=panel]:bg-card data-[layout=panel]:transition data-[layout=panel]:duration-200 data-[layout=panel]:ease-out data-[size=wide]:data-[layout=panel]:w-150 motion-reduce:transition-none data-[layout=panel]:xl:w-120 data-[size=wide]:data-[layout=panel]:xl:w-170 data-[layout=panel]:starting:translate-x-full"
       data-layout={wide ? "panel" : "page"}
       data-size={size}
+      ref={sectionRef}
     >
+      {wide && (
+        // The shade on the list's side, so the panel reads as lying over it.
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 right-full w-10 bg-linear-to-l from-black/10 to-transparent dark:from-black/40"
+        />
+      )}
       <header className="flex items-center gap-2 border-b px-2 py-2">
         {wide ? (
           <span className="flex size-8 shrink-0 items-center justify-center">
@@ -205,7 +251,7 @@ export function DetailPanel({
               key={spec.id}
               value={spec.id}
             >
-              <div className="flex flex-col gap-3 px-3 pb-3">
+              <div className="flex flex-col gap-3 px-3 pb-3 in-data-[layout=page]:lg:grid in-data-[layout=page]:lg:grid-cols-2 in-data-[layout=page]:lg:items-start">
                 <PanelBoundary resetKey={spec.id}>{spec.content}</PanelBoundary>
               </div>
             </TabsPanel>
@@ -224,6 +270,8 @@ interface PanelSectionProps {
   title: string
   children: ReactNode
   defaultOpen?: boolean
+  // Takes both columns when the panel is laid out as a page.
+  span?: boolean
 }
 
 // A folding card inside the panel, as UniFi groups Services, Manage, History.
@@ -231,9 +279,13 @@ export function PanelSection({
   title,
   children,
   defaultOpen = true,
+  span = false,
 }: PanelSectionProps) {
   return (
-    <div className="rounded-lg border bg-background/40">
+    <div
+      className="rounded-lg border bg-background/40 data-span:in-data-[layout=page]:lg:col-span-2"
+      data-span={span ? "" : undefined}
+    >
       <Collapsible defaultOpen={defaultOpen}>
         <CollapsibleTrigger variant="section">
           {title}

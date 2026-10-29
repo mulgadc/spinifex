@@ -69,7 +69,7 @@ export function InstanceMonitoring({ instanceId }: InstanceMonitoringProps) {
   }, [instanceId, range, now])
 
   return (
-    <PanelSection title="Instance statistics">
+    <PanelSection span title="Instance statistics">
       <div className="flex flex-col gap-5">
         <div className="flex items-center justify-between gap-2">
           <Badge variant="outline">Simulated data</Badge>
@@ -96,17 +96,19 @@ export function InstanceMonitoring({ instanceId }: InstanceMonitoringProps) {
             ))}
           </ToggleGroup>
         </div>
-        {charts.map((chart) => (
-          <MetricChart
-            format={chart.format}
-            key={chart.title}
-            max={chart.max}
-            series={chart.series}
-            since={RANGE_LABELS[range].since}
-            times={times}
-            title={chart.title}
-          />
-        ))}
+        <div className="flex flex-col gap-5 in-data-[layout=page]:xl:grid in-data-[layout=page]:xl:grid-cols-3">
+          {charts.map((chart) => (
+            <MetricChart
+              format={chart.format}
+              key={chart.title}
+              max={chart.max}
+              series={chart.series}
+              since={RANGE_LABELS[range].since}
+              times={times}
+              title={chart.title}
+            />
+          ))}
+        </div>
       </div>
     </PanelSection>
   )

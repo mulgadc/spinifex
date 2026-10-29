@@ -9,8 +9,8 @@ interface ResourceViewProps {
   panel?: ReactNode
 }
 
-// A list with its panel. From lg up the panel pushes the list aside rather than
-// covering it, so the row it belongs to stays in view; below lg it replaces it.
+// A list with its panel. From lg up the panel slides over the list's right edge
+// and the list keeps its width beneath it; below lg the panel replaces it.
 export function ResourceView({
   children,
   panel,
@@ -26,9 +26,9 @@ export function ResourceView({
   }
 
   return (
-    <div className="flex items-start gap-4">
-      <div className="min-w-0 flex-1">{children}</div>
+    <>
+      {children}
       {panel}
-    </div>
+    </>
   )
 }

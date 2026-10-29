@@ -3,11 +3,14 @@ import { ec2, expect, expectNoHorizontalOverflow, test } from "./console"
 const VPC_ID = "vpc-0e2e000000000001"
 const IGW_ID = "igw-0e2e000000000001"
 const DETACHED_IGW_ID = "igw-0e2e000000000002"
+const FREE_VPC_ID = "vpc-0e2e000000000002"
 
 const VPCS = `<vpcSet><item><vpcId>${VPC_ID}</vpcId><state>available</state>
 <cidrBlock>172.31.0.0/16</cidrBlock><isDefault>true</isDefault>
 <instanceTenancy>default</instanceTenancy><ownerId>000000000001</ownerId>
-<dhcpOptionsId>dopt-default</dhcpOptionsId></item></vpcSet>`
+<dhcpOptionsId>dopt-default</dhcpOptionsId></item>
+<item><vpcId>${FREE_VPC_ID}</vpcId><state>available</state><cidrBlock>10.0.0.0/16</cidrBlock>
+<isDefault>false</isDefault><instanceTenancy>default</instanceTenancy><ownerId>000000000001</ownerId></item></vpcSet>`
 
 const SUBNETS = `<subnetSet><item><subnetId>subnet-0e2e000000000001</subnetId>
 <vpcId>${VPC_ID}</vpcId><cidrBlock>172.31.0.0/20</cidrBlock>
@@ -101,6 +104,59 @@ test.describe("internet gateways", () => {
     await expect(
       panel.getByRole("button", { name: "Delete internet gateway" }),
     ).toBeEnabled()
+  })
+
+  test("detaches from the panel after asking", async ({ api, page }) => {
+    const detached: string[][] = []
+    api.handle("DetachInternetGateway", (params) => {
+      detached.push([
+        params.get("InternetGatewayId") ?? "",
+        params.get("VpcId") ?? "",
+      ])
+
+      return ec2("DetachInternetGateway", "<return>true</return>")(params)
+    })
+
+    await page.goto(`/ec2/describe-internet-gateways?selected=${IGW_ID}`)
+    await page.getByRole("button", { name: "Detach" }).click()
+
+    const dialog = page.getByRole("alertdialog")
+    await expect(dialog).toContainText("loses internet access")
+    await dialog.getByRole("button", { name: "Detach" }).click()
+    await expect(dialog).toBeHidden()
+    expect(detached).toStrictEqual([[IGW_ID, VPC_ID]])
+  })
+
+  test("attaches to a VPC that has no gateway", async ({ api, page }) => {
+    const attached: string[][] = []
+    api.handle("AttachInternetGateway", (params) => {
+      attached.push([
+        params.get("InternetGatewayId") ?? "",
+        params.get("VpcId") ?? "",
+      ])
+
+      return ec2("AttachInternetGateway", "<return>true</return>")(params)
+    })
+
+    await page.goto(
+      `/ec2/describe-internet-gateways?selected=${DETACHED_IGW_ID}`,
+    )
+    const panel = page.getByRole("region", { name: "Internet gateway details" })
+    await expect(
+      panel.getByRole("button", { name: "Attach", exact: true }),
+    ).toBeDisabled()
+
+    await panel.getByRole("combobox", { name: "VPC to attach" }).click()
+    // The default VPC already has a gateway, so it is not offered.
+    await expect(page.getByRole("option")).toHaveCount(1)
+    await page
+      .getByRole("option", { name: new RegExp(FREE_VPC_ID, "u") })
+      .click()
+    await panel.getByRole("button", { name: "Attach", exact: true }).click()
+
+    await expect
+      .poll(() => attached)
+      .toStrictEqual([[DETACHED_IGW_ID, FREE_VPC_ID]])
   })
 
   test("shows the panel as its own page on a phone", async ({ page }) => {

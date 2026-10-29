@@ -501,8 +501,10 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		RootDeviceType:  ec2.DeviceTypeEbs,
 		ImageOwnerAlias: accountID,
 		BootMode:        sourceAMI.BootMode,
-		Distro:          sourceAMI.Distro,
-		DistroFamily:    sourceAMI.DistroFamily,
+		// Every instance reports ENA support, and AWS takes the image's from the instance.
+		EnaSupport:   aws.Bool(true),
+		Distro:       sourceAMI.Distro,
+		DistroFamily: sourceAMI.DistroFamily,
 		// Snapshot succeeded before this point, so the image is complete.
 		State: "available",
 	}

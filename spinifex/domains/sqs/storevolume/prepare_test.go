@@ -205,6 +205,20 @@ func TestPrepare_FindsSbinToolOffThePath(t *testing.T) {
 	require.ErrorIs(t, err, ErrToolMissing, "a file that is not executable is not the tool")
 }
 
+// The copy runs qemu-img by name, so a qemu-img found only in sbin must not
+// pass the check that runs before anything is allocated.
+func TestPrepare_QemuImgOnlyInSbinAllocatesNothing(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "qemu-img"), []byte("#!/bin/sh\n"), 0o755))
+	h := &harness{missing: map[string]bool{"qemu-img": true}}
+	p := h.preparer(t)
+	p.toolPaths = []string{dir}
+	_, err := p.Prepare(context.Background(), Request{AccountID: testAccount, AvailabilityZone: "ap-southeast-2a", SizeGiB: 1})
+	require.ErrorIs(t, err, ErrToolMissing)
+	assert.Contains(t, err.Error(), "qemu-img")
+	assert.Empty(t, h.calls)
+}
+
 func TestPrepare_FailedFormatAllocatesNothing(t *testing.T) {
 	h := &harness{mkfsErr: errors.New("mkfs exploded")}
 	_, err := prepare(t, h)
@@ -301,6 +315,7 @@ func TestPrepare_FailedUnpublishRetainsTheVolume(t *testing.T) {
 			_, err := prepare(t, h)
 			requireRetained(t, err)
 			require.ErrorContains(t, err, "nats: timeout")
+			require.ErrorContains(t, err, "retained in creating", "the release never ran, so the state is known")
 			last := h.calls[len(h.calls)-1]
 			assert.Equal(t, "unpublish "+testVolume+" on "+testNode, last, "no discard or release after an unconfirmed unpublish")
 		})
@@ -315,7 +330,11 @@ func TestPrepare_FailedReleaseRetainsWithUnknownState(t *testing.T) {
 			h := &harness{completeErr: errors.New("object store: request failed"), completeApplies: applied}
 			_, err := prepare(t, h)
 			requireRetained(t, err)
-			require.ErrorContains(t, err, "state unknown")
+			var retained *RetainedVolumeError
+			require.ErrorAs(t, err, &retained)
+			assert.True(t, retained.StateUnknown)
+			require.ErrorContains(t, err, "unknown state (creating or available)")
+			assert.NotContains(t, err.Error(), "retained in creating")
 			assert.Equal(t, "complete "+testVolume, h.calls[len(h.calls)-1], "no discard after an uncertain release")
 			if applied {
 				assert.Equal(t, "available", h.state, "the fake really did release it, which is why discard would be wrong")

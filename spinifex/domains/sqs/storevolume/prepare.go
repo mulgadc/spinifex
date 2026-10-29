@@ -62,15 +62,18 @@ type Preparer struct {
 
 const defaultCleanupTimeout = 30 * time.Second
 
-// RetainedVolumeError reports a volume left in "creating" because an export
-// of it might still be live, so deleting it was not safe. VolumeID is what an
-// operator needs to inspect and reclaim it.
+// RetainedVolumeError reports a volume kept because deleting it was not safe.
+// StateUnknown means a failed release may still have made it available.
 type RetainedVolumeError struct {
-	VolumeID string
-	Err      error
+	VolumeID     string
+	StateUnknown bool
+	Err          error
 }
 
 func (e *RetainedVolumeError) Error() string {
+	if e.StateUnknown {
+		return fmt.Sprintf("volume %s retained in unknown state (creating or available) for recovery: %v", e.VolumeID, e.Err)
+	}
 	return fmt.Sprintf("volume %s retained in creating for recovery: %v", e.VolumeID, e.Err)
 }
 
@@ -97,7 +100,8 @@ func (p *Preparer) Prepare(ctx context.Context, req Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := p.findTool("qemu-img"); err != nil {
+	// The copy runs qemu-img by name, so only a PATH lookup proves it will run.
+	if _, err := p.findOnPath("qemu-img"); err != nil {
 		return "", err
 	}
 
@@ -137,7 +141,7 @@ func (p *Preparer) Prepare(ctx context.Context, req Request) (string, error) {
 	if err := p.Volumes.CompleteVolumePreparation(ctx, req.AccountID, volumeID); err != nil {
 		// The release write may still land, so the volume may already be
 		// available to others and is never discarded here.
-		return "", &RetainedVolumeError{VolumeID: volumeID, Err: fmt.Errorf("complete preparation failed; state unknown, creating or available: %w", err)}
+		return "", &RetainedVolumeError{VolumeID: volumeID, StateUnknown: true, Err: fmt.Errorf("complete preparation failed: %w", err)}
 	}
 	slog.InfoContext(ctx, "storevolume: prepared SQS store volume", "volumeId", volumeID, "sizeGiB", req.SizeGiB)
 	return volumeID, nil
@@ -260,12 +264,20 @@ func runMkfsExt4(ctx context.Context, mkfs, path string) error {
 	return nil
 }
 
-func (p *Preparer) findTool(name string) (string, error) {
+func (p *Preparer) findOnPath(name string) (string, error) {
 	look := p.lookPath
 	if look == nil {
 		look = exec.LookPath
 	}
 	if path, err := look(name); err == nil {
+		return path, nil
+	}
+	return "", fmt.Errorf("storevolume: %w: %s", ErrToolMissing, name)
+}
+
+// findTool also checks sbin, for a tool the caller runs by its resolved path.
+func (p *Preparer) findTool(name string) (string, error) {
+	if path, err := p.findOnPath(name); err == nil {
 		return path, nil
 	}
 	dirs := p.toolPaths

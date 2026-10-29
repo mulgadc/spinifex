@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,14 +63,14 @@ func TestECSActionsMap_NamespaceRegistered(t *testing.T) {
 }
 
 func TestECSRequest_MissingTarget(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	err := gw.ECS_Request(httptest.NewRecorder(), setupECSRequest("", ""))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
 }
 
 func TestECSRequest_UnknownAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	err := gw.ECS_Request(httptest.NewRecorder(),
 		setupECSRequest("AmazonEC2ContainerServiceV20141113.MadeUpAction", "{}"))
 	require.Error(t, err)
@@ -78,7 +79,7 @@ func TestECSRequest_UnknownAction(t *testing.T) {
 
 // An action whose real handler has not yet landed still resolves to the 501 stub.
 func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	err := gw.ECS_Request(httptest.NewRecorder(),
 		setupECSRequest("AmazonEC2ContainerServiceV20141113.UpdateCluster", "{}"))
 	require.Error(t, err)
@@ -92,7 +93,7 @@ func TestECSRequest_MissingAccountID(t *testing.T) {
 	req.Header.Set("X-Amz-Target", "AmazonEC2ContainerServiceV20141113.ListClusters")
 	req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxService, "ecs")))
 
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	// Account-less requests are rejected by the policy gate, which runs ahead of
 	// the handler's own account guard.
 	err := gw.ECS_Request(httptest.NewRecorder(), req)

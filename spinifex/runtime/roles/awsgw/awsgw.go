@@ -10,6 +10,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -496,6 +497,7 @@ func launchService(config *config.ClusterConfig) error {
 		IAMService:              iamService,
 		BucketStore:             objStore,
 		STSService:              stsService,
+		Credentials:             credverify.New(iamService, stsService),
 		Version:                 version,
 		Commit:                  commit,
 		OIDC:                    ekscluster.NewOIDCPublisher(jwksJS),

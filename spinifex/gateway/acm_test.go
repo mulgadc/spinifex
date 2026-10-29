@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,7 +24,7 @@ func setupACMRequest(target, body string) *http.Request {
 }
 
 func TestACMRequest_MissingTarget(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	w := httptest.NewRecorder()
 	err := gw.serveACM(w, setupACMRequest("", ""))
 	require.Error(t, err)
@@ -31,7 +32,7 @@ func TestACMRequest_MissingTarget(t *testing.T) {
 }
 
 func TestACMRequest_UnknownAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	w := httptest.NewRecorder()
 	err := gw.serveACM(w, setupACMRequest("CertificateManager.BogusAction", "{}"))
 	require.Error(t, err)
@@ -41,7 +42,7 @@ func TestACMRequest_UnknownAction(t *testing.T) {
 // A known action with no NATS connection passes routing + policy and fails at
 // the NATS-availability guard.
 func TestACMRequest_KnownActionNoNATS(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	w := httptest.NewRecorder()
 	err := gw.serveACM(w, setupACMRequest("CertificateManager.ListCertificates", "{}"))
 	require.Error(t, err)

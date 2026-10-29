@@ -6,6 +6,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/url"
 	"strings"
@@ -50,7 +51,7 @@ func newTaggingCBGateway(t *testing.T) (*GatewayConfig, *ec2tags.TagsServiceImpl
 		})
 	})
 
-	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), NATSConn: nc}
+	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), NATSConn: nc, Credentials: credverify.New(allowAllIAMService(), nil)}
 	return gw, svc
 }
 

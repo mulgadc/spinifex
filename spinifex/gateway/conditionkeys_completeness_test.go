@@ -7,6 +7,8 @@ package gateway
 import (
 	"crypto/tls"
 	"encoding/json"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -118,7 +120,7 @@ func emittedKeys(t *testing.T) map[string]string {
 		},
 	}
 
-	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}, Credentials: credverify.New(&mockIAMService{}, nil)}
 	union := make(map[string]string)
 	for name, principal := range principals {
 		r := httptest.NewRequest(http.MethodPost, "/?prefix=home/&max-keys=100", nil)
@@ -126,7 +128,8 @@ func emittedKeys(t *testing.T) map[string]string {
 		r.RemoteAddr = "10.4.1.9:52344"
 		// Resolved the way the middleware resolves it, so the gate cannot pass on
 		// a value only the test supplies.
-		userID, _, err := gw.principalUser(principal)
+		userID, _, err := stsdomain.ResolveCallerUser(principal.accountID, principal.principalType,
+			principal.identity, principal.assumedRoleID, gw.IAMService)
 		require.NoError(t, err)
 		principal.userID = userID
 		for key := range requestConditionKeys(r, principal) {

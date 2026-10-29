@@ -2,6 +2,7 @@ package gateway
 
 import (
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,7 @@ func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 		RateLimiter:    rl,
 		NATSConn:       nc,
 	}

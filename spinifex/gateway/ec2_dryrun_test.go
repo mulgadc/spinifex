@@ -4,6 +4,7 @@
 package gateway
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -42,7 +43,7 @@ func serveEC2(gw *GatewayConfig, body string) *httptest.ResponseRecorder {
 // The gateway has no NATS connection, so any request that reached its handler
 // would fail ServerInternal; DryRunOperation proves nothing was dispatched.
 func TestEC2Request_DryRunAnswersEveryAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 
 	actions := slices.Sorted(maps.Keys(ec2Actions))
 
@@ -61,7 +62,7 @@ func TestEC2Request_DryRunAnswersEveryAction(t *testing.T) {
 }
 
 func TestEC2Request_DryRunFalseDispatches(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	assertPermitted(t, dispatchEC2(t, gw, "Action=CreateVpc&CidrBlock=10.0.0.0/16&DryRun=false"))
 }
 

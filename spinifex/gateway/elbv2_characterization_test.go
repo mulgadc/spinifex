@@ -7,6 +7,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/xml"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -62,6 +63,21 @@ func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admi
 			},
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
+		Credentials: credverify.New(&policyMockIAMService{
+			mockIAMService: mockIAMService{
+				masterKey: testMasterKey,
+				accessKeys: map[string]*iamdomain.AccessKey{
+					testAccessKey: {
+						AccessKeyID:     testAccessKey,
+						SecretAccessKey: encryptedSecret,
+						UserName:        "alice",
+						AccountID:       authzAccountID,
+						Status:          "Active",
+					},
+				},
+			},
+			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		}, nil),
 	}
 	withELBv2(gw)
 
@@ -289,7 +305,7 @@ func TestELBv2Pipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) 
 
 // A nil NATS connection fails at the request-level gate, before dispatch.
 func TestELBv2Pipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
-	gw := withELBv2(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withELBv2(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)})
 
 	req := elbv2Request(authzAccountID, "Action=DescribeLoadBalancers")
 	w := httptest.NewRecorder()

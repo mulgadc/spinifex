@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,7 +25,8 @@ func TestECRToken_ExchangesBasicForBearer(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	gw := &GatewayConfig{
 		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenIssuer: iss, ECRTokenVerifier: verify,
-		IAMService: ecrBridgeTestIAM(ecrTestAccount),
+		IAMService:  ecrBridgeTestIAM(ecrTestAccount),
+		Credentials: credverify.New(ecrBridgeTestIAM(ecrTestAccount), nil),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/token", nil)
@@ -49,7 +51,8 @@ func TestECRToken_BearerCredentialAccepted(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	gw := &GatewayConfig{
 		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenIssuer: iss, ECRTokenVerifier: verify,
-		IAMService: ecrBridgeTestIAM(ecrTestAccount),
+		IAMService:  ecrBridgeTestIAM(ecrTestAccount),
+		Credentials: credverify.New(ecrBridgeTestIAM(ecrTestAccount), nil),
 	}
 
 	tok, _, err := iss.Mint(ecrauth.Principal{
@@ -126,7 +129,8 @@ func TestOCIRegistry_TokenRouted(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	gw := &GatewayConfig{
 		DisableLogging: true, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenIssuer: iss, ECRTokenVerifier: verify,
-		IAMService: ecrBridgeTestIAM(ecrTestAccount),
+		IAMService:  ecrBridgeTestIAM(ecrTestAccount),
+		Credentials: credverify.New(ecrBridgeTestIAM(ecrTestAccount), nil),
 	}
 	r := chi.NewRouter()
 	gw.mountOCIRegistry(r)

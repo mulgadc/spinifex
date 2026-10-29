@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,6 +53,7 @@ func ecrAuthzTestGateway(t *testing.T, policies []iamdomain.PolicyDocument) (*Ga
 		Region:           ecrTestRegion,
 		ECRTokenVerifier: verify,
 		IAMService:       iamSvc,
+		Credentials:      credverify.New(iamSvc, nil),
 	}, iamSvc
 }
 

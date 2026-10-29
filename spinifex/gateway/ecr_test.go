@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,14 +34,14 @@ func setupECRRequest(target, body string) *http.Request {
 }
 
 func TestECRRequest_MissingTarget(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	err := gw.serveECR(httptest.NewRecorder(), setupECRRequest("", ""))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
 }
 
 func TestECRRequest_UnknownAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	err := gw.serveECR(httptest.NewRecorder(),
 		setupECRRequest("AmazonEC2ContainerRegistry_V20150921.MadeUpAction", "{}"))
 	require.Error(t, err)
@@ -52,7 +53,7 @@ func TestECRRequest_UnknownAction(t *testing.T) {
 // image actions a composed registry capability, so ListRepositories stands in
 // as a still-stubbed action.
 func TestECRRequest_KnownActionNotImplemented(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	err := gw.serveECR(httptest.NewRecorder(),
 		setupECRRequest("AmazonEC2ContainerRegistry_V20150921.ListRepositories", "{}"))
 	require.Error(t, err)
@@ -60,7 +61,7 @@ func TestECRRequest_KnownActionNotImplemented(t *testing.T) {
 }
 
 func TestOCIRegistry_VersionCheck(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	r := chi.NewRouter()
 	gw.mountOCIRegistry(r)
 
@@ -72,7 +73,7 @@ func TestOCIRegistry_VersionCheck(t *testing.T) {
 }
 
 func TestOCIRegistry_StubReturns501(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	r := chi.NewRouter()
 	gw.mountOCIRegistry(r)
 

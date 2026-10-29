@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -38,7 +39,7 @@ func seedDiscoveryCluster(t *testing.T) http.Handler {
 		t.Fatalf("put jwks: %v", err)
 	}
 
-	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService(), OIDC: ekscluster.NewOIDCPublisher(js)}
+	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService(), OIDC: ekscluster.NewOIDCPublisher(js), Credentials: credverify.New(allowAllIAMService(), nil)}
 	return gw.SetupRoutes()
 }
 

@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http/httptest"
 	"strconv"
 	"strings"
@@ -33,6 +34,10 @@ func scopedPolicyGateway(statements ...iamdomain.Statement) *GatewayConfig {
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 			getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
+		Credentials: credverify.New(&policyMockIAMService{
+			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		}, nil),
 	}
 }
 
@@ -345,6 +350,12 @@ func passRoleDeniedGateway(t *testing.T, resolveErr error) *GatewayConfig {
 			},
 			resolveErr: resolveErr,
 		},
+		Credentials: credverify.New(&profileIAMService{
+			policyMockIAMService: policyMockIAMService{
+				getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			},
+			resolveErr: resolveErr,
+		}, nil),
 	}
 }
 

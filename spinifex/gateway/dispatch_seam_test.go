@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -167,6 +168,21 @@ func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...disp
 			},
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
+		Credentials: credverify.New(&policyMockIAMService{
+			mockIAMService: mockIAMService{
+				masterKey: testMasterKey,
+				accessKeys: map[string]*iamdomain.AccessKey{
+					testAccessKey: {
+						AccessKeyID:     testAccessKey,
+						SecretAccessKey: encryptedSecret,
+						UserName:        "alice",
+						AccountID:       ecrTestAccount,
+						Status:          "Active",
+					},
+				},
+			},
+			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		}, nil),
 	}
 
 	r := chi.NewRouter()
@@ -341,7 +357,7 @@ func TestDispatchSeam_NATSDownGetsSame503AsLegacy(t *testing.T) {
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(fakeJSONRegistration(&dispatchCapture{})))
 
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Services: b.Build()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Services: b.Build(), Credentials: credverify.New(allowAllIAMService(), nil)}
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxService, fakeJSONService)
@@ -378,6 +394,12 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 				testAccessKey: {AccessKeyID: testAccessKey, SecretAccessKey: encryptedSecret, UserName: "root", Status: "Active"},
 			},
 		},
+		Credentials: credverify.New(&mockIAMService{
+			masterKey: testMasterKey,
+			accessKeys: map[string]*iamdomain.AccessKey{
+				testAccessKey: {AccessKeyID: testAccessKey, SecretAccessKey: encryptedSecret, UserName: "root", Status: "Active"},
+			},
+		}, nil),
 	}
 
 	r := chi.NewRouter()

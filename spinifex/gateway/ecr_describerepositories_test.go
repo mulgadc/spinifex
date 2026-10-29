@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -56,7 +57,8 @@ func newDescribeReposGateway(t *testing.T, repos ...string) *GatewayConfig {
 	}
 	return withECR(&GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
-		IAMService: allowAllIAMService(),
+		IAMService:  allowAllIAMService(),
+		Credentials: credverify.New(allowAllIAMService(), nil),
 	}, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(store, awsapi.RepositoryEndpoint{
 		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
 	})})

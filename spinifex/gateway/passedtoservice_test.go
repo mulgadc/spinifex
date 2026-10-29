@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -34,6 +35,11 @@ func passRoleToGateway(t *testing.T, statements ...iamdomain.Statement) *Gateway
 				getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 			},
 		},
+		Credentials: credverify.New(&profileIAMService{
+			policyMockIAMService: policyMockIAMService{
+				getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			},
+		}, nil),
 	}
 }
 

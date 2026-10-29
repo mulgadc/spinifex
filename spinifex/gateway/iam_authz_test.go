@@ -5,6 +5,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -55,7 +56,7 @@ func iamScopedGateway(resources map[string]string, statements ...iamdomain.State
 		},
 		arns: resources,
 	}
-	return &GatewayConfig{DisableLogging: true, IAMService: svc}, svc
+	return &GatewayConfig{DisableLogging: true, IAMService: svc, Credentials: credverify.New(svc, nil)}, svc
 }
 
 func dispatchIAM(t *testing.T, gw *GatewayConfig, body string) error {

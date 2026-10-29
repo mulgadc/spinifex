@@ -12,9 +12,11 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -158,6 +160,7 @@ func setupTestApp(accessKey, secretKey string) http.Handler {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}, awsapi.Deps{})
 
 	r := chi.NewRouter()
@@ -186,7 +189,7 @@ func userIDApp(t *testing.T, svc *mockIAMService) (http.Handler, *string) {
 		},
 	}
 
-	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: svc}
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: svc, Credentials: credverify.New(svc, nil)}
 	seen := new(string)
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -393,6 +396,7 @@ func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	r := chi.NewRouter()
@@ -422,6 +426,7 @@ func TestSigV4Auth_NilIAMService(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     nil,
+		Credentials:    credverify.New(nil, nil),
 	}
 
 	r := chi.NewRouter()
@@ -506,6 +511,7 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	r := chi.NewRouter()
@@ -714,7 +720,7 @@ func TestSigV4Auth_MalformedTimestamp(t *testing.T) {
 // --- writeSigV4Error Response Format Tests ---
 
 func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 
 	testCases := []struct {
 		errorCode      string
@@ -765,7 +771,7 @@ func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
 }
 
 func TestWriteSigV4Error_IgnoresClientRequestID(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -855,6 +861,7 @@ func TestSigV4Auth_ContextPropagation(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	r := chi.NewRouter()
@@ -937,6 +944,7 @@ func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	r := chi.NewRouter()
@@ -977,6 +985,7 @@ func TestSigV4Auth_LookupAccessKeyUnexpectedError(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     &errorLookupMockIAMService{err: errors.New("nats: connection closed")},
+		Credentials:    credverify.New(&errorLookupMockIAMService{err: errors.New("nats: connection closed")}, nil),
 	}
 
 	r := chi.NewRouter()
@@ -1054,6 +1063,7 @@ func TestSigV4Auth_SignedContentType(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	r := chi.NewRouter()
@@ -1216,6 +1226,7 @@ func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	handler := setupPolicyTestHandler(gw)
@@ -1276,6 +1287,7 @@ func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	handler := setupPolicyTestHandler(gw)
@@ -1336,6 +1348,7 @@ func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	handler := setupPolicyTestHandler(gw)
@@ -1397,6 +1410,7 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	handler := setupPolicyTestHandler(gw)
@@ -1439,6 +1453,7 @@ func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	handler := setupPolicyTestHandler(gw)
@@ -1483,6 +1498,7 @@ func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	handler := setupPolicyTestHandler(gw)
@@ -1529,6 +1545,7 @@ func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
+		Credentials:    credverify.New(mockSvc, nil),
 	}
 
 	handler := setupPolicyTestHandler(gw)
@@ -1609,6 +1626,7 @@ func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 		Region:         testRegion,
 		NATSConn:       nc,
 		IAMService:     nil,
+		Credentials:    credverify.New(nil, nil),
 	}
 
 	r := chi.NewRouter()
@@ -1776,6 +1794,7 @@ func mountSessionGateway(t *testing.T, cred *stsdomain.SessionCredential) (http.
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     iamMock,
+		Credentials:    credverify.New(iamMock, stsMock),
 		STSService:     stsMock,
 	}
 
@@ -2048,20 +2067,15 @@ func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rl := authlimit.NewAuthRateLimiter()
 			defer rl.Stop()
-			gw := &GatewayConfig{
-				DisableLogging: true,
-				RateLimiter:    rl,
-				STSService:     &mockSTSService{principalErr: tc.err},
-			}
-			principal := principalContext{
-				identity:      "test-session",
-				principalType: principalTypeAssumedRole,
-				sessionCred:   &stsdomain.SessionCredential{AccessKeyID: testSessionAKID},
-			}
+			gw := &GatewayConfig{DisableLogging: true, RateLimiter: rl}
 
 			const ip = "10.15.8.11"
-			code := gw.checkSessionPrincipal(principal, testSessionAKID, authSource{limitKey: ip, logIP: ip})
-			require.Equal(t, awserrors.ErrorInvalidClientTokenId, code)
+			// The verifier decides whether a verdict counts; the gateway records it.
+			f := &credential.Failure{Code: awserrors.ErrorInvalidClientTokenId}
+			if tc.recorded {
+				f.FingerprintKind, f.FingerprintParts = "session-principal", []string{testSessionAKID}
+			}
+			gw.recordCredentialFailure(authSource{limitKey: ip, logIP: ip}, f)
 
 			// Read at the lockout boundary: with exactly `recorded` failures from
 			// the verdict, n more distinct ones leave the address open and one
@@ -2125,7 +2139,7 @@ func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 			},
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: iamMock}
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: iamMock, Credentials: credverify.New(iamMock, nil)}
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -2159,6 +2173,7 @@ func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     iamMock,
+		Credentials:    credverify.New(iamMock, nil),
 		STSService:     nil,
 	}
 
@@ -2233,6 +2248,7 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     iamMock,
+		Credentials:    credverify.New(iamMock, stsMock),
 		STSService:     stsMock,
 	}
 
@@ -2309,6 +2325,7 @@ func newAssumedRoleEnforcementGateway(t *testing.T, cred *stsdomain.SessionCrede
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     iamMock,
+		Credentials:    credverify.New(iamMock, stsMock),
 		STSService:     stsMock,
 	}
 }
@@ -2751,7 +2768,7 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 			},
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: mockSvc}
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: mockSvc, Credentials: credverify.New(mockSvc, nil)}
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
 	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))

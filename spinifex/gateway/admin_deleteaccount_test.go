@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"strings"
 	"testing"
 	"time"
@@ -211,7 +212,7 @@ func TestAdminListAccountsFailsClosed(t *testing.T) {
 // Each admin method is a separate grant. The signup Worker holds
 // spinifex:CreateAccount and must not reach deletion with it.
 func TestCreateAccountGrantDoesNotAllowDeleteAccount(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy()}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy(), Credentials: credverify.New(createAccountPolicy(), nil)}
 
 	for _, method := range []string{"DeleteAccount", "DescribeAccountDeletion", "ListAccounts"} {
 		t.Run(method, func(t *testing.T) {

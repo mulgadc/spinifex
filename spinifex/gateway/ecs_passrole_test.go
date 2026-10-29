@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -61,7 +62,7 @@ func TestECSRegisterTaskDefinition_DeniedWithoutPassRole(t *testing.T) {
 			return allowRegisterTaskDefAndPassRole("arn:aws:iam::123456789012:role/some-other-role"), nil
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: mock, Credentials: credverify.New(mock, nil)}
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, testECSPassRoleTargetARN))
 
@@ -76,7 +77,7 @@ func TestECSRegisterTaskDefinition_AllowedWithPassRole(t *testing.T) {
 			return allowRegisterTaskDefAndPassRole(testECSPassRoleTargetARN), nil
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: mock, Credentials: credverify.New(mock, nil)}
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, testECSPassRoleTargetARN))
 
@@ -96,7 +97,7 @@ func TestECSRegisterTaskDefinition_NoRoleSkipsPassRole(t *testing.T) {
 			return allowPolicyResource("ecs:RegisterTaskDefinition", "*"), nil
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: mock, Credentials: credverify.New(mock, nil)}
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, ""))
 
@@ -113,7 +114,7 @@ func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
 			return allowPolicyResource("ecs:RegisterTaskDefinition", "*"), nil
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: mock, Credentials: credverify.New(mock, nil)}
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, testECSPassRoleTargetARN))
 

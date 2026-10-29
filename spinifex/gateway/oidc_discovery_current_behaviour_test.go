@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -47,7 +48,7 @@ func newDiscoveryEnv(t *testing.T) *discoveryEnv {
 	js := testutil.NewJetStream(t, nc)
 	kv, err := js.CreateOrUpdateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "eks-account-" + testDiscAccount})
 	require.NoError(t, err)
-	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService(), OIDC: ekscluster.NewOIDCPublisher(js)}
+	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService(), OIDC: ekscluster.NewOIDCPublisher(js), Credentials: credverify.New(allowAllIAMService(), nil)}
 	return &discoveryEnv{nc: nc, kv: kv, h: gw.SetupRoutes()}
 }
 
@@ -149,7 +150,7 @@ func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 		}
 	})
 	t.Run("no_connection", func(t *testing.T) {
-		h := (&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}).SetupRoutes()
+		h := (&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}).SetupRoutes()
 		for _, p := range []string{cbDiscPath, cbKeysPath} {
 			rec := getOIDC(t, h, p)
 			assert.Equal(t, http.StatusInternalServerError, rec.Code, p)
@@ -206,7 +207,7 @@ func TestCurrentBehaviour_WebIdentityJWKSMissingWireResponse(t *testing.T) {
 	signed, err := tok.SignedString(priv)
 	require.NoError(t, err)
 
-	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: iamSvc, STSService: stsSvc}
+	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: iamSvc, STSService: stsSvc, Credentials: credverify.New(iamSvc, stsSvc)}
 	form := url.Values{
 		"Action": {"AssumeRoleWithWebIdentity"}, "Version": {"2011-06-15"},
 		"RoleArn": {aws.StringValue(role.Role.Arn)}, "RoleSessionName": {"s1"}, "WebIdentityToken": {signed},

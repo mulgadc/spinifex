@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +33,7 @@ func newImageGateway(t *testing.T) *GatewayConfig {
 		InternalSuffix: ecrTestSuffix,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
+		Credentials:    credverify.New(allowAllIAMService(), nil),
 	}, awsapi.Deps{Registry: awsapi.NewRegistryActionService(reg, reg, reg, reg), LifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg)})
 }
 
@@ -300,7 +302,7 @@ func TestImageHandlers_GuardRails(t *testing.T) {
 	assert.Equal(t, "InternalError", err.Error())
 
 	// A missing registry-action composition -> ServerInternal.
-	bare := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	bare := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 	err = bare.serveECR(httptest.NewRecorder(), imageReq(t, "ListImages", `{"repositoryName":"team/app"}`))
 	require.Error(t, err)
 	assert.Equal(t, "ServerInternal", err.Error())

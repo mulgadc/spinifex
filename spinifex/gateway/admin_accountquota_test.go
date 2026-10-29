@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -55,6 +56,7 @@ func quotaTestGateway(t *testing.T) (*GatewayConfig, string) {
 	return &GatewayConfig{
 		DisableLogging: true,
 		IAMService:     &quotaIAMService{known: account},
+		Credentials:    credverify.New(&quotaIAMService{known: account}, nil),
 		Quota:          quota,
 	}, account
 }
@@ -157,7 +159,7 @@ func TestAdminAccountQuotaRejectsBadRequests(t *testing.T) {
 // A gateway with quotas disabled has no override bucket; the admin surface must
 // report that rather than pretend the write landed.
 func TestAdminAccountQuotaWithoutQuotaService(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: &quotaIAMService{known: "000000000042"}}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: &quotaIAMService{known: "000000000042"}, Credentials: credverify.New(&quotaIAMService{known: "000000000042"}, nil)}
 
 	_, err := gw.adminGetAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: "000000000042"}))
 	require.Error(t, err)

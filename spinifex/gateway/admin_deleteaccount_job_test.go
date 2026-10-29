@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,7 @@ func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 	return &GatewayConfig{
 		DisableLogging: true,
 		IAMService:     svc,
+		Credentials:    credverify.New(svc, nil),
 		NATSConn:       nc,
 		ExpectedNodes:  1,
 		NodeIDs:        []string{"node-1"},

@@ -9,6 +9,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +33,7 @@ func newBedrockAgentRuntimeRequestGateway(t *testing.T, vector ochrevector.Vecto
 	_, _, js := testutil.StartTestJetStream(t)
 	return &GatewayConfig{
 		IAMService:              allowAllIAMService(),
+		Credentials:             credverify.New(allowAllIAMService(), nil),
 		BedrockAgentKB:          ochrevector.NewKBStore(js),
 		BedrockAgentDataSources: ochrevector.NewDataSourceStore(js),
 		BedrockAgentVector:      vector,
@@ -217,7 +219,7 @@ func TestBedrockAgentRuntimeRequest_MissingAccountIDReturnsInternalError(t *test
 }
 
 func TestBedrockAgentRuntimeRequest_NilDependenciesReturnServerInternal(t *testing.T) {
-	gw := &GatewayConfig{IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
 
 	req := bedrockAgentRuntimeRequestWithAccount(http.MethodPost, "/knowledgebases/kb-1/retrieve", `{"retrievalQuery":{"text":"q"}}`)
 	w := httptest.NewRecorder()

@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,7 +20,7 @@ import (
 func statusGateRouter(t *testing.T, svc iamdomain.IAMService) (chi.Router, *http.Request) {
 	t.Helper()
 
-	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: svc}
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: svc, Credentials: credverify.New(svc, nil)}
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })

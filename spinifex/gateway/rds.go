@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/mulgadc/bluebottle/pkg/auth"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
@@ -77,20 +76,14 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 // The role name comes from the underlying role ARN, never the session name,
 // which the caller picks at AssumeRole time and could name its way past the gate.
 func rdsCaller(r *http.Request) (rdsawsapi.Caller, error) {
-	p := callerPrincipalOf(r)
-	accountID := p.accountID
-	if accountID == "" {
+	actor, _ := callerActor(r.Context())
+	if actor.AccountID == "" {
 		return rdsawsapi.Caller{}, errors.New(awserrors.ErrorServerInternal)
 	}
-	caller := rdsawsapi.Caller{
-		AccountID:     accountID,
-		PrincipalType: p.principalType,
-		SessionName:   p.identity,
-	}
-	if arn := p.underlyingRoleARN; arn != "" {
-		if roleAcct, roleName, err := auth.ParseRoleARN(arn); err == nil && roleAcct == accountID {
-			caller.RoleName = roleName
-		}
-	}
-	return caller, nil
+	return rdsawsapi.Caller{
+		AccountID:     actor.AccountID,
+		PrincipalType: actor.PrincipalType,
+		SessionName:   actorName(actor),
+		RoleName:      actor.RoleName(),
+	}, nil
 }

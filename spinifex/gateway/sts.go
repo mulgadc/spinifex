@@ -185,27 +185,26 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 
 // resolveSTSCaller assembles the caller fields from the SigV4 request context.
 func (gw *GatewayConfig) resolveSTSCaller(r *http.Request) (stsCaller, error) {
-	ctx := r.Context()
-	p, _ := callerPrincipalFrom(ctx)
-	accountID := p.accountID
-	if accountID == "" {
+	actor, err := callerActor(r.Context())
+	if actor.AccountID == "" {
 		slog.Error("STS_Request: no account ID in auth context")
 		return stsCaller{}, errors.New(awserrors.ErrorInternalError)
 	}
-
-	arn, err := buildCallerARN(accountID, p.identity, p.principalType, p.assumedRoleARN, p.userARN)
 	if err != nil {
 		return stsCaller{}, err
 	}
-	return stsCaller{
-		accountID:      accountID,
-		arn:            arn,
-		identity:       p.identity,
-		principalType:  p.principalType,
-		assumedRoleARN: p.assumedRoleARN,
-		assumedRoleID:  p.assumedRoleID,
-		accessKey:      p.accessKeyID,
-	}, nil
+	c := stsCaller{
+		accountID:     actor.AccountID,
+		arn:           actor.CallerARN,
+		identity:      actorName(actor),
+		principalType: actor.PrincipalType,
+		accessKey:     actor.AccessKeyID,
+	}
+	if actor.PrincipalType == principalTypeAssumedRole {
+		c.assumedRoleARN = actor.CallerARN
+		c.assumedRoleID = actor.UserID
+	}
+	return c, nil
 }
 
 // buildCallerARN composes the caller ARN: assumed-role uses the sealed assumedRoleARN,

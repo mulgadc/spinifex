@@ -111,6 +111,8 @@ func setupSTSRequestHandler(p stsRequestParams) http.Handler {
 		}
 		if p.assumedRoleID != "" {
 			ctx = withPrincipalField(ctx, fieldAssumedRoleID, p.assumedRoleID)
+			// The door seals aws:userid as the assumed-role ID for a role session.
+			ctx = withPrincipalField(ctx, fieldUserID, p.assumedRoleID)
 		}
 		if p.underlyingRoleARN != "" {
 			ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN, p.underlyingRoleARN)

@@ -265,28 +265,44 @@ func (gw *GatewayConfig) ValidateServices() error {
 // the shared buildCallerARN helper, so nothing is computed until called.
 func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
 	return func() (dispatch.Actor, error) {
-		p := callerPrincipalOf(r)
-		callerARN, err := buildCallerARN(p.accountID, p.identity, p.principalType, p.assumedRoleARN, p.userARN)
+		actor, err := callerActor(r.Context())
 		if err != nil {
 			return dispatch.Actor{}, err
 		}
-		actor := dispatch.Actor{
-			AccountID:     p.accountID,
-			CallerARN:     callerARN,
-			PrincipalType: p.principalType,
-			AccessKeyID:   p.accessKeyID,
-			UserID:        p.userID,
-		}
-		switch p.principalType {
-		case principalTypeAssumedRole:
-			actor.PrincipalARN = p.underlyingRoleARN
-			actor.SessionName = p.identity
-		default:
-			actor.PrincipalARN = callerARN
-			actor.UserName = p.identity
-		}
 		return actor, nil
 	}
+}
+
+// callerActor is the verified caller as the seam hands it to a service. The
+// actor is fully populated even when err is set: err reports that no caller ARN
+// could be composed, so a reader that needs no ARN may ignore it.
+func callerActor(ctx context.Context) (dispatch.Actor, error) {
+	p, _ := callerPrincipalFrom(ctx)
+	callerARN, err := buildCallerARN(p.accountID, p.identity, p.principalType, p.assumedRoleARN, p.userARN)
+	actor := dispatch.Actor{
+		AccountID:     p.accountID,
+		CallerARN:     callerARN,
+		PrincipalType: p.principalType,
+		AccessKeyID:   p.accessKeyID,
+		UserID:        p.userID,
+	}
+	if p.principalType == principalTypeAssumedRole {
+		actor.PrincipalARN = p.underlyingRoleARN
+		actor.SessionName = p.identity
+	} else {
+		actor.PrincipalARN = callerARN
+		actor.UserName = p.identity
+	}
+	return actor, err
+}
+
+// actorName is the name the caller goes by: the session name for a role
+// session and the user name for every other principal.
+func actorName(a dispatch.Actor) string {
+	if a.PrincipalType == principalTypeAssumedRole {
+		return a.SessionName
+	}
+	return a.UserName
 }
 
 var supportedServices = map[string]bool{

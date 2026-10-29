@@ -307,30 +307,23 @@ func (gw *GatewayConfig) checkEKSPassRole(r *http.Request, action, accountID str
 // underlying role ARN, never the session name, which the caller picks at
 // AssumeRole time and could name its way past the gate.
 func eksCaller(r *http.Request) eksawsapi.Caller {
-	p := callerPrincipalOf(r)
-	accountID := p.accountID
-	caller := eksawsapi.Caller{
-		AccountID:     accountID,
-		PrincipalType: p.principalType,
-		SessionName:   p.identity,
+	actor, _ := callerActor(r.Context())
+	return eksawsapi.Caller{
+		AccountID:     actor.AccountID,
+		PrincipalType: actor.PrincipalType,
+		SessionName:   actorName(actor),
+		RoleName:      actor.RoleName(),
 	}
-	if roleARN := p.underlyingRoleARN; roleARN != "" {
-		if roleAcct, roleName, err := auth.ParseRoleARN(roleARN); err == nil && roleAcct == accountID {
-			caller.RoleName = roleName
-		}
-	}
-	return caller
 }
 
 // eksCallerPrincipalARN resolves the caller's IAM principal ARN from the SigV4
 // auth context. Returns "" when the ARN can't be composed; CreateCluster then
 // skips the creator-admin AccessEntry rather than failing.
 func eksCallerPrincipalARN(r *http.Request) string {
-	p := callerPrincipalOf(r)
-	arn, err := buildCallerARN(p.accountID, p.identity, p.principalType, p.assumedRoleARN, p.userARN)
+	actor, err := callerActor(r.Context())
 	if err != nil {
 		slog.DebugContext(r.Context(), "EKS_Request: could not resolve caller principal ARN", "err", err)
 		return ""
 	}
-	return arn
+	return actor.CallerARN
 }

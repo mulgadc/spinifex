@@ -62,8 +62,8 @@ func (gw *GatewayConfig) adminPutAccountQuota(ctx context.Context, body []byte) 
 	}
 
 	// The caller's own identity, so a quota change names who made it.
-	caller, _ := callerPrincipalFrom(ctx)
-	updatedBy := caller.identity
+	caller, _ := callerActor(ctx)
+	updatedBy := actorName(caller)
 	if err := gw.Quota.PutAccountQuota(ctx, accountID, over, updatedBy); err != nil {
 		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
 			return nil, err

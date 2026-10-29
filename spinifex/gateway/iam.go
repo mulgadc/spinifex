@@ -407,9 +407,9 @@ var getRootUser = iamHandler(func(accountID string, _ *iam.GetUserInput, gw *Gat
 // authorization: a user is treated as naming themselves, root is described as
 // the account root, and a role session must name a user.
 func getUserForCaller(r *http.Request, accountID string, in *iam.GetUserInput) (iamAction, error) {
-	p := callerPrincipalOf(r)
-	identity := p.identity
-	switch p.principalType {
+	actor, _ := callerActor(r.Context())
+	identity := actorName(actor)
+	switch actor.PrincipalType {
 	case principalTypeUser:
 		if identity == "root" && accountID == awsidentifiers.GlobalAccountID {
 			return getRootUser, nil
@@ -423,7 +423,7 @@ func getUserForCaller(r *http.Request, accountID string, in *iam.GetUserInput) (
 			"Must specify userName when calling with non-User credentials")
 	default:
 		slog.Error("IAM GetUser: unknown principal type, cannot default UserName",
-			"principal_type", p.principalType)
+			"principal_type", actor.PrincipalType)
 		return iamAction{}, errors.New(awserrors.ErrorInternalError)
 	}
 }

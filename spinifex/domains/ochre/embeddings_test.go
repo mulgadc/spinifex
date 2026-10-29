@@ -377,6 +377,7 @@ func (t *countingErrTransport) RoundTrip(req *http.Request) (*http.Response, err
 }
 
 func TestEmbeddingsProvider_EmbedBatch_RetriesTransportErrorThenSucceeds(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -402,6 +403,7 @@ func TestEmbeddingsProvider_EmbedBatch_RetriesTransportErrorThenSucceeds(t *test
 }
 
 func TestEmbeddingsProvider_EmbedBatch_GivesUpAfterTransportRetryCap(t *testing.T) {
+	t.Parallel()
 	transport := &countingErrTransport{
 		failures: embedTransportRetries + 10, // always fail
 		err:      &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},

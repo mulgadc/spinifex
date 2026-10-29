@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 
+	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
@@ -79,6 +80,28 @@ type Actor struct {
 	CallerARN     string
 	PrincipalType string
 	AccessKeyID   string
+	// PrincipalARN is the user ARN, the account root ARN, or for a role
+	// session the ARN of the role behind it. CallerARN is the session ARN.
+	PrincipalARN string
+	// UserID is aws:userid.
+	UserID string
+	// UserName is set for user principals only, GetSessionToken sessions included.
+	UserName string
+	// SessionName is set for assumed-role sessions only. The caller chose it.
+	SessionName string
+}
+
+// RoleName is the name of the role behind an assumed-role session. It is empty
+// for any other principal and when the role is not in the caller's own account.
+func (a Actor) RoleName() string {
+	if a.PrincipalType != "assumed-role" {
+		return ""
+	}
+	roleAccount, roleName, err := auth.ParseRoleARN(a.PrincipalARN)
+	if err != nil || roleAccount != a.AccountID {
+		return ""
+	}
+	return roleName
 }
 
 // AuthorizeFunc asks ingress for an IAM decision on the authenticated caller.

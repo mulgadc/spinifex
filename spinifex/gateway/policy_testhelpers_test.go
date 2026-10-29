@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"net/http"
 
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -28,11 +27,12 @@ func allowAllIAMService() *policyMockIAMService {
 // denied. Existing values are preserved for tests that set their own principal.
 func withTestIdentity(req *http.Request) *http.Request {
 	ctx := req.Context()
-	if ctx.Value(ctxIdentity) == nil {
-		ctx = context.WithValue(ctx, ctxIdentity, "alice")
+	have, _ := callerPrincipalFrom(ctx)
+	if have.identity == "" {
+		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
 	}
-	if ctx.Value(ctxPrincipalType) == nil {
-		ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	if have.principalType == "" {
+		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	}
 	return req.WithContext(ctx)
 }

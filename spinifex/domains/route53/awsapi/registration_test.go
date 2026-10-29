@@ -322,3 +322,17 @@ func TestExtensionsRoundTripThroughTheSDK(t *testing.T) {
 		&ext.GetHostedZoneActivationInput{Id: aws.String("ZNOPE")}, &ext.GetHostedZoneActivationOutput{})
 	requireAWSCode(t, missing.Send(), "NoSuchHostedZone")
 }
+
+func TestEmptyTagListsAreRefused(t *testing.T) {
+	client, _ := newClient(t)
+	zone, err := client.CreateHostedZone(&r53.CreateHostedZoneInput{Name: aws.String("example.com"), CallerReference: aws.String("tags")})
+	require.NoError(t, err)
+	for _, list := range []string{"AddTags", "RemoveTagKeys"} {
+		req, _ := client.ChangeTagsForResourceRequest(&r53.ChangeTagsForResourceInput{ResourceType: aws.String("hostedzone"), ResourceId: zone.HostedZone.Id})
+		// The SDK omits an empty list, so the body is written by hand.
+		req.Handlers.Build.PushBack(func(r *request.Request) {
+			r.SetStringBody(`<ChangeTagsForResourceRequest xmlns="` + awsapi.XMLNamespace + `"><` + list + `/></ChangeTagsForResourceRequest>`)
+		})
+		requireAWSCode(t, req.Send(), "InvalidInput")
+	}
+}

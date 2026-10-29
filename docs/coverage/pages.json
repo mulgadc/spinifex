@@ -247,6 +247,20 @@
         "option-groups": "Option groups configure engine add-ons for engines this platform does not offer, such as Oracle and SQL Server."
       }
     },
+    "route53": {
+      "slug": "route53",
+      "name": "Route 53",
+      "title": "Route 53 API Coverage",
+      "seoTitle": "Amazon Route 53 API Coverage on Spinifex — Spinifex Docs",
+      "description": "The Amazon Route 53 API operations Spinifex implements, covering the hosted zones it serves, their resource record sets, change status and tags on each zone.",
+      "tags": [
+        "aws",
+        "compatibility",
+        "coverage",
+        "route53",
+        "dns"
+      ]
+    },
     "s3": {
       "slug": "s3",
       "name": "S3",

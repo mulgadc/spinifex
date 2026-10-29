@@ -229,6 +229,36 @@ type EBSRequest struct {
 
 Viperblock responds with an NBD URI that QEMU uses to access the block device.
 
+#### Direct-boot microVM data volumes
+
+A direct-boot microVM keeps the launcher's saved `vm.Config` as a clean base, and `startQEMU` adds data volumes only to a launch-only copy of it (`runtime/compute/vm/lifecycle.go`).
+At each start the daemon takes one snapshot of the instance's already-mounted data requests, probes each NBD or host block export from that snapshot, and builds the command from the same snapshot, so the launched endpoint is the one that was checked and is never written back into the saved base.
+Each data volume becomes a `virtio-blk-device` on the MMIO bus with the same id, node name, I/O thread, serial and `werror=stop,rerror=stop` policy as the PCI device, and takes no PCIe hot-plug port.
+
+Boot and EFI requests are rejected on this path, and a direct-boot instance with no data requests launches its base unchanged.
+Disk-boot (q35) instances keep the existing PCI hot-plug path.
+
+Hot-attaching a volume to a running direct-boot microVM is not supported, because the MMIO bus has no PCIe root port to plug into.
+`AttachVolume` refuses it before mounting the volume or changing any instance or volume state, and the EC2 API returns `UnsupportedOperation`.
+
+This covers only requests that are already mounted when the instance starts; nothing yet supplies data volumes to a system instance, and the path is verified with fake-QEMU unit tests, not with a real EBS volume in a guest.
+
+#### Volume leases
+
+Before opening an engine on a volume, the Viperblock worker takes a lease: one entry per volume in the `VIPERBLOCK_VOLUME_LEASES` JetStream KV bucket, which expires 45 seconds after its last write (`providers/ebs/viperblock/volume_lease.go`).
+A renewal becomes eligible once the last confirmed write is 10 seconds old, and the holder checks for that periodically, so the rewrite lands some time after that point.
+Each rewrite is conditioned on the revision the holder last wrote, and a refused write that finds the entry gone or naming another owner or generation fences the export as a takeover.
+It may keep writing for 40 seconds after the last write the store acknowledged, measured from when that write was sent, because the server starts the entry's expiry when it applies the write and never earlier.
+A slow acknowledgement therefore shortens the remaining validity rather than extending it, and an acquisition acknowledged after its validity has already run out is refused as retryable.
+
+For a holder that cannot renew, a timer is armed for the validity deadline, leaving a nominal 5 seconds before the entry can expire; when it fires, the export's nbdkit is fenced with SIGKILL (`volume_fence.go`).
+The fence runs on its own goroutine, so Go scheduling, that goroutine and process termination all delay the kill, and enough delay can use up the whole margin; a kill held in uninterruptible sleep, which the fence waits up to 30 seconds for, is the extreme case.
+Once a lease is lost or has lapsed it stays lost: a renewal that succeeds afterwards is ignored, and another open on the same node cannot share it while the fence runs.
+
+These rules bound only the holder's own clock.
+The storage backend does not reject a stale writer, so a paused or partitioned host that resumes after its validity can still write; generation enforcement at the write boundary is required by Q-24 in the umbrella repository's `docs/specs/viperblock/rfc3-1_overview.md` and is not implemented.
+An export that survives a daemon restart writes without a renewed lease until recovery adopts it, and a survivor that recovery cannot adopt while a guest still uses it is left running without a lease or a fence.
+
 ### Predastore (S3)
 
 Object storage used for:
@@ -255,6 +285,29 @@ The daemon reports the topology on `spinifex.storage.config` (the
 file. It does not connect to Predastore to do so, and no Predastore node
 exposes a status endpoint. This is an operator status interface, not a generic
 storage-provider contract.
+
+### SQS message store (internal)
+
+`domains/sqs/message` defines the store-neutral interface the SQS domain reaches its message store through (ADR-0011:S6), with a JetStream adapter in `domains/sqs/message/jetstream` and a shared conformance suite in `domains/sqs/message/conformance`.
+It is an internal primitive: nothing outside the SQS domain uses it, no daemon or service is wired to it, and it does not itself deliver an SQS API.
+The dedicated JetStream server ADR-0011 describes is not deployed by this code, and Spinifex ships no host service, unit, user or firewall rule for it.
+
+The interface covers durable and idempotent append, body and metadata reads, conditional state writes and deletes, per-namespace counts, namespace enumeration, an ordered change feed, a bounded paginated scan, namespace deletion and a sweep of tombstoned bodies.
+A namespace carries an immutable message-shard and state-shard allocation chosen when the queue is created, so a later change in shard counts never moves an existing queue.
+
+The adapter provisions a fixed set of shared message streams (`SQS_M_<shard>`, one subject per queue) and shared state buckets (`sqs_state_<shard>`), keeps historical ones, and applies a 14-day-plus-one-hour retention backstop to both.
+It supports one node (R1) and three nodes (R3) only and refuses any other declared cluster size before provisioning.
+
+Reads that must observe a completed write or delete go to the stream leader: `GetState`, the state-key pass behind `Count` and `Namespaces`, and the body pass behind `Namespaces` and `Scan`.
+This avoids the follower-served direct gets and follower-placed consumers that returned purged data in local three-node fault-injection tests; it is not a general linearizability guarantee.
+Each leader read is one request per record, and the body pass transfers each full body internally even though `Scan` returns metadata only, which is a material cost for a large backlog.
+A state-key pass is bounded but is not a snapshot when a key is overwritten during it.
+
+The feed reads through an in-memory, headers-only ordered consumer.
+If that consumer delivers nothing for about two seconds while the stream holds a change after the feed's cursor, the feed replaces it from the cursor, so a stored change does not wait on a stalled consumer; the cause of those stalls is not established.
+`Close` is terminal, waits for consumer opens and deletes in progress and retries failed deletes, but cleanup is best effort for a create whose outcome is unknown: a consumer that lands after its last delete is removed by the server's one-minute inactive threshold.
+
+Coverage is unit and conformance tests on in-process R1 and R3 servers; there is no end-to-end or multi-host validation of this code, and earlier multi-host evidence predates the final feed.
 
 ## Configuration
 

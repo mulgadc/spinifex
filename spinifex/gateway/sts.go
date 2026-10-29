@@ -185,35 +185,29 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 
 // resolveSTSCaller assembles the caller fields from the SigV4 request context.
 func (gw *GatewayConfig) resolveSTSCaller(r *http.Request) (stsCaller, error) {
-	ctx := r.Context()
-	accountID, _ := ctx.Value(ctxAccountID).(string)
-	if accountID == "" {
+	actor, err := callerActor(r.Context())
+	if actor.AccountID == "" {
 		slog.Error("STS_Request: no account ID in auth context")
 		return stsCaller{}, errors.New(awserrors.ErrorInternalError)
 	}
-	identity, _ := ctx.Value(ctxIdentity).(string)
-	principalType, _ := ctx.Value(ctxPrincipalType).(string)
-	assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
-	assumedRoleID, _ := ctx.Value(ctxAssumedRoleID).(string)
-	accessKey, _ := ctx.Value(ctxAccessKey).(string)
-	userARN, _ := ctx.Value(ctxUserARN).(string)
-
-	arn, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN)
 	if err != nil {
 		return stsCaller{}, err
 	}
-	return stsCaller{
-		accountID:      accountID,
-		arn:            arn,
-		identity:       identity,
-		principalType:  principalType,
-		assumedRoleARN: assumedRoleARN,
-		assumedRoleID:  assumedRoleID,
-		accessKey:      accessKey,
-	}, nil
+	c := stsCaller{
+		accountID:     actor.AccountID,
+		arn:           actor.CallerARN,
+		identity:      actorName(actor),
+		principalType: actor.PrincipalType,
+		accessKey:     actor.AccessKeyID,
+	}
+	if actor.PrincipalType == principalTypeAssumedRole {
+		c.assumedRoleARN = actor.CallerARN
+		c.assumedRoleID = actor.UserID
+	}
+	return c, nil
 }
 
-// buildCallerARN composes the caller ARN: assumed-role uses ctxAssumedRoleARN,
+// buildCallerARN composes the caller ARN: assumed-role uses the sealed assumedRoleARN,
 // root uses arn:aws:iam::{aid}:root, user uses its stored userARN, path included,
 // or arn:aws:iam::{aid}:user/{identity} when there is no record to read it from.
 func buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN string) (string, error) {

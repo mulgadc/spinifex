@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,6 +53,7 @@ func ecrAuthzTestGateway(t *testing.T, policies []iamdomain.PolicyDocument) (*Ga
 		Region:           ecrTestRegion,
 		ECRTokenVerifier: verify,
 		IAMService:       iamSvc,
+		Credentials:      credverify.New(iamSvc, nil),
 	}, iamSvc
 }
 
@@ -83,6 +85,7 @@ func TestECROperationAuthorization_PullOnlyMatrix(t *testing.T) {
 		{http.MethodGet, "/v2/team/app/blobs/sha256:abc"},
 		{http.MethodHead, "/v2/team/app/manifests/latest"},
 		{http.MethodGet, "/v2/team/app/manifests/latest"},
+		{http.MethodGet, "/v2/team/app/referrers/sha256:abc"},
 	}
 	for _, c := range allowed {
 		t.Run("allow "+c.method+" "+c.path, func(t *testing.T) {
@@ -133,6 +136,7 @@ func TestECROperationAuthorization_ReadOnlyMatrix(t *testing.T) {
 		{http.MethodGet, "/v2/team/app/tags/list"},
 		{http.MethodHead, "/v2/team/app/blobs/sha256:abc"},
 		{http.MethodGet, "/v2/team/app/manifests/latest"},
+		{http.MethodGet, "/v2/team/app/referrers/sha256:abc"},
 	}
 	for _, c := range allowed {
 		t.Run("allow "+c.method+" "+c.path, func(t *testing.T) {
@@ -183,6 +187,39 @@ func TestECROperationAuthorization_RepoScopedAllowDoesNotCrossRepos(t *testing.T
 		assert.False(t, *called)
 		assert.Equal(t, http.StatusForbidden, w.Code)
 	})
+
+	t.Run("repo A referrers allowed", func(t *testing.T) {
+		next, called := okHandler()
+		w := httptest.NewRecorder()
+		gw.ecrOperationAuthorization(next).ServeHTTP(w, ecrAuthzRequest(http.MethodGet, "/v2/team/a/referrers/sha256:abc", ecrTestUserPrincipal()))
+		assert.True(t, *called)
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("repo B referrers denied", func(t *testing.T) {
+		next, called := okHandler()
+		w := httptest.NewRecorder()
+		gw.ecrOperationAuthorization(next).ServeHTTP(w, ecrAuthzRequest(http.MethodGet, "/v2/team/b/referrers/sha256:abc", ecrTestUserPrincipal()))
+		assert.False(t, *called)
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
+}
+
+// TestECROperationAuthorization_ReferrersNeedBatchGetImage verifies the
+// referrers listing is gated on BatchGetImage and on nothing a push grants.
+func TestECROperationAuthorization_ReferrersNeedBatchGetImage(t *testing.T) {
+	repoARN := "arn:aws:ecr:" + ecrTestRegion + ":" + ecrAuthzTestAccount + ":repository/team/app"
+	pushOnly := ecrAllowPolicy(
+		[]string{"ecr:PutImage", "ecr:InitiateLayerUpload", "ecr:ListImages", "ecr:BatchCheckLayerAvailability"},
+		[]string{repoARN},
+	)
+	gw, _ := ecrAuthzTestGateway(t, []iamdomain.PolicyDocument{pushOnly})
+
+	next, called := okHandler()
+	w := httptest.NewRecorder()
+	gw.ecrOperationAuthorization(next).ServeHTTP(w, ecrAuthzRequest(http.MethodGet, "/v2/team/app/referrers/sha256:abc", ecrTestUserPrincipal()))
+	assert.False(t, *called, "a caller without BatchGetImage must not reach the handler")
+	assert.Equal(t, http.StatusForbidden, w.Code)
 }
 
 // TestECROperationAuthorization_ExplicitDenyWins verifies an explicit Deny
@@ -196,6 +233,12 @@ func TestECROperationAuthorization_ExplicitDenyWins(t *testing.T) {
 	next, called := okHandler()
 	w := httptest.NewRecorder()
 	gw.ecrOperationAuthorization(next).ServeHTTP(w, ecrAuthzRequest(http.MethodGet, "/v2/team/app/manifests/latest", ecrTestUserPrincipal()))
+	assert.False(t, *called)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+
+	next, called = okHandler()
+	w = httptest.NewRecorder()
+	gw.ecrOperationAuthorization(next).ServeHTTP(w, ecrAuthzRequest(http.MethodGet, "/v2/team/app/referrers/sha256:abc", ecrTestUserPrincipal()))
 	assert.False(t, *called)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }

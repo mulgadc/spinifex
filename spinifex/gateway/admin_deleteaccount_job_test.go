@@ -7,6 +7,8 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +104,7 @@ func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 	return &GatewayConfig{
 		DisableLogging: true,
 		IAMService:     svc,
+		Credentials:    credverify.New(svc, nil),
 		NATSConn:       nc,
 		ExpectedNodes:  1,
 		NodeIDs:        []string{"node-1"},
@@ -152,7 +155,7 @@ func newTenantAccount(t *testing.T, gw *GatewayConfig, name string) *iamdomain.A
 
 func deleteAccountBody(t *testing.T, accountID, name, token string) []byte {
 	t.Helper()
-	body, err := json.Marshal(DeleteAccountRequest{
+	body, err := json.Marshal(operatorv1.DeleteAccountRequest{
 		AccountID: accountID, AccountName: name, ClientToken: token,
 	})
 	require.NoError(t, err)
@@ -175,7 +178,7 @@ func storeDeletionJob(t *testing.T, gw *GatewayConfig, job *accountDeletionJob) 
 
 func describeDeletion(t *testing.T, gw *GatewayConfig, accountID string) *accountDeletionJob {
 	t.Helper()
-	body, err := json.Marshal(DescribeAccountDeletionRequest{AccountID: accountID})
+	body, err := json.Marshal(operatorv1.DescribeAccountDeletionRequest{AccountID: accountID})
 	require.NoError(t, err)
 
 	output, err := gw.adminDescribeAccountDeletion(t.Context(), body)
@@ -192,7 +195,7 @@ func TestAdminDeleteAccountDryRunChangesNothing(t *testing.T) {
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
-	body, err := json.Marshal(DeleteAccountRequest{AccountID: account.AccountID, DryRun: true})
+	body, err := json.Marshal(operatorv1.DeleteAccountRequest{AccountID: account.AccountID, DryRun: true})
 	require.NoError(t, err)
 
 	output, err := gw.adminDeleteAccount(t.Context(), body)
@@ -220,6 +223,7 @@ func TestAdminDeleteAccountDryRunChangesNothing(t *testing.T) {
 // and holding the call open for it would make every timeout-and-retry start a
 // second one.
 func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
@@ -231,11 +235,11 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 	require.True(t, ok)
 	assert.NotEmpty(t, response.DeletionID)
 	assert.Equal(t, account.AccountID, response.AccountID)
-	assert.Equal(t, DeletionStateRunning, response.State)
+	assert.Equal(t, operatorv1.DeletionStateRunning, response.State)
 
 	// Progress is polled, so the record has to reach a terminal state on its own.
 	require.Eventually(t, func() bool {
-		return describeDeletion(t, gw, account.AccountID).State == DeletionStateCompleted
+		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
 	}, 60*time.Second, 10*time.Millisecond)
 
 	job := describeDeletion(t, gw, account.AccountID)
@@ -251,6 +255,7 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 // The record outlives the account it describes, so a retry that arrives after
 // the teardown finished is answered from it rather than as a missing account.
 func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	body := deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken)
@@ -260,7 +265,7 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 	started := first.(*DeleteAccountResponse)
 
 	require.Eventually(t, func() bool {
-		return describeDeletion(t, gw, account.AccountID).State == DeletionStateCompleted
+		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
 	}, 60*time.Second, 10*time.Millisecond)
 
 	second, err := gw.adminDeleteAccount(t.Context(), body)
@@ -269,14 +274,14 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 	replayed, ok := second.(*DeleteAccountResponse)
 	require.True(t, ok)
 	assert.Equal(t, started.DeletionID, replayed.DeletionID)
-	assert.Equal(t, DeletionStateCompleted, replayed.State)
+	assert.Equal(t, operatorv1.DeletionStateCompleted, replayed.State)
 
 	// A caller that lost its token and generated a fresh one is told the same
 	// thing, rather than that the account it just deleted does not exist.
 	third, err := gw.adminDeleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("f", 32)))
 	require.NoError(t, err)
-	assert.Equal(t, DeletionStateCompleted, third.(*DeleteAccountResponse).State)
+	assert.Equal(t, operatorv1.DeletionStateCompleted, third.(*DeleteAccountResponse).State)
 }
 
 // Reusing a token for a different account name is a client bug. Treating it as
@@ -289,7 +294,7 @@ func TestAdminDeleteAccountRejectsATokenBoundToAnotherName(t *testing.T) {
 		AccountID:   account.AccountID,
 		AccountName: "tenant@example.com",
 		ClientToken: deleteClientToken,
-		State:       DeletionStateRunning,
+		State:       operatorv1.DeletionStateRunning,
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 	})
 
@@ -310,7 +315,7 @@ func TestAdminDeleteAccountRefusesAConcurrentTeardown(t *testing.T) {
 		AccountID:   account.AccountID,
 		AccountName: "tenant@example.com",
 		ClientToken: deleteClientToken,
-		State:       DeletionStateRunning,
+		State:       operatorv1.DeletionStateRunning,
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 	})
 
@@ -331,7 +336,7 @@ func TestAdminDeleteAccountTakesOverAStaleJob(t *testing.T) {
 		AccountID:   account.AccountID,
 		AccountName: "tenant@example.com",
 		ClientToken: deleteClientToken,
-		State:       DeletionStateRunning,
+		State:       operatorv1.DeletionStateRunning,
 		UpdatedAt:   time.Now().UTC().Add(-2 * accountDeletionStale).Format(time.RFC3339),
 	})
 
@@ -342,7 +347,7 @@ func TestAdminDeleteAccountTakesOverAStaleJob(t *testing.T) {
 	response, ok := output.(*DeleteAccountResponse)
 	require.True(t, ok)
 	assert.NotEqual(t, "d-abandoned", response.DeletionID, "a takeover runs under its own deletion id")
-	assert.Equal(t, DeletionStateRunning, response.State)
+	assert.Equal(t, operatorv1.DeletionStateRunning, response.State)
 }
 
 // A teardown that failed is retried rather than left wedged: the engine
@@ -355,7 +360,7 @@ func TestAdminDeleteAccountRetriesAFailedJob(t *testing.T) {
 		AccountID:   account.AccountID,
 		AccountName: "tenant@example.com",
 		ClientToken: deleteClientToken,
-		State:       DeletionStateFailed,
+		State:       operatorv1.DeletionStateFailed,
 		Error:       "volume vol-1 is stuck",
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 	})
@@ -367,7 +372,7 @@ func TestAdminDeleteAccountRetriesAFailedJob(t *testing.T) {
 	response, ok := output.(*DeleteAccountResponse)
 	require.True(t, ok)
 	assert.NotEqual(t, "d-failed", response.DeletionID)
-	assert.Equal(t, DeletionStateRunning, response.State)
+	assert.Equal(t, operatorv1.DeletionStateRunning, response.State)
 }
 
 // A completed job means the account is gone. Saying so beats the missing-account
@@ -381,7 +386,7 @@ func TestAdminDeleteAccountReportsACompletedJobToANewToken(t *testing.T) {
 		AccountID:   account.AccountID,
 		AccountName: "tenant@example.com",
 		ClientToken: deleteClientToken,
-		State:       DeletionStateCompleted,
+		State:       operatorv1.DeletionStateCompleted,
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 		FinishedAt:  time.Now().UTC().Format(time.RFC3339),
 	})
@@ -393,7 +398,7 @@ func TestAdminDeleteAccountReportsACompletedJobToANewToken(t *testing.T) {
 	response, ok := output.(*DeleteAccountResponse)
 	require.True(t, ok)
 	assert.Equal(t, "d-done", response.DeletionID)
-	assert.Equal(t, DeletionStateCompleted, response.State)
+	assert.Equal(t, operatorv1.DeletionStateCompleted, response.State)
 }
 
 // The protected accounts are refused the same way an unauthorized caller is:
@@ -479,7 +484,7 @@ func TestDeletionTrackerRecordsEachStageAsItFinishes(t *testing.T) {
 	job := &accountDeletionJob{
 		DeletionID: "d-1",
 		AccountID:  "000000000042",
-		State:      DeletionStateRunning,
+		State:      operatorv1.DeletionStateRunning,
 	}
 	jobs := storeDeletionJob(t, gw, job)
 	tracker := &deletionTracker{jobs: jobs, job: job}
@@ -494,7 +499,7 @@ func TestDeletionTrackerRecordsEachStageAsItFinishes(t *testing.T) {
 	assert.Equal(t, accountteardown.StageCompute, stored.Stages[0].Stage)
 	require.Len(t, stored.Stages[0].Deleted, 1)
 	assert.Equal(t, "i-1", stored.Stages[0].Deleted[0].ID)
-	assert.Equal(t, DeletionStateRunning, stored.State)
+	assert.Equal(t, operatorv1.DeletionStateRunning, stored.State)
 	assert.NotEmpty(t, stored.UpdatedAt, "a running job must heartbeat or it reads as abandoned")
 }
 
@@ -505,7 +510,7 @@ func TestDeletionTrackerRecordsFailure(t *testing.T) {
 	job := &accountDeletionJob{
 		DeletionID: "d-1",
 		AccountID:  "000000000042",
-		State:      DeletionStateRunning,
+		State:      operatorv1.DeletionStateRunning,
 	}
 	jobs := storeDeletionJob(t, gw, job)
 	tracker := &deletionTracker{jobs: jobs, job: job}
@@ -513,7 +518,7 @@ func TestDeletionTrackerRecordsFailure(t *testing.T) {
 	tracker.finished(t.Context(), nil, assert.AnError)
 
 	stored := describeDeletion(t, gw, "000000000042")
-	assert.Equal(t, DeletionStateFailed, stored.State)
+	assert.Equal(t, operatorv1.DeletionStateFailed, stored.State)
 	assert.Contains(t, stored.Error, assert.AnError.Error())
 	assert.NotEmpty(t, stored.FinishedAt)
 }
@@ -525,7 +530,7 @@ func TestDeletionTrackerHeartbeatStops(t *testing.T) {
 	job := &accountDeletionJob{
 		DeletionID: "d-1",
 		AccountID:  "000000000042",
-		State:      DeletionStateRunning,
+		State:      operatorv1.DeletionStateRunning,
 	}
 	jobs := storeDeletionJob(t, gw, job)
 	tracker := &deletionTracker{jobs: jobs, job: job}

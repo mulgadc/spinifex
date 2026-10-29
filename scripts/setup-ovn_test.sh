@@ -377,6 +377,175 @@ case "$RC:$OUT" in
     *) fail "logrotate: unexpected stanza gave rc=$RC out=$OUT" ;;
 esac
 
+# --------------------------------------------------------------------------
+# Clustered DB storage, and what --recreate-db purges.
+# --------------------------------------------------------------------------
+# install-node.sh passes --recreate-db on every database node on every run, so
+# re-forming a cluster has to replace a clustered DB as readily as a standalone
+# one. Left in place, ovn-ctl serves it, ignores the RAFT flags and rejoins the
+# previous cluster under the member list the old DB carries.
+for fn in stop_ovn_databases ensure_clustered_db_storage; do
+    awk -v f="$fn() {" '$0 == f { on = 1 } on { print } on && $0 == "}" { exit }' "$SETUP" >>"$TMP/db_fn.sh"
+done
+
+# db-is-clustered reports on the fixture's own contents, so a test writes
+# "clustered" or "standalone" into the file to choose the format.
+printf '#!/bin/sh\n[ "$1" = db-is-clustered ] || exit 2\ngrep -q clustered "$2"\n' >"$TMP/bin/ovsdb-tool"
+printf '#!/bin/sh\nexit 0\n' >"$TMP/bin/systemctl"
+printf '#!/bin/sh\nexit 1\n' >"$TMP/bin/pgrep"
+printf '#!/bin/sh\necho "pkill $*" >>"%s"\nexit 0\n' "$TMP/pkill.log" >"$TMP/bin/pkill"
+chmod +x "$TMP/bin/ovsdb-tool" "$TMP/bin/systemctl" "$TMP/bin/pgrep" "$TMP/bin/pkill"
+
+# db_fixture <format> — a DB directory in <format> with every leftover present.
+db_fixture() {
+    rm -rf "$TMP/dbdir"
+    mkdir -p "$TMP/dbdir/standalone-backup"
+    for f in ovnnb_db.db ovnsb_db.db; do
+        echo "$1" >"$TMP/dbdir/$f"
+        echo "$1" >"$TMP/dbdir/$f.standalone-disabled"
+        echo "$1" >"$TMP/dbdir/standalone-backup/$f"
+        : >"$TMP/dbdir/.$f.~lock~"
+    done
+}
+
+# ensure_db <recreate:true|false> — runs ensure_clustered_db_storage; sets RC, OUT.
+ensure_db() {
+    RC=0
+    OUT=$(PATH="$TMP/bin:$PATH" bash -c '
+        OVN_DBDIR="$1"; RECREATE_DB="$2"; OVN_CENTRAL_UNITS=(ovn-central)
+        OVN_DB_STOP_WAIT=2; OVN_DB_KILL_WAIT=1
+        . "$3"; ensure_clustered_db_storage' _ "$TMP/dbdir" "$1" "$TMP/db_fn.sh" 2>&1) || RC=$?
+}
+
+db_fixture clustered
+ensure_db true
+if [ "$RC" = 0 ] && [ ! -e "$TMP/dbdir/ovnnb_db.db" ] && [ ! -e "$TMP/dbdir/ovnsb_db.db" ]; then
+    pass "recreate-db: a clustered DB is discarded, so re-forming does not rejoin the old cluster"
+else
+    fail "recreate-db: clustered DB rc=$RC left [$(ls -A "$TMP/dbdir")] out=$OUT"
+fi
+if [ -z "$(ls -A "$TMP/dbdir")" ]; then
+    pass "recreate-db: the lock files, move-asides and standalone backup go with it"
+else
+    fail "recreate-db: leftovers survived: $(ls -A "$TMP/dbdir" | tr '\n' ' ')"
+fi
+
+db_fixture standalone
+ensure_db true
+if [ "$RC" = 0 ] && [ ! -e "$TMP/dbdir/ovnnb_db.db" ]; then
+    pass "recreate-db: a standalone DB is discarded as before"
+else
+    fail "recreate-db: standalone DB rc=$RC left [$(ls -A "$TMP/dbdir")] out=$OUT"
+fi
+
+db_fixture clustered
+ensure_db false
+if [ "$RC" = 0 ] && [ -e "$TMP/dbdir/ovnnb_db.db" ]; then
+    pass "no recreate-db: a clustered DB is the steady state and is kept"
+else
+    fail "no recreate-db: clustered DB rc=$RC left [$(ls -A "$TMP/dbdir")] out=$OUT"
+fi
+
+db_fixture standalone
+ensure_db false
+case "$RC:$OUT" in
+    0:*) fail "no recreate-db: a standalone DB was accepted, so the RAFT flags would be ignored" ;;
+    *:*"standalone format"*) pass "no recreate-db: a standalone DB is refused by name" ;;
+    *) fail "no recreate-db: standalone DB rc=$RC out=$OUT" ;;
+esac
+
+# --------------------------------------------------------------------------
+# A rerun returns only once both of this node's RAFT members have rejoined.
+# --------------------------------------------------------------------------
+# A rerun restarts the node's NB and SB members together, so returning early
+# lets the next database node's rerun take a second member of each down.
+awk '$0 == "wait_for_raft_member() {" { on = 1 } on { print } on && $0 == "}" { exit }' "$SETUP" >"$TMP/raft_fn.sh"
+mkdir -p "$TMP/raftbin"
+printf '#!/bin/sh\nexit 0\n' >"$TMP/raftbin/sleep"
+printf '#!/bin/sh\n[ -f "%s" ] || exit 1\ncat "%s"\n' "$TMP/cluster-status" "$TMP/cluster-status" >"$TMP/raftbin/ovs-appctl"
+chmod +x "$TMP/raftbin/sleep" "$TMP/raftbin/ovs-appctl"
+
+# raft_member <Status:> <Leader:> — runs wait_for_raft_member against a
+# cluster/status in that state, or none when Status is "absent"; sets RC.
+raft_member() {
+    rm -f "$TMP/cluster-status"
+    if [ "$1" != absent ]; then
+        printf 'a1b2\nName: OVN_Northbound\nStatus: %s\nRole: follower\nTerm: 4\nLeader: %s\nVote: c3d4\n\nServers:\n    a1b2 (a1b2 at tcp:10.0.0.1:6643) (self)\n    c3d4 (c3d4 at tcp:10.0.0.2:6643)\n' \
+            "$1" "$2" >"$TMP/cluster-status"
+    fi
+    RC=0
+    PATH="$TMP/raftbin:$PATH" bash -c 'sudo() { "$@"; }; OVN_RAFT_REJOIN_WAIT=2; . "$1"
+        wait_for_raft_member /var/run/ovn/ovnnb_db.ctl OVN_Northbound' _ "$TMP/raft_fn.sh" >/dev/null 2>&1 || RC=$?
+}
+
+if [ ! -s "$TMP/raft_fn.sh" ]; then
+    fail "raft: no wait_for_raft_member in setup-ovn.sh"
+else
+    raft_member "cluster member" c3d4
+    if [ "$RC" = 0 ]; then pass "raft: a member following a known leader has rejoined"; else fail "raft: follower with leader rc=$RC"; fi
+    raft_member "cluster member" self
+    if [ "$RC" = 0 ]; then pass "raft: a member that is the leader has rejoined"; else fail "raft: leader rc=$RC"; fi
+    raft_member "cluster member" unknown
+    if [ "$RC" != 0 ]; then pass "raft: a member that has not found its leader has not rejoined"; else fail "raft: unknown leader accepted"; fi
+    raft_member "disconnected from the cluster (election timeout)" c3d4
+    if [ "$RC" != 0 ]; then pass "raft: a disconnected member that remembers a leader has not rejoined"; else fail "raft: disconnected member accepted"; fi
+    raft_member "joining cluster" c3d4
+    if [ "$RC" != 0 ]; then pass "raft: a member still joining has not rejoined"; else fail "raft: joining member accepted"; fi
+    raft_member absent ""
+    if [ "$RC" != 0 ]; then pass "raft: a server that does not answer has not rejoined"; else fail "raft: unanswered cluster/status accepted"; fi
+fi
+
+rm -rf "$TMP/dbdir"
+mkdir -p "$TMP/dbdir"
+ensure_db true
+if [ "$RC" = 0 ]; then pass "recreate-db: an empty DB directory is already what it wants"; else fail "recreate-db: empty directory rc=$RC out=$OUT"; fi
+
+# A server that outlives its unit must be killed by a pattern anchored on the
+# OVN database directory. Matching ovsdb-server alone would reap the OVS
+# conf.db server, which runs the switch.
+db_fixture clustered
+printf '#!/bin/sh\nexit 0\n' >"$TMP/bin/pgrep"
+: >"$TMP/pkill.log"
+ensure_db true
+if grep -q -- "$TMP/dbdir/ovn" "$TMP/pkill.log" 2>/dev/null; then
+    pass "recreate-db: a surviving server is killed by a pattern scoped to the OVN database directory"
+else
+    fail "recreate-db: pkill was called as [$(cat "$TMP/pkill.log" 2>/dev/null)]"
+fi
+if [ "$RC" != 0 ] && [ -e "$TMP/dbdir/ovnnb_db.db" ]; then
+    pass "recreate-db: a server that survives SIGKILL fails the run rather than unlinking under it"
+else
+    fail "recreate-db: unkillable server gave rc=$RC and left [$(ls -A "$TMP/dbdir")]"
+fi
+printf '#!/bin/sh\nexit 1\n' >"$TMP/bin/pgrep"
+
+# A rerun restarts this node's members, which can hand the leadership to a
+# peer, so the create node's set-connection must still land as a follower.
+for fn in db_clients set_client_connections; do
+    awk -v f="$fn() {" '$0 == f { on = 1 } on { print } on && $0 == "}" { exit }' "$SETUP" >>"$TMP/conn_fn.sh"
+done
+mkdir -p "$TMP/followerbin"
+for ctl in ovn-nbctl ovn-sbctl; do
+    cat >"$TMP/followerbin/$ctl" <<EOF
+#!/bin/sh
+case " \$* " in
+    *" --no-leader-only "*) echo "$ctl \$*" >>"$TMP/conn.log" ;;
+    *) echo "$ctl: unix:/var/run/ovn/db.sock: database connection failed ()" >&2; exit 1 ;;
+esac
+EOF
+    chmod +x "$TMP/followerbin/$ctl"
+done
+: >"$TMP/conn.log"
+RC=0
+PATH="$TMP/followerbin:$PATH" bash -c 'set -e; sudo() { "$@"; }; DB_CLUSTER_LOCAL_ADDR=10.0.0.1; . "$1"
+    db_clients; set_client_connections' _ "$TMP/conn_fn.sh" >/dev/null 2>&1 || RC=$?
+if [ "$RC" = 0 ] && [ "$(cat "$TMP/conn.log")" = "ovn-nbctl --db=tcp:10.0.0.1:6641 --no-leader-only set-connection ptcp:6641:127.0.0.1
+ovn-sbctl --db=tcp:10.0.0.1:6642 --no-leader-only set-connection ptcp:6642:127.0.0.1" ]; then
+    pass "connections: the create node sets the client listeners while a follower"
+else
+    fail "connections: as a follower rc=$RC calls [$(cat "$TMP/conn.log")]"
+fi
+
 if [ "$fails" -ne 0 ]; then
     echo "  setup-ovn.sh: $fails failure(s)"
     exit 1

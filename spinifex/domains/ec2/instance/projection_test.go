@@ -309,6 +309,29 @@ func TestProjectInstance_EnclaveOptionsAlwaysDisabled(t *testing.T) {
 	assert.False(t, aws.BoolValue(stopped.EnclaveOptions.Enabled))
 }
 
+// TestProjectInstance_EnaSupportAlwaysTrue covers DescribeInstances agreeing
+// with DescribeInstanceAttribute, including for a stored instance that
+// predates the field and one that carries a stale false.
+func TestProjectInstance_EnaSupportAlwaysTrue(t *testing.T) {
+	stale := fullVM(vm.StateRunning)
+	stale.Instance.EnaSupport = aws.Bool(false)
+
+	tests := []struct {
+		name string
+		vm   *vm.VM
+		cfg  InstanceProjection
+	}{
+		{"running", fullVM(vm.StateRunning), runningCfg()},
+		{"stopped", fullVM(vm.StateStopped), stoppedCfg(80, "stopped")},
+		{"stale", stale, runningCfg()},
+	}
+	for _, tt := range tests {
+		got, _ := ProjectInstance(tt.vm, tt.cfg)
+		require.NotNil(t, got.EnaSupport, tt.name)
+		assert.True(t, *got.EnaSupport, tt.name)
+	}
+}
+
 func TestParseInstanceIDFilter(t *testing.T) {
 	tests := []struct {
 		name    string

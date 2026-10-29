@@ -7,6 +7,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -132,12 +133,12 @@ func TestAuthorizeAdminGates(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gw := &GatewayConfig{DisableLogging: true, IAMService: tc.policy}
+			gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: tc.policy})
 			req := httptest.NewRequest(http.MethodPost, "/admin/CreateAccount", nil)
 			ctx := context.WithValue(req.Context(), ctxService, tc.service)
-			ctx = context.WithValue(ctx, ctxAccountID, tc.accountID)
-			ctx = context.WithValue(ctx, ctxIdentity, tc.identity)
-			ctx = context.WithValue(ctx, ctxPrincipalType, tc.principalType)
+			ctx = withPrincipalField(ctx, fieldAccountID, tc.accountID)
+			ctx = withPrincipalField(ctx, fieldIdentity, tc.identity)
+			ctx = withPrincipalField(ctx, fieldPrincipalType, tc.principalType)
 
 			err := gw.authorizeAdmin(req.WithContext(ctx), "CreateAccount")
 			if tc.wantErr == "" {
@@ -154,7 +155,7 @@ func TestAuthorizeAdminGates(t *testing.T) {
 // An unauthenticated request carries no auth context at all, which must not
 // read as a permitted principal.
 func TestAuthorizeAdminDeniesUnauthenticated(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	req := httptest.NewRequest(http.MethodPost, "/admin/CreateAccount", nil)
 
 	err := gw.authorizeAdmin(req, "CreateAccount")
@@ -184,7 +185,7 @@ func decodeAdminError(t *testing.T, rec *httptest.ResponseRecorder) adminErrorBo
 // An unknown method is rejected before authorization, so it never discloses
 // whether the caller would have been permitted.
 func TestAdminRequestUnknownMethod(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 
 	rec := adminRequest(gw, "PurgeEverything", `{}`)
 
@@ -193,7 +194,7 @@ func TestAdminRequestUnknownMethod(t *testing.T) {
 }
 
 func TestAdminRequestDeniesUnauthorizedCaller(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 
 	rec := adminRequest(gw, "CreateAccount", `{}`)
 
@@ -205,7 +206,7 @@ func TestAdminRequestDeniesUnauthorizedCaller(t *testing.T) {
 // The request ID ties a client failure to the gateway log line, so it must be
 // present on the header and in the body even for a denial.
 func TestAdminRequestAlwaysCarriesRequestID(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 
 	rec := adminRequest(gw, "CreateAccount", `{}`)
 
@@ -228,7 +229,7 @@ func TestWriteAdminErrorFallsBackOnUnknownCode(t *testing.T) {
 // The router serves every verb from one pattern, so the handler is what
 // refuses a GET — a second route would shadow the POST one.
 func TestAdminRequestRejectsNonPost(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	req := httptest.NewRequest(http.MethodGet, "/admin/CreateAccount", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("method", "CreateAccount")
@@ -256,9 +257,9 @@ func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *ht
 
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
 	ctx = context.WithValue(ctx, ctxService, "spinifex")
-	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.DefaultAccountID())
-	ctx = context.WithValue(ctx, ctxIdentity, "admin")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.DefaultAccountID())
+	ctx = withPrincipalField(ctx, fieldIdentity, "admin")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 
 	rec := httptest.NewRecorder()
 	gw.Admin_Request(rec, req.WithContext(ctx))
@@ -268,7 +269,7 @@ func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *ht
 // An authorized caller must still get a clear answer when the cluster is not
 // reachable, rather than a panic or a silent success.
 func TestAdminRequestReportsClusterUnavailable(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy()})
 
 	rec := authorizedAdminRequest(gw, `{}`)
 
@@ -278,7 +279,7 @@ func TestAdminRequestReportsClusterUnavailable(t *testing.T) {
 // The credential-minting CLI grants these by name. A method served but absent
 // from the list would be uncallable by every key an operator issues.
 func TestAdminMethodNamesCoverTheRoutedMethods(t *testing.T) {
-	names := AdminMethodNames()
+	names := operatorv1.AdminMethodNames()
 
 	require.Len(t, names, len(adminMethods))
 	assert.True(t, sort.StringsAreSorted(names), "names must be sorted for stable help text")
@@ -287,4 +288,15 @@ func TestAdminMethodNamesCoverTheRoutedMethods(t *testing.T) {
 		assert.True(t, ok, "%s is granted but not routed", name)
 		assert.Equal(t, name, method)
 	}
+}
+
+func TestAdminPathMethod_AcceptsExactlyTheContractList(t *testing.T) {
+	for _, name := range operatorv1.AdminMethodNames() {
+		got, ok := adminPathMethod("/admin/" + name)
+		require.True(t, ok, name)
+		require.Equal(t, name, got)
+	}
+	_, ok := adminPathMethod("/admin/NotInTheContractList")
+	require.False(t, ok)
+	require.Len(t, adminMethods, len(operatorv1.AdminMethodNames()))
 }

@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,14 +34,14 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
-	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
@@ -55,25 +54,10 @@ import (
 type contextKey string
 
 const (
-	ctxIdentity       contextKey = "sigv4.identity"
-	ctxAccountID      contextKey = "sigv4.accountId"
-	ctxService        contextKey = "sigv4.service"
-	ctxRegion         contextKey = "sigv4.region"
-	ctxAccessKey      contextKey = "sigv4.accessKey"
-	ctxAction         contextKey = "sigv4.action"
-	ctxQueryArgs      contextKey = "sigv4.queryArgs"
-	ctxPrincipalType  contextKey = "sigv4.principalType"
-	ctxAssumedRoleARN contextKey = "sigv4.assumedRoleARN"
-	ctxAssumedRoleID  contextKey = "sigv4.assumedRoleID"
-	// ctxUserID carries aws:userid, resolved once by the SigV4 middleware so
-	// every policy check in a request evaluates the same value.
-	ctxUserID contextKey = "sigv4.userID"
-	// ctxUserARN carries an IAM user's stored ARN, path included, from the same read.
-	ctxUserARN contextKey = "sigv4.userARN"
-	// ctxUnderlyingRoleARN carries the IAM role ARN backing an assumed-role session.
-	// Policy enforcement resolves the role name from this, never from ctxIdentity
-	// (attacker-influenced RoleSessionName).
-	ctxUnderlyingRoleARN contextKey = "sigv4.underlyingRoleARN"
+	ctxService   contextKey = "sigv4.service"
+	ctxRegion    contextKey = "sigv4.region"
+	ctxAction    contextKey = "sigv4.action"
+	ctxQueryArgs contextKey = "sigv4.queryArgs"
 
 	// ctxTargetAccount carries the accountID parsed from a registry host
 	// ({accountID}.dkr.ecr.{region}.{suffix}) by the host-routing middleware.
@@ -92,8 +76,8 @@ const (
 	ctxECRPrincipal contextKey = "ecr.principal"
 )
 
-// Values stored under ctxPrincipalType. Downstream handlers that interpret
-// ctxIdentity as an IAM user name MUST gate on principalTypeUser; otherwise a
+// Values of callerPrincipal.principalType. Downstream handlers that interpret
+// callerPrincipal.identity as an IAM user name MUST gate on principalTypeUser; otherwise a
 // session whose SessionName collides with a user name inherits that user's policies.
 const (
 	principalTypeUser        = "user"
@@ -154,6 +138,9 @@ type GatewayConfig struct {
 	// Nil makes DeleteAccount refuse rather than tear down around the data.
 	BucketStore accountteardown.BucketStore
 	STSService  stsdomain.STSService
+
+	// Credentials verifies SigV4 credentials. Nil fails every request closed.
+	Credentials credential.Verifier
 	RateLimiter *authlimit.AuthRateLimiter // Per-IP auth failure rate limiter
 	Throttler   *ratelimit.Throttler       // Per-account+action API request throttler
 	// accountStatus caches which accounts are ACTIVE, so enforcing account
@@ -165,6 +152,9 @@ type GatewayConfig struct {
 	Quota   *quota.Service
 	Version string // Build-time version string (set from cmd.Version)
 	Commit  string // Build-time commit hash (set from cmd.Commit)
+	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil
+	// answers them with a 500 (e.g. in unit tests of unrelated routes).
+	OIDC OIDCPublisher
 	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
 	// to the 501 stub (e.g. in unit tests of unrelated routes).
 	ECRRegistry *ecrregistry.Registry
@@ -235,11 +225,6 @@ type GatewayConfig struct {
 	// connection.
 	BedrockAgentVector ochrevector.VectorService
 
-	// TaggingResources serves Resource Groups Tagging API GetResources over the
-	// owner listers AWSGW wires. Nil fails Tagging_Request with ServerInternal,
-	// the same as an unconfigured gw.NATSConn.
-	TaggingResources *tagging.Aggregator
-
 	// Services holds the signed AWS services dispatched through the
 	// registration seam. Nil means nothing is registered, so every request
 	// falls through to the legacy switch in Request.
@@ -283,37 +268,53 @@ func (gw *GatewayConfig) ValidateServices() error {
 // the shared buildCallerARN helper, so nothing is computed until called.
 func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
 	return func() (dispatch.Actor, error) {
-		ctx := r.Context()
-		accountID, _ := ctx.Value(ctxAccountID).(string)
-		identity, _ := ctx.Value(ctxIdentity).(string)
-		principalType, _ := ctx.Value(ctxPrincipalType).(string)
-		assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
-		userARN, _ := ctx.Value(ctxUserARN).(string)
-		accessKey, _ := ctx.Value(ctxAccessKey).(string)
-
-		callerARN, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN)
+		actor, err := callerActor(r.Context())
 		if err != nil {
 			return dispatch.Actor{}, err
 		}
-		return dispatch.Actor{
-			AccountID:     accountID,
-			CallerARN:     callerARN,
-			PrincipalType: principalType,
-			AccessKeyID:   accessKey,
-		}, nil
+		return actor, nil
 	}
+}
+
+// callerActor is the verified caller as the seam hands it to a service. The
+// actor is fully populated even when err is set: err reports that no caller ARN
+// could be composed, so a reader that needs no ARN may ignore it.
+func callerActor(ctx context.Context) (dispatch.Actor, error) {
+	p, _ := callerPrincipalFrom(ctx)
+	callerARN, err := buildCallerARN(p.accountID, p.identity, p.principalType, p.assumedRoleARN, p.userARN)
+	actor := dispatch.Actor{
+		AccountID:     p.accountID,
+		CallerARN:     callerARN,
+		PrincipalType: p.principalType,
+		AccessKeyID:   p.accessKeyID,
+		UserID:        p.userID,
+	}
+	if p.principalType == principalTypeAssumedRole {
+		actor.PrincipalARN = p.underlyingRoleARN
+		actor.SessionName = p.identity
+	} else {
+		actor.PrincipalARN = callerARN
+		actor.UserName = p.identity
+	}
+	return actor, err
+}
+
+// actorName is the name the caller goes by: the session name for a role
+// session and the user name for every other principal.
+func actorName(a dispatch.Actor) string {
+	if a.PrincipalType == principalTypeAssumedRole {
+		return a.SessionName
+	}
+	return a.UserName
 }
 
 var supportedServices = map[string]bool{
 	"ec2":                   true,
 	"iam":                   true,
 	"sts":                   true,
-	"elasticloadbalancing":  true,
 	"eks":                   true,
 	"ecs":                   true,
 	"rds":                   true,
-	"tagging":               true,
-	"spinifex":              true,
 	"bedrock":               true,
 	"bedrock-runtime":       true,
 	"bedrock-agent":         true,
@@ -391,8 +392,8 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 	return []ratelimit.KeyFunc{
 		func(r *http.Request) (string, error) {
-			acct, ok := r.Context().Value(ctxAccountID).(string)
-			if !ok || acct == "" {
+			acct := callerPrincipalOf(r).accountID
+			if acct == "" {
 				return "", fmt.Errorf("account-id missing from request context")
 			}
 			return acct, nil
@@ -412,7 +413,7 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 // XML body to these clients is an unparseable "<?xml…" deserialization error.
 func jsonErrorService(svc string) bool {
 	switch svc {
-	case "eks", "ecs", "tagging",
+	case "eks", "ecs",
 		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime":
 		return true
 	}
@@ -531,8 +532,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 			err = gw.IAM_Request(w, r)
 		case "sts":
 			err = gw.STS_Request(w, r)
-		case "elasticloadbalancing":
-			err = gw.ELBv2_Request(w, r)
 		case "eks":
 			err = gw.EKS_Request(w, r)
 		case "bedrock":
@@ -547,10 +546,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 			err = gw.ECS_Request(w, r)
 		case "rds":
 			err = gw.RDS_Request(w, r)
-		case "tagging":
-			err = gw.Tagging_Request(w, r)
-		case "spinifex":
-			err = gw.Spinifex_Request(w, r)
 		default:
 			err = errors.New(awserrors.ErrorUnsupportedOperation)
 		}
@@ -570,7 +565,7 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 func (gw *GatewayConfig) dispatchRegistered(entry *dispatch.Entry, w http.ResponseWriter, r *http.Request) error {
 	return entry.Dispatch(w, dispatch.Invocation{
 		Request:   r,
-		AccountID: mustCtxString(r, ctxAccountID),
+		AccountID: callerPrincipalOf(r).accountID,
 		Region:    gw.Region,
 		Authorize: func(service, action string, resources []string, keys iampolicy.ConditionKeys) error {
 			return gw.checkPolicyResourcesWithKeys(r, service, action, resources, keys)
@@ -682,37 +677,22 @@ func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, 
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	identityVal := r.Context().Value(ctxIdentity)
-	if identityVal == nil {
+	caller, authenticated := callerPrincipalFrom(r.Context())
+	if !authenticated {
 		slog.Warn("checkPolicy: request carries no auth context", "service", service, "action", action)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
-	identity, ok := identityVal.(string)
-	if !ok {
-		slog.Error("checkPolicy: identity has unexpected type", "type", fmt.Sprintf("%T", identityVal))
-		return errors.New(awserrors.ErrorInternalError)
-	}
-	if identity == "" {
+	if caller.identity == "" {
 		slog.Warn("checkPolicy: authenticated request carries no identity name",
 			"service", service, "action", action)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
-	if accountID == "" {
-		slog.Error("checkPolicy: no account ID in auth context", "user", identity)
+	if caller.accountID == "" {
+		slog.Error("checkPolicy: no account ID in auth context", "user", caller.identity)
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	principal := principalContext{
-		identity:          identity,
-		accountID:         accountID,
-		principalType:     mustCtxString(r, ctxPrincipalType),
-		assumedRoleARN:    mustCtxString(r, ctxAssumedRoleARN),
-		assumedRoleID:     mustCtxString(r, ctxAssumedRoleID),
-		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
-		userID:            mustCtxString(r, ctxUserID),
-		userARN:           mustCtxString(r, ctxUserARN),
-	}
+	principal := caller.policyPrincipal()
 	keys := requestConditionKeys(r, principal)
 	maps.Copy(keys, actionKeys)
 	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources, keys)
@@ -775,46 +755,6 @@ func principalTypeCondition(principalType string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-// principalUser resolves aws:userid: an IAM user's unique ID, the role ID and
-// session name STS minted for a role session, or the account ID for root. Both
-// halves of a session's ID come from the resolved role, so unlike aws:username
-// it is not caller-chosen. An IAM user's stored ARN comes from the same read.
-//
-// A principal with no ID on record returns empty and the door omits the key. A
-// dependency fault returns InternalError instead: authorizing against a context
-// missing the key silently narrows an Allow and widens a Deny.
-func (gw *GatewayConfig) principalUser(principal principalContext) (userID, userARN string, err error) {
-	if principal.identity == "" || principal.accountID == "" {
-		return "", "", nil
-	}
-	userID, userARN, err = stsawsapi.ResolveCallerUser(principal.accountID, principal.principalType,
-		principal.identity, principal.assumedRoleID, gw.IAMService)
-	switch {
-	case err == nil:
-		if userID == "" {
-			slog.Warn("aws:userid unavailable: principal record carries no user ID",
-				"accountID", principal.accountID, "identity", principal.identity,
-				"principalType", principal.principalType)
-		}
-		return userID, userARN, nil
-	case strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity):
-		slog.Warn("aws:userid unavailable: no such IAM user",
-			"accountID", principal.accountID, "user", principal.identity)
-		return "", "", nil
-	default:
-		slog.Error("aws:userid: IAM dependency fault, refusing to authorize on a degraded context",
-			"accountID", principal.accountID, "identity", principal.identity, "err", err)
-		return "", "", errors.New(awserrors.ErrorInternalError)
-	}
-}
-
-// mustCtxString reads a string context value, defaulting to "" for an absent
-// or wrong-typed key rather than panicking.
-func mustCtxString(r *http.Request, key contextKey) string {
-	v, _ := r.Context().Value(key).(string)
-	return v
 }
 
 // policyResolveRetryBase scales the backoff between policy-resolve attempts
@@ -999,20 +939,8 @@ func readQueryArgs(r *http.Request) (map[string]string, error) {
 
 // ParseAWSQueryArgs parses an AWS query-protocol body. Returns an error on
 // invalid percent-encoding so callers can surface MalformedQueryString.
-func ParseAWSQueryArgs(query string) (map[string]string, error) {
-	values, err := url.ParseQuery(query)
-	if err != nil {
-		return nil, fmt.Errorf("invalid AWS query string: %w", err)
-	}
-
-	params := make(map[string]string, len(values))
-	for key, vs := range values {
-		// The query protocol indexes repeated parameters (Filter.1.Value.1), so a
-		// bare duplicate key only arrives from a non-conforming client. Take the
-		// last occurrence.
-		params[key] = vs[len(vs)-1]
-	}
-	return params, nil
+func ParseAWSQueryArgs(body string) (map[string]string, error) {
+	return query.ParseArgs(body)
 }
 
 // xmlErrorBody renders an error in the XML envelope svc's clients expect. The
@@ -1143,7 +1071,7 @@ func traceActionEnricher(next http.Handler) http.Handler {
 		recordResolvedAction(ctx, svc, action)
 
 		span := trace.SpanFromContext(ctx)
-		if acct, _ := ctx.Value(ctxAccountID).(string); acct != "" {
+		if acct := callerPrincipalOf(r).accountID; acct != "" {
 			span.SetAttributes(attribute.String("aws.account_id", acct))
 		}
 		if region, _ := ctx.Value(ctxRegion).(string); region != "" {

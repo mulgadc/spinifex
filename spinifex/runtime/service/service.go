@@ -13,7 +13,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifex"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/sqsstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/viperblockd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/vpcd"
 )
@@ -26,7 +25,6 @@ type Service interface {
 
 var (
 	_ Service = (*nats.Service)(nil)
-	_ Service = (*sqsstore.Service)(nil)
 	_ Service = (*northstar.Service)(nil)
 	_ Service = (*predastore.Service)(nil)
 	_ Service = (*viperblockd.Service)(nil)
@@ -44,9 +42,6 @@ func New(btype string, config any) (Service, error) {
 	switch btype {
 	case "nats":
 		return nats.New(config)
-
-	case "sqs-store":
-		return sqsstore.New(config)
 
 	case "northstar":
 		return northstar.New(config)

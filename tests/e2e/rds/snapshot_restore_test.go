@@ -319,7 +319,7 @@ func restoreFromSnapshot(t *testing.T, f *Fixture, id, snapshotID string,
 		opt(in)
 	}
 	markDBCreateStarted(id)
-	out, err := f.AWS.RDS.RestoreDBInstanceFromDBSnapshot(in) //nolint:staticcheck // e2e:allow-create — the restored instance under test
+	out, err := f.AWS.RDS.RestoreDBInstanceFromDBSnapshot(in) //nolint:staticcheck // The restored instance under test.
 	require.NoError(t, err, "restore-db-instance-from-db-snapshot %s", id)
 	require.NotNil(t, out.DBInstance)
 	t.Cleanup(func() { deleteInstance(t, f, id) })

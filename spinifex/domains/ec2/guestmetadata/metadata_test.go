@@ -159,6 +159,7 @@ func newTestService(res eniResolver, fIAM profileLookup, assumer stsAssumer) (*I
 		roleMiss:       newRoleMissLogger(func() time.Time { return now }),
 		pubKeys:        &fakePublicKeys{},
 		now:            func() time.Time { return now },
+		region:         "ap-southeast-2",
 		baseDomain:     "spx3.net",
 		servicesDomain: testServicesDomain,
 	}, now
@@ -511,6 +512,43 @@ func TestHTTP_ServicesDomainEmpty404(t *testing.T) {
 	rec := get(t, h, prefixMetaData+"services/domain", token)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	assert.NotContains(t, rec.Body.String(), "amazonaws.com")
+}
+
+// The region comes from the node's configuration, not the zone name, so a zone
+// named <region>-azN (no trailing letter) still reports the bare region.
+func TestHTTP_RegionFromNodeNotZoneName(t *testing.T) {
+	for _, az := range []string{"us-west-1a", "us-west-1-az2"} {
+		t.Run(az, func(t *testing.T) {
+			eni := testENI()
+			eni.availabilityZone = az
+			res := &fakeResolver{eni: eni, inst: &instanceFacts{instanceType: "t3.micro", imageID: "ami-12345"}}
+			svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+			svc.region = "us-west-1"
+			h := withTapENI(svc.httpHandler(), eni)
+			token := issueToken(t, h)
+
+			for path, want := range map[string]string{
+				prefixMetaData + "placement/availability-zone": az,
+				prefixMetaData + "placement/region":            "us-west-1",
+				prefixMetaData + "hostname":                    "ip-10-0-1-5.us-west-1.compute.internal",
+				prefixMetaData + "local-hostname":              "ip-10-0-1-5.us-west-1.compute.internal",
+				prefixMetaData + "public-hostname":             "ec2-203-0-113-7.us-west-1.compute.spx3.net",
+				macPath(eni.mac, "local-hostname"):             "ip-10-0-1-5.us-west-1.compute.internal",
+				macPath(eni.mac, "public-hostname"):            "ec2-203-0-113-7.us-west-1.compute.spx3.net",
+			} {
+				rec := get(t, h, path, token)
+				assert.Equal(t, http.StatusOK, rec.Code, "path=%s", path)
+				assert.Equal(t, want, rec.Body.String(), "path=%s", path)
+			}
+
+			rec := get(t, h, pathIdentityDocument, token)
+			require.Equal(t, http.StatusOK, rec.Code)
+			var doc map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+			assert.Equal(t, "us-west-1", doc["region"])
+			assert.Equal(t, az, doc["availabilityZone"])
+		})
+	}
 }
 
 // An instance with no public IP has no public hostname or public IPv4: both leaves

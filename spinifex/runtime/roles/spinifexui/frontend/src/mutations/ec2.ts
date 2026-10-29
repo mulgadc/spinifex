@@ -1668,6 +1668,143 @@ async function associateWizardSubnets(
   )
 }
 
+// Mutable so the caller's failure report names the step that threw.
+interface WizardStep {
+  current: string
+}
+
+async function wireWizardPublicTier(
+  ctx: WizardContext,
+  step: WizardStep,
+  publicSubnetIds: string[],
+): Promise<void> {
+  step.current = "creating internet gateway"
+  const igwName = ctx.prefix ? `${ctx.prefix}-igw` : undefined
+
+  const igwResult = await ctx.client.send(
+    new CreateInternetGatewayCommand({
+      TagSpecifications: buildTagSpec(
+        ResourceType.internet_gateway,
+        igwName,
+        ctx.extraTags,
+      ),
+    }),
+  )
+
+  const igwId = igwResult.InternetGateway?.InternetGatewayId
+
+  if (!igwId) {
+    throw new Error("Internet gateway was created but no ID was returned")
+  }
+
+  ctx.created.push({ type: "Internet Gateway", id: igwId })
+
+  step.current = "attaching internet gateway to VPC"
+  await ctx.client.send(
+    new AttachInternetGatewayCommand({
+      InternetGatewayId: igwId,
+      VpcId: ctx.vpcId,
+    }),
+  )
+
+  step.current = "creating public route table"
+  const pubRtbId = await createWizardRouteTable(ctx, "Public")
+
+  step.current = "creating default route to internet gateway"
+  await ctx.client.send(
+    new CreateRouteCommand({
+      RouteTableId: pubRtbId,
+      DestinationCidrBlock: "0.0.0.0/0",
+      GatewayId: igwId,
+    }),
+  )
+
+  step.current = "associating public subnets with route table"
+  await associateWizardSubnets(ctx, pubRtbId, publicSubnetIds)
+}
+
+// natSubnetId is set only when a NAT gateway was requested and a public
+// subnet exists to host it.
+async function wireWizardPrivateTier(
+  ctx: WizardContext,
+  step: WizardStep,
+  privateSubnetIds: string[],
+  natSubnetId: string | undefined,
+): Promise<void> {
+  step.current = "creating private route table"
+  const privRtbId = await createWizardRouteTable(ctx, "Private")
+
+  step.current = "associating private subnets with route table"
+  await associateWizardSubnets(ctx, privRtbId, privateSubnetIds)
+
+  if (natSubnetId) {
+    await createWizardNatRoute(ctx, step, privRtbId, natSubnetId)
+  }
+}
+
+// NAT gateway for private egress: an Elastic IP plus a NAT gateway in a
+// public subnet, then private 0.0.0.0/0 routes to it.
+async function createWizardNatRoute(
+  ctx: WizardContext,
+  step: WizardStep,
+  privRtbId: string,
+  natSubnetId: string,
+): Promise<void> {
+  step.current = "allocating Elastic IP for NAT gateway"
+
+  const eipResult = await ctx.client.send(
+    new AllocateAddressCommand({
+      Domain: "vpc",
+      TagSpecifications: buildTagSpec(
+        ResourceType.elastic_ip,
+        ctx.prefix ? `${ctx.prefix}-eip-nat` : undefined,
+        ctx.extraTags,
+      ),
+    }),
+  )
+
+  const allocationId = eipResult.AllocationId
+
+  if (!allocationId) {
+    throw new Error(
+      "Elastic IP was allocated but no allocation ID was returned",
+    )
+  }
+
+  ctx.created.push({ type: "Elastic IP", id: allocationId })
+
+  step.current = "creating NAT gateway"
+
+  const natResult = await ctx.client.send(
+    new CreateNatGatewayCommand({
+      SubnetId: natSubnetId,
+      AllocationId: allocationId,
+      TagSpecifications: buildTagSpec(
+        ResourceType.natgateway,
+        ctx.prefix ? `${ctx.prefix}-nat` : undefined,
+        ctx.extraTags,
+      ),
+    }),
+  )
+
+  const natGatewayId = natResult.NatGateway?.NatGatewayId
+
+  if (!natGatewayId) {
+    throw new Error("NAT gateway was created but no ID was returned")
+  }
+
+  ctx.created.push({ type: "NAT Gateway", id: natGatewayId })
+
+  step.current = "creating default route to NAT gateway"
+  await ctx.client.send(
+    new CreateRouteCommand({
+      RouteTableId: privRtbId,
+      DestinationCidrBlock: "0.0.0.0/0",
+      NatGatewayId: natGatewayId,
+    }),
+  )
+}
+
 export function useCreateVpcWizard() {
   const queryClient = useQueryClient()
 
@@ -1681,7 +1818,7 @@ export function useCreateVpcWizard() {
 
       const extraTags = toSdkTags(params.tags) ?? []
 
-      let currentStep = "creating VPC"
+      const step: WizardStep = { current: "creating VPC" }
 
       try {
         // Create VPC
@@ -1725,7 +1862,7 @@ export function useCreateVpcWizard() {
 
         const ctx: WizardContext = { client, vpcId, prefix, extraTags, created }
 
-        currentStep = "creating public subnets"
+        step.current = "creating public subnets"
 
         const publicSubnetIds = await createWizardSubnets(
           ctx,
@@ -1733,7 +1870,7 @@ export function useCreateVpcWizard() {
           plan.publicSubnets,
         )
 
-        currentStep = "creating private subnets"
+        step.current = "creating private subnets"
 
         const privateSubnetIds = await createWizardSubnets(
           ctx,
@@ -1741,120 +1878,17 @@ export function useCreateVpcWizard() {
           plan.privateSubnets,
         )
 
-        // Create and attach internet gateway (if public subnets > 0)
         if (params.publicSubnetCount > 0) {
-          currentStep = "creating internet gateway"
-          const igwName = prefix ? `${prefix}-igw` : undefined
-
-          const igwResult = await client.send(
-            new CreateInternetGatewayCommand({
-              TagSpecifications: buildTagSpec(
-                ResourceType.internet_gateway,
-                igwName,
-                extraTags,
-              ),
-            }),
-          )
-
-          const igwId = igwResult.InternetGateway?.InternetGatewayId
-
-          if (!igwId) {
-            throw new Error(
-              "Internet gateway was created but no ID was returned",
-            )
-          }
-
-          created.push({ type: "Internet Gateway", id: igwId })
-
-          // Attach IGW to VPC
-          currentStep = "attaching internet gateway to VPC"
-          await client.send(
-            new AttachInternetGatewayCommand({
-              InternetGatewayId: igwId,
-              VpcId: vpcId,
-            }),
-          )
-
-          currentStep = "creating public route table"
-          const pubRtbId = await createWizardRouteTable(ctx, "Public")
-
-          currentStep = "creating default route to internet gateway"
-          await client.send(
-            new CreateRouteCommand({
-              RouteTableId: pubRtbId,
-              DestinationCidrBlock: "0.0.0.0/0",
-              GatewayId: igwId,
-            }),
-          )
-
-          currentStep = "associating public subnets with route table"
-          await associateWizardSubnets(ctx, pubRtbId, publicSubnetIds)
+          await wireWizardPublicTier(ctx, step, publicSubnetIds)
         }
 
         if (params.privateSubnetCount > 0) {
-          currentStep = "creating private route table"
-          const privRtbId = await createWizardRouteTable(ctx, "Private")
-
-          currentStep = "associating private subnets with route table"
-          await associateWizardSubnets(ctx, privRtbId, privateSubnetIds)
-
-          // NAT gateway for private egress (optional). Needs a public
-          // subnet to live in and an Elastic IP; routes private 0.0.0.0/0 to it.
-          if (params.natGateway === "single" && publicSubnetIds[0]) {
-            currentStep = "allocating Elastic IP for NAT gateway"
-
-            const eipResult = await client.send(
-              new AllocateAddressCommand({
-                Domain: "vpc",
-                TagSpecifications: buildTagSpec(
-                  ResourceType.elastic_ip,
-                  prefix ? `${prefix}-eip-nat` : undefined,
-                  extraTags,
-                ),
-              }),
-            )
-
-            const allocationId = eipResult.AllocationId
-
-            if (!allocationId) {
-              throw new Error(
-                "Elastic IP was allocated but no allocation ID was returned",
-              )
-            }
-
-            created.push({ type: "Elastic IP", id: allocationId })
-
-            currentStep = "creating NAT gateway"
-
-            const natResult = await client.send(
-              new CreateNatGatewayCommand({
-                SubnetId: publicSubnetIds[0],
-                AllocationId: allocationId,
-                TagSpecifications: buildTagSpec(
-                  ResourceType.natgateway,
-                  prefix ? `${prefix}-nat` : undefined,
-                  extraTags,
-                ),
-              }),
-            )
-
-            const natGatewayId = natResult.NatGateway?.NatGatewayId
-
-            if (!natGatewayId) {
-              throw new Error("NAT gateway was created but no ID was returned")
-            }
-
-            created.push({ type: "NAT Gateway", id: natGatewayId })
-
-            currentStep = "creating default route to NAT gateway"
-            await client.send(
-              new CreateRouteCommand({
-                RouteTableId: privRtbId,
-                DestinationCidrBlock: "0.0.0.0/0",
-                NatGatewayId: natGatewayId,
-              }),
-            )
-          }
+          await wireWizardPrivateTier(
+            ctx,
+            step,
+            privateSubnetIds,
+            params.natGateway === "single" ? publicSubnetIds[0] : undefined,
+          )
         }
 
         return { vpcId, created }
@@ -1863,7 +1897,7 @@ export function useCreateVpcWizard() {
           vpcId: created.find((r) => r.type === "VPC")?.id,
           created,
           error: error instanceof Error ? error : new Error(String(error)),
-          failedStep: `Failed while ${currentStep}`,
+          failedStep: `Failed while ${step.current}`,
         }
       }
     },

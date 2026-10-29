@@ -42,7 +42,7 @@ const (
 	sourceActionTargetGroups
 )
 
-// Every action ELBv2_Request serves, with the resources AWS evaluates it
+// Every action the ELBv2 registration serves, with the resources AWS evaluates it
 // against. Exhaustive by contract: a completeness test compares this table with
 // the dispatch table in both directions, so an action cannot be added with a
 // silent account-wide grant.

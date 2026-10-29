@@ -6,15 +6,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
+	"github.com/stretchr/testify/require"
 )
 
-// runIPSec verifies OVN native IPsec is live on every node: OVS DB carries cert/key/CA
-// pointers, xfrm shows AES-GCM SAs, and ESP traffic is observed (best-effort tcpdump).
+// runIPSec verifies OVN native IPsec is live: every node carries cert/key/CA pointers
+// and AES-GCM SAs, and guest traffic between two nodes leaves each as ESP only.
 // Skips only when the node config disables IPsec; a cluster that asked for it fails.
 func runIPSec(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — OVN Native IPsec")
@@ -85,24 +88,7 @@ func runIPSec(t *testing.T, fix *Fixture) {
 		return nil
 	}, 90*time.Second, 5*time.Second)
 
-	harness.Step(t, "tcpdump ESP traffic on underlay (best-effort)")
-	for _, n := range fix.Cluster.Nodes {
-		c, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		raw, err := ssh.Run(c, n.Addr,
-			"sudo timeout 5 tcpdump -i any -nn -c 5 'ip proto 50' 2>&1 || true",
-		)
-		cancel()
-		if err != nil {
-			t.Logf("WARN: %s tcpdump ESP capture failed: %v", n.Name, err)
-			continue
-		}
-		s := strings.TrimSpace(string(raw))
-		if strings.Contains(s, "ESP") {
-			harness.Detail(t, "node", n.Name, "esp_capture", "observed")
-		} else {
-			t.Logf("WARN: %s tcpdump saw no ESP traffic in 5s window (geneve may be idle):\n%s", n.Name, s)
-		}
-	}
+	assertGuestTrafficEncrypted(t, fix, ssh)
 }
 
 // nodeConfigPath is the daemon config the cluster is provisioned with.
@@ -189,4 +175,291 @@ func readNBGlobalIPSec(t *testing.T, ssh *harness.PeerSSH, n harness.Node) (stri
 		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(raw)))
 	}
 	return strings.Trim(strings.TrimSpace(string(raw)), `"`), nil
+}
+
+// Guest traffic sent in each direction of the pair during the capture window.
+// Each ping's ICMP payload alone is a lower bound on the bytes its SA carries.
+const (
+	ipsecPingCount     = 200
+	ipsecPingSize      = 1000
+	ipsecCaptureWindow = 30 * time.Second
+)
+
+// ipsecLeg is one direction of the pair: what self sends towards peer's tunnel
+// endpoint, through the interface that routes there.
+type ipsecLeg struct {
+	self, peer           harness.Node
+	selfEncap, peerEncap string
+	dev                  string
+}
+
+func (l ipsecLeg) String() string {
+	return fmt.Sprintf("%s (%s) -> %s (%s)", l.self.Name, l.selfEncap, l.peer.Name, l.peerEncap)
+}
+
+// assertGuestTrafficEncrypted drives guest pings across a distinct-node pair and
+// fails unless, in each direction, the outbound SA counters rose by the payload,
+// the underlay carried ESP, and no plaintext Geneve left for the peer.
+func assertGuestTrafficEncrypted(t *testing.T, fix *Fixture, ssh *harness.PeerSSH) {
+	harness.Step(t, "cross-node guest traffic leaves each node of the pair as ESP, never plaintext Geneve")
+
+	pair := launchCrossNodePair(t, fix, "ipsec-runnersg")
+	srcEncap := readEncapIP(t, ssh, pair.src.node)
+	dstEncap := readEncapIP(t, ssh, pair.dst.node)
+	legs := []ipsecLeg{
+		{self: pair.src.node, peer: pair.dst.node, selfEncap: srcEncap, peerEncap: dstEncap},
+		{self: pair.dst.node, peer: pair.src.node, selfEncap: dstEncap, peerEncap: srcEncap},
+	}
+	for i := range legs {
+		legs[i].dev = routeDevTo(t, ssh, legs[i].self, legs[i].peerEncap)
+		harness.Detail(t, "leg", legs[i].String(), "dev", legs[i].dev)
+	}
+
+	// Converge first so the measured window is not spent on address-set
+	// propagation, which would read as packet loss rather than as plaintext.
+	out, converged, attempts, _ := pingConvergedCrossHost(pair.keyPath, pair.sshHost, pair.sshPort,
+		pair.dstPrivateIP, sameSGPingTimeout, nil)
+	require.Truef(t, converged, "cross-host ping %s -> %s never converged within %s (%d attempts)\n%s",
+		pair.src.id, pair.dst.id, sameSGPingTimeout, attempts, out)
+
+	before := make([]map[string]saCounters, len(legs))
+	for i, l := range legs {
+		before[i] = readOutboundSAs(t, ssh, l)
+	}
+
+	captures := make([]capture, len(legs))
+	var wg sync.WaitGroup
+	for i, l := range legs {
+		captures[i].done = make(chan struct{})
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(captures[i].done)
+			captures[i].out, captures[i].err = captureOutbound(ssh, l)
+		}()
+	}
+	waitForCaptures(t, ssh, legs, captures)
+
+	pingCmd := fmt.Sprintf("sudo -n ping -q -c %d -i 0.02 -s %d -W 2 %s", ipsecPingCount, ipsecPingSize, pair.dstPrivateIP)
+	pingOut, pingErr := sshCapture(pair.keyPath, "ubuntu", pair.sshHost, pair.sshPort, pingCmd)
+	wg.Wait()
+	if pingErr != nil {
+		t.Errorf("guest ping %s -> %s during capture: %v\n%s", pair.src.id, pair.dstPrivateIP, pingErr, pingOut)
+	}
+	harness.Detail(t, "guest_ping", strings.TrimSpace(pingOut))
+
+	payload := uint64(ipsecPingCount * ipsecPingSize)
+	for i, l := range legs {
+		after := readOutboundSAs(t, ssh, l)
+		bytes, packets := saDelta(before[i], after)
+		if captures[i].err != nil {
+			t.Errorf("%s: outbound capture on %s failed: %v", l, l.dev, captures[i].err)
+			continue
+		}
+		c := classifyUnderlay(captures[i].out)
+		harness.Detail(t, "leg", l.String(), "sa_bytes_delta", bytes, "sa_packets_delta", packets,
+			"esp_packets", c.esp, "geneve_packets", c.geneve, "other_packets", c.other)
+
+		if bytes < payload {
+			t.Errorf("%s: outbound SA bytes rose by %d during the window, under the %d bytes of guest payload sent — guest traffic bypassed the SA",
+				l, bytes, payload)
+		}
+		if c.esp == 0 {
+			t.Errorf("%s: no outbound ESP or UDP/4500 ESP on %s during guest traffic\n%s", l, l.dev, captures[i].out)
+		}
+		if c.geneve > 0 {
+			t.Errorf("%s: %d plaintext Geneve (UDP/6081) packets left %s for the peer — guest traffic is unencrypted on the underlay\n%s",
+				l, c.geneve, l.dev, captures[i].out)
+		}
+	}
+}
+
+// readEncapIP returns the node's Geneve tunnel endpoint, which is also the
+// address its IPsec SAs are keyed on.
+func readEncapIP(t *testing.T, ssh *harness.PeerSSH, n harness.Node) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	raw, err := ssh.Run(ctx, n.Addr, "sudo ovs-vsctl get Open_vSwitch . external_ids:ovn-encap-ip")
+	if err != nil {
+		t.Fatalf("%s read ovn-encap-ip: %v", n.Name, err)
+	}
+	ip := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+	if net.ParseIP(ip) == nil {
+		t.Fatalf("%s ovn-encap-ip %q is not an IP address", n.Name, ip)
+	}
+	return ip
+}
+
+// routeDevTo returns the interface self routes peerIP through, where outbound
+// ESP is emitted and where plaintext Geneve would be if the SA were bypassed.
+func routeDevTo(t *testing.T, ssh *harness.PeerSSH, self harness.Node, peerIP string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	raw, err := ssh.Run(ctx, self.Addr, "ip route get "+peerIP)
+	if err != nil {
+		t.Fatalf("%s ip route get %s: %v", self.Name, peerIP, err)
+	}
+	dev, ok := routeDev(string(raw))
+	if !ok {
+		t.Fatalf("%s ip route get %s names no device:\n%s", self.Name, peerIP, raw)
+	}
+	return dev
+}
+
+// routeDev extracts the device from `ip route get` output.
+func routeDev(out string) (string, bool) {
+	f := strings.Fields(out)
+	for i := 0; i+1 < len(f); i++ {
+		if f[i] == "dev" {
+			return f[i+1], true
+		}
+	}
+	return "", false
+}
+
+// saCounters is the "lifetime current" usage of one SA.
+type saCounters struct {
+	bytes, packets uint64
+}
+
+// readOutboundSAs returns the ESP SAs from self to peer, keyed by SPI.
+func readOutboundSAs(t *testing.T, ssh *harness.PeerSSH, l ipsecLeg) map[string]saCounters {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	raw, err := ssh.Run(ctx, l.self.Addr,
+		fmt.Sprintf("sudo ip -s xfrm state list src %s dst %s proto esp", l.selfEncap, l.peerEncap))
+	if err != nil {
+		t.Fatalf("%s: ip -s xfrm state: %v", l, err)
+	}
+	sas, err := parseXfrmCounters(string(raw))
+	if err != nil {
+		t.Fatalf("%s: %v\n%s", l, err, raw)
+	}
+	if len(sas) == 0 {
+		t.Fatalf("%s: no outbound ESP SA to the peer's tunnel endpoint", l)
+	}
+	return sas
+}
+
+// parseXfrmCounters reads `ip -s xfrm state` output into per-SPI usage counters.
+func parseXfrmCounters(out string) (map[string]saCounters, error) {
+	sas := map[string]saCounters{}
+	spi := ""
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
+		f := strings.Fields(line)
+		if len(f) >= 4 && f[0] == "proto" && f[2] == "spi" {
+			spi = f[3]
+			continue
+		}
+		if strings.TrimSpace(line) != "lifetime current:" {
+			continue
+		}
+		if spi == "" {
+			return nil, errors.New("xfrm lifetime counters precede any SPI")
+		}
+		if i+1 >= len(lines) {
+			return nil, fmt.Errorf("SA %s: lifetime current has no counter line", spi)
+		}
+		var c saCounters
+		if _, err := fmt.Sscanf(strings.TrimSpace(lines[i+1]), "%d(bytes), %d(packets)", &c.bytes, &c.packets); err != nil {
+			return nil, fmt.Errorf("SA %s: parse counters %q: %w", spi, lines[i+1], err)
+		}
+		sas[spi] = c
+		spi = ""
+	}
+	return sas, nil
+}
+
+// saDelta sums what each SA carried between two snapshots. An SA that appeared
+// in between counts in full and one that expired counts nothing, so a rekey
+// mid-window can only understate the delta, never inflate it.
+func saDelta(before, after map[string]saCounters) (bytes, packets uint64) {
+	for spi, a := range after {
+		b := before[spi]
+		if a.bytes >= b.bytes {
+			bytes += a.bytes - b.bytes
+		}
+		if a.packets >= b.packets {
+			packets += a.packets - b.packets
+		}
+	}
+	return bytes, packets
+}
+
+// captureOutbound runs a fixed-window, outbound-only capture of what self sends
+// the peer's tunnel endpoint. Inbound ESP is decrypted and seen again as Geneve
+// on the same interface, so only outbound packets are evidence.
+func captureOutbound(ssh *harness.PeerSSH, l ipsecLeg) (string, error) {
+	secs := int(ipsecCaptureWindow.Seconds())
+	ctx, cancel := context.WithTimeout(context.Background(), ipsecCaptureWindow+15*time.Second)
+	defer cancel()
+	// timeout(1) exits 124 when the window elapses, which is the normal end.
+	cmd := fmt.Sprintf("sudo timeout %d tcpdump -Q out -t -nn -l -i %s "+
+		"'dst host %s and (ip proto 50 or udp port 4500 or udp port 6081)' 2>&1; "+
+		"rc=$?; [ $rc -eq 124 ] && exit 0; exit $rc",
+		secs, l.dev, l.peerEncap)
+	raw, err := ssh.Run(ctx, l.self.Addr, cmd)
+	return string(raw), err
+}
+
+// capture is one leg's tcpdump output; done closes once out and err are set.
+type capture struct {
+	out  string
+	err  error
+	done chan struct{}
+}
+
+// waitForCaptures returns once tcpdump is running on every leg, so no guest
+// packet goes out before the capture that should see it. The anchored pattern
+// matches tcpdump itself, not the sudo and timeout processes that launch it.
+func waitForCaptures(t *testing.T, ssh *harness.PeerSSH, legs []ipsecLeg, captures []capture) {
+	t.Helper()
+	harness.EventuallyErr(t, func() error {
+		for i, l := range legs {
+			select {
+			case <-captures[i].done:
+				return fmt.Errorf("%s: capture exited before guest traffic: %v\n%s", l, captures[i].err, captures[i].out)
+			default:
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_, err := ssh.Run(ctx, l.self.Addr, "pgrep -f '^tcpdump -Q out .* -i "+l.dev+" '")
+			cancel()
+			if err != nil {
+				return fmt.Errorf("%s: capture not running yet: %w", l, err)
+			}
+		}
+		return nil
+	}, 15*time.Second, 500*time.Millisecond)
+}
+
+// underlayCapture counts captured packets by what they reveal on the wire.
+type underlayCapture struct {
+	esp    int // ESP, raw or UDP-encapsulated
+	geneve int // plaintext Geneve, UDP/6081
+	other  int // anything else the filter admitted, such as IKE on UDP/4500
+}
+
+// classifyUnderlay classifies `tcpdump -t -nn` lines. UDP-encapsulated ESP
+// prints as "UDP-encap: ESP(spi=...)", so one marker covers both encodings.
+func classifyUnderlay(out string) underlayCapture {
+	var c underlayCapture
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 || (f[0] != "IP" && f[0] != "IP6") || f[2] != ">" {
+			continue
+		}
+		switch {
+		case strings.Contains(line, "ESP(spi="):
+			c.esp++
+		case strings.HasSuffix(f[1], ".6081") || strings.HasSuffix(f[3], ".6081:"):
+			c.geneve++
+		default:
+			c.other++
+		}
+	}
+	return c
 }

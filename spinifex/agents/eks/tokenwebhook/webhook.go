@@ -43,6 +43,10 @@ type Config struct {
 	CertPath    string
 	KeyPath     string
 	Kubeconfig  string
+	// ReadyAddr, when set, is a plain-HTTP listener serving only /readyz for
+	// load balancer health checks. APIServerAddr defaults to the local k3s.
+	ReadyAddr     string
+	APIServerAddr string
 }
 
 // Run writes the serving certificate and apiserver kubeconfig, then serves
@@ -63,6 +67,11 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("build gateway client: %w", err)
 	}
 
+	probe, err := newGatewayProbe(cfg.GatewayURL, cfg.GatewayCA, cfg.APIServerAddr)
+	if err != nil {
+		return fmt.Errorf("build readiness probe: %w", err)
+	}
+
 	authr := &authenticator{
 		accountID:   cfg.AccountID,
 		clusterName: cfg.ClusterName,
@@ -74,6 +83,7 @@ func Run(ctx context.Context, cfg Config) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("/readyz", probe.handle)
 	mux.HandleFunc("/authenticate", authr.handle)
 
 	server := &http.Server{
@@ -82,11 +92,37 @@ func Run(ctx context.Context, cfg Config) error {
 		ReadHeaderTimeout: 5 * time.Second,
 		TLSConfig:         serverTLSConfig(tlsCert),
 	}
-	stop := context.AfterFunc(ctx, func() { _ = server.Close() })
+	readyErr := make(chan error, 1)
+	var readySrv *http.Server
+	if cfg.ReadyAddr != "" {
+		readySrv = &http.Server{
+			Addr:              cfg.ReadyAddr,
+			Handler:           readinessHandler(probe),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			if err := readySrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				readyErr <- fmt.Errorf("serve readiness: %w", err)
+				_ = server.Close()
+			}
+		}()
+		defer func() { _ = readySrv.Close() }()
+	}
+	stop := context.AfterFunc(ctx, func() {
+		_ = server.Close()
+		if readySrv != nil {
+			_ = readySrv.Close()
+		}
+	})
 	defer stop()
-	slog.Info("eks-token-webhook listening", "addr", cfg.Addr, "cluster", cfg.ClusterName)
+	slog.Info("eks-token-webhook listening", "addr", cfg.Addr, "ready_addr", cfg.ReadyAddr, "cluster", cfg.ClusterName)
 	if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve: %w", err)
+	}
+	select {
+	case err := <-readyErr:
+		return err
+	default:
 	}
 	return nil
 }
@@ -101,8 +137,8 @@ type tokenReviewRequest struct {
 
 // gatewayReviewer returns the per-call relay: SigV4-POST {accountId,token} to
 // the gateway and decode the resolved identity. A non-2xx / transport error is
-// surfaced (handle() turns it into a 5xx so the apiserver retries) rather than a
-// silent deny, distinguishing "webhook broker down" from "token rejected".
+// surfaced (handle() turns it into a 5xx) rather than a silent deny, which
+// distinguishes "webhook broker down" from "token rejected" in the logs.
 func gatewayReviewer(client *eksgw.Client, clusterName, accountID string) func(string) (ekscluster.WebhookTokenReviewResult, error) {
 	path := "/clusters/" + clusterName + "/token-review"
 	return func(token string) (ekscluster.WebhookTokenReviewResult, error) {
@@ -142,8 +178,8 @@ func (a *authenticator) handle(w http.ResponseWriter, r *http.Request) {
 
 	res, err := a.review(review.Spec.Token)
 	if err != nil {
-		// Broker fault (gateway down, transport error): a 5xx tells the apiserver
-		// to retry rather than treating a transient outage as a hard deny.
+		// Broker fault (gateway down, transport error). The apiserver treats any
+		// webhook error as an authentication failure and does not retry it.
 		slog.Error("TokenReview relay failed", "cluster", a.clusterName, "err", err)
 		http.Error(w, "token review unavailable", http.StatusServiceUnavailable)
 		return

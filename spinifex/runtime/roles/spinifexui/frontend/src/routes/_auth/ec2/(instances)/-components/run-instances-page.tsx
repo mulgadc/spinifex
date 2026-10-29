@@ -1,10 +1,12 @@
-import type { LaunchTemplateVersion } from "@aws-sdk/client-ec2"
+import type {
+  Image,
+  InstanceTypeInfo,
+  LaunchTemplateVersion,
+} from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { ChevronDown } from "lucide-react"
 import {
-  Controller,
   type DeepPartialSkipArrayKey,
   useForm,
   useWatch,
@@ -21,31 +23,11 @@ import {
   type CommandPart,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
-import { GpuInstanceTypeSelect } from "@/components/gpu-instance-type-select"
 import { PageHeading } from "@/components/page-heading"
-import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
 import { Button } from "@/components/ui/button"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldTitle,
-} from "@/components/ui/field"
+import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { isSystemManagedImage } from "@/lib/system-managed"
-import { formatVRAMMiB } from "@/lib/utils"
 import { useCreateInstance } from "@/mutations/ec2"
 import {
   ec2ImagesQueryOptions,
@@ -61,21 +43,23 @@ import {
 import {
   type CreateInstanceFormData,
   type CreateInstanceParams,
-  VOLUME_TYPES,
   createInstanceSchema,
   nextLaunchWizardName,
 } from "@/types/ec2"
 
-const DEFAULT_ROOT_DEVICE_NAME = "/dev/sda1"
-const DEFAULT_VOLUME_TYPE = "gp3"
-const MIN_VOLUME_SIZE_GIB = 1
-const MAX_VOLUME_SIZE_GIB = 16_384
+import {
+  ImageField,
+  InstanceTypeField,
+  KeyPairField,
+  LaunchTemplateFields,
+  PlacementGroupField,
+  RootVolumeFields,
+  SecurityGroupFields,
+  SubnetField,
+} from "./run-instances-fields"
 
-const INBOUND_RULE_CHECKBOXES = [
-  { name: "allowSsh", label: "Allow SSH", text: "Allow SSH (tcp/22)" },
-  { name: "allowHttp", label: "Allow HTTP", text: "Allow HTTP (tcp/80)" },
-  { name: "allowHttps", label: "Allow HTTPS", text: "Allow HTTPS (tcp/443)" },
-] as const
+const DEFAULT_ROOT_DEVICE_NAME = "/dev/sda1"
+const DEFAULT_SG_CIDR = "0.0.0.0/0"
 
 interface RunInstancesPageProps {
   launchTemplateId?: string
@@ -87,61 +71,21 @@ export function RunInstancesPage({
   launchTemplateVersion,
 }: RunInstancesPageProps) {
   const navigate = useNavigate()
-  const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
-  const { data: keyPairsData } = useSuspenseQuery(ec2KeyPairsQueryOptions)
-
-  const { data: instanceTypesData } = useSuspenseQuery(
-    ec2InstanceTypesQueryOptions,
-  )
-
-  const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
-  const { data: pgData } = useSuspenseQuery(ec2PlacementGroupsQueryOptions)
-  const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
-  const { data: sgData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
-  const { data: ltData } = useSuspenseQuery(ec2LaunchTemplatesQueryOptions)
   const createMutation = useCreateInstance()
 
-  const images = (imagesData.Images ?? []).filter(
-    (image) => !isSystemManagedImage(image),
-  )
+  const {
+    images,
+    keyPairs,
+    subnets,
+    placementGroups,
+    securityGroups,
+    launchTemplates,
+    instanceTypes,
+    defaultVpcId,
+  } = useLaunchOptions()
 
-  const keyPairs = keyPairsData.KeyPairs ?? []
-  const subnets = subnetsData.Subnets ?? []
-  const placementGroups = pgData.PlacementGroups ?? []
-  const vpcs = vpcsData.Vpcs ?? []
-  const securityGroups = sgData.SecurityGroups ?? []
-  const launchTemplates = ltData.LaunchTemplates ?? []
-  const defaultVpcId = (vpcs.find((v) => v.IsDefault) ?? vpcs[0])?.VpcId
-
-  const defaultSgName = nextLaunchWizardName(
-    securityGroups.map((sg) => sg.GroupName ?? ""),
-  )
-
-  const instanceTypeCounts: Record<string, number> = {}
-
-  for (const type of instanceTypesData.InstanceTypes ?? []) {
-    const typeName = type.InstanceType
-
-    if (!typeName) {
-      continue
-    }
-
-    instanceTypeCounts[typeName] = (instanceTypeCounts[typeName] ?? 0) + 1
-  }
-
+  const instanceTypeCounts = countInstanceTypes(instanceTypes)
   const uniqueInstanceTypes = Object.keys(instanceTypeCounts).toSorted()
-
-  // Compute default values from loaded data
-  const defaultImageId = images[0]?.ImageId
-  const defaultKeyName = keyPairs[0]?.KeyName
-
-  const defaultInstanceType =
-    uniqueInstanceTypes.find((type) => type.endsWith(".nano")) ??
-    uniqueInstanceTypes[0]
-
-  const defaultRoot = getRootMapping(
-    images.find((img) => img.ImageId === defaultImageId),
-  )
 
   const {
     control,
@@ -150,52 +94,14 @@ export function RunInstancesPage({
     setValue,
     formState: { errors, isSubmitting },
   } = useForm({
-    resolver: zodResolver(
-      createInstanceSchema
-        .refine(
-          (data) =>
-            !data.instanceType ||
-            data.count <= (instanceTypeCounts[data.instanceType] ?? 1),
-          {
-            message: "Cannot exceed available capacity",
-            path: ["count"],
-          },
-        )
-        .superRefine((data, ctx) => {
-          const minSize = getRootMapping(
-            images.find((img) => img.ImageId === data.imageId),
-          ).snapshotSize
-
-          if (
-            data.rootVolumeSize !== undefined &&
-            minSize !== undefined &&
-            data.rootVolumeSize < minSize
-          ) {
-            ctx.addIssue({
-              code: "custom",
-              message: `Volume size must be at least ${minSize} GiB (AMI snapshot size)`,
-              path: ["rootVolumeSize"],
-            })
-          }
-        }),
-    ),
+    resolver: zodResolver(buildRunInstancesSchema(images, instanceTypeCounts)),
     defaultValues: {
-      count: 1,
-      imageId: defaultImageId ?? "",
-      keyName: defaultKeyName ?? "",
-      instanceType: defaultInstanceType ?? "",
+      ...launchDefaults(images, keyPairs[0]?.KeyName, uniqueInstanceTypes),
       launchTemplateId,
       launchTemplateVersion: launchTemplateVersion ?? "$Default",
-      rootDeviceName: defaultRoot.deviceName,
-      securityGroupMode: "create",
-      securityGroupIds: [],
-      newSgName: defaultSgName,
-      newSgDescription: "Created by launch wizard",
-      allowSsh: true,
-      allowHttp: false,
-      allowHttps: false,
-      ruleSource: "anywhere",
-      customCidr: "",
+      newSgName: nextLaunchWizardName(
+        securityGroups.map((sg) => sg.GroupName ?? ""),
+      ),
     },
   })
 
@@ -206,16 +112,6 @@ export function RunInstancesPage({
     ? (instanceTypeCounts[selectedInstanceType] ?? 1)
     : 1
 
-  const selectedTypeInfo = instanceTypesData.InstanceTypes?.find(
-    (t) => t.InstanceType === selectedInstanceType,
-  )
-
-  const selectedGpuDevice = selectedTypeInfo?.GpuInfo?.Gpus?.[0]
-
-  const selectedGpuMigProfile = selectedGpuDevice?.Name?.startsWith("MIG ")
-    ? selectedGpuDevice.Name.slice("MIG ".length)
-    : undefined
-
   const selectedImageId = useWatch({ control, name: "imageId" })
 
   const selectedRoot = getRootMapping(
@@ -223,9 +119,6 @@ export function RunInstancesPage({
   )
 
   const selectedSubnetId = useWatch({ control, name: "subnetId" })
-  const sgMode = useWatch({ control, name: "securityGroupMode" })
-  const ruleSource = useWatch({ control, name: "ruleSource" })
-  const selectedSgIds = useWatch({ control, name: "securityGroupIds" }) ?? []
 
   // Launch template: when one is selected the instance is launched from it and
   // the direct-config fields below are hidden — the template supplies them.
@@ -236,18 +129,10 @@ export function RunInstancesPage({
     name: "launchTemplateVersion",
   })
 
-  const templateVersionsQuery = useQuery({
-    ...ec2LaunchTemplateVersionsQueryOptions(selectedTemplateId ?? ""),
-    enabled: !!selectedTemplateId,
-  })
-
-  const templateVersions =
-    templateVersionsQuery.data?.LaunchTemplateVersions ?? []
-
-  const resolvedTemplateData = resolveTemplateVersion(
-    templateVersions,
+  const { templateVersions, resolvedTemplateData } = useTemplateVersions(
+    selectedTemplateId,
     selectedTemplateVersion,
-  )?.LaunchTemplateData
+  )
 
   const effectiveVpcId =
     subnets.find((s) => s.SubnetId === selectedSubnetId)?.VpcId ?? defaultVpcId
@@ -255,6 +140,9 @@ export function RunInstancesPage({
   const vpcSecurityGroups = effectiveVpcId
     ? securityGroups.filter((sg) => sg.VpcId === effectiveVpcId)
     : securityGroups
+
+  const noCompute = uniqueInstanceTypes.length === 0 && !selectedTemplateId
+  const isBusy = isSubmitting || createMutation.isPending
 
   const onSubmit = async (data: CreateInstanceFormData) => {
     // Launch wholly from the template (plus count). Build params from only the
@@ -279,7 +167,7 @@ export function RunInstancesPage({
       <PageHeading title="Run Instances" />
 
       {/* Handle error when no instance types available */}
-      {uniqueInstanceTypes.length === 0 && !selectedTemplateId && (
+      {noCompute && (
         <ErrorBanner msg="No compute available. No new instances can be created until compute is available." />
       )}
 
@@ -292,416 +180,56 @@ export function RunInstancesPage({
       )}
 
       <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
-        {/* Launch template */}
-        <Field>
-          <FieldTitle>
-            <label htmlFor="launchTemplateId">Launch Template</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="launchTemplateId"
-            render={({ field }) => (
-              <Select
-                onValueChange={(value) => {
-                  field.onChange(value === "none" ? undefined : value)
-                }}
-                value={field.value ?? "none"}
-              >
-                <SelectTrigger className="w-full" id="launchTemplateId">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">none</SelectItem>
-                  {launchTemplates.map((lt) => (
-                    <SelectItem
-                      key={lt.LaunchTemplateId}
-                      value={lt.LaunchTemplateId ?? ""}
-                    >
-                      {lt.LaunchTemplateName ?? lt.LaunchTemplateId}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-        </Field>
-
-        {selectedTemplateId && (
-          <Field>
-            <FieldTitle>
-              <label htmlFor="launchTemplateVersion">Version</label>
-            </FieldTitle>
-            <Controller
-              control={control}
-              name="launchTemplateVersion"
-              render={({ field }) => (
-                <Select
-                  onValueChange={field.onChange}
-                  value={field.value ?? "$Default"}
-                >
-                  <SelectTrigger className="w-full" id="launchTemplateVersion">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="$Default">$Default</SelectItem>
-                    <SelectItem value="$Latest">$Latest</SelectItem>
-                    {templateVersions.map((version) => (
-                      <SelectItem
-                        key={version.VersionNumber}
-                        value={String(version.VersionNumber)}
-                      >
-                        v{version.VersionNumber}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-            {resolvedTemplateData && (
-              <div className="mt-3 space-y-1 rounded-md border border-border p-3 text-xs">
-                <p className="text-muted-foreground">
-                  Configuration from this version:
-                </p>
-                <p>
-                  Image:{" "}
-                  <span className="font-mono">
-                    {resolvedTemplateData.ImageId ?? "—"}
-                  </span>
-                </p>
-                <p>
-                  Instance type:{" "}
-                  <span className="font-mono">
-                    {resolvedTemplateData.InstanceType ?? "—"}
-                  </span>
-                </p>
-                <p>
-                  Key pair:{" "}
-                  <span className="font-mono">
-                    {resolvedTemplateData.KeyName ?? "—"}
-                  </span>
-                </p>
-              </div>
-            )}
-          </Field>
-        )}
+        <LaunchTemplateFields
+          control={control}
+          launchTemplates={launchTemplates}
+          resolvedTemplateData={resolvedTemplateData}
+          selectedTemplateId={selectedTemplateId}
+          templateVersions={templateVersions}
+        />
 
         {!selectedTemplateId && (
           <>
-            {/* ImageSelection */}
-            <Field>
-              <FieldTitle>
-                <label htmlFor="imageId">Image</label>
-              </FieldTitle>
-              <Controller
-                control={control}
-                name="imageId"
-                render={({ field }) => {
-                  const selectedImage = images.find(
-                    (img) => img.ImageId === field.value,
-                  )
-
-                  return (
-                    <Select
-                      onValueChange={(value) => {
-                        field.onChange(value)
-                        // Re-prefill DeviceName for the new AMI. Size, type and
-                        // delete-on-termination stay blank so an unchanged form
-                        // sends no BlockDeviceMappings.
-                        setValue(
-                          "rootDeviceName",
-                          getRootMapping(
-                            images.find((img) => img.ImageId === value),
-                          ).deviceName,
-                        )
-                      }}
-                      value={field.value ?? ""}
-                    >
-                      <SelectTrigger
-                        aria-invalid={!!errors.imageId}
-                        className="w-full"
-                        id="imageId"
-                      >
-                        <SelectValue>
-                          {selectedImage
-                            ? `${selectedImage.Name ?? "Unnamed"} (${selectedImage.Architecture})`
-                            : ""}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {images.map((image) => (
-                          <SelectItem
-                            key={image.ImageId}
-                            value={image.ImageId ?? ""}
-                          >
-                            {image.Name ?? "Unnamed"} ({image.Architecture})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )
-                }}
-              />
-              <FieldError errors={[errors.imageId]} />
-            </Field>
-
-            {/* Instance Type */}
-            <Field>
-              <FieldTitle>
-                <label htmlFor="instanceType">Instance Type</label>
-              </FieldTitle>
-              <Controller
-                control={control}
-                name="instanceType"
-                render={({ field }) => (
-                  <GpuInstanceTypeSelect
-                    aria-invalid={!!errors.instanceType}
-                    availabilityByType={instanceTypeCounts}
-                    className="w-full"
-                    id="instanceType"
-                    instanceTypes={instanceTypesData.InstanceTypes ?? []}
-                    onValueChange={field.onChange}
-                    value={field.value ?? ""}
-                  />
-                )}
-              />
-              {selectedGpuDevice && (
-                <FieldDescription>
-                  GPU: {selectedGpuDevice.Name}
-                  {selectedGpuDevice.MemoryInfo?.SizeInMiB !== undefined &&
-                    ` · ${formatVRAMMiB(selectedGpuDevice.MemoryInfo.SizeInMiB)} VRAM`}
-                  {selectedGpuMigProfile &&
-                    ` · MIG ${selectedGpuMigProfile} slice`}
-                </FieldDescription>
-              )}
-              <FieldError errors={[errors.instanceType]} />
-            </Field>
-
-            {/* Key Pair */}
-            <Field>
-              <FieldTitle>
-                <label htmlFor="keyName">Key Pair</label>
-              </FieldTitle>
-              <Controller
-                control={control}
-                name="keyName"
-                render={({ field }) => (
-                  <Select
-                    onValueChange={field.onChange}
-                    value={field.value ?? ""}
-                  >
-                    <SelectTrigger
-                      aria-invalid={!!errors.keyName}
-                      className="w-full"
-                      id="keyName"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {keyPairs.map((keyPair) => (
-                        <SelectItem
-                          key={keyPair.KeyPairId}
-                          value={keyPair.KeyName ?? ""}
-                        >
-                          {keyPair.KeyName}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-              <FieldError errors={[errors.keyName]} />
-            </Field>
-
-            {/* Subnet */}
-            <Field>
-              <FieldTitle>
-                <label htmlFor="subnetId">Subnet</label>
-              </FieldTitle>
-              <Controller
-                control={control}
-                name="subnetId"
-                render={({ field }) => (
-                  <Select
-                    onValueChange={(value) => {
-                      field.onChange(value === "none" ? undefined : value)
-                    }}
-                    value={field.value ?? "none"}
-                  >
-                    <SelectTrigger className="w-full" id="subnetId">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">none</SelectItem>
-                      {subnets.map((subnet) => (
-                        <SelectItem
-                          key={subnet.SubnetId}
-                          value={subnet.SubnetId ?? ""}
-                        >
-                          {subnet.SubnetId}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            </Field>
-
-            {/* Security Groups */}
-            <Field>
-              <FieldTitle>Security Group</FieldTitle>
-              <FieldDescription>
-                {effectiveVpcId
-                  ? `Applies to VPC ${effectiveVpcId}`
-                  : "No VPC resolved — select a subnet"}
-              </FieldDescription>
-              <div className="flex gap-4 text-sm">
-                <label className="flex items-center gap-2">
-                  <input
-                    aria-label="Create new security group"
-                    type="radio"
-                    value="create"
-                    {...register("securityGroupMode")}
-                  />
-                  Create new
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    aria-label="Select existing security group"
-                    type="radio"
-                    value="existing"
-                    {...register("securityGroupMode")}
-                  />
-                  Select existing
-                </label>
-              </div>
-
-              {sgMode === "create" ? (
-                <div className="mt-3 space-y-4 rounded-md border border-border p-4">
-                  <Field>
-                    <FieldTitle>
-                      <label htmlFor="newSgName">Name</label>
-                    </FieldTitle>
-                    <Input
-                      aria-invalid={!!errors.newSgName}
-                      id="newSgName"
-                      type="text"
-                      {...register("newSgName")}
-                    />
-                    <FieldError errors={[errors.newSgName]} />
-                  </Field>
-
-                  <Field>
-                    <FieldTitle>
-                      <label htmlFor="newSgDescription">Description</label>
-                    </FieldTitle>
-                    <Input
-                      id="newSgDescription"
-                      type="text"
-                      {...register("newSgDescription")}
-                    />
-                  </Field>
-
-                  <Field>
-                    <FieldTitle>Inbound rules</FieldTitle>
-                    <div className="space-y-1">
-                      {INBOUND_RULE_CHECKBOXES.map(({ name, label, text }) => (
-                        <label
-                          className="flex items-center gap-2 text-sm"
-                          key={name}
-                        >
-                          <input
-                            aria-label={label}
-                            type="checkbox"
-                            {...register(name)}
-                          />
-                          {text}
-                        </label>
-                      ))}
-                    </div>
-                  </Field>
-
-                  <Field>
-                    <FieldTitle>Source</FieldTitle>
-                    <div className="flex gap-4 text-sm">
-                      <label className="flex items-center gap-2">
-                        <input
-                          aria-label="Source anywhere"
-                          type="radio"
-                          value="anywhere"
-                          {...register("ruleSource")}
-                        />
-                        Anywhere (0.0.0.0/0)
-                      </label>
-                      <label className="flex items-center gap-2">
-                        <input
-                          aria-label="Source custom CIDR"
-                          type="radio"
-                          value="custom"
-                          {...register("ruleSource")}
-                        />
-                        Custom CIDR
-                      </label>
-                    </div>
-                    {ruleSource === "custom" && (
-                      <div className="mt-2">
-                        <Input
-                          aria-invalid={!!errors.customCidr}
-                          placeholder="203.0.113.0/24"
-                          type="text"
-                          {...register("customCidr")}
-                        />
-                        <FieldError errors={[errors.customCidr]} />
-                      </div>
-                    )}
-                  </Field>
-                </div>
-              ) : (
-                <div className="mt-3">
-                  <SecurityGroupCheckboxes
-                    emptyText="No security groups in the resolved VPC."
-                    groups={vpcSecurityGroups}
-                    onChange={(next) => {
-                      setValue("securityGroupIds", next, {
-                        shouldValidate: true,
-                      })
-                    }}
-                    selected={selectedSgIds}
-                  />
-                  <FieldError errors={[errors.securityGroupIds]} />
-                </div>
-              )}
-            </Field>
-
-            {/* Placement Group */}
-            <Field>
-              <FieldTitle>
-                <label htmlFor="placementGroupName">Placement Group</label>
-              </FieldTitle>
-              <Controller
-                control={control}
-                name="placementGroupName"
-                render={({ field }) => (
-                  <Select
-                    onValueChange={(value) => {
-                      field.onChange(value === "none" ? undefined : value)
-                    }}
-                    value={field.value ?? "none"}
-                  >
-                    <SelectTrigger className="w-full" id="placementGroupName">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">none</SelectItem>
-                      {placementGroups.map((pg) => (
-                        <SelectItem key={pg.GroupId} value={pg.GroupName ?? ""}>
-                          {pg.GroupName} ({pg.Strategy})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            </Field>
+            <ImageField
+              control={control}
+              errors={errors}
+              images={images}
+              onImageChange={(imageId) => {
+                // Re-prefill DeviceName for the new AMI. Size, type and
+                // delete-on-termination stay blank so an unchanged form
+                // sends no BlockDeviceMappings.
+                setValue(
+                  "rootDeviceName",
+                  getRootMapping(images.find((img) => img.ImageId === imageId))
+                    .deviceName,
+                )
+              }}
+            />
+            <InstanceTypeField
+              control={control}
+              errors={errors}
+              instanceTypeCounts={instanceTypeCounts}
+              instanceTypes={instanceTypes}
+              selectedInstanceType={selectedInstanceType}
+            />
+            <KeyPairField
+              control={control}
+              errors={errors}
+              keyPairs={keyPairs}
+            />
+            <SubnetField control={control} subnets={subnets} />
+            <SecurityGroupFields
+              control={control}
+              effectiveVpcId={effectiveVpcId}
+              errors={errors}
+              register={register}
+              setValue={setValue}
+              vpcSecurityGroups={vpcSecurityGroups}
+            />
+            <PlacementGroupField
+              control={control}
+              placementGroups={placementGroups}
+            />
           </>
         )}
 
@@ -725,120 +253,12 @@ export function RunInstancesPage({
         </Field>
 
         {!selectedTemplateId && (
-          <>
-            {/* Block Device Mappings (root volume) — collapsed by default */}
-            <Collapsible>
-              <CollapsibleTrigger
-                className="group"
-                variant="field"
-                render={
-                  <button
-                    aria-label="Block Device Mappings (root volume)"
-                    type="button"
-                  />
-                }
-              >
-                <span>Block Device Mappings (root volume)</span>
-                <ChevronDown className="size-3.5 text-muted-foreground transition-transform group-data-[panel-open]:rotate-180" />
-              </CollapsibleTrigger>
-              <CollapsibleContent className="mt-3" variant="panel">
-                <Field>
-                  <FieldTitle>
-                    <label htmlFor="rootDeviceName">Device Name</label>
-                  </FieldTitle>
-                  <Input
-                    aria-invalid={!!errors.rootDeviceName}
-                    id="rootDeviceName"
-                    type="text"
-                    {...register("rootDeviceName")}
-                  />
-                  <FieldError errors={[errors.rootDeviceName]} />
-                </Field>
-
-                <Field>
-                  <FieldTitle>
-                    <label htmlFor="rootVolumeSize">Volume Size (GiB)</label>
-                  </FieldTitle>
-                  <Input
-                    aria-invalid={!!errors.rootVolumeSize}
-                    id="rootVolumeSize"
-                    max={MAX_VOLUME_SIZE_GIB}
-                    min={selectedRoot.snapshotSize ?? MIN_VOLUME_SIZE_GIB}
-                    placeholder={
-                      selectedRoot.snapshotSize
-                        ? `${selectedRoot.snapshotSize} (AMI default)`
-                        : "use AMI / backend default"
-                    }
-                    type="number"
-                    {...register("rootVolumeSize", {
-                      setValueAs: (value: string) =>
-                        value === "" || value === null || value === undefined
-                          ? undefined
-                          : Number(value),
-                    })}
-                  />
-                  {selectedRoot.snapshotSize !== undefined && (
-                    <FieldDescription>
-                      AMI snapshot size: {selectedRoot.snapshotSize} GiB
-                    </FieldDescription>
-                  )}
-                  <FieldError errors={[errors.rootVolumeSize]} />
-                </Field>
-
-                <Field>
-                  <FieldTitle>
-                    <label htmlFor="rootVolumeType">Volume Type</label>
-                  </FieldTitle>
-                  <Controller
-                    control={control}
-                    name="rootVolumeType"
-                    render={({ field }) => (
-                      <Select
-                        onValueChange={field.onChange}
-                        value={field.value ?? DEFAULT_VOLUME_TYPE}
-                      >
-                        <SelectTrigger
-                          aria-invalid={!!errors.rootVolumeType}
-                          className="w-full"
-                          id="rootVolumeType"
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {VOLUME_TYPES.map((vt) => (
-                            <SelectItem key={vt} value={vt}>
-                              {vt}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  />
-                  <FieldError errors={[errors.rootVolumeType]} />
-                </Field>
-
-                <Field>
-                  <Controller
-                    control={control}
-                    name="rootDeleteOnTermination"
-                    render={({ field }) => (
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          aria-label="Delete on termination"
-                          checked={field.value ?? true}
-                          onChange={(e) => {
-                            field.onChange(e.target.checked)
-                          }}
-                          type="checkbox"
-                        />
-                        Delete on termination
-                      </label>
-                    )}
-                  />
-                </Field>
-              </CollapsibleContent>
-            </Collapsible>
-          </>
+          <RootVolumeFields
+            control={control}
+            errors={errors}
+            register={register}
+            snapshotSize={selectedRoot.snapshotSize}
+          />
         )}
 
         <CliCommandPanel
@@ -848,7 +268,7 @@ export function RunInstancesPage({
         {/* Actions */}
         <div className="flex gap-2">
           <Button
-            disabled={isSubmitting || createMutation.isPending}
+            disabled={isBusy}
             onClick={async () => {
               await navigate({ to: "/ec2/describe-instances" })
             }}
@@ -857,22 +277,148 @@ export function RunInstancesPage({
           >
             Cancel
           </Button>
-          <Button
-            disabled={
-              isSubmitting ||
-              createMutation.isPending ||
-              (!selectedTemplateId && uniqueInstanceTypes.length === 0)
-            }
-            type="submit"
-          >
-            {isSubmitting || createMutation.isPending
-              ? "Creating…"
-              : "Create Instance"}
+          <Button disabled={isBusy || noCompute} type="submit">
+            {isBusy ? "Creating…" : "Create Instance"}
           </Button>
         </div>
       </form>
     </>
   )
+}
+
+// useLaunchOptions loads every resource list the wizard offers. System-managed
+// images are hidden; the default VPC (or the first one) backs an unset subnet.
+function useLaunchOptions() {
+  const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
+  const { data: keyPairsData } = useSuspenseQuery(ec2KeyPairsQueryOptions)
+
+  const { data: instanceTypesData } = useSuspenseQuery(
+    ec2InstanceTypesQueryOptions,
+  )
+
+  const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
+  const { data: pgData } = useSuspenseQuery(ec2PlacementGroupsQueryOptions)
+  const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
+  const { data: sgData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
+  const { data: ltData } = useSuspenseQuery(ec2LaunchTemplatesQueryOptions)
+  const vpcs = vpcsData.Vpcs ?? []
+
+  return {
+    images: (imagesData.Images ?? []).filter(
+      (image) => !isSystemManagedImage(image),
+    ),
+    keyPairs: keyPairsData.KeyPairs ?? [],
+    subnets: subnetsData.Subnets ?? [],
+    placementGroups: pgData.PlacementGroups ?? [],
+    securityGroups: sgData.SecurityGroups ?? [],
+    launchTemplates: ltData.LaunchTemplates ?? [],
+    instanceTypes: instanceTypesData.InstanceTypes ?? [],
+    defaultVpcId: (vpcs.find((v) => v.IsDefault) ?? vpcs[0])?.VpcId,
+  }
+}
+
+function useTemplateVersions(
+  templateId: string | undefined,
+  selectedVersion: string | undefined,
+) {
+  const templateVersionsQuery = useQuery({
+    ...ec2LaunchTemplateVersionsQueryOptions(templateId ?? ""),
+    enabled: !!templateId,
+  })
+
+  const templateVersions =
+    templateVersionsQuery.data?.LaunchTemplateVersions ?? []
+
+  return {
+    templateVersions,
+    resolvedTemplateData: resolveTemplateVersion(
+      templateVersions,
+      selectedVersion,
+    )?.LaunchTemplateData,
+  }
+}
+
+function countInstanceTypes(instanceTypes: InstanceTypeInfo[]) {
+  const counts: Record<string, number> = {}
+
+  for (const type of instanceTypes) {
+    const typeName = type.InstanceType
+
+    if (!typeName) {
+      continue
+    }
+
+    counts[typeName] = (counts[typeName] ?? 0) + 1
+  }
+
+  return counts
+}
+
+function buildRunInstancesSchema(
+  images: Image[],
+  instanceTypeCounts: Record<string, number>,
+) {
+  return createInstanceSchema
+    .refine(
+      (data) =>
+        !data.instanceType ||
+        data.count <= (instanceTypeCounts[data.instanceType] ?? 1),
+      {
+        message: "Cannot exceed available capacity",
+        path: ["count"],
+      },
+    )
+    .superRefine((data, ctx) => {
+      const minSize = getRootMapping(
+        images.find((img) => img.ImageId === data.imageId),
+      ).snapshotSize
+
+      if (
+        data.rootVolumeSize !== undefined &&
+        minSize !== undefined &&
+        data.rootVolumeSize < minSize
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message: `Volume size must be at least ${minSize} GiB (AMI snapshot size)`,
+          path: ["rootVolumeSize"],
+        })
+      }
+    })
+}
+
+// launchDefaults prefills the direct-launch fields from the loaded data: the
+// first image and key pair, and a nano instance type when one is offered.
+function launchDefaults(
+  images: Image[],
+  defaultKeyName: string | undefined,
+  uniqueInstanceTypes: string[],
+): Partial<CreateInstanceFormData> {
+  const defaultImageId = images[0]?.ImageId
+
+  const defaultInstanceType =
+    uniqueInstanceTypes.find((type) => type.endsWith(".nano")) ??
+    uniqueInstanceTypes[0]
+
+  const defaultRoot = getRootMapping(
+    images.find((img) => img.ImageId === defaultImageId),
+  )
+
+  return {
+    count: 1,
+    imageId: defaultImageId ?? "",
+    keyName: defaultKeyName ?? "",
+    instanceType: defaultInstanceType ?? "",
+    rootDeviceName: defaultRoot.deviceName,
+    securityGroupMode: "create",
+    securityGroupIds: [],
+    newSgDescription: "Created by launch wizard",
+    allowSsh: true,
+    allowHttp: false,
+    allowHttps: false,
+    ruleSource: "anywhere",
+    customCidr: "",
+  }
 }
 
 interface RootMappingDefaults {
@@ -930,6 +476,8 @@ function buildRunInstancesCommands(
     value: "AWS_PROFILE=spinifex aws ec2 run-instances",
   }
 
+  const countFlag = commandFlag("\\\n  --count", (values.count ?? 0) || 1)
+
   if (values.launchTemplateId) {
     const templateVersion = values.launchTemplateVersion || "$Default"
 
@@ -942,11 +490,13 @@ function buildRunInstancesCommands(
             "\\\n  --launch-template",
             `LaunchTemplateId=${values.launchTemplateId},Version=${templateVersion}`,
           ),
-          ...commandFlag("\\\n  --count", (values.count ?? 0) || 1),
+          ...countFlag,
         ],
       },
     ]
   }
+
+  const securityGroups = buildSecurityGroupArgs(values, vpcId)
 
   const parts: CommandPart[] = [
     bin,
@@ -967,15 +517,37 @@ function buildRunInstancesCommands(
       "\\\n  --placement",
       values.placementGroupName && `GroupName=${values.placementGroupName}`,
     ),
-    ...commandFlag("\\\n  --count", (values.count ?? 0) || 1),
+    ...countFlag,
+    ...securityGroups.flags,
+    ...rootVolumeFlags(values),
   ]
 
-  // Security groups — create-new emits create + authorize commands and feeds
-  // $SG_ID into run-instances; select-existing passes the chosen IDs.
-  const sgCommands: CliCommand[] = []
+  return [...securityGroups.commands, { label: "Run Instances", parts }]
+}
 
-  if ((values.securityGroupMode || "create") === "create") {
-    sgCommands.push({
+interface SecurityGroupArgs {
+  commands: CliCommand[]
+  flags: CommandPart[]
+}
+
+// buildSecurityGroupArgs: create-new emits create + authorize commands and
+// feeds $SG_ID into run-instances; select-existing passes the chosen IDs.
+function buildSecurityGroupArgs(
+  values: DeepPartialSkipArrayKey<CreateInstanceFormData>,
+  vpcId: string | undefined,
+): SecurityGroupArgs {
+  if ((values.securityGroupMode || "create") !== "create") {
+    return {
+      commands: [],
+      flags: optionalFlag(
+        "\\\n  --security-group-ids",
+        values.securityGroupIds?.join(" "),
+      ),
+    }
+  }
+
+  const commands: CliCommand[] = [
+    {
       label: "Create security group",
       parts: captureId(
         "SG_ID",
@@ -993,53 +565,64 @@ function buildRunInstancesCommands(
         ],
         "GroupId",
       ),
-    })
+    },
+  ]
 
-    const cidr =
-      values.ruleSource === "custom" && values.customCidr
-        ? values.customCidr
-        : "0.0.0.0/0"
+  const ingress = buildIngressCommand(values)
 
-    const ports = [
-      ...(values.allowSsh === true ? [22] : []),
-      ...(values.allowHttp === true ? [80] : []),
-      ...(values.allowHttps === true ? [443] : []),
-    ]
-
-    if (ports.length > 0) {
-      const ipPerms = JSON.stringify(
-        ports.map((port) => ({
-          IpProtocol: "tcp",
-          FromPort: port,
-          ToPort: port,
-          IpRanges: [{ CidrIp: cidr }],
-        })),
-      )
-
-      sgCommands.push({
-        label: "Authorize inbound rules",
-        parts: [
-          {
-            type: "bin",
-            value:
-              "AWS_PROFILE=spinifex aws ec2 authorize-security-group-ingress",
-          },
-          ...commandFlag("\\\n  --group-id", "$SG_ID"),
-          ...commandFlag("\\\n  --ip-permissions", `'${ipPerms}'`),
-        ],
-      })
-    }
-
-    parts.push(...commandFlag("\\\n  --security-group-ids", "$SG_ID"))
-  } else {
-    parts.push(
-      ...optionalFlag(
-        "\\\n  --security-group-ids",
-        values.securityGroupIds?.join(" "),
-      ),
-    )
+  if (ingress) {
+    commands.push(ingress)
   }
 
+  return {
+    commands,
+    flags: commandFlag("\\\n  --security-group-ids", "$SG_ID"),
+  }
+}
+
+function buildIngressCommand(
+  values: DeepPartialSkipArrayKey<CreateInstanceFormData>,
+): CliCommand | undefined {
+  const cidr =
+    values.ruleSource === "custom" && values.customCidr
+      ? values.customCidr
+      : DEFAULT_SG_CIDR
+
+  const ports = [
+    ...(values.allowSsh === true ? [22] : []),
+    ...(values.allowHttp === true ? [80] : []),
+    ...(values.allowHttps === true ? [443] : []),
+  ]
+
+  if (ports.length === 0) {
+    return undefined
+  }
+
+  const ipPerms = JSON.stringify(
+    ports.map((port) => ({
+      IpProtocol: "tcp",
+      FromPort: port,
+      ToPort: port,
+      IpRanges: [{ CidrIp: cidr }],
+    })),
+  )
+
+  return {
+    label: "Authorize inbound rules",
+    parts: [
+      {
+        type: "bin",
+        value: "AWS_PROFILE=spinifex aws ec2 authorize-security-group-ingress",
+      },
+      ...commandFlag("\\\n  --group-id", "$SG_ID"),
+      ...commandFlag("\\\n  --ip-permissions", `'${ipPerms}'`),
+    ],
+  }
+}
+
+function rootVolumeFlags(
+  values: DeepPartialSkipArrayKey<CreateInstanceFormData>,
+): CommandPart[] {
   const { rootDeleteOnTermination, rootVolumeSize, rootVolumeType } = values
 
   const hasStorageOverride =
@@ -1047,24 +630,24 @@ function buildRunInstancesCommands(
     rootVolumeType !== undefined ||
     rootDeleteOnTermination !== undefined
 
-  if (hasStorageOverride) {
-    // A field the form left unset stays undefined, which JSON.stringify omits,
-    // so the CLI preview shows only the overrides the user actually set.
-    const ebs = {
-      VolumeSize: rootVolumeSize,
-      VolumeType: rootVolumeType || undefined,
-      DeleteOnTermination: rootDeleteOnTermination,
-    }
-
-    const bdm = JSON.stringify([
-      {
-        DeviceName: values.rootDeviceName || DEFAULT_ROOT_DEVICE_NAME,
-        Ebs: ebs,
-      },
-    ])
-
-    parts.push(...commandFlag("\\\n  --block-device-mappings", `'${bdm}'`))
+  if (!hasStorageOverride) {
+    return []
   }
 
-  return [...sgCommands, { label: "Run Instances", parts }]
+  // A field the form left unset stays undefined, which JSON.stringify omits,
+  // so the CLI preview shows only the overrides the user actually set.
+  const ebs = {
+    VolumeSize: rootVolumeSize,
+    VolumeType: rootVolumeType || undefined,
+    DeleteOnTermination: rootDeleteOnTermination,
+  }
+
+  const bdm = JSON.stringify([
+    {
+      DeviceName: values.rootDeviceName || DEFAULT_ROOT_DEVICE_NAME,
+      Ebs: ebs,
+    },
+  ])
+
+  return commandFlag("\\\n  --block-device-mappings", `'${bdm}'`)
 }

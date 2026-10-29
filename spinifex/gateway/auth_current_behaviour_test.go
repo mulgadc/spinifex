@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -136,6 +137,7 @@ func (e *cbEnv) gateway() http.Handler {
 		Region:         testRegion,
 		ExpectedNodes:  1,
 		IAMService:     e.counter,
+		Credentials:    credverify.New(e.counter, e.sts),
 		STSService:     e.sts,
 	}
 	return gw.SetupRoutes()

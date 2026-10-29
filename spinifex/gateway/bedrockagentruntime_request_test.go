@@ -30,7 +30,7 @@ import (
 func newBedrockAgentRuntimeRequestGateway(t *testing.T, vector ochrevector.VectorService, vllmURL string) *GatewayConfig {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	return &GatewayConfig{
+	return withVerifier(&GatewayConfig{
 		IAMService:              allowAllIAMService(),
 		BedrockAgentKB:          ochrevector.NewKBStore(js),
 		BedrockAgentDataSources: ochrevector.NewDataSourceStore(js),
@@ -39,14 +39,14 @@ func newBedrockAgentRuntimeRequestGateway(t *testing.T, vector ochrevector.Vecto
 			bedrockTestLlamaModelID: vllmURL,
 		},
 		BedrockAccess: grantAllModels{},
-	}
+	})
 }
 
 func bedrockAgentRuntimeRequestWithAccount(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	ctx := context.WithValue(req.Context(), ctxAccountID, bedrockAgentTestAccount)
-	ctx = context.WithValue(ctx, ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldAccountID, bedrockAgentTestAccount)
+	ctx = withPrincipalField(ctx, fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	return req.WithContext(ctx)
 }
 
@@ -217,7 +217,7 @@ func TestBedrockAgentRuntimeRequest_MissingAccountIDReturnsInternalError(t *test
 }
 
 func TestBedrockAgentRuntimeRequest_NilDependenciesReturnServerInternal(t *testing.T) {
-	gw := &GatewayConfig{IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{IAMService: allowAllIAMService()})
 
 	req := bedrockAgentRuntimeRequestWithAccount(http.MethodPost, "/knowledgebases/kb-1/retrieve", `{"retrievalQuery":{"text":"q"}}`)
 	w := httptest.NewRecorder()

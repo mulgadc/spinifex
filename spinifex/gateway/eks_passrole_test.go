@@ -55,7 +55,7 @@ func eksPassRoleGateway(statements ...iamdomain.Statement) *GatewayConfig {
 }
 
 func eksGatewayWithIAM(iamService *roleStoreIAMService) *GatewayConfig {
-	return &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: iamService}
+	return withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: iamService})
 }
 
 func createNodegroupBody(nodeRole string) string {

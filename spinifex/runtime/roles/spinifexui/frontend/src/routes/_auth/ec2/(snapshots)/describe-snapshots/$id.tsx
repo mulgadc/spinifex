@@ -1,3 +1,4 @@
+import type { Snapshot } from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { Copy, Image } from "lucide-react"
@@ -188,39 +189,7 @@ function SnapshotDetail() {
           title={snapshot.SnapshotId}
         />
 
-        <DetailCard>
-          <DetailCard.Header>Snapshot Information</DetailCard.Header>
-          <DetailCard.Content>
-            <DetailRow label="Snapshot ID" value={snapshot.SnapshotId} />
-            <DetailRow
-              label="Volume ID"
-              value={
-                snapshot.VolumeId ? (
-                  <Link
-                    className="text-primary hover:underline"
-                    params={{ id: snapshot.VolumeId }}
-                    to="/ec2/describe-volumes/$id"
-                  >
-                    {snapshot.VolumeId}
-                  </Link>
-                ) : undefined
-              }
-            />
-            <DetailRow
-              label="Volume Size"
-              value={`${snapshot.VolumeSize} GiB`}
-            />
-            <DetailRow label="State" value={snapshot.State} />
-            <DetailRow label="Description" value={snapshot.Description} />
-            <DetailRow label="Progress" value={snapshot.Progress} />
-            <DetailRow label="Start Time" value={startTime} />
-            <DetailRow label="Owner ID" value={snapshot.OwnerId} />
-            <DetailRow
-              label="Encrypted"
-              value={snapshot.Encrypted ? "Yes" : "No"}
-            />
-          </DetailCard.Content>
-        </DetailCard>
+        <SnapshotInfoCard snapshot={snapshot} startTime={startTime} />
       </div>
 
       <AlertDialog onOpenChange={setShowCopyDialog} open={showCopyDialog}>
@@ -331,5 +300,46 @@ function SnapshotDetail() {
         </AlertDialogContent>
       </AlertDialog>
     </>
+  )
+}
+
+function SnapshotInfoCard({
+  snapshot,
+  startTime,
+}: {
+  snapshot: Snapshot
+  startTime: string
+}) {
+  return (
+    <DetailCard>
+      <DetailCard.Header>Snapshot Information</DetailCard.Header>
+      <DetailCard.Content>
+        <DetailRow label="Snapshot ID" value={snapshot.SnapshotId} />
+        <DetailRow
+          label="Volume ID"
+          value={
+            snapshot.VolumeId ? (
+              <Link
+                className="text-primary hover:underline"
+                params={{ id: snapshot.VolumeId }}
+                to="/ec2/describe-volumes/$id"
+              >
+                {snapshot.VolumeId}
+              </Link>
+            ) : undefined
+          }
+        />
+        <DetailRow label="Volume Size" value={`${snapshot.VolumeSize} GiB`} />
+        <DetailRow label="State" value={snapshot.State} />
+        <DetailRow label="Description" value={snapshot.Description} />
+        <DetailRow label="Progress" value={snapshot.Progress} />
+        <DetailRow label="Start Time" value={startTime} />
+        <DetailRow label="Owner ID" value={snapshot.OwnerId} />
+        <DetailRow
+          label="Encrypted"
+          value={snapshot.Encrypted ? "Yes" : "No"}
+        />
+      </DetailCard.Content>
+    </DetailCard>
   )
 }

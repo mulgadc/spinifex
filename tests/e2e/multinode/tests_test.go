@@ -83,8 +83,9 @@ func TestMultinodeClusterRestartResumesGuests(t *testing.T) {
 	runClusterRestartResumesGuests(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeOVNRaft is sequential: stops ovn-central on the NB leader to
-// prove DB failover, restoring it in cleanup before later tests run.
+// TestMultinodeOVNRaft is sequential: restarts each node's OVN central in turn,
+// then stops ovn-central on the NB leader to prove DB failover, restoring it
+// in cleanup before later tests run.
 func TestMultinodeOVNRaft(t *testing.T) {
 	runOVNRaft(t, requireMultiNodeFixture(t))
 }
@@ -106,9 +107,9 @@ func TestMultinodeVPCNetworking(t *testing.T) {
 	runVPCNetworking(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeIPSec is read-only over SSH; launches no AWS resources.
+// TestMultinodeIPSec is sequential: it launches a cross-node instance pair and
+// captures each node's outbound underlay while the pair exchanges traffic.
 func TestMultinodeIPSec(t *testing.T) {
-	t.Parallel()
 	runIPSec(t, requireMultiNodeFixture(t))
 }
 

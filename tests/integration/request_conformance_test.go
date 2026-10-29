@@ -4,6 +4,7 @@ package integration
 
 import (
 	"bytes"
+	"encoding/xml"
 	"errors"
 	"io"
 	"net"
@@ -17,6 +18,8 @@ import (
 	"github.com/mulgadc/spinifex/internal/awsmodel"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
+	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	awsdispatch "github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/require"
@@ -36,7 +39,9 @@ const slowRequest = 500 * time.Millisecond
 func TestRequestConformance(t *testing.T) {
 	inventory := gateway.AWSOperationInventory(map[string]awsdispatch.Inventory{
 		awsapi.ServiceName:    awsapi.OperationInventory(),
-		acmawsapi.ServiceName: acmawsapi.OperationInventory(),
+		acmawsapi.ServiceName:     acmawsapi.OperationInventory(),
+		route53awsapi.ServiceName: route53awsapi.OperationInventory(),
+		elbv2awsapi.InventoryName: elbv2awsapi.OperationInventory(),
 	})
 	for _, service := range awsmodel.Services() {
 		// Predastore serves S3, not the gateway.
@@ -52,6 +57,9 @@ func TestRequestConformance(t *testing.T) {
 				Unsupported: served.Unsupported,
 			})
 			require.NoError(t, err)
+			// A served service whose inventory is not wired here would otherwise
+			// drop out of the sweep while the suite still passes.
+			require.NotEmpty(t, coverage.Implemented, "no implemented operations for %s", service)
 
 			gw := startGateway(t, nil)
 			startRequestConformanceBackends(t, gw)
@@ -99,11 +107,12 @@ const requestFixture = "conformance-fixture"
 // in not-found. It returns the members that name them.
 func createRequestFixtures(t *testing.T, sender *requestSender, service awsmodel.Service, accountID string) map[string]string {
 	t.Helper()
-	create := func(operation string, input map[string]any) {
+	create := func(operation string, input map[string]any) []byte {
 		t.Helper()
-		result, err := sender.send(awsmodel.RequestCase{Operation: operation, Input: input})
+		result, body, err := sender.exchange(awsmodel.RequestCase{Operation: operation, Input: input})
 		require.NoError(t, err, operation)
 		require.True(t, result.Status >= 200 && result.Status < 300, "create fixture: %s: %d %s: %s", operation, result.Status, result.Code, result.Message)
+		return body
 	}
 	switch service {
 	case awsmodel.IAM:
@@ -136,6 +145,32 @@ func createRequestFixtures(t *testing.T, sender *requestSender, service awsmodel
 			"repositoryNames": requestFixture,
 			"resourceArn":     "arn:aws:ecr:" + testRegion + ":" + accountID + ":repository/" + requestFixture,
 		}
+	case awsmodel.Route53:
+		// The zone and change IDs are generated, and Id names the zone
+		// everywhere but GetChange.
+		var created struct {
+			HostedZone struct{ Id string }
+			ChangeInfo struct{ Id string }
+		}
+		// Generated record names fall inside example.com.
+		body := create("CreateHostedZone", map[string]any{"Name": "example.com", "CallerReference": requestFixture})
+		require.NoError(t, xml.Unmarshal(body, &created), "decode CreateHostedZone response")
+		zoneID := strings.TrimPrefix(created.HostedZone.Id, "/hostedzone/")
+		changeID := strings.TrimPrefix(created.ChangeInfo.Id, "/change/")
+		require.NotEmpty(t, zoneID, "CreateHostedZone returned no zone ID")
+		require.NotEmpty(t, changeID, "CreateHostedZone returned no change ID")
+		return map[string]string{
+			"Id":           zoneID,
+			"HostedZoneId": zoneID,
+			"ResourceId":   zoneID,
+			"ResourceIds":  zoneID,
+			"GetChange.Id": changeID,
+			// A zone ID is a marker ListHostedZones can start from.
+			"ListHostedZones.Marker": zoneID,
+			// The tagging operations' resource type, which would otherwise be
+			// the enum's first value, healthcheck.
+			"ResourceType": "hostedzone",
+		}
 	default:
 		return nil
 	}
@@ -167,31 +202,37 @@ func newRequestSender(gw *Gateway, service awsmodel.Service) (*requestSender, er
 // recorded with status 0, which judges as inconclusive; any other transport
 // failure, such as a gateway panic closing the connection, is an error.
 func (s *requestSender) send(request awsmodel.RequestCase) (awsmodel.RequestResult, error) {
+	result, _, err := s.exchange(request)
+	return result, err
+}
+
+// exchange is send, also returning the response body.
+func (s *requestSender) exchange(request awsmodel.RequestCase) (awsmodel.RequestResult, []byte, error) {
 	encoded, err := awsmodel.EncodeRequest(s.service, request.Operation, request.Input)
 	if err != nil {
-		return awsmodel.RequestResult{}, err
+		return awsmodel.RequestResult{}, nil, err
 	}
 	httpRequest, err := http.NewRequest(encoded.Method, encoded.URL(s.endpoint), bytes.NewReader(encoded.Body))
 	if err != nil {
-		return awsmodel.RequestResult{}, err
+		return awsmodel.RequestResult{}, nil, err
 	}
 	for name, values := range encoded.Header {
 		httpRequest.Header[name] = values
 	}
 	if _, err := s.signer.Sign(httpRequest, bytes.NewReader(encoded.Body), s.signing, testRegion, time.Now()); err != nil {
-		return awsmodel.RequestResult{}, err
+		return awsmodel.RequestResult{}, nil, err
 	}
 	response, err := s.client.Do(httpRequest)
 	if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
-		return awsmodel.RequestResult{Code: "Timeout"}, nil
+		return awsmodel.RequestResult{Code: "Timeout"}, nil, nil
 	}
 	if err != nil {
-		return awsmodel.RequestResult{}, err
+		return awsmodel.RequestResult{}, nil, err
 	}
 	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return awsmodel.RequestResult{}, err
+		return awsmodel.RequestResult{}, nil, err
 	}
-	return awsmodel.DecodeRequestResult(s.service, response.StatusCode, response.Header, body), nil
+	return awsmodel.DecodeRequestResult(s.service, response.StatusCode, response.Header, body), body, nil
 }

@@ -1,4 +1,4 @@
-//test:in-package — drives ELBv2_Request through the gateway's unexported test
+//test:in-package — drives the ELBv2 service through the gateway's unexported test
 // helpers (scopedPolicyGateway, withTestIdentity) and auth context keys.
 
 package gateway
@@ -28,15 +28,15 @@ func elbv2Listener(lbName, lbID, id string) string {
 	return arn.FormatELBv2Listener(authzRegion, authzAccountID, lbName, lbID, id, "application")
 }
 
-// dispatchELBv2 drives the gateway with no NATS connection. A permitted request
+// dispatchELBv2 drives the service with no NATS connection. A permitted request
 // therefore reaches the NATS guard and fails there, which is what proves the
 // policy check ran ahead of the resource having to exist.
 func dispatchELBv2(t *testing.T, gw *GatewayConfig, body string) error {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxService, "elasticloadbalancing")
-	ctx = context.WithValue(ctx, ctxAccountID, authzAccountID)
-	return gw.ELBv2_Request(httptest.NewRecorder(), withTestIdentity(req.WithContext(ctx)))
+	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
+	return gw.serveELBv2(httptest.NewRecorder(), withTestIdentity(req.WithContext(ctx)))
 }
 
 // TestELBv2Request_ScopedDenyFires is the bypass this work closes. An operator
@@ -161,7 +161,7 @@ func TestELBv2Request_MissingAccountIDIsInternalError(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=DescribeLoadBalancers"))
 	ctx := context.WithValue(req.Context(), ctxService, "elasticloadbalancing")
-	err := gw.ELBv2_Request(httptest.NewRecorder(), withTestIdentity(req.WithContext(ctx)))
+	err := gw.serveELBv2(httptest.NewRecorder(), withTestIdentity(req.WithContext(ctx)))
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
@@ -211,7 +211,7 @@ func TestELBv2Request_AccountWideAllowStillPermitsEveryScopedAction(t *testing.T
 	}
 
 	// Every scoped action is covered, so a new one cannot land here untested.
-	for action := range elbv2Actions {
+	for _, action := range elbv2ServedActions() {
 		if _, unscoped := elbv2UnscopedActions[action]; unscoped {
 			continue
 		}

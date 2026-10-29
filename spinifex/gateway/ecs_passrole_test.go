@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,8 +23,8 @@ const testECSPassRoleTargetARN = "arn:aws:iam::123456789012:role/ecs-task-role"
 // setupECSUserRequest is setupECSRequest plus an authenticated user identity.
 func setupECSUserRequest(target, body string) *http.Request {
 	req := setupECSRequest(target, body)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	return req.WithContext(ctx)
 }
 
@@ -62,7 +61,7 @@ func TestECSRegisterTaskDefinition_DeniedWithoutPassRole(t *testing.T) {
 			return allowRegisterTaskDefAndPassRole("arn:aws:iam::123456789012:role/some-other-role"), nil
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, testECSPassRoleTargetARN))
 
@@ -77,7 +76,7 @@ func TestECSRegisterTaskDefinition_AllowedWithPassRole(t *testing.T) {
 			return allowRegisterTaskDefAndPassRole(testECSPassRoleTargetARN), nil
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, testECSPassRoleTargetARN))
 
@@ -97,7 +96,7 @@ func TestECSRegisterTaskDefinition_NoRoleSkipsPassRole(t *testing.T) {
 			return allowPolicyResource("ecs:RegisterTaskDefinition", "*"), nil
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, ""))
 
@@ -114,7 +113,7 @@ func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
 			return allowPolicyResource("ecs:RegisterTaskDefinition", "*"), nil
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, testECSPassRoleTargetARN))
 

@@ -52,7 +52,7 @@ func runIMDSDatapathSurvivesVswitchdRestart(t *testing.T, fix *Fixture) {
 	instanceID := launchBaselineInstance(t, fix, amiID, instType, keyName, vpc.SubnetID, []string{vpc.SGID})
 
 	harness.Step(t, "allocate-address and associate it with %s", instanceID)
-	eipOut, err := c.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")}) // e2e:allow-create — the Elastic IP is the ingress path that must survive the restart.
+	eipOut, err := c.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")}) // The Elastic IP is the ingress path that must survive the restart.
 	require.NoError(t, err, "allocate-address")
 	allocID, eipIP := aws.StringValue(eipOut.AllocationId), aws.StringValue(eipOut.PublicIp)
 	require.NotEmpty(t, eipIP, "EIP PublicIp empty")

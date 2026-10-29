@@ -201,6 +201,14 @@ func (f *fakeNLBProvisioner) CreateTargetGroup(_ context.Context, input *elbv2.C
 				Protocol:        input.Protocol,
 				Port:            input.Port,
 				TargetType:      input.TargetType,
+
+				HealthCheckProtocol:        input.HealthCheckProtocol,
+				HealthCheckPort:            input.HealthCheckPort,
+				HealthCheckPath:            input.HealthCheckPath,
+				HealthCheckIntervalSeconds: input.HealthCheckIntervalSeconds,
+				HealthCheckTimeoutSeconds:  input.HealthCheckTimeoutSeconds,
+				HealthyThresholdCount:      input.HealthyThresholdCount,
+				UnhealthyThresholdCount:    input.UnhealthyThresholdCount,
 			}},
 		}
 	}
@@ -432,6 +440,55 @@ func TestEnsureClusterNLB_InternetFacingUsesPublicAddress(t *testing.T) {
 	assert.Equal(t, "203.0.113.7", out.FrontendIP)
 	require.Len(t, nlbp.createLBSyncCalls, 1)
 	assert.Equal(t, elbv2.LoadBalancerSchemeEnumInternetFacing, aws.StringValue(nlbp.createLBSyncCalls[0].Scheme))
+}
+
+func TestEnsureClusterNLB_APIServerTGHealthChecksWebhookReadiness(t *testing.T) {
+	t.Parallel()
+	nlbp := newFakeNLBProvisioner()
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
+	require.NoError(t, err)
+
+	api := nlbp.tgByName["eks-alpha-cp"]
+	require.NotNil(t, api)
+	assert.Equal(t, elbv2.ProtocolEnumTcp, aws.StringValue(api.Protocol), "traffic stays TCP")
+	assert.Equal(t, elbv2.ProtocolEnumHttp, aws.StringValue(api.HealthCheckProtocol))
+	assert.Equal(t, "8444", aws.StringValue(api.HealthCheckPort))
+	assert.Equal(t, "/readyz", aws.StringValue(api.HealthCheckPath))
+	assert.Equal(t, int64(5), aws.Int64Value(api.HealthCheckIntervalSeconds))
+	assert.Equal(t, int64(2), aws.Int64Value(api.HealthyThresholdCount))
+	assert.Equal(t, int64(2), aws.Int64Value(api.UnhealthyThresholdCount))
+	assert.Less(t, aws.Int64Value(api.HealthCheckTimeoutSeconds), aws.Int64Value(api.HealthCheckIntervalSeconds),
+		"the probe must time out before the next one starts")
+
+	konn := nlbp.tgByName["eks-alpha-konn"]
+	require.NotNil(t, konn)
+	assert.Nil(t, konn.HealthCheckProtocol, "konnectivity TG keeps the default health check")
+	assert.Nil(t, konn.HealthCheckPort)
+	assert.Nil(t, konn.HealthCheckPath)
+}
+
+func TestEnsureClusterNLB_ExistingAPIServerTGIsLeftAsIs(t *testing.T) {
+	t.Parallel()
+	nlbp := newFakeNLBProvisioner()
+	legacy := &elbv2.TargetGroup{
+		TargetGroupArn:  aws.String("arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/eks-alpha-cp/legacy"),
+		TargetGroupName: aws.String("eks-alpha-cp"),
+		Protocol:        aws.String(elbv2.ProtocolEnumTcp),
+		Port:            aws.Int64(k3sAPIServerPort),
+	}
+	nlbp.tgByName["eks-alpha-cp"] = legacy
+
+	out, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, aws.StringValue(legacy.TargetGroupArn), out.TargetGroupArn)
+	for _, in := range nlbp.createTGCalls {
+		assert.NotEqual(t, "eks-alpha-cp", aws.StringValue(in.Name), "an existing TG is not re-created")
+	}
+	stored := nlbp.tgByName["eks-alpha-cp"]
+	assert.Nil(t, stored.HealthCheckProtocol, "an existing TG keeps its original health check")
+	assert.Nil(t, stored.HealthCheckPort)
+	assert.Nil(t, stored.HealthCheckPath)
 }
 
 func TestEnsureClusterNLB_IdempotentReusesExisting(t *testing.T) {

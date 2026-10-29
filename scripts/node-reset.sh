@@ -71,9 +71,16 @@ distro_unit_exists() {
 }
 
 distro_ovs_unit() {
-    local deb=false el=false
+    local deb=false el=false dir
     distro_unit_exists openvswitch-switch.service && deb=true
-    distro_unit_exists openvswitch.service && el=true
+    for dir in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+        if [ -e "${DISTRO_ROOT:-}$dir/openvswitch.service" ] || [ -L "${DISTRO_ROOT:-}$dir/openvswitch.service" ]; then
+            case $(readlink "${DISTRO_ROOT:-}$dir/openvswitch.service" || true) in
+                openvswitch-switch.service | */openvswitch-switch.service) ;;
+                *) el=true ;;
+            esac
+        fi
+    done
     if $deb && $el; then
         echo "distro.sh: OVS unit: found both openvswitch-switch.service and openvswitch.service; cannot tell which one owns OVS" >&2
         return 1
@@ -183,7 +190,7 @@ run sudo systemctl reset-failed 'spinifex-*' 2>/dev/null || true
 # the wipe and before the verification, failing the reset on a file the script
 # had already deleted. update-nodes.sh carries the same wait.
 if ! $DRY_RUN; then
-    for unit in spinifex-predastore spinifex-viperblock spinifex-sqs-store spinifex-nats; do
+    for unit in spinifex-predastore spinifex-viperblock spinifex-nats; do
         if systemctl is-active --quiet "$unit"; then
             sudo systemctl stop "$unit" || true
         fi
@@ -265,6 +272,33 @@ if [ -n "$OVS_UNIT" ]; then
     run sudo systemctl stop "$OVS_UNIT" 2>/dev/null || true
 fi
 run sudo rm -f /etc/openvswitch/system-id.conf
+
+# --- BEGIN ovs nss nicknames ---
+# ovs_nss_nicknames — the entries ovs-monitor-ipsec imported, read from
+# `certutil -L` on stdin: ovs_certkey_* is this node's certificate and key,
+# ovs_cert_* the CA and any peer certificates. Everything else is someone else's.
+ovs_nss_nicknames() {
+    awk '$1 ~ /^ovs_cert(key)?_/ {print $1}' | LC_ALL=C sort -u
+}
+# --- END ovs nss nicknames ---
+
+# A node rejoining another cluster must not keep trusting this one's CA. Only
+# the NSS entries go: other identities and /etc/ipsec.d/*.conf are left alone.
+if [ -x /usr/libexec/ipsec/pluto ] && command -v certutil >/dev/null 2>&1; then
+    log "removing Spinifex IPsec identities from libreswan's NSS database"
+    # A running ovs-monitor-ipsec imports them again from other_config.
+    run sudo systemctl stop openvswitch-ipsec.service 2>/dev/null || true
+    for nss in /var/lib/ipsec/nss /etc/ipsec.d; do
+        sudo test -e "$nss/cert9.db" || continue
+        for nick in $(sudo certutil -L -d "sql:$nss" 2>/dev/null | ovs_nss_nicknames); do
+            log "  deleting $nick from $nss"
+            delete=-D
+            case "$nick" in ovs_certkey_*) delete=-F ;; esac
+            run sudo certutil "$delete" -d "sql:$nss" -n "$nick" ||
+                log "  NOTE: could not delete $nick from $nss; remove it with certutil by hand"
+        done
+    done
+fi
 
 # Delete the OVN DBs outright — a caller re-running setup-ovn.sh gets fresh
 # empty ones. This is what clears stale chassis rows and port bindings, which
@@ -393,10 +427,6 @@ fi
 if ! $KEEP_DATA && [ -d "$DATA_DIR/nats/jetstream" ]; then
     log "removing the JetStream store"
     run sudo rm -rf "$DATA_DIR/nats/jetstream"
-fi
-if ! $KEEP_DATA && [ -d "$DATA_DIR/sqs-store/jetstream" ]; then
-    log "removing the SQS store JetStream data"
-    run sudo rm -rf "$DATA_DIR/sqs-store/jetstream"
 fi
 
 # Directories may survive — a mountpoint cannot be removed, and neither can the

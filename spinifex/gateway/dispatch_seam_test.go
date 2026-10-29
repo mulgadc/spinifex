@@ -147,7 +147,7 @@ func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...disp
 		require.NoError(t, b.Register(reg))
 	}
 
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		NATSConn:       nc,
@@ -167,7 +167,7 @@ func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...disp
 			},
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	}
+	})
 
 	r := chi.NewRouter()
 	r.Use(audit.Middleware)
@@ -341,7 +341,7 @@ func TestDispatchSeam_NATSDownGetsSame503AsLegacy(t *testing.T) {
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(fakeJSONRegistration(&dispatchCapture{})))
 
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Services: b.Build()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Services: b.Build()})
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxService, fakeJSONService)
@@ -368,7 +368,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 
 	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		Services:       b.Build(),
@@ -378,7 +378,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 				testAccessKey: {AccessKeyID: testAccessKey, SecretAccessKey: encryptedSecret, UserName: "root", Status: "Active"},
 			},
 		},
-	}
+	})
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())

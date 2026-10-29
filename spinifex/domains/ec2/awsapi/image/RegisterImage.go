@@ -2,9 +2,9 @@ package image
 
 import (
 	"context"
-	"errors"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -27,72 +27,84 @@ var validRegisterImageBootModes = map[string]bool{
 }
 
 // ValidateRegisterImageInput rejects inputs that ask for behaviour spinifex
-// doesn't have (PV, S3 bundles, kernel/ramdisk, IMDS/TPM/ENA hints) rather
-// than silently discarding them. Registration is pointer-only: caller supplies
-// a snapshot and we write a config.json that references it.
+// doesn't have (PV, S3 bundles, kernel/ramdisk, IMDS/TPM hints) rather than
+// silently discarding them. Registration is pointer-only: caller supplies a
+// snapshot and we write a config.json that references it.
 func ValidateRegisterImageInput(input *ec2.RegisterImageInput) error {
 	if input == nil {
-		return errors.New(awserrors.ErrorMissingParameter)
+		return awserrors.Errorf(awserrors.ErrorMissingParameter, "The request must contain the parameter Name")
 	}
 
 	if input.Name == nil || *input.Name == "" {
-		return errors.New(awserrors.ErrorMissingParameter)
+		return missingParam("Name")
 	}
 	if n := len(*input.Name); n < 3 || n > 128 {
-		return errors.New(awserrors.ErrorInvalidAMINameMalformed)
+		return invalidParam(awserrors.ErrorInvalidAMINameMalformed, "Name", *input.Name, "AMI names must be between 3 and 128 characters long.")
 	}
 
-	if input.ImageLocation != nil && *input.ImageLocation != "" {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	if aws.StringValue(input.ImageLocation) != "" {
+		return unsupportedParam("ImageLocation", *input.ImageLocation)
 	}
 
-	if input.Architecture != nil && *input.Architecture != "" {
-		if !validRegisterImageArchitectures[*input.Architecture] {
-			return errors.New(awserrors.ErrorInvalidParameterValue)
-		}
+	if arch := aws.StringValue(input.Architecture); arch != "" && !validRegisterImageArchitectures[arch] {
+		return invalidParam(awserrors.ErrorInvalidParameterValue, "Architecture", arch, "Supported values are x86_64, arm64 and i386.")
 	}
 
-	if input.VirtualizationType != nil && *input.VirtualizationType != "" && *input.VirtualizationType != "hvm" {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	if virt := aws.StringValue(input.VirtualizationType); virt != "" && virt != "hvm" {
+		return invalidParam(awserrors.ErrorInvalidParameterValue, "VirtualizationType", virt, "Only hvm is supported.")
 	}
 
-	if input.BootMode != nil && *input.BootMode != "" {
-		if !validRegisterImageBootModes[*input.BootMode] {
-			return errors.New(awserrors.ErrorInvalidParameterValue)
-		}
+	if mode := aws.StringValue(input.BootMode); mode != "" && !validRegisterImageBootModes[mode] {
+		return invalidParam(awserrors.ErrorInvalidParameterValue, "BootMode", mode, "Supported values are bios, uefi and uefi-preferred.")
 	}
-	if input.KernelId != nil && *input.KernelId != "" {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	if aws.StringValue(input.KernelId) != "" {
+		return unsupportedParam("KernelId", *input.KernelId)
 	}
-	if input.RamdiskId != nil && *input.RamdiskId != "" {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	if aws.StringValue(input.RamdiskId) != "" {
+		return unsupportedParam("RamdiskId", *input.RamdiskId)
 	}
-	if input.TpmSupport != nil && *input.TpmSupport != "" {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	if aws.StringValue(input.TpmSupport) != "" {
+		return unsupportedParam("TpmSupport", *input.TpmSupport)
 	}
-	if input.ImdsSupport != nil && *input.ImdsSupport != "" {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	if aws.StringValue(input.ImdsSupport) != "" {
+		return unsupportedParam("ImdsSupport", *input.ImdsSupport)
 	}
-	if input.EnaSupport != nil {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	if input.SriovNetSupport != nil && *input.SriovNetSupport != "" {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	if aws.StringValue(input.SriovNetSupport) != "" {
+		return unsupportedParam("SriovNetSupport", *input.SriovNetSupport)
 	}
 
 	if len(input.BlockDeviceMappings) == 0 {
-		return errors.New(awserrors.ErrorMissingParameter)
+		return missingParam("BlockDeviceMapping")
 	}
 
 	root := selectRootBlockDeviceMapping(input.BlockDeviceMappings, input.RootDeviceName)
 	if root == nil || root.Ebs == nil || root.Ebs.SnapshotId == nil || *root.Ebs.SnapshotId == "" {
-		return errors.New(awserrors.ErrorMissingParameter)
+		if name := aws.StringValue(input.RootDeviceName); name != "" && root == nil {
+			return awserrors.Errorf(awserrors.ErrorMissingParameter,
+				"Value (%s) for parameter RootDeviceName is invalid. No block device mapping has that DeviceName.", name)
+		}
+		return missingParam("SnapshotId in the root block device mapping")
 	}
 	if !strings.HasPrefix(*root.Ebs.SnapshotId, "snap-") {
-		return errors.New(awserrors.ErrorInvalidSnapshotIDMalformed)
+		return invalidParam(awserrors.ErrorInvalidSnapshotIDMalformed, "SnapshotId", *root.Ebs.SnapshotId, "Expected: 'snap-...'.")
 	}
 
 	return nil
+}
+
+// missingParam is EC2's wording for an absent required parameter.
+func missingParam(name string) error {
+	return awserrors.Errorf(awserrors.ErrorMissingParameter, "The request must contain the parameter %s", name)
+}
+
+// invalidParam is EC2's wording for a parameter value it refuses.
+func invalidParam(code, name, value, reason string) error {
+	return awserrors.Errorf(code, "Value (%s) for parameter %s is invalid. %s", value, name, reason)
+}
+
+// unsupportedParam refuses a parameter spinifex has no behaviour for.
+func unsupportedParam(name, value string) error {
+	return invalidParam(awserrors.ErrorInvalidParameterValue, name, value, name+" is not supported.")
 }
 
 // selectRootBlockDeviceMapping returns the BDM matching RootDeviceName if set,

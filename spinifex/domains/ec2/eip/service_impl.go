@@ -181,7 +181,7 @@ func (s *EIPServiceImpl) ReleaseAddress(ctx context.Context, input *ec2.ReleaseA
 
 	// Cannot release an EIP that is still associated.
 	if record.State == "associated" {
-		return nil, errors.New(awserrors.ErrorInvalidAddressLocked)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidIPAddressInUse, "Address %s is in use.", record.PublicIp)
 	}
 
 	// Release IP back to IPAM pool. User-driven release of an already-detached

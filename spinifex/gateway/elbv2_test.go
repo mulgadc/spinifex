@@ -15,22 +15,22 @@ import (
 func setupELBv2Request(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxService, "elasticloadbalancing")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 	return req.WithContext(ctx)
 }
 
 func TestELBv2Request_MissingAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	w := httptest.NewRecorder()
-	err := gw.ELBv2_Request(w, setupELBv2Request(""))
+	err := gw.serveELBv2(w, setupELBv2Request(""))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
 }
 
 func TestELBv2Request_UnknownAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	w := httptest.NewRecorder()
-	err := gw.ELBv2_Request(w, setupELBv2Request("Action=FakeAction"))
+	err := gw.serveELBv2(w, setupELBv2Request("Action=FakeAction"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
@@ -77,12 +77,12 @@ func TestELBv2ActionsMap_AllActionsRegistered(t *testing.T) {
 		"DescribeAccountLimits",
 	}
 
+	served := elbv2ServedActions()
 	for _, action := range expectedActions {
-		_, ok := elbv2Actions[action]
-		assert.True(t, ok, "action %q should be registered in elbv2Actions", action)
+		assert.Contains(t, served, action, "action %q should be served", action)
 	}
 
-	assert.Len(t, elbv2Actions, len(expectedActions), "elbv2Actions should have exactly %d actions", len(expectedActions))
+	assert.Len(t, served, len(expectedActions), "ELBv2 should serve exactly %d actions", len(expectedActions))
 }
 
 func TestELBv2ActionsMap_UnknownActionNotRegistered(t *testing.T) {
@@ -92,7 +92,6 @@ func TestELBv2ActionsMap_UnknownActionNotRegistered(t *testing.T) {
 	}
 
 	for _, action := range unknownActions {
-		_, ok := elbv2Actions[action]
-		assert.False(t, ok, "action %q should not be in elbv2Actions", action)
+		assert.NotContains(t, elbv2ServedActions(), action, "action %q should not be served", action)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -51,11 +52,11 @@ func quotaTestGateway(t *testing.T) (*GatewayConfig, string) {
 	}, nil)
 	quota.SetOverrides(kv)
 
-	return &GatewayConfig{
+	return withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		IAMService:     &quotaIAMService{known: account},
 		Quota:          quota,
-	}, account
+	}), account
 }
 
 func quotaRequestBody(t *testing.T, req AccountQuotaRequest) []byte {
@@ -83,7 +84,7 @@ func TestAdminGetAccountQuotaInherits(t *testing.T) {
 // named changed.
 func TestAdminPutThenGetAccountQuota(t *testing.T) {
 	gw, account := quotaTestGateway(t)
-	ctx := context.WithValue(t.Context(), ctxIdentity, "operator")
+	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
 
 	output, err := gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
 		AccountID: account,
@@ -109,7 +110,7 @@ func TestAdminPutThenGetAccountQuota(t *testing.T) {
 // Clearing must return the account to the configured limits.
 func TestAdminPutAccountQuotaClears(t *testing.T) {
 	gw, account := quotaTestGateway(t)
-	ctx := context.WithValue(t.Context(), ctxIdentity, "operator")
+	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
 
 	_, err := gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
 		AccountID: account,
@@ -156,7 +157,7 @@ func TestAdminAccountQuotaRejectsBadRequests(t *testing.T) {
 // A gateway with quotas disabled has no override bucket; the admin surface must
 // report that rather than pretend the write landed.
 func TestAdminAccountQuotaWithoutQuotaService(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: &quotaIAMService{known: "000000000042"}}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: &quotaIAMService{known: "000000000042"}})
 
 	_, err := gw.adminGetAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: "000000000042"}))
 	require.Error(t, err)
@@ -202,8 +203,8 @@ func TestAccountQuotaResponseExplicitZeroIsAnOverride(t *testing.T) {
 func TestAccountQuotaMethodsAreRegistered(t *testing.T) {
 	require.True(t, adminMethods["GetAccountQuota"])
 	require.True(t, adminMethods["PutAccountQuota"])
-	require.Contains(t, AdminMethodNames(), "GetAccountQuota")
-	require.Contains(t, AdminMethodNames(), "PutAccountQuota")
+	require.Contains(t, operatorv1.AdminMethodNames(), "GetAccountQuota")
+	require.Contains(t, operatorv1.AdminMethodNames(), "PutAccountQuota")
 }
 
 // quotaStubChecker answers AccountTerminating from a fixed set, so these
@@ -221,7 +222,7 @@ func (c *quotaStubChecker) AccountTerminating(_ context.Context, accountID strin
 // type, the stored record stays active, and the response never shows state.
 func TestAdminRequestCannotCarryState(t *testing.T) {
 	gw, account := quotaTestGateway(t)
-	ctx := context.WithValue(t.Context(), ctxIdentity, "operator")
+	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
 
 	body := []byte(`{"accountId":"` + account + `","overrides":{"vcpus":32,"state":"sealed"}}`)
 	output, err := gw.adminPutAccountQuota(ctx, body)
@@ -251,7 +252,7 @@ func TestAdminQuotaReadsMapBlocked(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, awserrors.ErrorBlocked, err.Error())
 
-	ctx := context.WithValue(t.Context(), ctxIdentity, "operator")
+	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
 	_, err = gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
 		AccountID: account, Overrides: admissionquota.Overrides{VCPUs: quotaPtr(8)},
 	}))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -41,23 +42,7 @@ const (
 // answered inline, so it must not hold an HTTP request for minutes.
 const accountDeletionInventoryTimeout = 2 * time.Minute
 
-// Deletion job states.
-const (
-	DeletionStateRunning   = "RUNNING"
-	DeletionStateCompleted = "COMPLETED"
-	DeletionStateFailed    = "FAILED"
-)
-
 var accountIDRE = regexp.MustCompile(`^[0-9]{12}$`)
-
-// DeleteAccountRequest is the /admin/DeleteAccount request body.
-type DeleteAccountRequest struct {
-	AccountID   string `json:"accountId"`
-	AccountName string `json:"accountName"`
-	ClientToken string `json:"clientToken"`
-	Force       bool   `json:"force,omitempty"`
-	DryRun      bool   `json:"dryRun,omitempty"`
-}
 
 // DeleteAccountResponse acknowledges a started (or replayed) teardown. The
 // teardown itself runs in the background: it takes minutes, and holding the
@@ -68,11 +53,6 @@ type DeleteAccountResponse struct {
 	State      string                  `json:"state"`
 	DryRun     bool                    `json:"dryRun"`
 	Inventory  *accountteardown.Result `json:"inventory,omitempty"`
-}
-
-// DescribeAccountDeletionRequest is the /admin/DescribeAccountDeletion body.
-type DescribeAccountDeletionRequest struct {
-	AccountID string `json:"accountId"`
 }
 
 // accountDeletionJob is the stored progress of one teardown. It is written
@@ -98,7 +78,7 @@ type accountDeletionJob struct {
 
 // adminDeleteAccount starts a teardown, or answers a dry run inline.
 func (gw *GatewayConfig) adminDeleteAccount(ctx context.Context, body []byte) (any, error) {
-	var req DeleteAccountRequest
+	var req operatorv1.DeleteAccountRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		slog.Debug("DeleteAccount: malformed JSON body", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
@@ -171,7 +151,7 @@ func (gw *GatewayConfig) adminDeleteAccount(ctx context.Context, body []byte) (a
 // adminDescribeAccountDeletion returns the stored job for an account, including
 // one that finished — the record outlives the account it describes.
 func (gw *GatewayConfig) adminDescribeAccountDeletion(ctx context.Context, body []byte) (any, error) {
-	var req DescribeAccountDeletionRequest
+	var req operatorv1.DescribeAccountDeletionRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		slog.Debug("DescribeAccountDeletion: malformed JSON body", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
@@ -199,22 +179,6 @@ func (gw *GatewayConfig) adminDescribeAccountDeletion(ctx context.Context, body 
 	return job, nil
 }
 
-// AccountSummary is one row of /admin/ListAccounts. It carries no credential
-// material: the caller can already create and delete accounts, but that is no
-// reason for a listing to hand out keys.
-type AccountSummary struct {
-	AccountID   string `json:"accountId"`
-	AccountName string `json:"accountName"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"createdAt,omitempty"`
-}
-
-// ListAccountsResponse is the /admin/ListAccounts success body.
-type ListAccountsResponse struct {
-	Accounts []AccountSummary `json:"accounts"`
-	Count    int              `json:"count"`
-}
-
 // adminListAccounts enumerates every account. It takes no parameters: the
 // account cap bounds the listing, so paging would be complexity with no payer.
 func (gw *GatewayConfig) adminListAccounts(_ context.Context, _ []byte) (any, error) {
@@ -229,12 +193,12 @@ func (gw *GatewayConfig) adminListAccounts(_ context.Context, _ []byte) (any, er
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	response := &ListAccountsResponse{Accounts: make([]AccountSummary, 0, len(accounts))}
+	response := &operatorv1.ListAccountsResponse{Accounts: make([]operatorv1.AccountSummary, 0, len(accounts))}
 	for _, account := range accounts {
 		if account == nil {
 			continue
 		}
-		response.Accounts = append(response.Accounts, AccountSummary{
+		response.Accounts = append(response.Accounts, operatorv1.AccountSummary{
 			AccountID:   account.AccountID,
 			AccountName: account.AccountName,
 			Status:      account.Status,
@@ -294,10 +258,10 @@ func (t *deletionTracker) finished(ctx context.Context, result *accountteardown.
 		t.job.Stages = result.Stages
 	}
 	if err != nil {
-		t.job.State = DeletionStateFailed
+		t.job.State = operatorv1.DeletionStateFailed
 		t.job.Error = err.Error()
 	} else {
-		t.job.State = DeletionStateCompleted
+		t.job.State = operatorv1.DeletionStateCompleted
 	}
 	t.job.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	accountID, state := t.job.AccountID, t.job.State
@@ -359,7 +323,7 @@ func (t *deletionTracker) persist(ctx context.Context) {
 func claimDeletionJob(
 	ctx context.Context,
 	jobs jetstream.KeyValue,
-	req *DeleteAccountRequest,
+	req *operatorv1.DeleteAccountRequest,
 ) (*accountDeletionJob, *accountDeletionJob, error) {
 	now := time.Now().UTC()
 	job := &accountDeletionJob{
@@ -367,7 +331,7 @@ func claimDeletionJob(
 		AccountID:   req.AccountID,
 		AccountName: req.AccountName,
 		ClientToken: req.ClientToken,
-		State:       DeletionStateRunning,
+		State:       operatorv1.DeletionStateRunning,
 		Force:       req.Force,
 		StartedAt:   now.Format(time.RFC3339),
 		UpdatedAt:   now.Format(time.RFC3339),
@@ -400,7 +364,7 @@ func claimDeletionJob(
 		return nil, nil, errors.New(awserrors.ErrorOperationInProgress)
 	}
 
-	if existing.State == DeletionStateRunning && !deletionJobStale(existing, now) {
+	if existing.State == operatorv1.DeletionStateRunning && !deletionJobStale(existing, now) {
 		return nil, nil, errors.New(awserrors.ErrorOperationInProgress)
 	}
 
@@ -421,7 +385,7 @@ func claimDeletionJob(
 func replayDeletionJob(
 	ctx context.Context,
 	jobs jetstream.KeyValue,
-	req *DeleteAccountRequest,
+	req *operatorv1.DeleteAccountRequest,
 ) (*accountDeletionJob, error) {
 	existing, err := readDeletionJob(ctx, jobs, req.AccountID)
 	if err != nil || existing == nil {
@@ -437,7 +401,7 @@ func replayDeletionJob(
 	// A finished teardown answers any token. The account is gone, so starting a
 	// second one would only fail on a missing account record — which is what a
 	// caller retrying under a fresh token would otherwise be told.
-	if existing.State == DeletionStateCompleted {
+	if existing.State == operatorv1.DeletionStateCompleted {
 		return existing, nil
 	}
 	return nil, nil
@@ -538,7 +502,7 @@ func isAccountNotFound(err error) bool {
 // validateDeleteAccountRequest rejects malformed input. Messages name the
 // offending field but never echo its value, which for accountName is a
 // customer email address.
-func validateDeleteAccountRequest(req *DeleteAccountRequest) error {
+func validateDeleteAccountRequest(req *operatorv1.DeleteAccountRequest) error {
 	req.AccountID = strings.TrimSpace(req.AccountID)
 	req.AccountName = strings.TrimSpace(req.AccountName)
 	req.ClientToken = strings.TrimSpace(req.ClientToken)

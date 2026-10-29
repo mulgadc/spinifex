@@ -10,9 +10,9 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"log/slog"
 	"maps"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,17 +33,20 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -59,6 +62,10 @@ var serviceName = "awsgw"
 // OIDCJWKSReader is wired into STS here, not beside its own definition in
 // domains/eks/cluster, because domains/eks/cluster must not import domains/sts.
 var _ stsdomain.ClusterJWKSResolver = (*ekscluster.OIDCJWKSReader)(nil)
+
+// OIDCPublisher is wired into the gateway here for the same reason: the EKS
+// domain cannot import gateway.
+var _ gateway.OIDCPublisher = (*ekscluster.OIDCPublisher)(nil)
 
 // AccountStatusReader also serves as the quota override seal's TERMINATING
 // precondition, wired here because domains/iam must not import
@@ -345,16 +352,7 @@ func launchService(config *config.ClusterConfig) error {
 	// fall back to AdvertiseIP, the off-host dial target carried in the server cert
 	// SANs (the same host EKS workers dial), so the returned URI resolves without
 	// DNS. Only when neither is concrete does the per-account parity name apply.
-	registryHost, registryPort := "", ""
-	if host, port, err := net.SplitHostPort(nodeConfig.AWSGW.Host); err == nil {
-		registryPort = port
-		if isConcreteRegistryHost(host) {
-			registryHost = host
-		}
-	}
-	if registryHost == "" && isConcreteRegistryHost(nodeConfig.AdvertiseIP) {
-		registryHost = nodeConfig.AdvertiseIP
-	}
+	registryHost, registryPort := ecr.RegistryAddress(nodeConfig.AWSGW.Host, nodeConfig.AdvertiseIP)
 	ecrEndpoint := awsapi.RepositoryEndpoint{
 		Region:         nodeConfig.Region,
 		ServicesDomain: config.AWS.ServicesDomain,
@@ -499,8 +497,10 @@ func launchService(config *config.ClusterConfig) error {
 		IAMService:              iamService,
 		BucketStore:             objStore,
 		STSService:              stsService,
+		Credentials:             credverify.New(iamService, stsService),
 		Version:                 version,
 		Commit:                  commit,
+		OIDC:                    ekscluster.NewOIDCPublisher(jwksJS),
 		ECRRegistry:             ecrRegistry,
 		ECRTokenIssuer:          ecrIssuer,
 		ECRTokenVerifier:        ecrauth.NewVerifier(verifyKeys, ecrAudience),
@@ -518,7 +518,6 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockAgentKB:          bedrockAgentKB,
 		BedrockAgentDataSources: bedrockAgentDataSources,
 		BedrockAgentVector:      bedrockAgentVector,
-		TaggingResources:        newTaggingAggregator(natsConn, nodeConfig.Region),
 	}
 
 	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{
@@ -530,10 +529,9 @@ func launchService(config *config.ClusterConfig) error {
 	})
 	acmControlPlane := acmawsapi.NewRegistration(acmawsapi.Deps{NATS: natsConn})
 	route53ControlPlane := route53awsapi.NewRegistration(route53awsapi.Deps{NATS: natsConn})
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane); err != nil {
-		return fmt.Errorf("awsgw: %w", err)
-	}
-
+	taggingControlPlane := taggingawsapi.NewRegistration(taggingawsapi.Deps{
+		Aggregator: newTaggingAggregator(natsConn, nodeConfig.Region),
+	})
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
 	// until their tokens expire. The rotator keeps the issuer/verifier current as
 	// keys roll. Bound to the same lifetime context as the STS janitor.
@@ -587,6 +585,23 @@ func launchService(config *config.ClusterConfig) error {
 	// Bedrock token quota reads the stream-fed usage counters built above,
 	// independent of whether the standing-infra dimensions are enabled.
 	gw.Quota.SetBedrockUsage(bedrockUsage)
+
+	// Composed after the quota service because ELBv2 enforces and reports the
+	// load balancer cap through it.
+	elbv2ControlPlane := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: natsConn, Quota: gw.Quota})
+	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
+		Version:     gw.Version,
+		Commit:      gw.Commit,
+		NATS:        natsConn,
+		RootCAs:     rootCAs,
+		ActiveNodes: gw.DiscoverActiveNodes,
+		ModelAccess: bedrockAccess,
+		Credentials: bedrockCredentials,
+		Access:      bedrockAccess,
+	})
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, operatorControlPlane); err != nil {
+		return fmt.Errorf("awsgw: %w", err)
+	}
 
 	// Leader-locked vCPU reconcile: the only path that lowers the counter,
 	// recomputing it from the running-plus-stopped sweep so out-of-band
@@ -749,13 +764,6 @@ func findBootstrapFile(baseDir string) string {
 		}
 	}
 	return candidates[0]
-}
-
-// isConcreteRegistryHost reports whether host is a dialable address to advertise
-// as the ECR registry host — a non-empty, non-unspecified literal. The wildcard
-// bind addresses are rejected so the registry URI never hands back 0.0.0.0/::.
-func isConcreteRegistryHost(host string) bool {
-	return host != "" && host != "0.0.0.0" && host != "::"
 }
 
 // parseBedrockEndpoints parses a comma-separated list of modelId=baseURL pairs

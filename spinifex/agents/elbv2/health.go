@@ -22,6 +22,11 @@ type HealthReport struct {
 	Servers []ServerStatus `json:"servers"`
 }
 
+// FailoverServerSuffix marks the unchecked backup copy of a server that HAProxy
+// uses only when every checked server is down. '.' cannot appear in a sanitized
+// target name, so a copy never collides with a real server.
+const FailoverServerSuffix = ".fo"
+
 // queryHAProxyStats reads backend server health from the HAProxy stats socket.
 // Parses CSV "show stat" output; cols 0/1/17 = pxname/svname/status.
 func queryHAProxyStats(socketPath string) ([]ServerStatus, error) {
@@ -53,7 +58,7 @@ func queryHAProxyStats(socketPath string) ([]ServerStatus, error) {
 		}
 
 		svname := fields[1]
-		if svname == "FRONTEND" || svname == "BACKEND" {
+		if svname == "FRONTEND" || svname == "BACKEND" || strings.HasSuffix(svname, FailoverServerSuffix) {
 			continue
 		}
 

@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func validRegisterImageInput() *ec2.RegisterImageInput {
@@ -33,30 +34,37 @@ func TestValidateRegisterImageInput(t *testing.T) {
 		input   *ec2.RegisterImageInput
 		wantErr bool
 		errMsg  string
+		// wantIn is the text the message must carry, so the caller can see which
+		// parameter was refused.
+		wantIn string
 	}{
 		{
 			name:    "NilInput",
 			input:   nil,
 			wantErr: true,
 			errMsg:  awserrors.ErrorMissingParameter,
+			wantIn:  "parameter Name",
 		},
 		{
 			name:    "MissingName",
 			mutate:  func(i *ec2.RegisterImageInput) { i.Name = nil },
 			wantErr: true,
 			errMsg:  awserrors.ErrorMissingParameter,
+			wantIn:  "parameter Name",
 		},
 		{
 			name:    "EmptyName",
 			mutate:  func(i *ec2.RegisterImageInput) { i.Name = aws.String("") },
 			wantErr: true,
 			errMsg:  awserrors.ErrorMissingParameter,
+			wantIn:  "parameter Name",
 		},
 		{
 			name:    "ShortName",
 			mutate:  func(i *ec2.RegisterImageInput) { i.Name = aws.String("ab") },
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidAMINameMalformed,
+			wantIn:  "for parameter Name is invalid",
 		},
 		{
 			name: "LongName",
@@ -69,12 +77,14 @@ func TestValidateRegisterImageInput(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidAMINameMalformed,
+			wantIn:  "for parameter Name is invalid",
 		},
 		{
 			name:    "MissingBlockDeviceMappings",
 			mutate:  func(i *ec2.RegisterImageInput) { i.BlockDeviceMappings = nil },
 			wantErr: true,
 			errMsg:  awserrors.ErrorMissingParameter,
+			wantIn:  "parameter BlockDeviceMapping",
 		},
 		{
 			name: "MissingSnapshotIdInRootBDM",
@@ -83,6 +93,7 @@ func TestValidateRegisterImageInput(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  awserrors.ErrorMissingParameter,
+			wantIn:  "parameter SnapshotId",
 		},
 		{
 			name: "MalformedSnapshotId",
@@ -91,6 +102,7 @@ func TestValidateRegisterImageInput(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidSnapshotIDMalformed,
+			wantIn:  "Value (not-a-snapshot) for parameter SnapshotId is invalid",
 		},
 		{
 			name: "RootDeviceNameWithNoMatchingBDM",
@@ -99,6 +111,7 @@ func TestValidateRegisterImageInput(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  awserrors.ErrorMissingParameter,
+			wantIn:  "Value (/dev/xvda) for parameter RootDeviceName is invalid",
 		},
 		{
 			name: "InvalidArchitecture",
@@ -107,6 +120,7 @@ func TestValidateRegisterImageInput(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidParameterValue,
+			wantIn:  "Value (riscv) for parameter Architecture is invalid",
 		},
 		{
 			name: "ParavirtualVirtualizationRejected",
@@ -115,6 +129,7 @@ func TestValidateRegisterImageInput(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidParameterValue,
+			wantIn:  "Value (paravirtual) for parameter VirtualizationType is invalid",
 		},
 		{
 			name: "ImageLocationRejected",
@@ -123,6 +138,7 @@ func TestValidateRegisterImageInput(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidParameterValue,
+			wantIn:  "for parameter ImageLocation is invalid. ImageLocation is not supported",
 		},
 		{
 			name:    "BootModeAcceptedBios",
@@ -144,42 +160,52 @@ func TestValidateRegisterImageInput(t *testing.T) {
 			mutate:  func(i *ec2.RegisterImageInput) { i.BootMode = aws.String("legacy-bios") },
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidParameterValue,
+			wantIn:  "Value (legacy-bios) for parameter BootMode is invalid",
 		},
 		{
 			name:    "KernelIdRejected",
 			mutate:  func(i *ec2.RegisterImageInput) { i.KernelId = aws.String("aki-123") },
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidParameterValue,
+			wantIn:  "Value (aki-123) for parameter KernelId is invalid. KernelId is not supported",
 		},
 		{
 			name:    "RamdiskIdRejected",
 			mutate:  func(i *ec2.RegisterImageInput) { i.RamdiskId = aws.String("ari-123") },
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidParameterValue,
+			wantIn:  "Value (ari-123) for parameter RamdiskId is invalid. RamdiskId is not supported",
 		},
 		{
 			name:    "TpmSupportRejected",
 			mutate:  func(i *ec2.RegisterImageInput) { i.TpmSupport = aws.String("v2.0") },
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidParameterValue,
+			wantIn:  "Value (v2.0) for parameter TpmSupport is invalid. TpmSupport is not supported",
 		},
 		{
 			name:    "ImdsSupportRejected",
 			mutate:  func(i *ec2.RegisterImageInput) { i.ImdsSupport = aws.String("v2.0") },
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidParameterValue,
+			wantIn:  "Value (v2.0) for parameter ImdsSupport is invalid. ImdsSupport is not supported",
 		},
 		{
-			name:    "EnaSupportRejected",
+			name:    "EnaSupportAcceptedTrue",
 			mutate:  func(i *ec2.RegisterImageInput) { i.EnaSupport = aws.Bool(true) },
-			wantErr: true,
-			errMsg:  awserrors.ErrorInvalidParameterValue,
+			wantErr: false,
+		},
+		{
+			name:    "EnaSupportAcceptedFalse",
+			mutate:  func(i *ec2.RegisterImageInput) { i.EnaSupport = aws.Bool(false) },
+			wantErr: false,
 		},
 		{
 			name:    "SriovNetSupportRejected",
 			mutate:  func(i *ec2.RegisterImageInput) { i.SriovNetSupport = aws.String("simple") },
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidParameterValue,
+			wantIn:  "Value (simple) for parameter SriovNetSupport is invalid. SriovNetSupport is not supported",
 		},
 		{
 			name: "ValidWithExplicitArch",
@@ -230,8 +256,12 @@ func TestValidateRegisterImageInput(t *testing.T) {
 
 			err := ValidateRegisterImageInput(input)
 			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Equal(t, tt.errMsg, err.Error())
+				require.Error(t, err)
+				code, msg, ok := awserrors.ResolveErrorDetail(err)
+				require.True(t, ok, "the error must carry a registered code")
+				assert.Equal(t, tt.errMsg, code)
+				assert.NotEmpty(t, msg, "the response must say what was refused")
+				assert.Contains(t, msg, tt.wantIn)
 			} else {
 				assert.NoError(t, err)
 			}
@@ -243,8 +273,10 @@ func TestRegisterImage_GatewayValidationFailureReturnsEarly(t *testing.T) {
 	// nil natsConn is fine here: validation rejects the input before any
 	// NATS round-trip is attempted, so we exercise the early-exit path.
 	_, err := RegisterImage(context.Background(), &ec2.RegisterImageInput{}, nil, "000000000001")
-	assert.Error(t, err)
-	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+	require.Error(t, err)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorMissingParameter, code)
 }
 
 func TestSelectRootBlockDeviceMapping_NoRootDeviceName(t *testing.T) {

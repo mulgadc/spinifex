@@ -26,13 +26,13 @@ func newImageGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
 	meta := ecrdomain.NewMemoryMetaStore()
 	reg := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), meta, ecrTestAccount)
-	return withECR(&GatewayConfig{
+	return withECR(withVerifier(&GatewayConfig{
 		ECRRegistry:    reg,
 		Region:         ecrTestRegion,
 		InternalSuffix: ecrTestSuffix,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
-	}, awsapi.Deps{Registry: awsapi.NewRegistryActionService(reg, reg, reg, reg), LifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg)})
+	}), awsapi.Deps{Registry: awsapi.NewRegistryActionService(reg, reg, reg, reg), LifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg)})
 }
 
 // seedGatewayRepo creates the repository metadata so push/PutImage handlers —
@@ -57,7 +57,7 @@ func seedTaggedImage(t *testing.T, gw *GatewayConfig, repo, tag string) string {
 func imageReq(t *testing.T, action, body string) *http.Request {
 	t.Helper()
 	req := setupECRRequest(awsapi.TargetPrefix+"."+action, body)
-	return req.WithContext(context.WithValue(req.Context(), ctxAccountID, ecrTestAccount))
+	return req.WithContext(withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount))
 }
 
 func callImage(t *testing.T, gw *GatewayConfig, action, body string) (*httptest.ResponseRecorder, error) {
@@ -300,7 +300,7 @@ func TestImageHandlers_GuardRails(t *testing.T) {
 	assert.Equal(t, "InternalError", err.Error())
 
 	// A missing registry-action composition -> ServerInternal.
-	bare := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	bare := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	err = bare.serveECR(httptest.NewRecorder(), imageReq(t, "ListImages", `{"repositoryName":"team/app"}`))
 	require.Error(t, err)
 	assert.Equal(t, "ServerInternal", err.Error())

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"testing"
 
@@ -94,6 +95,7 @@ func TestLifecyclePreview_MissingComposition(t *testing.T) {
 		Region:         ecrTestRegion,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
+		Credentials:    credverify.New(allowAllIAMService(), nil),
 	}
 
 	_, err := callImage(t, gw, "StartLifecyclePolicyPreview", previewBody("team/app", previewExpireOldest))

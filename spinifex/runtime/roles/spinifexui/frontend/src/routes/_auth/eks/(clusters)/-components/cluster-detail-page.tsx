@@ -1,3 +1,4 @@
+import type { Cluster } from "@aws-sdk/client-eks"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { AlertTriangle, Trash2 } from "lucide-react"
@@ -37,6 +38,54 @@ function statusVariant(status: string | undefined) {
       return "secondary" as const
     }
   }
+}
+
+function HealthIssuesBadge({ count }: { count: number }) {
+  if (count === 0) {
+    return null
+  }
+
+  return (
+    <Badge variant="destructive">
+      <AlertTriangle className="size-3" />
+      {count === 1 ? "1 health issue" : `${count} health issues`}
+    </Badge>
+  )
+}
+
+function ClusterOverviewCard({ cluster }: { cluster: Cluster | undefined }) {
+  const healthIssues = cluster?.health?.issues ?? []
+
+  const health =
+    healthIssues.length > 0
+      ? healthIssues
+          .map((issue) => issue.message)
+          .filter(Boolean)
+          .join("; ")
+      : "OK"
+
+  return (
+    <DetailCard>
+      <DetailCard.Header>Cluster</DetailCard.Header>
+      <DetailCard.Content>
+        <DetailRow label="ARN" value={cluster?.arn} />
+        <DetailRow label="Status" value={cluster?.status} />
+        <DetailRow label="Health" value={health} />
+        <DetailRow label="Kubernetes version" value={cluster?.version} />
+        <DetailRow label="Platform version" value={cluster?.platformVersion} />
+        <DetailRow label="Endpoint" value={cluster?.endpoint} />
+        <DetailRow
+          label="OIDC issuer"
+          value={cluster?.identity?.oidc?.issuer}
+        />
+        <DetailRow label="VPC" value={cluster?.resourcesVpcConfig?.vpcId} />
+        <DetailRow
+          label="Created at"
+          value={formatDateTime(cluster?.createdAt)}
+        />
+      </DetailCard.Content>
+    </DetailCard>
+  )
 }
 
 export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
@@ -97,14 +146,7 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
             <Badge variant={statusVariant(cluster?.status)}>
               {cluster?.status ?? "UNKNOWN"}
             </Badge>
-            {healthIssues.length > 0 && (
-              <Badge variant="destructive">
-                <AlertTriangle className="size-3" />
-                {healthIssues.length === 1
-                  ? "1 health issue"
-                  : `${healthIssues.length} health issues`}
-              </Badge>
-            )}
+            <HealthIssuesBadge count={healthIssues.length} />
           </div>
         }
         subtitle="Cluster Details"
@@ -129,42 +171,7 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
         </TabsList>
 
         <TabsPanel value="overview">
-          <DetailCard>
-            <DetailCard.Header>Cluster</DetailCard.Header>
-            <DetailCard.Content>
-              <DetailRow label="ARN" value={cluster?.arn} />
-              <DetailRow label="Status" value={cluster?.status} />
-              <DetailRow
-                label="Health"
-                value={
-                  healthIssues.length > 0
-                    ? healthIssues
-                        .map((issue) => issue.message)
-                        .filter(Boolean)
-                        .join("; ")
-                    : "OK"
-                }
-              />
-              <DetailRow label="Kubernetes version" value={cluster?.version} />
-              <DetailRow
-                label="Platform version"
-                value={cluster?.platformVersion}
-              />
-              <DetailRow label="Endpoint" value={cluster?.endpoint} />
-              <DetailRow
-                label="OIDC issuer"
-                value={cluster?.identity?.oidc?.issuer}
-              />
-              <DetailRow
-                label="VPC"
-                value={cluster?.resourcesVpcConfig?.vpcId}
-              />
-              <DetailRow
-                label="Created at"
-                value={formatDateTime(cluster?.createdAt)}
-              />
-            </DetailCard.Content>
-          </DetailCard>
+          <ClusterOverviewCard cluster={cluster} />
         </TabsPanel>
 
         <TabsPanel value="compute">

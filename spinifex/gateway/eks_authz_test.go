@@ -37,7 +37,7 @@ func dispatchEKS(t *testing.T, gw *GatewayConfig, method, path, body string) err
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
-	ctx = context.WithValue(ctx, ctxAccountID, authzAccountID)
+	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
 	req = withTestIdentity(req.WithContext(ctx))
 	return gw.EKS_Request(httptest.NewRecorder(), req)
 }
@@ -155,7 +155,7 @@ func TestEKSRequest_TagResourceScopesTheNamedResource(t *testing.T) {
 func TestEKSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
 	req := withTestIdentity(httptest.NewRequest(http.MethodGet, "/clusters", nil).
-		WithContext(context.WithValue(context.Background(), ctxAccountID, authzAccountID)))
+		WithContext(withPrincipalField(context.Background(), fieldAccountID, authzAccountID)))
 
 	for _, action := range eksawsapi.ScopedActions() {
 		t.Run(action, func(t *testing.T) {
@@ -188,12 +188,12 @@ func dispatchEKSAsCPAgent(t *testing.T, gw *GatewayConfig, path, instanceID stri
 	roleName := ekscluster.CPInstanceRoleName
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
-	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.GlobalAccountID)
-	ctx = context.WithValue(ctx, ctxIdentity, instanceID)
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeAssumedRole)
-	ctx = context.WithValue(ctx, ctxUnderlyingRoleARN,
+	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
+	ctx = withPrincipalField(ctx, fieldIdentity, instanceID)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
+	ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN,
 		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+roleName)
-	ctx = context.WithValue(ctx, ctxAssumedRoleARN,
+	ctx = withPrincipalField(ctx, fieldAssumedRoleARN,
 		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+roleName+"/"+instanceID)
 	return gw.EKS_Request(httptest.NewRecorder(), req.WithContext(ctx))
 }
@@ -293,28 +293,29 @@ func (f *publishFixture) publish(t *testing.T, ctx context.Context, cluster, bod
 func (f *publishFixture) requireNothingPublished(t *testing.T) {
 	t.Helper()
 	require.NoError(t, f.nc.Flush())
-	msg, err := f.sub.NextMsg(100 * time.Millisecond)
-	require.ErrorIs(t, err, nats.ErrTimeout, "relayed onto %v", msg)
+	pending, _, err := f.sub.Pending()
+	require.NoError(t, err)
+	require.Zero(t, pending, "relayed onto eks.>")
 }
 
 // cpAgentContext is the auth context a CP VM's IMDS credentials produce.
 func cpAgentContext(instanceID string) context.Context {
 	roleName := ekscluster.CPInstanceRoleName
 	ctx := context.WithValue(context.Background(), ctxService, "eks")
-	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.GlobalAccountID)
-	ctx = context.WithValue(ctx, ctxIdentity, instanceID)
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeAssumedRole)
-	ctx = context.WithValue(ctx, ctxUnderlyingRoleARN,
+	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
+	ctx = withPrincipalField(ctx, fieldIdentity, instanceID)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
+	ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN,
 		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+roleName)
-	return context.WithValue(ctx, ctxAssumedRoleARN,
+	return withPrincipalField(ctx, fieldAssumedRoleARN,
 		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+roleName+"/"+instanceID)
 }
 
 func userContext(accountID, name string) context.Context {
 	ctx := context.WithValue(context.Background(), ctxService, "eks")
-	ctx = context.WithValue(ctx, ctxAccountID, accountID)
-	ctx = context.WithValue(ctx, ctxIdentity, name)
-	return context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldAccountID, accountID)
+	ctx = withPrincipalField(ctx, fieldIdentity, name)
+	return withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 }
 
 // publishChannel is one body shape PublishInternal relays, and where it lands.
@@ -528,7 +529,7 @@ func (f *tokenReviewFixture) requireNothingVerified(t *testing.T) {
 	select {
 	case cluster := <-f.verified:
 		t.Fatalf("token verified against cluster %q", cluster)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 }
 

@@ -18,12 +18,12 @@ func setupACMRequest(target, body string) *http.Request {
 		req.Header.Set("X-Amz-Target", target)
 	}
 	ctx := context.WithValue(req.Context(), ctxService, "acm")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 	return withTestIdentity(req.WithContext(ctx))
 }
 
 func TestACMRequest_MissingTarget(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	w := httptest.NewRecorder()
 	err := gw.serveACM(w, setupACMRequest("", ""))
 	require.Error(t, err)
@@ -31,7 +31,7 @@ func TestACMRequest_MissingTarget(t *testing.T) {
 }
 
 func TestACMRequest_UnknownAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	w := httptest.NewRecorder()
 	err := gw.serveACM(w, setupACMRequest("CertificateManager.BogusAction", "{}"))
 	require.Error(t, err)
@@ -41,7 +41,7 @@ func TestACMRequest_UnknownAction(t *testing.T) {
 // A known action with no NATS connection passes routing + policy and fails at
 // the NATS-availability guard.
 func TestACMRequest_KnownActionNoNATS(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	w := httptest.NewRecorder()
 	err := gw.serveACM(w, setupACMRequest("CertificateManager.ListCertificates", "{}"))
 	require.Error(t, err)

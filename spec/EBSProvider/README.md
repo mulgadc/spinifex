@@ -73,6 +73,11 @@ The contract that every implementation of the `EBSProvider` interface must meet.
   The Viperblock implementation answers `internal` and leaves the volume published, which the specification allows only when the provider may fail.
 - Should a claim that lapses through its TTL be modelled, as a step that happens without a call?
 
+#### DeleteVolume
+
+- Must an implementation compare the handle before refusing a published volume?
+  The memory implementation does, and succeeds without deleting it, while the Viperblock implementation ignores the handle and refuses with `volume_in_use`.
+
 ### Snapshots
 
 #### CopySnapshot

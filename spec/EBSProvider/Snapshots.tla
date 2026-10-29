@@ -72,8 +72,7 @@ DeleteSnapshot(req, err) ==
 
      \* The request was accepted.
      \/ /\ Errors = {}
-        /\ snapshots' = IF \* A snapshot with a different handle is not the one the request meant.
-                           /\ KeyExists(snapshots, snapID)
+        /\ snapshots' = IF /\ KeyExists(snapshots, snapID)
                            /\ req.handle /= None
                            /\ snapshots[snapID].handle /= req.handle
                         THEN snapshots

@@ -59,8 +59,7 @@ push_payload() {
     rsh "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
     tar -C "$PAYLOAD_SRC" -cf - . | rsh "tar -C $REMOTE_DIR -xf -"
     if [ -n "$TARBALL" ]; then
-        # setup.sh from this checkout installs the tarball built from it.
-        scp "${SSH_OPTS[@]}" -q "$HERE/setup.sh" "$TARBALL" "$TARGET:$REMOTE_DIR/"
+        scp "${SSH_OPTS[@]}" -q "$TARBALL" "$TARGET:$REMOTE_DIR/"
     fi
 }
 

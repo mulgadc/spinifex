@@ -8,7 +8,7 @@
 #   prepare.sh appliance  spinifex login, first-boot service, console placeholder
 #   prepare.sh seal       wipe this system's identity, then power off
 # INSTALL_SPINIFEX_CHANNEL, INSTALL_SPINIFEX_VERSION and INSTALL_SPINIFEX_TARBALL
-# pass through to the installer. BUILD_USER is the SSH user to lock at seal.
+# pick the release tarball to install. BUILD_USER is the SSH user to lock at seal.
 set -euo pipefail
 
 # Shared by every unit built from this image; first login forces a change.
@@ -64,19 +64,24 @@ stage_update() {
 
 stage_install() {
     [ ! -e /etc/spinifex/spinifex.toml ] || die "/etc/spinifex/spinifex.toml exists; this system has been initialised, start from a clean OL install"
-    local args=()
-    [ -n "${INSTALL_SPINIFEX_CHANNEL:-}" ] && args+=(--channel "$INSTALL_SPINIFEX_CHANNEL")
-    [ -n "${INSTALL_SPINIFEX_VERSION:-}" ] && args+=(--version "$INSTALL_SPINIFEX_VERSION")
+    # install.mulgadc.com serves the latest stable setup.sh, which may predate
+    # Oracle Linux support, so run the setup.sh inside the release tarball.
+    local dir tarball
+    dir=$(mktemp -d)
     if [ -n "${INSTALL_SPINIFEX_TARBALL:-}" ]; then
-        # A local build: the payload carries the setup.sh of the checkout the
-        # tarball was built from, and setup.sh reads the tarball from the env.
-        [ -f "$HERE/setup.sh" ] || die "no setup.sh in the payload for INSTALL_SPINIFEX_TARBALL"
-        INSTALL_SPINIFEX_SKIP_NEWGRP=1 bash "$HERE/setup.sh" "${args[@]}"
+        tarball=$INSTALL_SPINIFEX_TARBALL
     else
-        curl -fsSL -o /tmp/spinifex-setup.sh https://install.mulgadc.com
-        INSTALL_SPINIFEX_SKIP_NEWGRP=1 bash /tmp/spinifex-setup.sh "${args[@]}"
-        rm -f /tmp/spinifex-setup.sh
+        local url="https://install.mulgadc.com/download/${INSTALL_SPINIFEX_VERSION:-${INSTALL_SPINIFEX_CHANNEL:-latest}}/amd64"
+        tarball=$dir/spinifex.tar.gz
+        log "downloading $url"
+        curl -fsSL -o "$tarball" "$url"
+        curl -fsSL -o "$dir/checksum.sha256" "$url.sha256"
+        [ "$(awk '{print $1}' "$dir/checksum.sha256")" = "$(sha256sum "$tarball" | awk '{print $1}')" ] \
+            || die "checksum mismatch for $url"
     fi
+    tar -xzf "$tarball" -C "$dir" ./setup.sh
+    INSTALL_SPINIFEX_TARBALL=$tarball INSTALL_SPINIFEX_SKIP_NEWGRP=1 bash "$dir/setup.sh"
+    rm -rf "$dir"
     # The installer enables these on a live host. The ISO image ships them off
     # and first boot enables them after init; a clone that started them first
     # would run every service with no config.

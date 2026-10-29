@@ -1,25 +1,153 @@
-------------------------------------------------- MODULE EBSProvider -------------------------------------------------
+------------------------------------------------- MODULE EBSProvider --------------------------------------------------
 (*********************************************************************************************************************)
-(* The contract that every EBSProvider implementation must meet, composed from every other module.                   *)
-(*                                                                                                                   *)
-(* Open questions:                                                                                                   *)
-(* - What may a failed call change? A failed call leaves the state unchanged, but a timeout can arrive after         *)
-(*   the provider acted, and a crash can leave work half done.                                                       *)
-(* - Is the schema version part of the contract? Every method refuses an unsupported version with                    *)
-(*   unsupported_version, and the conformance suite tests it, but the spec does not model versions.                  *)
+(* The state that an implementation exposes, and the types and constants that every other module shares.             *)
 (*********************************************************************************************************************)
-EXTENDS Capabilities, Volumes
+EXTENDS
+  Naturals,
+  Sequences,
+  FiniteSets,
+  Functions,
+  TLC
 
 -----------------------------------------------------------------------------------------------------------------------
-\* Specification
+\* Constants
 
-(*********************************************************************************************************************)
-(* Every call is a single atomic step, so an implementation must be linearizable: concurrent calls must              *)
-(* behave as if each ran alone, in an order consistent with when they were made and when they returned.              *)
-(*********************************************************************************************************************)
-Next ==
-  \/ VolumesNext
+CONSTANTS
+  MaxBytes,
+  VolumeIDs, VolumeHandles,
+  NodeIDs, NBDURIs, DevicePaths,
+  SnapshotIDs, SnapshotHandles,
+  AvailabilityZones, Timestamps,
+  Parameters, ProviderData,
+  \* The optional behaviour that the implementation advertises, which never changes.
+  Capabilities,
+  \* Whether the provider may fail to answer at any point in a behaviour.
+  ProviderMayFail,
+  \* Stands in for an optional field that a request or response omitted.
+  None
 
-Spec == Init /\ [][Next]_vars
+ASSUME MaxBytes \in Nat \ {0}
+ASSUME VolumeIDs /= {} /\ VolumeHandles /= {}
+ASSUME NodeIDs /= {} => NBDURIs /= {} \/ DevicePaths /= {}
+ASSUME SnapshotIDs /= {} => SnapshotHandles /= {} /\ Timestamps /= {}
+ASSUME None \notin UNION {VolumeIDs, VolumeHandles, NodeIDs, SnapshotIDs, SnapshotHandles,
+                          AvailabilityZones, Timestamps, Parameters, ProviderData}
+ASSUME Capabilities \in [online_expansion          : BOOLEAN,
+                         sparse_extent_reporting   : BOOLEAN,
+                         crash_consistent_snapshot : BOOLEAN,
+                         volume_seeding            : BOOLEAN,
+                         read_only_publish         : BOOLEAN,
+                         volume_enumeration        : BOOLEAN,
+                         snapshot_enumeration      : BOOLEAN,
+                         owner_routing             : BOOLEAN,
+                         exclusion                 : [scope             : {"none", "node", "cluster"},
+                                                      claim_ttl_seconds : Nat,
+                                                      fences_lost_claim : BOOLEAN]]
+ASSUME ProviderMayFail \in BOOLEAN
+
+-----------------------------------------------------------------------------------------------------------------------
+\* Variables
+
+VARIABLES
+  \* Every volume that the implementation exposes, keyed by volume ID.
+  volumes,
+  \* Every publication that the implementation exposes, keyed by the volume and the node it is published to.
+  publications,
+  \* Every snapshot that the implementation exposes, keyed by snapshot ID.
+  snapshots
+
+vars == <<volumes, publications, snapshots>>
+
+-----------------------------------------------------------------------------------------------------------------------
+\* Miscellaneous
+
+IsPartialFn(f, D, R) == DOMAIN f \subseteq D /\ \A x \in DOMAIN f : f[x] \in R
+
+Optional(S) == S \union {None}
+
+InsertKey(f, x, y) == f @@ (x :> y)
+
+RemoveKey(f, x) == RestrictDomain(f, LAMBDA x_2 : x_2 /= x)
+
+KeyExists(f, x) == x \in DOMAIN f
+
+-----------------------------------------------------------------------------------------------------------------------
+\* Types
+
+Bytes == 0..MaxBytes
+
+\* The errors that an implementation may return when its provider fails to answer.
+ProviderErrors == IF ProviderMayFail
+                  THEN {"internal", "unavailable"}
+                  \* Otherwise an implementation could conform by refusing to answer.
+                  ELSE {}
+
+CapacityRanges == [required_bytes : Bytes, limit_bytes : Bytes]
+
+VolumeStates == {"available", "in-use"}
+
+Volumes == [capacity_bytes     : 1..MaxBytes,
+            state              : VolumeStates,
+            handle             : VolumeHandles,
+            availability_zone  : Optional(AvailabilityZones),
+            \* Never returned, but kept to tell a retry from a conflicting request.
+            source_snapshot_id : Optional(SnapshotIDs),
+            parameters         : Optional(Parameters),
+            provider_data      : Optional(ProviderData)]
+
+\* How a published volume is reached on its node, either over NBD or as a host block device.
+Exports == [kind    : {"nbd"},
+            nbd_uri : NBDURIs]
+           \union
+           [kind        : {"block"},
+            device_path : DevicePaths,
+            size_bytes  : 1..MaxBytes]
+
+\* A volume published to a node, and whether it was published read-only.
+Publications == [export    : Exports,
+                 read_only : BOOLEAN]
+
+SnapshotStates == {"pending", "completed", "error"}
+
+Snapshots == [size_bytes       : 1..MaxBytes,
+              created_at       : Timestamps,
+              state            : SnapshotStates,
+              handle           : SnapshotHandles,
+              source_volume_id : VolumeIDs]
+
+-----------------------------------------------------------------------------------------------------------------------
+\* State helpers
+
+\* The part of a volume that the implementation returns.
+VolumeView(volID) ==
+  ("id" :> volID) @@ Restrict(volumes[volID], {"capacity_bytes",
+                                               "state",
+                                               "handle",
+                                               "availability_zone",
+                                               "provider_data"})
+
+\* The part of a publication that the implementation returns.
+PublicationView(volID, nodeID) == [volume_id |-> volID,
+                                   node_id   |-> nodeID,
+                                   export    |-> publications[volID, nodeID].export]
+
+\* The part of a snapshot that the implementation returns.
+SnapshotView(snapID) == ("id" :> snapID) @@ snapshots[snapID]
+
+-----------------------------------------------------------------------------------------------------------------------
+\* Invariants
+
+TypeOK ==
+  /\ IsPartialFn(volumes, VolumeIDs, Volumes)
+  /\ IsPartialFn(publications, VolumeIDs \X NodeIDs, Publications)
+  /\ IsPartialFn(snapshots, SnapshotIDs, Snapshots)
+
+-----------------------------------------------------------------------------------------------------------------------
+\* Initial state
+
+Init ==
+  /\ volumes      = <<>>
+  /\ publications = <<>>
+  /\ snapshots    = <<>>
 
 =======================================================================================================================

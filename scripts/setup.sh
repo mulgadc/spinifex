@@ -16,8 +16,8 @@
 #   VERBOSE                    Set to 1 to echo "[setup] <stage>" before each top-level step.
 #   SETUP_STAGES               Comma-separated subset of stages to run:
 #                                deps, aws, dns, users, sudoers, firewall, timesync, files,
-#                                directories, env, systemd, sysctl, modules, logrotate,
-#                                udev, fixown, migrations
+#                                directories, env, systemd, sysctl, needrestart, modules,
+#                                logrotate, udev, fixown, migrations
 #                              Unset = run every stage appropriate for the current mode.
 
 set -e
@@ -1895,6 +1895,28 @@ SYSCTL
     info "Kernel tunables installed (net.core.rmem_max/wmem_max = 16MB)"
 }
 
+# --- Keep needrestart off the Spinifex, OVS and OVN units ---
+# Guest QEMU runs in spinifex-daemon's cgroup, so needrestart charges QEMU's
+# replaced libraries to the daemon and restarts it after every dpkg run, which
+# never clears them and ends at the unit's start limit. Restarting the stack
+# after an upgrade is the operator's call; needrestart still lists the units.
+install_needrestart_conf() {
+    stage "installing needrestart override"
+    local dir="${DISTRO_ROOT:-}/etc/needrestart/conf.d"
+    $SUDO install -d "$dir"
+    $SUDO tee "$dir/90-spinifex.conf" > /dev/null << 'NEEDRESTART'
+# Managed by spinifex setup.sh — edits are overwritten.
+# Never restart these automatically; restart them by hand when it suits.
+$nrconf{override_rc}{qr(^spinifex-)} = 0;
+$nrconf{override_rc}{qr(^ovs-)} = 0;
+$nrconf{override_rc}{qr(^ovsdb-)} = 0;
+$nrconf{override_rc}{qr(^ovn-)} = 0;
+$nrconf{override_rc}{qr(^openvswitch-)} = 0;
+NEEDRESTART
+    $SUDO chmod 0644 "$dir/90-spinifex.conf"
+    info "needrestart will not restart the spinifex, OVS or OVN units"
+}
+
 # --- Install logrotate ---
 install_logrotate() {
     stage "installing logrotate config"
@@ -2089,6 +2111,7 @@ main() {
     stage_enabled fixown     && fix_file_ownership
     stage_enabled systemd    && install_systemd
     stage_enabled sysctl     && install_sysctl
+    stage_enabled needrestart && install_needrestart_conf
     stage_enabled modules    && install_kernel_modules
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev

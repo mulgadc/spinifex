@@ -237,7 +237,7 @@ fi
 log "stopping services"
 run sudo systemctl stop spinifex.target 2>/dev/null || true
 if ! $DRY_RUN; then
-    for unit in spinifex-predastore spinifex-viperblock spinifex-sqs-store spinifex-nats; do
+    for unit in spinifex-predastore spinifex-viperblock spinifex-nats; do
         if systemctl is-active --quiet "$unit"; then
             sudo systemctl stop "$unit" || true
         fi
@@ -493,7 +493,7 @@ fi
 # userdel warns about a missing home. Order here is cosmetic, not correctness.
 # ---------------------------------------------------------------------------
 log "removing service users and groups"
-for svc in nats sqsstore gw daemon storage northstar viperblock vpcd ui; do
+for svc in nats gw daemon storage northstar viperblock vpcd ui; do
     user="spinifex-${svc}"
     if id -u "$user" >/dev/null 2>&1; then
         run sudo userdel "$user" 2>/dev/null || log "  NOTE: could not remove user $user"
@@ -628,7 +628,7 @@ if ! $DRY_RUN; then
     for u in "${RESTART_UNITS[@]}"; do
         systemctl is-failed --quiet "$u" 2>/dev/null && LEFT+=("${u%.service}.service is failed")
     done
-    for svc in nats sqsstore gw daemon storage northstar viperblock vpcd ui; do
+    for svc in nats gw daemon storage northstar viperblock vpcd ui; do
         id -u "spinifex-${svc}" >/dev/null 2>&1 && LEFT+=("user spinifex-${svc}")
     done
     if command -v nft >/dev/null 2>&1 && sudo nft list table inet spinifex_filter >/dev/null 2>&1; then

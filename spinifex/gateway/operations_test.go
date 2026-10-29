@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"maps"
 	"slices"
 	"testing"
 
@@ -9,7 +10,9 @@ import (
 )
 
 func TestAWSOperationInventoryClassifiesDispatchers(t *testing.T) {
-	inventory := AWSOperationInventory(ecrRegistrationInventory())
+	registered := ecrRegistrationInventory()
+	maps.Copy(registered, rdsRegistrationInventory())
+	inventory := AWSOperationInventory(registered)
 
 	require.Contains(t, inventory["ec2"].Registered, "DescribeInstances")
 	require.NotContains(t, inventory["ec2"].Stubbed, "DescribeInstances")

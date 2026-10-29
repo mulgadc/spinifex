@@ -41,6 +41,7 @@ import (
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -193,6 +194,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// Composed as awsgw composes them. The harness has no quota service, and
 	// Tagging has no resource listers because no integration test aggregates.
 	require.NoError(t, services.Register(elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: nc})))
+	require.NoError(t, services.Register(rdsawsapi.NewRegistration(rdsawsapi.Deps{NATS: nc})))
 	require.NoError(t, services.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: tagging.NewAggregator()})))
 
 	cfg := &gateway.GatewayConfig{

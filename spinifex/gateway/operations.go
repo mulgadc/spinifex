@@ -5,7 +5,6 @@ import (
 	"slices"
 
 	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
-	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
@@ -36,10 +35,6 @@ func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]
 		},
 		"iam": {
 			Registered: mapKeys(iamActions),
-		},
-		"rds": {
-			Registered:  rdsawsapi.ActionNames(),
-			Unsupported: rdsawsapi.UnsupportedActionNames(),
 		},
 		"sts": {
 			Registered: mapKeys(stsActions),

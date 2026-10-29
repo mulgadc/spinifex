@@ -26,7 +26,8 @@ All colours are OKLCH and come from mulgadc.com, so product and site match.
 | `card`, `popover` | Raised surfaces. White in light, about `#1B2027` in dark. |
 | `muted`, `secondary`, `accent` | Hover rows, secondary buttons, quiet fills. |
 | `border` | Every divider and card edge. `#DCD8CE` in light, `oklch(1 0 0 / 8%)` in dark. |
-| `primary` | Brand orange `#EE4B12`: primary button, link, focus ring, active tab. |
+| `brand` | Brand orange `#EE4B12`, for the logo and decoration only. It fails text contrast, so it never carries text. |
+| `primary` | Darker orange in light, brighter orange in dark: primary button, link, focus ring, active tab. |
 | `sidebar` | The navigation column. |
 
 ### Status
@@ -73,6 +74,18 @@ Colour is never the only key: label every series.
 | `xs` | 12px | badges, secondary text |
 | `2xs` | 11px | mono eyebrow labels |
 
+### Primary and contrast
+
+The brand orange cannot be the primary: white on `#EE4B12` is 3.72:1, and as link text on a light card it is also 3.72:1, against WCAG AA's 4.5:1.
+So `primary` is its own token, and `brand` keeps the exact site colour for decoration.
+
+| Theme | `primary` | Fill text | Fill contrast | As a link |
+|---|---|---|---|---|
+| light | `oklch(55% 0.19 36.6)` | white | 5.30:1 | 5.30:1 on a card, 4.69:1 on the page |
+| dark | `oklch(68% 0.18 38)` | ink | 5.70:1 | 5.27:1 on a card |
+
+Dark mode puts ink on the fill rather than white, because no orange is both bright enough to read as a link on ink and dark enough to carry white text.
+
 ### Radius
 
 `--radius` is 0.5rem; `rounded-md` is that, `rounded-sm` and `rounded-lg` step 2px either side, and status pills are `rounded-full`.
@@ -80,7 +93,7 @@ Colour is never the only key: label every series.
 ### Themes
 
 The console defaults to dark, and the header switch toggles light and dark (`localStorage["spinifex-ui-theme"]`).
-`public/theme-init.js` applies the stored theme and `color-scheme` before first paint, so a dark-mode user never sees a white page while the bundle loads.
+`public/preboot.js` runs before the bundle. It applies the stored theme and `color-scheme` before first paint, so a dark-mode user never sees a white page while the bundle loads, and it turns off zod's eval probe (below).
 It is an external file because the console's CSP forbids inline scripts.
 
 ## Constraints from the console's CSP
@@ -89,6 +102,9 @@ The Go console serves `script-src 'self'; style-src 'self'`.
 
 - **No inline `<script>` or `<style>` elements.** A library that injects either breaks in production while working under `vite dev`, which applies no CSP. This is why `sonner` is not used.
 - **No runtime CSS variables set through `style`.** Primitives use fixed class maps instead, as `ToggleGroup` does for `spacing`.
+- **Base UI's `ScrollArea` injects a `<style>` element** to hide native scrollbars. `main.tsx` wraps the app in `CSPProvider disableStyleElements`, and `styles.css` carries the rule instead (`.base-ui-disable-scrollbar`).
+- **zod compiles validators with `new Function`** unless it is told not to, and it probes for that at module load, before any app code runs. `public/preboot.js` sets `globalThis.__zod_globalConfig = { jitless: true }` first.
+- **Chrome reports a violation whenever `DOMParser` meets a body that is not XML**, because the `<parsererror>` element it builds carries an inline style. The AWS SDK parses every query-protocol error body, so a proxy that answers with plain text or HTML produces a console violation as well as the error. Harmless, but it is noise in exactly the place someone debugging a failed call will look.
 - Base UI overlays animate through `data-starting-style` and `data-ending-style` transitions, not keyframe animation libraries, and every transition has `motion-reduce:transition-none`.
 
 ## Primitives
@@ -98,7 +114,10 @@ Added in Phase 1: breadcrumb, checkbox, command (`cmdk`), dialog, hover-card, po
 
 Base UI marks orientation with `data-orientation`, so `styles.css` defines the `data-horizontal` and `data-vertical` variants the shadcn sources expect.
 
-There is no chart primitive yet: shadcn's `chart` pulls `recharts`, whose `reselect@5.1.1` dependency fails the workspace's `trustPolicy: no-downgrade`.
+Base UI marks the selected tab with `data-active`, not `data-selected`, so `ui/tabs` styles that attribute.
+
+shadcn's `chart` is not used: it pulls `recharts`, whose `reselect@5.1.1` dependency fails the workspace's `trustPolicy: no-downgrade`.
+Charts are uPlot instead (see Charts).
 
 ## Enforcement
 
@@ -113,12 +132,78 @@ Four lint layers keep pages on the system.
 
 The table test is a ratchet: `HAND_WRITTEN_TABLES` lists the routes that still have one, it fails when a new file adds one, and it fails when a listed file no longer has one so the list only shrinks.
 
+## Shell
+
+`src/lib/nav.ts` is the one description of the console's navigation.
+The sidebar, the command palette and the breadcrumbs all read it, and `nav.test.ts` checks every destination against the generated route tree, so a renamed route fails a test rather than leaving a dead link.
+
+- **Sidebar.** Each service group folds, and a folded group stays folded across reloads (`localStorage["spinifex-ui-nav-collapsed"]`). The group holding the current page is always open, so the active item is always visible. On a phone the sidebar is a sheet, and any navigation closes it.
+- **Command palette.** ⌘K or Ctrl K, or the Search button in the header. It lists every page the user can reach, every create flow (`create` on a nav item), and a theme toggle. It is navigation only, with no resource search yet.
+- **Breadcrumbs.** Service, then list page, then the resource or the create flow. A resource ID is set in mono. On a phone only the last crumb shows.
+
 ## Layout
 
 The app shell's `<main>` is `min-w-0`, so a wide table scrolls inside its card instead of widening the page.
-Every page must fit at 500px with `document.documentElement.scrollWidth` equal to the window width.
+The page gutter is 16px on a phone, 24px from `md` and 32px from `xl`.
+`PageHeading` wraps its actions below the title when they do not fit beside it.
+Every page must fit at 390px with `document.documentElement.scrollWidth` equal to the window width.
+
+## Data tables
+
+`DataTable` (`src/components/data-table.tsx`) renders `@tanstack/react-table` over the `ui/table` primitives, so sorting, row selection and shift-click range selection are the library's and not ours to maintain.
+Pages describe columns with the small `DataColumn` shape (`id`, `header`, `cell`, `sortValue`, `hideBelow`, `align`), which the component maps to TanStack column definitions; a column with a `sortValue` sorts, with missing values last and numbers compared as numbers.
+Sort and selection stay controlled by the caller, so a page can keep them in the URL.
+
+A column hides itself through `hideBelow`, which is a **container** query on the table's card (`@max-lg`, `@max-xl`, `@max-4xl`, `@max-5xl`), not a viewport one.
+So columns drop out when a side panel narrows the list as well as on a small screen.
+
+List pages keep their filter, state and sort in the URL, so a filtered view can be bookmarked, shared and survives a reload.
+EC2 Instances is the reference page (`ec2/(instances)/-components/instances-page.tsx`):
+
+- The first column names the resource: the `Name` tag in the primary colour, with the ID in mono beneath it, opening its side panel.
+- Bulk actions appear above the table once a row is selected. Each action counts only the selected instances it applies to, so a mixed selection never sends a call that must fail, and Terminate asks first and lists every ID.
+- An empty account gets a call to action, and an empty filter result says the filters are why.
+
+VPCs and Internet gateways follow the same pattern.
+
+## Side panels
+
+Modelled on UniFi's console: a click on a row opens the resource in a panel beside the list, and a create flow opens there too.
+
+- **URL.** The panel is search state on the list route: `selected=<id>`, `tab=overview|monitoring|settings`, and `create=true`. Defaults are stripped, so a closed panel leaves the plain list address. Opening or closing a panel pushes a history entry, so Back closes it; a tab or filter change replaces the entry.
+- **Layout.** `ResourceView` puts the list and the panel side by side from `lg` (1024px), with the panel sticky and the list narrowing. Below `lg` there is no room to share, so the panel replaces the list as a full page with a back arrow. `useWideLayout` decides, through `matchMedia`.
+- **`DetailPanel`.** A header with the resource's own page (left) and close (right), the title and its ID, a summary of state and quick actions, then icon tabs with tooltips. Escape closes it unless a dialog or menu is open over it. Each tab, and a create form, sits in its own error boundary, so a failed query shows in the panel and the list keeps working.
+- **Contents.** `PanelSection` is a folding card, `PanelFields` and `PanelField` a label and value list, with `copy` for a one-click copy of IDs and addresses, and `PanelTags` the tag list. Create forms take an `onClose(id?)` prop: embedded, they hide their back link and heading, and a create selects the new resource.
+- **The full page stays.** `/ec2/describe-instances/$id` and its kind remain, for deep links and for actions the panel does not carry, such as attaching a gateway.
+
+## Charts
+
+`MetricChart` (`src/components/charts/metric-chart.tsx`) draws a time series with uPlot, chosen for size and because it draws on a canvas, which the CSP allows where inline style attributes are not; `csp.e2e.ts` renders one under the production header.
+The look follows UniFi's statistics: smoothed lines over a fading fill, a light grid, a legend chip per series that reads the value under the cursor (or the latest), and `-24 hrs … Now` beneath.
+Series colours are the chart palette, and the chart redraws when the theme changes.
+
+Instance monitoring shows EC2's agentless basic metrics: CPU utilisation, network bytes in and out, and packets in and out, over 1H, 1D or 1W.
+**The data is simulated** (`src/lib/simulated-metrics.ts`, seeded by instance ID) and the panel says so with a badge, until the daemon serves samples from QEMU.
+
+## Dates
+
+`formatDateTime` writes the AWS console's form in the viewer's zone, `2026/06/04 02:00 GMT-5`, with a 24-hour clock and UTC as plain `GMT`.
+
+## Testing
+
+`make test-ui-e2e` rebuilds `dist` and runs `pnpm e2e`, which drives Playwright against two servers (`playwright.config.ts`):
+
+- **dev** (Vite on 3101) for behaviour: the `/design` catalogue in both themes and four widths, theme bootstrap, primitives' keyboard behaviour, the shell, and the Instances, VPC and Internet gateway list and panel flows.
+- **preview** (the built `dist` on 3102) for `csp.e2e.ts`, which serves the console's own CSP header and fails on any violation. Vite dev applies no CSP, so this is the only place an inline style or `eval` is caught before production.
+
+`e2e/console.ts` is the fixture. It seeds a fake session and answers `/proxy/**` by action, with empty defaults for what the dashboard and shell ask for; a test adds handlers for its own data, and any call nobody answered fails the test through `api.unhandled`.
+Unhandled calls get an error in the protocol's own shape, since a plain-text body would itself trip the CSP test.
+
+Screenshot baselines live in `e2e/__screenshots__/` and are Linux Chromium renders, taken in `en-AU` and UTC so dates do not move with the host; `pnpm e2e:update` regenerates them.
+
+The `UI End-to-End` job in `.github/workflows/ui.yml` runs the suite on every pull request touching the frontend, with `--ignore-snapshots`: the runner rasterises fonts differently from the host that drew the baselines, so screenshots are compared locally and every behavioural and CSP test gates the merge.
 
 ## Open
 
-- **Brand orange fails text contrast.** White on `#EE4B12` is 3.72:1 and orange link text on a light card is 3.72:1, against WCAG AA's 4.5:1; a dark card gives 4.40:1. A light primary at 56–57% lightness reaches about 5:1 for both uses. In dark mode fills and links pull in opposite directions, so the choice is ink text on a brighter orange (4.75:1) or a separate link token.
-- **ToggleGroup's pressed state is weak** in both themes.
+- **Monitoring data is simulated.** Real samples need a source in the daemon; the plan is `docs/development/feature/ec2-basic-metrics.md` in the mulga repository.
+- **Screenshots do not gate CI.** Gating them needs baselines drawn in a pinned image, such as Playwright's own container, rather than on a workstation.

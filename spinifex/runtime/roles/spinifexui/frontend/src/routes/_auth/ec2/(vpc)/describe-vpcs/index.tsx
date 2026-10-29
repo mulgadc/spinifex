@@ -1,15 +1,22 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { ListCard } from "@/components/list-card"
-import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
-import { StateBadge } from "@/components/state-badge"
-import { Button } from "@/components/ui/button"
-import { getNameTag } from "@/lib/utils"
+import {
+  CLOSED_PANEL,
+  type PanelSearch,
+  panelSearchFields,
+} from "@/lib/panel-search"
 import { ec2VpcsQueryOptions } from "@/queries/ec2"
 
+import { VpcsPage } from "../-components/vpcs-page"
+
+const searchSchema = z.object(panelSearchFields)
+
 export const Route = createFileRoute("/_auth/ec2/(vpc)/describe-vpcs/")({
+  validateSearch: searchSchema,
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...ec2VpcsQueryOptions,
@@ -28,38 +35,22 @@ export const Route = createFileRoute("/_auth/ec2/(vpc)/describe-vpcs/")({
 
 function Vpcs() {
   const { data } = useSuspenseQuery(ec2VpcsQueryOptions)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
 
-  const vpcs = data.Vpcs ?? []
+  // Opening or closing a panel adds a history entry, so Back closes it.
+  function onSearchChange(next: Partial<PanelSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next || "create" in next),
+    })
+  }
 
   return (
-    <>
-      <PageHeading
-        actions={
-          <Link to="/ec2/create-vpc">
-            <Button>Create VPC</Button>
-          </Link>
-        }
-        title="VPCs"
-      />
-
-      <ResourceList
-        empty="No VPCs found."
-        getKey={(vpc) => vpc.VpcId}
-        items={vpcs}
-        renderItem={(vpc, id) => {
-          const name = getNameTag(vpc.Tags)
-
-          return (
-            <ListCard
-              badge={<StateBadge state={vpc.State} />}
-              params={{ id }}
-              subtitle={vpc.CidrBlock ?? ""}
-              title={name ? `${id} (${name})` : id}
-              to="/ec2/describe-vpcs/$id"
-            />
-          )
-        }}
-      />
-    </>
+    <VpcsPage
+      onSearchChange={onSearchChange}
+      search={search}
+      vpcs={data.Vpcs ?? []}
+    />
   )
 }

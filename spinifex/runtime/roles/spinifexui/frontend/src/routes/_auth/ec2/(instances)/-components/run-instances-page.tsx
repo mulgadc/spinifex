@@ -80,13 +80,28 @@ const INBOUND_RULE_CHECKBOXES = [
 interface RunInstancesPageProps {
   launchTemplateId?: string
   launchTemplateVersion?: string
+  // Given when the form sits in the list's side panel, which owns the title
+  // and is closed rather than navigated away from.
+  onClose?: () => void
 }
 
 export function RunInstancesPage({
   launchTemplateId,
   launchTemplateVersion,
+  onClose,
 }: RunInstancesPageProps) {
   const navigate = useNavigate()
+
+  async function leave() {
+    if (onClose) {
+      onClose()
+
+      return
+    }
+
+    await navigate({ to: "/ec2/describe-instances" })
+  }
+
   const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
   const { data: keyPairsData } = useSuspenseQuery(ec2KeyPairsQueryOptions)
 
@@ -270,13 +285,17 @@ export function RunInstancesPage({
       : { ...data, resolvedVpcId: effectiveVpcId }
 
     await createMutation.mutateAsync(params)
-    navigate({ to: "/ec2/describe-instances" })
+    await leave()
   }
 
   return (
     <>
-      <BackLink to="/ec2/describe-instances">Back to instances</BackLink>
-      <PageHeading title="Run Instances" />
+      {!onClose && (
+        <>
+          <BackLink to="/ec2/describe-instances">Back to instances</BackLink>
+          <PageHeading title="Run Instances" />
+        </>
+      )}
 
       {/* Handle error when no instance types available */}
       {uniqueInstanceTypes.length === 0 && !selectedTemplateId && (
@@ -849,9 +868,7 @@ export function RunInstancesPage({
         <div className="flex gap-2">
           <Button
             disabled={isSubmitting || createMutation.isPending}
-            onClick={async () => {
-              await navigate({ to: "/ec2/describe-instances" })
-            }}
+            onClick={leave}
             type="button"
             variant="outline"
           >

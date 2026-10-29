@@ -287,7 +287,7 @@ describe("DBInstanceDetailPage", () => {
     openTab("Events")
 
     const times = screen
-      .getAllByText(/^August \d+, 2026/)
+      .getAllByText(/^2026\/08\/\d{2} /u)
       .map((cell) => cell.textContent)
 
     expect(times[0]).toBe(formatDateTime(new Date("2026-08-16T03:05:00Z")))

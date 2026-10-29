@@ -105,7 +105,9 @@ function useInstanceStateMutation<Output>(
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (instanceId: string) => await send([instanceId]),
+    // One ID from a detail page, or several from a list selection.
+    mutationFn: async (instanceIds: string | string[]) =>
+      await send(Array.isArray(instanceIds) ? instanceIds : [instanceIds]),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
     },

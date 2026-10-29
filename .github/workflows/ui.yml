@@ -69,3 +69,44 @@ jobs:
             echo "$drift"
             exit 1
           fi
+
+  # The browser suite: the console against a faked API on Vite dev, plus the
+  # built dist under the production CSP. Screenshots are compared locally only,
+  # since the runner rasterises fonts differently from the host that drew them.
+  ui_e2e:
+    name: UI End-to-End
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: spinifex/runtime/roles/spinifexui/frontend
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: spinifex/runtime/roles/spinifexui/frontend
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.0
+        with:
+          package_json_file: spinifex/runtime/roles/spinifexui/frontend/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          cache: "pnpm"
+          cache-dependency-path: spinifex/runtime/roles/spinifexui/frontend/pnpm-lock.yaml
+          node-version-file: spinifex/runtime/roles/spinifexui/frontend/.nvmrc
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Build Frontend
+        run: pnpm build
+
+      - name: Run End-to-End Suite
+        run: pnpm e2e --ignore-snapshots

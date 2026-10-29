@@ -1,17 +1,40 @@
 import type { Reservation } from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { ListCard } from "@/components/list-card"
-import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
-import { StateBadge } from "@/components/state-badge"
-import { Button } from "@/components/ui/button"
+import { CLOSED_PANEL, panelSearchFields } from "@/lib/panel-search"
 import { ec2InstancesQueryOptions } from "@/queries/ec2"
+
+import {
+  type InstancesSearch,
+  InstancesPage,
+  STATE_FILTERS,
+} from "../-components/instances-page"
+
+// Defaults keep every param optional to links; catch drops a mangled value.
+/* oxlint-disable promise/prefer-await-to-then -- zod's .catch() supplies a schema fallback, not a promise handler */
+const searchSchema = z.object({
+  q: z.string().default("").catch(""),
+  state: z.enum(STATE_FILTERS).default("all").catch("all"),
+  sort: z.string().default("").catch(""),
+  ...panelSearchFields,
+})
+/* oxlint-enable promise/prefer-await-to-then */
+
+const DEFAULT_SEARCH = {
+  q: "",
+  state: "all",
+  sort: "",
+  ...CLOSED_PANEL,
+} as const
 
 export const Route = createFileRoute(
   "/_auth/ec2/(instances)/describe-instances/",
 )({
+  validateSearch: searchSchema,
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(DEFAULT_SEARCH)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...ec2InstancesQueryOptions,
@@ -40,7 +63,10 @@ const statePriority: Record<string, number> = {
 
 function Ec2() {
   const { data } = useSuspenseQuery(ec2InstancesQueryOptions)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
 
+  // Unsorted, the list keeps live instances first, as it always has.
   const instances = (
     data.Reservations?.flatMap(
       (reservation: Reservation) => reservation.Instances ?? [],
@@ -56,31 +82,20 @@ function Ec2() {
     return (a.InstanceId ?? "").localeCompare(b.InstanceId ?? "")
   })
 
-  return (
-    <>
-      <PageHeading
-        actions={
-          <Link to="/ec2/run-instances">
-            <Button>Run Instances</Button>
-          </Link>
-        }
-        title="Instances"
-      />
+  // Filters replace the history entry; opening or closing a panel adds one, so
+  // Back closes the panel it opened.
+  function onSearchChange(next: Partial<InstancesSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next || "create" in next),
+    })
+  }
 
-      <ResourceList
-        empty="No instances found."
-        getKey={(instance) => instance.InstanceId}
-        items={instances}
-        renderItem={(instance, id) => (
-          <ListCard
-            badge={<StateBadge state={instance.State?.Name} />}
-            params={{ id }}
-            subtitle={instance.InstanceType}
-            title={id}
-            to="/ec2/describe-instances/$id"
-          />
-        )}
-      />
-    </>
+  return (
+    <InstancesPage
+      instances={instances}
+      onSearchChange={onSearchChange}
+      search={search}
+    />
   )
 }

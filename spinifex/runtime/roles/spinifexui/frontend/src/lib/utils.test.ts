@@ -42,16 +42,22 @@ describe("cn", () => {
 })
 
 describe("formatDateTime", () => {
-  it("formats a Date object", () => {
-    const date = new Date("2025-06-15T10:30:00Z")
-    const result = formatDateTime(date)
-    expect(result).toContain("2025")
-    expect(result).toContain("15")
+  it("matches the AWS console's form with a whole-hour offset", () => {
+    expect(
+      formatDateTime(new Date("2026-06-04T07:00:00Z"), "America/Chicago"),
+    ).toBe("2026/06/04 02:00 GMT-5")
   })
 
-  it("formats an ISO string", () => {
-    const result = formatDateTime("2025-01-01T00:00:00Z")
-    expect(result).toContain("2025")
+  it("keeps a half-hour offset and a 24-hour clock", () => {
+    expect(formatDateTime("2026-01-01T13:05:00Z", "Australia/Adelaide")).toBe(
+      "2026/01/01 23:35 GMT+10:30",
+    )
+  })
+
+  it("names UTC as plain GMT", () => {
+    expect(formatDateTime("2026-01-01T00:00:00Z", "UTC")).toBe(
+      "2026/01/01 00:00 GMT",
+    )
   })
 
   it("returns 'Unknown' for undefined", () => {

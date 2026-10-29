@@ -48,7 +48,7 @@ const SNAPSHOT = {
 }
 
 const CRASH_CONSISTENT_EVENT = {
-  Date: new Date("2026-08-17T14:32:10Z"),
+  Date: new Date("2026-08-17T14:47:10Z"),
   SourceIdentifier: ID,
   SourceType: "db-snapshot",
   EventCategories: ["backup", "notification"],
@@ -166,7 +166,7 @@ describe("DBSnapshotDetailPage", () => {
     openTab("Events")
     expect(screen.getByText(/crash consistent/)).toBeInTheDocument()
     expect(
-      screen.getByText(formatDateTime(new Date("2026-08-17T14:32:10Z"))),
+      screen.getByText(formatDateTime(new Date("2026-08-17T14:47:10Z"))),
     ).toBeInTheDocument()
   })
 

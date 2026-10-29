@@ -28,7 +28,10 @@
   --popover: oklch(100% 0 0);
   --popover-foreground: oklch(21.1% 0.012 254.1);
 
-  --primary: oklch(63.8% 0.208 36.6); /* #EE4B12 brand orange */
+  /* Brand #EE4B12 fails 4.5:1 as button or link text, so primary is a deeper
+     step of the same hue; --brand keeps the exact colour for the mark. */
+  --brand: oklch(63.8% 0.208 36.6);
+  --primary: oklch(55% 0.19 36.6);
   --primary-foreground: oklch(100% 0 0);
   --secondary: oklch(92.8% 0.009 88.6);
   --secondary-foreground: oklch(21.1% 0.012 254.1);
@@ -39,7 +42,7 @@
 
   --border: oklch(88.3% 0.014 88.7); /* #DCD8CE */
   --input: oklch(88.3% 0.014 88.7);
-  --ring: oklch(63.8% 0.208 36.6);
+  --ring: var(--primary);
   --radius: 0.5rem;
 
   /* Status. The base is the solid colour; -foreground is the readable tinted
@@ -88,8 +91,10 @@
   --popover: oklch(26% 0.015 256.8);
   --popover-foreground: oklch(93% 0.006 250);
 
-  --primary: oklch(63.8% 0.208 36.6);
-  --primary-foreground: oklch(100% 0 0);
+  /* Lighter in dark so it reads as link text; ink, not white, sits on it. */
+  --brand: oklch(63.8% 0.208 36.6);
+  --primary: oklch(68% 0.18 38);
+  --primary-foreground: oklch(21.1% 0.012 254.1);
   --secondary: oklch(30.3% 0.014 256.8); /* #2A2F36 */
   --secondary-foreground: oklch(93% 0.006 250);
   --muted: oklch(27% 0.014 256.8);
@@ -99,7 +104,7 @@
 
   --border: oklch(100% 0 0 / 8%);
   --input: oklch(100% 0 0 / 12%);
-  --ring: oklch(63.8% 0.208 36.6);
+  --ring: var(--primary);
 
   --success: oklch(70% 0.16 155);
   --success-foreground: oklch(80% 0.14 155);
@@ -140,6 +145,7 @@
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  --color-brand: var(--brand);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
@@ -220,6 +226,16 @@
 }
 
 /* Hides the scrollbar while keeping the element scrollable. */
+/* Base UI injects this rule as an inline <style>, which the console's CSP
+   blocks; CSPProvider disables the injection and the rule lives here. */
+.base-ui-disable-scrollbar {
+  scrollbar-width: none;
+}
+
+.base-ui-disable-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 @utility no-scrollbar {
   scrollbar-width: none;
 

@@ -365,6 +365,7 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 	// them null, so a caller comparing the two read a disagreement.
 	ec2Instance.SetRootDeviceName(ebsmetadata.RootDeviceName)
 	ec2Instance.SetRootDeviceType(ec2.DeviceTypeEbs)
+	ec2Instance.SetEnaSupport(instanceEnaSupport)
 
 	// Stamp the metadata-options block so DescribeInstances reports the posture;
 	// the hop limit and the IMDSv1 opt-in are request-driven.
@@ -3347,7 +3348,7 @@ func (s *InstanceServiceImpl) DescribeInstanceAttribute(ctx context.Context, inp
 		output.EbsOptimized = &ec2.AttributeBooleanValue{Value: &val}
 
 	case ec2.InstanceAttributeNameEnaSupport:
-		val := true
+		val := instanceEnaSupport
 		output.EnaSupport = &ec2.AttributeBooleanValue{Value: &val}
 
 	case ec2.InstanceAttributeNameSourceDestCheck:

@@ -122,6 +122,20 @@ func TestRunInstance_RootDeviceFieldsPopulated(t *testing.T) {
 	assert.Equal(t, ec2.DeviceTypeEbs, aws.StringValue(ec2Instance.RootDeviceType))
 }
 
+func TestRunInstance_ReportsEnaSupport(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+
+	_, ec2Instance, err := svc.RunInstance(&ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-0abcdef1234567890"),
+		InstanceType: aws.String("t3.micro"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ec2Instance.EnaSupport)
+	assert.True(t, *ec2Instance.EnaSupport)
+}
+
 func TestVolumeTagsFromSpec(t *testing.T) {
 	specs := []*ec2.TagSpecification{
 		{ResourceType: aws.String("instance"), Tags: []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("node")}}},

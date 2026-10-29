@@ -75,6 +75,7 @@ wait_for_ssh() {
     die "$TARGET did not come back over SSH after the reboot"
 }
 
+rsh true || die "cannot SSH to $TARGET; set its key in ~/.ssh/config (IdentityFile) or ssh-add it"
 rsh "sudo -n true" || die "$BUILD_USER needs passwordless sudo on the build system"
 
 log "Copying the payload to $TARGET"

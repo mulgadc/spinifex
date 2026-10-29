@@ -406,6 +406,16 @@ var waitForNBDReady = nbd.WaitForNBDReady
 
 // startQEMU launches the QEMU process for instance and waits for startup to
 // confirm.
+// qemuStderrLevel reports the level a QEMU stderr line belongs at. QEMU
+// announces its own exit on stderr, so the notice for the signal a stop sends
+// it is the shutdown working rather than a fault.
+func qemuStderrLevel(line string) slog.Level {
+	if strings.Contains(line, "terminating on signal") {
+		return slog.LevelInfo
+	}
+	return slog.LevelError
+}
+
 func (m *Manager) startQEMU(instance *VM) error {
 	pidFile, err := hostprocess.GeneratePidFile(instance.ID)
 	if err != nil {
@@ -699,7 +709,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 			scanner := bufio.NewScanner(stderr)
 			slog.Info("QEMU stderr reader started")
 			for scanner.Scan() {
-				slog.Error("[qemu-stderr]", "line", scanner.Text())
+				line := scanner.Text()
+				slog.Log(context.Background(), qemuStderrLevel(line), "[qemu-stderr]", "line", line)
 			}
 		}()
 

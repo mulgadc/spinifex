@@ -76,6 +76,8 @@ wait_for_ssh() {
 
 rsh true || die "cannot SSH to $TARGET; set its key in ~/.ssh/config (IdentityFile) or ssh-add it"
 rsh "sudo -n true" || die "$BUILD_USER needs passwordless sudo on the build system"
+# A minimal OL install has no tar, which the payload copy and the installer need.
+rsh "command -v tar >/dev/null || sudo dnf install -y -q tar" || die "cannot install tar on the build system"
 
 log "Copying the payload to $TARGET"
 push_payload

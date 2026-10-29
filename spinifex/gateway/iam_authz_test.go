@@ -55,7 +55,7 @@ func iamScopedGateway(resources map[string]string, statements ...iamdomain.State
 		},
 		arns: resources,
 	}
-	return &GatewayConfig{DisableLogging: true, IAMService: svc}, svc
+	return withVerifier(&GatewayConfig{DisableLogging: true, IAMService: svc}), svc
 }
 
 func dispatchIAM(t *testing.T, gw *GatewayConfig, body string) error {

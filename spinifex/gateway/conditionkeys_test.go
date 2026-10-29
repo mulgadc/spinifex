@@ -6,14 +6,11 @@ package gateway
 
 import (
 	"crypto/tls"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -108,116 +105,6 @@ func TestRequestConditionKeys_OmitsUnresolvableUserID(t *testing.T) {
 	assert.NotContains(t, keys, iampolicy.KeyUserID)
 }
 
-// principalUser resolves the ID once per request, at the point the principal
-// is resolved. A user with no record and a session minted before the ID was
-// recorded both yield an omitted key, not a failed request.
-func TestPrincipalUserID_ResolvesAndOmits(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
-
-	userID, _, err := gw.principalUser(principalContext{
-		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, "AIDAALICE", userID)
-
-	userID, _, err = gw.principalUser(principalContext{
-		identity: "session", accountID: "000000000001", principalType: principalTypeAssumedRole,
-		assumedRoleID: "AROASHAREDOPS:session",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, "AROASHAREDOPS:session", userID)
-
-	// Root's aws:userid is the account ID, matching what GetCallerIdentity
-	// reports for the same principal.
-	userID, _, err = gw.principalUser(principalContext{
-		identity: "root", accountID: "000000000000", principalType: principalTypeUser,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, "000000000000", userID)
-
-	missing := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{
-		getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
-			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-		},
-	}}
-	userID, _, err = missing.principalUser(principalContext{
-		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
-	})
-	require.NoError(t, err, "a deleted user omits the key rather than failing the request")
-	assert.Empty(t, userID)
-
-	// A record predating the field resolves to no ID, which omits the key.
-	legacy := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{
-		getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
-			return &iam.GetUserOutput{User: &iam.User{UserName: aws.String("alice")}}, nil
-		},
-	}}
-	userID, _, err = legacy.principalUser(principalContext{
-		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
-	})
-	require.NoError(t, err)
-	assert.Empty(t, userID)
-
-	// A session minted before assumed_role_id was recorded takes the same arm.
-	userID, _, err = gw.principalUser(principalContext{
-		identity: "session", accountID: "000000000001", principalType: principalTypeAssumedRole,
-	})
-	require.NoError(t, err)
-	assert.Empty(t, userID)
-}
-
-// A dependency fault must not read as "the principal has no ID": the key would
-// be omitted, silently narrowing an Allow and widening a Deny to everything.
-func TestPrincipalUserID_DependencyFaultFailsClosed(t *testing.T) {
-	faulty := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{
-		getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
-			return nil, errors.New("nats: no responders available for request")
-		},
-	}}
-
-	userID, userARN, err := faulty.principalUser(principalContext{
-		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
-	})
-
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
-	assert.Empty(t, userID)
-	assert.Empty(t, userARN)
-}
-
-// An IAM user's ARN comes from its record, path included, in the same read as
-// its ID. Root and role sessions carry no user ARN.
-func TestPrincipalUser_ResolvesStoredUserARN(t *testing.T) {
-	const pathed = "arn:aws:iam::000000000001:user/eng/alice"
-	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{
-		getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
-			return &iam.GetUserOutput{User: &iam.User{
-				UserName: aws.String("alice"), UserId: aws.String("AIDAALICE"), Arn: aws.String(pathed),
-			}}, nil
-		},
-	}}
-
-	userID, userARN, err := gw.principalUser(principalContext{
-		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, "AIDAALICE", userID)
-	assert.Equal(t, pathed, userARN)
-
-	_, userARN, err = gw.principalUser(principalContext{
-		identity: "root", accountID: "000000000000", principalType: principalTypeUser,
-	})
-	require.NoError(t, err)
-	assert.Empty(t, userARN)
-
-	_, userARN, err = gw.principalUser(principalContext{
-		identity: "session", accountID: "000000000001", principalType: principalTypeAssumedRole,
-		assumedRoleID: "AROASHAREDOPS:session",
-	})
-	require.NoError(t, err)
-	assert.Empty(t, userARN)
-}
-
 // RoleSessionName is chosen by the caller of AssumeRole, so aws:username must
 // stay absent for a role session — otherwise anyone permitted to assume the
 // role satisfies an aws:username condition just by naming their session.
@@ -304,12 +191,12 @@ func conditionedPolicyIAMService(effect string, cond map[string]map[string]iamdo
 // nil keys from checkPolicyResources would leave every other test green while
 // silently killing every conditional Allow on this path.
 func TestCheckPolicyResources_ConditionalAllowHonoursSourceIP(t *testing.T) {
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		IAMService: conditionedPolicyIAMService("Allow", map[string]map[string]iamdomain.ConditionValue{
 			iampolicy.OpIPAddress: {iampolicy.KeySourceIP: {"10.0.0.0/8"}},
 		}),
-	}
+	})
 
 	tests := []struct {
 		name    string
@@ -343,12 +230,12 @@ func TestCheckPolicyResources_ConditionalAllowHonoursSourceIP(t *testing.T) {
 // the one direction where an absent key widens access. Pin it so the omission
 // is a decision rather than an accident.
 func TestCheckPolicyResources_ConditionalDenyHonoursSourceIP(t *testing.T) {
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		IAMService: conditionedPolicyIAMService("Deny", map[string]map[string]iamdomain.ConditionValue{
 			iampolicy.OpIPAddress: {iampolicy.KeySourceIP: {"203.0.113.0/24"}},
 		}),
-	}
+	})
 
 	for _, tt := range []struct {
 		name    string

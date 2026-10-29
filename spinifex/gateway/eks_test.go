@@ -159,7 +159,7 @@ func TestLookupEKSAction_UnknownReturnsFalse(t *testing.T) {
 }
 
 func TestEKSRequest_UnknownActionReturnsInvalidAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	req := httptest.NewRequest(http.MethodGet, "/totally-unknown", nil)
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
 	ctx = withPrincipalField(ctx, fieldAccountID, "111122223333")
@@ -172,7 +172,7 @@ func TestEKSRequest_UnknownActionReturnsInvalidAction(t *testing.T) {
 }
 
 func TestEKSRequest_MissingNATSReturnsServerInternal(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
 	ctx = withPrincipalField(ctx, fieldAccountID, "111122223333")
@@ -185,7 +185,7 @@ func TestEKSRequest_MissingNATSReturnsServerInternal(t *testing.T) {
 }
 
 func TestErrorHandler_EKSEmitsJSONNotXML(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
 	req = req.WithContext(ctx)

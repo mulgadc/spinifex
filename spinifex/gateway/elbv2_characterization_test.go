@@ -42,7 +42,7 @@ func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admi
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		NATSConn:       nc,
@@ -62,7 +62,7 @@ func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admi
 			},
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	}
+	})
 	withELBv2(gw)
 
 	r := chi.NewRouter()
@@ -289,7 +289,7 @@ func TestELBv2Pipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) 
 
 // A nil NATS connection fails at the request-level gate, before dispatch.
 func TestELBv2Pipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
-	gw := withELBv2(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withELBv2(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 
 	req := elbv2Request(authzAccountID, "Action=DescribeLoadBalancers")
 	w := httptest.NewRecorder()

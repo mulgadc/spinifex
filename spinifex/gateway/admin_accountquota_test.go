@@ -52,11 +52,11 @@ func quotaTestGateway(t *testing.T) (*GatewayConfig, string) {
 	}, nil)
 	quota.SetOverrides(kv)
 
-	return &GatewayConfig{
+	return withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		IAMService:     &quotaIAMService{known: account},
 		Quota:          quota,
-	}, account
+	}), account
 }
 
 func quotaRequestBody(t *testing.T, req AccountQuotaRequest) []byte {
@@ -157,7 +157,7 @@ func TestAdminAccountQuotaRejectsBadRequests(t *testing.T) {
 // A gateway with quotas disabled has no override bucket; the admin surface must
 // report that rather than pretend the write landed.
 func TestAdminAccountQuotaWithoutQuotaService(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: &quotaIAMService{known: "000000000042"}}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: &quotaIAMService{known: "000000000042"}})
 
 	_, err := gw.adminGetAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: "000000000042"}))
 	require.Error(t, err)

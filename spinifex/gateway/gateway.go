@@ -34,11 +34,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
-	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
@@ -138,6 +138,9 @@ type GatewayConfig struct {
 	// Nil makes DeleteAccount refuse rather than tear down around the data.
 	BucketStore accountteardown.BucketStore
 	STSService  stsdomain.STSService
+
+	// Credentials verifies SigV4 credentials. Nil fails every request closed.
+	Credentials credential.Verifier
 	RateLimiter *authlimit.AuthRateLimiter // Per-IP auth failure rate limiter
 	Throttler   *ratelimit.Throttler       // Per-account+action API request throttler
 	// accountStatus caches which accounts are ACTIVE, so enforcing account
@@ -751,39 +754,6 @@ func principalTypeCondition(principalType string) (string, bool) {
 		return iampolicy.PrincipalTypeAccount, true
 	default:
 		return "", false
-	}
-}
-
-// principalUser resolves aws:userid: an IAM user's unique ID, the role ID and
-// session name STS minted for a role session, or the account ID for root. Both
-// halves of a session's ID come from the resolved role, so unlike aws:username
-// it is not caller-chosen. An IAM user's stored ARN comes from the same read.
-//
-// A principal with no ID on record returns empty and the door omits the key. A
-// dependency fault returns InternalError instead: authorizing against a context
-// missing the key silently narrows an Allow and widens a Deny.
-func (gw *GatewayConfig) principalUser(principal principalContext) (userID, userARN string, err error) {
-	if principal.identity == "" || principal.accountID == "" {
-		return "", "", nil
-	}
-	userID, userARN, err = stsawsapi.ResolveCallerUser(principal.accountID, principal.principalType,
-		principal.identity, principal.assumedRoleID, gw.IAMService)
-	switch {
-	case err == nil:
-		if userID == "" {
-			slog.Warn("aws:userid unavailable: principal record carries no user ID",
-				"accountID", principal.accountID, "identity", principal.identity,
-				"principalType", principal.principalType)
-		}
-		return userID, userARN, nil
-	case strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity):
-		slog.Warn("aws:userid unavailable: no such IAM user",
-			"accountID", principal.accountID, "user", principal.identity)
-		return "", "", nil
-	default:
-		slog.Error("aws:userid: IAM dependency fault, refusing to authorize on a degraded context",
-			"accountID", principal.accountID, "identity", principal.identity, "err", err)
-		return "", "", errors.New(awserrors.ErrorInternalError)
 	}
 }
 

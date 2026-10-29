@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,6 +91,7 @@ func newBedrockRequestGateway(t *testing.T, vllmURL string) *GatewayConfig {
 		NATSConn:       nc,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
+		Credentials:    credverify.New(allowAllIAMService(), nil),
 		BedrockEndpoints: map[string]string{
 			bedrockTestLlamaModelID: vllmURL,
 		},

@@ -25,7 +25,7 @@ func passRoleTo(effect, operator, service string) iamdomain.Statement {
 func passRoleToGateway(t *testing.T, statements ...iamdomain.Statement) *GatewayConfig {
 	t.Helper()
 	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
-	return &GatewayConfig{
+	return withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         authzRegion,
 		NATSConn:       startTestNATS(t),
@@ -34,7 +34,7 @@ func passRoleToGateway(t *testing.T, statements ...iamdomain.Statement) *Gateway
 				getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 			},
 		},
-	}
+	})
 }
 
 func associateProfile(t *testing.T, gw *GatewayConfig) error {

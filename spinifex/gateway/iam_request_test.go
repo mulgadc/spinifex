@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -191,6 +192,7 @@ func setupIAMRequestHandler(svc iamdomain.IAMService) http.Handler {
 	gw := &GatewayConfig{
 		DisableLogging: true,
 		IAMService:     svc,
+		Credentials:    credverify.New(svc, nil),
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -376,6 +378,7 @@ func TestIAMRequest_NilService(t *testing.T) {
 	gw := &GatewayConfig{
 		DisableLogging: true,
 		IAMService:     nil,
+		Credentials:    credverify.New(nil, nil),
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -423,6 +426,7 @@ func TestIAMRequest_MissingAccountID(t *testing.T) {
 	gw := &GatewayConfig{
 		DisableLogging: true,
 		IAMService:     &flexMockIAMService{},
+		Credentials:    credverify.New(&flexMockIAMService{}, nil),
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "iam")

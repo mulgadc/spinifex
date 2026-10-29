@@ -38,7 +38,7 @@ func seedDiscoveryCluster(t *testing.T) http.Handler {
 		t.Fatalf("put jwks: %v", err)
 	}
 
-	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService(), OIDC: ekscluster.NewOIDCPublisher(js)}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService(), OIDC: ekscluster.NewOIDCPublisher(js)})
 	return gw.SetupRoutes()
 }
 

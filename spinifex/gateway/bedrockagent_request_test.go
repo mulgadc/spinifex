@@ -29,12 +29,12 @@ import (
 func newBedrockAgentRequestGateway(t *testing.T, vector ochrevector.VectorService) *GatewayConfig {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	return &GatewayConfig{
+	return withVerifier(&GatewayConfig{
 		IAMService:              allowAllIAMService(),
 		BedrockAgentKB:          ochrevector.NewKBStore(js),
 		BedrockAgentDataSources: ochrevector.NewDataSourceStore(js),
 		BedrockAgentVector:      vector,
-	}
+	})
 }
 
 func bedrockAgentRequestWithAccount(method, path, body string) *http.Request {
@@ -366,7 +366,7 @@ func TestBedrockAgentRequest_MissingAccountIDReturnsInternalError(t *testing.T) 
 }
 
 func TestBedrockAgentRequest_NilDependenciesReturnServerInternal(t *testing.T) {
-	gw := &GatewayConfig{IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{IAMService: allowAllIAMService()})
 
 	req := bedrockAgentRequestWithAccount(http.MethodPost, "/knowledgebases/", "")
 	w := httptest.NewRecorder()

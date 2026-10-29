@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"log/slog"
 	"strings"
 	"testing"
@@ -208,6 +209,7 @@ func TestCheckAccountCap(t *testing.T) {
 			gw := &GatewayConfig{
 				DisableLogging:    true,
 				IAMService:        &capMockIAMService{accounts: tc.accounts},
+				Credentials:       credverify.New(&capMockIAMService{accounts: tc.accounts}, nil),
 				SignupMaxAccounts: tc.max,
 			}
 			err := gw.checkAccountCap()
@@ -226,6 +228,7 @@ func TestCheckAccountCapFailsClosedOnListError(t *testing.T) {
 	gw := &GatewayConfig{
 		DisableLogging:    true,
 		IAMService:        &capMockIAMService{err: assert.AnError},
+		Credentials:       credverify.New(&capMockIAMService{err: assert.AnError}, nil),
 		SignupMaxAccounts: 128,
 	}
 
@@ -254,6 +257,7 @@ func newCreateAccountGateway(t *testing.T) *GatewayConfig {
 	return &GatewayConfig{
 		DisableLogging:    true,
 		IAMService:        svc,
+		Credentials:       credverify.New(svc, nil),
 		NATSConn:          nc,
 		SignupMaxAccounts: 128,
 	}

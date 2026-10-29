@@ -20,6 +20,7 @@
 package integration
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"encoding/json"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http/httptest"
@@ -221,6 +222,11 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	}
 	for _, opt := range opts {
 		opt(cfg)
+	}
+	// Built after the options so a test that swaps or drops a service sees the
+	// verifier follow it, as production wires the verifier over the same services.
+	if cfg.Credentials == nil {
+		cfg.Credentials = credverify.New(cfg.IAMService, cfg.STSService)
 	}
 
 	handler := cfg.SetupRoutes()

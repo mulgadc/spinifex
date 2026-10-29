@@ -26,14 +26,14 @@ const (
 // scopedPolicyGateway serves one policy document to every principal.
 func scopedPolicyGateway(statements ...iamdomain.Statement) *GatewayConfig {
 	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
-	return &GatewayConfig{
+	return withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         authzRegion,
 		IAMService: &policyMockIAMService{
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 			getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	}
+	})
 }
 
 func statement(effect, action, resource string) iamdomain.Statement {
@@ -335,7 +335,7 @@ func passRoleDeniedGateway(t *testing.T, resolveErr error) *GatewayConfig {
 		statement("Allow", "ec2:*", "*"),
 		statement("Deny", "iam:PassRole", "*"),
 	}}}
-	return &GatewayConfig{
+	return withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         authzRegion,
 		NATSConn:       startTestNATS(t),
@@ -345,7 +345,7 @@ func passRoleDeniedGateway(t *testing.T, resolveErr error) *GatewayConfig {
 			},
 			resolveErr: resolveErr,
 		},
-	}
+	})
 }
 
 // An iam:PassRole denial raised during dispatch is EC2's UnauthorizedOperation,

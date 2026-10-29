@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"strings"
 	"testing"
@@ -100,6 +101,7 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 		Region:         testRegion,
 		ExpectedNodes:  1,
 		IAMService:     e.counter,
+		Credentials:    credverify.New(e.counter, e.sts),
 		STSService:     e.sts,
 		Services:       b.Build(),
 	}

@@ -75,25 +75,25 @@ func newRDSGatewayWithResolver(
 	}
 	// Both branches are wired: an assumed-role principal resolves by role, and a
 	// test that only stubbed users would miss it entirely.
-	return &GatewayConfig{
+	return withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         "ap-southeast-2",
 		IAMService: &policyMockIAMService{
 			getUserPoliciesFn: counted,
 			getRolePoliciesFn: counted,
 		},
-	}, probe
+	}), probe
 }
 
 func TestRDSRequest_MissingAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	err := gw.RDS_Request(httptest.NewRecorder(), setupRDSRequest(""))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
 }
 
 func TestRDSRequest_UnknownAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	err := gw.RDS_Request(httptest.NewRecorder(), setupRDSRequest("Action=FakeAction"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
@@ -101,7 +101,7 @@ func TestRDSRequest_UnknownAction(t *testing.T) {
 
 // A malformed percent-encoding is a client error, not an internal one.
 func TestRDSRequest_MalformedQueryString(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	err := gw.RDS_Request(httptest.NewRecorder(), setupRDSRequest("Action=%zz"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMalformedQueryString, err.Error())
@@ -109,7 +109,7 @@ func TestRDSRequest_MalformedQueryString(t *testing.T) {
 
 func TestRDSRequest_MalformedScalarReturnsHTTP400(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()})
 	for _, body := range []string{
 		"Action=CreateDBInstance&AllocatedStorage=abc",
 		"Action=CreateDBInstance&MultiAZ=yes",
@@ -131,7 +131,7 @@ func TestRDSRequest_MalformedScalarReturnsHTTP400(t *testing.T) {
 // A known action still needs a NATS connection to reach the control plane, so
 // the disconnected case must fail rather than answer from the gateway alone.
 func TestRDSRequest_NoNATSConn(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	err := gw.RDS_Request(httptest.NewRecorder(), setupRDSRequest("Action=DescribeDBInstances"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
@@ -341,7 +341,7 @@ func TestRDSRequest_NoIdentityDenied(t *testing.T) {
 // RDS errors must use the IAM-style <ErrorResponse> envelope: the aws-sdk-go
 // query unmarshaler rejects the EC2 <Response><Errors> shape for this service.
 func TestRDSErrorHandler_UsesIAMEnvelope(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	w := httptest.NewRecorder()
 	gw.ErrorHandler(w, setupRDSRequest("Action=CreateDBInstance"), errNotImplementedForTest)
 
@@ -351,7 +351,7 @@ func TestRDSErrorHandler_UsesIAMEnvelope(t *testing.T) {
 }
 
 func TestRDSErrorHandler_UsesRDSUnsupportedActionWording(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	w := httptest.NewRecorder()
 	gw.ErrorHandler(w, setupRDSRequest("Action=CreateDBCluster"),
 		errors.New(awserrors.ErrorOperationNotSupported))
@@ -380,7 +380,7 @@ func TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400(t *testin
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()})
 	req := setupRDSRequest("Action=CreateDBInstance&DBInstanceIdentifier=orders-db&Engine=postgres&" +
 		"DBInstanceClass=db.t3.medium&AllocatedStorage=20&MasterUsername=appuser&DBName=orders")
 

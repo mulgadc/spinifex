@@ -211,7 +211,7 @@ func TestAdminListAccountsFailsClosed(t *testing.T) {
 // Each admin method is a separate grant. The signup Worker holds
 // spinifex:CreateAccount and must not reach deletion with it.
 func TestCreateAccountGrantDoesNotAllowDeleteAccount(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy()})
 
 	for _, method := range []string{"DeleteAccount", "DescribeAccountDeletion", "ListAccounts"} {
 		t.Run(method, func(t *testing.T) {

@@ -48,7 +48,7 @@ func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.Policy
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		NATSConn:       nc,
@@ -69,7 +69,7 @@ func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.Policy
 			},
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	}
+	})
 	gw.IAMService = operatorIAM{gw.IAMService.(*policyMockIAMService)}
 	if mutate != nil {
 		mutate(gw)

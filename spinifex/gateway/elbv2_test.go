@@ -20,7 +20,7 @@ func setupELBv2Request(body string) *http.Request {
 }
 
 func TestELBv2Request_MissingAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	w := httptest.NewRecorder()
 	err := gw.serveELBv2(w, setupELBv2Request(""))
 	require.Error(t, err)
@@ -28,7 +28,7 @@ func TestELBv2Request_MissingAction(t *testing.T) {
 }
 
 func TestELBv2Request_UnknownAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	w := httptest.NewRecorder()
 	err := gw.serveELBv2(w, setupELBv2Request("Action=FakeAction"))
 	require.Error(t, err)

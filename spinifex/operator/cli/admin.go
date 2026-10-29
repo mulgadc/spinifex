@@ -67,9 +67,6 @@ var predastoreTomlTemplate string
 //go:embed templates/nats.conf
 var natsConfTemplate string
 
-//go:embed templates/sqs-store.conf
-var sqsStoreConfTemplate string
-
 //go:embed templates/predastore-multinode.toml
 var predastoreMultiNodeTemplate string
 
@@ -1741,12 +1738,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 	fmt.Println("\n🔒 Generated NATS authentication token")
 
-	sqsStoreToken, err := admin.GenerateNATSToken()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating SQS store token: %v\n", err)
-		os.Exit(1)
-	}
-
 	if spxRoot == "" {
 		spxRoot = DefaultDataDir()
 	}
@@ -1886,11 +1877,9 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		AccountID: accountID,
 		Region:    region,
 		NatsToken: natsToken,
-		// Held only by the SQS store config; never by spinifex.toml.
-		SQSStoreToken: sqsStoreToken,
-		DataDir:       spxRoot,
-		LogDir:        LogDirFor(spxRoot),
-		ConfigDir:     configDir,
+		DataDir:   spxRoot,
+		LogDir:    LogDirFor(spxRoot),
+		ConfigDir: configDir,
 
 		Node:          node,
 		Az:            az,
@@ -2059,14 +2048,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		os.Exit(1)
 	}
 
-	sqsStoreToken, err := admin.GenerateNATSToken()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating SQS store token: %v\n", err)
-		os.Exit(1)
-	}
-
 	creds := &formation.SharedCredentials{
-		SQSStoreToken:  sqsStoreToken,
 		AccessKey:      accessKey,
 		SecretKey:      secretKey,
 		AccountID:      accountID,
@@ -2222,9 +2204,6 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		ClusterBindIP: clusterBind,
 		ClusterRoutes: clusterRoutes,
 		ClusterName:   clusterName,
-
-		SQSStoreToken:  sqsStoreToken,
-		SQSStoreRoutes: admin.SQSStoreRoutes(clusterRoutes),
 
 		PredastoreHostID:          predastoreHostID,
 		PredastoreAdminPort:       admin.PredastoreAdminPort,
@@ -2807,9 +2786,6 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		ClusterRoutes: clusterRoutes,
 		ClusterName:   creds.ClusterName,
 
-		SQSStoreToken:  creds.SQSStoreToken,
-		SQSStoreRoutes: admin.SQSStoreRoutes(clusterRoutes),
-
 		PredastoreHostID:          predastoreHostID,
 		PredastoreAdminPort:       admin.PredastoreAdminPort,
 		CompactionIntervalSeconds: compactionInterval,
@@ -3175,7 +3151,6 @@ type configDirs struct {
 	Predastore string
 	Viperblock string
 	NATS       string
-	SQSStore   string
 	Spinifex   string
 	Northstar  string
 }
@@ -3187,11 +3162,10 @@ func createConfigSubdirs(configDir string) (configDirs, error) {
 		Predastore: filepath.Join(configDir, "predastore"),
 		Viperblock: filepath.Join(configDir, "viperblock"),
 		NATS:       filepath.Join(configDir, "nats"),
-		SQSStore:   filepath.Join(configDir, "sqs-store"),
 		Spinifex:   filepath.Join(configDir, "spinifex"),
 		Northstar:  filepath.Join(configDir, "northstar"),
 	}
-	for _, dir := range []string{dirs.AWSGW, dirs.Predastore, dirs.Viperblock, dirs.NATS, dirs.SQSStore, dirs.Spinifex, dirs.Northstar} {
+	for _, dir := range []string{dirs.AWSGW, dirs.Predastore, dirs.Viperblock, dirs.NATS, dirs.Spinifex, dirs.Northstar} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return configDirs{}, fmt.Errorf("create directory %s: %w", dir, err)
 		}
@@ -3273,13 +3247,6 @@ func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings 
 		{Name: "spinifex.toml", Path: spinifexTomlPath, Template: spinifexTomlTemplate},
 		{Name: filepath.Join(dirs.AWSGW, "awsgw.toml"), Path: filepath.Join(dirs.AWSGW, "awsgw.toml"), Template: awsgwTomlTemplate},
 		{Name: filepath.Join(dirs.NATS, "nats.conf"), Path: filepath.Join(dirs.NATS, "nats.conf"), Template: natsConfTemplate},
-	}
-	// A cluster formed by a leader that predates the store distributes no
-	// token, so no store config is rendered rather than one nobody can join.
-	if settings.SQSStoreToken != "" {
-		configs = append(configs, admin.ConfigFile{
-			Name: filepath.Join(dirs.SQSStore, "sqs-store.conf"), Path: filepath.Join(dirs.SQSStore, "sqs-store.conf"), Template: sqsStoreConfTemplate,
-		})
 	}
 	// northstar.toml is only rendered when scoped DNS credentials were
 	// provisioned. A cluster formed by a leader that predates their distribution

@@ -274,7 +274,7 @@ storage-provider contract.
 
 `domains/sqs/message` defines the store-neutral interface the SQS domain reaches its message store through (ADR-0011:S6), with a JetStream adapter in `domains/sqs/message/jetstream` and a shared conformance suite in `domains/sqs/message/conformance`.
 It is an internal primitive: nothing outside the SQS domain uses it, no daemon or service is wired to it, and it does not itself deliver an SQS API.
-The dedicated JetStream server ADR-0011 describes is not deployed by this code.
+The dedicated JetStream server ADR-0011 describes is not deployed by this code, and Spinifex ships no host service, unit, user or firewall rule for it.
 
 The interface covers durable and idempotent append, body and metadata reads, conditional state writes and deletes, per-namespace counts, namespace enumeration, an ordered change feed, a bounded paginated scan, namespace deletion and a sweep of tombstoned bodies.
 A namespace carries an immutable message-shard and state-shard allocation chosen when the queue is created, so a later change in shard counts never moves an existing queue.

@@ -190,7 +190,7 @@ run sudo systemctl reset-failed 'spinifex-*' 2>/dev/null || true
 # the wipe and before the verification, failing the reset on a file the script
 # had already deleted. update-nodes.sh carries the same wait.
 if ! $DRY_RUN; then
-    for unit in spinifex-predastore spinifex-viperblock spinifex-sqs-store spinifex-nats; do
+    for unit in spinifex-predastore spinifex-viperblock spinifex-nats; do
         if systemctl is-active --quiet "$unit"; then
             sudo systemctl stop "$unit" || true
         fi
@@ -427,10 +427,6 @@ fi
 if ! $KEEP_DATA && [ -d "$DATA_DIR/nats/jetstream" ]; then
     log "removing the JetStream store"
     run sudo rm -rf "$DATA_DIR/nats/jetstream"
-fi
-if ! $KEEP_DATA && [ -d "$DATA_DIR/sqs-store/jetstream" ]; then
-    log "removing the SQS store JetStream data"
-    run sudo rm -rf "$DATA_DIR/sqs-store/jetstream"
 fi
 
 # Directories may survive — a mountpoint cannot be removed, and neither can the

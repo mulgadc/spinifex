@@ -283,7 +283,6 @@ create_service_users() {
     # Create per-service users with correct home directories
     declare -A SERVICE_HOMES=(
         [nats]="/var/lib/spinifex/nats"
-        [sqsstore]="/var/lib/spinifex/sqs-store"
         [gw]="/var/lib/spinifex/awsgw"
         [daemon]="/var/lib/spinifex/spinifex"
         [storage]="/var/lib/spinifex/predastore"
@@ -292,7 +291,7 @@ create_service_users() {
         [vpcd]="/var/lib/spinifex"
         [ui]="/var/lib/spinifex"
     )
-    for svc in nats sqsstore gw daemon storage northstar viperblock vpcd ui; do
+    for svc in nats gw daemon storage northstar viperblock vpcd ui; do
         local user="spinifex-${svc}"
         if ! id "$user" > /dev/null 2>&1; then
             $SUDO useradd --system --no-create-home \
@@ -324,7 +323,7 @@ create_service_users() {
     # Daemon consumes viperblock's NBD socket — join the producer-typed group.
     $SUDO usermod -aG spinifex-viperblock spinifex-daemon
 
-    info "Service users created (spinifex-{nats,sqsstore,gw,daemon,storage,northstar,viperblock,vpcd,ui})"
+    info "Service users created (spinifex-{nats,gw,daemon,storage,northstar,viperblock,vpcd,ui})"
 }
 
 # --- Install scoped sudoers rules ---
@@ -701,7 +700,7 @@ table inet spinifex_filter {
         # inventory and running instances to anyone who asks. 8660 is
         # predastore's unauthenticated /healthz and /readyz, which name the
         # peers a gate cannot reach, so it belongs here for the same reason.
-        ip saddr $spinifex_peers tcp dport { 4222, 4223, 4248, 4249, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
+        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
         ip saddr $spinifex_peers udp dport { 5300, 6660, 7660 } accept
 
         # Encap plane, peer-scoped: Geneve, IKE, NAT-T and ESP. Geneve is a
@@ -1598,12 +1597,6 @@ TMPEOF
     $SUDO chown "spinifex-nats:$SPINIFEX_GROUP" /etc/spinifex/nats
     $SUDO chmod 0750 /etc/spinifex/nats
 
-    # The SQS store holds its own token: 0700 keeps every other spinifex-*
-    # service in the shared group out.
-    $SUDO mkdir -p /etc/spinifex/sqs-store
-    $SUDO chown "spinifex-sqsstore:$SPINIFEX_GROUP" /etc/spinifex/sqs-store
-    $SUDO chmod 0700 /etc/spinifex/sqs-store
-
     $SUDO mkdir -p /etc/spinifex/predastore
     $SUDO chown "spinifex-storage:$SPINIFEX_GROUP" /etc/spinifex/predastore
     $SUDO chmod 0750 /etc/spinifex/predastore
@@ -1630,10 +1623,6 @@ TMPEOF
     $SUDO mkdir -p /var/lib/spinifex/nats
     $SUDO chown "spinifex-nats:$SPINIFEX_GROUP" /var/lib/spinifex/nats
     $SUDO chmod 0700 /var/lib/spinifex/nats
-
-    $SUDO mkdir -p /var/lib/spinifex/sqs-store
-    $SUDO chown "spinifex-sqsstore:$SPINIFEX_GROUP" /var/lib/spinifex/sqs-store
-    $SUDO chmod 0700 /var/lib/spinifex/sqs-store
 
     $SUDO mkdir -p /var/lib/spinifex/spinifex
     $SUDO chown "spinifex-daemon:$SPINIFEX_GROUP" /var/lib/spinifex/spinifex
@@ -1716,7 +1705,6 @@ fix_file_ownership() {
     # Per-service data dirs — recursive chown so existing files are accessible
     for entry in \
         nats:spinifex-nats \
-        sqs-store:spinifex-sqsstore \
         predastore:spinifex-storage \
         northstar:spinifex-northstar \
         spinifex:spinifex-daemon \
@@ -1734,11 +1722,6 @@ fix_file_ownership() {
     if [ -d /etc/spinifex/nats ]; then
         $SUDO chown -R "spinifex-nats:$SPINIFEX_GROUP" /etc/spinifex/nats \
             || fatal "Failed to set ownership on /etc/spinifex/nats"
-    fi
-    if [ -d /etc/spinifex/sqs-store ]; then
-        $SUDO chown -R "spinifex-sqsstore:$SPINIFEX_GROUP" /etc/spinifex/sqs-store \
-            || fatal "Failed to set ownership on /etc/spinifex/sqs-store"
-        $SUDO chmod 0700 /etc/spinifex/sqs-store
     fi
     if [ -d /etc/spinifex/predastore ]; then
         $SUDO chown -R "spinifex-storage:$SPINIFEX_GROUP" /etc/spinifex/predastore \

@@ -73,7 +73,6 @@ The cluster plane is peer-scoped. On a single-NIC node the planes collapse onto 
 | Ports | Serving |
 |---|---|
 | TCP 4222, 4248 | NATS client and cluster routes |
-| TCP 4223, 4249 | SQS message store client and cluster routes |
 | TCP 4432 | Formation, then the daemon cluster manager |
 | TCP and UDP 5300 | Internal DNS |
 | TCP 6641, 6642 | OVN northbound and southbound |

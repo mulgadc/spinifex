@@ -72,13 +72,31 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 - Is a provider that fails to seal the volume a failed provider?
   The Viperblock implementation answers `internal` and leaves the volume published, which the specification allows only when the provider may fail.
 - Should a claim that lapses through its TTL be modelled, as a step that happens without a call?
+- Should a volume that does not exist be refused with `not_found`?
+  It succeeds here, as CSI requires and the conformance suite tests, while AWS refuses `DetachVolume` on a missing volume with `InvalidVolume.NotFound`.
 
 #### DeleteVolume
 
 - Must an implementation compare the handle before refusing a published volume?
   The memory implementation does, and succeeds without deleting it, while the Viperblock implementation ignores the handle and refuses with `volume_in_use`.
+- Should a volume that does not exist be refused with `not_found`?
+  It succeeds here, as CSI requires and the conformance suite tests, while AWS refuses `DeleteVolume` on a missing volume with `InvalidVolume.NotFound`.
 
 ### Snapshots
+
+- Should a pending snapshot's move to `completed` or `error` be modelled, as a step that happens without a call?
+  Without it a pending snapshot never completes, and no snapshot is ever in `error`.
+
+#### CreateSnapshot
+
+- May success return a `pending` snapshot?
+  AWS starts a snapshot as `pending`, while the memory implementation returns `completed` and the NATS implementation waits for completion and refuses anything else.
+- Must a retry compare the volume handle?
+  It is ignored, as in the memory implementation, so a volume deleted and recreated under the same ID returns the old snapshot.
+- Should a copy's ID count as a retry?
+  A copy keeps its source's volume ID, so creating a snapshot of that volume under the copy's ID returns the copy.
+- Should `crash_consistent_snapshot` be modelled?
+  The specification does not model volume data, so it cannot say what a snapshot of a published volume holds.
 
 #### CopySnapshot
 
@@ -96,3 +114,5 @@ The contract that every implementation of the `EBSProvider` interface must meet.
   AWS allows it.
 - What does success promise?
   The Go docs say the snapshot is gone, but a snapshot whose handle did not match is left in place.
+- Should a snapshot that does not exist be refused with `not_found`?
+  It succeeds here, as CSI requires and the conformance suite tests, while AWS refuses `DeleteSnapshot` on a missing snapshot with `InvalidSnapshot.NotFound`.

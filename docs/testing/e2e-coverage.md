@@ -40,7 +40,7 @@ Runs **on** a node, shelling out to `ip`/`iptables`/`ovn-nbctl` locally. Skips u
 
 Phases 7 and 8 are gated on a cluster by what the datapath can actually do: the transit segment is a localnet, so host-to-guest Tier 1 ingress only exists where the VPC's gateway router port and the guest are both on this host. The VPC ingress route itself is installed on every node, so phase 8 checks it unconditionally.
 
-Three nightly cells run it: `nat-single` (cell 19), its Oracle Linux twin (cell 36) and `nat-multi` (cell 30). Cell 20 is the bare-metal job and is not in the permutation matrix at all, which is why the multi-node NAT cell is numbered past the end rather than filling a gap.
+Four nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 30), and their Oracle Linux twins (cells 36 and 38). Cell 20 is the bare-metal job and is not in the permutation matrix at all, which is why the multi-node NAT cell is numbered past the end rather than filling a gap.
 
 ### `multinode` — behaviour that only exists on more than one node
 
@@ -49,6 +49,9 @@ Three nightly cells run it: `nat-single` (cell 19), its Oracle Linux twin (cell 
 **`TestMultinodeJetStreamReplicas` is a whole-cluster sweep, not a named list, and it lives here on purpose.** It audits every KV bucket the cluster has and fails any that is replicated across fewer nodes than the cluster has, capped at JetStream's ceiling of five. Naming buckets would only ever cover the ones somebody remembered — a replica count is set where a bucket is created, and there is a bucket-creating call in most services — so the sweep is the assertion and the three daemon-owned buckets are named only so that a run enumerating nothing still fails. Because `multinode` is in `E2E_SUITES_NIGHTLY_MULTI`, this runs in every multi-node permutation cell, and no cell can be added that quietly opts out of it.
 
 **`TestMultinodeDNS` convergence budgets are env-tunable.** `SPINIFEX_MULTINODE_DNS_TOPOLOGY_TIMEOUT` (default `90s`) bounds every node agreeing on the NS topology, `SPINIFEX_MULTINODE_DNS_TIMEOUT` (default `2m`) bounds a record becoming answerable from a guest or a node, and `SPINIFEX_MULTINODE_DNS_POLL` (default `3s`) is the poll interval for both. Values are Go durations; a malformed or non-positive value panics rather than falling back to the default.
+
+**`TestMultinodeOVNRaft` restarts each node's OVN central in turn before it kills the NB leader.**
+A `setup-ovn.sh` rerun restarts a node's NB and SB members together, on EL through the one `ovn-northd.service`, so the test does the same on every database node in turn, waits for both members to be back as cluster members under a known leader, and requires an NB write to land after each step and the full quorum with one leader at the end.
 
 **`TestMultinodeIPSec` proves guest traffic is encrypted on the wire, not only that IPsec is configured.**
 It first requires every node to carry the OVS certificate, key and CA pointers, `NB_Global.ipsec=true` never asserted over an unconfigured chassis, and an AES-GCM SA in `ip xfrm state`.

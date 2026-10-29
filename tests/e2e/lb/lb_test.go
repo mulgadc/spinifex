@@ -1713,7 +1713,9 @@ func remoteTCPRoundRobin(t *testing.T, ctx context.Context, ssh *harness.PeerSSH
 	t.Helper()
 	var lines []string
 	for i := 0; i < n; i++ {
-		out, err := ssh.Run(ctx, peer, fmt.Sprintf("echo '' | nc -w5 '%s' %d", host, port))
+		// Read without writing, as TCPRoundRobin does: nmap-ncat (Oracle Linux) half-closes
+		// on stdin EOF where netcat-openbsd does not, and the NLB then drops the reply.
+		out, err := ssh.Run(ctx, peer, fmt.Sprintf("timeout 5 bash -c 'exec 3<>/dev/tcp/%s/%d && head -n1 <&3'", host, port))
 		if err != nil {
 			continue
 		}

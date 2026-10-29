@@ -158,6 +158,7 @@ Restarting the daemon is what re-arms it: the node rebuilds its peer list from t
 
 > [!WARNING]
 > Do not flush the whole nftables ruleset to clear the policy. The VPC daemon writes SNAT and per-elastic-IP forward rules into the `ip nat` and `ip filter` tables and reinstalls them only when it starts, so `nft flush ruleset` breaks elastic IPs silently until the next `systemctl restart spinifex-vpcd`. Use `disable`, which only ever touches `inet spinifex_filter`.
+> On Oracle Linux with IPsec on, a flush also removes `inet spinifex_ipsec_guard`, so Geneve to a peer without an SA goes out in clear until the daemon puts the table back, within 60 seconds.
 
 ## The Files
 

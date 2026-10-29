@@ -298,7 +298,6 @@ log "preflight on $N host(s)"
 
 versions=""
 families=""
-libreswan_hosts=""
 for i in $(seq 0 $((N - 1))); do
     host="${HOSTS[$i]}"
 
@@ -321,12 +320,6 @@ for i in $(seq 0 $((N - 1))); do
     family=$(out "$host" "cat /etc/os-release" | distro_os_family) ||
         fail "$host: cannot tell its OS from /etc/os-release"
     families+="${host}: ${family}"$'\n'
-
-    # libreswan's pluto: Spinifex cannot run OVN IPsec on it yet, and spx admin
-    # init refuses --ipsec=true there, which would stop formation part way.
-    if [ "$(out "$host" "test -x /usr/libexec/ipsec/pluto && echo yes")" = "yes" ]; then
-        libreswan_hosts+=" $host"
-    fi
 
     # A node that is already in a multi-node cluster is one whose keys and
     # logical network state are load-bearing. Refusing here is deliberate:
@@ -384,12 +377,6 @@ if [ "$(cut -d' ' -f2 <<<"$families" | sort -u | grep -c .)" -gt 1 ]; then
     fail "hosts run different operating systems:
 $(sed '/^$/d; s/^/         /' <<<"$families")
        A cluster must run one OS on every host."
-fi
-
-if $IPSEC_ENABLED && [ -n "$libreswan_hosts" ]; then
-    fail "--ipsec on, but these hosts use libreswan for IPsec:$libreswan_hosts
-       Spinifex cannot run OVN IPsec on libreswan yet. Re-run with --ipsec off
-       only if the nodes share a trusted private link."
 fi
 
 # --- Confirm ---------------------------------------------------------------

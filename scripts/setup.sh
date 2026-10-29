@@ -390,9 +390,67 @@ install_ipsec_state_helper() {
 set -eu
 
 if [ "$#" -ne 1 ]; then
-    echo "usage: $0 <on|off>" >&2
+    echo "usage: $0 <on|off|guard|unguard>" >&2
     exit 2
 fi
+
+# libreswan drops a tunnel's xfrm policies while IKE fails, and pluto flushes
+# the whole xfrm table when it starts or stops, so Geneve from the encap address
+# is dropped in nft unless the route carries an SA.
+GUARD_TABLE="inet spinifex_ipsec_guard"
+
+unguard() {
+    printf 'table %s\ndelete table %s\n' "$GUARD_TABLE" "$GUARD_TABLE" | nft -f -
+}
+
+want=""
+want_src() {
+    case "$1" in
+        *.*.*.*) case "$1" in *[!0-9.]*) src=0.0.0.0/0 ;; *) src="$1/32" ;; esac ;;
+        *) src=0.0.0.0/0 ;;
+    esac
+    case " $want " in *" $src "*) ;; *) want="$want $src" ;; esac
+}
+
+# One source per local address of a tunnel with a remote_name, which
+# ovn-controller sets only while NB_Global.ipsec is on. A tunnel without a
+# usable local_ip is guarded from every source rather than left open.
+guard() {
+    ifaces=$(ovs-vsctl --timeout=5 --bare --columns=name find Interface type=geneve)
+    for iface in $ifaces; do
+        peer=$(ovs-vsctl --timeout=5 --if-exists get Interface "$iface" options:remote_name)
+        [ -n "$peer" ] || continue
+        want_src "$(ovs-vsctl --timeout=5 --if-exists get Interface "$iface" options:local_ip | tr -d '"')"
+    done
+    # At boot pluto is up before ovn-controller builds the tunnels, and its
+    # callers guard only while encryption is wanted, so guard the encap address
+    # until the tunnels say otherwise.
+    if [ -z "$ifaces" ]; then
+        encap=$(ovs-vsctl --timeout=5 --if-exists get Open_vSwitch . external_ids:ovn-encap-ip | tr -d '"')
+        for ip in $(echo "$encap" | tr ',' ' '); do want_src "$ip"; done
+        [ -n "$want" ] || want_src ""
+    fi
+    if [ -z "$want" ]; then
+        unguard
+        return
+    fi
+    # One transaction, so the old set is never gone before the new one is in.
+    nft -f - << NFT
+table $GUARD_TABLE
+delete table $GUARD_TABLE
+table $GUARD_TABLE {
+    set srcs {
+        type ipv4_addr
+        flags interval
+        elements = { $(echo $want | tr ' ' ',') }
+    }
+    chain out {
+        type filter hook output priority 0; policy accept;
+        ip saddr @srcs udp dport 6081 rt ipsec missing drop
+    }
+}
+NFT
+}
 
 # mask/unmask rather than disable/enable. The daemon's unit sets
 # ProtectSystem=full, so /etc is read-only in the namespace its children inherit,
@@ -401,12 +459,24 @@ fi
 
 # ovs-monitor-ipsec execs the strongSwan starter itself rather than going through
 # this unit, so leaving it enabled only contends for UDP 500/4500. Off in both
-# states. Absent on a host without strongswan, which is not an error.
-systemctl mask --now strongswan-starter.service >/dev/null 2>&1 || true
+# states. Masking a unit no package ships leaves a stray /dev/null link, so a
+# host without strongSwan gets none, and loses one an older helper left.
+if [ -e /usr/lib/systemd/system/strongswan-starter.service ] || [ -e /lib/systemd/system/strongswan-starter.service ]; then
+    systemctl mask --now strongswan-starter.service >/dev/null 2>&1 || true
+elif [ "$(systemctl is-enabled strongswan-starter.service 2>/dev/null)" = masked ]; then
+    systemctl unmask strongswan-starter.service >/dev/null 2>&1 || true
+fi
 
 case "$1" in
     on)
-        systemctl unmask openvswitch-ipsec.service
+        if [ -x /usr/libexec/ipsec/pluto ]; then
+            # ovs-monitor-ipsec drives pluto over its control socket but does
+            # not start it, so pluto comes up first under its own unit.
+            systemctl unmask ipsec.service openvswitch-ipsec.service
+            systemctl start ipsec.service
+        else
+            systemctl unmask openvswitch-ipsec.service
+        fi
         exec systemctl start openvswitch-ipsec.service
         ;;
     off)
@@ -415,7 +485,14 @@ case "$1" in
         # On Debian that name is strongswan-starter's alias, masked above.
         if [ -x /usr/libexec/ipsec/pluto ]; then
             systemctl mask --now ipsec.service
+            unguard
         fi
+        ;;
+    guard)
+        guard
+        ;;
+    unguard)
+        unguard
         ;;
     *)
         echo "state not permitted: $1" >&2
@@ -1768,6 +1845,18 @@ MemoryMin=1G
 CPUWeight=300
 EOF
     info "  /etc/systemd/system/system.slice.d/spinifex-reserve.conf"
+
+    # The plaintext Geneve guard is not persisted, so it goes in when pluto
+    # starts at boot, before ovn-controller builds the tunnels. `-`: the guard
+    # must never fail the unit, and the daemon re-asserts it each pass.
+    if [ -x /usr/libexec/ipsec/pluto ]; then
+        $SUDO mkdir -p /etc/systemd/system/ipsec.service.d
+        $SUDO tee /etc/systemd/system/ipsec.service.d/spinifex-guard.conf > /dev/null << EOF
+[Service]
+ExecStartPost=-${IPSEC_STATE_HELPER} guard
+EOF
+        info "  /etc/systemd/system/ipsec.service.d/spinifex-guard.conf"
+    fi
 
     # daemon-reload / enable require a running systemd — skip inside the ISO
     # chroot. Unit files are still dropped into place; firstboot enables them.

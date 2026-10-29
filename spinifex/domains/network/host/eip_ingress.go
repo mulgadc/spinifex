@@ -9,6 +9,10 @@ import (
 
 const eipIngressComment = "spinifex-eip-ingress"
 
+// InternetRouteProbe is a public address whose route names the interface a
+// node reaches the internet through. `ip route get` sends nothing to it.
+const InternetRouteProbe = "1.1.1.1"
+
 // DetectUplinkFor resolves which interface (and local source IP) the kernel
 // would use to reach gatewayIP by parsing `ip route get`. Re-run per ensure:
 // WiFi/cellular uplinks change interface and address across reconnects.

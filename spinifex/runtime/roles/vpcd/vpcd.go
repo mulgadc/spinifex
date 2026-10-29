@@ -1069,13 +1069,23 @@ func ociPoolNames(pools []external.ExternalPoolConfig) []string {
 	return names
 }
 
+// eipUplinkLocator returns what EnsureEIPIngress resolves the proxy-ARP uplink
+// from. Vultr bare metal ARPs for a reserved IP on the public segment, so a
+// Vultr pool uses the interface the node routes the internet through.
+func eipUplinkLocator(pool *external.ExternalPoolConfig) (gateway, uplinkHint string) {
+	if pool.IsVultr() {
+		return host.InternetRouteProbe, ""
+	}
+	return pool.Gateway, pool.BindBridge
+}
+
 // hostEIPBinder builds the routed-mode host plumbing hooks for EIPs on the
-// public pool: /32 route into OVN plus proxy-ARP on the uplink. Static pools
-// locate the uplink via the pool gateway; dhcp pools via their bind bridge.
+// public pool: /32 route into OVN plus proxy-ARP on the uplink, which
+// eipUplinkLocator says how to find.
 func hostEIPBinder(pool *external.ExternalPoolConfig, sbAddr string) policy.HostEIPBinder {
 	runner := host.NewExecRunner()
 	prober := host.NewGatewayClaimProber(sbAddr)
-	gateway, uplinkHint := pool.Gateway, pool.BindBridge
+	gateway, uplinkHint := eipUplinkLocator(pool)
 	return policy.HostEIPBinder{
 		Bind: func(eip policy.EIPSpec, gwLrpIP string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

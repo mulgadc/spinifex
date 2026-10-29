@@ -98,9 +98,9 @@ const (
 	// attached through the exo CLI. A manual EIP arrives addressed to itself,
 	// so unlike OCI there is no private half to map.
 	SourceExoscale = "exoscale"
-	// SourceVultr delegates allocation to Vultr reserved IPs. Vultr routes a
-	// reserved IP to the holder's MAC addressed to itself, so like Exoscale
-	// there is no private half, and the address follows its guest between nodes.
+	// SourceVultr delegates allocation to Vultr reserved IPs, delivered to the
+	// holder addressed to itself, so like Exoscale there is no private half.
+	// A VM is routed it by MAC; bare metal is ARPed for it on the public NIC.
 	SourceVultr = "vultr"
 
 	// OCIAuthConfigFile authenticates from an API-key config file. The default,

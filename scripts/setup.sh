@@ -1203,7 +1203,7 @@ APT_RUNTIME_PACKAGES="nbdkit
 qemu-utils gdisk ovmf qemu-efi-aarch64 less
 libvirt-daemon-system libvirt-clients
 pciutils
-jq curl iproute2 ethtool netcat-openbsd wget unzip xz-utils file
+jq curl iproute2 iputils-arping ethtool netcat-openbsd wget unzip xz-utils file
 ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon dhcpcd-base
 chrony nftables"
 
@@ -1213,7 +1213,7 @@ chrony nftables"
 OL_RUNTIME_PACKAGES="nbdkit nbdkit-basic-filters
 qemu-kvm qemu-img edk2-ovmf seabios-bin less
 pciutils
-jq curl iproute ethtool nmap-ncat wget unzip xz file
+jq curl iproute iputils ethtool nmap-ncat wget unzip xz file
 ovn25.03-central ovn25.03-host openvswitch3.5 openvswitch3.5-ipsec libreswan dhcpcd
 chrony nftables iptables-nft systemd-resolved"
 

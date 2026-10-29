@@ -45,8 +45,7 @@ CreateVolume(req, val, err) ==
                                                      \/ volumes[volID].source_snapshot_id /= snapID
                                                      \/ volumes[volID].parameters         /= req.parameters,
                        not_found              |-> /\ ~KeyExists(volumes, volID)
-                                                  /\ snapID /= None
-                                                  /\ ~KeyExists(snapshots, snapID),
+                                                  /\ snapID \notin Optional(DOMAIN snapshots),
                        unsupported_capability |-> /\ req.seed_data > 0
                                                   /\ ~Capabilities.volume_seeding]
         IN {e \in DOMAIN checks : checks[e]}
@@ -90,8 +89,7 @@ GetVolume(req, val, err) ==
       Errors ==
         LET checks == [invalid_argument |-> volID = None,
                        not_found        |-> \/ ~KeyExists(volumes, volID)
-                                            \/ /\ req.handle /= None
-                                               /\ req.handle /= volumes[volID].handle]
+                                            \/ req.handle \notin {None, volumes[volID].handle}]
         IN {e \in DOMAIN checks : checks[e]}
 
      \* The request was rejected, or the provider failed to answer.
@@ -121,15 +119,12 @@ PublishVolume(req, val, err) ==
       nodeID == req.node_id
 
       Errors ==
-        LET checks == [invalid_argument       |-> \/ volID = None
-                                                  \/ nodeID = None,
+        LET checks == [invalid_argument       |-> None \in {volID, nodeID},
                        not_found              |-> \/ ~KeyExists(volumes, volID)
-                                                  \/ /\ req.handle /= None
-                                                     /\ req.handle /= volumes[volID].handle,
+                                                  \/ req.handle \notin {None, volumes[volID].handle},
                        unsupported_capability |-> /\ req.read_only
                                                   /\ ~Capabilities.read_only_publish,
-                       volume_in_use          |-> \E n \in NodeIDs \ {nodeID} :
-                                                    KeyExists(publications, <<volID, n>>)]
+                       volume_in_use          |-> PublishedNodes(volID) \ {nodeID} /= {}]
         IN {e \in DOMAIN checks : checks[e]}
 
      \* The request was rejected, or the provider failed to answer.
@@ -167,8 +162,7 @@ UnpublishVolume(req, err) ==
       nodeID == req.node_id
 
       Errors ==
-        LET checks == [invalid_argument |-> \/ volID = None
-                                            \/ nodeID = None]
+        LET checks == [invalid_argument |-> None \in {volID, nodeID}]
         IN {e \in DOMAIN checks : checks[e]}
 
      \* The request was rejected, or the provider failed to answer.
@@ -180,7 +174,8 @@ UnpublishVolume(req, err) ==
         \* Record removal is idempotent so that retries succeed.
         /\ publications' = RemoveKey(publications, <<volID, nodeID>>)
         \* The volume is available again once no node holds it.
-        /\ volumes' = IF \E n \in NodeIDs : KeyExists(publications', <<volID, n>>)
+        /\ volumes' = IF \/ ~KeyExists(volumes, volID)
+                         \/ PublishedNodes(volID)' /= {}
                       THEN volumes
                       ELSE [volumes EXCEPT ![volID].state = "available"]
         /\ err = None
@@ -198,9 +193,8 @@ DeleteVolume(req, err) ==
 
       Errors ==
         LET checks == [invalid_argument |-> volID = None,
-                       volume_in_use    |-> /\ \E n \in NodeIDs : KeyExists(publications, <<volID, n>>)
-                                            /\ \/ req.handle = None
-                                               \/ req.handle = volumes[volID].handle]
+                       volume_in_use    |-> /\ PublishedNodes(volID) /= {}
+                                            /\ req.handle \in {None, volumes[volID].handle}]
         IN {e \in DOMAIN checks : checks[e]}
 
      \* The request was rejected, or the provider failed to answer.
@@ -211,8 +205,7 @@ DeleteVolume(req, err) ==
      \/ /\ Errors = {}
         \* Record removal is idempotent so that retries succeed.
         /\ volumes' = IF /\ KeyExists(volumes, volID)
-                         /\ req.handle /= None
-                         /\ volumes[volID].handle /= req.handle
+                         /\ req.handle \notin {None, volumes[volID].handle}
                       THEN volumes
                       ELSE RemoveKey(volumes, volID)
         /\ err = None

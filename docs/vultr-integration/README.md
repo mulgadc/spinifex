@@ -1,7 +1,7 @@
 ---
 title: "Spinifex on Vultr"
 seoTitle: "Run Spinifex on Vultr with reserved IPs — Spinifex Docs"
-description: "Deploy Spinifex on one or three Vultr VMs with a single command, and run EC2, load balancers and EKS on real Vultr reserved IPs."
+description: "Deploy Spinifex on Vultr VMs or bare metal with one command, and run EC2, EBS, S3, VPC, load balancers and EKS on public Vultr reserved IPs it manages."
 category: "Cloud Install"
 tags:
   - install
@@ -10,52 +10,95 @@ tags:
   - terraform
   - cluster
 resources:
+  - title: "Setting Up Your Cluster"
+    url: "/docs/setting-up-your-cluster"
   - title: "Spinifex on Oracle Cloud"
     url: "/docs/oci-integration"
-  - title: "Spinifex on Exoscale"
-    url: "/docs/exoscale-integration"
+  - title: "Single-Node Install"
+    url: "/docs/install"
   - title: "Spinifex Repository"
     url: "https://github.com/mulgadc/spinifex"
 ---
 
 # Running Spinifex on Vultr
 
-> [!WARNING]
-> **Work in progress.** This page is not yet published on docs.mulgadc.com. Do not add it to `scripts/docs-config.json` in `mulga-docs` until Vultr support is in a published release.
-
-> One command builds Spinifex on Vultr VMs and gives your guests real public addresses. Removing it takes one more command.
+> Run the AWS surface (EC2, EBS, S3, VPC, load balancers and EKS) on Vultr, with guests that get real public addresses through Vultr's own API.
 
 ## Table of Contents
 
-- [What you get](#what-you-get)
-- [Before you start](#before-you-start)
-- [Deploy](#deploy)
-- [Use it](#use-it)
-- [Watch a failover](#watch-a-failover)
-- [Tear it down](#tear-it-down)
-- [Troubleshooting](#troubleshooting)
+- [Overview](#overview)
+- [Prerequisites](#prerequisites)
+- [Instructions](#instructions)
+- [1.
+  Download Spinifex](#1-download-spinifex)
+- [2.
+  Choose a deployment](#2-choose-a-deployment)
+- [3.
+  Deploy](#3-deploy)
+- [4.
+  Restrict the API key](#4-restrict-the-api-key)
+- [5.
+  Check it worked](#5-check-it-worked)
+- [6.
+  Obtain AWS credentials](#6-obtain-aws-credentials)
+- [7.
+  Set up your cluster](#7-set-up-your-cluster)
+- [Removing the deployment](#removing-the-deployment)
 - [Limits](#limits)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
-## What you get
+## Overview
 
-`deploy.sh` creates one or three Vultr VMs in a private VPC of their own, installs Spinifex on them and forms the cluster. The AWS APIs (EC2, EBS, S3, VPC, load balancers and EKS) are then served on the first node's address, and the ordinary AWS CLI, SDKs and Terraform provider talk to them unmodified.
+Spinifex is an open-source infrastructure platform that brings core AWS services to bare-metal, edge, and on-prem environments.
+It serves the EC2, EBS, S3, VPC, IAM and STS APIs, plus load balancers and EKS, over an endpoint of your own, so the AWS CLI, the AWS SDKs and the AWS Terraform provider all work against it unmodified.
 
-Anything that needs a public address gets a Vultr reserved IP, attached to the VM its guest runs on. That covers an instance in a public subnet, an Elastic IP, an internet-facing load balancer and a NAT gateway. Spinifex creates each address and deletes it when the resource goes away.
+This guide runs Spinifex on Vultr, on one node or three, on VMs or on bare metal.
+It is the same product you would install on your own servers with [Single-Node Install](/docs/install), so everything you build on it behaves the same wherever Spinifex runs.
 
-On three nodes, an instance whose VM fails is restarted on another node, and its address follows it.
+**Why run it on Vultr:**
+
+- **A global network.** Vultr has 33 locations across six continents, so you can put an AWS-compatible region close to your users or your data.
+- **Compute when you need it.** VMs and bare metal are available by the hour in most Vultr locations, with no long-term commitment.
+- **Flexibility.** Start on one VM for development, then move to three nodes or bare metal for production with the same command.
+- **Portable workloads.** Your applications and Terraform code against the AWS APIs, not against Vultr, so they move between Vultr, AWS, your own rack or an edge site as a deployment decision.
+- **Keep your AWS shape.** VPCs, subnets, security groups, instances, volumes and load balancers stay exactly as you define them today.
+  No rewrite of your application or your infrastructure code is required.
+
+### How Spinifex uses your Vultr API key
+
+Spinifex includes Vultr support, which needs a Vultr API key to provide public networking.
+Whenever something you create on Spinifex needs a public address, such as an EC2 instance in a public subnet, an Elastic IP, an internet-facing load balancer or a NAT gateway, Spinifex creates a Vultr reserved IP through the API, attaches it to the node the resource runs on, and routes it to that resource.
+It deletes the reserved IP again when the resource goes away.
+
+The key is copied to the nodes over SSH and stored at `/etc/spinifex/vultr/api-key`, readable only by the Spinifex daemon.
+It is never written to the Terraform state or to the instance metadata.
 
 ---
 
-## Before you start
+## Prerequisites
 
 You need:
 
-- **A Vultr account** with room for the VMs. Each node is a `vx1-g-16c-64g` (16 vCPU, 64 GB), $0.48 an hour, so three nodes cost $1.44 an hour while they run.
-- **A Vultr API key.** In the Vultr portal, open **Account → API** and enable it. Under **Access Control**, the key must accept calls from your machine *and* from every node, because the nodes call the API to manage their addresses. The node addresses do not exist until the deploy creates them, so either allow all IPv4 for now or add them when the deploy stops and asks (see [Troubleshooting](#troubleshooting)).
-- **On your machine:** [OpenTofu](https://opentofu.org/docs/intro/install/) 1.5 or newer, the AWS CLI v2, `python3`, and an SSH key pair at `~/.ssh/id_ed25519` (or pass `--ssh-key`).
-- **The Spinifex repository**, for `deploy.sh`:
+- **A Vultr account** with room for the nodes you choose in [step 2](#2-choose-a-deployment).
+- **A Vultr API key.** In the Vultr portal, open **Account → API** and enable it.
+  Under **Access Control**, add `0.0.0.0/0` for now.
+  The nodes call the API to manage their addresses, and their addresses do not exist until the deploy creates them.
+  You replace `0.0.0.0/0` with the real addresses in [step 4](#4-restrict-the-api-key).
+- **OpenTofu or Terraform**, version 1.5 or newer. Install [OpenTofu](https://opentofu.org/docs/intro/install/) or [Terraform](https://developer.hashicorp.com/terraform/install); the deploy script uses whichever it finds, preferring OpenTofu.
+- **The AWS CLI v2** and `python3`.
+- **An SSH key pair** at `~/.ssh/id_ed25519`.
+  Create one with `ssh-keygen -t ed25519` if you do not have one.
+  The deploy installs the public key on every node.
+
+---
+
+## Instructions
+
+## 1. Download Spinifex
+
+The deploy script, `deploy-vultr.sh`, is in the Spinifex repository:
 
 ```bash
 git clone https://github.com/mulgadc/spinifex.git
@@ -65,81 +108,191 @@ cd scripts/terraform/vultr-spx
 ```
 
 > [!NOTE]
-> Vultr support is on the development branch and not yet in a published release. `git switch dev` gives you the deploy driver for it, and `--channel dev` below installs the matching Spinifex build, the pre-release published from every change to `dev`. Once Vultr support is in a release, skip `git switch dev` and pass `--channel latest`.
+> Vultr support is on the development branch and not yet in a published release.
+> `git switch dev` gives you the deploy script for it, and `--channel dev` in [step 3](#3-deploy) installs the matching Spinifex build, the pre-release published from every change to `dev`.
+> Once Vultr support is in a release, skip `git switch dev` and pass `--channel latest`.
 
 ---
 
-## Deploy
+## 2. Choose a deployment
+
+| Use | Nodes | Plan | Cost while running |
+| --- | --- | --- | --- |
+| Development and testing | 1 | `vx1-g-16c-64g` VM (16 vCPU, 64 GB) | $0.48 an hour |
+| Production | 3 | `vx1-g-16c-64g` VM | $1.44 an hour |
+| Production on bare metal | 1 or 3 | `vbm-8c-64gb-amd` bare metal (8 cores, 16 threads, 64 GB, 2 × 1.9 TB NVMe) | $0.55 an hour per server |
+
+**For development and testing, use one `vx1-g-16c-64g` VM.** It is the smallest size we recommend, because the EC2 instances, load balancers, EKS and ECS clusters you create all run inside it and need headroom.
+
+**For production, use three VMs, or bare metal.** On three nodes, an instance whose node fails is restarted on another node, and its public address follows it.
+`vbm-8c-64gb-amd` is the smallest bare-metal server we recommend for production workloads, as one server or as three.
+
+Bare metal takes longer to deliver than a VM, and Vultr bills a bare-metal server from the moment it is created, whether it is running or stopped.
+
+---
+
+## 3. Deploy
+
+`deploy-vultr.sh` is a helper script around Terraform or OpenTofu and the official [Vultr provider](https://registry.terraform.io/providers/vultr/vultr/latest), so the Vultr side of the deployment is infrastructure as code you can read, keep and change in `scripts/terraform/vultr-spx/`.
+OpenTofu or Terraform creates a private Vultr VPC and the nodes.
+The script then installs Spinifex on every node over SSH and forms the cluster.
+
+Each node runs **Ubuntu 24.04 LTS** as its host operating system, and Spinifex runs on top of it.
+Vultr installs the operating system when it creates the node, so there is no host to prepare first.
+
+Set your API key, then run the command for the deployment you chose:
 
 ```bash
 export VULTR_API_KEY=<your key>
 
-./deploy.sh up --name demo --channel dev              # one node, about 3 minutes
-./deploy.sh up --name demo --nodes 3 --channel dev    # three nodes, about 16 minutes
+# Development and testing: one VM
+./deploy-vultr.sh up --channel dev --plan vx1-g-16c-64g
+
+# Production: three VMs
+./deploy-vultr.sh up --channel dev --plan vx1-g-16c-64g --nodes 3
+
+# Production on bare metal: one server, or three
+./deploy-vultr.sh up --channel dev --plan vbm-8c-64gb-amd
+./deploy-vultr.sh up --channel dev --plan vbm-8c-64gb-amd --nodes 3
 ```
 
-`--name` labels everything the deployment creates, so you can run several side by side. The defaults are Vultr region `ord` and Spinifex region `us-east-1`; `./deploy.sh` with no arguments lists the options.
+One VM takes about 4 minutes and three VMs about 16 minutes.
+Bare metal is slower, because Vultr takes 5 to 6 minutes to deliver a server: one server took 10 minutes in our test, and three took 18½.
+The default Vultr region is `ord` (Chicago); pass `--region` for another, and run `./deploy-vultr.sh --help` for every option.
 
-When it finishes, `deploy.sh` prints the API endpoint, `https://<node1 address>:9999`. It has also written an AWS profile called `spinifex-vultr-demo`, with the endpoint and the cluster's CA already set, and imported an Ubuntu 26.04 image. If a step fails, fix the cause and run the same command again: it resumes from the step that failed.
+If a step fails, fix the cause and run the same command again: it resumes from the step that failed.
 
-Check it:
+When it finishes, the deploy prints:
 
-```bash
-aws --profile spinifex-vultr-demo ec2 describe-images --query 'Images[].Name'
+```ini
+endpoint=https://203.0.113.10:9999
+profile=spinifex
+ca=/home/you/.spinifex/vultr-default-ca.pem
+console=https://203.0.113.10:3000/
+node1=203.0.113.10
+api_key_allowlist=203.0.113.10/32
 ```
 
-To SSH to a node, use the host key the deploy pinned:
-
-```bash
-ssh -o UserKnownHostsFile=~/.spinifex/vultr/demo/known_hosts root@<node address>
-```
-
-`./deploy.sh status --name demo` lists the completed steps and every VM, volume, VPC and reserved IP the deployment still holds. The node addresses are in the Vultr portal under **Compute**.
+A three-node deployment lists `node2` and `node3` as well, and all three addresses in `api_key_allowlist`.
 
 ---
 
-## Use it
+## 4. Restrict the API key
 
-The workbooks in `docs/terraform-workbooks/` are ordinary AWS Terraform. `nginx-alb` builds a VPC, two web servers and an internet-facing load balancer:
+Now that the node addresses are known, close the API key to everything else.
+In the Vultr portal, open **Account → API**, and under **Access Control**:
+
+1. Add each address from the `api_key_allowlist` line.
+2. Add your own machine's public address, so that `./deploy-vultr.sh` can still remove the deployment later.
+3. Remove `0.0.0.0/0`.
+
+`./deploy-vultr.sh status` prints the node addresses again whenever you need them.
+
+---
+
+## 5. Check it worked
 
 ```bash
-cd ../../../docs/terraform-workbooks/nginx-alb
-export AWS_PROFILE=spinifex-vultr-demo AWS_CA_BUNDLE=~/.spinifex/vultr-demo-ca.pem
-tofu init
-tofu apply -var region=us-east-1 -var spinifex_endpoint=https://<node1 address>:9999
-
-aws elbv2 describe-load-balancers --names nginx-alb \
-    --query 'LoadBalancers[0].AvailabilityZones[].LoadBalancerAddresses[].IpAddress' --output text
-curl http://<that address>/      # alternates between the two servers
+./deploy-vultr.sh status
 ```
 
-The servers take a minute or two after `apply` to install nginx.
+This lists each node and its address, then every VM or bare-metal server, VPC, volume and reserved IP the deployment holds in your Vultr account, then the completed deploy steps.
 
-Each server's public address and the load balancer's address are Vultr reserved IPs, which you can see in the Vultr portal under **Network → Reserved IPs**, labelled `spinifex-vultr-demo:`. `tofu destroy` deletes them again.
+To log in to a node:
+
+```bash
+./deploy-vultr.sh ssh            # node1
+./deploy-vultr.sh ssh node2      # another node of a three-node deployment
+```
+
+For a three-node deployment, check that every node has joined:
+
+```bash
+./deploy-vultr.sh ssh 'spx get nodes'
+```
+
+Expect three nodes with `Ready` status.
 
 ---
 
-## Watch a failover
+## 6. Obtain AWS credentials
 
-On a three-node deployment, with the workbook above running:
+The deploy generated an AWS access key and secret on node 1.
+Display them with:
 
-1. Find which node runs a web server: `ssh` to node1 and run `spx get nodes`, which shows the VM count per node.
-2. In the Vultr portal, **Stop** that node's VM.
-3. Keep `curl`ing the server's public address.
+```bash
+./deploy-vultr.sh credentials
+```
 
-In our measurement the instance was `running` on another node 2½ minutes after the stop, with its reserved IP moved to that node's VM, and answered HTTP once the guest had booted, 4¾ minutes after the stop. Start the stopped VM again and it rejoins without taking the instance back.
+> [!WARNING]
+> This reveals an AWS secret.
+> Do not redirect its output, or paste the credentials into chat, tickets, source control or logs.
+
+The output has this shape:
+
+```ini
+[spinifex]
+aws_access_key_id = <access-key>
+aws_secret_access_key = <secret-key>
+```
+
+Use these to sign in to the web console at the `console` address the deploy printed, `https://<node1 address>:3000/`.
+
+The deploy has also written them to an AWS profile named `spinifex` on your machine, with the endpoint and the cluster's certificate already set, so the AWS CLI works straight away:
+
+```bash
+export AWS_PROFILE=spinifex
+aws ec2 describe-instance-types
+```
+
+The same profile is set up on node 1, if you prefer to work from there:
+
+```bash
+./deploy-vultr.sh ssh 'export AWS_PROFILE=spinifex; aws ec2 describe-instance-types'
+```
+
+If this returns a list of available instance types, your installation is working.
+
+<p align="center">
+  <img src="../../.github/assets/spinifex-ui.jpg" alt="Spinifex Web UI" width="900">
+</p>
+
+**Congratulations, Spinifex is installed.**
 
 ---
 
-## Tear it down
+## 7. Set up your cluster
+
+Spinifex is running, but it holds nothing yet: no machine images, no networks, no instances.
+
+Continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to import an AMI, create an SSH key pair, create a VPC with a public subnet, and launch your first instance.
+An instance you launch into a public subnet gets a Vultr reserved IP, which you can see in the Vultr portal under **Network → Reserved IPs**.
+
+---
+
+## Removing the deployment
 
 Remove anything you built on the cluster first, then:
 
 ```bash
-./deploy.sh destroy --name demo
+./deploy-vultr.sh destroy
 ```
 
-This deletes the VMs and the VPC, plus two things Terraform never created and Vultr keeps billing: the VMs' boot volumes and any reserved IP labelled for the deployment. It fails, and lists what is left, if anything remains afterwards.
+It shows what it will delete and asks you to type the deployment name, `default`, to confirm.
+It deletes the nodes and the VPC, plus anything else the deployment left in your Vultr account that keeps billing: VM boot volumes, and any reserved IP Spinifex created.
+When it finishes, nothing of the deployment is left, and if anything is, it lists it and fails.
+
+After removing the deployment, remove the node addresses from the API key's **Access Control** list, since Vultr may give them to someone else.
+
+---
+
+## Limits
+
+- **One or three nodes.** Other cluster sizes are not supported.
+- **At least 16 vCPU per VM.** Smaller VX plans report their vCPUs as hyperthreads, and Spinifex schedules half of them.
+- **A deleted reserved IP keeps its quota slot for 24 hours**, by Vultr's documentation, so creating and deleting many addresses in a day can reach the account's limit.
+- **Disassociating an Elastic IP leaves the instance with no public address**, where AWS would give it a new one.
+  Stopping and starting the instance gets it one.
 
 ---
 
@@ -147,19 +300,8 @@ This deletes the VMs and the VPC, plus two things Terraform never created and Vu
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `the API key was refused; check its IP allowlist` | Your machine's address is not in the key's Access Control list. Add it in the portal. |
-| `never logged its Vultr allocator` | The node's address is not in the key's Access Control list. Add every node's address, shown in the Vultr portal under **Compute**, then run `up` again. |
-| `plan vx1-g-16c-64g is not available in this region` | Pick another region with `--region`, or another plan of at least 16 vCPU with `--plan`. |
-| `formation failed` | The full log is in `~/.spinifex/vultr/demo/form.log`. Run `up` again once the cause is fixed. |
-| Any other failure | Logs are under `~/.spinifex/vultr/demo/`. `up` resumes from the failed step. |
-
----
-
-## Limits
-
-- **VMs only, one or three nodes.** Bare metal is not supported yet.
-- **At least 16 vCPU per node.** Smaller VX plans report their vCPUs as hyperthreads and Spinifex schedules half of them.
-- **The API key lives on the nodes**, at `/etc/spinifex/vultr/api-key`, readable only by the Spinifex daemon. It is never in the Terraform state or the instance metadata.
-- **A deleted reserved IP keeps its quota slot for 24 hours**, by Vultr's documentation, so creating and deleting many addresses in a day can reach the account's limit.
-- **Disassociating an Elastic IP leaves the instance with no public address.** AWS gives it a new one. Stopping and starting the instance gets it one.
-- **An `apt upgrade` leaves Spinifex, OVS and OVN running.** The installer stops needrestart restarting them, so restart them yourself when it suits. The deploy also turns off unattended upgrades on these hosts.
+| `the API key was refused; check its IP allowlist` | Your machine's address is not in the key's **Access Control** list. Add it in the portal. |
+| `the node's API calls are refused` or `never logged its Vultr allocator` | A node's address is not in the key's **Access Control** list. Add `0.0.0.0/0` until the deploy finishes, then follow [step 4](#4-restrict-the-api-key), and run `up` again. |
+| `plan ... is not available in this region` | Pick another region with `--region`, or check the plan's availability in the Vultr portal. |
+| `formation failed` | The full log is in `~/.spinifex/vultr/default/form.log`. Run `up` again once the cause is fixed. |
+| Any other failure | The logs are under `~/.spinifex/vultr/default/`, and the message names the log on the node. `up` resumes from the failed step. |

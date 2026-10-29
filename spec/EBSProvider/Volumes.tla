@@ -27,6 +27,9 @@ UnpublishVolumeRequests == [volume_id : Optional(VolumeIDs),
                             handle    : Optional(VolumeHandles),
                             node_id   : Optional(NodeIDs)]
 
+DeleteVolumeRequests == [volume_id : Optional(VolumeIDs),
+                         handle    : Optional(VolumeHandles)]
+
 -----------------------------------------------------------------------------------------------------------------------
 \* Control plane operations
 
@@ -185,6 +188,34 @@ UnpublishVolume(req, err) ==
                       ELSE [volumes EXCEPT ![volID].state = "available"]
         /\ err = None
         /\ UNCHANGED snapshots
+
+DeleteVolume(req, err) ==
+  (*******************************************************************************************************************)
+  (* A volume is deleted, so that its data is gone. Snapshots taken from it are unaffected.                          *)
+  (*******************************************************************************************************************)
+  LET volID == req.volume_id
+
+      Errors ==
+        LET checks == [invalid_argument |-> volID = None,
+                       volume_in_use    |-> /\ \E n \in NodeIDs : KeyExists(publications, <<volID, n>>)
+                                            /\ \/ req.handle = None
+                                               \/ req.handle = volumes[volID].handle]
+        IN {e \in DOMAIN checks : checks[e]}
+
+     \* The request was rejected, or the provider failed to answer.
+  IN \/ /\ err \in Errors \union ProviderErrors
+        /\ UNCHANGED vars
+
+     \* The request was accepted.
+     \/ /\ Errors = {}
+        \* Record removal is idempotent so that retries succeed.
+        /\ volumes' = IF /\ KeyExists(volumes, volID)
+                         /\ req.handle /= None
+                         /\ volumes[volID].handle /= req.handle
+                      THEN volumes
+                      ELSE RemoveKey(volumes, volID)
+        /\ err = None
+        /\ UNCHANGED <<publications, snapshots>>
 
 -----------------------------------------------------------------------------------------------------------------------
 \* Specification

@@ -337,6 +337,20 @@ func TestGenerateRequestsSkipsAcceptanceForUnguessableMembers(t *testing.T) {
 	require.NotEmpty(t, markerRejections, "a pagination token still gets rejection requests")
 }
 
+func TestGenerateRequestsAcceptsAFixtureForAnUnguessableMember(t *testing.T) {
+	options := testRequestOptions
+	options.Fixtures = map[string]string{"ListRoles.Marker": "fixture-marker"}
+	plan, err := GenerateRequests(IAM, "ListRoles", options)
+	require.NoError(t, err)
+	var markers []any
+	for _, request := range plan.Cases {
+		if request.Acceptance() && request.Member == "Marker" {
+			markers = append(markers, request.Input["Marker"])
+		}
+	}
+	require.Equal(t, []any{"fixture-marker"}, markers)
+}
+
 func TestGenerateRequestsUsesResourceHints(t *testing.T) {
 	tests := []struct {
 		service   Service

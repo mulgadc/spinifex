@@ -160,6 +160,8 @@ func createRequestFixtures(t *testing.T, sender *requestSender, service awsmodel
 			"ResourceId":   zoneID,
 			"ResourceIds":  zoneID,
 			"GetChange.Id": changeID,
+			// A zone ID is a marker ListHostedZones can start from.
+			"ListHostedZones.Marker": zoneID,
 			// The tagging operations' resource type, which would otherwise be
 			// the enum's first value, healthcheck.
 			"ResourceType": "hostedzone",

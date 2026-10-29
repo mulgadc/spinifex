@@ -191,7 +191,7 @@ func userIDApp(t *testing.T, svc *mockIAMService) (http.Handler, *string) {
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		*seen = mustCtxString(r, ctxUserID)
+		*seen = callerPrincipalOf(r).userID
 		w.Write([]byte("OK"))
 	})
 	return r, seen
@@ -860,11 +860,10 @@ func TestSigV4Auth_ContextPropagation(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		identity := r.Context().Value(ctxIdentity)
-		accountId := r.Context().Value(ctxAccountID)
+		caller := callerPrincipalOf(r)
+		identity, accountId, accessKey := caller.identity, caller.accountID, caller.accessKeyID
 		service := r.Context().Value(ctxService)
 		region := r.Context().Value(ctxRegion)
-		accessKey := r.Context().Value(ctxAccessKey)
 		fmt.Fprintf(w,
 			"identity=%v|accountId=%v|service=%v|region=%v|accessKey=%v",
 			identity, accountId, service, region, accessKey,
@@ -943,9 +942,8 @@ func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		identity := r.Context().Value(ctxIdentity)
-		accountID := r.Context().Value(ctxAccountID)
-		fmt.Fprintf(w, "%v:%v", identity, accountID)
+		caller := callerPrincipalOf(r)
+		fmt.Fprintf(w, "%v:%v", caller.identity, caller.accountID)
 	})
 
 	// First request as alice
@@ -1784,13 +1782,13 @@ func mountSessionGateway(t *testing.T, cred *stsdomain.SessionCredential) (http.
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, req *http.Request) {
-		ctx := req.Context()
+		caller := callerPrincipalOf(req)
 		fmt.Fprintf(w,
 			"identity=%v|accountId=%v|principalType=%v|assumedRoleARN=%v",
-			ctx.Value(ctxIdentity),
-			ctx.Value(ctxAccountID),
-			ctx.Value(ctxPrincipalType),
-			ctx.Value(ctxAssumedRoleARN),
+			caller.identity,
+			caller.accountID,
+			caller.principalType,
+			caller.assumedRoleARN,
 		)
 	})
 	return r, stsMock
@@ -1852,7 +1850,7 @@ func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
 	assert.Contains(t, bodyStr, "accountId=123456789012")
 	assert.Contains(t, bodyStr, "principalType=user")
 	// A user session carries no assumed-role ARN, so the context value is unset.
-	assert.Contains(t, bodyStr, "assumedRoleARN=<nil>")
+	assert.True(t, strings.HasSuffix(bodyStr, "assumedRoleARN="), "body: %s", bodyStr)
 }
 
 func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) {
@@ -2111,7 +2109,7 @@ func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
 }
 
 func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
-	// Long-lived AKIA path must set ctxPrincipalType=user for correct policy gating.
+	// Long-lived AKIA path must seal principalType=user for correct policy gating.
 	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 
@@ -2132,9 +2130,8 @@ func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, req *http.Request) {
-		fmt.Fprintf(w, "principalType=%v|assumedRoleARN=%v",
-			req.Context().Value(ctxPrincipalType),
-			req.Context().Value(ctxAssumedRoleARN))
+		caller := callerPrincipalOf(req)
+		fmt.Fprintf(w, "principalType=%v|assumedRoleARN=%v", caller.principalType, caller.assumedRoleARN)
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -2145,8 +2142,8 @@ func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 
 	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
 	assert.Contains(t, string(body), "principalType=user")
-	// ctxAssumedRoleARN unset → "<nil>" via fmt %v
-	assert.Contains(t, string(body), "assumedRoleARN=<nil>")
+	// assumedRoleARN is empty for a long-lived user.
+	assert.True(t, strings.HasSuffix(string(body), "assumedRoleARN="), "body: %s", string(body))
 }
 
 func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {

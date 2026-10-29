@@ -42,7 +42,7 @@ func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
 func ecrRepositoryRequest(t *testing.T, gw *GatewayConfig, action, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	req := setupECRRequest(awsapi.TargetPrefix+"."+action, body)
-	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
+	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
 	return w, gw.serveECR(w, req.WithContext(ctx))
 }
@@ -287,13 +287,13 @@ func TestECRRequest_CreateDeleteDispatched(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
 
 	create := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.CreateRepository", `{"repositoryName":"team/app"}`)
-	create = create.WithContext(context.WithValue(create.Context(), ctxAccountID, ecrTestAccount))
+	create = create.WithContext(withPrincipalField(create.Context(), fieldAccountID, ecrTestAccount))
 	wc := httptest.NewRecorder()
 	require.NoError(t, gw.serveECR(wc, create))
 	assert.Equal(t, http.StatusOK, wc.Code)
 
 	del := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.DeleteRepository", `{"repositoryName":"team/app"}`)
-	del = del.WithContext(context.WithValue(del.Context(), ctxAccountID, ecrTestAccount))
+	del = del.WithContext(withPrincipalField(del.Context(), fieldAccountID, ecrTestAccount))
 	wd := httptest.NewRecorder()
 	require.NoError(t, gw.serveECR(wd, del))
 	assert.Equal(t, http.StatusOK, wd.Code)

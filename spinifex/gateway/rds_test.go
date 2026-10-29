@@ -25,7 +25,7 @@ const rdsTestAccountID = "123456789012"
 func setupRDSRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxService, "rds")
-	ctx = context.WithValue(ctx, ctxAccountID, rdsTestAccountID)
+	ctx = withPrincipalField(ctx, fieldAccountID, rdsTestAccountID)
 	return withTestIdentity(req.WithContext(ctx))
 }
 
@@ -33,9 +33,9 @@ func setupRDSRequest(body string) *http.Request {
 // what turns the policy check from the pre-IAM bypass into a real evaluation.
 func setupRDSUserRequest(body, accountID string) *http.Request {
 	req := setupRDSRequest(body)
-	ctx := context.WithValue(req.Context(), ctxAccountID, accountID)
-	ctx = context.WithValue(ctx, ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldAccountID, accountID)
+	ctx = withPrincipalField(ctx, fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	return req.WithContext(ctx)
 }
 
@@ -44,11 +44,11 @@ func setupRDSUserRequest(body, accountID string) *http.Request {
 func setupRDSAgentRequest(body, sessionName string) *http.Request {
 	req := setupRDSRequest(body)
 	roleARN := "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":role/" + rdsinstance.InstanceRoleName
-	ctx := context.WithValue(req.Context(), ctxAccountID, awsidentifiers.GlobalAccountID)
-	ctx = context.WithValue(ctx, ctxIdentity, sessionName)
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeAssumedRole)
-	ctx = context.WithValue(ctx, ctxUnderlyingRoleARN, roleARN)
-	ctx = context.WithValue(ctx, ctxAssumedRoleARN,
+	ctx := withPrincipalField(req.Context(), fieldAccountID, awsidentifiers.GlobalAccountID)
+	ctx = withPrincipalField(ctx, fieldIdentity, sessionName)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
+	ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN, roleARN)
+	ctx = withPrincipalField(ctx, fieldAssumedRoleARN,
 		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+rdsinstance.InstanceRoleName+"/"+sessionName)
 	return req.WithContext(ctx)
 }
@@ -330,7 +330,7 @@ func TestRDSRequest_NoIdentityDenied(t *testing.T) {
 	gw, probe := newRDSPolicyGateway(nil)
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=DescribeDBInstances"))
 	ctx := context.WithValue(req.Context(), ctxService, "rds")
-	ctx = context.WithValue(ctx, ctxAccountID, rdsTestAccountID)
+	ctx = withPrincipalField(ctx, fieldAccountID, rdsTestAccountID)
 
 	err := gw.RDS_Request(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)

@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,8 +23,8 @@ const testECSPassRoleTargetARN = "arn:aws:iam::123456789012:role/ecs-task-role"
 // setupECSUserRequest is setupECSRequest plus an authenticated user identity.
 func setupECSUserRequest(target, body string) *http.Request {
 	req := setupECSRequest(target, body)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	return req.WithContext(ctx)
 }
 

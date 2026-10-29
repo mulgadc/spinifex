@@ -204,7 +204,7 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 	// Hoisted above the policy check because the resolver builds ARNs from it.
 	// gw.Region, never the caller-supplied credential-scope region, which would
 	// let a caller sign for another region and slide out from under a Deny.
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	accountID := callerPrincipalOf(r).accountID
 	if accountID == "" {
 		slog.ErrorContext(r.Context(), "EKS_Request: no account ID in auth context")
 		// InternalError, not ServerInternal: the policy gate used to reach this
@@ -307,13 +307,14 @@ func (gw *GatewayConfig) checkEKSPassRole(r *http.Request, action, accountID str
 // underlying role ARN, never the session name, which the caller picks at
 // AssumeRole time and could name its way past the gate.
 func eksCaller(r *http.Request) eksawsapi.Caller {
-	accountID := mustCtxString(r, ctxAccountID)
+	p := callerPrincipalOf(r)
+	accountID := p.accountID
 	caller := eksawsapi.Caller{
 		AccountID:     accountID,
-		PrincipalType: mustCtxString(r, ctxPrincipalType),
-		SessionName:   mustCtxString(r, ctxIdentity),
+		PrincipalType: p.principalType,
+		SessionName:   p.identity,
 	}
-	if roleARN := mustCtxString(r, ctxUnderlyingRoleARN); roleARN != "" {
+	if roleARN := p.underlyingRoleARN; roleARN != "" {
 		if roleAcct, roleName, err := auth.ParseRoleARN(roleARN); err == nil && roleAcct == accountID {
 			caller.RoleName = roleName
 		}
@@ -325,13 +326,8 @@ func eksCaller(r *http.Request) eksawsapi.Caller {
 // auth context. Returns "" when the ARN can't be composed; CreateCluster then
 // skips the creator-admin AccessEntry rather than failing.
 func eksCallerPrincipalARN(r *http.Request) string {
-	ctx := r.Context()
-	accountID, _ := ctx.Value(ctxAccountID).(string)
-	identity, _ := ctx.Value(ctxIdentity).(string)
-	principalType, _ := ctx.Value(ctxPrincipalType).(string)
-	assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
-	userARN, _ := ctx.Value(ctxUserARN).(string)
-	arn, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN)
+	p := callerPrincipalOf(r)
+	arn, err := buildCallerARN(p.accountID, p.identity, p.principalType, p.assumedRoleARN, p.userARN)
 	if err != nil {
 		slog.DebugContext(r.Context(), "EKS_Request: could not resolve caller principal ARN", "err", err)
 		return ""

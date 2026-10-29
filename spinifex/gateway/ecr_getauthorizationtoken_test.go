@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -25,10 +24,10 @@ func TestGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 	}, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
-	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
-	ctx = context.WithValue(ctx, ctxIdentity, "dev")
-	ctx = context.WithValue(ctx, ctxAccessKey, "AKIAGETAUTHTOKENTEST1")
+	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldIdentity, "dev")
+	ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAGETAUTHTOKENTEST1")
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".GetAuthorizationToken")
 	w := httptest.NewRecorder()
 
@@ -79,11 +78,11 @@ func TestGetAuthorizationToken_PathedUserRoundTrips(t *testing.T) {
 	}, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
-	ctx := context.WithValue(req.Context(), ctxAccountID, ecrPrincipalTestAccount)
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
-	ctx = context.WithValue(ctx, ctxIdentity, "dev")
-	ctx = context.WithValue(ctx, ctxUserARN, ecrPathedUserARN)
-	ctx = context.WithValue(ctx, ctxAccessKey, ecrPrincipalTestAKID)
+	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrPrincipalTestAccount)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldIdentity, "dev")
+	ctx = withPrincipalField(ctx, fieldUserARN, ecrPathedUserARN)
+	ctx = withPrincipalField(ctx, fieldAccessKey, ecrPrincipalTestAKID)
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".GetAuthorizationToken")
 	w := httptest.NewRecorder()
 	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
@@ -118,10 +117,10 @@ func TestGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
 	}, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
-	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
-	ctx = context.WithValue(ctx, ctxIdentity, "dev")
-	ctx = context.WithValue(ctx, ctxAccessKey, "AKIAGETAUTHTOKENTEST1")
+	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldIdentity, "dev")
+	ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAGETAUTHTOKENTEST1")
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".GetAuthorizationToken")
 	w := httptest.NewRecorder()
 	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
@@ -142,7 +141,7 @@ func TestGetAuthorizationToken_NoIssuerNotImplemented(t *testing.T) {
 		IAMService:     allowAllIAMService(),
 	}, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(nil, awsapi.RepositoryEndpoint{})})
 	req := setupECRRequest(awsapi.TargetPrefix+".GetAuthorizationToken", "{}")
-	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
+	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
 	err := gw.serveECR(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)
 	assert.Equal(t, "NotImplemented", err.Error())

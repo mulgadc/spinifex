@@ -99,9 +99,9 @@ func newBedrockRequestGateway(t *testing.T, vllmURL string) *GatewayConfig {
 
 func bedrockRequestWithAccount(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	ctx := context.WithValue(req.Context(), ctxAccountID, bedrockTestAccount)
-	ctx = context.WithValue(ctx, ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldAccountID, bedrockTestAccount)
+	ctx = withPrincipalField(ctx, fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	return req.WithContext(ctx)
 }
 

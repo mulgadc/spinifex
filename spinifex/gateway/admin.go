@@ -162,9 +162,8 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 func (gw *GatewayConfig) authorizeAdmin(r *http.Request, method string) error {
 	ctx := r.Context()
 	service, _ := ctx.Value(ctxService).(string)
-	accountID, _ := ctx.Value(ctxAccountID).(string)
-	identity, _ := ctx.Value(ctxIdentity).(string)
-	principalType, _ := ctx.Value(ctxPrincipalType).(string)
+	p, _ := callerPrincipalFrom(ctx)
+	accountID, identity, principalType := p.accountID, p.identity, p.principalType
 
 	deny := func(reason string) error {
 		slog.Warn("Admin: access denied", "method", method, "reason", reason,

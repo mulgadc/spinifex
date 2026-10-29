@@ -25,10 +25,10 @@ func setupECRRequest(target, body string) *http.Request {
 		req.Header.Set("X-Amz-Target", target)
 	}
 	ctx := context.WithValue(req.Context(), ctxService, "ecr")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	ctx = context.WithValue(ctx, ctxIdentity, "dev")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
-	ctx = context.WithValue(ctx, ctxAccessKey, "AKIAECRTESTCONTROLPL1")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldIdentity, "dev")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAECRTESTCONTROLPL1")
 	return req.WithContext(ctx)
 }
 

@@ -136,9 +136,9 @@ func TestAuthorizeAdminGates(t *testing.T) {
 			gw := &GatewayConfig{DisableLogging: true, IAMService: tc.policy}
 			req := httptest.NewRequest(http.MethodPost, "/admin/CreateAccount", nil)
 			ctx := context.WithValue(req.Context(), ctxService, tc.service)
-			ctx = context.WithValue(ctx, ctxAccountID, tc.accountID)
-			ctx = context.WithValue(ctx, ctxIdentity, tc.identity)
-			ctx = context.WithValue(ctx, ctxPrincipalType, tc.principalType)
+			ctx = withPrincipalField(ctx, fieldAccountID, tc.accountID)
+			ctx = withPrincipalField(ctx, fieldIdentity, tc.identity)
+			ctx = withPrincipalField(ctx, fieldPrincipalType, tc.principalType)
 
 			err := gw.authorizeAdmin(req.WithContext(ctx), "CreateAccount")
 			if tc.wantErr == "" {
@@ -257,9 +257,9 @@ func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *ht
 
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
 	ctx = context.WithValue(ctx, ctxService, "spinifex")
-	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.DefaultAccountID())
-	ctx = context.WithValue(ctx, ctxIdentity, "admin")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.DefaultAccountID())
+	ctx = withPrincipalField(ctx, fieldIdentity, "admin")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 
 	rec := httptest.NewRecorder()
 	gw.Admin_Request(rec, req.WithContext(ctx))

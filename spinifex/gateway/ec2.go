@@ -683,7 +683,7 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 	// Hoisted above the policy check because the resolver builds ARNs from it.
 	// gw.Region, never the caller-supplied credential-scope region, which would
 	// let a caller sign for another region and slide out from under a Deny.
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	accountID := callerPrincipalOf(r).accountID
 	if accountID == "" {
 		slog.Error("EC2_Request: no account ID in auth context")
 		// InternalError, not ServerInternal: the policy gate used to reach this

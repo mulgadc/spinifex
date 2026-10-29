@@ -39,9 +39,9 @@ func newBedrockAgentRequestGateway(t *testing.T, vector ochrevector.VectorServic
 
 func bedrockAgentRequestWithAccount(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	ctx := context.WithValue(req.Context(), ctxAccountID, bedrockAgentTestAccount)
-	ctx = context.WithValue(ctx, ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldAccountID, bedrockAgentTestAccount)
+	ctx = withPrincipalField(ctx, fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	return req.WithContext(ctx)
 }
 

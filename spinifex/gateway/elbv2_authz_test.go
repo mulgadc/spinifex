@@ -35,7 +35,7 @@ func dispatchELBv2(t *testing.T, gw *GatewayConfig, body string) error {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxService, "elasticloadbalancing")
-	ctx = context.WithValue(ctx, ctxAccountID, authzAccountID)
+	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
 	return gw.serveELBv2(httptest.NewRecorder(), withTestIdentity(req.WithContext(ctx)))
 }
 

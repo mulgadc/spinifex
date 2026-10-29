@@ -186,34 +186,29 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 // resolveSTSCaller assembles the caller fields from the SigV4 request context.
 func (gw *GatewayConfig) resolveSTSCaller(r *http.Request) (stsCaller, error) {
 	ctx := r.Context()
-	accountID, _ := ctx.Value(ctxAccountID).(string)
+	p, _ := callerPrincipalFrom(ctx)
+	accountID := p.accountID
 	if accountID == "" {
 		slog.Error("STS_Request: no account ID in auth context")
 		return stsCaller{}, errors.New(awserrors.ErrorInternalError)
 	}
-	identity, _ := ctx.Value(ctxIdentity).(string)
-	principalType, _ := ctx.Value(ctxPrincipalType).(string)
-	assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
-	assumedRoleID, _ := ctx.Value(ctxAssumedRoleID).(string)
-	accessKey, _ := ctx.Value(ctxAccessKey).(string)
-	userARN, _ := ctx.Value(ctxUserARN).(string)
 
-	arn, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN)
+	arn, err := buildCallerARN(accountID, p.identity, p.principalType, p.assumedRoleARN, p.userARN)
 	if err != nil {
 		return stsCaller{}, err
 	}
 	return stsCaller{
 		accountID:      accountID,
 		arn:            arn,
-		identity:       identity,
-		principalType:  principalType,
-		assumedRoleARN: assumedRoleARN,
-		assumedRoleID:  assumedRoleID,
-		accessKey:      accessKey,
+		identity:       p.identity,
+		principalType:  p.principalType,
+		assumedRoleARN: p.assumedRoleARN,
+		assumedRoleID:  p.assumedRoleID,
+		accessKey:      p.accessKeyID,
 	}, nil
 }
 
-// buildCallerARN composes the caller ARN: assumed-role uses ctxAssumedRoleARN,
+// buildCallerARN composes the caller ARN: assumed-role uses the sealed assumedRoleARN,
 // root uses arn:aws:iam::{aid}:root, user uses its stored userARN, path included,
 // or arn:aws:iam::{aid}:user/{identity} when there is no record to read it from.
 func buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN string) (string, error) {

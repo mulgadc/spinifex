@@ -63,7 +63,7 @@ func dispatchIAM(t *testing.T, gw *GatewayConfig, body string) error {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	ctx := context.WithValue(req.Context(), ctxService, "iam")
-	ctx = context.WithValue(ctx, ctxAccountID, authzAccountID)
+	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
 	req = withTestIdentity(req.WithContext(ctx))
 	return gw.IAM_Request(httptest.NewRecorder(), req)
 }

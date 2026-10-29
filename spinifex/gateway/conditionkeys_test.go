@@ -5,7 +5,6 @@
 package gateway
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"net/http"
@@ -326,7 +325,7 @@ func TestCheckPolicyResources_ConditionalAllowHonoursSourceIP(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.RemoteAddr = tt.remote
 			req = withTestIdentity(req)
-			req = req.WithContext(context.WithValue(req.Context(), ctxAccountID, "000000000001"))
+			req = req.WithContext(withPrincipalField(req.Context(), fieldAccountID, "000000000001"))
 
 			err := gw.checkPolicyResources(req, "ec2", "DescribeInstances", []string{"*"})
 			if tt.wantErr == "" {
@@ -363,7 +362,7 @@ func TestCheckPolicyResources_ConditionalDenyHonoursSourceIP(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.RemoteAddr = tt.remote
 			req = withTestIdentity(req)
-			req = req.WithContext(context.WithValue(req.Context(), ctxAccountID, "000000000001"))
+			req = req.WithContext(withPrincipalField(req.Context(), fieldAccountID, "000000000001"))
 
 			err := gw.checkPolicyResources(req, "ec2", "DescribeInstances", []string{"*"})
 			if tt.wantErr == "" {

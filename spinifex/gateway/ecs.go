@@ -37,7 +37,7 @@ func (gw *GatewayConfig) ECS_Request(w http.ResponseWriter, r *http.Request) err
 
 	// Hoisted above the policy check because the resolver builds ARNs from the
 	// caller's account and from the same body bytes the handler unmarshals.
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	accountID := callerPrincipalOf(r).accountID
 	if accountID == "" {
 		slog.ErrorContext(r.Context(), "ECS_Request: no account ID in auth context")
 		// InternalError, not ServerInternal: the policy gate used to reach this

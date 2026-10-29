@@ -54,25 +54,10 @@ import (
 type contextKey string
 
 const (
-	ctxIdentity       contextKey = "sigv4.identity"
-	ctxAccountID      contextKey = "sigv4.accountId"
-	ctxService        contextKey = "sigv4.service"
-	ctxRegion         contextKey = "sigv4.region"
-	ctxAccessKey      contextKey = "sigv4.accessKey"
-	ctxAction         contextKey = "sigv4.action"
-	ctxQueryArgs      contextKey = "sigv4.queryArgs"
-	ctxPrincipalType  contextKey = "sigv4.principalType"
-	ctxAssumedRoleARN contextKey = "sigv4.assumedRoleARN"
-	ctxAssumedRoleID  contextKey = "sigv4.assumedRoleID"
-	// ctxUserID carries aws:userid, resolved once by the SigV4 middleware so
-	// every policy check in a request evaluates the same value.
-	ctxUserID contextKey = "sigv4.userID"
-	// ctxUserARN carries an IAM user's stored ARN, path included, from the same read.
-	ctxUserARN contextKey = "sigv4.userARN"
-	// ctxUnderlyingRoleARN carries the IAM role ARN backing an assumed-role session.
-	// Policy enforcement resolves the role name from this, never from ctxIdentity
-	// (attacker-influenced RoleSessionName).
-	ctxUnderlyingRoleARN contextKey = "sigv4.underlyingRoleARN"
+	ctxService   contextKey = "sigv4.service"
+	ctxRegion    contextKey = "sigv4.region"
+	ctxAction    contextKey = "sigv4.action"
+	ctxQueryArgs contextKey = "sigv4.queryArgs"
 
 	// ctxTargetAccount carries the accountID parsed from a registry host
 	// ({accountID}.dkr.ecr.{region}.{suffix}) by the host-routing middleware.
@@ -91,8 +76,8 @@ const (
 	ctxECRPrincipal contextKey = "ecr.principal"
 )
 
-// Values stored under ctxPrincipalType. Downstream handlers that interpret
-// ctxIdentity as an IAM user name MUST gate on principalTypeUser; otherwise a
+// Values of callerPrincipal.principalType. Downstream handlers that interpret
+// callerPrincipal.identity as an IAM user name MUST gate on principalTypeUser; otherwise a
 // session whose SessionName collides with a user name inherits that user's policies.
 const (
 	principalTypeUser        = "user"
@@ -280,23 +265,16 @@ func (gw *GatewayConfig) ValidateServices() error {
 // the shared buildCallerARN helper, so nothing is computed until called.
 func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
 	return func() (dispatch.Actor, error) {
-		ctx := r.Context()
-		accountID, _ := ctx.Value(ctxAccountID).(string)
-		identity, _ := ctx.Value(ctxIdentity).(string)
-		principalType, _ := ctx.Value(ctxPrincipalType).(string)
-		assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
-		userARN, _ := ctx.Value(ctxUserARN).(string)
-		accessKey, _ := ctx.Value(ctxAccessKey).(string)
-
-		callerARN, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN)
+		p := callerPrincipalOf(r)
+		callerARN, err := buildCallerARN(p.accountID, p.identity, p.principalType, p.assumedRoleARN, p.userARN)
 		if err != nil {
 			return dispatch.Actor{}, err
 		}
 		return dispatch.Actor{
-			AccountID:     accountID,
+			AccountID:     p.accountID,
 			CallerARN:     callerARN,
-			PrincipalType: principalType,
-			AccessKeyID:   accessKey,
+			PrincipalType: p.principalType,
+			AccessKeyID:   p.accessKeyID,
 		}, nil
 	}
 }
@@ -385,8 +363,8 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 	return []ratelimit.KeyFunc{
 		func(r *http.Request) (string, error) {
-			acct, ok := r.Context().Value(ctxAccountID).(string)
-			if !ok || acct == "" {
+			acct := callerPrincipalOf(r).accountID
+			if acct == "" {
 				return "", fmt.Errorf("account-id missing from request context")
 			}
 			return acct, nil
@@ -558,7 +536,7 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 func (gw *GatewayConfig) dispatchRegistered(entry *dispatch.Entry, w http.ResponseWriter, r *http.Request) error {
 	return entry.Dispatch(w, dispatch.Invocation{
 		Request:   r,
-		AccountID: mustCtxString(r, ctxAccountID),
+		AccountID: callerPrincipalOf(r).accountID,
 		Region:    gw.Region,
 		Authorize: func(service, action string, resources []string, keys iampolicy.ConditionKeys) error {
 			return gw.checkPolicyResourcesWithKeys(r, service, action, resources, keys)
@@ -670,37 +648,22 @@ func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, 
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	identityVal := r.Context().Value(ctxIdentity)
-	if identityVal == nil {
+	caller, authenticated := callerPrincipalFrom(r.Context())
+	if !authenticated {
 		slog.Warn("checkPolicy: request carries no auth context", "service", service, "action", action)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
-	identity, ok := identityVal.(string)
-	if !ok {
-		slog.Error("checkPolicy: identity has unexpected type", "type", fmt.Sprintf("%T", identityVal))
-		return errors.New(awserrors.ErrorInternalError)
-	}
-	if identity == "" {
+	if caller.identity == "" {
 		slog.Warn("checkPolicy: authenticated request carries no identity name",
 			"service", service, "action", action)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
-	if accountID == "" {
-		slog.Error("checkPolicy: no account ID in auth context", "user", identity)
+	if caller.accountID == "" {
+		slog.Error("checkPolicy: no account ID in auth context", "user", caller.identity)
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	principal := principalContext{
-		identity:          identity,
-		accountID:         accountID,
-		principalType:     mustCtxString(r, ctxPrincipalType),
-		assumedRoleARN:    mustCtxString(r, ctxAssumedRoleARN),
-		assumedRoleID:     mustCtxString(r, ctxAssumedRoleID),
-		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
-		userID:            mustCtxString(r, ctxUserID),
-		userARN:           mustCtxString(r, ctxUserARN),
-	}
+	principal := caller.policyPrincipal()
 	keys := requestConditionKeys(r, principal)
 	maps.Copy(keys, actionKeys)
 	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources, keys)
@@ -796,13 +759,6 @@ func (gw *GatewayConfig) principalUser(principal principalContext) (userID, user
 			"accountID", principal.accountID, "identity", principal.identity, "err", err)
 		return "", "", errors.New(awserrors.ErrorInternalError)
 	}
-}
-
-// mustCtxString reads a string context value, defaulting to "" for an absent
-// or wrong-typed key rather than panicking.
-func mustCtxString(r *http.Request, key contextKey) string {
-	v, _ := r.Context().Value(key).(string)
-	return v
 }
 
 // policyResolveRetryBase scales the backoff between policy-resolve attempts
@@ -1119,7 +1075,7 @@ func traceActionEnricher(next http.Handler) http.Handler {
 		recordResolvedAction(ctx, svc, action)
 
 		span := trace.SpanFromContext(ctx)
-		if acct, _ := ctx.Value(ctxAccountID).(string); acct != "" {
+		if acct := callerPrincipalOf(r).accountID; acct != "" {
 			span.SetAttributes(attribute.String("aws.account_id", acct))
 		}
 		if region, _ := ctx.Value(ctxRegion).(string); region != "" {

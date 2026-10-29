@@ -19,7 +19,7 @@ func setupECSRequest(target, body string) *http.Request {
 		req.Header.Set("X-Amz-Target", target)
 	}
 	ctx := context.WithValue(req.Context(), ctxService, "ecs")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 	return withTestIdentity(req.WithContext(ctx))
 }
 

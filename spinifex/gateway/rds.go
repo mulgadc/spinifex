@@ -77,16 +77,17 @@ func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) err
 // The role name comes from the underlying role ARN, never the session name,
 // which the caller picks at AssumeRole time and could name its way past the gate.
 func rdsCaller(r *http.Request) (rdsawsapi.Caller, error) {
-	accountID := mustCtxString(r, ctxAccountID)
+	p := callerPrincipalOf(r)
+	accountID := p.accountID
 	if accountID == "" {
 		return rdsawsapi.Caller{}, errors.New(awserrors.ErrorServerInternal)
 	}
 	caller := rdsawsapi.Caller{
 		AccountID:     accountID,
-		PrincipalType: mustCtxString(r, ctxPrincipalType),
-		SessionName:   mustCtxString(r, ctxIdentity),
+		PrincipalType: p.principalType,
+		SessionName:   p.identity,
 	}
-	if arn := mustCtxString(r, ctxUnderlyingRoleARN); arn != "" {
+	if arn := p.underlyingRoleARN; arn != "" {
 		if roleAcct, roleName, err := auth.ParseRoleARN(arn); err == nil && roleAcct == accountID {
 			caller.RoleName = roleName
 		}

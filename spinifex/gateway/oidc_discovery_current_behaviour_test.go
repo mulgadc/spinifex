@@ -47,7 +47,7 @@ func newDiscoveryEnv(t *testing.T) *discoveryEnv {
 	js := testutil.NewJetStream(t, nc)
 	kv, err := js.CreateOrUpdateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "eks-account-" + testDiscAccount})
 	require.NoError(t, err)
-	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()}
+	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService(), OIDC: ekscluster.NewOIDCPublisher(js)}
 	return &discoveryEnv{nc: nc, kv: kv, h: gw.SetupRoutes()}
 }
 

@@ -165,6 +165,9 @@ type GatewayConfig struct {
 	Quota   *quota.Service
 	Version string // Build-time version string (set from cmd.Version)
 	Commit  string // Build-time commit hash (set from cmd.Commit)
+	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil
+	// answers them with a 500 (e.g. in unit tests of unrelated routes).
+	OIDC OIDCPublisher
 	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
 	// to the 501 stub (e.g. in unit tests of unrelated routes).
 	ECRRegistry *ecrregistry.Registry

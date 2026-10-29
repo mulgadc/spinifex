@@ -491,6 +491,7 @@ func launchService(config *config.ClusterConfig) error {
 		STSService:              stsService,
 		Version:                 version,
 		Commit:                  commit,
+		OIDC:                    ekscluster.NewOIDCPublisher(jwksJS),
 		ECRRegistry:             ecrRegistry,
 		ECRTokenIssuer:          ecrIssuer,
 		ECRTokenVerifier:        ecrauth.NewVerifier(verifyKeys, ecrAudience),

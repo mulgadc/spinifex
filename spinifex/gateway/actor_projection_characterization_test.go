@@ -184,7 +184,10 @@ func cbInstanceRoleSession(t *testing.T, e *cbEnv, roleName, instanceID string) 
 // userObservation is the expected observation for a user principal.
 func userObservation(accountID, callerARN, akid, identity, userID, userARN, principalARN string) actorObservation {
 	return actorObservation{
-		Actor:    dispatch.Actor{AccountID: accountID, CallerARN: callerARN, PrincipalType: "user", AccessKeyID: akid},
+		Actor: dispatch.Actor{
+			AccountID: accountID, CallerARN: callerARN, PrincipalType: "user", AccessKeyID: akid,
+			PrincipalARN: principalARN, UserID: userID, UserName: identity,
+		},
 		Identity: identity, PrincipalType: "user", UserID: userID, UserARN: userARN,
 		RDSAccountID: accountID, RDSPrincipalType: "user", RDSSessionName: identity,
 		EKSAccountID: accountID, EKSPrincipalType: "user", EKSSessionName: identity,
@@ -196,7 +199,10 @@ func userObservation(accountID, callerARN, akid, identity, userID, userARN, prin
 func roleObservation(accountID, roleName, roleID, session, akid string) actorObservation {
 	sessionARN := "arn:aws:sts::" + accountID + ":assumed-role/" + roleName + "/" + session
 	return actorObservation{
-		Actor:    dispatch.Actor{AccountID: accountID, CallerARN: sessionARN, PrincipalType: "assumed-role", AccessKeyID: akid},
+		Actor: dispatch.Actor{
+			AccountID: accountID, CallerARN: sessionARN, PrincipalType: "assumed-role", AccessKeyID: akid,
+			PrincipalARN: "arn:aws:iam::" + accountID + ":role/" + roleName, UserID: roleID + ":" + session, SessionName: session,
+		},
 		Identity: session, PrincipalType: "assumed-role",
 		AssumedRoleARN: sessionARN, AssumedRoleID: roleID + ":" + session,
 		UnderlyingRoleARN: "arn:aws:iam::" + accountID + ":role/" + roleName,

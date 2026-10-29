@@ -270,12 +270,22 @@ func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc
 		if err != nil {
 			return dispatch.Actor{}, err
 		}
-		return dispatch.Actor{
+		actor := dispatch.Actor{
 			AccountID:     p.accountID,
 			CallerARN:     callerARN,
 			PrincipalType: p.principalType,
 			AccessKeyID:   p.accessKeyID,
-		}, nil
+			UserID:        p.userID,
+		}
+		switch p.principalType {
+		case principalTypeAssumedRole:
+			actor.PrincipalARN = p.underlyingRoleARN
+			actor.SessionName = p.identity
+		default:
+			actor.PrincipalARN = callerARN
+			actor.UserName = p.identity
+		}
+		return actor, nil
 	}
 }
 

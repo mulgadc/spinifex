@@ -24,7 +24,9 @@ if ! archive_list=$(zcat "$INITRAMFS" | cpio --quiet -t); then
     echo "ERROR: $INITRAMFS is not a readable gzip cpio archive" >&2
     exit 1
 fi
-for want in init etc/inittab usr/local/bin/nats-server dev/console dev/null; do
+for want in init etc/inittab usr/local/bin/nats-server dev/console dev/null \
+    usr/local/lib/sqs-store/sqs-store-lib.sh usr/local/lib/sqs-store/sqs-store-prepare \
+    usr/local/lib/sqs-store/sqs-store-run usr/local/lib/sqs-store/sqs-store-stop; do
     if ! grep -qx "$want" <<< "$archive_list"; then
         echo "ERROR: $want missing from $INITRAMFS" >&2
         exit 1

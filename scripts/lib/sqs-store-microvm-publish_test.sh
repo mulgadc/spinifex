@@ -29,6 +29,8 @@ stage() {
     dir=$1 omit=${2:-}
     root="$TMP/root.$$.$(date +%s%N)"
     for p in init etc/inittab usr/local/bin/nats-server sbin/mkfs.ext4 sbin/e2fsck \
+        usr/local/lib/sqs-store/sqs-store-lib.sh usr/local/lib/sqs-store/sqs-store-prepare \
+        usr/local/lib/sqs-store/sqs-store-run usr/local/lib/sqs-store/sqs-store-stop \
         dev/console dev/null lib/modules/6.12-virt/kernel/fs/ext4/ext4.ko \
         lib/modules/6.12-virt/kernel/drivers/acpi/tiny-power-button.ko; do
         [ "$p" = "$omit" ] && continue
@@ -76,7 +78,7 @@ else
 fi
 
 # --- Each failing gate keeps the previous valid pair exactly ---
-for case in nats-server ext4 size; do
+for case in nats-server store-stop ext4 size; do
     d="$TMP/keep-$case"
     stage "$d/prev"
     bash "$PUBLISH" "$d/prev" "$d/out" >/dev/null 2>&1
@@ -84,6 +86,7 @@ for case in nats-server ext4 size; do
     max=50
     case $case in
         nats-server) stage "$d/stage" usr/local/bin/nats-server ;;
+        store-stop) stage "$d/stage" usr/local/lib/sqs-store/sqs-store-stop ;;
         ext4) stage "$d/stage" lib/modules/6.12-virt/kernel/fs/ext4/ext4.ko ;;
         size) stage "$d/stage"; max=0 ;;
     esac

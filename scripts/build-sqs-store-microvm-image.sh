@@ -1,11 +1,13 @@
 #!/bin/bash
 # build-sqs-store-microvm-image.sh — build the SQS store microVM kernel +
-# initramfs: the dedicated nats-server, ext4 support and a clean power-down.
-# Packaging only: the image does not start the store, format a disk or carry
-# credentials. The LB image (build-microvm-image.sh) is separate and unchanged.
+# initramfs: the dedicated nats-server, ext4 support, the store's guest steps
+# and a clean power-down. The guest never formats a disk; build/microvm/
+# sqs-store/sqs-store-lib.sh states its fw_cfg contract. The LB image
+# (build-microvm-image.sh) is separate and unchanged.
 #
 # Inputs:
 #   $REPO_ROOT/build/microvm/sqs-store/init.sh, inittab
+#   $REPO_ROOT/build/microvm/sqs-store/sqs-store-{lib.sh,prepare,run,stop}
 #   $REPO_ROOT/bin/nats-server  (make bin/nats-server, the go.mod-pinned version)
 #
 # Outputs:
@@ -183,6 +185,19 @@ if [ ! -f "$INITTAB" ]; then
 fi
 echo "[build-sqs-store-microvm-image] installing inittab..."
 install -m 0644 "$INITTAB" "$CHROOT_DIR/etc/inittab"
+
+# --- Place the store's guest steps ---
+echo "[build-sqs-store-microvm-image] installing store guest steps..."
+mkdir -p "$CHROOT_DIR/usr/local/lib/sqs-store"
+for step in sqs-store-lib.sh sqs-store-prepare sqs-store-run sqs-store-stop; do
+    if [ ! -f "$BUILD_DIR/$step" ]; then
+        echo "ERROR: $BUILD_DIR/$step not found — cannot build initramfs" >&2
+        exit 1
+    fi
+done
+install -m 0644 "$BUILD_DIR/sqs-store-lib.sh" "$CHROOT_DIR/usr/local/lib/sqs-store/"
+install -m 0755 "$BUILD_DIR/sqs-store-prepare" "$BUILD_DIR/sqs-store-run" "$BUILD_DIR/sqs-store-stop" \
+    "$CHROOT_DIR/usr/local/lib/sqs-store/"
 
 # --- Copy nats-server binary ---
 echo "[build-sqs-store-microvm-image] copying nats-server binary..."

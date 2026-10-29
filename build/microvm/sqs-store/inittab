@@ -2,8 +2,9 @@
 # (poweroff) handler installed before sysinit runs, so a press can never reach
 # the pre-exec shell PID 1. A press before this line is lost; the host re-sends.
 ::sysinit:/sbin/modprobe tiny_power_button power_signal=12
-# Packaging only: the store is not started. Report the bundled server so a boot
-# shows the binary runs in this guest.
-::sysinit:/bin/sh -c 'echo "[init] sqs-store image: $(/usr/local/bin/nats-server --version 2>&1)" > /dev/console'
+::sysinit:/usr/local/lib/sqs-store/sqs-store-prepare
+::respawn:/usr/local/lib/sqs-store/sqs-store-run
 ::ctrlaltdel:/sbin/reboot
-::shutdown:/bin/sh -c '/bin/sync; /bin/umount -a -r; echo "[init] shutdown: umount -a -r rc=$?" > /dev/console'
+# One action: the store stops and its disk unmounts first, and the generic
+# umount -a -r runs only if the store is gone.
+::shutdown:/usr/local/lib/sqs-store/sqs-store-stop

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"os"
 	"sort"
 	"strings"
@@ -12,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/spf13/cobra"
 )
 
@@ -392,7 +392,7 @@ func revokePrincipalKeys(svc iamdomain.IAMService, accountID, userName string) (
 // policy allows. An empty request means every admin method: a principal minted
 // without a --grant is the operator credential.
 func resolvePrincipalGrants(requested []string) ([]string, error) {
-	known := gateway.AdminMethodNames()
+	known := operatorv1.AdminMethodNames()
 	if len(requested) == 0 {
 		return prefixGrants(known), nil
 	}
@@ -632,5 +632,5 @@ func init() {
 
 	adminPrincipalCreateCmd.Flags().StringSlice("grant", nil,
 		"Admin methods this principal may call (default: all of "+
-			strings.Join(gateway.AdminMethodNames(), ", ")+")")
+			strings.Join(operatorv1.AdminMethodNames(), ", ")+")")
 }

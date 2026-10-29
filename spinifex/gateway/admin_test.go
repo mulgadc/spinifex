@@ -7,6 +7,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -278,7 +279,7 @@ func TestAdminRequestReportsClusterUnavailable(t *testing.T) {
 // The credential-minting CLI grants these by name. A method served but absent
 // from the list would be uncallable by every key an operator issues.
 func TestAdminMethodNamesCoverTheRoutedMethods(t *testing.T) {
-	names := AdminMethodNames()
+	names := operatorv1.AdminMethodNames()
 
 	require.Len(t, names, len(adminMethods))
 	assert.True(t, sort.StringsAreSorted(names), "names must be sorted for stable help text")
@@ -287,4 +288,15 @@ func TestAdminMethodNamesCoverTheRoutedMethods(t *testing.T) {
 		assert.True(t, ok, "%s is granted but not routed", name)
 		assert.Equal(t, name, method)
 	}
+}
+
+func TestAdminPathMethod_AcceptsExactlyTheContractList(t *testing.T) {
+	for _, name := range operatorv1.AdminMethodNames() {
+		got, ok := adminPathMethod("/admin/" + name)
+		require.True(t, ok, name)
+		require.Equal(t, name, got)
+	}
+	_, ok := adminPathMethod("/admin/NotInTheContractList")
+	require.False(t, ok)
+	require.Len(t, adminMethods, len(operatorv1.AdminMethodNames()))
 }

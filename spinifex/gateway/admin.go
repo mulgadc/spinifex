@@ -6,36 +6,27 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"maps"
 	"net/http"
-	"slices"
 	"strings"
 	"uuid"
 
 	"github.com/go-chi/chi/v5"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 )
 
-// adminMethods lists the callable /admin/<Method> names. A method absent here
-// is rejected before any parsing, so adding a handler is a deliberate act
-// rather than a side effect of adding a function.
-var adminMethods = map[string]bool{
-	"CreateAccount":           true,
-	"DeleteAccount":           true,
-	"DescribeAccountDeletion": true,
-	"GetAccountQuota":         true,
-	"ListAccounts":            true,
-	"PutAccountQuota":         true,
-}
-
-// AdminMethodNames returns the callable /admin/<Method> names in sorted order.
-// Tooling that mints a credential grants these by name, so the list has to come
-// from the router rather than from a copy that can drift out of step with it.
-func AdminMethodNames() []string {
-	return slices.Sorted(maps.Keys(adminMethods))
-}
+// adminMethods is the callable /admin/<Method> set, built from the contract's
+// list. A method absent here is rejected before any parsing, so adding a
+// handler is a deliberate act rather than a side effect of adding a function.
+var adminMethods = func() map[string]bool {
+	m := make(map[string]bool)
+	for _, name := range operatorv1.AdminMethodNames() {
+		m[name] = true
+	}
+	return m
+}()
 
 // adminPathPrefix is the private admin surface's URL prefix. It is matched
 // before routing so the auth middleware can label the request by method.

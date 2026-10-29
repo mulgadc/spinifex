@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -202,8 +203,8 @@ func TestAccountQuotaResponseExplicitZeroIsAnOverride(t *testing.T) {
 func TestAccountQuotaMethodsAreRegistered(t *testing.T) {
 	require.True(t, adminMethods["GetAccountQuota"])
 	require.True(t, adminMethods["PutAccountQuota"])
-	require.Contains(t, AdminMethodNames(), "GetAccountQuota")
-	require.Contains(t, AdminMethodNames(), "PutAccountQuota")
+	require.Contains(t, operatorv1.AdminMethodNames(), "GetAccountQuota")
+	require.Contains(t, operatorv1.AdminMethodNames(), "PutAccountQuota")
 }
 
 // quotaStubChecker answers AccountTerminating from a fixed set, so these

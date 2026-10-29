@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"strings"
 	"testing"
 	"time"
@@ -38,50 +39,50 @@ func TestValidateDeleteAccountRequest(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		request DeleteAccountRequest
+		request operatorv1.DeleteAccountRequest
 		wantErr string
 	}{
 		{
 			name:    "complete request",
-			request: DeleteAccountRequest{AccountID: "000000000042", AccountName: "t@example.com", ClientToken: token},
+			request: operatorv1.DeleteAccountRequest{AccountID: "000000000042", AccountName: "t@example.com", ClientToken: token},
 		},
 		{
 			name:    "dry run needs only the account id",
-			request: DeleteAccountRequest{AccountID: "000000000042", DryRun: true},
+			request: operatorv1.DeleteAccountRequest{AccountID: "000000000042", DryRun: true},
 		},
 		{
 			name:    "no account id",
-			request: DeleteAccountRequest{AccountName: "t@example.com", ClientToken: token},
+			request: operatorv1.DeleteAccountRequest{AccountName: "t@example.com", ClientToken: token},
 			wantErr: awserrors.ErrorMissingParameter,
 		},
 		{
 			name:    "account id is not twelve digits",
-			request: DeleteAccountRequest{AccountID: "42", AccountName: "t@example.com", ClientToken: token},
+			request: operatorv1.DeleteAccountRequest{AccountID: "42", AccountName: "t@example.com", ClientToken: token},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 		{
 			name:    "account id is not numeric",
-			request: DeleteAccountRequest{AccountID: "00000000004x", AccountName: "t@example.com", ClientToken: token},
+			request: operatorv1.DeleteAccountRequest{AccountID: "00000000004x", AccountName: "t@example.com", ClientToken: token},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 		{
 			name:    "no name confirmation",
-			request: DeleteAccountRequest{AccountID: "000000000042", ClientToken: token},
+			request: operatorv1.DeleteAccountRequest{AccountID: "000000000042", ClientToken: token},
 			wantErr: awserrors.ErrorMissingParameter,
 		},
 		{
 			name:    "no client token",
-			request: DeleteAccountRequest{AccountID: "000000000042", AccountName: "t@example.com"},
+			request: operatorv1.DeleteAccountRequest{AccountID: "000000000042", AccountName: "t@example.com"},
 			wantErr: awserrors.ErrorMissingParameter,
 		},
 		{
 			name:    "client token too short",
-			request: DeleteAccountRequest{AccountID: "000000000042", AccountName: "t@example.com", ClientToken: "short"},
+			request: operatorv1.DeleteAccountRequest{AccountID: "000000000042", AccountName: "t@example.com", ClientToken: "short"},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 		{
 			name: "account name too long",
-			request: DeleteAccountRequest{
+			request: operatorv1.DeleteAccountRequest{
 				AccountID:   "000000000042",
 				AccountName: strings.Repeat("x", accountNameMaxLen+1),
 				ClientToken: token,
@@ -106,7 +107,7 @@ func TestValidateDeleteAccountRequest(t *testing.T) {
 // Whitespace around a confirmation name is a copy-paste artefact, not a
 // mismatch — but it must be trimmed before the comparison, not after.
 func TestValidateDeleteAccountRequestTrimsInput(t *testing.T) {
-	request := DeleteAccountRequest{
+	request := operatorv1.DeleteAccountRequest{
 		AccountID:   "  000000000042 ",
 		AccountName: " t@example.com ",
 		ClientToken: " " + strings.Repeat("a", clientTokenMinLen) + " ",
@@ -187,7 +188,7 @@ func TestAdminListAccountsReportsStatus(t *testing.T) {
 	output, err := gw.adminListAccounts(context.Background(), nil)
 	require.NoError(t, err)
 
-	response, ok := output.(*ListAccountsResponse)
+	response, ok := output.(*operatorv1.ListAccountsResponse)
 	require.True(t, ok)
 	assert.Equal(t, 2, response.Count)
 	assert.Equal(t, iamdomain.AccountStatusActive, response.Accounts[0].Status)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -95,12 +94,11 @@ func setupSTSRequestHandler(p stsRequestParams) http.Handler {
 	if p.iamSvc == nil {
 		p.iamSvc = &flexMockIAMService{}
 	}
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		STSService:     p.stsSvc,
 		IAMService:     p.iamSvc,
-		Credentials:    credverify.New(p.iamSvc, p.stsSvc),
-	}
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		ctx = context.WithValue(ctx, ctxService, "sts")
@@ -337,7 +335,7 @@ func TestSTSRequest_AssumeRole_MissingRoleArn(t *testing.T) {
 }
 
 func TestSTSRequest_NilService_InternalError(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, STSService: nil, IAMService: &flexMockIAMService{}, Credentials: credverify.New(&flexMockIAMService{}, nil)}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, STSService: nil, IAMService: &flexMockIAMService{}})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
@@ -369,7 +367,7 @@ func TestSTSRequest_AssumeRole_NilIAMService_InternalError(t *testing.T) {
 			return nil, nil
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, STSService: svc, IAMService: nil, Credentials: credverify.New(nil, svc)}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, STSService: svc, IAMService: nil})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
@@ -453,7 +451,7 @@ func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) 
 	const pathed = "arn:aws:iam::123456789012:user/eng/alice"
 	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		STSService:     &flexMockSTSService{},
@@ -469,19 +467,7 @@ func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) 
 				}}, nil
 			},
 		},
-		Credentials: credverify.New(&mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{testAccessKey: {
-				AccessKeyID: testAccessKey, SecretAccessKey: encryptedSecret,
-				UserName: "alice", AccountID: "123456789012", Status: "Active",
-			}},
-			getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
-				return &iam.GetUserOutput{User: &iam.User{
-					UserName: aws.String("alice"), UserId: aws.String("AIDAALICE"), Arn: aws.String(pathed),
-				}}, nil
-			},
-		}, &flexMockSTSService{}),
-	}
+	})
 	handler := gw.SigV4AuthMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := gw.STS_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)

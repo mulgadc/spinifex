@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -136,11 +135,10 @@ func TestECRAuthBridge_NoAuthChallenges401(t *testing.T) {
 
 func TestECRAuthBridge_ValidTokenPassesThrough(t *testing.T) {
 	iss, verify := newECRAuth(t)
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, ECRTokenVerifier: verify,
-		IAMService:  ecrBridgeTestIAM(ecrTestAccount),
-		Credentials: credverify.New(ecrBridgeTestIAM(ecrTestAccount), nil),
-	}
+		IAMService: ecrBridgeTestIAM(ecrTestAccount),
+	})
 	next, called := okHandler()
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/", nil)

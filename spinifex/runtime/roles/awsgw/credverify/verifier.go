@@ -57,7 +57,8 @@ func failCounted(code, kind string, parts ...string) *credential.Failure {
 // Authenticate resolves the secret for req.AccessKeyID, hands it to verifySig and,
 // only if that accepts, returns the credential's account.
 func (v *Verifier) Authenticate(req credential.Request, verifySig func(secret string) error) (credential.Authenticated, *credential.Failure) {
-	if v.iam == nil {
+	// A nil *Verifier stored in the interface passes the gateway's nil check.
+	if v == nil || v.iam == nil {
 		slog.Error("SigV4 auth: IAM service not initialized")
 		return credential.Authenticated{}, fail(awserrors.ErrorInternalError)
 	}
@@ -90,6 +91,10 @@ func (v *Verifier) Authenticate(req credential.Request, verifySig func(secret st
 
 // Resolve re-verifies a session's backing principal and resolves the caller's user ID.
 func (v *Verifier) Resolve(req credential.Request, auth credential.Authenticated) (credential.Principal, *credential.Failure) {
+	if v == nil {
+		slog.Error("SigV4 auth: credential verifier not configured")
+		return credential.Principal{}, fail(awserrors.ErrorInternalError)
+	}
 	sess, ok := auth.Handle.(session)
 	if !ok {
 		slog.Error("SigV4 auth: Resolve called with a handle this verifier did not issue")

@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -56,7 +55,7 @@ func taggingPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, agg *tagg
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		NATSConn:       nc,
@@ -75,22 +74,7 @@ func taggingPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, agg *tagg
 			},
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-		Credentials: credverify.New(&policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       authzAccountID,
-						Status:          "Active",
-					},
-				},
-			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-		}, nil),
-	}
+	})
 	withTagging(gw, agg)
 
 	r := chi.NewRouter()
@@ -325,7 +309,7 @@ func TestTaggingPipeline_OversizedBody_413OverHTTP(t *testing.T) {
 
 // A nil NATS connection fails at the request-level gate, before dispatch.
 func TestRequest_ClusterUnavailableNilConn_Tagging(t *testing.T) {
-	gw := withTagging(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}, tagging.NewAggregator())
+	gw := withTagging(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}), tagging.NewAggregator())
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-Amz-Target", taggingTargetPrefix+"GetResources")

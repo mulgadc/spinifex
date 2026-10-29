@@ -7,7 +7,6 @@ package gateway
 import (
 	"bytes"
 	"encoding/xml"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -32,7 +31,7 @@ func rdsPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConf
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		NATSConn:       nc,
@@ -52,22 +51,7 @@ func rdsPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConf
 			},
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-		Credentials: credverify.New(&policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       authzAccountID,
-						Status:          "Active",
-					},
-				},
-			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-		}, nil),
-	}
+	})
 	withRDS(gw)
 
 	r := chi.NewRouter()
@@ -230,7 +214,7 @@ func TestRDSPipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) {
 }
 
 func TestRDSPipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	withRDS(gw)
 
 	w := httptest.NewRecorder()

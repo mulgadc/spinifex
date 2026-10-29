@@ -292,6 +292,9 @@ func TestResolve_SessionPrincipalVerdicts(t *testing.T) {
 			require.NotNil(t, f)
 			assert.Equal(t, awserrors.ErrorInvalidClientTokenId, f.Code)
 			assert.Equal(t, tc.kind, f.FingerprintKind)
+			if tc.kind != "" {
+				assert.Equal(t, []string{testSession}, f.FingerprintParts)
+			}
 		})
 	}
 
@@ -317,6 +320,20 @@ func TestResolve_LongLivedSkipsContinuityCheck(t *testing.T) {
 	_, f = v.Resolve(req, auth)
 	require.Nil(t, f)
 	assert.Zero(t, sts.principals.Load())
+}
+
+// A typed-nil verifier in the gateway's interface field must fault, not panic.
+func TestNilVerifierFailsClosed(t *testing.T) {
+	var v *Verifier
+	called := false
+	_, f := v.Authenticate(credential.Request{AccessKeyID: testAKID}, func(string) error { called = true; return nil })
+	require.NotNil(t, f)
+	assert.Equal(t, awserrors.ErrorInternalError, f.Code)
+	assert.False(t, called)
+
+	_, f = v.Resolve(credential.Request{}, credential.Authenticated{})
+	require.NotNil(t, f)
+	assert.Equal(t, awserrors.ErrorInternalError, f.Code)
 }
 
 func TestResolve_RejectsForeignHandle(t *testing.T) {

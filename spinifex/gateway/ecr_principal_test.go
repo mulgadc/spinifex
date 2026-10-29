@@ -3,7 +3,6 @@ package gateway
 import (
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"strings"
 	"testing"
 	"time"
@@ -168,7 +167,7 @@ func seedECRTestUser(iamSvc *ecrMockIAMService, accountID, userName, akid string
 func TestResolveECRPrincipal_LongLivedUser(t *testing.T) {
 	iamSvc := newECRMockIAMService()
 	seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-	gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+	gw := &GatewayConfig{IAMService: iamSvc}
 
 	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
@@ -192,7 +191,7 @@ func TestResolveECRPrincipal_LongLivedUser_Pathed(t *testing.T) {
 	iamSvc := newECRMockIAMService()
 	seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
 	iamSvc.users[ecrPrincipalTestAccount+"|dev"].Arn = aws.String(ecrPathedUserARN)
-	gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+	gw := &GatewayConfig{IAMService: iamSvc}
 
 	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
@@ -213,7 +212,7 @@ func TestResolveECRPrincipal_LongLivedUser_Pathed(t *testing.T) {
 func TestResolveECRPrincipal_GlobalRoot(t *testing.T) {
 	iamSvc := newECRMockIAMService()
 	seedECRTestUser(iamSvc, awsidentifiers.GlobalAccountID, "root", ecrPrincipalTestAKID)
-	gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+	gw := &GatewayConfig{IAMService: iamSvc}
 
 	claims := &ecrauth.Claims{
 		AccountID:     awsidentifiers.GlobalAccountID,
@@ -241,7 +240,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 
 	t.Run("unknown access key", func(t *testing.T) {
 		iamSvc := newECRMockIAMService()
-		gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+		gw := &GatewayConfig{IAMService: iamSvc}
 		_, err := gw.resolveECRPrincipal(validClaims())
 		require.Error(t, err)
 		assert.False(t, isECRDependencyFailure(err))
@@ -251,7 +250,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
 		iamSvc.accessKeys[ecrPrincipalTestAKID].Status = "Inactive"
-		gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+		gw := &GatewayConfig{IAMService: iamSvc}
 		_, err := gw.resolveECRPrincipal(validClaims())
 		require.Error(t, err)
 		assert.False(t, isECRDependencyFailure(err))
@@ -261,7 +260,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
 		iamSvc.accessKeys[ecrPrincipalTestAKID].AccountID = "000000000099"
-		gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+		gw := &GatewayConfig{IAMService: iamSvc}
 		_, err := gw.resolveECRPrincipal(validClaims())
 		require.Error(t, err)
 	})
@@ -270,7 +269,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
 		delete(iamSvc.users, ecrPrincipalTestAccount+"|dev")
-		gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+		gw := &GatewayConfig{IAMService: iamSvc}
 		_, err := gw.resolveECRPrincipal(validClaims())
 		require.Error(t, err)
 		assert.False(t, isECRDependencyFailure(err))
@@ -280,7 +279,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
 		iamSvc.accounts[ecrPrincipalTestAccount].Status = iamdomain.AccountStatusSuspended
-		gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+		gw := &GatewayConfig{IAMService: iamSvc}
 		_, err := gw.resolveECRPrincipal(validClaims())
 		require.Error(t, err)
 		assert.False(t, isECRDependencyFailure(err))
@@ -292,7 +291,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
 		iamSvc.accounts[ecrPrincipalTestAccount].Status = iamdomain.AccountStatusTerminating
-		gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+		gw := &GatewayConfig{IAMService: iamSvc}
 		_, err := gw.resolveECRPrincipal(validClaims())
 		require.Error(t, err)
 		assert.False(t, isECRDependencyFailure(err))
@@ -301,7 +300,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 	t.Run("principalType claim mismatch", func(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-		gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+		gw := &GatewayConfig{IAMService: iamSvc}
 		c := validClaims()
 		c.PrincipalType = principalTypeAssumedRole
 		_, err := gw.resolveECRPrincipal(c)
@@ -311,7 +310,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 	t.Run("subject does not match canonical ARN", func(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-		gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+		gw := &GatewayConfig{IAMService: iamSvc}
 		c := validClaims()
 		c.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/someone-else"
 		_, err := gw.resolveECRPrincipal(c)
@@ -328,7 +327,7 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 	t.Run("IAM backend outage is a dependency failure, not a denial", func(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		iamSvc.genericErr = errors.New("nats: no responders")
-		gw := &GatewayConfig{IAMService: iamSvc, Credentials: credverify.New(iamSvc, nil)}
+		gw := &GatewayConfig{IAMService: iamSvc}
 		_, err := gw.resolveECRPrincipal(validClaims())
 		require.Error(t, err)
 		assert.True(t, isECRDependencyFailure(err))
@@ -356,7 +355,7 @@ func TestResolveECRPrincipal_SessionToken_User(t *testing.T) {
 	iamSvc := newECRMockIAMService()
 	stsSvc := newECRMockSTSService()
 	seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(time.Hour))
-	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc, Credentials: credverify.New(iamSvc, stsSvc)}
+	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
 	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
@@ -376,7 +375,7 @@ func TestResolveECRPrincipal_SessionToken_User_Pathed(t *testing.T) {
 	stsSvc := newECRMockSTSService()
 	seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(time.Hour))
 	stsSvc.liveUserARN = ecrPathedUserARN
-	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc, Credentials: credverify.New(iamSvc, stsSvc)}
+	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
 	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
@@ -411,7 +410,7 @@ func TestResolveECRPrincipal_SessionToken_User_StalePrincipalRejected(t *testing
 			stsSvc := newECRMockSTSService()
 			seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(time.Hour))
 			stsSvc.principalErr = tc.err
-			gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc, Credentials: credverify.New(iamSvc, stsSvc)}
+			gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
 			claims := &ecrauth.Claims{
 				AccountID:     ecrPrincipalTestAccount,
@@ -431,7 +430,7 @@ func TestResolveECRPrincipal_SessionToken_Expired(t *testing.T) {
 	iamSvc := newECRMockIAMService()
 	stsSvc := newECRMockSTSService()
 	seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(-time.Hour))
-	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc, Credentials: credverify.New(iamSvc, stsSvc)}
+	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
 	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
@@ -446,7 +445,7 @@ func TestResolveECRPrincipal_SessionToken_Expired(t *testing.T) {
 }
 
 func TestResolveECRPrincipal_SessionToken_UnknownSession(t *testing.T) {
-	gw := &GatewayConfig{IAMService: newECRMockIAMService(), STSService: newECRMockSTSService(), Credentials: credverify.New(newECRMockIAMService(), newECRMockSTSService())}
+	gw := &GatewayConfig{IAMService: newECRMockIAMService(), STSService: newECRMockSTSService()}
 	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
 		PrincipalType: principalTypeAssumedRole,
@@ -487,7 +486,7 @@ func TestResolveECRPrincipal_AssumedRole(t *testing.T) {
 	iamSvc := newECRMockIAMService()
 	stsSvc := newECRMockSTSService()
 	assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
-	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc, Credentials: credverify.New(iamSvc, stsSvc)}
+	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
 	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
@@ -509,7 +508,7 @@ func TestResolveECRPrincipal_AssumedRole_LegacyEmptyPrincipalType(t *testing.T) 
 	stsSvc := newECRMockSTSService()
 	assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
 	stsSvc.sessions[ecrPrincipalTestASID].PrincipalType = "" // pre-PrincipalType legacy record
-	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc, Credentials: credverify.New(iamSvc, stsSvc)}
+	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
 	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
@@ -549,7 +548,7 @@ func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
 				stsSvc := newECRMockSTSService()
 				assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
 				stsSvc.principalErr = verdict
-				gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc, Credentials: credverify.New(iamSvc, stsSvc)}
+				gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 				_, err := gw.resolveECRPrincipal(baseClaims(assumedARN))
 				require.Error(t, err)
 				assert.False(t, isECRDependencyFailure(err))
@@ -562,7 +561,7 @@ func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
 		stsSvc := newECRMockSTSService()
 		assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
 		stsSvc.principalErr = errors.New("nats: no responders")
-		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc, Credentials: credverify.New(iamSvc, stsSvc)}
+		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 		_, err := gw.resolveECRPrincipal(baseClaims(assumedARN))
 		require.Error(t, err)
 		assert.True(t, isECRDependencyFailure(err))
@@ -572,7 +571,7 @@ func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		stsSvc := newECRMockSTSService()
 		assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(-time.Minute))
-		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc, Credentials: credverify.New(iamSvc, stsSvc)}
+		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 		_, err := gw.resolveECRPrincipal(baseClaims(assumedARN))
 		require.Error(t, err)
 	})
@@ -584,7 +583,7 @@ func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		stsSvc := newECRMockSTSService()
 		assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
-		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc, Credentials: credverify.New(iamSvc, stsSvc)}
+		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
 		claims := baseClaims(assumedARN)
 		// Subject claims a completely different role than the session's stored
@@ -595,7 +594,7 @@ func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
 	})
 
 	t.Run("nil STS service is a dependency failure", func(t *testing.T) {
-		gw := &GatewayConfig{IAMService: newECRMockIAMService(), Credentials: credverify.New(newECRMockIAMService(), nil)}
+		gw := &GatewayConfig{IAMService: newECRMockIAMService()}
 		_, err := gw.resolveECRPrincipal(baseClaims("arn:aws:sts::" + ecrPrincipalTestAccount + ":assumed-role/deploy/session-1"))
 		require.Error(t, err)
 		assert.True(t, isECRDependencyFailure(err))
@@ -603,7 +602,7 @@ func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
 }
 
 func TestResolveECRPrincipal_UnrecognizedAccessKeyPrefix(t *testing.T) {
-	gw := &GatewayConfig{IAMService: newECRMockIAMService(), Credentials: credverify.New(newECRMockIAMService(), nil)}
+	gw := &GatewayConfig{IAMService: newECRMockIAMService()}
 	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
 		PrincipalType: principalTypeUser,

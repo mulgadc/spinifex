@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -49,7 +48,7 @@ func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.Policy
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		NATSConn:       nc,
@@ -70,22 +69,7 @@ func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.Policy
 			},
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-		Credentials: credverify.New(&policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "admin",
-						AccountID:       accountID,
-						Status:          "Active",
-					},
-				},
-			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-		}, nil),
-	}
+	})
 	gw.IAMService = operatorIAM{gw.IAMService.(*policyMockIAMService)}
 	if mutate != nil {
 		mutate(gw)

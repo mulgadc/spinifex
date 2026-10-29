@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,21 +17,9 @@ import (
 // AssumeRoleWithWebIdentity is routed to the STS dispatcher before SigV4, not rejected.
 func TestAnonymousSTS_WebIdentityNoAuthReachesHandler(t *testing.T) {
 	var seenToken string
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		IAMService:     &flexMockIAMService{},
-		Credentials: credverify.New(&flexMockIAMService{}, &flexMockSTSService{
-			assumeWebIdentityFn: func(in *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
-				seenToken = aws.StringValue(in.WebIdentityToken)
-				return &sts.AssumeRoleWithWebIdentityOutput{
-					Credentials: &sts.Credentials{
-						AccessKeyId:     aws.String("ASIAIRSA"),
-						SecretAccessKey: aws.String("secret"),
-						SessionToken:    aws.String("token"),
-					},
-				}, nil
-			},
-		}),
 		STSService: &flexMockSTSService{
 			assumeWebIdentityFn: func(in *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
 				seenToken = aws.StringValue(in.WebIdentityToken)
@@ -45,7 +32,7 @@ func TestAnonymousSTS_WebIdentityNoAuthReachesHandler(t *testing.T) {
 				}, nil
 			},
 		},
-	}
+	})
 	handler := gw.SetupRoutes()
 
 	body := "Action=AssumeRoleWithWebIdentity&Version=2011-06-15" +

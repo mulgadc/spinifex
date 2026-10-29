@@ -5,7 +5,6 @@ package gateway
 
 import (
 	"encoding/xml"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -37,7 +36,7 @@ func tagSpecBody(action, resourceType string) string {
 }
 
 func TestEC2Request_TagSpecificationResourceType(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
 
 	cases := []struct {
 		name, body, code, resourceType string
@@ -63,7 +62,7 @@ func TestEC2Request_TagSpecificationResourceType(t *testing.T) {
 // Each of an action's own types reaches the handler, which fails only on the
 // absent NATS connection.
 func TestEC2Request_TagSpecificationAllowedTypes(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
 
 	for _, rt := range []string{"instance", "volume", "network-interface", "spot-instances-request"} {
 		assertPermitted(t, dispatchEC2(t, gw, tagSpecBody("RunInstances", rt)+"&ImageId=ami-1&MinCount=1&MaxCount=1"))
@@ -81,7 +80,7 @@ func xmlText(t *testing.T, s string) string {
 
 // The refusals are AWS's own, captured by scripts/aws-compliance/aws-response-diff/scen_e.py.
 func TestEC2Request_MaxResultsOutOfRange(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
 
 	cases := []struct {
 		action string
@@ -118,7 +117,7 @@ func TestEC2Request_MaxResultsOutOfRange(t *testing.T) {
 // Captured from AWS: the combination is refused even when MaxResults is also
 // out of range.
 func TestEC2Request_DescribeInstancesMaxResultsWithInstanceIds(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
 
 	for _, n := range []string{"2", "5"} {
 		w := serveEC2(gw, "Action=DescribeInstances&InstanceId.1=i-0123456789abcdef0&MaxResults="+n)
@@ -129,7 +128,7 @@ func TestEC2Request_DescribeInstancesMaxResultsWithInstanceIds(t *testing.T) {
 }
 
 func TestEC2Request_MaxResultsInRange(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
 
 	for _, body := range []string{
 		"Action=DescribeCapacityReservations&MaxResults=1",
@@ -150,6 +149,6 @@ func TestEC2Request_MaxResultsInRange(t *testing.T) {
 
 // AWS answers DryRun ahead of a MaxResults out of range.
 func TestEC2Request_MaxResultsAfterDryRun(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
 	assertDryRun(t, dispatchEC2(t, gw, "Action=DescribeLaunchTemplates&MaxResults=0&DryRun=true"))
 }

@@ -7,7 +7,6 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -39,7 +38,7 @@ func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConf
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		NATSConn:       nc,
@@ -58,22 +57,7 @@ func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConf
 			},
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-		Credentials: credverify.New(&policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       authzAccountID,
-						Status:          "Active",
-					},
-				},
-			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-		}, nil),
-	}
+	})
 
 	withACM(gw, acmawsapi.Deps{})
 
@@ -257,7 +241,7 @@ func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
 func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
 	for _, action := range []string{"ListCertificates", "DeleteCertificate"} {
 		t.Run(action, func(t *testing.T) {
-			gw := withACM(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}, acmawsapi.Deps{})
+			gw := withACM(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}), acmawsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", "CertificateManager."+action)

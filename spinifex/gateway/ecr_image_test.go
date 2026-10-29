@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,14 +26,13 @@ func newImageGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
 	meta := ecrdomain.NewMemoryMetaStore()
 	reg := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), meta, ecrTestAccount)
-	return withECR(&GatewayConfig{
+	return withECR(withVerifier(&GatewayConfig{
 		ECRRegistry:    reg,
 		Region:         ecrTestRegion,
 		InternalSuffix: ecrTestSuffix,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
-		Credentials:    credverify.New(allowAllIAMService(), nil),
-	}, awsapi.Deps{Registry: awsapi.NewRegistryActionService(reg, reg, reg, reg), LifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg)})
+	}), awsapi.Deps{Registry: awsapi.NewRegistryActionService(reg, reg, reg, reg), LifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg)})
 }
 
 // seedGatewayRepo creates the repository metadata so push/PutImage handlers —
@@ -302,7 +300,7 @@ func TestImageHandlers_GuardRails(t *testing.T) {
 	assert.Equal(t, "InternalError", err.Error())
 
 	// A missing registry-action composition -> ServerInternal.
-	bare := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Credentials: credverify.New(allowAllIAMService(), nil)}
+	bare := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	err = bare.serveECR(httptest.NewRecorder(), imageReq(t, "ListImages", `{"repositoryName":"team/app"}`))
 	require.Error(t, err)
 	assert.Equal(t, "ServerInternal", err.Error())

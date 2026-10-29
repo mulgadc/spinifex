@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,11 +30,10 @@ func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
 	serveECRMeta(t, nc, ecr.SubjectRepoDelete, svc.RepoDelete)
 	serveECRMeta(t, nc, ecr.SubjectManifestPut, svc.ManifestPut)
 	serveECRMeta(t, nc, ecr.SubjectManifestList, svc.ManifestList)
-	gw := withECR(&GatewayConfig{
+	gw := withECR(withVerifier(&GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
-		IAMService:  allowAllIAMService(),
-		Credentials: credverify.New(allowAllIAMService(), nil),
-	}, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
+		IAMService: allowAllIAMService(),
+	}), awsapi.Deps{Repository: awsapi.NewRepositoryActionService(ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
 		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
 	})})
 	return gw, nc
@@ -302,12 +300,11 @@ func TestECRRequest_CreateDeleteDispatched(t *testing.T) {
 }
 
 func TestRepositoryActions_MissingComposition(t *testing.T) {
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		Region:         ecrTestRegion,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
-		Credentials:    credverify.New(allowAllIAMService(), nil),
-	}
+	})
 
 	_, err := ecrRepositoryRequest(t, gw, "CreateRepository", `{"repositoryName":"team/app"}`)
 	require.Error(t, err)

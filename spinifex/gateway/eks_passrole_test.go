@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"errors"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"testing"
 
@@ -56,7 +55,7 @@ func eksPassRoleGateway(statements ...iamdomain.Statement) *GatewayConfig {
 }
 
 func eksGatewayWithIAM(iamService *roleStoreIAMService) *GatewayConfig {
-	return &GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: iamService, Credentials: credverify.New(iamService, nil)}
+	return withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: iamService})
 }
 
 func createNodegroupBody(nodeRole string) string {

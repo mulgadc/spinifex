@@ -179,6 +179,7 @@ type CapacityRange struct {
 type VolumeState string
 
 const (
+	VolumeStateCreating  VolumeState = "creating"
 	VolumeStateAvailable VolumeState = "available"
 	VolumeStateInUse     VolumeState = "in-use"
 )

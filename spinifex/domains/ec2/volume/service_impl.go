@@ -118,6 +118,40 @@ func NewVolumeServiceImplWithStore(cfg *config.Config, store objectstore.ObjectS
 // CreateVolume allocates a new EBS volume through the EBS provider and records
 // its control-plane metadata document.
 func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateVolumeInput, accountID string) (*ec2.Volume, error) {
+	return s.createVolume(ctx, input, accountID, ebsprovider.VolumeStateAvailable)
+}
+
+// CreateVolumeForPreparation is CreateVolume for an internal caller that must
+// write the volume's first contents before anyone else can use it. The record
+// is born "creating", which attach, delete, modify, force-detach and snapshot
+// all refuse, until CompleteVolumePreparation makes it available.
+func (s *VolumeServiceImpl) CreateVolumeForPreparation(ctx context.Context, input *ec2.CreateVolumeInput, accountID string) (*ec2.Volume, error) {
+	return s.createVolume(ctx, input, accountID, ebsprovider.VolumeStateCreating)
+}
+
+// CompleteVolumePreparation moves a volume made by CreateVolumeForPreparation
+// to available. Anything other than an unattached "creating" volume is
+// refused, so it cannot release a volume some other path is using.
+func (s *VolumeServiceImpl) CompleteVolumePreparation(ctx context.Context, accountID, volumeID string) error {
+	meta, err := s.getVolumeMetadata(ctx, accountID, volumeID)
+	if err != nil {
+		return err
+	}
+	if meta.TenantID != accountID {
+		return errors.New(awserrors.ErrorInvalidVolumeNotFound)
+	}
+	if meta.State != string(ebsprovider.VolumeStateCreating) || meta.AttachedInstance != "" {
+		return awserrors.Errorf(awserrors.ErrorIncorrectState, "volume %s is %q, not an unattached creating volume", volumeID, meta.State)
+	}
+	meta.State = string(ebsprovider.VolumeStateAvailable)
+	if err := s.metadata.PutVolume(ctx, meta); err != nil {
+		return awserrors.Errorf(awserrors.ErrorServerInternal, "write volume metadata %s: %v", volumeID, err)
+	}
+	slog.InfoContext(ctx, "Volume preparation completed", "volumeId", volumeID)
+	return nil
+}
+
+func (s *VolumeServiceImpl) createVolume(ctx context.Context, input *ec2.CreateVolumeInput, accountID string, initialState ebsprovider.VolumeState) (*ec2.Volume, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -241,7 +275,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if err := s.metadata.PutVolume(ctx, ebsmetadata.Volume{
-		VolumeID: volumeID, TenantID: accountID, CapacityGiB: uint64(size), State: string(ebsprovider.VolumeStateAvailable),
+		VolumeID: volumeID, TenantID: accountID, CapacityGiB: uint64(size), State: string(initialState),
 		CreatedAt: now, AvailabilityZone: *input.AvailabilityZone, VolumeType: volumeType,
 		IOPS: iops, Throughput: throughput, SnapshotID: snapshotID, Tags: tags, ProviderHandle: created.Handle,
 		Encrypted: encrypted,
@@ -254,7 +288,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	slog.InfoContext(ctx, "CreateVolume completed", "volumeId", volumeID, "size", size, "type", volumeType)
 
 	return &ec2.Volume{VolumeId: aws.String(volumeID), Size: aws.Int64(size), VolumeType: aws.String(volumeType),
-		State: aws.String("available"), AvailabilityZone: input.AvailabilityZone, CreateTime: aws.Time(now),
+		State: aws.String(string(initialState)), AvailabilityZone: input.AvailabilityZone, CreateTime: aws.Time(now),
 		Iops: aws.Int64(int64(iops)), Throughput: aws.Int64(int64(throughput)), Encrypted: aws.Bool(encrypted),
 		SnapshotId: snapshotIDOrNil(snapshotID), Tags: awstags.MapToEC2(tags)}, nil
 }
@@ -947,7 +981,7 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 	if input.Size == nil || *input.Size <= originalSize {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if meta.AttachedInstance != "" && meta.State == "in-use" {
+	if (meta.AttachedInstance != "" && meta.State == "in-use") || meta.State == string(ebsprovider.VolumeStateCreating) {
 		return nil, errors.New(awserrors.ErrorIncorrectState)
 	}
 	originalType := meta.VolumeType
@@ -1068,6 +1102,11 @@ func (s *VolumeServiceImpl) ForceDetachVolume(ctx context.Context, input *ec2.De
 	}
 	if meta.TenantID != accountID {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+	}
+
+	// Clearing would also make a volume still being prepared available.
+	if meta.State == string(ebsprovider.VolumeStateCreating) {
+		return nil, errors.New(awserrors.ErrorIncorrectState)
 	}
 
 	previous := meta.AttachedInstance

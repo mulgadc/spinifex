@@ -5,7 +5,7 @@
 EXTENDS EBSProvider
 
 -----------------------------------------------------------------------------------------------------------------------
-\* Types
+\* Control plane operations
 
 CreateVolumeRequests == [volume_id                 : Optional(VolumeIDs),
                          capacity_range            : CapacityRanges,
@@ -14,24 +14,6 @@ CreateVolumeRequests == [volume_id                 : Optional(VolumeIDs),
                          source_snapshot_volume_id : Optional(VolumeIDs),
                          parameters                : Optional(Parameters),
                          seed_data                 : Bytes]
-
-GetVolumeRequests == [volume_id : Optional(VolumeIDs),
-                      handle    : Optional(VolumeHandles)]
-
-PublishVolumeRequests == [volume_id : Optional(VolumeIDs),
-                          handle    : Optional(VolumeHandles),
-                          node_id   : Optional(NodeIDs),
-                          read_only : BOOLEAN]
-
-UnpublishVolumeRequests == [volume_id : Optional(VolumeIDs),
-                            handle    : Optional(VolumeHandles),
-                            node_id   : Optional(NodeIDs)]
-
-DeleteVolumeRequests == [volume_id : Optional(VolumeIDs),
-                         handle    : Optional(VolumeHandles)]
-
------------------------------------------------------------------------------------------------------------------------
-\* Control plane operations
 
 CreateVolume(req, val, err) ==
   (*******************************************************************************************************************)
@@ -95,6 +77,10 @@ CreateVolume(req, val, err) ==
         /\ err = None
         /\ UNCHANGED <<publications, snapshots>>
 
+
+GetVolumeRequests == [volume_id : Optional(VolumeIDs),
+                      handle    : Optional(VolumeHandles)]
+
 GetVolume(req, val, err) ==
   (*******************************************************************************************************************)
   (* A volume's current capacity, state and handle are read, and nothing changes.                                    *)
@@ -118,6 +104,12 @@ GetVolume(req, val, err) ==
         /\ val = VolumeView(volID)
         /\ err = None
         /\ UNCHANGED vars
+
+
+PublishVolumeRequests == [volume_id : Optional(VolumeIDs),
+                          handle    : Optional(VolumeHandles),
+                          node_id   : Optional(NodeIDs),
+                          read_only : BOOLEAN]
 
 PublishVolume(req, val, err) ==
   (*******************************************************************************************************************)
@@ -161,6 +153,11 @@ PublishVolume(req, val, err) ==
         /\ err = None
         /\ UNCHANGED snapshots
 
+
+UnpublishVolumeRequests == [volume_id : Optional(VolumeIDs),
+                            handle    : Optional(VolumeHandles),
+                            node_id   : Optional(NodeIDs)]
+
 UnpublishVolume(req, err) ==
   (*******************************************************************************************************************)
   (* A volume's export on a node is torn down, so that its data is no longer reachable there. Once no node           *)
@@ -188,6 +185,10 @@ UnpublishVolume(req, err) ==
                       ELSE [volumes EXCEPT ![volID].state = "available"]
         /\ err = None
         /\ UNCHANGED snapshots
+
+
+DeleteVolumeRequests == [volume_id : Optional(VolumeIDs),
+                         handle    : Optional(VolumeHandles)]
 
 DeleteVolume(req, err) ==
   (*******************************************************************************************************************)

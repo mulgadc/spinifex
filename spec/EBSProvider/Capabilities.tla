@@ -2,7 +2,7 @@
 (*********************************************************************************************************************)
 (* The optional behaviour that an implementation advertises.                                                         *)
 (*********************************************************************************************************************)
-EXTENDS Base
+EXTENDS EBSProvider
 
 -----------------------------------------------------------------------------------------------------------------------
 \* Types
@@ -15,10 +15,6 @@ GetCapabilitiesRequests == {<<>>}
 GetCapabilities(req, val, err) ==
   (*******************************************************************************************************************)
   (* The implementation reports which optional behaviour it supports.                                                *)
-  (*                                                                                                                 *)
-  (* Open questions:                                                                                                 *)
-  (* - Is it a lasting promise that capabilities never change, even when an implementation or its provider is        *)
-  (*   upgraded or reconfigured after an earlier answer was cached?                                                  *)
   (*******************************************************************************************************************)
      \* The provider failed to answer.
   \/ /\ val = None

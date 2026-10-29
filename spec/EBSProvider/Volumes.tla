@@ -1,12 +1,8 @@
 --------------------------------------------------- MODULE Volumes ----------------------------------------------------
 (*********************************************************************************************************************)
 (* The lifecycle of a volume, from its creation to its deletion.                                                     *)
-(*                                                                                                                   *)
-(* Open questions:                                                                                                   *)
-(* - Who decides whether a volume is in-use? An implementation may track attachments itself, or derive the           *)
-(*   state from whether a publication claim is held.                                                                 *)
 (*********************************************************************************************************************)
-EXTENDS Base
+EXTENDS EBSProvider
 
 -----------------------------------------------------------------------------------------------------------------------
 \* Types
@@ -38,20 +34,6 @@ CreateVolume(req, val, err) ==
   (*******************************************************************************************************************)
   (* A volume of the requested capacity is created, either blank or holding a snapshot's data, optionally            *)
   (* with seed data written at its start. A retry of a call that already succeeded returns the same volume.          *)
-  (*                                                                                                                 *)
-  (* Open questions:                                                                                                 *)
-  (* - May the capacity be anywhere in the requested range, as CSI allows? An implementation that rounds up          *)
-  (*   would then fail the comparison that tells a retry from a conflicting request.                                 *)
-  (* - May seed data be combined with a source snapshot? The viperblock implementation refuses, the memory           *)
-  (*   implementation accepts.                                                                                       *)
-  (* - Must the source snapshot be completed? AWS refuses one that is not.                                           *)
-  (* - Must an implementation store the availability zone, parameters and source snapshot, so that it can            *)
-  (*   detect a conflicting retry? The viperblock implementation does not.                                           *)
-  (* - Should a retry be compared against the original request rather than the current volume? A retry after         *)
-  (*   ExpandVolume conflicts on capacity.                                                                           *)
-  (* - Should a retry with a different source snapshot volume ID conflict? It is not compared.                       *)
-  (* - Is byte equality the meaning of equal parameters, or may an implementation compare them semantically?         *)
-  (* - Should MaxSeedBytes be modelled? Seed data larger than it is refused with invalid_argument.                   *)
   (*******************************************************************************************************************)
   LET volID     == req.volume_id
       snapID    == req.source_snapshot_id
@@ -113,10 +95,6 @@ CreateVolume(req, val, err) ==
 GetVolume(req, val, err) ==
   (*******************************************************************************************************************)
   (* A volume's current capacity, state and handle are read, and nothing changes.                                    *)
-  (*                                                                                                                 *)
-  (* Open questions:                                                                                                 *)
-  (* - Must an implementation compare the handle? The viperblock implementation ignores it. And is not_found         *)
-  (*   the right error for a volume that was deleted and recreated under the same ID?                                *)
   (*******************************************************************************************************************)
   LET volID == req.volume_id
 
@@ -143,14 +121,6 @@ PublishVolume(req, val, err) ==
   (* A volume's data becomes reachable on a node, through an export that a VM there can attach, either an NBD        *)
   (* URI or a host block device. Reads and writes through the export reach the volume, and a read-only export        *)
   (* refuses writes. Only one node at a time may reach a volume.                                                     *)
-  (*                                                                                                                 *)
-  (* Open questions:                                                                                                 *)
-  (* - Should volume_in_use depend on the exclusion scope? An implementation whose scope is none lets two            *)
-  (*   writers in, and one whose scope is node cannot see another node, yet both are refused here.                   *)
-  (* - Must a republish to the same node with a different read_only be refused? The viperblock implementation        *)
-  (*   refuses it with volume_in_use, while the memory implementation ignores the flag.                              *)
-  (* - May two volumes on one node share an NBD URI or a device path?                                                *)
-  (* - Must a block export's size equal the volume's capacity?                                                       *)
   (*******************************************************************************************************************)
   LET volID  == req.volume_id
       nodeID == req.node_id
@@ -192,12 +162,6 @@ UnpublishVolume(req, err) ==
   (*******************************************************************************************************************)
   (* A volume's export on a node is torn down, so that its data is no longer reachable there. Once no node           *)
   (* can reach the volume, it is available again.                                                                    *)
-  (*                                                                                                                 *)
-  (* Open questions:                                                                                                 *)
-  (* - Must an implementation compare the handle? Both the viperblock and memory implementations ignore it.          *)
-  (* - May an implementation whose provider failed to seal the volume answer internal without injected               *)
-  (*   faults? The viperblock implementation does, and leaves the volume published.                                  *)
-  (* - Should a claim that lapses through its TTL be modelled, as a step that happens without a call?                *)
   (*******************************************************************************************************************)
   LET volID  == req.volume_id
       nodeID == req.node_id

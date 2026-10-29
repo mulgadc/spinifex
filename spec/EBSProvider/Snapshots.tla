@@ -2,7 +2,7 @@
 (*********************************************************************************************************************)
 (* The lifecycle of a snapshot, from its creation to its deletion.                                                   *)
 (*********************************************************************************************************************)
-EXTENDS Base
+EXTENDS EBSProvider
 
 -----------------------------------------------------------------------------------------------------------------------
 \* Types
@@ -21,13 +21,6 @@ CopySnapshot(req, val, err) ==
   (*******************************************************************************************************************)
   (* A snapshot is copied under a new ID, sharing its frozen data, and the copy can be deleted independently         *)
   (* of it.                                                                                                          *)
-  (*                                                                                                                 *)
-  (* Open questions:                                                                                                 *)
-  (* - Should a retried copy return the existing copy, as a retried CreateVolume does, rather than                   *)
-  (*   already_exists?                                                                                               *)
-  (* - May a source that is not completed be copied? AWS refuses until it is.                                        *)
-  (* - What state does a copy start in? The memory implementation always returns completed, while AWS starts         *)
-  (*   a copy as pending.                                                                                            *)
   (*******************************************************************************************************************)
   LET srcSnapID == req.source_snapshot_id
       dstSnapID == req.destination_snapshot_id
@@ -66,13 +59,6 @@ DeleteSnapshot(req, err) ==
   (*******************************************************************************************************************)
   (* A snapshot is deleted, so that no new volume can be restored from it. Volumes already restored from it,         *)
   (* and copies of it, are unaffected.                                                                               *)
-  (*                                                                                                                 *)
-  (* Open questions:                                                                                                 *)
-  (* - Is the handle check part of the contract? The viperblock implementation ignores the handle and deletes        *)
-  (*   anyway.                                                                                                       *)
-  (* - May a pending snapshot be deleted? AWS allows it.                                                             *)
-  (* - What does success promise? The Go docs say the snapshot is gone, but a snapshot whose handle did not          *)
-  (*   match is left in place.                                                                                       *)
   (*******************************************************************************************************************)
   LET snapID == req.snapshot_id
 

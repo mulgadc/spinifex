@@ -34,9 +34,6 @@ func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]
 		"eks": {
 			Registered: eksActionNames(),
 		},
-		"elasticloadbalancingv2": {
-			Registered: mapKeys(elbv2Actions),
-		},
 		"iam": {
 			Registered: mapKeys(iamActions),
 		},

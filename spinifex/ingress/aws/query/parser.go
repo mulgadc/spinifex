@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -323,4 +324,22 @@ func stringValuesAt(value reflect.Value, path []string) []string {
 		return nil
 	}
 	return stringValuesAt(value.FieldByName(path[0]), path[1:])
+}
+
+// ParseArgs parses an AWS query-protocol body. Returns an error on invalid
+// percent-encoding so callers can surface MalformedQueryString.
+func ParseArgs(body string) (map[string]string, error) {
+	values, err := url.ParseQuery(body)
+	if err != nil {
+		return nil, fmt.Errorf("invalid AWS query string: %w", err)
+	}
+
+	params := make(map[string]string, len(values))
+	for key, vs := range values {
+		// The query protocol indexes repeated parameters (Filter.1.Value.1), so a
+		// bare duplicate key only arrives from a non-conforming client. Take the
+		// last occurrence.
+		params[key] = vs[len(vs)-1]
+	}
+	return params, nil
 }

@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +41,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
@@ -305,7 +305,6 @@ var supportedServices = map[string]bool{
 	"ec2":                   true,
 	"iam":                   true,
 	"sts":                   true,
-	"elasticloadbalancing":  true,
 	"eks":                   true,
 	"ecs":                   true,
 	"rds":                   true,
@@ -527,8 +526,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 			err = gw.IAM_Request(w, r)
 		case "sts":
 			err = gw.STS_Request(w, r)
-		case "elasticloadbalancing":
-			err = gw.ELBv2_Request(w, r)
 		case "eks":
 			err = gw.EKS_Request(w, r)
 		case "bedrock":
@@ -993,20 +990,8 @@ func readQueryArgs(r *http.Request) (map[string]string, error) {
 
 // ParseAWSQueryArgs parses an AWS query-protocol body. Returns an error on
 // invalid percent-encoding so callers can surface MalformedQueryString.
-func ParseAWSQueryArgs(query string) (map[string]string, error) {
-	values, err := url.ParseQuery(query)
-	if err != nil {
-		return nil, fmt.Errorf("invalid AWS query string: %w", err)
-	}
-
-	params := make(map[string]string, len(values))
-	for key, vs := range values {
-		// The query protocol indexes repeated parameters (Filter.1.Value.1), so a
-		// bare duplicate key only arrives from a non-conforming client. Take the
-		// last occurrence.
-		params[key] = vs[len(vs)-1]
-	}
-	return params, nil
+func ParseAWSQueryArgs(body string) (map[string]string, error) {
+	return query.ParseArgs(body)
 }
 
 // xmlErrorBody renders an error in the XML envelope svc's clients expect. The

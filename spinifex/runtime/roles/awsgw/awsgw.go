@@ -32,6 +32,7 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
@@ -528,10 +529,6 @@ func launchService(config *config.ClusterConfig) error {
 	taggingControlPlane := taggingawsapi.NewRegistration(taggingawsapi.Deps{
 		Aggregator: newTaggingAggregator(natsConn, nodeConfig.Region),
 	})
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane); err != nil {
-		return fmt.Errorf("awsgw: %w", err)
-	}
-
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
 	// until their tokens expire. The rotator keeps the issuer/verifier current as
 	// keys roll. Bound to the same lifetime context as the STS janitor.
@@ -585,6 +582,13 @@ func launchService(config *config.ClusterConfig) error {
 	// Bedrock token quota reads the stream-fed usage counters built above,
 	// independent of whether the standing-infra dimensions are enabled.
 	gw.Quota.SetBedrockUsage(bedrockUsage)
+
+	// Composed after the quota service because ELBv2 enforces and reports the
+	// load balancer cap through it.
+	elbv2ControlPlane := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: natsConn, Quota: gw.Quota})
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane); err != nil {
+		return fmt.Errorf("awsgw: %w", err)
+	}
 
 	// Leader-locked vCPU reconcile: the only path that lowers the counter,
 	// recomputing it from the running-plus-stopped sweep so out-of-band

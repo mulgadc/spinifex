@@ -269,7 +269,7 @@ func TestErrorHandler_NonEC2ValidationDefaults_DropEC2Wording(t *testing.T) {
 }
 
 func TestErrorHandler_ELBv2Service(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withELBv2(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "elasticloadbalancing")
@@ -859,6 +859,9 @@ func TestRequest_MalformedQueryString_EndToEnd(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// A live NATS connection bypasses the cluster-unavailable gate.
 			gw := &GatewayConfig{DisableLogging: true, NATSConn: connectedNATS(t), IAMService: allowAllIAMService()}
+			if tc.service == "elasticloadbalancing" {
+				withELBv2(gw)
+			}
 			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
 			ctx := context.WithValue(req.Context(), ctxService, tc.service)
 			ctx = context.WithValue(ctx, ctxAccountID, "123456789012")

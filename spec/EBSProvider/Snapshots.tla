@@ -5,17 +5,11 @@
 EXTENDS EBSProvider
 
 -----------------------------------------------------------------------------------------------------------------------
-\* Types
+\* Interface methods
 
 CopySnapshotRequests == [source_snapshot_id      : Optional(SnapshotIDs),
                          destination_snapshot_id : Optional(SnapshotIDs),
                          volume_id               : Optional(VolumeIDs)]
-
-DeleteSnapshotRequests == [snapshot_id : Optional(SnapshotIDs),
-                           handle      : Optional(SnapshotHandles)]
-
------------------------------------------------------------------------------------------------------------------------
-\* Interface methods
 
 CopySnapshot(req, val, err) ==
   (*******************************************************************************************************************)
@@ -54,6 +48,10 @@ CopySnapshot(req, val, err) ==
              /\ val = SnapshotView(dstSnapID)'
              /\ err = None
              /\ UNCHANGED <<volumes, publications>>
+
+
+DeleteSnapshotRequests == [snapshot_id : Optional(SnapshotIDs),
+                           handle      : Optional(SnapshotHandles)]
 
 DeleteSnapshot(req, err) ==
   (*******************************************************************************************************************)

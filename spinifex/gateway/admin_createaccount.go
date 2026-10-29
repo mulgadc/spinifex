@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -43,32 +44,14 @@ const (
 
 var clientTokenRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-// CreateAccountRequest is the /admin/CreateAccount request body.
-type CreateAccountRequest struct {
-	Name        string `json:"name"`
-	ClientToken string `json:"clientToken"`
-	Source      string `json:"source,omitempty"`
-}
-
-// CreateAccountResponse is the /admin/CreateAccount success body. It is stored
-// verbatim (with the secret encrypted) so a replay returns an identical answer.
-type CreateAccountResponse struct {
-	AccountID       string `json:"accountId"`
-	AccountName     string `json:"accountName"`
-	AdminUser       string `json:"adminUser"`
-	AccessKeyID     string `json:"accessKeyId"`
-	SecretAccessKey string `json:"secretAccessKey"`
-	DefaultVpcID    string `json:"defaultVpcId"`
-}
-
 // adminIdemRecord is the stored provisioning state for one client token.
 type adminIdemRecord struct {
 	State string `json:"state"` // "in-progress" or "done"
 	Name  string `json:"name"`
 	// Response is populated when State is "done". SecretAccessKey inside it is
 	// ciphertext, never plaintext.
-	Response  *CreateAccountResponse `json:"response,omitempty"`
-	StartedAt string                 `json:"started_at"`
+	Response  *operatorv1.CreateAccountResponse `json:"response,omitempty"`
+	StartedAt string                            `json:"started_at"`
 }
 
 const (
@@ -84,7 +67,7 @@ const (
 // duplicate names impossible. Provisioning itself is resumable, so a failure
 // anywhere is recovered by retrying with the same token.
 func (gw *GatewayConfig) adminCreateAccount(ctx context.Context, body []byte) (any, error) {
-	var req CreateAccountRequest
+	var req operatorv1.CreateAccountRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		slog.Debug("CreateAccount: malformed JSON body", "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
@@ -164,8 +147,8 @@ func (gw *GatewayConfig) adminCreateAccount(ctx context.Context, body []byte) (a
 func (gw *GatewayConfig) provisionNewAccount(
 	ctx context.Context,
 	names *iamdomain.AccountNameIndex,
-	req *CreateAccountRequest,
-) (*CreateAccountResponse, error) {
+	req *operatorv1.CreateAccountRequest,
+) (*operatorv1.CreateAccountResponse, error) {
 	// Accounts that predate the reservation index have no entry to collide
 	// with, so they are found by name scan. The same listing bounds the cap.
 	existing, err := iamdomain.FindAccountByName(gw.IAMService, req.Name)
@@ -225,7 +208,7 @@ func (gw *GatewayConfig) provisionNewAccount(
 	slog.Info("CreateAccount: account created",
 		"accountID", account.AccountID, "source", req.Source, "defaultVpcID", vpcID)
 
-	return &CreateAccountResponse{
+	return &operatorv1.CreateAccountResponse{
 		AccountID:       provisioned.AccountID,
 		AccountName:     provisioned.AccountName,
 		AdminUser:       provisioned.AdminUser,
@@ -238,7 +221,7 @@ func (gw *GatewayConfig) provisionNewAccount(
 // claimClientToken CAS-creates the in-progress record. It returns a non-nil
 // response when the token has already completed, meaning the caller should
 // replay it rather than provision again.
-func claimClientToken(ctx context.Context, idem jetstream.KeyValue, clientToken, name string) (*CreateAccountResponse, error) {
+func claimClientToken(ctx context.Context, idem jetstream.KeyValue, clientToken, name string) (*operatorv1.CreateAccountResponse, error) {
 	normalized := iamdomain.NormalizeAccountName(name)
 	claim, err := json.Marshal(adminIdemRecord{
 		State:     adminIdemInProgress,
@@ -370,7 +353,7 @@ func clientTokenKey(clientToken string) string {
 // validateCreateAccountRequest rejects malformed input. Messages name the
 // offending field but never echo its value, which for `name` is a customer
 // email address.
-func validateCreateAccountRequest(req *CreateAccountRequest) error {
+func validateCreateAccountRequest(req *operatorv1.CreateAccountRequest) error {
 	req.Name = strings.TrimSpace(req.Name)
 	req.ClientToken = strings.TrimSpace(req.ClientToken)
 

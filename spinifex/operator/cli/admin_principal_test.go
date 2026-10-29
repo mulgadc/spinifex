@@ -2,11 +2,11 @@ package cli_test
 
 import (
 	"encoding/json"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"strings"
 	"testing"
 
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/operator/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,7 +42,7 @@ func TestPrincipalGrantsDefaultToEveryAdminMethod(t *testing.T) {
 	require.NoError(t, err)
 
 	var want []string
-	for _, method := range gateway.AdminMethodNames() {
+	for _, method := range operatorv1.AdminMethodNames() {
 		want = append(want, "spinifex:"+method)
 	}
 	assert.ElementsMatch(t, want, grants)
@@ -181,7 +181,7 @@ func TestAccountSummariesCarryStatus(t *testing.T) {
 
 func TestPrintAccountTableRendersEveryAccount(t *testing.T) {
 	output := captureOutput(t, func() {
-		cli.PrintAccountTable([]gateway.AccountSummary{
+		cli.PrintAccountTable([]operatorv1.AccountSummary{
 			{
 				AccountID:   "000000000042",
 				AccountName: "tenant@example.com",

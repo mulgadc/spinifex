@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"context"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/operator/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,7 +53,7 @@ func TestDeleteAccountRemoteSignsAndPosts(t *testing.T) {
 
 	out, err := cli.DeleteAccountRemote(t.Context(),
 		cli.AdminTarget(srv.URL, "us-west-1", writeServerCA(t, srv)),
-		gateway.DeleteAccountRequest{
+		operatorv1.DeleteAccountRequest{
 			AccountID:   "000000000042",
 			AccountName: "tenant@example.com",
 			ClientToken: strings.Repeat("a", 32),
@@ -61,7 +61,7 @@ func TestDeleteAccountRemoteSignsAndPosts(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "d-1", out.DeletionID)
-	assert.Equal(t, gateway.DeletionStateRunning, out.State)
+	assert.Equal(t, operatorv1.DeletionStateRunning, out.State)
 
 	assert.Equal(t, http.MethodPost, got.Method)
 	assert.Equal(t, "/admin/DeleteAccount", got.URL.Path)
@@ -80,7 +80,7 @@ func TestDeleteAccountRemoteDryRunCarriesTheInventory(t *testing.T) {
 
 	out, err := cli.DeleteAccountRemote(t.Context(),
 		cli.AdminTarget(srv.URL, "us-west-1", writeServerCA(t, srv)),
-		gateway.DeleteAccountRequest{AccountID: "000000000042", DryRun: true})
+		operatorv1.DeleteAccountRequest{AccountID: "000000000042", DryRun: true})
 	require.NoError(t, err)
 
 	assert.True(t, out.DryRun)
@@ -99,7 +99,7 @@ func TestDeleteAccountRemoteSurfacesGatewayError(t *testing.T) {
 
 	_, err := cli.DeleteAccountRemote(t.Context(),
 		cli.AdminTarget(srv.URL, "us-west-1", writeServerCA(t, srv)),
-		gateway.DeleteAccountRequest{
+		operatorv1.DeleteAccountRequest{
 			AccountID:   "000000000001",
 			AccountName: "spinifex",
 			ClientToken: strings.Repeat("a", 32),
@@ -123,7 +123,7 @@ func TestDescribeAccountDeletionRemoteReportsProgress(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "/admin/DescribeAccountDeletion", got.URL.Path)
-	assert.Equal(t, gateway.DeletionStateRunning, out.State)
+	assert.Equal(t, operatorv1.DeletionStateRunning, out.State)
 	assert.Len(t, out.Stages, 1)
 }
 

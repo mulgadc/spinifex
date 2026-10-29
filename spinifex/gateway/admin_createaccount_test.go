@@ -7,6 +7,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"log/slog"
 	"strings"
 	"testing"
@@ -43,61 +44,61 @@ func (m *capMockIAMService) ListAccounts() ([]*iamdomain.Account, error) {
 func TestValidateCreateAccountRequest(t *testing.T) {
 	tests := []struct {
 		name    string
-		req     CreateAccountRequest
+		req     operatorv1.CreateAccountRequest
 		wantErr string
 	}{
 		{
 			name: "valid",
-			req:  CreateAccountRequest{Name: "ben@example.com", ClientToken: testClientToken},
+			req:  operatorv1.CreateAccountRequest{Name: "ben@example.com", ClientToken: testClientToken},
 		},
 		{
 			name:    "missing name",
-			req:     CreateAccountRequest{ClientToken: testClientToken},
+			req:     operatorv1.CreateAccountRequest{ClientToken: testClientToken},
 			wantErr: awserrors.ErrorMissingParameter,
 		},
 		{
 			name:    "missing client token",
-			req:     CreateAccountRequest{Name: "ben@example.com"},
+			req:     operatorv1.CreateAccountRequest{Name: "ben@example.com"},
 			wantErr: awserrors.ErrorMissingParameter,
 		},
 		{
 			name:    "name is not an email address",
-			req:     CreateAccountRequest{Name: "ben", ClientToken: testClientToken},
+			req:     operatorv1.CreateAccountRequest{Name: "ben", ClientToken: testClientToken},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 		{
 			name:    "name has no dotted domain",
-			req:     CreateAccountRequest{Name: "ben@example", ClientToken: testClientToken},
+			req:     operatorv1.CreateAccountRequest{Name: "ben@example", ClientToken: testClientToken},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 		{
 			name:    "name has two at signs",
-			req:     CreateAccountRequest{Name: "ben@a@example.com", ClientToken: testClientToken},
+			req:     operatorv1.CreateAccountRequest{Name: "ben@a@example.com", ClientToken: testClientToken},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 		{
 			name:    "name too long",
-			req:     CreateAccountRequest{Name: strings.Repeat("a", 250) + "@example.com", ClientToken: testClientToken},
+			req:     operatorv1.CreateAccountRequest{Name: strings.Repeat("a", 250) + "@example.com", ClientToken: testClientToken},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 		{
 			name:    "client token too short",
-			req:     CreateAccountRequest{Name: "ben@example.com", ClientToken: "short"},
+			req:     operatorv1.CreateAccountRequest{Name: "ben@example.com", ClientToken: "short"},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 		{
 			name:    "client token too long",
-			req:     CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 129)},
+			req:     operatorv1.CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 129)},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 		{
 			name:    "client token has illegal characters",
-			req:     CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 31) + "!"},
+			req:     operatorv1.CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 31) + "!"},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 		{
 			name:    "source too long",
-			req:     CreateAccountRequest{Name: "ben@example.com", ClientToken: testClientToken, Source: strings.Repeat("s", 65)},
+			req:     operatorv1.CreateAccountRequest{Name: "ben@example.com", ClientToken: testClientToken, Source: strings.Repeat("s", 65)},
 			wantErr: awserrors.ErrorInvalidParameterValue,
 		},
 	}
@@ -119,7 +120,7 @@ func TestValidateCreateAccountRequest(t *testing.T) {
 // A validation message names the offending field, never its value: `name` is a
 // customer email address.
 func TestValidateCreateAccountRequestNeverEchoesTheValue(t *testing.T) {
-	req := CreateAccountRequest{Name: "ben@example.com", ClientToken: "short"}
+	req := operatorv1.CreateAccountRequest{Name: "ben@example.com", ClientToken: "short"}
 	err := validateCreateAccountRequest(&req)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "short")
@@ -169,7 +170,7 @@ func TestClaimClientTokenReplaysCompletedResult(t *testing.T) {
 	done, err := json.Marshal(adminIdemRecord{
 		State: adminIdemDone,
 		Name:  "ben@example.com",
-		Response: &CreateAccountResponse{
+		Response: &operatorv1.CreateAccountResponse{
 			AccountID:       "000000000042",
 			AccountName:     "ben@example.com",
 			SecretAccessKey: "ciphertext",
@@ -260,7 +261,7 @@ func newCreateAccountGateway(t *testing.T) *GatewayConfig {
 
 func createAccountBody(t *testing.T, name, clientToken string) []byte {
 	t.Helper()
-	body, err := json.Marshal(CreateAccountRequest{Name: name, ClientToken: clientToken, Source: "test"})
+	body, err := json.Marshal(operatorv1.CreateAccountRequest{Name: name, ClientToken: clientToken, Source: "test"})
 	require.NoError(t, err)
 	return body
 }
@@ -272,7 +273,7 @@ func TestAdminCreateAccountProvisionsAndReplays(t *testing.T) {
 
 	first, err := gw.adminCreateAccount(ctx, body)
 	require.NoError(t, err)
-	created := first.(*CreateAccountResponse)
+	created := first.(*operatorv1.CreateAccountResponse)
 
 	assert.NotEmpty(t, created.AccountID)
 	assert.Equal(t, "ben@example.com", created.AccountName)
@@ -284,7 +285,7 @@ func TestAdminCreateAccountProvisionsAndReplays(t *testing.T) {
 	// The replay is the only way to re-obtain the secret, so it must match.
 	second, err := gw.adminCreateAccount(ctx, body)
 	require.NoError(t, err)
-	assert.Equal(t, created, second.(*CreateAccountResponse))
+	assert.Equal(t, created, second.(*operatorv1.CreateAccountResponse))
 
 	accounts, err := gw.IAMService.ListAccounts()
 	require.NoError(t, err)
@@ -357,7 +358,7 @@ func TestAdminCreateAccountNeverLogsTheSecret(t *testing.T) {
 	out, err := gw.adminCreateAccount(t.Context(), createAccountBody(t, "ben@example.com", testClientToken))
 	require.NoError(t, err)
 
-	created := out.(*CreateAccountResponse)
+	created := out.(*operatorv1.CreateAccountResponse)
 	require.NotEmpty(t, created.SecretAccessKey)
 	assert.NotContains(t, logged.String(), created.SecretAccessKey)
 	assert.NotContains(t, logged.String(), testClientToken)

@@ -9,7 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	gateway_spx "github.com/mulgadc/spinifex/spinifex/gateway/spx"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 )
 
 // spinifexAdminActions lists actions that require admin account access.
@@ -59,22 +59,22 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 	var output any
 	switch action {
 	case "GetVersion":
-		output, err = gateway_spx.GetVersion(gw.Version, gw.Commit)
+		output, err = admin.GetVersion(gw.Version, gw.Commit)
 	case "GetNodes":
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		output, err = gateway_spx.GetNodes(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx))
+		output, err = admin.GetNodes(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx))
 	case "GetVMs":
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		output, err = gateway_spx.GetVMs(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx))
+		output, err = admin.GetVMs(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx))
 	case "GetStorageStatus":
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		output, err = gateway_spx.GetStorageStatus(gw.NATSConn, gw.RootCAs)
+		output, err = admin.GetStorageStatus(gw.NATSConn, gw.RootCAs)
 	case "PromoteImage":
 		if gw.NATSConn == nil {
 			return errors.New(awserrors.ErrorServerInternal)
@@ -83,7 +83,7 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		if imageID == "" {
 			return errors.New(awserrors.ErrorMissingParameter)
 		}
-		output, err = gateway_spx.PromoteImage(ctx, gw.NATSConn, imageID, accountID)
+		output, err = admin.PromoteImage(ctx, gw.NATSConn, imageID, accountID)
 	case "GrantModelAccess", "RevokeModelAccess":
 		// Grants are gateway-owned KV state, like the bedrock credential store,
 		// so these need no NATS hop: the gateway writes the bucket it reads.

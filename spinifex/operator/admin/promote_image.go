@@ -1,4 +1,4 @@
-package spx
+package admin
 
 import (
 	"context"

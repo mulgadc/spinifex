@@ -59,6 +59,10 @@ var serviceName = "awsgw"
 // domains/eks/cluster, because domains/eks/cluster must not import domains/sts.
 var _ stsdomain.ClusterJWKSResolver = (*ekscluster.OIDCJWKSReader)(nil)
 
+// OIDCPublisher is wired into the gateway here for the same reason: the EKS
+// domain cannot import gateway.
+var _ gateway.OIDCPublisher = (*ekscluster.OIDCPublisher)(nil)
+
 // AccountStatusReader also serves as the quota override seal's TERMINATING
 // precondition, wired here because domains/iam must not import
 // domains/admission/quota.
@@ -491,6 +495,7 @@ func launchService(config *config.ClusterConfig) error {
 		STSService:              stsService,
 		Version:                 version,
 		Commit:                  commit,
+		OIDC:                    ekscluster.NewOIDCPublisher(jwksJS),
 		ECRRegistry:             ecrRegistry,
 		ECRTokenIssuer:          ecrIssuer,
 		ECRTokenVerifier:        ecrauth.NewVerifier(verifyKeys, ecrAudience),

@@ -59,11 +59,13 @@ You need:
 
 ```bash
 git clone https://github.com/mulgadc/spinifex.git
-cd spinifex/scripts/terraform/vultr-spx
+cd spinifex
+git switch dev
+cd scripts/terraform/vultr-spx
 ```
 
 > [!NOTE]
-> Vultr support is not yet in a published release, so `--channel latest` installs a build without it. Until it ships, pass `--distro` with a release tarball built from the Vultr branch.
+> Vultr support is on the development branch and not yet in a published release. `git switch dev` gives you the deploy driver for it, and `--channel dev` below installs the matching Spinifex build, the pre-release published from every change to `dev`. Once Vultr support is in a release, skip `git switch dev` and pass `--channel latest`.
 
 ---
 
@@ -72,8 +74,8 @@ cd spinifex/scripts/terraform/vultr-spx
 ```bash
 export VULTR_API_KEY=<your key>
 
-./deploy.sh up --name demo --distro spinifex.tar.gz              # one node, about 3 minutes
-./deploy.sh up --name demo --nodes 3 --distro spinifex.tar.gz    # three nodes, about 16 minutes
+./deploy.sh up --name demo --channel dev              # one node, about 3 minutes
+./deploy.sh up --name demo --nodes 3 --channel dev    # three nodes, about 16 minutes
 ```
 
 `--name` labels everything the deployment creates, so you can run several side by side. The defaults are Vultr region `ord` and Spinifex region `us-east-1`; `./deploy.sh` with no arguments lists the options.

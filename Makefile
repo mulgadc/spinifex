@@ -140,6 +140,23 @@ $(MICROVM_ARTIFACTS) &: $(MICROVM_INPUTS)
 bin/lb-agent:
 	$(MAKE) build-lb-agent
 
+# The SQS store microVM image: a separate artifact from the LB image above, not
+# installed or released by any target yet.
+SQS_STORE_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/sqs-store
+SQS_STORE_MICROVM_ARTIFACTS := $(SQS_STORE_MICROVM_OUT_DIR)/vmlinuz $(SQS_STORE_MICROVM_OUT_DIR)/initramfs.cpio.gz
+SQS_STORE_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_STORE_MICROVM_OUT_DIR)/inittab bin/nats-server
+
+$(SQS_STORE_MICROVM_ARTIFACTS) &: $(SQS_STORE_MICROVM_INPUTS)
+	./scripts/build-sqs-store-microvm-image.sh
+
+# The dedicated SQS store server, built from the go.mod-pinned module so the
+# image ships exactly the reviewed version. Static for the musl guest.
+bin/nats-server: go.mod go.sum
+	@mkdir -p bin
+	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ github.com/nats-io/nats-server/v2
+
+build-sqs-store-microvm-image: $(SQS_STORE_MICROVM_ARTIFACTS) ## Build the SQS store microVM kernel and initramfs (packaging only; not installed or released)
+
 # qboot is the microvm firmware. The source tarball ships with each release
 # because qboot is GPL-2.0.
 QBOOT_COMMIT := $(shell sed -n 's/^QBOOT_COMMIT="\(.*\)"$$/\1/p' scripts/build-qboot.sh)
@@ -469,7 +486,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-store-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/awsmodel"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	awsdispatch "github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -40,6 +41,7 @@ func TestRequestConformance(t *testing.T) {
 		awsapi.ServiceName:    awsapi.OperationInventory(),
 		acmawsapi.ServiceName:     acmawsapi.OperationInventory(),
 		route53awsapi.ServiceName: route53awsapi.OperationInventory(),
+		elbv2awsapi.InventoryName: elbv2awsapi.OperationInventory(),
 	})
 	for _, service := range awsmodel.Services() {
 		// Predastore serves S3, not the gateway.
@@ -55,6 +57,9 @@ func TestRequestConformance(t *testing.T) {
 				Unsupported: served.Unsupported,
 			})
 			require.NoError(t, err)
+			// A served service whose inventory is not wired here would otherwise
+			// drop out of the sweep while the suite still passes.
+			require.NotEmpty(t, coverage.Implemented, "no implemented operations for %s", service)
 
 			gw := startGateway(t, nil)
 			startRequestConformanceBackends(t, gw)

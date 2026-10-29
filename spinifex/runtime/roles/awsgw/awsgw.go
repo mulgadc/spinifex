@@ -38,6 +38,7 @@ import (
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -513,7 +514,6 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockAgentKB:          bedrockAgentKB,
 		BedrockAgentDataSources: bedrockAgentDataSources,
 		BedrockAgentVector:      bedrockAgentVector,
-		TaggingResources:        newTaggingAggregator(natsConn, nodeConfig.Region),
 	}
 
 	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{
@@ -525,7 +525,10 @@ func launchService(config *config.ClusterConfig) error {
 	})
 	acmControlPlane := acmawsapi.NewRegistration(acmawsapi.Deps{NATS: natsConn})
 	route53ControlPlane := route53awsapi.NewRegistration(route53awsapi.Deps{NATS: natsConn})
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane); err != nil {
+	taggingControlPlane := taggingawsapi.NewRegistration(taggingawsapi.Deps{
+		Aggregator: newTaggingAggregator(natsConn, nodeConfig.Region),
+	})
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
 

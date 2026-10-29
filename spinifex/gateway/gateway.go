@@ -36,7 +36,6 @@ import (
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -238,11 +237,6 @@ type GatewayConfig struct {
 	// connection.
 	BedrockAgentVector ochrevector.VectorService
 
-	// TaggingResources serves Resource Groups Tagging API GetResources over the
-	// owner listers AWSGW wires. Nil fails Tagging_Request with ServerInternal,
-	// the same as an unconfigured gw.NATSConn.
-	TaggingResources *tagging.Aggregator
-
 	// Services holds the signed AWS services dispatched through the
 	// registration seam. Nil means nothing is registered, so every request
 	// falls through to the legacy switch in Request.
@@ -315,7 +309,6 @@ var supportedServices = map[string]bool{
 	"eks":                   true,
 	"ecs":                   true,
 	"rds":                   true,
-	"tagging":               true,
 	"spinifex":              true,
 	"bedrock":               true,
 	"bedrock-runtime":       true,
@@ -415,7 +408,7 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 // XML body to these clients is an unparseable "<?xml…" deserialization error.
 func jsonErrorService(svc string) bool {
 	switch svc {
-	case "eks", "ecs", "tagging",
+	case "eks", "ecs",
 		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime":
 		return true
 	}
@@ -550,8 +543,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 			err = gw.ECS_Request(w, r)
 		case "rds":
 			err = gw.RDS_Request(w, r)
-		case "tagging":
-			err = gw.Tagging_Request(w, r)
 		case "spinifex":
 			err = gw.Spinifex_Request(w, r)
 		default:

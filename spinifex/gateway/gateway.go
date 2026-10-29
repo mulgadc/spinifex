@@ -552,11 +552,28 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		slog.Error("Service request error", "service", svc, "action", action, "error", err)
+		slog.Log(r.Context(), serviceErrorLevel(svc, err), "Service request error",
+			"service", svc, "action", action, "error", err)
 		gw.ErrorHandler(w, r, err)
 	} else {
 		slog.Info("Service request completed", "service", svc, "action", action)
 	}
+}
+
+// serviceErrorLevel reports the level a dispatch failure belongs at, taken from
+// the status the caller is about to be given. A 4xx is the client's own
+// request, and DryRunOperation is a 412 that AWS documents as the success
+// answer to a dry run, so only a 5xx is a fault of ours.
+func serviceErrorLevel(svc string, err error) slog.Level {
+	code, _, ok := awserrors.ResolveErrorDetail(err)
+	if !ok {
+		return slog.LevelError
+	}
+	status := awserrors.LookupErrorMessage(svc, code).HTTPCode
+	if status >= 400 && status < 500 {
+		return slog.LevelInfo
+	}
+	return slog.LevelError
 }
 
 // dispatchRegistered hands the authenticated request to a registered service

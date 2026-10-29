@@ -104,6 +104,7 @@ type AMI struct {
 	VolumeSizeGiB   uint64            `json:"volume_size_gib"`
 	SnapshotID      string            `json:"snapshot_id,omitempty"`
 	BootMode        string            `json:"boot_mode,omitempty"`
+	EnaSupport      *bool             `json:"ena_support,omitempty"`
 	Distro          string            `json:"distro,omitempty"`
 	DistroFamily    string            `json:"distro_family,omitempty"`
 	Tags            map[string]string `json:"tags,omitempty"`

@@ -324,6 +324,11 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 		image.BootMode = aws.String(amiMeta.BootMode)
 	}
 
+	// EnaSupport is optional on RegisterImage; AWS omits it when never set.
+	if amiMeta.EnaSupport != nil {
+		image.EnaSupport = aws.Bool(*amiMeta.EnaSupport)
+	}
+
 	if bdms := synthesizeRootBlockDeviceMapping(amiMeta, encryptedAtRest); bdms != nil {
 		image.RootDeviceName = aws.String("/dev/sda1")
 		image.BlockDeviceMappings = bdms
@@ -901,6 +906,7 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 		ImageOwnerAlias: accountID,
 		CreationDate:    time.Now().UTC(),
 		BootMode:        srcMeta.BootMode,
+		EnaSupport:      copyBoolPtr(srcMeta.EnaSupport),
 		Distro:          srcMeta.Distro,
 		DistroFamily:    srcMeta.DistroFamily,
 		Tags:            tags,
@@ -1110,6 +1116,7 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 		CreationDate:    time.Now().UTC(),
 		Tags:            tags,
 		BootMode:        aws.StringValue(input.BootMode),
+		EnaSupport:      copyBoolPtr(input.EnaSupport),
 		// The referenced snapshot already exists (checked above), so the
 		// image is complete as soon as this config is written.
 		State: "available",
@@ -1122,6 +1129,15 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 
 	slog.InfoContext(ctx, "RegisterImage completed", "amiId", amiID, "snapshotId", snapshotID, "accountId", accountID)
 	return &ec2.RegisterImageOutput{ImageId: aws.String(amiID)}, nil
+}
+
+// copyBoolPtr returns a pointer to a copy of *b, or nil, so two AMI records
+// never share one flag.
+func copyBoolPtr(b *bool) *bool {
+	if b == nil {
+		return nil
+	}
+	return aws.Bool(*b)
 }
 
 // pickRootSnapshotBDM returns the BDM matching RootDeviceName (if set) that

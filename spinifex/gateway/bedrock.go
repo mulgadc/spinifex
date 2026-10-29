@@ -162,7 +162,7 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Hoisted above the policy check because the resolver builds ARNs from it.
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	accountID := callerPrincipalOf(r).accountID
 	if accountID == "" {
 		slog.ErrorContext(r.Context(), "Bedrock_Request: no account ID in auth context")
 		// InternalError, not ServerInternal: the policy gate used to reach this

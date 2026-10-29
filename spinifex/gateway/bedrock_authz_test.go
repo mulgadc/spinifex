@@ -24,7 +24,7 @@ import (
 func dispatchBedrockFamily(t *testing.T, gw *GatewayConfig, dispatch func(http.ResponseWriter, *http.Request) error, method, path, body string) error {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxAccountID, authzAccountID)))
+	req = withTestIdentity(req.WithContext(withPrincipalField(req.Context(), fieldAccountID, authzAccountID)))
 	return dispatch(httptest.NewRecorder(), req)
 }
 
@@ -138,7 +138,7 @@ func TestBedrockRequest_OversizedBodyIsRejected(t *testing.T) {
 func TestBedrockFamily_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "bedrock:*", "*"))
 	req := withTestIdentity(httptest.NewRequest(http.MethodGet, "/", nil).
-		WithContext(context.WithValue(context.Background(), ctxAccountID, authzAccountID)))
+		WithContext(withPrincipalField(context.Background(), fieldAccountID, authzAccountID)))
 	body := []byte(`{"modelId":"meta.llama3","retrieveAndGenerateConfiguration":` +
 		`{"knowledgeBaseConfiguration":{"knowledgeBaseId":"kb-1"}}}`)
 

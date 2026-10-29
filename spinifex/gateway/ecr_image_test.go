@@ -57,7 +57,7 @@ func seedTaggedImage(t *testing.T, gw *GatewayConfig, repo, tag string) string {
 func imageReq(t *testing.T, action, body string) *http.Request {
 	t.Helper()
 	req := setupECRRequest(awsapi.TargetPrefix+"."+action, body)
-	return req.WithContext(context.WithValue(req.Context(), ctxAccountID, ecrTestAccount))
+	return req.WithContext(withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount))
 }
 
 func callImage(t *testing.T, gw *GatewayConfig, action, body string) (*httptest.ResponseRecorder, error) {

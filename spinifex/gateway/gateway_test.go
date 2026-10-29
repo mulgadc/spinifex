@@ -867,7 +867,7 @@ func TestRequest_MalformedQueryString_EndToEnd(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
 			ctx := context.WithValue(req.Context(), ctxService, tc.service)
-			ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+			ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 			req = req.WithContext(ctx)
 			w := httptest.NewRecorder()
 
@@ -885,8 +885,8 @@ func TestRequest_EC2MissingAction(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, NATSConn: connectedNATS(t), IAMService: allowAllIAMService()}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
 	ctx := context.WithValue(req.Context(), ctxService, "ec2")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
 
@@ -902,8 +902,8 @@ func TestRequest_IAMNilService(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: nil, NATSConn: connectedNATS(t)}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=CreateUser&UserName=test"))
 	ctx := context.WithValue(req.Context(), ctxService, "iam")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
 
@@ -931,7 +931,7 @@ func setupEC2Request(body string, accountID string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxService, "ec2")
 	if accountID != "" {
-		ctx = context.WithValue(ctx, ctxAccountID, accountID)
+		ctx = withPrincipalField(ctx, fieldAccountID, accountID)
 	}
 	return withTestIdentity(req.WithContext(ctx))
 }
@@ -1071,9 +1071,9 @@ func TestEC2Request_DescribeAvailabilityZones(t *testing.T) {
 func TestCheckPolicy_FailsClosed(t *testing.T) {
 	authed := func(identity string) *http.Request {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)
-		ctx := context.WithValue(req.Context(), ctxIdentity, identity)
-		ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-		ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+		ctx := withPrincipalField(req.Context(), fieldIdentity, identity)
+		ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 		return req.WithContext(ctx)
 	}
 
@@ -1122,9 +1122,9 @@ func TestCheckPolicyResources_DenialIsOpaque(t *testing.T) {
 	}
 	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	resource := "arn:aws:iam::123456789012:role/private/target"
@@ -1155,9 +1155,9 @@ func TestCheckPolicy_PassRoleFailsClosed(t *testing.T) {
 func TestCheckPolicy_RootUserGlobalAccount(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "root")
-	ctx = context.WithValue(ctx, ctxAccountID, "000000000000") // GlobalAccountID
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "root")
+	ctx = withPrincipalField(ctx, fieldAccountID, "000000000000") // GlobalAccountID
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1170,10 +1170,10 @@ func TestCheckPolicy_RootUserGlobalAccount(t *testing.T) {
 func TestCheckPolicy_AssumedRoleSessionNamedRoot(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "root")
-	ctx = context.WithValue(ctx, ctxAccountID, "000000000000")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeAssumedRole)
-	ctx = context.WithValue(ctx, ctxAssumedRoleARN, "arn:aws:sts::000000000000:assumed-role/r/root")
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "root")
+	ctx = withPrincipalField(ctx, fieldAccountID, "000000000000")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
+	ctx = withPrincipalField(ctx, fieldAssumedRoleARN, "arn:aws:sts::000000000000:assumed-role/r/root")
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1196,9 +1196,9 @@ func TestCheckPolicy_NonRootAllowPolicy(t *testing.T) {
 	}
 	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1220,9 +1220,9 @@ func TestCheckPolicy_NonRootDenyPolicy(t *testing.T) {
 	}
 	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1238,9 +1238,9 @@ func TestCheckPolicy_NonRootNoPolicies(t *testing.T) {
 	}
 	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1256,9 +1256,9 @@ func TestCheckPolicy_GetUserPoliciesError(t *testing.T) {
 	}
 	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1269,7 +1269,7 @@ func TestCheckPolicy_GetUserPoliciesError(t *testing.T) {
 func TestCheckPolicy_MissingAccountID(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
 	// No account ID
 	req = req.WithContext(ctx)
 
@@ -1298,9 +1298,9 @@ func TestCheckPolicy_NATSTransientRetriesAllAttempts(t *testing.T) {
 	}
 	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1330,9 +1330,9 @@ func TestCheckPolicy_NATSTransientRetriesThenSucceeds(t *testing.T) {
 	}
 	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1348,9 +1348,9 @@ func TestCheckPolicy_NonTransientErrorStillFails(t *testing.T) {
 	}
 	gw := &GatewayConfig{DisableLogging: true, IAMService: mock}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1395,7 +1395,7 @@ func TestThrottleKeyFuncs_ExtractsAccountAndAction(t *testing.T) {
 	require.Len(t, keyFuncs, 2)
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxAccountID, "123456789012")
+	ctx := withPrincipalField(req.Context(), fieldAccountID, "123456789012")
 	ctx = context.WithValue(ctx, ctxAction, "DescribeInstances")
 	req = req.WithContext(ctx)
 
@@ -1414,7 +1414,7 @@ func TestThrottleKeyFuncs_UnknownAction(t *testing.T) {
 
 	// No ctxAction in context — should return "unknown".
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxAccountID, "123")
+	ctx := withPrincipalField(req.Context(), fieldAccountID, "123")
 	req = req.WithContext(ctx)
 
 	action, err := keyFuncs[1](req)
@@ -1548,7 +1548,7 @@ func TestThrottleMiddleware_Integration(t *testing.T) {
 
 	makeReq := func() *http.Response {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)
-		ctx := context.WithValue(req.Context(), ctxAccountID, "acct1")
+		ctx := withPrincipalField(req.Context(), fieldAccountID, "acct1")
 		ctx = context.WithValue(ctx, ctxService, "ec2")
 		ctx = context.WithValue(ctx, ctxAction, "DescribeInstances")
 		req = req.WithContext(ctx)
@@ -1578,7 +1578,7 @@ func TestThrottleMiddleware_DisabledConfig(t *testing.T) {
 	handler := gw.SetupRoutes()
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=DescribeInstances"))
-	ctx := context.WithValue(req.Context(), ctxAccountID, "acct1")
+	ctx := withPrincipalField(req.Context(), fieldAccountID, "acct1")
 	ctx = context.WithValue(ctx, ctxService, "ec2")
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
@@ -1608,7 +1608,7 @@ func TestThrottleMiddleware_PerActionIsolation(t *testing.T) {
 
 	makeReq := func(action string) *http.Response {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)
-		ctx := context.WithValue(req.Context(), ctxAccountID, "acct1")
+		ctx := withPrincipalField(req.Context(), fieldAccountID, "acct1")
 		ctx = context.WithValue(ctx, ctxService, "ec2")
 		ctx = context.WithValue(ctx, ctxAction, action)
 		req = req.WithContext(ctx)

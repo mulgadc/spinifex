@@ -356,7 +356,7 @@ func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	accountID, _ := r.Context().Value(ctxAccountID).(string)
+	accountID := callerPrincipalOf(r).accountID
 	if accountID == "" {
 		slog.Error("IAM_Request: no account ID in auth context")
 		return errors.New(awserrors.ErrorInternalError)
@@ -407,8 +407,9 @@ var getRootUser = iamHandler(func(accountID string, _ *iam.GetUserInput, gw *Gat
 // authorization: a user is treated as naming themselves, root is described as
 // the account root, and a role session must name a user.
 func getUserForCaller(r *http.Request, accountID string, in *iam.GetUserInput) (iamAction, error) {
-	identity := mustCtxString(r, ctxIdentity)
-	switch mustCtxString(r, ctxPrincipalType) {
+	actor, _ := callerActor(r.Context())
+	identity := actorName(actor)
+	switch actor.PrincipalType {
 	case principalTypeUser:
 		if identity == "root" && accountID == awsidentifiers.GlobalAccountID {
 			return getRootUser, nil
@@ -422,7 +423,7 @@ func getUserForCaller(r *http.Request, accountID string, in *iam.GetUserInput) (
 			"Must specify userName when calling with non-User credentials")
 	default:
 		slog.Error("IAM GetUser: unknown principal type, cannot default UserName",
-			"principal_type", mustCtxString(r, ctxPrincipalType))
+			"principal_type", actor.PrincipalType)
 		return iamAction{}, errors.New(awserrors.ErrorInternalError)
 	}
 }

@@ -15,7 +15,7 @@ import (
 func setupELBv2Request(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxService, "elasticloadbalancing")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 	return req.WithContext(ctx)
 }
 

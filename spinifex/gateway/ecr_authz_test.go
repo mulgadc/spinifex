@@ -125,7 +125,7 @@ func TestECRRequest_OversizedBodyIsRejected(t *testing.T) {
 func TestECRRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "ecr:*", "*"))
 	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/", nil).
-		WithContext(context.WithValue(context.Background(), ctxAccountID, authzAccountID)))
+		WithContext(withPrincipalField(context.Background(), fieldAccountID, authzAccountID)))
 	body := []byte(`{"repositoryName":"app","repositoryNames":["app"],` +
 		`"resourceArn":"arn:aws:ecr:` + authzRegion + `:` + authzAccountID + `:repository/app"}`)
 

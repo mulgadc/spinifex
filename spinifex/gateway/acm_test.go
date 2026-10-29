@@ -18,7 +18,7 @@ func setupACMRequest(target, body string) *http.Request {
 		req.Header.Set("X-Amz-Target", target)
 	}
 	ctx := context.WithValue(req.Context(), ctxService, "acm")
-	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 	return withTestIdentity(req.WithContext(ctx))
 }
 

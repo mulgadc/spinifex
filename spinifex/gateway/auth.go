@@ -215,29 +215,21 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			r.Body = io.NopCloser(bytes.NewReader(body))
 
 			ctx := r.Context()
-			ctx = context.WithValue(ctx, ctxIdentity, principal.identity)
-			ctx = context.WithValue(ctx, ctxAccountID, principal.accountID)
+			ctx = withCallerPrincipal(ctx, callerPrincipal{
+				identity:          principal.identity,
+				accountID:         principal.accountID,
+				accessKeyID:       sig.Credential.AccessKeyID,
+				principalType:     principal.principalType,
+				assumedRoleARN:    principal.assumedRoleARN,
+				assumedRoleID:     principal.assumedRoleID,
+				underlyingRoleARN: principal.underlyingRoleARN,
+				userID:            principal.userID,
+				userARN:           principal.userARN,
+			})
 			ctx = context.WithValue(ctx, ctxService, sig.Credential.Service)
 			ctx = context.WithValue(ctx, ctxRegion, sig.Credential.Region)
-			ctx = context.WithValue(ctx, ctxAccessKey, sig.Credential.AccessKeyID)
-			ctx = context.WithValue(ctx, ctxPrincipalType, principal.principalType)
 			audit.From(ctx).SetIdentity(sig.Credential.AccessKeyID, principal.accountID,
 				sig.Credential.Region, sig.Credential.Service, principal.principalType)
-			if principal.assumedRoleARN != "" {
-				ctx = context.WithValue(ctx, ctxAssumedRoleARN, principal.assumedRoleARN)
-			}
-			if principal.assumedRoleID != "" {
-				ctx = context.WithValue(ctx, ctxAssumedRoleID, principal.assumedRoleID)
-			}
-			if principal.underlyingRoleARN != "" {
-				ctx = context.WithValue(ctx, ctxUnderlyingRoleARN, principal.underlyingRoleARN)
-			}
-			if principal.userID != "" {
-				ctx = context.WithValue(ctx, ctxUserID, principal.userID)
-			}
-			if principal.userARN != "" {
-				ctx = context.WithValue(ctx, ctxUserARN, principal.userARN)
-			}
 
 			// Parse once; dispatchers reuse via ctxQueryArgs. On error the
 			// dispatcher re-parses and returns MalformedQueryString.

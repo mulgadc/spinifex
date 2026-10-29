@@ -84,7 +84,7 @@ func TestAdminGetAccountQuotaInherits(t *testing.T) {
 // named changed.
 func TestAdminPutThenGetAccountQuota(t *testing.T) {
 	gw, account := quotaTestGateway(t)
-	ctx := context.WithValue(t.Context(), ctxIdentity, "operator")
+	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
 
 	output, err := gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
 		AccountID: account,
@@ -110,7 +110,7 @@ func TestAdminPutThenGetAccountQuota(t *testing.T) {
 // Clearing must return the account to the configured limits.
 func TestAdminPutAccountQuotaClears(t *testing.T) {
 	gw, account := quotaTestGateway(t)
-	ctx := context.WithValue(t.Context(), ctxIdentity, "operator")
+	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
 
 	_, err := gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
 		AccountID: account,
@@ -222,7 +222,7 @@ func (c *quotaStubChecker) AccountTerminating(_ context.Context, accountID strin
 // type, the stored record stays active, and the response never shows state.
 func TestAdminRequestCannotCarryState(t *testing.T) {
 	gw, account := quotaTestGateway(t)
-	ctx := context.WithValue(t.Context(), ctxIdentity, "operator")
+	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
 
 	body := []byte(`{"accountId":"` + account + `","overrides":{"vcpus":32,"state":"sealed"}}`)
 	output, err := gw.adminPutAccountQuota(ctx, body)
@@ -252,7 +252,7 @@ func TestAdminQuotaReadsMapBlocked(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, awserrors.ErrorBlocked, err.Error())
 
-	ctx := context.WithValue(t.Context(), ctxIdentity, "operator")
+	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
 	_, err = gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
 		AccountID: account, Overrides: admissionquota.Overrides{VCPUs: quotaPtr(8)},
 	}))

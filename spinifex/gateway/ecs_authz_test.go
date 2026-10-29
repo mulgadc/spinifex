@@ -138,7 +138,7 @@ func TestECSRequest_OversizedBodyIsRejected(t *testing.T) {
 func TestECSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "ecs:*", "*"))
 	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/", nil).
-		WithContext(context.WithValue(context.Background(), ctxAccountID, authzAccountID)))
+		WithContext(withPrincipalField(context.Background(), fieldAccountID, authzAccountID)))
 	body := []byte(`{"cluster":"prod","service":"web","serviceName":"web","task":"t-1",` +
 		`"containerInstance":"ci-1","taskDefinition":"app:1","name":"cp","capacityProvider":"cp",` +
 		`"clusterName":"prod","resourceArn":"` + ecsResourceARN("cluster/prod") + `"}`)

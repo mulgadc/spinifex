@@ -102,18 +102,20 @@ func setupSTSRequestHandler(p stsRequestParams) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		ctx = context.WithValue(ctx, ctxService, "sts")
-		ctx = context.WithValue(ctx, ctxAccountID, p.accountID)
-		ctx = context.WithValue(ctx, ctxIdentity, p.identity)
-		ctx = context.WithValue(ctx, ctxPrincipalType, p.principalType)
-		ctx = context.WithValue(ctx, ctxAccessKey, p.accessKey)
+		ctx = withPrincipalField(ctx, fieldAccountID, p.accountID)
+		ctx = withPrincipalField(ctx, fieldIdentity, p.identity)
+		ctx = withPrincipalField(ctx, fieldPrincipalType, p.principalType)
+		ctx = withPrincipalField(ctx, fieldAccessKey, p.accessKey)
 		if p.assumedRoleARN != "" {
-			ctx = context.WithValue(ctx, ctxAssumedRoleARN, p.assumedRoleARN)
+			ctx = withPrincipalField(ctx, fieldAssumedRoleARN, p.assumedRoleARN)
 		}
 		if p.assumedRoleID != "" {
-			ctx = context.WithValue(ctx, ctxAssumedRoleID, p.assumedRoleID)
+			ctx = withPrincipalField(ctx, fieldAssumedRoleID, p.assumedRoleID)
+			// The door seals aws:userid as the assumed-role ID for a role session.
+			ctx = withPrincipalField(ctx, fieldUserID, p.assumedRoleID)
 		}
 		if p.underlyingRoleARN != "" {
-			ctx = context.WithValue(ctx, ctxUnderlyingRoleARN, p.underlyingRoleARN)
+			ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN, p.underlyingRoleARN)
 		}
 		r = r.WithContext(ctx)
 		if err := gw.STS_Request(w, r); err != nil {
@@ -336,10 +338,10 @@ func TestSTSRequest_NilService_InternalError(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, STSService: nil, IAMService: &flexMockIAMService{}}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "sts")
-		ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.GlobalAccountID)
-		ctx = context.WithValue(ctx, ctxIdentity, "alice")
-		ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
-		ctx = context.WithValue(ctx, ctxAccessKey, "AKIAEXAMPLE")
+		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
+		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
+		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+		ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAEXAMPLE")
 		r = r.WithContext(ctx)
 		if err := gw.STS_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)
@@ -368,10 +370,10 @@ func TestSTSRequest_AssumeRole_NilIAMService_InternalError(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, STSService: svc, IAMService: nil}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "sts")
-		ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.GlobalAccountID)
-		ctx = context.WithValue(ctx, ctxIdentity, "alice")
-		ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
-		ctx = context.WithValue(ctx, ctxAccessKey, "AKIAEXAMPLE")
+		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
+		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
+		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+		ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAEXAMPLE")
 		r = r.WithContext(ctx)
 		if err := gw.STS_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)

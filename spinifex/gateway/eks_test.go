@@ -162,7 +162,7 @@ func TestEKSRequest_UnknownActionReturnsInvalidAction(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	req := httptest.NewRequest(http.MethodGet, "/totally-unknown", nil)
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
-	ctx = context.WithValue(ctx, ctxAccountID, "111122223333")
+	ctx = withPrincipalField(ctx, fieldAccountID, "111122223333")
 	req = withTestIdentity(req.WithContext(ctx))
 
 	w := httptest.NewRecorder()
@@ -175,7 +175,7 @@ func TestEKSRequest_MissingNATSReturnsServerInternal(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
-	ctx = context.WithValue(ctx, ctxAccountID, "111122223333")
+	ctx = withPrincipalField(ctx, fieldAccountID, "111122223333")
 	req = withTestIdentity(req.WithContext(ctx))
 
 	w := httptest.NewRecorder()

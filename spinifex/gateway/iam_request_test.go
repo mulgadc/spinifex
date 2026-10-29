@@ -195,9 +195,9 @@ func setupIAMRequestHandler(svc iamdomain.IAMService) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		ctx = context.WithValue(ctx, ctxService, "iam")
-		ctx = context.WithValue(ctx, ctxAccountID, "000000000000")
-		ctx = context.WithValue(ctx, ctxIdentity, "root")
-		ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+		ctx = withPrincipalField(ctx, fieldAccountID, "000000000000")
+		ctx = withPrincipalField(ctx, fieldIdentity, "root")
+		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 		r = r.WithContext(ctx)
 		if err := gw.IAM_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)
@@ -380,9 +380,9 @@ func TestIAMRequest_NilService(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		ctx = context.WithValue(ctx, ctxService, "iam")
-		ctx = context.WithValue(ctx, ctxAccountID, "000000000000")
-		ctx = context.WithValue(ctx, ctxIdentity, "root")
-		ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+		ctx = withPrincipalField(ctx, fieldAccountID, "000000000000")
+		ctx = withPrincipalField(ctx, fieldIdentity, "root")
+		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 		r = r.WithContext(ctx)
 		if err := gw.IAM_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)

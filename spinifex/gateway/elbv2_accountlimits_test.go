@@ -35,7 +35,7 @@ type accountLimitsResponse struct {
 func elbv2Request(accountID, body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxService, "elasticloadbalancing")
-	ctx = context.WithValue(ctx, ctxAccountID, accountID)
+	ctx = withPrincipalField(ctx, fieldAccountID, accountID)
 	return withTestIdentity(req.WithContext(ctx))
 }
 

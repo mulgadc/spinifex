@@ -9,8 +9,8 @@
 #   --version <tag>        install a specific release
 #   --tarball <path>       install a local release tarball instead
 #
-# Ports, keys and jump hosts come from ~/.ssh/config. <user> needs
-# passwordless sudo.
+# Ports, keys and jump hosts come from ~/.ssh/config. <user> needs sudo;
+# without passwordless sudo, sudo asks for its password once.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -75,7 +75,14 @@ wait_for_ssh() {
 }
 
 rsh true || die "cannot SSH to $TARGET; set its key in ~/.ssh/config (IdentityFile) or ssh-add it"
-rsh "sudo -n true" || die "$BUILD_USER needs passwordless sudo on the build system"
+# The stages run sudo with no terminal, so grant passwordless sudo for the
+# build when the user lacks it. Seal removes the grant.
+if ! rsh "sudo -n true" 2>/dev/null; then
+    log "Granting $BUILD_USER passwordless sudo for the build; sudo asks for its password once"
+    ssh "${SSH_OPTS[@]}" -t "$TARGET" "echo '$BUILD_USER ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/90-spinifex-build >/dev/null && sudo chmod 0440 /etc/sudoers.d/90-spinifex-build" \
+        || die "could not grant $BUILD_USER passwordless sudo on the build system"
+    rsh "sudo -n true" || die "$BUILD_USER still has no passwordless sudo on the build system"
+fi
 # A minimal OL install has no tar, which the payload copy and the installer need.
 rsh "command -v tar >/dev/null || sudo dnf install -y -q tar" || die "cannot install tar on the build system"
 

@@ -167,7 +167,7 @@ stage_seal() {
         home=$(getent passwd "$BUILD_USER" | cut -d: -f6)
         rm -f "$home/.ssh/authorized_keys" "$home/.bash_history"
         passwd -l "$BUILD_USER" >/dev/null
-        rm -f "/etc/sudoers.d/90-cloud-init-users"
+        rm -f /etc/sudoers.d/90-cloud-init-users /etc/sudoers.d/90-spinifex-build
     fi
     rm -f /root/.ssh/authorized_keys /root/.bash_history /home/spinifex/.bash_history
 

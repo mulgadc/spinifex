@@ -90,6 +90,7 @@ Volumes == [capacity_bytes     : 1..MaxBytes,
             state              : VolumeStates,
             handle             : VolumeHandles,
             availability_zone  : Optional(AvailabilityZones),
+
             \* Never returned, but kept to tell a retry from a conflicting request.
             source_snapshot_id : Optional(SnapshotIDs),
             parameters         : Optional(Parameters),
@@ -125,6 +126,9 @@ VolumeView(volID) ==
                                                "handle",
                                                "availability_zone",
                                                "provider_data"})
+
+\* The nodes that a volume is published to.
+PublishedNodes(volID) == {n \in NodeIDs : KeyExists(publications, <<volID, n>>)}
 
 \* The part of a publication that the implementation returns.
 PublicationView(volID, nodeID) == [volume_id |-> volID,

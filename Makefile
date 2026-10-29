@@ -144,7 +144,7 @@ bin/lb-agent:
 # installed or released by any target yet.
 SQS_STORE_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/sqs-store
 SQS_STORE_MICROVM_ARTIFACTS := $(SQS_STORE_MICROVM_OUT_DIR)/vmlinuz $(SQS_STORE_MICROVM_OUT_DIR)/initramfs.cpio.gz
-SQS_STORE_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_STORE_MICROVM_OUT_DIR)/inittab bin/nats-server
+SQS_STORE_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_STORE_MICROVM_OUT_DIR)/inittab bin/nats-server
 
 $(SQS_STORE_MICROVM_ARTIFACTS) &: $(SQS_STORE_MICROVM_INPUTS)
 	./scripts/build-sqs-store-microvm-image.sh

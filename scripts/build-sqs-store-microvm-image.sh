@@ -81,11 +81,14 @@ case "${CHROOT_DIR:?mktemp -d returned empty}" in
     /tmp/*|/var/tmp/*|"${TMPDIR:-/nonexistent}"/*) ;;
     *) echo "ERROR: refusing to use unexpected CHROOT_DIR: $CHROOT_DIR" >&2; exit 1 ;;
 esac
+# Outputs are written here first, beside $BUILD_DIR so publishing is a rename.
+STAGE_DIR=$(mktemp -d "$BUILD_DIR/.stage.XXXXXX")
 CONTAINER_TOOL=""
 CONTAINER_CID=""
 cleanup() {
     echo "[build-sqs-store-microvm-image] cleaning up chroot: $CHROOT_DIR"
     rm -rf "$CHROOT_DIR"
+    rm -rf "${STAGE_DIR:?}"
     if [ -n "$CONTAINER_CID" ] && [ -n "$CONTAINER_TOOL" ]; then
         echo "[build-sqs-store-microvm-image] cleaning up container: $CONTAINER_CID"
         $CONTAINER_TOOL rm -f "$CONTAINER_CID" >/dev/null 2>&1 || true
@@ -424,7 +427,7 @@ find "$CHROOT_DIR/usr/sbin" "$CHROOT_DIR/usr/bin" \
 done
 
 # --- Copy vmlinuz out before stripping /boot from chroot ---
-VMLINUZ_OUT="$BUILD_DIR/vmlinuz"
+VMLINUZ_OUT="$STAGE_DIR/vmlinuz"
 echo "[build-sqs-store-microvm-image] copying kernel: $VMLINUZ_OUT"
 cp "$KERNEL_IMG" "$VMLINUZ_OUT"
 
@@ -437,7 +440,7 @@ cp "$KERNEL_IMG" "$VMLINUZ_OUT"
 rm -rf "${CHROOT_DIR:?}/boot"
 
 # --- Build initramfs ---
-INITRAMFS_OUT="$BUILD_DIR/initramfs.cpio.gz"
+INITRAMFS_OUT="$STAGE_DIR/initramfs.cpio.gz"
 echo "[build-sqs-store-microvm-image] building initramfs: $INITRAMFS_OUT"
 # Create the static device nodes and pack the archive inside a single fakeroot
 # session: mknod/cpio see faked device entries and write real char-device
@@ -449,66 +452,9 @@ fakeroot sh -c '
     find . | cpio --quiet -o -H newc | gzip -9 > "$2"
 ' _ "$CHROOT_DIR" "$INITRAMFS_OUT"
 
-# --- Content gate: read the packed archive, not the chroot ---
-archive_list=$(zcat "$INITRAMFS_OUT" | cpio --quiet -t)
-for want in init etc/inittab usr/local/bin/nats-server dev/console dev/null; do
-    if ! grep -qx "$want" <<< "$archive_list"; then
-        echo "ERROR: $want missing from $INITRAMFS_OUT" >&2
-        exit 1
-    fi
-done
-for fs_tool in mkfs.ext4 e2fsck; do
-    if ! grep -qxE "(usr/)?sbin/$fs_tool" <<< "$archive_list"; then
-        echo "ERROR: $fs_tool missing from $INITRAMFS_OUT" >&2
-        exit 1
-    fi
-done
-# Module files may spell a name with dashes (tiny-power-button.ko).
-for want_ko in ext4 tiny_power_button; do
-    if ! tr '-' '_' <<< "$archive_list" | grep -q "/$want_ko\.ko\$"; then
-        echo "ERROR: $want_ko missing from $INITRAMFS_OUT" >&2
-        exit 1
-    fi
-done
-if grep -qE '(^|/)(lb-agent|haproxy|nginx)$' <<< "$archive_list"; then
-    echo "ERROR: LB data-plane binaries found in the SQS store image" >&2
-    exit 1
-fi
-echo "[build-sqs-store-microvm-image] content gate: PASS"
-
-# --- Log artifact sizes ---
-echo ""
-echo "[build-sqs-store-microvm-image] artifacts:"
-ls -lh "$VMLINUZ_OUT" "$INITRAMFS_OUT"
-echo ""
-
-# --- Phase 2 artifact size gate (50 MiB total) ---
-ARTIFACT_MAX_MiB="${MICROVM_ARTIFACT_MAX_MiB:-50}"
-total_bytes=$(( $(stat -c %s "$VMLINUZ_OUT") + $(stat -c %s "$INITRAMFS_OUT") ))
-max_bytes=$(( ARTIFACT_MAX_MiB * 1024 * 1024 ))
-total_mib=$(( (total_bytes + 1048575) / 1048576 ))
-if [ "$total_bytes" -gt "$max_bytes" ]; then
-    echo "ERROR: artifact size ${total_mib} MiB exceeds ${ARTIFACT_MAX_MiB} MiB gate" >&2
-    echo "       Set MICROVM_ARTIFACT_MAX_MiB=N to override during development." >&2
-    exit 1
-fi
-echo "[build-sqs-store-microvm-image] artifact size gate: PASS (${total_mib} MiB / ${ARTIFACT_MAX_MiB} MiB)"
-
-# --- Guest-RAM initramfs gate (uncompressed) ---
-# The kernel unpacks the whole initramfs into RAM before init, so the
-# UNCOMPRESSED size — not the gzip artifact — sets the sys.micro memory floor.
-# Over budget => "Initramfs unpacking failed" panic before userspace.
-UNCOMPRESSED_MAX_MiB="${MICROVM_INITRAMFS_UNCOMPRESSED_MAX_MiB:-96}"
-uncompressed_bytes=$(zcat "$INITRAMFS_OUT" | wc -c)
-uncompressed_mib=$(( (uncompressed_bytes + 1048575) / 1048576 ))
-umax_bytes=$(( UNCOMPRESSED_MAX_MiB * 1024 * 1024 ))
-if [ "$uncompressed_bytes" -gt "$umax_bytes" ]; then
-    echo "ERROR: uncompressed initramfs ${uncompressed_mib} MiB exceeds ${UNCOMPRESSED_MAX_MiB} MiB guest-RAM gate" >&2
-    echo "       The kernel unpacks this into guest RAM before init; a larger" >&2
-    echo "       footprint panics before userspace. Slim the initramfs, or raise the" >&2
-    echo "       instance memory AND MICROVM_INITRAMFS_UNCOMPRESSED_MAX_MiB together." >&2
-    exit 1
-fi
-echo "[build-sqs-store-microvm-image] initramfs guest-RAM gate: PASS (${uncompressed_mib} MiB / ${UNCOMPRESSED_MAX_MiB} MiB uncompressed)"
+# --- Gate the staged pair, then publish it ---
+# Nothing reaches $BUILD_DIR until every gate passes, so a failed build cannot
+# leave a pair the grouped make target would take as up to date.
+"$REPO_ROOT/scripts/lib/sqs-store-microvm-publish.sh" "$STAGE_DIR" "$BUILD_DIR"
 echo ""
 echo "[build-sqs-store-microvm-image] done."

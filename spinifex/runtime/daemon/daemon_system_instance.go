@@ -413,6 +413,18 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 	instance.Config = cfg
 	instance.DirectBoot = true
 	if store != nil {
+		netcfg, err := netcfgForInput(input)
+		if err != nil {
+			d.cleanupFailedSystemInstance(instance, instanceType)
+			return nil, fmt.Errorf("render sqs store netcfg: %w", err)
+		}
+		instance.SQSStoreGuest = &vm.SQSStoreGuest{
+			NodeID:       d.node,
+			DataVolumeID: store.volumeID,
+			ListenAddr:   store.listenAddr,
+			ClientNKey:   store.clientNKey,
+			Netcfg:       netcfg,
+		}
 		// Mounted and marked in-use by the normal launch path, and only
 		// detached when the instance terminates.
 		instance.EBSRequests.Mu.Lock()
@@ -701,9 +713,7 @@ func (d *Daemon) prepareInstanceRelaunch(inst *vm.VM) error {
 // under /var/lib/spinifex/ and are a no-op.
 func (d *Daemon) refreshSystemInstanceState(inst *vm.VM) error {
 	if inst.ManagedBy == tags.ManagedBySQS {
-		// Its guest config is not rebuildable yet; relaunching without it
-		// would boot a store missing its disk serial and client key.
-		return fmt.Errorf("sqs store instance %s cannot be relaunched: its guest config is not recoverable", inst.ID)
+		return d.refreshSQSStoreState(inst)
 	}
 	if inst.ManagedBy != tags.ManagedByELBv2 {
 		return nil
@@ -983,21 +993,11 @@ func tapNameForNIC(idx int, _ elbv2domain.NICConfig, instanceID string, input *e
 func (d *Daemon) writeFwCfgBlobs(instanceID string, input *elbv2domain.SystemInstanceInput) ([]vm.FwCfgEntry, error) {
 	runtimeDir := hostprocess.RuntimeDir()
 
-	netcfgPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-netcfg.tmp", instanceID))
+	netcfgPath := netcfgFwCfgPath(instanceID)
 	lbenvPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-lbenv.tmp", instanceID))
 	cacertPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-cacert.tmp", instanceID))
 
-	// Exclude any unprovisioned mgmt NIC so the guest is only ever told about
-	// interfaces that physically exist — mirrors the netdev/mmio-slot skip
-	// in buildNICNetdevs/buildDirectBootConfig.
-	provisionedNICs := make([]elbv2domain.NICConfig, 0, len(input.NICs))
-	for i, nic := range input.NICs {
-		if nicProvisioned(i, nic) {
-			provisionedNICs = append(provisionedNICs, nic)
-		}
-	}
-
-	netcfg, err := buildNetcfgBlob(provisionedNICs)
+	netcfg, err := netcfgForInput(input)
 	if err != nil {
 		return nil, err
 	}
@@ -1028,6 +1028,23 @@ func (d *Daemon) writeFwCfgBlobs(instanceID string, input *elbv2domain.SystemIns
 		{Name: "opt/spinifex/lb-agent-env", File: lbenvPath},
 		{Name: "opt/spinifex/ca-cert", File: cacertPath},
 	}, nil
+}
+
+func netcfgFwCfgPath(instanceID string) string {
+	return filepath.Join(hostprocess.RuntimeDir(), fmt.Sprintf("fwcfg-%s-netcfg.tmp", instanceID))
+}
+
+// netcfgForInput renders the guest network config. Any unprovisioned mgmt NIC
+// is excluded so the guest is only told about interfaces that exist, as in
+// buildNICNetdevs/buildDirectBootConfig.
+func netcfgForInput(input *elbv2domain.SystemInstanceInput) (string, error) {
+	provisionedNICs := make([]elbv2domain.NICConfig, 0, len(input.NICs))
+	for i, nic := range input.NICs {
+		if nicProvisioned(i, nic) {
+			provisionedNICs = append(provisionedNICs, nic)
+		}
+	}
+	return buildNetcfgBlob(provisionedNICs)
 }
 
 // buildNetcfgBlob serialises a slice of NICConfig entries to the shell KEY=value

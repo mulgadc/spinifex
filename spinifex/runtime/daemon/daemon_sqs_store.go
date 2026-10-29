@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -169,14 +171,83 @@ func writeSQSStoreFwCfg(instanceID string, store *sqsStoreLaunch) ([]vm.FwCfgEnt
 	}
 	entries := make([]vm.FwCfgEntry, 0, len(values))
 	for _, v := range values {
-		path := filepath.Join(hostprocess.RuntimeDir(), fmt.Sprintf("fwcfg-%s-sqs-%s.tmp", instanceID, v.name))
-		if err := os.WriteFile(path, []byte(v.value), 0600); err != nil {
+		e := sqsStoreFwCfgEntry(instanceID, v.name)
+		if err := os.WriteFile(e.File, []byte(v.value), 0600); err != nil {
 			for _, e := range entries {
 				_ = os.Remove(e.File)
 			}
 			return nil, fmt.Errorf("write %s: %w", v.name, err)
 		}
-		entries = append(entries, vm.FwCfgEntry{Name: "opt/spinifex/sqs-store/" + v.name, File: path})
+		entries = append(entries, e)
 	}
 	return entries, nil
+}
+
+var sqsStoreFwCfgNames = []string{"data-serial", "listen-addr", "client-nkey"}
+
+func sqsStoreFwCfgEntry(instanceID, name string) vm.FwCfgEntry {
+	return vm.FwCfgEntry{
+		Name: "opt/spinifex/sqs-store/" + name,
+		File: filepath.Join(hostprocess.RuntimeDir(), fmt.Sprintf("fwcfg-%s-sqs-%s.tmp", instanceID, name)),
+	}
+}
+
+// refreshSQSStoreState rewrites an SQS store guest's fw_cfg files from its
+// record for a relaunch on the node that launched it. Every other relaunch
+// (recovery onto a survivor, a start landing elsewhere) is refused.
+func (d *Daemon) refreshSQSStoreState(inst *vm.VM) error {
+	g := inst.SQSStoreGuest
+	if g == nil {
+		return fmt.Errorf("sqs store instance %s cannot be relaunched: its record has no guest config", inst.ID)
+	}
+	if g.NodeID == "" || g.NodeID != d.node {
+		return fmt.Errorf("sqs store instance %s cannot be relaunched on node %s: it was launched on node %q and is only restarted there", inst.ID, d.node, g.NodeID)
+	}
+	in := &elbv2domain.SystemInstanceInput{
+		Kind:     systeminstance.KindSQSStore,
+		SQSStore: &systeminstance.SQSStoreInput{DataVolumeID: g.DataVolumeID, ClientNKey: g.ClientNKey},
+	}
+	if err := in.ValidateSQSStore(); err != nil {
+		return fmt.Errorf("sqs store instance %s cannot be relaunched: %w", inst.ID, err)
+	}
+	if ip := net.ParseIP(g.ListenAddr); ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		return fmt.Errorf("sqs store instance %s cannot be relaunched: listen address %q is not a usable IPv4 address", inst.ID, g.ListenAddr)
+	}
+	if g.Netcfg == "" {
+		return fmt.Errorf("sqs store instance %s cannot be relaunched: its record has no network config", inst.ID)
+	}
+	if !sqsStoreKeepsDataVolume(inst, g.DataVolumeID) {
+		return fmt.Errorf("sqs store instance %s cannot be relaunched: data volume %s is not among its kept volumes", inst.ID, g.DataVolumeID)
+	}
+	// QEMU loads the files the record's Config names; they must be exactly the
+	// ones rewritten here, or the guest would boot with stale or missing config.
+	want := []vm.FwCfgEntry{{Name: "opt/spinifex/netcfg", File: netcfgFwCfgPath(inst.ID)}}
+	for _, name := range sqsStoreFwCfgNames {
+		want = append(want, sqsStoreFwCfgEntry(inst.ID, name))
+	}
+	if !slices.Equal(inst.Config.FwCfg, want) {
+		return fmt.Errorf("sqs store instance %s cannot be relaunched: its recorded fw_cfg files are not the store's", inst.ID)
+	}
+	if err := os.WriteFile(want[0].File, []byte(g.Netcfg), 0600); err != nil {
+		return fmt.Errorf("sqs store instance %s: write netcfg: %w", inst.ID, err)
+	}
+	if _, err := writeSQSStoreFwCfg(inst.ID, &sqsStoreLaunch{volumeID: g.DataVolumeID, listenAddr: g.ListenAddr, clientNKey: g.ClientNKey}); err != nil {
+		_ = os.Remove(want[0].File)
+		return fmt.Errorf("sqs store instance %s: %w", inst.ID, err)
+	}
+	slog.Info("Refreshed SQS store guest config", "instanceId", inst.ID)
+	return nil
+}
+
+// sqsStoreKeepsDataVolume reports whether the record mounts the data volume
+// through the normal EBS path and keeps it on terminate.
+func sqsStoreKeepsDataVolume(inst *vm.VM, volumeID string) bool {
+	inst.EBSRequests.Mu.Lock()
+	defer inst.EBSRequests.Mu.Unlock()
+	for _, r := range inst.EBSRequests.Requests {
+		if r.Name == volumeID {
+			return !r.DeleteOnTermination
+		}
+	}
+	return false
 }

@@ -397,9 +397,3 @@ func TestResourceManager_SubscribesSQSStoreSubjectOnlyWhenServed(t *testing.T) {
 		assert.True(t, ok, "and its queue subject for %s", itype)
 	}
 }
-
-func TestRefreshSystemInstanceState_RefusesSQSStoreRelaunch(t *testing.T) {
-	d := createTestDaemon(t, sharedNATSURL)
-	err := d.refreshSystemInstanceState(&vm.VM{ID: "i-sqs", ManagedBy: tags.ManagedBySQS})
-	require.ErrorContains(t, err, "cannot be relaunched")
-}

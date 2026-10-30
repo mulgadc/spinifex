@@ -7,7 +7,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -166,4 +168,29 @@ func TestAssumeRoleWithWebIdentity_AWSFormConditionKeys(t *testing.T) {
 	err := assume(denied.Arn)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+// A provider registered with a trailing-slash issuer keeps matching Principal.Federated.
+func TestAssumeRoleWithWebIdentity_TrailingSlashIssuerProviderStillGrants(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	f := newWebIdentityFixture(t, svc, testCallerAccountID)
+	f.issuer += "/"
+	hostPath := strings.TrimPrefix(f.issuer, "https://")
+	f.federatedARN = iamdomain.OIDCProviderARN(testCallerAccountID, hostPath)
+
+	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), svc.js,
+		iamdomain.IAMAccountBucketName(testCallerAccountID), iamdomain.KVBucketIAMAccountVersion)
+	require.NoError(t, err)
+	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(f.issuer), []byte(`{"registered":true}`))
+	require.NoError(t, err)
+
+	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-trailing-slash",
+		webIdentityTrustPolicyNoCondition(f.federatedARN))
+	out, err := svc.AssumeRoleWithWebIdentity(&sts.AssumeRoleWithWebIdentityInput{
+		RoleArn:          role.Arn,
+		RoleSessionName:  aws.String("sess"),
+		WebIdentityToken: aws.String(f.signToken(f.defaultClaims())),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, hostPath, aws.StringValue(out.Provider))
 }

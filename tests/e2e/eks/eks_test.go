@@ -333,25 +333,42 @@ func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, ar
 		"caller ARN must reflect the assumed IRSA role")
 	t.Logf("GetCallerIdentity (web-identity creds): %s", aws.StringValue(ident.Arn))
 
-	// 5) Condition matching against the same token. The grant above already
-	//    proved the roles below are resolvable, so a denial is the condition.
-	t.Run("MismatchedSubjectDenied", func(t *testing.T) {
-		otherArn, _ := createWebIdentityRole(t, c, fx, providerArn, "irsa-other", "E2E IRSA other-SA role",
-			stockIRSACondition(issuer, "system:serviceaccount:default:other"))
-		_, aerr := assume(otherArn)
-		require.Error(t, aerr, "token for the default SA must not assume a role bound to another SA")
-		var awsErr awserr.Error
-		require.ErrorAs(t, aerr, &awsErr)
-		assert.Equal(t, "AccessDenied", awsErr.Code())
-	})
+	// 5) Condition matching against the same token. A role STS cannot resolve
+	//    yet also answers AccessDenied, so a denial only counts when it follows
+	//    a grant on the same role.
 	t.Run("StringLikeSubjectGrants", func(t *testing.T) {
 		prefix := strings.TrimPrefix(issuer, "https://")
 		likeArn, _ := createWebIdentityRole(t, c, fx, providerArn, "irsa-like", "E2E IRSA StringLike role",
 			fmt.Sprintf(`{"StringEquals":{%q:"sts.amazonaws.com"},"StringLike":{%q:"system:serviceaccount:default:*"}}`,
 				prefix+":aud", prefix+":sub"))
-		out, aerr := assume(likeArn)
-		require.NoError(t, aerr, "StringLike on :sub must grant for the default SA")
+		var out *sts.AssumeRoleWithWebIdentityOutput
+		harness.EventuallyErr(t, func() error {
+			var aerr error
+			out, aerr = assume(likeArn)
+			return aerr
+		}, 60*time.Second, 5*time.Second)
 		assert.Equal(t, defaultSA, aws.StringValue(out.SubjectFromWebIdentityToken))
+	})
+	t.Run("MismatchedSubjectDenied", func(t *testing.T) {
+		// The primary role was just assumed, so it resolves. Rebinding it to another SA turns the
+		// grant into a denial only once the new policy is evaluated.
+		_, err := c.IAM.UpdateAssumeRolePolicy(&iam.UpdateAssumeRolePolicyInput{
+			RoleName: aws.String(roleName),
+			PolicyDocument: aws.String(webIdentityTrustPolicy(providerArn,
+				stockIRSACondition(issuer, "system:serviceaccount:default:other"))),
+		})
+		require.NoError(t, err, "update-assume-role-policy")
+		harness.EventuallyErr(t, func() error {
+			_, aerr := assume(roleArn)
+			if aerr == nil {
+				return errors.New("token for the default SA still assumes a role bound to another SA")
+			}
+			var awsErr awserr.Error
+			if !errors.As(aerr, &awsErr) || awsErr.Code() != "AccessDenied" {
+				return fmt.Errorf("want AccessDenied, got: %w", aerr)
+			}
+			return nil
+		}, 60*time.Second, 5*time.Second)
 	})
 }
 
@@ -399,19 +416,23 @@ func registerOIDCProvider(t *testing.T, c *harness.AWSClient, fx *clusterFixture
 	return providerArn
 }
 
+// webIdentityTrustPolicy trusts providerArn for AssumeRoleWithWebIdentity, with an optional Condition block (JSON object).
+func webIdentityTrustPolicy(providerArn, condition string) string {
+	conditionJSON := ""
+	if condition != "" {
+		conditionJSON = `,"Condition":` + condition
+	}
+	return fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"%s}]}`, providerArn, conditionJSON)
+}
+
 // createWebIdentityRole creates a role trusting providerArn for AssumeRoleWithWebIdentity,
 // with an optional Condition block (JSON object; empty for none), deleted via t.Cleanup.
 func createWebIdentityRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture, providerArn, roleNameSuffix, description, condition string) (roleArn, roleName string) {
 	t.Helper()
 	roleName = fmt.Sprintf("%s-%s", fx.ClusterName, roleNameSuffix)
-	conditionJSON := ""
-	if condition != "" {
-		conditionJSON = `,"Condition":` + condition
-	}
-	trustPolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"%s}]}`, providerArn, conditionJSON)
 	roleOut, err := c.IAM.CreateRole(&iam.CreateRoleInput{
 		RoleName:                 aws.String(roleName),
-		AssumeRolePolicyDocument: aws.String(trustPolicy),
+		AssumeRolePolicyDocument: aws.String(webIdentityTrustPolicy(providerArn, condition)),
 		Description:              aws.String(description),
 	})
 	require.NoError(t, err, "create-role")

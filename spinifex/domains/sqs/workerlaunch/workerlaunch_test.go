@@ -22,14 +22,18 @@ const (
 )
 
 type fakeVolumes struct {
-	mu        sync.Mutex
-	prepared  []string
-	encrypted bool
+	mu         sync.Mutex
+	prepared   []string
+	encrypted  bool
+	prepareErr error
 }
 
 func (f *fakeVolumes) Prepare(context.Context) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.prepareErr != nil {
+		return "", f.prepareErr
+	}
 	id := fmt.Sprintf("vol-%017x", len(f.prepared)+1)
 	f.prepared = append(f.prepared, id)
 	return id, nil
@@ -140,18 +144,79 @@ func TestEnsure_FirstLaunchBindsAndIsIdempotent(t *testing.T) {
 	}
 }
 
-// A volume whose own record is not encrypted is refused before any intent.
+// A volume whose own record is not encrypted is refused before any intent,
+// and the volume this call created is reported rather than dropped.
 func TestEnsure_RefusesAnUnencryptedVolume(t *testing.T) {
 	r := newRig(t)
 	r.vol.encrypted = false
-	if _, err := r.l.Ensure(context.Background(), region, itype); !errors.Is(err, ErrUnencrypted) {
+	_, err := r.l.Ensure(context.Background(), region, itype)
+	if !errors.Is(err, ErrUnencrypted) {
 		t.Fatalf("ensure = %v, want ErrUnencrypted", err)
+	}
+	unclaimed, ok := errors.AsType[*UnclaimedVolumeError](err)
+	if !ok || unclaimed.VolumeID != r.vol.prepared[0] {
+		t.Fatalf("ensure = %v, want the prepared volume %s reported", err, r.vol.prepared[0])
 	}
 	if _, err := r.l.Identities.Current(context.Background(), region); err == nil {
 		t.Fatal("an intent was recorded for an unencrypted volume")
 	}
 	if r.vms.count() != 0 {
 		t.Fatal("launched on an unencrypted volume")
+	}
+}
+
+// A refusal that can be made without allocating, a cluster that cannot
+// encrypt or a claim that cannot be minted, prepares no volume at all.
+func TestEnsure_RefusesBeforeAllocating(t *testing.T) {
+	r := newRig(t)
+	r.vol.prepareErr = fmt.Errorf("%w: no storage key", ErrUnencrypted)
+	_, err := r.l.Ensure(context.Background(), region, itype)
+	if !errors.Is(err, ErrUnencrypted) {
+		t.Fatalf("ensure = %v, want ErrUnencrypted", err)
+	}
+	if _, ok := errors.AsType[*UnclaimedVolumeError](err); ok {
+		t.Fatalf("ensure = %v reports a volume it never created", err)
+	}
+
+	r.vol.prepareErr = nil
+	r.l.newClaimID = func() (string, error) { return "", errors.New("no entropy") }
+	if _, err := r.l.Ensure(context.Background(), region, itype); err == nil {
+		t.Fatal("ensure succeeded without a claim ID")
+	}
+	if len(r.vol.prepared) != 0 {
+		t.Fatalf("prepared %v before a refusal that needs no volume", r.vol.prepared)
+	}
+	if _, err := r.l.Identities.Current(context.Background(), region); err == nil {
+		t.Fatal("an intent was recorded")
+	}
+}
+
+// Callers that lose the first BeginLaunch each report the volume they made;
+// every prepared volume is either the bound worker's or reported exactly once.
+func TestEnsure_LosersReportTheirVolumes(t *testing.T) {
+	r := newRig(t)
+	var mu sync.Mutex
+	reported := map[string]int{}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			_, err := r.l.Ensure(context.Background(), region, itype)
+			if u, ok := errors.AsType[*UnclaimedVolumeError](err); ok {
+				mu.Lock()
+				reported[u.VolumeID]++
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	bound := r.current(t).DataVolumeID
+	for _, v := range r.vol.prepared {
+		switch {
+		case v == bound && reported[v] != 0:
+			t.Fatalf("bound volume %s was also reported unclaimed", v)
+		case v != bound && reported[v] != 1:
+			t.Fatalf("volume %s reported %d times, want once", v, reported[v])
+		}
 	}
 }
 

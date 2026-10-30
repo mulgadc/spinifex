@@ -110,12 +110,14 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 	}
 	cur, err := l.Identities.Current(ctx, region)
 	var req workerident.LaunchRequest
+	var fresh string
 	switch {
 	case errors.Is(err, jetstream.ErrKeyNotFound):
 		req, err = l.first(ctx)
 		if err != nil {
 			return Result{}, err
 		}
+		fresh = req.DataVolumeID
 	case err != nil:
 		return Result{}, err
 	case cur.NodeID != l.NodeID:
@@ -142,16 +144,11 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 			NodeID: l.NodeID, DataVolumeID: cur.DataVolumeID}
 	}
 
-	encrypted, err := l.Volumes.Encrypted(ctx, req.DataVolumeID)
+	intent, err := l.begin(ctx, region, req)
 	if err != nil {
-		return Result{}, fmt.Errorf("read data volume %s: %w", req.DataVolumeID, err)
-	}
-	if !encrypted {
-		return Result{}, fmt.Errorf("%w: %s", ErrUnencrypted, req.DataVolumeID)
-	}
-	req.DataVolumeEncrypted = true
-	intent, err := l.Identities.BeginLaunch(ctx, region, req)
-	if err != nil {
+		if fresh != "" {
+			return Result{}, &UnclaimedVolumeError{VolumeID: fresh, Err: err}
+		}
 		return Result{}, err
 	}
 
@@ -188,19 +185,47 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 	return Result{InstanceID: instanceID, Generation: intent.Generation}, nil
 }
 
-// first prepares the Region's first worker volume. A volume prepared by a
-// call that then loses BeginLaunch to another is left unused, never deleted.
+// first prepares the Region's first worker volume, after everything that can
+// fail without allocating. A volume this call cannot record is reported in an
+// UnclaimedVolumeError and left in place, never deleted.
 func (l *Launcher) first(ctx context.Context) (workerident.LaunchRequest, error) {
-	volumeID, err := l.Volumes.Prepare(ctx)
-	if err != nil {
-		return workerident.LaunchRequest{}, fmt.Errorf("prepare worker data volume: %w", err)
-	}
 	claim, err := l.claimID()
 	if err != nil {
 		return workerident.LaunchRequest{}, err
 	}
+	volumeID, err := l.Volumes.Prepare(ctx)
+	if err != nil {
+		return workerident.LaunchRequest{}, fmt.Errorf("prepare worker data volume: %w", err)
+	}
 	return workerident.LaunchRequest{ClaimID: claim, NodeID: l.NodeID, DataVolumeID: volumeID}, nil
 }
+
+// begin checks the volume's own record and records the launch intent.
+func (l *Launcher) begin(ctx context.Context, region string, req workerident.LaunchRequest) (workerident.Intent, error) {
+	encrypted, err := l.Volumes.Encrypted(ctx, req.DataVolumeID)
+	if err != nil {
+		return workerident.Intent{}, fmt.Errorf("read data volume %s: %w", req.DataVolumeID, err)
+	}
+	if !encrypted {
+		return workerident.Intent{}, fmt.Errorf("%w: %s", ErrUnencrypted, req.DataVolumeID)
+	}
+	req.DataVolumeEncrypted = true
+	return l.Identities.BeginLaunch(ctx, region, req)
+}
+
+// UnclaimedVolumeError reports a worker volume this call created but did not
+// confirm recording in a launch intent. Its ownership is unproven, so it is
+// left for an operator; a BeginLaunch whose reply was lost may still hold it.
+type UnclaimedVolumeError struct {
+	VolumeID string
+	Err      error
+}
+
+func (e *UnclaimedVolumeError) Error() string {
+	return fmt.Sprintf("worker data volume %s was created but not recorded: %v", e.VolumeID, e.Err)
+}
+
+func (e *UnclaimedVolumeError) Unwrap() error { return e.Err }
 
 // bind retries a lost reply with the same arguments, which BindInstance
 // accepts as idempotent.

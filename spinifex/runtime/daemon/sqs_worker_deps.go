@@ -12,12 +12,14 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awsiam "github.com/aws/aws-sdk-go/service/iam"
+	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 )
@@ -62,22 +64,99 @@ func (r sqsWorkerRoles) EnsureWorkerProfile(context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	arn, err := iamdomain.EnsureSystemInstanceProfile(svc, awsidentifiers.GlobalAccountID,
-		workerrole.RoleName, sqsWorkerRolePolicyName, policy)
-	if err != nil {
-		return "", fmt.Errorf("sqs worker: ensure instance profile: %w", err)
+	if err := ensureSQSWorkerRoleTrust(svc); err != nil {
+		return "", err
 	}
-	if strings.TrimSpace(arn) == "" {
-		return "", errors.New("sqs worker: ensure instance profile: empty profile ARN")
+	acct, name := awsidentifiers.GlobalAccountID, aws.String(workerrole.RoleName)
+	if _, err := svc.PutRolePolicy(acct, &awsiam.PutRolePolicyInput{RoleName: name,
+		PolicyName: aws.String(sqsWorkerRolePolicyName), PolicyDocument: aws.String(policy)}); err != nil {
+		return "", fmt.Errorf("sqs worker: put role policy: %w", err)
 	}
-	role, err := svc.GetRole(awsidentifiers.GlobalAccountID, &awsiam.GetRoleInput{RoleName: aws.String(workerrole.RoleName)})
+	return ensureSQSWorkerProfile(svc)
+}
+
+// ensureSQSWorkerRoleTrust creates the role with EC2-only trust when absent and
+// verifies the trust of whatever role exists, including one a racing create
+// made, before any policy is granted to it.
+func ensureSQSWorkerRoleTrust(svc iamdomain.SystemInstanceRoleEnsurer) error {
+	acct, name := awsidentifiers.GlobalAccountID, aws.String(workerrole.RoleName)
+	role, err := svc.GetRole(acct, &awsiam.GetRoleInput{RoleName: name})
 	if err != nil {
-		return "", fmt.Errorf("sqs worker: read role trust: %w", err)
+		if err.Error() != awserrors.ErrorIAMNoSuchEntity {
+			return fmt.Errorf("sqs worker: read role: %w", err)
+		}
+		_, cerr := svc.CreateRole(acct, &awsiam.CreateRoleInput{RoleName: name,
+			AssumeRolePolicyDocument: aws.String(iamdomain.EC2InstanceTrustPolicy),
+			Description:              aws.String("Spinifex-managed SQS worker instance role")})
+		if cerr != nil && cerr.Error() != awserrors.ErrorIAMEntityAlreadyExists {
+			return fmt.Errorf("sqs worker: create role: %w", cerr)
+		}
+		if role, err = svc.GetRole(acct, &awsiam.GetRoleInput{RoleName: name}); err != nil {
+			return fmt.Errorf("sqs worker: re-read role: %w", err)
+		}
 	}
 	if role == nil || role.Role == nil || !ec2OnlyTrust(aws.StringValue(role.Role.AssumeRolePolicyDocument)) {
-		return "", fmt.Errorf("sqs worker: role %s trusts more than the EC2 service", workerrole.RoleName)
+		return fmt.Errorf("sqs worker: role %s trusts more than the EC2 service", workerrole.RoleName)
 	}
-	return arn, nil
+	return nil
+}
+
+// ensureSQSWorkerProfile find-or-creates the profile, attaches the role to an
+// empty one, and returns its ARN only once a re-read shows it carries exactly
+// the worker role; a profile holding any other role is refused, never changed.
+func ensureSQSWorkerProfile(svc iamdomain.SystemInstanceRoleEnsurer) (string, error) {
+	acct, name := awsidentifiers.GlobalAccountID, aws.String(workerrole.RoleName)
+	get := func() (*awsiam.InstanceProfile, error) {
+		out, err := svc.GetInstanceProfile(acct, &awsiam.GetInstanceProfileInput{InstanceProfileName: name})
+		if err != nil {
+			return nil, err
+		}
+		if out == nil || out.InstanceProfile == nil {
+			return nil, errors.New("empty instance profile")
+		}
+		return out.InstanceProfile, nil
+	}
+	prof, err := get()
+	if err != nil {
+		if err.Error() != awserrors.ErrorIAMNoSuchEntity {
+			return "", fmt.Errorf("sqs worker: read instance profile: %w", err)
+		}
+		if _, cerr := svc.CreateInstanceProfile(acct, &awsiam.CreateInstanceProfileInput{InstanceProfileName: name}); cerr != nil &&
+			cerr.Error() != awserrors.ErrorIAMEntityAlreadyExists {
+			return "", fmt.Errorf("sqs worker: create instance profile: %w", cerr)
+		}
+		if prof, err = get(); err != nil {
+			return "", fmt.Errorf("sqs worker: re-read instance profile: %w", err)
+		}
+	}
+	if !sqsWorkerProfileRoles(prof, true) {
+		return "", fmt.Errorf("sqs worker: instance profile %s carries a role other than %s", workerrole.RoleName, workerrole.RoleName)
+	}
+	if len(prof.Roles) == 0 {
+		if _, aerr := svc.AddRoleToInstanceProfile(acct, &awsiam.AddRoleToInstanceProfileInput{
+			InstanceProfileName: name, RoleName: name}); aerr != nil && aerr.Error() != awserrors.ErrorIAMLimitExceeded {
+			return "", fmt.Errorf("sqs worker: add role to instance profile: %w", aerr)
+		}
+		if prof, err = get(); err != nil {
+			return "", fmt.Errorf("sqs worker: re-read instance profile: %w", err)
+		}
+	}
+	if !sqsWorkerProfileRoles(prof, false) {
+		return "", fmt.Errorf("sqs worker: instance profile %s does not carry exactly %s", workerrole.RoleName, workerrole.RoleName)
+	}
+	if strings.TrimSpace(aws.StringValue(prof.Arn)) == "" {
+		return "", errors.New("sqs worker: instance profile has no ARN")
+	}
+	return aws.StringValue(prof.Arn), nil
+}
+
+// sqsWorkerProfileRoles reports whether p carries only the worker role; an
+// empty profile qualifies only when allowEmpty is set.
+func sqsWorkerProfileRoles(p *awsiam.InstanceProfile, allowEmpty bool) bool {
+	if len(p.Roles) == 0 {
+		return allowEmpty
+	}
+	return len(p.Roles) == 1 && p.Roles[0] != nil && aws.StringValue(p.Roles[0].RoleName) == workerrole.RoleName
 }
 
 // ec2OnlyTrust reports whether doc is, as JSON, exactly the EC2 instance trust
@@ -106,6 +185,8 @@ type sqsWorkerVolumes struct {
 	volumes          sqsWorkerVolumeService
 	availabilityZone string
 	sizeGiB          int64
+
+	encryptionKeyFile string
 }
 
 var _ workerlaunch.Volumes = sqsWorkerVolumes{}
@@ -113,6 +194,15 @@ var _ workerlaunch.Volumes = sqsWorkerVolumes{}
 func (v sqsWorkerVolumes) Prepare(ctx context.Context) (string, error) {
 	if v.prep == nil || v.availabilityZone == "" || v.sizeGiB <= 0 {
 		return "", errors.New("sqs worker: volume preparer is not configured")
+	}
+	// Refuse before allocating: on a cluster without a storage key every
+	// attempt would otherwise strand an unencrypted volume.
+	enabled, err := ebsencryption.Enabled(v.encryptionKeyFile)
+	if err != nil {
+		return "", fmt.Errorf("sqs worker: read cluster storage key: %w", err)
+	}
+	if !enabled {
+		return "", fmt.Errorf("%w: the cluster storage key is not configured", workerlaunch.ErrUnencrypted)
 	}
 	return v.prep.Prepare(ctx, storevolume.Request{
 		AccountID: awsidentifiers.GlobalAccountID, AvailabilityZone: v.availabilityZone, SizeGiB: v.sizeGiB,

@@ -19,6 +19,7 @@ import (
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -250,8 +251,11 @@ func TestSQSWorkerInput_MapsSpec(t *testing.T) {
 }
 
 type fakeRoleIAM struct {
-	trust  string
-	policy string
+	trust        string
+	createdTrust string // trust a racing create left in place; "" uses the request's
+	policy       string
+	profile      *awsiam.InstanceProfile
+	writes       []string
 }
 
 func (f *fakeRoleIAM) GetRole(_ string, in *awsiam.GetRoleInput) (*awsiam.GetRoleOutput, error) {
@@ -262,39 +266,58 @@ func (f *fakeRoleIAM) GetRole(_ string, in *awsiam.GetRoleInput) (*awsiam.GetRol
 }
 
 func (f *fakeRoleIAM) CreateRole(_ string, in *awsiam.CreateRoleInput) (*awsiam.CreateRoleOutput, error) {
+	f.writes = append(f.writes, "CreateRole")
+	if f.createdTrust != "" {
+		f.trust = f.createdTrust
+		return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+	}
 	f.trust = aws.StringValue(in.AssumeRolePolicyDocument)
 	return &awsiam.CreateRoleOutput{}, nil
 }
 
 func (f *fakeRoleIAM) PutRolePolicy(_ string, in *awsiam.PutRolePolicyInput) (*awsiam.PutRolePolicyOutput, error) {
+	f.writes = append(f.writes, "PutRolePolicy")
 	f.policy = aws.StringValue(in.PolicyDocument)
 	return &awsiam.PutRolePolicyOutput{}, nil
 }
 
-func (f *fakeRoleIAM) GetInstanceProfile(_ string, in *awsiam.GetInstanceProfileInput) (*awsiam.GetInstanceProfileOutput, error) {
-	return &awsiam.GetInstanceProfileOutput{InstanceProfile: &awsiam.InstanceProfile{
-		Arn: aws.String(testWorkerProfile), InstanceProfileName: in.InstanceProfileName,
-		Roles: []*awsiam.Role{{RoleName: aws.String(workerrole.RoleName)}},
-	}}, nil
+func (f *fakeRoleIAM) GetInstanceProfile(string, *awsiam.GetInstanceProfileInput) (*awsiam.GetInstanceProfileOutput, error) {
+	if f.profile == nil {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	p := *f.profile
+	p.Roles = slices.Clone(f.profile.Roles)
+	return &awsiam.GetInstanceProfileOutput{InstanceProfile: &p}, nil
 }
 
-func (f *fakeRoleIAM) CreateInstanceProfile(string, *awsiam.CreateInstanceProfileInput) (*awsiam.CreateInstanceProfileOutput, error) {
-	return &awsiam.CreateInstanceProfileOutput{}, nil
+func (f *fakeRoleIAM) CreateInstanceProfile(_ string, in *awsiam.CreateInstanceProfileInput) (*awsiam.CreateInstanceProfileOutput, error) {
+	f.writes = append(f.writes, "CreateInstanceProfile")
+	f.profile = &awsiam.InstanceProfile{Arn: aws.String(testWorkerProfile), InstanceProfileName: in.InstanceProfileName}
+	return &awsiam.CreateInstanceProfileOutput{InstanceProfile: f.profile}, nil
 }
 
-func (f *fakeRoleIAM) AddRoleToInstanceProfile(string, *awsiam.AddRoleToInstanceProfileInput) (*awsiam.AddRoleToInstanceProfileOutput, error) {
+func (f *fakeRoleIAM) AddRoleToInstanceProfile(_ string, in *awsiam.AddRoleToInstanceProfileInput) (*awsiam.AddRoleToInstanceProfileOutput, error) {
+	f.writes = append(f.writes, "AddRoleToInstanceProfile")
+	f.profile.Roles = append(f.profile.Roles, &awsiam.Role{RoleName: in.RoleName})
 	return &awsiam.AddRoleToInstanceProfileOutput{}, nil
 }
 
+func sqsWorkerRolesWith(f *fakeRoleIAM) sqsWorkerRoles {
+	return sqsWorkerRoles{provider: func() iamdomain.SystemInstanceRoleEnsurer { return f }}
+}
+
+var broadWorkerTrust = strings.Replace(iamdomain.EC2InstanceTrustPolicy, `{"Service":"ec2.amazonaws.com"}`,
+	`{"Service":"ec2.amazonaws.com","AWS":"arn:aws:iam::123456789012:root"}`, 1)
+
 // The role is created with EC2-only trust and granted exactly the gateway's
-// internal actions; a pre-existing role that trusts anything more is refused.
+// internal actions, and the new profile carries exactly that role.
 func TestSQSWorkerRoles_EC2OnlyTrustAndMinimalPolicy(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeRoleIAM{}
-	roles := sqsWorkerRoles{provider: func() iamdomain.SystemInstanceRoleEnsurer { return fake }}
-	arn, err := roles.EnsureWorkerProfile(ctx)
+	arn, err := sqsWorkerRolesWith(fake).EnsureWorkerProfile(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, testWorkerProfile, arn)
+	assert.Equal(t, []string{"CreateRole", "PutRolePolicy", "CreateInstanceProfile", "AddRoleToInstanceProfile"}, fake.writes)
 
 	var doc iamdomain.PolicyDocument
 	require.NoError(t, json.Unmarshal([]byte(fake.policy), &doc))
@@ -303,17 +326,56 @@ func TestSQSWorkerRoles_EC2OnlyTrustAndMinimalPolicy(t *testing.T) {
 	assert.Equal(t, []string{"spinifex-sqs:ClaimFirstStore", "spinifex-sqs:RecordWorkerPublicKey"}, got)
 
 	fake.trust = url.QueryEscape(iamdomain.EC2InstanceTrustPolicy)
-	_, err = roles.EnsureWorkerProfile(ctx)
+	fake.writes = nil
+	_, err = sqsWorkerRolesWith(fake).EnsureWorkerProfile(ctx)
 	require.NoError(t, err, "an URL-encoded EC2-only trust is the same trust")
-
-	broad := strings.Replace(iamdomain.EC2InstanceTrustPolicy, `{"Service":"ec2.amazonaws.com"}`,
-		`{"Service":"ec2.amazonaws.com","AWS":"arn:aws:iam::123456789012:root"}`, 1)
-	fake.trust = broad
-	_, err = roles.EnsureWorkerProfile(ctx)
-	require.ErrorContains(t, err, "trusts more than the EC2 service")
+	assert.Equal(t, []string{"PutRolePolicy"}, fake.writes, "a correct profile is reused unchanged")
 
 	_, err = sqsWorkerRoles{}.EnsureWorkerProfile(ctx)
 	require.Error(t, err)
+}
+
+// A pre-existing role with broader trust, found directly or left by a racing
+// create, is refused before any policy, profile or attachment is written.
+func TestSQSWorkerRoles_UnsafeRoleIsUntouched(t *testing.T) {
+	for name, fake := range map[string]*fakeRoleIAM{
+		"existing":     {trust: broadWorkerTrust},
+		"racingCreate": {createdTrust: broadWorkerTrust},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := sqsWorkerRolesWith(fake).EnsureWorkerProfile(context.Background())
+			require.ErrorContains(t, err, "trusts more than the EC2 service")
+			assert.Empty(t, fake.policy, "policy granted to an unsafe role")
+			assert.Nil(t, fake.profile, "profile created for an unsafe role")
+			assert.NotContains(t, fake.writes, "PutRolePolicy")
+		})
+	}
+}
+
+// A profile that already carries another role is refused and never modified.
+func TestSQSWorkerRoles_RefusesAMismatchedProfile(t *testing.T) {
+	for name, roles := range map[string][]*awsiam.Role{
+		"otherRole":  {{RoleName: aws.String("rdsInstanceRole")}},
+		"extraRole":  {{RoleName: aws.String(workerrole.RoleName)}, {RoleName: aws.String("rdsInstanceRole")}},
+		"nilRoleRef": {nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeRoleIAM{trust: iamdomain.EC2InstanceTrustPolicy,
+				profile: &awsiam.InstanceProfile{Arn: aws.String(testWorkerProfile), Roles: roles}}
+			_, err := sqsWorkerRolesWith(fake).EnsureWorkerProfile(context.Background())
+			require.ErrorContains(t, err, "instance profile")
+			assert.NotContains(t, fake.writes, "AddRoleToInstanceProfile")
+			assert.Len(t, fake.profile.Roles, len(roles), "profile roles changed")
+		})
+	}
+}
+
+// Without a cluster storage key the volume adapter refuses before the
+// preparer runs, so no unencrypted volume is allocated.
+func TestSQSWorkerVolumes_RefusesBeforeAllocatingWithoutAStorageKey(t *testing.T) {
+	v := sqsWorkerVolumes{prep: &storevolume.Preparer{}, availabilityZone: "az-1", sizeGiB: 1}
+	_, err := v.Prepare(t.Context())
+	require.ErrorIs(t, err, workerlaunch.ErrUnencrypted)
 }
 
 // Encryption is read from the volume's own record, never a caller flag.

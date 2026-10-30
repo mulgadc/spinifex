@@ -24,12 +24,43 @@ import (
 // under; the guest finds the disk by serial, not by this name.
 const sqsStoreDataDevice = "/dev/sdf"
 
+// sqsGuest is an SQS direct-boot guest launch, the store or the shared worker,
+// that has passed every check that can run before anything is allocated.
+type sqsGuest interface {
+	imageDir() string
+	dataVolume() string
+	needsMgmtNIC() bool
+	writeFwCfg(instanceID string) ([]vm.FwCfgEntry, error)
+	// record stores what a same-node relaunch rebuilds the fw_cfg files from.
+	record(inst *vm.VM, nodeID, netcfg string)
+}
+
 // sqsStoreLaunch is an SQS store launch that has passed every check that can
 // run before capacity, an ENI or a VM record exists.
 type sqsStoreLaunch struct {
 	volumeID   string
 	listenAddr string
 	clientNKey string
+}
+
+var _ sqsGuest = (*sqsStoreLaunch)(nil)
+
+func (s *sqsStoreLaunch) imageDir() string   { return sqsStoreImageDir() }
+func (s *sqsStoreLaunch) dataVolume() string { return s.volumeID }
+func (s *sqsStoreLaunch) needsMgmtNIC() bool { return false }
+
+func (s *sqsStoreLaunch) writeFwCfg(instanceID string) ([]vm.FwCfgEntry, error) {
+	return writeSQSStoreFwCfg(instanceID, s)
+}
+
+func (s *sqsStoreLaunch) record(inst *vm.VM, nodeID, netcfg string) {
+	inst.SQSStoreGuest = &vm.SQSStoreGuest{
+		NodeID:       nodeID,
+		DataVolumeID: s.volumeID,
+		ListenAddr:   s.listenAddr,
+		ClientNKey:   s.clientNKey,
+		Netcfg:       netcfg,
+	}
 }
 
 // sqsStoreImageDir holds the store's kernel and initramfs, beside the load

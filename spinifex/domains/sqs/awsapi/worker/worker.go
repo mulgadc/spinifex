@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -26,18 +27,13 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-// ServiceName is the SigV4 credential-scope service the SQS worker signs for.
-// No AWS SDK signs for it, so no tenant request reaches these actions.
-const ServiceName = "spinifex-sqs"
-
-// WorkerRoleName is the system-account instance role the SQS worker VM runs
-// under. Its trust policy must admit only EC2, so STS names every session after
-// the instance and no caller can choose the session name the gate reads.
-const WorkerRoleName = "sqsWorkerRole"
-
+// The contract lives in workerrole so the role grant can read it without
+// importing this adapter.
 const (
-	ActionClaimFirstStore       = "ClaimFirstStore"
-	ActionRecordWorkerPublicKey = "RecordWorkerPublicKey"
+	ServiceName                 = workerrole.ServiceName
+	WorkerRoleName              = workerrole.RoleName
+	ActionClaimFirstStore       = workerrole.ActionClaimFirstStore
+	ActionRecordWorkerPublicKey = workerrole.ActionRecordWorkerPublicKey
 )
 
 const principalTypeAssumedRole = "assumed-role"

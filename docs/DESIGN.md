@@ -346,7 +346,7 @@ Credential issuance and rotation, store placement and NATS readiness checks do n
 ### SQS worker guest (not wired)
 
 The shared SQS worker guest holds the SQS store's client credential, so that no platform component does (ADR-0011:S2).
-Nothing launches or calls it outside local testing: there is no worker system-instance kind, launch path or gateway action, and no worker service runs after boot.
+Nothing activates it: no caller invokes the worker launcher below, its network allocator is not wired, and no worker service runs after boot.
 
 `make build-sqs-worker-microvm-image` builds it with the store image's script and network `/init` under `SQS_MICROVM_PROFILE=worker`; it carries the static `sqs-worker` binary and the ext4 tools, no `nats-server`, and an empty `/data` mountpoint.
 At boot `sqs-worker boot` reads three firmware config values under `opt/spinifex/sqs-worker/`: the worker disk's serial, `store-status` and the store's authorized NKey public key.
@@ -372,7 +372,6 @@ Binding writes the instance's index entry first and then binds the record to tha
 The index is only a lookup: `Authorize` accepts an instance only while the Region's record is `bound` to exactly that instance, generation and claim, confirmed by a compare-and-swap at the leader-read revision, so an old, orphaned, rewritten or unbound entry authorizes nothing.
 A same-instance reboot keeps its instance ID and identity; a replacement takes a new generation, and the first cut refuses another node or data volume and an unencrypted volume, although the encryption flag is the caller's claim and the launch wiring must verify it from the volume's metadata.
 Both buckets are opened through `OpenDurableKV`, which refuses an existing bucket whose effective stream configuration could expire, evict, lose, lag or refuse records: non-limits retention, an age, per-message or delete-marker TTL, memory storage, asynchronous flush, a size, count or message-size cap, a discard policy other than discard-new, unacknowledged writes, a sealed stream, a mirror or sources, or fewer replicas than the cluster needs.
-No worker launch calls this store yet, so nothing is ever bound.
 `workerkey.Acquire` drives that decision: it syncs a new key to disk, records its public key and only then returns it, so a crash before recording reuses the key already on disk.
 
 `domains/sqs/awsapi/worker` carries the decision to the worker as `ClaimFirstStore` and `RecordWorkerPublicKey`, served under the internal `spinifex-sqs` signing service, which no AWS SDK signs for; the public AmazonSQS action inventory is untouched.
@@ -381,12 +380,22 @@ The first-store identity is the current record's instance, claim and generation,
 A request that passed `Authorize` just before a confirmed stop and replacement still carries the old generation; the fence was raised before the successor began, so `firststore` refuses it whether or not the successor has claimed yet.
 The adapter never logs a caller-chosen parameter name, because one could carry a secret.
 `RecordWorkerPublicKey` accepts only a valid public user key, so a seed is refused without being recorded, logged or echoed.
-The gateway binds both buckets per request and never creates them, so it provisions nothing and answers `ServiceUnavailable` until a worker launch has created them; the worker role's policy, instance profile and trust policy, which must admit only EC2, belong to that launch.
+The gateway binds both buckets per request and never creates them, so it provisions nothing and answers `ServiceUnavailable` until a worker launch has created them; the worker launch below ensures the role.
 No worker client calls these actions yet; the worker boot path above still accepts only `existing`.
 The private key stays on the worker disk; the guest logs and publishes only the public key to `/run/sqs-worker/public-key`.
 
+`domains/sqs/workerlaunch` realizes the worker on the node it runs on, its only node: a bound record is returned as is; otherwise it prepares the data volume (first launch only), reads the volume's own record and refuses it unless encrypted, takes the intent, ensures the role, finds or creates the network for the claim and reads the recorded store key, and marks the intent dispatched before launching.
+A dispatched launch is never sent again: a lost reply or error leaves the intent `launching` and dispatched, and every later call returns `ErrOutcomeUnknown` until the outcome is reconciled, since the launch path is not idempotent.
+A failure before dispatch leaves an undispatched intent that the next call resumes with the same claim; a confirmed stop or failure is replaced only after `firststore.Fence` excludes the old generation, reusing the pinned volume.
+The store decision passed to the guest is `existing` with the recorded key, or `new`, which the guest refuses.
+A volume prepared by a caller that then loses the intent to another is left unused, not deleted.
+The daemon's `LaunchSQSWorkerInstance` boots the `sqs-worker` image through the same direct-boot path as the store, with the data volume attached at boot and kept on terminate, a required instance profile, and a required mgmt NIC; it re-reads the volume's own record and refuses one that is not available and encrypted, before anything is allocated.
+Its firmware config adds the gateway URL on this node's mgmt bridge and the cluster CA from the daemon's own trust store; the caller cannot supply either, and no value written is secret.
+A relaunch rebuilds that config from the VM record on the node that launched it and is refused anywhere else, and membership takeover already skips SQS-managed instances.
+`sqsWorkerRole` is ensured in the system account granting exactly `spinifex-sqs:ClaimFirstStore` and `spinifex-sqs:RecordWorkerPublicKey`, from the `domains/sqs/workerrole` contract the gateway gate also reads; an existing role whose trust admits more than the EC2 service is refused.
+
 Evidence is local only: unit tests with a fake firmware config, sysfs and mount table, and real QEMU boots against disposable scratch disks showing the key survives reboots and that each refusal publishes no key.
-A first worker key therefore needs a current, non-replayable first-store decision from a domain record, which does not exist yet; real use also needs the encrypted-volume check, and Viperblock's at-rest key is held by the platform.
+A first worker key still needs the guest's signed client for these actions; the SQS system VPC network allocator, a caller and stop/detach evidence for `RecordStopped` are also not wired, and Viperblock's at-rest key is held by the platform.
 
 ## Configuration
 

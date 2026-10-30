@@ -54,6 +54,9 @@ type Record struct {
 	NodeID       string `json:"nodeID"`
 	DataVolumeID string `json:"dataVolumeID"`
 	InstanceID   string `json:"instanceID,omitempty"`
+	// Dispatched is set once, before the launch is sent. A dispatched launch
+	// is never sent again: its outcome is reconciled, not retried.
+	Dispatched bool `json:"dispatched,omitempty"`
 }
 
 // IndexEntry finds an instance's regional record. It is a lookup, never proof
@@ -107,6 +110,7 @@ var (
 	ErrUnreadable        = errors.New("worker identity record is unreadable")
 	ErrContended         = errors.New("worker identity changed concurrently; retry")
 	ErrNotFenced         = errors.New("first-store fence does not yet exclude the replaced generation")
+	ErrDispatched        = errors.New("SQS worker launch was already dispatched; its outcome must be reconciled")
 )
 
 const maxAttempts = 8
@@ -221,8 +225,8 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 			if err := s.requireFence(ctx, region, rec.Generation+1); err != nil {
 				return Intent{}, err
 			}
-			next.State, next.Generation, next.ClaimID, next.InstanceID =
-				StateLaunching, rec.Generation+1, req.ClaimID, ""
+			next.State, next.Generation, next.ClaimID, next.InstanceID, next.Dispatched =
+				StateLaunching, rec.Generation+1, req.ClaimID, "", false
 		}
 		// Unchanged for a retry: the rewrite proves the read was current.
 		if s.put(ctx, regionKey(region), next, rev) == nil {
@@ -322,6 +326,51 @@ func (s Store) FailLaunch(ctx context.Context, intent Intent) error {
 		}
 	}
 	return ErrContended
+}
+
+// MarkDispatched records that intent's launch is about to be sent. Exactly one
+// call wins; a second call, or a retry after a lost reply, gets ErrDispatched,
+// so an ambiguous dispatch is never repeated.
+func (s Store) MarkDispatched(ctx context.Context, intent Intent) error {
+	if err := validIntent(intent); err != nil {
+		return err
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, intent.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrSuperseded
+		}
+		if err != nil {
+			return err
+		}
+		switch {
+		case rec.Generation != intent.Generation || rec.ClaimID != intent.ClaimID:
+			return ErrSuperseded
+		case rec.State != StateLaunching:
+			return ErrConflict
+		case rec.Dispatched:
+			return ErrDispatched
+		}
+		next := *rec
+		next.Dispatched = true
+		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// Current is the Region's record, read from the stream leader. It decides
+// nothing by itself; every transition re-reads it under compare-and-swap.
+func (s Store) Current(ctx context.Context, region string) (Record, error) {
+	if !regionPattern.MatchString(region) {
+		return Record{}, errors.New("invalid region")
+	}
+	rec, _, err := s.readRecord(ctx, region)
+	if err != nil {
+		return Record{}, err
+	}
+	return *rec, nil
 }
 
 // RecordStopped records that intent's bound instance is confirmed stopped and

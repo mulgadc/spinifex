@@ -301,6 +301,19 @@ func (s Store) FencedAt(ctx context.Context, region string) (uint64, error) {
 	return rec.Fence, nil
 }
 
+// RecordedKey is the Region's recorded store public key, empty when none is
+// recorded yet. Read from the leader; a key, once recorded, never changes.
+func (s Store) RecordedKey(ctx context.Context, region string) (string, error) {
+	rec, _, err := s.read(ctx, region)
+	if errors.Is(err, ErrNotClaimed) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return rec.PublicKey, nil
+}
+
 // checkGeneration refuses an older generation, and a different identity at
 // the same generation; only a strictly newer generation may supersede.
 func checkGeneration(held, id Identity) error {

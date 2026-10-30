@@ -768,3 +768,52 @@ func TestReplacement_NeedsTheFirstStoreFence(t *testing.T) {
 		t.Fatalf("replacement after the fence = %+v, %v", in, err)
 	}
 }
+
+// A launch is marked dispatched exactly once, and only for the current
+// launching intent; a replay after a lost reply is refused, never resent.
+func TestMarkDispatched_OnceForTheCurrentIntent(t *testing.T) {
+	ctx := context.Background()
+	s, kv := newStore(t)
+	in, err := s.BeginLaunch(ctx, region, launch(claim(1), 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkDispatched(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if !record(t, kv).Dispatched {
+		t.Fatal("record not marked dispatched")
+	}
+	if err := s.MarkDispatched(ctx, in); !errors.Is(err, ErrDispatched) {
+		t.Fatalf("second dispatch = %v, want ErrDispatched", err)
+	}
+	if again, err := s.BeginLaunch(ctx, region, launch(claim(1), 0)); err != nil || again != in {
+		t.Fatalf("same-claim retry = %+v, %v", again, err)
+	}
+	if !record(t, kv).Dispatched {
+		t.Fatal("a same-claim retry cleared the dispatch mark")
+	}
+	stale := in
+	stale.ClaimID = claim(9)
+	if err := s.MarkDispatched(ctx, stale); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("other claim = %v, want ErrSuperseded", err)
+	}
+	if err := s.BindInstance(ctx, in, inst(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkDispatched(ctx, in); !errors.Is(err, ErrConflict) {
+		t.Fatalf("dispatch after bind = %v, want ErrConflict", err)
+	}
+	// A replacement starts undispatched.
+	mustStop(t, s, in, inst(1))
+	next, err := s.BeginLaunch(ctx, region, launch(claim(2), 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record(t, kv).Dispatched {
+		t.Fatal("the replacement inherited the dispatch mark")
+	}
+	if err := s.MarkDispatched(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+}

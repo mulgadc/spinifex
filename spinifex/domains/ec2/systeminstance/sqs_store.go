@@ -54,6 +54,8 @@ func (in *SystemInstanceInput) ValidateSQSStore() error {
 		return fmt.Errorf("%w: boot mode %q, the store boots direct only", ErrInvalidSQSStoreInput, in.BootMode)
 	case in.SQSStore == nil:
 		return fmt.Errorf("%w: no data volume or client key", ErrInvalidSQSStoreInput)
+	case in.SQSWorker != nil:
+		return fmt.Errorf("%w: SQS worker settings on an SQS store launch", ErrInvalidSQSStoreInput)
 	case !volumeIDPattern.MatchString(in.SQSStore.DataVolumeID):
 		return fmt.Errorf("%w: data volume ID %q is malformed", ErrInvalidSQSStoreInput, in.SQSStore.DataVolumeID)
 	case !nkeys.IsValidPublicUserKey(in.SQSStore.ClientNKey):
@@ -69,7 +71,7 @@ func (in *SystemInstanceInput) ValidateSQSStore() error {
 // RefuseNonLoadBalancerKind keeps every non-load-balancer guest off the
 // legacy launch path, which would boot the load balancer image instead.
 func (in *SystemInstanceInput) RefuseNonLoadBalancerKind() error {
-	if in.Kind != "" || in.SQSStore != nil {
+	if in.Kind != "" || in.SQSStore != nil || in.SQSWorker != nil {
 		return fmt.Errorf("%w: kind %q must use its own launch subject", ErrInvalidSQSStoreInput, in.Kind)
 	}
 	return nil

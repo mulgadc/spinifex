@@ -120,7 +120,7 @@ An ALB whose targets all fail their health check keeps serving from them instead
 
 ### `eks`, `ecs`, `ecr` — container services
 
-`eks`: cluster create/delete, access entries, addon delivery, `GetToken`, kubeconfig artifacts, the EBS CSI volume path, and an IRSA pod wired with a projected SA token. `ecs`: clusters, container instances, the three network modes (`awsvpc`, `bridge`, `host`), task-role credentials fetched from the container credentials endpoint, a service behind an ELB, and ENI release on terminate. `ecr`: control-plane CRUD plus a real OCI data plane — docker login/build/push/pull round trips, multi-layer images, and raw blob HTTP.
+`eks`: cluster create/delete, access entries, addon delivery, `GetToken`, kubeconfig artifacts, the EBS CSI volume path, an IRSA web-identity exchange under the stock AWS trust policy (`StringEquals` on the issuer host-path `:sub`/`:aud`, a mismatched `:sub` denied with `AccessDenied`, a `StringLike` `:sub` granted), and an IRSA pod wired with a projected SA token. `ecs`: clusters, container instances, the three network modes (`awsvpc`, `bridge`, `host`), task-role credentials fetched from the container credentials endpoint, a service behind an ELB, and ENI release on terminate. `ecr`: control-plane CRUD plus a real OCI data plane — docker login/build/push/pull round trips, multi-layer images, and raw blob HTTP.
 
 ### `rds` — managed databases
 

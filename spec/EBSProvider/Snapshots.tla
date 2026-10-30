@@ -96,6 +96,38 @@ CopySnapshot(req, val, err) ==
         /\ UNCHANGED <<volumes, publications>>
 
 
+ListSnapshotsRequests == [max_results    : -1..(MaxListResults + 1),
+                          starting_token : Optional(ListTokens)]
+
+ListSnapshots(req, val, err) ==
+  (*******************************************************************************************************************)
+  (* Some of the snapshots are listed, a page at a time, and nothing changes. A call with no starting token that     *)
+  (* returns no next token lists every snapshot.                                                                     *)
+  (*******************************************************************************************************************)
+  LET Errors ==
+    LET checks == [unsupported_capability |-> ~Capabilities.snapshot_enumeration]
+    IN {e \in DOMAIN checks : checks[e]}
+
+     \* The request was rejected, or the provider failed to answer.
+  IN \/ /\ val = None
+        /\ err \in Errors \union ProviderErrors
+        /\ UNCHANGED vars
+
+     \* The request was accepted.
+     \/ /\ Errors = {}
+        /\ LET refs == {[id               |-> id,
+                         source_volume_id |-> snapshots[id].source_volume_id,
+                         handle           |-> snapshots[id].handle] : id \in DOMAIN snapshots}
+           \* The page and the next token are the implementation's choice.
+           IN \E page \in SUBSET refs, next \in Optional(ListTokens) :
+                /\ Cardinality(page) <= PageSize(req.max_results)
+                /\ next /= None => Cardinality(page) = PageSize(req.max_results)
+                /\ req.starting_token = None /\ next = None => page = refs
+                /\ val = [snapshots |-> page, next_token |-> next]
+        /\ err = None
+        /\ UNCHANGED vars
+
+
 DeleteSnapshotRequests == [snapshot_id : Optional(SnapshotIDs),
                            handle      : Optional(SnapshotHandles)]
 

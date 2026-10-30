@@ -346,7 +346,7 @@ Credential issuance and rotation, store placement and NATS readiness checks do n
 ### SQS worker guest (not wired)
 
 The shared SQS worker guest holds the SQS store's client credential, so that no platform component does (ADR-0011:S2).
-Nothing activates it: no caller invokes the worker launcher below, its network allocator is not wired, and no worker service runs after boot.
+Nothing activates it: no caller invokes the worker launcher below, and no worker service runs after boot.
 
 `make build-sqs-worker-microvm-image` builds it with the store image's script and network `/init` under `SQS_MICROVM_PROFILE=worker`; it carries the static `sqs-worker` binary and the ext4 tools, no `nats-server`, and an empty `/data` mountpoint.
 At boot `sqs-worker boot` reads three firmware config values under `opt/spinifex/sqs-worker/`: the worker disk's serial, `store-status` and the store's authorized NKey public key.
@@ -395,7 +395,8 @@ A relaunch rebuilds that config from the VM record on the node that launched it 
 `sqsWorkerRole` is ensured in the system account granting exactly `spinifex-sqs:ClaimFirstStore` and `spinifex-sqs:RecordWorkerPublicKey`, from the `domains/sqs/workerrole` contract the gateway gate also reads; an existing role whose trust admits more than the EC2 service is refused.
 
 Evidence is local only: unit tests with a fake firmware config, sysfs and mount table, and real QEMU boots against disposable scratch disks showing the key survives reboots and that each refusal publishes no key.
-A first worker key still needs the guest's signed client for these actions; the SQS system VPC network allocator, a caller and stop/detach evidence for `RecordStopped` are also not wired, and Viperblock's at-rest key is held by the platform.
+The worker's network is a private SQS system VPC per Region, built by `systemvpc.EnsurePrivate` from the `[sqs]` supernet (default `10.240.0.0/14`): one VPC and one /24 subnet, with no internet gateway, NAT gateway, EIP, route table or daemon-to-store node port. Each launch claim gets one ENI in that subnet, in the VPC default security group, found again by its claim on a retry; two ENIs for one claim are refused. Worker-to-store TCP and the guest's route to the metadata service are not yet proven by any traffic test.
+A first worker key still needs the guest's signed client for these actions; a caller and stop/detach evidence for `RecordStopped` are also not wired, and Viperblock's at-rest key is held by the platform.
 
 ## Configuration
 

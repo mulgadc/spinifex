@@ -222,7 +222,7 @@ type UnclaimedVolumeError struct {
 }
 
 func (e *UnclaimedVolumeError) Error() string {
-	return fmt.Sprintf("worker data volume %s was created but not recorded: %v", e.VolumeID, e.Err)
+	return fmt.Sprintf("worker data volume %s was created but this call could not confirm it was recorded: %v", e.VolumeID, e.Err)
 }
 
 func (e *UnclaimedVolumeError) Unwrap() error { return e.Err }

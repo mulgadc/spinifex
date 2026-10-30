@@ -10,6 +10,7 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -107,4 +108,63 @@ func TestRehydrate_UserSessionUsesLiveARN(t *testing.T) {
 	require.Nil(t, f)
 	assert.Equal(t, "AIDAsession", p.UserID)
 	assert.Equal(t, "arn:aws:iam::000000000001:user/ops/session", p.CallerARN)
+}
+
+func TestRehydrate_GlobalRootIsTheAccountRoot(t *testing.T) {
+	f := &fakeIAM{key: &iamdomain.AccessKey{
+		AccessKeyID: testAKID, UserName: "root", AccountID: awsidentifiers.GlobalAccountID,
+		Status: iamdomain.AccessKeyStatusActive,
+	}}
+	p, fail := New(f, nil).Rehydrate(testAKID, awsidentifiers.GlobalAccountID)
+	require.Nil(t, fail)
+	assert.Equal(t, stsdomain.PrincipalTypeUser, p.PrincipalType)
+	assert.Equal(t, "root", p.Identity)
+	assert.Equal(t, "arn:aws:iam::"+awsidentifiers.GlobalAccountID+":root", p.CallerARN)
+}
+
+func TestRehydrate_NilIAMFailsClosed(t *testing.T) {
+	_, f := New(nil, nil).Rehydrate(testAKID, testAccount)
+	require.NotNil(t, f)
+	assert.Equal(t, awserrors.ErrorInternalError, f.Code)
+}
+
+func TestRehydrate_RecordWithoutPrincipalTypeIsARoleSession(t *testing.T) {
+	cred := roleSession("AROAX")
+	cred.PrincipalType = ""
+	p, f := New(&fakeIAM{}, &fakeSTS{cred: cred}).Rehydrate(testSession, testAccount)
+	require.Nil(t, f)
+	assert.Equal(t, stsdomain.PrincipalTypeAssumedRole, p.PrincipalType)
+	assert.Equal(t, "arn:aws:sts::000000000001:assumed-role/SharedOps/session", p.CallerARN)
+}
+
+func TestRehydrate_SessionPrincipalContinuityVerdicts(t *testing.T) {
+	userSession := func() *stsdomain.SessionCredential {
+		c := roleSession("")
+		c.PrincipalType = stsdomain.PrincipalTypeUser
+		c.AssumedRoleARN = ""
+		return c
+	}
+	creds := map[string]func() *stsdomain.SessionCredential{
+		"user session": userSession,
+		"role session": func() *stsdomain.SessionCredential { return roleSession("AROAX") },
+	}
+	verdicts := map[string]error{
+		"principal gone":     stsdomain.ErrSessionPrincipalGone,
+		"principal replaced": stsdomain.ErrSessionPrincipalReplaced,
+		"legacy record":      stsdomain.ErrSessionPrincipalLegacy,
+	}
+	for cname, cred := range creds {
+		for vname, verdict := range verdicts {
+			t.Run(cname+" "+vname, func(t *testing.T) {
+				_, f := New(&fakeIAM{}, &fakeSTS{cred: cred(), principalErr: verdict}).Rehydrate(testSession, testAccount)
+				require.NotNil(t, f)
+				assert.Equal(t, awserrors.ErrorInvalidClientTokenId, f.Code)
+			})
+		}
+		t.Run(cname+" continuity fault", func(t *testing.T) {
+			_, f := New(&fakeIAM{}, &fakeSTS{cred: cred(), principalErr: errors.New("kv down")}).Rehydrate(testSession, testAccount)
+			require.NotNil(t, f)
+			assert.Equal(t, awserrors.ErrorInternalError, f.Code)
+		})
+	}
 }

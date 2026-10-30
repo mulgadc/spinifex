@@ -3,7 +3,7 @@ import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
-import { CLOSED_PANEL } from "@/lib/panel-search"
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const { sdk } = vi.hoisted(() => {
@@ -45,12 +45,16 @@ const LBS: LoadBalancer[] = [
   },
 ]
 
-function renderPage(loadBalancers: LoadBalancer[], onSearchChange = vi.fn()) {
+function renderPage(
+  loadBalancers: LoadBalancer[],
+  onSearchChange = vi.fn(),
+  search: PanelSearch = CLOSED_PANEL,
+) {
   renderWithClient(
     <DescribeLoadBalancersPage
       loadBalancers={loadBalancers}
       onSearchChange={onSearchChange}
-      search={CLOSED_PANEL}
+      search={search}
     />,
     createTestQueryClient(),
   )
@@ -68,7 +72,18 @@ describe("describe-load-balancers list route", () => {
     expect(screen.getByText("internet-facing")).toBeInTheDocument()
     expect(
       screen.getByRole("link", { name: "Create load balancer" }),
-    ).toHaveAttribute("href", "/ec2/create-load-balancer")
+    ).toBeInTheDocument()
+  })
+
+  it("opens the create form in the side panel", async () => {
+    renderPage(LBS, vi.fn(), { ...CLOSED_PANEL, create: true })
+
+    await expect(
+      screen.findByRole("button", { name: "Create Load Balancer" }),
+    ).resolves.toBeInTheDocument()
+    expect(
+      screen.getByRole("region", { name: "Create load balancer" }),
+    ).toBeInTheDocument()
   })
 
   it("selects a load balancer by its ARN when its row is clicked", async () => {

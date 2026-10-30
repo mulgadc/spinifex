@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -18,6 +19,7 @@ import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { useDeleteDBSubnetGroup } from "@/mutations/rds"
 
+import { CreateDBSubnetGroupPage } from "./create-db-subnet-group-page"
 import { DBSubnetGroupDetails } from "./db-subnet-group-details"
 
 const COLUMNS: DataColumn<DBSubnetGroup>[] = [
@@ -109,7 +111,17 @@ export function DBSubnetGroupsListPage({
 
   let panel: ReactNode = null
 
-  if (open?.DBSubnetGroupName) {
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Create DB subnet group">
+        <CreateDBSubnetGroupPage
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.DBSubnetGroupName) {
     panel = (
       <DBSubnetGroupDetails
         group={open}
@@ -127,7 +139,16 @@ export function DBSubnetGroupsListPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/rds/create-db-subnet-group">
+          <Link
+            className={buttonVariants()}
+            from="/rds/describe-db-subnet-groups/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create Subnet Group
           </Link>

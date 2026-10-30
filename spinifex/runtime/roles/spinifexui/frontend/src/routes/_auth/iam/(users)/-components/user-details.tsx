@@ -40,6 +40,7 @@ import {
 
 import { AccessKeyModal } from "../../-components/access-key-modal"
 import { AttachedPoliciesPanel } from "../../-components/attached-policies-panel"
+import { iamDeleteWarning } from "../../-components/delete-prerequisites"
 import { IamItem, IamItems } from "../../-components/iam-items"
 import { InlinePoliciesPanel } from "../../-components/inline-policies-panel"
 
@@ -376,7 +377,7 @@ function Settings({
         </div>
       </PanelSection>
       <ResourceDeleteDialog
-        description={`Delete the user ${userName}? This cannot be undone.`}
+        description={`Delete the user ${userName}? ${iamDeleteWarning("user")}`}
         identifier={userName}
         mutation={remove}
         onDeleted={onDeleted}

@@ -1,4 +1,3 @@
-import { useNavigate } from "@tanstack/react-router"
 import { AlertTriangle, Check, Download } from "lucide-react"
 
 import {
@@ -18,14 +17,15 @@ interface PrivateKeyModalProps {
   open: boolean
   keyName: string
   keyMaterial: string
+  onClose: () => void
 }
 
 export function PrivateKeyModal({
   open,
   keyName,
   keyMaterial,
+  onClose,
 }: PrivateKeyModalProps) {
-  const navigate = useNavigate()
   const { copied, copy } = useCopyToClipboard()
 
   const handleDownload = () => {
@@ -36,10 +36,6 @@ export function PrivateKeyModal({
     link.download = `${keyName}.pem`
     link.click()
     URL.revokeObjectURL(url)
-  }
-
-  const handleClose = () => {
-    navigate({ to: "/ec2/describe-key-pairs" })
   }
 
   return (
@@ -97,7 +93,7 @@ export function PrivateKeyModal({
         </div>
 
         <AlertDialogFooter>
-          <AlertDialogCancel onClick={handleClose}>
+          <AlertDialogCancel onClick={onClose}>
             Close and Continue
           </AlertDialogCancel>
         </AlertDialogFooter>

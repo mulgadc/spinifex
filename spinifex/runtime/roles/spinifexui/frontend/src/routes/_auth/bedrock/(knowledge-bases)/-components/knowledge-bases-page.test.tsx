@@ -18,11 +18,14 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal)
 })
 
-import { CLOSED_PANEL } from "@/lib/panel-search"
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 
 import { KnowledgeBasesPage } from "./knowledge-bases-page"
 
-function renderSeeded(knowledgeBaseSummaries: KnowledgeBaseSummary[]) {
+function renderSeeded(
+  knowledgeBaseSummaries: KnowledgeBaseSummary[],
+  search: PanelSearch = CLOSED_PANEL,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -34,7 +37,7 @@ function renderSeeded(knowledgeBaseSummaries: KnowledgeBaseSummary[]) {
       <KnowledgeBasesPage
         knowledgeBases={knowledgeBaseSummaries}
         onSearchChange={onSearchChange}
-        search={CLOSED_PANEL}
+        search={search}
       />
     </QueryClientProvider>,
   )
@@ -87,11 +90,21 @@ describe("KnowledgeBasesPage", () => {
     expect(screen.getByText("ACTIVE")).toBeInTheDocument()
   })
 
-  it("links to the create knowledge base route", () => {
+  it("renders a create knowledge base link", () => {
     renderSeeded([])
     expect(
       screen.getByRole("link", { name: "Create knowledge base" }),
-    ).toHaveAttribute("href", "/bedrock/list-knowledge-bases/create")
+    ).toBeInTheDocument()
+  })
+
+  it("opens the create form in the side panel", async () => {
+    renderSeeded([], { ...CLOSED_PANEL, create: true })
+
+    const panel = screen.getByRole("region", { name: "Create knowledge base" })
+
+    await expect(
+      within(panel).findByRole("button", { name: "Create Knowledge Base" }),
+    ).resolves.toBeInTheDocument()
   })
 
   it("deletes each selected knowledge base with its own call", async () => {

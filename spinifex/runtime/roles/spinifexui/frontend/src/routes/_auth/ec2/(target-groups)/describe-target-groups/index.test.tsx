@@ -3,7 +3,7 @@ import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import { CLOSED_PANEL } from "@/lib/panel-search"
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const sdk = await vi.hoisted(async () => {
@@ -45,11 +45,15 @@ const TGS: TargetGroup[] = [
   },
 ]
 
-function renderPage(targetGroups: TargetGroup[], onSearchChange = vi.fn()) {
+function renderPage(
+  targetGroups: TargetGroup[],
+  onSearchChange = vi.fn(),
+  search: PanelSearch = CLOSED_PANEL,
+) {
   renderWithClient(
     <DescribeTargetGroupsPage
       onSearchChange={onSearchChange}
-      search={CLOSED_PANEL}
+      search={search}
       targetGroups={targetGroups}
     />,
     createTestQueryClient(),
@@ -82,11 +86,23 @@ describe("describe-target-groups list route", () => {
     expect(screen.getByText("tg-two")).toBeInTheDocument()
     expect(
       screen.getByRole("link", { name: "Create target group" }),
-    ).toHaveAttribute("href", "/ec2/create-target-group")
+    ).toBeInTheDocument()
 
     await waitFor(() => {
       expect(screen.getByText("1 healthy, 1 unhealthy")).toBeInTheDocument()
     })
+  })
+
+  it("opens the create form in the side panel", async () => {
+    sdk.setHandler("DescribeVpcsCommand", () => ({ Vpcs: [] }))
+    renderPage(TGS, vi.fn(), { ...CLOSED_PANEL, create: true })
+
+    await expect(
+      screen.findByRole("button", { name: "Create Target Group" }),
+    ).resolves.toBeInTheDocument()
+    expect(
+      screen.getByRole("region", { name: "Create target group" }),
+    ).toBeInTheDocument()
   })
 
   it("selects a target group by its ARN when its row is clicked", async () => {

@@ -128,9 +128,37 @@ describe("load-balancer detail route", () => {
     await expect(
       screen.findByRole("link", { name: "subnet-a (10.0.1.0/24)" }),
     ).resolves.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Listeners" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Attributes" })).toBeNull()
+  })
+
+  it("moves to the Listeners tab through the URL", async () => {
+    const user = userEvent.setup()
+    await renderRoute([ALB])
+
+    await user.click(screen.getByRole("tab", { name: "Listeners" }))
+
+    expect(routerState.navigate).toHaveBeenCalledWith({
+      search: { tab: "listeners" },
+      replace: true,
+    })
+  })
+
+  it("lists listeners on their own tab", async () => {
+    renderDetails(ALB, "listeners")
+
     await expect(
       screen.findByText("No listeners configured."),
     ).resolves.toBeInTheDocument()
+    expect(screen.queryByText("internet-facing")).toBeNull()
+  })
+
+  it("edits attributes on their own tab, not in Settings", async () => {
+    renderDetails(ALB, "attributes")
+
+    await expect(
+      screen.findByRole("switch", { name: "Deletion protection" }),
+    ).resolves.not.toBeChecked()
   })
 
   it("renders a not-found state when the ARN is unknown", async () => {
@@ -145,9 +173,7 @@ describe("load-balancer detail route", () => {
     await expect(
       screen.findByRole("button", { name: "Security groups" }),
     ).resolves.toBeInTheDocument()
-    expect(
-      screen.getByRole("switch", { name: "Deletion protection" }),
-    ).not.toBeChecked()
+    expect(screen.queryByRole("button", { name: "Attributes" })).toBeNull()
   })
 
   it("has no security groups to edit on a network load balancer", async () => {

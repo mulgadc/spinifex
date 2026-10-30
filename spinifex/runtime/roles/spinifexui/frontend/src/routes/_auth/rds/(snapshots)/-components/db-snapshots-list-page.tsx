@@ -4,6 +4,7 @@ import { Camera } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -13,14 +14,14 @@ import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
 import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteDBSnapshot } from "@/mutations/rds"
 import { SNAPSHOT_TYPE_AUTOMATED, SNAPSHOT_TYPE_MANUAL } from "@/types/rds"
 
-import { CreateDBSnapshotDialog } from "./create-db-snapshot-dialog"
+import { CreateDBSnapshotPage } from "./create-db-snapshot-page"
 import { DBSnapshotDetails } from "./db-snapshot-details"
 
 const TYPE_FILTERS = [
@@ -119,17 +120,19 @@ const COLUMNS: DataColumn<DBSnapshot>[] = [
 interface DBSnapshotsListPageProps {
   snapshots: readonly DBSnapshot[]
   search: PanelSearch
+  // The database the create form snapshots, or "" to let the form pick one.
+  instance?: string
   onSearchChange: (search: Partial<PanelSearch>) => void
 }
 
 export function DBSnapshotsListPage({
   snapshots,
   search,
+  instance = "",
   onSearchChange,
 }: DBSnapshotsListPageProps) {
   const [sort, setSort] = useState<SortState>()
   const [typeFilter, setTypeFilter] = useState<string>("")
-  const [showCreate, setShowCreate] = useState(false)
 
   const visible = snapshots.filter(
     (snapshot) => typeFilter === "" || snapshot.SnapshotType === typeFilter,
@@ -156,7 +159,18 @@ export function DBSnapshotsListPage({
 
   let panel: ReactNode = null
 
-  if (open?.DBSnapshotIdentifier) {
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Take DB snapshot">
+        <CreateDBSnapshotPage
+          dbInstanceIdentifier={instance === "" ? undefined : instance}
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.DBSnapshotIdentifier) {
     panel = (
       <DBSnapshotDetails
         key={open.DBSnapshotIdentifier}
@@ -174,14 +188,20 @@ export function DBSnapshotsListPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Button
-            onClick={() => {
-              setShowCreate(true)
-            }}
+          <Link
+            className={buttonVariants()}
+            from="/rds/describe-db-snapshots/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              instance: "",
+              create: true,
+            })}
+            to="."
           >
             <Camera data-icon="inline-start" />
             Take snapshot
-          </Button>
+          </Link>
         }
         subtitle="Manual snapshots and automated backups of your databases."
         title="Snapshots"
@@ -236,10 +256,6 @@ export function DBSnapshotsListPage({
         deleted by hand — the instance&apos;s backup retention is what removes
         them.
       </p>
-
-      {showCreate && (
-        <CreateDBSnapshotDialog onOpenChange={setShowCreate} open={true} />
-      )}
     </ResourceView>
   )
 }

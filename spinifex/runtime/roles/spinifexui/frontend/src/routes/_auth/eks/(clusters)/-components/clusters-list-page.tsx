@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useMemo, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -20,6 +21,7 @@ import { useDeleteCluster } from "@/mutations/eks"
 import { eksClusterQueryOptions } from "@/queries/eks"
 
 import { ClusterDetails } from "./cluster-details"
+import { CreateClusterPage } from "./create-cluster-page"
 
 // ListClusters returns names only, so each row describes its own cluster.
 function ClusterStatus({ clusterName }: { clusterName: string }) {
@@ -98,7 +100,22 @@ export function ClustersListPage({
 
   let panel: ReactNode = null
 
-  if (open) {
+  if (search.create) {
+    panel = (
+      <CreatePanel
+        onClose={() => {
+          onSearchChange(CLOSED_PANEL)
+        }}
+        title="Create cluster"
+      >
+        <CreateClusterPage
+          onClose={(clusterName) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: clusterName ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open) {
     panel = (
       <ClusterDetails
         clusterName={open}
@@ -118,7 +135,16 @@ export function ClustersListPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/eks/create-cluster">
+          <Link
+            className={buttonVariants()}
+            from="/eks/list-clusters/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create cluster
           </Link>

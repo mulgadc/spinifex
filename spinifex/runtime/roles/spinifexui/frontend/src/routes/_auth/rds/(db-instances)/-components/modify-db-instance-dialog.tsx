@@ -7,7 +7,7 @@ import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { PickerNoticeText, pickerNotice } from "@/components/picker-notice"
-import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
+import { SecurityGroupPicker } from "@/components/security-group-picker"
 import {
   AlertDialog,
   AlertDialogContent,
@@ -162,10 +162,16 @@ export function ModifyDBInstanceDialog({
   }
 
   const onSubmit = async (data: ModifyDBInstanceFormData) => {
-    await modifyInstance.mutateAsync({
-      ...data,
-      dbInstanceIdentifier: identifier,
-    })
+    try {
+      await modifyInstance.mutateAsync({
+        ...data,
+        dbInstanceIdentifier: identifier,
+      })
+    } catch {
+      // Surfaced in the dialog through the mutation's error.
+      return
+    }
+
     onOpenChange(false)
   }
 
@@ -227,7 +233,7 @@ export function ModifyDBInstanceDialog({
             {securityGroupNotice ? (
               <PickerNoticeText notice={securityGroupNotice} />
             ) : (
-              <SecurityGroupCheckboxes
+              <SecurityGroupPicker
                 emptyText="No security group in this instance's VPC is available."
                 groups={securityGroups}
                 onChange={setSecurityGroups}

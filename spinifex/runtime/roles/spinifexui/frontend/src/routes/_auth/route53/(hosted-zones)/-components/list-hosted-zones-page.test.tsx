@@ -133,13 +133,13 @@ describe("list-hosted-zones page", () => {
     expect(activation.get).toHaveBeenCalledWith("ZPENDING")
   })
 
-  it("links Add domain to the walkthrough", () => {
-    renderList()
+  it("opens the Add domain walkthrough in the side panel", () => {
+    renderList(ZONES, { ...CLOSED_PANEL, create: true })
 
-    expect(screen.getByRole("link", { name: "Add domain" })).toHaveAttribute(
-      "href",
-      "/route53/create-hosted-zone",
-    )
+    expect(
+      screen.getByRole("region", { name: "Add domain" }),
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText("Domain name")).toBeInTheDocument()
   })
 
   it("opens a zone's panel from its row, keyed by the bare zone ID", async () => {

@@ -18,11 +18,14 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal)
 })
 
-import { CLOSED_PANEL } from "@/lib/panel-search"
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 
 import { GuardrailsPage } from "./guardrails-page"
 
-function renderSeeded(guardrails: GuardrailSummary[]) {
+function renderSeeded(
+  guardrails: GuardrailSummary[],
+  search: PanelSearch = CLOSED_PANEL,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -34,7 +37,7 @@ function renderSeeded(guardrails: GuardrailSummary[]) {
       <GuardrailsPage
         guardrails={guardrails}
         onSearchChange={onSearchChange}
-        search={CLOSED_PANEL}
+        search={search}
       />
     </QueryClientProvider>,
   )
@@ -57,7 +60,17 @@ describe("GuardrailsPage", () => {
     renderSeeded([])
     expect(
       screen.getByRole("link", { name: "Create guardrail" }),
-    ).toHaveAttribute("href", "/bedrock/list-guardrails/create")
+    ).toBeInTheDocument()
+  })
+
+  it("opens the create form in the side panel", () => {
+    renderSeeded([], { ...CLOSED_PANEL, create: true })
+
+    const panel = screen.getByRole("region", { name: "Create guardrail" })
+
+    expect(
+      within(panel).getByRole("button", { name: "Create Guardrail" }),
+    ).toBeInTheDocument()
   })
 
   it("lists guardrails sorted by name", () => {

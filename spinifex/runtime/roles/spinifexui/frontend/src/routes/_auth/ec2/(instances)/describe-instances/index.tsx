@@ -3,10 +3,11 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
-import { CLOSED_PANEL, panelSearchFields } from "@/lib/panel-search"
+import { panelSearchFields } from "@/lib/panel-search"
 import { ec2InstancesQueryOptions } from "@/queries/ec2"
 
 import {
+  CLOSED_INSTANCES_PANEL,
   type InstancesSearch,
   InstancesPage,
   STATE_FILTERS,
@@ -18,6 +19,8 @@ const searchSchema = z.object({
   q: z.string().default("").catch(""),
   state: z.enum(STATE_FILTERS).default("all").catch("all"),
   sort: z.string().default("").catch(""),
+  template: z.string().default("").catch(""),
+  templateVersion: z.string().default("").catch(""),
   ...panelSearchFields,
 })
 /* oxlint-enable promise/prefer-await-to-then */
@@ -26,7 +29,7 @@ const DEFAULT_SEARCH = {
   q: "",
   state: "all",
   sort: "",
-  ...CLOSED_PANEL,
+  ...CLOSED_INSTANCES_PANEL,
 } as const
 
 export const Route = createFileRoute(

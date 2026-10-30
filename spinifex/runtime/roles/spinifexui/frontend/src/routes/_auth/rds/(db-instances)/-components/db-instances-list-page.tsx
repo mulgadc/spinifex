@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -18,6 +19,7 @@ import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { useDeleteDBInstance } from "@/mutations/rds"
 
+import { CreateDBInstancePage } from "./create-db-instance-page"
 import { DBInstanceDetails } from "./db-instance-details"
 import { defaultFinalSnapshotIdentifier } from "./delete-db-instance-dialog"
 
@@ -130,7 +132,17 @@ export function DBInstancesListPage({
 
   let panel: ReactNode = null
 
-  if (open?.DBInstanceIdentifier) {
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Create database">
+        <CreateDBInstancePage
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.DBInstanceIdentifier) {
     panel = (
       <DBInstanceDetails
         instance={open}
@@ -148,7 +160,16 @@ export function DBInstancesListPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/rds/create-db-instance">
+          <Link
+            className={buttonVariants()}
+            from="/rds/describe-db-instances/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create database
           </Link>

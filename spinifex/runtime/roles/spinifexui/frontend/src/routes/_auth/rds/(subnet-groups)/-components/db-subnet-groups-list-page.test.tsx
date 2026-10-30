@@ -82,11 +82,11 @@ describe("DBSubnetGroupsListPage", () => {
     ).toBeInTheDocument()
   })
 
-  it("links the heading action to the create page", () => {
-    renderPage([])
+  it("renders the create form in the panel when asked", () => {
+    renderPage([], { create: true })
     expect(
-      screen.getByRole("link", { name: "Create Subnet Group" }),
-    ).toHaveAttribute("href", "/rds/create-db-subnet-group")
+      screen.getByRole("region", { name: "Create DB subnet group" }),
+    ).toBeInTheDocument()
   })
 
   it("deletes each selected DB subnet group with its own call", async () => {

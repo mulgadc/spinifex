@@ -1,13 +1,15 @@
 import type { QueryClient } from "@tanstack/react-query"
-import { fireEvent, screen } from "@testing-library/react"
+import { fireEvent, screen, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
+const send = vi.hoisted(() => vi.fn())
+
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(vi.fn())
+  return mockAwsClients(send)
 })
 
 import { AddonsTab } from "./addons-tab"
@@ -106,5 +108,33 @@ describe("AddonsTab", () => {
     expect(
       screen.getByText(/Remove add-on "coredns" from the cluster\?/),
     ).toBeInTheDocument()
+  })
+
+  it("shows a refused add in the dialog and keeps it open", async () => {
+    send.mockRejectedValueOnce(
+      Object.assign(new Error("The service account role is required."), {
+        name: "InvalidParameterException",
+      }),
+    )
+    renderWithClient(<AddonsTab clusterName={CLUSTER} />, seed())
+    fireEvent.click(screen.getByRole("button", { name: "Add add-on" }))
+    fireEvent.change(screen.getByLabelText("Add-on"), {
+      target: { value: "aws-load-balancer-controller" },
+    })
+    const dialog = screen.getByRole("alertdialog")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }))
+
+    await expect(
+      within(dialog).findByText(
+        "InvalidParameterException: The service account role is required.",
+      ),
+    ).resolves.toBeInTheDocument()
+    expect(send.mock.calls[0]?.[0].input.addonName).toBe(
+      "aws-load-balancer-controller",
+    )
+    expect(screen.getByLabelText("Add-on")).toHaveValue(
+      "aws-load-balancer-controller",
+    )
+    expect(within(dialog).getByRole("button", { name: "Add" })).toBeEnabled()
   })
 })

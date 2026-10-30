@@ -314,7 +314,7 @@ test.describe("instances list", () => {
     await expect(panel).toBeVisible()
     await expect(page.getByRole("table", { name: "Instances" })).toBeVisible()
 
-    await panel.getByRole("button", { name: "Close launch form" }).click()
+    await panel.getByRole("button", { name: "Close create form" }).click()
     await expect(panel).toBeHidden()
   })
 
@@ -506,5 +506,5 @@ test("an empty account is offered a first launch", async ({ page }) => {
 
   await expect(page.getByText("No instances yet.")).toBeVisible()
   await page.getByRole("link", { name: "Launch your first instance" }).click()
-  await expect(page).toHaveURL(/\/ec2\/run-instances$/u)
+  await expect(page).toHaveURL(/\/ec2\/describe-instances\?create=true$/u)
 })

@@ -21,11 +21,11 @@ import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { PageHeading } from "@/components/page-heading"
 import {
-  SecurityGroupCheckboxes,
+  SecurityGroupPicker,
   defaultSecurityGroupIdForVpc,
   securityGroupIdsForVpc,
   securityGroupsForVpc,
-} from "@/components/security-group-checkboxes"
+} from "@/components/security-group-picker"
 import { SystemImageRequired } from "@/components/system-image-required"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import {
@@ -367,7 +367,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
 
           <Field>
             <FieldTitle>VPC security groups</FieldTitle>
-            <SecurityGroupCheckboxes
+            <SecurityGroupPicker
               emptyText={
                 placementVpcId
                   ? `No security groups available in ${placementVpcId}.`

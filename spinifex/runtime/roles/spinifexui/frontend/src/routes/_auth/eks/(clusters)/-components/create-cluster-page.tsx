@@ -1,14 +1,19 @@
-import type { Subnet } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
-import { ErrorBanner } from "@/components/error-banner"
+import {
+  CliCommandPanel,
+  type CliCommand,
+  cliPlaceholder,
+  commandFlag,
+  optionalFlag,
+  shellSingleQuote,
+} from "@/components/cli-command-panel"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
+import { SwitchList } from "@/components/switch-list"
 import { SystemImageRequired } from "@/components/system-image-required"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
@@ -38,19 +43,16 @@ import {
   EKS_SUPPORTED_VERSIONS,
 } from "@/types/eks"
 
-import { CreateClusterRoleDialog } from "./create-cluster-role-dialog"
+import { CreateClusterRoleSection } from "./create-cluster-role-section"
 
-function subnetLabel(subnet: Subnet): string {
-  const name = getNameTag(subnet.Tags)
-  const suffix = name ? `${subnet.SubnetId} (${name})` : subnet.SubnetId
-
-  return `${suffix} · ${subnet.CidrBlock}`
+interface CreateClusterPageProps {
+  // Called with the new cluster's name, or with nothing on cancel.
+  onClose: (clusterName?: string) => void
 }
 
-export function CreateClusterPage() {
-  const navigate = useNavigate()
+export function CreateClusterPage({ onClose }: CreateClusterPageProps) {
   const queryClient = useQueryClient()
-  const [isRoleDialogOpen, setIsRoleDialogOpen] = useState(false)
+  const [isRoleFormOpen, setIsRoleFormOpen] = useState(false)
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: rolesData } = useSuspenseQuery(iamRolesQueryOptions)
@@ -86,7 +88,6 @@ export function CreateClusterPage() {
 
   const selectedVpc = useWatch({ control, name: "vpcId" })
   const selectedSubnets = useWatch({ control, name: "subnetIds" })
-  const selectedSubnetSet = new Set(selectedSubnets)
   const publicAccess = useWatch({ control, name: "endpointPublicAccess" })
   const publicCidrs = useWatch({ control, name: "publicAccessCidrs" })
 
@@ -95,14 +96,6 @@ export function CreateClusterPage() {
   const handleVpcChange = (newVpcId: string | null = "") => {
     setValue("vpcId", newVpcId ?? "", { shouldValidate: true })
     setValue("subnetIds", [])
-  }
-
-  const toggleSubnet = (subnetId: string) => {
-    const next = selectedSubnets.includes(subnetId)
-      ? selectedSubnets.filter((id) => id !== subnetId)
-      : [...selectedSubnets, subnetId]
-
-    setValue("subnetIds", next, { shouldValidate: true })
   }
 
   const updateCidr = (index: number, value: string) => {
@@ -127,48 +120,49 @@ export function CreateClusterPage() {
 
   const clusterName = useWatch({ control, name: "name" })
 
+  const [selectedRoleArn, version, privateAccess, creatorAdmin] = useWatch({
+    control,
+    name: [
+      "roleArn",
+      "version",
+      "endpointPrivateAccess",
+      "bootstrapClusterCreatorAdminPermissions",
+    ],
+  })
+
   const handleRoleCreated = async (roleArn: string) => {
     await queryClient.invalidateQueries({
       queryKey: iamRolesQueryOptions.queryKey,
     })
     setValue("roleArn", roleArn, { shouldValidate: true })
+    setIsRoleFormOpen(false)
   }
 
   const onSubmit = async (data: CreateClusterFormData) => {
-    await createCluster.mutateAsync(data)
-    await navigate({
-      to: "/eks/list-clusters",
-      search: { selected: data.name },
-    })
+    try {
+      await createCluster.mutateAsync(data)
+      onClose(data.name)
+    } catch {
+      // Left open, with the refusal shown beside the submit button.
+    }
   }
 
   if (!hasEksSystemImage) {
     return (
-      <>
-        <BackLink to="/eks/list-clusters">Clusters</BackLink>
-        <PageHeading subtitle="EKS" title="Create Cluster" />
-        <SystemImageRequired
-          description="EKS clusters boot a Spinifex-managed node image (K3s) that is not shipped with the platform. Import it before creating a cluster."
-          importCommand="spx admin images import --name spinifex-eks-node"
-          title="EKS system image not found"
-        />
-      </>
+      <SystemImageRequired
+        description="EKS clusters boot a Spinifex-managed node image (K3s) that is not shipped with the platform. Import it before creating a cluster."
+        importCommand="spx admin images import --name spinifex-eks-node"
+        title="EKS system image not found"
+      />
     )
   }
 
   return (
-    <>
-      <BackLink to="/eks/list-clusters">Clusters</BackLink>
-      <PageHeading subtitle="EKS" title="Create Cluster" />
-
-      {createCluster.error && (
-        <ErrorBanner
-          error={createCluster.error}
-          msg="Failed to create cluster"
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={createCluster.isPending || isSubmitting}
+      >
         <Field>
           <FieldTitle>
             <label htmlFor="cluster-name">Name</label>
@@ -235,8 +229,9 @@ export function CreateClusterPage() {
               )}
             />
             <Button
+              aria-expanded={isRoleFormOpen}
               onClick={() => {
-                setIsRoleDialogOpen(true)
+                setIsRoleFormOpen(!isRoleFormOpen)
               }}
               type="button"
               variant="outline"
@@ -247,11 +242,13 @@ export function CreateClusterPage() {
           <FieldError errors={[errors.roleArn]} />
         </Field>
 
-        {isRoleDialogOpen && (
-          <CreateClusterRoleDialog
+        {isRoleFormOpen && (
+          <CreateClusterRoleSection
             clusterName={clusterName}
+            onCancel={() => {
+              setIsRoleFormOpen(false)
+            }}
             onCreated={handleRoleCreated}
-            onOpenChange={setIsRoleDialogOpen}
           />
         )}
 
@@ -266,30 +263,25 @@ export function CreateClusterPage() {
 
         <Field>
           <FieldTitle>Subnets (select at least 1)</FieldTitle>
-          {vpcSubnets.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No subnets in the selected VPC.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {vpcSubnets.map((subnet) => (
-                <label
-                  className="flex items-center gap-2 text-xs"
-                  key={subnet.SubnetId}
-                >
-                  <input
-                    aria-label={`Subnet ${subnetLabel(subnet)}`}
-                    checked={selectedSubnetSet.has(subnet.SubnetId ?? "")}
-                    onChange={() => {
-                      toggleSubnet(subnet.SubnetId ?? "")
-                    }}
-                    type="checkbox"
-                  />
-                  <span className="font-mono">{subnetLabel(subnet)}</span>
-                </label>
-              ))}
-            </div>
-          )}
+          <SwitchList
+            emptyText="No subnets in the selected VPC."
+            itemLabel="Subnet"
+            items={vpcSubnets.map((subnet) => ({
+              id: subnet.SubnetId ?? "",
+              label: subnet.SubnetId ?? "",
+              detail: [
+                getNameTag(subnet.Tags),
+                subnet.AvailabilityZone,
+                subnet.CidrBlock,
+              ]
+                .filter(Boolean)
+                .join(" · "),
+            }))}
+            onChange={(next) => {
+              setValue("subnetIds", next, { shouldValidate: true })
+            }}
+            selected={selectedSubnets}
+          />
           <FieldError errors={[errors.subnetIds]} />
         </Field>
 
@@ -400,16 +392,85 @@ export function CreateClusterPage() {
           />
         </Field>
 
+        <CliCommandPanel
+          commands={buildCreateClusterCommands({
+            name: clusterName,
+            roleArn: selectedRoleArn,
+            version,
+            subnetIds: selectedSubnets,
+            publicAccess,
+            privateAccess,
+            publicCidrs,
+            creatorAdmin,
+          })}
+        />
+
         <FormActions
+          error={createCluster.error}
+          errorMsg="Failed to create cluster"
           isPending={createCluster.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => {
-            await navigate({ to: "/eks/list-clusters" })
+          onCancel={() => {
+            onClose()
           }}
           pendingLabel="Creating…"
-          submitLabel="Create Cluster"
+          submitLabel="Create cluster"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
+}
+
+interface CreateClusterCommandInput {
+  name: string
+  roleArn: string
+  version: string
+  subnetIds: string[]
+  publicAccess: boolean
+  privateAccess: boolean
+  publicCidrs: string[]
+  creatorAdmin: boolean
+}
+
+// Mirrors the request: CIDRs go only with public access, and authentication
+// is always API access entries.
+function buildCreateClusterCommands({
+  name,
+  roleArn,
+  version,
+  subnetIds,
+  publicAccess,
+  privateAccess,
+  publicCidrs,
+  creatorAdmin,
+}: CreateClusterCommandInput): CliCommand[] {
+  const vpcConfig = [
+    `subnetIds=${subnetIds.length > 0 ? subnetIds.join(",") : "<subnet-ids>"}`,
+    `endpointPublicAccess=${publicAccess}`,
+    `endpointPrivateAccess=${privateAccess}`,
+  ]
+
+  if (publicAccess && publicCidrs.length > 0) {
+    vpcConfig.push(`publicAccessCidrs=${publicCidrs.join(",")}`)
+  }
+
+  return [
+    {
+      label: "Create cluster",
+      parts: [
+        { type: "bin", value: "AWS_PROFILE=spinifex aws eks create-cluster" },
+        ...commandFlag("\\\n  --name", cliPlaceholder(name.trim(), "name")),
+        ...commandFlag("\\\n  --role-arn", cliPlaceholder(roleArn, "role-arn")),
+        ...optionalFlag("\\\n  --kubernetes-version", version),
+        ...commandFlag(
+          "\\\n  --resources-vpc-config",
+          shellSingleQuote(vpcConfig.join(",")),
+        ),
+        ...commandFlag(
+          "\\\n  --access-config",
+          `authenticationMode=API,bootstrapClusterCreatorAdminPermissions=${creatorAdmin}`,
+        ),
+      ],
+    },
+  ]
 }

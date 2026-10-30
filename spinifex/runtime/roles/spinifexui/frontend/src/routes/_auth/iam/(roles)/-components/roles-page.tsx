@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -18,6 +19,8 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteRole } from "@/mutations/iam"
 
+import { iamDeleteWarning } from "../../-components/delete-prerequisites"
+import { CreateRolePage } from "./create-role-page"
 import { RoleDetails } from "./role-details"
 
 const COLUMNS: DataColumn<Role>[] = [
@@ -90,24 +93,48 @@ export function RolesPage({ roles, search, onSearchChange }: RolesPageProps) {
   return (
     <ResourceView
       panel={
-        open && (
-          <RoleDetails
-            key={open.RoleName}
+        search.create ? (
+          <CreatePanel
             onClose={() => {
               onSearchChange(CLOSED_PANEL)
             }}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            role={open}
-            tab={search.tab}
-          />
+            title="Create role"
+          >
+            <CreateRolePage
+              onClose={(id) => {
+                onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+              }}
+            />
+          </CreatePanel>
+        ) : (
+          open && (
+            <RoleDetails
+              key={open.RoleName}
+              onClose={() => {
+                onSearchChange(CLOSED_PANEL)
+              }}
+              onTabChange={(tab) => {
+                onSearchChange({ tab })
+              }}
+              role={open}
+              tab={search.tab}
+            />
+          )
         )
       }
     >
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/iam/create-role">
+          <Link
+            className={buttonVariants()}
+            from="/iam/list-roles/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create role
           </Link>
@@ -119,7 +146,7 @@ export function RolesPage({ roles, search, onSearchChange }: RolesPageProps) {
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>
           <BulkDelete
             deleteOne={remove.mutateAsync}
-            description="Detach their policies and remove them from their instance profiles first, or the delete is refused. This cannot be undone."
+            description={iamDeleteWarning("role", selection.ids.length)}
             ids={selection.ids}
             label={(id) => `${id} (${resourceIds.get(id) ?? ""})`}
             noun={["role", "roles"]}

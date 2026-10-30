@@ -29,7 +29,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal)
 })
 
-import { CLOSED_PANEL } from "@/lib/panel-search"
+import { CLOSED_PANEL, type PanelTab } from "@/lib/panel-search"
 
 import { SecurityGroupDetails } from "./security-group-details"
 import { SecurityGroupsPage } from "./security-groups-page"
@@ -55,14 +55,17 @@ const DEFAULT_GROUP: SecurityGroup = {
   ],
 }
 
-function renderDetails(sg: SecurityGroup = DEFAULT_GROUP) {
+function renderDetails(
+  sg: SecurityGroup = DEFAULT_GROUP,
+  tab: PanelTab = "overview",
+) {
   sdk.send.mockClear()
   renderWithClient(
     <SecurityGroupDetails
       onClose={vi.fn()}
       onTabChange={vi.fn()}
       sg={sg}
-      tab="overview"
+      tab={tab}
     />,
     createTestQueryClient(),
   )
@@ -165,6 +168,46 @@ describe("SecurityGroupDetails", () => {
           },
         ],
       },
+    })
+  })
+})
+
+describe("SecurityGroupDetails delete", () => {
+  it("refuses to delete the default group and says why", async () => {
+    const user = userEvent.setup()
+    renderDetails(DEFAULT_GROUP, "settings")
+
+    const remove = screen.getByRole("button", { name: "Delete security group" })
+    expect(remove).toBeDisabled()
+    expect(
+      screen.getByText("The default security group cannot be deleted."),
+    ).toBeInTheDocument()
+
+    await user.click(remove)
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+  })
+
+  it("deletes any other group once confirmed", async () => {
+    const user = userEvent.setup()
+    renderDetails(
+      { ...DEFAULT_GROUP, GroupId: "sg-web", GroupName: "web" },
+      "settings",
+    )
+
+    expect(
+      screen.queryByText("The default security group cannot be deleted."),
+    ).not.toBeInTheDocument()
+    await user.click(
+      screen.getByRole("button", { name: "Delete security group" }),
+    )
+    const dialog = await screen.findByRole("alertdialog")
+    await user.click(within(dialog).getByRole("button", { name: /^Delete/u }))
+
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalled()
+    })
+    expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
+      input: { GroupId: "sg-web" },
     })
   })
 })

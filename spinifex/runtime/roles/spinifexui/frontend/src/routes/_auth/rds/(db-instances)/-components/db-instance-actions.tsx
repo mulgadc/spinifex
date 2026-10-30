@@ -37,11 +37,10 @@ import {
   canStop,
 } from "@/types/rds"
 
-import { CreateDBSnapshotDialog } from "../../(snapshots)/-components/create-db-snapshot-dialog"
 import { DeleteDBInstanceDialog } from "./delete-db-instance-dialog"
 import { ModifyDBInstanceDialog } from "./modify-db-instance-dialog"
 
-type Dialog = "" | "stop" | "reboot" | "snapshot" | "modify" | "delete"
+type Dialog = "" | "stop" | "reboot" | "modify" | "delete"
 
 interface DBInstanceActionsProps {
   instance: DBInstance
@@ -134,7 +133,10 @@ export function DBInstanceActions({
             <DropdownMenuItem
               disabled={!canSnapshot(status)}
               onClick={() => {
-                setDialog("snapshot")
+                void navigate({
+                  to: "/rds/describe-db-snapshots",
+                  search: { create: true, instance: id },
+                })
               }}
             >
               <Camera />
@@ -207,13 +209,6 @@ export function DBInstanceActions({
       {dialog === "modify" && (
         <ModifyDBInstanceDialog
           instance={instance}
-          onOpenChange={closeDialog}
-          open={true}
-        />
-      )}
-      {dialog === "snapshot" && (
-        <CreateDBSnapshotDialog
-          dbInstanceIdentifier={id}
           onOpenChange={closeDialog}
           open={true}
         />

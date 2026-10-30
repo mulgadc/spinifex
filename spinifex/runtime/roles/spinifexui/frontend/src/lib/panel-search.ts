@@ -1,6 +1,12 @@
 import { z } from "zod"
 
-export const PANEL_TABS = ["overview", "monitoring", "settings"] as const
+export const PANEL_TABS = [
+  "overview",
+  "listeners",
+  "attributes",
+  "monitoring",
+  "settings",
+] as const
 
 export type PanelTab = (typeof PANEL_TABS)[number]
 

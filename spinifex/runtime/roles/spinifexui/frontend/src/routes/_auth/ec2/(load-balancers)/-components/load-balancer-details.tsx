@@ -2,7 +2,14 @@ import type { Subnet } from "@aws-sdk/client-ec2"
 import type { LoadBalancer } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { Eye, Maximize2, SlidersHorizontal, Trash2 } from "lucide-react"
+import {
+  Eye,
+  ListChecks,
+  Maximize2,
+  SlidersHorizontal,
+  Trash2,
+  Waypoints,
+} from "lucide-react"
 import { type ReactNode, Suspense, useState } from "react"
 
 import {
@@ -78,7 +85,6 @@ function Zones({ lb }: { lb: LoadBalancer }) {
 function Overview({ lb }: { lb: LoadBalancer }) {
   const arn = lb.LoadBalancerArn ?? ""
   const securityGroups = definedIds(lb.SecurityGroups)
-  const isNlb = lb.Type === "network"
 
   return (
     <>
@@ -137,16 +143,21 @@ function Overview({ lb }: { lb: LoadBalancer }) {
           </PanelFields>
         </PanelSection>
       )}
-      <PanelSection title="Listeners">
-        <Suspense fallback={<PanelSpinner />}>
-          <ListenersTab
-            lbType={isNlb ? "network" : "application"}
-            loadBalancerArn={arn}
-            vpcId={lb.VpcId}
-          />
-        </Suspense>
-      </PanelSection>
     </>
+  )
+}
+
+function Listeners({ lb }: { lb: LoadBalancer }) {
+  return (
+    <PanelSection title="Listeners">
+      <Suspense fallback={<PanelSpinner />}>
+        <ListenersTab
+          lbType={lb.Type === "network" ? "network" : "application"}
+          loadBalancerArn={lb.LoadBalancerArn ?? ""}
+          vpcId={lb.VpcId}
+        />
+      </Suspense>
+    </PanelSection>
   )
 }
 
@@ -242,11 +253,6 @@ function Settings({
           </Loading>
         </PanelSection>
       )}
-      <PanelSection title="Attributes">
-        <Loading>
-          <AttributesSection arn={arn} />
-        </Loading>
-      </PanelSection>
       <PanelSection title="Tags">
         <Loading>
           <Elbv2TagsSection arn={arn} />
@@ -330,6 +336,24 @@ export function LoadBalancerDetails({
           label: "Overview",
           icon: Eye,
           content: <Overview lb={lb} />,
+        },
+        {
+          id: "listeners",
+          label: "Listeners",
+          icon: Waypoints,
+          content: <Listeners lb={lb} />,
+        },
+        {
+          id: "attributes",
+          label: "Attributes",
+          icon: ListChecks,
+          content: (
+            <PanelSection title="Attributes">
+              <Loading>
+                <AttributesSection arn={arn} />
+              </Loading>
+            </PanelSection>
+          ),
         },
         {
           id: "settings",

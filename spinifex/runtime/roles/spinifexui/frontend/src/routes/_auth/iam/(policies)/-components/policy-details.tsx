@@ -23,6 +23,7 @@ import {
   iamPolicyVersionQueryOptions,
 } from "@/queries/iam"
 
+import { iamDeleteWarning } from "../../-components/delete-prerequisites"
 import { PolicyDocumentViewer } from "../../-components/policy-document-viewer"
 
 function PolicyDocument({ policy }: { policy: Policy }) {
@@ -125,7 +126,7 @@ function Settings({
         </div>
       </PanelSection>
       <ResourceDeleteDialog
-        description={`Delete the policy ${policy.PolicyName ?? policyArn}? This cannot be undone.`}
+        description={`Delete the policy ${policy.PolicyName ?? policyArn}? ${iamDeleteWarning("policy")}`}
         identifier={policyArn}
         mutation={remove}
         onDeleted={onDeleted}

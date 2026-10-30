@@ -90,11 +90,11 @@ describe("DBInstancesListPage", () => {
     ).toBeNull()
   })
 
-  it("links the heading action to the create page", () => {
-    renderList([])
+  it("renders the create form in the panel when asked", () => {
+    renderList([], { create: true })
     expect(
-      screen.getByRole("link", { name: "Create database" }),
-    ).toHaveAttribute("href", "/rds/create-db-instance")
+      screen.getByRole("region", { name: "Create database" }),
+    ).toBeInTheDocument()
   })
 
   it("deletes each selected instance with its own call, keeping a final snapshot", async () => {

@@ -139,6 +139,70 @@ describe("RouteTablesPage", () => {
 })
 
 describe("RouteTableDetails", () => {
+  it("lists a main table's implicit subnets without offering to disassociate them", () => {
+    const qc = seed()
+    qc.setQueryData(["ec2", "subnets"], {
+      Subnets: [
+        { SubnetId: "subnet-1", VpcId: "vpc-1" },
+        { SubnetId: "subnet-3", VpcId: "vpc-1" },
+        { SubnetId: "subnet-9", VpcId: "vpc-other" },
+      ],
+    })
+    qc.setQueryData(["ec2", "routeTables"], { RouteTables: [MAIN, CUSTOM] })
+    renderWithClient(
+      <RouteTableDetails
+        layout="page"
+        onClose={vi.fn()}
+        onTabChange={vi.fn()}
+        rtb={MAIN}
+        tab="overview"
+      />,
+      qc,
+    )
+
+    const card = screen
+      .getByRole("button", { name: /^Subnet associations/u })
+      .closest(".rounded-lg")
+
+    if (!(card instanceof HTMLElement)) {
+      throw new TypeError("section not found")
+    }
+
+    const section = within(card)
+    const item = section.getByRole("link", { name: "subnet-3" }).closest("li")
+
+    expect(item).toHaveTextContent("Implicit")
+    expect(section.queryByRole("link", { name: "subnet-1" })).toBeNull()
+    expect(section.queryByRole("link", { name: "subnet-9" })).toBeNull()
+    expect(section.queryByRole("button", { name: /^Disassociate/u })).toBeNull()
+    expect(
+      screen.getByRole("button", { name: "Subnet associations (1)" }),
+    ).toBeInTheDocument()
+  })
+
+  it("lists no implicit subnets for a table that is not main", () => {
+    const qc = seed()
+    qc.setQueryData(["ec2", "subnets"], {
+      Subnets: [{ SubnetId: "subnet-3", VpcId: "vpc-1" }],
+    })
+    qc.setQueryData(["ec2", "routeTables"], { RouteTables: [MAIN, CUSTOM] })
+    renderWithClient(
+      <RouteTableDetails
+        layout="page"
+        onClose={vi.fn()}
+        onTabChange={vi.fn()}
+        rtb={CUSTOM}
+        tab="overview"
+      />,
+      qc,
+    )
+
+    expect(screen.queryByText("Implicit")).toBeNull()
+    expect(
+      screen.getByRole("button", { name: /^Disassociate subnet-1/u }),
+    ).toBeInTheDocument()
+  })
+
   it("keeps a main route table's delete visible but disabled", () => {
     renderWithClient(
       <RouteTableDetails

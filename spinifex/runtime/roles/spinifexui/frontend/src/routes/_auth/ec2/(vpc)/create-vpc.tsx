@@ -1,18 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { CreateVpcPage } from "./-components/create-vpc-page"
-
+// The form opens in the list's side panel; this address is kept for links.
 export const Route = createFileRoute("/_auth/ec2/(vpc)/create-vpc")({
-  head: () => ({
-    meta: [
-      {
-        title: "Create VPC | EC2 | Mulga",
-      },
-    ],
-  }),
-  component: RouteComponent,
+  beforeLoad: () => {
+    throw redirect({ to: "/ec2/describe-vpcs", search: { create: true } })
+  },
 })
-
-function RouteComponent() {
-  return <CreateVpcPage />
-}

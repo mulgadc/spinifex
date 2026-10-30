@@ -2,23 +2,28 @@ import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
 import { z } from "zod"
 
-import {
-  CLOSED_PANEL,
-  type PanelSearch,
-  panelSearchFields,
-} from "@/lib/panel-search"
+import { panelSearchFields } from "@/lib/panel-search"
 import { ec2SnapshotsQueryOptions } from "@/queries/ec2"
 
-import { SnapshotsPage } from "../-components/snapshots-page"
+import {
+  CLOSED_SNAPSHOTS_PANEL,
+  type SnapshotsSearch,
+  SnapshotsPage,
+} from "../-components/snapshots-page"
 
-const searchSchema = z.object(panelSearchFields)
+/* oxlint-disable promise/prefer-await-to-then -- zod's .catch() supplies a schema fallback, not a promise handler */
+const searchSchema = z.object({
+  ...panelSearchFields,
+  volume: z.string().default("").catch(""),
+})
+/* oxlint-enable promise/prefer-await-to-then */
 
 export const Route = createFileRoute(
   "/_auth/ec2/(snapshots)/describe-snapshots/",
 )({
   validateSearch: searchSchema,
   // Defaults stay out of the URL, so the plain list keeps its plain address.
-  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
+  search: { middlewares: [stripSearchParams(CLOSED_SNAPSHOTS_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...ec2SnapshotsQueryOptions,
@@ -41,7 +46,7 @@ function Snapshots() {
   const navigate = Route.useNavigate()
 
   // Opening or closing a panel adds a history entry, so Back closes it.
-  function onSearchChange(next: Partial<PanelSearch>) {
+  function onSearchChange(next: Partial<SnapshotsSearch>) {
     void navigate({
       search: (previous) => ({ ...previous, ...next }),
       replace: !("selected" in next || "create" in next),

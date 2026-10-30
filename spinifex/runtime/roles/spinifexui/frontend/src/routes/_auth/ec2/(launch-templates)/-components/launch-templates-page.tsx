@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -18,6 +19,7 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteLaunchTemplate } from "@/mutations/ec2"
 
+import { CreateLaunchTemplatePage } from "./create-launch-template-page"
 import { LaunchTemplateDetails } from "./launch-template-details"
 
 const COLUMNS: DataColumn<LaunchTemplate>[] = [
@@ -111,7 +113,22 @@ export function LaunchTemplatesPage({
 
   let panel: ReactNode = null
 
-  if (open?.LaunchTemplateId) {
+  if (search.create) {
+    panel = (
+      <CreatePanel
+        onClose={() => {
+          onSearchChange(CLOSED_PANEL)
+        }}
+        title="Create launch template"
+      >
+        <CreateLaunchTemplatePage
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.LaunchTemplateId) {
     panel = (
       <LaunchTemplateDetails
         key={open.LaunchTemplateId}
@@ -131,7 +148,16 @@ export function LaunchTemplatesPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/ec2/create-launch-template">
+          <Link
+            className={buttonVariants()}
+            from="/ec2/describe-launch-templates/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create launch template
           </Link>

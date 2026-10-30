@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -18,6 +19,8 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteInstanceProfile } from "@/mutations/iam"
 
+import { iamDeleteWarning } from "../../-components/delete-prerequisites"
+import { CreateInstanceProfilePage } from "./create-instance-profile-page"
 import { InstanceProfileDetails } from "./instance-profile-details"
 
 const COLUMNS: DataColumn<InstanceProfile>[] = [
@@ -110,24 +113,48 @@ export function InstanceProfilesPage({
   return (
     <ResourceView
       panel={
-        open && (
-          <InstanceProfileDetails
-            key={open.InstanceProfileName}
+        search.create ? (
+          <CreatePanel
             onClose={() => {
               onSearchChange(CLOSED_PANEL)
             }}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            profile={open}
-            tab={search.tab}
-          />
+            title="Create instance profile"
+          >
+            <CreateInstanceProfilePage
+              onClose={(id) => {
+                onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+              }}
+            />
+          </CreatePanel>
+        ) : (
+          open && (
+            <InstanceProfileDetails
+              key={open.InstanceProfileName}
+              onClose={() => {
+                onSearchChange(CLOSED_PANEL)
+              }}
+              onTabChange={(tab) => {
+                onSearchChange({ tab })
+              }}
+              profile={open}
+              tab={search.tab}
+            />
+          )
         )
       }
     >
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/iam/create-instance-profile">
+          <Link
+            className={buttonVariants()}
+            from="/iam/list-instance-profiles/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create instance profile
           </Link>
@@ -139,7 +166,10 @@ export function InstanceProfilesPage({
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>
           <BulkDelete
             deleteOne={remove.mutateAsync}
-            description="Remove their roles first, or the delete is refused. This cannot be undone."
+            description={iamDeleteWarning(
+              "instance profile",
+              selection.ids.length,
+            )}
             ids={selection.ids}
             label={(id) => `${id} (${resourceIds.get(id) ?? ""})`}
             noun={["instance profile", "instance profiles"]}

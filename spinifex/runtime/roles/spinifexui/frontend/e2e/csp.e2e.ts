@@ -33,15 +33,19 @@ test("the built console renders under its CSP", async ({ api, page }) => {
     },
   )
 
-  await page.goto("/design")
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible()
   await page.goto("/")
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible()
 
+  // A release has no design catalogue; the palette is its overlay in use.
   await page.getByRole("button", { name: /theme/iu }).click()
+  await page.keyboard.press("ControlOrMeta+k")
+  await expect(
+    page.getByRole("dialog", { name: "Command palette" }),
+  ).toBeVisible()
+  await page.keyboard.press("Escape")
+
   await page.goto("/design")
-  await page.getByRole("button", { name: "Dialog", exact: true }).click()
-  await expect(page.getByRole("dialog")).toBeVisible()
+  await expect(page.getByText("Page not found")).toBeVisible()
 
   // The charts draw through uPlot, the one library here that styles the DOM.
   api.handle(

@@ -63,14 +63,21 @@ function Settings({
   const id = sg.GroupId ?? ""
   const remove = useDeleteSecurityGroup()
   const [confirm, setConfirm] = useState(false)
+  // AWS refuses to delete a VPC's default group, so the action is not offered.
+  const isDefault = sg.GroupName === "default"
 
   return (
     <>
       <PanelTags tags={sg.Tags} />
       <PanelSection title="Manage">
         <div className="flex flex-col items-start gap-3">
+          {isDefault && (
+            <p className="text-sm text-muted-foreground">
+              The default security group cannot be deleted.
+            </p>
+          )}
           <Button
-            disabled={remove.isPending}
+            disabled={isDefault || remove.isPending}
             onClick={() => {
               setConfirm(true)
             }}

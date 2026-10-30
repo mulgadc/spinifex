@@ -90,6 +90,8 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
       if (editing === policyName) {
         setEditing(null)
       }
+    } catch {
+      // Shown by the banner above.
     } finally {
       setConfirmDelete(null)
     }

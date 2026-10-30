@@ -122,6 +122,30 @@ describe("InlinePoliciesPanel", () => {
     })
   })
 
+  it("shows a refused delete in the banner and keeps the policy", async () => {
+    send.mockRejectedValueOnce(
+      Object.assign(new Error("The user policy cannot be found."), {
+        name: "NoSuchEntity",
+      }),
+    )
+    renderWithClient(
+      <InlinePoliciesPanel kind="user" name={USER} />,
+      seed([POLICY]),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
+
+    const dialog = await screen.findByRole("alertdialog")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }))
+
+    await expect(
+      screen.findByText("NoSuchEntity: The user policy cannot be found."),
+    ).resolves.toBeInTheDocument()
+    expect(
+      screen.getByText("Failed to delete inline policy"),
+    ).toBeInTheDocument()
+    expect(screen.getByText(POLICY)).toBeInTheDocument()
+  })
+
   it("does not delete when the confirmation is cancelled", async () => {
     send.mockResolvedValue({})
     renderWithClient(

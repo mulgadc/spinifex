@@ -113,7 +113,7 @@ function seed(images: unknown[]): QueryClient {
 describe("CreateDBInstancePage system image gating", () => {
   it("renders the full form when both engine images are imported", () => {
     renderWithClient(
-      <CreateDBInstancePage />,
+      <CreateDBInstancePage onClose={vi.fn()} />,
       seed([image("postgres"), image("mariadb")]),
     )
     expect(screen.getByLabelText("DB instance identifier")).toBeInTheDocument()
@@ -124,7 +124,10 @@ describe("CreateDBInstancePage system image gating", () => {
   })
 
   it("keeps the form usable when only one engine image is imported", () => {
-    renderWithClient(<CreateDBInstancePage />, seed([image("postgres")]))
+    renderWithClient(
+      <CreateDBInstancePage onClose={vi.fn()} />,
+      seed([image("postgres")]),
+    )
     expect(screen.getByLabelText("DB instance identifier")).toBeInTheDocument()
     expect(
       screen.getByRole("button", { name: "Create Database" }),
@@ -134,7 +137,10 @@ describe("CreateDBInstancePage system image gating", () => {
 
   it("keeps the engine without an image visible but unselectable", async () => {
     const user = userEvent.setup()
-    renderWithClient(<CreateDBInstancePage />, seed([image("postgres")]))
+    renderWithClient(
+      <CreateDBInstancePage onClose={vi.fn()} />,
+      seed([image("postgres")]),
+    )
 
     await user.click(screen.getByLabelText("Engine"))
 
@@ -148,13 +154,19 @@ describe("CreateDBInstancePage system image gating", () => {
   })
 
   it("defaults to an engine that can actually boot", () => {
-    renderWithClient(<CreateDBInstancePage />, seed([image("mariadb")]))
+    renderWithClient(
+      <CreateDBInstancePage onClose={vi.fn()} />,
+      seed([image("mariadb")]),
+    )
     expect(screen.getByLabelText("Engine")).toHaveTextContent("mariadb")
     expect(screen.queryByLabelText("DB instance identifier")).not.toBeNull()
   })
 
   it("carries the import command for the engine that has no image", () => {
-    renderWithClient(<CreateDBInstancePage />, seed([image("postgres")]))
+    renderWithClient(
+      <CreateDBInstancePage onClose={vi.fn()} />,
+      seed([image("postgres")]),
+    )
     expect(screen.getByText("mariadb image not found")).toBeInTheDocument()
     expect(
       screen.getByText(/spx admin images import.*mariadb/),
@@ -165,7 +177,7 @@ describe("CreateDBInstancePage system image gating", () => {
   it("rejects an image for a different engine version", async () => {
     const user = userEvent.setup()
     renderWithClient(
-      <CreateDBInstancePage />,
+      <CreateDBInstancePage onClose={vi.fn()} />,
       seed([image("postgres", "17"), image("mariadb")]),
     )
 
@@ -178,7 +190,7 @@ describe("CreateDBInstancePage system image gating", () => {
   it("rejects an image without the data-volume contract", async () => {
     const user = userEvent.setup()
     renderWithClient(
-      <CreateDBInstancePage />,
+      <CreateDBInstancePage onClose={vi.fn()} />,
       seed([image("postgres", "18", false), image("mariadb")]),
     )
 
@@ -189,7 +201,7 @@ describe("CreateDBInstancePage system image gating", () => {
   })
 
   it("replaces the form when no engine image is imported", () => {
-    renderWithClient(<CreateDBInstancePage />, seed([]))
+    renderWithClient(<CreateDBInstancePage onClose={vi.fn()} />, seed([]))
     expect(screen.getByText("RDS system image not found")).toBeInTheDocument()
     expect(screen.queryByLabelText("DB instance identifier")).toBeNull()
     expect(screen.getByText(/spx admin images import/)).toBeInTheDocument()
@@ -198,7 +210,7 @@ describe("CreateDBInstancePage system image gating", () => {
 
 function renderForm() {
   return renderWithClient(
-    <CreateDBInstancePage />,
+    <CreateDBInstancePage onClose={vi.fn()} />,
     seed([image("postgres"), image("mariadb")]),
   )
 }
@@ -262,21 +274,28 @@ describe("CreateDBInstancePage fields", () => {
     expect(screen.queryByLabelText(new RegExp(label, "i"))).toBeNull()
   })
 
-  it("leaves deletion protection as the only live switch", () => {
+  it("leaves deletion protection as the only live setting switch", () => {
     renderForm()
 
     const enabled = screen
       .getAllByRole("switch")
       .filter((toggle) => toggle.getAttribute("aria-disabled") !== "true")
+      .filter(
+        (toggle) =>
+          !toggle.getAttribute("aria-label")?.startsWith("Security group"),
+      )
 
     expect(
       enabled.map((toggle) => toggle.getAttribute("aria-label")),
     ).toStrictEqual(["Enable deletion protection"])
   })
 
-  it("keeps security groups as checkboxes, since they select from a list", () => {
+  it("lists the security groups as switches, with no checkboxes", () => {
     renderForm()
-    expect(screen.getAllByRole("checkbox")).toHaveLength(1)
+    expect(
+      screen.getAllByRole("switch", { name: /^Security group / }),
+    ).toHaveLength(1)
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0)
   })
 
   it("offers security groups only from the default placement VPC", () => {
@@ -331,5 +350,48 @@ describe("CreateDBInstancePage fields", () => {
     renderForm()
     fireEvent.click(screen.getByRole("button", { name: "AWS CLI" }))
     expect(screen.getByText(/<DBInstanceIdentifier>/)).toBeInTheDocument()
+  })
+})
+
+describe("CreateDBInstancePage submit", () => {
+  it("shows a refused create beside the button and stays open", async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error("DB instance orders-db already exists"), {
+        name: "DBInstanceAlreadyExists",
+      }),
+    )
+    const onClose = vi.fn()
+    const user = userEvent.setup()
+    renderWithClient(
+      <CreateDBInstancePage onClose={onClose} />,
+      seed([image("postgres"), image("mariadb")]),
+    )
+
+    await user.type(
+      screen.getByLabelText("DB instance identifier"),
+      "orders-db",
+    )
+    await user.click(screen.getByLabelText("DB instance class"))
+    await user.click(screen.getByRole("option", { name: "db.t3.micro" }))
+    await user.type(screen.getByLabelText("Master username"), "dbadmin")
+    await user.type(screen.getByLabelText("Master password"), "Sup3rSecretPw")
+    await user.type(
+      screen.getByLabelText("Confirm master password"),
+      "Sup3rSecretPw",
+    )
+    await user.click(screen.getByRole("button", { name: "Create Database" }))
+
+    await expect(
+      screen.findByText(
+        "DBInstanceAlreadyExists: DB instance orders-db already exists",
+      ),
+    ).resolves.toBeInTheDocument()
+    expect(mockSend.mock.calls[0]?.[0].input.DBInstanceIdentifier).toBe(
+      "orders-db",
+    )
+    expect(onClose).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole("button", { name: "Create Database" }),
+    ).toBeEnabled()
   })
 })

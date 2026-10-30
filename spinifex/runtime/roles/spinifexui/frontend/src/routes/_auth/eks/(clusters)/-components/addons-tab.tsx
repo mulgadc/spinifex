@@ -11,6 +11,7 @@ import {
   PanelFields,
   PanelSection,
 } from "@/components/detail-panel"
+import { ErrorBanner } from "@/components/error-banner"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -95,13 +96,19 @@ function AddAddonDialog({
   }
 
   const onSubmit = async (data: CreateAddonFormValues) => {
-    await createAddon.mutateAsync({
-      clusterName,
-      addonName: data.addonName,
-      addonVersion: data.addonVersion || undefined,
-      serviceAccountRoleArn: data.serviceAccountRoleArn.trim() || undefined,
-      configurationValues: data.configurationValues.trim() || undefined,
-    })
+    try {
+      await createAddon.mutateAsync({
+        clusterName,
+        addonName: data.addonName,
+        addonVersion: data.addonVersion || undefined,
+        serviceAccountRoleArn: data.serviceAccountRoleArn.trim() || undefined,
+        configurationValues: data.configurationValues.trim() || undefined,
+      })
+    } catch {
+      // Surfaced in the dialog through the mutation's error.
+      return
+    }
+
     reset()
     onOpenChange(false)
   }
@@ -112,6 +119,14 @@ function AddAddonDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Add add-on</AlertDialogTitle>
         </AlertDialogHeader>
+
+        {createAddon.error && (
+          <ErrorBanner
+            className="mb-0"
+            error={createAddon.error}
+            msg="Failed to add the add-on"
+          />
+        )}
 
         <form className="space-y-4" id="add-addon-form">
           <Field>

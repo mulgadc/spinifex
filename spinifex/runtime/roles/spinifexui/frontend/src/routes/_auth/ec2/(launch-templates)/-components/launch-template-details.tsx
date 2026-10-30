@@ -191,10 +191,11 @@ function Versions({ lt }: { lt: LaunchTemplate }) {
                       variant: "ghost",
                     })}
                     search={{
-                      launchTemplateId: id,
-                      launchTemplateVersion: String(versionNumber),
+                      create: true,
+                      template: id,
+                      templateVersion: String(versionNumber),
                     }}
-                    to="/ec2/run-instances"
+                    to="/ec2/describe-instances"
                   >
                     <Rocket />
                   </Link>
@@ -330,7 +331,13 @@ function CreateVersion({ lt }: { lt: LaunchTemplate }) {
   }
 
   async function onCreateVersion(data: LaunchTemplateFormData) {
-    await createVersion.mutateAsync({ ...data, launchTemplateId: id })
+    try {
+      await createVersion.mutateAsync({ ...data, launchTemplateId: id })
+    } catch {
+      // Surfaced in the error banner through the mutation's error.
+      return
+    }
+
     reset({
       versionDescription: "",
       sourceVersion: undefined,

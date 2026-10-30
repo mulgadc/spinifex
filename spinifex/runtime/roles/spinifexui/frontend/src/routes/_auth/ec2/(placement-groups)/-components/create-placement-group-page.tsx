@@ -1,5 +1,4 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useNavigate } from "@tanstack/react-router"
 import {
   Controller,
   type DeepPartialSkipArrayKey,
@@ -7,16 +6,14 @@ import {
   useWatch,
 } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
   commandFlag,
   shellSingleQuote,
 } from "@/components/cli-command-panel"
-import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
@@ -33,30 +30,14 @@ import {
 } from "@/types/ec2"
 
 interface CreatePlacementGroupPageProps {
-  // Given when the form sits in the list's side panel: called with the new
-  // group's ID once created, or with nothing on cancel.
-  onClose?: (groupId?: string) => void
+  // Called with the new resource's ID once created, or with nothing on cancel.
+  onClose: (groupId?: string) => void
 }
 
 export function CreatePlacementGroupPage({
   onClose,
 }: CreatePlacementGroupPageProps) {
-  const navigate = useNavigate()
-
-  async function finish(groupId?: string) {
-    if (onClose) {
-      onClose(groupId)
-
-      return
-    }
-
-    await (groupId
-      ? navigate({
-          to: "/ec2/describe-placement-groups/$id",
-          params: { id: groupId },
-        })
-      : navigate({ to: "/ec2/describe-placement-groups" }))
-  }
+  const finish = onClose
 
   const createMutation = useCreatePlacementGroup()
 
@@ -76,29 +57,24 @@ export function CreatePlacementGroupPage({
   const values = useWatch({ control })
 
   const onSubmit = async (data: CreatePlacementGroupFormData) => {
-    const result = await createMutation.mutateAsync(data)
-    await finish(result.PlacementGroup?.GroupId)
+    let result
+
+    try {
+      result = await createMutation.mutateAsync(data)
+    } catch {
+      // Surfaced beside the submit button through the mutation's error.
+      return
+    }
+
+    finish(result.PlacementGroup?.GroupId)
   }
 
   return (
-    <>
-      {!onClose && (
-        <>
-          <BackLink to="/ec2/describe-placement-groups">
-            Back to placement groups
-          </BackLink>
-          <PageHeading title="Create Placement Group" />
-        </>
-      )}
-
-      {createMutation.error && (
-        <ErrorBanner
-          error={createMutation.error}
-          msg="Failed to create placement group"
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={createMutation.isPending || isSubmitting}
+      >
         <Field>
           <FieldTitle>
             <label htmlFor="groupName">Group Name</label>
@@ -141,16 +117,18 @@ export function CreatePlacementGroupPage({
         <CliCommandPanel commands={buildCreatePlacementGroupCommands(values)} />
 
         <FormActions
+          error={createMutation.error}
+          errorMsg="Failed to create placement group"
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => {
-            await finish()
+          onCancel={() => {
+            finish()
           }}
           pendingLabel="Creating…"
           submitLabel="Create Placement Group"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
 }
 

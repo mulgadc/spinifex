@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -18,6 +19,8 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteGroup } from "@/mutations/iam"
 
+import { iamDeleteWarning } from "../../-components/delete-prerequisites"
+import { CreateGroupPage } from "./create-group-page"
 import { GroupDetails } from "./group-details"
 
 const COLUMNS: DataColumn<Group>[] = [
@@ -92,24 +95,48 @@ export function GroupsPage({
   return (
     <ResourceView
       panel={
-        open && (
-          <GroupDetails
-            key={open.GroupName}
+        search.create ? (
+          <CreatePanel
             onClose={() => {
               onSearchChange(CLOSED_PANEL)
             }}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            group={open}
-            tab={search.tab}
-          />
+            title="Create group"
+          >
+            <CreateGroupPage
+              onClose={(id) => {
+                onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+              }}
+            />
+          </CreatePanel>
+        ) : (
+          open && (
+            <GroupDetails
+              key={open.GroupName}
+              onClose={() => {
+                onSearchChange(CLOSED_PANEL)
+              }}
+              onTabChange={(tab) => {
+                onSearchChange({ tab })
+              }}
+              group={open}
+              tab={search.tab}
+            />
+          )
         )
       }
     >
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/iam/create-group">
+          <Link
+            className={buttonVariants()}
+            from="/iam/list-groups/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create group
           </Link>
@@ -121,7 +148,7 @@ export function GroupsPage({
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>
           <BulkDelete
             deleteOne={remove.mutateAsync}
-            description="Remove their members and detach their policies first, or the delete is refused. This cannot be undone."
+            description={iamDeleteWarning("group", selection.ids.length)}
             ids={selection.ids}
             label={(id) => `${id} (${resourceIds.get(id) ?? ""})`}
             noun={["group", "groups"]}

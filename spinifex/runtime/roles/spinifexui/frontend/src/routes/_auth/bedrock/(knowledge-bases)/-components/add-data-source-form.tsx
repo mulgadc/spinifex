@@ -36,7 +36,13 @@ export function AddDataSourceForm({
   })
 
   const onSubmit = async (data: DataSourceFormData) => {
-    await createDataSource.mutateAsync({ data, knowledgeBaseId })
+    try {
+      await createDataSource.mutateAsync({ data, knowledgeBaseId })
+    } catch {
+      // Surfaced in the banner above the form through the mutation's error.
+      return
+    }
+
     reset(EMPTY_DATA_SOURCE_FORM_DEFAULTS)
     setOpen(false)
   }

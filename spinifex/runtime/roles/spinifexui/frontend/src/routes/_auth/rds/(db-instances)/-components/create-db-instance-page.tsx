@@ -1,9 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery, useQuery } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   cliPlaceholder,
@@ -11,16 +9,15 @@ import {
   optionalFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
-import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
 import type { PickerNotice } from "@/components/picker-notice"
 import {
-  SecurityGroupCheckboxes,
+  SecurityGroupPicker,
   securityGroupIdsForVpc,
   securityGroupsForVpc,
-} from "@/components/security-group-checkboxes"
+} from "@/components/security-group-picker"
 import { SystemImageRequired } from "@/components/system-image-required"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import {
@@ -87,8 +84,12 @@ const UNAVAILABLE_OPTIONS = [
   },
 ] as const
 
-export function CreateDBInstancePage() {
-  const navigate = useNavigate()
+interface CreateDBInstancePageProps {
+  // Called with the new DB instance's identifier once created, or with nothing on cancel.
+  onClose: (id?: string) => void
+}
+
+export function CreateDBInstancePage({ onClose }: CreateDBInstancePageProps) {
   const createInstance = useCreateDBInstance()
 
   const { data: engineVersionsData } = useSuspenseQuery(
@@ -225,8 +226,14 @@ export function CreateDBInstancePage() {
   }
 
   const onSubmit = async (data: CreateDBInstanceFormData) => {
-    await createInstance.mutateAsync(data)
-    await navigate({ to: "/rds/describe-db-instances" })
+    try {
+      await createInstance.mutateAsync(data)
+    } catch {
+      // Surfaced beside the submit button through the mutation's error.
+      return
+    }
+
+    onClose(data.dbInstanceIdentifier)
   }
 
   // Both engine images absent is a cluster that cannot run RDS at all, so the
@@ -234,15 +241,11 @@ export function CreateDBInstancePage() {
   // must leave the other engine's create path intact.
   if (engines.length > 0 && bootableEngines.length === 0) {
     return (
-      <>
-        <BackLink to="/rds/describe-db-instances">Back to databases</BackLink>
-        <PageHeading title="Create Database" />
-        <SystemImageRequired
-          description={`RDS boots a Spinifex-managed engine image that is not shipped with the platform. Import one before creating a database. Engines offered: ${engines.join(", ")}.`}
-          importCommand={rdsImportCommand(engines[0] ?? "")}
-          title="RDS system image not found"
-        />
-      </>
+      <SystemImageRequired
+        description={`RDS boots a Spinifex-managed engine image that is not shipped with the platform. Import one before creating a database. Engines offered: ${engines.join(", ")}.`}
+        importCommand={rdsImportCommand(engines[0] ?? "")}
+        title="RDS system image not found"
+      />
     )
   }
 
@@ -260,18 +263,11 @@ export function CreateDBInstancePage() {
       : engineClassNotice
 
   return (
-    <>
-      <BackLink to="/rds/describe-db-instances">Back to databases</BackLink>
-      <PageHeading title="Create Database" />
-
-      {createInstance.error && (
-        <ErrorBanner
-          error={createInstance.error}
-          msg="Failed to create the DB instance"
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={createInstance.isPending || isSubmitting}
+      >
         <TextField
           description="Lowercase letters, digits and hyphens. This is also the endpoint hostname, so it cannot be changed later."
           error={errors.dbInstanceIdentifier}
@@ -469,7 +465,7 @@ export function CreateDBInstancePage() {
 
         <Field>
           <FieldTitle>VPC security groups</FieldTitle>
-          <SecurityGroupCheckboxes
+          <SecurityGroupPicker
             emptyText={
               placementVpcId
                 ? `No security groups available in ${placementVpcId}.`
@@ -570,16 +566,18 @@ export function CreateDBInstancePage() {
         />
 
         <FormActions
+          error={createInstance.error}
+          errorMsg="Failed to create the DB instance"
           isPending={createInstance.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => {
-            await navigate({ to: "/rds/describe-db-instances" })
+          onCancel={() => {
+            onClose()
           }}
           pendingLabel="Creating…"
           submitLabel="Create Database"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
 }
 

@@ -70,6 +70,29 @@ describe("ClustersListPage", () => {
     })
   })
 
+  it("opens the create form in the panel, with the image callout inside it", async () => {
+    const qc = createTestQueryClient()
+    qc.setQueryData(["ec2", "vpcs"], { Vpcs: [] })
+    qc.setQueryData(["ec2", "subnets"], { Subnets: [] })
+    qc.setQueryData(["iam", "roles"], { Roles: [] })
+    qc.setQueryData(["ec2", "images"], { Images: [] })
+
+    renderWithClient(
+      <ClustersListPage
+        clusters={[]}
+        onSearchChange={vi.fn()}
+        search={{ ...CLOSED_PANEL, create: true }}
+      />,
+      qc,
+    )
+
+    const panel = await screen.findByRole("region", { name: "Create cluster" })
+
+    expect(
+      within(panel).getByText("EKS system image not found"),
+    ).toBeInTheDocument()
+  })
+
   it("opens the selected cluster's panel, linked to its own page", () => {
     renderPage(["c1"], { selected: "c1" })
     const panel = screen.getByRole("region", { name: "Cluster details" })

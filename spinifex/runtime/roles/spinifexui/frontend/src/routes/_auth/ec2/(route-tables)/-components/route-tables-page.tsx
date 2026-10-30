@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -19,6 +20,7 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
 import { useDeleteRouteTable } from "@/mutations/ec2"
 
+import { CreateRouteTablePage } from "./create-route-table-page"
 import { isMainRouteTable, RouteTableDetails } from "./route-table-details"
 
 function subnetCount(rtb: RouteTable): number {
@@ -139,7 +141,22 @@ export function RouteTablesPage({
 
   let panel: ReactNode = null
 
-  if (open?.RouteTableId) {
+  if (search.create) {
+    panel = (
+      <CreatePanel
+        onClose={() => {
+          onSearchChange(CLOSED_PANEL)
+        }}
+        title="Create route table"
+      >
+        <CreateRouteTablePage
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.RouteTableId) {
     panel = (
       <RouteTableDetails
         key={open.RouteTableId}
@@ -159,7 +176,16 @@ export function RouteTablesPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/ec2/create-route-table">
+          <Link
+            className={buttonVariants()}
+            from="/ec2/describe-route-tables/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create route table
           </Link>

@@ -38,3 +38,8 @@ export function Specimen({
     </div>
   )
 }
+
+// For a specimen's buttons that have nothing to act on.
+export function unwired() {
+  // A specimen shows the control, not its effect.
+}

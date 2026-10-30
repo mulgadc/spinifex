@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -18,6 +19,8 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeletePolicy } from "@/mutations/iam"
 
+import { iamDeleteWarning } from "../../-components/delete-prerequisites"
+import { CreatePolicyPage } from "./create-policy-page"
 import { PolicyDetails } from "./policy-details"
 
 const COLUMNS: DataColumn<Policy>[] = [
@@ -98,24 +101,48 @@ export function PoliciesPage({
   return (
     <ResourceView
       panel={
-        open && (
-          <PolicyDetails
-            key={open.Arn}
+        search.create ? (
+          <CreatePanel
             onClose={() => {
               onSearchChange(CLOSED_PANEL)
             }}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            policy={open}
-            tab={search.tab}
-          />
+            title="Create policy"
+          >
+            <CreatePolicyPage
+              onClose={(id) => {
+                onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+              }}
+            />
+          </CreatePanel>
+        ) : (
+          open && (
+            <PolicyDetails
+              key={open.Arn}
+              onClose={() => {
+                onSearchChange(CLOSED_PANEL)
+              }}
+              onTabChange={(tab) => {
+                onSearchChange({ tab })
+              }}
+              policy={open}
+              tab={search.tab}
+            />
+          )
         )
       }
     >
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/iam/create-policy">
+          <Link
+            className={buttonVariants()}
+            from="/iam/list-policies/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create policy
           </Link>
@@ -127,7 +154,7 @@ export function PoliciesPage({
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>
           <BulkDelete
             deleteOne={remove.mutateAsync}
-            description="Detach them from every user, group and role first, or the delete is refused. This cannot be undone."
+            description={iamDeleteWarning("policy", selection.ids.length)}
             ids={selection.ids}
             label={(id) => `${names.get(id) ?? id} (${id})`}
             noun={["policy", "policies"]}

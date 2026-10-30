@@ -1,24 +1,37 @@
 import type { Bucket } from "@aws-sdk/client-s3"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import {
+  createFileRoute,
+  Link,
+  stripSearchParams,
+} from "@tanstack/react-router"
 import { Database, Plus } from "lucide-react"
 import { useState } from "react"
+import { z } from "zod"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
   type SortState,
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceView } from "@/components/resource-view"
 import { SelectionBar } from "@/components/selection-bar"
 import { buttonVariants } from "@/components/ui/button"
 import { useRowSelection } from "@/hooks/use-row-selection"
+import { CLOSED_PANEL, panelSearchFields } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteBucket } from "@/mutations/s3"
 import { s3BucketsQueryOptions } from "@/queries/s3"
 
+import { CreateBucketPage } from "../(buckets)/-components/create-bucket-page"
+
 export const Route = createFileRoute("/_auth/s3/ls/")({
+  validateSearch: z.object(panelSearchFields),
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...s3BucketsQueryOptions,
@@ -63,11 +76,12 @@ const COLUMNS: DataColumn<Bucket>[] = [
 ]
 
 function noPanel() {
-  // Buckets open as pages, so there is no panel for a selection to close.
+  // Buckets open as pages, so only the create form uses the panel.
 }
 
 function Buckets() {
   const { data } = useSuspenseQuery(s3BucketsQueryOptions)
+  const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const [sort, setSort] = useState<SortState>()
   const deleteBucket = useDeleteBucket()
@@ -80,11 +94,31 @@ function Buckets() {
     noPanel,
   )
 
+  // Opening or closing the panel adds a history entry, so Back closes it.
+  function closePanel() {
+    void navigate({ search: (previous) => ({ ...previous, ...CLOSED_PANEL }) })
+  }
+
+  const panel = search.create && (
+    <CreatePanel onClose={closePanel} title="Create bucket">
+      <CreateBucketPage onClose={closePanel} />
+    </CreatePanel>
+  )
+
   return (
-    <>
+    <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/s3/create-bucket">
+          <Link
+            className={buttonVariants()}
+            from="/s3/ls/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create bucket
           </Link>
@@ -119,6 +153,6 @@ function Buckets() {
         selected={selection.selected}
         sort={sort}
       />
-    </>
+    </ResourceView>
   )
 }

@@ -1,12 +1,18 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
-import { ErrorBanner } from "@/components/error-banner"
+import {
+  CliCommandPanel,
+  type CliCommand,
+  cliPlaceholder,
+  commandFlag,
+  optionalFlag,
+  shellSingleQuote,
+} from "@/components/cli-command-panel"
+import { PanelSection } from "@/components/detail-panel"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
@@ -28,10 +34,23 @@ import {
 import { elbv2TargetGroupsQueryOptions } from "@/queries/elbv2"
 import { createServiceSchema, type CreateServiceFormData } from "@/types/ecs"
 
-import { AwsvpcNetworkFields, TaskDefinitionField } from "./task-launch-fields"
+import { awsvpcNetworkFlag, cliNumber, ECS_BIN } from "./ecs-cli"
+import {
+  AWSVPC_SUBNET_REQUIRED,
+  AwsvpcNetworkFields,
+  TaskDefinitionField,
+} from "./task-launch-fields"
 
-export function CreateServicePage({ cluster }: { cluster: string }) {
-  const navigate = useNavigate()
+interface CreateServicePageProps {
+  cluster: string
+  // Called once the service is created, or on cancel.
+  onClose: () => void
+}
+
+export function CreateServicePage({
+  cluster,
+  onClose,
+}: CreateServicePageProps) {
   const createService = useCreateService()
 
   const { data: taskDefArns } = useSuspenseQuery(ecsTaskDefinitionsQueryOptions)
@@ -47,6 +66,7 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
     handleSubmit,
     register: field,
     setValue,
+    setError,
     formState: { errors, isSubmitting },
   } = useForm<CreateServiceFormData>({
     resolver: zodResolver(createServiceSchema),
@@ -76,38 +96,43 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
   const selectedSgs = useWatch({ control, name: "securityGroups" })
   const assignPublicIp = useWatch({ control, name: "assignPublicIp" })
 
-  function done() {
-    void navigate({
-      to: "/ecs/list-clusters/$clusterName",
-      params: { clusterName: cluster },
+  const [serviceName, desiredCount, targetGroupArn, lbContainer, lbPort] =
+    useWatch({
+      control,
+      name: [
+        "serviceName",
+        "desiredCount",
+        "targetGroupArn",
+        "loadBalancerContainerName",
+        "loadBalancerContainerPort",
+      ],
     })
-  }
 
   async function onSubmit(data: CreateServiceFormData) {
-    await createService.mutateAsync({ ...data, awsvpc })
-    done()
+    if (awsvpc && data.subnets.length === 0) {
+      setError("subnets", { message: AWSVPC_SUBNET_REQUIRED })
+
+      return
+    }
+
+    try {
+      await createService.mutateAsync({ ...data, awsvpc })
+      onClose()
+    } catch {
+      // Left open, with the refusal shown beside the submit button.
+    }
   }
 
-  const awsvpcMissingSubnet = awsvpc && selectedSubnets.length === 0
-
   return (
-    <>
-      <BackLink
-        params={{ clusterName: cluster }}
-        to="/ecs/list-clusters/$clusterName"
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={createService.isPending || isSubmitting}
       >
-        {cluster}
-      </BackLink>
-      <PageHeading subtitle={`Cluster: ${cluster}`} title="Create Service" />
+        <p className="text-sm text-muted-foreground">
+          In cluster <span className="font-mono">{cluster}</span>
+        </p>
 
-      {createService.isError && (
-        <ErrorBanner
-          error={createService.error}
-          msg="Failed to create service."
-        />
-      )}
-
-      <form className="max-w-2xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
         <Field>
           <FieldTitle>
             <label htmlFor="serviceName">Service name</label>
@@ -157,76 +182,162 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
             selectedSecurityGroups={selectedSgs}
             selectedSubnets={selectedSubnets}
             subnets={subnets}
+            subnetsError={errors.subnets}
           />
         )}
 
-        <div className="space-y-4 rounded-lg border bg-card p-4">
-          <h2 className="font-semibold">Load balancer (optional)</h2>
-          <Field>
-            <FieldTitle>
-              <label htmlFor="targetGroupArn">Target group</label>
-            </FieldTitle>
-            <Controller
-              control={control}
-              name="targetGroupArn"
-              render={({ field: f }) => (
-                <Select
-                  onValueChange={(v) => {
-                    f.onChange(v === "none" ? "" : v)
-                  }}
-                  value={f.value === "" ? "none" : f.value}
-                >
-                  <SelectTrigger className="w-full" id="targetGroupArn">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">none</SelectItem>
-                    {targetGroups.map((tg) => (
-                      <SelectItem
-                        key={tg.TargetGroupArn}
-                        value={tg.TargetGroupArn ?? ""}
-                      >
-                        {tg.TargetGroupName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </Field>
-          <div className="grid grid-cols-2 gap-4">
+        <PanelSection title="Load balancer (optional)">
+          <div className="space-y-4">
             <Field>
               <FieldTitle>
-                <label htmlFor="lbContainerName">Container name</label>
+                <label htmlFor="targetGroupArn">Target group</label>
               </FieldTitle>
-              <Input
-                id="lbContainerName"
-                placeholder="app"
-                {...field("loadBalancerContainerName")}
+              <Controller
+                control={control}
+                name="targetGroupArn"
+                render={({ field: f }) => (
+                  <Select
+                    onValueChange={(v) => {
+                      f.onChange(v === "none" ? "" : v)
+                    }}
+                    value={f.value === "" ? "none" : f.value}
+                  >
+                    <SelectTrigger className="w-full" id="targetGroupArn">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">none</SelectItem>
+                      {targetGroups.map((tg) => (
+                        <SelectItem
+                          key={tg.TargetGroupArn}
+                          value={tg.TargetGroupArn ?? ""}
+                        >
+                          {tg.TargetGroupName}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               />
             </Field>
-            <Field>
-              <FieldTitle>
-                <label htmlFor="lbContainerPort">Container port</label>
-              </FieldTitle>
-              <Input
-                id="lbContainerPort"
-                placeholder="80"
-                type="number"
-                {...field("loadBalancerContainerPort")}
-              />
-            </Field>
+            <div className="grid grid-cols-2 gap-4">
+              <Field>
+                <FieldTitle>
+                  <label htmlFor="lbContainerName">Container name</label>
+                </FieldTitle>
+                <Input
+                  id="lbContainerName"
+                  placeholder="app"
+                  {...field("loadBalancerContainerName")}
+                />
+              </Field>
+              <Field>
+                <FieldTitle>
+                  <label htmlFor="lbContainerPort">Container port</label>
+                </FieldTitle>
+                <Input
+                  id="lbContainerPort"
+                  placeholder="80"
+                  type="number"
+                  {...field("loadBalancerContainerPort")}
+                />
+              </Field>
+            </div>
           </div>
-        </div>
+        </PanelSection>
+
+        <CliCommandPanel
+          commands={buildCreateServiceCommands({
+            cluster,
+            serviceName,
+            taskDefinition: selectedTaskDef,
+            desiredCount,
+            network: awsvpc
+              ? {
+                  subnets: selectedSubnets,
+                  securityGroups: selectedSgs,
+                  assignPublicIp,
+                }
+              : undefined,
+            loadBalancer: { targetGroupArn, lbContainer, lbPort },
+          })}
+        />
 
         <FormActions
-          isPending={createService.isPending || awsvpcMissingSubnet}
+          error={createService.error}
+          errorMsg="Failed to create service"
+          isPending={createService.isPending}
           isSubmitting={isSubmitting}
-          onCancel={done}
+          onCancel={onClose}
           pendingLabel="Creating…"
-          submitLabel="Create Service"
+          submitLabel="Create service"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
+}
+
+interface CreateServiceCommandInput {
+  cluster: string
+  serviceName: string
+  taskDefinition: string
+  desiredCount: number
+  network?: Parameters<typeof awsvpcNetworkFlag>[0]
+  loadBalancer: { targetGroupArn: string; lbContainer: string; lbPort: string }
+}
+
+// The load balancer block is sent only with a target group, and its container
+// name and port only when given, as the request does.
+function loadBalancersValue({
+  targetGroupArn,
+  lbContainer,
+  lbPort,
+}: CreateServiceCommandInput["loadBalancer"]): string {
+  const fields = [`targetGroupArn=${targetGroupArn}`]
+
+  if (lbContainer) {
+    fields.push(`containerName=${lbContainer}`)
+  }
+
+  if (lbPort) {
+    fields.push(`containerPort=${lbPort}`)
+  }
+
+  return targetGroupArn ? shellSingleQuote(fields.join(",")) : ""
+}
+
+function buildCreateServiceCommands({
+  cluster,
+  serviceName,
+  taskDefinition,
+  desiredCount,
+  network,
+  loadBalancer,
+}: CreateServiceCommandInput): CliCommand[] {
+  return [
+    {
+      label: "Create service",
+      parts: [
+        { type: "bin", value: `${ECS_BIN} create-service` },
+        ...commandFlag("\\\n  --cluster", cluster),
+        ...commandFlag(
+          "\\\n  --service-name",
+          cliPlaceholder(serviceName.trim(), "name"),
+        ),
+        ...commandFlag(
+          "\\\n  --task-definition",
+          cliPlaceholder(taskDefinition, "task-definition"),
+        ),
+        ...commandFlag(
+          "\\\n  --desired-count",
+          cliNumber(desiredCount, "count"),
+        ),
+        ...(network ? awsvpcNetworkFlag(network) : []),
+        ...optionalFlag(
+          "\\\n  --load-balancers",
+          loadBalancersValue(loadBalancer),
+        ),
+      ],
+    },
+  ]
 }

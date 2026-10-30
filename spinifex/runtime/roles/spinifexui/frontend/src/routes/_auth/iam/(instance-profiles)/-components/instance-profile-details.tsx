@@ -28,6 +28,7 @@ import {
   iamRolesQueryOptions,
 } from "@/queries/iam"
 
+import { iamDeleteWarning } from "../../-components/delete-prerequisites"
 import { IamItem, IamItems } from "../../-components/iam-items"
 
 // The roles come from GetInstanceProfile, so an add or remove shows at once.
@@ -245,7 +246,7 @@ function Settings({
         </div>
       </PanelSection>
       <ResourceDeleteDialog
-        description={`Delete the instance profile ${instanceProfileName}? This cannot be undone.`}
+        description={`Delete the instance profile ${instanceProfileName}? ${iamDeleteWarning("instance profile")}`}
         identifier={instanceProfileName}
         mutation={remove}
         onDeleted={onDeleted}

@@ -1,20 +1,13 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { CreatePlacementGroupPage } from "./-components/create-placement-group-page"
-
+// The form opens in the list's side panel; this address is kept for links.
 export const Route = createFileRoute(
   "/_auth/ec2/(placement-groups)/create-placement-group",
 )({
-  head: () => ({
-    meta: [
-      {
-        title: "Create Placement Group | EC2 | Mulga",
-      },
-    ],
-  }),
-  component: CreatePlacementGroup,
+  beforeLoad: () => {
+    throw redirect({
+      to: "/ec2/describe-placement-groups",
+      search: { create: true },
+    })
+  },
 })
-
-function CreatePlacementGroup() {
-  return <CreatePlacementGroupPage />
-}

@@ -23,9 +23,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal)
 })
 
-import { CLOSED_PANEL } from "@/lib/panel-search"
-
-import { SnapshotsPage } from "./snapshots-page"
+import { CLOSED_SNAPSHOTS_PANEL, SnapshotsPage } from "./snapshots-page"
 
 const ROWS: Snapshot[] = [
   { SnapshotId: "snap-1", State: "completed" },
@@ -39,7 +37,7 @@ describe("SnapshotsPage", () => {
       <SnapshotsPage
         snapshots={ROWS}
         onSearchChange={vi.fn()}
-        search={CLOSED_PANEL}
+        search={CLOSED_SNAPSHOTS_PANEL}
       />,
       createTestQueryClient(),
     )

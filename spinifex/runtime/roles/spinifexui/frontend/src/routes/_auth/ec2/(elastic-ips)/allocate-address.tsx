@@ -1,20 +1,10 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { AllocateAddressPage } from "./-components/allocate-address-page"
-
+// The form opens in the list's side panel; this address is kept for links.
 export const Route = createFileRoute(
   "/_auth/ec2/(elastic-ips)/allocate-address",
 )({
-  head: () => ({
-    meta: [
-      {
-        title: "Allocate Elastic IP | EC2 | Mulga",
-      },
-    ],
-  }),
-  component: AllocateAddress,
+  beforeLoad: () => {
+    throw redirect({ to: "/ec2/describe-addresses", search: { create: true } })
+  },
 })
-
-function AllocateAddress() {
-  return <AllocateAddressPage />
-}

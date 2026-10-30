@@ -1,4 +1,4 @@
-import type { Volume } from "@aws-sdk/client-ec2"
+import type { Instance, Volume } from "@aws-sdk/client-ec2"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { Link2, Unlink } from "lucide-react"
@@ -41,12 +41,22 @@ export function isVolumeAvailable(volume: Volume): boolean {
   return volume.State === "available" && !volume.Attachments?.length
 }
 
+// AWS attaches only to a running or stopped instance in the volume's zone.
+function isAttachTarget(instance: Instance, zone: string | undefined) {
+  const state = instance.State?.Name
+  const inZone = !zone || instance.Placement?.AvailabilityZone === zone
+
+  return (state === "running" || state === "stopped") && inZone
+}
+
 function AttachDialog({
   volumeId,
+  zone,
   open,
   onOpenChange,
 }: {
   volumeId: string
+  zone: string | undefined
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
@@ -55,10 +65,12 @@ function AttachDialog({
   const [instanceId, setInstanceId] = useState("")
   const [device, setDevice] = useState("")
 
-  const running =
+  const targets =
     data?.Reservations?.flatMap(
-      (r) => r.Instances?.filter((i) => i.State?.Name === "running") ?? [],
+      (r) => r.Instances?.filter((i) => isAttachTarget(i, zone)) ?? [],
     ) ?? []
+
+  const where = zone ? ` in ${zone}` : ""
 
   function onChange(next: boolean) {
     if (!next) {
@@ -89,7 +101,7 @@ function AttachDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Attach volume</AlertDialogTitle>
           <AlertDialogDescription>
-            Attach {volumeId} to a running instance.
+            Attach {volumeId} to a running or stopped instance{where}.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {attach.error && (
@@ -108,12 +120,14 @@ function AttachDialog({
             <SelectTrigger className="w-full" id="attachInstance">
               <SelectValue
                 placeholder={
-                  running.length ? "Select an instance" : "No instance running"
+                  targets.length
+                    ? "Select an instance"
+                    : `No running or stopped instances${where}.`
                 }
               />
             </SelectTrigger>
             <SelectContent>
-              {running.map((instance) => {
+              {targets.map((instance) => {
                 const name = getNameTag(instance.Tags)
 
                 return (
@@ -300,6 +314,7 @@ export function VolumeAttachment({ volume }: { volume: Volume }) {
         onOpenChange={onOpenChange}
         open={dialog === "attach"}
         volumeId={volumeId}
+        zone={volume.AvailabilityZone}
       />
       <DetachDialog
         instanceId={attachments[0]?.InstanceId}

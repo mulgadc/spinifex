@@ -38,7 +38,7 @@ test.describe("command palette", () => {
     await page.getByRole("combobox").fill("launch instance")
     await page.keyboard.press("Enter")
 
-    await expect(page).toHaveURL(/\/ec2\/run-instances$/u)
+    await expect(page).toHaveURL(/\/ec2\/describe-instances\?create=true$/u)
   })
 })
 

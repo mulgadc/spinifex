@@ -1,5 +1,4 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useNavigate } from "@tanstack/react-router"
 import {
   Controller,
   type DeepPartialSkipArrayKey,
@@ -7,7 +6,6 @@ import {
   useWatch,
 } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
@@ -17,9 +15,9 @@ import {
   variableFlag,
   type CommandPart,
 } from "@/components/cli-command-panel"
-import { ErrorBanner } from "@/components/error-banner"
+import { PanelSection } from "@/components/detail-panel"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
@@ -50,25 +48,12 @@ const PUBLIC_SUBNET_COUNTS = [0, 1] as const
 const PRIVATE_SUBNET_COUNTS = [0, 1, 2] as const
 
 interface CreateVpcPageProps {
-  // Given when the form sits in the list's side panel: called with the new
-  // VPC's ID once created, or with nothing on cancel.
-  onClose?: (vpcId?: string) => void
+  // Called with the new VPC's ID once created, or with nothing on cancel.
+  onClose: (vpcId?: string) => void
 }
 
 export function CreateVpcPage({ onClose }: CreateVpcPageProps) {
-  const navigate = useNavigate()
-
-  async function finish(vpcId?: string) {
-    if (onClose) {
-      onClose(vpcId)
-
-      return
-    }
-
-    await (vpcId
-      ? navigate({ to: "/ec2/describe-vpcs/$id", params: { id: vpcId } })
-      : navigate({ to: "/ec2/describe-vpcs" }))
-  }
+  const finish = onClose
 
   const createVpcMutation = useCreateVpc()
   const wizardMutation = useCreateVpcWizard()
@@ -133,22 +118,36 @@ export function CreateVpcPage({ onClose }: CreateVpcPageProps) {
           ? `${data.namePrefix}-vpc`
           : data.namePrefix
 
-      const result = await createVpcMutation.mutateAsync({
-        cidrBlock: data.cidrBlock,
-        name: name || undefined,
-        tags: data.tags,
-      })
+      let result
 
-      await finish(result.Vpc?.VpcId)
+      try {
+        result = await createVpcMutation.mutateAsync({
+          cidrBlock: data.cidrBlock,
+          name: name || undefined,
+          tags: data.tags,
+        })
+      } catch {
+        // Surfaced beside the submit button through the mutation's error.
+        return
+      }
+
+      finish(result.Vpc?.VpcId)
 
       return
     }
 
     // VPC and more mode
-    const result = await wizardMutation.mutateAsync(data)
+    let result
+
+    try {
+      result = await wizardMutation.mutateAsync(data)
+    } catch {
+      // Surfaced beside the submit button through the mutation's error.
+      return
+    }
 
     if (!result.error && result.vpcId) {
-      await finish(result.vpcId)
+      finish(result.vpcId)
     }
   }
 
@@ -156,250 +155,227 @@ export function CreateVpcPage({ onClose }: CreateVpcPageProps) {
   const isPending = createVpcMutation.isPending || wizardMutation.isPending
 
   return (
-    <>
-      {!onClose && (
-        <>
-          <BackLink to="/ec2/describe-vpcs">Back to VPCs</BackLink>
-          <PageHeading title="Create VPC" />
-        </>
-      )}
-
-      {mutationError && (
-        <ErrorBanner error={mutationError} msg="Failed to create VPC" />
-      )}
-
-      <WizardFailureBanner result={wizardMutation.data} />
-
-      {wizardMutation.isPending && (
-        <div className="mb-4 max-w-4xl text-sm text-muted-foreground">
-          Creating VPC and resources...
-        </div>
-      )}
-
-      <div className="flex max-w-6xl gap-8">
-        {/* Left column: Form */}
-        <form
-          className="min-w-0 flex-1 space-y-6"
-          onSubmit={handleSubmit(onSubmit)}
-        >
-          {/* Section 1: Resources to create */}
-          <Field>
-            <FieldTitle>Resources to create</FieldTitle>
-            <div className="flex gap-4">
-              <label className="flex items-center gap-2 text-xs">
-                <input
-                  aria-label="VPC only"
-                  type="radio"
-                  value="vpc-only"
-                  {...register("mode")}
-                />
-                VPC only
-              </label>
-              <label className="flex items-center gap-2 text-xs">
-                <input
-                  aria-label="VPC and more"
-                  type="radio"
-                  value="vpc-and-more"
-                  {...register("mode")}
-                />
-                VPC and more
-              </label>
-            </div>
-          </Field>
-
-          {/* Section 2: Name tag auto-generation */}
-          <Field>
-            <FieldTitle>
-              <label htmlFor="namePrefix">Name tag auto-generation</label>
-            </FieldTitle>
-            <div className="flex items-center gap-3">
-              <Input
-                id="namePrefix"
-                placeholder="project"
-                {...register("namePrefix")}
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock className="space-y-6" locked={isPending || isSubmitting}>
+        {/* Section 1: Resources to create */}
+        <Field>
+          <FieldTitle>Resources to create</FieldTitle>
+          <div className="flex gap-4">
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                aria-label="VPC only"
+                type="radio"
+                value="vpc-only"
+                {...register("mode")}
               />
+              VPC only
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                aria-label="VPC and more"
+                type="radio"
+                value="vpc-and-more"
+                {...register("mode")}
+              />
+              VPC and more
+            </label>
+          </div>
+        </Field>
+
+        {/* Section 2: Name tag auto-generation */}
+        <Field>
+          <FieldTitle>
+            <label htmlFor="namePrefix">Name tag auto-generation</label>
+          </FieldTitle>
+          <div className="flex items-center gap-3">
+            <Input
+              id="namePrefix"
+              placeholder="project"
+              {...register("namePrefix")}
+            />
+            <Controller
+              control={control}
+              name="autoGenerateNames"
+              render={({ field }) => (
+                <div className="flex shrink-0 items-center gap-2">
+                  <Switch
+                    aria-label="Auto-generate name tags"
+                    checked={field.value}
+                    id="autoGenerateNames"
+                    onCheckedChange={field.onChange}
+                  />
+                  <Label htmlFor="autoGenerateNames">Auto-generate</Label>
+                </div>
+              )}
+            />
+          </div>
+        </Field>
+
+        {/* Section 3: CIDR Block */}
+        <Field>
+          <FieldTitle>
+            <label htmlFor="cidrBlock">IPv4 CIDR block</label>
+          </FieldTitle>
+          <Input
+            aria-invalid={!!errors.cidrBlock}
+            id="cidrBlock"
+            placeholder="10.0.0.0/16"
+            {...register("cidrBlock")}
+          />
+          <FieldError errors={[errors.cidrBlock]} />
+        </Field>
+
+        {/* Section 4: Tenancy */}
+        <Field>
+          <FieldTitle>Tenancy</FieldTitle>
+          <Controller
+            control={control}
+            name="tenancy"
+            render={({ field }) => (
+              <Select onValueChange={field.onChange} value={field.value}>
+                <SelectTrigger id="tenancy">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">default</SelectItem>
+                  <SelectItem value="dedicated">dedicated</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+          />
+        </Field>
+
+        <TagsFieldArray control={control} name="tags" />
+
+        {/* VPC and more sections */}
+        {mode === "vpc-and-more" && (
+          <>
+            {/* Section 5: Public Subnets */}
+            <Field>
+              <FieldTitle>Number of public subnets</FieldTitle>
               <Controller
                 control={control}
-                name="autoGenerateNames"
+                name="publicSubnetCount"
                 render={({ field }) => (
-                  <div className="flex shrink-0 items-center gap-2">
-                    <Switch
-                      aria-label="Auto-generate name tags"
-                      checked={field.value}
-                      id="autoGenerateNames"
-                      onCheckedChange={field.onChange}
-                    />
-                    <Label htmlFor="autoGenerateNames">Auto-generate</Label>
+                  <div className="flex gap-1">
+                    {PUBLIC_SUBNET_COUNTS.map((n) => (
+                      <Button
+                        key={n}
+                        onClick={() => {
+                          field.onChange(n)
+                        }}
+                        size="sm"
+                        type="button"
+                        variant={field.value === n ? "default" : "outline"}
+                      >
+                        {n}
+                      </Button>
+                    ))}
                   </div>
                 )}
               />
-            </div>
-          </Field>
+              <SubnetCidrInputs
+                count={publicSubnetCount}
+                defaults={defaultCidrs.publicSubnets.map((s) => s.cidr)}
+                form={form}
+                type="public"
+              />
+            </Field>
 
-          {/* Section 3: CIDR Block */}
-          <Field>
-            <FieldTitle>
-              <label htmlFor="cidrBlock">IPv4 CIDR block</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.cidrBlock}
-              id="cidrBlock"
-              placeholder="10.0.0.0/16"
-              {...register("cidrBlock")}
-            />
-            <FieldError errors={[errors.cidrBlock]} />
-          </Field>
-
-          {/* Section 4: Tenancy */}
-          <Field>
-            <FieldTitle>Tenancy</FieldTitle>
-            <Controller
-              control={control}
-              name="tenancy"
-              render={({ field }) => (
-                <Select onValueChange={field.onChange} value={field.value}>
-                  <SelectTrigger id="tenancy">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="default">default</SelectItem>
-                    <SelectItem value="dedicated">dedicated</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </Field>
-
-          <TagsFieldArray control={control} name="tags" />
-
-          {/* VPC and more sections */}
-          {mode === "vpc-and-more" && (
-            <>
-              {/* Section 5: Public Subnets */}
-              <Field>
-                <FieldTitle>Number of public subnets</FieldTitle>
-                <Controller
-                  control={control}
-                  name="publicSubnetCount"
-                  render={({ field }) => (
-                    <div className="flex gap-1">
-                      {PUBLIC_SUBNET_COUNTS.map((n) => (
-                        <Button
-                          key={n}
-                          onClick={() => {
-                            field.onChange(n)
-                          }}
-                          size="sm"
-                          type="button"
-                          variant={field.value === n ? "default" : "outline"}
-                        >
-                          {n}
-                        </Button>
-                      ))}
-                    </div>
-                  )}
-                />
-                <SubnetCidrInputs
-                  count={publicSubnetCount}
-                  defaults={defaultCidrs.publicSubnets.map((s) => s.cidr)}
-                  form={form}
-                  type="public"
-                />
-              </Field>
-
-              {/* Section 6: Private Subnets */}
-              <Field>
-                <FieldTitle>Number of private subnets</FieldTitle>
-                <Controller
-                  control={control}
-                  name="privateSubnetCount"
-                  render={({ field }) => (
-                    <div className="flex gap-1">
-                      {PRIVATE_SUBNET_COUNTS.map((n) => (
-                        <Button
-                          key={n}
-                          onClick={() => {
-                            field.onChange(n)
-                          }}
-                          size="sm"
-                          type="button"
-                          variant={field.value === n ? "default" : "outline"}
-                        >
-                          {n}
-                        </Button>
-                      ))}
-                    </div>
-                  )}
-                />
-                <SubnetCidrInputs
-                  count={privateSubnetCount}
-                  defaults={defaultCidrs.privateSubnets.map((s) => s.cidr)}
-                  form={form}
-                  type="private"
-                />
-              </Field>
-
-              {/* Section 7: NAT gateway (needs both a public and private subnet) */}
-              {publicSubnetCount > 0 && privateSubnetCount > 0 && (
-                <Field>
-                  <FieldTitle>NAT gateways</FieldTitle>
-                  <Controller
-                    control={control}
-                    name="natGateway"
-                    render={({ field }) => (
-                      <Select
-                        onValueChange={field.onChange}
-                        value={field.value ?? "none"}
+            {/* Section 6: Private Subnets */}
+            <Field>
+              <FieldTitle>Number of private subnets</FieldTitle>
+              <Controller
+                control={control}
+                name="privateSubnetCount"
+                render={({ field }) => (
+                  <div className="flex gap-1">
+                    {PRIVATE_SUBNET_COUNTS.map((n) => (
+                      <Button
+                        key={n}
+                        onClick={() => {
+                          field.onChange(n)
+                        }}
+                        size="sm"
+                        type="button"
+                        variant={field.value === n ? "default" : "outline"}
                       >
-                        <SelectTrigger id="natGateway">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">None</SelectItem>
-                          <SelectItem value="single">In 1 AZ</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    )}
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Creates an Elastic IP + NAT gateway in the public subnet and
-                    routes private subnet egress (0.0.0.0/0) through it.
-                  </p>
-                </Field>
-              )}
-            </>
-          )}
+                        {n}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              />
+              <SubnetCidrInputs
+                count={privateSubnetCount}
+                defaults={defaultCidrs.privateSubnets.map((s) => s.cidr)}
+                form={form}
+                type="private"
+              />
+            </Field>
 
-          <CliCommandPanel
-            commands={buildCreateVpcCommands(values, subnetCidrs)}
-          />
+            {/* Section 7: NAT gateway (needs both a public and private subnet) */}
+            {publicSubnetCount > 0 && privateSubnetCount > 0 && (
+              <Field>
+                <FieldTitle>NAT gateways</FieldTitle>
+                <Controller
+                  control={control}
+                  name="natGateway"
+                  render={({ field }) => (
+                    <Select
+                      onValueChange={field.onChange}
+                      value={field.value ?? "none"}
+                    >
+                      <SelectTrigger id="natGateway">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">None</SelectItem>
+                        <SelectItem value="single">In 1 AZ</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Creates an Elastic IP + NAT gateway in the public subnet and
+                  routes private subnet egress (0.0.0.0/0) through it.
+                </p>
+              </Field>
+            )}
+          </>
+        )}
 
-          <FormActions
-            isPending={isPending}
-            isSubmitting={isSubmitting}
-            onCancel={async () => {
-              await finish()
-            }}
-            pendingLabel="Creating…"
-            submitLabel="Create VPC"
-          />
-        </form>
+        {mode === "vpc-and-more" && (
+          <PanelSection title="Preview">
+            <VpcPreview
+              hasIgw={publicSubnetCount > 0}
+              mode={mode}
+              privateSubnets={subnetCidrs.privateSubnets}
+              publicSubnets={subnetCidrs.publicSubnets}
+              vpcCidr={vpcCidr}
+            />
+          </PanelSection>
+        )}
 
-        {/* Right column: Preview, which a side panel has no room for */}
-        <div
-          className="hidden min-w-0 flex-1 data-[page]:lg:block"
-          data-page={onClose ? undefined : ""}
-        >
-          <VpcPreview
-            hasIgw={mode === "vpc-and-more" && publicSubnetCount > 0}
-            mode={mode}
-            privateSubnets={subnetCidrs.privateSubnets}
-            publicSubnets={subnetCidrs.publicSubnets}
-            vpcCidr={vpcCidr}
-          />
-        </div>
-      </div>
-    </>
+        <CliCommandPanel
+          commands={buildCreateVpcCommands(values, subnetCidrs)}
+        />
+
+        <WizardFailureBanner result={wizardMutation.data} />
+
+        <FormActions
+          error={mutationError}
+          errorMsg="Failed to create VPC"
+          isPending={isPending}
+          isSubmitting={isSubmitting}
+          onCancel={() => {
+            finish()
+          }}
+          pendingLabel="Creating…"
+          submitLabel="Create VPC"
+        />
+      </FormLock>
+    </form>
   )
 }
 

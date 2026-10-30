@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -20,6 +21,7 @@ import { formatDateTime } from "@/lib/utils"
 import { useDeleteKnowledgeBase } from "@/mutations/bedrockAgent"
 
 import { KnowledgeBaseDetails } from "./knowledge-base-details"
+import { KnowledgeBaseFormPage } from "./knowledge-base-form-page"
 
 const COLUMNS: DataColumn<KnowledgeBaseSummary>[] = [
   {
@@ -84,12 +86,14 @@ export function KnowledgeBasesPage({
     (kb) => search.selected !== "" && kb.knowledgeBaseId === search.selected,
   )
 
+  function closePanel() {
+    onSearchChange(CLOSED_PANEL)
+  }
+
   const selection = useRowSelection(
     knowledgeBases.map((kb) => kb.knowledgeBaseId ?? ""),
     open !== undefined,
-    () => {
-      onSearchChange(CLOSED_PANEL)
-    },
+    closePanel,
   )
 
   const deleteKnowledgeBase = useDeleteKnowledgeBase()
@@ -100,14 +104,22 @@ export function KnowledgeBasesPage({
 
   let panel: ReactNode = null
 
-  if (open?.knowledgeBaseId) {
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Create knowledge base">
+        <KnowledgeBaseFormPage
+          onClose={(knowledgeBaseId) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: knowledgeBaseId ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.knowledgeBaseId) {
     panel = (
       <KnowledgeBaseDetails
         key={open.knowledgeBaseId}
         knowledgeBase={open}
-        onClose={() => {
-          onSearchChange(CLOSED_PANEL)
-        }}
+        onClose={closePanel}
         onTabChange={(tab) => {
           onSearchChange({ tab })
         }}
@@ -122,7 +134,13 @@ export function KnowledgeBasesPage({
         actions={
           <Link
             className={buttonVariants()}
-            to="/bedrock/list-knowledge-bases/create"
+            from="/bedrock/list-knowledge-bases/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
           >
             <Plus data-icon="inline-start" />
             Create knowledge base

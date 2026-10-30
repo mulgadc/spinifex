@@ -75,10 +75,10 @@ describe("ClusterDetails", () => {
 
     expect(
       screen.getByRole("link", { name: "Create service" }),
-    ).toHaveAttribute("href", "/ecs/create-service")
+    ).toHaveAttribute("href", "/ecs/list-clusters")
     expect(screen.getByRole("link", { name: "Run task" })).toHaveAttribute(
       "href",
-      "/ecs/run-task",
+      "/ecs/list-clusters",
     )
   })
 

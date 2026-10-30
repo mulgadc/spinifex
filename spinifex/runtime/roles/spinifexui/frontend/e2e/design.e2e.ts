@@ -112,7 +112,11 @@ test.describe("primitives", () => {
 
   test("table specimen switches between its states", async ({ page }) => {
     const states = page.getByRole("group").filter({ hasText: "loading" })
-    const table = page.getByRole("table")
+
+    // The patterns section has its own sample table; this is the Data one.
+    const table = page
+      .getByRole("table")
+      .filter({ hasNot: page.getByText("Sample volumes") })
 
     await expect(table.getByRole("row")).toHaveCount(6)
 

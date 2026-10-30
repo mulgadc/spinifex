@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -19,6 +20,7 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
 import { useDeleteNatGateway } from "@/mutations/ec2"
 
+import { CreateNatGatewayPage } from "./create-nat-gateway-page"
 import { NatGatewayDetails } from "./nat-gateway-details"
 
 const COLUMNS: DataColumn<NatGateway>[] = [
@@ -141,7 +143,22 @@ export function NatGatewaysPage({
 
   let panel: ReactNode = null
 
-  if (open?.NatGatewayId) {
+  if (search.create) {
+    panel = (
+      <CreatePanel
+        onClose={() => {
+          onSearchChange(CLOSED_PANEL)
+        }}
+        title="Create NAT gateway"
+      >
+        <CreateNatGatewayPage
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.NatGatewayId) {
     panel = (
       <NatGatewayDetails
         key={open.NatGatewayId}
@@ -161,7 +178,16 @@ export function NatGatewaysPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/ec2/create-nat-gateway">
+          <Link
+            className={buttonVariants()}
+            from="/ec2/describe-nat-gateways/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create NAT gateway
           </Link>

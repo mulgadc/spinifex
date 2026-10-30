@@ -22,9 +22,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 // Wide enough for the panel to sit over the list rather than replace it.
 vi.mock("@/hooks/use-wide-layout", () => ({ useWideLayout: () => true }))
 
-import { CLOSED_PANEL } from "@/lib/panel-search"
-
 import { ClustersPage } from "./clusters-page"
+import { CLOSED_CLUSTERS_PANEL, type ClustersSearch } from "./clusters-search"
 
 const CLUSTER: Cluster = {
   clusterName: "web",
@@ -37,9 +36,8 @@ const CLUSTER: Cluster = {
 
 function renderPage({
   clusters = [CLUSTER],
-  hasSystemImage = true,
-  selected = "",
-} = {}) {
+  search = {},
+}: { clusters?: Cluster[]; search?: Partial<ClustersSearch> } = {}) {
   const onSearchChange = vi.fn()
   const qc = createTestQueryClient()
   qc.setQueryData(["ecs", "clusters", "web", "services"], [])
@@ -49,9 +47,8 @@ function renderPage({
   renderWithClient(
     <ClustersPage
       clusters={clusters}
-      hasSystemImage={hasSystemImage}
       onSearchChange={onSearchChange}
-      search={{ ...CLOSED_PANEL, selected }}
+      search={{ ...CLOSED_CLUSTERS_PANEL, ...search }}
     />,
     qc,
   )
@@ -68,13 +65,13 @@ describe("ClustersPage", () => {
 
     fireEvent.click(screen.getByRole("cell", { name: "ACTIVE" }))
     expect(onSearchChange).toHaveBeenCalledWith({
-      ...CLOSED_PANEL,
+      ...CLOSED_CLUSTERS_PANEL,
       selected: "web",
     })
   })
 
   it("shows the selected cluster in a panel over the list", () => {
-    renderPage({ selected: "web" })
+    renderPage({ search: { selected: "web" } })
 
     expect(screen.getByRole("table")).toBeInTheDocument()
 
@@ -92,18 +89,28 @@ describe("ClustersPage", () => {
     expect(screen.getByText("No ECS clusters found.")).toBeInTheDocument()
   })
 
-  it("opens the create dialog when an ECS node image is present", () => {
+  it("offers Create cluster as a link, with no image warning", () => {
     renderPage({ clusters: [] })
-    fireEvent.click(screen.getByRole("button", { name: "Create cluster" }))
-    expect(screen.getByText(/A cluster groups/)).toBeInTheDocument()
+    expect(
+      screen.getByRole("link", { name: "Create cluster" }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText("ECS system image not found"),
+    ).not.toBeInTheDocument()
   })
 
-  it("blocks creation and warns when no ECS node image exists", () => {
-    renderPage({ clusters: [], hasSystemImage: false })
-    expect(screen.getByText("ECS system image not found")).toBeInTheDocument()
-    expect(
-      screen.getByRole("button", { name: "Create cluster" }),
-    ).toBeDisabled()
+  it("opens the create form in the panel", async () => {
+    renderPage({ search: { create: true } })
+    await expect(
+      screen.findByRole("region", { name: "Create cluster" }),
+    ).resolves.toBeInTheDocument()
+  })
+
+  it("opens the run task form for the selected cluster", async () => {
+    renderPage({ search: { selected: "web", launch: "task" } })
+    await expect(
+      screen.findByRole("region", { name: "Run task" }),
+    ).resolves.toBeInTheDocument()
   })
 
   it("deletes each selected cluster with its own call", async () => {

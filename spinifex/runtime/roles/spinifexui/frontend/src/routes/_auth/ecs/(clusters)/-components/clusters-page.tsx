@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -13,15 +14,16 @@ import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
 import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
-import { SystemImageRequired } from "@/components/system-image-required"
-import { Button } from "@/components/ui/button"
+import { buttonVariants } from "@/components/ui/button"
 import { useRowSelection } from "@/hooks/use-row-selection"
-import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { useDeleteCluster } from "@/mutations/ecs"
 
 import { ClusterDetails } from "./cluster-details"
-import { CreateClusterDialog } from "./create-cluster-dialog"
+import { CLOSED_CLUSTERS_PANEL, type ClustersSearch } from "./clusters-search"
+import { CreateClusterPage } from "./create-cluster-page"
+import { CreateServicePage } from "./create-service-page"
 import { EcsSectionNav } from "./ecs-section-nav"
+import { RunTaskPage } from "./run-task-page"
 
 const COLUMNS: DataColumn<Cluster>[] = [
   {
@@ -34,7 +36,7 @@ const COLUMNS: DataColumn<Cluster>[] = [
         from="/ecs/list-clusters/"
         search={(previous) => ({
           ...previous,
-          ...CLOSED_PANEL,
+          ...CLOSED_CLUSTERS_PANEL,
           selected: cluster.clusterName ?? "",
         })}
         to="."
@@ -74,20 +76,16 @@ const COLUMNS: DataColumn<Cluster>[] = [
 
 interface ClustersPageProps {
   clusters: readonly Cluster[]
-  // Clusters launch their instances from the Spinifex-managed node image.
-  hasSystemImage: boolean
-  search: PanelSearch
-  onSearchChange: (search: Partial<PanelSearch>) => void
+  search: ClustersSearch
+  onSearchChange: (search: Partial<ClustersSearch>) => void
 }
 
 export function ClustersPage({
   clusters,
-  hasSystemImage,
   search,
   onSearchChange,
 }: ClustersPageProps) {
   const [sort, setSort] = useState<SortState>()
-  const [createOpen, setCreateOpen] = useState(false)
 
   const named = clusters.filter((cluster) => !!cluster.clusterName)
 
@@ -97,7 +95,12 @@ export function ClustersPage({
   )
 
   function closePanel() {
-    onSearchChange(CLOSED_PANEL)
+    onSearchChange(CLOSED_CLUSTERS_PANEL)
+  }
+
+  // A launch closes back onto the cluster it was opened from.
+  function closeLaunch() {
+    onSearchChange({ launch: "" })
   }
 
   const selection = useRowSelection(
@@ -110,7 +113,32 @@ export function ClustersPage({
 
   let panel: ReactNode = null
 
-  if (open) {
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Create cluster">
+        <CreateClusterPage
+          onClose={(clusterName) => {
+            onSearchChange({
+              ...CLOSED_CLUSTERS_PANEL,
+              selected: clusterName ?? "",
+            })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open && search.launch === "service") {
+    panel = (
+      <CreatePanel onClose={closeLaunch} title="Create service">
+        <CreateServicePage cluster={search.selected} onClose={closeLaunch} />
+      </CreatePanel>
+    )
+  } else if (open && search.launch === "task") {
+    panel = (
+      <CreatePanel onClose={closeLaunch} title="Run task">
+        <RunTaskPage cluster={search.selected} onClose={closeLaunch} />
+      </CreatePanel>
+    )
+  } else if (open) {
     panel = (
       <ClusterDetails
         cluster={open}
@@ -128,15 +156,19 @@ export function ClustersPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Button
-            disabled={!hasSystemImage}
-            onClick={() => {
-              setCreateOpen(true)
-            }}
+          <Link
+            className={buttonVariants()}
+            from="/ecs/list-clusters/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_CLUSTERS_PANEL,
+              create: true,
+            })}
+            to="."
           >
             <Plus data-icon="inline-start" />
             Create cluster
-          </Button>
+          </Link>
         }
         title="Clusters"
       />
@@ -156,15 +188,6 @@ export function ClustersPage({
         </SelectionBar>
       )}
 
-      {!hasSystemImage && (
-        <SystemImageRequired
-          className="mb-6"
-          description="ECS clusters need a Spinifex-managed node image (containerd + ecs-agent) to launch container instances. Import it before creating a cluster."
-          importCommand="spx admin images import --name spinifex-ecs-node"
-          title="ECS system image not found"
-        />
-      )}
-
       <DataTable
         activeId={open?.clusterName}
         caption="ECS clusters"
@@ -172,7 +195,7 @@ export function ClustersPage({
         empty="No ECS clusters found."
         getRowId={(cluster) => cluster.clusterName ?? ""}
         onRowClick={(id) => {
-          onSearchChange({ ...CLOSED_PANEL, selected: id })
+          onSearchChange({ ...CLOSED_CLUSTERS_PANEL, selected: id })
         }}
         onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}
@@ -180,8 +203,6 @@ export function ClustersPage({
         selected={selection.selected}
         sort={sort}
       />
-
-      <CreateClusterDialog onOpenChange={setCreateOpen} open={createOpen} />
     </ResourceView>
   )
 }

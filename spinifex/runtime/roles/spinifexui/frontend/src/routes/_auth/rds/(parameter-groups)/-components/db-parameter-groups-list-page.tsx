@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -18,6 +19,7 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { useDeleteDBParameterGroup } from "@/mutations/rds"
 import { isDefaultParameterGroupName } from "@/types/rds"
 
+import { CreateDBParameterGroupPage } from "./create-db-parameter-group-page"
 import { DBParameterGroupDetails } from "./db-parameter-group-details"
 
 function groupType(group: DBParameterGroup): string {
@@ -106,7 +108,17 @@ export function DBParameterGroupsListPage({
 
   let panel: ReactNode = null
 
-  if (open?.DBParameterGroupName) {
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Create DB parameter group">
+        <CreateDBParameterGroupPage
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.DBParameterGroupName) {
     panel = (
       <DBParameterGroupDetails
         group={open}
@@ -126,7 +138,13 @@ export function DBParameterGroupsListPage({
         actions={
           <Link
             className={buttonVariants()}
-            to="/rds/create-db-parameter-group"
+            from="/rds/describe-db-parameter-groups/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
           >
             <Plus data-icon="inline-start" />
             Create Parameter Group

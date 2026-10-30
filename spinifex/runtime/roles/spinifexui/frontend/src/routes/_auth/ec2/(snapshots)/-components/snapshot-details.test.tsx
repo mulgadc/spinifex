@@ -49,16 +49,34 @@ function renderSnapshot(snapshot: Snapshot) {
 }
 
 describe("SnapshotDetails", () => {
-  it("keeps every action visible but disabled until the snapshot completes", () => {
+  it("keeps copy and register disabled until the snapshot completes", () => {
     renderSnapshot({ SnapshotId: "snap-1", State: "pending" })
 
-    for (const name of [
-      "Copy snapshot",
-      "Register as AMI",
-      "Delete snapshot",
-    ]) {
+    for (const name of ["Copy snapshot", "Register as AMI"]) {
       expect(screen.getByRole("button", { name })).toBeDisabled()
     }
+  })
+
+  it("sends a pending snapshot's delete and shows the refusal", async () => {
+    const user = userEvent.setup()
+    renderSnapshot({ SnapshotId: "snap-1", State: "pending" })
+    sdk.send.mockRejectedValueOnce(
+      new Error("The snapshot snap-1 is currently in use."),
+    )
+
+    await user.click(screen.getByRole("button", { name: "Delete snapshot" }))
+    await user.type(
+      await screen.findByLabelText(/^To confirm, type/u),
+      "delete",
+    )
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+
+    await expect(
+      screen.findByText("The snapshot snap-1 is currently in use."),
+    ).resolves.toBeInTheDocument()
+    expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
+      input: { SnapshotId: "snap-1" },
+    })
   })
 
   it("copies a completed snapshot within the cluster's region", async () => {

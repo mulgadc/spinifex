@@ -1,1 +1,0 @@
-import{E as e,k as t,v as n}from"./utils-Vn6Vssm8.js";import{n as r}from"./with-selector-BfuH6HWY.js";var i=t(e(),1),a=r();function o(e){let t=i.useCallback(t=>e===void 0?n:e.subscribeStore(t),[e]),r=i.useCallback(()=>e===void 0?void 0:e.store,[e]);return(0,a.useSyncExternalStore)(t,r,()=>e?.serverStore)}export{o as t};

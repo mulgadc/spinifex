@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -19,6 +20,7 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
 import { useDeleteSubnet } from "@/mutations/ec2"
 
+import { CreateSubnetPage } from "./create-subnet-page"
 import { SubnetDetails } from "./subnet-details"
 
 const COLUMNS: DataColumn<Subnet>[] = [
@@ -137,7 +139,22 @@ export function SubnetsPage({
 
   let panel: ReactNode = null
 
-  if (open?.SubnetId) {
+  if (search.create) {
+    panel = (
+      <CreatePanel
+        onClose={() => {
+          onSearchChange(CLOSED_PANEL)
+        }}
+        title="Create subnet"
+      >
+        <CreateSubnetPage
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.SubnetId) {
     panel = (
       <SubnetDetails
         key={open.SubnetId}
@@ -157,7 +174,16 @@ export function SubnetsPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/ec2/create-subnet">
+          <Link
+            className={buttonVariants()}
+            from="/ec2/describe-subnets/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create subnet
           </Link>

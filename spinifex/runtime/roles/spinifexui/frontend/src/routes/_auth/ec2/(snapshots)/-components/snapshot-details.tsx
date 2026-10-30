@@ -97,8 +97,7 @@ function Settings({
         <div className="flex flex-col items-start gap-3">
           {!completed && (
             <p className="text-sm text-muted-foreground">
-              A snapshot can be copied, registered or deleted once it has
-              completed.
+              A snapshot can be copied or registered once it has completed.
             </p>
           )}
           <div className="flex flex-wrap gap-2">
@@ -126,7 +125,7 @@ function Settings({
             </Button>
           </div>
           <Button
-            disabled={!completed || remove.isPending}
+            disabled={remove.isPending}
             onClick={() => {
               setDialog("delete")
             }}

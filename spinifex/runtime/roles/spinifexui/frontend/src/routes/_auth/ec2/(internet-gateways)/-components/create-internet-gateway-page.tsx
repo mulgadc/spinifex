@@ -1,16 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useNavigate } from "@tanstack/react-router"
 import { useForm, useWatch } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
   optionalFlag,
 } from "@/components/cli-command-panel"
-import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
 import { Field, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { useCreateInternetGateway } from "@/mutations/ec2"
@@ -20,30 +17,14 @@ import {
 } from "@/types/ec2"
 
 interface CreateInternetGatewayPageProps {
-  // Given when the form sits in the list's side panel: called with the new
-  // gateway's ID once created, or with nothing on cancel.
-  onClose?: (internetGatewayId?: string) => void
+  // Called with the new resource's ID once created, or with nothing on cancel.
+  onClose: (internetGatewayId?: string) => void
 }
 
 export function CreateInternetGatewayPage({
   onClose,
 }: CreateInternetGatewayPageProps) {
-  const navigate = useNavigate()
-
-  async function finish(internetGatewayId?: string) {
-    if (onClose) {
-      onClose(internetGatewayId)
-
-      return
-    }
-
-    await (internetGatewayId
-      ? navigate({
-          to: "/ec2/describe-internet-gateways/$id",
-          params: { id: internetGatewayId },
-        })
-      : navigate({ to: "/ec2/describe-internet-gateways" }))
-  }
+  const finish = onClose
 
   const createMutation = useCreateInternetGateway()
 
@@ -60,32 +41,26 @@ export function CreateInternetGatewayPage({
   const values = useWatch({ control })
 
   const onSubmit = async (data: CreateInternetGatewayFormData) => {
-    const result = await createMutation.mutateAsync({
-      name: data.name?.trim() ?? undefined,
-    })
+    let result
 
-    await finish(result.InternetGateway?.InternetGatewayId)
+    try {
+      result = await createMutation.mutateAsync({
+        name: data.name?.trim() ?? undefined,
+      })
+    } catch {
+      // Surfaced beside the submit button through the mutation's error.
+      return
+    }
+
+    finish(result.InternetGateway?.InternetGatewayId)
   }
 
   return (
-    <>
-      {!onClose && (
-        <>
-          <BackLink to="/ec2/describe-internet-gateways">
-            Back to Internet Gateways
-          </BackLink>
-          <PageHeading title="Create Internet Gateway" />
-        </>
-      )}
-
-      {createMutation.error && (
-        <ErrorBanner
-          error={createMutation.error}
-          msg="Failed to create Internet Gateway"
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={createMutation.isPending || isSubmitting}
+      >
         <Field>
           <FieldTitle>
             <label htmlFor="name">Name (optional)</label>
@@ -102,16 +77,18 @@ export function CreateInternetGatewayPage({
         />
 
         <FormActions
+          error={createMutation.error}
+          errorMsg="Failed to create Internet Gateway"
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => {
-            await finish()
+          onCancel={() => {
+            finish()
           }}
           pendingLabel="Creating…"
           submitLabel="Create"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
 }
 

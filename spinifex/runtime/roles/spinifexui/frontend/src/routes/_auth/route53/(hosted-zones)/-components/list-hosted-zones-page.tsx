@@ -2,9 +2,10 @@ import type { HostedZone } from "@aws-sdk/client-route-53"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
-import { useState } from "react"
+import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -21,6 +22,7 @@ import { bareZoneId } from "@/lib/route53-activation"
 import { useDeleteHostedZone } from "@/mutations/route53"
 import { route53ActivationQueryOptions } from "@/queries/route53"
 
+import { CreateHostedZonePage } from "./create-hosted-zone-page"
 import { deleteHostedZone } from "./delete-hosted-zone"
 import { HostedZoneDetails } from "./hosted-zone-details"
 
@@ -112,12 +114,14 @@ export function ListHostedZonesPage({
       search.selected !== "" && bareZoneId(zone.Id ?? "") === search.selected,
   )
 
+  function closePanel() {
+    onSearchChange(CLOSED_PANEL)
+  }
+
   const selection = useRowSelection(
     zones.map((zone) => bareZoneId(zone.Id ?? "")),
     open !== undefined,
-    () => {
-      onSearchChange(CLOSED_PANEL)
-    },
+    closePanel,
   )
 
   const queryClient = useQueryClient()
@@ -127,27 +131,46 @@ export function ListHostedZonesPage({
     zones.map((zone) => [bareZoneId(zone.Id ?? ""), zone.Name]),
   )
 
+  let panel: ReactNode = null
+
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Add domain">
+        <CreateHostedZonePage
+          onClose={(zoneId) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: zoneId ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open) {
+    panel = (
+      <HostedZoneDetails
+        key={open.Id}
+        onClose={closePanel}
+        onTabChange={(tab) => {
+          onSearchChange({ tab })
+        }}
+        tab={search.tab}
+        zone={open}
+      />
+    )
+  }
+
   return (
-    <ResourceView
-      panel={
-        open && (
-          <HostedZoneDetails
-            key={open.Id}
-            onClose={() => {
-              onSearchChange(CLOSED_PANEL)
-            }}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            tab={search.tab}
-            zone={open}
-          />
-        )
-      }
-    >
+    <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/route53/create-hosted-zone">
+          <Link
+            className={buttonVariants()}
+            from="/route53/list-hosted-zones/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Add domain
           </Link>

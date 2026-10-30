@@ -1,15 +1,15 @@
 import type { InternetGateway } from "@aws-sdk/client-ec2"
 import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
-import { type ReactNode, Suspense, useState } from "react"
+import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
   type SortState,
 } from "@/components/data-table"
-import { DetailPanel, PanelSpinner } from "@/components/detail-panel"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
 import { SelectionBar } from "@/components/selection-bar"
@@ -137,20 +137,13 @@ export function InternetGatewaysPage({
 
   if (search.create) {
     panel = (
-      <DetailPanel
-        closeLabel="Close create form"
-        label="Create internet gateway"
-        onClose={closePanel}
-        title="Create internet gateway"
-      >
-        <Suspense fallback={<PanelSpinner />}>
-          <CreateInternetGatewayPage
-            onClose={(igwId) => {
-              onSearchChange({ ...CLOSED_PANEL, selected: igwId ?? "" })
-            }}
-          />
-        </Suspense>
-      </DetailPanel>
+      <CreatePanel onClose={closePanel} title="Create internet gateway">
+        <CreateInternetGatewayPage
+          onClose={(igwId) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: igwId ?? "" })
+          }}
+        />
+      </CreatePanel>
     )
   } else if (open?.InternetGatewayId) {
     panel = (

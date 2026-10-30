@@ -11,6 +11,7 @@ import {
   PanelFields,
   PanelSection,
 } from "@/components/detail-panel"
+import { ErrorBanner } from "@/components/error-banner"
 import {
   GpuInstanceTypeSelect,
   isGpuInstanceType,
@@ -322,22 +323,28 @@ function AddNodegroupDialog({
   }
 
   const onSubmit = async (data: CreateNodegroupFormValues) => {
-    await createNodegroup.mutateAsync({
-      clusterName,
-      nodegroupName: data.nodegroupName,
-      nodeRole: data.nodeRole,
-      subnetIds: data.subnetIds,
-      instanceTypes: data.instanceTypes
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean),
-      amiType: data.amiType,
-      capacityType: data.capacityType,
-      diskSize: data.diskSize,
-      minSize: data.minSize,
-      desiredSize: data.desiredSize,
-      maxSize: data.maxSize,
-    })
+    try {
+      await createNodegroup.mutateAsync({
+        clusterName,
+        nodegroupName: data.nodegroupName,
+        nodeRole: data.nodeRole,
+        subnetIds: data.subnetIds,
+        instanceTypes: data.instanceTypes
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean),
+        amiType: data.amiType,
+        capacityType: data.capacityType,
+        diskSize: data.diskSize,
+        minSize: data.minSize,
+        desiredSize: data.desiredSize,
+        maxSize: data.maxSize,
+      })
+    } catch {
+      // Surfaced in the dialog through the mutation's error.
+      return
+    }
+
     reset()
     onOpenChange(false)
   }
@@ -348,6 +355,14 @@ function AddNodegroupDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Add node group</AlertDialogTitle>
         </AlertDialogHeader>
+
+        {createNodegroup.error && (
+          <ErrorBanner
+            className="mb-0"
+            error={createNodegroup.error}
+            msg="Failed to create the node group"
+          />
+        )}
 
         <form className="space-y-4" id="add-nodegroup-form">
           <Field>

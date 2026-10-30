@@ -70,8 +70,8 @@ export function ClusterTasks({ clusterName }: { clusterName: string }) {
         )}
         <Link
           className={buttonVariants({ size: "sm", variant: "outline" })}
-          search={{ cluster: clusterName }}
-          to="/ecs/run-task"
+          search={{ selected: clusterName, launch: "task" }}
+          to="/ecs/list-clusters"
         >
           <Play data-icon="inline-start" />
           Run task

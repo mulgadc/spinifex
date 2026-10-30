@@ -10,6 +10,7 @@ import {
   PanelFields,
   PanelSection,
 } from "@/components/detail-panel"
+import { ErrorBanner } from "@/components/error-banner"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -175,14 +176,20 @@ function AddAccessEntryDialog({
   })
 
   const onSubmit = async (data: CreateAccessEntryFormValues) => {
-    await createEntry.mutateAsync({
-      clusterName,
-      principalArn: data.principalArn,
-      kubernetesGroups: data.kubernetesGroups
-        .split(",")
-        .map((g) => g.trim())
-        .filter(Boolean),
-    })
+    try {
+      await createEntry.mutateAsync({
+        clusterName,
+        principalArn: data.principalArn,
+        kubernetesGroups: data.kubernetesGroups
+          .split(",")
+          .map((g) => g.trim())
+          .filter(Boolean),
+      })
+    } catch {
+      // Surfaced in the dialog through the mutation's error.
+      return
+    }
+
     reset()
     onOpenChange(false)
   }
@@ -193,6 +200,14 @@ function AddAccessEntryDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Add access entry</AlertDialogTitle>
         </AlertDialogHeader>
+
+        {createEntry.error && (
+          <ErrorBanner
+            className="mb-0"
+            error={createEntry.error}
+            msg="Failed to create the access entry"
+          />
+        )}
 
         <form className="space-y-4" id="add-access-entry-form">
           <Field>

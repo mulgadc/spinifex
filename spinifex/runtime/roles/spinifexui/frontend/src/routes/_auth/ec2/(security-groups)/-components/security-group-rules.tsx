@@ -79,13 +79,19 @@ function AddRuleDialog({
   const portsDisabled = selectedProtocol === "-1" || selectedProtocol === "icmp"
 
   const onSubmit = async (data: SecurityGroupRuleFormData) => {
-    await mutation.mutateAsync({
-      groupId,
-      ipProtocol: data.ipProtocol,
-      fromPort: portsDisabled ? -1 : data.fromPort,
-      toPort: portsDisabled ? -1 : data.toPort,
-      cidrIp: data.cidrIp,
-    })
+    try {
+      await mutation.mutateAsync({
+        groupId,
+        ipProtocol: data.ipProtocol,
+        fromPort: portsDisabled ? -1 : data.fromPort,
+        toPort: portsDisabled ? -1 : data.toPort,
+        cidrIp: data.cidrIp,
+      })
+    } catch {
+      // Surfaced in the error banner through the mutation's error.
+      return
+    }
+
     reset()
     onOpenChange(false)
   }

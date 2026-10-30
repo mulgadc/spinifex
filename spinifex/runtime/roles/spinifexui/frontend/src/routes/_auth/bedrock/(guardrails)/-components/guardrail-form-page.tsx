@@ -9,12 +9,18 @@ import {
   type UseFormRegister,
   useFieldArray,
   useForm,
+  useWatch,
 } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
-import { ErrorBanner } from "@/components/error-banner"
+import {
+  type CliCommand,
+  CliCommandPanel,
+  shellSingleQuote,
+} from "@/components/cli-command-panel"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
+import { FormLock } from "@/components/form-lock"
 import { PageHeading } from "@/components/page-heading"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import { Button } from "@/components/ui/button"
@@ -33,6 +39,8 @@ import { Textarea } from "@/components/ui/textarea"
 import { useCreateGuardrail, useUpdateGuardrail } from "@/mutations/bedrock"
 import {
   CONTENT_FILTER_TYPES,
+  EMPTY_GUARDRAIL_FORM_DEFAULTS,
+  formToCreateInput,
   CONTEXTUAL_GROUNDING_FILTER_TYPES,
   FILTER_STRENGTHS,
   type GuardrailFormData,
@@ -49,7 +57,11 @@ function path(template: string): Path<GuardrailFormData> {
 }
 
 type GuardrailFormPageProps =
-  | { mode: "create"; defaultValues: GuardrailFormData }
+  | {
+      mode: "create"
+      defaultValues: GuardrailFormData
+      onClose: (guardrailId?: string) => void
+    }
   | { mode: "edit"; guardrailId: string; defaultValues: GuardrailFormData }
 
 interface SectionProps {
@@ -468,21 +480,40 @@ export function GuardrailFormPage(props: GuardrailFormPageProps) {
     defaultValues,
   })
 
-  const onSubmit = async (data: GuardrailFormData) => {
-    if (mode === "create") {
-      const result = await createGuardrail.mutateAsync(data)
-      await navigate({
-        params: { guardrailId: result.guardrailId ?? "" },
-        to: "/bedrock/list-guardrails/$guardrailId",
-      })
+  const values = useWatch({ control })
 
+  // Watched by name, the rows keep their full types rather than partial ones.
+  const rows = useWatch({
+    control,
+    name: [
+      "topics",
+      "contentFilters",
+      "words",
+      "piiEntities",
+      "regexes",
+      "contextualGroundingFilters",
+      "tags",
+    ],
+  })
+
+  const onSubmit = async (data: GuardrailFormData) => {
+    try {
+      if (mode === "create") {
+        const result = await createGuardrail.mutateAsync(data)
+        props.onClose(result.guardrailId)
+
+        return
+      }
+
+      await updateGuardrail.mutateAsync({
+        data,
+        guardrailIdentifier: props.guardrailId,
+      })
+    } catch {
+      // Surfaced beside the submit button through the mutation's error.
       return
     }
 
-    await updateGuardrail.mutateAsync({
-      data,
-      guardrailIdentifier: props.guardrailId,
-    })
     await navigate({
       params: { guardrailId: props.guardrailId },
       to: "/bedrock/list-guardrails/$guardrailId",
@@ -490,45 +521,27 @@ export function GuardrailFormPage(props: GuardrailFormPageProps) {
   }
 
   const handleCancel = async () => {
-    if (mode === "edit") {
-      await navigate({
-        params: { guardrailId: props.guardrailId },
-        to: "/bedrock/list-guardrails/$guardrailId",
-      })
+    if (mode === "create") {
+      props.onClose()
 
       return
     }
 
-    await navigate({ to: "/bedrock/list-guardrails" })
+    await navigate({
+      params: { guardrailId: props.guardrailId },
+      to: "/bedrock/list-guardrails/$guardrailId",
+    })
   }
 
   const mutation = mode === "create" ? createGuardrail : updateGuardrail
   const sectionProps: SectionProps = { control, errors, register }
 
-  return (
-    <>
-      {mode === "edit" ? (
-        <BackLink
-          params={{ guardrailId: props.guardrailId }}
-          to="/bedrock/list-guardrails/$guardrailId"
-        >
-          Back to guardrail
-        </BackLink>
-      ) : (
-        <BackLink to="/bedrock/list-guardrails">Back to guardrails</BackLink>
-      )}
-      <PageHeading
-        title={mode === "create" ? "Create Guardrail" : "Edit Guardrail"}
-      />
-
-      {mutation.error && (
-        <ErrorBanner
-          error={mutation.error}
-          msg={`Failed to ${mode === "create" ? "create" : "update"} the guardrail`}
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+  const form = (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={mutation.isPending || isSubmitting}
+      >
         <TextField
           description="Letters, digits, hyphens and underscores only."
           error={errors.name}
@@ -624,7 +637,25 @@ export function GuardrailFormPage(props: GuardrailFormPageProps) {
 
         {mode === "create" && <TagsFieldArray control={control} name="tags" />}
 
+        {mode === "create" && (
+          <CliCommandPanel
+            commands={buildCreateGuardrailCommands({
+              ...EMPTY_GUARDRAIL_FORM_DEFAULTS,
+              ...values,
+              topics: rows[0],
+              contentFilters: rows[1],
+              words: rows[2],
+              piiEntities: rows[3],
+              regexes: rows[4],
+              contextualGroundingFilters: rows[5],
+              tags: rows[6],
+            })}
+          />
+        )}
+
         <FormActions
+          error={mutation.error}
+          errorMsg={`Failed to ${mode === "create" ? "create" : "update"} the guardrail`}
           isPending={mutation.isPending}
           isSubmitting={isSubmitting}
           onCancel={() => {
@@ -633,7 +664,44 @@ export function GuardrailFormPage(props: GuardrailFormPageProps) {
           pendingLabel={mode === "create" ? "Creating…" : "Saving…"}
           submitLabel={mode === "create" ? "Create Guardrail" : "Save Changes"}
         />
-      </form>
+      </FormLock>
+    </form>
+  )
+
+  if (mode === "create") {
+    return form
+  }
+
+  return (
+    <>
+      <BackLink
+        params={{ guardrailId: props.guardrailId }}
+        to="/bedrock/list-guardrails/$guardrailId"
+      >
+        Back to guardrail
+      </BackLink>
+      <PageHeading title="Edit Guardrail" />
+      <div className="max-w-4xl">{form}</div>
     </>
   )
+}
+
+// The policies nest too deeply for flags, so the request goes as one JSON
+// document, the same input the console sends.
+function buildCreateGuardrailCommands(values: GuardrailFormData): CliCommand[] {
+  const input = formToCreateInput({ ...values, name: values.name || "<Name>" })
+
+  return [
+    {
+      label: "Create guardrail",
+      parts: [
+        {
+          type: "bin",
+          value: "AWS_PROFILE=spinifex aws bedrock create-guardrail",
+        },
+        { type: "flag", value: " --cli-input-json" },
+        { type: "value", value: ` ${shellSingleQuote(JSON.stringify(input))}` },
+      ],
+    },
+  ]
 }

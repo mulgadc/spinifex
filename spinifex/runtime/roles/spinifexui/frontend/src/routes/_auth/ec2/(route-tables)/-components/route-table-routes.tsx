@@ -143,12 +143,18 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
   }
 
   async function onAddRoute(values: CreateRouteFormData) {
-    await createRoute.mutateAsync({
-      routeTableId,
-      destinationCidrBlock: values.destinationCidrBlock,
-      gatewayId: values.targetType === "igw" ? values.targetId : undefined,
-      natGatewayId: values.targetType === "nat" ? values.targetId : undefined,
-    })
+    try {
+      await createRoute.mutateAsync({
+        routeTableId,
+        destinationCidrBlock: values.destinationCidrBlock,
+        gatewayId: values.targetType === "igw" ? values.targetId : undefined,
+        natGatewayId: values.targetType === "nat" ? values.targetId : undefined,
+      })
+    } catch {
+      // Shown by the banner above the form.
+      return
+    }
+
     form.reset()
   }
 

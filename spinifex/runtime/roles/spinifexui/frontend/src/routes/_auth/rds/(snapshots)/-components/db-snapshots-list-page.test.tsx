@@ -45,11 +45,13 @@ function renderList(
   snapshots: DBSnapshot[],
   search: Partial<PanelSearch> = {},
   onSearchChange = vi.fn(),
+  instance = "",
 ) {
   const qc = createTestQueryClient()
   qc.setQueryData(["rds", "dbInstances"], { DBInstances: [] })
   renderWithClient(
     <DBSnapshotsListPage
+      instance={instance}
       onSearchChange={onSearchChange}
       search={{ ...CLOSED_PANEL, ...search }}
       snapshots={snapshots}
@@ -112,10 +114,29 @@ describe("DBSnapshotsListPage", () => {
     ).toBeInTheDocument()
   })
 
-  it("opens the create dialog from the heading action", () => {
+  it("offers Take snapshot as a link from the heading", () => {
     renderList([])
-    fireEvent.click(screen.getByRole("button", { name: "Take snapshot" }))
-    expect(screen.getByText("Take DB Snapshot")).toBeInTheDocument()
+    expect(
+      screen.getByRole("link", { name: "Take snapshot" }),
+    ).toBeInTheDocument()
+  })
+
+  it("renders the create form in the panel when asked", () => {
+    renderList([], { create: true })
+    expect(
+      screen.getByRole("region", { name: "Take DB snapshot" }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/No DB instance is available or stopped/),
+    ).toBeInTheDocument()
+  })
+
+  it("fixes the instance when opened from a database", () => {
+    renderList([], { create: true }, vi.fn(), "orders-db")
+    expect(screen.queryByLabelText("DB instance")).toBeNull()
+    expect(
+      screen.getByLabelText<HTMLInputElement>("Snapshot identifier").value,
+    ).toMatch(/^orders-db-snapshot-/)
   })
 
   it("says why an automated backup cannot be removed by hand", () => {

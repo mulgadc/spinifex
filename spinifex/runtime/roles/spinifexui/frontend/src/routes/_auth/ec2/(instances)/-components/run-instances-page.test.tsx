@@ -117,6 +117,7 @@ interface SetupOptions {
   instanceTypes?: InstanceTypeInfo[]
   subnets?: Subnet[]
   launchTemplates?: LaunchTemplate[]
+  onClose?: (instanceId?: string) => void
 }
 
 function setup({
@@ -124,6 +125,7 @@ function setup({
   instanceTypes = INSTANCE_TYPES,
   subnets = [DEFAULT_SUBNET],
   launchTemplates = [],
+  onClose = vi.fn(),
 }: SetupOptions = {}) {
   sdk.reset()
   const queryClient = createTestQueryClient()
@@ -160,7 +162,7 @@ function setup({
     LaunchTemplates: launchTemplates,
   })
 
-  return renderWithClient(<RunInstancesPage onClose={vi.fn()} />, queryClient)
+  return renderWithClient(<RunInstancesPage onClose={onClose} />, queryClient)
 }
 
 function osTile(name: string) {
@@ -451,5 +453,32 @@ describe("run-instances submit", () => {
     })
     expect(input?.SubnetId).toBeUndefined()
     expect(input?.BlockDeviceMappings).toBeUndefined()
+  })
+
+  it("shows a refused launch beside the button and stays open", async () => {
+    const user = userEvent.setup()
+    const onClose = vi.fn()
+
+    setup({ onClose })
+    sdk.setHandler("CreateSecurityGroupCommand", () => ({ GroupId: "sg-new" }))
+    sdk.setHandler("AuthorizeSecurityGroupIngressCommand", () => ({}))
+    sdk.setHandler("RunInstancesCommand", () => {
+      throw Object.assign(new Error("Not enough capacity for t3.nano."), {
+        name: "InsufficientInstanceCapacity",
+      })
+    })
+
+    await user.click(await screen.findByRole("radio", { name: "Oracle Linux" }))
+    await user.click(screen.getByRole("button", { name: "Create Instance" }))
+
+    await expect(
+      screen.findByText(
+        "InsufficientInstanceCapacity: Not enough capacity for t3.nano.",
+      ),
+    ).resolves.toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole("button", { name: "Create Instance" }),
+    ).toBeEnabled()
   })
 })

@@ -2,7 +2,7 @@ import type { SecurityGroup } from "@aws-sdk/client-ec2"
 import { useState } from "react"
 
 import { EditorShell } from "@/components/editor-shell"
-import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
+import { SecurityGroupPicker } from "@/components/security-group-picker"
 import { sameSet } from "@/lib/utils"
 
 interface SecurityGroupsEditorProps {
@@ -50,7 +50,7 @@ export function SecurityGroupsEditor({
       successMsg="Security groups updated."
     >
       <div className="flex flex-col gap-1 p-4">
-        <SecurityGroupCheckboxes
+        <SecurityGroupPicker
           emptyText="No security groups in this VPC."
           groups={available}
           onChange={setSelected}

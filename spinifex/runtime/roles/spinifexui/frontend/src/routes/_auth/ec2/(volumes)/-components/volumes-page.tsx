@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -19,6 +20,7 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime, getNameTag } from "@/lib/utils"
 import { useDeleteVolume } from "@/mutations/ec2"
 
+import { CreateVolumePage } from "./create-volume-page"
 import { VolumeDetails } from "./volume-details"
 
 const COLUMNS: DataColumn<Volume>[] = [
@@ -138,7 +140,22 @@ export function VolumesPage({
 
   let panel: ReactNode = null
 
-  if (open?.VolumeId) {
+  if (search.create) {
+    panel = (
+      <CreatePanel
+        onClose={() => {
+          onSearchChange(CLOSED_PANEL)
+        }}
+        title="Create volume"
+      >
+        <CreateVolumePage
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.VolumeId) {
     panel = (
       <VolumeDetails
         key={open.VolumeId}
@@ -158,7 +175,16 @@ export function VolumesPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/ec2/create-volume">
+          <Link
+            className={buttonVariants()}
+            from="/ec2/describe-volumes/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create volume
           </Link>

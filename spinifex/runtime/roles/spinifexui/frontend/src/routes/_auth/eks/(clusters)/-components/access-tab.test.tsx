@@ -1,12 +1,14 @@
-import { fireEvent, screen } from "@testing-library/react"
+import { fireEvent, screen, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
+const send = vi.hoisted(() => vi.fn())
+
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(vi.fn())
+  return mockAwsClients(send)
 })
 
 import { AccessTab } from "./access-tab"
@@ -71,5 +73,29 @@ describe("AccessTab", () => {
     expect(
       screen.getByText(`Delete access entry for "${PRINCIPAL}"?`),
     ).toBeInTheDocument()
+  })
+
+  it("shows a refused create in the dialog and keeps it open", async () => {
+    send.mockRejectedValueOnce(
+      Object.assign(new Error("The access entry already exists."), {
+        name: "ResourceInUseException",
+      }),
+    )
+    renderWithClient(<AccessTab clusterName={CLUSTER} />, seed())
+    fireEvent.click(screen.getByRole("button", { name: "Add access entry" }))
+    fireEvent.change(screen.getByLabelText("IAM principal ARN"), {
+      target: { value: PRINCIPAL },
+    })
+    const dialog = screen.getByRole("alertdialog")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }))
+
+    await expect(
+      within(dialog).findByText(
+        "ResourceInUseException: The access entry already exists.",
+      ),
+    ).resolves.toBeInTheDocument()
+    expect(send.mock.calls[0]?.[0].input.principalArn).toBe(PRINCIPAL)
+    expect(screen.getByLabelText("IAM principal ARN")).toHaveValue(PRINCIPAL)
+    expect(within(dialog).getByRole("button", { name: "Create" })).toBeEnabled()
   })
 })

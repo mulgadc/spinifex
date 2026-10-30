@@ -31,6 +31,7 @@ import {
 import { iamGroupQueryOptions, iamUsersQueryOptions } from "@/queries/iam"
 
 import { AttachedPoliciesPanel } from "../../-components/attached-policies-panel"
+import { iamDeleteWarning } from "../../-components/delete-prerequisites"
 import { IamItem, IamItems } from "../../-components/iam-items"
 import { InlinePoliciesPanel } from "../../-components/inline-policies-panel"
 
@@ -236,7 +237,7 @@ function Settings({
         </div>
       </PanelSection>
       <ResourceDeleteDialog
-        description={`Delete the group ${groupName}? This cannot be undone.`}
+        description={`Delete the group ${groupName}? ${iamDeleteWarning("group")}`}
         identifier={groupName}
         mutation={remove}
         onDeleted={onDeleted}

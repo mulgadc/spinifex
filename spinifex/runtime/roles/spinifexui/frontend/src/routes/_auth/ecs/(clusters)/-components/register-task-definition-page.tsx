@@ -1,12 +1,24 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useNavigate } from "@tanstack/react-router"
 import { Plus, Trash2 } from "lucide-react"
-import { Controller, useFieldArray, useForm } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartial,
+  useFieldArray,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
-import { ErrorBanner } from "@/components/error-banner"
+import {
+  CliCommandPanel,
+  type CliCommand,
+  cliPlaceholder,
+  commandFlag,
+  optionalFlag,
+  shellSingleQuote,
+} from "@/components/cli-command-panel"
+import { PanelSection } from "@/components/detail-panel"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
@@ -19,15 +31,24 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { useRegisterTaskDefinition } from "@/mutations/ecs"
+import {
+  buildContainerDefinition,
+  useRegisterTaskDefinition,
+} from "@/mutations/ecs"
 import {
   NETWORK_MODES,
   registerTaskDefinitionSchema,
   type RegisterTaskDefinitionFormData,
 } from "@/types/ecs"
 
-export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
-  const navigate = useNavigate()
+interface RegisterTaskDefinitionPageProps {
+  // Called with the registered family, or with nothing on cancel.
+  onClose: (family?: string) => void
+}
+
+export function RegisterTaskDefinitionPage({
+  onClose,
+}: RegisterTaskDefinitionPageProps) {
   const register = useRegisterTaskDefinition()
 
   const {
@@ -53,39 +74,26 @@ export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
   })
 
   const ports = useFieldArray({ control, name: "portMappings" })
-
-  function done() {
-    void navigate(
-      cluster
-        ? {
-            to: "/ecs/list-clusters/$clusterName",
-            params: { clusterName: cluster },
-          }
-        : { to: "/ecs/list-clusters" },
-    )
-  }
+  const values = useWatch({ control })
 
   async function onSubmit(data: RegisterTaskDefinitionFormData) {
-    await register.mutateAsync(data)
-    done()
+    try {
+      await register.mutateAsync(data)
+      onClose(data.family)
+    } catch {
+      // Left open, with the refusal shown beside the submit button.
+    }
   }
 
   return (
-    <>
-      <BackLink to="/ecs/list-clusters">Clusters</BackLink>
-      <PageHeading
-        subtitle="Register a single-container task definition"
-        title="Register Task Definition"
-      />
-
-      {register.isError && (
-        <ErrorBanner
-          error={register.error}
-          msg="Failed to register task definition."
-        />
-      )}
-
-      <form className="max-w-2xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={register.isPending || isSubmitting}
+      >
+        <p className="text-sm text-muted-foreground">
+          A task definition with a single container.
+        </p>
         <Field>
           <FieldTitle>
             <label htmlFor="family">Family</label>
@@ -133,8 +141,7 @@ export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
           </Field>
         </div>
 
-        <div className="rounded-lg border bg-card p-4">
-          <h2 className="mb-4 font-semibold">Container</h2>
+        <PanelSection title="Container">
           <div className="space-y-4">
             <Field>
               <FieldTitle>
@@ -267,16 +274,71 @@ export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
               ))}
             </div>
           </div>
-        </div>
+        </PanelSection>
+
+        <CliCommandPanel
+          commands={buildRegisterTaskDefinitionCommands(values)}
+        />
 
         <FormActions
+          error={register.error}
+          errorMsg="Failed to register task definition"
           isPending={register.isPending}
           isSubmitting={isSubmitting}
-          onCancel={done}
+          onCancel={() => {
+            onClose()
+          }}
           pendingLabel="Registering…"
-          submitLabel="Register Task Definition"
+          submitLabel="Register task definition"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
+}
+
+function buildRegisterTaskDefinitionCommands(
+  values: DeepPartial<RegisterTaskDefinitionFormData>,
+): CliCommand[] {
+  const container = buildContainerDefinition({
+    family: "",
+    networkMode: "bridge",
+    cpu: "",
+    memory: "",
+    containerName: values.containerName ?? "",
+    image: values.image ?? "",
+    containerCpu: values.containerCpu ?? "",
+    containerMemory: values.containerMemory ?? "",
+    containerGpuCount: Number.isFinite(values.containerGpuCount)
+      ? (values.containerGpuCount ?? 0)
+      : 0,
+    essential: values.essential ?? true,
+    portMappings: (values.portMappings ?? []).flatMap((pm) =>
+      pm?.containerPort && pm.protocol
+        ? [{ containerPort: pm.containerPort, protocol: pm.protocol }]
+        : [],
+    ),
+  })
+
+  return [
+    {
+      label: "Register task definition",
+      parts: [
+        {
+          type: "bin",
+          value: "AWS_PROFILE=spinifex aws ecs register-task-definition",
+        },
+        ...commandFlag(
+          "\\\n  --family",
+          cliPlaceholder(values.family ?? "", "family"),
+        ),
+        ...commandFlag("\\\n  --network-mode", values.networkMode ?? "bridge"),
+        ...optionalFlag("\\\n  --cpu", values.cpu),
+        ...optionalFlag("\\\n  --memory", values.memory),
+        ...commandFlag(
+          "\\\n  --container-definitions",
+          shellSingleQuote(JSON.stringify([container])),
+        ),
+      ],
+    },
+  ]
 }

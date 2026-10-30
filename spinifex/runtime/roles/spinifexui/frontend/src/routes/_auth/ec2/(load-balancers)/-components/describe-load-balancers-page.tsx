@@ -1,9 +1,10 @@
 import type { LoadBalancer } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
-import { useState } from "react"
+import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -19,6 +20,7 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteLoadBalancer } from "@/mutations/elbv2"
 
+import { CreateLoadBalancerPage } from "./create-load-balancer-page"
 import { LoadBalancerDetails } from "./load-balancer-details"
 
 const COLUMNS: DataColumn<LoadBalancer>[] = [
@@ -136,25 +138,46 @@ export function DescribeLoadBalancersPage({
     loadBalancers.map((lb) => [lb.LoadBalancerArn, lb.LoadBalancerName]),
   )
 
+  let panel: ReactNode = null
+
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Create load balancer">
+        <CreateLoadBalancerPage
+          onClose={(arn) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: arn ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.LoadBalancerArn) {
+    panel = (
+      <LoadBalancerDetails
+        key={open.LoadBalancerArn}
+        lb={open}
+        onClose={closePanel}
+        onTabChange={(tab) => {
+          onSearchChange({ tab })
+        }}
+        tab={search.tab}
+      />
+    )
+  }
+
   return (
-    <ResourceView
-      panel={
-        open?.LoadBalancerArn && (
-          <LoadBalancerDetails
-            key={open.LoadBalancerArn}
-            lb={open}
-            onClose={closePanel}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            tab={search.tab}
-          />
-        )
-      }
-    >
+    <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/ec2/create-load-balancer">
+          <Link
+            className={buttonVariants()}
+            from="/ec2/describe-load-balancers/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create load balancer
           </Link>

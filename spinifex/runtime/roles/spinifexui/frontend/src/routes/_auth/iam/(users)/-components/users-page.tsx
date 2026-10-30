@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -18,6 +19,8 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteUser } from "@/mutations/iam"
 
+import { iamDeleteWarning } from "../../-components/delete-prerequisites"
+import { CreateUserPage } from "./create-user-page"
 import { UserDetails } from "./user-details"
 
 const COLUMNS: DataColumn<User>[] = [
@@ -91,24 +94,48 @@ export function UsersPage({ users, search, onSearchChange }: UsersPageProps) {
   return (
     <ResourceView
       panel={
-        open && (
-          <UserDetails
-            key={open.UserName}
+        search.create ? (
+          <CreatePanel
             onClose={() => {
               onSearchChange(CLOSED_PANEL)
             }}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            tab={search.tab}
-            user={open}
-          />
+            title="Create user"
+          >
+            <CreateUserPage
+              onClose={(id) => {
+                onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+              }}
+            />
+          </CreatePanel>
+        ) : (
+          open && (
+            <UserDetails
+              key={open.UserName}
+              onClose={() => {
+                onSearchChange(CLOSED_PANEL)
+              }}
+              onTabChange={(tab) => {
+                onSearchChange({ tab })
+              }}
+              tab={search.tab}
+              user={open}
+            />
+          )
         )
       }
     >
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/iam/create-user">
+          <Link
+            className={buttonVariants()}
+            from="/iam/list-users/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create user
           </Link>
@@ -120,7 +147,7 @@ export function UsersPage({ users, search, onSearchChange }: UsersPageProps) {
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>
           <BulkDelete
             deleteOne={remove.mutateAsync}
-            description="Detach their policies, delete their access keys and remove them from their groups first, or the delete is refused. This cannot be undone."
+            description={iamDeleteWarning("user", selection.ids.length)}
             ids={selection.ids}
             label={(id) => `${id} (${resourceIds.get(id) ?? ""})`}
             noun={["user", "users"]}

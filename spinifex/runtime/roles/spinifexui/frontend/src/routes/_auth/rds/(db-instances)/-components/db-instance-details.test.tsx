@@ -9,6 +9,7 @@ import { rdsDBInstanceQueryOptions } from "@/queries/rds"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+const mockNavigate = vi.hoisted(() => vi.fn())
 
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
@@ -19,7 +20,7 @@ vi.mock("@/lib/awsClient", async () => {
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
 
-  return await mockRouter(importOriginal)
+  return await mockRouter(importOriginal, { navigate: mockNavigate })
 })
 
 import { DBInstanceDetails } from "./db-instance-details"
@@ -422,10 +423,13 @@ describe("DBInstanceDetails", () => {
     ).toBeInTheDocument()
   })
 
-  it("opens the snapshot dialog for this instance from the Actions menu", async () => {
+  it("opens the snapshot form for this instance from the Actions menu", async () => {
     renderWithClient(<Details />, seed())
     await chooseAction("Take snapshot")
-    expect(screen.getByText("Take DB Snapshot")).toBeInTheDocument()
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: "/rds/describe-db-snapshots",
+      search: { create: true, instance: "orders-db" },
+    })
   })
 
   // backing-up is reachable only from a settled instance, so the action is

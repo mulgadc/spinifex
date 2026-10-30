@@ -111,8 +111,8 @@ function Settings({
             )}
             <Link
               className={buttonVariants({ size: "sm", variant: "outline" })}
-              search={{ volumeId: id }}
-              to="/ec2/create-snapshot"
+              search={{ create: true, volume: id }}
+              to="/ec2/describe-snapshots"
             >
               <Camera data-icon="inline-start" />
               Create snapshot

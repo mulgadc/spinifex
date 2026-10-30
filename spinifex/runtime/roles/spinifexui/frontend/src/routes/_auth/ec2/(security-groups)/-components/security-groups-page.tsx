@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -17,6 +18,7 @@ import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { useDeleteSecurityGroup } from "@/mutations/ec2"
 
+import { CreateSecurityGroupPage } from "./create-security-group-page"
 import { SecurityGroupDetails } from "./security-group-details"
 
 // Rules count one per source, as AWS lists and revokes them.
@@ -145,7 +147,22 @@ export function SecurityGroupsPage({
 
   let panel: ReactNode = null
 
-  if (open?.GroupId) {
+  if (search.create) {
+    panel = (
+      <CreatePanel
+        onClose={() => {
+          onSearchChange(CLOSED_PANEL)
+        }}
+        title="Create security group"
+      >
+        <CreateSecurityGroupPage
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.GroupId) {
     panel = (
       <SecurityGroupDetails
         key={open.GroupId}
@@ -165,7 +182,16 @@ export function SecurityGroupsPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/ec2/create-security-group">
+          <Link
+            className={buttonVariants()}
+            from="/ec2/describe-security-groups/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create security group
           </Link>

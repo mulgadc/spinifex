@@ -24,6 +24,7 @@ import {
 } from "@/queries/iam"
 
 import { AttachedPoliciesPanel } from "../../-components/attached-policies-panel"
+import { iamDeleteWarning } from "../../-components/delete-prerequisites"
 import { IamItem, IamItems } from "../../-components/iam-items"
 import { InlinePoliciesPanel } from "../../-components/inline-policies-panel"
 import { PolicyDocumentViewer } from "../../-components/policy-document-viewer"
@@ -157,7 +158,7 @@ function Settings({
         </div>
       </PanelSection>
       <ResourceDeleteDialog
-        description={`Delete the role ${roleName}? This cannot be undone.`}
+        description={`Delete the role ${roleName}? ${iamDeleteWarning("role")}`}
         identifier={roleName}
         mutation={remove}
         onDeleted={onDeleted}

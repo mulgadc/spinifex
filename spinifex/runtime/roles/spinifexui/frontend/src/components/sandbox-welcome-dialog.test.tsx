@@ -38,7 +38,7 @@ describe("SandboxWelcomeDialog", () => {
 
     expect(
       screen.getByRole("link", { name: /Launch an instance/ }),
-    ).toHaveAttribute("href", "/ec2/run-instances")
+    ).toHaveAttribute("href", "/ec2/describe-instances")
     expect(
       screen.getByRole("link", { name: /Create a bucket/ }),
     ).toHaveAttribute("href", "/s3/ls")

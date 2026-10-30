@@ -1,11 +1,11 @@
 import type { Instance } from "@aws-sdk/client-ec2"
 import { Link } from "@tanstack/react-router"
 import { Pause, Play, Plus, RotateCw, Search, Trash2 } from "lucide-react"
-import { type ReactNode, Suspense, useState } from "react"
+import { type ReactNode, useState } from "react"
 
+import { CreatePanel } from "@/components/create-panel"
 import { type DataColumn, DataTable } from "@/components/data-table"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { DetailPanel, PanelSpinner } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
@@ -38,7 +38,16 @@ export interface InstancesSearch extends PanelSearch {
   q: string
   state: StateFilter
   sort: string
+  // The launch template the launch form starts from, when opened from one.
+  template: string
+  templateVersion: string
 }
+
+export const CLOSED_INSTANCES_PANEL = {
+  ...CLOSED_PANEL,
+  template: "",
+  templateVersion: "",
+} satisfies Partial<InstancesSearch>
 
 export function instanceName(instance: Instance): string | undefined {
   return instance.Tags?.find((tag) => tag.Key === "Name")?.Value
@@ -103,7 +112,7 @@ const COLUMNS: DataColumn<Instance>[] = [
           from="/ec2/describe-instances/"
           search={(previous) => ({
             ...previous,
-            ...CLOSED_PANEL,
+            ...CLOSED_INSTANCES_PANEL,
             selected: id,
           })}
           to="."
@@ -331,24 +340,30 @@ export function InstancesPage({
   )
 
   function closePanel() {
-    onSearchChange(CLOSED_PANEL)
+    onSearchChange(CLOSED_INSTANCES_PANEL)
+  }
+
+  function showInstance(id: string) {
+    onSearchChange({ ...CLOSED_INSTANCES_PANEL, selected: id })
   }
 
   let panel: ReactNode = null
 
   if (search.create) {
     panel = (
-      <DetailPanel
-        closeLabel="Close launch form"
-        label="Launch instance"
-        onClose={closePanel}
-        size="wide"
-        title="Launch instance"
-      >
-        <Suspense fallback={<PanelSpinner />}>
-          <RunInstancesPage onClose={closePanel} />
-        </Suspense>
-      </DetailPanel>
+      <CreatePanel onClose={closePanel} title="Launch instance">
+        <RunInstancesPage
+          launchTemplateId={search.template || undefined}
+          launchTemplateVersion={search.templateVersion || undefined}
+          onClose={(id) => {
+            if (id) {
+              showInstance(id)
+            } else {
+              closePanel()
+            }
+          }}
+        />
+      </CreatePanel>
     )
   } else if (open) {
     panel = (
@@ -374,7 +389,7 @@ export function InstancesPage({
             from="/ec2/describe-instances/"
             search={(previous) => ({
               ...previous,
-              ...CLOSED_PANEL,
+              ...CLOSED_INSTANCES_PANEL,
               create: true,
             })}
             to="."
@@ -463,7 +478,13 @@ export function InstancesPage({
                       size: "sm",
                       variant: "outline",
                     })}
-                    to="/ec2/run-instances"
+                    from="/ec2/describe-instances/"
+                    search={(previous) => ({
+                      ...previous,
+                      ...CLOSED_INSTANCES_PANEL,
+                      create: true,
+                    })}
+                    to="."
                   >
                     Launch your first instance
                   </Link>
@@ -473,7 +494,7 @@ export function InstancesPage({
             activeId={open?.InstanceId}
             getRowId={(instance) => instance.InstanceId ?? ""}
             onRowClick={(id) => {
-              onSearchChange({ ...CLOSED_PANEL, selected: id })
+              showInstance(id)
             }}
             onSelectedChange={(next) => {
               setSelected(next)

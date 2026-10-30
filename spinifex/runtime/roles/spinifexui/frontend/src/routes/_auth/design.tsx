@@ -1,26 +1,17 @@
-import type { QueryClient } from "@tanstack/react-query"
-import { createFileRoute } from "@tanstack/react-router"
-
-import { requireAdmin } from "@/lib/require-admin"
+import { createFileRoute, notFound } from "@tanstack/react-router"
 
 import { DesignCataloguePage } from "./-components/design/design-catalogue-page"
 
-// The catalogue is a reference for building pages, so it is open in dev
-// builds and admin-only in a release.
-async function requireDevOrAdmin(options: {
-  context: { queryClient: QueryClient }
-}): Promise<void> {
-  if (import.meta.env.DEV) {
-    return
-  }
-
-  await requireAdmin(options)
-}
-
+// The catalogue is for building the console, not using it: a release build
+// answers not found, and the dead branch drops the catalogue from the bundle.
 export const Route = createFileRoute("/_auth/design")({
-  beforeLoad: requireDevOrAdmin,
+  beforeLoad: () => {
+    if (!import.meta.env.DEV) {
+      notFound({ throw: true })
+    }
+  },
   head: () => ({
     meta: [{ title: "Design system | Mulga" }],
   }),
-  component: DesignCataloguePage,
+  component: import.meta.env.DEV ? DesignCataloguePage : () => null,
 })

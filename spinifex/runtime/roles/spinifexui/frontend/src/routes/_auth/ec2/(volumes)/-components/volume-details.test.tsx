@@ -50,16 +50,42 @@ const AVAILABLE: Volume = {
   VolumeId: "vol-2",
   Size: 20,
   State: "available",
+  AvailabilityZone: "us-east-1a",
   Attachments: [],
 }
 
-function renderVolume(volume: Volume, tab: PanelTab = "overview") {
+const INSTANCES = [
+  {
+    InstanceId: "i-9",
+    State: { Name: "running" },
+    Placement: { AvailabilityZone: "us-east-1a" },
+  },
+  {
+    InstanceId: "i-stopped",
+    State: { Name: "stopped" },
+    Placement: { AvailabilityZone: "us-east-1a" },
+  },
+  {
+    InstanceId: "i-pending",
+    State: { Name: "pending" },
+    Placement: { AvailabilityZone: "us-east-1a" },
+  },
+  {
+    InstanceId: "i-elsewhere",
+    State: { Name: "running" },
+    Placement: { AvailabilityZone: "us-east-1b" },
+  },
+]
+
+function renderVolume(
+  volume: Volume,
+  tab: PanelTab = "overview",
+  instances = INSTANCES,
+) {
   sdk.send.mockClear()
   const qc = createTestQueryClient()
   qc.setQueryData(["ec2", "instances"], {
-    Reservations: [
-      { Instances: [{ InstanceId: "i-9", State: { Name: "running" } }] },
-    ],
+    Reservations: [{ Instances: instances }],
   })
   renderWithClient(
     <VolumeDetails
@@ -116,6 +142,31 @@ describe("VolumeDetails", () => {
     expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
       input: { VolumeId: "vol-2", InstanceId: "i-9" },
     })
+  })
+
+  it("offers running and stopped instances in the volume's zone only", async () => {
+    const user = userEvent.setup()
+    renderVolume(AVAILABLE)
+
+    await user.click(screen.getByRole("button", { name: "Attach" }))
+    await user.click(screen.getByLabelText("Instance"))
+    await screen.findByRole("option", { name: "i-9" })
+
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent),
+    ).toStrictEqual(["i-9", "i-stopped"])
+  })
+
+  it("says why there is nothing to attach to", async () => {
+    const user = userEvent.setup()
+    renderVolume(AVAILABLE, "overview", INSTANCES.slice(2))
+
+    await user.click(screen.getByRole("button", { name: "Attach" }))
+
+    await expect(
+      screen.findByText("No running or stopped instances in us-east-1a."),
+    ).resolves.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Attach" })).toBeDisabled()
   })
 
   it("keeps resize and delete visible but disabled while attached", () => {

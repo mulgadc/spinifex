@@ -1,20 +1,13 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { CreateInternetGatewayPage } from "./-components/create-internet-gateway-page"
-
+// The form opens in the list's side panel; this address is kept for links.
 export const Route = createFileRoute(
   "/_auth/ec2/(internet-gateways)/create-internet-gateway",
 )({
-  head: () => ({
-    meta: [
-      {
-        title: "Create Internet Gateway | EC2 | Mulga",
-      },
-    ],
-  }),
-  component: RouteComponent,
+  beforeLoad: () => {
+    throw redirect({
+      to: "/ec2/describe-internet-gateways",
+      search: { create: true },
+    })
+  },
 })
-
-function RouteComponent() {
-  return <CreateInternetGatewayPage />
-}

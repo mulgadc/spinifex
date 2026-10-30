@@ -48,8 +48,8 @@ export function ClusterServices({ clusterName }: { clusterName: string }) {
         )}
         <Link
           className={buttonVariants({ size: "sm", variant: "outline" })}
-          search={{ cluster: clusterName }}
-          to="/ecs/create-service"
+          search={{ selected: clusterName, launch: "service" }}
+          to="/ecs/list-clusters"
         >
           <Plus data-icon="inline-start" />
           Create service

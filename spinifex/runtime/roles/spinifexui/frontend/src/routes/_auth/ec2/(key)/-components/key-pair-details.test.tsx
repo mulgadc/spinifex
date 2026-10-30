@@ -29,10 +29,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal)
 })
 
-import { CLOSED_PANEL } from "@/lib/panel-search"
-
 import { KeyPairDetails } from "./key-pair-details"
-import { KeyPairsPage } from "./key-pairs-page"
+import { CLOSED_KEY_PAIRS_PANEL, KeyPairsPage } from "./key-pairs-page"
 
 const KEYS: KeyPairInfo[] = [
   { KeyPairId: "key-2", KeyName: "zeta", KeyType: "ed25519" },
@@ -72,7 +70,7 @@ describe("KeyPairsPage", () => {
       <KeyPairsPage
         keyPairs={KEYS}
         onSearchChange={vi.fn()}
-        search={CLOSED_PANEL}
+        search={CLOSED_KEY_PAIRS_PANEL}
       />,
       createTestQueryClient(),
     )

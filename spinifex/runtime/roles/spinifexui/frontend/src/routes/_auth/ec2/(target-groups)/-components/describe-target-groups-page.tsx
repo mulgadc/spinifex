@@ -2,9 +2,10 @@ import type { TargetGroup } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
-import { useState } from "react"
+import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -19,6 +20,7 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { useDeleteTargetGroup } from "@/mutations/elbv2"
 import { elbv2TargetHealthQueryOptions } from "@/queries/elbv2"
 
+import { CreateTargetGroupPage } from "./create-target-group-page"
 import { TargetGroupDetails } from "./target-group-details"
 
 // Both health columns read the same query, so it is fetched once per group.
@@ -168,25 +170,46 @@ export function DescribeTargetGroupsPage({
     targetGroups.map((tg) => [tg.TargetGroupArn, tg.TargetGroupName]),
   )
 
+  let panel: ReactNode = null
+
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Create target group">
+        <CreateTargetGroupPage
+          onClose={(arn) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: arn ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.TargetGroupArn) {
+    panel = (
+      <TargetGroupDetails
+        key={open.TargetGroupArn}
+        onClose={closePanel}
+        onTabChange={(tab) => {
+          onSearchChange({ tab })
+        }}
+        tab={search.tab}
+        tg={open}
+      />
+    )
+  }
+
   return (
-    <ResourceView
-      panel={
-        open?.TargetGroupArn && (
-          <TargetGroupDetails
-            key={open.TargetGroupArn}
-            onClose={closePanel}
-            onTabChange={(tab) => {
-              onSearchChange({ tab })
-            }}
-            tab={search.tab}
-            tg={open}
-          />
-        )
-      }
-    >
+    <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/ec2/create-target-group">
+          <Link
+            className={buttonVariants()}
+            from="/ec2/describe-target-groups/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create target group
           </Link>

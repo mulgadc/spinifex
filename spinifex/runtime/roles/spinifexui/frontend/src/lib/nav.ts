@@ -242,7 +242,8 @@ export const NAV: readonly NavGroup[] = [
     service: "RDS",
     items: [
       {
-        label: "DB Instances",
+        label: "RDS",
+        tooltip: "RDS databases",
         icon: Database,
         to: "/rds/describe-db-instances",
         create: { label: "Create database", to: "/rds/create-db-instance" },

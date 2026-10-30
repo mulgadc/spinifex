@@ -1,1 +1,0 @@
-import{T as e,w as t}from"./utils-Vn6Vssm8.js";import{t as n}from"./create-placement-group-page-RPIeWFeQ.js";var r=t(),i=e();function a(){let e=(0,r.c)(1),t;return e[0]===Symbol.for(`react.memo_cache_sentinel`)?(t=(0,i.jsx)(n,{}),e[0]=t):t=e[0],t}export{a as component};

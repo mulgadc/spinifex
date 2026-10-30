@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -19,7 +20,18 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime, getNameTag } from "@/lib/utils"
 import { useDeleteSnapshot } from "@/mutations/ec2"
 
+import { CreateSnapshotPage } from "./create-snapshot-page"
 import { SnapshotDetails } from "./snapshot-details"
+
+// The create form can open on a chosen volume, as from the volume's panel.
+export interface SnapshotsSearch extends PanelSearch {
+  volume: string
+}
+
+export const CLOSED_SNAPSHOTS_PANEL = {
+  ...CLOSED_PANEL,
+  volume: "",
+} satisfies SnapshotsSearch
 
 const COLUMNS: DataColumn<Snapshot>[] = [
   {
@@ -36,7 +48,7 @@ const COLUMNS: DataColumn<Snapshot>[] = [
           from="/ec2/describe-snapshots/"
           search={(previous) => ({
             ...previous,
-            ...CLOSED_PANEL,
+            ...CLOSED_SNAPSHOTS_PANEL,
             selected: id,
           })}
           to="."
@@ -110,8 +122,8 @@ const COLUMNS: DataColumn<Snapshot>[] = [
 
 interface SnapshotsPageProps {
   snapshots: readonly Snapshot[]
-  search: PanelSearch
-  onSearchChange: (search: Partial<PanelSearch>) => void
+  search: SnapshotsSearch
+  onSearchChange: (search: Partial<SnapshotsSearch>) => void
 }
 
 export function SnapshotsPage({
@@ -130,7 +142,7 @@ export function SnapshotsPage({
     snapshots.map((snapshot) => snapshot.SnapshotId ?? ""),
     open !== undefined,
     () => {
-      onSearchChange(CLOSED_PANEL)
+      onSearchChange(CLOSED_SNAPSHOTS_PANEL)
     },
   )
 
@@ -145,12 +157,28 @@ export function SnapshotsPage({
 
   let panel: ReactNode = null
 
-  if (open?.SnapshotId) {
+  if (search.create) {
+    panel = (
+      <CreatePanel
+        onClose={() => {
+          onSearchChange(CLOSED_SNAPSHOTS_PANEL)
+        }}
+        title="Create snapshot"
+      >
+        <CreateSnapshotPage
+          volumeId={search.volume}
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_SNAPSHOTS_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.SnapshotId) {
     panel = (
       <SnapshotDetails
         key={open.SnapshotId}
         onClose={() => {
-          onSearchChange(CLOSED_PANEL)
+          onSearchChange(CLOSED_SNAPSHOTS_PANEL)
         }}
         onTabChange={(tab) => {
           onSearchChange({ tab })
@@ -165,7 +193,16 @@ export function SnapshotsPage({
     <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Link className={buttonVariants()} to="/ec2/create-snapshot">
+          <Link
+            className={buttonVariants()}
+            from="/ec2/describe-snapshots/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_SNAPSHOTS_PANEL,
+              create: true,
+            })}
+            to="."
+          >
             <Plus data-icon="inline-start" />
             Create snapshot
           </Link>
@@ -197,7 +234,7 @@ export function SnapshotsPage({
         empty="No snapshots yet."
         getRowId={(snapshot) => snapshot.SnapshotId ?? ""}
         onRowClick={(id) => {
-          onSearchChange({ ...CLOSED_PANEL, selected: id })
+          onSearchChange({ ...CLOSED_SNAPSHOTS_PANEL, selected: id })
         }}
         onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}

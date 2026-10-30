@@ -2,7 +2,8 @@
 
 The console's tokens, primitives and the rules that hold pages to them.
 The live catalogue is the `/design` route: every token and primitive below rendered in both themes.
-It is open to admins in production and to anyone under `vite dev`.
+It is served by the Vite dev server only and is absent from release builds; a release build answers it with "Page not found".
+The rules on it are proposed as `PROP-CONSOLEUI-001` in `docs/development/proposals/console-design-system/` in the mulga repository, and bind nobody until accepted.
 
 Source: `spinifex/runtime/roles/spinifexui/frontend/`.
 Tokens are in `src/styles.css`, primitives in `src/components/ui/`, and the catalogue in `src/routes/_auth/-components/design/`.
@@ -145,9 +146,11 @@ Four lint layers keep pages on the system.
 | `shadcn/no-unknown-classes` | all source, not tests | a class Tailwind does not generate, such as a typo or a removed token |
 | `shadcn/no-restyle` | all source | a page passing layout or colour classes to a primitive |
 | `eslint/no-restricted-imports` | `src/routes/**` | a route importing a chart library directly |
-| `src/routes/route-files.test.ts` | test suite | a new hand-written `<table>` in a route |
+| `src/routes/route-files.test.ts` | test suite | a route that builds a table by hand, with `<table>` or the `ui/table` primitives |
+| `design-coverage.test.ts` | test suite | a shared component in `src/components` that `/design` neither shows nor lists with a reason |
 
-The table test is a ratchet: `HAND_WRITTEN_TABLES` lists the routes that still have one, it fails when a new file adds one, and it fails when a listed file no longer has one so the list only shrinks.
+The table test allows two files, each with its reason: the catalogue's specimen of the `ui/table` primitives, and the RDS parameter editor, an editable grid.
+Every other list is a `DataTable`, and the test also fails when an allowed file stops building a table so the list cannot go stale.
 
 ## Shell
 
@@ -247,6 +250,18 @@ Modelled on UniFi's console: a click on a row opens the resource in a panel besi
 - **Actions.** State actions sit in the summary as a button group, and the rest go in an Actions menu, Unikraft style. Stop, Reboot and every destructive action confirm in a dialog.
 - **Loading.** A panel or page still loading shows `PanelSpinner`, a centred spinner on the background, not a grey skeleton block.
 - **`DetailCard`, `DetailRow` and `ListCard` are retired.** Every resource page uses the panel sections instead.
+
+## Create flows
+
+Every create flow opens in the side panel over its list, through `CreatePanel`, and never in a dialog or on a page of its own.
+
+- **URL.** `create=true` opens it, plus a list-local field where the flow needs context (`volume` for a snapshot, `instance` for an RDS snapshot, `launch=service|task` on ECS clusters). The old `create-*` addresses redirect to the list with the panel open, so links and bookmarks keep working.
+- **Form.** The fields come in the order AWS asks for them. Settings that are on or off are `Switch`es, and a multi-select picker (subnets, security groups) is a `SwitchList`, a boxed list with one switch per row. Checkboxes only select table rows.
+- **CLI.** Every create form ends with a `CliCommandPanel` showing the AWS CLI commands that send the same request, built from the form's live values and only the flags the console actually sends.
+- **Submit.** `FormActions` turns the submit button into a spinner with its pending label in place, and `FormLock`, a native `<fieldset disabled>`, disables every control above it until the request settles. Nothing above the form appears or moves, and the panel does not scroll.
+- **Failure.** A refused request shows beside the button through `FormActions`'s `error`, and the form unlocks. The handler wraps only the mutation call in `try`, with an empty `catch` that returns, because react-hook-form rethrows whatever the handler throws and the error is already on screen from the mutation's state.
+- **Success.** `onClose(id)` closes the panel and selects the new resource, where the list has a panel to select it in.
+- **Appliance images.** A create that needs an ECS, EKS or RDS appliance image shows the missing-image callout inside its panel, never on the list, and only the step that needs the image is blocked.
 
 ## Charts
 

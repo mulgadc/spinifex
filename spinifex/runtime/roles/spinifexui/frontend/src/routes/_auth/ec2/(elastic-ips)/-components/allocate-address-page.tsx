@@ -1,17 +1,14 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useNavigate } from "@tanstack/react-router"
 import { useForm, useWatch } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
   commandFlag,
   optionalFlag,
 } from "@/components/cli-command-panel"
-import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
 import { Field, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { useAllocateAddress } from "@/mutations/ec2"
@@ -21,28 +18,12 @@ import {
 } from "@/types/ec2"
 
 interface AllocateAddressPageProps {
-  // Given when the form sits in the list's side panel: called with the new
-  // allocation's ID once allocated, or with nothing on cancel.
-  onClose?: (allocationId?: string) => void
+  // Called with the new resource's ID once created, or with nothing on cancel.
+  onClose: (allocationId?: string) => void
 }
 
 export function AllocateAddressPage({ onClose }: AllocateAddressPageProps) {
-  const navigate = useNavigate()
-
-  async function finish(allocationId?: string) {
-    if (onClose) {
-      onClose(allocationId)
-
-      return
-    }
-
-    await (allocationId
-      ? navigate({
-          to: "/ec2/describe-addresses/$id",
-          params: { id: allocationId },
-        })
-      : navigate({ to: "/ec2/describe-addresses" }))
-  }
+  const finish = onClose
 
   const allocateMutation = useAllocateAddress()
 
@@ -59,30 +40,26 @@ export function AllocateAddressPage({ onClose }: AllocateAddressPageProps) {
   const values = useWatch({ control })
 
   const onSubmit = async (data: AllocateAddressFormData) => {
-    const result = await allocateMutation.mutateAsync({
-      name: data.name?.trim() ?? undefined,
-    })
+    let result
 
-    await finish(result.AllocationId)
+    try {
+      result = await allocateMutation.mutateAsync({
+        name: data.name?.trim() ?? undefined,
+      })
+    } catch {
+      // Surfaced beside the submit button through the mutation's error.
+      return
+    }
+
+    finish(result.AllocationId)
   }
 
   return (
-    <>
-      {!onClose && (
-        <>
-          <BackLink to="/ec2/describe-addresses">Back to Elastic IPs</BackLink>
-          <PageHeading title="Allocate Elastic IP" />
-        </>
-      )}
-
-      {allocateMutation.error && (
-        <ErrorBanner
-          error={allocateMutation.error}
-          msg="Failed to allocate Elastic IP"
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={allocateMutation.isPending || isSubmitting}
+      >
         <Field>
           <FieldTitle>
             <label htmlFor="name">Name (optional)</label>
@@ -95,16 +72,18 @@ export function AllocateAddressPage({ onClose }: AllocateAddressPageProps) {
         />
 
         <FormActions
+          error={allocateMutation.error}
+          errorMsg="Failed to allocate Elastic IP"
           isPending={allocateMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => {
-            await finish()
+          onCancel={() => {
+            finish()
           }}
           pendingLabel="Allocating…"
           submitLabel="Allocate"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
 }
 

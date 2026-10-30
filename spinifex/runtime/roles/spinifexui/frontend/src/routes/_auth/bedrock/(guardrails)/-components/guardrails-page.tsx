@@ -4,6 +4,7 @@ import { Plus } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -18,8 +19,10 @@ import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteGuardrail } from "@/mutations/bedrock"
+import { EMPTY_GUARDRAIL_FORM_DEFAULTS } from "@/types/bedrock"
 
 import { GuardrailDetails } from "./guardrail-details"
+import { GuardrailFormPage } from "./guardrail-form-page"
 
 const COLUMNS: DataColumn<GuardrailSummary>[] = [
   {
@@ -84,12 +87,14 @@ export function GuardrailsPage({
     (guardrail) => search.selected !== "" && guardrail.id === search.selected,
   )
 
+  function closePanel() {
+    onSearchChange(CLOSED_PANEL)
+  }
+
   const selection = useRowSelection(
     guardrails.map((guardrail) => guardrail.id ?? ""),
     open !== undefined,
-    () => {
-      onSearchChange(CLOSED_PANEL)
-    },
+    closePanel,
   )
 
   const deleteGuardrail = useDeleteGuardrail()
@@ -100,14 +105,24 @@ export function GuardrailsPage({
 
   let panel: ReactNode = null
 
-  if (open?.id) {
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Create guardrail">
+        <GuardrailFormPage
+          defaultValues={EMPTY_GUARDRAIL_FORM_DEFAULTS}
+          mode="create"
+          onClose={(guardrailId) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: guardrailId ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.id) {
     panel = (
       <GuardrailDetails
         guardrail={open}
         key={open.id}
-        onClose={() => {
-          onSearchChange(CLOSED_PANEL)
-        }}
+        onClose={closePanel}
         onTabChange={(tab) => {
           onSearchChange({ tab })
         }}
@@ -122,7 +137,13 @@ export function GuardrailsPage({
         actions={
           <Link
             className={buttonVariants()}
-            to="/bedrock/list-guardrails/create"
+            from="/bedrock/list-guardrails/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
           >
             <Plus data-icon="inline-start" />
             Create guardrail

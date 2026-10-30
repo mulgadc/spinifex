@@ -4,6 +4,7 @@ import { Plus, Upload } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
   type DataColumn,
   DataTable,
@@ -18,7 +19,18 @@ import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteKeyPair } from "@/mutations/ec2"
 
+import { CreateKeyPairPage } from "./create-key-pair-page"
+import { ImportKeyPairPage } from "./import-key-pair-page"
 import { KeyPairDetails } from "./key-pair-details"
+
+export interface KeyPairsSearch extends PanelSearch {
+  import: boolean
+}
+
+export const CLOSED_KEY_PAIRS_PANEL = {
+  ...CLOSED_PANEL,
+  import: false,
+} satisfies KeyPairsSearch
 
 const COLUMNS: DataColumn<KeyPairInfo>[] = [
   {
@@ -34,7 +46,7 @@ const COLUMNS: DataColumn<KeyPairInfo>[] = [
           from="/ec2/describe-key-pairs/"
           search={(previous) => ({
             ...previous,
-            ...CLOSED_PANEL,
+            ...CLOSED_KEY_PAIRS_PANEL,
             selected: id,
           })}
           to="."
@@ -82,8 +94,8 @@ const COLUMNS: DataColumn<KeyPairInfo>[] = [
 
 interface KeyPairsPageProps {
   keyPairs: readonly KeyPairInfo[]
-  search: PanelSearch
-  onSearchChange: (search: Partial<PanelSearch>) => void
+  search: KeyPairsSearch
+  onSearchChange: (search: Partial<KeyPairsSearch>) => void
 }
 
 export function KeyPairsPage({
@@ -98,12 +110,18 @@ export function KeyPairsPage({
       search.selected !== "" && keyPair.KeyPairId === search.selected,
   )
 
+  function closePanel() {
+    onSearchChange(CLOSED_KEY_PAIRS_PANEL)
+  }
+
+  function showKeyPair(keyPairId?: string) {
+    onSearchChange({ ...CLOSED_KEY_PAIRS_PANEL, selected: keyPairId ?? "" })
+  }
+
   const selection = useRowSelection(
     keyPairs.map((keyPair) => keyPair.KeyPairId ?? ""),
     open !== undefined,
-    () => {
-      onSearchChange(CLOSED_PANEL)
-    },
+    closePanel,
   )
 
   const deleteKeyPair = useDeleteKeyPair()
@@ -114,14 +132,24 @@ export function KeyPairsPage({
 
   let panel: ReactNode = null
 
-  if (open?.KeyPairId) {
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Create key pair">
+        <CreateKeyPairPage onClose={showKeyPair} />
+      </CreatePanel>
+    )
+  } else if (search.import) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Import key pair">
+        <ImportKeyPairPage onClose={showKeyPair} />
+      </CreatePanel>
+    )
+  } else if (open?.KeyPairId) {
     panel = (
       <KeyPairDetails
         key={open.KeyPairId}
         keyPair={open}
-        onClose={() => {
-          onSearchChange(CLOSED_PANEL)
-        }}
+        onClose={closePanel}
         onTabChange={(tab) => {
           onSearchChange({ tab })
         }}
@@ -137,12 +165,27 @@ export function KeyPairsPage({
           <div className="flex gap-2">
             <Link
               className={buttonVariants({ variant: "outline" })}
-              to="/ec2/import-key-pair"
+              from="/ec2/describe-key-pairs/"
+              search={(previous) => ({
+                ...previous,
+                ...CLOSED_KEY_PAIRS_PANEL,
+                import: true,
+              })}
+              to="."
             >
               <Upload data-icon="inline-start" />
               Import key pair
             </Link>
-            <Link className={buttonVariants()} to="/ec2/create-key-pair">
+            <Link
+              className={buttonVariants()}
+              from="/ec2/describe-key-pairs/"
+              search={(previous) => ({
+                ...previous,
+                ...CLOSED_KEY_PAIRS_PANEL,
+                create: true,
+              })}
+              to="."
+            >
               <Plus data-icon="inline-start" />
               Create key pair
             </Link>
@@ -170,7 +213,7 @@ export function KeyPairsPage({
         empty="No key pairs yet."
         getRowId={(keyPair) => keyPair.KeyPairId ?? ""}
         onRowClick={(id) => {
-          onSearchChange({ ...CLOSED_PANEL, selected: id })
+          showKeyPair(id)
         }}
         onSelectedChange={selection.onSelectedChange}
         onSortChange={setSort}

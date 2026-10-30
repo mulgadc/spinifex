@@ -88,11 +88,11 @@ describe("DBParameterGroupsListPage", () => {
     ).toBeInTheDocument()
   })
 
-  it("links the heading action to the create page", () => {
-    renderPage([])
+  it("renders the create form in the panel when asked", () => {
+    renderPage([], { create: true })
     expect(
-      screen.getByRole("link", { name: "Create Parameter Group" }),
-    ).toHaveAttribute("href", "/rds/create-db-parameter-group")
+      screen.getByRole("region", { name: "Create DB parameter group" }),
+    ).toBeInTheDocument()
   })
 
   it("deletes each selected DB parameter group with its own call", async () => {

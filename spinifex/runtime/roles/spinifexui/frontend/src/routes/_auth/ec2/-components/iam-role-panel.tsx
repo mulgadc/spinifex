@@ -49,10 +49,16 @@ export function IamRolePanel({ instanceId }: { instanceId: string }) {
       return
     }
 
-    await associateMutation.mutateAsync({
-      instanceId,
-      instanceProfileName: selectedProfile,
-    })
+    try {
+      await associateMutation.mutateAsync({
+        instanceId,
+        instanceProfileName: selectedProfile,
+      })
+    } catch {
+      // Surfaced in the error banner through the mutation's error.
+      return
+    }
+
     setSelectedProfile("")
   }
 
@@ -61,10 +67,14 @@ export function IamRolePanel({ instanceId }: { instanceId: string }) {
       return
     }
 
-    await disassociateMutation.mutateAsync({
-      associationId: association.AssociationId,
-      instanceId,
-    })
+    try {
+      await disassociateMutation.mutateAsync({
+        associationId: association.AssociationId,
+        instanceId,
+      })
+    } catch {
+      // Surfaced in the error banner through the mutation's error.
+    }
   }
 
   return (
@@ -151,7 +161,8 @@ export function IamRolePanel({ instanceId }: { instanceId: string }) {
                 No instance profiles exist.{" "}
                 <Link
                   className="text-primary hover:underline"
-                  to="/iam/create-instance-profile"
+                  search={{ create: true }}
+                  to="/iam/list-instance-profiles"
                 >
                   Create one
                 </Link>{" "}

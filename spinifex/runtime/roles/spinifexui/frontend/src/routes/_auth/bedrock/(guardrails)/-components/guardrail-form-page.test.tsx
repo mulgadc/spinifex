@@ -28,13 +28,28 @@ import {
 
 import { GuardrailFormPage } from "./guardrail-form-page"
 
-function renderCreate() {
-  return renderWithClient(
+function renderCreate(onClose = vi.fn()) {
+  renderWithClient(
     <GuardrailFormPage
       defaultValues={EMPTY_GUARDRAIL_FORM_DEFAULTS}
       mode="create"
+      onClose={onClose}
     />,
     createTestQueryClient(),
+  )
+
+  return onClose
+}
+
+async function fillRequired(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByLabelText("Name"), "content-safety")
+  await user.type(
+    screen.getByLabelText("Blocked input message"),
+    "Blocked input.",
+  )
+  await user.type(
+    screen.getByLabelText("Blocked output message"),
+    "Blocked output.",
   )
 }
 
@@ -72,29 +87,42 @@ describe("GuardrailFormPage create mode", () => {
     expect(screen.getByText("Tags")).toBeInTheDocument()
   })
 
-  it("submits CreateGuardrailCommand and navigates to the new guardrail", async () => {
+  it("submits CreateGuardrailCommand and opens the new guardrail", async () => {
     const user = userEvent.setup()
-    renderCreate()
+    const onClose = renderCreate()
 
-    await user.type(screen.getByLabelText("Name"), "content-safety")
-    await user.type(
-      screen.getByLabelText("Blocked input message"),
-      "Blocked input.",
-    )
-    await user.type(
-      screen.getByLabelText("Blocked output message"),
-      "Blocked output.",
-    )
+    await fillRequired(user)
     await user.click(screen.getByRole("button", { name: "Create Guardrail" }))
 
     await screen.findByRole("button", { name: "Create Guardrail" })
     expect(mockSend).toHaveBeenCalled()
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.name).toBe("content-safety")
-    expect(mockNavigate).toHaveBeenCalledWith({
-      params: { guardrailId: "gr-new" },
-      to: "/bedrock/list-guardrails/$guardrailId",
-    })
+    expect(onClose).toHaveBeenCalledWith("gr-new")
+  })
+
+  it("keeps the form open with the error when the create fails", async () => {
+    mockSend.mockRejectedValueOnce(new Error("quota reached"))
+    const user = userEvent.setup()
+    const onClose = renderCreate()
+
+    await fillRequired(user)
+    await user.click(screen.getByRole("button", { name: "Create Guardrail" }))
+
+    await expect(
+      screen.findByText("Failed to create the guardrail"),
+    ).resolves.toBeInTheDocument()
+    expect(screen.getByLabelText("Name")).toBeEnabled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it("closes the panel on cancel", async () => {
+    const user = userEvent.setup()
+    const onClose = renderCreate()
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
+
+    expect(onClose).toHaveBeenCalledWith()
   })
 })
 

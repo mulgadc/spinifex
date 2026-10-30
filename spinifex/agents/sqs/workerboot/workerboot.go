@@ -75,45 +75,8 @@ func Boot(ctx context.Context, cfg Config) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	name, err := findDisk(cfg, c.serial)
-	if err != nil {
+	if err := mountWorkerDisk(cfg, c.serial); err != nil {
 		return "", err
-	}
-	dev := filepath.Join(cfg.DevDir, name)
-	majMin, err := readTrimmed(filepath.Join(cfg.SysBlock, name, "dev"))
-	if err != nil {
-		return "", fmt.Errorf("read device number of %s: %w", name, err)
-	}
-
-	mounted, err := mountedDevice(cfg.MountInfo, cfg.DataDir)
-	if err != nil {
-		return "", err
-	}
-	switch mounted {
-	case majMin:
-		cfg.Log(fmt.Sprintf("%s already mounted at %s", dev, cfg.DataDir))
-	case "":
-		if err := cfg.Disk.Check(dev); err != nil {
-			return "", fmt.Errorf("check %s: %w", dev, err)
-		}
-		if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
-			return "", fmt.Errorf("create mountpoint %s: %w", cfg.DataDir, err)
-		}
-		if err := cfg.Disk.Mount(dev, cfg.DataDir); err != nil {
-			return "", fmt.Errorf("mount %s at %s: %w", dev, cfg.DataDir, err)
-		}
-	default:
-		return "", fmt.Errorf("%s holds device %s, not the worker disk %s", cfg.DataDir, mounted, majMin)
-	}
-
-	// Proven from the mount table, not inferred from the mount call: an empty
-	// mountpoint directory must never receive a key.
-	mounted, err = mountedDevice(cfg.MountInfo, cfg.DataDir)
-	if err != nil {
-		return "", err
-	}
-	if mounted != majMin {
-		return "", fmt.Errorf("worker disk %s (%s) is not mounted at %s", dev, majMin, cfg.DataDir)
 	}
 
 	if cfg.NewClaimer == nil {
@@ -137,6 +100,53 @@ func Boot(ctx context.Context, cfg Config) (string, error) {
 	}
 	cfg.Log("store key ready: public=" + pub)
 	return pub, nil
+}
+
+// mountWorkerDisk selects the disk with serial, checks and mounts it at
+// DataDir unless it is already there, and proves from the mount table that
+// exactly that disk is what is mounted.
+func mountWorkerDisk(cfg Config, serial string) error {
+	name, err := findDisk(cfg, serial)
+	if err != nil {
+		return err
+	}
+	dev := filepath.Join(cfg.DevDir, name)
+	majMin, err := readTrimmed(filepath.Join(cfg.SysBlock, name, "dev"))
+	if err != nil {
+		return fmt.Errorf("read device number of %s: %w", name, err)
+	}
+
+	mounted, err := mountedDevice(cfg.MountInfo, cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	switch mounted {
+	case majMin:
+		cfg.Log(fmt.Sprintf("%s already mounted at %s", dev, cfg.DataDir))
+	case "":
+		if err := cfg.Disk.Check(dev); err != nil {
+			return fmt.Errorf("check %s: %w", dev, err)
+		}
+		if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
+			return fmt.Errorf("create mountpoint %s: %w", cfg.DataDir, err)
+		}
+		if err := cfg.Disk.Mount(dev, cfg.DataDir); err != nil {
+			return fmt.Errorf("mount %s at %s: %w", dev, cfg.DataDir, err)
+		}
+	default:
+		return fmt.Errorf("%s holds device %s, not the worker disk %s", cfg.DataDir, mounted, majMin)
+	}
+
+	// Proven from the mount table, not inferred from the mount call: an empty
+	// mountpoint directory must never receive a key.
+	mounted, err = mountedDevice(cfg.MountInfo, cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	if mounted != majMin {
+		return fmt.Errorf("worker disk %s (%s) is not mounted at %s", dev, majMin, cfg.DataDir)
+	}
+	return nil
 }
 
 func readContract(dir string) (contract, error) {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -33,6 +34,7 @@ const (
 	ServiceName                 = workerrole.ServiceName
 	WorkerRoleName              = workerrole.RoleName
 	ActionClaimFirstStore       = workerrole.ActionClaimFirstStore
+	ActionDescribeStore         = workerrole.ActionDescribeStore
 	ActionRecordWorkerPublicKey = workerrole.ActionRecordWorkerPublicKey
 )
 
@@ -42,6 +44,7 @@ const principalTypeAssumedRole = "assumed-role"
 // parameter: it is derived from the session and the current worker record.
 var params = map[string][]string{
 	ActionClaimFirstStore:       {},
+	ActionDescribeStore:         {},
 	ActionRecordWorkerPublicKey: {"PublicKey"},
 }
 
@@ -61,7 +64,13 @@ type FirstStore interface {
 	RecordPublicKey(ctx context.Context, region string, id firststore.Identity, pub string) error
 }
 
+// Stores reads the Region's store launch record from the stream leader.
+type Stores interface {
+	Current(ctx context.Context, region string) (storelaunch.Record, error)
+}
+
 var (
+	_ Stores     = storelaunch.Records{}
 	_ Identities = workerident.Store{}
 	_ FirstStore = firststore.Store{}
 )
@@ -71,6 +80,7 @@ var (
 type Deps struct {
 	Identities Identities
 	FirstStore FirstStore
+	Stores     Stores
 }
 
 // NewRegistration returns the internal SQS worker Query registration.
@@ -140,7 +150,7 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		}
 	}
 
-	if d.Identities == nil || d.FirstStore == nil {
+	if d.Identities == nil || d.FirstStore == nil || d.Stores == nil {
 		return errors.New(awserrors.ErrorServiceUnavailable)
 	}
 	ident, err := d.Identities.Authorize(ctx, session)
@@ -156,6 +166,8 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	id := firststore.Identity{InstanceID: ident.InstanceID, ClaimID: ident.ClaimID, Generation: ident.Generation}
 
 	switch action {
+	case ActionDescribeStore:
+		return d.describeStore(ctx, w, ident.Region)
 	case ActionClaimFirstStore:
 		dec, err := d.FirstStore.Claim(ctx, ident.Region, id)
 		if err != nil {
@@ -213,6 +225,43 @@ func mapError(ctx context.Context, action string, err error) error {
 	return errors.New(awserrors.ErrorServerInternal)
 }
 
+// describeStore reports the Region's store launch: pending until it is bound,
+// then the address and the public key it was launched for. Bound is not
+// ready; the worker checks the store itself with its own key.
+func (d Deps) describeStore(ctx context.Context, w http.ResponseWriter, region string) error {
+	rec, err := d.Stores.Current(ctx, region)
+	switch {
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		return writeXML(ctx, w, describeResponse{Result: describeResult{State: StorePending}})
+	case errors.Is(err, storelaunch.ErrUnreadable), errors.Is(err, storelaunch.ErrInvalidRecording):
+		return mapError(ctx, ActionDescribeStore, err)
+	case err != nil:
+		return mapError(ctx, ActionDescribeStore, fmt.Errorf("%w: %w", errUnavailable, err))
+	case rec.State != storelaunch.StateBound:
+		return writeXML(ctx, w, describeResponse{Result: describeResult{State: StorePending}})
+	}
+	return writeXML(ctx, w, describeResponse{Result: describeResult{
+		State: StoreBound, Address: rec.Address, PublicKey: rec.PublicKey,
+	}})
+}
+
+// DescribeStore states.
+const (
+	StorePending = "pending"
+	StoreBound   = "bound"
+)
+
+type describeResult struct {
+	State     string `xml:"State"`
+	Address   string `xml:"Address,omitempty"`
+	PublicKey string `xml:"PublicKey,omitempty"`
+}
+
+type describeResponse struct {
+	XMLName xml.Name       `xml:"DescribeStoreResponse"`
+	Result  describeResult `xml:"DescribeStoreResult"`
+}
+
 type claimResult struct {
 	CreateKey bool   `xml:"CreateKey"`
 	PublicKey string `xml:"PublicKey,omitempty"`
@@ -247,7 +296,7 @@ func JetStreamDeps(js jetstream.JetStream) Deps {
 	if js == nil {
 		return Deps{}
 	}
-	return Deps{Identities: boundIdentities{js}, FirstStore: boundFirstStore{js}}
+	return Deps{Identities: boundIdentities{js}, FirstStore: boundFirstStore{js}, Stores: boundStores{js}}
 }
 
 // errUnavailable marks a bucket that could not be bound: absent, unreachable
@@ -282,7 +331,18 @@ func (b boundFirstStore) RecordPublicKey(ctx context.Context, region string, id 
 	return s.RecordPublicKey(ctx, region, id, pub)
 }
 
+type boundStores struct{ js jetstream.JetStream }
+
+func (b boundStores) Current(ctx context.Context, region string) (storelaunch.Record, error) {
+	r, err := storelaunch.Bind(ctx, b.js)
+	if err != nil {
+		return storelaunch.Record{}, fmt.Errorf("%w: %w", errUnavailable, err)
+	}
+	return r.Current(ctx, region)
+}
+
 var (
 	_ Identities = boundIdentities{}
 	_ FirstStore = boundFirstStore{}
+	_ Stores     = boundStores{}
 )

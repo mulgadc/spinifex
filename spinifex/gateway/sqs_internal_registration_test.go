@@ -10,10 +10,12 @@ import (
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	sqsworkerapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi/worker"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,6 +37,12 @@ func (sqsWorkerFirstStore) Claim(context.Context, string, firststore.Identity) (
 
 func (sqsWorkerFirstStore) RecordPublicKey(context.Context, string, firststore.Identity, string) error {
 	return nil
+}
+
+type sqsWorkerStores struct{}
+
+func (sqsWorkerStores) Current(context.Context, string) (storelaunch.Record, error) {
+	return storelaunch.Record{}, jetstream.ErrKeyNotFound
 }
 
 // withSQSInternal registers the internal SQS surface beside RDS, as awsgw
@@ -77,7 +85,7 @@ func serveSigned(gw *GatewayConfig, w http.ResponseWriter, r *http.Request) erro
 func newSQSInternalGateway(policies []iamdomain.PolicyDocument) (*GatewayConfig, *rdsPolicyProbe, *sqsWorkerIdentities) {
 	gw, probe := newRDSPolicyGateway(policies)
 	ids := &sqsWorkerIdentities{}
-	return withSQSInternal(gw, sqsworkerapi.Deps{Identities: ids, FirstStore: sqsWorkerFirstStore{}}), probe, ids
+	return withSQSInternal(gw, sqsworkerapi.Deps{Identities: ids, FirstStore: sqsWorkerFirstStore{}, Stores: sqsWorkerStores{}}), probe, ids
 }
 
 // The worker's session, signed for spinifex-sqs, reaches the internal surface

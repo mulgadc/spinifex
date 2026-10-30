@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -32,8 +33,9 @@ const (
 	callTimeout    = 30 * time.Second
 	maxResponse    = 64 << 10
 
-	actionClaim  = "ClaimFirstStore"
-	actionRecord = "RecordWorkerPublicKey"
+	actionClaim    = "ClaimFirstStore"
+	actionDescribe = "DescribeStore"
+	actionRecord   = "RecordWorkerPublicKey"
 )
 
 // Signer signs a request in place for service and region.
@@ -131,6 +133,41 @@ func (c *Client) Claim(ctx context.Context) (bool, string, error) {
 		return false, res.PublicKey, nil
 	}
 	return false, "", errors.New("spinifex-sqs ClaimFirstStore: response is not a valid decision")
+}
+
+// Store is the Region's store launch as the gateway reports it. Bound means
+// a VM was launched for it, not that it is ready.
+type Store struct {
+	Bound     bool
+	Address   string
+	PublicKey string
+}
+
+type describeResult struct {
+	State     string `xml:"State"`
+	Address   string `xml:"Address"`
+	PublicKey string `xml:"PublicKey"`
+}
+
+// DescribeStore reports this worker's store. A bound reply must carry an
+// IPv4 address and a valid public key; a pending one must carry neither.
+func (c *Client) DescribeStore(ctx context.Context) (Store, error) {
+	var res describeResult
+	if err := c.call(ctx, actionDescribe, nil, &res); err != nil {
+		return Store{}, err
+	}
+	switch {
+	case res.State == "pending" && res.Address == "" && res.PublicKey == "":
+		return Store{}, nil
+	case res.State == "bound" && isIPv4(res.Address) && nkeys.IsValidPublicUserKey(res.PublicKey):
+		return Store{Bound: true, Address: res.Address, PublicKey: res.PublicKey}, nil
+	}
+	return Store{}, errors.New("spinifex-sqs DescribeStore: response is not a valid store state")
+}
+
+func isIPv4(s string) bool {
+	ip := net.ParseIP(s)
+	return ip != nil && ip.To4() != nil && !strings.Contains(s, ":")
 }
 
 // RecordPublicKey records the worker's public key. Anything other than a

@@ -34,11 +34,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerkey"
 	sqsworkerapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi/worker"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/nats-io/nkeys"
 )
 
 const (
@@ -236,9 +238,10 @@ func (g *localGateway) sentBodies() []string {
 
 // gwCluster is the domain's real worker-identity and first-store records.
 type gwCluster struct {
-	ids   workerident.Store
-	fence firststore.Store
-	gw    *localGateway
+	ids    workerident.Store
+	fence  firststore.Store
+	stores storelaunch.Records
+	gw     *localGateway
 }
 
 func newGWCluster(t *testing.T) gwCluster {
@@ -254,7 +257,11 @@ func newGWCluster(t *testing.T) gwCluster {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return gwCluster{ids: ids, fence: fence, gw: newLocalGateway(t, sqsworkerapi.JetStreamDeps(js))}
+	stores, err := storelaunch.Open(ctx, js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gwCluster{ids: ids, fence: fence, stores: stores, gw: newLocalGateway(t, sqsworkerapi.JetStreamDeps(js))}
 }
 
 func (c gwCluster) launch(t *testing.T, claim string, supersedes uint64, inst string) workerident.Intent {
@@ -546,4 +553,112 @@ func TestGateway_StaleWorkerGivesUpWithinTheBound(t *testing.T) {
 		t.Fatalf("calls = %d, want exactly the 5 attempts", n)
 	}
 	g.assertNoKey()
+}
+
+// bindStore runs the store launch record through to bound for pub at address,
+// as the operator's EnsureSQSStore would.
+func (c gwCluster) bindStore(t *testing.T, pub, address string) {
+	t.Helper()
+	ctx := context.Background()
+	const claim = "store-claim-0001"
+	steps := []func() error{
+		func() error { return c.stores.Begin(ctx, testRegion, claim, "node-a", pub, "t3.medium", 8) },
+		func() error { return c.stores.MarkVolumeAttempted(ctx, testRegion, claim) },
+		func() error { return c.stores.RecordVolume(ctx, testRegion, claim, "vol-0b1c2d3e4f5a60718") },
+		func() error { return c.stores.MarkNetworkAttempted(ctx, testRegion, claim) },
+		func() error { return c.stores.MarkDispatched(ctx, testRegion, claim) },
+		func() error { return c.stores.Bind(ctx, testRegion, claim, "i-0123456789abcdef0", address) },
+	}
+	for i, step := range steps {
+		if err := step(); err != nil {
+			t.Fatalf("store launch step %d: %v", i, err)
+		}
+	}
+}
+
+// readyFor points the guest's readiness at the local gateway and a store on port.
+func (c gwCluster) readyFor(g *guest, accessKey, inst string, port int) ReadyConfig {
+	signer := c.gw.issue(accessKey, "secret-"+accessKey, inst)
+	return ReadyConfig{
+		Config: g.cfg,
+		NewDescriber: func(region, url string) (StoreDescriber, error) {
+			cl, err := sqsworkergw.New(url, region, c.gw.caPEM(), signer)
+			if err != nil {
+				return nil, err
+			}
+			return gwDescriber{cl}, nil
+		},
+		Checker: NATSChecker{Port: port, Dial: time.Second},
+	}
+}
+
+type gwDescriber struct{ c *sqsworkergw.Client }
+
+func (d gwDescriber) DescribeStore(ctx context.Context) (Store, error) {
+	st, err := d.c.DescribeStore(ctx)
+	return Store(st), err
+}
+
+// The whole path with real components: the worker boots and records its key,
+// waits while the operator has not launched the store, then reaches the real
+// store's JetStream with its own key once the store is bound; after a reboot
+// it is ready again with the same key. No request carries the seed.
+func TestGateway_ReadyAfterADelayedStoreLaunch(t *testing.T) {
+	c := newGWCluster(t)
+	c.launch(t, "claim-0001", 0, gwInstance)
+	g := newGuest(t)
+	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
+	pub, err := g.boot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.cfg.Attempts = 2
+	port := storeServer(t, pub)
+	if _, err := Ready(context.Background(), c.readyFor(g, "ASIAWORKER1", gwInstance, port)); !errors.Is(err, errStorePending) {
+		t.Fatalf("before the store launch: %v", err)
+	}
+	g.assertNotReady()
+
+	c.bindStore(t, pub, "127.0.0.1")
+	for boot := 1; boot <= 2; boot++ {
+		st, err := Ready(context.Background(), c.readyFor(g, "ASIAWORKER1", gwInstance, port))
+		if err != nil || st.PublicKey != pub {
+			t.Fatalf("ready %d = %+v %v", boot, st, err)
+		}
+		g.resetMounts()
+		if again, err := g.boot(); err != nil || again != pub {
+			t.Fatalf("reboot %d = %q %v", boot, again, err)
+		}
+	}
+	c.assertNoSeedSent(t, g.seed())
+	g.assertNoSeedLeak(nil, g.seed())
+}
+
+// A store bound to a key other than this worker's is never checked, and a
+// replaced worker cannot read the store at all.
+func TestGateway_ReadyRefusesWrongKeyAndReplacedWorker(t *testing.T) {
+	c := newGWCluster(t)
+	first := c.launch(t, "claim-0001", 0, gwInstance)
+	g := newGuest(t)
+	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
+	if _, err := g.boot(); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := nkeys.CreateUser()
+	otherPub, _ := other.PublicKey()
+	c.bindStore(t, otherPub, "127.0.0.1")
+	port := storeServer(t, otherPub)
+	if _, err := Ready(context.Background(), c.readyFor(g, "ASIAWORKER1", gwInstance, port)); !errors.Is(err, ErrStoreKeyMismatch) {
+		t.Fatalf("wrong key: %v", err)
+	}
+	g.assertNotReady()
+
+	if err := c.ids.RecordStopped(context.Background(), first, gwInstance); err != nil {
+		t.Fatal(err)
+	}
+	g.cfg.Attempts = 2
+	_, err := Ready(context.Background(), c.readyFor(g, "ASIAWORKER1", gwInstance, port))
+	if apiErr, ok := errors.AsType[*sqsworkergw.APIError](err); !ok || apiErr.Code != "AccessDenied" {
+		t.Fatalf("stopped worker: %v", err)
+	}
 }

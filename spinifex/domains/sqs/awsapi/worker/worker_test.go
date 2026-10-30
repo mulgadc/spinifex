@@ -14,6 +14,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -106,7 +107,18 @@ func current() workerident.Identity {
 
 func fakes() (*fakeIdentities, *fakeFirstStore, Deps) {
 	ids, fs := &fakeIdentities{ident: current()}, &fakeFirstStore{decision: firststore.Decision{CreateKey: true}}
-	return ids, fs, Deps{Identities: ids, FirstStore: fs}
+	return ids, fs, Deps{Identities: ids, FirstStore: fs, Stores: &fakeStores{err: jetstream.ErrKeyNotFound}}
+}
+
+type fakeStores struct {
+	rec     storelaunch.Record
+	err     error
+	regions []string
+}
+
+func (f *fakeStores) Current(_ context.Context, region string) (storelaunch.Record, error) {
+	f.regions = append(f.regions, region)
+	return f.rec, f.err
 }
 
 // The first-store identity is the authoritative record's, keyed by the session
@@ -333,8 +345,9 @@ func TestStoreErrorsMapToWorkerCodes(t *testing.T) {
 func TestMissingDependenciesFailClosed(t *testing.T) {
 	for name, deps := range map[string]Deps{
 		"no deps":        {},
-		"no first store": {Identities: &fakeIdentities{ident: current()}},
-		"no identities":  {FirstStore: &fakeFirstStore{decision: firststore.Decision{CreateKey: true}}},
+		"no first store": {Identities: &fakeIdentities{ident: current()}, Stores: &fakeStores{}},
+		"no identities":  {FirstStore: &fakeFirstStore{decision: firststore.Decision{CreateKey: true}}, Stores: &fakeStores{}},
+		"no stores":      {Identities: &fakeIdentities{ident: current()}, FirstStore: &fakeFirstStore{}},
 		"nil JetStream":  JetStreamDeps(nil),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -468,7 +481,7 @@ func TestRealStores_InFlightOldGenerationLosesToTheSuccessor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inFlight := Deps{Identities: &fakeIdentities{ident: stale}, FirstStore: c.deps.FirstStore}
+	inFlight := Deps{Identities: &fakeIdentities{ident: stale}, FirstStore: c.deps.FirstStore, Stores: c.deps.Stores}
 	_, err = invoke(inFlight, "Action=ClaimFirstStore", workerActor(instance), &call{})
 	assertCode(t, err, awserrors.ErrorAccessDenied)
 	_, err = invoke(inFlight, "Action=RecordWorkerPublicKey&PublicKey="+newUserKey(t).pub, workerActor(instance), &call{})
@@ -555,6 +568,7 @@ func TestRealStores_InFlightOldGenerationCannotPreemptTheSuccessor(t *testing.T)
 					replaced = true
 				}},
 				FirstStore: c.deps.FirstStore,
+				Stores:     c.deps.Stores,
 			}
 			_, err := invoke(inFlight, action, workerActor(instance), &call{})
 			if !replaced {
@@ -586,5 +600,68 @@ func TestUnexpectedParameterNameIsNotLogged(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), secret) || strings.Contains(logs.String(), secret[2:12]) {
 		t.Fatal("parameter name reached the log")
+	}
+}
+
+// DescribeStore reports only the current worker's own Region, says pending
+// until the store is bound, and never echoes anything but the public key.
+func TestDescribeStore(t *testing.T) {
+	k := newUserKey(t)
+	bound := storelaunch.Record{Region: region, State: storelaunch.StateBound, PublicKey: k.pub,
+		InstanceID: successor, Address: "10.240.0.9"}
+	for _, tc := range []struct {
+		name    string
+		stores  *fakeStores
+		want    []string
+		wantErr string
+	}{
+		{"no record", &fakeStores{err: jetstream.ErrKeyNotFound}, []string{"<State>pending</State>"}, ""},
+		{"launching", &fakeStores{rec: storelaunch.Record{Region: region, State: storelaunch.StateLaunching}},
+			[]string{"<State>pending</State>"}, ""},
+		{"bound", &fakeStores{rec: bound},
+			[]string{"<State>bound</State>", "<Address>10.240.0.9</Address>", "<PublicKey>" + k.pub + "</PublicKey>"}, ""},
+		{"leader unavailable", &fakeStores{err: errors.New("leader lost")}, nil, awserrors.ErrorServiceUnavailable},
+		{"corrupt record", &fakeStores{err: storelaunch.ErrUnreadable}, nil, awserrors.ErrorServerInternal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ids, _, deps := fakes()
+			deps.Stores = tc.stores
+			rec, err := invoke(deps, "Action=DescribeStore", workerActor(instance), &call{})
+			if tc.wantErr != "" {
+				assertCode(t, err, tc.wantErr)
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(rec.Body.String(), w) {
+					t.Fatalf("body %q lacks %q", rec.Body.String(), w)
+				}
+			}
+			if tc.name != "bound" && strings.Contains(rec.Body.String(), "<Address>") {
+				t.Fatalf("an unbound store reported an address: %q", rec.Body.String())
+			}
+			if len(tc.stores.regions) != 1 || tc.stores.regions[0] != ids.ident.Region {
+				t.Fatalf("read Regions %v, want only the bound worker's", tc.stores.regions)
+			}
+		})
+	}
+}
+
+// A caller that is not the current worker never reads the store record.
+func TestDescribeStore_RefusesNonCurrentWorkers(t *testing.T) {
+	ids, _, deps := fakes()
+	ids.err = workerident.ErrNotCurrent
+	stores := &fakeStores{}
+	deps.Stores = stores
+	_, err := invoke(deps, "Action=DescribeStore", workerActor(instance), &call{})
+	assertCode(t, err, awserrors.ErrorAccessDenied)
+	_, err = invoke(deps, "Action=DescribeStore&Region=ap-southeast-2", workerActor(instance), &call{})
+	if err == nil {
+		t.Fatal("an identity parameter was accepted")
+	}
+	if len(stores.regions) != 0 {
+		t.Fatalf("store record read for a refused caller: %v", stores.regions)
 	}
 }

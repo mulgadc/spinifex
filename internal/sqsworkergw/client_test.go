@@ -188,3 +188,48 @@ func TestCall_DoesNotFollowRedirects(t *testing.T) {
 		t.Fatal("the signed request followed a redirect")
 	}
 }
+
+// Only "pending" with nothing else, or "bound" with an IPv4 address and one
+// valid public key, is a store state.
+func TestDescribeStore_AcceptsOnlyAValidState(t *testing.T) {
+	pub, seed := userKey(t)
+	wrap := func(inner string) string {
+		return `<DescribeStoreResponse><DescribeStoreResult>` + inner + `</DescribeStoreResult></DescribeStoreResponse>`
+	}
+	t.Run("pending", func(t *testing.T) {
+		c, _, seen := server(t, 200, wrap(`<State>pending</State>`))
+		st, err := c.DescribeStore(context.Background())
+		if err != nil || st.Bound {
+			t.Fatalf("store = %+v %v", st, err)
+		}
+		if !strings.Contains((*seen)[0], "Action=DescribeStore") {
+			t.Fatalf("request = %q", (*seen)[0])
+		}
+	})
+	t.Run("bound", func(t *testing.T) {
+		c, _, _ := server(t, 200, wrap(`<State>bound</State><Address>10.240.0.9</Address><PublicKey>`+pub+`</PublicKey>`))
+		st, err := c.DescribeStore(context.Background())
+		if err != nil || !st.Bound || st.Address != "10.240.0.9" || st.PublicKey != pub {
+			t.Fatalf("store = %+v %v", st, err)
+		}
+	})
+	for name, inner := range map[string]string{
+		"pending with address": `<State>pending</State><Address>10.240.0.9</Address>`,
+		"bound without key":    `<State>bound</State><Address>10.240.0.9</Address>`,
+		"bound with seed":      `<State>bound</State><Address>10.240.0.9</Address><PublicKey>` + seed + `</PublicKey>`,
+		"bound with hostname":  `<State>bound</State><Address>store.example</Address><PublicKey>` + pub + `</PublicKey>`,
+		"bound with IPv6":      `<State>bound</State><Address>::ffff:10.240.0.9</Address><PublicKey>` + pub + `</PublicKey>`,
+		"unknown state":        `<State>ready</State>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _, _ := server(t, 200, wrap(inner))
+			_, err := c.DescribeStore(context.Background())
+			if err == nil {
+				t.Fatal("accepted an invalid store state")
+			}
+			if strings.Contains(err.Error(), seed) {
+				t.Fatal("the error echoes a seed")
+			}
+		})
+	}
+}

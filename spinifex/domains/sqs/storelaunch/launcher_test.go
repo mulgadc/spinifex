@@ -386,6 +386,22 @@ func TestEnsure_RefusesADifferentSizeOnRetry(t *testing.T) {
 	}
 }
 
+// Once the store is bound, a request for another volume size is refused
+// rather than silently returning the existing store.
+func TestEnsure_RefusesADifferentSizeOnceBound(t *testing.T) {
+	r := newRig(t)
+	r.bindWorker(t, node, true)
+	if _, err := r.l.Ensure(context.Background(), region, itype, sizeGiB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.l.Ensure(context.Background(), region, itype, sizeGiB+1); !errors.Is(err, ErrSizeChanged) {
+		t.Fatalf("bound store with another size = %v", err)
+	}
+	if r.vol.count() != 1 || r.vms.count() != 1 {
+		t.Fatalf("%d volumes, %d VMs", r.vol.count(), r.vms.count())
+	}
+}
+
 // Before any dispatch, a retry with a different size is refused at Begin.
 func TestEnsure_RefusesADifferentSizeBeforeDispatch(t *testing.T) {
 	r := newRig(t)

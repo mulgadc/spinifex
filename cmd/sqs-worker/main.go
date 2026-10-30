@@ -3,11 +3,14 @@
 // Usage:
 //
 //	sqs-worker boot
+//	sqs-worker ready
 //
 // boot selects and mounts the worker's data disk named by fw_cfg, asks the
 // gateway for its current first-store decision with its instance-role
 // credentials, then loads or creates the store key on that disk and
-// publishes only the public key.
+// publishes only the public key. ready then asks the gateway for the bound
+// store and checks its JetStream with that key, within a bound; it proves the
+// store accepted the worker key, not the store server's identity.
 package main
 
 import (
@@ -29,30 +32,43 @@ const caPath = "/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/ca-cert/raw"
 // no static-key fallback.
 func newClaimer() workerboot.NewClaimer {
 	return func(region, gatewayURL string) (workerkey.Claimer, error) {
-		ca, err := os.ReadFile(caPath)
-		if err != nil {
-			return nil, fmt.Errorf("read cluster CA: %w", err)
-		}
-		return sqsworkergw.New(gatewayURL, region, ca, gwsign.NewInstanceRole())
+		return newClient(region, gatewayURL)
 	}
 }
 
+func newClient(region, gatewayURL string) (*sqsworkergw.Client, error) {
+	ca, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, fmt.Errorf("read cluster CA: %w", err)
+	}
+	return sqsworkergw.New(gatewayURL, region, ca, gwsign.NewInstanceRole())
+}
+
+type describer struct{ c *sqsworkergw.Client }
+
+func (d describer) DescribeStore(ctx context.Context) (workerboot.Store, error) {
+	st, err := d.c.DescribeStore(ctx)
+	return workerboot.Store(st), err
+}
+
 func main() {
-	if len(os.Args) != 2 || os.Args[1] != "boot" {
-		fmt.Fprintln(os.Stderr, "usage: sqs-worker boot")
+	if len(os.Args) != 2 || (os.Args[1] != "boot" && os.Args[1] != "ready") {
+		fmt.Fprintln(os.Stderr, "usage: sqs-worker boot|ready")
 		os.Exit(2)
 	}
 	logf := func(msg string) { fmt.Fprintf(os.Stderr, "[sqs-worker] %s\n", msg) }
-	if err := boot(logf); err != nil {
+	run := boot
+	if os.Args[1] == "ready" {
+		run = ready
+	}
+	if err := run(logf); err != nil {
 		logf("FATAL: " + err.Error())
 		os.Exit(1)
 	}
 }
 
-func boot(logf func(string)) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	_, err := workerboot.Boot(ctx, workerboot.Config{
+func config(logf func(string)) workerboot.Config {
+	return workerboot.Config{
 		FwCfgDir:      "/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/sqs-worker",
 		SysBlock:      "/sys/block",
 		DevDir:        "/dev",
@@ -65,6 +81,32 @@ func boot(logf func(string)) error {
 		Attempts:      60,
 		Wait:          5 * time.Second,
 		Log:           logf,
+	}
+}
+
+func boot(logf func(string)) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	_, err := workerboot.Boot(ctx, config(logf))
+	return err
+}
+
+// ready waits up to 15 minutes for the operator to launch the store.
+func ready(logf func(string)) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	cfg := config(logf)
+	cfg.Attempts = 180
+	_, err := workerboot.Ready(ctx, workerboot.ReadyConfig{
+		Config: cfg,
+		NewDescriber: func(region, gatewayURL string) (workerboot.StoreDescriber, error) {
+			c, err := newClient(region, gatewayURL)
+			if err != nil {
+				return nil, err
+			}
+			return describer{c}, nil
+		},
+		Checker: workerboot.NATSChecker{},
 	})
 	return err
 }

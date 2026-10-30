@@ -1,0 +1,7 @@
+#!/bin/sh
+# once: after boot published the worker key, wait within a bound for the
+# operator-launched store and check its JetStream with that key. A pass proves
+# the store accepted the worker key; the store server is not authenticated.
+[ -s /run/sqs-worker/public-key ] || { echo "[sqs-worker] no worker key; readiness skipped" >> /dev/console; exit 0; }
+/usr/local/bin/sqs-worker ready >> /dev/console 2>&1 || echo "[sqs-worker] store not ready" >> /dev/console
+exit 0

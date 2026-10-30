@@ -215,14 +215,14 @@ install -m 0644 "$INITTAB" "$CHROOT_DIR/etc/inittab"
 
 if [ "$PROFILE" = worker ]; then
     echo "$TAG installing worker guest steps..."
-    for step in sqs-worker-prepare sqs-worker-stop; do
+    for step in sqs-worker-prepare sqs-worker-ready sqs-worker-stop; do
         if [ ! -f "$BUILD_DIR/$step" ]; then
             echo "ERROR: $BUILD_DIR/$step not found — cannot build initramfs" >&2
             exit 1
         fi
     done
     mkdir -p "$CHROOT_DIR/usr/local/lib/sqs-worker" "$CHROOT_DIR/usr/local/bin"
-    install -m 0755 "$BUILD_DIR/sqs-worker-prepare" "$BUILD_DIR/sqs-worker-stop" \
+    install -m 0755 "$BUILD_DIR/sqs-worker-prepare" "$BUILD_DIR/sqs-worker-ready" "$BUILD_DIR/sqs-worker-stop" \
         "$CHROOT_DIR/usr/local/lib/sqs-worker/"
     install -m 0755 "$SQS_WORKER_BIN" "$CHROOT_DIR/usr/local/bin/sqs-worker"
     # The mountpoint ships empty; the worker proves its disk is mounted here.

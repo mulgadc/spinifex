@@ -15,10 +15,11 @@ const RoleName = "sqsWorkerRole"
 
 const (
 	ActionClaimFirstStore       = "ClaimFirstStore"
+	ActionDescribeStore         = "DescribeStore"
 	ActionRecordWorkerPublicKey = "RecordWorkerPublicKey"
 )
 
 // Actions lists every internal worker action, sorted.
 func Actions() []string {
-	return []string{ActionClaimFirstStore, ActionRecordWorkerPublicKey}
+	return []string{ActionClaimFirstStore, ActionDescribeStore, ActionRecordWorkerPublicKey}
 }

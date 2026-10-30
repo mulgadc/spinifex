@@ -127,6 +127,8 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string, size
 		return Result{}, ErrWrongNode
 	case rec.InstanceType != instanceType:
 		return Result{}, fmt.Errorf("%w: %s", ErrTypeChanged, rec.InstanceType)
+	case rec.SizeGiB != sizeGiB:
+		return Result{}, fmt.Errorf("%w: %d GiB", ErrSizeChanged, rec.SizeGiB)
 	case rec.State == StateBound:
 		return Result{InstanceID: rec.InstanceID, Address: rec.Address, InstanceType: rec.InstanceType}, nil
 	case rec.Dispatched:

@@ -429,3 +429,16 @@ func TestEnsureSQSStore_RefusesAMismatchedReply(t *testing.T) {
 		require.NoError(t, sub.Unsubscribe())
 	}
 }
+
+// A request for another volume size after the store is bound is refused
+// through the admin path, and no second store is launched.
+func TestEnsureSQSStore_RefusesAnotherSizeOnceBound(t *testing.T) {
+	f := newStoreFixture(t, &storeVMs{})
+	f.bindWorker(t, ensureNode, true)
+	_, err := f.call(t, ensureNode, storeType, 30*time.Second)
+	require.NoError(t, err)
+	_, err = admin.EnsureSQSStore(t.Context(), f.nc, ensureNodes, ensureNode, storeType, "9", "", 30*time.Second)
+	assert.Contains(t, requireAWSCode(t, err, awserrors.ErrorIncorrectState), "8 GiB")
+	assert.Equal(t, 1, f.vols.count())
+	assert.Equal(t, 1, f.vms.count())
+}

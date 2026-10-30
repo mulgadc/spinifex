@@ -1,6 +1,7 @@
 package spinifexui
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"io/fs"
@@ -75,4 +76,42 @@ func TestHandler_S3ProxyOutlastsTheServerReadTimeout(t *testing.T) {
 		defer resp.Body.Close()
 		assert.NotEqual(t, http.StatusOK, resp.StatusCode)
 	}
+}
+
+func TestHandler_AWSGWProxyPassesAnEventStreamThroughAsItArrives(t *testing.T) {
+	release := make(chan struct{})
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: sample\ndata: {}\n\n"))
+		http.NewResponseController(w).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(backend.Close)
+	t.Cleanup(func() { close(release) })
+
+	transport := backend.Client().Transport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, backend.Listener.Addr().String())
+	}
+	transport.TLSClientConfig.ServerName = "example.com"
+
+	contentFS, err := fs.Sub(distFS, "frontend/dist")
+	require.NoError(t, err)
+	svc := &Service{Config: &Config{Region: "us-west-1"}}
+	front := httptest.NewServer(svc.newHandler(contentFS, filepath.Join(t.TempDir(), "ca.pem"), transport))
+	t.Cleanup(front.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, front.URL+"/proxy/awsgw/", strings.NewReader("Action=GetInstanceMetrics"))
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// The backend has not finished, so this line can only come from a flush.
+	line, err := bufio.NewReader(resp.Body).ReadString('\n')
+	require.NoError(t, err)
+	assert.Equal(t, "event: sample\n", line)
 }

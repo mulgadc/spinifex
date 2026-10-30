@@ -1,4 +1,4 @@
-import { CONSOLE_CSP, ec2, expect, test } from "./console"
+import { CONSOLE_CSP, ec2, expect, liveMetrics, test } from "./console"
 
 // Vite dev applies no CSP, so a library that injects inline script or style
 // works there and breaks in the shipped console. This runs the built dist with
@@ -54,6 +54,7 @@ test("the built console renders under its CSP", async ({ api, page }) => {
 </item></instancesSet></item></reservationSet>`,
     ),
   )
+  api.handle("GetInstanceMetrics", liveMetrics())
   await page.goto(
     "/ec2/describe-instances?selected=i-0c5p000000000001&tab=monitoring",
   )

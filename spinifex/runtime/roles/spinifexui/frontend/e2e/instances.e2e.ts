@@ -2,6 +2,7 @@ import {
   ec2,
   expect,
   expectNoHorizontalOverflow,
+  liveMetrics,
   test,
   type Theme,
   useTheme,
@@ -131,8 +132,10 @@ test.describe("instances list", () => {
   })
 
   test("renders the panel's tabs as the instance's own page", async ({
+    api,
     page,
   }) => {
+    api.handle("GetInstanceMetrics", liveMetrics())
     await page.goto("/ec2/describe-instances/i-0a1b2c3d4e5f60001")
     const details = page.getByRole("region", { name: "Instance details" })
 
@@ -146,6 +149,11 @@ test.describe("instances list", () => {
     await details.getByRole("tab", { name: "Monitoring" }).click()
     await expect(page).toHaveURL(/\?tab=monitoring$/u)
     await expect(details.getByRole("figure")).toHaveCount(3)
+    // A running instance streams; the newest sample is what each chart reads.
+    await expect(details.getByText("Live", { exact: true })).toBeVisible()
+    await expect(
+      details.getByRole("figure", { name: "CPU utilization (%)" }),
+    ).toContainText("42%")
 
     await details.getByRole("button", { name: "Back to instances" }).click()
     await expect(page).toHaveURL(/\/ec2\/describe-instances$/u)
@@ -204,6 +212,9 @@ test.describe("instances list", () => {
     ).toBeVisible()
     await expect(
       panel.getByRole("figure", { name: "Network packets" }),
+    ).toBeVisible()
+    await expect(
+      panel.getByText("Live statistics need a running instance."),
     ).toBeVisible()
 
     await page.reload()

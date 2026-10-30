@@ -35,6 +35,14 @@ interface MetricChartProps {
   height?: number
   // Pins the y axis, as a percentage does at 100.
   max?: number
+  // A live chart scrolls on its own clock: the x axis is the `span` seconds
+  // ending at `now()`, moving whether or not a sample has just arrived.
+  live?: LiveAxis
+}
+
+export interface LiveAxis {
+  now: () => number
+  span: number
 }
 
 // The theme class lands on <html> in an effect, after this component's own
@@ -81,8 +89,10 @@ function areaFill(color: string) {
   }
 }
 
-// UniFi draws curves, not polylines.
+// UniFi draws curves, not polylines. A live sample is an average over the
+// interval before it, so live charts step back from each point instead.
 const smooth = uPlot.paths.spline?.()
+const stepped = uPlot.paths.stepped?.({ align: -1 })
 
 function latest(values: readonly (number | null)[]): number | undefined {
   return values.findLast((value) => value !== null) ?? undefined
@@ -105,6 +115,7 @@ export function MetricChart({
   since,
   height = 112,
   max,
+  live,
 }: MetricChartProps) {
   const theme = useSyncExternalStore(subscribeToRootClass, rootClass)
   const [cursor, setCursor] = useState<number>()
@@ -121,8 +132,40 @@ export function MetricChart({
     const data = plotData(times, series)
 
     dataRef.current = data
-    plotRef.current?.setData(data)
-  }, [times, series])
+    // A live chart keeps the x range its clock set rather than the data's.
+    plotRef.current?.setData(data, !live)
+  }, [times, series, live])
+
+  // Moves the window once it has slid at least a device pixel, which keeps the
+  // scroll smooth without redrawing every frame for a five-minute axis.
+  useEffect(() => {
+    let frame = 0
+    let drawn = Number.NEGATIVE_INFINITY
+
+    const tick = () => {
+      if (!live) {
+        return
+      }
+
+      const plot = plotRef.current
+      const now = live.now()
+
+      if (plot && (now - drawn) * (plot.bbox.width / live.span) >= 1) {
+        drawn = now
+        plot.setScale("x", { min: now - live.span, max: now })
+      }
+
+      frame = requestAnimationFrame(tick)
+    }
+
+    if (live) {
+      frame = requestAnimationFrame(tick)
+    }
+
+    return () => {
+      cancelAnimationFrame(frame)
+    }
+  }, [live])
 
   // A ref callback with cleanup: the plot lives exactly as long as its element,
   // which the theme key below replaces so the canvas repaints in new colours.
@@ -181,7 +224,7 @@ export function MetricChart({
                 label,
                 stroke: color,
                 width: 1.5,
-                paths: smooth,
+                paths: live ? stepped : smooth,
                 fill: areaFill(color),
                 points: { show: false },
               }
@@ -201,6 +244,11 @@ export function MetricChart({
 
       plotRef.current = plot
 
+      if (live) {
+        const now = live.now()
+        plot.setScale("x", { min: now - live.span, max: now })
+      }
+
       const observer = new ResizeObserver(() => {
         plot.setSize({ width: element.clientWidth, height })
       })
@@ -213,7 +261,7 @@ export function MetricChart({
         plotRef.current = null
       }
     },
-    [seriesKey, format, height, max],
+    [seriesKey, format, height, max, live],
   )
 
   return (

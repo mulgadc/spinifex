@@ -40,6 +40,12 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		return errors.New(awserrors.ErrorMissingAction)
 	}
 
+	// Checked against the instance's ARN rather than "*", so a policy can grant
+	// or deny it per instance.
+	if action == getInstanceMetricsAction {
+		return gw.getInstanceMetrics(w, r, queryArgs)
+	}
+
 	if err := gw.checkPolicy(r, "spinifex", action); err != nil {
 		return err
 	}

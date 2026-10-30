@@ -254,9 +254,11 @@ Modelled on UniFi's console: a click on a row opens the resource in a panel besi
 The look follows UniFi's statistics: smoothed lines over a fading fill, a light grid, a legend chip per series that reads the value under the cursor (or the latest), and `-24 hrs … Now` beneath.
 Series colours are the chart palette, and the chart redraws when the theme changes.
 
-Instance monitoring shows EC2's agentless basic metrics live: CPU utilisation, network bytes in and out, and packets in and out, one sample a second over the last five minutes, with no history to range over.
-The chart is built once and fed with `setData`, so a second's tick does not rebuild it, and polling stops while the tab is hidden.
-**The data is simulated** (`src/lib/simulated-metrics.ts`, seeded by instance ID and second) and the panel says so with a badge, until awsgw serves `GetMetricData` at a one-second period.
+Instance monitoring streams live statistics from the host: CPU utilisation, network bytes in and out, and packets in and out, one sample every 500 ms over the last five minutes, with no history to range over.
+The stream is `GetInstanceMetrics` on the spinifex service, a signed POST answered as `text/event-stream` (`src/lib/live-metrics.ts`), which ends every 60 s and reconnects with `Since` so nothing is lost or repeated.
+It runs only while the tab is visible and the instance is running; a segment that fails or delivers nothing backs off.
+A live chart draws stepped paths, and its x axis slides with the host's clock one second behind the newest sample (`LiveClock`), so the plot keeps moving between samples and a slow link does not jitter it.
+A gap of more than three sample periods breaks the line rather than drawing across missing time.
 
 ## Dates
 
@@ -293,4 +295,4 @@ On a failure the job uploads `test-results/` as the `ui-e2e-test-results` artifa
 
 ## Open
 
-- **Monitoring data is simulated.** Real samples need a source in the daemon; the plan is `docs/development/feature/ec2-basic-metrics.md` in the mulga repository.
+- **Monitoring is live only.** Nothing is stored, so there is no `GetMetricData` and no range beyond the five-minute window; the history plan is `docs/development/feature/ec2-basic-metrics.md` in the mulga repository.

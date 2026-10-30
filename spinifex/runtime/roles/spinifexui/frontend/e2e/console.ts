@@ -64,6 +64,35 @@ export function json(value: JsonValue): ReturnType<ApiHandler> {
   return { body: JSON.stringify(value), contentType: "application/json" }
 }
 
+// GetInstanceMetrics as the gateway streams it, one sample per 500 ms up to
+// now, honouring Since so a reconnect is answered with nothing new.
+export function liveMetrics(cpu = 42): ApiHandler {
+  return (params) => {
+    const since = Number(params.get("Since") ?? 0)
+    const now = Date.now()
+    const events: string[] = []
+
+    for (let t = now - 5000; t <= now; t += 500) {
+      if (t > since) {
+        const sample = {
+          t,
+          cpu,
+          netIn: 2048,
+          netOut: 1024,
+          pktIn: 12,
+          pktOut: 8,
+        }
+
+        events.push(
+          `id: ${t}\nevent: sample\ndata: ${JSON.stringify(sample)}\n\n`,
+        )
+      }
+    }
+
+    return { body: events.join(""), contentType: "text/event-stream" }
+  }
+}
+
 export const EC2_NAMESPACE = "http://ec2.amazonaws.com/doc/2016-11-15/"
 
 export function ec2(action: string, inner: string): ApiHandler {

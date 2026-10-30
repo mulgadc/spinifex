@@ -2607,6 +2607,12 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil
 }
 
+// unsealedCheckTimeout bounds the unsealed-writes check. It must stay well under
+// the forwarder's wait for this node, or a wedged provider makes the refusal
+// arrive after the forwarder has given up and started the instance elsewhere.
+// A var so tests can shrink it.
+var unsealedCheckTimeout = 5 * time.Second
+
 // errInsufficientCapacity is the plain capacity refusal.
 var errInsufficientCapacity = errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 
@@ -2643,7 +2649,9 @@ func (s *InstanceServiceImpl) capacityRefusal(ctx context.Context, instance *vm.
 		return errInsufficientCapacity
 	}
 
-	held, err := s.unsealedChecker.HoldsUnsealedWrites(ctx, s.nodeID, volumes)
+	checkCtx, cancel := context.WithTimeout(ctx, unsealedCheckTimeout)
+	defer cancel()
+	held, err := s.unsealedChecker.HoldsUnsealedWrites(checkCtx, s.nodeID, volumes)
 	if err != nil {
 		slog.ErrorContext(ctx, "launchClaimedInstance: could not check for unsealed writes, refusing to let the start fall back",
 			"instanceId", instance.ID, "err", err)

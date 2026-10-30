@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -67,4 +68,32 @@ func TestLaunchClaimedInstance_CapacityRefusalFailsSafeWhenTheCheckFails(t *test
 	require.True(t, ok, "an unanswered check must refuse the fallback, got %v", err)
 	require.Error(t, typed.CheckErr)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, awserrors.ValidErrorCodeFromError(err))
+}
+
+type blockingUnsealedChecker struct{}
+
+func (blockingUnsealedChecker) HoldsUnsealedWrites(ctx context.Context, _ string, _ []string) ([]string, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// A provider that never answers must not hold the refusal past the forwarder's
+// patience: the typed refusal has to arrive inside the bound.
+func TestLaunchClaimedInstance_UnansweredCheckIsBoundedAndFailsSafe(t *testing.T) {
+	old := unsealedCheckTimeout
+	unsealedCheckTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { unsealedCheckTimeout = old })
+
+	svc, _ := claimedRelaunchService(t, func(*vm.VM) error { return nil })
+	svc.SetUnsealedWritesChecker(blockingUnsealedChecker{}, "node-a")
+	instance := &vm.VM{ID: "i-wedged", AccountID: "acc", InstanceType: "no.such.type"}
+	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-root", Boot: true}}
+
+	start := time.Now()
+	err := svc.launchClaimedInstance(t.Context(), instance, func() {})
+
+	assert.Less(t, time.Since(start), 5*time.Second)
+	typed, ok := errors.AsType[*UnsealedWritesError](err)
+	require.True(t, ok, "got %v", err)
+	require.ErrorIs(t, typed.CheckErr, context.DeadlineExceeded)
 }

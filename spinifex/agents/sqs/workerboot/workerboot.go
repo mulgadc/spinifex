@@ -19,11 +19,11 @@ import (
 // Guest contract, read from fw_cfg under opt/spinifex/sqs-worker/:
 //
 //	data-serial   virtio-blk serial of the worker's own ext4 data disk
-//	store-status  "new" when no store exists yet, "existing" otherwise
-//	store-nkey    the store's authorized user public NKey; only with "existing"
+//	store-status  "existing"; "new" is refused (see readContract)
+//	store-nkey    the store's authorized user public NKey
 const (
-	StatusNew      = "new"
 	StatusExisting = "existing"
+	statusNew      = "new"
 
 	keyDirName = "sqs-worker-key"
 	maxFwCfg   = 128
@@ -54,8 +54,9 @@ type contract struct {
 	serial, status, storeKey string
 }
 
-// Boot runs the boot step and returns the worker's public key. Any missing,
-// malformed or ambiguous input refuses before a key is read or created.
+// Boot runs the boot step and returns the worker's public key. It only loads
+// an existing key the store authorizes; any missing, malformed or ambiguous
+// input refuses before a key is read.
 func Boot(cfg Config) (string, error) {
 	c, err := readContract(cfg.FwCfgDir)
 	if err != nil {
@@ -102,13 +103,7 @@ func Boot(cfg Config) (string, error) {
 		return "", fmt.Errorf("worker disk %s (%s) is not mounted at %s", dev, majMin, cfg.DataDir)
 	}
 
-	store := workerkey.Store{Dir: filepath.Join(cfg.DataDir, keyDirName)}
-	var kp nkeys.KeyPair
-	if c.status == StatusNew {
-		kp, err = store.ForNewStore()
-	} else {
-		kp, err = store.ForExistingStore(c.storeKey)
-	}
+	kp, err := workerkey.Store{Dir: filepath.Join(cfg.DataDir, keyDirName)}.ForExistingStore(c.storeKey)
 	if err != nil {
 		return "", err
 	}
@@ -120,7 +115,7 @@ func Boot(cfg Config) (string, error) {
 	if err := writePublicKey(cfg.RunDir, pub); err != nil {
 		return "", err
 	}
-	cfg.Log(fmt.Sprintf("store key ready (%s store): public=%s", c.status, pub))
+	cfg.Log("store key ready: public=" + pub)
 	return pub, nil
 }
 
@@ -136,24 +131,23 @@ func readContract(dir string) (contract, error) {
 	if c.status, err = readFwCfg(dir, "store-status"); err != nil {
 		return c, err
 	}
-	key, keyErr := readFwCfg(dir, "store-nkey")
 	switch c.status {
-	case StatusNew:
-		// A key alongside "new" contradicts it; refuse rather than guess.
-		if !errors.Is(keyErr, fs.ErrNotExist) {
-			return c, errors.New("store-nkey must not be supplied for a new store")
-		}
 	case StatusExisting:
-		if keyErr != nil {
-			return c, keyErr
-		}
-		if !nkeys.IsValidPublicUserKey(key) {
-			return c, errors.New("store-nkey is not a user public NKey")
-		}
-		c.storeKey = key
+	case statusNew:
+		// A static fw_cfg value replays across resets, so it cannot prove no
+		// store exists; key creation waits for a current authoritative decision.
+		return c, errors.New(`store-status "new" is refused: creating a store key needs a current authoritative first-store decision`)
 	default:
-		return c, errors.New(`store-status must be "new" or "existing"`)
+		return c, errors.New(`store-status must be "existing"`)
 	}
+	key, err := readFwCfg(dir, "store-nkey")
+	if err != nil {
+		return c, err
+	}
+	if !nkeys.IsValidPublicUserKey(key) {
+		return c, errors.New("store-nkey is not a user public NKey")
+	}
+	c.storeKey = key
 	return c, nil
 }
 

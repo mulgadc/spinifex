@@ -349,15 +349,17 @@ The shared SQS worker guest holds the SQS store's client credential, so that no 
 Nothing launches or calls it outside local testing: there is no worker system-instance kind, launch path or gateway action, and no worker service runs after boot.
 
 `make build-sqs-worker-microvm-image` builds it with the store image's script and network `/init` under `SQS_MICROVM_PROFILE=worker`; it carries the static `sqs-worker` binary and the ext4 tools, no `nats-server`, and an empty `/data` mountpoint.
-At boot `sqs-worker boot` reads three firmware config values under `opt/spinifex/sqs-worker/`: the worker disk's serial, `store-status` (`new` or `existing`) and, only with `existing`, the store's authorized NKey public key.
-A missing, empty or unknown status, a key alongside `new`, or a missing or invalid key with `existing` refuses before any disk is touched.
+At boot `sqs-worker boot` reads three firmware config values under `opt/spinifex/sqs-worker/`: the worker disk's serial, `store-status` and the store's authorized NKey public key.
+Only `existing` is accepted: a static firmware value survives a guest reset, so `new` cannot prove no store exists, and the boot step creates no key until the worker can obtain a current authoritative first-store decision.
+`new`, a missing, empty or unknown status, or a missing or invalid key refuses before any disk is touched.
 
 It selects exactly one disk with that serial, runs `e2fsck -p`, mounts it at `/data` and then confirms from `/proc/self/mountinfo` that this disk, as a whole ext4 filesystem, is what is mounted there; an empty mountpoint, a foreign mount or a failed check or mount refuses, and the guest never formats.
-Only then does `agents/sqs/workerkey` load the key from `/data/sqs-worker-key`, or create it there for a new store, owner-only, synced and linked so an existing key is never replaced; for an existing store a missing or different key refuses.
+Only then does `agents/sqs/workerkey` load the key from `/data/sqs-worker-key`; a missing or different key refuses and is never replaced.
+`workerkey` can create a key for a new store, owner-only, synced and linked so an existing key is never replaced, but nothing calls that path yet.
 The private key stays on the worker disk; the guest logs and publishes only the public key to `/run/sqs-worker/public-key`.
 
 Evidence is local only: unit tests with a fake firmware config, sysfs and mount table, and real QEMU boots against disposable scratch disks showing the key survives reboots and that each refusal publishes no key.
-Whether a store exists is supplied by the caller and must come from an authoritative domain record, which does not exist yet; real use also needs the encrypted-volume check, and Viperblock's at-rest key is held by the platform.
+A first worker key therefore needs a current, non-replayable first-store decision from a domain record, which does not exist yet; real use also needs the encrypted-volume check, and Viperblock's at-rest key is held by the platform.
 
 ## Configuration
 

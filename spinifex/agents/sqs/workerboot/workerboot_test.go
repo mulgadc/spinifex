@@ -102,7 +102,25 @@ func (g *guest) fw(name, value string) {
 	mustWrite(g.t, filepath.Join(g.cfg.FwCfgDir, name, "raw"), value)
 }
 
-func (g *guest) newStore() { g.fw("store-status", "new\n") }
+func (g *guest) staleNew() { g.fw("store-status", "new\n") }
+
+// seedKey stands for a worker key created when the store was first made; it
+// returns that key's public half.
+func (g *guest) seedKey() string {
+	g.t.Helper()
+	kp, err := workerkey.Store{Dir: g.keyDir()}.ForNewStore()
+	if err != nil {
+		g.t.Fatalf("seed worker key: %v", err)
+	}
+	defer kp.Wipe()
+	pub, err := kp.PublicKey()
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	return pub
+}
+
+func (g *guest) keyFile() string { return filepath.Join(g.keyDir(), "store-client.nk") }
 
 func (g *guest) existingStore(pub string) {
 	g.fw("store-status", "existing\n")
@@ -160,6 +178,13 @@ func (g *guest) assertNoSeedLeak(err error, seed string) {
 	}
 }
 
+// otherPub is a valid store key the worker does not hold.
+func otherPub(t *testing.T) string {
+	t.Helper()
+	pub, _ := userKey(t)
+	return pub
+}
+
 func userKey(t *testing.T) (pub, seed string) {
 	t.Helper()
 	kp, err := nkeys.CreateUser()
@@ -177,44 +202,78 @@ func userKey(t *testing.T) (pub, seed string) {
 	return p, string(s)
 }
 
-func TestBoot_NewStoreKeySurvivesReboot(t *testing.T) {
+func TestBoot_ExistingKeySurvivesReboot(t *testing.T) {
 	g := newGuest(t)
 	g.fw("data-serial", testSerial+"\n")
-	g.newStore()
-	pub, err := Boot(g.cfg)
-	if err != nil {
-		t.Fatalf("first boot: %v", err)
-	}
-	if g.disk.checks != 1 || g.disk.mounts != 1 {
-		t.Fatalf("checks=%d mounts=%d, want one each", g.disk.checks, g.disk.mounts)
-	}
-	published, err := os.ReadFile(filepath.Join(g.cfg.RunDir, "public-key"))
-	if err != nil || strings.TrimSpace(string(published)) != pub {
-		t.Fatalf("published key = %q, %v; want %s", published, err, pub)
-	}
+	pub := g.seedKey()
 	seed := g.seed()
-	g.assertNoSeedLeak(nil, seed)
-
-	// Reboot into the now-existing store, and again with a stale "new".
-	for _, status := range []func(){func() { g.existingStore(pub) }, g.newStore} {
+	g.existingStore(pub)
+	for boot := 1; boot <= 2; boot++ {
 		g.resetMounts()
-		_ = os.Remove(filepath.Join(g.cfg.FwCfgDir, "store-nkey", "raw"))
-		status()
-		again, err := Boot(g.cfg)
+		got, err := Boot(g.cfg)
 		if err != nil {
-			t.Fatalf("reboot: %v", err)
+			t.Fatalf("boot %d: %v", boot, err)
 		}
-		if again != pub || g.seed() != seed {
-			t.Fatal("reboot changed the worker key")
+		if got != pub || g.seed() != seed {
+			t.Fatalf("boot %d changed the worker key", boot)
+		}
+		published, err := os.ReadFile(filepath.Join(g.cfg.RunDir, "public-key"))
+		if err != nil || strings.TrimSpace(string(published)) != pub {
+			t.Fatalf("published key = %q, %v; want %s", published, err, pub)
 		}
 	}
+	if g.disk.checks != 2 || g.disk.mounts != 2 {
+		t.Fatalf("checks=%d mounts=%d, want one of each per boot", g.disk.checks, g.disk.mounts)
+	}
 	g.assertNoSeedLeak(nil, seed)
+}
+
+// The original first-start fw_cfg replays after a reset. Once the store exists
+// it must never yield a key, even when the worker key has since been lost.
+func TestBoot_StaleNewAfterStoreCreatedNeverCreatesKey(t *testing.T) {
+	t.Run("key lost", func(t *testing.T) {
+		g := newGuest(t)
+		g.fw("data-serial", testSerial)
+		g.seedKey()
+		if err := os.Remove(g.keyFile()); err != nil {
+			t.Fatal(err)
+		}
+		g.resetMounts()
+		g.staleNew()
+		pub, err := Boot(g.cfg)
+		if err == nil || !strings.Contains(err.Error(), "authoritative first-store decision") {
+			t.Fatalf("pub=%q err = %v, want stale-new refusal", pub, err)
+		}
+		if _, err := os.Lstat(g.keyFile()); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("a replacement key was created for an existing store")
+		}
+		if _, err := os.Lstat(filepath.Join(g.cfg.RunDir, "public-key")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("a public key was published")
+		}
+		if g.disk.checks != 0 || g.disk.mounts != 0 {
+			t.Fatal("a stale first-start contract still touched the disk")
+		}
+	})
+	t.Run("key present", func(t *testing.T) {
+		g := newGuest(t)
+		g.fw("data-serial", testSerial)
+		g.seedKey()
+		seed := g.seed()
+		g.resetMounts()
+		g.staleNew()
+		if _, err := Boot(g.cfg); err == nil {
+			t.Fatal("a stale first-start contract returned a key")
+		}
+		if g.seed() != seed {
+			t.Fatal("the worker key changed")
+		}
+	})
 }
 
 func TestBoot_EmptyMountpointCreatesNoKey(t *testing.T) {
 	g := newGuest(t)
 	g.fw("data-serial", testSerial)
-	g.newStore()
+	g.existingStore(otherPub(t))
 	g.disk.noopMount = true
 	_, err := Boot(g.cfg)
 	if err == nil || !strings.Contains(err.Error(), "is not mounted at") {
@@ -250,7 +309,7 @@ func TestBoot_DiskSelectionRefusals(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newGuest(t)
-			g.newStore()
+			g.existingStore(otherPub(t))
 			tc.setup(g)
 			_, err := Boot(g.cfg)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -268,7 +327,7 @@ func TestBoot_CheckOrMountFailureCreatesNoKey(t *testing.T) {
 	t.Run("check", func(t *testing.T) {
 		g := newGuest(t)
 		g.fw("data-serial", testSerial)
-		g.newStore()
+		g.existingStore(otherPub(t))
 		g.disk.checkErr = errors.New("e2fsck refused")
 		if _, err := Boot(g.cfg); err == nil {
 			t.Fatal("boot passed a disk that failed its check")
@@ -281,7 +340,7 @@ func TestBoot_CheckOrMountFailureCreatesNoKey(t *testing.T) {
 	t.Run("mount", func(t *testing.T) {
 		g := newGuest(t)
 		g.fw("data-serial", testSerial)
-		g.newStore()
+		g.existingStore(otherPub(t))
 		g.disk.mountErr = errors.New("invalid argument")
 		if _, err := Boot(g.cfg); err == nil {
 			t.Fatal("boot passed a failed mount")
@@ -302,7 +361,7 @@ func TestBoot_ForeignMountAtDataDirRefuses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newGuest(t)
 			g.fw("data-serial", testSerial)
-			g.newStore()
+			g.existingStore(otherPub(t))
 			g.appendMount(tc.majMin, tc.root, g.cfg.DataDir, tc.fstype, "x")
 			_, err := Boot(g.cfg)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -318,7 +377,7 @@ func TestBoot_ForeignMountAtDataDirRefuses(t *testing.T) {
 func TestBoot_AlreadyMountedWorkerDiskIsReused(t *testing.T) {
 	g := newGuest(t)
 	g.fw("data-serial", testSerial)
-	g.newStore()
+	g.existingStore(g.seedKey())
 	g.appendMount(testMajMin, "/", g.cfg.DataDir, "ext4", "/dev/vda")
 	if _, err := Boot(g.cfg); err != nil {
 		t.Fatal(err)
@@ -335,11 +394,11 @@ func TestBoot_ContractRefusalsTouchNoDisk(t *testing.T) {
 		setup func(g *guest)
 		want  string
 	}{
-		{"no serial", func(g *guest) { g.newStore() }, "data-serial not supplied"},
-		{"bad serial", func(g *guest) { g.fw("data-serial", "vol-0a1b2c3d4e5f6071"); g.newStore() }, "not a volume serial"},
+		{"no serial", func(g *guest) { g.existingStore(otherPub(t)) }, "data-serial not supplied"},
+		{"bad serial", func(g *guest) { g.fw("data-serial", "vol-0a1b2c3d4e5f6071"); g.existingStore(otherPub(t)) }, "not a volume serial"},
 		{"status absent", func(g *guest) { g.fw("data-serial", testSerial) }, "store-status not supplied"},
 		{"status empty", func(g *guest) { g.fw("data-serial", testSerial); g.fw("store-status", "") }, "exactly one value"},
-		{"status unknown", func(g *guest) { g.fw("data-serial", testSerial); g.fw("store-status", "unknown") }, `"new" or "existing"`},
+		{"status unknown", func(g *guest) { g.fw("data-serial", testSerial); g.fw("store-status", "unknown") }, `must be "existing"`},
 		{"existing without key", func(g *guest) { g.fw("data-serial", testSerial); g.fw("store-status", "existing") }, "store-nkey not supplied"},
 		{"existing with empty key", func(g *guest) {
 			g.fw("data-serial", testSerial)
@@ -347,16 +406,12 @@ func TestBoot_ContractRefusalsTouchNoDisk(t *testing.T) {
 			g.fw("store-nkey", "")
 		}, "exactly one value"},
 		{"existing with seed as key", func(g *guest) { g.fw("data-serial", testSerial); g.existingStore(seed) }, "not a user public NKey"},
+		{"new", func(g *guest) { g.fw("data-serial", testSerial); g.staleNew() }, "authoritative first-store decision"},
 		{"new with a key", func(g *guest) {
 			g.fw("data-serial", testSerial)
-			g.newStore()
+			g.staleNew()
 			g.fw("store-nkey", pub)
-		}, "must not be supplied"},
-		{"new with an empty key", func(g *guest) {
-			g.fw("data-serial", testSerial)
-			g.newStore()
-			g.fw("store-nkey", "")
-		}, "must not be supplied"},
+		}, "authoritative first-store decision"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -391,14 +446,9 @@ func TestBoot_ExistingStoreKeyMustBePresentAndMatch(t *testing.T) {
 	t.Run("mismatch", func(t *testing.T) {
 		g := newGuest(t)
 		g.fw("data-serial", testSerial)
-		g.newStore()
-		if _, err := Boot(g.cfg); err != nil {
-			t.Fatal(err)
-		}
+		g.seedKey()
 		seed := g.seed()
-		other, _ := userKey(t)
-		g.resetMounts()
-		g.existingStore(other)
+		g.existingStore(otherPub(t))
 		_, err := Boot(g.cfg)
 		if !errors.Is(err, workerkey.ErrKeyMismatch) {
 			t.Fatalf("err = %v, want ErrKeyMismatch", err)

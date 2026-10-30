@@ -691,6 +691,11 @@ func (cfg *Config) acquireVolumeLease(ctx context.Context, volumeName string) (*
 		err = cfg.markVolumeDirty(ctx, volumeName, lease.generation,
 			"volume open, writes not yet confirmed to the backend")
 	}
+	if errors.Is(err, errVolumeLeaseHeld) {
+		// A refused takeover is the lease's verdict, not a failure to record.
+		cfg.leases.release(ctx, lease)
+		return nil, err
+	}
 	if err != nil {
 		// Opening anyway would leave writes nothing records, so a later takeover
 		// could not tell this node ever held them. Give the lease back instead.

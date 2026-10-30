@@ -4,9 +4,14 @@ package viperblock
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
+
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,4 +133,45 @@ func TestRegisterProviderSubjects_WiresALivenessStore(t *testing.T) {
 	startProviderSubjects(t, cfg, natsURL)
 
 	assert.NotNil(t, cfg.liveness, "a production Config must get a liveness store")
+}
+
+// The daemon writes heartbeats under clusterv1.HeartbeatKey with a JSON record
+// carrying more than the timestamp. The reader must date one it did not shape.
+func TestHeartbeatLiveness_ReadsWhatTheDaemonWrites(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	live := newHeartbeatLiveness(nc)
+	_, _, err = live.LastSeen(t.Context(), "node-a")
+	require.Error(t, err, "a missing bucket is unknown, never a reason to call a node gone")
+
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: clusterv1.ClusterStateBucket})
+	require.NoError(t, err)
+
+	_, found, err := live.LastSeen(t.Context(), "node-a")
+	require.NoError(t, err)
+	assert.False(t, found, "no heartbeat record means the node has not been seen")
+
+	beat, err := json.Marshal(map[string]any{
+		"node": "node-a", "epoch": 3, "vm_count": 4, "allocated_vcpu": 8,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), clusterv1.HeartbeatKey("node-a"), beat)
+	require.NoError(t, err)
+
+	seen, found, err := live.LastSeen(t.Context(), "node-a")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.WithinDuration(t, time.Now(), seen, nodeLivenessWindow)
+
+	_, err = kv.Put(t.Context(), clusterv1.HeartbeatKey("node-b"), []byte("{"))
+	require.NoError(t, err)
+	_, found, err = live.LastSeen(t.Context(), "node-b")
+	require.NoError(t, err)
+	assert.False(t, found, "a record that cannot be dated vouches for nothing")
 }

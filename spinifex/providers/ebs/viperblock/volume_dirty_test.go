@@ -48,11 +48,11 @@ func TestVolumeDirty_MarkedOnOpenNotOnSealFailure(t *testing.T) {
 	assert.Equal(t, "node-a", record.Owner)
 }
 
-// TestVolumeDirty_DoesNotRefuseAnotherNode locks the availability half. Instance
+// TestVolumeDirty_DoesNotPinAVolumeToAGoneNode locks the availability half. Instance
 // start forwards to the node that last ran the instance and only falls back once
 // that node has failed its window, so refusing here would leave the instance
 // unable to run anywhere rather than running with a slightly older copy.
-func TestVolumeDirty_DoesNotRefuseAnotherNode(t *testing.T) {
+func TestVolumeDirty_DoesNotPinAVolumeToAGoneNode(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-dirtytakeoverallowed"
@@ -61,8 +61,9 @@ func TestVolumeDirty_DoesNotRefuseAnotherNode(t *testing.T) {
 	require.NoError(t, gone.mark(t.Context(), volumeName, 1, "seal volume: predastore unreachable"))
 
 	survivor := &Config{
-		leases: newTestLeases(t, natsURL, "node-b"),
-		dirty:  newTestDirty(t, natsURL, "node-b"),
+		leases:   newTestLeases(t, natsURL, "node-b"),
+		dirty:    newTestDirty(t, natsURL, "node-b"),
+		liveness: &fakeLiveness{seen: time.Now().Add(-2 * nodeLivenessWindow), found: true},
 	}
 
 	lease, err := survivor.acquireVolumeLease(t.Context(), volumeName)
@@ -82,8 +83,9 @@ func TestVolumeDirty_TakeoverNamesThePreviousHolder(t *testing.T) {
 	require.NoError(t, gone.mark(t.Context(), volumeName, 1, "seal volume: predastore unreachable"))
 
 	survivor := &Config{
-		leases: newTestLeases(t, natsURL, "node-b"),
-		dirty:  newTestDirty(t, natsURL, "node-b"),
+		leases:   newTestLeases(t, natsURL, "node-b"),
+		dirty:    newTestDirty(t, natsURL, "node-b"),
+		liveness: &fakeLiveness{seen: time.Now().Add(-2 * nodeLivenessWindow), found: true},
 	}
 	_, err := survivor.acquireVolumeLease(t.Context(), volumeName)
 	require.NoError(t, err)

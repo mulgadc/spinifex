@@ -248,6 +248,34 @@ func (cfg *Config) purgeVolumeDirty(ctx context.Context, volumeName string) {
 	}
 }
 
+// refuseWhileOwnerLive refuses a takeover from a node still heartbeating: its
+// unsealed writes are in its memory, and opening from the backend checkpoint
+// would discard them. A liveness that cannot be read, or is not wired, refuses
+// too, because a guess of "gone" is the unsafe one.
+func (cfg *Config) refuseWhileOwnerLive(ctx context.Context, volumeName string, record viperblocklegacyv1.DirtyRecord) error {
+	if cfg.liveness == nil {
+		slog.ErrorContext(ctx, "refusing to open a volume whose previous owner may be live: no node liveness source is wired",
+			"volume", volumeName, "previous_owner", record.Owner)
+		return fmt.Errorf("%w: %s holds unsealed writes and its liveness is unknown", errVolumeLeaseHeld, record.Owner)
+	}
+	seen, found, err := cfg.liveness.LastSeen(ctx, record.Owner)
+	if err != nil {
+		slog.ErrorContext(ctx, "refusing to open a volume whose previous owner may be live: could not read its heartbeat",
+			"volume", volumeName, "previous_owner", record.Owner, "err", err)
+		return fmt.Errorf("%w: %s holds unsealed writes and its liveness could not be read", errVolumeLeaseHeld, record.Owner)
+	}
+	if !found {
+		return nil
+	}
+	age := time.Since(seen)
+	if age > nodeLivenessWindow {
+		return nil
+	}
+	slog.WarnContext(ctx, "refusing to open a volume whose previous owner is still live",
+		"volume", volumeName, "previous_owner", record.Owner, "last_seen_ms", telemetry.Millis(age))
+	return fmt.Errorf("%w: %s is still live and holds unsealed writes", errVolumeLeaseHeld, record.Owner)
+}
+
 // reportVolumeTakeover records that this node is opening a volume another node
 // holds unsealed writes for, and takes ownership of the marker.
 //
@@ -265,6 +293,10 @@ func (cfg *Config) reportVolumeTakeover(ctx context.Context, volumeName string, 
 	record, ok := cfg.dirty.holder(ctx, volumeName)
 	if !ok || record.Owner == "" || record.Owner == cfg.dirty.owner {
 		return false, nil
+	}
+
+	if err := cfg.refuseWhileOwnerLive(ctx, volumeName, record); err != nil {
+		return false, err
 	}
 
 	slog.WarnContext(ctx, "opening a volume whose writes were last held by another node, from the backend checkpoint instead",

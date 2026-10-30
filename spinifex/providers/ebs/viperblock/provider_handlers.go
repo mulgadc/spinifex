@@ -81,6 +81,12 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		cfg.dirty = dirty
 	}
 
+	// Read-only view of the daemon's heartbeats, opened lazily so a viperblockd
+	// that starts before the daemon still serves; a takeover asks for it.
+	if cfg.liveness == nil {
+		cfg.liveness = newHeartbeatLiveness(nc)
+	}
+
 	subs := []struct {
 		subject string
 		handler providerMsgHandler

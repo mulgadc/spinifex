@@ -612,22 +612,29 @@ func TestGateway_ReadyAfterADelayedStoreLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.cfg.Attempts = 2
 	port := storeServer(t, pub)
-	if _, err := Ready(context.Background(), c.readyFor(g, "ASIAWORKER1", gwInstance, port)); !errors.Is(err, errStorePending) {
-		t.Fatalf("before the store launch: %v", err)
-	}
-	g.assertNotReady()
-
-	c.bindStore(t, pub, "127.0.0.1")
-	for boot := 1; boot <= 2; boot++ {
-		st, err := Ready(context.Background(), c.readyFor(g, "ASIAWORKER1", gwInstance, port))
-		if err != nil || st.PublicKey != pub {
-			t.Fatalf("ready %d = %+v %v", boot, st, err)
+	err = g.watch(c.readyFor(g, "ASIAWORKER1", gwInstance, port), func(call int, ready bool) bool {
+		if ready {
+			if call < 4 {
+				t.Fatalf("ready at call %d, before the store launch", call)
+			}
+			return true
 		}
+		if call == 3 {
+			c.bindStore(t, pub, "127.0.0.1")
+		}
+		return false
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("watch = %v", err)
+	}
+	for boot := 1; boot <= 2; boot++ {
 		g.resetMounts()
 		if again, err := g.boot(); err != nil || again != pub {
 			t.Fatalf("reboot %d = %q %v", boot, again, err)
+		}
+		if err := g.watch(c.readyFor(g, "ASIAWORKER1", gwInstance, port), func(_ int, ready bool) bool { return ready }); !errors.Is(err, context.Canceled) {
+			t.Fatalf("ready after reboot %d: %v", boot, err)
 		}
 	}
 	c.assertNoSeedSent(t, g.seed())
@@ -635,7 +642,7 @@ func TestGateway_ReadyAfterADelayedStoreLaunch(t *testing.T) {
 }
 
 // A store bound to a key other than this worker's is never checked, and a
-// replaced worker cannot read the store at all.
+// replaced worker cannot read the store at all; neither is ever ready.
 func TestGateway_ReadyRefusesWrongKeyAndReplacedWorker(t *testing.T) {
 	c := newGWCluster(t)
 	first := c.launch(t, "claim-0001", 0, gwInstance)
@@ -648,17 +655,22 @@ func TestGateway_ReadyRefusesWrongKeyAndReplacedWorker(t *testing.T) {
 	otherPub, _ := other.PublicKey()
 	c.bindStore(t, otherPub, "127.0.0.1")
 	port := storeServer(t, otherPub)
-	if _, err := Ready(context.Background(), c.readyFor(g, "ASIAWORKER1", gwInstance, port)); !errors.Is(err, ErrStoreKeyMismatch) {
-		t.Fatalf("wrong key: %v", err)
+	never := func(call int, ready bool) bool {
+		if ready {
+			t.Fatal("ready against a store for another key")
+		}
+		return call == 3
 	}
-	g.assertNotReady()
+	_ = g.watch(c.readyFor(g, "ASIAWORKER1", gwInstance, port), never)
+	if !slices.ContainsFunc(g.logs, func(l string) bool { return strings.Contains(l, ErrStoreKeyMismatch.Error()) }) {
+		t.Fatalf("no mismatch reported: %v", g.logs)
+	}
 
 	if err := c.ids.RecordStopped(context.Background(), first, gwInstance); err != nil {
 		t.Fatal(err)
 	}
-	g.cfg.Attempts = 2
-	_, err := Ready(context.Background(), c.readyFor(g, "ASIAWORKER1", gwInstance, port))
-	if apiErr, ok := errors.AsType[*sqsworkergw.APIError](err); !ok || apiErr.Code != "AccessDenied" {
-		t.Fatalf("stopped worker: %v", err)
+	_ = g.watch(c.readyFor(g, "ASIAWORKER1", gwInstance, port), never)
+	if !strings.Contains(g.logs[len(g.logs)-1], "AccessDenied") {
+		t.Fatalf("stopped worker: %v", g.logs[len(g.logs)-1])
 	}
 }

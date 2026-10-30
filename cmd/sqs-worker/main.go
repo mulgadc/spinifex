@@ -8,15 +8,19 @@
 // boot selects and mounts the worker's data disk named by fw_cfg, asks the
 // gateway for its current first-store decision with its instance-role
 // credentials, then loads or creates the store key on that disk and
-// publishes only the public key. ready then asks the gateway for the bound
-// store and checks its JetStream with that key, within a bound; it proves the
-// store accepted the worker key, not the store server's identity.
+// publishes only the public key. ready then keeps checking the bound store's
+// JetStream with that key until it is stopped, keeping a readiness marker only
+// while the check passes; it proves the store accepted the worker key, not
+// the store server's identity.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
@@ -91,14 +95,12 @@ func boot(logf func(string)) error {
 	return err
 }
 
-// ready waits up to 15 minutes for the operator to launch the store.
+// ready runs until init stops it; the marker is removed on the way out.
 func ready(logf func(string)) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
-	cfg := config(logf)
-	cfg.Attempts = 180
-	_, err := workerboot.Ready(ctx, workerboot.ReadyConfig{
-		Config: cfg,
+	err := workerboot.Watch(ctx, workerboot.ReadyConfig{
+		Config: config(logf),
 		NewDescriber: func(region, gatewayURL string) (workerboot.StoreDescriber, error) {
 			c, err := newClient(region, gatewayURL)
 			if err != nil {
@@ -106,7 +108,13 @@ func ready(logf func(string)) error {
 			}
 			return describer{c}, nil
 		},
-		Checker: workerboot.NATSChecker{},
+		Checker:     workerboot.NATSChecker{},
+		CallTimeout: 30 * time.Second,
+		Refresh:     30 * time.Second,
+		Refused:     5 * time.Minute,
 	})
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
 	return err
 }

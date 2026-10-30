@@ -34,62 +34,96 @@ type Checker interface {
 	Check(ctx context.Context, address string, kp nkeys.KeyPair) error
 }
 
-// ReadyConfig is Config plus the readiness capabilities.
+// ReadyConfig is Config plus the readiness capabilities and cadence.
 type ReadyConfig struct {
 	Config
 
 	NewDescriber NewDescriber
 	Checker      Checker
+	// CallTimeout bounds one describe-and-check pass; zero is 30 seconds.
+	CallTimeout time.Duration
+	// Refresh is the wait after a pass before checking again; zero is 30s.
+	Refresh time.Duration
+	// Refused is the wait after a failure that cannot clear by itself, such
+	// as a refused or mismatched key; zero is five minutes.
+	Refused time.Duration
 }
 
 // ErrStoreKeyMismatch is a bound store launched for a key other than the one
-// on this worker's disk; it is never retried.
+// on this worker's disk; it is asked again only at the Refused cadence.
 var ErrStoreKeyMismatch = errors.New("the store was launched for a different worker key")
 
 const readyFile = "store-ready"
 
-// Ready proves the store answers this worker's key: it re-proves the worker
-// disk is mounted, loads the existing key for the store's recorded public key,
-// and checks the store's JetStream with it. It never creates a key. NKey
-// authenticates this client only; the store server itself is not.
-func Ready(ctx context.Context, cfg ReadyConfig) (Store, error) {
+// Watch keeps the readiness marker true until ctx ends: it re-proves the disk,
+// then checks the store with the worker's existing key every pass, writing the
+// marker on a pass and removing it on any failure and on return. It never
+// creates a key. NKey authenticates this client only, not the store server.
+func Watch(ctx context.Context, cfg ReadyConfig) error {
+	marker := filepath.Join(cfg.RunDir, readyFile)
+	defer func() { _ = os.Remove(marker) }()
+	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear stale store readiness: %w", err)
+	}
 	c, err := readContract(cfg.FwCfgDir)
 	if err != nil {
-		return Store{}, err
+		return err
 	}
 	if err := mountWorkerDisk(cfg.Config, c.serial); err != nil {
-		return Store{}, err
+		return err
 	}
 	if cfg.NewDescriber == nil || cfg.Checker == nil {
-		return Store{}, errors.New("no gateway client or store checker is configured")
+		return errors.New("no gateway client or store checker is configured")
 	}
 	d, err := cfg.NewDescriber(c.region, c.gatewayURL)
 	if err != nil {
-		return Store{}, fmt.Errorf("build gateway client: %w", err)
+		return fmt.Errorf("build gateway client: %w", err)
 	}
 	keys := workerkey.Store{Dir: filepath.Join(cfg.DataDir, keyDirName)}
+	callTimeout := orDefault(cfg.CallTimeout, 30*time.Second)
+	refresh := orDefault(cfg.Refresh, 30*time.Second)
+	refused := orDefault(cfg.Refused, 5*time.Minute)
 
-	attempts := max(cfg.Attempts, 1)
-	for i := range attempts {
-		st, err := readyOnce(ctx, cfg, d, keys)
+	last := ""
+	for {
+		callCtx, cancel := context.WithTimeout(ctx, callTimeout)
+		st, err := readyOnce(callCtx, cfg, d, keys)
+		cancel()
+		delay, state := refresh, ""
 		if err == nil {
-			if err := writeReady(cfg.RunDir, st); err != nil {
-				return Store{}, err
+			err = writeReady(cfg.RunDir, st)
+		}
+		switch {
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case err == nil:
+			state = fmt.Sprintf("store at %s answered the worker key (client-authenticated only; the store server is not authenticated)", st.Address)
+		default:
+			_ = os.Remove(marker)
+			delay = cfg.Wait
+			if !pending(err) && !retryable(err) && !errors.Is(err, errStorePending) {
+				delay = refused
 			}
-			cfg.Log(fmt.Sprintf("store at %s answered the worker key (client-authenticated only; the store server is not authenticated)", st.Address))
-			return st, nil
+			state = fmt.Sprintf("store not ready: %v", err)
 		}
-		if i == attempts-1 || !pending(err) && !retryable(err) && !errors.Is(err, errStorePending) {
-			return Store{}, err
+		// Only a change is logged, so a long wait does not flood the console.
+		if state != last {
+			cfg.Log(state)
+			last = state
 		}
-		cfg.Log(fmt.Sprintf("store not ready, asking again: %v", err))
 		select {
 		case <-ctx.Done():
-			return Store{}, ctx.Err()
-		case <-time.After(cfg.Wait):
+			return ctx.Err()
+		case <-time.After(max(delay, time.Millisecond)):
 		}
 	}
-	return Store{}, errors.New("store readiness attempts exhausted")
+}
+
+func orDefault(d, def time.Duration) time.Duration {
+	if d <= 0 {
+		return def
+	}
+	return d
 }
 
 var errStorePending = errors.New("the store is not yet bound")

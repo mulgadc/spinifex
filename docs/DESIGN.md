@@ -413,9 +413,11 @@ A volume preparation that failed before sending any create, such as a missing `m
 Any other marked step whose result is not visible is reported as `IncorrectState` and never resent; a volume that is not encrypted by its own record is refused as `UnsupportedOperation` with its ID kept, and the daemon re-checks the volume's encryption and the guest's size at launch.
 The daemon never receives the worker's seed; the store's NATS server accepts only that public key, and the reply's bound VM and address are not readiness, which only the worker can check.
 
-After boot, the worker's one-shot `sqs-worker ready` step mounts and verifies its disk again and calls the internal `spinifex-sqs` `DescribeStore` action, which admits only the current worker and returns the bound store's address and recorded public key, or pending.
-It loads its key only if it matches that public key, then connects to the store's NATS on port 4222 with it and asks JetStream for account info, asking again every 5 seconds for up to 15 minutes while the store is pending or not answering.
-A mismatched key or a store that refuses the key stops the step at once; a pass writes only the address and public key to `/run/sqs-worker/store-ready`.
+After boot, the worker's long-running `sqs-worker ready` step mounts and verifies its disk again and calls the internal `spinifex-sqs` `DescribeStore` action, which admits only the current worker and returns the bound store's address and recorded public key, or pending.
+It loads its key only if it matches that public key, then connects to the store's NATS on port 4222 with it and asks JetStream for account info, each pass bounded to 30 seconds.
+The step runs until shutdown with no overall deadline, so a store the operator launches at any time is picked up: it asks again every 5 seconds while the store is pending, not answering or the reply was lost, and re-checks a ready store every 30 seconds.
+A pass writes only the address and public key to `/run/sqs-worker/store-ready`; any failed pass removes that file, and so do the step's exit and the guest's shutdown, which stops the step by its recorded PID.
+A mismatched key, a store that refuses the key, a key missing from the disk or an unclassified gateway refusal is asked again only every 5 minutes, so it never spins and still recovers if the operator fixes it; a missing key is never replaced.
 The NKey authenticates the worker to the store, but nothing authenticates the store to the worker: there is no TLS, so a pass means only that something at that address accepted the key.
 This is store readiness for the worker alone; there is no SQS API, and no production sizing or support is claimed.
 

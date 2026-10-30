@@ -111,7 +111,7 @@ func (d *Daemon) buildSQSStoreLauncher(ctx context.Context) (*storelaunch.Launch
 		Host:           sqsStoreHost{check: d.sqsStoreHostReady},
 		VMs:            sqsStoreVMs{launch: d.LaunchSQSStoreInstance},
 		NodeID:         d.node,
-		RetainedVolume: retainedStoreVolume,
+		RetainedVolume: retainedVolume,
 	}, nil
 }
 
@@ -158,7 +158,7 @@ func (v sqsStoreVolumes) Encrypted(ctx context.Context, volumeID string) (bool, 
 	return v.inner.Encrypted(ctx, volumeID)
 }
 
-func retainedStoreVolume(err error) string {
+func retainedVolume(err error) string {
 	if r, ok := errors.AsType[*storevolume.RetainedVolumeError](err); ok {
 		return r.VolumeID
 	}

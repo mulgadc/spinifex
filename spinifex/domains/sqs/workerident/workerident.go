@@ -52,7 +52,7 @@ type Record struct {
 	Generation   uint64 `json:"generation"`
 	ClaimID      string `json:"claimID"`
 	NodeID       string `json:"nodeID"`
-	DataVolumeID string `json:"dataVolumeID"`
+	DataVolumeID string `json:"dataVolumeID,omitempty"`
 	InstanceType string `json:"instanceType"`
 	InstanceID   string `json:"instanceID,omitempty"`
 	// Dispatched is set once, before the launch is sent. A dispatched launch
@@ -61,6 +61,9 @@ type Record struct {
 	// NetworkAttempted is set once, before the claim's ENI create is sent. A
 	// create whose outcome was not seen is never sent again for that claim.
 	NetworkAttempted bool `json:"networkAttempted,omitempty"`
+	// VolumeAttempted is set once, before the first volume create is sent;
+	// DataVolumeID is recorded only after it. A replacement keeps both.
+	VolumeAttempted bool `json:"volumeAttempted,omitempty"`
 }
 
 // IndexEntry finds an instance's regional record. It is a lookup, never proof
@@ -71,11 +74,18 @@ type IndexEntry struct {
 	ClaimID    string `json:"claimID"`
 }
 
+// Allocated reports whether the launch has sent any create, so its intent
+// can no longer be re-typed without a replacement.
+func (r Record) Allocated() bool {
+	return r.VolumeAttempted || r.NetworkAttempted || r.Dispatched
+}
+
 // LaunchRequest is one launch attempt. ClaimID is freshly minted per attempt
 // and reused only to retry it; only the current claim is recorded, so a VM
 // launch must be idempotent on generation and claim together. Supersedes is the generation the caller
 // read and is replacing, zero for the Region's first worker, so a replayed
-// request cannot take a generation it never observed.
+// request cannot take a generation it never observed. DataVolumeID is empty
+// for a first launch whose volume is not yet made.
 type LaunchRequest struct {
 	ClaimID             string
 	Supersedes          uint64
@@ -119,6 +129,7 @@ var (
 	ErrNotFenced         = errors.New("first-store fence does not yet exclude the replaced generation")
 	ErrDispatched        = errors.New("SQS worker launch was already dispatched; its outcome must be reconciled")
 	ErrNetworkAttempted  = errors.New("SQS worker network create was already sent; its outcome must be reconciled")
+	ErrVolumeAttempted   = errors.New("SQS worker volume create was already sent; its outcome must be reconciled")
 )
 
 const maxAttempts = 8
@@ -192,9 +203,9 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 		return Intent{}, errors.New("invalid claim ID")
 	case !nodePattern.MatchString(req.NodeID):
 		return Intent{}, errors.New("invalid node ID")
-	case !volumePattern.MatchString(req.DataVolumeID):
+	case req.DataVolumeID != "" && !volumePattern.MatchString(req.DataVolumeID):
 		return Intent{}, errors.New("invalid data volume ID")
-	case !req.DataVolumeEncrypted:
+	case req.DataVolumeID != "" && !req.DataVolumeEncrypted:
 		return Intent{}, ErrUnencryptedVolume
 	case !typePattern.MatchString(req.InstanceType):
 		return Intent{}, errors.New("invalid instance type")
@@ -206,7 +217,8 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 				return Intent{}, ErrConflict
 			}
 			next := Record{Region: region, State: StateLaunching, Generation: 1,
-				ClaimID: req.ClaimID, NodeID: req.NodeID, DataVolumeID: req.DataVolumeID, InstanceType: req.InstanceType}
+				ClaimID: req.ClaimID, NodeID: req.NodeID, DataVolumeID: req.DataVolumeID, InstanceType: req.InstanceType,
+				VolumeAttempted: req.DataVolumeID != ""}
 			// A failed create may still have applied; the re-read decides.
 			if s.put(ctx, regionKey(region), next, 0) == nil {
 				return intentOf(next), nil
@@ -229,7 +241,11 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 				return Intent{}, ErrSuperseded
 			}
 			if rec.InstanceType != req.InstanceType {
-				return Intent{}, ErrTypeChanged
+				// An intent that has sent nothing allocated nothing, so it may be re-typed.
+				if rec.Allocated() {
+					return Intent{}, ErrTypeChanged
+				}
+				next.InstanceType = req.InstanceType
 			}
 		case req.Supersedes != rec.Generation:
 			return Intent{}, ErrSuperseded
@@ -365,6 +381,8 @@ func (s Store) MarkDispatched(ctx context.Context, intent Intent) error {
 			return ErrConflict
 		case rec.Dispatched:
 			return ErrDispatched
+		case rec.DataVolumeID == "":
+			return ErrConflict
 		}
 		next := *rec
 		next.Dispatched = true
@@ -400,6 +418,81 @@ func (s Store) MarkNetworkAttempted(ctx context.Context, intent Intent) error {
 		}
 		next := *rec
 		next.NetworkAttempted = true
+		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// MarkVolumeAttempted records that intent's one volume create is about to be
+// sent. Exactly one call wins; any later call gets ErrVolumeAttempted, so a
+// create that may have applied is never sent again.
+func (s Store) MarkVolumeAttempted(ctx context.Context, intent Intent) error {
+	return s.updateLaunching(ctx, intent, func(rec *Record) error {
+		if rec.VolumeAttempted {
+			return ErrVolumeAttempted
+		}
+		rec.VolumeAttempted = true
+		return nil
+	})
+}
+
+// ClearVolumeAttempt withdraws the volume mark after a create proven never to
+// have been sent. It refuses once a volume is recorded, and is idempotent.
+func (s Store) ClearVolumeAttempt(ctx context.Context, intent Intent) error {
+	return s.updateLaunching(ctx, intent, func(rec *Record) error {
+		if rec.DataVolumeID != "" {
+			return ErrConflict
+		}
+		rec.VolumeAttempted = false
+		return nil
+	})
+}
+
+// RecordVolume records the volume the attempted create returned. A retry with
+// the same volume succeeds; a different one is refused.
+func (s Store) RecordVolume(ctx context.Context, intent Intent, volumeID string) error {
+	if !volumePattern.MatchString(volumeID) {
+		return errors.New("invalid data volume ID")
+	}
+	return s.updateLaunching(ctx, intent, func(rec *Record) error {
+		switch {
+		case !rec.VolumeAttempted:
+			return ErrConflict
+		case rec.DataVolumeID == volumeID:
+		case rec.DataVolumeID != "":
+			return ErrVolumeMismatch
+		}
+		rec.DataVolumeID = volumeID
+		return nil
+	})
+}
+
+// updateLaunching applies change to intent's record while it is launching and
+// undispatched, under compare-and-swap at the revision read.
+func (s Store) updateLaunching(ctx context.Context, intent Intent, change func(*Record) error) error {
+	if err := validIntent(intent); err != nil {
+		return err
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, intent.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrSuperseded
+		}
+		if err != nil {
+			return err
+		}
+		switch {
+		case rec.Generation != intent.Generation || rec.ClaimID != intent.ClaimID:
+			return ErrSuperseded
+		case rec.State != StateLaunching || rec.Dispatched:
+			return ErrConflict
+		}
+		next := *rec
+		if err := change(&next); err != nil {
+			return err
+		}
 		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
 			return nil
 		}
@@ -543,8 +636,15 @@ func (s Store) readRecord(ctx context.Context, region string) (*Record, uint64, 
 
 func wellFormed(r *Record, region string) bool {
 	if r.Region != region || r.Generation == 0 || !claimPattern.MatchString(r.ClaimID) ||
-		!nodePattern.MatchString(r.NodeID) || !volumePattern.MatchString(r.DataVolumeID) ||
-		!typePattern.MatchString(r.InstanceType) {
+		!nodePattern.MatchString(r.NodeID) || !typePattern.MatchString(r.InstanceType) {
+		return false
+	}
+	if r.DataVolumeID == "" {
+		// Only an undispatched launch, or one that failed before it, lacks a volume.
+		if r.Dispatched || (r.State != StateLaunching && r.State != StateFailed) {
+			return false
+		}
+	} else if !r.VolumeAttempted || !volumePattern.MatchString(r.DataVolumeID) {
 		return false
 	}
 	switch r.State {

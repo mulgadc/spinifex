@@ -12,13 +12,15 @@ import (
 	"fmt"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Volumes prepares the worker's data volume and reads its own metadata.
 type Volumes interface {
-	// Prepare creates a new, empty, formatted volume and returns its ID.
+	// Prepare creates a new, empty, formatted volume and returns its ID. An
+	// error wrapping storevolume.ErrNotCreated proves no create was sent.
 	Prepare(ctx context.Context) (string, error)
 	// Encrypted reports the volume record's own encryption flag.
 	Encrypted(ctx context.Context, volumeID string) (bool, error)
@@ -81,6 +83,12 @@ var (
 	// ErrNetworkOutcomeUnknown is returned when the claim's ENI create was
 	// sent but no ENI is visible; the create is not repeated until reconciled.
 	ErrNetworkOutcomeUnknown = errors.New("SQS worker network create outcome is unknown; reconcile before relaunching")
+	// ErrVolumeNotCreated is a volume Prepare that sent no create; a retry may
+	// prepare one.
+	ErrVolumeNotCreated = errors.New("SQS worker volume was not created")
+	// ErrVolumeOutcomeUnknown is returned for a volume create that was sent
+	// but not recorded; the create is not repeated until reconciled.
+	ErrVolumeOutcomeUnknown = errors.New("SQS worker volume create outcome is unknown; reconcile before relaunching")
 )
 
 // Launcher realizes the worker on NodeID, the node it runs on and the only
@@ -94,6 +102,8 @@ type Launcher struct {
 	Host       Host
 	VMs        VMLauncher
 	NodeID     string
+	// RetainedVolume extracts a volume ID from a Prepare error, if any.
+	RetainedVolume func(error) string
 
 	newClaimID func() (string, error)
 }
@@ -116,23 +126,23 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 	}
 	cur, err := l.Identities.Current(ctx, region)
 	var req workerident.LaunchRequest
-	var fresh string
 	switch {
 	case errors.Is(err, jetstream.ErrKeyNotFound):
+		// The first launch records its intent before any volume exists.
 		if err := l.hostReady(ctx); err != nil {
 			return Result{}, err
 		}
-		req, err = l.first(ctx)
+		claim, err := l.claimID()
 		if err != nil {
 			return Result{}, err
 		}
-		fresh = req.DataVolumeID
+		req = workerident.LaunchRequest{ClaimID: claim, NodeID: l.NodeID}
 	case err != nil:
 		return Result{}, err
 	case cur.NodeID != l.NodeID:
 		return Result{}, workerident.ErrWrongNode
-	case (cur.State == workerident.StateBound || cur.State == workerident.StateLaunching) &&
-		cur.InstanceType != instanceType:
+	case cur.InstanceType != instanceType &&
+		(cur.State == workerident.StateBound || (cur.State == workerident.StateLaunching && cur.Allocated())):
 		// Changing the type needs a replacement, never a silent answer for the old VM.
 		return Result{}, fmt.Errorf("%w: %s", workerident.ErrTypeChanged, cur.InstanceType)
 	case cur.State == workerident.StateBound:
@@ -166,14 +176,15 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 	req.InstanceType = instanceType
 	intent, err := l.begin(ctx, region, req)
 	if err != nil {
-		if fresh != "" {
-			return Result{}, &UnclaimedVolumeError{VolumeID: fresh, Err: err}
-		}
 		return Result{}, err
 	}
 
 	// Nothing below is dispatched yet: a failure leaves an undispatched
 	// intent that the next call resumes with the same claim.
+	volumeID, err := l.volume(ctx, intent, req.DataVolumeID)
+	if err != nil {
+		return Result{}, err
+	}
 	profile, err := l.Roles.EnsureWorkerProfile(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("ensure worker instance profile: %w", err)
@@ -183,7 +194,7 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 		return Result{}, err
 	}
 	spec := Spec{InstanceType: instanceType, ProfileARN: profile, Network: *network,
-		DataVolumeID: req.DataVolumeID, Region: region}
+		DataVolumeID: volumeID, Region: region}
 
 	if err := l.Identities.MarkDispatched(ctx, intent); err != nil {
 		return Result{}, err
@@ -231,23 +242,53 @@ func (l *Launcher) hostReady(ctx context.Context) error {
 	return nil
 }
 
-// first prepares the Region's first worker volume, after everything that can
-// fail without allocating. A volume this call cannot record is reported in an
-// UnclaimedVolumeError and left in place, never deleted.
-func (l *Launcher) first(ctx context.Context) (workerident.LaunchRequest, error) {
-	claim, err := l.claimID()
-	if err != nil {
-		return workerident.LaunchRequest{}, err
+// volume returns the intent's recorded volume, or marks the intent and
+// prepares one. A volume it knows of but cannot use is reported in a
+// VolumeError and left in place, never deleted.
+func (l *Launcher) volume(ctx context.Context, intent workerident.Intent, recorded string) (string, error) {
+	if recorded != "" {
+		return recorded, nil
 	}
-	volumeID, err := l.Volumes.Prepare(ctx)
-	if err != nil {
-		return workerident.LaunchRequest{}, fmt.Errorf("prepare worker data volume: %w", err)
+	if err := l.Identities.MarkVolumeAttempted(ctx, intent); err != nil {
+		if errors.Is(err, workerident.ErrVolumeAttempted) {
+			return "", ErrVolumeOutcomeUnknown
+		}
+		return "", fmt.Errorf("worker data volume: %w", err)
 	}
-	return workerident.LaunchRequest{ClaimID: claim, NodeID: l.NodeID, DataVolumeID: volumeID}, nil
+	id, err := l.Volumes.Prepare(ctx)
+	if errors.Is(err, storevolume.ErrNotCreated) {
+		if cerr := l.Identities.ClearVolumeAttempt(ctx, intent); cerr != nil {
+			return "", fmt.Errorf("%w: no volume was created, but its mark was not cleared: %w", ErrVolumeOutcomeUnknown, cerr)
+		}
+		return "", fmt.Errorf("%w: %w", ErrVolumeNotCreated, err)
+	}
+	if err != nil {
+		err = fmt.Errorf("%w: %w", ErrVolumeOutcomeUnknown, err)
+		if l.RetainedVolume != nil {
+			if kept := l.RetainedVolume(err); kept != "" {
+				return "", &VolumeError{VolumeID: kept, Err: err}
+			}
+		}
+		return "", err
+	}
+	if err := l.Identities.RecordVolume(ctx, intent, id); err != nil {
+		return "", &VolumeError{VolumeID: id, Err: fmt.Errorf("%w: %w", ErrVolumeOutcomeUnknown, err)}
+	}
+	encrypted, err := l.Volumes.Encrypted(ctx, id)
+	if err != nil {
+		return "", &VolumeError{VolumeID: id, Err: fmt.Errorf("read its record: %w", err)}
+	}
+	if !encrypted {
+		return "", &VolumeError{VolumeID: id, Err: ErrUnencrypted}
+	}
+	return id, nil
 }
 
-// begin checks the volume's own record and records the launch intent.
+// begin checks a recorded volume's own record and records the launch intent.
 func (l *Launcher) begin(ctx context.Context, region string, req workerident.LaunchRequest) (workerident.Intent, error) {
+	if req.DataVolumeID == "" {
+		return l.Identities.BeginLaunch(ctx, region, req)
+	}
 	encrypted, err := l.Volumes.Encrypted(ctx, req.DataVolumeID)
 	if err != nil {
 		return workerident.Intent{}, fmt.Errorf("read data volume %s: %w", req.DataVolumeID, err)
@@ -259,19 +300,18 @@ func (l *Launcher) begin(ctx context.Context, region string, req workerident.Lau
 	return l.Identities.BeginLaunch(ctx, region, req)
 }
 
-// UnclaimedVolumeError reports a worker volume this call created but did not
-// confirm recording in a launch intent. Its ownership is unproven, so it is
-// left for an operator; a BeginLaunch whose reply was lost may still hold it.
-type UnclaimedVolumeError struct {
+// VolumeError reports a worker volume this call knows of but could not use:
+// it is kept, never deleted, and its ID stays visible to the operator.
+type VolumeError struct {
 	VolumeID string
 	Err      error
 }
 
-func (e *UnclaimedVolumeError) Error() string {
-	return fmt.Sprintf("worker data volume %s was created but this call could not confirm it was recorded: %v", e.VolumeID, e.Err)
+func (e *VolumeError) Error() string {
+	return fmt.Sprintf("SQS worker data volume %s is kept: %v", e.VolumeID, e.Err)
 }
 
-func (e *UnclaimedVolumeError) Unwrap() error { return e.Err }
+func (e *VolumeError) Unwrap() error { return e.Err }
 
 // bind retries a lost reply with the same arguments, which BindInstance
 // accepts as idempotent.

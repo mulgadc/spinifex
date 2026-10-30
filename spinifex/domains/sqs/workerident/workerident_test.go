@@ -891,3 +891,119 @@ func TestBeginLaunch_InstanceTypeIsFixedForAGeneration(t *testing.T) {
 		t.Fatalf("record = %+v, %v; want type %s", rec, err, testType)
 	}
 }
+
+// A first launch is recorded before its volume exists. Its one create is
+// marked once, a proven unsent create may withdraw the mark, the returned
+// volume is recorded once, and nothing without a volume can be dispatched.
+func TestVolumeIntent_MarkedOnceBeforeTheCreate(t *testing.T) {
+	ctx := context.Background()
+	s, kv := newStore(t)
+	req := launch(claim(1), 0)
+	req.DataVolumeID, req.DataVolumeEncrypted = "", false
+	in, err := s.BeginLaunch(ctx, region, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := record(t, kv); rec.State != StateLaunching || rec.DataVolumeID != "" || rec.Allocated() {
+		t.Fatalf("intent = %+v", rec)
+	}
+	if err := s.MarkDispatched(ctx, in); !errors.Is(err, ErrConflict) {
+		t.Fatalf("dispatch without a volume = %v, want ErrConflict", err)
+	}
+	if err := s.RecordVolume(ctx, in, volume); !errors.Is(err, ErrConflict) {
+		t.Fatalf("record before the mark = %v, want ErrConflict", err)
+	}
+	if err := s.MarkVolumeAttempted(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkVolumeAttempted(ctx, in); !errors.Is(err, ErrVolumeAttempted) {
+		t.Fatalf("second mark = %v, want ErrVolumeAttempted", err)
+	}
+	if again, err := s.BeginLaunch(ctx, region, req); err != nil || again != in || !record(t, kv).VolumeAttempted {
+		t.Fatalf("same-claim retry = %+v, %v; record %+v", again, err, record(t, kv))
+	}
+	if err := s.ClearVolumeAttempt(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkVolumeAttempted(ctx, in); err != nil {
+		t.Fatalf("mark after a withdrawn attempt = %v", err)
+	}
+	if err := s.RecordVolume(ctx, in, volume); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordVolume(ctx, in, volume); err != nil {
+		t.Fatalf("lost-reply retry = %v", err)
+	}
+	if err := s.RecordVolume(ctx, in, "vol-0fedcba9876543210"); !errors.Is(err, ErrVolumeMismatch) {
+		t.Fatalf("other volume = %v, want ErrVolumeMismatch", err)
+	}
+	if err := s.ClearVolumeAttempt(ctx, in); !errors.Is(err, ErrConflict) {
+		t.Fatalf("clear after record = %v, want ErrConflict", err)
+	}
+	stale := in
+	stale.ClaimID = claim(9)
+	if err := s.MarkVolumeAttempted(ctx, stale); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("other claim = %v, want ErrSuperseded", err)
+	}
+	if err := s.MarkDispatched(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordVolume(ctx, in, volume); !errors.Is(err, ErrConflict) {
+		t.Fatalf("record after dispatch = %v, want ErrConflict", err)
+	}
+}
+
+// A replacement after a launch that failed with its create unsettled keeps
+// the mark, so the create is still never sent again.
+func TestVolumeIntent_ReplacementKeepsAnUnsettledMark(t *testing.T) {
+	ctx := context.Background()
+	s, kv := newStore(t)
+	req := launch(claim(1), 0)
+	req.DataVolumeID, req.DataVolumeEncrypted = "", false
+	in, err := s.BeginLaunch(ctx, region, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkVolumeAttempted(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailLaunch(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	fence(t, s, 2)
+	next := launch(claim(2), 1)
+	next.DataVolumeID, next.DataVolumeEncrypted = "", false
+	in2, err := s.BeginLaunch(ctx, region, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := record(t, kv); !rec.VolumeAttempted || rec.DataVolumeID != "" {
+		t.Fatalf("replacement = %+v, want the unsettled mark kept", rec)
+	}
+	if err := s.MarkVolumeAttempted(ctx, in2); !errors.Is(err, ErrVolumeAttempted) {
+		t.Fatalf("mark on replacement = %v, want ErrVolumeAttempted", err)
+	}
+}
+
+// Only an undispatched or failed launch may lack a volume, and a recorded
+// volume must have been marked first.
+func TestReadRecord_RefusesAVolumeOutsideItsIntent(t *testing.T) {
+	ctx := context.Background()
+	for name, rec := range map[string]Record{
+		"dispatched without volume": {Region: region, State: StateLaunching, Generation: 1, ClaimID: claim(1),
+			NodeID: node, InstanceType: testType, VolumeAttempted: true, Dispatched: true},
+		"bound without volume": {Region: region, State: StateBound, Generation: 1, ClaimID: claim(1),
+			NodeID: node, InstanceType: testType, InstanceID: inst(1)},
+		"volume without mark": {Region: region, State: StateLaunching, Generation: 1, ClaimID: claim(1),
+			NodeID: node, InstanceType: testType, DataVolumeID: volume},
+	} {
+		s, kv := newStore(t)
+		b, _ := json.Marshal(rec)
+		if _, err := kv.Put(ctx, regionKey(region), b); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Current(ctx, region); !errors.Is(err, ErrUnreadable) {
+			t.Errorf("%s: %v, want ErrUnreadable", name, err)
+		}
+	}
+}

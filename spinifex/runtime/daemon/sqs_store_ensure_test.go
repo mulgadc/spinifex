@@ -136,7 +136,7 @@ func newStoreFixture(t *testing.T, vms *storeVMs) *storeFixture {
 		Host:           sqsStoreHost{check: func() error { return f.hostErr }},
 		VMs:            vms,
 		NodeID:         ensureNode,
-		RetainedVolume: retainedStoreVolume,
+		RetainedVolume: retainedVolume,
 	}
 	f.d = &Daemon{
 		node:   ensureNode,

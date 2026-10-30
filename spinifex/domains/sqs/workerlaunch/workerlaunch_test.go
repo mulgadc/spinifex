@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/nats-io/nats.go/jetstream"
@@ -22,11 +24,14 @@ const (
 	itype  = "sys.test"
 )
 
+// fakeVolumes creates one volume per Prepare. prepareErr refuses before any
+// create; appliedErr creates the volume, then reports failure without its ID.
 type fakeVolumes struct {
 	mu         sync.Mutex
 	prepared   []string
 	encrypted  bool
 	prepareErr error
+	appliedErr error
 }
 
 func (f *fakeVolumes) Prepare(context.Context) (string, error) {
@@ -37,8 +42,22 @@ func (f *fakeVolumes) Prepare(context.Context) (string, error) {
 	}
 	id := fmt.Sprintf("vol-%017x", len(f.prepared)+1)
 	f.prepared = append(f.prepared, id)
+	if f.appliedErr != nil {
+		return "", f.appliedErr
+	}
 	return id, nil
 }
+
+func (f *fakeVolumes) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.prepared)
+}
+
+// keptVolumeError carries the ID of a volume a failed Prepare left in place.
+type keptVolumeError struct{ id string }
+
+func (e keptVolumeError) Error() string { return "fill failed for " + e.id }
 
 func (f *fakeVolumes) Encrypted(context.Context, string) (bool, error) { return f.encrypted, nil }
 
@@ -192,79 +211,130 @@ func TestEnsure_FirstLaunchBindsAndIsIdempotent(t *testing.T) {
 	}
 }
 
-// A volume whose own record is not encrypted is refused before any intent,
-// and the volume this call created is reported rather than dropped.
+// A volume whose own record is not encrypted is recorded and reported, never
+// launched on, and later calls refuse it rather than preparing another.
 func TestEnsure_RefusesAnUnencryptedVolume(t *testing.T) {
 	r := newRig(t)
 	r.vol.encrypted = false
-	_, err := r.l.Ensure(context.Background(), region, itype)
-	if !errors.Is(err, ErrUnencrypted) {
-		t.Fatalf("ensure = %v, want ErrUnencrypted", err)
+	for range 3 {
+		_, err := r.l.Ensure(context.Background(), region, itype)
+		if !errors.Is(err, ErrUnencrypted) || !strings.Contains(err.Error(), r.vol.prepared[0]) {
+			t.Fatalf("ensure = %v, want ErrUnencrypted naming %s", err, r.vol.prepared[0])
+		}
 	}
-	unclaimed, ok := errors.AsType[*UnclaimedVolumeError](err)
-	if !ok || unclaimed.VolumeID != r.vol.prepared[0] {
-		t.Fatalf("ensure = %v, want the prepared volume %s reported", err, r.vol.prepared[0])
+	if rec := r.current(t); rec.DataVolumeID != r.vol.prepared[0] || rec.Dispatched {
+		t.Fatalf("record = %+v", rec)
 	}
-	if _, err := r.l.Identities.Current(context.Background(), region); err == nil {
-		t.Fatal("an intent was recorded for an unencrypted volume")
-	}
-	if r.vms.count() != 0 {
-		t.Fatal("launched on an unencrypted volume")
+	if r.vol.count() != 1 || r.vms.count() != 0 || len(r.net.claims) != 0 {
+		t.Fatalf("volumes=%d launches=%d network=%d", r.vol.count(), r.vms.count(), len(r.net.claims))
 	}
 }
 
-// A refusal that can be made without allocating, a cluster that cannot
-// encrypt or a claim that cannot be minted, prepares no volume at all.
-func TestEnsure_RefusesBeforeAllocating(t *testing.T) {
+// A Prepare proven to have sent no create withdraws its mark, so a retry may
+// prepare the volume; the failed call allocated nothing.
+func TestEnsure_ProvenPreCreateFailureIsRetried(t *testing.T) {
 	r := newRig(t)
-	r.vol.prepareErr = fmt.Errorf("%w: no storage key", ErrUnencrypted)
-	_, err := r.l.Ensure(context.Background(), region, itype)
-	if !errors.Is(err, ErrUnencrypted) {
-		t.Fatalf("ensure = %v, want ErrUnencrypted", err)
+	ctx := context.Background()
+	r.vol.prepareErr = fmt.Errorf("%w: %w: no storage key", storevolume.ErrNotCreated, ErrUnencrypted)
+	for range 2 {
+		_, err := r.l.Ensure(ctx, region, itype)
+		if !errors.Is(err, ErrVolumeNotCreated) || !errors.Is(err, ErrUnencrypted) {
+			t.Fatalf("ensure = %v, want ErrVolumeNotCreated", err)
+		}
+		if _, ok := errors.AsType[*VolumeError](err); ok {
+			t.Fatalf("ensure = %v reports a volume it never created", err)
+		}
 	}
-	if _, ok := errors.AsType[*UnclaimedVolumeError](err); ok {
-		t.Fatalf("ensure = %v reports a volume it never created", err)
+	if rec := r.current(t); rec.VolumeAttempted || rec.DataVolumeID != "" || rec.Allocated() {
+		t.Fatalf("record after a proven pre-create failure = %+v", rec)
 	}
-
 	r.vol.prepareErr = nil
+	if _, err := r.l.Ensure(ctx, region, itype); err != nil {
+		t.Fatal(err)
+	}
+	if r.vol.count() != 1 || r.vms.count() != 1 {
+		t.Fatalf("volumes=%d launches=%d", r.vol.count(), r.vms.count())
+	}
+}
+
+// A claim that cannot be minted refuses with nothing recorded or prepared.
+func TestEnsure_NoClaimRecordsNothing(t *testing.T) {
+	r := newRig(t)
 	r.l.newClaimID = func() (string, error) { return "", errors.New("no entropy") }
 	if _, err := r.l.Ensure(context.Background(), region, itype); err == nil {
 		t.Fatal("ensure succeeded without a claim ID")
 	}
-	if len(r.vol.prepared) != 0 {
+	if r.vol.count() != 0 {
 		t.Fatalf("prepared %v before a refusal that needs no volume", r.vol.prepared)
 	}
-	if _, err := r.l.Identities.Current(context.Background(), region); err == nil {
-		t.Fatal("an intent was recorded")
+	if _, err := r.l.Identities.Current(context.Background(), region); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("record after refusal: %v", err)
 	}
 }
 
-// Callers that lose the first BeginLaunch each report the volume they made;
-// every prepared volume is either the bound worker's or reported exactly once.
-func TestEnsure_LosersReportTheirVolumes(t *testing.T) {
+// A create that applied but returned no ID is never sent again: every later
+// call reports the unknown outcome, even once the volume exists, and nothing
+// further is allocated or launched.
+func TestEnsure_AmbiguousVolumeCreateIsNeverResent(t *testing.T) {
 	r := newRig(t)
-	var mu sync.Mutex
-	reported := map[string]int{}
-	var wg sync.WaitGroup
-	for range 8 {
-		wg.Go(func() {
-			_, err := r.l.Ensure(context.Background(), region, itype)
-			if u, ok := errors.AsType[*UnclaimedVolumeError](err); ok {
-				mu.Lock()
-				reported[u.VolumeID]++
-				mu.Unlock()
-			}
-		})
+	ctx := context.Background()
+	r.vol.appliedErr = errors.New("nats: timeout")
+	if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrVolumeOutcomeUnknown) {
+		t.Fatalf("ensure = %v, want ErrVolumeOutcomeUnknown", err)
 	}
-	wg.Wait()
-	bound := r.current(t).DataVolumeID
-	for _, v := range r.vol.prepared {
-		switch {
-		case v == bound && reported[v] != 0:
-			t.Fatalf("bound volume %s was also reported unclaimed", v)
-		case v != bound && reported[v] != 1:
-			t.Fatalf("volume %s reported %d times, want once", v, reported[v])
+	r.vol.appliedErr = nil
+	for range 3 {
+		if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrVolumeOutcomeUnknown) {
+			t.Fatalf("retry = %v, want ErrVolumeOutcomeUnknown", err)
 		}
+	}
+	rec := r.current(t)
+	if r.vol.count() != 1 || !rec.VolumeAttempted || rec.DataVolumeID != "" || r.vms.count() != 0 || len(r.net.claims) != 0 {
+		t.Fatalf("volumes=%d record=%+v launches=%d network=%d", r.vol.count(), rec, r.vms.count(), len(r.net.claims))
+	}
+	if _, err := r.l.Ensure(ctx, region, "sys.other"); !errors.Is(err, workerident.ErrTypeChanged) {
+		t.Fatalf("re-type after a sent create = %v, want ErrTypeChanged", err)
+	}
+}
+
+// A failed Prepare that names the volume it left behind reports that ID, and
+// the create is still never sent again.
+func TestEnsure_RetainedVolumeIDStaysVisible(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.l.RetainedVolume = func(err error) string {
+		if k, ok := errors.AsType[keptVolumeError](err); ok {
+			return k.id
+		}
+		return ""
+	}
+	r.vol.appliedErr = keptVolumeError{id: "vol-00000000000000001"}
+	_, err := r.l.Ensure(ctx, region, itype)
+	kept, ok := errors.AsType[*VolumeError](err)
+	if !ok || kept.VolumeID != "vol-00000000000000001" || !errors.Is(err, ErrVolumeOutcomeUnknown) {
+		t.Fatalf("ensure = %v, want the kept volume reported", err)
+	}
+	r.vol.appliedErr = nil
+	if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrVolumeOutcomeUnknown) {
+		t.Fatalf("retry = %v, want ErrVolumeOutcomeUnknown", err)
+	}
+	if r.vol.count() != 1 || r.vms.count() != 0 {
+		t.Fatalf("volumes=%d launches=%d", r.vol.count(), r.vms.count())
+	}
+}
+
+// An intent that has sent nothing may be re-typed; one that has may not.
+func TestEnsure_UnallocatedIntentMayBeRetyped(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.vol.prepareErr = fmt.Errorf("%w: image writer missing", storevolume.ErrNotCreated)
+	if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrVolumeNotCreated) {
+		t.Fatalf("ensure = %v, want ErrVolumeNotCreated", err)
+	}
+	r.vol.prepareErr = nil
+	res, err := r.l.Ensure(ctx, region, "sys.other")
+	if err != nil || res.InstanceType != "sys.other" || res.Generation != 1 || r.vms.specs[0].InstanceType != "sys.other" {
+		t.Fatalf("re-typed ensure = %+v, %v", res, err)
 	}
 }
 
@@ -288,7 +358,7 @@ func TestEnsure_AmbiguousLaunchIsNeverResent(t *testing.T) {
 	}
 }
 
-// Concurrent first launches start exactly one VM.
+// Concurrent first launches prepare one volume and start exactly one VM.
 func TestEnsure_ConcurrentCallsLaunchOnce(t *testing.T) {
 	r := newRig(t)
 	var wg sync.WaitGroup
@@ -301,8 +371,8 @@ func TestEnsure_ConcurrentCallsLaunchOnce(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if r.vms.count() != 1 || ok.Load() < 1 {
-		t.Fatalf("launched %d VMs, %d calls succeeded", r.vms.count(), ok.Load())
+	if r.vms.count() != 1 || r.vol.count() != 1 || ok.Load() < 1 {
+		t.Fatalf("launched %d VMs on %d volumes, %d calls succeeded", r.vms.count(), r.vol.count(), ok.Load())
 	}
 	if rec := r.current(t); rec.State != workerident.StateBound {
 		t.Fatalf("record = %+v, want bound", rec)

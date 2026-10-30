@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -35,16 +37,38 @@ const (
 
 var ensureNodes = []string{"node-1", "node-2"}
 
+// ensureVolumes counts creates sent. refuse fails before sending one; fail
+// is returned after the create applied.
 type ensureVolumes struct {
 	mu       sync.Mutex
 	prepared int
+	refuse   error
+	fail     error
 }
 
 func (v *ensureVolumes) Prepare(context.Context) (string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.refuse != nil {
+		return "", v.refuse
+	}
 	v.prepared++
+	if v.fail != nil {
+		return "", v.fail
+	}
 	return ensureVolume, nil
+}
+
+func (v *ensureVolumes) set(refuse, fail error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.refuse, v.fail = refuse, fail
+}
+
+func (v *ensureVolumes) count() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.prepared
 }
 
 func (v *ensureVolumes) Encrypted(context.Context, string) (bool, error) { return true, nil }
@@ -119,6 +143,8 @@ func newEnsureFixture(t *testing.T, vms *ensureVMs) *ensureFixture {
 		Host:       sqsWorkerHost{check: func() (string, error) { return f.d.sqsWorkerHostReady() }},
 		VMs:        vms,
 		NodeID:     ensureNode,
+
+		RetainedVolume: retainedVolume,
 	}
 	f.d = &Daemon{
 		node:        ensureNode,
@@ -254,6 +280,57 @@ func TestEnsureSQSWorker_AmbiguousLaunchIsNeverResent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, workerident.StateLaunching, cur.State)
 	assert.True(t, cur.Dispatched)
+}
+
+// A volume create whose reply was lost is never sent again: repeated admin
+// calls report it, even after it would succeed, and allocate nothing more.
+func TestEnsureSQSWorker_AmbiguousVolumeCreateIsNeverResent(t *testing.T) {
+	f := newEnsureFixture(t, &ensureVMs{})
+	f.vols.set(nil, errors.New("nats: timeout"))
+	_, err := f.call(t, ensureNode, 30*time.Second)
+	assert.Contains(t, requireAWSCode(t, err, awserrors.ErrorIncorrectState), "volume create outcome is unknown")
+
+	f.vols.set(nil, nil)
+	for range 3 {
+		_, err := f.call(t, ensureNode, 30*time.Second)
+		requireAWSCode(t, err, awserrors.ErrorIncorrectState)
+	}
+	assert.Equal(t, 1, f.vols.count())
+	assert.Equal(t, 0, f.vms.count())
+	assert.Equal(t, 0, f.workerENIs(t))
+	cur, err := f.ids.Current(t.Context(), sqsTestRegion)
+	require.NoError(t, err)
+	assert.True(t, cur.VolumeAttempted)
+	assert.Empty(t, cur.DataVolumeID)
+}
+
+// A failed create that kept its volume names it to the operator.
+func TestEnsureSQSWorker_RetainedVolumeIsReported(t *testing.T) {
+	f := newEnsureFixture(t, &ensureVMs{})
+	f.vols.set(nil, &storevolume.RetainedVolumeError{VolumeID: ensureVolume, Err: errors.New("fill failed")})
+	_, err := f.call(t, ensureNode, 30*time.Second)
+	assert.Contains(t, requireAWSCode(t, err, awserrors.ErrorIncorrectState), ensureVolume)
+	f.vols.set(nil, nil)
+	_, err = f.call(t, ensureNode, 30*time.Second)
+	requireAWSCode(t, err, awserrors.ErrorIncorrectState)
+	assert.Equal(t, 1, f.vols.count())
+	assert.Equal(t, 0, f.vms.count())
+}
+
+// A create proven never sent is retryable, and the retry launches once.
+func TestEnsureSQSWorker_UnsentVolumeCreateIsRetryable(t *testing.T) {
+	f := newEnsureFixture(t, &ensureVMs{})
+	f.vols.set(fmt.Errorf("%w: image writer missing", storevolume.ErrNotCreated), nil)
+	for range 2 {
+		_, err := f.call(t, ensureNode, 30*time.Second)
+		requireAWSCode(t, err, awserrors.ErrorServiceUnavailable)
+	}
+	f.vols.set(nil, nil)
+	out, err := f.call(t, ensureNode, 30*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), out.Generation)
+	assert.Equal(t, 1, f.vols.count())
+	assert.Equal(t, 1, f.vms.count())
 }
 
 // A node outside the cluster or not safe as a subject token is refused before

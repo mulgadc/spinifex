@@ -1,12 +1,15 @@
 package daemon
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -48,4 +51,10 @@ func TestBuildSQSWorkerLauncher_WiresTheRealHostCheck(t *testing.T) {
 
 	installWorkerImage(t)
 	require.NoError(t, l.Host.Ready(t.Context()))
+
+	// The preparer's retained volume reaches the operator, wrapped as the launcher wraps it.
+	require.NotNil(t, l.RetainedVolume)
+	kept := fmt.Errorf("%w: %w", workerlaunch.ErrVolumeOutcomeUnknown,
+		&storevolume.RetainedVolumeError{VolumeID: ensureVolume, Err: errors.New("fill failed")})
+	require.Equal(t, ensureVolume, l.RetainedVolume(kept))
 }

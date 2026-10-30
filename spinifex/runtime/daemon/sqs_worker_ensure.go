@@ -102,6 +102,8 @@ func (d *Daemon) buildSQSWorkerLauncher(ctx context.Context) (*workerlaunch.Laun
 		Host:       sqsWorkerHost{check: d.sqsWorkerHostReady},
 		VMs:        sqsWorkerVMs{launch: d.LaunchSQSWorkerInstance},
 		NodeID:     d.node,
+
+		RetainedVolume: retainedVolume,
 	}, nil
 }
 
@@ -149,8 +151,21 @@ func sqsWorkerEnsureError(err error) (code, message string) {
 	if errors.Is(err, workerlaunch.ErrNetworkOutcomeUnknown) {
 		return awserrors.ErrorIncorrectState, workerlaunch.ErrNetworkOutcomeUnknown.Error()
 	}
-	if unclaimed, ok := errors.AsType[*workerlaunch.UnclaimedVolumeError](err); ok {
-		return awserrors.ErrorServerInternal, unclaimed.Error()
+	vol, kept := errors.AsType[*workerlaunch.VolumeError](err)
+	if errors.Is(err, workerlaunch.ErrVolumeOutcomeUnknown) {
+		if kept {
+			return awserrors.ErrorIncorrectState, vol.Error()
+		}
+		return awserrors.ErrorIncorrectState, workerlaunch.ErrVolumeOutcomeUnknown.Error()
+	}
+	if errors.Is(err, workerlaunch.ErrVolumeNotCreated) && !errors.Is(err, workerlaunch.ErrUnencrypted) {
+		return awserrors.ErrorServiceUnavailable, err.Error()
+	}
+	if kept {
+		if errors.Is(err, workerlaunch.ErrUnencrypted) {
+			return awserrors.ErrorUnsupportedOperation, vol.Error()
+		}
+		return awserrors.ErrorServerInternal, vol.Error()
 	}
 	switch {
 	case errors.Is(err, workerident.ErrTypeChanged):

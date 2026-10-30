@@ -6,6 +6,8 @@
 #   deploy-vultr.sh status                 nodes, addresses and what the deployment holds
 #   deploy-vultr.sh credentials            print the AWS access key and secret
 #   deploy-vultr.sh ssh [nodeN] [command]  SSH to a node, node1 by default
+#   deploy-vultr.sh stop nodeN             power a node off, as a failure would
+#   deploy-vultr.sh start nodeN            power it back on
 #   deploy-vultr.sh destroy
 #
 # VULTR_API_KEY must be set. OpenTofu, or Terraform when OpenTofu is not
@@ -47,7 +49,7 @@ NODES=1
 YES=0
 
 usage() {
-    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
     cat <<EOF
 
 Options:
@@ -82,7 +84,8 @@ while [ $# -gt 0 ]; do
         --yes) YES=1 ;;
         -h|--help) usage; exit 0 ;;
         node[1-3])
-            if [ "$CMD" != ssh ] || [ -n "$NODE_ARG" ]; then usage >&2; exit 2; fi
+            case "$CMD" in ssh|stop|start) ;; *) usage >&2; exit 2 ;; esac
+            [ -z "$NODE_ARG" ] || { usage >&2; exit 2; }
             NODE_ARG="$1" ;;
         *) [ "$CMD" = ssh ] && break
            echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -95,7 +98,7 @@ die() { log "ERROR: $*"; exit 1; }
 
 [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,23}$ ]] || die "--name must be 1-24 lowercase letters, digits or hyphens"
 [ "$NODES" = 1 ] || [ "$NODES" = 3 ] || die "--nodes must be 1 or 3"
-case "$CMD" in up|destroy|status) [ -n "${VULTR_API_KEY:-}" ] || die "VULTR_API_KEY is not set" ;; esac
+case "$CMD" in up|destroy|status|stop|start) [ -n "${VULTR_API_KEY:-}" ] || die "VULTR_API_KEY is not set" ;; esac
 if command -v tofu >/dev/null; then TF_BIN=tofu
 elif command -v terraform >/dev/null; then TF_BIN=terraform
 else die "neither OpenTofu (tofu) nor Terraform is installed"; fi
@@ -469,6 +472,20 @@ cmd_credentials() {
     on 'awk "/^\[spinifex\]/{f=1} /^\[/&&!/^\[spinifex\]/{f=0} f" ~/.aws/credentials'
 }
 
+# cmd_power ACTION halts or starts NODE_ARG through the Vultr API. A halt is a
+# hard power-off, so the node gets no chance to hand anything over first.
+cmd_power() {
+    [ -n "$NODE_ARG" ] || die "$CMD needs a node, such as node2"
+    local id path
+    IP="$(node_ip "$NODE_ARG")"
+    id="$(node_field provider_host_id | sed -n "${NODE_ARG#node}p")"
+    path="/instances/$id"
+    "$TF_BIN" -chdir="$SCRIPT_DIR" state list -state="$TF_STATE" | grep -q '^vultr_bare_metal_server\.' &&
+        path="/bare-metals/$id"
+    vultr POST "$path/$1" >/dev/null || die "Vultr refused to $1 $NODE_ARG"
+    log "$NODE_ARG ($IP): $1 requested"
+}
+
 cmd_ssh() {
     IP="$(node_ip "${NODE_ARG:-node1}")"
     ssh -i "$SSH_KEY" -o UserKnownHostsFile="$KNOWN_HOSTS" "root@$IP" "$@"
@@ -480,5 +497,7 @@ case "$CMD" in
     status) cmd_status ;;
     credentials) cmd_credentials ;;
     ssh) cmd_ssh "$@" ;;
+    stop) cmd_power halt ;;
+    start) cmd_power start ;;
     *) usage >&2; exit 2 ;;
 esac

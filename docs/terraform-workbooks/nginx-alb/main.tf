@@ -12,10 +12,16 @@
 #
 # Demonstrates: VPC, public subnets, internet gateway, route tables,
 # security group, key pair, cloud-init user-data, EC2 instances with
-# auto-assigned public IPs, ALB, target group, and listener.
+# auto-assigned public IPs, an optional placement group, ALB, target group,
+# and listener.
+#
+# server_count sets how many web servers launch (default 2). Setting
+# placement_strategy = "spread" puts each one on a different Spinifex node,
+# so a three-node cluster with server_count = 3 can lose any node and keep
+# serving through the ALB.
 #
 # Usage:
-#   cd spinifex/docs/terraform/nginx-alb
+#   cd spinifex/docs/terraform-workbooks/nginx-alb
 #   export AWS_PROFILE=spinifex
 #   tofu init && tofu apply
 #
@@ -28,6 +34,9 @@
 #
 # Then:
 #   curl http://<alb_public_ip>    # Load-balanced Nginx (alternates between instances)
+#
+# Three servers, one per node:
+#   tofu apply -var server_count=3 -var placement_strategy=spread
 
 terraform {
   required_version = ">= 1.6.0"
@@ -60,6 +69,28 @@ variable "region" {
 variable "instance_type" {
   type    = string
   default = "t3.small"
+}
+
+variable "server_count" {
+  type        = number
+  default     = 2
+  description = "Number of Nginx web servers behind the ALB"
+
+  validation {
+    condition     = var.server_count >= 1
+    error_message = "server_count must be at least 1."
+  }
+}
+
+variable "placement_strategy" {
+  type        = string
+  default     = ""
+  description = "Placement group strategy for the web servers: spread (one per node), cluster (all on one node), or empty for none"
+
+  validation {
+    condition     = contains(["", "spread", "cluster"], var.placement_strategy)
+    error_message = "placement_strategy must be spread, cluster, or empty."
+  }
 }
 
 variable "spinifex_endpoint" {
@@ -241,14 +272,28 @@ resource "aws_security_group" "web" {
 }
 
 # ---------------------------------------------------------------------------
-# EC2 Instances — two Nginx servers with distinct landing pages
+# Placement Group — optional; spread puts each web server on its own node
 # ---------------------------------------------------------------------------
 
-resource "aws_instance" "nginx_1" {
-  ami           = data.aws_ami.ubuntu.id
-  instance_type = var.instance_type
+resource "aws_placement_group" "web" {
+  count    = var.placement_strategy == "" ? 0 : 1
+  name     = "nginx-alb-${var.placement_strategy}"
+  strategy = var.placement_strategy
+}
 
-  subnet_id              = aws_subnet.public_a.id
+# ---------------------------------------------------------------------------
+# EC2 Instances — Nginx servers with distinct landing pages, alternating
+# between the two public subnets
+# ---------------------------------------------------------------------------
+
+resource "aws_instance" "nginx" {
+  count = var.server_count
+
+  ami             = data.aws_ami.ubuntu.id
+  instance_type   = var.instance_type
+  placement_group = one(aws_placement_group.web[*].name)
+
+  subnet_id              = count.index % 2 == 0 ? aws_subnet.public_a.id : aws_subnet.public_b.id
   vpc_security_group_ids = [aws_security_group.web.id]
   key_name               = aws_key_pair.nginx.key_name
 
@@ -266,7 +311,7 @@ resource "aws_instance" "nginx_1" {
     <head><title>Spinifex ALB Demo</title></head>
     <body style="font-family: sans-serif; max-width: 600px; margin: 80px auto;">
       <h1>Hello from Spinifex!</h1>
-      <p><strong>Instance:</strong> $INSTANCE_ID (Server 1)</p>
+      <p><strong>Instance:</strong> $INSTANCE_ID (Server ${count.index + 1})</p>
       <p>This Nginx server is behind an Application Load Balancer.</p>
       <hr>
       <p><small>Provisioned via cloud-init user-data.</small></p>
@@ -280,48 +325,19 @@ resource "aws_instance" "nginx_1" {
   )
 
   tags = {
-    Name = "nginx-alb-1"
+    Name = "nginx-alb-${count.index + 1}"
   }
 }
 
-resource "aws_instance" "nginx_2" {
-  ami           = data.aws_ami.ubuntu.id
-  instance_type = var.instance_type
+# Earlier versions declared the two servers separately.
+moved {
+  from = aws_instance.nginx_1
+  to   = aws_instance.nginx[0]
+}
 
-  subnet_id              = aws_subnet.public_b.id
-  vpc_security_group_ids = [aws_security_group.web.id]
-  key_name               = aws_key_pair.nginx.key_name
-
-  user_data_base64 = base64encode(<<-USERDATA
-    #!/bin/bash
-    set -euo pipefail
-
-    apt-get update -y
-    apt-get install -y nginx
-
-    INSTANCE_ID=$(cat /var/lib/cloud/data/instance-id 2>/dev/null || hostname)
-    cat > /var/www/html/index.html <<HTML
-    <!DOCTYPE html>
-    <html>
-    <head><title>Spinifex ALB Demo</title></head>
-    <body style="font-family: sans-serif; max-width: 600px; margin: 80px auto;">
-      <h1>Hello from Spinifex!</h1>
-      <p><strong>Instance:</strong> $INSTANCE_ID (Server 2)</p>
-      <p>This Nginx server is behind an Application Load Balancer.</p>
-      <hr>
-      <p><small>Provisioned via cloud-init user-data.</small></p>
-    </body>
-    </html>
-    HTML
-
-    systemctl enable nginx
-    systemctl restart nginx
-  USERDATA
-  )
-
-  tags = {
-    Name = "nginx-alb-2"
-  }
+moved {
+  from = aws_instance.nginx_2
+  to   = aws_instance.nginx[1]
 }
 
 # ---------------------------------------------------------------------------
@@ -365,19 +381,25 @@ resource "aws_lb_target_group" "nginx" {
 }
 
 # ---------------------------------------------------------------------------
-# Register both instances as targets
+# Register every web server as a target
 # ---------------------------------------------------------------------------
 
-resource "aws_lb_target_group_attachment" "nginx_1" {
+resource "aws_lb_target_group_attachment" "nginx" {
+  count = var.server_count
+
   target_group_arn = aws_lb_target_group.nginx.arn
-  target_id        = aws_instance.nginx_1.id
+  target_id        = aws_instance.nginx[count.index].id
   port             = 80
 }
 
-resource "aws_lb_target_group_attachment" "nginx_2" {
-  target_group_arn = aws_lb_target_group.nginx.arn
-  target_id        = aws_instance.nginx_2.id
-  port             = 80
+moved {
+  from = aws_lb_target_group_attachment.nginx_1
+  to   = aws_lb_target_group_attachment.nginx[0]
+}
+
+moved {
+  from = aws_lb_target_group_attachment.nginx_2
+  to   = aws_lb_target_group_attachment.nginx[1]
 }
 
 # ---------------------------------------------------------------------------
@@ -401,12 +423,11 @@ resource "aws_lb_listener" "http" {
 
 output "note" {
   value = <<-EOT
-    EC2 instances can take 30+ seconds to boot after apply — if HTTP is
-    unreachable, wait and retry.
+    EC2 instances can take 30+ seconds to boot after apply, and Nginx installs
+    after that — if HTTP is unreachable, wait and retry.
 
-    The Nginx instances have private IPs only. The ALB DNS name ends in
-    .elb.spinifex.local and will not resolve from your host, so fetch the
-    ALB's public IP with:
+    The ALB DNS name ends in .elb.spinifex.local and will not resolve from
+    your host, so fetch the ALB's public IP with:
 
       aws elbv2 describe-load-balancers --names nginx-alb \
         --query 'LoadBalancers[0].AvailabilityZones[].LoadBalancerAddresses[].IpAddress' \
@@ -428,18 +449,18 @@ output "alb_dns_name" {
   value = aws_lb.web.dns_name
 }
 
-output "instance_1_id" {
-  value = aws_instance.nginx_1.id
+output "instance_ids" {
+  value = aws_instance.nginx[*].id
 }
 
-output "instance_1_private_ip" {
-  value = aws_instance.nginx_1.private_ip
+output "instance_private_ips" {
+  value = aws_instance.nginx[*].private_ip
 }
 
-output "instance_2_id" {
-  value = aws_instance.nginx_2.id
+output "instance_public_ips" {
+  value = aws_instance.nginx[*].public_ip
 }
 
-output "instance_2_private_ip" {
-  value = aws_instance.nginx_2.private_ip
+output "placement_group" {
+  value = one(aws_placement_group.web[*].name)
 }

@@ -2608,9 +2608,8 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 }
 
 // unsealedCheckTimeout bounds the unsealed-writes check. It must stay well under
-// the forwarder's wait for this node, or a wedged provider makes the refusal
-// arrive after the forwarder has given up and started the instance elsewhere.
-// A var so tests can shrink it.
+// the forwarder's wait for this node, or a wedged provider answers after the
+// forwarder has already started the instance elsewhere. A var so tests shrink it.
 var unsealedCheckTimeout = 5 * time.Second
 
 // errInsufficientCapacity is the plain capacity refusal.

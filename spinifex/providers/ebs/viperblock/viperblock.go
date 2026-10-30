@@ -224,6 +224,10 @@ type Config struct {
 	// dead one and does not expire.
 	dirty *volumeDirty
 
+	// liveness says when a node was last seen alive. Consulted before taking a
+	// volume over from the node named in its dirty marker.
+	liveness nodeLiveness
+
 	// nc announces a fenced volume to this node's daemon. Held here because the
 	// fence runs from a lease-renewal goroutine, which has no handler's
 	// connection to borrow. Nil in tests that never fence.

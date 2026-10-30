@@ -434,6 +434,17 @@ func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
 		assert.NotEmpty(t, w.Header().Get("WWW-Authenticate"))
 		assert.Zero(t, *e.reached)
 	})
+	t.Run("a refreshed token keeps the role ID", func(t *testing.T) {
+		e := newBridgeEnv(t, read)
+		expired(e)
+		w := e.do(http.MethodGet, "/v2/token", "Bearer "+e.roleToken(t, bridgeRoleID))
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		var body ociTokenResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		claims, err := e.verifier.Verify(body.Token)
+		require.NoError(t, err)
+		assert.Equal(t, bridgeRoleID, claims.RoleID)
+	})
 	t.Run("role gone is 403 DENIED with the AWS body", func(t *testing.T) {
 		e := newBridgeEnv(t, read)
 		expired(e)

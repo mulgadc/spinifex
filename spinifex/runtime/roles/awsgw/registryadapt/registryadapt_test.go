@@ -100,6 +100,16 @@ func TestConfig_WiresBothRehydrators(t *testing.T) {
 	assert.NotNil(t, cfg.RoleRehydrator)
 }
 
+func TestRehydrate_SessionGoneMapsToErrSessionGone(t *testing.T) {
+	for _, code := range []string{awserrors.ErrorExpiredToken, awserrors.ErrorInvalidClientTokenId} {
+		_, err := registryRehydrator{stubRehydrator{f: &credential.Failure{Code: code, SessionGone: true}}}.Rehydrate("ASIA", "000000000001")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ecrregistry.ErrSessionGone, code)
+	}
+	_, err := registryRehydrator{stubRehydrator{f: &credential.Failure{Code: awserrors.ErrorExpiredToken}}}.Rehydrate("ASIA", "000000000001")
+	assert.NotErrorIs(t, err, ecrregistry.ErrSessionGone, "an expired-code failure not flagged as a session is not session gone")
+}
+
 func TestRehydrate_ProjectsEveryPrincipalField(t *testing.T) {
 	in := credential.Principal{
 		Identity: "dev", AccountID: "000000000001", PrincipalType: "user",

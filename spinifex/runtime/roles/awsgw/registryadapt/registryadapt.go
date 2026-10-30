@@ -57,9 +57,13 @@ func (a registryRoleRehydrator) RehydrateRole(accountID, roleID, assumedRoleARN 
 	return projectPrincipal(p), nil
 }
 
-// registryFailure maps a credential failure code to a registry sentinel: a dependency
-// fault is unavailable, and every other code is an identity that no longer resolves.
+// registryFailure maps a credential failure to a registry sentinel: a session that
+// has expired or been removed is session gone, a dependency fault is unavailable, and
+// every other failure is an identity that no longer resolves.
 func registryFailure(f *credential.Failure) error {
+	if f.SessionGone {
+		return fmt.Errorf("%w: %s", ecrregistry.ErrSessionGone, f.Code)
+	}
 	if f.Code == awserrors.ErrorInternalError {
 		return fmt.Errorf("%w: %s", ecrregistry.ErrUnavailable, f.Code)
 	}

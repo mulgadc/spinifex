@@ -24,6 +24,9 @@ type Failure struct {
 	// record. An empty kind records nothing.
 	FingerprintKind  string
 	FingerprintParts []string
+	// SessionGone marks a session credential whose record has expired or been removed,
+	// as opposed to one rejected for any other reason.
+	SessionGone bool
 	// RoleGone marks a RehydrateRole rejection because the role is deleted or was
 	// recreated under a new ID, as opposed to a dependency fault or a bad input.
 	RoleGone bool

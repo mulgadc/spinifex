@@ -356,6 +356,12 @@ Only `existing` is accepted: a static firmware value survives a guest reset, so 
 It selects exactly one disk with that serial, runs `e2fsck -p`, mounts it at `/data` and then confirms from `/proc/self/mountinfo` that this disk, as a whole ext4 filesystem, is what is mounted there; an empty mountpoint, a foreign mount or a failed check or mount refuses, and the guest never formats.
 Only then does `agents/sqs/workerkey` load the key from `/data/sqs-worker-key`; a missing or different key refuses and is never replaced.
 `workerkey` can create a key for a new store, owner-only, synced and linked so an existing key is never replaced, but nothing calls that path yet.
+
+`domains/sqs/firststore` is the SQS domain's first-store decision: one record per Region in the `spinifex-sqs-first-store` KV bucket moves from `claimed` to `key-recorded` to `launch-intent` under compare-and-swap, bound to the worker's instance ID, claim ID and generation.
+A claim authorizes key creation only while no public key is recorded; once one is, every claim returns only that key, and a store launch intent needs it recorded first.
+An older generation, a different identity at the same generation or an unreadable record authorizes nothing, and the record holds no private key material.
+`workerkey.Acquire` drives that decision: it syncs a new key to disk, records its public key and only then returns it, so a crash before recording reuses the key already on disk.
+No transport carries the decision yet; the worker boot path above still accepts only `existing`.
 The private key stays on the worker disk; the guest logs and publishes only the public key to `/run/sqs-worker/public-key`.
 
 Evidence is local only: unit tests with a fake firmware config, sysfs and mount table, and real QEMU boots against disposable scratch disks showing the key survives reboots and that each refusal publishes no key.

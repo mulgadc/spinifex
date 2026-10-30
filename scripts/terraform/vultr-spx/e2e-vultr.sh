@@ -57,11 +57,18 @@ if [ ! -f "$SSH_KEY" ]; then
 fi
 DEPLOY_ARGS=(--name "$NAME" --nodes "$NODES" --plan "$PLAN" --region "$REGION" --ssh-key "$SSH_KEY")
 
+# on_node1 [ssh options --] command: the options go before the destination,
+# where ssh reads them, and everything after -- is the remote command.
 on_node1() {
-    local ip
+    local ip opts=()
+    if [[ " $* " == *" -- "* ]]; then
+        while [ "$1" != -- ]; do opts+=("$1"); shift; done
+        shift
+    fi
     ip="$("$DEPLOY" status "${DEPLOY_ARGS[@]}" 2>/dev/null | awk '$1 == "node1" {print $2}')"
+    [ -n "$ip" ] || { log "no node1 address in deploy-vultr.sh status"; return 1; }
     ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "$@" "root@$ip"
+        -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "${opts[@]}" "root@$ip" "$@"
 }
 
 # destroy is also the last assertion: it fails, listing what remains, if anything
@@ -141,7 +148,7 @@ scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o
 # The same driver and workbooks as the hypervisor nightly and OCI. The reverse
 # SOCKS forward gives it this host's vantage, outside Vultr, for public addresses.
 log "running the workbooks: $WORKBOOKS"
-if on_node1 -o ExitOnForwardFailure=yes -R 1080 \
+if on_node1 -o ExitOnForwardFailure=yes -R 1080 -- \
     "chmod +x /root/run-tofu-examples-e2e.sh; WORKBOOK_DIR=/root/workbooks $(printf 'WORKBOOKS=%q' "$WORKBOOKS") E2E_PUBLIC_PROXY=127.0.0.1:1080 /root/run-tofu-examples-e2e.sh" \
     2>&1 | tee "$ARTIFACT_DIR/workbooks.log"; then
     rc=0

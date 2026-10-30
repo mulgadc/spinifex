@@ -268,10 +268,20 @@ func (cfg *Config) buildVB(ctx context.Context, volumeName string) (*viperblock.
 
 	vb, cacheSize, err := construct(ctx, volumeName)
 	if err != nil {
-		cfg.releaseVolumeLease(ctx, lease)
+		cfg.abandonOpen(ctx, volumeName, lease, err)
 		return nil, 0, nil, err
 	}
 	return vb, cacheSize, lease, nil
+}
+
+// abandonOpen gives the lease back after an open that failed. A volume that
+// does not exist holds no writes, so the marker this open wrote is cleared
+// too, or a later open elsewhere would be refused for a volume that is not there.
+func (cfg *Config) abandonOpen(ctx context.Context, volumeName string, lease *volumeLease, openErr error) {
+	if errors.Is(openErr, viperblock.ErrStateNotFound) {
+		cfg.clearVolumeDirty(ctx, volumeName, lease.generation)
+	}
+	cfg.releaseVolumeLease(ctx, lease)
 }
 
 func (cfg *Config) loadStateRetryPolicy() (int, time.Duration) {
@@ -449,6 +459,9 @@ func openVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperbl
 		return nil, nil, fmt.Errorf("backend init: %w", err)
 	}
 	if err := loadStateWithRetry(ctx, cfg, vb, volumeName); err != nil {
+		if errors.Is(err, viperblock.ErrStateNotFound) {
+			cfg.clearVolumeDirty(ctx, volumeName, lease.generation)
+		}
 		return nil, nil, fmt.Errorf("load state: %w", err)
 	}
 

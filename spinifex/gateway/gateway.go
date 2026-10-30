@@ -15,7 +15,6 @@ import (
 	"maps"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 	"uuid"
@@ -29,8 +28,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
-	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -138,62 +135,6 @@ type GatewayConfig struct {
 	// SigV4 group and the AWS seam, which ADR-0002:S5 keeps off the registry. Nil
 	// answers 501.
 	RegistryHandler http.Handler
-	// BedrockCredentials resolves per-account provider API keys for bedrock
-	// routes. Nil falls back to no external providers (self-host models only).
-	BedrockCredentials *ochre.CredentialStore
-	// BedrockEndpoints maps a self-hosted modelId to its OpenAI-compatible base
-	// URL. These endpoints are pinned/always-resident, so this is static
-	// config, and they resolve ahead of the dynamic registry so a pinned
-	// endpoint bypasses the lifecycle entirely.
-	BedrockEndpoints map[string]string
-	// BedrockEndpointResolver resolves self-host endpoints through the daemon's
-	// registry, requesting a launch for a model that has no endpoint yet. Nil
-	// falls back to BedrockEndpoints alone, under which a model that was never
-	// pinned is never reachable.
-	BedrockEndpointResolver ochre.EndpointResolver
-	// BedrockLoggingConfig persists per-account invocation-logging preferences
-	// (PutModelInvocationLoggingConfiguration and friends). Nil falls back to
-	// an unconfigured store, under which reads/writes error rather than panic.
-	BedrockLoggingConfig *ochre.LoggingConfigStore
-	// BedrockRecorder durably records every Bedrock invocation. Nil falls back
-	// to a no-op recorder, so routes stay safe to exercise before the
-	// invocation stream is wired in (e.g. unit tests of unrelated routes).
-	BedrockRecorder ochre.Recorder
-	// BedrockAccess resolves per-account model-access grants. Access is
-	// deny-by-default, so nil means no account may list or invoke any model.
-	// It is the AccessResolver interface rather than the concrete store so a
-	// test can inject a fixed grant set without standing up JetStream.
-	BedrockAccess ochre.AccessResolver
-	// BedrockAccessAdmin is the writable side of the same grant store, used by
-	// the spinifex admin actions. Nil disables grant administration, which is
-	// how a gateway with an injected read-only resolver behaves.
-	BedrockAccessAdmin *ochre.ModelAccessStore
-	// BedrockProvisioned persists provisioned-throughput commitments and
-	// drives the pinned endpoint underneath each one. Nil falls back to an
-	// unconfigured store, under which reads/writes error rather than panic.
-	BedrockProvisioned *ochre.ProvisionedStore
-	// BedrockGuardrails persists guardrail control-plane records (CreateGuardrail
-	// and friends). Nil falls back to an unconfigured store, under which
-	// reads/writes error rather than panic.
-	BedrockGuardrails *ochre.GuardrailStore
-	// BedrockEmbedder drives guardrail topicPolicy's semantic match, reusing
-	// the same embedding endpoint the Ochre KB path resolves models through.
-	// Nil leaves topicPolicy on its literal (word-boundary) matcher alone.
-	BedrockEmbedder ochre.Embedder
-
-	// BedrockAgentKB and BedrockAgentDataSources persist bedrock-agent
-	// knowledge-base and data-source resource metadata (D-arch: gateway-owned,
-	// not the daemon-owned vector engine). Nil for either fails
-	// BedrockAgent_Request with ServerInternal rather than panicking, the same
-	// as an unconfigured gw.NATSConn does for every other service.
-	BedrockAgentKB          *ochrevector.KBStore
-	BedrockAgentDataSources *ochrevector.DataSourceStore
-	// BedrockAgentVector forwards CreateIndex/DeleteIndex/Ingest/DescribeJob/
-	// ListJobs calls to .9's daemon-side VectorService over NATS
-	// (ochrevector.NewNATSVectorService). It is the interface, not
-	// the concrete client, so a test can inject a fake without a live NATS
-	// connection.
-	BedrockAgentVector ochrevector.VectorService
 
 	// Services holds the signed AWS services dispatched through the
 	// registration seam. Nil means nothing is registered, so every request
@@ -215,7 +156,7 @@ var _ dispatch.Legacy = legacyServices{}
 func (legacyServices) Serves(svc string) bool { return supportedServices[svc] }
 
 func (legacyServices) ResolveAction(r *http.Request, svc string) string {
-	return resolveNonQueryAction(r, svc)
+	return resolveNonQueryAction(r)
 }
 
 func (legacyServices) JSONErrors(svc string) bool { return jsonErrorService(svc) }
@@ -266,11 +207,7 @@ func callerActor(ctx context.Context) (dispatch.Actor, error) {
 }
 
 var supportedServices = map[string]bool{
-	"ec2":                   true,
-	"bedrock":               true,
-	"bedrock-runtime":       true,
-	"bedrock-agent":         true,
-	"bedrock-agent-runtime": true,
+	"ec2": true,
 }
 
 func (gw *GatewayConfig) SetupRoutes() http.Handler {
@@ -364,10 +301,6 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 // XML. One source of truth so every error emitter agrees with ErrorHandler; an
 // XML body to these clients is an unparseable "<?xml…" deserialization error.
 func jsonErrorService(svc string) bool {
-	switch svc {
-	case "bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime":
-		return true
-	}
 	return false
 }
 
@@ -479,14 +412,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		switch svc {
 		case "ec2":
 			err = gw.EC2_Request(w, r)
-		case "bedrock":
-			err = gw.Bedrock_Request(w, r)
-		case "bedrock-runtime":
-			err = gw.BedrockRuntime_Request(w, r)
-		case "bedrock-agent":
-			err = gw.BedrockAgent_Request(w, r)
-		case "bedrock-agent-runtime":
-			err = gw.BedrockAgentRuntime_Request(w, r)
 		default:
 			err = errors.New(awserrors.ErrorUnsupportedOperation)
 		}
@@ -549,47 +474,11 @@ func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
 	if _, ok := gw.registered(svc); ok {
 		return svc, nil
 	}
-	// The whole Bedrock family shares the SigV4 signing name "bedrock"; the
-	// request path is the only discriminator, since the gateway serves one endpoint.
-	if svc == "bedrock" {
-		svc = resolveBedrockSubservice(r.URL.Path)
-	}
 	if !supportedServices[svc] {
 		slog.Debug("Unsupported service", "service", svc)
 		return "", errors.New(awserrors.ErrorUnsupportedOperation)
 	}
 	return svc, nil
-}
-
-// resolveBedrockSubservice maps a bedrock-family request path to its real
-// sub-service, the only discriminator since all four share one signing name.
-// Shared by GetService (post-auth dispatch) and SigV4 auth (action resolution).
-func resolveBedrockSubservice(path string) string {
-	switch {
-	case strings.HasPrefix(path, "/model/") || strings.HasPrefix(path, "/guardrail/"):
-		return "bedrock-runtime"
-	case path == "/retrieveAndGenerate" || (strings.HasPrefix(path, "/knowledgebases/") && strings.HasSuffix(path, "/retrieve")):
-		return "bedrock-agent-runtime"
-	case strings.HasPrefix(path, "/knowledgebases/"):
-		return "bedrock-agent"
-	default:
-		return "bedrock"
-	}
-}
-
-// readBoundedBody reads a request body under the same cap the signed path
-// applies, so a body read ahead of the policy gate can neither be used to
-// bypass the gate nor to exhaust memory. On the signed path sigv4.Parse has
-// already buffered and rewound these bytes, so this re-reads a buffer.
-func readBoundedBody(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return body, nil
 }
 
 // checkPolicy evaluates IAM policies against the literal resource "*", so it

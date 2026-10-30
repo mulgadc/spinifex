@@ -1,4 +1,4 @@
-package gateway
+package awsapi
 
 import (
 	"context"
@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
 // converseFn is ochre.Converse partially applied over the request's
@@ -34,8 +35,8 @@ type bedrockAgentRuntimeRoute = rest.Route[bedrockAgentRuntimeRouteHandler]
 // (data-plane) gateway function. params holds the path params,
 // PathUnescape'd. body is the raw request bytes, needed alongside the typed
 // SDK input because RetrievalFilter's leaf operators must be recovered from
-// it directly (see wireFilter). kb/vector are gw.BedrockAgentKB/
-// gw.BedrockAgentVector, the same stores bedrock-agent's control plane uses.
+// it directly (see wireFilter). kb/vector are d.KB/
+// d.Vector, the same stores bedrock-agent's control plane uses.
 // converse reaches ochre.Converse for RetrieveAndGenerate's
 // generation step.
 type bedrockAgentRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, kb *ochrevector.KBStore, vector ochrevector.VectorService, converse converseFn) (any, error)
@@ -76,7 +77,8 @@ var bedrockAgentRuntimeRouter = rest.NewRouter("bedrock-agent-runtime", bedrockA
 // BedrockAgent_Request. RetrieveAndGenerate is metered the same way Converse
 // is on bedrock-runtime (it ends up calling ochre.Converse
 // in-process); Retrieve never reaches a model, so it is not metered.
-func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *http.Request) error {
+func (d Deps) bedrockAgentRuntime(w http.ResponseWriter, inv dispatch.Invocation) error {
+	r := inv.Request
 	action, params, handler, ok := bedrockAgentRuntimeRouter.Lookup(r.Method, r.URL.EscapedPath())
 	if !ok {
 		slog.DebugContext(r.Context(), "bedrock-agent-runtime: no route for request", "method", r.Method, "path", r.URL.Path)
@@ -84,7 +86,7 @@ func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *h
 	}
 
 	// Hoisted above the policy check because the resolver builds ARNs from it.
-	accountID := callerPrincipalOf(r).accountID
+	accountID := inv.AccountID
 	if accountID == "" {
 		slog.ErrorContext(r.Context(), "BedrockAgentRuntime_Request: no account ID in auth context")
 		// InternalError, not ServerInternal: the policy gate used to reach this
@@ -100,32 +102,32 @@ func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *h
 		return err
 	}
 
-	resources, err := ochre.ResourceARNs("bedrock-agent-runtime", action, gw.Region, accountID, params, body)
+	resources, err := ResourceARNs("bedrock-agent-runtime", action, inv.Region, accountID, params, body)
 	if err != nil {
 		return err
 	}
-	if err := gw.checkPolicyResources(r, "bedrock-agent-runtime", action, resources); err != nil {
+	if err := inv.Authorize("bedrock-agent-runtime", action, resources, nil); err != nil {
 		return err
 	}
 
-	if gw.BedrockAgentKB == nil || gw.BedrockAgentVector == nil {
+	if d.KB == nil || d.Vector == nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if action == "RetrieveAndGenerate" {
-		if err := gw.Quota.CheckBedrockRPM(accountID); err != nil {
+		if err := d.checkRPM(accountID); err != nil {
 			return err
 		}
-		if err := gw.Quota.CheckBedrockTokens(r.Context(), accountID); err != nil {
+		if err := d.checkTokens(r.Context(), accountID); err != nil {
 			return err
 		}
 	}
 
 	converse := func(ctx context.Context, acct, modelID string, input *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error) {
-		return ochre.Converse(ctx, acct, modelID, input, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
+		return ochre.Converse(ctx, acct, modelID, input, d.resolver(), d.endpointResolver(), d.recorder(), d.accessResolver(), d.provisionedStore(inv.Region), d.guardrailStore(inv.Region), d.Embedder)
 	}
 
-	output, err := handler(r.Context(), accountID, params, body, gw.BedrockAgentKB, gw.BedrockAgentVector, converse)
+	output, err := handler(r.Context(), accountID, params, body, d.KB, d.Vector, converse)
 	if err != nil {
 		return err
 	}

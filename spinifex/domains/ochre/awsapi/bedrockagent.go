@@ -1,4 +1,4 @@
-package gateway
+package awsapi
 
 import (
 	"context"
@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/nats-io/nats.go"
 )
 
@@ -27,8 +28,8 @@ type bedrockAgentRoute = rest.Route[bedrockAgentRouteHandler]
 
 // bedrockAgentRouteHandler invokes a per-action bedrock-agent (control-plane)
 // gateway function. params holds the path params, PathUnescape'd.
-// kb/ds are gw.BedrockAgentKB / gw.BedrockAgentDataSources; vector is
-// gw.BedrockAgentVector, the NATSVectorService forwarding client to .9's
+// kb/ds are d.KB / d.DataSources; vector is
+// d.Vector, the NATSVectorService forwarding client to .9's
 // daemon-side VectorService.
 type bedrockAgentRouteHandler func(ctx context.Context, accountID, region string, params []string, body []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService) (any, error)
 
@@ -106,7 +107,8 @@ var bedrockAgentRouter = rest.NewRouter("bedrock-agent", bedrockAgentRoutes)
 // BedrockAgent_Request dispatches bedrock-agent (control-plane) REST-JSON
 // requests: resolves method+path to an action, reads the body, calls the
 // handler, and serialises the output as JSON, mirroring Bedrock_Request.
-func (gw *GatewayConfig) BedrockAgent_Request(w http.ResponseWriter, r *http.Request) error {
+func (d Deps) bedrockAgent(w http.ResponseWriter, inv dispatch.Invocation) error {
+	r := inv.Request
 	action, params, handler, ok := bedrockAgentRouter.Lookup(r.Method, r.URL.EscapedPath())
 	if !ok {
 		slog.DebugContext(r.Context(), "bedrock-agent: no route for request", "method", r.Method, "path", r.URL.Path)
@@ -114,7 +116,7 @@ func (gw *GatewayConfig) BedrockAgent_Request(w http.ResponseWriter, r *http.Req
 	}
 
 	// Hoisted above the policy check because the resolver builds ARNs from it.
-	accountID := callerPrincipalOf(r).accountID
+	accountID := inv.AccountID
 	if accountID == "" {
 		slog.ErrorContext(r.Context(), "BedrockAgent_Request: no account ID in auth context")
 		// InternalError, not ServerInternal: the policy gate used to reach this
@@ -123,15 +125,15 @@ func (gw *GatewayConfig) BedrockAgent_Request(w http.ResponseWriter, r *http.Req
 	}
 
 	// Every bedrock-agent action names its knowledge base in the path.
-	resources, err := ochre.ResourceARNs("bedrock-agent", action, gw.Region, accountID, params, nil)
+	resources, err := ResourceARNs("bedrock-agent", action, inv.Region, accountID, params, nil)
 	if err != nil {
 		return err
 	}
-	if err := gw.checkPolicyResources(r, "bedrock-agent", action, resources); err != nil {
+	if err := inv.Authorize("bedrock-agent", action, resources, nil); err != nil {
 		return err
 	}
 
-	if gw.BedrockAgentVector == nil || gw.BedrockAgentKB == nil || gw.BedrockAgentDataSources == nil {
+	if d.Vector == nil || d.KB == nil || d.DataSources == nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -141,7 +143,7 @@ func (gw *GatewayConfig) BedrockAgent_Request(w http.ResponseWriter, r *http.Req
 		return err
 	}
 
-	output, err := handler(r.Context(), accountID, gw.Region, params, body, gw.BedrockAgentKB, gw.BedrockAgentDataSources, gw.BedrockAgentVector)
+	output, err := handler(r.Context(), accountID, inv.Region, params, body, d.KB, d.DataSources, d.Vector)
 	if err != nil {
 		return err
 	}

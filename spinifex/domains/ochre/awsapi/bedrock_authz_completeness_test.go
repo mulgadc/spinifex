@@ -1,12 +1,11 @@
 //test:in-package — the four Bedrock route tables are unexported here, and the
 // completeness test exists to compare them against the scope tables.
 
-package gateway
+package awsapi
 
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -26,22 +25,14 @@ func TestBedrockScopeTablesAreExhaustive(t *testing.T) {
 		names := make(map[string]bool, len(actions))
 		for _, action := range actions {
 			names[action] = true
-			assert.True(t, ochre.HasScope(service, action),
-				"%s action %q has no resource scope entry: add one to bedrockScopes in domains/ochre/authz.go",
+			assert.True(t, HasScope(service, action),
+				"%s action %q has no resource scope entry: add one to bedrockScopes in domains/ochre/awsapi/authz.go",
 				service, action)
 		}
-		for _, action := range ochre.ScopedActions(service) {
+		for _, action := range ScopedActions(service) {
 			assert.True(t, names[action],
-				"bedrockScopes[%q] has an entry for %q, which the dispatch table does not serve: remove it from domains/ochre/authz.go",
+				"bedrockScopes[%q] has an entry for %q, which the dispatch table does not serve: remove it from domains/ochre/awsapi/authz.go",
 				service, action)
 		}
 	}
-}
-
-func actionsOf[T any](routes []T, action func(T) string) []string {
-	actions := make([]string, 0, len(routes))
-	for _, route := range routes {
-		actions = append(actions, action(route))
-	}
-	return actions
 }

@@ -208,7 +208,7 @@ func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 			req.Header.Set("X-Amz-Target", tc.target)
 			assert.Equal(t, tc.wantAction, ecrEntry.ResolveAction(req))
 
-			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req, "ecr"),
+			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req),
 				"dispatch and telemetry parsers must agree on %q", tc.target)
 		})
 	}

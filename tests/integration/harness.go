@@ -58,6 +58,7 @@ import (
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
@@ -206,6 +207,12 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// Tagging has no resource listers because no integration test aggregates.
 	require.NoError(t, services.Register(elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: nc})))
 	require.NoError(t, services.Register(rdsawsapi.NewRegistration(rdsawsapi.Deps{NATS: nc})))
+	// Ochre model access is deny-by-default, so without a grant store every
+	// bedrock route refuses. Tests sign as the system account, which the store
+	// exempts from grants exactly as it does in production, so the catalog is
+	// visible here without provisioning grants per test; a test signing as a
+	// tenant account would have to grant first.
+	require.NoError(t, services.Register(ochreawsapi.NewRegistration(ochreawsapi.Deps{Access: bedrockAccess})))
 	require.NoError(t, services.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: nc})))
 	require.NoError(t, services.Register(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: nc, Roles: iamdomain.NewRoleResolver(iamSvc)})))
 	require.NoError(t, services.Register(iamawsapi.NewRegistration(iamawsapi.Deps{
@@ -228,13 +235,6 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		IAMService:     iamSvc,
 		STSService:     stsSvc,
 		AnonymousSTS:   stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsDeps),
-		// Ochre model access is deny-by-default, so without a grant store every
-		// bedrock route refuses. Tests sign as the system account, which the
-		// store exempts from grants exactly as it does in production, so the
-		// catalog is visible here without provisioning grants per test; a test
-		// signing as a tenant account would have to grant first.
-		BedrockAccess:      bedrockAccess,
-		BedrockAccessAdmin: bedrockAccess,
 	}
 	for _, opt := range opts {
 		opt(cfg)

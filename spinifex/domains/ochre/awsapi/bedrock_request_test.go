@@ -1,9 +1,8 @@
-package gateway
+package awsapi
 
 import (
 	"context"
 	"encoding/json"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
-	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
@@ -82,29 +80,19 @@ func (grantAllModels) Granted(_ context.Context, _, _ string) (bool, error) { re
 // ListFoundationModels/GetFoundationModel read the weights resolver through a
 // package-level setter rather than a GatewayConfig field, so it is installed
 // here and reset on cleanup.
-func newBedrockRequestGateway(t *testing.T, vllmURL string) *GatewayConfig {
+func newBedrockRequestGateway(t *testing.T, vllmURL string) *testGateway {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
 	ochre.SetWeightsResolver(bedrockRequestWeightsStub{})
 	t.Cleanup(func() { ochre.SetWeightsResolver(nil) })
-	return &GatewayConfig{
-		NATSConn:       nc,
-		DisableLogging: true,
-		IAMService:     allowAllIAMService(),
-		Credentials:    credverify.New(allowAllIAMService(), nil),
-		BedrockEndpoints: map[string]string{
-			bedrockTestLlamaModelID: vllmURL,
-		},
-		BedrockAccess: grantAllModels{},
-	}
+	return &testGateway{Deps: Deps{
+		Endpoints: ochre.NewStaticEndpointResolver(map[string]string{bedrockTestLlamaModelID: vllmURL}),
+		Access:    grantAllModels{},
+	}}
 }
 
 func bedrockRequestWithAccount(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	ctx := withPrincipalField(req.Context(), fieldAccountID, bedrockTestAccount)
-	ctx = withPrincipalField(ctx, fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	return req.WithContext(ctx)
+	return req.WithContext(context.WithValue(req.Context(), accountKey{}, bedrockTestAccount))
 }
 
 // TestBedrockRequest_DenyByDefault covers the whole gateway path with no
@@ -115,7 +103,7 @@ func bedrockRequestWithAccount(method, path, body string) *http.Request {
 func TestBedrockRequest_DenyByDefault(t *testing.T) {
 	ts := newVLLMStub(t)
 	gw := newBedrockRequestGateway(t, ts.URL)
-	gw.BedrockAccess = nil // no grant store configured
+	gw.Access = nil // no grant store configured
 
 	t.Run("list is empty", func(t *testing.T) {
 		req := bedrockRequestWithAccount(http.MethodGet, "/foundation-models", "")
@@ -215,12 +203,12 @@ func TestBedrockRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	ts := newVLLMStub(t)
 	gw := newBedrockRequestGateway(t, ts.URL)
 
-	req := withTestIdentity(httptest.NewRequest(http.MethodGet, "/foundation-models", nil))
+	req := httptest.NewRequest(http.MethodGet, "/foundation-models", nil)
 	w := httptest.NewRecorder()
-	// Account-less requests are rejected by the policy gate, which runs ahead of
-	// the handler's own account guard.
+	// Account-less requests are refused before anything is read or authorized.
 	err := gw.Bedrock_Request(w, req)
 	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
@@ -277,12 +265,12 @@ func TestBedrockRuntimeRequest_MissingAccountIDReturnsInternalError(t *testing.T
 	ts := newVLLMStub(t)
 	gw := newBedrockRequestGateway(t, ts.URL)
 
-	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/model/"+bedrockTestLlamaModelID+"/converse", strings.NewReader("{}")))
+	req := httptest.NewRequest(http.MethodPost, "/model/"+bedrockTestLlamaModelID+"/converse", strings.NewReader("{}"))
 	w := httptest.NewRecorder()
-	// Account-less requests are rejected by the policy gate, which runs ahead of
-	// the handler's own account guard.
+	// Account-less requests are refused before anything is read or authorized.
 	err := gw.BedrockRuntime_Request(w, req)
 	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 

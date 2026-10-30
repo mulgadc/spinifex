@@ -98,7 +98,6 @@ var allowlist = []allowance{
 	{From: "domains/ochre", To: "domains/ec2/systeminstance", Debt: "Cross-domain", Reason: "consumes another domain's implementation rather than a capability"},
 	{From: "domains/ochre", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "secret encrypt/decrypt helpers; needs a shared crypto boundary"},
 	{From: "domains/ochre", To: "domains/network/systemvpc", Debt: "Cross-domain", Reason: "consumes another domain's implementation rather than a capability"},
-	{From: "domains/ochre", To: "ingress/aws/bodyscope", Debt: "domains/ochre (action adapters)", Reason: "Bedrock action adapters still live in the Ochre package; they move to domains/ochre/awsapi"},
 	{From: "domains/ochre", To: "runtime/compute/gpu", Debt: "Domain → runtime", Reason: "GPU runtime state read directly; needs a domain-owned projection"},
 
 	{From: "domains/ochre/vector", To: "domains/iam", Debt: "Cross-domain", Reason: "consumes another domain's implementation rather than a capability"},

@@ -1,4 +1,4 @@
-package gateway
+package awsapi
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
 // bedrockRoute maps one HTTP method + chi path pattern to an AWS action and handler.
@@ -19,11 +20,11 @@ type bedrockRoute = rest.Route[bedrockRouteHandler]
 
 // bedrockRouteHandler invokes a per-action bedrock (control-plane) gateway
 // function. params holds the path params, PathUnescape'd. resolver
-// is gw.bedrockResolver(): the configured credential store, or a no-op
-// fallback. loggingStore is gw.bedrockLoggingConfigStore(). access is
-// gw.bedrockAccessResolver(): the configured grant store, or a deny-all
-// fallback. provisioned is gw.bedrockProvisionedStore(). guardrails is
-// gw.bedrockGuardrailStore().
+// is d.resolver(): the configured credential store, or a no-op
+// fallback. loggingStore is d.loggingStore(). access is
+// d.accessResolver(): the configured grant store, or a deny-all
+// fallback. provisioned is d.provisionedStore(inv.Region). guardrails is
+// d.guardrailStore(inv.Region).
 type bedrockRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver ochre.CredentialResolver, loggingStore *ochre.LoggingConfigStore, access ochre.AccessResolver, provisioned *ochre.ProvisionedStore, guardrails *ochre.GuardrailStore) (any, error)
 
 // bedrockRoutes is the dispatch table. Order is presentational: the router
@@ -154,7 +155,8 @@ var bedrockRouter = rest.NewRouter("bedrock", bedrockRoutes)
 // Bedrock_Request dispatches bedrock (control-plane) REST-JSON requests:
 // resolves method+path to an action, reads the body, calls the handler, and
 // serialises the output as JSON.
-func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request) error {
+func (d Deps) bedrock(w http.ResponseWriter, inv dispatch.Invocation) error {
+	r := inv.Request
 	action, params, handler, ok := bedrockRouter.Lookup(r.Method, r.URL.EscapedPath())
 	if !ok {
 		slog.DebugContext(r.Context(), "bedrock: no route for request", "method", r.Method, "path", r.URL.Path)
@@ -162,7 +164,7 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Hoisted above the policy check because the resolver builds ARNs from it.
-	accountID := callerPrincipalOf(r).accountID
+	accountID := inv.AccountID
 	if accountID == "" {
 		slog.ErrorContext(r.Context(), "Bedrock_Request: no account ID in auth context")
 		// InternalError, not ServerInternal: the policy gate used to reach this
@@ -197,108 +199,19 @@ func (gw *GatewayConfig) Bedrock_Request(w http.ResponseWriter, r *http.Request)
 
 	// After the body read and the query fold: CreateProvisionedModelThroughput
 	// names the foundation model it commits there rather than in the path.
-	resources, err := ochre.ResourceARNs("bedrock", action, gw.Region, accountID, params, body)
+	resources, err := ResourceARNs("bedrock", action, inv.Region, accountID, params, body)
 	if err != nil {
 		return err
 	}
-	if err := gw.checkPolicyResources(r, "bedrock", action, resources); err != nil {
+	if err := inv.Authorize("bedrock", action, resources, nil); err != nil {
 		return err
 	}
 
-	if gw.NATSConn == nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockLoggingConfigStore(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore())
+	output, err := handler(r.Context(), accountID, params, body, d.resolver(), d.loggingStore(), d.accessResolver(), d.provisionedStore(inv.Region), d.guardrailStore(inv.Region))
 	if err != nil {
 		return err
 	}
 
 	ochre.WriteJSONResponse(w, output)
 	return nil
-}
-
-// bedrockResolver returns gw.BedrockCredentials as a CredentialResolver, or
-// the no-op fallback when no credential store is configured.
-func (gw *GatewayConfig) bedrockResolver() ochre.CredentialResolver {
-	if gw.BedrockCredentials != nil {
-		return gw.BedrockCredentials
-	}
-	return ochre.NoopCredentialResolver
-}
-
-// bedrockLoggingConfigStore returns gw.BedrockLoggingConfig, or a store
-// backed by no JetStream client when unconfigured. Reads/writes then fail
-// with an error (no JetStream to open a KV bucket against) rather than
-// panicking, which is acceptable for unit tests of unrelated routes that
-// never reach a logging-config handler.
-func (gw *GatewayConfig) bedrockLoggingConfigStore() *ochre.LoggingConfigStore {
-	if gw.BedrockLoggingConfig != nil {
-		return gw.BedrockLoggingConfig
-	}
-	return ochre.NewLoggingConfigStore(nil)
-}
-
-// bedrockRecorder returns gw.BedrockRecorder, or the no-op fallback when no
-// invocation recorder is configured.
-func (gw *GatewayConfig) bedrockRecorder() ochre.Recorder {
-	if gw.BedrockRecorder != nil {
-		return gw.BedrockRecorder
-	}
-	return ochre.NoopRecorder
-}
-
-// bedrockAccessResolver returns gw.BedrockAccess wrapped so a staged
-// self-host model is granted to every account (import is the grant), or the
-// deny-all fallback when no grant store is configured. Model access is
-// deny-by-default, so an unconfigured gateway advertises and serves no models
-// rather than all of them; staged-open behaviour requires the access
-// subsystem to be present, so the fallback stays unwrapped.
-func (gw *GatewayConfig) bedrockAccessResolver() ochre.AccessResolver {
-	if gw.BedrockAccess != nil {
-		return ochre.NewStagedOpenAccessResolver(gw.BedrockAccess)
-	}
-	return ochre.DenyAllAccessResolver
-}
-
-// bedrockProvisionedStore returns gw.BedrockProvisioned, or a store backed by
-// no JetStream client when unconfigured. Reads/writes then fail with an error
-// (no JetStream to open a KV bucket against) rather than panicking, which is
-// acceptable for unit tests of unrelated routes that never reach a
-// provisioned-throughput handler.
-func (gw *GatewayConfig) bedrockProvisionedStore() *ochre.ProvisionedStore {
-	if gw.BedrockProvisioned != nil {
-		return gw.BedrockProvisioned
-	}
-	return ochre.NewProvisionedStore(nil, gw.Region, nil)
-}
-
-// bedrockGuardrailStore returns gw.BedrockGuardrails, or a store backed by no
-// JetStream client when unconfigured. Reads/writes then fail with an error
-// (no JetStream to open a KV bucket against) rather than panicking, which is
-// acceptable for unit tests of unrelated routes that never reach a guardrail
-// handler.
-func (gw *GatewayConfig) bedrockGuardrailStore() *ochre.GuardrailStore {
-	if gw.BedrockGuardrails != nil {
-		return gw.BedrockGuardrails
-	}
-	return ochre.NewGuardrailStore(nil, gw.Region)
-}
-
-// bedrockEndpointResolver returns the registry-backed resolver when one is
-// configured, which resolves gw.BedrockEndpoints ahead of the registry itself.
-// Without it only the pinned endpoints resolve, so a model that was never
-// pinned returns ModelNotReady rather than launching.
-func (gw *GatewayConfig) bedrockEndpointResolver() ochre.EndpointResolver {
-	if gw.BedrockEndpointResolver != nil {
-		return gw.BedrockEndpointResolver
-	}
-	return ochre.NewStaticEndpointResolver(gw.BedrockEndpoints)
-}
-
-// bedrockEmbedder returns gw.BedrockEmbedder, or nil when unconfigured. A nil
-// Embedder is a valid value throughout ochre's guardrail engine:
-// it simply falls back to topicPolicy's literal matcher.
-func (gw *GatewayConfig) bedrockEmbedder() ochre.Embedder {
-	return gw.BedrockEmbedder
 }

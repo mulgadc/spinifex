@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -131,4 +132,32 @@ func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Equal(t, "AccessDeniedException", body.Type)
 	assert.Equal(t, "User is not authorized to perform this action.", body.Message)
+}
+
+// Current behaviour, not a statement of what AWS does: ECS resolves nothing, so
+// a role ARN that is malformed, in another account or absent from the store
+// reaches PassRole as written and is accepted when the grant covers it.
+func TestECSRegisterTaskDefinition_UnresolvedRoleARNsAreNotRejected(t *testing.T) {
+	for name, roleARN := range map[string]string{
+		"malformed":   "not-an-arn",
+		"foreign":     "arn:aws:iam::999999999999:role/ecs-task-role",
+		"nonexistent": "arn:aws:iam::123456789012:role/no-such-role",
+	} {
+		t.Run(name, func(t *testing.T) {
+			mock := &policyMockIAMService{
+				getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+					return allowRegisterTaskDefAndPassRole("*"), nil
+				},
+			}
+			gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
+			req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
+				registerTaskDefinitionBody(t, roleARN))
+
+			err := gw.ECS_Request(httptest.NewRecorder(), req)
+			require.Error(t, err) // fails downstream on the nil NATS conn
+			assertNotDenied(t, err)
+			code, _ := awserrors.ResolveErrorCode(err)
+			assert.NotEqual(t, awserrors.ErrorInvalidParameterValue, code)
+		})
+	}
 }

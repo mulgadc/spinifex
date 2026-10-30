@@ -257,11 +257,7 @@ func (gw *GatewayConfig) ValidateServices() error {
 // the shared buildCallerARN helper, so nothing is computed until called.
 func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
 	return func() (dispatch.Actor, error) {
-		actor, err := callerActor(r.Context())
-		if err != nil {
-			return dispatch.Actor{}, err
-		}
-		return actor, nil
+		return callerActor(r.Context())
 	}
 }
 
@@ -299,7 +295,6 @@ func actorName(a dispatch.Actor) string {
 
 var supportedServices = map[string]bool{
 	"ec2":                   true,
-	"iam":                   true,
 	"sts":                   true,
 	"eks":                   true,
 	"ecs":                   true,
@@ -516,8 +511,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		switch svc {
 		case "ec2":
 			err = gw.EC2_Request(w, r)
-		case "iam":
-			err = gw.IAM_Request(w, r)
 		case "sts":
 			err = gw.STS_Request(w, r)
 		case "eks":

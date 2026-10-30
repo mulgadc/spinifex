@@ -35,6 +35,7 @@ import (
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
@@ -593,6 +594,12 @@ func launchService(config *config.ClusterConfig) error {
 		ExpectedNodes: len(config.Nodes),
 		Quota:         gw.Quota,
 	})
+	iamControlPlane := iamawsapi.NewRegistration(iamawsapi.Deps{
+		IAM: iamService,
+		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
+		},
+	})
 	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
 		Version:     gw.Version,
 		Commit:      gw.Commit,
@@ -610,7 +617,7 @@ func launchService(config *config.ClusterConfig) error {
 		BucketStore:       objStore,
 		SignupMaxAccounts: signupMaxAccounts,
 	})
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, operatorControlPlane); err != nil {
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, operatorControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
 

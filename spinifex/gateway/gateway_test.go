@@ -84,7 +84,7 @@ func TestXMLErrorBody_EnvelopePerService(t *testing.T) {
 }
 
 func TestErrorHandler_IAMService(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withIAM(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "iam")
@@ -658,7 +658,8 @@ func TestParseAWSQueryArgs_CapturedClientBodies(t *testing.T) {
 }
 
 func TestGetService(t *testing.T) {
-	gw := withTagging(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}), nil)
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	withServices(gw, taggingRegistration(nil), iamRegistration(gw))
 
 	tests := []struct {
 		name      string
@@ -865,6 +866,9 @@ func TestRequest_MalformedQueryString_EndToEnd(t *testing.T) {
 			if tc.service == "spinifex" {
 				withOperator(gw)
 			}
+			if tc.service == "iam" {
+				withIAM(gw)
+			}
 			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
 			ctx := context.WithValue(req.Context(), ctxService, tc.service)
 			ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
@@ -899,7 +903,7 @@ func TestRequest_EC2MissingAction(t *testing.T) {
 }
 
 func TestRequest_IAMNilService(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: nil, NATSConn: connectedNATS(t)})
+	gw := withIAM(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: nil, NATSConn: connectedNATS(t)}))
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=CreateUser&UserName=test"))
 	ctx := context.WithValue(req.Context(), ctxService, "iam")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
@@ -1649,7 +1653,7 @@ func TestRequest_ClusterUnavailableNilConn_EC2(t *testing.T) {
 }
 
 func TestRequest_ClusterUnavailableNilConn_IAM(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withIAM(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxService, "iam")

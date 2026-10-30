@@ -1,0 +1,12 @@
+#!/bin/sh
+# The only shutdown action: flush and unmount the worker disk, then remount
+# everything else read-only. Nothing in this image holds the disk open yet.
+sync
+if grep -q ' /data ' /proc/mounts 2>/dev/null; then
+    rc=0
+    umount /data || rc=$?
+    echo "[sqs-worker] stop: umount /data rc=$rc" >> /dev/console
+fi
+rc=0
+umount -a -r || rc=$?
+echo "[init] shutdown: umount -a -r rc=$rc" >> /dev/console

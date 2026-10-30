@@ -157,6 +157,21 @@ bin/nats-server: go.mod go.sum
 
 build-sqs-store-microvm-image: $(SQS_STORE_MICROVM_ARTIFACTS) ## Build the SQS store microVM kernel and initramfs
 
+# The shared SQS worker microVM image: the store image's /init and kernel with
+# the worker binary instead of nats-server. Not installed or released yet.
+SQS_WORKER_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/sqs-worker
+SQS_WORKER_MICROVM_ARTIFACTS := $(SQS_WORKER_MICROVM_OUT_DIR)/vmlinuz $(SQS_WORKER_MICROVM_OUT_DIR)/initramfs.cpio.gz
+SQS_WORKER_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_WORKER_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_WORKER_MICROVM_OUT_DIR)/,sqs-worker-prepare sqs-worker-stop) bin/sqs-worker
+
+$(SQS_WORKER_MICROVM_ARTIFACTS) &: $(SQS_WORKER_MICROVM_INPUTS)
+	SQS_MICROVM_PROFILE=worker ./scripts/build-sqs-store-microvm-image.sh
+
+bin/sqs-worker: go.mod go.sum $(shell find cmd/sqs-worker spinifex/agents/sqs -name '*.go' ! -name '*_test.go')
+	@mkdir -p bin
+	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/sqs-worker
+
+build-sqs-worker-microvm-image: $(SQS_WORKER_MICROVM_ARTIFACTS) ## Build the shared SQS worker microVM kernel and initramfs
+
 # qboot is the microvm firmware. The source tarball ships with each release
 # because qboot is GPL-2.0.
 QBOOT_COMMIT := $(shell sed -n 's/^QBOOT_COMMIT="\(.*\)"$$/\1/p' scripts/build-qboot.sh)
@@ -493,7 +508,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-store-microvm-image install-microvm install-sqs-store-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-store-microvm-image build-sqs-worker-microvm-image install-microvm install-sqs-store-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

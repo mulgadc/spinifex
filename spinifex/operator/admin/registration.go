@@ -91,6 +91,9 @@ func NewRegistration(deps Deps) dispatch.Registration {
 // resolveAction is the one Query Action parser telemetry and dispatch share.
 // It leaves the body readable for the dispatcher and answers "" on any failure.
 func resolveAction(r *http.Request) string {
+	if method, ok := PathMethod(r.URL.Path); ok {
+		return method
+	}
 	args, err := readQueryArgs(r)
 	if err != nil {
 		return ""
@@ -116,6 +119,9 @@ func readQueryArgs(r *http.Request) (map[string]string, error) {
 // before the super-admin account gate, and both before an unknown action is
 // refused, so a denied caller learns nothing about which actions exist.
 func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
+	if isAdminPath(inv.Request.URL.Path) {
+		return d.dispatchREST(w, inv)
+	}
 	r := inv.Request
 	args, err := readQueryArgs(r)
 	if err != nil {

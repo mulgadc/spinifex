@@ -117,6 +117,8 @@ type ActorFunc func() (Actor, error)
 type Invocation struct {
 	Request   *http.Request
 	AccountID string
+	// Service is the service the request's SigV4 credential scope names.
+	Service   string
 	Region    string
 	Authorize AuthorizeFunc
 	Actor     ActorFunc

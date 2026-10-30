@@ -145,6 +145,7 @@ func TestErrors_ClassifiedWithoutEchoingTheBody(t *testing.T) {
 		{403, "AccessDenied", false},
 		{400, "InvalidParameterValue", false},
 		{400, "InvalidState", false},
+		{403, "SignatureDoesNotMatch", false},
 		{503, "ServiceUnavailable", true},
 		{500, "InternalFailure", false},
 	}
@@ -152,7 +153,7 @@ func TestErrors_ClassifiedWithoutEchoingTheBody(t *testing.T) {
 		c, _, _ := server(t, tc.status, `<ErrorResponse><Error><Code>`+tc.code+`</Code><Message>secret-ish detail</Message></Error></ErrorResponse>`)
 		_, _, err := c.Claim(context.Background())
 		api, ok := errors.AsType[*APIError](err)
-		if !ok || api.Code != tc.code || api.Retryable() != tc.retryable {
+		if !ok || api.Code != tc.code || api.Retryable() != tc.retryable || api.Pending() != (tc.code == "AccessDenied") {
 			t.Fatalf("%s: err = %v", tc.code, err)
 		}
 		if strings.Contains(err.Error(), "secret-ish") {

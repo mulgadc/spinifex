@@ -56,8 +56,8 @@ type Config struct {
 	// IsBlockDevice reports whether a /dev node is a block device.
 	IsBlockDevice func(path string) bool
 	NewClaimer    NewClaimer
-	// Attempts bounds the decision calls; only a classified retryable
-	// refusal or a lost reply is retried, Wait apart.
+	// Attempts bounds the decision calls, Wait apart. Only a lost reply, a
+	// retryable refusal or a pending authorization is asked again.
 	Attempts int
 	Wait     time.Duration
 	Log      func(msg string)
@@ -164,16 +164,23 @@ func readContract(dir string) (contract, error) {
 }
 
 // acquire runs the decision and key step, repeating it only on an error that
-// says it is safe to repeat. Each repeat re-asks the gateway: a reply lost
-// after the key was recorded is answered with that key, never a new one.
+// says it is safe to repeat, including a denial a not-yet-bound worker gets.
+// A denial creates nothing, and each repeat re-asks the gateway.
 func acquire(ctx context.Context, cfg Config, store workerkey.Store, c workerkey.Claimer) (kp nkeys.KeyPair, err error) {
 	attempts := max(cfg.Attempts, 1)
 	for i := range attempts {
 		kp, err = store.Acquire(ctx, c)
-		if err == nil || !retryable(err) || i == attempts-1 {
+		if err == nil || i == attempts-1 {
 			return kp, err
 		}
-		cfg.Log(fmt.Sprintf("first-store decision not settled, retrying: %v", err))
+		switch {
+		case pending(err):
+			cfg.Log(fmt.Sprintf("worker not yet authorized, asking again: %v", err))
+		case retryable(err):
+			cfg.Log(fmt.Sprintf("first-store decision not settled, retrying: %v", err))
+		default:
+			return kp, err
+		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -181,6 +188,14 @@ func acquire(ctx context.Context, cfg Config, store workerkey.Store, c workerkey
 		}
 	}
 	return nil, err
+}
+
+func pending(err error) bool {
+	p, ok := errors.AsType[interface {
+		error
+		Pending() bool
+	}](err)
+	return ok && p.Pending()
 }
 
 func retryable(err error) bool {

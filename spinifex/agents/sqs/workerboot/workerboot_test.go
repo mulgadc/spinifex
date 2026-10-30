@@ -57,6 +57,12 @@ type transient struct{}
 func (transient) Error() string   { return "connection reset" }
 func (transient) Retryable() bool { return true }
 
+// notBoundError is the denial a started but not yet bound worker receives.
+type notBoundError struct{}
+
+func (notBoundError) Error() string { return "AccessDenied" }
+func (notBoundError) Pending() bool { return true }
+
 func (a *authority) Claim(context.Context) (bool, string, error) {
 	a.claims++
 	if len(a.claimErrs) > 0 {
@@ -419,6 +425,29 @@ func TestBoot_RetriesOnlyRetryableRefusals(t *testing.T) {
 		}
 		if g.auth.claims != 1 {
 			t.Fatalf("claims = %d; a denial must not be retried", g.auth.claims)
+		}
+		g.assertNoKey()
+	})
+	t.Run("pending then authorized", func(t *testing.T) {
+		g := newGuest(t)
+		g.contract()
+		g.auth.claimErrs = []error{notBoundError{}, notBoundError{}}
+		if _, err := g.boot(); err != nil {
+			t.Fatal(err)
+		}
+		if g.auth.claims != 3 {
+			t.Fatalf("claims = %d, want 3", g.auth.claims)
+		}
+	})
+	t.Run("pending never authorized", func(t *testing.T) {
+		g := newGuest(t)
+		g.contract()
+		g.auth.claimErrs = []error{notBoundError{}, notBoundError{}, notBoundError{}, notBoundError{}}
+		if _, err := g.boot(); !errors.Is(err, notBoundError{}) {
+			t.Fatalf("err = %v, want the denial", err)
+		}
+		if g.auth.claims != 3 {
+			t.Fatalf("claims = %d, want the 3 attempts", g.auth.claims)
 		}
 		g.assertNoKey()
 	})

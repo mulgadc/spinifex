@@ -98,6 +98,11 @@ func (e *APIError) Retryable() bool {
 	return e.Code == "ServiceUnavailable" || e.Code == "Throttling" || e.StatusCode == http.StatusServiceUnavailable
 }
 
+// Pending reports an AccessDenied, which a worker that has started but is
+// not yet bound to its identity legitimately receives. It authorizes
+// nothing; the caller may ask again within its own bound.
+func (e *APIError) Pending() bool { return e.Code == "AccessDenied" }
+
 // TransientError is a call that may not have reached the gateway, or whose
 // reply was lost: signing, sending or reading failed. Both actions are safe
 // to repeat, so it is retryable.

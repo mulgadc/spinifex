@@ -64,6 +64,8 @@ type localGateway struct {
 	bodies   []string
 	// dropReply, while set, applies a request and then drops its reply.
 	dropReply func(action string) bool
+	// replied, when set, receives each reply's error code, "" on success.
+	replied chan string
 }
 
 func newLocalGateway(t *testing.T, deps sqsworkerapi.Deps) *localGateway {
@@ -154,6 +156,7 @@ func (g *localGateway) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	g.reply("")
 	maps.Copy(w.Header(), rec.Header())
 	w.WriteHeader(rec.Code)
 	_, _ = w.Write(rec.Body.Bytes())
@@ -213,9 +216,16 @@ func (g *localGateway) verify(r *http.Request, body []byte) (session, string, st
 }
 
 func (g *localGateway) fail(w http.ResponseWriter, status int, code string) {
+	g.reply(code)
 	w.Header().Set("Content-Type", "text/xml")
 	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, "<ErrorResponse><Error><Code>%s</Code></Error></ErrorResponse>", code)
+}
+
+func (g *localGateway) reply(code string) {
+	if g.replied != nil {
+		g.replied <- code
+	}
 }
 
 func (g *localGateway) sentBodies() []string {
@@ -390,8 +400,8 @@ func TestGateway_UnboundOrReplacedInstanceIsRefused(t *testing.T) {
 		if !ok || api.Code != "AccessDenied" {
 			t.Fatalf("err = %v, want AccessDenied", err)
 		}
-		if n := len(c.gw.sentBodies()); n != 1 {
-			t.Fatalf("calls = %d; a denial must not be retried", n)
+		if n := len(c.gw.sentBodies()); n != g.cfg.Attempts {
+			t.Fatalf("calls = %d, want the %d attempts and no more", n, g.cfg.Attempts)
 		}
 		g.assertNoKey()
 	})
@@ -469,4 +479,71 @@ func otherCA(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// The worker VM starts before its launch binds the instance, so its first
+// calls are denied. It creates nothing while denied, and boots once bound.
+func TestGateway_BootBeforeBindSucceedsAfterBinding(t *testing.T) {
+	c := newGWCluster(t)
+	ctx := context.Background()
+	intent, err := c.ids.BeginLaunch(ctx, testRegion, workerident.LaunchRequest{
+		ClaimID: "claim-0001", NodeID: "node-a", DataVolumeID: gwVolume, DataVolumeEncrypted: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := newGuest(t)
+	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
+	g.cfg.Attempts = 1000
+	c.gw.replied = make(chan string, 2000)
+
+	type result struct {
+		pub string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		pub, err := g.boot()
+		done <- result{pub, err}
+	}()
+	if code := <-c.gw.replied; code != "AccessDenied" {
+		t.Fatalf("first reply = %q, want AccessDenied before binding", code)
+	}
+	g.assertNoKey()
+	if err := c.ids.BindInstance(ctx, intent, gwInstance); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil || r.pub == "" {
+		t.Fatalf("boot after binding = %q, %v", r.pub, r.err)
+	}
+	if g.seed() == "" {
+		t.Fatal("booted without a key on the worker disk")
+	}
+}
+
+// A replaced worker is never bound again: it keeps being denied, creates
+// nothing and gives up within its attempts.
+func TestGateway_StaleWorkerGivesUpWithinTheBound(t *testing.T) {
+	c := newGWCluster(t)
+	ctx := context.Background()
+	first := c.launch(t, "claim-0001", 0, gwInstance)
+	if err := c.ids.RecordStopped(ctx, first, gwInstance); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.fence.Fence(ctx, testRegion, first.Generation+1); err != nil {
+		t.Fatal(err)
+	}
+	c.launch(t, "claim-0002", first.Generation, gwSuccessor)
+	g := newGuest(t)
+	c.guestFor(t, g, "ASIAOLD", gwInstance)
+	g.cfg.Attempts = 5
+	_, err := g.boot()
+	if api, ok := errors.AsType[*sqsworkergw.APIError](err); !ok || !api.Pending() {
+		t.Fatalf("err = %v, want the denial", err)
+	}
+	if n := len(c.gw.sentBodies()); n != 5 {
+		t.Fatalf("calls = %d, want exactly the 5 attempts", n)
+	}
+	g.assertNoKey()
 }

@@ -1,64 +1,40 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"uuid"
 
-	"github.com/go-chi/chi/v5"
-	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
+	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 )
 
-// adminMethods is the callable /admin/<Method> set, built from the contract's
-// list. A method absent here is rejected before any parsing, so adding a
-// handler is a deliberate act rather than a side effect of adding a function.
-var adminMethods = func() map[string]bool {
-	m := make(map[string]bool)
-	for _, name := range operatorv1.AdminMethodNames() {
-		m[name] = true
-	}
-	return m
-}()
+// Admin_Request serves the private /admin/<Method> surface. The route stays
+// here so it keeps its place ahead of the service selector; the work is the
+// spinifex registration's, dispatched exactly as a Query request is. Only the
+// error rendering differs: this surface answers in JSON with a request ID.
+func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
+	requestID := uuid.NewV4().String()
+	w.Header().Set("X-Amzn-Requestid", requestID)
+	r = r.WithContext(operatoradmin.WithRequestID(r.Context(), requestID))
 
-// adminPathPrefix is the private admin surface's URL prefix. It is matched
-// before routing so the auth middleware can label the request by method.
-const adminPathPrefix = "/admin/"
+	entry, ok := gw.registered(operatoradmin.ServiceName)
+	if !ok {
+		slog.Error("Admin: spinifex service is not registered", "requestId", requestID)
+		gw.writeAdminError(w, requestID, awserrors.ErrorInternalError, "")
+		return
+	}
 
-// adminPathMethod extracts the method from an /admin/<Method> path. It reports
-// false for anything else, including a nested path, so only the exact shape the
-// router serves is labelled.
-func adminPathMethod(path string) (string, bool) {
-	rest, ok := strings.CutPrefix(path, adminPathPrefix)
-	if !ok || rest == "" || strings.Contains(rest, "/") {
-		return "", false
+	action, _ := r.Context().Value(ctxAction).(string)
+	if err := gw.dispatchRegistered(entry, w, r); err != nil {
+		slog.Log(r.Context(), serviceErrorLevel(operatoradmin.ServiceName, err), "Service request error",
+			"service", operatoradmin.ServiceName, "action", action, "requestId", requestID, "error", err)
+		gw.writeAdminErrorFor(w, requestID, err)
+		return
 	}
-	if !adminMethods[rest] {
-		return "", false
-	}
-	return rest, true
+	slog.Info("Service request completed", "service", operatoradmin.ServiceName, "action", action, "requestId", requestID)
 }
-
-// ctxAdminRequestID carries the /admin request ID to handlers that log under it.
-// It correlates log records only and authorises nothing.
-const ctxAdminRequestID contextKey = "admin.requestID"
-
-func adminRequestIDFrom(ctx context.Context) string {
-	id, _ := ctx.Value(ctxAdminRequestID).(string)
-	return id
-}
-
-// adminMaxBodyBytes caps the JSON request body. The largest legitimate request
-// is a few hundred bytes; the cap exists so an unauthenticated-shaped mistake
-// cannot make the gateway buffer megabytes.
-const adminMaxBodyBytes = 8 << 10
 
 // adminErrorBody is the JSON error envelope for /admin. This surface is not an
 // AWS API, so it does not use the EC2 or IAM XML envelopes.
@@ -70,129 +46,6 @@ type adminErrorBody struct {
 type adminErrorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
-}
-
-// Admin_Request dispatches the private /admin/<Method> surface: super-admin
-// only, JSON in and JSON out, SigV4-authenticated by the shared middleware.
-//
-// Authorization is fail-closed at every step and every denial returns the same
-// AccessDenied, so a caller cannot probe which gate rejected it.
-func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
-	requestID := uuid.NewV4().String()
-	w.Header().Set("X-Amzn-Requestid", requestID)
-
-	method := chi.URLParam(r, "method")
-	ctx := context.WithValue(r.Context(), ctxAdminRequestID, requestID)
-
-	// One handler for every verb rather than a POST route plus a catch-all:
-	// chi resolves the two to the same pattern, and the catch-all wins.
-	if r.Method != http.MethodPost {
-		gw.writeAdminError(w, requestID, awserrors.ErrorMethodNotAllowed, "")
-		return
-	}
-
-	if !adminMethods[method] {
-		slog.Debug("Admin: unknown method", "method", method)
-		gw.writeAdminError(w, requestID, awserrors.ErrorInvalidAction, "")
-		return
-	}
-
-	if err := gw.authorizeAdmin(r, method); err != nil {
-		gw.writeAdminErrorFor(w, requestID, err)
-		return
-	}
-
-	if gw.NATSConn == nil || !gw.NATSConn.IsConnected() {
-		gw.writeAdminError(w, requestID, awserrors.ErrorServiceUnavailable, clusterUnavailableMsg)
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, adminMaxBodyBytes+1))
-	if err != nil {
-		slog.Error("Admin: failed to read request body", "method", method, "err", err)
-		gw.writeAdminError(w, requestID, awserrors.ErrorInternalError, "")
-		return
-	}
-	if len(body) > adminMaxBodyBytes {
-		gw.writeAdminError(w, requestID, awserrors.ErrorInvalidRequest, "request body exceeds 8 KiB")
-		return
-	}
-
-	var output any
-	switch method {
-	case "CreateAccount":
-		output, err = gw.adminCreateAccount(ctx, body)
-	case "DeleteAccount":
-		output, err = gw.adminDeleteAccount(ctx, body)
-	case "DescribeAccountDeletion":
-		output, err = gw.adminDescribeAccountDeletion(ctx, body)
-	case "ListAccounts":
-		output, err = gw.adminListAccounts(ctx, body)
-	case "GetAccountQuota":
-		output, err = gw.adminGetAccountQuota(ctx, body)
-	case "PutAccountQuota":
-		output, err = gw.adminPutAccountQuota(ctx, body)
-	default:
-		// Unreachable: adminMethods gates the switch. Fail closed anyway so
-		// adding a name to the map without a case cannot silently return 200.
-		err = errors.New(awserrors.ErrorInvalidAction)
-	}
-	if err != nil {
-		gw.writeAdminErrorFor(w, requestID, err)
-		return
-	}
-
-	jsonOutput, err := json.Marshal(output)
-	if err != nil {
-		slog.Error("Admin: failed to marshal response", "method", method, "err", err)
-		gw.writeAdminError(w, requestID, awserrors.ErrorInternalError, "")
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(jsonOutput); err != nil {
-		slog.Error("Admin: failed to write response", "method", method, "err", err)
-	}
-}
-
-// authorizeAdmin runs the five fail-closed gates. Each returns the same
-// AccessDenied so the response cannot be used to enumerate which condition the
-// caller failed; the log line names it for operators.
-func (gw *GatewayConfig) authorizeAdmin(r *http.Request, method string) error {
-	ctx := r.Context()
-	service, _ := ctx.Value(ctxService).(string)
-	actor, _ := callerActor(ctx)
-	accountID, identity, principalType := actor.AccountID, actorName(actor), actor.PrincipalType
-
-	deny := func(reason string) error {
-		slog.Warn("Admin: access denied", "method", method, "reason", reason,
-			"service", service, "accountID", accountID, "identity", identity,
-			"principalType", principalType, "sourceIP", ingresshttp.ClientIP(r.RemoteAddr))
-		return errors.New(awserrors.ErrorAccessDenied)
-	}
-
-	// The credential scope must be spinifex: a key signed for ec2 reaching this
-	// path means the caller is probing, not calling.
-	if service != "spinifex" {
-		return deny("credential scope is not spinifex")
-	}
-	if accountID != awsidentifiers.DefaultAccountID() {
-		return deny("not the super-admin account")
-	}
-	// Long-lived IAM users only. This excludes assumed-role sessions outright,
-	// so a role session cannot reach account creation even from this account.
-	if principalType != principalTypeUser {
-		return deny("principal is not an IAM user")
-	}
-	if identity == "" {
-		return deny("no identity in auth context")
-	}
-
-	// Defence in depth and the actual grant: the principal must hold
-	// spinifex:<Method>. checkPolicy fails closed on a nil IAM service, an
-	// unauthenticated request and an unresolvable principal.
-	return gw.checkPolicy(r, "spinifex", method)
 }
 
 // writeAdminErrorFor resolves an error to its code and any message its call

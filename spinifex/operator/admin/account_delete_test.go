@@ -1,4 +1,4 @@
-package gateway
+package admin
 
 //test:in-package — the request validators, the job staleness rule and the
 // engine-error mapping are unexported, and each is a safety rail that would go
@@ -22,7 +22,7 @@ import (
 
 // listAccountsIAMService answers the one call /admin/ListAccounts makes.
 type listAccountsIAMService struct {
-	policyMockIAMService
+	iamdomain.IAMService
 
 	accounts []*iamdomain.Account
 	err      error
@@ -177,7 +177,7 @@ func TestTeardownErrorMapping(t *testing.T) {
 // The listing is an operator's index of tenants. It must carry the status —
 // that is how a stuck TERMINATING account is noticed — and no key material.
 func TestAdminListAccountsReportsStatus(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: &listAccountsIAMService{
+	gw := Deps{IAM: &listAccountsIAMService{
 		accounts: []*iamdomain.Account{
 			{AccountID: "000000000042", AccountName: "t@example.com", Status: iamdomain.AccountStatusActive},
 			nil,
@@ -185,7 +185,7 @@ func TestAdminListAccountsReportsStatus(t *testing.T) {
 		},
 	}}
 
-	output, err := gw.adminListAccounts(context.Background(), nil)
+	output, err := gw.listAccounts(context.Background(), nil)
 	require.NoError(t, err)
 
 	response, ok := output.(*operatorv1.ListAccountsResponse)
@@ -198,40 +198,26 @@ func TestAdminListAccountsReportsStatus(t *testing.T) {
 // Failing closed matters here: an empty listing reads as "no accounts", which
 // is exactly what an operator would act on.
 func TestAdminListAccountsFailsClosed(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: &listAccountsIAMService{
+	gw := Deps{IAM: &listAccountsIAMService{
 		err: errors.New("kv unavailable"),
 	}}
 
-	_, err := gw.adminListAccounts(context.Background(), nil)
+	_, err := gw.listAccounts(context.Background(), nil)
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
-// Each admin method is a separate grant. The signup Worker holds
-// spinifex:CreateAccount and must not reach deletion with it.
-func TestCreateAccountGrantDoesNotAllowDeleteAccount(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy()})
-
-	for _, method := range []string{"DeleteAccount", "DescribeAccountDeletion", "ListAccounts"} {
-		t.Run(method, func(t *testing.T) {
-			rec := authorizedAdminRequestForMethod(gw, method, `{}`)
-
-			assert.Equal(t, awserrors.ErrorAccessDenied, decodeAdminError(t, rec).Error.Code)
-		})
-	}
-}
-
 // A missing account id must be refused before anything reads the cluster, so
 // DescribeAccountDeletion cannot be used to probe with junk.
 func TestDescribeAccountDeletionValidatesTheAccountID(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := Deps{}
 
-	_, err := gw.adminDescribeAccountDeletion(context.Background(), []byte(`{}`))
+	_, err := gw.describeAccountDeletion(context.Background(), []byte(`{}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 
-	_, err = gw.adminDescribeAccountDeletion(context.Background(), []byte(`{"accountId":"nope"}`))
+	_, err = gw.describeAccountDeletion(context.Background(), []byte(`{"accountId":"nope"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }

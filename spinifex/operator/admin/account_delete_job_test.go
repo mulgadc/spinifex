@@ -1,4 +1,4 @@
-package gateway
+package admin
 
 //test:in-package — the deletion job record, its claim rules and the progress
 // tracker are unexported, and they are what make a teardown survive a retry or
@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +41,7 @@ const sealCapabilitySubjectPrefix = "ec2.v1.AccountSettingsSealCapability."
 // embedded JetStream, with a stub cluster answering the subjects the reapers
 // drive. The tenant has no resources, so every stage drains empty and the test
 // exercises the job record rather than the reapers.
-func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
+func newDeleteAccountGateway(t *testing.T) Deps {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
@@ -101,14 +100,12 @@ func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 	}
 	require.NoError(t, nc.Flush())
 
-	return &GatewayConfig{
-		DisableLogging: true,
-		IAMService:     svc,
-		Credentials:    credverify.New(svc, nil),
-		NATSConn:       nc,
-		ExpectedNodes:  1,
-		NodeIDs:        []string{"node-1"},
-		BucketStore:    emptyBucketStore{},
+	return Deps{
+		IAM:           svc,
+		NATS:          nc,
+		ExpectedNodes: 1,
+		NodeIDs:       []string{"node-1"},
+		BucketStore:   emptyBucketStore{},
 	}
 }
 
@@ -142,13 +139,13 @@ func (emptyBucketStore) DeleteBucket(context.Context, string) error { return nil
 // newTenantAccount creates an account that is safe to delete. Account ids are
 // sequential and the first belongs to the super admin, which is protected, so
 // the tenant under test can never be the first one created.
-func newTenantAccount(t *testing.T, gw *GatewayConfig, name string) *iamdomain.Account {
+func newTenantAccount(t *testing.T, gw Deps, name string) *iamdomain.Account {
 	t.Helper()
-	if accounts, err := gw.IAMService.ListAccounts(); err == nil && len(accounts) == 0 {
-		_, err := gw.IAMService.CreateAccount("super-admin@example.com")
+	if accounts, err := gw.IAM.ListAccounts(); err == nil && len(accounts) == 0 {
+		_, err := gw.IAM.CreateAccount("super-admin@example.com")
 		require.NoError(t, err)
 	}
-	account, err := gw.IAMService.CreateAccount(name)
+	account, err := gw.IAM.CreateAccount(name)
 	require.NoError(t, err)
 	return account
 }
@@ -164,7 +161,7 @@ func deleteAccountBody(t *testing.T, accountID, name, token string) []byte {
 
 // storeDeletionJob seeds a job record directly, which is how a job left behind
 // by another gateway is reproduced without racing a live teardown.
-func storeDeletionJob(t *testing.T, gw *GatewayConfig, job *accountDeletionJob) jetstream.KeyValue {
+func storeDeletionJob(t *testing.T, gw Deps, job *accountDeletionJob) jetstream.KeyValue {
 	t.Helper()
 	jobs, err := gw.accountDeletionStore(t.Context())
 	require.NoError(t, err)
@@ -176,12 +173,12 @@ func storeDeletionJob(t *testing.T, gw *GatewayConfig, job *accountDeletionJob) 
 	return jobs
 }
 
-func describeDeletion(t *testing.T, gw *GatewayConfig, accountID string) *accountDeletionJob {
+func describeDeletion(t *testing.T, gw Deps, accountID string) *accountDeletionJob {
 	t.Helper()
 	body, err := json.Marshal(operatorv1.DescribeAccountDeletionRequest{AccountID: accountID})
 	require.NoError(t, err)
 
-	output, err := gw.adminDescribeAccountDeletion(t.Context(), body)
+	output, err := gw.describeAccountDeletion(t.Context(), body)
 	require.NoError(t, err)
 	job, ok := output.(*accountDeletionJob)
 	require.True(t, ok)
@@ -198,7 +195,7 @@ func TestAdminDeleteAccountDryRunChangesNothing(t *testing.T) {
 	body, err := json.Marshal(operatorv1.DeleteAccountRequest{AccountID: account.AccountID, DryRun: true})
 	require.NoError(t, err)
 
-	output, err := gw.adminDeleteAccount(t.Context(), body)
+	output, err := gw.deleteAccount(t.Context(), body)
 	require.NoError(t, err)
 
 	response, ok := output.(*DeleteAccountResponse)
@@ -208,12 +205,12 @@ func TestAdminDeleteAccountDryRunChangesNothing(t *testing.T) {
 	assert.Empty(t, response.DeletionID, "a dry run must not claim a job")
 	require.NotNil(t, response.Inventory)
 
-	stored, err := gw.IAMService.GetAccount(account.AccountID)
+	stored, err := gw.IAM.GetAccount(account.AccountID)
 	require.NoError(t, err)
 	assert.Equal(t, iamdomain.AccountStatusActive, stored.Status)
 
 	// No job record means a later real delete is not answered as a replay.
-	_, err = gw.adminDescribeAccountDeletion(t.Context(),
+	_, err = gw.describeAccountDeletion(t.Context(),
 		[]byte(`{"accountId":"`+account.AccountID+`"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
@@ -227,7 +224,7 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
-	output, err := gw.adminDeleteAccount(t.Context(),
+	output, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken))
 	require.NoError(t, err)
 
@@ -248,7 +245,7 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 	assert.Empty(t, job.Error)
 	assert.NotEmpty(t, job.Stages, "the stage report is the only view into a finished teardown")
 
-	_, err = gw.IAMService.GetAccount(account.AccountID)
+	_, err = gw.IAM.GetAccount(account.AccountID)
 	assert.Error(t, err, "the account record must be gone once the job completes")
 }
 
@@ -260,7 +257,7 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	body := deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken)
 
-	first, err := gw.adminDeleteAccount(t.Context(), body)
+	first, err := gw.deleteAccount(t.Context(), body)
 	require.NoError(t, err)
 	started := first.(*DeleteAccountResponse)
 
@@ -268,7 +265,7 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
 	}, 60*time.Second, 10*time.Millisecond)
 
-	second, err := gw.adminDeleteAccount(t.Context(), body)
+	second, err := gw.deleteAccount(t.Context(), body)
 	require.NoError(t, err)
 
 	replayed, ok := second.(*DeleteAccountResponse)
@@ -278,7 +275,7 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 
 	// A caller that lost its token and generated a fresh one is told the same
 	// thing, rather than that the account it just deleted does not exist.
-	third, err := gw.adminDeleteAccount(t.Context(),
+	third, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("f", 32)))
 	require.NoError(t, err)
 	assert.Equal(t, operatorv1.DeletionStateCompleted, third.(*DeleteAccountResponse).State)
@@ -298,7 +295,7 @@ func TestAdminDeleteAccountRejectsATokenBoundToAnotherName(t *testing.T) {
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 	})
 
-	_, err := gw.adminDeleteAccount(t.Context(),
+	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "someone-else@example.com", deleteClientToken))
 
 	require.Error(t, err)
@@ -319,7 +316,7 @@ func TestAdminDeleteAccountRefusesAConcurrentTeardown(t *testing.T) {
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 	})
 
-	_, err := gw.adminDeleteAccount(t.Context(),
+	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("b", 32)))
 
 	require.Error(t, err)
@@ -340,7 +337,7 @@ func TestAdminDeleteAccountTakesOverAStaleJob(t *testing.T) {
 		UpdatedAt:   time.Now().UTC().Add(-2 * accountDeletionStale).Format(time.RFC3339),
 	})
 
-	output, err := gw.adminDeleteAccount(t.Context(),
+	output, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("c", 32)))
 	require.NoError(t, err)
 
@@ -365,7 +362,7 @@ func TestAdminDeleteAccountRetriesAFailedJob(t *testing.T) {
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 	})
 
-	output, err := gw.adminDeleteAccount(t.Context(),
+	output, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("d", 32)))
 	require.NoError(t, err)
 
@@ -391,7 +388,7 @@ func TestAdminDeleteAccountReportsACompletedJobToANewToken(t *testing.T) {
 		FinishedAt:  time.Now().UTC().Format(time.RFC3339),
 	})
 
-	output, err := gw.adminDeleteAccount(t.Context(),
+	output, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("e", 32)))
 	require.NoError(t, err)
 
@@ -410,11 +407,13 @@ func TestAdminDeleteAccountRefusesProtectedAccounts(t *testing.T) {
 	// The system account and the super admin, whichever names they carry.
 	for _, accountID := range []string{"000000000000", "000000000001"} {
 		t.Run(accountID, func(t *testing.T) {
-			_, err := gw.adminDeleteAccount(t.Context(),
+			_, err := gw.deleteAccount(t.Context(),
 				deleteAccountBody(t, accountID, "super-admin@example.com", deleteClientToken))
 
 			require.Error(t, err)
-			assertDenied(t, err)
+			code, ok := awserrors.ResolveErrorCode(err)
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorAccessDenied, code)
 		})
 	}
 }
@@ -425,13 +424,13 @@ func TestAdminDeleteAccountRefusesAMismatchedName(t *testing.T) {
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
-	_, err := gw.adminDeleteAccount(t.Context(),
+	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "wrong@example.com", deleteClientToken))
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIdempotentParameterMismatch, err.Error())
 
-	stored, err := gw.IAMService.GetAccount(account.AccountID)
+	stored, err := gw.IAM.GetAccount(account.AccountID)
 	require.NoError(t, err)
 	assert.Equal(t, iamdomain.AccountStatusActive, stored.Status)
 }
@@ -440,7 +439,7 @@ func TestAdminDeleteAccountRejectsAnUnknownAccount(t *testing.T) {
 	gw := newDeleteAccountGateway(t)
 	newTenantAccount(t, gw, "tenant@example.com")
 
-	_, err := gw.adminDeleteAccount(t.Context(),
+	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, "000000009999", "ghost@example.com", deleteClientToken))
 
 	require.Error(t, err)
@@ -450,7 +449,7 @@ func TestAdminDeleteAccountRejectsAnUnknownAccount(t *testing.T) {
 func TestAdminDeleteAccountRejectsAMalformedBody(t *testing.T) {
 	gw := newDeleteAccountGateway(t)
 
-	_, err := gw.adminDeleteAccount(t.Context(), []byte(`{`))
+	_, err := gw.deleteAccount(t.Context(), []byte(`{`))
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidRequest, err.Error())
@@ -459,9 +458,9 @@ func TestAdminDeleteAccountRejectsAMalformedBody(t *testing.T) {
 // Without an IAM service there is no way to check what the account owns, and
 // deleting on a guess is worse than refusing.
 func TestAdminDeleteAccountRefusesWithoutAnIAMService(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := Deps{}
 
-	_, err := gw.adminDeleteAccount(context.Background(),
+	_, err := gw.deleteAccount(context.Background(),
 		deleteAccountBody(t, "000000000042", "tenant@example.com", deleteClientToken))
 
 	require.Error(t, err)
@@ -471,7 +470,7 @@ func TestAdminDeleteAccountRefusesWithoutAnIAMService(t *testing.T) {
 func TestAdminDescribeAccountDeletionRejectsAMalformedBody(t *testing.T) {
 	gw := newDeleteAccountGateway(t)
 
-	_, err := gw.adminDescribeAccountDeletion(t.Context(), []byte(`{`))
+	_, err := gw.describeAccountDeletion(t.Context(), []byte(`{`))
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidRequest, err.Error())

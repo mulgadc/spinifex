@@ -13,11 +13,14 @@ import (
 	"slices"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
+	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
 )
 
@@ -45,6 +48,15 @@ type Deps struct {
 	ModelAccess ModelAccess
 	Credentials ochre.CredentialResolver
 	Access      ochre.AccessResolver
+
+	// The /admin methods run against these. A nil IAM or Quota answers the
+	// methods that need it with InternalError.
+	IAM               iamdomain.IAMService
+	Quota             *quota.Service
+	ExpectedNodes     int
+	NodeIDs           []string
+	BucketStore       accountteardown.BucketStore
+	SignupMaxAccounts int
 }
 
 // adminActions are the actions only the super-admin account may call.
@@ -79,6 +91,9 @@ func NewRegistration(deps Deps) dispatch.Registration {
 // resolveAction is the one Query Action parser telemetry and dispatch share.
 // It leaves the body readable for the dispatcher and answers "" on any failure.
 func resolveAction(r *http.Request) string {
+	if method, ok := PathMethod(r.URL.Path); ok {
+		return method
+	}
 	args, err := readQueryArgs(r)
 	if err != nil {
 		return ""
@@ -104,6 +119,9 @@ func readQueryArgs(r *http.Request) (map[string]string, error) {
 // before the super-admin account gate, and both before an unknown action is
 // refused, so a denied caller learns nothing about which actions exist.
 func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
+	if isAdminPath(inv.Request.URL.Path) {
+		return d.dispatchREST(w, inv)
+	}
 	r := inv.Request
 	args, err := readQueryArgs(r)
 	if err != nil {

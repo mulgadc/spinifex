@@ -43,7 +43,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
-	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -132,12 +131,7 @@ type GatewayConfig struct {
 	// Zero value keeps the pre-existing fan-out-only behaviour.
 	InstanceStatus ec2instanceapi.StatusSynthesis
 	IAMService     iamdomain.IAMService
-	// BucketStore reaps a tenant's S3 buckets during account teardown. It
-	// signs with the config service credential, which predastore already
-	// trusts to reach any bucket, so this grants enumeration, not access.
-	// Nil makes DeleteAccount refuse rather than tear down around the data.
-	BucketStore accountteardown.BucketStore
-	STSService  stsdomain.STSService
+	STSService     stsdomain.STSService
 
 	// Credentials verifies SigV4 credentials. Nil fails every request closed.
 	Credentials credential.Verifier
@@ -205,11 +199,6 @@ type GatewayConfig struct {
 	// the same embedding endpoint the Ochre KB path resolves models through.
 	// Nil leaves topicPolicy on its literal (word-boundary) matcher alone.
 	BedrockEmbedder ochre.Embedder
-
-	// SignupMaxAccounts caps how many accounts /admin/CreateAccount will allow
-	// to exist. Zero means uncapped, which is the behaviour of every cluster
-	// that has not opted into self-service signup.
-	SignupMaxAccounts int
 
 	// BedrockAgentKB and BedrockAgentDataSources persist bedrock-agent
 	// knowledge-base and data-source resource metadata (D-arch: gateway-owned,
@@ -580,12 +569,19 @@ func (gw *GatewayConfig) dispatchRegistered(entry *dispatch.Entry, w http.Respon
 	return entry.Dispatch(w, dispatch.Invocation{
 		Request:   r,
 		AccountID: callerPrincipalOf(r).accountID,
+		Service:   requestService(r),
 		Region:    gw.Region,
 		Authorize: func(service, action string, resources []string, keys iampolicy.ConditionKeys) error {
 			return gw.checkPolicyResourcesWithKeys(r, service, action, resources, keys)
 		},
 		Actor: gw.registeredActorFunc(r),
 	})
+}
+
+// requestService is the service the request's credential scope names.
+func requestService(r *http.Request) string {
+	svc, _ := r.Context().Value(ctxService).(string)
+	return svc
 }
 
 func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {

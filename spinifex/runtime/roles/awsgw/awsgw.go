@@ -496,7 +496,6 @@ func launchService(config *config.ClusterConfig) error {
 		RegistryHost:            registryHost,
 		AZ:                      nodeConfig.AZ,
 		IAMService:              iamService,
-		BucketStore:             objStore,
 		STSService:              stsService,
 		Credentials:             credverify.New(iamService, stsService),
 		Version:                 version,
@@ -515,7 +514,6 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockProvisioned:      bedrockProvisioned,
 		BedrockGuardrails:       bedrockGuardrails,
 		BedrockEmbedder:         bedrockEmbedder,
-		SignupMaxAccounts:       signupMaxAccounts,
 		BedrockAgentKB:          bedrockAgentKB,
 		BedrockAgentDataSources: bedrockAgentDataSources,
 		BedrockAgentVector:      bedrockAgentVector,
@@ -604,6 +602,13 @@ func launchService(config *config.ClusterConfig) error {
 		ModelAccess: bedrockAccess,
 		Credentials: bedrockCredentials,
 		Access:      bedrockAccess,
+
+		IAM:               iamService,
+		Quota:             gw.Quota,
+		ExpectedNodes:     len(config.Nodes),
+		NodeIDs:           nodeIDs,
+		BucketStore:       objStore,
+		SignupMaxAccounts: signupMaxAccounts,
 	})
 	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, operatorControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)

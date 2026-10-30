@@ -229,13 +229,6 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				}
 			}
 
-			// /admin carries its method in the path and a JSON body, so the
-			// query-arg parse above finds no Action. Without this every admin
-			// method would share one "unknown" throttle bucket and trace label.
-			if method, ok := adminPathMethod(r.URL.Path); ok {
-				ctx = context.WithValue(ctx, ctxAction, method)
-			}
-
 			// A registered service names its own action; everything else keeps
 			// resolving JSON-1.1/path-routed REST-JSON actions through the legacy
 			// resolver, since those carry no query-protocol Action to parse above.

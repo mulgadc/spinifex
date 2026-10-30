@@ -1,4 +1,4 @@
-package gateway
+package admin
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
 // AccountQuotaRequest addresses one account. PutAccountQuota also carries the
@@ -33,15 +34,15 @@ const (
 	sourceOverride = "override"
 )
 
-// adminGetAccountQuota reports one account's effective limits, its stored
+// getAccountQuota reports one account's effective limits, its stored
 // overrides, and which layer each dimension resolved from.
-func (gw *GatewayConfig) adminGetAccountQuota(ctx context.Context, body []byte) (any, error) {
-	accountID, _, err := gw.parseAccountQuotaRequest(body)
+func (d Deps) getAccountQuota(ctx context.Context, body []byte) (any, error) {
+	accountID, _, err := d.parseAccountQuotaRequest(body)
 	if err != nil {
 		return nil, err
 	}
 
-	over, limits, err := gw.Quota.GetAccountQuota(ctx, accountID)
+	over, limits, err := d.Quota.GetAccountQuota(ctx, accountID)
 	if err != nil {
 		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
 			return nil, err
@@ -52,19 +53,18 @@ func (gw *GatewayConfig) adminGetAccountQuota(ctx context.Context, body []byte) 
 	return accountQuotaResponse(accountID, over, limits), nil
 }
 
-// adminPutAccountQuota stores one account's overrides and returns the limits
+// putAccountQuota stores one account's overrides and returns the limits
 // they resolve to, so a caller never has to guess what it just applied. An
 // empty override set clears the record.
-func (gw *GatewayConfig) adminPutAccountQuota(ctx context.Context, body []byte) (any, error) {
-	accountID, over, err := gw.parseAccountQuotaRequest(body)
+func (d Deps) putAccountQuota(ctx context.Context, caller dispatch.Actor, body []byte) (any, error) {
+	accountID, over, err := d.parseAccountQuotaRequest(body)
 	if err != nil {
 		return nil, err
 	}
 
 	// The caller's own identity, so a quota change names who made it.
-	caller, _ := callerActor(ctx)
 	updatedBy := actorName(caller)
-	if err := gw.Quota.PutAccountQuota(ctx, accountID, over, updatedBy); err != nil {
+	if err := d.Quota.PutAccountQuota(ctx, accountID, over, updatedBy); err != nil {
 		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
 			return nil, err
 		}
@@ -74,7 +74,7 @@ func (gw *GatewayConfig) adminPutAccountQuota(ctx context.Context, body []byte) 
 	slog.InfoContext(ctx, "Account quota override updated",
 		"accountID", accountID, "updatedBy", updatedBy, "cleared", over.Empty())
 
-	stored, limits, err := gw.Quota.GetAccountQuota(ctx, accountID)
+	stored, limits, err := d.Quota.GetAccountQuota(ctx, accountID)
 	if err != nil {
 		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
 			return nil, err
@@ -88,8 +88,8 @@ func (gw *GatewayConfig) adminPutAccountQuota(ctx context.Context, body []byte) 
 // parseAccountQuotaRequest decodes and validates a quota request. The account
 // must exist: silently accepting an override for a typo'd ID would store a
 // record that never applies to anything.
-func (gw *GatewayConfig) parseAccountQuotaRequest(body []byte) (string, quota.Overrides, error) {
-	if gw.Quota == nil || gw.IAMService == nil {
+func (d Deps) parseAccountQuotaRequest(body []byte) (string, quota.Overrides, error) {
+	if d.Quota == nil || d.IAM == nil {
 		slog.Error("AccountQuota: quota or IAM service not available")
 		return "", quota.Overrides{}, errors.New(awserrors.ErrorInternalError)
 	}
@@ -101,7 +101,7 @@ func (gw *GatewayConfig) parseAccountQuotaRequest(body []byte) (string, quota.Ov
 	if !accountIDRE.MatchString(req.AccountID) {
 		return "", quota.Overrides{}, errors.New(awserrors.ErrorInvalidRequest)
 	}
-	if _, err := gw.IAMService.GetAccount(req.AccountID); err != nil {
+	if _, err := d.IAM.GetAccount(req.AccountID); err != nil {
 		return "", quota.Overrides{}, errors.New(awserrors.ErrorInvalidRequest)
 	}
 	return req.AccountID, req.Overrides, nil

@@ -3,29 +3,22 @@ package systeminstance
 import (
 	"errors"
 	"fmt"
-
-	"github.com/nats-io/nkeys"
+	"regexp"
 )
 
 // KindSQSWorker is the shared SQS worker guest. It holds the store's private
 // key on its own data volume and reaches the gateway over its mgmt NIC.
 const KindSQSWorker Kind = "sqs-worker"
 
-// Store status values the worker guest reads at boot. A new store is never
-// keyed by the guest from this value alone; it refuses to boot on it.
-const (
-	SQSWorkerStoreNew      = "new"
-	SQSWorkerStoreExisting = "existing"
-)
-
 // SQSWorkerInput is what an SQS worker guest needs beyond its network: its
-// existing encrypted data volume and the first-store decision read at launch.
-// StoreNKey is the store's recorded public key; nothing here is ever a seed.
+// existing encrypted data volume and the Region it signs gateway calls for.
+// The first-store decision is not here: the guest asks the gateway at boot.
 type SQSWorkerInput struct {
 	DataVolumeID string `json:"data_volume_id"`
-	StoreStatus  string `json:"store_status"`
-	StoreNKey    string `json:"store_nkey,omitempty"`
+	Region       string `json:"region"`
 }
+
+var regionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]+$`)
 
 // ErrInvalidSQSWorkerInput is returned for a malformed SQS worker launch.
 var ErrInvalidSQSWorkerInput = errors.New("sysinstance: invalid SQS worker launch")
@@ -40,7 +33,7 @@ func (in *SystemInstanceInput) ValidateSQSWorker() error {
 	case in.BootMode != "" && in.BootMode != BootDirect:
 		return fmt.Errorf("%w: boot mode %q, the worker boots direct only", ErrInvalidSQSWorkerInput, in.BootMode)
 	case in.SQSWorker == nil:
-		return fmt.Errorf("%w: no data volume or store decision", ErrInvalidSQSWorkerInput)
+		return fmt.Errorf("%w: no data volume or Region", ErrInvalidSQSWorkerInput)
 	case in.SQSStore != nil:
 		return fmt.Errorf("%w: SQS store settings on an SQS worker launch", ErrInvalidSQSWorkerInput)
 	case in.IamInstanceProfileArn == "":
@@ -54,23 +47,14 @@ func (in *SystemInstanceInput) ValidateSQSWorker() error {
 	return in.SQSWorker.Validate()
 }
 
-// Validate checks the worker's volume and store decision. It reads nothing.
+// Validate checks the worker's volume and Region. It reads nothing.
 func (w *SQSWorkerInput) Validate() error {
 	if !volumeIDPattern.MatchString(w.DataVolumeID) {
 		return fmt.Errorf("%w: data volume ID %q is malformed", ErrInvalidSQSWorkerInput, w.DataVolumeID)
 	}
-	switch w.StoreStatus {
-	case SQSWorkerStoreNew:
-		if w.StoreNKey != "" {
-			return fmt.Errorf("%w: a new store has no recorded key", ErrInvalidSQSWorkerInput)
-		}
-	case SQSWorkerStoreExisting:
-		if !nkeys.IsValidPublicUserKey(w.StoreNKey) {
-			// Not echoed: a caller that sent a seed must not have it logged.
-			return fmt.Errorf("%w: store key is not a NATS user public key", ErrInvalidSQSWorkerInput)
-		}
-	default:
-		return fmt.Errorf("%w: store status is neither %q nor %q", ErrInvalidSQSWorkerInput, SQSWorkerStoreNew, SQSWorkerStoreExisting)
+	if !regionPattern.MatchString(w.Region) {
+		// Not echoed: a caller-supplied value may be anything, a seed included.
+		return fmt.Errorf("%w: Region is malformed", ErrInvalidSQSWorkerInput)
 	}
 	return nil
 }

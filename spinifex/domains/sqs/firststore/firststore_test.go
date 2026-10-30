@@ -574,37 +574,3 @@ func TestFence_RacesOldGenerationCalls(t *testing.T) {
 		}
 	}
 }
-
-// RecordedKey reports no key until one is recorded, and then exactly it,
-// whatever later fence or launch intent is written over the record.
-func TestRecordedKey(t *testing.T) {
-	s, _ := newStore(t)
-	ctx := context.Background()
-	if k, err := s.RecordedKey(ctx, region); err != nil || k != "" {
-		t.Fatalf("no record = %q, %v", k, err)
-	}
-	w := ident(1, 1)
-	if _, err := s.Claim(ctx, region, w); err != nil {
-		t.Fatal(err)
-	}
-	if k, err := s.RecordedKey(ctx, region); err != nil || k != "" {
-		t.Fatalf("claimed = %q, %v; want no key", k, err)
-	}
-	pub, _ := userPub(t)
-	if err := s.RecordPublicKey(ctx, region, w, pub); err != nil {
-		t.Fatal(err)
-	}
-	mustFence(t, s, 2)
-	if k, err := s.RecordedKey(ctx, region); err != nil || k != pub {
-		t.Fatalf("recorded = %q, %v; want %q", k, err, pub)
-	}
-}
-
-// A fence written before any claim records no key.
-func TestRecordedKey_FenceOnlyHasNoKey(t *testing.T) {
-	s, _ := newStore(t)
-	mustFence(t, s, 1)
-	if k, err := s.RecordedKey(context.Background(), region); err != nil || k != "" {
-		t.Fatalf("fence only = %q, %v", k, err)
-	}
-}

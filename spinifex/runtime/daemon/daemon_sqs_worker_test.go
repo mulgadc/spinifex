@@ -67,10 +67,12 @@ func sqsWorkerFixture(t *testing.T, encrypted bool) *sysInstFixture {
 	return f
 }
 
-func (f *sysInstFixture) workerInput(t *testing.T, eni *ec2.NetworkInterface, volumeID, status, key string) *elbv2domain.SystemInstanceInput {
+const testWorkerRegion = "ap-southeast-2"
+
+func (f *sysInstFixture) workerInput(t *testing.T, eni *ec2.NetworkInterface, volumeID string) *elbv2domain.SystemInstanceInput {
 	t.Helper()
 	in := sqsWorkerInput(workerlaunch.Spec{
-		InstanceType: f.itype, ProfileARN: testWorkerProfile, DataVolumeID: volumeID, StoreStatus: status, StoreNKey: key,
+		InstanceType: f.itype, ProfileARN: testWorkerProfile, DataVolumeID: volumeID, Region: testWorkerRegion,
 		Network: workerlaunch.Network{SubnetID: f.subnetID, ENIID: aws.StringValue(eni.NetworkInterfaceId),
 			ENIMac: aws.StringValue(eni.MacAddress), ENIIP: aws.StringValue(eni.PrivateIpAddress), CIDR: "10.81.1.5/24", Gateway: "10.81.1.1"},
 	})
@@ -92,12 +94,12 @@ func fwCfgValues(t *testing.T, inst *vm.VM) map[string]string {
 
 // The worker launches through the real direct-boot path with its encrypted
 // volume attached at boot, a mgmt NIC, its profile, and only public values in
-// fw_cfg: data serial, store decision, gateway URL on this node's bridge, CA.
+// fw_cfg: data serial, Region, gateway URL on this node's bridge, CA. No
+// first-store decision is passed: the guest asks the gateway for it.
 func TestLaunchSQSWorkerInstance_BootsWithMgmtNICProfileAndPublicConfig(t *testing.T) {
 	f := sqsWorkerFixture(t, true)
 	vol := f.systemVolume(t)
-	key := testClientNKey(t)
-	in := f.workerInput(t, f.newENI(t), vol, systeminstance.SQSWorkerStoreExisting, key)
+	in := f.workerInput(t, f.newENI(t), vol)
 
 	out, err := f.d.LaunchSQSWorkerInstance(t.Context(), in)
 	require.NoError(t, err)
@@ -115,12 +117,11 @@ func TestLaunchSQSWorkerInstance_BootsWithMgmtNICProfileAndPublicConfig(t *testi
 
 	got := fwCfgValues(t, inst)
 	assert.Equal(t, vm.VolumeSerial(vol), got["opt/spinifex/sqs-worker/data-serial"])
-	assert.Equal(t, "existing", got["opt/spinifex/sqs-worker/store-status"])
-	assert.Equal(t, key, got["opt/spinifex/sqs-worker/store-nkey"])
+	assert.Equal(t, testWorkerRegion, got["opt/spinifex/sqs-worker/region"])
 	assert.Equal(t, "https://10.97.8.1:9999", got["opt/spinifex/sqs-worker/gateway-url"])
 	assert.Contains(t, got["opt/spinifex/ca-cert"], "BEGIN CERTIFICATE")
 	assert.Contains(t, got, "opt/spinifex/netcfg")
-	assert.Len(t, got, 6, "no load balancer environment reaches the worker")
+	assert.Len(t, got, 5, "no store decision or load balancer environment reaches the worker")
 	for name, v := range got {
 		_, err := nkeys.FromSeed([]byte(strings.TrimSpace(v)))
 		assert.Error(t, err, "%s must hold no NKey seed", name)
@@ -131,7 +132,6 @@ func TestLaunchSQSWorkerInstance_BootsWithMgmtNICProfileAndPublicConfig(t *testi
 func TestLaunchSQSWorkerInstance_RefusesBeforeAnySideEffect(t *testing.T) {
 	f := sqsWorkerFixture(t, true)
 	vol := f.systemVolume(t)
-	key := testClientNKey(t)
 	seed, err := func() (string, error) {
 		kp, err := nkeys.CreateUser()
 		if err != nil {
@@ -158,11 +158,11 @@ func TestLaunchSQSWorkerInstance_RefusesBeforeAnySideEffect(t *testing.T) {
 		{"no mgmt NIC slot", func(_ *sysInstFixture, in *elbv2domain.SystemInstanceInput) {
 			in.NICs = in.NICs[:1]
 		}},
-		{"seed as store key", func(_ *sysInstFixture, in *elbv2domain.SystemInstanceInput) {
-			in.SQSWorker.StoreNKey = seed
+		{"seed as Region", func(_ *sysInstFixture, in *elbv2domain.SystemInstanceInput) {
+			in.SQSWorker.Region = seed
 		}},
-		{"unknown status", func(_ *sysInstFixture, in *elbv2domain.SystemInstanceInput) {
-			in.SQSWorker.StoreStatus = ""
+		{"no Region", func(_ *sysInstFixture, in *elbv2domain.SystemInstanceInput) {
+			in.SQSWorker.Region = ""
 		}},
 		{"store settings too", func(_ *sysInstFixture, in *elbv2domain.SystemInstanceInput) {
 			in.SQSStore = &systeminstance.SQSStoreInput{}
@@ -182,7 +182,7 @@ func TestLaunchSQSWorkerInstance_RefusesBeforeAnySideEffect(t *testing.T) {
 			bridge, ca := f.d.mgmtBridgeIP, f.d.config.NATS.CACert
 			t.Cleanup(func() { f.d.mgmtBridgeIP, f.d.config.NATS.CACert = bridge, ca })
 			eni := f.newENI(t)
-			in := f.workerInput(t, eni, vol, systeminstance.SQSWorkerStoreExisting, key)
+			in := f.workerInput(t, eni, vol)
 			tc.mutate(f, in)
 			vcpu, vms := f.capacity(), f.d.vmMgr.Count()
 			_, err := f.d.LaunchSQSWorkerInstance(t.Context(), in)
@@ -194,7 +194,7 @@ func TestLaunchSQSWorkerInstance_RefusesBeforeAnySideEffect(t *testing.T) {
 
 	t.Run("unencrypted volume", func(t *testing.T) {
 		eni := plain.newENI(t)
-		in := plain.workerInput(t, eni, plainVol, systeminstance.SQSWorkerStoreExisting, key)
+		in := plain.workerInput(t, eni, plainVol)
 		vcpu, vms := plain.capacity(), plain.d.vmMgr.Count()
 		_, err := plain.d.LaunchSQSWorkerInstance(t.Context(), in)
 		require.ErrorContains(t, err, "not encrypted")
@@ -207,7 +207,7 @@ func TestLaunchSQSWorkerInstance_RefusesBeforeAnySideEffect(t *testing.T) {
 func TestLaunchSQSWorkerInstance_RequiresTheMgmtNIC(t *testing.T) {
 	f := sqsWorkerFixture(t, true)
 	f.d.networkPlumber = &erroringPlumber{setupErr: errors.New("tap failed")}
-	in := f.workerInput(t, f.newENI(t), f.systemVolume(t), systeminstance.SQSWorkerStoreExisting, testClientNKey(t))
+	in := f.workerInput(t, f.newENI(t), f.systemVolume(t))
 	_, err := f.d.LaunchSQSWorkerInstance(t.Context(), in)
 	require.ErrorContains(t, err, "setup mgmt tap for SQS worker")
 	assert.Equal(t, 0, f.d.mgmtIPAllocator.AllocatedCount(), "a failed mgmt NIC must return its address")
@@ -217,7 +217,7 @@ func TestLaunchSQSWorkerInstance_RequiresTheMgmtNIC(t *testing.T) {
 // refused, so the worker is never moved.
 func TestRefreshSQSWorkerState_SameNodeOnly(t *testing.T) {
 	f := sqsWorkerFixture(t, true)
-	in := f.workerInput(t, f.newENI(t), f.systemVolume(t), systeminstance.SQSWorkerStoreExisting, testClientNKey(t))
+	in := f.workerInput(t, f.newENI(t), f.systemVolume(t))
 	out, err := f.d.LaunchSQSWorkerInstance(t.Context(), in)
 	require.NoError(t, err)
 	inst, _ := f.d.vmMgr.Get(out.InstanceID)
@@ -239,7 +239,7 @@ func TestRefreshSQSWorkerState_SameNodeOnly(t *testing.T) {
 // as the default NIC and an empty mgmt slot for the daemon to fill.
 func TestSQSWorkerInput_MapsSpec(t *testing.T) {
 	spec := workerlaunch.Spec{InstanceType: "sys.test", ProfileARN: testWorkerProfile, DataVolumeID: "vol-0123456789abcdef0",
-		StoreStatus: "new", Network: workerlaunch.Network{SubnetID: "subnet-1", ENIID: "eni-1", ENIMac: "02:00:00:00:00:01",
+		Region: testWorkerRegion, Network: workerlaunch.Network{SubnetID: "subnet-1", ENIID: "eni-1", ENIMac: "02:00:00:00:00:01",
 			ENIIP: "10.240.0.10", CIDR: "10.240.0.10/22", Gateway: "10.240.0.1"}}
 	in := sqsWorkerInput(spec)
 	require.NoError(t, in.ValidateSQSWorker())
@@ -247,7 +247,7 @@ func TestSQSWorkerInput_MapsSpec(t *testing.T) {
 	assert.Equal(t, systeminstance.KindSQSWorker, in.Kind)
 	assert.Equal(t, testWorkerProfile, in.IamInstanceProfileArn)
 	assert.Equal(t, []systeminstance.NICConfig{{MAC: "02:00:00:00:00:01", CIDR: "10.240.0.10/22", Gateway: "10.240.0.1", IsDefault: true}, {}}, in.NICs)
-	assert.Equal(t, &systeminstance.SQSWorkerInput{DataVolumeID: spec.DataVolumeID, StoreStatus: "new"}, in.SQSWorker)
+	assert.Equal(t, &systeminstance.SQSWorkerInput{DataVolumeID: spec.DataVolumeID, Region: testWorkerRegion}, in.SQSWorker)
 }
 
 type fakeRoleIAM struct {

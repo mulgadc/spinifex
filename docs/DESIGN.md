@@ -349,13 +349,13 @@ The shared SQS worker guest holds the SQS store's client credential, so that no 
 Nothing activates it: no caller invokes the worker launcher below, and no worker service runs after boot.
 
 `make build-sqs-worker-microvm-image` builds it with the store image's script and network `/init` under `SQS_MICROVM_PROFILE=worker`; it carries the static `sqs-worker` binary and the ext4 tools, no `nats-server`, and an empty `/data` mountpoint.
-At boot `sqs-worker boot` reads three firmware config values under `opt/spinifex/sqs-worker/`: the worker disk's serial, `store-status` and the store's authorized NKey public key.
-Only `existing` is accepted: a static firmware value survives a guest reset, so `new` cannot prove no store exists, and the boot step creates no key until the worker can obtain a current authoritative first-store decision.
-`new`, a missing, empty or unknown status, or a missing or invalid key refuses before any disk is touched.
+At boot `sqs-worker boot` reads three firmware config values under `opt/spinifex/sqs-worker/`: the worker disk's serial, its Region and the gateway URL; none is a first-store decision, because a static value survives a guest reset.
+A missing, empty or malformed value refuses before any disk is touched.
 
 It selects exactly one disk with that serial, runs `e2fsck -p`, mounts it at `/data` and then confirms from `/proc/self/mountinfo` that this disk, as a whole ext4 filesystem, is what is mounted there; an empty mountpoint, a foreign mount or a failed check or mount refuses, and the guest never formats.
-Only then does `agents/sqs/workerkey` load the key from `/data/sqs-worker-key`; a missing or different key refuses and is never replaced.
-`workerkey` can create a key for a new store, owner-only, synced and linked so an existing key is never replaced, but nothing calls that path yet.
+Only then does it ask the gateway for the current decision with `ClaimFirstStore`, signed by `internal/sqsworkergw` with credentials from the instance metadata service only (`gwsign.NewInstanceRole`, no environment, profile or static-key fallback), over TLS 1.3 that trusts only the cluster CA from `opt/spinifex/ca-cert` and never follows a redirect.
+Under that decision `workerkey.Acquire` creates the key on `/data/sqs-worker-key`, owner-only and synced, records only its public key and then uses it, or loads the recorded key; a missing or different key once one is recorded refuses and is never replaced.
+Only a lost reply or a `ServiceUnavailable` or `Throttling` refusal is retried, re-asking the gateway each time; an authentication or other refusal, or an answer that is neither "create" nor one valid public key, refuses the boot.
 
 `domains/sqs/firststore` is the SQS domain's first-store decision: one record per Region in the `spinifex-sqs-first-store` KV bucket moves from `claimed` to `key-recorded` to `launch-intent` under compare-and-swap, bound to the worker's instance ID, claim ID and generation.
 A claim authorizes key creation only while no public key is recorded; once one is, every claim returns only that key, and a store launch intent needs it recorded first.
@@ -381,22 +381,21 @@ A request that passed `Authorize` just before a confirmed stop and replacement s
 The adapter never logs a caller-chosen parameter name, because one could carry a secret.
 `RecordWorkerPublicKey` accepts only a valid public user key, so a seed is refused without being recorded, logged or echoed.
 The gateway binds both buckets per request and never creates them, so it provisions nothing and answers `ServiceUnavailable` until a worker launch has created them; the worker launch below ensures the role.
-No worker client calls these actions yet; the worker boot path above still accepts only `existing`.
 The private key stays on the worker disk; the guest logs and publishes only the public key to `/run/sqs-worker/public-key`.
 
 `domains/sqs/workerlaunch` realizes the worker on the node it runs on, its only node: a bound record is returned as is; otherwise it prepares the data volume (first launch only), reads the volume's own record and refuses it unless encrypted, takes the intent, ensures the role, finds or creates the network for the claim and reads the recorded store key, and marks the intent dispatched before launching.
 A dispatched launch is never sent again: a lost reply or error leaves the intent `launching` and dispatched, and every later call returns `ErrOutcomeUnknown` until the outcome is reconciled, since the launch path is not idempotent.
 A failure before dispatch leaves an undispatched intent that the next call resumes with the same claim; a confirmed stop or failure is replaced only after `firststore.Fence` excludes the old generation, reusing the pinned volume.
-The store decision passed to the guest is `existing` with the recorded key, or `new`, which the guest refuses.
+The launch passes no store decision or key: the guest asks the gateway at boot.
 The first launch refuses before allocating a volume when the cluster storage key is not configured or a claim ID cannot be minted. A volume a call did create but could not confirm recording in a launch intent, including one that loses the intent to another caller, is reported with its ID in an `UnclaimedVolumeError` and left in place for an operator, never deleted. The worker role is created with EC2-only trust, and an existing role is checked for that trust before any policy is granted; the instance profile must carry exactly the worker role, and one holding any other role is refused unchanged.
 The daemon's `LaunchSQSWorkerInstance` boots the `sqs-worker` image through the same direct-boot path as the store, with the data volume attached at boot and kept on terminate, a required instance profile, and a required mgmt NIC; it re-reads the volume's own record and refuses one that is not available and encrypted, before anything is allocated.
 Its firmware config adds the gateway URL on this node's mgmt bridge and the cluster CA from the daemon's own trust store; the caller cannot supply either, and no value written is secret.
 A relaunch rebuilds that config from the VM record on the node that launched it and is refused anywhere else, and membership takeover already skips SQS-managed instances.
 `sqsWorkerRole` is ensured in the system account granting exactly `spinifex-sqs:ClaimFirstStore` and `spinifex-sqs:RecordWorkerPublicKey`, from the `domains/sqs/workerrole` contract the gateway gate also reads; an existing role whose trust admits more than the EC2 service is refused.
 
-Evidence is local only: unit tests with a fake firmware config, sysfs and mount table, and real QEMU boots against disposable scratch disks showing the key survives reboots and that each refusal publishes no key.
+Evidence is local only: unit tests with a fake firmware config, sysfs and mount table, tests running the boot through the real client against the real `spinifex-sqs` registration and records, and QEMU boots of the built image against disposable scratch disks and a host-side test gateway and metadata service, showing the first boot creates the key, reboots reuse it, a key lost after recording is never replaced, and the seed reaches no log or request.
 The worker's network is a private SQS system VPC per Region, built by `systemvpc.EnsurePrivate` from the `[sqs]` supernet (default `10.240.0.0/14`): one VPC and one /24 subnet, with no internet gateway, NAT gateway, EIP, route table or daemon-to-store node port. Each launch claim gets one ENI in that subnet, in the VPC default security group, found again by its claim on a retry; two ENIs for one claim are refused. Worker-to-store TCP and the guest's route to the metadata service are not yet proven by any traffic test.
-A first worker key still needs the guest's signed client for these actions; a caller and stop/detach evidence for `RecordStopped` are also not wired, and Viperblock's at-rest key is held by the platform.
+A caller for the launcher and stop/detach evidence for `RecordStopped` are not wired, the guest's metadata route on a real ENI is unproven, and Viperblock's at-rest key is held by the platform.
 
 ## Configuration
 

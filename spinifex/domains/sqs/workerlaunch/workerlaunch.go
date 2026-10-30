@@ -47,15 +47,14 @@ type NetworkAllocator interface {
 	WorkerNetwork(ctx context.Context, region, claimID string) (*Network, error)
 }
 
-// Spec is one worker VM launch. StoreNKey is a public key; nothing in a spec
-// is ever a seed.
+// Spec is one worker VM launch. It carries no key: the guest takes its
+// first-store decision from the gateway at boot.
 type Spec struct {
 	InstanceType string
 	ProfileARN   string
 	Network      Network
 	DataVolumeID string
-	StoreStatus  string
-	StoreNKey    string
+	Region       string
 }
 
 // VMLauncher starts the worker VM on this node. Any error leaves the outcome
@@ -63,13 +62,6 @@ type Spec struct {
 type VMLauncher interface {
 	LaunchWorker(ctx context.Context, spec Spec) (string, error)
 }
-
-// Store status values the guest reads; mirrored from the system-instance
-// contract, which this domain does not import.
-const (
-	StoreNew      = "new"
-	StoreExisting = "existing"
-)
 
 var (
 	// ErrOutcomeUnknown is returned when a dispatched launch may or may not
@@ -162,15 +154,8 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 	if err != nil {
 		return Result{}, fmt.Errorf("worker network: %w", err)
 	}
-	key, err := l.FirstStore.RecordedKey(ctx, region)
-	if err != nil {
-		return Result{}, fmt.Errorf("read first-store decision: %w", err)
-	}
 	spec := Spec{InstanceType: instanceType, ProfileARN: profile, Network: *network,
-		DataVolumeID: req.DataVolumeID, StoreStatus: StoreNew}
-	if key != "" {
-		spec.StoreStatus, spec.StoreNKey = StoreExisting, key
-	}
+		DataVolumeID: req.DataVolumeID, Region: region}
 
 	if err := l.Identities.MarkDispatched(ctx, intent); err != nil {
 		return Result{}, err

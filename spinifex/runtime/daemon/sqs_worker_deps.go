@@ -265,7 +265,7 @@ func sqsWorkerInput(spec workerlaunch.Spec) *elbv2domain.SystemInstanceInput {
 		},
 		Kind: systeminstance.KindSQSWorker,
 		SQSWorker: &systeminstance.SQSWorkerInput{
-			DataVolumeID: spec.DataVolumeID, StoreStatus: spec.StoreStatus, StoreNKey: spec.StoreNKey,
+			DataVolumeID: spec.DataVolumeID, Region: spec.Region,
 		},
 	}
 }

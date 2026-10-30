@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 )
 
@@ -123,3 +124,41 @@ func TestNewIMDS_BuildsProvider(t *testing.T) {
 		t.Fatal("expected non-nil credentials provider")
 	}
 }
+
+// The instance-role signer ignores environment keys and signs only with the
+// credentials the metadata service issues.
+func TestNewInstanceRole_UsesOnlyIMDS(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", testAccessKey)
+	t.Setenv("AWS_SECRET_ACCESS_KEY", testSecretKey)
+	const imdsKey = "ASIAIMDSONLYEXAMPLE1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest/api/token":
+			_, _ = w.Write([]byte("token"))
+		case "/latest/meta-data/iam/security-credentials/":
+			_, _ = w.Write([]byte("sqsWorkerRole"))
+		case "/latest/meta-data/iam/security-credentials/sqsWorkerRole":
+			_, _ = w.Write([]byte(`{"Code":"Success","AccessKeyId":"` + imdsKey + `","SecretAccessKey":"s","Token":"t","Expiration":"2099-01-01T00:00:00Z"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	s := newInstanceRole(imds.New(imds.Options{Endpoint: srv.URL}))
+	req := httptest.NewRequest(http.MethodPost, "https://gw.example/", nil)
+	if err := s.Sign(req, emptySHA, testService, testRegion); err != nil {
+		t.Fatal(err)
+	}
+	if auth := req.Header.Get("Authorization"); !strings.Contains(auth, "Credential="+imdsKey+"/") {
+		t.Fatalf("Authorization = %q, want the IMDS credential", auth)
+	}
+
+	srv.Close()
+	cold := newInstanceRole(imds.New(imds.Options{Endpoint: srv.URL}))
+	if err := cold.EnsureCredentials(context.Background()); err == nil {
+		t.Fatal("environment keys were used when IMDS was unreachable")
+	}
+}
+
+const emptySHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

@@ -96,13 +96,12 @@ type SQSStoreGuest struct {
 }
 
 // SQSWorkerGuest is what an SQS worker guest's fw_cfg files are rebuilt from.
-// None of it is secret: the store key is a public key and the CA a public
-// certificate. NodeID is the only node allowed to relaunch it from this record.
+// None of it is secret: the CA is a public certificate. NodeID is the only
+// node allowed to relaunch it from this record.
 type SQSWorkerGuest struct {
 	NodeID       string `json:"node_id"`
 	DataVolumeID string `json:"data_volume_id"`
-	StoreStatus  string `json:"store_status"`
-	StoreNKey    string `json:"store_nkey,omitempty"`
+	Region       string `json:"region"`
 	GatewayURL   string `json:"gateway_url"`
 	CACert       string `json:"ca_cert"`
 	Netcfg       string `json:"netcfg"`

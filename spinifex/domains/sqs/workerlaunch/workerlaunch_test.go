@@ -130,7 +130,7 @@ func TestEnsure_FirstLaunchBindsAndIsIdempotent(t *testing.T) {
 		t.Fatalf("ensure = %+v, %v", res, err)
 	}
 	spec := r.vms.specs[0]
-	if spec.StoreStatus != StoreNew || spec.StoreNKey != "" || spec.ProfileARN == "" ||
+	if spec.Region != region || spec.ProfileARN == "" ||
 		spec.Network.ENIID != "eni-1" || spec.DataVolumeID != r.vol.prepared[0] || spec.InstanceType != itype {
 		t.Fatalf("spec = %+v", spec)
 	}
@@ -283,7 +283,7 @@ func TestEnsure_ResumesAnUndispatchedIntent(t *testing.T) {
 }
 
 // After a confirmed stop the replacement fences the old generation out of
-// first-store, reuses the pinned volume, and launches with the recorded key.
+// first-store and reuses the pinned volume; the guest asks for its key.
 func TestEnsure_ReplacementFencesAndReusesTheVolume(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
@@ -311,7 +311,7 @@ func TestEnsure_ReplacementFencesAndReusesTheVolume(t *testing.T) {
 		t.Fatalf("replacement = %+v, %v", next, err)
 	}
 	spec := r.vms.specs[1]
-	if spec.DataVolumeID != r.vol.prepared[0] || len(r.vol.prepared) != 1 || spec.StoreStatus != StoreExisting || spec.StoreNKey != pub {
+	if spec.DataVolumeID != r.vol.prepared[0] || len(r.vol.prepared) != 1 || spec.Region != region {
 		t.Fatalf("replacement spec = %+v", spec)
 	}
 	if f, _ := r.l.FirstStore.FencedAt(ctx, region); f != 2 {

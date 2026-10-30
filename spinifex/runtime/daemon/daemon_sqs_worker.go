@@ -28,11 +28,10 @@ func sqsWorkerImageDir() string {
 // sqsWorkerLaunch is an SQS worker launch that has passed every check that
 // can run before capacity, an ENI or a VM record exists.
 type sqsWorkerLaunch struct {
-	volumeID    string
-	storeStatus string
-	storeNKey   string
-	gatewayURL  string
-	caCert      string
+	volumeID   string
+	region     string
+	gatewayURL string
+	caCert     string
 }
 
 var _ sqsGuest = (*sqsWorkerLaunch)(nil)
@@ -49,8 +48,7 @@ func (w *sqsWorkerLaunch) record(inst *vm.VM, nodeID, netcfg string) {
 	inst.SQSWorkerGuest = &vm.SQSWorkerGuest{
 		NodeID:       nodeID,
 		DataVolumeID: w.volumeID,
-		StoreStatus:  w.storeStatus,
-		StoreNKey:    w.storeNKey,
+		Region:       w.region,
 		GatewayURL:   w.gatewayURL,
 		CACert:       w.caCert,
 		Netcfg:       netcfg,
@@ -101,11 +99,10 @@ func (d *Daemon) prepareSQSWorkerLaunch(ctx context.Context, input *elbv2domain.
 		return nil, err
 	}
 	return &sqsWorkerLaunch{
-		volumeID:    input.SQSWorker.DataVolumeID,
-		storeStatus: input.SQSWorker.StoreStatus,
-		storeNKey:   input.SQSWorker.StoreNKey,
-		gatewayURL:  d.resolveSystemGatewayBaseURL(),
-		caCert:      string(ca),
+		volumeID:   input.SQSWorker.DataVolumeID,
+		region:     input.SQSWorker.Region,
+		gatewayURL: d.resolveSystemGatewayBaseURL(),
+		caCert:     string(ca),
 	}, nil
 }
 
@@ -134,7 +131,7 @@ func (d *Daemon) checkSQSWorkerVolume(ctx context.Context, volumeID string) erro
 	return nil
 }
 
-var sqsWorkerFwCfgNames = []string{"data-serial", "store-status", "store-nkey", "gateway-url"}
+var sqsWorkerFwCfgNames = []string{"data-serial", "region", "gateway-url"}
 
 func sqsWorkerFwCfgEntry(instanceID, name string) vm.FwCfgEntry {
 	return vm.FwCfgEntry{
@@ -152,13 +149,12 @@ func sqsWorkerCAEntry(instanceID string) vm.FwCfgEntry {
 }
 
 // writeSQSWorkerFwCfg writes the worker's values and CA as fw_cfg files.
-// Nothing written is secret: the key is public and the CA a certificate.
+// Nothing written is secret: the CA is a public certificate.
 func writeSQSWorkerFwCfg(instanceID string, w *sqsWorkerLaunch) ([]vm.FwCfgEntry, error) {
 	values := map[string]string{
-		"data-serial":  vm.VolumeSerial(w.volumeID),
-		"store-status": w.storeStatus,
-		"store-nkey":   w.storeNKey,
-		"gateway-url":  w.gatewayURL,
+		"data-serial": vm.VolumeSerial(w.volumeID),
+		"region":      w.region,
+		"gateway-url": w.gatewayURL,
 	}
 	entries := make([]vm.FwCfgEntry, 0, len(sqsWorkerFwCfgNames)+1)
 	write := func(e vm.FwCfgEntry, value string) error {
@@ -193,7 +189,7 @@ func (d *Daemon) refreshSQSWorkerState(inst *vm.VM) error {
 	if g.NodeID == "" || g.NodeID != d.node {
 		return fmt.Errorf("sqs worker instance %s cannot be relaunched on node %s: it was launched on node %q and is only restarted there", inst.ID, d.node, g.NodeID)
 	}
-	w := &systeminstance.SQSWorkerInput{DataVolumeID: g.DataVolumeID, StoreStatus: g.StoreStatus, StoreNKey: g.StoreNKey}
+	w := &systeminstance.SQSWorkerInput{DataVolumeID: g.DataVolumeID, Region: g.Region}
 	if err := w.Validate(); err != nil {
 		return fmt.Errorf("sqs worker instance %s cannot be relaunched: %w", inst.ID, err)
 	}
@@ -215,7 +211,7 @@ func (d *Daemon) refreshSQSWorkerState(inst *vm.VM) error {
 		return fmt.Errorf("sqs worker instance %s: write netcfg: %w", inst.ID, err)
 	}
 	if _, err := writeSQSWorkerFwCfg(inst.ID, &sqsWorkerLaunch{
-		volumeID: g.DataVolumeID, storeStatus: g.StoreStatus, storeNKey: g.StoreNKey, gatewayURL: g.GatewayURL, caCert: g.CACert,
+		volumeID: g.DataVolumeID, region: g.Region, gatewayURL: g.GatewayURL, caCert: g.CACert,
 	}); err != nil {
 		_ = os.Remove(want[0].File)
 		return fmt.Errorf("sqs worker instance %s: %w", inst.ID, err)

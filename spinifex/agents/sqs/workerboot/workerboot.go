@@ -1,33 +1,41 @@
 // Package workerboot prepares the shared SQS worker guest: it selects exactly
 // the expected data disk by serial, checks and mounts it, proves that disk is
-// what is mounted, and only then loads or creates the worker's store key on it.
+// what is mounted, and only then loads or creates the worker's store key on it
+// under the current first-store decision the gateway returns.
 package workerboot
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerkey"
 	"github.com/nats-io/nkeys"
 )
 
-// Guest contract, read from fw_cfg under opt/spinifex/sqs-worker/:
+// Guest contract, read from fw_cfg under opt/spinifex/sqs-worker/. None of it
+// is a decision: whether a store key may be created is asked of the gateway.
 //
 //	data-serial   virtio-blk serial of the worker's own ext4 data disk
-//	store-status  "existing"; "new" is refused (see readContract)
-//	store-nkey    the store's authorized user public NKey
+//	region        the Region the worker signs its gateway calls for
+//	gateway-url   https URL of the gateway on this node's mgmt bridge
 const (
-	StatusExisting = "existing"
-	statusNew      = "new"
-
 	keyDirName = "sqs-worker-key"
 	maxFwCfg   = 128
 )
+
+var regionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]+$`)
+
+// NewClaimer builds the gateway client the first-store decision comes from.
+type NewClaimer func(region, gatewayURL string) (workerkey.Claimer, error)
 
 // Disk checks and mounts the worker data disk. The guest never formats.
 type Disk interface {
@@ -47,17 +55,22 @@ type Config struct {
 	Disk      Disk
 	// IsBlockDevice reports whether a /dev node is a block device.
 	IsBlockDevice func(path string) bool
-	Log           func(msg string)
+	NewClaimer    NewClaimer
+	// Attempts bounds the decision calls; only a classified retryable
+	// refusal or a lost reply is retried, Wait apart.
+	Attempts int
+	Wait     time.Duration
+	Log      func(msg string)
 }
 
 type contract struct {
-	serial, status, storeKey string
+	serial, region, gatewayURL string
 }
 
-// Boot runs the boot step and returns the worker's public key. It only loads
-// an existing key the store authorizes; any missing, malformed or ambiguous
-// input refuses before a key is read.
-func Boot(cfg Config) (string, error) {
+// Boot runs the boot step and returns the worker's public key. The key is
+// loaded or created only under the gateway's current decision; any missing,
+// malformed or ambiguous input or answer refuses.
+func Boot(ctx context.Context, cfg Config) (string, error) {
 	c, err := readContract(cfg.FwCfgDir)
 	if err != nil {
 		return "", err
@@ -103,7 +116,14 @@ func Boot(cfg Config) (string, error) {
 		return "", fmt.Errorf("worker disk %s (%s) is not mounted at %s", dev, majMin, cfg.DataDir)
 	}
 
-	kp, err := workerkey.Store{Dir: filepath.Join(cfg.DataDir, keyDirName)}.ForExistingStore(c.storeKey)
+	if cfg.NewClaimer == nil {
+		return "", errors.New("no gateway client is configured")
+	}
+	claimer, err := cfg.NewClaimer(c.region, c.gatewayURL)
+	if err != nil {
+		return "", fmt.Errorf("build gateway client: %w", err)
+	}
+	kp, err := acquire(ctx, cfg, workerkey.Store{Dir: filepath.Join(cfg.DataDir, keyDirName)}, claimer)
 	if err != nil {
 		return "", err
 	}
@@ -128,27 +148,47 @@ func readContract(dir string) (contract, error) {
 	if !validSerial(c.serial) {
 		return c, errors.New("data-serial is not a volume serial")
 	}
-	if c.status, err = readFwCfg(dir, "store-status"); err != nil {
+	if c.region, err = readFwCfg(dir, "region"); err != nil {
 		return c, err
 	}
-	switch c.status {
-	case StatusExisting:
-	case statusNew:
-		// A static fw_cfg value replays across resets, so it cannot prove no
-		// store exists; key creation waits for a current authoritative decision.
-		return c, errors.New(`store-status "new" is refused: creating a store key needs a current authoritative first-store decision`)
-	default:
-		return c, errors.New(`store-status must be "existing"`)
+	if !regionPattern.MatchString(c.region) {
+		return c, errors.New("region is not a Region name")
 	}
-	key, err := readFwCfg(dir, "store-nkey")
-	if err != nil {
+	if c.gatewayURL, err = readFwCfg(dir, "gateway-url"); err != nil {
 		return c, err
 	}
-	if !nkeys.IsValidPublicUserKey(key) {
-		return c, errors.New("store-nkey is not a user public NKey")
+	if u, err := url.Parse(c.gatewayURL); err != nil || u.Scheme != "https" || u.Host == "" {
+		return c, errors.New("gateway-url is not an https URL")
 	}
-	c.storeKey = key
 	return c, nil
+}
+
+// acquire runs the decision and key step, repeating it only on an error that
+// says it is safe to repeat. Each repeat re-asks the gateway: a reply lost
+// after the key was recorded is answered with that key, never a new one.
+func acquire(ctx context.Context, cfg Config, store workerkey.Store, c workerkey.Claimer) (kp nkeys.KeyPair, err error) {
+	attempts := max(cfg.Attempts, 1)
+	for i := range attempts {
+		kp, err = store.Acquire(ctx, c)
+		if err == nil || !retryable(err) || i == attempts-1 {
+			return kp, err
+		}
+		cfg.Log(fmt.Sprintf("first-store decision not settled, retrying: %v", err))
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(cfg.Wait):
+		}
+	}
+	return nil, err
+}
+
+func retryable(err error) bool {
+	r, ok := errors.AsType[interface {
+		error
+		Retryable() bool
+	}](err)
+	return ok && r.Retryable()
 }
 
 // readFwCfg returns one fw_cfg value: a single token with at most one trailing

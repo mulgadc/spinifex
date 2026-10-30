@@ -10,6 +10,7 @@ import (
 
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 )
 
 const (
@@ -25,7 +26,7 @@ type webIdentityContext struct {
 	// federatedPrincipalARN is the oidc-provider ARN Principal.Federated must equal.
 	federatedPrincipalARN string
 
-	// issuer is the literal `iss` claim; used to build condition-key prefixes like `{iss}:sub`.
+	// issuer is the literal `iss` claim; its host-path (or scheme-prefixed form) prefixes condition keys like `{issuer}:sub`.
 	issuer string
 
 	// subject is the literal `sub` claim.
@@ -84,7 +85,7 @@ func matchWebIdentityStatement(actions []string, principalRaw, conditionRaw json
 	if !principalMatch {
 		return false, nil
 	}
-	if !conditionsHold(conditionRaw, identity) {
+	if held, _ := conditionsHold(conditionRaw, identity); !held {
 		return false, nil
 	}
 	return true, nil
@@ -132,43 +133,65 @@ func matchFederatedPrincipal(raw json.RawMessage, expectedARN string) (bool, err
 	return false, nil
 }
 
-// conditionsHold evaluates a Condition block. Only StringEquals is supported;
-// keys are {iss}:sub (equality) and {iss}:aud (set-membership). No Condition = grant.
-func conditionsHold(raw json.RawMessage, identity webIdentityContext) bool {
+// condDenial says why a Condition block did not hold, for the caller to log.
+type condDenial struct {
+	operator string
+	key      string
+	// unknownKey is true when the key or operator is unsupported, false when the value did not match.
+	unknownKey bool
+}
+
+// webIdentityHostPath is the issuer without scheme or trailing slash; it keys condition names and the provider ARN.
+func webIdentityHostPath(issuer string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(issuer, "https://"), "/")
+}
+
+// conditionsHold evaluates a Condition block: StringEquals and StringLike on {issuer}:sub and {issuer}:aud.
+// The issuer is the host-path (AWS form) or the scheme-prefixed legacy form; no Condition = grant.
+// Values under one key are OR'd; keys and operators are AND'd. Anything unrecognised fails closed.
+func conditionsHold(raw json.RawMessage, identity webIdentityContext) (bool, condDenial) {
 	if !isCondRawNonEmpty(raw) {
-		return true
+		return true, condDenial{}
 	}
 	var ops map[string]map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &ops); err != nil {
-		return false
+		return false, condDenial{unknownKey: true}
 	}
+	hostPath := webIdentityHostPath(identity.issuer)
+	subKeys := []string{hostPath + ":sub", "https://" + hostPath + ":sub"}
+	audKeys := []string{hostPath + ":aud", "https://" + hostPath + ":aud"}
 	for op, kv := range ops {
-		if op != "StringEquals" {
-			// Validator rejects other operators at write time; a non-StringEquals here means tampering.
-			return false
+		var match func(want, got []string) bool
+		switch op {
+		case "StringEquals":
+			match = anyEquals
+		case "StringLike":
+			match = anyLike
+		default:
+			// Validator rejects other operators at write time; one here means tampering.
+			return false, condDenial{operator: op, unknownKey: true}
 		}
-		issPrefix := strings.TrimSuffix(identity.issuer, "/")
 		for key, expectedRaw := range kv {
 			expected, ok := unmarshalStringOrArray(expectedRaw)
 			if !ok {
-				return false
+				return false, condDenial{operator: op, key: key, unknownKey: true}
 			}
-			switch key {
-			case issPrefix + ":sub":
-				if !anyEquals(expected, []string{identity.subject}) {
-					return false
+			switch {
+			case slices.Contains(subKeys, key):
+				if !match(expected, []string{identity.subject}) {
+					return false, condDenial{operator: op, key: key}
 				}
-			case issPrefix + ":aud":
-				if !anyEquals(expected, identity.audience) {
-					return false
+			case slices.Contains(audKeys, key):
+				if !match(expected, identity.audience) {
+					return false, condDenial{operator: op, key: key}
 				}
 			default:
 				// Unknown condition key — fail closed rather than silently ignore a stricter check.
-				return false
+				return false, condDenial{operator: op, key: key, unknownKey: true}
 			}
 		}
 	}
-	return true
+	return true, condDenial{}
 }
 
 // isCondRawNonEmpty reports whether a Condition RawMessage has meaningful content.
@@ -200,6 +223,18 @@ func anyEquals(want, got []string) bool {
 	for _, w := range want {
 		for _, g := range got {
 			if subtle.ConstantTimeCompare([]byte(w), []byte(g)) == 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// anyLike reports whether any pattern in want matches any value in got, with IAM StringLike * and ? wildcards.
+func anyLike(want, got []string) bool {
+	for _, w := range want {
+		for _, g := range got {
+			if filters.MatchWildcard(w, g) {
 				return true
 			}
 		}

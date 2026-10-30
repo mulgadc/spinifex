@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
@@ -103,7 +102,7 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
 
-	issuerHostPath := strings.TrimPrefix(claims.Issuer, "https://")
+	issuerHostPath := webIdentityHostPath(claims.Issuer)
 	federatedARN := iamdomain.OIDCProviderARN(roleAccountID, issuerHostPath)
 	identity := webIdentityContext{
 		federatedPrincipalARN: federatedARN,

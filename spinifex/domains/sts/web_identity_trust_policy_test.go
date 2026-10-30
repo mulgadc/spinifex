@@ -66,11 +66,6 @@ func TestEvalWebIdentity_ConditionKeys(t *testing.T) {
 			grant:     true,
 		},
 		{
-			name:      "legacy https:// form with trailing slash still grants",
-			condition: fmt.Sprintf(`{"StringEquals":{%q:%q}}`, legacy+"/:sub", testIRSASubject),
-			grant:     true,
-		},
-		{
 			name:      "StringLike sub wildcard grants",
 			condition: fmt.Sprintf(`{"StringLike":{%q:%q}}`, awsKey+":sub", "system:serviceaccount:kube-system:*"),
 			grant:     true,

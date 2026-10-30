@@ -149,19 +149,49 @@ func (d *volumeDirty) purge(ctx context.Context, volumeName string) error {
 // that cannot be read is reported as absent: refusing every mount because the
 // bucket is unreadable would convert a degraded cluster into a stopped one.
 func (d *volumeDirty) holder(ctx context.Context, volumeName string) (viperblocklegacyv1.DirtyRecord, bool) {
-	entry, err := d.kv.Get(ctx, volumeName)
+	record, ok, err := d.lookup(ctx, volumeName)
 	if err != nil {
-		if !errors.Is(err, jetstream.ErrKeyNotFound) {
-			slog.Warn("volume dirty: could not read marker", "volume", volumeName, "err", err)
-		}
+		slog.Warn("volume dirty: could not read marker", "volume", volumeName, "err", err)
 		return viperblocklegacyv1.DirtyRecord{}, false
+	}
+	return record, ok
+}
+
+// lookup is holder for a caller that must tell "no marker" from "could not
+// read the marker", because acting on the second as the first is unsafe.
+func (d *volumeDirty) lookup(ctx context.Context, volumeName string) (viperblocklegacyv1.DirtyRecord, bool, error) {
+	entry, err := d.kv.Get(ctx, volumeName)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return viperblocklegacyv1.DirtyRecord{}, false, nil
+	}
+	if err != nil {
+		return viperblocklegacyv1.DirtyRecord{}, false, err
 	}
 	var record viperblocklegacyv1.DirtyRecord
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		slog.Warn("volume dirty: unreadable marker", "volume", volumeName, "err", err)
-		return viperblocklegacyv1.DirtyRecord{}, false
+		return viperblocklegacyv1.DirtyRecord{}, false, fmt.Errorf("unreadable marker: %w", err)
 	}
-	return record, true
+	return record, true, nil
+}
+
+// unsealedWritesHeld returns the volumes in volumeNames whose marker names this
+// node. A marker that cannot be read fails the whole call: the answer is used to
+// refuse a start elsewhere, and a guess of "none" would allow it.
+func (cfg *Config) unsealedWritesHeld(ctx context.Context, volumeNames []string) ([]string, error) {
+	if cfg.dirty == nil {
+		return nil, errors.New("volume dirty markers are not available on this node")
+	}
+	var held []string
+	for _, name := range volumeNames {
+		record, ok, err := cfg.dirty.lookup(ctx, name)
+		if err != nil {
+			return nil, fmt.Errorf("read dirty mark on %s: %w", name, err)
+		}
+		if ok && record.Owner == cfg.dirty.owner {
+			held = append(held, name)
+		}
+	}
+	return held, nil
 }
 
 // markVolumeDirty records that this node holds writes for volumeName.

@@ -237,6 +237,8 @@ type InstanceServiceImpl struct {
 	gpuClaimer        GPUClaimer
 	amiLoader         AMIMetaLoader
 	ebsProvider       ebsprovider.EBSProvider
+	unsealedChecker   ebsprovider.UnsealedWritesChecker
+	nodeID            string
 	metadata          *ebsmetadata.Store
 	keyValidator      KeyPairValidator
 	eniCreator        ENICreator
@@ -250,6 +252,14 @@ type InstanceServiceImpl struct {
 // control-plane storage engine.
 func (s *InstanceServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
 	s.ebsProvider = provider
+}
+
+// SetUnsealedWritesChecker injects the check a capacity refusal makes before
+// letting a start fall back to another node, and the name this node is known by
+// to that check.
+func (s *InstanceServiceImpl) SetUnsealedWritesChecker(checker ebsprovider.UnsealedWritesChecker, nodeID string) {
+	s.unsealedChecker = checker
+	s.nodeID = nodeID
 }
 
 // SetVolumeCreator injects the volume service a launch uses for the volumes it
@@ -2597,6 +2607,56 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil
 }
 
+// errInsufficientCapacity is the plain capacity refusal.
+var errInsufficientCapacity = errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+
+// UnsealedWritesError is a capacity refusal from a node that still holds
+// unsealed writes for the instance's volumes, or could not say whether it does.
+// It reads as InsufficientInstanceCapacity everywhere; only the ec2.start
+// forwarder looks for it, to refuse a start on a node with the older copy.
+type UnsealedWritesError struct {
+	InstanceID string
+	Volumes    []string
+	// CheckErr is set when the node could not read the markers.
+	CheckErr error
+}
+
+func (e *UnsealedWritesError) Error() string { return awserrors.ErrorInsufficientInstanceCapacity }
+
+func (e *UnsealedWritesError) Unwrap() error { return errInsufficientCapacity }
+
+// capacityRefusal is the error a launch that cannot take the instance returns.
+// When this node holds unsealed writes for the instance's volumes the refusal is
+// typed, because the volumes would otherwise be opened elsewhere from the backend
+// checkpoint. A check that cannot be made counts as held.
+func (s *InstanceServiceImpl) capacityRefusal(ctx context.Context, instance *vm.VM) error {
+	if s.unsealedChecker == nil {
+		return errInsufficientCapacity
+	}
+	instance.EBSRequests.Mu.Lock()
+	volumes := make([]string, 0, len(instance.EBSRequests.Requests))
+	for _, req := range instance.EBSRequests.Requests {
+		volumes = append(volumes, req.Name)
+	}
+	instance.EBSRequests.Mu.Unlock()
+	if len(volumes) == 0 {
+		return errInsufficientCapacity
+	}
+
+	held, err := s.unsealedChecker.HoldsUnsealedWrites(ctx, s.nodeID, volumes)
+	if err != nil {
+		slog.ErrorContext(ctx, "launchClaimedInstance: could not check for unsealed writes, refusing to let the start fall back",
+			"instanceId", instance.ID, "err", err)
+		return &UnsealedWritesError{InstanceID: instance.ID, Volumes: volumes, CheckErr: err}
+	}
+	if len(held) == 0 {
+		return errInsufficientCapacity
+	}
+	slog.WarnContext(ctx, "launchClaimedInstance: at capacity while holding unsealed writes",
+		"instanceId", instance.ID, "volumes", held)
+	return &UnsealedWritesError{InstanceID: instance.ID, Volumes: held}
+}
+
 // launchClaimedInstance runs an instance this node has already won the right
 // to run, and is the whole of the launch both claims share.
 //
@@ -2612,12 +2672,12 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 		slog.ErrorContext(ctx, "launchClaimedInstance: instance type not available on this node",
 			"instanceId", instance.ID, "instanceType", instance.InstanceType)
 		undo()
-		return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		return s.capacityRefusal(ctx, instance)
 	}
 	if err := s.resourceMgr.Allocate(instanceType); err != nil {
 		slog.ErrorContext(ctx, "launchClaimedInstance: failed to allocate resources", "instanceId", instance.ID, "err", err)
 		undo()
-		return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		return s.capacityRefusal(ctx, instance)
 	}
 
 	// Add to local map + clear the stop intent before launch.
@@ -2638,7 +2698,7 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 			s.resourceMgr.Deallocate(instanceType)
 			s.vmMgr.Delete(instance.ID)
 			undo()
-			return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+			return s.capacityRefusal(ctx, instance)
 		}
 		profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
 		gpuCount := instancetypes.GPUCountForType(instance.InstanceType)
@@ -2662,7 +2722,7 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 			s.resourceMgr.Deallocate(instanceType)
 			s.vmMgr.Delete(instance.ID)
 			undo()
-			return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+			return s.capacityRefusal(ctx, instance)
 		}
 		instance.GPUAttachments = attachments
 		gpuClaimed = true

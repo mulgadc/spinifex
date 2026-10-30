@@ -120,6 +120,16 @@ func UnpublishSubject(nodeID string) (string, error) {
 	return subjectPrefix + nodeID + ".unmount", nil
 }
 
+// UnsealedWritesSubject returns nodeID's per-node subject
+// (ebs.provider.v1.<node>.unsealed), which answers whether that node holds
+// unsealed writes for a set of volumes.
+func UnsealedWritesSubject(nodeID string) (string, error) {
+	if err := validateSubjectToken(nodeID); err != nil {
+		return "", err
+	}
+	return subjectPrefix + nodeID + ".unsealed", nil
+}
+
 // ownerSubjectPrefix is common to every owner-routed subject OwnerSubject
 // builds: ebs.provider.v1.owner.{volumeID}.{verb}.
 const ownerSubjectPrefix = subjectPrefix + "owner."
@@ -197,7 +207,10 @@ type NATSProvider struct {
 	requestTimeout time.Duration
 }
 
-var _ EBSProvider = (*NATSProvider)(nil)
+var (
+	_ EBSProvider           = (*NATSProvider)(nil)
+	_ UnsealedWritesChecker = (*NATSProvider)(nil)
+)
 
 // NewNATSProvider returns a provider client over conn. A non-positive
 // requestTimeout takes the 30s default; data-moving subjects get at least 180s.
@@ -488,6 +501,25 @@ func (p *NATSProvider) UnpublishVolume(ctx context.Context, req UnpublishVolumeR
 		return err
 	}
 	return responseError(response.SchemaVersion, response.Error)
+}
+
+// HoldsUnsealedWrites returns the subset of volumeIDs for which nodeID's
+// provider holds writes the backend may not have. An error means the node could
+// not say, which a caller deciding whether to start elsewhere must not read as no.
+func (p *NATSProvider) HoldsUnsealedWrites(ctx context.Context, nodeID string, volumeIDs []string) ([]string, error) {
+	subject, err := UnsealedWritesSubject(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	req := HoldsUnsealedWritesRequest{Versioned: NewVersioned(), NodeID: nodeID, VolumeIDs: volumeIDs}
+	var response HoldsUnsealedWritesResponse
+	if err := p.request(ctx, subject, req, &response); err != nil {
+		return nil, err
+	}
+	if err := responseError(response.SchemaVersion, response.Error); err != nil {
+		return nil, err
+	}
+	return response.Held, nil
 }
 
 func (p *NATSProvider) request(ctx context.Context, subject string, input, output any) error {

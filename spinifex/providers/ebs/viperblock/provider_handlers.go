@@ -133,6 +133,16 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		return fmt.Errorf("subscribe to %s: %w", unpublishSubject, err)
 	}
 
+	unsealedSubject, err := ebsprovider.UnsealedWritesSubject(cfg.NodeName)
+	if err != nil {
+		return fmt.Errorf("build unsealed-writes subject: %w", err)
+	}
+	if _, err := nc.Subscribe(unsealedSubject, tracedProviderHandler(func(ctx context.Context, msg *nats.Msg) {
+		handleHoldsUnsealedWrites(ctx, cfg, msg)
+	})); err != nil {
+		return fmt.Errorf("subscribe to %s: %w", unsealedSubject, err)
+	}
+
 	return nil
 }
 
@@ -1857,6 +1867,32 @@ func handleUnpublishVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 
 	slog.Info("ebs.provider.volume.unpublish: unpublished", "volume", req.VolumeID, "node", cfg.NodeName)
 	respondProvider(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()})
+}
+
+func handleHoldsUnsealedWrites(ctx context.Context, cfg *Config, msg *nats.Msg) {
+	var req ebsprovider.HoldsUnsealedWritesRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		respondProvider(ctx, msg, ebsprovider.HoldsUnsealedWritesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		return
+	}
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
+		respondProvider(ctx, msg, ebsprovider.HoldsUnsealedWritesResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		return
+	}
+	for _, volume := range req.VolumeIDs {
+		if !validVolumeName(volume) {
+			respondProvider(ctx, msg, ebsprovider.HoldsUnsealedWritesResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", volume)})
+			return
+		}
+	}
+
+	held, err := cfg.unsealedWritesHeld(ctx, req.VolumeIDs)
+	if err != nil {
+		slog.Error("ebs.provider.unsealed: could not read dirty markers", "node", cfg.NodeName, "err", err)
+		respondProvider(ctx, msg, ebsprovider.HoldsUnsealedWritesResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("read dirty markers: %v", err)})
+		return
+	}
+	respondProvider(ctx, msg, ebsprovider.HoldsUnsealedWritesResponse{Versioned: ebsprovider.NewVersioned(), Held: held})
 }
 
 // mountEntryIsStale reports whether a MountedVolume describes an export that is

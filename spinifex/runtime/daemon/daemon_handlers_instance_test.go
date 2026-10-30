@@ -137,11 +137,6 @@ func TestHandleEC2StartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
 
 // withShortForwardTimeout shrinks startStoppedForwardTimeout for the duration
 // of a test so a forced forward timeout doesn't cost real wall-clock seconds.
-// unsealedWritesHeader is how an owner marks a capacity refusal as one that
-// must not fall back, because the node still holds unsealed writes for the
-// instance's volumes. A header keeps the AWS error body unchanged.
-const unsealedWritesHeader = "X-Unsealed-Writes"
-
 func withShortForwardTimeout(t *testing.T, d time.Duration) {
 	t.Helper()
 	orig := startStoppedForwardTimeout
@@ -620,7 +615,7 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 			_, _ = store.ClaimStoppedInstance("i-p1-fwd-dirty")
 			resp := nats.NewMsg(m.Reply)
 			resp.Data = awserrors.GenerateErrorPayload(awserrors.ErrorInsufficientInstanceCapacity)
-			resp.Header.Set(unsealedWritesHeader, "true")
+			resp.Header.Set(natsmsg.UnsealedWritesHeader, "true")
 			_ = m.RespondMsg(resp)
 		})
 

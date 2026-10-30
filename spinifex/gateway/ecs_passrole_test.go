@@ -140,7 +140,6 @@ func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
 func TestECSRegisterTaskDefinition_UnresolvedRoleARNsAreNotRejected(t *testing.T) {
 	for name, roleARN := range map[string]string{
 		"malformed":   "not-an-arn",
-		"foreign":     "arn:aws:iam::999999999999:role/ecs-task-role",
 		"nonexistent": "arn:aws:iam::123456789012:role/no-such-role",
 	} {
 		t.Run(name, func(t *testing.T) {

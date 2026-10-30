@@ -603,7 +603,7 @@ func launchService(config *config.ClusterConfig) error {
 			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
 		},
 	})
-	ecsControlPlane := ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: natsConn})
+	ecsControlPlane := ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})
 	eksControlPlane := eksawsapi.NewRegistration(eksawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})
 	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
 	stsControlPlane := stsawsapi.NewRegistration(stsDeps)

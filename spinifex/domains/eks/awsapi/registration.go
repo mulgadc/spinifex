@@ -169,6 +169,9 @@ func (d Deps) checkPassRole(inv dispatch.Invocation, action, accountID string, b
 		switch {
 		case err == nil:
 		case errors.Is(err, passrole.ErrMalformed), errors.Is(err, passrole.ErrForeignAccount):
+			if action == "CreateCluster" || action == "CreateNodegroup" {
+				return awserrors.Errorf(awserrors.ErrorAccessDeniedException, "Cross-account pass role is not allowed.")
+			}
 			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s is not a role ARN in account %s", roleARN, accountID)
 		case errors.Is(err, passrole.ErrNotFound):
 			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "role %s does not exist", roleARN)

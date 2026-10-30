@@ -9,9 +9,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/nats-io/nats.go"
 )
@@ -26,6 +26,9 @@ const tasksServicePrincipal = "ecs-tasks.amazonaws.com"
 // NATS connection fails the actions that reach the daemon.
 type Deps struct {
 	NATS *nats.Conn
+	// Roles resolves a role a RunTask override names. Nil leaves a missing
+	// override role undetected.
+	Roles passrole.Resolver
 }
 
 // NewRegistration returns the ECS AWS JSON 1.1 control-plane registration.
@@ -112,12 +115,14 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 
 	// iam:PassRole is enforced on the role ARN as written, for whichever role
 	// the action later names.
-	passRoleCheck := func(roleARN string) error {
-		return inv.Authorize("iam", "PassRole", []string{roleARN},
-			iampolicy.ConditionKeys{iampolicy.KeyPassedToService: tasksServicePrincipal})
+	passRoleCheck := roleChecker(accountRoles{}, passrole.AuthorizeFunc(inv.Authorize), accountID, nil)
+	var roles passrole.Resolver = accountRoles{}
+	if d.Roles != nil {
+		roles = d.Roles
 	}
+	ctx := withOverrideRoleCheck(r.Context(), roleChecker(roles, passrole.AuthorizeFunc(inv.Authorize), accountID, unableToAssume))
 
-	output, err := handler(r.Context(), d.NATS, accountID, body, passRoleCheck)
+	output, err := handler(ctx, d.NATS, accountID, body, passRoleCheck)
 	if err != nil {
 		return err
 	}

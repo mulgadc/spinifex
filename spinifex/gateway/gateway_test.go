@@ -1362,14 +1362,6 @@ func TestCheckPolicy_NonTransientErrorStillFails(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
-func TestIsNATSTransient(t *testing.T) {
-	assert.False(t, isNATSTransient(nil))
-	assert.True(t, isNATSTransient(nats.ErrNoResponders))
-	assert.True(t, isNATSTransient(nats.ErrTimeout))
-	assert.True(t, isNATSTransient(fmt.Errorf("get user: %w", nats.ErrNoResponders)))
-	assert.False(t, isNATSTransient(errors.New("some other error")))
-}
-
 func TestImportKeyPair_Base64PaddingWorkaround(t *testing.T) {
 	// The ImportKeyPair handler decodes URL-encoded Base64 padding (%3D%3D → ==)
 	// before passing to the generic handler.

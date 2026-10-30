@@ -4,6 +4,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"log/slog"
 	"net"
 	"net/http"
@@ -737,7 +738,7 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 	if err != nil {
 		// A gateway iam:PassRole denial is EC2's UnauthorizedOperation too; an
 		// AccessDenied a daemon returns is left as it is.
-		if _, denied := errors.AsType[*identityPolicyDenialError](err); denied {
+		if _, denied := errors.AsType[*policyauth.DenialError](err); denied {
 			return errors.New(awserrors.ErrorUnauthorizedOperation)
 		}
 		return err

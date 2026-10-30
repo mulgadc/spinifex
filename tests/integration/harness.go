@@ -50,6 +50,10 @@ import (
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
@@ -186,6 +190,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	ecrMeta := ecrdomain.NewNATSMetaStore(nc)
 	ecrRegistry := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), ecrMeta, awsidentifiers.GlobalAccountID)
 	ecrIssuer := ecrauth.NewIssuer(signingKey, testECRAudience)
+	ecrVerifier := ecrauth.NewVerifier(verifyKeys, testECRAudience)
 	ecrEndpoint := awsapi.RepositoryEndpoint{Region: testRegion, ServicesDomain: testECRServicesDomain}
 	services := awsdispatch.NewBuilder()
 	require.NoError(t, services.Register(awsapi.NewRegistration(awsapi.Deps{
@@ -223,14 +228,6 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		IAMService:     iamSvc,
 		STSService:     stsSvc,
 		AnonymousSTS:   stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsDeps),
-		// ECRRegistry serves the OCI Distribution v2 (/v2/*) data plane; its
-		// Meta store is a NATS client, so a test that pushes/pulls or manages
-		// repositories must additionally call StartECRDaemonLite to subscribe a
-		// real MetaServiceImpl or every ECR request will time out with no
-		// responder. Blob/manifest bytes are memory-backed: no predastore.
-		ECRRegistry:      ecrRegistry,
-		ECRTokenIssuer:   ecrIssuer,
-		ECRTokenVerifier: ecrauth.NewVerifier(verifyKeys, testECRAudience),
 		// Ochre model access is deny-by-default, so without a grant store every
 		// bedrock route refuses. Tests sign as the system account, which the
 		// store exempts from grants exactly as it does in production, so the
@@ -246,6 +243,24 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// verifier follow it, as production wires the verifier over the same services.
 	if cfg.Credentials == nil {
 		cfg.Credentials = credverify.New(cfg.IAMService, cfg.STSService)
+	}
+
+	// The OCI /v2 data plane. Its Meta store is a NATS client, so a test that
+	// pushes or pulls must call StartECRDaemonLite or every request times out.
+	// Blob and manifest bytes are memory-backed: no predastore.
+	if cfg.RegistryHandler == nil {
+		if cfg.Admission == nil {
+			cfg.Admission = accountadmission.New(cfg.IAMService)
+		}
+		bridge, err := ecrregistry.NewBridge(registryadapt.Config(ecrregistry.BridgeConfig{
+			Registry:  ecrRegistry,
+			Verifier:  ecrVerifier,
+			Issuer:    ecrIssuer,
+			Admission: cfg.Admission,
+			Region:    cfg.Region,
+		}, credverify.New(cfg.IAMService, cfg.STSService), policyauth.New(cfg.IAMService)))
+		require.NoError(t, err)
+		cfg.RegistryHandler = ingresshttp.NewHostMatcher(cfg.InternalSuffix, "dkr", "ecr").Middleware(bridge.Handler())
 	}
 
 	handler := cfg.SetupRoutes()

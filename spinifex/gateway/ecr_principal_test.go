@@ -2,19 +2,14 @@ package gateway
 
 import (
 	"errors"
-	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strings"
-	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
-	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // ecrMockIAMService implements iamdomain.IAMService for ECR principal
@@ -36,6 +31,10 @@ type ecrMockIAMService struct {
 	// not-found error, simulating an IAM backend outage rather than a
 	// missing record.
 	genericErr error
+
+	// userPolicyErr fails only the policy read, so a test can let the principal
+	// rehydrate and then break authorization.
+	userPolicyErr error
 }
 
 func newECRMockIAMService() *ecrMockIAMService {
@@ -96,6 +95,9 @@ func (m *ecrMockIAMService) GetAccount(accountID string) (*iamdomain.Account, er
 func (m *ecrMockIAMService) GetUserPolicies(accountID, userName string) ([]iamdomain.PolicyDocument, error) {
 	if m.genericErr != nil {
 		return nil, m.genericErr
+	}
+	if m.userPolicyErr != nil {
+		return nil, m.userPolicyErr
 	}
 	return m.userPolicies[accountID+"|"+userName], nil
 }
@@ -164,175 +166,7 @@ func seedECRTestUser(iamSvc *ecrMockIAMService, accountID, userName, akid string
 	iamSvc.accounts[accountID] = &iamdomain.Account{AccountID: accountID, Status: iamdomain.AccountStatusActive}
 }
 
-func TestResolveECRPrincipal_LongLivedUser(t *testing.T) {
-	iamSvc := newECRMockIAMService()
-	seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-	gw := &GatewayConfig{IAMService: iamSvc}
-
-	claims := &ecrauth.Claims{
-		AccountID:     ecrPrincipalTestAccount,
-		PrincipalType: principalTypeUser,
-		AccessKeyID:   ecrPrincipalTestAKID,
-	}
-	claims.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/dev"
-
-	got, err := gw.resolveECRPrincipal(claims)
-	require.NoError(t, err)
-	assert.Equal(t, principalContext{identity: "dev", accountID: ecrPrincipalTestAccount,
-		principalType: principalTypeUser, userID: "AIDADEV", userARN: claims.Subject}, got)
-}
-
 const ecrPathedUserARN = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/eng/dev"
-
-// A user at a non-root path verifies against its stored ARN, path included. A
-// token whose subject drops the path, as one minted before the path was carried
-// would, no longer names the principal and is rejected.
-func TestResolveECRPrincipal_LongLivedUser_Pathed(t *testing.T) {
-	iamSvc := newECRMockIAMService()
-	seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-	iamSvc.users[ecrPrincipalTestAccount+"|dev"].Arn = aws.String(ecrPathedUserARN)
-	gw := &GatewayConfig{IAMService: iamSvc}
-
-	claims := &ecrauth.Claims{
-		AccountID:     ecrPrincipalTestAccount,
-		PrincipalType: principalTypeUser,
-		AccessKeyID:   ecrPrincipalTestAKID,
-	}
-	claims.Subject = ecrPathedUserARN
-	got, err := gw.resolveECRPrincipal(claims)
-	require.NoError(t, err)
-	assert.Equal(t, ecrPathedUserARN, got.userARN)
-
-	claims.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/dev"
-	_, err = gw.resolveECRPrincipal(claims)
-	require.Error(t, err)
-	assert.False(t, isECRDependencyFailure(err))
-}
-
-func TestResolveECRPrincipal_GlobalRoot(t *testing.T) {
-	iamSvc := newECRMockIAMService()
-	seedECRTestUser(iamSvc, awsidentifiers.GlobalAccountID, "root", ecrPrincipalTestAKID)
-	gw := &GatewayConfig{IAMService: iamSvc}
-
-	claims := &ecrauth.Claims{
-		AccountID:     awsidentifiers.GlobalAccountID,
-		PrincipalType: principalTypeUser,
-		AccessKeyID:   ecrPrincipalTestAKID,
-	}
-	claims.Subject = "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":root"
-
-	got, err := gw.resolveECRPrincipal(claims)
-	require.NoError(t, err)
-	assert.Equal(t, principalTypeUser, got.principalType)
-	assert.Equal(t, "root", got.identity)
-}
-
-func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
-	validClaims := func() *ecrauth.Claims {
-		c := &ecrauth.Claims{
-			AccountID:     ecrPrincipalTestAccount,
-			PrincipalType: principalTypeUser,
-			AccessKeyID:   ecrPrincipalTestAKID,
-		}
-		c.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/dev"
-		return c
-	}
-
-	t.Run("unknown access key", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		gw := &GatewayConfig{IAMService: iamSvc}
-		_, err := gw.resolveECRPrincipal(validClaims())
-		require.Error(t, err)
-		assert.False(t, isECRDependencyFailure(err))
-	})
-
-	t.Run("inactive access key", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-		iamSvc.accessKeys[ecrPrincipalTestAKID].Status = "Inactive"
-		gw := &GatewayConfig{IAMService: iamSvc}
-		_, err := gw.resolveECRPrincipal(validClaims())
-		require.Error(t, err)
-		assert.False(t, isECRDependencyFailure(err))
-	})
-
-	t.Run("access key account does not match claim account", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-		iamSvc.accessKeys[ecrPrincipalTestAKID].AccountID = "000000000099"
-		gw := &GatewayConfig{IAMService: iamSvc}
-		_, err := gw.resolveECRPrincipal(validClaims())
-		require.Error(t, err)
-	})
-
-	t.Run("deleted user", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-		delete(iamSvc.users, ecrPrincipalTestAccount+"|dev")
-		gw := &GatewayConfig{IAMService: iamSvc}
-		_, err := gw.resolveECRPrincipal(validClaims())
-		require.Error(t, err)
-		assert.False(t, isECRDependencyFailure(err))
-	})
-
-	t.Run("suspended account", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-		iamSvc.accounts[ecrPrincipalTestAccount].Status = iamdomain.AccountStatusSuspended
-		gw := &GatewayConfig{IAMService: iamSvc}
-		_, err := gw.resolveECRPrincipal(validClaims())
-		require.Error(t, err)
-		assert.False(t, isECRDependencyFailure(err))
-	})
-
-	// CURRENT: a registry token is rehydrated against the account record, so a
-	// terminating account's already-issued token is rejected as invalid.
-	t.Run("terminating account", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-		iamSvc.accounts[ecrPrincipalTestAccount].Status = iamdomain.AccountStatusTerminating
-		gw := &GatewayConfig{IAMService: iamSvc}
-		_, err := gw.resolveECRPrincipal(validClaims())
-		require.Error(t, err)
-		assert.False(t, isECRDependencyFailure(err))
-	})
-
-	t.Run("principalType claim mismatch", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-		gw := &GatewayConfig{IAMService: iamSvc}
-		c := validClaims()
-		c.PrincipalType = principalTypeAssumedRole
-		_, err := gw.resolveECRPrincipal(c)
-		require.Error(t, err)
-	})
-
-	t.Run("subject does not match canonical ARN", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
-		gw := &GatewayConfig{IAMService: iamSvc}
-		c := validClaims()
-		c.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/someone-else"
-		_, err := gw.resolveECRPrincipal(c)
-		require.Error(t, err)
-	})
-
-	t.Run("nil IAM service is a dependency failure", func(t *testing.T) {
-		gw := &GatewayConfig{}
-		_, err := gw.resolveECRPrincipal(validClaims())
-		require.Error(t, err)
-		assert.True(t, isECRDependencyFailure(err))
-	})
-
-	t.Run("IAM backend outage is a dependency failure, not a denial", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		iamSvc.genericErr = errors.New("nats: no responders")
-		gw := &GatewayConfig{IAMService: iamSvc}
-		_, err := gw.resolveECRPrincipal(validClaims())
-		require.Error(t, err)
-		assert.True(t, isECRDependencyFailure(err))
-	})
-}
 
 func seedECRSessionUser(iamSvc *ecrMockIAMService, stsSvc *ecrMockSTSService, accountID, userName, asid string, expiresAt time.Time) {
 	iamSvc.users[accountID+"|"+userName] = &iam.User{
@@ -349,112 +183,6 @@ func seedECRSessionUser(iamSvc *ecrMockIAMService, stsSvc *ecrMockSTSService, ac
 		UserID:        "AIDA" + strings.ToUpper(userName),
 		ExpiresAt:     expiresAt,
 	}
-}
-
-func TestResolveECRPrincipal_SessionToken_User(t *testing.T) {
-	iamSvc := newECRMockIAMService()
-	stsSvc := newECRMockSTSService()
-	seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(time.Hour))
-	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-
-	claims := &ecrauth.Claims{
-		AccountID:     ecrPrincipalTestAccount,
-		PrincipalType: principalTypeUser,
-		AccessKeyID:   ecrPrincipalTestASID,
-	}
-	claims.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/dev"
-
-	got, err := gw.resolveECRPrincipal(claims)
-	require.NoError(t, err)
-	assert.Equal(t, principalContext{identity: "dev", accountID: ecrPrincipalTestAccount,
-		principalType: principalTypeUser, userID: "AIDADEV"}, got)
-}
-
-func TestResolveECRPrincipal_SessionToken_User_Pathed(t *testing.T) {
-	iamSvc := newECRMockIAMService()
-	stsSvc := newECRMockSTSService()
-	seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(time.Hour))
-	stsSvc.liveUserARN = ecrPathedUserARN
-	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-
-	claims := &ecrauth.Claims{
-		AccountID:     ecrPrincipalTestAccount,
-		PrincipalType: principalTypeUser,
-		AccessKeyID:   ecrPrincipalTestASID,
-	}
-	claims.Subject = ecrPathedUserARN
-	got, err := gw.resolveECRPrincipal(claims)
-	require.NoError(t, err)
-	assert.Equal(t, ecrPathedUserARN, got.userARN)
-
-	claims.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/dev"
-	_, err = gw.resolveECRPrincipal(claims)
-	require.Error(t, err)
-	assert.False(t, isECRDependencyFailure(err))
-}
-
-// The user branch had no continuity check at all before: a GetSessionToken
-// session survived its user being deleted and recreated under the same name.
-func TestResolveECRPrincipal_SessionToken_User_StalePrincipalRejected(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-	}{
-		{"user deleted", stsdomain.ErrSessionPrincipalGone},
-		{"user recreated same name", stsdomain.ErrSessionPrincipalReplaced},
-		{"legacy record with no immutable UserID", stsdomain.ErrSessionPrincipalLegacy},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			iamSvc := newECRMockIAMService()
-			stsSvc := newECRMockSTSService()
-			seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(time.Hour))
-			stsSvc.principalErr = tc.err
-			gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-
-			claims := &ecrauth.Claims{
-				AccountID:     ecrPrincipalTestAccount,
-				PrincipalType: principalTypeUser,
-				AccessKeyID:   ecrPrincipalTestASID,
-			}
-			claims.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/dev"
-
-			_, err := gw.resolveECRPrincipal(claims)
-			require.Error(t, err)
-			assert.False(t, isECRDependencyFailure(err))
-		})
-	}
-}
-
-func TestResolveECRPrincipal_SessionToken_Expired(t *testing.T) {
-	iamSvc := newECRMockIAMService()
-	stsSvc := newECRMockSTSService()
-	seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(-time.Hour))
-	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-
-	claims := &ecrauth.Claims{
-		AccountID:     ecrPrincipalTestAccount,
-		PrincipalType: principalTypeUser,
-		AccessKeyID:   ecrPrincipalTestASID,
-	}
-	claims.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/dev"
-
-	_, err := gw.resolveECRPrincipal(claims)
-	require.Error(t, err)
-	assert.False(t, isECRDependencyFailure(err))
-}
-
-func TestResolveECRPrincipal_SessionToken_UnknownSession(t *testing.T) {
-	gw := &GatewayConfig{IAMService: newECRMockIAMService(), STSService: newECRMockSTSService()}
-	claims := &ecrauth.Claims{
-		AccountID:     ecrPrincipalTestAccount,
-		PrincipalType: principalTypeAssumedRole,
-		AccessKeyID:   ecrPrincipalTestASID,
-	}
-	claims.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":assumed-role/deploy/session"
-	_, err := gw.resolveECRPrincipal(claims)
-	require.Error(t, err)
-	assert.False(t, isECRDependencyFailure(err))
 }
 
 func seedECRAssumedRole(iamSvc *ecrMockIAMService, stsSvc *ecrMockSTSService, accountID, roleName, roleID, asid, sessionName string, expiresAt time.Time) string {
@@ -480,136 +208,4 @@ func seedECRAssumedRole(iamSvc *ecrMockIAMService, stsSvc *ecrMockSTSService, ac
 		ExpiresAt:         expiresAt,
 	}
 	return assumedRoleARN
-}
-
-func TestResolveECRPrincipal_AssumedRole(t *testing.T) {
-	iamSvc := newECRMockIAMService()
-	stsSvc := newECRMockSTSService()
-	assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
-	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-
-	claims := &ecrauth.Claims{
-		AccountID:     ecrPrincipalTestAccount,
-		PrincipalType: principalTypeAssumedRole,
-		AccessKeyID:   ecrPrincipalTestASID,
-	}
-	claims.Subject = assumedARN
-
-	got, err := gw.resolveECRPrincipal(claims)
-	require.NoError(t, err)
-	assert.Equal(t, principalTypeAssumedRole, got.principalType)
-	assert.Equal(t, "session-1", got.identity)
-	assert.Equal(t, assumedARN, got.assumedRoleARN)
-	assert.Equal(t, "arn:aws:iam::"+ecrPrincipalTestAccount+":role/deploy", got.underlyingRoleARN)
-}
-
-func TestResolveECRPrincipal_AssumedRole_LegacyEmptyPrincipalType(t *testing.T) {
-	iamSvc := newECRMockIAMService()
-	stsSvc := newECRMockSTSService()
-	assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
-	stsSvc.sessions[ecrPrincipalTestASID].PrincipalType = "" // pre-PrincipalType legacy record
-	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-
-	claims := &ecrauth.Claims{
-		AccountID:     ecrPrincipalTestAccount,
-		PrincipalType: principalTypeAssumedRole,
-		AccessKeyID:   ecrPrincipalTestASID,
-	}
-	claims.Subject = assumedARN
-
-	got, err := gw.resolveECRPrincipal(claims)
-	require.NoError(t, err)
-	assert.Equal(t, principalTypeAssumedRole, got.principalType)
-}
-
-func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
-	baseClaims := func(assumedARN string) *ecrauth.Claims {
-		c := &ecrauth.Claims{
-			AccountID:     ecrPrincipalTestAccount,
-			PrincipalType: principalTypeAssumedRole,
-			AccessKeyID:   ecrPrincipalTestASID,
-		}
-		c.Subject = assumedARN
-		return c
-	}
-
-	// Every continuity verdict is client-visible (401 + re-auth challenge), never
-	// a 503: the identity really is invalid, and answering 503 would tell a
-	// client to retry a credential that will never work again.
-	t.Run("continuity verdicts are invalid-principal, not dependency failures", func(t *testing.T) {
-		verdicts := map[string]error{
-			"role deleted":                           stsdomain.ErrSessionPrincipalGone,
-			"role replaced (RoleId changed)":         stsdomain.ErrSessionPrincipalReplaced,
-			"legacy record with no immutable RoleID": stsdomain.ErrSessionPrincipalLegacy,
-		}
-		for name, verdict := range verdicts {
-			t.Run(name, func(t *testing.T) {
-				iamSvc := newECRMockIAMService()
-				stsSvc := newECRMockSTSService()
-				assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
-				stsSvc.principalErr = verdict
-				gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-				_, err := gw.resolveECRPrincipal(baseClaims(assumedARN))
-				require.Error(t, err)
-				assert.False(t, isECRDependencyFailure(err))
-			})
-		}
-	})
-
-	t.Run("continuity check fault is a dependency failure", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		stsSvc := newECRMockSTSService()
-		assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
-		stsSvc.principalErr = errors.New("nats: no responders")
-		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-		_, err := gw.resolveECRPrincipal(baseClaims(assumedARN))
-		require.Error(t, err)
-		assert.True(t, isECRDependencyFailure(err))
-	})
-
-	t.Run("expired session", func(t *testing.T) {
-		iamSvc := newECRMockIAMService()
-		stsSvc := newECRMockSTSService()
-		assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(-time.Minute))
-		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-		_, err := gw.resolveECRPrincipal(baseClaims(assumedARN))
-		require.Error(t, err)
-	})
-
-	t.Run("attacker-controlled session name cannot rename into another role's ARN shape", func(t *testing.T) {
-		// resolveECRPrincipal must derive the ARN from the stored underlying
-		// role, never trust an attacker-influenced session name for anything
-		// beyond the ARN's trailing session-name segment.
-		iamSvc := newECRMockIAMService()
-		stsSvc := newECRMockSTSService()
-		assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
-		gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
-
-		claims := baseClaims(assumedARN)
-		// Subject claims a completely different role than the session's stored
-		// underlying role — must be rejected even though PrincipalType matches.
-		claims.Subject = "arn:aws:sts::" + ecrPrincipalTestAccount + ":assumed-role/other-role/session-1"
-		_, err := gw.resolveECRPrincipal(claims)
-		require.Error(t, err)
-	})
-
-	t.Run("nil STS service is a dependency failure", func(t *testing.T) {
-		gw := &GatewayConfig{IAMService: newECRMockIAMService()}
-		_, err := gw.resolveECRPrincipal(baseClaims("arn:aws:sts::" + ecrPrincipalTestAccount + ":assumed-role/deploy/session-1"))
-		require.Error(t, err)
-		assert.True(t, isECRDependencyFailure(err))
-	})
-}
-
-func TestResolveECRPrincipal_UnrecognizedAccessKeyPrefix(t *testing.T) {
-	gw := &GatewayConfig{IAMService: newECRMockIAMService()}
-	claims := &ecrauth.Claims{
-		AccountID:     ecrPrincipalTestAccount,
-		PrincipalType: principalTypeUser,
-		AccessKeyID:   "NOTAVALIDPREFIX",
-	}
-	claims.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/dev"
-	_, err := gw.resolveECRPrincipal(claims)
-	require.Error(t, err)
-	assert.False(t, isECRDependencyFailure(err))
 }

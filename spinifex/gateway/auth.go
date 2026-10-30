@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"io"
 	"log/slog"
 	"net/http"
@@ -35,8 +36,8 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = authlimit.NewAuthRateLimiter()
 	}
-	if gw.accountStatus == nil {
-		gw.accountStatus = newAccountStatusCache()
+	if gw.Admission == nil {
+		gw.Admission = accountadmission.New(gw.IAMService)
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -6,42 +6,10 @@ import {
   GetObjectCommand,
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3"
-import { Upload } from "@aws-sdk/lib-storage"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
 import { getS3Client } from "@/lib/awsClient"
 import type { CreateBucketFormData } from "@/types/s3"
-
-interface UploadObjectParams {
-  bucket: string
-  key: string
-  file: File
-}
-
-export function useUploadObject() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ bucket, key, file }: UploadObjectParams) => {
-      const upload = new Upload({
-        client: getS3Client(),
-        params: {
-          Bucket: bucket,
-          Key: key,
-          Body: file,
-          ContentType: file.type,
-        },
-      })
-
-      return await upload.done()
-    },
-    onSuccess: (_, variables) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["s3", "buckets", variables.bucket, "objects"],
-      })
-    },
-  })
-}
 
 export function useCreateBucket() {
   const queryClient = useQueryClient()

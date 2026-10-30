@@ -1,1 +1,0 @@
-import{E as e,k as t}from"./utils-CTImhd74.js";var n=t(e(),1);function r({controlled:e,default:t,name:r,state:i=`value`}){let{current:a}=n.useRef(e!==void 0),[o,s]=n.useState(()=>t);return[a&&e!==void 0?e:o,n.useCallback(e=>{a||s(e)},[])]}export{r as t};

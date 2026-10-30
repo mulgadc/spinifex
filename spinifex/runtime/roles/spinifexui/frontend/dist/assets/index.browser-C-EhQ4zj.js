@@ -1,1 +1,0 @@
-import"./awsClient-CmqSgX9E.js";export{t as EventStreamSerde,r as eventStreamSerdeProvider}from"./index.browser-BEm-79SP.js";

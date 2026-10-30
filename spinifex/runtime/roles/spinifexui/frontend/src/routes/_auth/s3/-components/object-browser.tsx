@@ -31,11 +31,7 @@ import {
 import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime, formatSize } from "@/lib/utils"
-import {
-  downloadObject,
-  useDeleteObjects,
-  useUploadObject,
-} from "@/mutations/s3"
+import { downloadObject, useDeleteObjects } from "@/mutations/s3"
 import { s3BucketObjectsQueryOptions } from "@/queries/s3"
 
 import { ObjectDetails } from "./object-details"
@@ -190,7 +186,6 @@ export function ObjectBrowser({
   const query = folder + useDebounced(find, FIND_DELAY_MS)
   const pages = usePages(query)
   const [sort, setSort] = useState<SortState>()
-  const upload = useUploadObject()
   const deleteObjects = useDeleteObjects(bucket)
   const [downloadError, setDownloadError] = useState<Error | null>(null)
 
@@ -286,22 +281,11 @@ export function ObjectBrowser({
   return (
     <ResourceView panel={panel}>
       <PageHeading
-        actions={
-          <UploadButton
-            bucket={bucket}
-            isPending={upload.isPending}
-            onUpload={upload.mutateAsync}
-            prefix={folder}
-          />
-        }
+        actions={<UploadButton bucket={bucket} prefix={folder} />}
         title={bucket}
       />
 
       <PathCrumbs bucket={bucket} folder={folder} />
-
-      {upload.error && (
-        <ErrorBanner error={upload.error} msg="Failed to upload object" />
-      )}
 
       <InputGroup className="mb-3 w-full sm:w-96">
         <InputGroupAddon>

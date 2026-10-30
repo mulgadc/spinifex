@@ -1,0 +1,1 @@
+import{x as e}from"./utils-Vn6Vssm8.js";import{P as t}from"./reason-parts-B1_pE0SL.js";function n(e,t,n,r){return e.addEventListener(t,n,r),()=>{e.removeEventListener(t,n,r)}}function r(n){let r=e(i,n).current;return r.next=n,t(r.effect),r}function i(e){let t={current:e,next:e,effect:()=>{t.current=t.next}};return t}export{n,r as t};

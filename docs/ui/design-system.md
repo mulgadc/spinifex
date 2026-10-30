@@ -218,6 +218,17 @@ Folders and objects share one table, folders first as S3 lists them; a folder ro
 - **Selecting a folder selects everything under it.** Delete lists every key under the folder, then sends `DeleteObjects` in batches of 1000, and a folder that was only partly deleted says how much was left.
 - The bucket list deletes only empty buckets; S3 refuses the rest with `BucketNotEmpty`, and the dialog says so before anything is sent.
 
+#### Uploads
+
+Uploads run in a store outside React (`src/lib/uploads.ts`), so they carry on, and keep their progress, while the user browses elsewhere in the console.
+
+- **A small, quick upload stays on the button.** While a batch runs, Upload becomes "Uploading N%" with a ring that fills, and a click on it opens the progress dialog.
+- **A large or slow batch opens the dialog.** It opens at once for 16 MiB or more, and otherwise after 2 seconds if the batch is still going, so a quick upload never flashes a dialog. Hide keeps the batch on the button, and the dialog does not reopen on its own after that.
+- **The dialog shows what a user would ask about.** Bytes sent of the total, the rate in bits a second with SI prefixes (kbit/s, Mbit/s, Gbit/s) over the last 3 seconds, an approximate time left, and a row per file with its own progress and cancel. A rate that has fallen to nothing after bytes moved reads "Stalled". A finished batch gives its elapsed time and average rate, and failures can be retried.
+- **Files go three at a time, each in 8 MiB parts sent four at a time**, with lib-storage's `Upload` over `XhrHttpHandler`, since `fetch` reports no upload progress. Each file has its own client, as the handler's progress event does not say which request it came from.
+- Leaving the page while uploads run asks first, and signing out cancels them.
+- The console's S3 proxy gives each request an hour, in place of the server's 15-second read and 120-second write timeouts, which would cut off a part or a download on a slow link.
+
 ### Instance launch
 
 The image picker shows each distribution's own mark from `src/assets/os/` (Ubuntu, Debian, Rocky, Alpine, CentOS), imported with `?no-inline` so it is served as a file and satisfies `img-src 'self'`. Any other distribution gets a generic server icon, and the "Other images" tile a disc.

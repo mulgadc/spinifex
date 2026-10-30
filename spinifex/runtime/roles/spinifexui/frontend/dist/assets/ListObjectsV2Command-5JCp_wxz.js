@@ -1,0 +1,1 @@
+import{Ga as e,Ia as t,Ka as n,to as r}from"./awsClient-DkJuva7G.js";var i=class extends r(e,n,`ListObjectsV2`,t){};export{i as t};

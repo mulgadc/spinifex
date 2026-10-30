@@ -217,6 +217,9 @@ importers:
       '@aws-sdk/lib-storage':
         specifier: ^3.1155.0
         version: 3.1155.0(@aws-sdk/client-s3@3.1155.0)
+      '@aws-sdk/xhr-http-handler':
+        specifier: ^3.1155.0
+        version: 3.1155.0
       '@base-ui/react':
         specifier: ^1.9.0
         version: 1.9.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -538,6 +541,9 @@ packages:
   '@aws-sdk/util-locate-window@3.965.10':
     resolution: {integrity: sha512-ycwH6Zd2GhuSqdXX9ihbCjeGTB6xOJs+O3+Jb8/zDG9978XU80qs75dfkPJRMNKe5MvBZPuNeFpd4JZKPoUF4g==}
     engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/xhr-http-handler@3.1155.0':
+    resolution: {integrity: sha512-qa/9LT3Fo+sjmtsLweooHaPyzuQ8xQHj2Dbe761JmG+ZHacVBxV8t0oWr4xoFQ7zQheqR1Gmyh55M+lR4xlMAw==}
 
   '@aws-sdk/xml-builder@3.972.41':
     resolution: {integrity: sha512-ctjVSyCMegrWfXlx6VqzSBFI6UqmQ5ZlnfMhdLIiWmhoH8UAQxSCP5N3OpG7X3k4LnS7ou74C4mt20+bfTW2aQ==}
@@ -4384,6 +4390,14 @@ snapshots:
 
   '@aws-sdk/util-locate-window@3.965.10':
     dependencies:
+      tslib: 2.8.1
+
+  '@aws-sdk/xhr-http-handler@3.1155.0':
+    dependencies:
+      '@aws-sdk/types': 3.975.0
+      '@smithy/core': 3.36.2
+      '@smithy/types': 4.19.0
+      events: 3.3.0
       tslib: 2.8.1
 
   '@aws-sdk/xml-builder@3.972.41':

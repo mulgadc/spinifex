@@ -1,3 +1,5 @@
+import type { Page } from "@playwright/test"
+
 import { type ConsoleApi, expect, test } from "./console"
 
 const S3_NAMESPACE = "http://s3.amazonaws.com/doc/2006-03-01/"
@@ -40,6 +42,20 @@ function listObjects(params: URLSearchParams) {
   return {
     body: `<ListBucketResult xmlns="${S3_NAMESPACE}"><Name>photos</Name><Prefix>${prefix}</Prefix><KeyCount>${page.length}</KeyCount><MaxKeys>${maxKeys}</MaxKeys><Delimiter>/</Delimiter><IsTruncated>${truncated}</IsTruncated>${truncated ? `<NextContinuationToken>${start + maxKeys}</NextContinuationToken>` : ""}${folders.join("")}${objects.join("")}</ListBucketResult>`,
   }
+}
+
+// Built in the page, as the e2e project has no Node types for a Buffer.
+async function chooseFile(page: Page, name: string) {
+  await page
+    .getByLabel("Choose files to upload")
+    .evaluate((input: HTMLInputElement, fileName) => {
+      const files = new DataTransfer()
+      files.items.add(
+        new File(["e2e ".repeat(64 * 1024)], fileName, { type: "text/plain" }),
+      )
+      input.files = files.files
+      input.dispatchEvent(new Event("change", { bubbles: true }))
+    }, name)
 }
 
 function photosBucket(api: ConsoleApi) {
@@ -164,5 +180,72 @@ test.describe("object browser", () => {
     expect(deleted).toHaveLength(1)
     expect(deleted[0]).toContain("<Key>img-0001.jpg</Key>")
     expect(deleted[0]).toContain("<Key>img-0002.jpg</Key>")
+  })
+
+  test("shows a slow upload's progress, then its result", async ({
+    api,
+    page,
+  }) => {
+    photosBucket(api)
+    api.handle("PUT /proxy/s3/photos/notes.txt", () => ({
+      body: "",
+      headers: { etag: '"e2e"' },
+    }))
+
+    // The PUT is held until the test lets it go, so the upload stays running.
+    let released = false
+    await page.route("**/proxy/s3/photos/notes.txt*", async (route) => {
+      await expect.poll(() => released, { timeout: 30_000 }).toBeTruthy()
+      await route.fallback()
+    })
+    await page.goto("/s3/ls/photos")
+
+    await chooseFile(page, "notes.txt")
+
+    const button = page.getByRole("button", { name: /^Uploading, \d+% done/u })
+    await expect(button).toBeVisible()
+
+    // Small, so the dialog waits to see whether it finishes quickly.
+    const dialog = page.getByRole("dialog")
+    await expect(dialog).toBeHidden()
+    await expect(dialog.getByText("Uploading 1 file")).toBeVisible()
+    await expect(dialog.getByText("s3://photos/")).toBeVisible()
+
+    await dialog.getByRole("button", { name: "Hide" }).click()
+    await expect(dialog).toBeHidden()
+    await button.click()
+    await expect(dialog).toBeVisible()
+
+    released = true
+    await expect(dialog.getByText("Uploaded 1 file")).toBeVisible()
+    await expect(dialog.getByText("100%")).toBeVisible()
+
+    // The footer's Close, not the corner one every dialog has.
+    await dialog
+      .locator("[data-slot=dialog-footer]")
+      .getByRole("button", { name: "Close" })
+      .click()
+    await expect(dialog).toBeHidden()
+    await expect(page.getByRole("button", { name: "Upload" })).toBeVisible()
+  })
+
+  test("cancels an upload that has not finished", async ({ api, page }) => {
+    photosBucket(api)
+    await page.route("**/proxy/s3/photos/held.txt*", async (route) => {
+      // Never answered: the upload can only end by being cancelled.
+      await expect.poll(() => route.request().failure()).toBeTruthy()
+    })
+    await page.goto("/s3/ls/photos")
+    await chooseFile(page, "held.txt")
+
+    await page.getByRole("button", { name: /^Uploading, \d+% done/u }).click()
+
+    const dialog = page.getByRole("dialog")
+    await expect(dialog.getByRole("button", { name: "Hide" })).toBeFocused()
+    await dialog.getByRole("button", { name: "Cancel all" }).click()
+
+    await expect(dialog.getByText("Upload cancelled")).toBeVisible()
+    await expect(dialog.getByRole("progressbar")).toHaveCount(0)
+    await expect(dialog.getByText("Cancelled", { exact: true })).toBeVisible()
   })
 })

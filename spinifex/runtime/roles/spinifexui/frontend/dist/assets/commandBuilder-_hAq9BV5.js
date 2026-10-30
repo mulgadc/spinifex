@@ -1,1 +1,0 @@
-import{No as e,Uo as t,Za as n}from"./awsClient-CmqSgX9E.js";var r=t(n,`AmazonBedrockControlPlaneService`,`BedrockClient`,e),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

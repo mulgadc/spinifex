@@ -32,6 +32,7 @@
     "@aws-sdk/client-s3": "^3.1155.0",
     "@aws-sdk/client-sts": "^3.1155.0",
     "@aws-sdk/lib-storage": "^3.1155.0",
+    "@aws-sdk/xhr-http-handler": "^3.1155.0",
     "@base-ui/react": "^1.9.0",
     "@fontsource-variable/archivo": "^5.3.0",
     "@fontsource-variable/geist": "^5.3.0",

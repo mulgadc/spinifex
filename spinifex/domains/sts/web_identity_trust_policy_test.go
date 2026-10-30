@@ -246,7 +246,7 @@ func TestEvalWebIdentity_DenialReasons(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := evalTrustPolicyForWebIdentity(tt.policy, irsaIdentity())
-			var denial *trustPolicyDenial
+			var denial *trustPolicyDeniedError
 			require.ErrorAs(t, err, &denial)
 			assert.Equal(t, tt.reason, denial.reason)
 			assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())

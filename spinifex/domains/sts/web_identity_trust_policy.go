@@ -53,11 +53,11 @@ func evalTrustPolicyForWebIdentity(docJSON string, identity webIdentityContext) 
 			return err
 		}
 		if matched {
-			return &trustPolicyDenial{reason: denyReasonExplicitDeny}
+			return &trustPolicyDeniedError{reason: denyReasonExplicitDeny}
 		}
 	}
 
-	denial := &trustPolicyDenial{reason: denyReasonNoStatement}
+	denial := &trustPolicyDeniedError{reason: denyReasonNoStatement}
 
 	for _, stmt := range doc.Statement {
 		if stmt.Effect != iamdomain.PolicyEffectAllow {
@@ -72,7 +72,7 @@ func evalTrustPolicyForWebIdentity(docJSON string, identity webIdentityContext) 
 		}
 		// Keep the first statement that matched action and principal but failed its condition.
 		if cd != nil && denial.reason == denyReasonNoStatement {
-			denial = &trustPolicyDenial{reason: denyReasonCondMismatch, operator: cd.operator, key: cd.key}
+			denial = &trustPolicyDeniedError{reason: denyReasonCondMismatch, operator: cd.operator, key: cd.key}
 			if cd.unknownKey {
 				denial.reason = denyReasonCondUnsupport
 			}
@@ -144,20 +144,20 @@ func matchFederatedPrincipal(raw json.RawMessage, expectedARN string) (bool, err
 
 // Reasons a trust policy denied the assumption, logged by the caller.
 const (
-	denyReasonNoStatement    = "no statement matched"
+	denyReasonNoStatement   = "no statement matched"
 	denyReasonExplicitDeny  = "explicit deny"
 	denyReasonCondMismatch  = "condition value mismatch"
 	denyReasonCondUnsupport = "condition operator or key unsupported"
 )
 
-// trustPolicyDenial is the AccessDenied error carrying why, for logs only; the API response is unchanged.
-type trustPolicyDenial struct {
+// trustPolicyDeniedError is the AccessDenied error carrying why, for logs only; the API response is unchanged.
+type trustPolicyDeniedError struct {
 	reason   string
 	operator string
 	key      string
 }
 
-func (d *trustPolicyDenial) Error() string { return awserrors.ErrorAccessDenied }
+func (d *trustPolicyDeniedError) Error() string { return awserrors.ErrorAccessDenied }
 
 // condDenial says why a Condition block did not hold, for the caller to log.
 type condDenial struct {

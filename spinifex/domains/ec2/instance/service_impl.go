@@ -2813,11 +2813,11 @@ func (s *InstanceServiceImpl) RecoverInstance(ctx context.Context, instance *vm.
 }
 
 // volumeExclusionMarkers are the refusals that mean another node is writing this
-// volume right now. Only the lease refuses: a volume whose writes are merely
-// unsealed is opened here with a warning rather than blocked, so the instance
-// still runs. The text arrives having crossed NATS from viperblockd.
+// volume right now, or is still live and holds its unsealed writes. A previous
+// owner that has stopped heartbeating is opened over with a warning instead. The
+// text arrives having crossed NATS from viperblockd.
 var volumeExclusionMarkers = []string{
-	"volume is leased by another owner",
+	ec2v1.VolumeHeldElsewhereText,
 }
 
 // ErrVolumeHeldElsewhere reports a launch refused because another node still

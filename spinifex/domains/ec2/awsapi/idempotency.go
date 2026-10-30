@@ -1,11 +1,10 @@
-package gateway
+package awsapi
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 
 	ec2idemapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/idem"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -13,40 +12,39 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// ec2ClientTokenBucket lazily binds the EC2 token bucket, once per gateway
+// clientTokenBucket lazily binds the EC2 token bucket, once per handler
 // rather than once per request.
-func (gw *GatewayConfig) ec2ClientTokenBucket(ctx context.Context) (jetstream.KeyValue, error) {
-	gw.ec2TokenOnce.Do(func() {
-		js, err := jetstream.New(gw.NATSConn)
+func (h *Handler) clientTokenBucket(ctx context.Context) (jetstream.KeyValue, error) {
+	h.tokenOnce.Do(func() {
+		js, err := jetstream.New(h.NATS)
 		if err != nil {
-			gw.ec2TokenErr = fmt.Errorf("clienttoken jetstream: %w", err)
+			h.tokenErr = fmt.Errorf("clienttoken jetstream: %w", err)
 			return
 		}
 		// The bind happens once, so it must not inherit the first caller's
 		// cancellation: a client that disconnects mid-open would poison the
 		// bucket for every later request. Deadline-free, so the open falls back
 		// to the JetStream API's own timeout.
-		gw.ec2TokenKV, gw.ec2TokenErr = idempotency.OpenBucket(
+		h.tokenKV, h.tokenErr = idempotency.OpenBucket(
 			context.WithoutCancel(ctx), js, ec2idemapi.KVBucket, ec2idemapi.TTL)
 	})
-	return gw.ec2TokenKV, gw.ec2TokenErr
+	return h.tokenKV, h.tokenErr
 }
 
 // ec2IdempotentHandler is ec2Handler for creates that honour ClientToken: a
 // repeat of the same token returns the first call's result instead of creating
 // a second resource. Out is pinned so the result can be stored and replayed.
-func ec2IdempotentHandler[In, Out any](handler func(ctx context.Context, input *In, gw *GatewayConfig, accountID string) (Out, error)) ec2Action {
+func ec2IdempotentHandler[In, Out any](handler func(ctx context.Context, input *In, c *call, accountID string) (Out, error)) ec2Action {
 	return ec2Action{
 		idempotent: true,
 		parse:      parseEC2Input[In],
-		dispatch: func(action string, parsed any, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
+		dispatch: func(ctx context.Context, action string, parsed any, c *call, accountID string) ([]byte, error) {
 			input, ok := parsed.(*In)
 			if !ok {
 				return nil, errors.New(awserrors.ErrorInternalError)
 			}
-			ctx := requestContext(r)
-			output, err := runEC2Idempotent(ctx, action, gw, accountID, input, func() (Out, error) {
-				return handler(ctx, input, gw, accountID)
+			output, err := runEC2Idempotent(ctx, action, c, accountID, input, func() (Out, error) {
+				return handler(ctx, input, c, accountID)
 			})
 			if err != nil {
 				return nil, err
@@ -61,7 +59,7 @@ func ec2IdempotentHandler[In, Out any](handler func(ctx context.Context, input *
 func runEC2Idempotent[In, Out any](
 	ctx context.Context,
 	action string,
-	gw *GatewayConfig,
+	c *call,
 	accountID string,
 	input *In,
 	work func() (Out, error),
@@ -74,7 +72,7 @@ func runEC2Idempotent[In, Out any](
 		return work()
 	}
 
-	kv, kerr := gw.ec2ClientTokenBucket(ctx)
+	kv, kerr := c.clientTokenBucket(ctx)
 	if kerr != nil {
 		// Running anyway would create the duplicate the token was sent to
 		// prevent, so this fails rather than degrading to no idempotency.

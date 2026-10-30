@@ -1,9 +1,9 @@
 package gateway
 
 import (
-	"maps"
 	"slices"
 
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
@@ -23,7 +23,7 @@ type ServiceOperationInventory struct {
 func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]ServiceOperationInventory {
 	inventory := map[string]ServiceOperationInventory{
 		"ec2": {
-			Registered: mapKeys(ec2Actions),
+			Registered: ec2awsapi.ActionNames(),
 		},
 	}
 	for name, inv := range registered {
@@ -34,8 +34,4 @@ func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]
 		}
 	}
 	return inventory
-}
-
-func mapKeys[V any](values map[string]V) []string {
-	return slices.Sorted(maps.Keys(values))
 }

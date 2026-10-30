@@ -1,4 +1,4 @@
-package gateway
+package awsapi
 
 import (
 	"context"
@@ -13,17 +13,17 @@ import (
 )
 
 // render drives a single EC2 action through ec2Handler exactly as the real
-// dispatch table does (see ec2Actions in ec2.go), with a stub inner handler
+// dispatch table does (see ec2Actions in actions.go), with a stub inner handler
 // standing in for the NATS round trip. This exercises the real marshal path
 // (currently marshalEC2Response) without needing a live NATS connection.
 func render[In any](t *testing.T, action string, out any) string {
 	t.Helper()
-	h := ec2Handler(func(_ context.Context, _ *In, _ *GatewayConfig, _ string) (any, error) {
+	h := ec2Handler(func(_ context.Context, _ *In, _ *call, _ string) (any, error) {
 		return out, nil
 	})
 	input, err := h.parse(map[string]string{})
 	require.NoError(t, err)
-	xmlOutput, err := h.dispatch(action, input, &GatewayConfig{}, "acct-123", nil)
+	xmlOutput, err := h.dispatch(t.Context(), action, input, &call{Handler: NewHandler(Deps{})}, "acct-123")
 	require.NoError(t, err)
 	return string(xmlOutput)
 }

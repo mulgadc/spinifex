@@ -1758,3 +1758,55 @@ func TestDeleteRole_RevocationFailureKeepsDelete(t *testing.T) {
 	_, err = svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: role.RoleName})
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity))
 }
+
+func webIdentityTrustDoc(action, condition string) string {
+	return `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::` + testAccountID + `:oidc-provider/oidc.eks.au-mel-1.amazonaws.com/id/ABCDEF"},"Action":"` + action + `","Condition":` + condition + `}]}`
+}
+
+func TestCreateRole_TrustPolicy_WebIdentityStringLikeAccepted(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	doc := webIdentityTrustDoc("sts:AssumeRoleWithWebIdentity",
+		`{"StringEquals":{"oidc.eks.au-mel-1.amazonaws.com/id/ABCDEF:aud":"sts.amazonaws.com"},"StringLike":{"oidc.eks.au-mel-1.amazonaws.com/id/ABCDEF:sub":"system:serviceaccount:kube-system:*"}}`)
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("irsa-stringlike"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	require.NoError(t, err)
+}
+
+func TestCreateRole_TrustPolicy_WebIdentityStringNotEqualsRejected(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	doc := webIdentityTrustDoc("sts:AssumeRoleWithWebIdentity",
+		`{"StringNotEquals":{"oidc.eks.au-mel-1.amazonaws.com/id/ABCDEF:sub":"system:serviceaccount:default:bad"}}`)
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("irsa-notequals"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	require.Error(t, err)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorIAMMalformedPolicyDocument, code)
+	assert.Contains(t, message, "StringNotEquals")
+}
+
+func TestCreateRole_TrustPolicy_AssumeRoleStringLikeRejected(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringLike":{"aws:SourceAccount":"` + testAccountID + `"}}}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("assume-stringlike"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	require.Error(t, err)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorIAMMalformedPolicyDocument, code)
+	assert.Contains(t, message, "StringLike")
+}

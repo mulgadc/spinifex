@@ -34,6 +34,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -132,6 +133,9 @@ type GatewayConfig struct {
 	InstanceStatus ec2instanceapi.StatusSynthesis
 	IAMService     iamdomain.IAMService
 	STSService     stsdomain.STSService
+	// AnonymousSTS serves the unsigned STS actions that authenticate by a token
+	// in the body. Nil answers them with InternalError.
+	AnonymousSTS stsawsapi.AnonymousFunc
 
 	// Credentials verifies SigV4 credentials. Nil fails every request closed.
 	Credentials credential.Verifier
@@ -257,11 +261,7 @@ func (gw *GatewayConfig) ValidateServices() error {
 // the shared buildCallerARN helper, so nothing is computed until called.
 func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
 	return func() (dispatch.Actor, error) {
-		actor, err := callerActor(r.Context())
-		if err != nil {
-			return dispatch.Actor{}, err
-		}
-		return actor, nil
+		return callerActor(r.Context())
 	}
 }
 
@@ -299,8 +299,6 @@ func actorName(a dispatch.Actor) string {
 
 var supportedServices = map[string]bool{
 	"ec2":                   true,
-	"iam":                   true,
-	"sts":                   true,
 	"eks":                   true,
 	"ecs":                   true,
 	"bedrock":               true,
@@ -516,10 +514,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		switch svc {
 		case "ec2":
 			err = gw.EC2_Request(w, r)
-		case "iam":
-			err = gw.IAM_Request(w, r)
-		case "sts":
-			err = gw.STS_Request(w, r)
 		case "eks":
 			err = gw.EKS_Request(w, r)
 		case "bedrock":
@@ -852,7 +846,8 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 }
 
 // identityPolicyDenialError keeps shared authorization failures opaque. A
-// caller that proves its resource is non-sensitive may opt into details.
+// service whose resource is safe to name matches the wrapped
+// dispatch.PolicyDenialError and answers in detail.
 type identityPolicyDenialError struct {
 	principal   principalContext
 	logIdentity string
@@ -864,15 +859,8 @@ func (d *identityPolicyDenialError) Error() string {
 	return awserrors.ErrorAccessDenied
 }
 
-func (d *identityPolicyDenialError) detailedError() error {
-	callerARN, err := buildCallerARN(d.principal.accountID, d.principal.identity,
-		d.principal.principalType, d.principal.assumedRoleARN, d.principal.userARN)
-	if err != nil {
-		callerARN = d.logIdentity
-	}
-	return awserrors.Errorf(awserrors.ErrorAccessDenied,
-		"User: %s is not authorized to perform: %s on resource: %s",
-		callerARN, d.action, d.resource)
+func (d *identityPolicyDenialError) Unwrap() error {
+	return &dispatch.PolicyDenialError{Action: d.action, Resource: d.resource}
 }
 
 func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {

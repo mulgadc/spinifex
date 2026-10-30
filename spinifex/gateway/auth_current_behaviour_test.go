@@ -140,6 +140,7 @@ func (e *cbEnv) gateway() http.Handler {
 		Credentials:    credverify.New(e.counter, e.sts),
 		STSService:     e.sts,
 	}
+	withIAMAndSTS(gw)
 	return gw.SetupRoutes()
 }
 

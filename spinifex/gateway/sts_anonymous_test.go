@@ -17,7 +17,7 @@ import (
 // AssumeRoleWithWebIdentity is routed to the STS dispatcher before SigV4, not rejected.
 func TestAnonymousSTS_WebIdentityNoAuthReachesHandler(t *testing.T) {
 	var seenToken string
-	gw := withVerifier(&GatewayConfig{
+	gw := withSTS(withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		IAMService:     &flexMockIAMService{},
 		STSService: &flexMockSTSService{
@@ -32,7 +32,7 @@ func TestAnonymousSTS_WebIdentityNoAuthReachesHandler(t *testing.T) {
 				}, nil
 			},
 		},
-	})
+	}))
 	handler := gw.SetupRoutes()
 
 	body := "Action=AssumeRoleWithWebIdentity&Version=2011-06-15" +

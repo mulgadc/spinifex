@@ -35,12 +35,14 @@ import (
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -593,6 +595,15 @@ func launchService(config *config.ClusterConfig) error {
 		ExpectedNodes: len(config.Nodes),
 		Quota:         gw.Quota,
 	})
+	iamControlPlane := iamawsapi.NewRegistration(iamawsapi.Deps{
+		IAM: iamService,
+		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
+		},
+	})
+	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
+	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
+	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsDeps)
 	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
 		Version:     gw.Version,
 		Commit:      gw.Commit,
@@ -610,7 +621,7 @@ func launchService(config *config.ClusterConfig) error {
 		BucketStore:       objStore,
 		SignupMaxAccounts: signupMaxAccounts,
 	})
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, operatorControlPlane); err != nil {
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
 

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"strings"
@@ -101,8 +102,10 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 		IAMService:     e.counter,
 		Credentials:    credverify.New(e.counter, e.sts),
 		STSService:     e.sts,
-		Services:       b.Build(),
 	}
+	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	require.NoError(t, b.Register(stsRegistration(gw)))
+	gw.Services = b.Build()
 	return gw.SetupRoutes(), &seen
 }
 

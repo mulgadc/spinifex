@@ -33,12 +33,6 @@ func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]
 		"eks": {
 			Registered: eksActionNames(),
 		},
-		"iam": {
-			Registered: mapKeys(iamActions),
-		},
-		"sts": {
-			Registered: mapKeys(stsActions),
-		},
 	}
 	for name, inv := range registered {
 		inventory[name] = ServiceOperationInventory{

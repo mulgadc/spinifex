@@ -20,6 +20,7 @@
 package integration
 
 import (
+	"context"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"encoding/json"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -41,6 +42,9 @@ import (
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
@@ -195,6 +199,14 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// Tagging has no resource listers because no integration test aggregates.
 	require.NoError(t, services.Register(elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: nc})))
 	require.NoError(t, services.Register(rdsawsapi.NewRegistration(rdsawsapi.Deps{NATS: nc})))
+	require.NoError(t, services.Register(iamawsapi.NewRegistration(iamawsapi.Deps{
+		IAM: iamSvc,
+		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, nc, 1, accountID, profileARN)
+		},
+	})))
+	stsDeps := stsawsapi.Deps{STS: stsSvc, IAM: iamSvc}
+	require.NoError(t, services.Register(stsawsapi.NewRegistration(stsDeps)))
 	require.NoError(t, services.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: tagging.NewAggregator()})))
 
 	cfg := &gateway.GatewayConfig{
@@ -206,6 +218,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		AZ:             testAZ,
 		IAMService:     iamSvc,
 		STSService:     stsSvc,
+		AnonymousSTS:   stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsDeps),
 		// ECRRegistry serves the OCI Distribution v2 (/v2/*) data plane; its
 		// Meta store is a NATS client, so a test that pushes/pulls or manages
 		// repositories must additionally call StartECRDaemonLite to subscribe a

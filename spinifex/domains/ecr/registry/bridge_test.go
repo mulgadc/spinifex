@@ -425,6 +425,15 @@ func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
 		assert.NotEmpty(t, w.Header().Get("WWW-Authenticate"))
 		assert.Zero(t, *e.reached)
 	})
+	t.Run("a failure other than session gone is never retried against the role", func(t *testing.T) {
+		e := newBridgeEnv(t, read)
+		// The live role would be authorised, so a 401 shows it was never asked.
+		e.rehyd.err = ErrInvalidCredential
+		w := e.do(http.MethodGet, manifest, "Bearer "+e.roleToken(t, bridgeRoleID))
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		assert.NotEmpty(t, w.Header().Get("WWW-Authenticate"))
+		assert.Zero(t, *e.reached)
+	})
 	t.Run("role gone is 403 DENIED with the AWS body", func(t *testing.T) {
 		e := newBridgeEnv(t, read)
 		expired(e)

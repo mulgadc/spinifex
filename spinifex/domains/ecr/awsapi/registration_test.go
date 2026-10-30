@@ -331,6 +331,43 @@ func TestDispatch_GetAuthorizationTokenMintsForTheVerifiedActor(t *testing.T) {
 	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
 }
 
+// Only a role session names a role, and the ID is the part of aws:userid before the
+// session name. Every other caller gets a token without the claim.
+func TestDispatch_GetAuthorizationTokenCarriesTheRoleIDOfARoleSessionOnly(t *testing.T) {
+	const roleARN = "arn:aws:sts::" + regAccount + ":assumed-role/builder/session"
+	cases := map[string]struct {
+		actor dispatch.Actor
+		want  string
+	}{
+		"role session": {dispatch.Actor{
+			AccountID: regAccount, CallerARN: roleARN, PrincipalType: "assumed-role",
+			AccessKeyID: "ASIAREGISTRATIONTEST", UserID: "AROAROLEID0000000001:session",
+		}, "AROAROLEID0000000001"},
+		"user": {dispatch.Actor{
+			AccountID: regAccount, CallerARN: "arn:aws:iam::" + regAccount + ":user/dev",
+			PrincipalType: "user", AccessKeyID: "AKIAREGISTRATIONTEST", UserID: "AIDAUSERID:with:colons",
+		}, ""},
+		"root": {dispatch.Actor{
+			AccountID: regAccount, CallerARN: "arn:aws:iam::" + regAccount + ":root",
+			PrincipalType: "root", AccessKeyID: "AKIAREGISTRATIONTEST", UserID: regAccount,
+		}, ""},
+		"role session without a session part in aws:userid": {dispatch.Actor{
+			AccountID: regAccount, CallerARN: roleARN, PrincipalType: "assumed-role",
+			AccessKeyID: "ASIAREGISTRATIONTEST", UserID: "AROAROLEID0000000001",
+		}, ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeInvocation{actor: tc.actor}
+			be := &backend{log: &f.log}
+			_, err := dispatchWith(t, be.deps(), f.invocation(TargetPrefix+".GetAuthorizationToken", "{}"))
+			require.NoError(t, err)
+			require.Len(t, be.minted, 1)
+			assert.Equal(t, tc.want, be.minted[0].RoleID)
+		})
+	}
+}
+
 // An actor ingress cannot build is a server fault, and nothing is minted.
 func TestDispatch_GetAuthorizationTokenActorFailureIsServerInternal(t *testing.T) {
 	f := &fakeInvocation{actorErr: errors.New("no canonical ARN")}

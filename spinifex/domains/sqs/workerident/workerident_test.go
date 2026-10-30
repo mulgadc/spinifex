@@ -34,8 +34,8 @@ func newStore(t *testing.T) (Store, jetstream.KeyValue) {
 	return s, s.KV
 }
 
-func launch(claim string) LaunchRequest {
-	return LaunchRequest{ClaimID: claim, NodeID: node, DataVolumeID: volume, DataVolumeEncrypted: true}
+func launch(claim string, supersedes uint64) LaunchRequest {
+	return LaunchRequest{ClaimID: claim, Supersedes: supersedes, NodeID: node, DataVolumeID: volume, DataVolumeEncrypted: true}
 }
 
 func inst(n int) string { return fmt.Sprintf("i-%017x", n) }
@@ -60,10 +60,10 @@ func record(t *testing.T, kv jetstream.KeyValue) Record {
 	return r
 }
 
-func mustBound(t *testing.T, s Store, claimID, instanceID string) Intent {
+func mustBound(t *testing.T, s Store, claimID, instanceID string, supersedes uint64) Intent {
 	t.Helper()
 	ctx := context.Background()
-	in, err := s.BeginLaunch(ctx, region, launch(claimID))
+	in, err := s.BeginLaunch(ctx, region, launch(claimID, supersedes))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,10 +73,17 @@ func mustBound(t *testing.T, s Store, claimID, instanceID string) Intent {
 	return in
 }
 
+func mustStop(t *testing.T, s Store, in Intent, instanceID string) {
+	t.Helper()
+	if err := s.RecordStopped(context.Background(), in, instanceID); err != nil {
+		t.Fatalf("record stopped: %v", err)
+	}
+}
+
 func TestLifecycle_BindAuthorizesAndRestartKeepsIdentity(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newStore(t)
-	in, err := s.BeginLaunch(ctx, region, launch(claim(1)))
+	in, err := s.BeginLaunch(ctx, region, launch(claim(1), 0))
 	if err != nil || in.Generation != 1 {
 		t.Fatalf("intent = %+v, %v; want generation 1", in, err)
 	}
@@ -106,17 +113,32 @@ func TestLifecycle_BindAuthorizesAndRestartKeepsIdentity(t *testing.T) {
 	}
 }
 
-func TestReplacement_OldIndexIsNotCurrent(t *testing.T) {
+func TestReplacement_NeedsConfirmedStop(t *testing.T) {
 	ctx := context.Background()
-	s, _ := newStore(t)
-	mustBound(t, s, claim(1), inst(1))
-	in, err := s.BeginLaunch(ctx, region, launch(claim(2)))
+	s, kv := newStore(t)
+	old := mustBound(t, s, claim(1), inst(1), 0)
+	if _, err := s.BeginLaunch(ctx, region, launch(claim(2), 1)); !errors.Is(err, ErrInFlight) {
+		t.Fatalf("replacement of a bound worker = %v, want ErrInFlight", err)
+	}
+	if got, err := s.Authorize(ctx, inst(1)); err != nil || got.Generation != 1 {
+		t.Fatalf("refused replacement disturbed the worker: %+v, %v", got, err)
+	}
+	if err := s.RecordStopped(ctx, old, inst(2)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stop naming another instance = %v, want ErrConflict", err)
+	}
+	for range 2 {
+		mustStop(t, s, old, inst(1))
+	}
+	// A stopped worker keeps its instance in the record but is not current.
+	if _, err := s.Authorize(ctx, inst(1)); !errors.Is(err, ErrNotCurrent) {
+		t.Fatalf("stopped worker = %v, want ErrNotCurrent", err)
+	}
+	if err := s.BindInstance(ctx, old, inst(1)); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("rebinding a stopped worker = %v, want ErrSuperseded", err)
+	}
+	in, err := s.BeginLaunch(ctx, region, launch(claim(2), 1))
 	if err != nil || in.Generation != 2 {
 		t.Fatalf("replacement intent = %+v, %v; want generation 2", in, err)
-	}
-	// The old worker stops being current at the intent, before any rebind.
-	if _, err := s.Authorize(ctx, inst(1)); !errors.Is(err, ErrNotCurrent) {
-		t.Fatalf("old worker during replacement = %v, want ErrNotCurrent", err)
 	}
 	if err := s.BindInstance(ctx, in, inst(2)); err != nil {
 		t.Fatal(err)
@@ -127,65 +149,146 @@ func TestReplacement_OldIndexIsNotCurrent(t *testing.T) {
 	if got, err := s.Authorize(ctx, inst(2)); err != nil || got.Generation != 2 {
 		t.Fatalf("new worker = %+v, %v", got, err)
 	}
-	if err := s.BindInstance(ctx, Intent{Region: region, Generation: 1, ClaimID: claim(1)}, inst(1)); !errors.Is(err, ErrSuperseded) {
-		t.Fatalf("replayed old bind = %v, want ErrSuperseded", err)
+	if err := s.RecordStopped(ctx, old, inst(1)); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("stopping a superseded worker = %v, want ErrSuperseded", err)
+	}
+	if r := record(t, kv); r.State != StateBound || r.InstanceID != inst(2) {
+		t.Fatalf("record = %+v", r)
+	}
+	if err := s.RecordStopped(ctx, Intent{Region: region, Generation: 3, ClaimID: claim(3)}, inst(2)); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("stop with an unrecorded intent = %v, want ErrSuperseded", err)
 	}
 }
 
-func TestCompetingLaunches_AuthorizeOneWorker(t *testing.T) {
+// launcher stands in for a caller that starts a VM on the pinned volume as
+// soon as BeginLaunch returns an intent.
+type launcher struct {
+	mu       sync.Mutex
+	launched map[string]bool
+}
+
+func (l *launcher) start(t *testing.T, s Store, req LaunchRequest) (Intent, bool) {
+	in, err := s.BeginLaunch(context.Background(), region, req)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrInFlight), errors.Is(err, ErrSuperseded), errors.Is(err, ErrContended):
+		return Intent{}, false
+	default:
+		t.Errorf("begin %s: %v", req.ClaimID, err)
+		return Intent{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.launched == nil {
+		l.launched = map[string]bool{}
+	}
+	l.launched[in.ClaimID] = true
+	return in, true
+}
+
+func (l *launcher) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.launched)
+}
+
+func TestCompetingLaunches_StartOneVM(t *testing.T) {
+	for name, prior := range map[string]func(t *testing.T, s Store) uint64{
+		"first worker": func(*testing.T, Store) uint64 { return 0 },
+		"after a confirmed stop": func(t *testing.T, s Store) uint64 {
+			mustStop(t, s, mustBound(t, s, claim(100), inst(100), 0), inst(100))
+			return 1
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := newStore(t)
+			supersedes := prior(t, s)
+			var l launcher
+			var wg sync.WaitGroup
+			for i := range 8 {
+				wg.Go(func() { l.start(t, s, launch(claim(i+1), supersedes)) })
+			}
+			wg.Wait()
+			if l.count() != 1 {
+				t.Fatalf("%d callers started a VM on the pinned volume, want 1", l.count())
+			}
+		})
+	}
+}
+
+func TestAmbiguousPriorLaunch_BlocksOthers(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newStore(t)
-	const n = 8
-	intents := make([]Intent, n)
-	var wg sync.WaitGroup
-	for i := range n {
-		wg.Go(func() {
-			in, err := s.BeginLaunch(ctx, region, launch(claim(i+1)))
-			if err != nil && !errors.Is(err, ErrContended) {
-				t.Errorf("begin %d: %v", i, err)
-			}
-			intents[i] = in
-		})
+	var l launcher
+	// A's VM launch returned no answer: it may or may not be running.
+	a, ok := l.start(t, s, launch(claim(1), 0))
+	if !ok {
+		t.Fatal("first launch refused")
 	}
-	wg.Wait()
-	seen := map[uint64]bool{}
-	for _, in := range intents {
-		if in.Generation != 0 {
-			if seen[in.Generation] {
-				t.Fatalf("two intents share generation %d", in.Generation)
-			}
-			seen[in.Generation] = true
+	for range 3 {
+		if _, ok := l.start(t, s, launch(claim(2), 1)); ok {
+			t.Fatal("a second VM started while the first launch's outcome is unknown")
+		}
+		if _, ok := l.start(t, s, launch(claim(2), 0)); ok {
+			t.Fatal("a second VM started from a stale generation")
 		}
 	}
-	var bound atomic.Int32
-	for i, in := range intents {
-		if in.Generation == 0 {
-			continue
-		}
-		wg.Go(func() {
-			if err := s.BindInstance(ctx, in, inst(i+1)); err == nil {
-				bound.Add(1)
-			} else if !errors.Is(err, ErrSuperseded) && !errors.Is(err, ErrContended) {
-				t.Errorf("bind %d: %v", i, err)
-			}
-		})
+	again, err := s.BeginLaunch(ctx, region, launch(claim(1), 0))
+	if err != nil || again != a {
+		t.Fatalf("retry of the ambiguous launch = %+v, %v; want the same intent", again, err)
 	}
-	wg.Wait()
-	authorized := 0
-	for i := range n {
-		if _, err := s.Authorize(ctx, inst(i+1)); err == nil {
-			authorized++
-		}
+	if err := s.FailLaunch(ctx, a); err != nil {
+		t.Fatal(err)
 	}
-	if bound.Load() != 1 || authorized != 1 {
-		t.Fatalf("bound=%d authorized=%d, want exactly one worker", bound.Load(), authorized)
+	if _, ok := l.start(t, s, launch(claim(2), 1)); !ok || l.count() != 2 {
+		t.Fatalf("launch after confirmed failure refused; launched %d", l.count())
+	}
+}
+
+func TestReplay_ABA(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newStore(t)
+	reqA := launch(claim(1), 0)
+	a, _ := s.BeginLaunch(ctx, region, reqA)
+	if err := s.FailLaunch(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.BeginLaunch(ctx, region, launch(claim(2), 1))
+	if err != nil || b.Generation != 2 {
+		t.Fatalf("B = %+v, %v", b, err)
+	}
+	if _, err := s.BeginLaunch(ctx, region, reqA); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("replayed A while B launches = %v, want ErrSuperseded", err)
+	}
+	if _, err := s.BeginLaunch(ctx, region, launch(claim(2), 0)); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("B retried with a generation it did not supersede = %v, want ErrSuperseded", err)
+	}
+	if err := s.BindInstance(ctx, b, inst(2)); err != nil {
+		t.Fatal(err)
+	}
+	mustStop(t, s, b, inst(2))
+	// Even once B is stopped, A's request names a generation it never observed.
+	if _, err := s.BeginLaunch(ctx, region, reqA); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("replayed A after B stopped = %v, want ErrSuperseded", err)
+	}
+	if _, err := s.BeginLaunch(ctx, region, launch(claim(2), 2)); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("B's claim ID reused for generation 3 = %v, want ErrSuperseded", err)
+	}
+	if _, err := s.BeginLaunch(ctx, region, launch(claim(3), 7)); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("a generation from the future = %v, want ErrSuperseded", err)
+	}
+	if c, err := s.BeginLaunch(ctx, region, launch(claim(3), 2)); err != nil || c.Generation != 3 {
+		t.Fatalf("C = %+v, %v", c, err)
+	}
+	if _, err := s.BeginLaunch(ctx, "us-east-1", launch(claim(4), 3)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("superseding in a Region with no record = %v, want ErrConflict", err)
 	}
 }
 
 func TestFailedLaunch(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newStore(t)
-	in, _ := s.BeginLaunch(ctx, region, launch(claim(1)))
+	in, _ := s.BeginLaunch(ctx, region, launch(claim(1), 0))
 	for range 2 {
 		if err := s.FailLaunch(ctx, in); err != nil {
 			t.Fatalf("fail launch = %v", err)
@@ -198,10 +301,10 @@ func TestFailedLaunch(t *testing.T) {
 	if _, err := s.Authorize(ctx, inst(1)); !errors.Is(err, ErrNotCurrent) {
 		t.Fatalf("failed launch's instance = %v, want ErrNotCurrent", err)
 	}
-	if _, err := s.BeginLaunch(ctx, region, launch(claim(1))); !errors.Is(err, ErrSuperseded) {
+	if _, err := s.BeginLaunch(ctx, region, launch(claim(1), 0)); !errors.Is(err, ErrSuperseded) {
 		t.Fatalf("restarting a failed attempt = %v, want ErrSuperseded", err)
 	}
-	next, err := s.BeginLaunch(ctx, region, launch(claim(2)))
+	next, err := s.BeginLaunch(ctx, region, launch(claim(2), 1))
 	if err != nil || next.Generation != 2 {
 		t.Fatalf("next launch = %+v, %v; want generation 2", next, err)
 	}
@@ -219,18 +322,18 @@ func TestFailedLaunch(t *testing.T) {
 func TestBeginLaunch_PinnedPlacementAndEncryption(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newStore(t)
-	unencrypted := launch(claim(1))
+	unencrypted := launch(claim(1), 0)
 	unencrypted.DataVolumeEncrypted = false
 	if _, err := s.BeginLaunch(ctx, region, unencrypted); !errors.Is(err, ErrUnencryptedVolume) {
 		t.Fatalf("unencrypted volume = %v", err)
 	}
-	mustBound(t, s, claim(1), inst(1))
-	other := launch(claim(2))
+	mustBound(t, s, claim(1), inst(1), 0)
+	other := launch(claim(2), 1)
 	other.NodeID = "node-b"
 	if _, err := s.BeginLaunch(ctx, region, other); !errors.Is(err, ErrWrongNode) {
 		t.Fatalf("other node = %v, want ErrWrongNode", err)
 	}
-	other = launch(claim(2))
+	other = launch(claim(2), 1)
 	other.DataVolumeID = "vol-0fedcba9876543210"
 	if _, err := s.BeginLaunch(ctx, region, other); !errors.Is(err, ErrVolumeMismatch) {
 		t.Fatalf("other volume = %v, want ErrVolumeMismatch", err)
@@ -250,7 +353,7 @@ func TestAuthorize_IndexIsNotProof(t *testing.T) {
 	}
 	t.Run("entry whose generation is not the record's", func(t *testing.T) {
 		s, kv := newStore(t)
-		mustBound(t, s, claim(1), inst(1))
+		mustBound(t, s, claim(1), inst(1), 0)
 		put(t, kv, indexKey(inst(9)), IndexEntry{Region: region, Generation: 1, ClaimID: claim(1)})
 		if _, err := s.Authorize(ctx, inst(9)); !errors.Is(err, ErrNotCurrent) {
 			t.Fatalf("forged entry = %v, want ErrNotCurrent", err)
@@ -258,7 +361,7 @@ func TestAuthorize_IndexIsNotProof(t *testing.T) {
 	})
 	t.Run("bound instance whose entry was rewritten", func(t *testing.T) {
 		s, kv := newStore(t)
-		mustBound(t, s, claim(1), inst(1))
+		mustBound(t, s, claim(1), inst(1), 0)
 		put(t, kv, indexKey(inst(1)), IndexEntry{Region: region, Generation: 7, ClaimID: claim(7)})
 		if _, err := s.Authorize(ctx, inst(1)); !errors.Is(err, ErrNotCurrent) {
 			t.Fatalf("rewritten entry = %v, want ErrNotCurrent", err)
@@ -266,7 +369,7 @@ func TestAuthorize_IndexIsNotProof(t *testing.T) {
 	})
 	t.Run("entry for a launching record", func(t *testing.T) {
 		s, kv := newStore(t)
-		in, _ := s.BeginLaunch(ctx, region, launch(claim(1)))
+		in, _ := s.BeginLaunch(ctx, region, launch(claim(1), 0))
 		put(t, kv, indexKey(inst(1)), IndexEntry(in))
 		if _, err := s.Authorize(ctx, inst(1)); !errors.Is(err, ErrNotCurrent) {
 			t.Fatalf("index without bind = %v, want ErrNotCurrent", err)
@@ -281,7 +384,7 @@ func TestAuthorize_IndexIsNotProof(t *testing.T) {
 	})
 	t.Run("unreadable entry or record", func(t *testing.T) {
 		s, kv := newStore(t)
-		mustBound(t, s, claim(1), inst(1))
+		mustBound(t, s, claim(1), inst(1), 0)
 		kv.Put(ctx, indexKey(inst(2)), []byte("{"))
 		if _, err := s.Authorize(ctx, inst(2)); !errors.Is(err, ErrUnreadable) {
 			t.Fatalf("corrupt entry = %v, want ErrUnreadable", err)
@@ -290,13 +393,13 @@ func TestAuthorize_IndexIsNotProof(t *testing.T) {
 		if _, err := s.Authorize(ctx, inst(1)); !errors.Is(err, ErrUnreadable) {
 			t.Fatalf("corrupt record = %v, want ErrUnreadable", err)
 		}
-		if _, err := s.BeginLaunch(ctx, region, launch(claim(2))); !errors.Is(err, ErrUnreadable) {
+		if _, err := s.BeginLaunch(ctx, region, launch(claim(2), 0)); !errors.Is(err, ErrUnreadable) {
 			t.Fatalf("launch over a corrupt record = %v, want ErrUnreadable", err)
 		}
 	})
 	t.Run("conflicting entry is not overwritten", func(t *testing.T) {
 		s, kv := newStore(t)
-		in, _ := s.BeginLaunch(ctx, region, launch(claim(1)))
+		in, _ := s.BeginLaunch(ctx, region, launch(claim(1), 0))
 		put(t, kv, indexKey(inst(1)), IndexEntry{Region: region, Generation: 7, ClaimID: claim(7)})
 		if err := s.BindInstance(ctx, in, inst(1)); !errors.Is(err, ErrConflict) {
 			t.Fatalf("bind over a conflicting entry = %v, want ErrConflict", err)
@@ -343,18 +446,18 @@ func TestLostReplies(t *testing.T) {
 	t.Run("intent applied, reply lost, retried", func(t *testing.T) {
 		base, kv := newStore(t)
 		s := Store{JS: base.JS, KV: &lossyKV{KeyValue: kv, failCreate: 1, apply: true}}
-		in, err := s.BeginLaunch(ctx, region, launch(claim(1)))
+		in, err := s.BeginLaunch(ctx, region, launch(claim(1), 0))
 		if err != nil || in.Generation != 1 {
 			t.Fatalf("intent = %+v, %v", in, err)
 		}
-		again, err := base.BeginLaunch(ctx, region, launch(claim(1)))
+		again, err := base.BeginLaunch(ctx, region, launch(claim(1), 0))
 		if err != nil || again != in {
 			t.Fatalf("retried intent = %+v, %v; want the same generation", again, err)
 		}
 	})
 	t.Run("index and bind applied, replies lost, retried", func(t *testing.T) {
 		base, kv := newStore(t)
-		in, _ := base.BeginLaunch(ctx, region, launch(claim(1)))
+		in, _ := base.BeginLaunch(ctx, region, launch(claim(1), 0))
 		s := Store{JS: base.JS, KV: &lossyKV{KeyValue: kv, failCreate: 1, failUpdate: 1, apply: true}}
 		if err := s.BindInstance(ctx, in, inst(1)); err != nil {
 			t.Fatalf("bind = %v, want recovered success", err)
@@ -365,7 +468,7 @@ func TestLostReplies(t *testing.T) {
 	})
 	t.Run("bind reply lost and the caller gives up", func(t *testing.T) {
 		base, kv := newStore(t)
-		in, _ := base.BeginLaunch(ctx, region, launch(claim(1)))
+		in, _ := base.BeginLaunch(ctx, region, launch(claim(1), 0))
 		s := Store{JS: base.JS, KV: &lossyKV{KeyValue: kv, failUpdate: maxAttempts}}
 		if err := s.BindInstance(ctx, in, inst(1)); !errors.Is(err, ErrContended) {
 			t.Fatalf("bind = %v, want ErrContended", err)
@@ -380,7 +483,7 @@ func TestLostReplies(t *testing.T) {
 	t.Run("persistently dropped intent grants nothing", func(t *testing.T) {
 		base, kv := newStore(t)
 		s := Store{JS: base.JS, KV: &lossyKV{KeyValue: kv, failCreate: maxAttempts}}
-		if _, err := s.BeginLaunch(ctx, region, launch(claim(1))); !errors.Is(err, ErrContended) {
+		if _, err := s.BeginLaunch(ctx, region, launch(claim(1), 0)); !errors.Is(err, ErrContended) {
 			t.Fatalf("intent = %v, want ErrContended", err)
 		}
 	})
@@ -404,18 +507,19 @@ func laggingReplica(t *testing.T, leader Store, history ...[]byte) Store {
 func TestStaleReads_GrantNothing(t *testing.T) {
 	ctx := context.Background()
 	s, kv := newStore(t)
-	old, _ := s.BeginLaunch(ctx, region, launch(claim(1)))
+	old, _ := s.BeginLaunch(ctx, region, launch(claim(1), 0))
 	launching := raw(t, kv, regionKey(region))
 	if err := s.BindInstance(ctx, old, inst(1)); err != nil {
 		t.Fatal(err)
 	}
-	next, _ := s.BeginLaunch(ctx, region, launch(claim(2)))
+	mustStop(t, s, old, inst(1))
+	next, _ := s.BeginLaunch(ctx, region, launch(claim(2), 1))
 	// The replica still shows generation 1 launching.
 	stale := laggingReplica(t, s, launching)
 	if err := stale.BindInstance(ctx, old, inst(3)); err == nil {
 		t.Fatal("a stale read bound a superseded intent")
 	}
-	if _, err := stale.BeginLaunch(ctx, region, launch(claim(1))); err == nil {
+	if _, err := stale.BeginLaunch(ctx, region, launch(claim(1), 0)); err == nil {
 		t.Fatal("a stale read revived a superseded intent")
 	}
 	if r := record(t, kv); r.Generation != next.Generation || r.ClaimID != next.ClaimID || r.State != StateLaunching {
@@ -426,13 +530,14 @@ func TestStaleReads_GrantNothing(t *testing.T) {
 func TestStaleReads_KeepNoReplacedWorkerAuthorized(t *testing.T) {
 	ctx := context.Background()
 	s, kv := newStore(t)
-	in, _ := s.BeginLaunch(ctx, region, launch(claim(1)))
+	in, _ := s.BeginLaunch(ctx, region, launch(claim(1), 0))
 	launching := raw(t, kv, regionKey(region))
 	if err := s.BindInstance(ctx, in, inst(1)); err != nil {
 		t.Fatal(err)
 	}
 	entry, bound := raw(t, kv, indexKey(inst(1))), raw(t, kv, regionKey(region))
-	mustBound(t, s, claim(2), inst(2))
+	mustStop(t, s, in, inst(1))
+	mustBound(t, s, claim(2), inst(2), 1)
 	// The replica replays the leader's first three revisions, so it still shows
 	// generation 1 bound to the old instance at the revisions it had then.
 	_, _, js := testutil.StartTestJetStream(t)
@@ -470,7 +575,7 @@ func TestReads_UseLeaderMessageGet(t *testing.T) {
 		defer sub.Unsubscribe()
 	}
 	nc.Flush()
-	mustBound(t, s, claim(1), inst(1))
+	mustBound(t, s, claim(1), inst(1), 0)
 	if _, err := s.Authorize(context.Background(), inst(1)); err != nil {
 		t.Fatal(err)
 	}
@@ -495,6 +600,67 @@ func TestOpen_RefusesNonDurableBuckets(t *testing.T) {
 			}
 			if _, err := Open(ctx, js); err == nil {
 				t.Fatal("opened a bucket that can lose records")
+			}
+		})
+	}
+	// Settings a bucket can only get from a stream edited or created outside
+	// the KV API; each could expire, lose, lag or refuse an authority record.
+	stream := "KV_" + Bucket
+	subjects := []string{"$KV." + Bucket + ".>"}
+	kvStream := func(t *testing.T, js jetstream.JetStream) jetstream.StreamConfig {
+		t.Helper()
+		if _, err := js.CreateKeyValue(ctx, BucketConfig(1)); err != nil {
+			t.Fatal(err)
+		}
+		info, err := js.Stream(ctx, stream)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.CachedInfo().Config
+	}
+	for name, edit := range map[string]func(*jetstream.StreamConfig){
+		"per-message TTL":         func(c *jetstream.StreamConfig) { c.AllowMsgTTL = true },
+		"sealed":                  func(c *jetstream.StreamConfig) { c.Sealed = true },
+		"discard new per subject": func(c *jetstream.StreamConfig) { c.DiscardNewPerSubject = true; c.MaxMsgsPerSubject = 1 },
+		"unacknowledged writes":   func(c *jetstream.StreamConfig) { c.NoAck = true },
+		"message size cap":        func(c *jetstream.StreamConfig) { c.MaxMsgSize = 4096 },
+		"discard old":             func(c *jetstream.StreamConfig) { c.Discard = jetstream.DiscardOld },
+		"expiring delete markers": func(c *jetstream.StreamConfig) { c.AllowMsgTTL = true; c.SubjectDeleteMarkerTTL = time.Minute },
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, js := testutil.StartTestJetStream(t)
+			cfg := kvStream(t, js)
+			edit(&cfg)
+			if _, err := js.UpdateStream(ctx, cfg); err != nil {
+				t.Fatalf("prepare bucket: %v", err)
+			}
+			if _, err := Open(ctx, js); err == nil {
+				t.Fatal("opened a bucket that can lose or refuse records")
+			}
+		})
+	}
+	for name, cfg := range map[string]jetstream.StreamConfig{
+		"work-queue retention": {Name: stream, Subjects: subjects, Retention: jetstream.WorkQueuePolicy,
+			MaxMsgsPerSubject: 1, Discard: jetstream.DiscardNew, Storage: jetstream.FileStorage, AllowDirect: true, AllowRollup: true},
+		"interest retention": {Name: stream, Subjects: subjects, Retention: jetstream.InterestPolicy,
+			MaxMsgsPerSubject: 1, Discard: jetstream.DiscardNew, Storage: jetstream.FileStorage, AllowDirect: true, AllowRollup: true},
+		"mirror": {Name: stream, Mirror: &jetstream.StreamSource{Name: "SRC"},
+			MaxMsgsPerSubject: 1, Discard: jetstream.DiscardNew, Storage: jetstream.FileStorage},
+		"sources": {Name: stream, Subjects: subjects, Sources: []*jetstream.StreamSource{{Name: "SRC"}},
+			MaxMsgsPerSubject: 1, Discard: jetstream.DiscardNew, Storage: jetstream.FileStorage, AllowDirect: true, AllowRollup: true},
+		"asynchronous flush": {Name: stream, Subjects: subjects, PersistMode: jetstream.AsyncPersistMode,
+			MaxMsgsPerSubject: 1, Discard: jetstream.DiscardNew, Storage: jetstream.FileStorage, AllowDirect: true, AllowRollup: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, js := testutil.StartTestJetStream(t)
+			if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "SRC", Subjects: []string{"src.>"}, Storage: jetstream.FileStorage}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := js.CreateStream(ctx, cfg); err != nil {
+				t.Fatalf("prepare bucket: %v", err)
+			}
+			if _, err := Open(ctx, js); err == nil {
+				t.Fatal("opened a bucket that can lose, lag or refuse records")
 			}
 		})
 	}

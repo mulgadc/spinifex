@@ -39,18 +39,35 @@ func OpenDurableKV(ctx context.Context, js jsapi.JetStream, bucket, description 
 	return kv, nil
 }
 
+// checkDurable refuses any effective stream setting under which an accepted
+// authority write could later expire, be evicted or lost, lag a source, or be
+// refused; the bucket's records are compared and swapped, never re-derived.
 func checkDurable(sc jsapi.StreamConfig, replicas int) error {
 	switch {
+	case sc.Retention != jsapi.LimitsPolicy:
+		return fmt.Errorf("retention is %s, not limits", sc.Retention)
 	case sc.MaxAge != 0:
 		return fmt.Errorf("records expire after %s", sc.MaxAge)
-	case sc.Storage != jsapi.FileStorage:
-		return errors.New("storage is not file-backed")
-	case sc.MaxBytes > 0 || sc.MaxMsgs > 0:
-		return errors.New("a size or message cap can evict records")
-	case sc.MaxMsgsPerSubject < 1:
-		return errors.New("per-key history is unbounded or zero")
+	case sc.AllowMsgTTL:
+		return errors.New("per-message TTLs can expire records")
 	case sc.SubjectDeleteMarkerTTL != 0:
 		return errors.New("delete markers expire")
+	case sc.Storage != jsapi.FileStorage:
+		return errors.New("storage is not file-backed")
+	case sc.PersistMode != jsapi.DefaultPersistMode:
+		return errors.New("writes are flushed asynchronously")
+	case sc.MaxBytes > 0 || sc.MaxMsgs > 0 || sc.MaxMsgSize > 0:
+		return errors.New("a size or message cap can evict or refuse records")
+	case sc.MaxMsgsPerSubject < 1:
+		return errors.New("per-key history is unbounded or zero")
+	case sc.Discard != jsapi.DiscardNew || sc.DiscardNewPerSubject:
+		return errors.New("the discard policy can evict or refuse records")
+	case sc.NoAck:
+		return errors.New("writes are not acknowledged")
+	case sc.Sealed:
+		return errors.New("the bucket is sealed")
+	case sc.Mirror != nil || len(sc.Sources) > 0:
+		return errors.New("the bucket mirrors or sources another stream")
 	case sc.Replicas < replicas:
 		return fmt.Errorf("%d replicas, want at least %d", sc.Replicas, replicas)
 	}

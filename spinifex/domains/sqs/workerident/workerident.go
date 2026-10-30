@@ -1,6 +1,7 @@
 // Package workerident is the SQS domain's authority on which VM is the
-// Region's shared SQS worker. A regional record moves launching -> bound or
-// failed under compare-and-swap; a per-instance index only finds the record.
+// Region's shared SQS worker. A regional record moves launching -> bound ->
+// stopped, or launching -> failed, under compare-and-swap; a per-instance
+// index only finds the record.
 package workerident
 
 import (
@@ -36,8 +37,10 @@ const (
 	StateLaunching State = "launching"
 	// The record names the one instance that is the worker.
 	StateBound State = "bound"
-	// The intended launch failed; the next launch takes a newer generation.
+	// The caller confirmed the launch created no instance holding the volume.
 	StateFailed State = "failed"
+	// The caller confirmed the bound instance stopped and released the volume.
+	StateStopped State = "stopped"
 )
 
 // Record is the Region's current worker. Generation only grows; the first cut
@@ -60,10 +63,14 @@ type IndexEntry struct {
 	ClaimID    string `json:"claimID"`
 }
 
-// LaunchRequest is one launch attempt. ClaimID is minted per attempt and
-// reused only to retry that attempt.
+// LaunchRequest is one launch attempt. ClaimID is freshly minted per attempt
+// and reused only to retry it; only the current claim is recorded, so a VM
+// launch must be idempotent on generation and claim together. Supersedes is the generation the caller
+// read and is replacing, zero for the Region's first worker, so a replayed
+// request cannot take a generation it never observed.
 type LaunchRequest struct {
 	ClaimID             string
+	Supersedes          uint64
 	NodeID              string
 	DataVolumeID        string
 	DataVolumeEncrypted bool
@@ -91,6 +98,7 @@ var (
 	ErrUnknownInstance   = errors.New("instance is not an SQS worker")
 	ErrNotCurrent        = errors.New("instance is not the Region's current SQS worker")
 	ErrSuperseded        = errors.New("launch intent has been superseded")
+	ErrInFlight          = errors.New("another SQS worker launch is in flight or bound")
 	ErrConflict          = errors.New("worker identity conflicts with the recorded state")
 	ErrWrongNode         = errors.New("SQS worker is pinned to another node")
 	ErrVolumeMismatch    = errors.New("SQS worker is pinned to another data volume")
@@ -131,8 +139,9 @@ func regionKey(region string) string { return "region." + region }
 func indexKey(instanceID string) string { return "instance." + instanceID }
 
 // BeginLaunch records a launch intent. A retry of the same attempt returns the
-// same intent; a new attempt takes the next generation and supersedes any
-// earlier intent or bound worker, which from then on is not current.
+// same intent. A new attempt is refused while the previous one is launching or
+// bound, including one whose outcome is unknown; it takes the next generation
+// only after FailLaunch or RecordStopped confirmed nothing holds the volume.
 func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest) (Intent, error) {
 	switch {
 	case !regionPattern.MatchString(region):
@@ -149,6 +158,9 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 	for range maxAttempts {
 		rec, rev, err := s.readRecord(ctx, region)
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			if req.Supersedes != 0 {
+				return Intent{}, ErrConflict
+			}
 			next := Record{Region: region, State: StateLaunching, Generation: 1,
 				ClaimID: req.ClaimID, NodeID: req.NodeID, DataVolumeID: req.DataVolumeID}
 			// A failed create may still have applied; the re-read decides.
@@ -167,12 +179,16 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 			return Intent{}, ErrVolumeMismatch
 		}
 		next := *rec
-		if rec.ClaimID == req.ClaimID {
-			if rec.State != StateLaunching {
-				// The attempt already bound or failed; it cannot start again.
+		switch {
+		case rec.ClaimID == req.ClaimID:
+			if rec.State != StateLaunching || rec.Generation != req.Supersedes+1 {
 				return Intent{}, ErrSuperseded
 			}
-		} else {
+		case req.Supersedes != rec.Generation:
+			return Intent{}, ErrSuperseded
+		case rec.State == StateLaunching || rec.State == StateBound:
+			return Intent{}, ErrInFlight
+		default:
 			next.State, next.Generation, next.ClaimID, next.InstanceID =
 				StateLaunching, rec.Generation+1, req.ClaimID, ""
 		}
@@ -227,8 +243,9 @@ func (s Store) BindInstance(ctx context.Context, intent Intent, instanceID strin
 	return ErrContended
 }
 
-// FailLaunch records that intent's launch did not produce the worker. It
-// refuses once the intent is bound or superseded, and is idempotent.
+// FailLaunch records that intent's launch created no instance holding the data
+// volume. Call it only once that is confirmed; a launch with an unknown outcome
+// must stay launching. It refuses once bound or superseded, and is idempotent.
 func (s Store) FailLaunch(ctx context.Context, intent Intent) error {
 	if err := validIntent(intent); err != nil {
 		return err
@@ -249,6 +266,42 @@ func (s Store) FailLaunch(ctx context.Context, intent Intent) error {
 		case StateLaunching:
 			next.State = StateFailed
 		case StateFailed:
+		default:
+			return ErrConflict
+		}
+		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// RecordStopped records that intent's bound instance is confirmed stopped and
+// its data volume detached and no longer exported, which is the only way a
+// bound worker can be replaced. It is idempotent.
+func (s Store) RecordStopped(ctx context.Context, intent Intent, instanceID string) error {
+	if err := validIntent(intent); err != nil {
+		return err
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, intent.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrSuperseded
+		}
+		if err != nil {
+			return err
+		}
+		if rec.Generation != intent.Generation || rec.ClaimID != intent.ClaimID {
+			return ErrSuperseded
+		}
+		if rec.InstanceID != instanceID {
+			return ErrConflict
+		}
+		next := *rec
+		switch rec.State {
+		case StateBound:
+			next.State = StateStopped
+		case StateStopped:
 		default:
 			return ErrConflict
 		}
@@ -350,7 +403,7 @@ func wellFormed(r *Record, region string) bool {
 		return false
 	}
 	switch r.State {
-	case StateBound:
+	case StateBound, StateStopped:
 		return instancePattern.MatchString(r.InstanceID)
 	case StateLaunching, StateFailed:
 		return r.InstanceID == ""

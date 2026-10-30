@@ -820,6 +820,9 @@ func launchService(cfg *Config) error {
 	// SB re-bootstraps (snapshot install / compaction) with no deploy in flight.
 	go runOVNControllerWatchdog(loopCtx, newOVNWatchdog(host.NewGatewayClaimProber(cfg.OVNSBAddr)))
 
+	// Per host: releases an ovs-vswitchd that came up held in flow-restore-wait.
+	go runVswitchdWatchdog(loopCtx, newVswitchdWatchdog(hostFlowRestore{r: host.NewExecRunner()}))
+
 	// Host-side EIP plumbing, on every node. The drift loop above is leader-gated
 	// because it writes the shared NB DB; routes and proxy-ARP are this host's
 	// own, and a node that never wins the lease would otherwise have no path to

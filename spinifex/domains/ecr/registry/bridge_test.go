@@ -20,11 +20,13 @@ import (
 )
 
 const (
-	bridgeRegion  = "ap-southeast-2"
-	bridgeAccount = "000000000001"
-	bridgeAKID    = "AKIABRIDGETESTUSER001"
-	bridgeUserARN = "arn:aws:iam::" + bridgeAccount + ":user/dev"
-	bridgeHost    = bridgeAccount + ".dkr.ecr." + bridgeRegion + ".spinifex.internal"
+	bridgeRegion         = "ap-southeast-2"
+	bridgeAccount        = "000000000001"
+	bridgeAKID           = "AKIABRIDGETESTUSER001"
+	bridgeRoleSessionARN = "arn:aws:sts::" + bridgeAccount + ":assumed-role/SharedOps/session"
+	bridgeUserARN        = "arn:aws:iam::" + bridgeAccount + ":user/dev"
+	bridgeRoleID         = "AROAROLEID0000000001"
+	bridgeHost           = bridgeAccount + ".dkr.ecr." + bridgeRegion + ".spinifex.internal"
 )
 
 type targetKey struct{}
@@ -52,6 +54,17 @@ type fakeRehydrator struct {
 }
 
 func (f *fakeRehydrator) Rehydrate(_, _ string) (Principal, error) { return f.principal, f.err }
+
+// fakeRoleRehydrator answers RehydrateRole from the live role: its principal, or the
+// error the role's absence or an outage would give.
+type fakeRoleRehydrator struct {
+	principal Principal
+	err       error
+}
+
+func (f *fakeRoleRehydrator) RehydrateRole(_, _, _ string) (Principal, error) {
+	return f.principal, f.err
+}
 
 // rule allows or denies the listed actions on resources; a trailing * in a resource
 // matches any suffix. An explicit deny wins.
@@ -121,6 +134,7 @@ type bridgeEnv struct {
 	issuer   *ecrauth.Issuer
 	verifier *ecrauth.Verifier
 	rehyd    *fakeRehydrator
+	roleLive *fakeRoleRehydrator
 	authz    *fakeAuthorizer
 	adm      *fakeAdmission
 	reached  *int
@@ -144,6 +158,11 @@ func newBridgeEnv(t *testing.T, rules ...rule) *bridgeEnv {
 		rehyd: &fakeRehydrator{principal: Principal{
 			Identity: "dev", AccountID: bridgeAccount, PrincipalType: "user", CallerARN: bridgeUserARN,
 		}},
+		roleLive: &fakeRoleRehydrator{principal: Principal{
+			Identity: "session", AccountID: bridgeAccount, PrincipalType: "assumed-role",
+			CallerARN: bridgeRoleSessionARN, AssumedRoleARN: bridgeRoleSessionARN,
+			AssumedRoleID: bridgeRoleID + ":session", UnderlyingRoleARN: "arn:aws:iam::" + bridgeAccount + ":role/SharedOps",
+		}},
 		authz:   &fakeAuthorizer{rules: rules},
 		adm:     &fakeAdmission{active: true},
 		reached: new(int),
@@ -154,7 +173,7 @@ func newBridgeEnv(t *testing.T, rules ...rule) *bridgeEnv {
 	})
 	b, err := NewBridge(BridgeConfig{
 		Registry: next, Verifier: vf, Issuer: iss,
-		Rehydrator: e.rehyd, Authorizer: e.authz, Admission: e.adm, Region: bridgeRegion, Target: hostTarget, ClientIP: noIP,
+		Rehydrator: e.rehyd, RoleRehydrator: e.roleLive, Authorizer: e.authz, Admission: e.adm, Region: bridgeRegion, Target: hostTarget, ClientIP: noIP,
 	})
 	require.NoError(t, err)
 	e.handler = hostMiddleware(b.Handler())
@@ -164,6 +183,17 @@ func newBridgeEnv(t *testing.T, rules ...rule) *bridgeEnv {
 func (e *bridgeEnv) token(t *testing.T, account, arn, principalType string) string {
 	t.Helper()
 	tok, _, err := e.issuer.Mint(ecrauth.Principal{AccountID: account, ARN: arn, Type: principalType, AccessKeyID: bridgeAKID})
+	require.NoError(t, err)
+	return tok
+}
+
+// roleToken is a role session's registry token carrying the role's immutable ID.
+func (e *bridgeEnv) roleToken(t *testing.T, roleID string) string {
+	t.Helper()
+	tok, _, err := e.issuer.Mint(ecrauth.Principal{
+		AccountID: bridgeAccount, ARN: bridgeRoleSessionARN, Type: "assumed-role",
+		AccessKeyID: "ASIABRIDGETESTROLE001", RoleID: roleID,
+	})
 	require.NoError(t, err)
 	return tok
 }
@@ -354,6 +384,64 @@ func TestBridge_Rehydration(t *testing.T) {
 		e := newBridgeEnv(t, read)
 		e.rehyd.principal.CallerARN = "arn:aws:iam::" + bridgeAccount + ":user/other"
 		assert.Equal(t, http.StatusUnauthorized, get(e, t).Code)
+	})
+}
+
+// AWS keeps a registry token valid past the session that minted it and judges the
+// role's current state on every request.
+func TestBridge_ExpiredSessionFallsBackToTheLiveRole(t *testing.T) {
+	read := allow([]string{"ecr:BatchGetImage"}, repoARN("*"))
+	const manifest = "/v2/team/app/manifests/latest"
+	expired := func(e *bridgeEnv) { e.rehyd.err = ErrSessionGone }
+
+	t.Run("live role is authorised", func(t *testing.T) {
+		e := newBridgeEnv(t, read)
+		expired(e)
+		w := e.do(http.MethodGet, manifest, "Bearer "+e.roleToken(t, bridgeRoleID))
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, 1, *e.reached)
+	})
+	t.Run("live role whose policy no longer allows the action is denied by the evaluator", func(t *testing.T) {
+		e := newBridgeEnv(t)
+		expired(e)
+		w := e.do(http.MethodGet, manifest, "Bearer "+e.roleToken(t, bridgeRoleID))
+		assert.Equal(t, http.StatusForbidden, w.Code)
+		assert.Equal(t, "DENIED", errCode(t, w))
+		assert.Zero(t, *e.reached)
+	})
+	t.Run("inactive account is denied as before", func(t *testing.T) {
+		e := newBridgeEnv(t, read)
+		expired(e)
+		e.adm.active = false
+		w := e.do(http.MethodGet, manifest, "Bearer "+e.roleToken(t, bridgeRoleID))
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		assert.Zero(t, *e.reached)
+	})
+	t.Run("no role ID claim still challenges 401", func(t *testing.T) {
+		e := newBridgeEnv(t, read)
+		expired(e)
+		w := e.do(http.MethodGet, manifest, "Bearer "+e.roleToken(t, ""))
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		assert.NotEmpty(t, w.Header().Get("WWW-Authenticate"))
+		assert.Zero(t, *e.reached)
+	})
+	t.Run("role gone is 403 DENIED with the AWS body", func(t *testing.T) {
+		e := newBridgeEnv(t, read)
+		expired(e)
+		e.roleLive.err = ErrRoleGone
+		w := e.do(http.MethodGet, manifest, "Bearer "+e.roleToken(t, bridgeRoleID))
+		assert.Equal(t, http.StatusForbidden, w.Code)
+		assert.JSONEq(t, `{"errors":[{"code":"DENIED","message":"The security token included in the request is invalid."}]}`, w.Body.String())
+		assert.Empty(t, w.Header().Get("WWW-Authenticate"), "a retry would not help, so no challenge")
+		assert.Zero(t, *e.reached)
+	})
+	t.Run("role lookup outage is 503", func(t *testing.T) {
+		e := newBridgeEnv(t, read)
+		expired(e)
+		e.roleLive.err = ErrUnavailable
+		w := e.do(http.MethodGet, manifest, "Bearer "+e.roleToken(t, bridgeRoleID))
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+		assert.Zero(t, *e.reached)
 	})
 }
 

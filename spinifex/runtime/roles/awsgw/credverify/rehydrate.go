@@ -14,7 +14,15 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 )
 
-var _ credential.Rehydrator = (*Verifier)(nil)
+var (
+	_ credential.Rehydrator     = (*Verifier)(nil)
+	_ credential.RoleRehydrator = (*Verifier)(nil)
+)
+
+// RehydrateRole is not implemented yet.
+func (v *Verifier) RehydrateRole(accountID, roleID, assumedRoleARN string) (credential.Principal, *credential.Failure) {
+	return credential.Principal{}, fail(awserrors.ErrorInternalError)
+}
 
 // Rehydrate rebuilds the caller accessKeyID names from the current IAM and STS
 // records. It runs the lookups Authenticate and Resolve run, through the same

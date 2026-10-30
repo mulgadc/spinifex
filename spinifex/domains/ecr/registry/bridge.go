@@ -47,6 +47,20 @@ var (
 	ErrUnavailable       = errors.New("identity dependency unavailable")
 )
 
+// ErrSessionGone marks a Rehydrate failure because the access key's session record
+// has expired or been removed. ErrRoleGone marks a RehydrateRole failure because the
+// role is deleted or was recreated under a new ID.
+var (
+	ErrSessionGone = errors.New("session expired or gone")
+	ErrRoleGone    = errors.New("role gone")
+)
+
+// RoleRehydrator rebuilds an assumed-role principal from the live role named by the
+// token's role ID, once the session record behind it is gone.
+type RoleRehydrator interface {
+	RehydrateRole(accountID, roleID, assumedRoleARN string) (Principal, error)
+}
+
 // Rehydrator rebuilds the principal behind an access key from current identity state.
 // A failure wraps ErrInvalidCredential or ErrUnavailable.
 type Rehydrator interface {
@@ -74,8 +88,10 @@ type BridgeConfig struct {
 	Issuer   TokenIssuer
 	// Rehydrator rebuilds the token's principal from current identity state.
 	Rehydrator Rehydrator
-	Authorizer Authorizer
-	Admission  Admission
+	// RoleRehydrator is optional: without it an expired session is a 401.
+	RoleRehydrator RoleRehydrator
+	Authorizer     Authorizer
+	Admission      Admission
 	// Target reports the account and region the request's registry host names.
 	Target func(r *http.Request) (account, region string, ok bool)
 	// ClientIP reports the client address, for logging.

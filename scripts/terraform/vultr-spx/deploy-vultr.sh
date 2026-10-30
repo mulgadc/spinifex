@@ -213,6 +213,9 @@ install_spinifex() {
             "$DISTRO" "$SPINIFEX_SRC/scripts/setup.sh" "root@$IP:/tmp/" || die "copy to $IP failed"
         on "INSTALL_SPINIFEX_TARBALL=/tmp/$(basename "$DISTRO") bash /tmp/setup.sh >/root/setup.log 2>&1" ||
             die "setup.sh failed; see /root/setup.log on $IP"
+        # A tarball built by build-install-artifacts.sh ships setup.sh beside it
+        # rather than in it, and the later steps run the installed copy.
+        on 'test -x /usr/local/share/spinifex/setup.sh || install -D -m 0755 /tmp/setup.sh /usr/local/share/spinifex/setup.sh'
     else
         on "curl -sfL https://install.mulgadc.com | bash -s -- --channel $CHANNEL >/root/setup.log 2>&1" ||
             die "install failed; see /root/setup.log on $IP"

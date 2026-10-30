@@ -1,6 +1,6 @@
 #!/bin/sh
 # setup_host_test.sh — tests for setup.sh's DNS handover to systemd-resolved,
-# its chrony drop-in and its nbdkit plugin directory.
+# its chrony and needrestart drop-ins and its nbdkit plugin directory.
 #
 # setup.sh is sourced with INSTALL_SPINIFEX_LIB_ONLY=1 so main never runs. PATH
 # holds stub commands and links to a few real tools only, so no host resolver,
@@ -17,10 +17,10 @@ fails=0
 pass() { echo "  ok   - $1"; }
 fail() { echo "  FAIL - $1"; fails=$((fails + 1)); }
 
-echo "-- setup.sh host DNS, chrony and nbdkit"
+echo "-- setup.sh host DNS, chrony, needrestart and nbdkit"
 
 mkdir -p "$TMP/sys"
-for tool in bash awk sed grep readlink basename dirname cp ln mkdir cat head tail wc tee rm chmod; do
+for tool in bash awk sed grep readlink basename dirname cp ln mkdir cat head tail wc tee rm chmod install; do
     ln -s "$(command -v "$tool")" "$TMP/sys/$tool"
 done
 
@@ -248,6 +248,50 @@ case "$RC:$OUT" in
     0:*"Skipping the chrony drop-in"*) pass "no chrony config: the drop-in is skipped with a warning" ;;
     *) fail "no chrony: rc=$RC: $OUT" ;;
 esac
+
+# --------------------------------------------------------------------------
+# needrestart override.
+# --------------------------------------------------------------------------
+# restarts <conf> <unit> — how needrestart would treat <unit> under <conf>:
+# "no" when an override_rc pattern deselects it, "yes" otherwise.
+restarts() {
+    perl -e 'our %nrconf; do $ARGV[0]; die $@ if $@;
+        for my $re (keys %{$nrconf{override_rc}}) {
+            if ($ARGV[1] =~ $re) { print $nrconf{override_rc}{$re} ? "yes" : "no"; exit }
+        }
+        print "yes"' "$1" "$2"
+}
+
+host
+run install_needrestart_conf
+conf="$TMP/root/etc/needrestart/conf.d/90-spinifex.conf"
+if [ "$RC" != 0 ] || [ ! -f "$conf" ]; then
+    fail "needrestart: rc=$RC: $OUT"
+elif ! command -v perl > /dev/null; then
+    fail "needrestart: perl is not installed, so the override cannot be checked"
+else
+    wrong=""
+    for unit in spinifex-daemon.service spinifex-viperblock.service ovs-vswitchd.service \
+        ovsdb-server.service ovn-controller.service openvswitch-switch.service; do
+        [ "$(restarts "$conf" "$unit")" = no ] || wrong="$wrong $unit"
+    done
+    for unit in ssh.service rsyslog.service polkit.service; do
+        [ "$(restarts "$conf" "$unit")" = yes ] || wrong="$wrong $unit"
+    done
+    if [ -n "$wrong" ]; then
+        fail "needrestart override treats these wrongly:$wrong"
+    else
+        pass "needrestart keeps off the stack's units and still restarts everything else"
+    fi
+fi
+
+before=$(cat "$conf" 2>/dev/null)
+run install_needrestart_conf
+if [ "$RC" = 0 ] && [ "$(cat "$conf" 2>/dev/null)" = "$before" ]; then
+    pass "needrestart override is unchanged by a second install"
+else
+    fail "needrestart override changed on re-run: rc=$RC: $OUT"
+fi
 
 # --------------------------------------------------------------------------
 # nbdkit plugin directory.

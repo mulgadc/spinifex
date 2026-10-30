@@ -29,8 +29,9 @@
 #
 # /usr/local/bin/spx, the nbdkit plugin, /usr/local/{share,lib}/spinifex,
 # /usr/share/spinifex, every spinifex systemd unit and slice, the eight
-# spinifex-* service users, the sudoers grant, the sysctl/logrotate/chrony/udev
-# drop-ins, the host firewall policy and its loaded nft table, the OVS bridges
+# spinifex-* service users, the sudoers grant, the sysctl, logrotate, chrony,
+# needrestart and udev drop-ins, the host firewall policy and its loaded nft
+# table, the OVS bridges
 # and OVN databases, the Spinifex resolved drop-in, and the Spinifex CA from the
 # host trust store. Where setup.sh turned on systemd-resolved, it restores
 # /etc/resolv.conf and turns resolved off.
@@ -457,6 +458,7 @@ rm_path /etc/sysctl.d/*spinifex* \
         /etc/sudoers.d/spinifex-network \
         /etc/chrony/conf.d/spinifex.conf \
         /etc/chrony.d/spinifex.conf \
+        /etc/needrestart/conf.d/90-spinifex.conf \
         /etc/logrotate.d/spinifex \
         /etc/tmpfiles.d/spinifex.conf \
         /etc/udev/rules.d/*spinifex* \
@@ -615,6 +617,7 @@ if ! $DRY_RUN; then
              /usr/share/spinifex "$ETC_DIR" "$LOG_DIR" \
              /etc/sudoers.d/spinifex-network /etc/logrotate.d/spinifex /etc/tmpfiles.d/spinifex.conf \
              /etc/chrony/conf.d/spinifex.conf /etc/chrony.d/spinifex.conf "$RESOLV_CONF_SAVED" \
+             /etc/needrestart/conf.d/90-spinifex.conf \
              "$RESOLVED_DROPIN"; do
         exists "$p" && LEFT+=("$p")
     done

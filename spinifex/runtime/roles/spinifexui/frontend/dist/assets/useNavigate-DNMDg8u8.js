@@ -1,1 +1,0 @@
-import{M as e,k as t}from"./utils-CIaw-opd.js";import{i as n}from"./link-B8wv90NB.js";var r=e(t(),1);function i(e){let t=n();return r.useCallback(n=>t.navigate({...n,from:n.from??e?.from}),[e?.from,t])}export{i as t};

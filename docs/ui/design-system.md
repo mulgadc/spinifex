@@ -154,7 +154,7 @@ The table test is a ratchet: `HAND_WRITTEN_TABLES` lists the routes that still h
 `src/lib/nav.ts` is the one description of the console's navigation.
 The sidebar, the command palette and the breadcrumbs all read it, and `nav.test.ts` checks every destination against the generated route tree, so a renamed route fails a test rather than leaving a dead link.
 
-- **Sidebar.** Each service group folds, and a folded group stays folded across reloads (`localStorage["spinifex-ui-nav-collapsed"]`). Navigating into a folded group unfolds it so the active item shows, and it can then be folded again, the current group included. On a phone the sidebar is a sheet, and any navigation closes it.
+- **Sidebar.** Groups take generic names rather than AWS's service marks: Compute, Databases, Authentication and Object Storage, not EC2, RDS, IAM and S3. Pages and the rest of the console keep the AWS names, and each group's `service` keeps its AWS name findable in the command palette, where typing it exactly ranks that group first. Each service group folds, and a folded group stays folded across reloads (`localStorage["spinifex-ui-nav-collapsed"]`). Navigating into a folded group unfolds it so the active item shows, and it can then be folded again, the current group included. On a phone the sidebar is a sheet, and any navigation closes it.
 - **Command palette.** ⌘K or Ctrl K, or the Search button in the header. It lists every page the user can reach, every create flow (`create` on a nav item), and a theme toggle. It is navigation only, with no resource search yet.
 - **Breadcrumbs.** Service, then list page, then the resource or the create flow. A resource ID is set in mono. On a phone only the last crumb shows.
 - **Sign in.** The sign-in card sits over the shell on a light, barely blurred overlay rather than on a page of its own, so the console stays in view. The shell behind it is `inert`, which keeps pointer, keyboard and screen reader out of it until the user signs in.
@@ -191,6 +191,7 @@ Every list with a delete action has row checkboxes. Selecting a row shows `Selec
 `BulkDelete` (`src/components/bulk-delete.tsx`) is the bar's destructive action, and its dialog names every selected resource before anything is sent.
 
 - **One call per resource, one at a time.** Most AWS delete calls take a single ID, so each refusal lands against its own row with AWS's message. A partial failure keeps the dialog open, and its confirm becomes "Retry N" for only the ones that failed.
+- **A batch call where AWS has one.** `deleteMany` instead of `deleteOne` hands the whole selection to one function that returns the refusals by ID, as S3's `DeleteObjects` does for up to 1000 keys.
 - **No pre-filtering.** The bar sends what was selected and lets AWS refuse, rather than guessing which deletes would fail. Instances are the exception, since one call takes many IDs and a mixed selection would fail as a whole.
 - **The bulk delete and the panel's delete are the same function.** Where a single delete is several calls, such as removing dependants first, the sequence lives in one place and both use it.
 - The verb follows the AWS console: Release for an Elastic IP, Deregister for an image.
@@ -206,6 +207,16 @@ A delete that cannot be walked back asks the user to type a word first, as the A
 - Not for anything cheap to recreate, such as a key pair, a security group rule or a tag.
 
 Key pairs is the smallest example (`ec2/(key)/-components/key-pairs-page.tsx`).
+
+### Object browser
+
+A bucket opens as a page rather than a panel, since its contents need the width (`s3/-components/object-browser.tsx`).
+Folders and objects share one table, folders first as S3 lists them; a folder row enters the folder, and an object row opens its panel with `HeadObject`'s properties, its user metadata and a download.
+
+- **The find box is S3's prefix.** It sends `Prefix` = folder + typed text to `ListObjectsV2` after a 250ms pause, so it finds keys the current page has not loaded, and it matches from the start of the name only.
+- **Pages are S3's.** 100 entries a page with `MaxKeys`, and Next follows `NextContinuationToken`. Tokens only run forward, so the browser keeps the stack of tokens that opened each page, and Previous pops it; sorting a column sorts the page on screen.
+- **Selecting a folder selects everything under it.** Delete lists every key under the folder, then sends `DeleteObjects` in batches of 1000, and a folder that was only partly deleted says how much was left.
+- The bucket list deletes only empty buckets; S3 refuses the rest with `BucketNotEmpty`, and the dialog says so before anything is sent.
 
 ### Instance launch
 

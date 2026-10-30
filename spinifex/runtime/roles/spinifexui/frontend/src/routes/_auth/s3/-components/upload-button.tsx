@@ -64,8 +64,8 @@ export function UploadButton({
         onClick={() => fileInputRef.current?.click()}
         size="sm"
       >
-        <Upload className="mr-2 size-4" />
-        {isPending ? "Uploading…" : "Upload Files"}
+        <Upload data-icon="inline-start" />
+        {isPending ? "Uploading…" : "Upload"}
       </Button>
     </>
   )

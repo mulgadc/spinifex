@@ -53,7 +53,10 @@ export interface NavItem {
 
 export interface NavGroup {
   items: readonly NavItem[]
+  // Generic names, not AWS's service marks; `service` keeps the AWS name
+  // findable in the command palette.
   label: string
+  service?: string
   ochre?: boolean
 }
 
@@ -66,7 +69,8 @@ export const NAV: readonly NavGroup[] = [
     ],
   },
   {
-    label: "EC2",
+    label: "Compute",
+    service: "EC2",
     items: [
       {
         label: "Instances",
@@ -234,10 +238,11 @@ export const NAV: readonly NavGroup[] = [
     ],
   },
   {
-    label: "RDS",
+    label: "Databases",
+    service: "RDS",
     items: [
       {
-        label: "Databases",
+        label: "DB Instances",
         icon: Database,
         to: "/rds/describe-db-instances",
         create: { label: "Create database", to: "/rds/create-db-instance" },
@@ -299,7 +304,8 @@ export const NAV: readonly NavGroup[] = [
     ],
   },
   {
-    label: "IAM",
+    label: "Authentication",
+    service: "IAM",
     items: [
       {
         label: "Users",
@@ -342,7 +348,8 @@ export const NAV: readonly NavGroup[] = [
     ],
   },
   {
-    label: "S3",
+    label: "Object Storage",
+    service: "S3",
     items: [
       {
         label: "Buckets",

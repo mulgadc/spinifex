@@ -109,4 +109,31 @@ describe("BulkDelete", () => {
 
     expect(deleteOne).toHaveBeenCalledTimes(2)
   })
+
+  it("hands a batch deleter every ID in one call, keeping its refusals", async () => {
+    const deleteMany = vi.fn(
+      async (_ids: readonly string[]) => new Map([["b", "Access Denied"]]),
+    )
+
+    const onDeleted = vi.fn()
+    const user = userEvent.setup()
+
+    render(
+      <BulkDelete
+        deleteMany={deleteMany}
+        ids={["a", "b"]}
+        noun={["item", "items"]}
+        onDeleted={onDeleted}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+    await user.click(screen.getByRole("button", { name: "Delete 2" }))
+
+    expect(deleteMany).toHaveBeenCalledExactlyOnceWith(["a", "b"])
+    expect(onDeleted).toHaveBeenLastCalledWith(["a"])
+    expect(
+      within(screen.getByRole("alertdialog")).getByText("Access Denied"),
+    ).toBeInTheDocument()
+  })
 })

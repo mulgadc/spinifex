@@ -22,6 +22,16 @@ test.describe("command palette", () => {
     await expect(page).toHaveURL(/\/ec2\/describe-vpcs$/u)
   })
 
+  test("finds a page by its AWS service name", async ({ page }) => {
+    await page.goto("/")
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible()
+    await page.keyboard.press("ControlOrMeta+k")
+    await page.getByRole("combobox").fill("rds")
+    await page.keyboard.press("Enter")
+
+    await expect(page).toHaveURL(/\/rds\/describe-db-instances$/u)
+  })
+
   test("offers create flows", async ({ page }) => {
     await page.goto("/")
     await page.getByRole("button", { name: /search/iu }).click()
@@ -37,7 +47,7 @@ test.describe("breadcrumbs", () => {
     await page.goto("/ec2/describe-instances/i-0a1b2c3d4e5f60718")
 
     const trail = page.getByRole("navigation", { name: "breadcrumb" })
-    await expect(trail.getByText("EC2")).toBeVisible()
+    await expect(trail.getByText("Compute")).toBeVisible()
     await expect(trail.getByText("i-0a1b2c3d4e5f60718")).toHaveClass(
       /font-mono/u,
     )
@@ -103,7 +113,11 @@ test.describe("sidebar", () => {
   test("remembers a folded group across reloads", async ({ page }) => {
     await page.goto("/")
     const sidebar = page.locator("[data-slot=sidebar]")
-    const s3 = sidebar.getByRole("button", { name: "S3", exact: true })
+
+    const s3 = sidebar.getByRole("button", {
+      name: "Object Storage",
+      exact: true,
+    })
 
     await expect(
       sidebar.getByRole("link", { name: "Buckets", exact: true }),

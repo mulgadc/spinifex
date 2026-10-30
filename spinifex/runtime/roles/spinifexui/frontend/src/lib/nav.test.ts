@@ -85,14 +85,14 @@ describe("visibleNav", () => {
     )
 
     expect(groups).not.toContain("Ochre")
-    expect(groups).toContain("EC2")
+    expect(groups).toContain("Compute")
   })
 })
 
 describe("breadcrumbTrail", () => {
   it("ends at the list page on the list itself", () => {
     expect(breadcrumbTrail(NAV, "/ec2/describe-instances")).toStrictEqual([
-      { label: "EC2" },
+      { label: "Compute" },
       { label: "Instances" },
     ])
   })
@@ -101,7 +101,7 @@ describe("breadcrumbTrail", () => {
     expect(
       breadcrumbTrail(NAV, "/ec2/describe-instances/i-0a1b2c3d"),
     ).toStrictEqual([
-      { label: "EC2" },
+      { label: "Compute" },
       { label: "Instances", to: "/ec2/describe-instances" },
       { label: "i-0a1b2c3d" },
     ])

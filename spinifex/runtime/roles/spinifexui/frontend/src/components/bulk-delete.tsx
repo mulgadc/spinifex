@@ -19,7 +19,19 @@ type Outcome =
   | { status: "done" }
   | { status: "failed"; message: string }
 
-interface BulkDeleteProps {
+// Most AWS delete calls take one ID, so the selection is deleted one call at a
+// time and each failure kept. A call that takes many, such as DeleteObjects,
+// passes deleteMany instead and returns the IDs it could not delete, with why.
+type Deleter =
+  | { deleteOne: (id: string) => Promise<object>; deleteMany?: never }
+  | {
+      deleteMany: (
+        ids: readonly string[],
+      ) => Promise<ReadonlyMap<string, string>>
+      deleteOne?: never
+    }
+
+type BulkDeleteProps = Deleter & {
   ids: readonly string[]
   // Singular and plural, as "key pair" and "key pairs".
   noun: readonly [string, string]
@@ -32,9 +44,6 @@ interface BulkDeleteProps {
   pendingVerb?: string
   // Typed before the confirm enables, for deletes that cannot be walked back.
   confirmPhrase?: string
-  // Deletes one resource. Most AWS delete calls take a single ID, so the
-  // selection is deleted one call at a time and each failure is kept.
-  deleteOne: (id: string) => Promise<object>
   // The IDs that were deleted, once a run ends, so the caller can drop them
   // from its selection.
   onDeleted: (ids: string[]) => void
@@ -57,6 +66,7 @@ export function BulkDelete({
   pendingVerb = "Deleting",
   confirmPhrase,
   deleteOne,
+  deleteMany,
   onDeleted,
 }: BulkDeleteProps) {
   const [open, setOpen] = useState(false)
@@ -97,24 +107,55 @@ export function BulkDelete({
     const deleted: string[] = []
     const next = new Map(outcomes)
 
-    for (const id of targets) {
-      next.set(id, { status: "running" })
-      setOutcomes(new Map(next))
-
-      try {
-        // One at a time, so each refusal lands against its own resource.
-        // oxlint-disable-next-line no-await-in-loop
-        await deleteOne(id)
-        next.set(id, { status: "done" })
-        deleted.push(id)
-      } catch (error) {
-        next.set(id, {
-          status: "failed",
-          message: error instanceof Error ? error.message : String(error),
-        })
+    if (deleteMany) {
+      for (const id of targets) {
+        next.set(id, { status: "running" })
       }
 
       setOutcomes(new Map(next))
+      let refused: ReadonlyMap<string, string>
+
+      try {
+        refused = await deleteMany(targets)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        refused = new Map(targets.map((id) => [id, message]))
+      }
+
+      for (const id of targets) {
+        const message = refused.get(id)
+
+        if (message === undefined) {
+          next.set(id, { status: "done" })
+          deleted.push(id)
+        } else {
+          next.set(id, { status: "failed", message })
+        }
+      }
+
+      setOutcomes(new Map(next))
+    }
+
+    if (deleteOne) {
+      for (const id of targets) {
+        next.set(id, { status: "running" })
+        setOutcomes(new Map(next))
+
+        try {
+          // One at a time, so each refusal lands against its own resource.
+          // oxlint-disable-next-line no-await-in-loop
+          await deleteOne(id)
+          next.set(id, { status: "done" })
+          deleted.push(id)
+        } catch (error) {
+          next.set(id, {
+            status: "failed",
+            message: error instanceof Error ? error.message : String(error),
+          })
+        }
+
+        setOutcomes(new Map(next))
+      }
     }
 
     setRunning(false)

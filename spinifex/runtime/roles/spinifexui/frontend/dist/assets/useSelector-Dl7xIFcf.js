@@ -1,0 +1,1 @@
+import{E as e,k as t}from"./utils-CTImhd74.js";import{t as n}from"./with-selector-CX59z2pK.js";var r=t(e(),1),i=n();function a(e,t){return e===t}function o(e,t=e=>e,n){let o=n?.compare??a,s=(0,r.useCallback)(t=>{let{unsubscribe:n}=e.subscribe(t);return n},[e]),c=(0,r.useCallback)(()=>e.get(),[e]);return(0,i.useSyncExternalStoreWithSelector)(s,c,c,t,o)}export{o as t};

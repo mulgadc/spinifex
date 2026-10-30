@@ -20,11 +20,13 @@ const FAKE_SESSION = {
 export type Theme = "dark" | "light"
 
 // A handler answers one API action. Query-protocol services (EC2, STS, IAM)
-// name it in the form body; JSON services name it in X-Amz-Target.
+// name it in the form body; JSON services name it in X-Amz-Target. S3 is
+// "<METHOD> <path>", and its handlers get the URL's query string.
 export type ApiHandler = (params: URLSearchParams) => {
   status?: number
   body: string
   contentType?: string
+  headers?: Record<string, string>
 }
 
 export interface ConsoleApi {
@@ -196,10 +198,16 @@ async function installConsole(page: Page): Promise<ConsoleApi> {
       return
     }
 
-    const response = handler(new URLSearchParams(body))
+    const response = handler(
+      action.includes(" ")
+        ? new URL(request.url()).searchParams
+        : new URLSearchParams(body),
+    )
+
     await route.fulfill({
       status: response.status ?? 200,
       contentType: response.contentType ?? "text/xml",
+      headers: response.headers,
       body: response.body,
     })
   })

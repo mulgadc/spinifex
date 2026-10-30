@@ -40,8 +40,28 @@ function usePaletteShortcut(toggle: () => void) {
   }, [toggle])
 }
 
+// A group or AWS service typed in full ("compute", "ec2") lists first.
+function namedFirst<T extends { label: string; service?: string }>(
+  groups: readonly T[],
+  search: string,
+): T[] {
+  const term = search.trim().toLowerCase()
+
+  const named = (group: T) =>
+    [group.label, group.service].some((name) => name?.toLowerCase() === term)
+
+  return [...groups.filter(named), ...groups.filter((group) => !named(group))]
+}
+
 export function CommandPalette() {
   const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState("")
+
+  // However the palette closes, it opens empty next time.
+  if (!open && search !== "") {
+    setSearch("")
+  }
+
   const navigate = useNavigate()
   const { isAdmin } = useAdmin()
   const { theme, setTheme } = useTheme()
@@ -86,14 +106,22 @@ export function CommandPalette() {
         title="Command palette"
       >
         <Command>
-          <CommandInput placeholder="Go to a service or run a command" />
+          <CommandInput
+            onValueChange={setSearch}
+            placeholder="Go to a service or run a command"
+            value={search}
+          />
           <CommandList>
             <CommandEmpty>No matches.</CommandEmpty>
-            {groups.map((group) => (
-              <CommandGroup heading={group.label} key={group.label}>
+            {namedFirst(groups, search).map((group) => (
+              <CommandGroup
+                heading={group.label}
+                key={group.label}
+                value={group.label}
+              >
                 {group.items.map((item) => (
                   <CommandItem
-                    keywords={[group.label]}
+                    keywords={[group.label, group.service ?? ""]}
                     key={item.to}
                     onSelect={() => {
                       go(item.to)

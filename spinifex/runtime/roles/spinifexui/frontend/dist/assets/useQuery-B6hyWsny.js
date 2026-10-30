@@ -1,0 +1,1 @@
+import{r as e,t}from"./useBaseQuery-BMGykeP1.js";function n(n,r){return t(n,e,r)}export{n as t};

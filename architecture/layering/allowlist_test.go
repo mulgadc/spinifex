@@ -59,9 +59,6 @@ var allowlist = []allowance{
 	{From: "domains/ec2/awsapi/instance", To: "runtime/compute/cache", Debt: "domains/ec2/awsapi/instance (dependency)", Reason: "node liveness and VM state; needs an EC2-owned projection"},
 	{From: "domains/ec2/awsapi/instance", To: "runtime/compute/vm", Debt: "domains/ec2/awsapi/instance (dependency)", Reason: "node liveness and VM state; needs an EC2-owned projection"},
 
-	{From: "domains/ec2/awsapi/spotinstance", To: "domains/admission/quota", Debt: "domains/ec2/awsapi/spotinstance (dependency)", Reason: "RequestSpotInstances.go uses IAMService and quota.Service"},
-	{From: "domains/ec2/awsapi/spotinstance", To: "domains/iam", Debt: "domains/ec2/awsapi/spotinstance (dependency)", Reason: "RequestSpotInstances.go uses IAMService and quota.Service"},
-
 	{From: "domains/ec2/eip", To: "domains/network/topology", Debt: "EC2 → network implementation", Reason: "EC2 reads network implementation; clears with the EC2-owned projection"},
 
 	{From: "domains/ec2/guestmetadata", To: "domains/dns", Debt: "Guest metadata: the cross-domain and runtime imports above", Reason: "guest-metadata relocation residual; needs capabilities, projections or contracts"},
@@ -103,25 +100,7 @@ var allowlist = []allowance{
 	{From: "domains/ochre/vector", To: "domains/iam", Debt: "Cross-domain", Reason: "consumes another domain's implementation rather than a capability"},
 
 	{From: "gateway", To: "domains/ec2/awsapi", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/account", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/capacityreservation", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/eigw", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/eip", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/idem", Debt: "gateway/ec2.go (registration; ec2_idempotency.go)", Reason: "dispatch-time idempotency wrapper; moves with the EC2 dispatch map"},
-	{From: "gateway", To: "domains/ec2/awsapi/igw", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/image", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
 	{From: "gateway", To: "domains/ec2/awsapi/instance", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/key", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/launchtemplate", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/natgw", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/placementgroup", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/routetable", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/snapshot", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/spotinstance", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/tags", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/volume", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/vpc", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/zone", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
 
 	{From: "domains/rds/awsapi", To: "domains/ec2/awsapi/instance", Debt: "Instance adapter consumers outside EC2", Reason: "enginecatalog.go calls the instance adapter; needs an EC2 capability"},
 

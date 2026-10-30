@@ -1,3 +1,4 @@
+// Package gateway provides the AWS-compatible API gateway for the Spinifex platform.
 package gateway
 
 import (
@@ -10,7 +11,6 @@ import (
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
-	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -23,9 +23,9 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
-	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
@@ -39,7 +39,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -89,11 +88,10 @@ type GatewayConfig struct {
 	activeNodesMu    sync.RWMutex
 	activeNodesCount int
 	activeNodesAt    time.Time
-	// The EC2 client-token KV binding, bound on first use and reused after, so
-	// the creates that honour ClientToken do not rebind it per request.
-	ec2TokenOnce   sync.Once
-	ec2TokenKV     jetstream.KeyValue
-	ec2TokenErr    error
+	// The EC2 handler, built on first use so its client-token binding is reused
+	// across requests.
+	ec2Once        sync.Once
+	ec2Handler     *ec2awsapi.Handler
 	InternalSuffix string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
 	// RegistryPort is the gateway's advertised port, appended to the ECR
 	// registry host so docker login/tag/push dial the right port. Empty or
@@ -504,13 +502,6 @@ const (
 	eksServicePrincipal      = "eks.amazonaws.com"
 )
 
-// checkPassRole enforces iam:PassRole on roleARN. iam:PassedToService is fixed
-// by the call site handing the role over, never read from the request.
-func (gw *GatewayConfig) checkPassRole(r *http.Request, roleARN, passedTo string) error {
-	return gw.checkPolicyResourcesWithKeys(r, "iam", "PassRole", []string{roleARN},
-		iampolicy.ConditionKeys{iampolicy.KeyPassedToService: passedTo})
-}
-
 // checkPolicyResourcesWithKeys is checkPolicyResources with action-scoped
 // condition keys layered over the request's own.
 func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, action string, resources []string, actionKeys iampolicy.ConditionKeys) error {
@@ -629,24 +620,6 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	if _, err := w.Write(xmlError); err != nil {
 		slog.Error("Failed to write error response", "err", err)
 	}
-}
-
-// readQueryArgs returns parsed query args from context (set by SigV4) or falls
-// back to parsing the body (unauthenticated/test paths only).
-func readQueryArgs(r *http.Request) (map[string]string, error) {
-	if args, ok := r.Context().Value(ctxQueryArgs).(map[string]string); ok {
-		return args, nil
-	}
-	// Same cap as the signed path: this fallback only runs when the context
-	// carries no pre-parsed args, so the body has not been bounded upstream.
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
-	}
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return ParseAWSQueryArgs(string(body))
 }
 
 // ParseAWSQueryArgs parses an AWS query-protocol body. Returns an error on

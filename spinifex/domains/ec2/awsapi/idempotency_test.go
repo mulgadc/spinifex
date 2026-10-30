@@ -1,8 +1,7 @@
-//test:in-package — the decorator, the action table and the gateway's token
-//bucket field are all unexported, and the point of these tests is that the
-//table's entries are wired to the decorator.
+//test:in-package — the decorator and the action table are unexported, and the
+// point of these tests is that the table entries are wired to the decorator.
 
-package gateway
+package awsapi
 
 import (
 	"bytes"
@@ -60,32 +59,32 @@ func responseFields(t *testing.T, doc []byte) []string {
 	return fields
 }
 
-// newTokenGateway returns a gateway whose client-token bucket is already bound
+// newTokenCall returns a gateway whose client-token bucket is already bound
 // to a test JetStream, so dispatch never reaches a real NATS connection.
-func newTokenGateway(t *testing.T) *GatewayConfig {
+func newTokenCall(t *testing.T) *call {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv, err := idempotency.OpenBucket(t.Context(), testutil.NewJetStream(t, nc), "gw-ec2-tokens", time.Minute)
 	require.NoError(t, err)
 
-	gw := &GatewayConfig{}
-	// Burns the Once as it binds, so ec2ClientTokenBucket returns this bucket
+	h := NewHandler(Deps{})
+	// Burns the Once as it binds, so clientTokenBucket returns this bucket
 	// rather than dialing.
-	gw.ec2TokenOnce.Do(func() { gw.ec2TokenKV = kv })
-	return gw
+	h.tokenOnce.Do(func() { h.tokenKV = kv })
+	return &call{Handler: h}
 }
 
 // dispatchTwice runs one action twice through the decorator with the same input
 // and reports how many times the create actually ran.
-func dispatchTwice[In, Out any](t *testing.T, gw *GatewayConfig, action string, input *In, result Out) (calls int, first, second []byte) {
+func dispatchTwice[In, Out any](t *testing.T, c *call, action string, input *In, result Out) (calls int, first, second []byte) {
 	t.Helper()
-	handler := ec2IdempotentHandler(func(ctx context.Context, in *In, gw *GatewayConfig, accountID string) (Out, error) {
+	handler := ec2IdempotentHandler(func(ctx context.Context, in *In, c *call, accountID string) (Out, error) {
 		calls++
 		return result, nil
 	})
-	first, err := handler.dispatch(action, input, gw, idemTestAccount, nil)
+	first, err := handler.dispatch(t.Context(), action, input, c, idemTestAccount)
 	require.NoError(t, err)
-	second, err = handler.dispatch(action, input, gw, idemTestAccount, nil)
+	second, err = handler.dispatch(t.Context(), action, input, c, idemTestAccount)
 	require.NoError(t, err)
 	return calls, first, second
 }
@@ -98,8 +97,8 @@ func TestIdempotentHandler_SameTokenCreatesOneResource(t *testing.T) {
 
 	t.Run("CreateVolume", func(t *testing.T) {
 		t.Parallel()
-		gw := newTokenGateway(t)
-		calls, first, second := dispatchTwice(t, gw, "CreateVolume",
+		c := newTokenCall(t)
+		calls, first, second := dispatchTwice(t, c, "CreateVolume",
 			&ec2.CreateVolumeInput{Size: aws.Int64(8), ClientToken: tok},
 			ec2.Volume{VolumeId: aws.String("vol-1")})
 		assert.Equal(t, 1, calls)
@@ -109,8 +108,8 @@ func TestIdempotentHandler_SameTokenCreatesOneResource(t *testing.T) {
 
 	t.Run("CreateNetworkInterface", func(t *testing.T) {
 		t.Parallel()
-		gw := newTokenGateway(t)
-		calls, first, second := dispatchTwice(t, gw, "CreateNetworkInterface",
+		c := newTokenCall(t)
+		calls, first, second := dispatchTwice(t, c, "CreateNetworkInterface",
 			&ec2.CreateNetworkInterfaceInput{ClientToken: tok},
 			ec2.CreateNetworkInterfaceOutput{
 				NetworkInterface: &ec2.NetworkInterface{NetworkInterfaceId: aws.String("eni-1")},
@@ -123,8 +122,8 @@ func TestIdempotentHandler_SameTokenCreatesOneResource(t *testing.T) {
 	// Both IDs have to survive the replay: re-creating either one leaks it.
 	t.Run("CreateNatGateway", func(t *testing.T) {
 		t.Parallel()
-		gw := newTokenGateway(t)
-		calls, first, second := dispatchTwice(t, gw, "CreateNatGateway",
+		c := newTokenCall(t)
+		calls, first, second := dispatchTwice(t, c, "CreateNatGateway",
 			&ec2.CreateNatGatewayInput{ClientToken: tok},
 			ec2.CreateNatGatewayOutput{
 				NatGateway: &ec2.NatGateway{
@@ -142,8 +141,8 @@ func TestIdempotentHandler_SameTokenCreatesOneResource(t *testing.T) {
 
 	t.Run("CreateRouteTable", func(t *testing.T) {
 		t.Parallel()
-		gw := newTokenGateway(t)
-		calls, first, second := dispatchTwice(t, gw, "CreateRouteTable",
+		c := newTokenCall(t)
+		calls, first, second := dispatchTwice(t, c, "CreateRouteTable",
 			&ec2.CreateRouteTableInput{ClientToken: tok},
 			ec2.CreateRouteTableOutput{
 				RouteTable: &ec2.RouteTable{
@@ -161,8 +160,8 @@ func TestIdempotentHandler_SameTokenCreatesOneResource(t *testing.T) {
 
 	t.Run("CreateEgressOnlyInternetGateway", func(t *testing.T) {
 		t.Parallel()
-		gw := newTokenGateway(t)
-		calls, first, second := dispatchTwice(t, gw, "CreateEgressOnlyInternetGateway",
+		c := newTokenCall(t)
+		calls, first, second := dispatchTwice(t, c, "CreateEgressOnlyInternetGateway",
 			&ec2.CreateEgressOnlyInternetGatewayInput{ClientToken: tok},
 			ec2.CreateEgressOnlyInternetGatewayOutput{
 				EgressOnlyInternetGateway: &ec2.EgressOnlyInternetGateway{
@@ -176,8 +175,8 @@ func TestIdempotentHandler_SameTokenCreatesOneResource(t *testing.T) {
 
 	t.Run("CopyImage", func(t *testing.T) {
 		t.Parallel()
-		gw := newTokenGateway(t)
-		calls, first, second := dispatchTwice(t, gw, "CopyImage",
+		c := newTokenCall(t)
+		calls, first, second := dispatchTwice(t, c, "CopyImage",
 			&ec2.CopyImageInput{Name: aws.String("copy"), ClientToken: tok},
 			ec2.CopyImageOutput{ImageId: aws.String("ami-1")})
 		assert.Equal(t, 1, calls)
@@ -189,8 +188,8 @@ func TestIdempotentHandler_SameTokenCreatesOneResource(t *testing.T) {
 	// client that thought it made one call.
 	t.Run("CreateLaunchTemplateVersion", func(t *testing.T) {
 		t.Parallel()
-		gw := newTokenGateway(t)
-		calls, first, second := dispatchTwice(t, gw, "CreateLaunchTemplateVersion",
+		c := newTokenCall(t)
+		calls, first, second := dispatchTwice(t, c, "CreateLaunchTemplateVersion",
 			&ec2.CreateLaunchTemplateVersionInput{LaunchTemplateId: aws.String("lt-1"), ClientToken: tok},
 			ec2.CreateLaunchTemplateVersionOutput{
 				LaunchTemplateVersion: &ec2.LaunchTemplateVersion{
@@ -205,8 +204,8 @@ func TestIdempotentHandler_SameTokenCreatesOneResource(t *testing.T) {
 
 	t.Run("CreateCapacityReservation", func(t *testing.T) {
 		t.Parallel()
-		gw := newTokenGateway(t)
-		calls, first, second := dispatchTwice(t, gw, "CreateCapacityReservation",
+		c := newTokenCall(t)
+		calls, first, second := dispatchTwice(t, c, "CreateCapacityReservation",
 			&ec2.CreateCapacityReservationInput{ClientToken: tok},
 			ec2.CreateCapacityReservationOutput{
 				CapacityReservation: &ec2.CapacityReservation{
@@ -223,14 +222,14 @@ func TestIdempotentHandler_SameTokenCreatesOneResource(t *testing.T) {
 // separate pieces of work rather than one replaying the other's response.
 func TestIdempotentHandler_TokensAreScopedPerAction(t *testing.T) {
 	t.Parallel()
-	gw := newTokenGateway(t)
+	c := newTokenCall(t)
 	tok := aws.String("shared-token")
 
-	volumeCalls, _, _ := dispatchTwice(t, gw, "CreateVolume",
+	volumeCalls, _, _ := dispatchTwice(t, c, "CreateVolume",
 		&ec2.CreateVolumeInput{ClientToken: tok}, ec2.Volume{VolumeId: aws.String("vol-1")})
 	require.Equal(t, 1, volumeCalls)
 
-	eigwCalls, _, second := dispatchTwice(t, gw, "CreateEgressOnlyInternetGateway",
+	eigwCalls, _, second := dispatchTwice(t, c, "CreateEgressOnlyInternetGateway",
 		&ec2.CreateEgressOnlyInternetGatewayInput{ClientToken: tok},
 		ec2.CreateEgressOnlyInternetGatewayOutput{
 			EgressOnlyInternetGateway: &ec2.EgressOnlyInternetGateway{
@@ -246,19 +245,19 @@ func TestIdempotentHandler_TokensAreScopedPerAction(t *testing.T) {
 // must not run.
 func TestIdempotentHandler_ParamMismatchIsRejected(t *testing.T) {
 	t.Parallel()
-	gw := newTokenGateway(t)
+	c := newTokenCall(t)
 	calls := 0
-	handler := ec2IdempotentHandler(func(ctx context.Context, in *ec2.CreateVolumeInput, gw *GatewayConfig, accountID string) (ec2.Volume, error) {
+	handler := ec2IdempotentHandler(func(ctx context.Context, in *ec2.CreateVolumeInput, c *call, accountID string) (ec2.Volume, error) {
 		calls++
 		return ec2.Volume{VolumeId: aws.String("vol-1")}, nil
 	})
 
-	_, err := handler.dispatch("CreateVolume",
-		&ec2.CreateVolumeInput{Size: aws.Int64(8), ClientToken: aws.String("tok-mm")}, gw, idemTestAccount, nil)
+	_, err := handler.dispatch(t.Context(), "CreateVolume",
+		&ec2.CreateVolumeInput{Size: aws.Int64(8), ClientToken: aws.String("tok-mm")}, c, idemTestAccount)
 	require.NoError(t, err)
 
-	_, err = handler.dispatch("CreateVolume",
-		&ec2.CreateVolumeInput{Size: aws.Int64(16), ClientToken: aws.String("tok-mm")}, gw, idemTestAccount, nil)
+	_, err = handler.dispatch(t.Context(), "CreateVolume",
+		&ec2.CreateVolumeInput{Size: aws.Int64(16), ClientToken: aws.String("tok-mm")}, c, idemTestAccount)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIdempotentParameterMismatch, err.Error())
 	assert.Equal(t, 1, calls, "a mismatched token must not create anything")
@@ -267,8 +266,8 @@ func TestIdempotentHandler_ParamMismatchIsRejected(t *testing.T) {
 // Without a token the client did not ask for idempotency, so each call creates.
 func TestIdempotentHandler_NoTokenCreatesEachTime(t *testing.T) {
 	t.Parallel()
-	gw := newTokenGateway(t)
-	calls, _, _ := dispatchTwice(t, gw, "CreateVolume",
+	c := newTokenCall(t)
+	calls, _, _ := dispatchTwice(t, c, "CreateVolume",
 		&ec2.CreateVolumeInput{Size: aws.Int64(8)}, ec2.Volume{VolumeId: aws.String("vol-1")})
 	assert.Equal(t, 2, calls)
 }
@@ -277,10 +276,10 @@ func TestIdempotentHandler_NoTokenCreatesEachTime(t *testing.T) {
 // again rather than replay the failure.
 func TestIdempotentHandler_FailedCreateIsRetryable(t *testing.T) {
 	t.Parallel()
-	gw := newTokenGateway(t)
+	c := newTokenCall(t)
 	boom := errors.New("create failed")
 	calls := 0
-	handler := ec2IdempotentHandler(func(ctx context.Context, in *ec2.CreateVolumeInput, gw *GatewayConfig, accountID string) (ec2.Volume, error) {
+	handler := ec2IdempotentHandler(func(ctx context.Context, in *ec2.CreateVolumeInput, c *call, accountID string) (ec2.Volume, error) {
 		calls++
 		if calls == 1 {
 			return ec2.Volume{}, boom
@@ -289,10 +288,10 @@ func TestIdempotentHandler_FailedCreateIsRetryable(t *testing.T) {
 	})
 	input := &ec2.CreateVolumeInput{Size: aws.Int64(8), ClientToken: aws.String("tok-retry")}
 
-	_, err := handler.dispatch("CreateVolume", input, gw, idemTestAccount, nil)
+	_, err := handler.dispatch(t.Context(), "CreateVolume", input, c, idemTestAccount)
 	require.ErrorIs(t, err, boom, "the handler's own error reaches the caller unchanged")
 
-	out, err := handler.dispatch("CreateVolume", input, gw, idemTestAccount, nil)
+	out, err := handler.dispatch(t.Context(), "CreateVolume", input, c, idemTestAccount)
 	require.NoError(t, err)
 	assert.Equal(t, 2, calls)
 	assert.Contains(t, string(out), "vol-1")

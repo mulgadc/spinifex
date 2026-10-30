@@ -168,7 +168,7 @@ func tokenPrincipal(inv dispatch.Invocation) (ecrauth.Principal, error) {
 // aws:userid ("<roleID>:<session>"). Any other principal, or a UserID without that
 // shape, yields none and the token carries no role claim.
 func roleIDOf(actor dispatch.Actor) string {
-	if actor.PrincipalType != "assumed-role" {
+	if actor.PrincipalType != dispatch.PrincipalTypeAssumedRole {
 		return ""
 	}
 	roleID, _, found := strings.Cut(actor.UserID, ":")

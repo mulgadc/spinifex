@@ -44,6 +44,62 @@ func TestRehydrate_FailureCodeMapping(t *testing.T) {
 	}
 }
 
+type stubRoleRehydrator struct {
+	p credential.Principal
+	f *credential.Failure
+}
+
+func (s stubRoleRehydrator) RehydrateRole(_, _, _ string) (credential.Principal, *credential.Failure) {
+	return s.p, s.f
+}
+
+func TestRehydrateRole_FailureMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		f    *credential.Failure
+		is   error
+		isnt []error
+	}{
+		{"role gone", &credential.Failure{Code: awserrors.ErrorInvalidClientTokenId, RoleGone: true},
+			ecrregistry.ErrRoleGone, []error{ecrregistry.ErrUnavailable, ecrregistry.ErrInvalidCredential}},
+		{"dependency fault", &credential.Failure{Code: awserrors.ErrorInternalError},
+			ecrregistry.ErrUnavailable, []error{ecrregistry.ErrRoleGone}},
+		{"other invalid", &credential.Failure{Code: awserrors.ErrorInvalidClientTokenId},
+			ecrregistry.ErrInvalidCredential, []error{ecrregistry.ErrRoleGone, ecrregistry.ErrUnavailable}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := registryRoleRehydrator{stubRoleRehydrator{f: c.f}}.RehydrateRole("000000000001", "AROA", "arn")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, c.is)
+			for _, no := range c.isnt {
+				assert.NotErrorIs(t, err, no)
+			}
+		})
+	}
+}
+
+func TestRehydrateRole_ProjectsThePrincipal(t *testing.T) {
+	in := credential.Principal{
+		Identity: "session", AccountID: "000000000001", PrincipalType: "assumed-role",
+		AssumedRoleARN: "ar", AssumedRoleID: "ari", UnderlyingRoleARN: "ur", UserID: "uid", CallerARN: "carn",
+	}
+	got, err := registryRoleRehydrator{stubRoleRehydrator{p: in}}.RehydrateRole("000000000001", "AROA", "ar")
+	require.NoError(t, err)
+	assert.Equal(t, ecrregistry.Principal(in), got)
+}
+
+type stubCredentials struct {
+	stubRehydrator
+	stubRoleRehydrator
+}
+
+func TestConfig_WiresBothRehydrators(t *testing.T) {
+	cfg := Config(ecrregistry.BridgeConfig{}, stubCredentials{}, nil)
+	assert.NotNil(t, cfg.Rehydrator)
+	assert.NotNil(t, cfg.RoleRehydrator)
+}
+
 func TestRehydrate_ProjectsEveryPrincipalField(t *testing.T) {
 	in := credential.Principal{
 		Identity: "dev", AccountID: "000000000001", PrincipalType: "user",

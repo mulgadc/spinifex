@@ -310,8 +310,9 @@ func TestDispatch_GetAuthorizationTokenMintsForTheVerifiedActor(t *testing.T) {
 	actor := dispatch.Actor{
 		AccountID:     regAccount,
 		CallerARN:     "arn:aws:sts::" + regAccount + ":assumed-role/builder/session",
-		PrincipalType: "AssumedRole",
+		PrincipalType: dispatch.PrincipalTypeAssumedRole,
 		AccessKeyID:   "ASIAREGISTRATIONTEST",
+		UserID:        "AROAROLEID0000000001:session",
 	}
 	f := &fakeInvocation{actor: actor}
 	be := &backend{log: &f.log}
@@ -326,6 +327,7 @@ func TestDispatch_GetAuthorizationTokenMintsForTheVerifiedActor(t *testing.T) {
 		ARN:         actor.CallerARN,
 		Type:        actor.PrincipalType,
 		AccessKeyID: actor.AccessKeyID,
+		RoleID:      "AROAROLEID0000000001",
 	}, be.minted[0])
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))

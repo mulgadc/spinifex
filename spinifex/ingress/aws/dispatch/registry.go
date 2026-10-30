@@ -73,6 +73,9 @@ type Inventory struct {
 	Unsupported []string
 }
 
+// PrincipalTypeAssumedRole is Actor.PrincipalType for an assumed-role session.
+const PrincipalTypeAssumedRole = "assumed-role"
+
 // Actor is the verified caller as ingress authenticated it. It carries only
 // the facts a service needs to act for the caller, never credentials.
 type Actor struct {
@@ -94,7 +97,7 @@ type Actor struct {
 // RoleName is the name of the role behind an assumed-role session. It is empty
 // for any other principal and when the role is not in the caller's own account.
 func (a Actor) RoleName() string {
-	if a.PrincipalType != "assumed-role" {
+	if a.PrincipalType != PrincipalTypeAssumedRole {
 		return ""
 	}
 	roleAccount, roleName, err := auth.ParseRoleARN(a.PrincipalARN)

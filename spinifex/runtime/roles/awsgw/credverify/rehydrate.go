@@ -19,9 +19,57 @@ var (
 	_ credential.RoleRehydrator = (*Verifier)(nil)
 )
 
-// RehydrateRole is not implemented yet.
+// RehydrateRole rebuilds an assumed-role caller from the live role, without the
+// session record: the role named by assumedRoleARN must still exist in accountID with
+// the immutable roleID the caller was minted for. A deleted role, or one recreated
+// under the same name with a new ID, is RoleGone. Nothing here reads the session store.
 func (v *Verifier) RehydrateRole(accountID, roleID, assumedRoleARN string) (credential.Principal, *credential.Failure) {
-	return credential.Principal{}, fail(awserrors.ErrorInternalError)
+	if v == nil || v.iam == nil {
+		slog.Error("credential rehydrate role: IAM service not initialized")
+		return credential.Principal{}, fail(awserrors.ErrorInternalError)
+	}
+	roleName, sessionName, ok := parseAssumedRoleARN(assumedRoleARN, accountID)
+	if !ok || roleID == "" {
+		slog.Warn("credential rehydrate role: malformed request", "accountID", accountID, "assumedRoleARN", assumedRoleARN)
+		return credential.Principal{}, fail(awserrors.ErrorInvalidClientTokenId)
+	}
+
+	out, err := v.iam.GetRole(accountID, &iam.GetRoleInput{RoleName: aws.String(roleName)})
+	switch {
+	case err != nil && awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity),
+		err == nil && (out == nil || out.Role == nil),
+		err == nil && aws.StringValue(out.Role.RoleId) != roleID:
+		slog.Warn("credential rehydrate role: role gone", "accountID", accountID, "roleID", roleID, "assumedRoleARN", assumedRoleARN)
+		return credential.Principal{}, &credential.Failure{Code: awserrors.ErrorInvalidClientTokenId, RoleGone: true}
+	case err != nil:
+		slog.Error("credential rehydrate role: role lookup failed", "accountID", accountID, "roleID", roleID, "err", err)
+		return credential.Principal{}, fail(awserrors.ErrorInternalError)
+	}
+
+	slog.Info("credential rehydrate role: session gone, authorising from the live role",
+		"accountID", accountID, "roleID", roleID, "assumedRoleARN", assumedRoleARN)
+	return v.principalOf("", session{
+		identity:          sessionName,
+		accountID:         accountID,
+		principalType:     stsdomain.PrincipalTypeAssumedRole,
+		assumedRoleARN:    assumedRoleARN,
+		assumedRoleID:     roleID + ":" + sessionName,
+		underlyingRoleARN: aws.StringValue(out.Role.Arn),
+	}, nil)
+}
+
+// parseAssumedRoleARN splits arn:aws:sts::<account>:assumed-role/<role>/<session>,
+// requiring the account to be wantAccount.
+func parseAssumedRoleARN(value, wantAccount string) (roleName, sessionName string, ok bool) {
+	service, _, account, resource, ok := spxarn.Split(value)
+	if !ok || service != "sts" || account != wantAccount {
+		return "", "", false
+	}
+	parts := strings.Split(resource, "/")
+	if len(parts) != 3 || parts[0] != "assumed-role" || parts[1] == "" || parts[2] == "" {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
 }
 
 // Rehydrate rebuilds the caller accessKeyID names from the current IAM and STS
@@ -66,6 +114,13 @@ func (v *Verifier) Rehydrate(accessKeyID, accountID string) (credential.Principa
 	if f != nil {
 		return credential.Principal{}, f
 	}
+	return v.principalOf(accessKeyID, sess, live)
+}
+
+// principalOf builds the caller sess describes: its fields, the user ID and the
+// canonical ARN. Rehydrate and RehydrateRole both end here, so a rebuilt role session
+// cannot differ from the one its own session record yields.
+func (v *Verifier) principalOf(accessKeyID string, sess session, live *stsdomain.SessionPrincipal) (credential.Principal, *credential.Failure) {
 	p := credential.Principal{
 		Identity:          sess.identity,
 		AccountID:         sess.accountID,
@@ -92,6 +147,8 @@ func (v *Verifier) Rehydrate(accessKeyID, accountID string) (credential.Principa
 // and the root user is read like any other rather than short-circuited.
 func (v *Verifier) rehydrateUser(p *credential.Principal, sess session, live *stsdomain.SessionPrincipal) *credential.Failure {
 	switch {
+	case sess.principalType == stsdomain.PrincipalTypeAssumedRole:
+		p.UserID = sess.assumedRoleID
 	case sess.cred == nil:
 		out, err := v.iam.GetUser(sess.accountID, &iam.GetUserInput{UserName: aws.String(sess.identity)})
 		if err != nil {
@@ -112,8 +169,6 @@ func (v *Verifier) rehydrateUser(p *credential.Principal, sess session, live *st
 		if live != nil {
 			p.UserID, p.UserARN = live.UserID, live.UserARN
 		}
-	default:
-		p.UserID = sess.assumedRoleID
 	}
 	return nil
 }

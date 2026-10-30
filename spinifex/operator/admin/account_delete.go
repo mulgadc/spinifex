@@ -1,4 +1,4 @@
-package gateway
+package admin
 
 import (
 	"context"
@@ -76,8 +76,8 @@ type accountDeletionJob struct {
 	Error string `json:"error,omitempty"`
 }
 
-// adminDeleteAccount starts a teardown, or answers a dry run inline.
-func (gw *GatewayConfig) adminDeleteAccount(ctx context.Context, body []byte) (any, error) {
+// deleteAccount starts a teardown, or answers a dry run inline.
+func (d Deps) deleteAccount(ctx context.Context, body []byte) (any, error) {
 	var req operatorv1.DeleteAccountRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		slog.Debug("DeleteAccount: malformed JSON body", "err", err)
@@ -86,12 +86,12 @@ func (gw *GatewayConfig) adminDeleteAccount(ctx context.Context, body []byte) (a
 	if err := validateDeleteAccountRequest(&req); err != nil {
 		return nil, err
 	}
-	if gw.IAMService == nil {
+	if d.IAM == nil {
 		slog.Error("DeleteAccount: IAM service not available")
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	engine, err := accountteardown.NewClusterEngine(ctx, gw.NATSConn, gw.ExpectedNodes, gw.NodeIDs, gw.IAMService, gw.BucketStore)
+	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, d.ExpectedNodes, d.NodeIDs, d.IAM, d.BucketStore)
 	if err != nil {
 		slog.Error("DeleteAccount: failed to build teardown engine", "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)
@@ -101,7 +101,7 @@ func (gw *GatewayConfig) adminDeleteAccount(ctx context.Context, body []byte) (a
 		inventoryCtx, cancel := context.WithTimeout(ctx, accountDeletionInventoryTimeout)
 		defer cancel()
 
-		inventory, err := engine.DryRun(inventoryCtx, req.AccountID, adminRequestIDFrom(ctx))
+		inventory, err := engine.DryRun(inventoryCtx, req.AccountID, requestIDFrom(ctx))
 		if err != nil {
 			return nil, teardownError("DeleteAccount", req.AccountID, err)
 		}
@@ -110,7 +110,7 @@ func (gw *GatewayConfig) adminDeleteAccount(ctx context.Context, body []byte) (a
 		}, nil
 	}
 
-	jobs, err := gw.accountDeletionStore(ctx)
+	jobs, err := d.accountDeletionStore(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -141,16 +141,16 @@ func (gw *GatewayConfig) adminDeleteAccount(ctx context.Context, body []byte) (a
 		return deletionJobResponse(replay), nil
 	}
 
-	gw.runAccountDeletion(engine, jobs, job)
+	d.runAccountDeletion(engine, jobs, job)
 
 	return &DeleteAccountResponse{
 		DeletionID: job.DeletionID, AccountID: job.AccountID, State: job.State,
 	}, nil
 }
 
-// adminDescribeAccountDeletion returns the stored job for an account, including
+// describeAccountDeletion returns the stored job for an account, including
 // one that finished — the record outlives the account it describes.
-func (gw *GatewayConfig) adminDescribeAccountDeletion(ctx context.Context, body []byte) (any, error) {
+func (d Deps) describeAccountDeletion(ctx context.Context, body []byte) (any, error) {
 	var req operatorv1.DescribeAccountDeletionRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		slog.Debug("DescribeAccountDeletion: malformed JSON body", "err", err)
@@ -164,7 +164,7 @@ func (gw *GatewayConfig) adminDescribeAccountDeletion(ctx context.Context, body 
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	jobs, err := gw.accountDeletionStore(ctx)
+	jobs, err := d.accountDeletionStore(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -179,15 +179,15 @@ func (gw *GatewayConfig) adminDescribeAccountDeletion(ctx context.Context, body 
 	return job, nil
 }
 
-// adminListAccounts enumerates every account. It takes no parameters: the
+// listAccounts enumerates every account. It takes no parameters: the
 // account cap bounds the listing, so paging would be complexity with no payer.
-func (gw *GatewayConfig) adminListAccounts(_ context.Context, _ []byte) (any, error) {
-	if gw.IAMService == nil {
+func (d Deps) listAccounts(_ context.Context, _ []byte) (any, error) {
+	if d.IAM == nil {
 		slog.Error("ListAccounts: IAM service not available")
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	accounts, err := gw.IAMService.ListAccounts()
+	accounts, err := d.IAM.ListAccounts()
 	if err != nil {
 		slog.Error("ListAccounts: failed to list accounts", "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
@@ -212,7 +212,7 @@ func (gw *GatewayConfig) adminListAccounts(_ context.Context, _ []byte) (any, er
 // runAccountDeletion runs the teardown in the background on its own context.
 // The request's context is cancelled the moment the response is written, and a
 // teardown cancelled halfway leaves the account half-emptied.
-func (gw *GatewayConfig) runAccountDeletion(
+func (d Deps) runAccountDeletion(
 	engine *accountteardown.Engine,
 	jobs jetstream.KeyValue,
 	job *accountDeletionJob,
@@ -451,8 +451,8 @@ func readDeletionJob(ctx context.Context, jobs jetstream.KeyValue, accountID str
 // accountDeletionStore opens the job bucket. Opened per request, like the
 // CreateAccount stores, so a cluster upgraded into this feature picks it up
 // without a gateway restart.
-func (gw *GatewayConfig) accountDeletionStore(ctx context.Context) (jetstream.KeyValue, error) {
-	js, err := jetstream.New(gw.NATSConn)
+func (d Deps) accountDeletionStore(ctx context.Context) (jetstream.KeyValue, error) {
+	js, err := jetstream.New(d.NATS)
 	if err != nil {
 		slog.Error("DeleteAccount: failed to get JetStream context", "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)

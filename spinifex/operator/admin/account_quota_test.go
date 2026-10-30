@@ -1,11 +1,11 @@
 //test:in-package — drives the unexported admin handlers and the request identity they read from the context.
-package gateway
+package admin
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -21,7 +21,7 @@ func quotaPtr(v int) *int { return &v }
 // quotaIAMService resolves exactly one account, so a request naming any other
 // exercises the "account must exist" gate.
 type quotaIAMService struct {
-	policyMockIAMService
+	iamdomain.IAMService
 
 	known string
 }
@@ -35,7 +35,7 @@ func (m *quotaIAMService) GetAccount(accountID string) (*iamdomain.Account, erro
 
 // quotaTestGateway wires a real quota Service over a real JetStream KV bucket,
 // so the admin handlers are exercised against the store they use in production.
-func quotaTestGateway(t *testing.T) (*GatewayConfig, string) {
+func quotaTestGateway(t *testing.T) (Deps, string) {
 	t.Helper()
 	const account = "000000000042"
 
@@ -52,10 +52,9 @@ func quotaTestGateway(t *testing.T) (*GatewayConfig, string) {
 	}, nil)
 	quota.SetOverrides(kv)
 
-	return withVerifier(&GatewayConfig{
-		DisableLogging: true,
-		IAMService:     &quotaIAMService{known: account},
-		Quota:          quota,
+	return (Deps{
+		IAM:   &quotaIAMService{known: account},
+		Quota: quota,
 	}), account
 }
 
@@ -71,7 +70,7 @@ func quotaRequestBody(t *testing.T, req AccountQuotaRequest) []byte {
 func TestAdminGetAccountQuotaInherits(t *testing.T) {
 	gw, account := quotaTestGateway(t)
 
-	output, err := gw.adminGetAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: account}))
+	output, err := gw.getAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: account}))
 	require.NoError(t, err)
 
 	resp, ok := output.(*AccountQuotaResponse)
@@ -84,9 +83,9 @@ func TestAdminGetAccountQuotaInherits(t *testing.T) {
 // named changed.
 func TestAdminPutThenGetAccountQuota(t *testing.T) {
 	gw, account := quotaTestGateway(t)
-	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
+	ctx := t.Context()
 
-	output, err := gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
+	output, err := gw.putAccountQuota(ctx, operatorActor, quotaRequestBody(t, AccountQuotaRequest{
 		AccountID: account,
 		Overrides: admissionquota.Overrides{VCPUs: quotaPtr(32)},
 	}))
@@ -99,7 +98,7 @@ func TestAdminPutThenGetAccountQuota(t *testing.T) {
 	require.Equal(t, "operator", put.Overrides.UpdatedBy)
 	require.Equal(t, 4, put.Limits["vpcs"], "an unnamed dimension must keep inheriting")
 
-	output, err = gw.adminGetAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: account}))
+	output, err = gw.getAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: account}))
 	require.NoError(t, err)
 	got, ok := output.(*AccountQuotaResponse)
 	require.True(t, ok)
@@ -110,15 +109,15 @@ func TestAdminPutThenGetAccountQuota(t *testing.T) {
 // Clearing must return the account to the configured limits.
 func TestAdminPutAccountQuotaClears(t *testing.T) {
 	gw, account := quotaTestGateway(t)
-	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
+	ctx := t.Context()
 
-	_, err := gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
+	_, err := gw.putAccountQuota(ctx, operatorActor, quotaRequestBody(t, AccountQuotaRequest{
 		AccountID: account,
 		Overrides: admissionquota.Overrides{VCPUs: quotaPtr(32)},
 	}))
 	require.NoError(t, err)
 
-	output, err := gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{AccountID: account}))
+	output, err := gw.putAccountQuota(ctx, operatorActor, quotaRequestBody(t, AccountQuotaRequest{AccountID: account}))
 	require.NoError(t, err)
 
 	resp, ok := output.(*AccountQuotaResponse)
@@ -143,11 +142,11 @@ func TestAdminAccountQuotaRejectsBadRequests(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := gw.adminGetAccountQuota(t.Context(), tt.body)
+			_, err := gw.getAccountQuota(t.Context(), tt.body)
 			require.Error(t, err)
 			require.Equal(t, awserrors.ErrorInvalidRequest, err.Error())
 
-			_, err = gw.adminPutAccountQuota(t.Context(), tt.body)
+			_, err = gw.putAccountQuota(t.Context(), operatorActor, tt.body)
 			require.Error(t, err)
 			require.Equal(t, awserrors.ErrorInvalidRequest, err.Error())
 		})
@@ -157,9 +156,9 @@ func TestAdminAccountQuotaRejectsBadRequests(t *testing.T) {
 // A gateway with quotas disabled has no override bucket; the admin surface must
 // report that rather than pretend the write landed.
 func TestAdminAccountQuotaWithoutQuotaService(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: &quotaIAMService{known: "000000000042"}})
+	gw := Deps{IAM: &quotaIAMService{known: "000000000042"}}
 
-	_, err := gw.adminGetAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: "000000000042"}))
+	_, err := gw.getAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: "000000000042"}))
 	require.Error(t, err)
 	require.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
@@ -198,15 +197,6 @@ func TestAccountQuotaResponseExplicitZeroIsAnOverride(t *testing.T) {
 	require.Equal(t, sourceConfig, resp.Source["vcpus"])
 }
 
-// The two quota methods must be routable, or they return InvalidAction on a
-// cluster that otherwise looks correctly configured.
-func TestAccountQuotaMethodsAreRegistered(t *testing.T) {
-	require.True(t, adminMethods["GetAccountQuota"])
-	require.True(t, adminMethods["PutAccountQuota"])
-	require.Contains(t, operatorv1.AdminMethodNames(), "GetAccountQuota")
-	require.Contains(t, operatorv1.AdminMethodNames(), "PutAccountQuota")
-}
-
 // quotaStubChecker answers AccountTerminating from a fixed set, so these
 // tests can seal a record without a real IAM bucket.
 type quotaStubChecker struct {
@@ -222,10 +212,10 @@ func (c *quotaStubChecker) AccountTerminating(_ context.Context, accountID strin
 // type, the stored record stays active, and the response never shows state.
 func TestAdminRequestCannotCarryState(t *testing.T) {
 	gw, account := quotaTestGateway(t)
-	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
+	ctx := t.Context()
 
 	body := []byte(`{"accountId":"` + account + `","overrides":{"vcpus":32,"state":"sealed"}}`)
-	output, err := gw.adminPutAccountQuota(ctx, body)
+	output, err := gw.putAccountQuota(ctx, operatorActor, body)
 	require.NoError(t, err)
 
 	resp, ok := output.(*AccountQuotaResponse)
@@ -248,14 +238,17 @@ func TestAdminQuotaReadsMapBlocked(t *testing.T) {
 	_, err := gw.Quota.SealAccountOverrides(t.Context(), account)
 	require.NoError(t, err)
 
-	_, err = gw.adminGetAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: account}))
+	_, err = gw.getAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: account}))
 	require.Error(t, err)
 	require.Equal(t, awserrors.ErrorBlocked, err.Error())
 
-	ctx := withPrincipalField(t.Context(), fieldIdentity, "operator")
-	_, err = gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
+	ctx := t.Context()
+	_, err = gw.putAccountQuota(ctx, operatorActor, quotaRequestBody(t, AccountQuotaRequest{
 		AccountID: account, Overrides: admissionquota.Overrides{VCPUs: quotaPtr(8)},
 	}))
 	require.Error(t, err)
 	require.Equal(t, awserrors.ErrorBlocked, err.Error())
 }
+
+// operatorActor is the caller a quota change is attributed to.
+var operatorActor = dispatch.Actor{UserName: "operator", PrincipalType: "user"}

@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
+	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 )
 
 // adminMethods is the callable /admin/<Method> set, built from the contract's
@@ -46,15 +46,6 @@ func adminPathMethod(path string) (string, bool) {
 	return rest, true
 }
 
-// ctxAdminRequestID carries the /admin request ID to handlers that log under it.
-// It correlates log records only and authorises nothing.
-const ctxAdminRequestID contextKey = "admin.requestID"
-
-func adminRequestIDFrom(ctx context.Context) string {
-	id, _ := ctx.Value(ctxAdminRequestID).(string)
-	return id
-}
-
 // adminMaxBodyBytes caps the JSON request body. The largest legitimate request
 // is a few hundred bytes; the cap exists so an unauthenticated-shaped mistake
 // cannot make the gateway buffer megabytes.
@@ -82,7 +73,7 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Amzn-Requestid", requestID)
 
 	method := chi.URLParam(r, "method")
-	ctx := context.WithValue(r.Context(), ctxAdminRequestID, requestID)
+	ctx := operatoradmin.WithRequestID(r.Context(), requestID)
 
 	// One handler for every verb rather than a POST route plus a catch-all:
 	// chi resolves the two to the same pattern, and the catch-all wins.
@@ -118,25 +109,8 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var output any
-	switch method {
-	case "CreateAccount":
-		output, err = gw.adminCreateAccount(ctx, body)
-	case "DeleteAccount":
-		output, err = gw.adminDeleteAccount(ctx, body)
-	case "DescribeAccountDeletion":
-		output, err = gw.adminDescribeAccountDeletion(ctx, body)
-	case "ListAccounts":
-		output, err = gw.adminListAccounts(ctx, body)
-	case "GetAccountQuota":
-		output, err = gw.adminGetAccountQuota(ctx, body)
-	case "PutAccountQuota":
-		output, err = gw.adminPutAccountQuota(ctx, body)
-	default:
-		// Unreachable: adminMethods gates the switch. Fail closed anyway so
-		// adding a name to the map without a case cannot silently return 200.
-		err = errors.New(awserrors.ErrorInvalidAction)
-	}
+	caller, _ := callerActor(ctx)
+	output, err := gw.adminHandlers().RunMethod(ctx, method, caller, body)
 	if err != nil {
 		gw.writeAdminErrorFor(w, requestID, err)
 		return
@@ -237,5 +211,19 @@ func (gw *GatewayConfig) writeAdminError(w http.ResponseWriter, requestID, code,
 	w.WriteHeader(detail.HTTPCode)
 	if _, err := w.Write(body); err != nil {
 		slog.Error("Admin: failed to write error response", "err", err)
+	}
+}
+
+// adminHandlers builds the /admin method handlers over the gateway's own
+// capabilities.
+func (gw *GatewayConfig) adminHandlers() operatoradmin.Deps {
+	return operatoradmin.Deps{
+		NATS:              gw.NATSConn,
+		IAM:               gw.IAMService,
+		Quota:             gw.Quota,
+		ExpectedNodes:     gw.ExpectedNodes,
+		NodeIDs:           gw.NodeIDs,
+		BucketStore:       gw.BucketStore,
+		SignupMaxAccounts: gw.SignupMaxAccounts,
 	}
 }

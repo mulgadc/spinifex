@@ -1,4 +1,4 @@
-package gateway
+package admin
 
 import (
 	"context"
@@ -59,14 +59,14 @@ const (
 	adminIdemDone       = "done"
 )
 
-// adminCreateAccount provisions a tenant account and returns its first
+// createAccount provisions a tenant account and returns its first
 // credentials.
 //
 // Correctness rests on two CAS creates rather than a transaction: the client
 // token admits exactly one in-flight attempt, and the name reservation makes
 // duplicate names impossible. Provisioning itself is resumable, so a failure
 // anywhere is recovered by retrying with the same token.
-func (gw *GatewayConfig) adminCreateAccount(ctx context.Context, body []byte) (any, error) {
+func (d Deps) createAccount(ctx context.Context, body []byte) (any, error) {
 	var req operatorv1.CreateAccountRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		slog.Debug("CreateAccount: malformed JSON body", "err", err)
@@ -75,12 +75,12 @@ func (gw *GatewayConfig) adminCreateAccount(ctx context.Context, body []byte) (a
 	if err := validateCreateAccountRequest(&req); err != nil {
 		return nil, err
 	}
-	if gw.IAMService == nil {
+	if d.IAM == nil {
 		slog.Error("CreateAccount: IAM service not available")
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	names, idem, err := gw.adminStores(ctx)
+	names, idem, err := d.stores(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +92,7 @@ func (gw *GatewayConfig) adminCreateAccount(ctx context.Context, body []byte) (a
 		return nil, err
 	}
 	if replay != nil {
-		secret, err := gw.IAMService.DecryptSecret(replay.SecretAccessKey)
+		secret, err := d.IAM.DecryptSecret(replay.SecretAccessKey)
 		if err != nil {
 			slog.Error("CreateAccount: cannot decrypt replayed secret", "accountID", replay.AccountID, "err", err)
 			return nil, errors.New(awserrors.ErrorInternalError)
@@ -103,7 +103,7 @@ func (gw *GatewayConfig) adminCreateAccount(ctx context.Context, body []byte) (a
 		return &out, nil
 	}
 
-	response, err := gw.provisionNewAccount(ctx, names, &req)
+	response, err := d.provisionNewAccount(ctx, names, &req)
 	if err != nil {
 		// Drop the token claim so the caller can retry rather than being told
 		// OperationInProgress until the TTL expires.
@@ -115,7 +115,7 @@ func (gw *GatewayConfig) adminCreateAccount(ctx context.Context, body []byte) (a
 	}
 
 	stored := *response
-	ciphertext, err := gw.IAMService.EncryptSecret(response.SecretAccessKey)
+	ciphertext, err := d.IAM.EncryptSecret(response.SecretAccessKey)
 	if err != nil {
 		slog.Error("CreateAccount: failed to encrypt secret for replay", "accountID", response.AccountID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
@@ -144,14 +144,14 @@ func (gw *GatewayConfig) adminCreateAccount(ctx context.Context, body []byte) (a
 
 // provisionNewAccount reserves the name, creates the account, provisions its
 // admin identity and waits for the default VPC.
-func (gw *GatewayConfig) provisionNewAccount(
+func (d Deps) provisionNewAccount(
 	ctx context.Context,
 	names *iamdomain.AccountNameIndex,
 	req *operatorv1.CreateAccountRequest,
 ) (*operatorv1.CreateAccountResponse, error) {
 	// Accounts that predate the reservation index have no entry to collide
 	// with, so they are found by name scan. The same listing bounds the cap.
-	existing, err := iamdomain.FindAccountByName(gw.IAMService, req.Name)
+	existing, err := iamdomain.FindAccountByName(d.IAM, req.Name)
 	if err != nil {
 		slog.Error("CreateAccount: failed to list accounts", "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
@@ -159,7 +159,7 @@ func (gw *GatewayConfig) provisionNewAccount(
 	if existing != nil {
 		return nil, errors.New(awserrors.ErrorAccountAlreadyExists)
 	}
-	if err := gw.checkAccountCap(); err != nil {
+	if err := d.checkAccountCap(); err != nil {
 		return nil, err
 	}
 
@@ -173,7 +173,7 @@ func (gw *GatewayConfig) provisionNewAccount(
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	account, err := gw.IAMService.CreateAccount(iamdomain.NormalizeAccountName(req.Name))
+	account, err := d.IAM.CreateAccount(iamdomain.NormalizeAccountName(req.Name))
 	if err != nil {
 		if relErr := names.Release(ctx, req.Name, req.ClientToken); relErr != nil {
 			slog.Error("CreateAccount: failed to release name reservation", "err", relErr)
@@ -191,14 +191,14 @@ func (gw *GatewayConfig) provisionNewAccount(
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	provisioned, err := iamdomain.ProvisionAccount(gw.IAMService, account.AccountID, account.AccountName)
+	provisioned, err := iamdomain.ProvisionAccount(d.IAM, account.AccountID, account.AccountName)
 	if err != nil {
 		slog.Error("CreateAccount: failed to provision account",
 			"accountID", account.AccountID, "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	vpcID, err := gw.ensureDefaultVPC(ctx, account.AccountID)
+	vpcID, err := d.ensureDefaultVPC(ctx, account.AccountID)
 	if err != nil {
 		slog.Error("CreateAccount: default VPC not ready",
 			"accountID", account.AccountID, "err", err)
@@ -268,18 +268,18 @@ func claimClientToken(ctx context.Context, idem jetstream.KeyValue, clientToken,
 
 // checkAccountCap enforces [signup] max_accounts. Zero or absent means no cap,
 // which is the pre-existing behaviour for a cluster that never opted in.
-func (gw *GatewayConfig) checkAccountCap() error {
-	if gw.SignupMaxAccounts <= 0 {
+func (d Deps) checkAccountCap() error {
+	if d.SignupMaxAccounts <= 0 {
 		return nil
 	}
-	accounts, err := gw.IAMService.ListAccounts()
+	accounts, err := d.IAM.ListAccounts()
 	if err != nil {
 		slog.Error("CreateAccount: failed to count accounts for cap", "err", err)
 		return errors.New(awserrors.ErrorInternalError)
 	}
-	if len(accounts) >= gw.SignupMaxAccounts {
+	if len(accounts) >= d.SignupMaxAccounts {
 		slog.Warn("CreateAccount: account cap reached",
-			"accounts", len(accounts), "maxAccounts", gw.SignupMaxAccounts)
+			"accounts", len(accounts), "maxAccounts", d.SignupMaxAccounts)
 		return errors.New(awserrors.ErrorIAMLimitExceeded)
 	}
 	return nil
@@ -288,7 +288,7 @@ func (gw *GatewayConfig) checkAccountCap() error {
 // ensureDefaultVPC asks the daemon to build the account's default VPC and waits
 // for the acknowledgement, so the response never promises an account that
 // cannot launch anything.
-func (gw *GatewayConfig) ensureDefaultVPC(ctx context.Context, accountID string) (string, error) {
+func (d Deps) ensureDefaultVPC(ctx context.Context, accountID string) (string, error) {
 	payload, err := json.Marshal(struct {
 		AccountID string `json:"account_id"`
 	}{AccountID: accountID})
@@ -299,7 +299,7 @@ func (gw *GatewayConfig) ensureDefaultVPC(ctx context.Context, accountID string)
 	reqCtx, cancel := context.WithTimeout(ctx, ensureDefaultVpcTimeout)
 	defer cancel()
 
-	msg, err := gw.NATSConn.RequestWithContext(reqCtx, ec2v1.EnsureDefaultVpcSubject, payload)
+	msg, err := d.NATS.RequestWithContext(reqCtx, ec2v1.EnsureDefaultVpcSubject, payload)
 	if err != nil {
 		return "", fmt.Errorf("request default VPC: %w", err)
 	}
@@ -320,11 +320,11 @@ func (gw *GatewayConfig) ensureDefaultVPC(ctx context.Context, accountID string)
 	return reply.VpcID, nil
 }
 
-// adminStores opens the name index and the idempotency bucket. Both are opened
+// stores opens the name index and the idempotency bucket. Both are opened
 // per request rather than cached on the gateway so a bucket created after
 // startup (a cluster upgraded into this feature) is picked up without a restart.
-func (gw *GatewayConfig) adminStores(ctx context.Context) (*iamdomain.AccountNameIndex, jetstream.KeyValue, error) {
-	js, err := jetstream.New(gw.NATSConn)
+func (d Deps) stores(ctx context.Context) (*iamdomain.AccountNameIndex, jetstream.KeyValue, error) {
+	js, err := jetstream.New(d.NATS)
 	if err != nil {
 		slog.Error("CreateAccount: failed to get JetStream context", "err", err)
 		return nil, nil, errors.New(awserrors.ErrorServiceUnavailable)

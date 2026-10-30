@@ -1,4 +1,4 @@
-package gateway
+package admin
 
 //test:in-package — exercises the unexported CreateAccount internals
 // (claimClientToken, checkAccountCap, request validation) directly, since the
@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"encoding/json"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"log/slog"
 	"strings"
 	"testing"
@@ -206,10 +205,8 @@ func TestCheckAccountCap(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gw := &GatewayConfig{
-				DisableLogging:    true,
-				IAMService:        &capMockIAMService{accounts: tc.accounts},
-				Credentials:       credverify.New(&capMockIAMService{accounts: tc.accounts}, nil),
+			gw := Deps{
+				IAM:               &capMockIAMService{accounts: tc.accounts},
 				SignupMaxAccounts: tc.max,
 			}
 			err := gw.checkAccountCap()
@@ -225,10 +222,8 @@ func TestCheckAccountCap(t *testing.T) {
 
 // A cap that cannot be evaluated must not be treated as "not reached".
 func TestCheckAccountCapFailsClosedOnListError(t *testing.T) {
-	gw := &GatewayConfig{
-		DisableLogging:    true,
-		IAMService:        &capMockIAMService{err: assert.AnError},
-		Credentials:       credverify.New(&capMockIAMService{err: assert.AnError}, nil),
+	gw := Deps{
+		IAM:               &capMockIAMService{err: assert.AnError},
 		SignupMaxAccounts: 128,
 	}
 
@@ -239,7 +234,7 @@ func TestCheckAccountCapFailsClosedOnListError(t *testing.T) {
 
 // newCreateAccountGateway wires a gateway against a real IAM service, embedded
 // JetStream, and a stub daemon answering the default-VPC request.
-func newCreateAccountGateway(t *testing.T) *GatewayConfig {
+func newCreateAccountGateway(t *testing.T) Deps {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
@@ -254,11 +249,9 @@ func newCreateAccountGateway(t *testing.T) *GatewayConfig {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	return &GatewayConfig{
-		DisableLogging:    true,
-		IAMService:        svc,
-		Credentials:       credverify.New(svc, nil),
-		NATSConn:          nc,
+	return Deps{
+		IAM:               svc,
+		NATS:              nc,
 		SignupMaxAccounts: 128,
 	}
 }
@@ -275,7 +268,7 @@ func TestAdminCreateAccountProvisionsAndReplays(t *testing.T) {
 	ctx := t.Context()
 	body := createAccountBody(t, "ben@example.com", testClientToken)
 
-	first, err := gw.adminCreateAccount(ctx, body)
+	first, err := gw.createAccount(ctx, body)
 	require.NoError(t, err)
 	created := first.(*operatorv1.CreateAccountResponse)
 
@@ -287,11 +280,11 @@ func TestAdminCreateAccountProvisionsAndReplays(t *testing.T) {
 	assert.Equal(t, "vpc-0a1b2c3d", created.DefaultVpcID)
 
 	// The replay is the only way to re-obtain the secret, so it must match.
-	second, err := gw.adminCreateAccount(ctx, body)
+	second, err := gw.createAccount(ctx, body)
 	require.NoError(t, err)
 	assert.Equal(t, created, second.(*operatorv1.CreateAccountResponse))
 
-	accounts, err := gw.IAMService.ListAccounts()
+	accounts, err := gw.IAM.ListAccounts()
 	require.NoError(t, err)
 	assert.Len(t, accounts, 1, "replay must not provision a second account")
 }
@@ -300,12 +293,12 @@ func TestAdminCreateAccountRejectsDuplicateName(t *testing.T) {
 	gw := newCreateAccountGateway(t)
 	ctx := t.Context()
 
-	_, err := gw.adminCreateAccount(ctx, createAccountBody(t, "ben@example.com", testClientToken))
+	_, err := gw.createAccount(ctx, createAccountBody(t, "ben@example.com", testClientToken))
 	require.NoError(t, err)
 
 	// Different token, same name: a second person cannot take an existing name,
 	// and the error discloses nothing about the account that holds it.
-	_, err = gw.adminCreateAccount(ctx, createAccountBody(t, "BEN@example.com", strings.Repeat("b", 32)))
+	_, err = gw.createAccount(ctx, createAccountBody(t, "BEN@example.com", strings.Repeat("b", 32)))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccountAlreadyExists, err.Error())
 }
@@ -315,10 +308,10 @@ func TestAdminCreateAccountEnforcesCap(t *testing.T) {
 	gw.SignupMaxAccounts = 1
 	ctx := t.Context()
 
-	_, err := gw.adminCreateAccount(ctx, createAccountBody(t, "ben@example.com", testClientToken))
+	_, err := gw.createAccount(ctx, createAccountBody(t, "ben@example.com", testClientToken))
 	require.NoError(t, err)
 
-	_, err = gw.adminCreateAccount(ctx, createAccountBody(t, "second@example.com", strings.Repeat("c", 32)))
+	_, err = gw.createAccount(ctx, createAccountBody(t, "second@example.com", strings.Repeat("c", 32)))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIAMLimitExceeded, err.Error())
 }
@@ -330,22 +323,22 @@ func TestAdminCreateAccountReleasesTokenAfterFailure(t *testing.T) {
 	gw.SignupMaxAccounts = 1
 	ctx := t.Context()
 
-	_, err := gw.adminCreateAccount(ctx, createAccountBody(t, "ben@example.com", testClientToken))
+	_, err := gw.createAccount(ctx, createAccountBody(t, "ben@example.com", testClientToken))
 	require.NoError(t, err)
 
 	capped := createAccountBody(t, "second@example.com", strings.Repeat("c", 32))
-	_, err = gw.adminCreateAccount(ctx, capped)
+	_, err = gw.createAccount(ctx, capped)
 	require.Error(t, err)
 
 	gw.SignupMaxAccounts = 128
-	_, err = gw.adminCreateAccount(ctx, capped)
+	_, err = gw.createAccount(ctx, capped)
 	assert.NoError(t, err)
 }
 
 func TestAdminCreateAccountMalformedBody(t *testing.T) {
 	gw := newCreateAccountGateway(t)
 
-	_, err := gw.adminCreateAccount(t.Context(), []byte("not json"))
+	_, err := gw.createAccount(t.Context(), []byte("not json"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidRequest, err.Error())
 }
@@ -359,7 +352,7 @@ func TestAdminCreateAccountNeverLogsTheSecret(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
 	gw := newCreateAccountGateway(t)
-	out, err := gw.adminCreateAccount(t.Context(), createAccountBody(t, "ben@example.com", testClientToken))
+	out, err := gw.createAccount(t.Context(), createAccountBody(t, "ben@example.com", testClientToken))
 	require.NoError(t, err)
 
 	created := out.(*operatorv1.CreateAccountResponse)

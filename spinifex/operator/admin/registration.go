@@ -13,11 +13,14 @@ import (
 	"slices"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
+	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
 )
 
@@ -45,6 +48,15 @@ type Deps struct {
 	ModelAccess ModelAccess
 	Credentials ochre.CredentialResolver
 	Access      ochre.AccessResolver
+
+	// The /admin methods run against these. A nil IAM or Quota answers the
+	// methods that need it with InternalError.
+	IAM               iamdomain.IAMService
+	Quota             *quota.Service
+	ExpectedNodes     int
+	NodeIDs           []string
+	BucketStore       accountteardown.BucketStore
+	SignupMaxAccounts int
 }
 
 // adminActions are the actions only the super-admin account may call.

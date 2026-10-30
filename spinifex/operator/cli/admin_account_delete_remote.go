@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/gateway"
 	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/spf13/cobra"
 )
 
@@ -114,8 +114,8 @@ func deleteAccountRemote(
 	ctx context.Context,
 	target adminTarget,
 	req operatorv1.DeleteAccountRequest,
-) (*gateway.DeleteAccountResponse, error) {
-	var out gateway.DeleteAccountResponse
+) (*admin.DeleteAccountResponse, error) {
+	var out admin.DeleteAccountResponse
 	if err := callAdmin(ctx, target, "DeleteAccount", req, &out); err != nil {
 		return nil, err
 	}

@@ -8,7 +8,7 @@ import (
 	"strconv"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/spf13/cobra"
 )
 
@@ -92,8 +92,8 @@ func runAccountQuotaGet(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), adminRequestTimeout)
 	defer cancel()
 
-	var out gateway.AccountQuotaResponse
-	req := gateway.AccountQuotaRequest{AccountID: args[0]}
+	var out admin.AccountQuotaResponse
+	req := admin.AccountQuotaRequest{AccountID: args[0]}
 	if err := callAdmin(ctx, target, "GetAccountQuota", req, &out); err != nil {
 		return err
 	}
@@ -130,8 +130,8 @@ func runAccountQuotaSet(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), adminRequestTimeout)
 	defer cancel()
 
-	var out gateway.AccountQuotaResponse
-	req := gateway.AccountQuotaRequest{AccountID: args[0], Overrides: over}
+	var out admin.AccountQuotaResponse
+	req := admin.AccountQuotaRequest{AccountID: args[0], Overrides: over}
 	if err := callAdmin(ctx, target, "PutAccountQuota", req, &out); err != nil {
 		return err
 	}
@@ -162,7 +162,7 @@ func quotaOverridesFromFlags(cmd *cobra.Command) (quota.Overrides, bool, error) 
 	return over, changed, nil
 }
 
-func printAccountQuota(resp *gateway.AccountQuotaResponse) {
+func printAccountQuota(resp *admin.AccountQuotaResponse) {
 	fmt.Printf("Account %s\n\n", resp.AccountID)
 	fmt.Printf("%-16s %10s  %s\n", "DIMENSION", "LIMIT", "SOURCE")
 	fmt.Printf("%-16s %10s  %s\n", "---------", "-----", "------")

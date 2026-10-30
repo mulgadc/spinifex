@@ -300,3 +300,17 @@ func TestAdminPathMethod_AcceptsExactlyTheContractList(t *testing.T) {
 	require.False(t, ok)
 	require.Len(t, adminMethods, len(operatorv1.AdminMethodNames()))
 }
+
+// Each admin method is a separate grant. The signup Worker holds
+// spinifex:CreateAccount and must not reach deletion with it.
+func TestCreateAccountGrantDoesNotAllowDeleteAccount(t *testing.T) {
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy()})
+
+	for _, method := range []string{"DeleteAccount", "DescribeAccountDeletion", "ListAccounts"} {
+		t.Run(method, func(t *testing.T) {
+			rec := authorizedAdminRequestForMethod(gw, method, `{}`)
+
+			assert.Equal(t, awserrors.ErrorAccessDenied, decodeAdminError(t, rec).Error.Code)
+		})
+	}
+}

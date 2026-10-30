@@ -360,6 +360,8 @@ Only then does `agents/sqs/workerkey` load the key from `/data/sqs-worker-key`; 
 `domains/sqs/firststore` is the SQS domain's first-store decision: one record per Region in the `spinifex-sqs-first-store` KV bucket moves from `claimed` to `key-recorded` to `launch-intent` under compare-and-swap, bound to the worker's instance ID, claim ID and generation.
 A claim authorizes key creation only while no public key is recorded; once one is, every claim returns only that key, and a store launch intent needs it recorded first.
 An older generation, a different identity at the same generation or an unreadable record authorizes nothing, and the record holds no private key material.
+Reads are stream message gets answered by the stream leader, never direct gets a lagging replica can answer, and every authorizing answer is also confirmed by a compare-and-swap at the revision it read, so a stale or unavailable read authorizes nothing.
+The authenticated caller that will carry this decision must derive the worker's instance ID and generation from authoritative instance state; a generation supplied in a request cannot itself authorize a takeover.
 `workerkey.Acquire` drives that decision: it syncs a new key to disk, records its public key and only then returns it, so a crash before recording reuses the key already on disk.
 No transport carries the decision yet; the worker boot path above still accepts only `existing`.
 The private key stays on the worker disk; the guest logs and publishes only the public key to `/run/sqs-worker/public-key`.

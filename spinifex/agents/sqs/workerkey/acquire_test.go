@@ -48,7 +48,7 @@ func domain(t *testing.T) (firststore.Store, jetstream.KeyValue) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return firststore.Store{KV: kv}, kv
+	return firststore.Store{JS: js, KV: kv}, kv
 }
 
 func worker(gen uint64, n byte) firststore.Identity {
@@ -228,5 +228,39 @@ func TestAcquire_ContradictoryDecisionCreatesNoKey(t *testing.T) {
 	}
 	if _, err := os.Lstat(keyPath(disk)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("a contradictory decision created a key")
+	}
+}
+
+// A replica that has applied the claim but not the key record must not lead a
+// worker whose key is lost to create a replacement.
+func TestAcquire_StaleClaimedReadAfterRecordingCreatesNoKey(t *testing.T) {
+	ctx := context.Background()
+	fs, kv := domain(t)
+	disk := workerDisk(t)
+	id := worker(1, 1)
+	fs.Claim(ctx, region, id)
+	claimed, err := kv.Get(ctx, "region."+region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, err := disk.Acquire(ctx, &domainClaimer{s: fs, id: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp.Wipe()
+	os.Remove(keyPath(disk))
+
+	_, _, replicaJS := testutil.StartTestJetStream(t)
+	replica, err := replicaJS.CreateKeyValue(ctx, firststore.BucketConfig(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replica.Put(ctx, "region."+region, claimed.Value())
+	stale := firststore.Store{JS: replicaJS, KV: fs.KV}
+	if _, err := disk.Acquire(ctx, &domainClaimer{s: stale, id: id}); err == nil {
+		t.Fatal("a stale claimed read returned a key")
+	}
+	if _, err := os.Lstat(keyPath(disk)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a stale claimed read created a replacement key")
 	}
 }

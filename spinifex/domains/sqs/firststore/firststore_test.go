@@ -2,6 +2,7 @@ package firststore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 )
@@ -23,7 +25,7 @@ func newStore(t *testing.T) (Store, jetstream.KeyValue) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Store{KV: kv}, kv
+	return Store{JS: js, KV: kv}, kv
 }
 
 func ident(n int, gen uint64) Identity {
@@ -286,29 +288,29 @@ func (k *lossyKV) Update(ctx context.Context, key string, value []byte, rev uint
 func TestAmbiguousWrites(t *testing.T) {
 	ctx := context.Background()
 	t.Run("applied claim with a lost reply is recovered", func(t *testing.T) {
-		_, kv := newStore(t)
-		s := Store{KV: &lossyKV{KeyValue: kv, failCreate: 1, apply: true}}
+		base, kv := newStore(t)
+		s := Store{JS: base.JS, KV: &lossyKV{KeyValue: kv, failCreate: 1, apply: true}}
 		d, err := s.Claim(ctx, region, ident(1, 1))
 		if err != nil || !d.CreateKey {
 			t.Fatalf("claim = %+v, %v", d, err)
 		}
 	})
 	t.Run("dropped claim that a rival won is refused", func(t *testing.T) {
-		_, kv := newStore(t)
+		base, kv := newStore(t)
 		lossy := &lossyKV{KeyValue: kv, failCreate: 1}
-		lossy.beforeCreate = func() { Store{KV: kv}.Claim(ctx, region, ident(2, 1)) }
-		if _, err := (Store{KV: lossy}).Claim(ctx, region, ident(1, 1)); !errors.Is(err, ErrClaimHeld) {
+		lossy.beforeCreate = func() { base.Claim(ctx, region, ident(2, 1)) }
+		if _, err := (Store{JS: base.JS, KV: lossy}).Claim(ctx, region, ident(1, 1)); !errors.Is(err, ErrClaimHeld) {
 			t.Fatalf("claim = %v, want ErrClaimHeld", err)
 		}
 	})
 	t.Run("applied key record with a lost reply is confirmed on retry", func(t *testing.T) {
-		_, kv := newStore(t)
+		base, kv := newStore(t)
 		w := ident(1, 1)
-		Store{KV: kv}.Claim(ctx, region, w)
+		base.Claim(ctx, region, w)
 		pub, _ := userPub(t)
-		lossy := &lossyKV{KeyValue: kv, failUpdate: maxAttempts, apply: true}
-		s := Store{KV: lossy}
-		// The first update applies; the re-read then sees it already recorded.
+		lossy := &lossyKV{KeyValue: kv, failUpdate: 1, apply: true}
+		s := Store{JS: base.JS, KV: lossy}
+		// The update applies but its reply is lost; the re-read sees it recorded.
 		if err := s.RecordPublicKey(ctx, region, w, pub); err != nil {
 			t.Fatalf("record = %v, want recovered success", err)
 		}
@@ -318,8 +320,8 @@ func TestAmbiguousWrites(t *testing.T) {
 		}
 	})
 	t.Run("persistently dropped writes authorize nothing", func(t *testing.T) {
-		_, kv := newStore(t)
-		s := Store{KV: &lossyKV{KeyValue: kv, failCreate: maxAttempts}}
+		base, kv := newStore(t)
+		s := Store{JS: base.JS, KV: &lossyKV{KeyValue: kv, failCreate: maxAttempts}}
 		d, err := s.Claim(ctx, region, ident(1, 1))
 		if !errors.Is(err, ErrContended) || d.CreateKey {
 			t.Fatalf("claim = %+v, %v; want ErrContended", d, err)
@@ -343,5 +345,112 @@ func TestValidation(t *testing.T) {
 	}
 	if _, err := s.Claim(ctx, "Bad.Region", ident(1, 1)); err == nil {
 		t.Error("claim accepted an invalid region")
+	}
+}
+
+// laggingReplica serves reads from a second server whose bucket holds an
+// older history of the record, so its revisions match the leader's past ones,
+// while writes still go to the real leader.
+func laggingReplica(t *testing.T, leader Store, history ...string) Store {
+	t.Helper()
+	_, _, js := testutil.StartTestJetStream(t)
+	kv, err := js.CreateKeyValue(context.Background(), BucketConfig(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range history {
+		if _, err := kv.Put(context.Background(), key(region), []byte(v)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return Store{JS: js, KV: leader.KV}
+}
+
+func TestStaleRead_RecordedKeyNeverReauthorizesCreation(t *testing.T) {
+	ctx := context.Background()
+	s, kv := newStore(t)
+	w := ident(1, 1)
+	s.Claim(ctx, region, w)
+	claimed := stored(t, kv)
+	pub, _ := userPub(t)
+	if err := s.RecordPublicKey(ctx, region, w, pub); err != nil {
+		t.Fatal(err)
+	}
+	// The replica has applied the claim but not the key record.
+	stale := laggingReplica(t, s, claimed)
+	d, err := stale.Claim(ctx, region, w)
+	if d.CreateKey || !errors.Is(err, ErrContended) {
+		t.Fatalf("stale claim = %+v, %v; want no authorization", d, err)
+	}
+	if err := stale.RecordLaunchIntent(ctx, region, w, pub); !errors.Is(err, ErrKeyNotRecorded) {
+		t.Fatalf("stale launch intent = %v, want a refusal", err)
+	}
+	if d, err := s.Claim(ctx, region, w); err != nil || d.CreateKey || d.PublicKey != pub {
+		t.Fatalf("leader claim = %+v, %v; want the recorded key", d, err)
+	}
+}
+
+func TestStaleRead_OldGenerationIsNotRevivedAfterRebind(t *testing.T) {
+	ctx := context.Background()
+	for _, keyed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "claimed", true: "key recorded"}[keyed], func(t *testing.T) {
+			s, kv := newStore(t)
+			old, next := ident(1, 1), ident(2, 2)
+			s.Claim(ctx, region, old)
+			history := []string{stored(t, kv)}
+			pub, _ := userPub(t)
+			if keyed {
+				s.RecordPublicKey(ctx, region, old, pub)
+				history = append(history, stored(t, kv))
+			}
+			if _, err := s.Claim(ctx, region, next); err != nil {
+				t.Fatal(err)
+			}
+			// The replica still shows the old generation as the holder.
+			stale := laggingReplica(t, s, history...)
+			if d, err := stale.Claim(ctx, region, old); err == nil || d.CreateKey || d.PublicKey != "" {
+				t.Fatalf("stale old-generation claim = %+v, %v; want refusal", d, err)
+			}
+			if err := stale.RecordPublicKey(ctx, region, old, pub); err == nil {
+				t.Fatal("stale old-generation record was accepted")
+			}
+			if err := stale.RecordLaunchIntent(ctx, region, old, pub); err == nil {
+				t.Fatal("stale old-generation launch intent was accepted")
+			}
+			var rec Record
+			json.Unmarshal([]byte(stored(t, kv)), &rec)
+			if rec.Worker != next {
+				t.Fatalf("leader record holder = %+v, want the newer generation", rec.Worker)
+			}
+		})
+	}
+}
+
+// Reads must be stream message gets, which only the leader answers, never
+// direct gets, which any replica answers.
+func TestReads_UseLeaderMessageGet(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	kv, err := js.CreateKeyValue(context.Background(), BucketConfig(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var direct, leader atomic.Int32
+	sub1, _ := nc.Subscribe("$JS.API.DIRECT.GET.KV_"+Bucket+".>", func(*nats.Msg) { direct.Add(1) })
+	sub2, _ := nc.Subscribe("$JS.API.DIRECT.GET.KV_"+Bucket, func(*nats.Msg) { direct.Add(1) })
+	sub3, _ := nc.Subscribe("$JS.API.STREAM.MSG.GET.KV_"+Bucket, func(*nats.Msg) { leader.Add(1) })
+	defer sub1.Unsubscribe()
+	defer sub2.Unsubscribe()
+	defer sub3.Unsubscribe()
+	nc.Flush()
+	s := Store{JS: js, KV: kv}
+	ctx := context.Background()
+	w := ident(1, 1)
+	pub, _ := userPub(t)
+	s.Claim(ctx, region, w)
+	s.RecordPublicKey(ctx, region, w, pub)
+	s.Claim(ctx, region, w)
+	nc.Flush()
+	if direct.Load() != 0 || leader.Load() < 3 {
+		t.Fatalf("direct gets=%d leader gets=%d; want only leader reads", direct.Load(), leader.Load())
 	}
 }

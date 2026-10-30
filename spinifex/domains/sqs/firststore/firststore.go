@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 
+	sqsjs "github.com/mulgadc/spinifex/spinifex/domains/sqs/message/jetstream"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 )
@@ -41,7 +42,8 @@ const (
 )
 
 // Identity is one worker VM incarnation. Generation increases each time the
-// worker is relaunched; ClaimID is unique to one claim attempt sequence.
+// worker is relaunched. A caller must derive it from authoritative instance
+// state, never from the worker's request: a newer generation may take over.
 type Identity struct {
 	InstanceID string `json:"instanceID"`
 	ClaimID    string `json:"claimID"`
@@ -81,8 +83,11 @@ var (
 	claimPattern    = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
 )
 
-// Store is the first-store state machine over the domain's KV bucket.
+// Store is the first-store state machine over the domain's KV bucket. Reads
+// go to the stream leader, and every authorizing answer is also confirmed by a
+// compare-and-swap at the revision read, so a stale read authorizes nothing.
 type Store struct {
+	JS jetstream.JetStream
 	KV jetstream.KeyValue
 }
 
@@ -126,14 +131,12 @@ func (s Store) Claim(ctx context.Context, region string, id Identity) (Decision,
 		if err := checkGeneration(rec.Worker, id); err != nil {
 			return Decision{}, err
 		}
-		if rec.Worker != id {
-			// Strictly newer generation: rebind, keeping state and key.
-			next := *rec
-			next.Worker = id
-			if s.update(ctx, region, next, rev) != nil {
-				continue
-			}
-			rec = &next
+		// Rebinds a strictly newer generation, keeping state and key; for the
+		// same identity it rewrites the record to prove the read was current.
+		next := *rec
+		next.Worker = id
+		if s.update(ctx, region, next, rev) != nil {
+			continue
 		}
 		if rec.State == StateClaimed {
 			return Decision{CreateKey: true}, nil
@@ -200,8 +203,12 @@ func (s Store) advance(ctx context.Context, region string, id Identity, pub stri
 			return ErrKeyMismatch
 		}
 		next, err := step(rec)
-		if err != nil || next == nil {
+		if err != nil {
 			return err
+		}
+		if next == nil {
+			// Already applied: rewrite unchanged to prove the read was current.
+			next = rec
 		}
 		if s.update(ctx, region, *next, rev) == nil {
 			return nil
@@ -226,7 +233,7 @@ func checkGeneration(held, id Identity) error {
 }
 
 func (s Store) read(ctx context.Context, region string) (*Record, uint64, error) {
-	entry, err := s.KV.Get(ctx, key(region))
+	value, rev, err := sqsjs.LeaderKVGet(ctx, s.JS, Bucket, key(region))
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return nil, 0, ErrNotClaimed
 	}
@@ -234,13 +241,13 @@ func (s Store) read(ctx context.Context, region string) (*Record, uint64, error)
 		return nil, 0, fmt.Errorf("read first-store record: %w", err)
 	}
 	var rec Record
-	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+	if err := json.Unmarshal(value, &rec); err != nil {
 		return nil, 0, ErrUnreadable
 	}
 	if !wellFormed(&rec, region) {
 		return nil, 0, ErrUnreadable
 	}
-	return &rec, entry.Revision(), nil
+	return &rec, rev, nil
 }
 
 func wellFormed(rec *Record, region string) bool {

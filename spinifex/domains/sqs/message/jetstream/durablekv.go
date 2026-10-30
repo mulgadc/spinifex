@@ -21,6 +21,21 @@ func OpenDurableKV(ctx context.Context, js jsapi.JetStream, bucket, description 
 	if err != nil {
 		return nil, err
 	}
+	return verifyDurable(ctx, kv, bucket)
+}
+
+// BindDurableKV binds an existing SQS authority bucket without ever creating
+// one, so a reader that must not provision state fails closed when it is absent,
+// and refuses it on the same durability terms as OpenDurableKV.
+func BindDurableKV(ctx context.Context, js jsapi.JetStream, bucket string) (jsapi.KeyValue, error) {
+	kv, err := js.KeyValue(ctx, bucket)
+	if err != nil {
+		return nil, fmt.Errorf("bind bucket %s: %w", bucket, err)
+	}
+	return verifyDurable(ctx, kv, bucket)
+}
+
+func verifyDurable(ctx context.Context, kv jsapi.KeyValue, bucket string) (jsapi.KeyValue, error) {
 	replicas, err := clustersize.Replicas()
 	if err != nil {
 		return nil, fmt.Errorf("bucket %s: %w", bucket, err)

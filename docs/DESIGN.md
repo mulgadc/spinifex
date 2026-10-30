@@ -371,9 +371,16 @@ Binding writes the instance's index entry first and then binds the record to tha
 The index is only a lookup: `Authorize` accepts an instance only while the Region's record is `bound` to exactly that instance, generation and claim, confirmed by a compare-and-swap at the leader-read revision, so an old, orphaned, rewritten or unbound entry authorizes nothing.
 A same-instance reboot keeps its instance ID and identity; a replacement takes a new generation, and the first cut refuses another node or data volume and an unencrypted volume, although the encryption flag is the caller's claim and the launch wiring must verify it from the volume's metadata.
 Both buckets are opened through `OpenDurableKV`, which refuses an existing bucket whose effective stream configuration could expire, evict, lose, lag or refuse records: non-limits retention, an age, per-message or delete-marker TTL, memory storage, asynchronous flush, a size, count or message-size cap, a discard policy other than discard-new, unacknowledged writes, a sealed stream, a mirror or sources, or fewer replicas than the cluster needs.
-Nothing calls this store yet: no worker launch, gateway action or credential uses it.
+No worker launch calls this store yet, so nothing is ever bound.
 `workerkey.Acquire` drives that decision: it syncs a new key to disk, records its public key and only then returns it, so a crash before recording reuses the key already on disk.
-No transport carries the decision yet; the worker boot path above still accepts only `existing`.
+
+`domains/sqs/awsapi/worker` carries the decision to the worker as `ClaimFirstStore` and `RecordWorkerPublicKey`, served under the internal `spinifex-sqs` signing service, which no AWS SDK signs for; the public AmazonSQS action inventory is untouched.
+The gateway admits only an assumed-role session of `sqsWorkerRole` in the system account, then the role's policy, and only then resolves the session name, the instance ID STS set, through `workerident.Authorize`; the request carries no identity, and any parameter beyond the action's own is refused.
+The first-store identity is the current record's instance, claim and generation, and a worker bound to another Region is refused.
+A request that passed `Authorize` just before a confirmed stop and replacement still carries the old generation, and `firststore` refuses it once the successor has claimed.
+`RecordWorkerPublicKey` accepts only a valid public user key, so a seed is refused without being recorded, logged or echoed.
+The gateway binds both buckets per request and never creates them, so it provisions nothing and answers `ServiceUnavailable` until a worker launch has created them; the worker role's policy, instance profile and trust policy, which must admit only EC2, belong to that launch.
+No worker client calls these actions yet; the worker boot path above still accepts only `existing`.
 The private key stays on the worker disk; the guest logs and publishes only the public key to `/run/sqs-worker/public-key`.
 
 Evidence is local only: unit tests with a fake firmware config, sysfs and mount table, and real QEMU boots against disposable scratch disks showing the key survives reboots and that each refusal publishes no key.

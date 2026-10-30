@@ -101,6 +101,16 @@ func Open(ctx context.Context, js jetstream.JetStream) (Store, error) {
 	return Store{JS: js, KV: kv}, nil
 }
 
+// Bind binds the existing bucket without creating it, refusing one that could
+// lose records; a reader that must not provision state uses it.
+func Bind(ctx context.Context, js jetstream.JetStream) (Store, error) {
+	kv, err := sqsjs.BindDurableKV(ctx, js, Bucket)
+	if err != nil {
+		return Store{}, err
+	}
+	return Store{JS: js, KV: kv}, nil
+}
+
 func key(region string) string { return "region." + region }
 
 func validate(region string, id Identity) error {

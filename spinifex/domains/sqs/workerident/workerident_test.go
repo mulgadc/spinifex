@@ -688,3 +688,44 @@ func TestOpen_RefusesNonDurableBuckets(t *testing.T) {
 		}
 	})
 }
+
+// A reader that must not provision state binds the existing bucket only: an
+// absent one stays absent, and a non-durable one is refused as Open refuses it.
+func TestBind_NeverCreatesAndRefusesNonDurable(t *testing.T) {
+	clustersize.DeclareForTest(t, 1)
+	ctx := context.Background()
+	t.Run("absent bucket", func(t *testing.T) {
+		_, _, js := testutil.StartTestJetStream(t)
+		if _, err := Bind(ctx, js); err == nil {
+			t.Fatal("bound a bucket that does not exist")
+		}
+		if _, err := firststore.Bind(ctx, js); err == nil {
+			t.Fatal("bound a first-store bucket that does not exist")
+		}
+		for _, name := range []string{Bucket, firststore.Bucket} {
+			if _, err := js.KeyValue(ctx, name); !errors.Is(err, jetstream.ErrBucketNotFound) {
+				t.Fatalf("bind provisioned %s: %v", name, err)
+			}
+		}
+	})
+	t.Run("existing durable bucket", func(t *testing.T) {
+		_, _, js := testutil.StartTestJetStream(t)
+		if _, err := Open(ctx, js); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Bind(ctx, js); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("existing expiring bucket", func(t *testing.T) {
+		_, _, js := testutil.StartTestJetStream(t)
+		cfg := BucketConfig(1)
+		cfg.TTL = time.Hour
+		if _, err := js.CreateKeyValue(ctx, cfg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Bind(ctx, js); err == nil {
+			t.Fatal("bound an expiring bucket")
+		}
+	})
+}

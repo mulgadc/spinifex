@@ -275,3 +275,41 @@ func TestActionNames_SortedAndInventory(t *testing.T) {
 	assert.Equal(t, names, OperationInventory().Registered)
 	assert.Contains(t, names, "GetUser")
 }
+
+// TestRegistration_EveryActionRoutesToItsHandler sends each action through the
+// dispatcher and checks authorization sees that action and, once it passes, the
+// action's own handler runs. The service is a stub: a handler that reaches a
+// method past the embedded interface panics, which proves it was selected.
+func TestRegistration_EveryActionRoutesToItsHandler(t *testing.T) {
+	for _, name := range ActionNames() {
+		t.Run(name, func(t *testing.T) {
+			var authorized []string
+			form := url.Values{"Action": {name}, "UserName": {"alice"}}
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(form.Encode()))
+			inv := dispatch.Invocation{
+				Request:   r,
+				AccountID: testAccountID,
+				Service:   ServiceName,
+				Authorize: func(_, action string, _ []string, _ iampolicy.ConditionKeys) error {
+					authorized = append(authorized, action)
+					return nil
+				},
+				Actor: func() (dispatch.Actor, error) {
+					return dispatch.Actor{AccountID: testAccountID, PrincipalType: "user", UserName: "alice"}, nil
+				},
+			}
+			handlerReached := false
+			func() {
+				defer func() {
+					if recover() != nil {
+						handlerReached = true
+					}
+				}()
+				err := NewRegistration(Deps{IAM: &regService{}}).Dispatch(httptest.NewRecorder(), inv)
+				handlerReached = err == nil || !awserrors.IsErrorCode(err, awserrors.ErrorInvalidAction)
+			}()
+			require.Equal(t, []string{name}, authorized, "authorization sees exactly this action")
+			assert.True(t, handlerReached)
+		})
+	}
+}

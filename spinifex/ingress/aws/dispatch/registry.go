@@ -108,6 +108,16 @@ func (a Actor) RoleName() string {
 // A nil error permits the operation; otherwise the error is the AWS result.
 type AuthorizeFunc func(service, action string, resources []string, keys iampolicy.ConditionKeys) error
 
+// PolicyDenialError is the error an AuthorizeFunc wraps when the caller's identity
+// policy denies the action. It reads as a bare AccessDenied; a service whose
+// resource is safe to name may match it with errors.As and answer in detail.
+type PolicyDenialError struct {
+	Action   string
+	Resource string
+}
+
+func (d *PolicyDenialError) Error() string { return awserrors.ErrorAccessDenied }
+
 // ActorFunc resolves the verified caller on demand, so a request that never
 // needs it cannot fail on it.
 type ActorFunc func() (Actor, error)

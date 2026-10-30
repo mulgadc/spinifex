@@ -20,6 +20,7 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
@@ -46,6 +47,7 @@ func TestRequestConformance(t *testing.T) {
 		elbv2awsapi.InventoryName: elbv2awsapi.OperationInventory(),
 		rdsawsapi.ServiceName:     rdsawsapi.OperationInventory(),
 		iamawsapi.ServiceName:     iamawsapi.OperationInventory(),
+		stsawsapi.ServiceName:     stsawsapi.OperationInventory(),
 	})
 	for _, service := range awsmodel.Services() {
 		// Predastore serves S3, not the gateway.

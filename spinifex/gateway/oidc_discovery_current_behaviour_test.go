@@ -206,7 +206,7 @@ func TestCurrentBehaviour_WebIdentityJWKSMissingWireResponse(t *testing.T) {
 	signed, err := tok.SignedString(priv)
 	require.NoError(t, err)
 
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: iamSvc, STSService: stsSvc})
+	gw := withSTS(withVerifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: iamSvc, STSService: stsSvc}))
 	form := url.Values{
 		"Action": {"AssumeRoleWithWebIdentity"}, "Version": {"2011-06-15"},
 		"RoleArn": {aws.StringValue(role.Role.Arn)}, "RoleSessionName": {"s1"}, "WebIdentityToken": {signed},

@@ -3,10 +3,13 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // anonymousSTSInterceptor routes unsigned IRSA bootstrap actions
@@ -20,7 +23,7 @@ func (gw *GatewayConfig) anonymousSTSInterceptor(next http.Handler) http.Handler
 				ctx := context.WithValue(r.Context(), ctxQueryArgs, args)
 				ctx = context.WithValue(ctx, ctxService, "sts")
 				r = r.WithContext(ctx)
-				if err := gw.STS_Request(w, r); err != nil {
+				if err := gw.serveAnonymousSTS(w, args); err != nil {
 					gw.ErrorHandler(w, r, err)
 				}
 				return
@@ -51,4 +54,29 @@ func (gw *GatewayConfig) anonymousSTSArgs(r *http.Request) (map[string]string, b
 		return nil, false
 	}
 	return args, true
+}
+
+// anonymousSTSActions lists STS actions that carry no SigV4; authenticated by
+// a web-identity JWT instead. anonymousSTSInterceptor routes these before auth.
+var anonymousSTSActions = map[string]bool{
+	"AssumeRoleWithWebIdentity": true,
+}
+
+// serveAnonymousSTS runs an unsigned STS action through the composed
+// capability and writes its XML response.
+func (gw *GatewayConfig) serveAnonymousSTS(w http.ResponseWriter, args map[string]string) error {
+	if gw.AnonymousSTS == nil {
+		slog.Error("STS: anonymous service not initialized")
+		return errors.New(awserrors.ErrorInternalError)
+	}
+	xmlOutput, err := gw.AnonymousSTS(args)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "text/xml")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(xmlOutput); err != nil {
+		slog.Error("Failed to write STS response", "err", err)
+	}
+	return nil
 }

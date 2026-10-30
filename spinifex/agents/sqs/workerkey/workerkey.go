@@ -31,7 +31,9 @@ var (
 	ErrCorrupt     = errors.New("worker store key file does not hold a user NKey seed")
 )
 
-// Store is the key directory on the mounted worker disk.
+// Store is the key directory on the worker disk. Workerkey cannot tell a
+// mounted disk from an empty mountpoint, so the caller must first verify the
+// expected data volume is mounted there.
 type Store struct {
 	Dir string
 }
@@ -91,15 +93,15 @@ func (s Store) ensure(expected string) (nkeys.KeyPair, error) {
 func (s Store) path() string { return filepath.Join(s.Dir, keyFile) }
 
 // prepareDir creates only the key directory, inside a parent that must already
-// exist (the mounted worker disk), refuses one that is not owner-only, locks it
-// and removes temporary files a crash left behind.
+// exist, refuses one that is not owner-only, locks it and removes temporary
+// files a crash left behind.
 func (s Store) prepareDir() (unlock func(), err error) {
 	if s.Dir == "" {
 		return nil, errors.New("worker store key directory is not set")
 	}
 	parent, err := os.Stat(filepath.Dir(s.Dir))
 	if err != nil || !parent.IsDir() {
-		return nil, errors.New("worker key directory parent is missing; the worker disk is not mounted")
+		return nil, errors.New("worker key directory parent is missing")
 	}
 	if err := os.Mkdir(s.Dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return nil, fmt.Errorf("create worker key directory: %w", err)

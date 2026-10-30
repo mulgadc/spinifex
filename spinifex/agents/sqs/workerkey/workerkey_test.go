@@ -306,8 +306,8 @@ func TestForExistingStore_RejectsInvalidAuthorizedKey(t *testing.T) {
 	}
 }
 
-func TestForNewStore_RefusesUnmountedParent(t *testing.T) {
-	s := Store{Dir: filepath.Join(t.TempDir(), "not-mounted", "keys")}
+func TestForNewStore_RefusesMissingParent(t *testing.T) {
+	s := Store{Dir: filepath.Join(t.TempDir(), "missing-parent", "keys")}
 	if _, err := s.ForNewStore(); err == nil {
 		t.Fatal("a key directory was created without its parent")
 	}

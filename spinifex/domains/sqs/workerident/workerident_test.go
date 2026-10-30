@@ -817,3 +817,47 @@ func TestMarkDispatched_OnceForTheCurrentIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMarkNetworkAttempted_OnceForTheCurrentIntent(t *testing.T) {
+	ctx := context.Background()
+	s, kv := newStore(t)
+	in, err := s.BeginLaunch(ctx, region, launch(claim(1), 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkNetworkAttempted(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if !record(t, kv).NetworkAttempted {
+		t.Fatal("record not marked")
+	}
+	if err := s.MarkNetworkAttempted(ctx, in); !errors.Is(err, ErrNetworkAttempted) {
+		t.Fatalf("second mark = %v, want ErrNetworkAttempted", err)
+	}
+	if _, err := s.BeginLaunch(ctx, region, launch(claim(1), 0)); err != nil || !record(t, kv).NetworkAttempted {
+		t.Fatalf("a same-claim retry cleared the mark: %v", err)
+	}
+	stale := in
+	stale.ClaimID = claim(9)
+	if err := s.MarkNetworkAttempted(ctx, stale); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("other claim = %v, want ErrSuperseded", err)
+	}
+	if err := s.BindInstance(ctx, in, inst(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkNetworkAttempted(ctx, in); !errors.Is(err, ErrConflict) {
+		t.Fatalf("mark after bind = %v, want ErrConflict", err)
+	}
+	// A replacement's new claim starts unmarked.
+	mustStop(t, s, in, inst(1))
+	next, err := s.BeginLaunch(ctx, region, launch(claim(2), 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record(t, kv).NetworkAttempted {
+		t.Fatal("a replacement inherited the network mark")
+	}
+	if err := s.MarkNetworkAttempted(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+}

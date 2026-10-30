@@ -69,7 +69,17 @@ func newSQSWorkerNetwork(vpc sqsWorkerNetworkVPC, cfg *config.SQSConfig) *sqsWor
 	return &sqsWorkerNetwork{vpc: vpc, cfg: cfg, sem: make(chan struct{}, 1)}
 }
 
-func (n *sqsWorkerNetwork) WorkerNetwork(ctx context.Context, region, claimID string) (*workerlaunch.Network, error) {
+// FindWorkerNetwork returns the claim's visible ENI, or nil when there is none.
+func (n *sqsWorkerNetwork) FindWorkerNetwork(ctx context.Context, region, claimID string) (*workerlaunch.Network, error) {
+	return n.allocate(ctx, region, claimID, false)
+}
+
+// CreateWorkerNetwork reuses the claim's visible ENI or creates it.
+func (n *sqsWorkerNetwork) CreateWorkerNetwork(ctx context.Context, region, claimID string) (*workerlaunch.Network, error) {
+	return n.allocate(ctx, region, claimID, true)
+}
+
+func (n *sqsWorkerNetwork) allocate(ctx context.Context, region, claimID string, create bool) (*workerlaunch.Network, error) {
 	if n == nil || n.vpc == nil || n.sem == nil {
 		return nil, errors.New("sqs worker: network allocator is not configured")
 	}
@@ -94,8 +104,8 @@ func (n *sqsWorkerNetwork) WorkerNetwork(ctx context.Context, region, claimID st
 	if err != nil {
 		return nil, fmt.Errorf("sqs worker: subnet CIDR %q: %w", refs.SubnetCIDR, err)
 	}
-	eni, err := n.claimENI(ctx, refs.SubnetID, claimID)
-	if err != nil {
+	eni, err := n.claimENI(ctx, refs.SubnetID, claimID, create)
+	if err != nil || eni == nil {
 		return nil, err
 	}
 	ip, err := netip.ParseAddr(aws.StringValue(eni.PrivateIpAddress))
@@ -117,8 +127,9 @@ func (n *sqsWorkerNetwork) WorkerNetwork(ctx context.Context, region, claimID st
 }
 
 // claimENI returns the claim's ENI, creating it on a miss with the VPC default
-// security group. More than one complete match is refused, not chosen from.
-func (n *sqsWorkerNetwork) claimENI(ctx context.Context, subnetID, claimID string) (*ec2.NetworkInterface, error) {
+// security group only when create is set. More than one complete match is
+// refused, not chosen from.
+func (n *sqsWorkerNetwork) claimENI(ctx context.Context, subnetID, claimID string, create bool) (*ec2.NetworkInterface, error) {
 	acct := awsidentifiers.GlobalAccountID
 	desc := "SQS worker interface for " + claimID
 	out, err := n.vpc.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{Filters: []*ec2.Filter{
@@ -140,6 +151,9 @@ func (n *sqsWorkerNetwork) claimENI(ctx context.Context, subnetID, claimID strin
 	case 1:
 		return found[0], nil
 	case 0:
+		if !create {
+			return nil, nil
+		}
 	default:
 		return nil, fmt.Errorf("sqs worker: %d ENIs carry claim %s; refusing to choose", len(found), claimID)
 	}

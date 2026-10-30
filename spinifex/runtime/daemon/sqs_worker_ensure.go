@@ -146,6 +146,9 @@ func sqsWorkerEnsureError(err error) (code, message string) {
 	if errors.Is(err, workerlaunch.ErrOutcomeUnknown) {
 		return awserrors.ErrorIncorrectState, workerlaunch.ErrOutcomeUnknown.Error()
 	}
+	if errors.Is(err, workerlaunch.ErrNetworkOutcomeUnknown) {
+		return awserrors.ErrorIncorrectState, workerlaunch.ErrNetworkOutcomeUnknown.Error()
+	}
 	if unclaimed, ok := errors.AsType[*workerlaunch.UnclaimedVolumeError](err); ok {
 		return awserrors.ErrorServerInternal, unclaimed.Error()
 	}

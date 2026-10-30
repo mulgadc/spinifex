@@ -41,10 +41,12 @@ type Network struct {
 	Gateway string
 }
 
-// NetworkAllocator finds or creates the one ENI for a launch claim, so a
-// retry of the same claim reuses it.
+// NetworkAllocator manages the one ENI for a launch claim. Find only looks
+// and returns nil when none is visible; Create sends a create, after reusing
+// one that is already visible.
 type NetworkAllocator interface {
-	WorkerNetwork(ctx context.Context, region, claimID string) (*Network, error)
+	FindWorkerNetwork(ctx context.Context, region, claimID string) (*Network, error)
+	CreateWorkerNetwork(ctx context.Context, region, claimID string) (*Network, error)
 }
 
 // Spec is one worker VM launch. It carries no key: the guest takes its
@@ -76,6 +78,9 @@ var (
 	ErrUnencrypted    = errors.New("SQS worker data volume is not encrypted")
 	ErrIncomplete     = errors.New("SQS worker launcher is missing a capability")
 	ErrHostNotReady   = errors.New("this node cannot boot an SQS worker yet")
+	// ErrNetworkOutcomeUnknown is returned when the claim's ENI create was
+	// sent but no ENI is visible; the create is not repeated until reconciled.
+	ErrNetworkOutcomeUnknown = errors.New("SQS worker network create outcome is unknown; reconcile before relaunching")
 )
 
 // Launcher realizes the worker on NodeID, the node it runs on and the only
@@ -167,9 +172,9 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 	if err != nil {
 		return Result{}, fmt.Errorf("ensure worker instance profile: %w", err)
 	}
-	network, err := l.Network.WorkerNetwork(ctx, region, intent.ClaimID)
+	network, err := l.network(ctx, region, intent)
 	if err != nil {
-		return Result{}, fmt.Errorf("worker network: %w", err)
+		return Result{}, err
 	}
 	spec := Spec{InstanceType: instanceType, ProfileARN: profile, Network: *network,
 		DataVolumeID: req.DataVolumeID, Region: region}
@@ -185,6 +190,30 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 		return Result{}, fmt.Errorf("worker %s launched but not bound: %w", instanceID, err)
 	}
 	return Result{InstanceID: instanceID, Generation: intent.Generation}, nil
+}
+
+// network reuses the claim's visible ENI, or marks the intent and sends one
+// create. Once marked, an ENI that is not visible fails closed: the create
+// may still land, so a second one could give the claim two interfaces.
+func (l *Launcher) network(ctx context.Context, region string, intent workerident.Intent) (*Network, error) {
+	found, err := l.Network.FindWorkerNetwork(ctx, region, intent.ClaimID)
+	if err != nil {
+		return nil, fmt.Errorf("worker network: %w", err)
+	}
+	if found != nil {
+		return found, nil
+	}
+	if err := l.Identities.MarkNetworkAttempted(ctx, intent); err != nil {
+		if errors.Is(err, workerident.ErrNetworkAttempted) {
+			return nil, ErrNetworkOutcomeUnknown
+		}
+		return nil, fmt.Errorf("worker network: %w", err)
+	}
+	created, err := l.Network.CreateWorkerNetwork(ctx, region, intent.ClaimID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrNetworkOutcomeUnknown, err)
+	}
+	return created, nil
 }
 
 // hostReady runs before any volume, intent, network or dispatch, so a node

@@ -46,7 +46,7 @@ func TestSQSSystemVPCSpec_DefaultIsDisjointAndOverridable(t *testing.T) {
 func TestSQSWorkerNetwork_PrivateShape(t *testing.T) {
 	n, svc := sqsWorkerNetworkFixture(t, nil)
 	ctx := t.Context()
-	net, err := n.WorkerNetwork(ctx, sqsTestRegion, "claim-a")
+	net, err := n.CreateWorkerNetwork(ctx, sqsTestRegion, "claim-a")
 	require.NoError(t, err)
 
 	subnet := netip.MustParsePrefix(sqsSystemVPCSpec(nil, sqsTestRegion).Supernet)
@@ -86,10 +86,10 @@ func TestSQSWorkerNetwork_PrivateShape(t *testing.T) {
 func TestSQSWorkerNetwork_OneENIPerClaim(t *testing.T) {
 	n, svc := sqsWorkerNetworkFixture(t, nil)
 	ctx := t.Context()
-	first, err := n.WorkerNetwork(ctx, sqsTestRegion, "claim-a")
+	first, err := n.CreateWorkerNetwork(ctx, sqsTestRegion, "claim-a")
 	require.NoError(t, err)
 
-	again, err := n.WorkerNetwork(ctx, sqsTestRegion, "claim-a")
+	again, err := n.CreateWorkerNetwork(ctx, sqsTestRegion, "claim-a")
 	require.NoError(t, err)
 	assert.Equal(t, first, again)
 
@@ -97,7 +97,7 @@ func TestSQSWorkerNetwork_OneENIPerClaim(t *testing.T) {
 	got := make([]string, 8)
 	for i := range got {
 		wg.Go(func() {
-			net, err := n.WorkerNetwork(context.Background(), sqsTestRegion, "claim-c")
+			net, err := n.CreateWorkerNetwork(context.Background(), sqsTestRegion, "claim-c")
 			if err == nil {
 				got[i] = net.ENIID
 			}
@@ -109,7 +109,7 @@ func TestSQSWorkerNetwork_OneENIPerClaim(t *testing.T) {
 		assert.Equal(t, got[0], id, "concurrent calls for one new claim must share one ENI")
 	}
 
-	other, err := n.WorkerNetwork(ctx, sqsTestRegion, "claim-b")
+	other, err := n.CreateWorkerNetwork(ctx, sqsTestRegion, "claim-b")
 	require.NoError(t, err)
 	assert.NotEqual(t, first.ENIID, other.ENIID)
 	assert.Equal(t, first.SubnetID, other.SubnetID)
@@ -123,12 +123,12 @@ func TestSQSWorkerNetwork_OneENIPerClaim(t *testing.T) {
 func TestSQSWorkerNetwork_RefusesADuplicatedClaim(t *testing.T) {
 	n, svc := sqsWorkerNetworkFixture(t, nil)
 	ctx := t.Context()
-	net, err := n.WorkerNetwork(ctx, sqsTestRegion, "claim-a")
+	net, err := n.CreateWorkerNetwork(ctx, sqsTestRegion, "claim-a")
 	require.NoError(t, err)
 	_, err = svc.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{SubnetId: aws.String(net.SubnetID),
 		Description: aws.String("SQS worker interface for claim-a")}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
-	_, err = n.WorkerNetwork(ctx, sqsTestRegion, "claim-a")
+	_, err = n.CreateWorkerNetwork(ctx, sqsTestRegion, "claim-a")
 	require.ErrorContains(t, err, "refusing to choose")
 }
 
@@ -139,7 +139,7 @@ func TestSQSWorkerNetwork_CancelledWaiterAllocatesNothing(t *testing.T) {
 	n.sem <- struct{}{}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := n.WorkerNetwork(ctx, sqsTestRegion, "claim-a")
+	_, err := n.CreateWorkerNetwork(ctx, sqsTestRegion, "claim-a")
 	require.ErrorIs(t, err, context.Canceled)
 	<-n.sem
 	vpcs, err := svc.DescribeVpcs(t.Context(), &ec2.DescribeVpcsInput{}, awsidentifiers.GlobalAccountID)
@@ -149,11 +149,11 @@ func TestSQSWorkerNetwork_CancelledWaiterAllocatesNothing(t *testing.T) {
 
 func TestSQSWorkerNetwork_RefusesIncompleteInput(t *testing.T) {
 	n, _ := sqsWorkerNetworkFixture(t, nil)
-	_, err := n.WorkerNetwork(t.Context(), "", "claim-a")
+	_, err := n.CreateWorkerNetwork(t.Context(), "", "claim-a")
 	require.Error(t, err)
-	_, err = n.WorkerNetwork(t.Context(), sqsTestRegion, "")
+	_, err = n.CreateWorkerNetwork(t.Context(), sqsTestRegion, "")
 	require.Error(t, err)
-	_, err = (&sqsWorkerNetwork{}).WorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
+	_, err = (&sqsWorkerNetwork{}).CreateWorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
 	require.Error(t, err)
 }
 
@@ -177,10 +177,10 @@ func (v strayENIVPC) DescribeNetworkInterfaces(ctx context.Context, in *ec2.Desc
 // An ENI whose address is outside the private subnet is refused.
 func TestSQSWorkerNetwork_RefusesAnAddressOutsideTheSubnet(t *testing.T) {
 	n, svc := sqsWorkerNetworkFixture(t, nil)
-	_, err := n.WorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
+	_, err := n.CreateWorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
 	require.NoError(t, err)
 	stray := newSQSWorkerNetwork(strayENIVPC{VPCServiceImpl: svc, stray: "192.0.2.10"}, nil)
-	_, err = stray.WorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
+	_, err = stray.CreateWorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
 	require.ErrorContains(t, err, "is not in subnet")
 }
 
@@ -222,9 +222,9 @@ func (v *lostCreateVPC) CreateNetworkInterface(ctx context.Context, in *ec2.Crea
 func TestSQSWorkerNetwork_LostCreateReplyReusesTheENI(t *testing.T) {
 	_, svc := sqsWorkerNetworkFixture(t, nil)
 	n := newSQSWorkerNetwork(&lostCreateVPC{VPCServiceImpl: svc}, nil)
-	_, err := n.WorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
+	_, err := n.CreateWorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
 	require.ErrorContains(t, err, "create ENI")
-	net, err := n.WorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
+	net, err := n.CreateWorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
 	require.NoError(t, err)
 	out, err := svc.DescribeNetworkInterfaces(t.Context(), &ec2.DescribeNetworkInterfacesInput{}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)

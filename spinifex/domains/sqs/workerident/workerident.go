@@ -57,6 +57,9 @@ type Record struct {
 	// Dispatched is set once, before the launch is sent. A dispatched launch
 	// is never sent again: its outcome is reconciled, not retried.
 	Dispatched bool `json:"dispatched,omitempty"`
+	// NetworkAttempted is set once, before the claim's ENI create is sent. A
+	// create whose outcome was not seen is never sent again for that claim.
+	NetworkAttempted bool `json:"networkAttempted,omitempty"`
 }
 
 // IndexEntry finds an instance's regional record. It is a lookup, never proof
@@ -111,6 +114,7 @@ var (
 	ErrContended         = errors.New("worker identity changed concurrently; retry")
 	ErrNotFenced         = errors.New("first-store fence does not yet exclude the replaced generation")
 	ErrDispatched        = errors.New("SQS worker launch was already dispatched; its outcome must be reconciled")
+	ErrNetworkAttempted  = errors.New("SQS worker network create was already sent; its outcome must be reconciled")
 )
 
 const maxAttempts = 8
@@ -225,8 +229,8 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 			if err := s.requireFence(ctx, region, rec.Generation+1); err != nil {
 				return Intent{}, err
 			}
-			next.State, next.Generation, next.ClaimID, next.InstanceID, next.Dispatched =
-				StateLaunching, rec.Generation+1, req.ClaimID, "", false
+			next.State, next.Generation, next.ClaimID, next.InstanceID, next.Dispatched, next.NetworkAttempted =
+				StateLaunching, rec.Generation+1, req.ClaimID, "", false, false
 		}
 		// Unchanged for a retry: the rewrite proves the read was current.
 		if s.put(ctx, regionKey(region), next, rev) == nil {
@@ -353,6 +357,38 @@ func (s Store) MarkDispatched(ctx context.Context, intent Intent) error {
 		}
 		next := *rec
 		next.Dispatched = true
+		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// MarkNetworkAttempted records that intent's ENI create is about to be sent.
+// Exactly one call wins; a second call, or a retry after a lost reply, gets
+// ErrNetworkAttempted, so an uncertain create is never repeated.
+func (s Store) MarkNetworkAttempted(ctx context.Context, intent Intent) error {
+	if err := validIntent(intent); err != nil {
+		return err
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, intent.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrSuperseded
+		}
+		if err != nil {
+			return err
+		}
+		switch {
+		case rec.Generation != intent.Generation || rec.ClaimID != intent.ClaimID:
+			return ErrSuperseded
+		case rec.State != StateLaunching:
+			return ErrConflict
+		case rec.NetworkAttempted:
+			return ErrNetworkAttempted
+		}
+		next := *rec
+		next.NetworkAttempted = true
 		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
 			return nil
 		}

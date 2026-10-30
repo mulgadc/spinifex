@@ -51,21 +51,52 @@ func (f *fakeRoles) EnsureWorkerProfile(context.Context) (string, error) {
 	return "arn:aws:iam::000000000000:instance-profile/sqsWorkerRole", nil
 }
 
+// fakeNetwork holds one ENI per claim. A create with fail set is applied but
+// reports failure; with hidden set it stays invisible to Find until shown.
 type fakeNetwork struct {
-	mu     sync.Mutex
-	claims []string
-	fail   error
+	mu      sync.Mutex
+	claims  []string
+	created map[string]bool
+	fail    error
+	hidden  bool
+	shown   map[string]bool
 }
 
-func (f *fakeNetwork) WorkerNetwork(_ context.Context, _, claimID string) (*Network, error) {
+func (f *fakeNetwork) net() *Network {
+	return &Network{SubnetID: "subnet-1", ENIID: "eni-1", ENIMac: "02:00:00:00:00:01",
+		ENIIP: "10.240.0.10", CIDR: "10.240.0.10/24", Gateway: "10.240.0.1"}
+}
+
+func (f *fakeNetwork) FindWorkerNetwork(_ context.Context, _, claimID string) (*Network, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.created[claimID] && (!f.hidden || f.shown[claimID]) {
+		return f.net(), nil
+	}
+	return nil, nil
+}
+
+func (f *fakeNetwork) CreateWorkerNetwork(_ context.Context, _, claimID string) (*Network, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.claims = append(f.claims, claimID)
+	if f.created == nil {
+		f.created = map[string]bool{}
+	}
+	f.created[claimID] = true
 	if f.fail != nil {
 		return nil, f.fail
 	}
-	return &Network{SubnetID: "subnet-1", ENIID: "eni-1", ENIMac: "02:00:00:00:00:01",
-		ENIIP: "10.240.0.10", CIDR: "10.240.0.10/24", Gateway: "10.240.0.1"}, nil
+	return f.net(), nil
+}
+
+func (f *fakeNetwork) show(claimID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.shown == nil {
+		f.shown = map[string]bool{}
+	}
+	f.shown[claimID] = true
 }
 
 type fakeVMs struct {
@@ -406,11 +437,10 @@ func TestEnsure_HostNotReadyRefusesBeforeAllocating(t *testing.T) {
 // a stopped worker is neither fenced nor replaced.
 func TestEnsure_HostNotReadyLeavesRecordsUntouched(t *testing.T) {
 	r := newRig(t)
-	r.net.fail = errors.New("network down")
+	r.iam.fail.Store(1)
 	if _, err := r.l.Ensure(context.Background(), region, itype); err == nil {
-		t.Fatal("want network failure")
+		t.Fatal("want IAM failure")
 	}
-	r.net.fail = nil
 	before := r.current(t)
 	r.host.err = errors.New("image missing")
 	if _, err := r.l.Ensure(context.Background(), region, itype); !errors.Is(err, ErrHostNotReady) {
@@ -441,5 +471,52 @@ func TestEnsure_HostNotReadyLeavesRecordsUntouched(t *testing.T) {
 	fence, err := r.l.FirstStore.FencedAt(context.Background(), region)
 	if err != nil || fence > stopped.Generation {
 		t.Fatalf("fence = %d, %v while the host was not ready", fence, err)
+	}
+}
+
+// A create whose reply is lost and whose ENI is not yet visible is never sent
+// again: the retry fails closed and dispatches nothing, and once the ENI
+// becomes visible the next call reuses it and launches once.
+func TestEnsure_UncertainNetworkCreateIsNotRepeated(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.net.fail = errors.New("nats: timeout")
+	r.net.hidden = true
+	if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrNetworkOutcomeUnknown) {
+		t.Fatalf("first = %v, want ErrNetworkOutcomeUnknown", err)
+	}
+	r.net.fail = nil
+	for range 3 {
+		if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrNetworkOutcomeUnknown) {
+			t.Fatalf("retry = %v, want ErrNetworkOutcomeUnknown", err)
+		}
+	}
+	rec := r.current(t)
+	if len(r.net.claims) != 1 || rec.Dispatched || !rec.NetworkAttempted || r.vms.count() != 0 {
+		t.Fatalf("creates=%d record=%+v launches=%d", len(r.net.claims), rec, r.vms.count())
+	}
+	r.net.show(rec.ClaimID)
+	if _, err := r.l.Ensure(ctx, region, itype); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.net.claims) != 1 || r.vms.count() != 1 {
+		t.Fatalf("after visible: creates=%d launches=%d", len(r.net.claims), r.vms.count())
+	}
+}
+
+// A failure after the ENI is visible resumes with that ENI, not a new create.
+func TestEnsure_VisibleNetworkIsReusedOnResume(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.net.fail = errors.New("nats: timeout")
+	if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrNetworkOutcomeUnknown) {
+		t.Fatalf("first = %v", err)
+	}
+	r.net.fail = nil
+	if _, err := r.l.Ensure(ctx, region, itype); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.net.claims) != 1 || r.vms.count() != 1 {
+		t.Fatalf("creates=%d launches=%d", len(r.net.claims), r.vms.count())
 	}
 }

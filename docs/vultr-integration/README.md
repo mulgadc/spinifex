@@ -76,8 +76,8 @@ It is never written to the Terraform state or to the instance metadata.
 You need:
 
 - **A Vultr account** with room for the nodes you choose in [step 2](#2-choose-a-deployment).
-- **A Vultr API key.** In the Vultr portal, open **Account → API** and enable it.
-  Under **Access Control**, add `0.0.0.0/0` for now.
+- **A Vultr API key.** In the Vultr portal, open your user menu, then **API Access**, and under your organization choose **Create API Key**.
+  Under **Access Control List**, choose **Add IP to Allowlist** and add `0.0.0.0/0` for now.
   The nodes call the API to manage their addresses, and their addresses do not exist until the deploy creates them.
   You replace `0.0.0.0/0` with the real addresses in [step 4](#4-restrict-the-api-key).
 - **OpenTofu or Terraform**, version 1.5 or newer. Install [OpenTofu](https://opentofu.org/docs/intro/install/) or [Terraform](https://developer.hashicorp.com/terraform/install); the deploy script uses whichever it finds, preferring OpenTofu.
@@ -85,6 +85,12 @@ You need:
 - **An SSH key pair** at `~/.ssh/id_ed25519`.
   Create one with `ssh-keygen -t ed25519` if you do not have one.
   The deploy installs the public key on every node.
+
+The API key page, with the key and the temporary `0.0.0.0/0` entry in its access control list:
+
+<p align="center">
+  <img src="../../.github/assets/images/vultr/vultr-api-keys.png" alt="Vultr API Access page, showing an API key and an access control list that allows 0.0.0.0/0" width="900">
+</p>
 
 ---
 
@@ -174,11 +180,11 @@ A three-node deployment lists `node2` and `node3` as well, and all three address
 ## 4. Restrict the API key
 
 Now that the node addresses are known, close the API key to everything else.
-In the Vultr portal, open **Account → API**, and under **Access Control**:
+In the Vultr portal, open your user menu, then **API Access**, and under **Access Control List**:
 
-1. Add each address from the `api_key_allowlist` line.
+1. Choose **Add IP to Allowlist** for each address from the `api_key_allowlist` line.
 2. Add your own machine's public address, so that `./deploy-vultr.sh` can still remove the deployment later.
-3. Remove `0.0.0.0/0`.
+3. Remove the `0.0.0.0/0` entry, and the IPv6 `::/0` entry if your list has one.
 
 `./deploy-vultr.sh status` prints the node addresses again whenever you need them.
 
@@ -191,6 +197,14 @@ In the Vultr portal, open **Account → API**, and under **Access Control**:
 ```
 
 This lists each node and its address, then every VM or bare-metal server, VPC, volume and reserved IP the deployment holds in your Vultr account, then the completed deploy steps.
+
+In the Vultr portal, the nodes are under **Compute → Instances**, bare-metal servers included.
+Each is named `spinifex-<deployment>-nodeN` and tagged `spinifex` and `deployment:<deployment>`, which is `deployment:default` unless you passed `--name`.
+These are the servers that run Spinifex, and the AWS workloads and services you create on it run inside them.
+
+<p align="center">
+  <img src="../../.github/assets/images/vultr/vultr-instances.png" alt="Vultr Instances page, showing Spinifex nodes named spinifex-deployment-nodeN with the spinifex and deployment tags" width="900">
+</p>
 
 To log in to a node:
 

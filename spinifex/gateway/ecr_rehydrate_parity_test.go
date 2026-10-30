@@ -176,6 +176,11 @@ func TestRehydrateParity_ResolveECRPrincipal(t *testing.T) {
 			assert.Equal(t, want.assumedRoleID, got.AssumedRoleID)
 			assert.Equal(t, want.underlyingRoleARN, got.UnderlyingRoleARN)
 			assert.Equal(t, claims.Subject, got.CallerARN)
+
+			// The gateway and credverify each build the caller ARN; the same inputs must agree.
+			gwARN, err := buildCallerARN(got.AccountID, got.Identity, got.PrincipalType, got.AssumedRoleARN, got.UserARN)
+			require.NoError(t, err)
+			assert.Equal(t, gwARN, got.CallerARN)
 		})
 	}
 }

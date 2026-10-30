@@ -20,6 +20,8 @@
 package integration
 
 import (
+	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	"context"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"encoding/json"
@@ -51,6 +53,7 @@ import (
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/ec2quota"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -228,10 +231,8 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	cfg := &gateway.GatewayConfig{
 		DisableLogging: true,
 		NATSConn:       nc,
-		Services:       services.Build(),
 		ExpectedNodes:  1,
 		Region:         testRegion,
-		AZ:             testAZ,
 		IAMService:     iamSvc,
 		STSService:     stsSvc,
 		AnonymousSTS:   stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsDeps),
@@ -239,6 +240,18 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	// EC2 is registered once the options have run so its node count follows
+	// ExpectedNodes, as awsgw takes it from the same config.
+	require.NoError(t, services.Register(ec2awsapi.NewRegistration(ec2awsapi.Deps{
+		NATS:          nc,
+		IAM:           iamSvc,
+		Quota:         ec2quota.Adapter{Service: admissionquota.New(admissionquota.Limits{}, nil)},
+		ActiveNodes:   func(context.Context) int { return cfg.ExpectedNodes },
+		ExpectedNodes: cfg.ExpectedNodes,
+		AZ:            testAZ,
+		Endpoint:      "https://localhost:9999",
+	})))
+	cfg.Services = services.Build()
 	// Built after the options so a test that swaps or drops a service sees the
 	// verifier follow it, as production wires the verifier over the same services.
 	if cfg.Credentials == nil {

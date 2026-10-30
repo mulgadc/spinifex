@@ -11,8 +11,8 @@ import (
 // as the awsgw role composes it. Set both on gw before calling.
 func withRDS(gw *GatewayConfig) *GatewayConfig {
 	deps := rdsawsapi.Deps{NATS: gw.NATSConn, ExpectedNodes: gw.ExpectedNodes}
-	if gw.Quota != nil {
-		deps.Quota = gw.Quota
+	if quotaFor(gw) != nil {
+		deps.Quota = quotaFor(gw)
 	}
 	b := dispatch.NewBuilder()
 	if err := b.Register(rdsawsapi.NewRegistration(deps)); err != nil {

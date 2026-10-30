@@ -133,6 +133,7 @@ func TestSigV4Auth_FailureLogsLoopbackGatedClientIP(t *testing.T) {
 				STSService:     &mockSTSService{},
 				RateLimiter:    rl,
 			}
+			withEC2(gw)
 			handler := gw.SigV4AuthMiddleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Fatal("an unknown session credential must not reach the handler")
 			}))

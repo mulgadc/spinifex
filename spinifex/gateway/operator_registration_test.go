@@ -27,12 +27,14 @@ func withOperator(gw *GatewayConfig) *GatewayConfig {
 		ActiveNodes: gw.DiscoverActiveNodes,
 
 		IAM:           gw.IAMService,
-		Quota:         gw.Quota,
+		Quota:         quotaFor(gw),
 		ExpectedNodes: gw.ExpectedNodes,
-		NodeIDs:       gw.NodeIDs,
 	}
 	reg := operatoradmin.NewRegistration(deps)
 	if err := b.Register(reg); err != nil {
+		panic(err)
+	}
+	if err := b.Register(ec2Registration(gw)); err != nil {
 		panic(err)
 	}
 	gw.Services = b.Build()

@@ -10,6 +10,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -137,9 +138,6 @@ func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdo
 	cfg := &GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
-		AZ:             testRegion + "a",
-		RegistryHost:   "registry.example",
-		RegistryPort:   "443",
 		NATSConn:       nc,
 		IAMService:     svc,
 		ExpectedNodes:  1,
@@ -147,7 +145,10 @@ func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdo
 	if env.NoNATS {
 		cfg.NATSConn = nil
 	}
-	gw := withVerifier(cfg)
+	gw := withEC2(withVerifier(cfg), func(d *ec2awsapi.Deps) {
+		d.AZ = testRegion + "a"
+		d.Endpoint = "https://registry.example"
+	})
 	r := chi.NewRouter()
 	for _, mw := range env.Outer {
 		r.Use(mw)

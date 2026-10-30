@@ -2607,6 +2607,12 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instance *vm.VM, undo func()) error {
 	instance.ResetNodeLocalState()
 
+	// AWS restamps LaunchTime on every start. The pending watchdog times a
+	// launch from it, so a stale one terminates the instance mid-boot.
+	if instance.Instance != nil {
+		instance.Instance.LaunchTime = aws.Time(time.Now())
+	}
+
 	instanceType, ok := s.resourceMgr.InstanceTypes()[instance.InstanceType]
 	if !ok {
 		slog.ErrorContext(ctx, "launchClaimedInstance: instance type not available on this node",

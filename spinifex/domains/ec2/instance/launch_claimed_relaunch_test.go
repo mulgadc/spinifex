@@ -7,6 +7,7 @@ package instance
 
 import (
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -78,4 +79,24 @@ func TestLaunchClaimedInstance_RefusesWhenTheBootStateCannotBeRebuilt(t *testing
 	assert.Len(t, resources.deallocated, 1, "the capacity the attempt took has to be returned")
 	_, present := svc.vmMgr.Get("i-moved")
 	assert.False(t, present, "a refused launch must not leave the instance in this node's view")
+}
+
+// A claimed instance was launched long before this node runs it: a stopped
+// instance can be started a day later, and a recovery waits out its old
+// node's heartbeat and volume lease first. The pending watchdog times the
+// launch from LaunchTime, so the old one has it terminated while it boots.
+func TestLaunchClaimedInstance_RestampsLaunchTime(t *testing.T) {
+	var launchedAt time.Time
+	svc, _ := claimedRelaunchService(t, func(v *vm.VM) error {
+		launchedAt = aws.TimeValue(v.Instance.LaunchTime)
+		return nil
+	})
+
+	before := time.Now()
+	instance := &vm.VM{ID: "i-moved", AccountID: "acc", InstanceType: "t3.micro",
+		Instance: &ec2.Instance{LaunchTime: aws.Time(before.Add(-24 * time.Hour))}}
+	_ = svc.launchClaimedInstance(t.Context(), instance, func() {})
+
+	assert.False(t, launchedAt.Before(before),
+		"the relaunch must start the pending watchdog's clock again, or a launch older than %s is terminated as stuck", vm.PendingWatchdogTimeout)
 }

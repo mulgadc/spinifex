@@ -63,6 +63,7 @@ type fakeSTS struct {
 	cred         *stsdomain.SessionCredential
 	tokenOK      bool
 	principalErr error
+	live         *stsdomain.SessionPrincipal
 	principals   atomic.Int32
 }
 
@@ -74,7 +75,7 @@ func (f *fakeSTS) VerifySessionToken(*stsdomain.SessionCredential, string) bool 
 
 func (f *fakeSTS) VerifySessionPrincipal(*stsdomain.SessionCredential) (*stsdomain.SessionPrincipal, error) {
 	f.principals.Add(1)
-	return nil, f.principalErr
+	return f.live, f.principalErr
 }
 
 func accept(string) error { return nil }

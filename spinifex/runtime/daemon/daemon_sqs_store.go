@@ -24,12 +24,43 @@ import (
 // under; the guest finds the disk by serial, not by this name.
 const sqsStoreDataDevice = "/dev/sdf"
 
+// sqsGuest is an SQS direct-boot guest launch, the store or the shared worker,
+// that has passed every check that can run before anything is allocated.
+type sqsGuest interface {
+	imageDir() string
+	dataVolume() string
+	needsMgmtNIC() bool
+	writeFwCfg(instanceID string) ([]vm.FwCfgEntry, error)
+	// record stores what a same-node relaunch rebuilds the fw_cfg files from.
+	record(inst *vm.VM, nodeID, netcfg string)
+}
+
 // sqsStoreLaunch is an SQS store launch that has passed every check that can
 // run before capacity, an ENI or a VM record exists.
 type sqsStoreLaunch struct {
 	volumeID   string
 	listenAddr string
 	clientNKey string
+}
+
+var _ sqsGuest = (*sqsStoreLaunch)(nil)
+
+func (s *sqsStoreLaunch) imageDir() string   { return sqsStoreImageDir() }
+func (s *sqsStoreLaunch) dataVolume() string { return s.volumeID }
+func (s *sqsStoreLaunch) needsMgmtNIC() bool { return false }
+
+func (s *sqsStoreLaunch) writeFwCfg(instanceID string) ([]vm.FwCfgEntry, error) {
+	return writeSQSStoreFwCfg(instanceID, s)
+}
+
+func (s *sqsStoreLaunch) record(inst *vm.VM, nodeID, netcfg string) {
+	inst.SQSStoreGuest = &vm.SQSStoreGuest{
+		NodeID:       nodeID,
+		DataVolumeID: s.volumeID,
+		ListenAddr:   s.listenAddr,
+		ClientNKey:   s.clientNKey,
+		Netcfg:       netcfg,
+	}
 }
 
 // sqsStoreImageDir holds the store's kernel and initramfs, beside the load
@@ -81,8 +112,12 @@ func (d *Daemon) prepareSQSStoreLaunch(ctx context.Context, input *elbv2domain.S
 	if err := input.ValidateSQSStore(); err != nil {
 		return nil, err
 	}
-	if _, ok := d.resourceMgr.instanceTypes[input.InstanceType]; !ok {
+	it, ok := d.resourceMgr.instanceTypes[input.InstanceType]
+	if !ok {
 		return nil, fmt.Errorf("unknown instance type: %s", input.InstanceType)
+	}
+	if err := sqsStoreMemoryFits(input.InstanceType, it); err != nil {
+		return nil, err
 	}
 	listenAddr, err := sqsStoreListenAddr(input.NICs)
 	if err != nil {
@@ -101,6 +136,21 @@ func (d *Daemon) prepareSQSStoreLaunch(ctx context.Context, input *elbv2domain.S
 		listenAddr: listenAddr,
 		clientNKey: input.SQSStore.ClientNKey,
 	}, nil
+}
+
+// sqsStoreMinMemoryMiB is the heap limit the store's server runs under; a
+// guest no larger than it cannot also hold its kernel and page cache. This is
+// a floor, not a validated size.
+const sqsStoreMinMemoryMiB = 512
+
+// ErrSQSStoreUndersized refuses an instance type too small for the store.
+var ErrSQSStoreUndersized = errors.New("sqs store: instance type memory does not exceed the store's 512 MiB heap limit")
+
+func sqsStoreMemoryFits(name string, it *ec2.InstanceTypeInfo) error {
+	if it == nil || instanceTypeMemoryMiB(it) <= sqsStoreMinMemoryMiB {
+		return fmt.Errorf("%w: %s", ErrSQSStoreUndersized, name)
+	}
+	return nil
 }
 
 // sqsStoreListenAddr is the address of the one default NIC, which the guest
@@ -126,8 +176,8 @@ func sqsStoreListenAddr(nics []elbv2domain.NICConfig) (string, error) {
 	return addr, nil
 }
 
-// checkSQSStoreVolume requires the volume to exist in the system account and
-// be available. That is the normal EBS attach rule, not an ownership check.
+// checkSQSStoreVolume requires the volume's own record, in the system
+// account, to say it is available and encrypted; no caller flag is trusted.
 func (d *Daemon) checkSQSStoreVolume(ctx context.Context, volumeID string) error {
 	if d.volumeService == nil {
 		return errors.New("sqs store: volume service unavailable")
@@ -144,8 +194,15 @@ func (d *Daemon) checkSQSStoreVolume(ctx context.Context, volumeID string) error
 	if state := aws.StringValue(out.Volumes[0].State); state != ec2.VolumeStateAvailable {
 		return fmt.Errorf("sqs store: data volume %s is %s, not available", volumeID, state)
 	}
+	if !aws.BoolValue(out.Volumes[0].Encrypted) {
+		return fmt.Errorf("%w: %s", ErrSQSStoreUnencrypted, volumeID)
+	}
 	return nil
 }
+
+// ErrSQSStoreUnencrypted refuses a store data volume whose record is not
+// encrypted.
+var ErrSQSStoreUnencrypted = errors.New("sqs store: data volume is not encrypted")
 
 // sqsStoreNetcfgOnly keeps the network config and drops the load balancer's
 // agent environment and CA bundle, which the store guest must not receive.

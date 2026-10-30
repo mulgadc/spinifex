@@ -161,7 +161,8 @@ sqs_run() {
         return 2
     fi
     sqs_log "run: starting pid=$$"
-    exec "$NATS_BIN" -c "$SQS_RUN/nats.conf"
+    # ADR-0011:S11 bounds the store's Go heap; the guest must be larger.
+    GOMEMLIMIT=512MiB exec "$NATS_BIN" -c "$SQS_RUN/nats.conf"
 }
 
 # sqs_stop: first shutdown action. Block any respawn, SIGTERM the recorded run

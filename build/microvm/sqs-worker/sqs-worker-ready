@@ -1,0 +1,6 @@
+#!/bin/sh
+# Respawned by init. A watcher that must not run parks here instead of exiting,
+# so init does not respawn it in a tight loop.
+. /usr/local/lib/sqs-worker/sqs-worker-lib.sh
+sqsw_run
+exec sleep 2147483647

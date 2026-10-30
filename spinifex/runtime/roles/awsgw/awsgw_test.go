@@ -9,6 +9,7 @@ import (
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
+	sqsworkerapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi/worker"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/assert"
@@ -59,6 +60,17 @@ func TestWireServiceRegistry(t *testing.T) {
 			_, ok := gw.Services.Lookup(svc)
 			assert.True(t, ok, svc)
 		}
+	})
+
+	t.Run("the internal SQS worker surface wires beside the public services", func(t *testing.T) {
+		gw := &gateway.GatewayConfig{}
+		require.NoError(t, wireServiceRegistry(gw,
+			awsapi.NewRegistration(awsapi.Deps{}), acmawsapi.NewRegistration(acmawsapi.Deps{}),
+			sqsworkerapi.NewRegistration(sqsworkerapi.JetStreamDeps(nil))))
+		_, ok := gw.Services.Lookup(sqsworkerapi.ServiceName)
+		assert.True(t, ok)
+		_, ok = gw.Services.Lookup("sqs")
+		assert.False(t, ok, "the public sqs signing service must stay unserved")
 	})
 
 	t.Run("a registration claiming a legacy name fails startup", func(t *testing.T) {

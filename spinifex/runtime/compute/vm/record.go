@@ -38,6 +38,10 @@ type InstanceSpec struct {
 	// that launched the store.
 	SQSStoreGuest *SQSStoreGuest `json:"sqs_store_guest,omitempty"`
 
+	// SQSWorkerGuest is written once at launch, with Config, by the node
+	// that launched the worker.
+	SQSWorkerGuest *SQSWorkerGuest `json:"sqs_worker_guest,omitempty"`
+
 	PlacementGroupName    string `json:"placement_group_name,omitempty"`
 	CapacityReservationId string `json:"capacity_reservation_id,omitempty"`
 	InstanceLifecycle     string `json:"instance_lifecycle,omitempty"`
@@ -122,6 +126,7 @@ func (v *VM) Record() *InstanceRecord {
 			HostfwdPorts:          v.HostfwdPorts,
 			ManagedBy:             v.ManagedBy,
 			SQSStoreGuest:         v.SQSStoreGuest,
+			SQSWorkerGuest:        v.SQSWorkerGuest,
 			BootMode:              v.BootMode,
 			DirectBoot:            v.DirectBoot,
 			IamInstanceProfileArn: v.IamInstanceProfileArn,
@@ -180,6 +185,7 @@ func VMFromRecord(r *InstanceRecord) *VM {
 		HostfwdPorts:          r.Spec.HostfwdPorts,
 		ManagedBy:             r.Spec.ManagedBy,
 		SQSStoreGuest:         r.Spec.SQSStoreGuest,
+		SQSWorkerGuest:        r.Spec.SQSWorkerGuest,
 		BootMode:              r.Spec.BootMode,
 		DirectBoot:            r.Spec.DirectBoot,
 		IamInstanceProfileArn: r.Spec.IamInstanceProfileArn,

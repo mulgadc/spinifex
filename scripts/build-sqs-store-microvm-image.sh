@@ -5,6 +5,10 @@
 # sqs-store/sqs-store-lib.sh states its fw_cfg contract. The LB image
 # (build-microvm-image.sh) is separate and unchanged.
 #
+# SQS_MICROVM_PROFILE=worker builds the shared SQS worker guest instead: the
+# same network /init and kernel, build/microvm/sqs-worker's steps and
+# $REPO_ROOT/bin/sqs-worker, with no nats-server.
+#
 # Inputs:
 #   $REPO_ROOT/build/microvm/sqs-store/init.sh, inittab
 #   $REPO_ROOT/build/microvm/sqs-store/sqs-store-{lib.sh,prepare,run,stop}
@@ -26,6 +30,18 @@ INIT_SH="$BUILD_DIR/init.sh"
 INITTAB="$BUILD_DIR/inittab"
 NATS_SERVER_BIN="$REPO_ROOT/bin/nats-server"
 
+PROFILE="${SQS_MICROVM_PROFILE:-store}"
+case "$PROFILE" in
+    store) ;;
+    worker)
+        BUILD_DIR="$REPO_ROOT/build/microvm/sqs-worker"
+        INITTAB="$BUILD_DIR/inittab"
+        SQS_WORKER_BIN="$REPO_ROOT/bin/sqs-worker"
+        ;;
+    *) echo "ERROR: SQS_MICROVM_PROFILE must be store or worker, not $PROFILE" >&2; exit 1 ;;
+esac
+TAG="[build-sqs-$PROFILE-microvm-image]"
+
 ALPINE_VERSION="${ALPINE_VERSION:-3.24}"
 ALPINE_MIRROR="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
 # e2fsprogs: mkfs.ext4/e2fsck for a guest that mounts an ext4 data volume.
@@ -36,8 +52,8 @@ ALPINE_PACKAGES="busybox linux-virt iproute2 ca-certificates e2fsprogs kmod"
 # button (QMP system_powerdown) into a signal busybox init handles as poweroff.
 MICROVM_EXTRA_MODULES="${MICROVM_EXTRA_MODULES:-ext4 tiny_power_button}"
 
-echo "[build-sqs-store-microvm-image] repo root: $REPO_ROOT"
-echo "[build-sqs-store-microvm-image] build dir: $BUILD_DIR"
+echo "$TAG repo root: $REPO_ROOT"
+echo "$TAG build dir: $BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 # --- Verify non-negotiable tools ---
@@ -52,6 +68,16 @@ for tool in cpio gzip find fakeroot; do
     fi
 done
 
+if [ "$PROFILE" = worker ]; then
+    if [ ! -x "$SQS_WORKER_BIN" ]; then
+        echo "ERROR: $SQS_WORKER_BIN not found — run 'make bin/sqs-worker'" >&2
+        exit 1
+    fi
+    if ! file -b "$SQS_WORKER_BIN" | grep -q "statically linked"; then
+        echo "ERROR: $SQS_WORKER_BIN is not statically linked — it cannot run on the musl guest" >&2
+        exit 1
+    fi
+else
 # --- Verify the dedicated nats-server is the go.mod-pinned build ---
 # A stale or host-installed binary would ship an unreviewed server version.
 NATS_SERVER_PIN=$(awk '$1 == "github.com/nats-io/nats-server/v2" { print $2; exit }' "$REPO_ROOT/go.mod")
@@ -72,7 +98,8 @@ if [ "$nats_server_version" != "$NATS_SERVER_PIN" ]; then
     echo "ERROR: $NATS_SERVER_BIN reports $nats_server_version, go.mod pins $NATS_SERVER_PIN" >&2
     exit 1
 fi
-echo "[build-sqs-store-microvm-image] nats-server: $nats_server_version (matches go.mod)"
+echo "$TAG nats-server: $nats_server_version (matches go.mod)"
+fi
 
 # --- Create chroot ---
 CHROOT_DIR=$(mktemp -d)
@@ -88,11 +115,11 @@ STAGE_DIR=$(mktemp -d "$BUILD_DIR/.stage.XXXXXX")
 CONTAINER_TOOL=""
 CONTAINER_CID=""
 cleanup() {
-    echo "[build-sqs-store-microvm-image] cleaning up chroot: $CHROOT_DIR"
+    echo "$TAG cleaning up chroot: $CHROOT_DIR"
     rm -rf "$CHROOT_DIR"
     rm -rf "${STAGE_DIR:?}"
     if [ -n "$CONTAINER_CID" ] && [ -n "$CONTAINER_TOOL" ]; then
-        echo "[build-sqs-store-microvm-image] cleaning up container: $CONTAINER_CID"
+        echo "$TAG cleaning up container: $CONTAINER_CID"
         $CONTAINER_TOOL rm -f "$CONTAINER_CID" >/dev/null 2>&1 || true
     fi
 }
@@ -101,7 +128,7 @@ trap cleanup EXIT
 # --- Populate rootfs ---
 # Strategy 1: native apk (Alpine hosts, CI)
 if command -v apk >/dev/null 2>&1; then
-    echo "[build-sqs-store-microvm-image] rootfs: native apk"
+    echo "$TAG rootfs: native apk"
     mkdir -p \
         "$CHROOT_DIR/etc/apk" \
         "$CHROOT_DIR/lib/apk/db" \
@@ -125,7 +152,7 @@ EOF
 # this grows without bound. `buildx --output type=local` writes the image
 # filesystem straight to a directory and releases every mount, so nothing leaks.
 elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    echo "[build-sqs-store-microvm-image] rootfs: docker buildx --output type=local (alpine:${ALPINE_VERSION})"
+    echo "$TAG rootfs: docker buildx --output type=local (alpine:${ALPINE_VERSION})"
     BUILD_CTX=$(mktemp -d)
     cat > "$BUILD_CTX/Dockerfile" <<DOCKERFILE
 FROM alpine:${ALPINE_VERSION}
@@ -140,7 +167,7 @@ DOCKERFILE
 # Strategy 3: podman -> run + export. Podman's store does not exhibit the docker
 # overlay2 export-mount leak, and podman has no buildx.
 elif command -v podman >/dev/null 2>&1; then
-    echo "[build-sqs-store-microvm-image] rootfs: podman export (alpine:${ALPINE_VERSION})"
+    echo "$TAG rootfs: podman export (alpine:${ALPINE_VERSION})"
     CONTAINER_TOOL=podman
     CONTAINER_CID=$(podman run -d \
         "alpine:${ALPINE_VERSION}" \
@@ -170,7 +197,7 @@ rm -rf "${CHROOT_DIR:?}/dev"
 mkdir "$CHROOT_DIR/dev"
 
 # --- Place init script ---
-echo "[build-sqs-store-microvm-image] installing init.sh as /init..."
+echo "$TAG installing init.sh as /init..."
 if [ ! -f "$INIT_SH" ]; then
     echo "ERROR: $INIT_SH not found — cannot build initramfs" >&2
     exit 1
@@ -183,11 +210,26 @@ if [ ! -f "$INITTAB" ]; then
     echo "ERROR: $INITTAB not found — cannot build initramfs" >&2
     exit 1
 fi
-echo "[build-sqs-store-microvm-image] installing inittab..."
+echo "$TAG installing inittab..."
 install -m 0644 "$INITTAB" "$CHROOT_DIR/etc/inittab"
 
+if [ "$PROFILE" = worker ]; then
+    echo "$TAG installing worker guest steps..."
+    for step in sqs-worker-lib.sh sqs-worker-prepare sqs-worker-ready sqs-worker-stop; do
+        if [ ! -f "$BUILD_DIR/$step" ]; then
+            echo "ERROR: $BUILD_DIR/$step not found — cannot build initramfs" >&2
+            exit 1
+        fi
+    done
+    mkdir -p "$CHROOT_DIR/usr/local/lib/sqs-worker" "$CHROOT_DIR/usr/local/bin"
+    install -m 0755 "$BUILD_DIR/sqs-worker-lib.sh" "$BUILD_DIR/sqs-worker-prepare" "$BUILD_DIR/sqs-worker-ready" "$BUILD_DIR/sqs-worker-stop" \
+        "$CHROOT_DIR/usr/local/lib/sqs-worker/"
+    install -m 0755 "$SQS_WORKER_BIN" "$CHROOT_DIR/usr/local/bin/sqs-worker"
+    # The mountpoint ships empty; the worker proves its disk is mounted here.
+    mkdir -p "$CHROOT_DIR/data"
+else
 # --- Place the store's guest steps ---
-echo "[build-sqs-store-microvm-image] installing store guest steps..."
+echo "$TAG installing store guest steps..."
 mkdir -p "$CHROOT_DIR/usr/local/lib/sqs-store"
 for step in sqs-store-lib.sh sqs-store-prepare sqs-store-run sqs-store-stop; do
     if [ ! -f "$BUILD_DIR/$step" ]; then
@@ -200,9 +242,10 @@ install -m 0755 "$BUILD_DIR/sqs-store-prepare" "$BUILD_DIR/sqs-store-run" "$BUIL
     "$CHROOT_DIR/usr/local/lib/sqs-store/"
 
 # --- Copy nats-server binary ---
-echo "[build-sqs-store-microvm-image] copying nats-server binary..."
+echo "$TAG copying nats-server binary..."
 mkdir -p "$CHROOT_DIR/usr/local/bin"
 install -m 0755 "$NATS_SERVER_BIN" "$CHROOT_DIR/usr/local/bin/nats-server"
+fi
 
 # --- Create required directories for init ---
 mkdir -p \
@@ -217,7 +260,7 @@ if [ -z "$KERNEL_IMG" ]; then
     echo "ERROR: no vmlinuz found in $CHROOT_DIR/boot" >&2
     exit 1
 fi
-echo "[build-sqs-store-microvm-image] kernel image: $KERNEL_IMG"
+echo "$TAG kernel image: $KERNEL_IMG"
 
 KERNEL_VER=$(basename "$KERNEL_IMG" | sed 's/vmlinuz-//')
 KERNEL_CONFIG="$CHROOT_DIR/boot/config-${KERNEL_VER}"
@@ -231,9 +274,9 @@ if ! find "$CHROOT_DIR/lib/modules" \
         echo "ERROR: qemu_fw_cfg module missing from initramfs — fw_cfg reads will fail at boot" >&2
         exit 1
     fi
-    echo "[build-sqs-store-microvm-image] fw_cfg: built-in (CONFIG_FW_CFG_SYSFS=y)"
+    echo "$TAG fw_cfg: built-in (CONFIG_FW_CFG_SYSFS=y)"
 else
-    echo "[build-sqs-store-microvm-image] fw_cfg: module found in lib/modules"
+    echo "$TAG fw_cfg: module found in lib/modules"
 fi
 
 # --- Assert ext4 userspace tools (data volume) ---
@@ -243,7 +286,7 @@ for fs_tool in mkfs.ext4 e2fsck; do
         exit 1
     fi
 done
-echo "[build-sqs-store-microvm-image] e2fsprogs: mkfs.ext4 + e2fsck present"
+echo "$TAG e2fsprogs: mkfs.ext4 + e2fsck present"
 
 # --- Strip kernel modules (Phase 2 keep-list approach) ---
 # Only modules needed by a virtio-mmio microvm guest are kept:
@@ -282,7 +325,7 @@ image_kmod() {
         --argv0 "$1" "$CHROOT_DIR/bin/kmod" "${@:2}"
 }
 
-echo "[build-sqs-store-microvm-image] stripping kernel modules to virtio+fw_cfg+${MICROVM_EXTRA_MODULES} only..."
+echo "$TAG stripping kernel modules to virtio+fw_cfg+${MICROVM_EXTRA_MODULES} only..."
 for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
     kver="$(basename "$kver_dir")"
     kernel_dir="$kver_dir/kernel"
@@ -381,8 +424,8 @@ for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
             exit 1
         fi
     done
-    echo "[build-sqs-store-microvm-image] extra module closure: $(echo "$extra_names" | tr '\n' ' ')"
-    echo "[build-sqs-store-microvm-image] modules kept: $(echo "$kept_names" | tr '\n' ' ')"
+    echo "$TAG extra module closure: $(echo "$extra_names" | tr '\n' ' ')"
+    echo "$TAG modules kept: $(echo "$kept_names" | tr '\n' ' ')"
 
     # Rebuild module metadata with the image's own kmod, the binary the guest's
     # modprobe runs, so no host depmod is needed. Stock indexes still name .ko.gz
@@ -415,12 +458,12 @@ for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
             echo "ERROR: modprobe plan for $name names $path, not a kept plain .ko" >&2
             exit 1
         done <<< "$plan"
-        echo "[build-sqs-store-microvm-image] modprobe $name: $(awk '{ n = split($2, a, "/"); printf "%s ", a[n] }' <<< "$plan")"
+        echo "$TAG modprobe $name: $(awk '{ n = split($2, a, "/"); printf "%s ", a[n] }' <<< "$plan")"
     done
 done
 
 # --- Strip package-manager artifacts (not needed at runtime) ---
-echo "[build-sqs-store-microvm-image] stripping package manager artifacts..."
+echo "$TAG stripping package manager artifacts..."
 rm -rf \
     "$CHROOT_DIR/lib/apk" \
     "$CHROOT_DIR/var/cache/apk" \
@@ -434,7 +477,7 @@ rm -rf \
 # --- Strip debug symbols from binaries ---
 # nats-server in /usr/local/bin is left as built (-s -w), so the shipped bytes
 # are the ones whose version was checked above.
-echo "[build-sqs-store-microvm-image] stripping debug symbols from binaries..."
+echo "$TAG stripping debug symbols from binaries..."
 find "$CHROOT_DIR/usr/sbin" "$CHROOT_DIR/usr/bin" \
      "$CHROOT_DIR/sbin" "$CHROOT_DIR/bin" \
     -type f 2>/dev/null | while read -r bin; do
@@ -443,7 +486,7 @@ done
 
 # --- Copy vmlinuz out before stripping /boot from chroot ---
 VMLINUZ_OUT="$STAGE_DIR/vmlinuz"
-echo "[build-sqs-store-microvm-image] copying kernel: $VMLINUZ_OUT"
+echo "$TAG copying kernel: $VMLINUZ_OUT"
 cp "$KERNEL_IMG" "$VMLINUZ_OUT"
 
 # Drop /boot from the chroot — vmlinuz, Alpine's stock initramfs-virt, System.map
@@ -456,7 +499,7 @@ rm -rf "${CHROOT_DIR:?}/boot"
 
 # --- Build initramfs ---
 INITRAMFS_OUT="$STAGE_DIR/initramfs.cpio.gz"
-echo "[build-sqs-store-microvm-image] building initramfs: $INITRAMFS_OUT"
+echo "$TAG building initramfs: $INITRAMFS_OUT"
 # Create the static device nodes and pack the archive inside a single fakeroot
 # session: mknod/cpio see faked device entries and write real char-device
 # records into the cpio, while the host filesystem never gets an actual node.
@@ -470,6 +513,6 @@ fakeroot sh -c '
 # --- Gate the staged pair, then publish it ---
 # Nothing reaches $BUILD_DIR until every gate passes, so a failed build cannot
 # leave a pair the grouped make target would take as up to date.
-"$REPO_ROOT/scripts/lib/sqs-store-microvm-publish.sh" "$STAGE_DIR" "$BUILD_DIR"
+"$REPO_ROOT/scripts/lib/sqs-store-microvm-publish.sh" "$STAGE_DIR" "$BUILD_DIR" "$PROFILE"
 echo ""
-echo "[build-sqs-store-microvm-image] done."
+echo "$TAG done."

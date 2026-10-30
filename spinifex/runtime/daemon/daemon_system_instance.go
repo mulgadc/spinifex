@@ -90,13 +90,19 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 	return d.launchDirectSystemInstance(input, nil)
 }
 
-// launchDirectSystemInstance boots a direct-boot microVM. A nil store is the
-// load balancer; a store's volume and guest config were checked by the caller
+// launchDirectSystemInstance boots a direct-boot microVM. A nil guest is the
+// load balancer; an SQS guest's volume and config were checked by the caller
 // before anything here allocates.
-func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInput, store *sqsStoreLaunch) (*elbv2domain.SystemInstanceOutput, error) {
+func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInput, guest sqsGuest) (*elbv2domain.SystemInstanceOutput, error) {
 	managedBy := tags.ManagedByELBv2
-	if store != nil {
+	if guest != nil {
 		managedBy = tags.ManagedBySQS
+	}
+	// The SQS worker reaches the gateway only over its mgmt NIC.
+	mgmtRequired := input.Scheme == elbv2domain.SchemeInternal || (guest != nil && guest.needsMgmtNIC())
+	mgmtFor := "internal-scheme ALB"
+	if guest != nil && guest.needsMgmtNIC() {
+		mgmtFor = "SQS worker"
 	}
 	accountID := awsidentifiers.GlobalAccountID
 	// ENI account may differ from system account — the ENI is created under
@@ -363,9 +369,9 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 
 		mgmtIP, allocErr := d.mgmtIPAllocator.Allocate(instance.ID)
 		if allocErr != nil {
-			if input.Scheme == elbv2domain.SchemeInternal {
+			if mgmtRequired {
 				d.cleanupFailedSystemInstance(instance, instanceType)
-				return nil, fmt.Errorf("allocate mgmt IP for internal-scheme ALB: %w", allocErr)
+				return nil, fmt.Errorf("allocate mgmt IP for %s: %w", mgmtFor, allocErr)
 			}
 			slog.Warn("LaunchSystemInstance: failed to allocate mgmt IP, skipping mgmt NIC", "instanceId", instance.ID, "err", allocErr)
 		} else {
@@ -386,9 +392,9 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 				d.mgmtIPAllocator.Release(instance.ID)
 				instance.MgmtMAC = ""
 				instance.MgmtIP = ""
-				if input.Scheme == elbv2domain.SchemeInternal {
+				if mgmtRequired {
 					d.cleanupFailedSystemInstance(instance, instanceType)
-					return nil, fmt.Errorf("setup mgmt tap for internal-scheme ALB: %w", tapErr)
+					return nil, fmt.Errorf("setup mgmt tap for %s: %w", mgmtFor, tapErr)
 				}
 				slog.Error("LaunchSystemInstance: failed to setup mgmt tap", "instanceId", instance.ID, "err", tapErr)
 			} else {
@@ -399,37 +405,36 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 		}
 	}
 
+	if guest != nil && guest.needsMgmtNIC() && instance.MgmtIP == "" {
+		d.cleanupFailedSystemInstance(instance, instanceType)
+		return nil, errors.New("sqs worker: no mgmt NIC on this node")
+	}
+
 	// The requested guest ports. The host ports they land on are observed by
 	// the launch and reported back through HostfwdPortMap.
 	instance.HostfwdPorts = slices.Clone(input.HostfwdPorts)
 
 	// Direct-boot (microvm) path: build the vm.Config directly with microvm
 	// machine settings and fw_cfg blobs for network, lb-agent env, and CA cert.
-	cfg, err := d.buildDirectBootConfig(instance.ID, input, store)
+	cfg, err := d.buildDirectBootConfig(instance.ID, input, guest)
 	if err != nil {
 		d.cleanupFailedSystemInstance(instance, instanceType)
 		return nil, fmt.Errorf("build direct-boot config: %w", err)
 	}
 	instance.Config = cfg
 	instance.DirectBoot = true
-	if store != nil {
+	if guest != nil {
 		netcfg, err := netcfgForInput(input)
 		if err != nil {
 			d.cleanupFailedSystemInstance(instance, instanceType)
-			return nil, fmt.Errorf("render sqs store netcfg: %w", err)
+			return nil, fmt.Errorf("render sqs guest netcfg: %w", err)
 		}
-		instance.SQSStoreGuest = &vm.SQSStoreGuest{
-			NodeID:       d.node,
-			DataVolumeID: store.volumeID,
-			ListenAddr:   store.listenAddr,
-			ClientNKey:   store.clientNKey,
-			Netcfg:       netcfg,
-		}
+		guest.record(instance, d.node, netcfg)
 		// Mounted and marked in-use by the normal launch path, and only
 		// detached when the instance terminates.
 		instance.EBSRequests.Mu.Lock()
 		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{
-			Name:                store.volumeID,
+			Name:                guest.dataVolume(),
 			DeviceName:          sqsStoreDataDevice,
 			DeleteOnTermination: false,
 		})
@@ -713,6 +718,9 @@ func (d *Daemon) prepareInstanceRelaunch(inst *vm.VM) error {
 // under /var/lib/spinifex/ and are a no-op.
 func (d *Daemon) refreshSystemInstanceState(inst *vm.VM) error {
 	if inst.ManagedBy == tags.ManagedBySQS {
+		if inst.SQSWorkerGuest != nil {
+			return d.refreshSQSWorkerState(inst)
+		}
 		return d.refreshSQSStoreState(inst)
 	}
 	if inst.ManagedBy != tags.ManagedByELBv2 {
@@ -825,7 +833,7 @@ var microvmDir = vm.MicroVMDir
 //
 // Network topology from input.NICs is serialised to three fw_cfg tmpfiles
 // (netcfg, lb-agent-env, ca-cert) under hostprocess.RuntimeDir().
-func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.SystemInstanceInput, store *sqsStoreLaunch) (vm.Config, error) {
+func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.SystemInstanceInput, guest sqsGuest) (vm.Config, error) {
 	it := d.resourceMgr.instanceTypes[input.InstanceType]
 	architecture := "x86_64"
 	if it != nil && it.ProcessorInfo != nil && len(it.ProcessorInfo.SupportedArchitectures) > 0 && it.ProcessorInfo.SupportedArchitectures[0] != nil {
@@ -848,13 +856,13 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 		return vm.Config{}, fmt.Errorf("write fw_cfg blobs: %w", err)
 	}
 	imageDir := microvmDir
-	if store != nil {
-		storeCfg, err := writeSQSStoreFwCfg(instanceID, store)
+	if guest != nil {
+		guestCfg, err := guest.writeFwCfg(instanceID)
 		if err != nil {
-			return vm.Config{}, fmt.Errorf("write sqs store fw_cfg blobs: %w", err)
+			return vm.Config{}, fmt.Errorf("write sqs guest fw_cfg blobs: %w", err)
 		}
-		fwCfg = append(sqsStoreNetcfgOnly(fwCfg), storeCfg...)
-		imageDir = sqsStoreImageDir()
+		fwCfg = append(sqsStoreNetcfgOnly(fwCfg), guestCfg...)
+		imageDir = guest.imageDir()
 	}
 
 	// Build kernel cmdline.
@@ -869,8 +877,8 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 	//   mitigations=off         — skip spectre/meltdown microcode patching at
 	//                             boot. Load balancer only: KVM guest on trusted
 	//                             host CPU, single-tenant LB workload, no untrusted
-	//                             code in the VM. Saves ~200-500ms. The SQS store
-	//                             holds tenant data and keeps mitigations on.
+	//                             code in the VM. Saves ~200-500ms. The SQS
+	//                             guests hold tenant data and keep mitigations on.
 	//   tsc=reliable            — skip TSC calibration loop on KVM (host already
 	//                             vouched for invariant TSC)
 	//   no_timer_check          — skip APIC/PIT cross-check; microvm has no PIT
@@ -878,7 +886,7 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 	//   i8042.no{pnp,aux,kbd}   — microvm has no PS/2; skip i8042 probe timeouts
 	var sb strings.Builder
 	sb.WriteString("console=ttyS0 quiet loglevel=3")
-	if store == nil {
+	if guest == nil {
 		sb.WriteString(" mitigations=off")
 	}
 	sb.WriteString(" tsc=reliable no_timer_check reboot=t i8042.nopnp i8042.noaux i8042.nokbd")

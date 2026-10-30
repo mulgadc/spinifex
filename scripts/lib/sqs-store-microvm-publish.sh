@@ -1,6 +1,7 @@
 #!/bin/bash
-# sqs-store-microvm-publish.sh STAGE_DIR OUT_DIR — gate a staged SQS store
-# microVM kernel + initramfs and move them into OUT_DIR only if every gate passes.
+# sqs-store-microvm-publish.sh STAGE_DIR OUT_DIR [PROFILE] — gate a staged SQS
+# store (default) or worker microVM kernel + initramfs and move them into
+# OUT_DIR only if every gate passes.
 #
 # A failed gate leaves OUT_DIR as it was: a previous valid pair stays, and an
 # older pair stays older than the build inputs, so make rebuilds next time.
@@ -10,7 +11,15 @@ STAGE_DIR="${1:?usage: sqs-store-microvm-publish.sh STAGE_DIR OUT_DIR}"
 OUT_DIR="${2:?usage: sqs-store-microvm-publish.sh STAGE_DIR OUT_DIR}"
 VMLINUZ="$STAGE_DIR/vmlinuz"
 INITRAMFS="$STAGE_DIR/initramfs.cpio.gz"
-tag="[build-sqs-store-microvm-image]"
+PROFILE="${3:-store}"
+case "$PROFILE" in
+    store)
+        payload="usr/local/bin/nats-server usr/local/lib/sqs-store/sqs-store-lib.sh usr/local/lib/sqs-store/sqs-store-prepare usr/local/lib/sqs-store/sqs-store-run usr/local/lib/sqs-store/sqs-store-stop" ;;
+    worker)
+        payload="usr/local/bin/sqs-worker usr/local/lib/sqs-worker/sqs-worker-lib.sh usr/local/lib/sqs-worker/sqs-worker-prepare usr/local/lib/sqs-worker/sqs-worker-ready usr/local/lib/sqs-worker/sqs-worker-stop data" ;;
+    *) echo "ERROR: profile must be store or worker, not $PROFILE" >&2; exit 1 ;;
+esac
+tag="[build-sqs-$PROFILE-microvm-image]"
 
 for f in "$VMLINUZ" "$INITRAMFS"; do
     if [ ! -s "$f" ]; then
@@ -24,9 +33,8 @@ if ! archive_list=$(zcat "$INITRAMFS" | cpio --quiet -t); then
     echo "ERROR: $INITRAMFS is not a readable gzip cpio archive" >&2
     exit 1
 fi
-for want in init etc/inittab usr/local/bin/nats-server dev/console dev/null \
-    usr/local/lib/sqs-store/sqs-store-lib.sh usr/local/lib/sqs-store/sqs-store-prepare \
-    usr/local/lib/sqs-store/sqs-store-run usr/local/lib/sqs-store/sqs-store-stop; do
+# shellcheck disable=SC2086 # payload is a word list on purpose
+for want in init etc/inittab dev/console dev/null $payload; do
     if ! grep -qx "$want" <<< "$archive_list"; then
         echo "ERROR: $want missing from $INITRAMFS" >&2
         exit 1
@@ -49,6 +57,11 @@ for want_ko in ext4 tiny_power_button; do
 done
 if grep -qE '(^|/)(lb-agent|haproxy|nginx)$' <<< "$archive_list"; then
     echo "ERROR: LB data-plane binaries found in the SQS store image" >&2
+    exit 1
+fi
+# The worker holds the store client key; it must never carry the store server.
+if [ "$PROFILE" = worker ] && grep -qE '(^|/)nats-server$' <<< "$archive_list"; then
+    echo "ERROR: nats-server found in the SQS worker image" >&2
     exit 1
 fi
 echo "$tag content gate: PASS"

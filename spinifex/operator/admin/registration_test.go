@@ -245,6 +245,8 @@ func TestNewRegistration_DeclaresTheAdminActionsAsItsInventory(t *testing.T) {
 	assert.ElementsMatch(t, []string{
 		"GetVersion", "GetNodes", "GetVMs", "GetStorageStatus", "PromoteImage",
 		"GrantModelAccess", "RevokeModelAccess", "ListModelAccess", "ListOchreCatalog",
+		"EnsureSQSStore",
+		"EnsureSQSWorker",
 	}, reg.Inventory.Registered)
 	assert.NoError(t, dispatch.NewBuilder().Register(reg))
 }

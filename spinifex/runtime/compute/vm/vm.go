@@ -95,6 +95,18 @@ type SQSStoreGuest struct {
 	Netcfg       string `json:"netcfg"`
 }
 
+// SQSWorkerGuest is what an SQS worker guest's fw_cfg files are rebuilt from.
+// None of it is secret: the CA is a public certificate. NodeID is the only
+// node allowed to relaunch it from this record.
+type SQSWorkerGuest struct {
+	NodeID       string `json:"node_id"`
+	DataVolumeID string `json:"data_volume_id"`
+	Region       string `json:"region"`
+	GatewayURL   string `json:"gateway_url"`
+	CACert       string `json:"ca_cert"`
+	Netcfg       string `json:"netcfg"`
+}
+
 // VM is one EC2 instance on this node: its observed and desired state, QEMU
 // Config, attached volumes and ENIs, and the EC2 API records returned for it.
 // It is persisted as JSON, minus the live QMPClient and unexported fields.
@@ -226,6 +238,10 @@ type VM struct {
 	// SQSStoreGuest is the guest config of an SQS store instance, kept so a
 	// relaunch on the same node can rewrite its fw_cfg files. Nil otherwise.
 	SQSStoreGuest *SQSStoreGuest `json:"sqs_store_guest,omitempty"`
+
+	// SQSWorkerGuest is the guest config of an SQS worker instance, kept so a
+	// relaunch on the same node can rewrite its fw_cfg files. Nil otherwise.
+	SQSWorkerGuest *SQSWorkerGuest `json:"sqs_worker_guest,omitempty"`
 
 	// IamInstanceProfileArn is the ARN of the instance profile attached at
 	// launch or via AssociateIamInstanceProfile. Empty when no profile is

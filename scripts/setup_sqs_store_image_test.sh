@@ -1,6 +1,6 @@
 #!/bin/sh
-# setup_sqs_store_image_test.sh — tests for shipping the SQS store microVM
-# image: staging it into a release tree and installing it with setup.sh.
+# setup_sqs_store_image_test.sh — tests for shipping the SQS store and worker
+# microVM images: staging them into a release tree and installing with setup.sh.
 #
 # setup.sh is sourced with INSTALL_SPINIFEX_LIB_ONLY=1 so main never runs, and
 # installs into a temporary SPINIFEX_MICROVM_DIR with SUDO cleared.
@@ -16,7 +16,7 @@ fails=0
 pass() { echo "  ok   - $1"; }
 fail() { echo "  FAIL - $1"; fails=$((fails + 1)); }
 
-echo "-- SQS store microVM image release and install"
+echo "-- SQS store and worker microVM image release and install"
 
 # image <dir> <tag>: a fake built image whose bytes name its tag.
 image() {
@@ -184,6 +184,60 @@ if [ "$RC" != 0 ] && same "$TMP/built/vmlinuz" "$TMP/mv/sqs-store/vmlinuz" && [ 
     pass "an interrupted install leaves the initramfs missing, not mismatched"
 else
     fail "interrupted install: rc=$RC initramfs=$([ -e "$TMP/mv/sqs-store/initramfs.cpio.gz" ] && echo present || echo missing)"
+fi
+
+# --- SQS worker image: same staging and install path, its own directory ---
+install_worker() {
+    RC=0
+    OUT=$(EXTRACT_DIR="$1" SPINIFEX_MICROVM_DIR="$2" INSTALL_SPINIFEX_LIB_ONLY=1 \
+        bash -c '. "$1"; SUDO=""; install_sqs_worker_image' _ "$SETUP" 2>&1) || RC=$?
+}
+image "$TMP/wbuilt" w1
+release "$TMP/wrel"
+sh "$STAGE" "$TMP/built" "$TMP/wrel" > /dev/null
+sh "$STAGE" "$TMP/wbuilt" "$TMP/wrel" sqs-worker > /dev/null
+if same "$TMP/wbuilt/vmlinuz" "$TMP/wrel/microvm-sqs-worker/vmlinuz" \
+    && same "$TMP/wbuilt/initramfs.cpio.gz" "$TMP/wrel/microvm-sqs-worker/initramfs.cpio.gz" \
+    && same "$TMP/built/vmlinuz" "$TMP/wrel/microvm-sqs-store/vmlinuz"; then
+    pass "the worker image stages beside the store image"
+else
+    fail "worker staging: $(ls -R "$TMP/wrel")"
+fi
+install_worker "$TMP/wrel" "$TMP/wmv"
+if [ "$RC" = 0 ] && same "$TMP/wbuilt/initramfs.cpio.gz" "$TMP/wmv/sqs-worker/initramfs.cpio.gz" \
+    && [ ! -e "$TMP/wmv/sqs-store" ]; then
+    pass "the worker image installs into its own directory only"
+else
+    fail "worker install: rc=$RC $OUT"
+fi
+release "$TMP/wrel-none"
+OUT=$(sh "$STAGE" "$TMP/no-such-build" "$TMP/wrel-none" sqs-worker)
+if [ ! -e "$TMP/wrel-none/microvm-sqs-worker" ] && echo "$OUT" | grep -q 'SQS worker microVM image missing'; then
+    pass "a missing worker build stages nothing and says so"
+else
+    fail "missing worker build: $OUT"
+fi
+install_worker "$TMP/wrel-none" "$TMP/wmv"
+if [ "$RC" = 0 ] && [ ! -e "$TMP/wmv/sqs-worker/vmlinuz" ] && [ ! -e "$TMP/wmv/sqs-worker/initramfs.cpio.gz" ] \
+    && echo "$OUT" | grep -q 'no SQS worker microVM image; SQS worker launches will be refused'; then
+    pass "a release without the worker image removes the earlier one and warns"
+else
+    fail "release without worker image: rc=$RC $OUT"
+fi
+cp -r "$TMP/wrel" "$TMP/wrel-bad"
+rm "$TMP/wrel-bad/microvm-sqs-worker/vmlinuz"
+install_worker "$TMP/wrel" "$TMP/wmv"
+install_worker "$TMP/wrel-bad" "$TMP/wmv"
+if [ "$RC" != 0 ] && echo "$OUT" | grep -q 'SQS worker microVM image in this release is incomplete: vmlinuz is missing' \
+    && [ ! -e "$TMP/wmv/sqs-worker/initramfs.cpio.gz" ]; then
+    pass "an incomplete worker image is refused and the earlier pair is removed"
+else
+    fail "incomplete worker image: rc=$RC $OUT"
+fi
+if OUT=$(sh "$STAGE" "$TMP/wbuilt" "$TMP/wrel" lb 2>&1); then
+    fail "an unknown image name was staged"
+else
+    pass "an unknown image name is refused"
 fi
 
 [ "$fails" = 0 ] || { echo "FAIL: $fails"; exit 1; }

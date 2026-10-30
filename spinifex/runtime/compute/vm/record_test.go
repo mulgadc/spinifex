@@ -240,6 +240,14 @@ func populatedVM() *vm.VM {
 			ClientNKey:   "UCLIENTPUBLICKEY",
 			Netcfg:       "netcfg-1",
 		},
+		SQSWorkerGuest: &vm.SQSWorkerGuest{
+			NodeID:       "node-1",
+			DataVolumeID: "vol-0123456789abcdef1",
+			Region:       "ap-southeast-2",
+			GatewayURL:   "https://10.255.0.1:9999",
+			CACert:       "ca-1",
+			Netcfg:       "netcfg-2",
+		},
 
 		QMPClient: &qmp.QMPClient{},
 	}

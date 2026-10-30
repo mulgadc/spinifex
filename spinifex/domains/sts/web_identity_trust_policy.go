@@ -3,7 +3,6 @@ package sts
 import (
 	"crypto/subtle"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -49,46 +48,56 @@ func evalTrustPolicyForWebIdentity(docJSON string, identity webIdentityContext) 
 		if stmt.Effect != iamdomain.PolicyEffectDeny {
 			continue
 		}
-		matched, err := matchWebIdentityStatement(stmt.Action, stmt.Principal, stmt.Condition, identity)
+		matched, _, err := matchWebIdentityStatement(stmt.Action, stmt.Principal, stmt.Condition, identity)
 		if err != nil {
 			return err
 		}
 		if matched {
-			return errors.New(awserrors.ErrorAccessDenied)
+			return &trustPolicyDenial{reason: denyReasonExplicitDeny}
 		}
 	}
+
+	denial := &trustPolicyDenial{reason: denyReasonNoStatement}
 
 	for _, stmt := range doc.Statement {
 		if stmt.Effect != iamdomain.PolicyEffectAllow {
 			continue
 		}
-		matched, err := matchWebIdentityStatement(stmt.Action, stmt.Principal, stmt.Condition, identity)
+		matched, cd, err := matchWebIdentityStatement(stmt.Action, stmt.Principal, stmt.Condition, identity)
 		if err != nil {
 			return err
 		}
 		if matched {
 			return nil
 		}
+		// Keep the first statement that matched action and principal but failed its condition.
+		if cd != nil && denial.reason == denyReasonNoStatement {
+			denial = &trustPolicyDenial{reason: denyReasonCondMismatch, operator: cd.operator, key: cd.key}
+			if cd.unknownKey {
+				denial.reason = denyReasonCondUnsupport
+			}
+		}
 	}
 
-	return errors.New(awserrors.ErrorAccessDenied)
+	return denial
 }
 
-func matchWebIdentityStatement(actions []string, principalRaw, conditionRaw json.RawMessage, identity webIdentityContext) (bool, error) {
+// matchWebIdentityStatement reports whether a statement applies; when only its Condition failed, the denial says why.
+func matchWebIdentityStatement(actions []string, principalRaw, conditionRaw json.RawMessage, identity webIdentityContext) (bool, *condDenial, error) {
 	if !matchWebIdentityAction(actions) {
-		return false, nil
+		return false, nil, nil
 	}
 	principalMatch, err := matchFederatedPrincipal(principalRaw, identity.federatedPrincipalARN)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	if !principalMatch {
-		return false, nil
+		return false, nil, nil
 	}
-	if held, _ := conditionsHold(conditionRaw, identity); !held {
-		return false, nil
+	if held, cd := conditionsHold(conditionRaw, identity); !held {
+		return false, &cd, nil
 	}
-	return true, nil
+	return true, nil, nil
 }
 
 func matchWebIdentityAction(actions []string) bool {
@@ -133,6 +142,23 @@ func matchFederatedPrincipal(raw json.RawMessage, expectedARN string) (bool, err
 	return false, nil
 }
 
+// Reasons a trust policy denied the assumption, logged by the caller.
+const (
+	denyReasonNoStatement    = "no statement matched"
+	denyReasonExplicitDeny  = "explicit deny"
+	denyReasonCondMismatch  = "condition value mismatch"
+	denyReasonCondUnsupport = "condition operator or key unsupported"
+)
+
+// trustPolicyDenial is the AccessDenied error carrying why, for logs only; the API response is unchanged.
+type trustPolicyDenial struct {
+	reason   string
+	operator string
+	key      string
+}
+
+func (d *trustPolicyDenial) Error() string { return awserrors.ErrorAccessDenied }
+
 // condDenial says why a Condition block did not hold, for the caller to log.
 type condDenial struct {
 	operator string
@@ -141,7 +167,7 @@ type condDenial struct {
 	unknownKey bool
 }
 
-// webIdentityHostPath is the issuer without scheme or trailing slash; it keys condition names and the provider ARN.
+// webIdentityHostPath is the issuer without scheme or trailing slash; it prefixes condition keys only.
 func webIdentityHostPath(issuer string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(issuer, "https://"), "/")
 }

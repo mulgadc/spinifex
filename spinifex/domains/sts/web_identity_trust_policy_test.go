@@ -1,7 +1,9 @@
 package sts
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -193,4 +195,61 @@ func TestAssumeRoleWithWebIdentity_TrailingSlashIssuerProviderStillGrants(t *tes
 	})
 	require.NoError(t, err)
 	assert.Equal(t, hostPath, aws.StringValue(out.Provider))
+}
+
+// A trust-policy denial logs the role, issuer, subject and failing condition key, never the token.
+func TestAssumeRoleWithWebIdentity_DenyLogsReasonWithoutToken(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	svc, _ := newTestSetup(t)
+	f := newWebIdentityFixture(t, svc, testCallerAccountID)
+	prefix := strings.TrimPrefix(f.issuer, "https://")
+	policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity","Condition":{"StringLike":{%q:%q}}}]}`,
+		f.federatedARN, prefix+":sub", "system:serviceaccount:kube-system:*")
+	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-deny-log", policy)
+
+	token := f.signToken(f.defaultClaims())
+	_, err := svc.AssumeRoleWithWebIdentity(&sts.AssumeRoleWithWebIdentityInput{
+		RoleArn:          role.Arn,
+		RoleSessionName:  aws.String("sess"),
+		WebIdentityToken: aws.String(token),
+	})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+
+	logged := buf.String()
+	assert.Contains(t, logged, "trust policy denied")
+	assert.Contains(t, logged, aws.StringValue(role.Arn))
+	assert.Contains(t, logged, "system:serviceaccount:default:my-sa")
+	assert.Contains(t, logged, "condition_operator=StringLike")
+	assert.Contains(t, logged, "condition_key="+prefix+":sub")
+	assert.Contains(t, logged, "condition value mismatch")
+	assert.NotContains(t, logged, token)
+}
+
+func TestEvalWebIdentity_DenialReasons(t *testing.T) {
+	awsKey := strings.TrimPrefix(testIRSAIssuer, "https://")
+	otherPrincipal := strings.Replace(irsaPolicy(`{"StringEquals":{}}`), testIRSAFedARN, "arn:aws:iam::000000000001:oidc-provider/other", 1)
+	tests := []struct {
+		name   string
+		policy string
+		reason string
+	}{
+		{"principal mismatch", otherPrincipal, denyReasonNoStatement},
+		{"value mismatch", irsaPolicy(fmt.Sprintf(`{"StringEquals":{%q:"x"}}`, awsKey+":sub")), denyReasonCondMismatch},
+		{"unknown key", irsaPolicy(fmt.Sprintf(`{"StringEquals":{%q:"x"}}`, awsKey+":email")), denyReasonCondUnsupport},
+		{"explicit deny", fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"}]}`, testIRSAFedARN), denyReasonExplicitDeny},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := evalTrustPolicyForWebIdentity(tt.policy, irsaIdentity())
+			var denial *trustPolicyDenial
+			require.ErrorAs(t, err, &denial)
+			assert.Equal(t, tt.reason, denial.reason)
+			assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+		})
+	}
 }

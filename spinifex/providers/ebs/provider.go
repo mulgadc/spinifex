@@ -181,6 +181,11 @@ type VolumeState string
 const (
 	VolumeStateAvailable VolumeState = "available"
 	VolumeStateInUse     VolumeState = "in-use"
+	// VolumeStateDeleting is a volume whose teardown is owed but not finished.
+	// AWS documents a volume remaining here for several minutes, because the
+	// object removal behind it scales with the volume and no request can carry
+	// that. Every dependant path refuses it.
+	VolumeStateDeleting VolumeState = "deleting"
 )
 
 // Volume contains only facts the control plane can rely on across providers.

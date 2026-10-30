@@ -876,6 +876,19 @@ func handleDeleteVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *na
 		return
 	}
 
+	// Local teardown runs first because its cost is fixed while the object
+	// deletion below scales with the volume. Behind it, a timeout on a large
+	// volume leaves this node's WAL and dirty marker behind for good.
+	if localPath, err := localVolumeDir(cfg.BaseDir, req.VolumeID); err == nil {
+		if err := os.RemoveAll(localPath); err != nil {
+			slog.Error("ebs.provider.volume.delete: failed to remove local volume directory", "volume", req.VolumeID, "path", localPath, "err", err)
+		}
+	}
+
+	// The volume is going, so a marker pinning it to this node pins nothing.
+	// Left behind it would outlive every copy of the data it describes.
+	cfg.purgeVolumeDirty(ctx, req.VolumeID)
+
 	store := providerObjectStoreFactory(cfg)
 	if err := deleteObjectPrefix(ctx, store, cfg.Bucket, req.VolumeID+"-efi/"); err != nil {
 		slog.Error("ebs.provider.volume.delete: failed to delete aux objects", "volume", req.VolumeID, "err", err)
@@ -887,18 +900,6 @@ func handleDeleteVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *na
 		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("delete volume objects: %v", err)})
 		return
 	}
-
-	// Delete is permanent: remove any on-disk WAL/checkpoint cache left on
-	// this node regardless of mount-tracking state, mirroring ebs.delete.
-	if localPath, err := localVolumeDir(cfg.BaseDir, req.VolumeID); err == nil {
-		if err := os.RemoveAll(localPath); err != nil {
-			slog.Error("ebs.provider.volume.delete: failed to remove local volume directory", "volume", req.VolumeID, "path", localPath, "err", err)
-		}
-	}
-
-	// The volume is gone, so a marker pinning it to this node pins nothing.
-	// Left behind it would outlive every copy of the data it describes.
-	cfg.purgeVolumeDirty(ctx, req.VolumeID)
 
 	slog.Info("ebs.provider.volume.delete: deleted", "volume", req.VolumeID)
 	respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned()})

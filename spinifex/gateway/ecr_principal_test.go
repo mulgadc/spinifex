@@ -36,6 +36,10 @@ type ecrMockIAMService struct {
 	// not-found error, simulating an IAM backend outage rather than a
 	// missing record.
 	genericErr error
+
+	// userPolicyErr fails only the policy read, so a test can let the principal
+	// rehydrate and then break authorization.
+	userPolicyErr error
 }
 
 func newECRMockIAMService() *ecrMockIAMService {
@@ -96,6 +100,9 @@ func (m *ecrMockIAMService) GetAccount(accountID string) (*iamdomain.Account, er
 func (m *ecrMockIAMService) GetUserPolicies(accountID, userName string) ([]iamdomain.PolicyDocument, error) {
 	if m.genericErr != nil {
 		return nil, m.genericErr
+	}
+	if m.userPolicyErr != nil {
+		return nil, m.userPolicyErr
 	}
 	return m.userPolicies[accountID+"|"+userName], nil
 }

@@ -58,15 +58,22 @@ type sqsWorkerNetworkVPC interface {
 // VPC, one ENI per launch claim. Allocations are serialised in this process so
 // two resumes of one claim cannot both miss the describe and create two ENIs.
 type sqsWorkerNetwork struct {
-	vpc sqsWorkerNetworkVPC
-	cfg *config.SQSConfig
-	sem chan struct{}
+	vpc  sqsWorkerNetworkVPC
+	cfg  *config.SQSConfig
+	sem  chan struct{}
+	desc string
 }
 
 var _ workerlaunch.NetworkAllocator = (*sqsWorkerNetwork)(nil)
 
 func newSQSWorkerNetwork(vpc sqsWorkerNetworkVPC, cfg *config.SQSConfig) *sqsWorkerNetwork {
-	return &sqsWorkerNetwork{vpc: vpc, cfg: cfg, sem: make(chan struct{}, 1)}
+	return &sqsWorkerNetwork{vpc: vpc, cfg: cfg, sem: make(chan struct{}, 1), desc: "SQS worker interface for "}
+}
+
+// newSQSStoreNetwork places the store's ENI in the same private subnet as the
+// worker, found by its own claim.
+func newSQSStoreNetwork(vpc sqsWorkerNetworkVPC, cfg *config.SQSConfig) *sqsWorkerNetwork {
+	return &sqsWorkerNetwork{vpc: vpc, cfg: cfg, sem: make(chan struct{}, 1), desc: "SQS store interface for "}
 }
 
 // FindWorkerNetwork returns the claim's visible ENI, or nil when there is none.
@@ -131,7 +138,10 @@ func (n *sqsWorkerNetwork) allocate(ctx context.Context, region, claimID string,
 // refused, not chosen from.
 func (n *sqsWorkerNetwork) claimENI(ctx context.Context, subnetID, claimID string, create bool) (*ec2.NetworkInterface, error) {
 	acct := awsidentifiers.GlobalAccountID
-	desc := "SQS worker interface for " + claimID
+	if n.desc == "" {
+		return nil, errors.New("sqs worker: network allocator is not configured")
+	}
+	desc := n.desc + claimID
 	out, err := n.vpc.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{Filters: []*ec2.Filter{
 		{Name: aws.String("subnet-id"), Values: aws.StringSlice([]string{subnetID})},
 		{Name: aws.String("description"), Values: aws.StringSlice([]string{desc})},

@@ -71,6 +71,7 @@ var adminActions = map[string]bool{
 	"ListModelAccess":   true,
 	"ListOchreCatalog":  true,
 	"EnsureSQSWorker":   true,
+	"EnsureSQSStore":    true,
 }
 
 // ActionNames lists every action the registration dispatches, sorted.
@@ -236,6 +237,11 @@ func (d Deps) run(ctx context.Context, action string, args map[string]string, ac
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		return EnsureSQSWorker(ctx, d.NATS, d.NodeIDs, args["NodeId"], args["InstanceType"], accountID, sqsWorkerEnsureWait)
+	case "EnsureSQSStore":
+		if d.NATS == nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		return EnsureSQSStore(ctx, d.NATS, d.NodeIDs, args["NodeId"], args["InstanceType"], args["VolumeSizeGiB"], accountID, sqsWorkerEnsureWait)
 	case "ListOchreCatalog":
 		entries, err := ochre.AdminCatalog(ctx, accountID, d.credentials(), d.access())
 		if err != nil {

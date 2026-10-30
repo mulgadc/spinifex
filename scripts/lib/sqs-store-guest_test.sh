@@ -56,6 +56,7 @@ EOF
 cat > "$TMP/bin/nats-server" <<'EOF'
 #!/bin/sh
 echo "nats-server $*" >> "$T/calls.log"
+[ "$1" = -t ] || echo "GOMEMLIMIT=${GOMEMLIMIT:-unset}" >> "$T/env.log"
 [ "$1" = -t ] && exit "$(cat "$T/configtest.rc")"
 exit 0
 EOF
@@ -188,6 +189,8 @@ run_step() {
 }
 fresh run-ready; prepare; : > "$T/calls.log"
 check "a prepared store starts the server" 'run_step && grep -qx "nats-server -c $T/run/nats.conf" "$T/calls.log"'
+fresh run-memlimit; prepare; : > "$T/env.log"
+check "the server runs under the ADR-0011:S11 heap limit" 'run_step && grep -qx "GOMEMLIMIT=512MiB" "$T/env.log"'
 fresh run-unready
 check "an unprepared store never starts the server" '! run_step && ! grep -q "^nats-server" "$T/calls.log"'
 fresh run-stopping; prepare; : > "$T/calls.log"; : > "$T/run/stopping"

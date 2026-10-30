@@ -404,6 +404,13 @@ A reply lost to that timeout is reported as `ServiceUnavailable`; calling again 
 The reply names the bound VM's node, Region, instance ID and generation; bound is not ready, and it says nothing about the guest's boot, its key or the store.
 Stop/detach evidence for `RecordStopped` is not wired, the guest's metadata route and gateway TLS on a real ENI and worker-to-store TCP are unproven, and Viperblock's at-rest key is held by the platform.
 
+The super-admin `EnsureSQSStore` action takes a `NodeId`, an `InstanceType` and a `VolumeSizeGiB` and sends a request to `sqs.store.Ensure.v1.<node>` with no queue group; only the node the Region's worker is bound to can launch the store.
+That node refuses an instance type whose memory does not exceed 512 MiB, the store's `GOMEMLIMIT` under ADR-0011:S11; this is a floor, not a validated size, and no type is defaulted.
+It refuses before recording or allocating anything unless the store image and the cluster storage key are present, the worker is bound on this node, and that worker's identity has recorded its public key in the first-store decision, which it then advances to a launch intent.
+The store's own launch record in `spinifex-sqs-store-launch` holds only that public key, the claim, the node and the operator's size, and marks each step before its uncertain create: the volume, the ENI in the worker's private subnet, and the launch.
+A marked step whose result is not visible is reported as `IncorrectState` and never resent; a volume that is not encrypted by its own record is refused as `UnsupportedOperation` with its ID kept, and the daemon re-checks the volume's encryption and the guest's size at launch.
+The daemon never receives the worker's seed; the store's NATS server accepts only that public key, and the reply's bound VM and address are not readiness, which only the worker can check.
+
 ## Configuration
 
 Cluster configuration (`spinifex/bootstrap/config/config.go`):

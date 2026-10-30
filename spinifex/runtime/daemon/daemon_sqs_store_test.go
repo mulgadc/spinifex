@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -25,12 +26,45 @@ import (
 )
 
 // sqsStoreVolumes gives the fixture a volume service in a named AZ, since the
-// test daemon's config has none and CreateVolume requires one.
+// test daemon's config has none and CreateVolume requires one, and an
+// instance type larger than the store's heap limit.
 func (f *sysInstFixture) sqsStoreVolumes(t *testing.T) {
 	t.Helper()
+	f.sqsStoreVolumesEncrypted(t, true)
+}
+
+// sqsStoreVolumesEncrypted is sqsStoreVolumes with a cluster storage key only
+// when encrypted is set, so new volumes are recorded encrypted or not.
+func (f *sysInstFixture) sqsStoreVolumesEncrypted(t *testing.T, encrypted bool) {
+	t.Helper()
 	f.d.config.AZ = "ap-southeast-2a"
+	f.itype = sqsStoreTestInstanceType(t, f.d)
+	f.d.config.Viperblock.EncryptionKeyFile = ""
+	if encrypted {
+		raw := make([]byte, 32)
+		_, err := rand.Read(raw)
+		require.NoError(t, err)
+		key := filepath.Join(t.TempDir(), "master.key")
+		require.NoError(t, os.WriteFile(key, raw, 0o600))
+		f.d.config.Viperblock.EncryptionKeyFile = key
+	}
 	f.d.volumeService = ec2volume.NewVolumeServiceImplWithStore(f.d.config, objectstore.NewMemoryObjectStore(), f.d.natsConn)
 	f.d.volumeService.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+}
+
+// sqsStoreTestInstanceType is the smallest of the daemon's types that fits
+// the store, so a fixture never lands on an undersized random pick.
+func sqsStoreTestInstanceType(t *testing.T, d *Daemon) string {
+	t.Helper()
+	best, mem := "", int64(0)
+	for name, it := range d.resourceMgr.instanceTypes {
+		m := instanceTypeMemoryMiB(it)
+		if m > sqsStoreMinMemoryMiB && (best == "" || m < mem || (m == mem && name < best)) {
+			best, mem = name, m
+		}
+	}
+	require.NotEmpty(t, best, "no instance type fits the store")
+	return best
 }
 
 // sqsStoreImage points microvmDir at a temp tree holding the shared firmware
@@ -123,6 +157,18 @@ func TestLaunchSQSStoreInstance_RefusesBeforeAnySideEffect(t *testing.T) {
 		AvailabilityZone: aws.String(f.d.config.AZ), Size: aws.Int64(1), VolumeType: aws.String("gp3"),
 	}, testAccountID)
 	require.NoError(t, err)
+	key := f.d.config.Viperblock.EncryptionKeyFile
+	f.d.config.Viperblock.EncryptionKeyFile = ""
+	plainVol := f.systemVolume(t)
+	f.d.config.Viperblock.EncryptionKeyFile = key
+	small := ""
+	for name, it := range f.d.resourceMgr.instanceTypes {
+		if m := instanceTypeMemoryMiB(it); m > 0 && m <= sqsStoreMinMemoryMiB {
+			small = name
+			break
+		}
+	}
+	require.NotEmpty(t, small, "the test needs an instance type at or below the heap limit")
 
 	cases := []struct {
 		name    string
@@ -148,6 +194,8 @@ func TestLaunchSQSStoreInstance_RefusesBeforeAnySideEffect(t *testing.T) {
 		}, "describe data volume"},
 		{"missing volume", func(in *elbv2domain.SystemInstanceInput) { in.SQSStore.DataVolumeID = "vol-0123456789abcdef0" }, "describe data volume"},
 		{"volume already in use", func(in *elbv2domain.SystemInstanceInput) { in.SQSStore.DataVolumeID = inUse }, "not available"},
+		{"unencrypted volume", func(in *elbv2domain.SystemInstanceInput) { in.SQSStore.DataVolumeID = plainVol }, "not encrypted"},
+		{"undersized instance type", func(in *elbv2domain.SystemInstanceInput) { in.InstanceType = small }, "512 MiB heap limit"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

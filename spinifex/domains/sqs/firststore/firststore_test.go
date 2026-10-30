@@ -574,3 +574,29 @@ func TestFence_RacesOldGenerationCalls(t *testing.T) {
 		}
 	}
 }
+
+// RecordedKey reports the recorded key and its recorder, before and after the
+// launch intent, and refuses when no key is recorded.
+func TestRecordedKey_ReportsTheRecorderAndKey(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newStore(t)
+	w := ident(1, 1)
+	if _, _, err := s.RecordedKey(ctx, region); !errors.Is(err, ErrNotClaimed) {
+		t.Fatalf("before claim = %v", err)
+	}
+	s.Claim(ctx, region, w)
+	if _, _, err := s.RecordedKey(ctx, region); !errors.Is(err, ErrKeyNotRecorded) {
+		t.Fatalf("before key = %v, want ErrKeyNotRecorded", err)
+	}
+	pub, _ := userPub(t)
+	s.RecordPublicKey(ctx, region, w, pub)
+	for range 2 {
+		holder, got, err := s.RecordedKey(ctx, region)
+		if err != nil || holder != w || got != pub {
+			t.Fatalf("recorded key = %+v %q %v", holder, got, err)
+		}
+		if err := s.RecordLaunchIntent(ctx, region, w, pub); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

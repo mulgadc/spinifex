@@ -215,6 +215,23 @@ func (s Store) RecordLaunchIntent(ctx context.Context, region string, id Identit
 	})
 }
 
+// RecordedKey is the Region's recorded worker public key and the identity
+// that recorded it, read from the stream leader. It authorizes nothing by
+// itself: RecordLaunchIntent confirms the same key under compare-and-swap.
+func (s Store) RecordedKey(ctx context.Context, region string) (Identity, string, error) {
+	if !regionPattern.MatchString(region) {
+		return Identity{}, "", errors.New("invalid region")
+	}
+	rec, _, err := s.read(ctx, region)
+	if err != nil {
+		return Identity{}, "", err
+	}
+	if rec.State != StateKeyRecorded && rec.State != StateLaunchIntent {
+		return Identity{}, "", ErrKeyNotRecorded
+	}
+	return rec.Worker, rec.PublicKey, nil
+}
+
 // advance applies step to the current record of the exact claiming identity.
 // A nil next record means the transition has already happened.
 func (s Store) advance(ctx context.Context, region string, id Identity, pub string, step func(*Record) (*Record, error)) error {

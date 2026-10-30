@@ -1,7 +1,7 @@
 //test:in-package — the route tables are unexported, and these tests hold each
 // service table to what the REST router resolves.
 
-package gateway
+package awsapi
 
 import (
 	"strings"

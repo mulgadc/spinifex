@@ -1,4 +1,4 @@
-package gateway
+package awsapi
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
 // InvokeModel/InvokeModelWithResponseStream carry their guardrail selection
@@ -26,12 +27,12 @@ type bedrockRuntimeRoute = rest.Route[bedrockRuntimeRouteHandler]
 
 // bedrockRuntimeRouteHandler invokes a per-action bedrock-runtime (data-plane)
 // gateway function. params holds the path params, PathUnescape'd.
-// resolver is gw.bedrockResolver() (credential store or no-op); endpoints is
-// gw.bedrockEndpointResolver() over the configured pinned self-host
-// endpoints; recorder is gw.bedrockRecorder() (invocation recorder or no-op);
-// access is gw.bedrockAccessResolver() (grant store or deny-all); provisioned
-// is gw.bedrockProvisionedStore(), consulted when modelId is a PT ARN;
-// guardrails is gw.bedrockGuardrailStore(); embedder is gw.bedrockEmbedder(),
+// resolver is d.resolver() (credential store or no-op); endpoints is
+// d.endpointResolver() over the configured pinned self-host
+// endpoints; recorder is d.recorder() (invocation recorder or no-op);
+// access is d.accessResolver() (grant store or deny-all); provisioned
+// is d.provisionedStore(inv.Region), consulted when modelId is a PT ARN;
+// guardrails is d.guardrailStore(inv.Region); embedder is d.Embedder,
 // driving guardrail topicPolicy's semantic match.
 type bedrockRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, resolver ochre.CredentialResolver, endpoints ochre.EndpointResolver, recorder ochre.Recorder, access ochre.AccessResolver, provisioned *ochre.ProvisionedStore, guardrails *ochre.GuardrailStore, embedder ochre.Embedder) (any, error)
 
@@ -72,7 +73,8 @@ var bedrockRuntimeRouter = rest.NewRouter("bedrock-runtime", bedrockRuntimeRoute
 // BedrockRuntime_Request dispatches bedrock-runtime (data-plane) REST-JSON
 // requests: resolves method+path to an action, reads the body, calls the
 // handler, and serialises the output as JSON.
-func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.Request) error {
+func (d Deps) bedrockRuntime(w http.ResponseWriter, inv dispatch.Invocation) error {
+	r := inv.Request
 	action, params, handler, ok := bedrockRuntimeRouter.Lookup(r.Method, r.URL.EscapedPath())
 	if !ok {
 		slog.DebugContext(r.Context(), "bedrock-runtime: no route for request", "method", r.Method, "path", r.URL.Path)
@@ -80,7 +82,7 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 	}
 
 	// Hoisted above the policy check because the resolver builds ARNs from it.
-	accountID := callerPrincipalOf(r).accountID
+	accountID := inv.AccountID
 	if accountID == "" {
 		slog.ErrorContext(r.Context(), "BedrockRuntime_Request: no account ID in auth context")
 		// InternalError, not ServerInternal: the policy gate used to reach this
@@ -90,26 +92,22 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 
 	// Every bedrock-runtime action names its model or guardrail in the path, so
 	// the gate resolves before the body is read at all.
-	resources, err := ochre.ResourceARNs("bedrock-runtime", action, gw.Region, accountID, params, nil)
+	resources, err := ResourceARNs("bedrock-runtime", action, inv.Region, accountID, params, nil)
 	if err != nil {
 		return err
 	}
-	if err := gw.checkPolicyResources(r, "bedrock-runtime", action, resources); err != nil {
+	if err := inv.Authorize("bedrock-runtime", action, resources, nil); err != nil {
 		return err
-	}
-
-	if gw.NATSConn == nil {
-		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Ochre metering. RPM is a local, in-memory check —
 	// cheap enough to run before the body is even read. The token cap reads
 	// the stream-fed usage counter, so it goes second; both are no-ops
 	// (nil-safe on gw.Quota) unless their dimension is explicitly enabled.
-	if err := gw.Quota.CheckBedrockRPM(accountID); err != nil {
+	if err := d.checkRPM(accountID); err != nil {
 		return err
 	}
-	if err := gw.Quota.CheckBedrockTokens(r.Context(), accountID); err != nil {
+	if err := d.checkTokens(r.Context(), accountID); err != nil {
 		return err
 	}
 
@@ -124,7 +122,7 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 	if action == "InvokeModel" {
 		guardrailIdent := r.Header.Get(bedrockGuardrailIdentifierHeader)
 		guardrailVersion := r.Header.Get(bedrockGuardrailVersionHeader)
-		respBody, contentType, err := ochre.InvokeModel(r.Context(), accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), guardrailIdent, guardrailVersion, gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
+		respBody, contentType, err := ochre.InvokeModel(r.Context(), accountID, params[0], body, d.resolver(), d.endpointResolver(), d.recorder(), d.accessResolver(), d.provisionedStore(inv.Region), guardrailIdent, guardrailVersion, d.guardrailStore(inv.Region), d.Embedder)
 		if err != nil {
 			return err
 		}
@@ -139,15 +137,15 @@ func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.R
 	// (-> ErrorHandler); once streaming starts they always return nil,
 	// surfacing any further failure as an in-band exception event.
 	if action == "ConverseStream" {
-		return ochre.ConverseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
+		return ochre.ConverseStream(r.Context(), w, accountID, params[0], body, d.resolver(), d.endpointResolver(), d.recorder(), d.accessResolver(), d.provisionedStore(inv.Region), d.guardrailStore(inv.Region), d.Embedder)
 	}
 	if action == "InvokeModelWithResponseStream" {
 		guardrailIdent := r.Header.Get(bedrockGuardrailIdentifierHeader)
 		guardrailVersion := r.Header.Get(bedrockGuardrailVersionHeader)
-		return ochre.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), r.Header.Get("Content-Type"), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), guardrailIdent, guardrailVersion, gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
+		return ochre.InvokeModelWithResponseStream(r.Context(), w, accountID, params[0], body, d.resolver(), d.endpointResolver(), r.Header.Get("Content-Type"), d.recorder(), d.accessResolver(), d.provisionedStore(inv.Region), guardrailIdent, guardrailVersion, d.guardrailStore(inv.Region), d.Embedder)
 	}
 
-	output, err := handler(r.Context(), accountID, params, body, gw.bedrockResolver(), gw.bedrockEndpointResolver(), gw.bedrockRecorder(), gw.bedrockAccessResolver(), gw.bedrockProvisionedStore(), gw.bedrockGuardrailStore(), gw.bedrockEmbedder())
+	output, err := handler(r.Context(), accountID, params, body, d.resolver(), d.endpointResolver(), d.recorder(), d.accessResolver(), d.provisionedStore(inv.Region), d.guardrailStore(inv.Region), d.Embedder)
 	if err != nil {
 		return err
 	}

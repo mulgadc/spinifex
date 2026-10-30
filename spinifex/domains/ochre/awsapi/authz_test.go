@@ -1,9 +1,10 @@
-package ochre_test
+package awsapi_test
 
 import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +20,7 @@ func bedrockARN(resource string) string {
 
 func resolveScope(t *testing.T, service, action string, params []string, body string) []string {
 	t.Helper()
-	resources, err := ochre.ResourceARNs(service, action, authzRegion, authzAccountID, params, []byte(body))
+	resources, err := awsapi.ResourceARNs(service, action, authzRegion, authzAccountID, params, []byte(body))
 	require.NoError(t, err)
 	return resources
 }
@@ -122,8 +123,8 @@ func TestResourceARNs_AccountLevelActionsStayAccountWide(t *testing.T) {
 // An action that is served but has no entry, or a service with no table at all,
 // fails closed rather than defaulting to an account-wide grant.
 func TestResourceARNs_UnknownActionOrServiceIsRejected(t *testing.T) {
-	_, err := ochre.ResourceARNs("bedrock", "MadeUpAction", authzRegion, authzAccountID, nil, nil)
+	_, err := awsapi.ResourceARNs("bedrock", "MadeUpAction", authzRegion, authzAccountID, nil, nil)
 	require.Error(t, err)
-	_, err = ochre.ResourceARNs("bedrock-madeup", "GetGuardrail", authzRegion, authzAccountID, nil, nil)
+	_, err = awsapi.ResourceARNs("bedrock-madeup", "GetGuardrail", authzRegion, authzAccountID, nil, nil)
 	require.Error(t, err)
 }

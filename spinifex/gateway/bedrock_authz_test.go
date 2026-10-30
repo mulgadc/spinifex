@@ -12,20 +12,38 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
-	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// dispatchBedrockFamily drives one of the four dispatchers with no NATS
-// connection and no stores. A permitted request therefore fails on that guard,
-// which is what proves the policy check ran ahead of the resource existing.
-func dispatchBedrockFamily(t *testing.T, gw *GatewayConfig, dispatch func(http.ResponseWriter, *http.Request) error, method, path, body string) error {
+// dispatchBedrockFamily drives one Bedrock service through the registered
+// dispatcher with no stores behind it. A request that clears the policy gate
+// reaches the handler and fails there, which is what proves the gate ran
+// ahead of the resource existing.
+func dispatchBedrockFamily(t *testing.T, gw *GatewayConfig, service, method, path, body string) error {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	req = withTestIdentity(req.WithContext(withPrincipalField(req.Context(), fieldAccountID, authzAccountID)))
-	return dispatch(httptest.NewRecorder(), req)
+	ctx := context.WithValue(req.Context(), ctxService, service)
+	req = withTestIdentity(req.WithContext(withPrincipalField(ctx, fieldAccountID, authzAccountID)))
+	return serveBedrock(gw, service, httptest.NewRecorder(), req)
+}
+
+func serveBedrock(gw *GatewayConfig, service string, w http.ResponseWriter, req *http.Request) error {
+	if gw.Services == nil {
+		b := dispatch.NewBuilder()
+		if err := b.Register(ochreawsapi.NewRegistration(ochreawsapi.Deps{})); err != nil {
+			panic(err)
+		}
+		gw.Services = b.Build()
+	}
+	entry, ok := gw.registered(service)
+	if !ok {
+		panic(service + " is not registered on this gateway")
+	}
+	return gw.dispatchRegistered(entry, w, req)
 }
 
 func bedrockScopeARN(resource string) string {
@@ -41,8 +59,8 @@ func TestBedrockRequest_ScopedDenyFires(t *testing.T) {
 		statement("Deny", "bedrock:DeleteGuardrail", bedrockScopeARN("guardrail/gr-prod")),
 	)
 
-	assertDenied(t, dispatchBedrockFamily(t, gw, gw.Bedrock_Request, http.MethodDelete, "/guardrails/gr-prod", ""))
-	assertPermitted(t, dispatchBedrockFamily(t, gw, gw.Bedrock_Request, http.MethodDelete, "/guardrails/gr-dev", ""))
+	assertDenied(t, dispatchBedrockFamily(t, gw, "bedrock", http.MethodDelete, "/guardrails/gr-prod", ""))
+	assertBedrockPermitted(t, dispatchBedrockFamily(t, gw, "bedrock", http.MethodDelete, "/guardrails/gr-dev", ""))
 }
 
 // TestBedrockRequest_ScopedAllowGrants is the other half: a least-privilege
@@ -52,9 +70,9 @@ func TestBedrockRequest_ScopedAllowGrants(t *testing.T) {
 		statement("Allow", "bedrock:GetProvisionedModelThroughput", bedrockScopeARN("provisioned-model/pm-dev")),
 	)
 
-	assertPermitted(t, dispatchBedrockFamily(t, gw, gw.Bedrock_Request,
+	assertBedrockPermitted(t, dispatchBedrockFamily(t, gw, "bedrock",
 		http.MethodGet, "/provisioned-model-throughput/pm-dev", ""))
-	assertDenied(t, dispatchBedrockFamily(t, gw, gw.Bedrock_Request,
+	assertDenied(t, dispatchBedrockFamily(t, gw, "bedrock",
 		http.MethodGet, "/provisioned-model-throughput/pm-prod", ""))
 }
 
@@ -67,12 +85,12 @@ func TestBedrockRequest_CreateProvisionedThroughputScopesFromBody(t *testing.T) 
 			"arn:aws:bedrock:*::foundation-model/anthropic.*"),
 	)
 
-	assertDenied(t, dispatchBedrockFamily(t, gw, gw.Bedrock_Request, http.MethodPost,
+	assertDenied(t, dispatchBedrockFamily(t, gw, "bedrock", http.MethodPost,
 		"/provisioned-model-throughput", `{"modelId":"anthropic.claude-v2"}`))
-	assertPermitted(t, dispatchBedrockFamily(t, gw, gw.Bedrock_Request, http.MethodPost,
+	assertBedrockPermitted(t, dispatchBedrockFamily(t, gw, "bedrock", http.MethodPost,
 		"/provisioned-model-throughput", `{"modelId":"meta.llama3"}`))
 	// An unreadable body authorizes account-wide and stays the handler's fault.
-	assertPermitted(t, dispatchBedrockFamily(t, gw, gw.Bedrock_Request, http.MethodPost,
+	assertBedrockPermitted(t, dispatchBedrockFamily(t, gw, "bedrock", http.MethodPost,
 		"/provisioned-model-throughput", "{not json"))
 }
 
@@ -84,9 +102,9 @@ func TestBedrockRuntimeRequest_ScopedDenyFires(t *testing.T) {
 		statement("Deny", "bedrock:InvokeModel", "arn:aws:bedrock:*::foundation-model/anthropic.*"),
 	)
 
-	assertDenied(t, dispatchBedrockFamily(t, gw, gw.BedrockRuntime_Request,
+	assertDenied(t, dispatchBedrockFamily(t, gw, "bedrock-runtime",
 		http.MethodPost, "/model/anthropic.claude-v2/invoke", `{}`))
-	assertPermitted(t, dispatchBedrockFamily(t, gw, gw.BedrockRuntime_Request,
+	assertBedrockPermitted(t, dispatchBedrockFamily(t, gw, "bedrock-runtime",
 		http.MethodPost, "/model/meta.llama3/invoke", `{}`))
 }
 
@@ -98,9 +116,9 @@ func TestBedrockAgentRequest_ScopedDenyCoversTheWholeKnowledgeBase(t *testing.T)
 		statement("Deny", "bedrock:StartIngestionJob", bedrockScopeARN("knowledge-base/kb-prod")),
 	)
 
-	assertPermitted(t, dispatchBedrockFamily(t, gw, gw.BedrockAgent_Request, http.MethodPut,
+	assertBedrockPermitted(t, dispatchBedrockFamily(t, gw, "bedrock-agent", http.MethodPut,
 		"/knowledgebases/kb-dev/datasources/ds-1/ingestionjobs/", `{}`))
-	assertDenied(t, dispatchBedrockFamily(t, gw, gw.BedrockAgent_Request, http.MethodPut,
+	assertDenied(t, dispatchBedrockFamily(t, gw, "bedrock-agent", http.MethodPut,
 		"/knowledgebases/kb-prod/datasources/ds-1/ingestionjobs/", `{}`))
 }
 
@@ -115,9 +133,9 @@ func TestBedrockAgentRuntimeRequest_RetrieveAndGenerateScopesFromBody(t *testing
 			`"knowledgeBaseConfiguration":{"knowledgeBaseId":"` + kb + `","modelArn":"meta.llama3"}}}`
 	}
 
-	assertDenied(t, dispatchBedrockFamily(t, gw, gw.BedrockAgentRuntime_Request,
+	assertDenied(t, dispatchBedrockFamily(t, gw, "bedrock-agent-runtime",
 		http.MethodPost, "/retrieveAndGenerate", body("kb-prod")))
-	assertPermitted(t, dispatchBedrockFamily(t, gw, gw.BedrockAgentRuntime_Request,
+	assertBedrockPermitted(t, dispatchBedrockFamily(t, gw, "bedrock-agent-runtime",
 		http.MethodPost, "/retrieveAndGenerate", body("kb-dev")))
 }
 
@@ -127,7 +145,7 @@ func TestBedrockRequest_OversizedBodyIsRejected(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "bedrock:*", "*"))
 	body := `{"modelId":"` + strings.Repeat("a", sigv4.MaxPayloadLen) + `"}`
 
-	err := dispatchBedrockFamily(t, gw, gw.Bedrock_Request, http.MethodPost,
+	err := dispatchBedrockFamily(t, gw, "bedrock", http.MethodPost,
 		"/provisioned-model-throughput", body)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorRequestEntityTooLarge, err.Error())
@@ -143,9 +161,9 @@ func TestBedrockFamily_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 		`{"knowledgeBaseConfiguration":{"knowledgeBaseId":"kb-1"}}}`)
 
 	for _, service := range []string{"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime"} {
-		for _, action := range ochre.ScopedActions(service) {
+		for _, action := range ochreawsapi.ScopedActions(service) {
 			t.Run(service+"/"+action, func(t *testing.T) {
-				resources, err := ochre.ResourceARNs(service, action, authzRegion, authzAccountID,
+				resources, err := ochreawsapi.ResourceARNs(service, action, authzRegion, authzAccountID,
 					[]string{"id-1", "id-2", "id-3"}, body)
 				require.NoError(t, err)
 				assert.NoError(t, gw.checkPolicyResources(req, service, action, resources))
@@ -159,22 +177,33 @@ func TestBedrockFamily_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 func TestBedrockFamily_MissingAccountIDReturnsInternalError(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "bedrock:*", "*"))
 	dispatchers := map[string]struct {
-		dispatch func(http.ResponseWriter, *http.Request) error
-		method   string
-		path     string
+		method string
+		path   string
 	}{
-		"bedrock":               {gw.Bedrock_Request, http.MethodGet, "/foundation-models"},
-		"bedrock-runtime":       {gw.BedrockRuntime_Request, http.MethodPost, "/model/m/invoke"},
-		"bedrock-agent":         {gw.BedrockAgent_Request, http.MethodPost, "/knowledgebases/"},
-		"bedrock-agent-runtime": {gw.BedrockAgentRuntime_Request, http.MethodPost, "/retrieveAndGenerate"},
+		"bedrock":               {http.MethodGet, "/foundation-models"},
+		"bedrock-runtime":       {http.MethodPost, "/model/m/invoke"},
+		"bedrock-agent":         {http.MethodPost, "/knowledgebases/"},
+		"bedrock-agent-runtime": {http.MethodPost, "/retrieveAndGenerate"},
 	}
 
 	for service, d := range dispatchers {
 		t.Run(service, func(t *testing.T) {
-			req := withTestIdentity(httptest.NewRequest(d.method, d.path, strings.NewReader("{}")))
-			err := d.dispatch(httptest.NewRecorder(), req)
+			req := httptest.NewRequest(d.method, d.path, strings.NewReader("{}"))
+			req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxService, service)))
+			err := serveBedrock(gw, service, httptest.NewRecorder(), req)
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 		})
 	}
+}
+
+// assertBedrockPermitted asserts the request cleared the policy gate. Past it
+// the handler has no store behind it, so any other outcome is acceptable.
+func assertBedrockPermitted(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.NotEqual(t, awserrors.ErrorAccessDenied, code, "policy gate denied: %v", err)
 }

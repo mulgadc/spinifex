@@ -1,4 +1,4 @@
-package ochre
+package awsapi
 
 import (
 	"errors"
@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
 )
@@ -174,13 +175,13 @@ func resolve(source resourceSource, service, action, region, accountID string, p
 		return guardrailARN(region, accountID, param(params, 0)), nil
 
 	case sourceNewGuardrail:
-		return FormatGuardrailARN(region, accountID, anyID), nil
+		return ochre.FormatGuardrailARN(region, accountID, anyID), nil
 
 	case sourceProvisionedModelPath:
 		return provisionedModelARN(region, accountID, param(params, 0)), nil
 
 	case sourceNewProvisionedModel:
-		return FormatProvisionedModelARN(region, accountID, anyID), nil
+		return ochre.FormatProvisionedModelARN(region, accountID, anyID), nil
 
 	case sourceProvisionedModelSourceBody:
 		return foundationModelARN(region, scope.String("modelId")), nil
@@ -189,7 +190,7 @@ func resolve(source resourceSource, service, action, region, accountID string, p
 		return knowledgeBaseARN(region, accountID, param(params, 0)), nil
 
 	case sourceNewKnowledgeBase:
-		return FormatKnowledgeBaseARN(region, accountID, anyID), nil
+		return ochre.FormatKnowledgeBaseARN(region, accountID, anyID), nil
 
 	case sourceKnowledgeBaseBody:
 		config, err := scope.Object("retrieveAndGenerateConfiguration")
@@ -222,7 +223,7 @@ func foundationModelARN(region, modelID string) string {
 // modelId is a provisioned-throughput ARN, and the foundation model itself
 // otherwise, matching the translation resolveInferenceTarget performs.
 func inferenceTargetARN(region, accountID, modelID string) string {
-	if !looksLikeProvisionedModelARN(modelID) {
+	if !ochre.LooksLikeProvisionedModelARN(modelID) {
 		return foundationModelARN(region, modelID)
 	}
 	return provisionedModelARN(region, accountID, modelID)
@@ -236,11 +237,11 @@ func provisionedModelARN(region, accountID, idOrARN string) string {
 	if region == "" || accountID == "" || idOrARN == "" {
 		return anyResource
 	}
-	id, err := resolveProvisionedModelID(idOrARN, region, accountID)
+	id, err := ochre.ResolveProvisionedModelID(idOrARN, region, accountID)
 	if err != nil || id == "" {
 		return anyResource
 	}
-	return FormatProvisionedModelARN(region, accountID, id)
+	return ochre.FormatProvisionedModelARN(region, accountID, id)
 }
 
 // guardrailARN accepts the id-or-ARN spelling every guardrail op allows,
@@ -249,18 +250,18 @@ func guardrailARN(region, accountID, idOrARN string) string {
 	if region == "" || accountID == "" || idOrARN == "" {
 		return anyResource
 	}
-	id, err := resolveGuardrailID(idOrARN, region, accountID)
+	id, err := ochre.ResolveGuardrailID(idOrARN, region, accountID)
 	if err != nil || id == "" {
 		return anyResource
 	}
-	return FormatGuardrailARN(region, accountID, id)
+	return ochre.FormatGuardrailARN(region, accountID, id)
 }
 
 func knowledgeBaseARN(region, accountID, id string) string {
 	if region == "" || accountID == "" || id == "" {
 		return anyResource
 	}
-	return FormatKnowledgeBaseARN(region, accountID, id)
+	return ochre.FormatKnowledgeBaseARN(region, accountID, id)
 }
 
 func param(params []string, i int) string {

@@ -4,7 +4,7 @@
 // bedrock/bedrock-runtime services.
 //
 //test:in-package
-package gateway
+package awsapi
 
 import (
 	"context"
@@ -26,23 +26,19 @@ import (
 // gateway-owned KB/DataSource stores over a real (embedded) JetStream and an
 // allow-everything IAMService, so the policy gate passes on a real evaluation
 // rather than a bypass, mirroring newBedrockRequestGateway.
-func newBedrockAgentRequestGateway(t *testing.T, vector ochrevector.VectorService) *GatewayConfig {
+func newBedrockAgentRequestGateway(t *testing.T, vector ochrevector.VectorService) *testGateway {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	return withVerifier(&GatewayConfig{
-		IAMService:              allowAllIAMService(),
-		BedrockAgentKB:          ochrevector.NewKBStore(js),
-		BedrockAgentDataSources: ochrevector.NewDataSourceStore(js),
-		BedrockAgentVector:      vector,
-	})
+	return &testGateway{Deps: Deps{
+		KB:          ochrevector.NewKBStore(js),
+		DataSources: ochrevector.NewDataSourceStore(js),
+		Vector:      vector,
+	}}
 }
 
 func bedrockAgentRequestWithAccount(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	ctx := withPrincipalField(req.Context(), fieldAccountID, bedrockAgentTestAccount)
-	ctx = withPrincipalField(ctx, fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	return req.WithContext(ctx)
+	return req.WithContext(context.WithValue(req.Context(), accountKey{}, bedrockAgentTestAccount))
 }
 
 const createKnowledgeBaseRequestBody = `{
@@ -63,7 +59,7 @@ const createKnowledgeBaseRequestBody = `{
 // createTestKnowledgeBase drives CreateKnowledgeBase through the HTTP route
 // so tests that need an existing knowledge base don't have to hand-build a
 // KBRecord, and returns its generated id.
-func createTestKnowledgeBase(t *testing.T, gw *GatewayConfig) string {
+func createTestKnowledgeBase(t *testing.T, gw *testGateway) string {
 	t.Helper()
 	req := bedrockAgentRequestWithAccount(http.MethodPut, "/knowledgebases/", createKnowledgeBaseRequestBody)
 	w := httptest.NewRecorder()
@@ -154,7 +150,7 @@ const createDataSourceRequestBody = `{
 	}
 }`
 
-func createTestDataSource(t *testing.T, gw *GatewayConfig, kbID string) string {
+func createTestDataSource(t *testing.T, gw *testGateway, kbID string) string {
 	t.Helper()
 	req := bedrockAgentRequestWithAccount(http.MethodPut, "/knowledgebases/"+kbID+"/datasources/", createDataSourceRequestBody)
 	w := httptest.NewRecorder()
@@ -269,9 +265,9 @@ func TestBedrockAgentRequest_StartAndListAndGetIngestionJob(t *testing.T) {
 	// response, so both are seeded from the stores' own records here: IndexID
 	// from the KB, DataSourceID from the data source's own id (the exact
 	// ownership match key GetIngestionJob/ListIngestionJobs use).
-	kbRec, err := gw.BedrockAgentKB.Get(context.Background(), bedrockAgentTestAccount, kbID)
+	kbRec, err := gw.KB.Get(context.Background(), bedrockAgentTestAccount, kbID)
 	require.NoError(t, err)
-	dsRec, err := gw.BedrockAgentDataSources.Get(context.Background(), bedrockAgentTestAccount, dsID)
+	dsRec, err := gw.DataSources.Get(context.Background(), bedrockAgentTestAccount, dsID)
 	require.NoError(t, err)
 	vector.ingestResp.Job.IndexID = kbRec.IndexID
 	vector.ingestResp.Job.DataSourceID = dsRec.ID
@@ -316,9 +312,9 @@ func TestBedrockAgentRequest_StopIngestionJob(t *testing.T) {
 	kbID := createTestKnowledgeBase(t, gw)
 	dsID := createTestDataSource(t, gw, kbID)
 
-	kbRec, err := gw.BedrockAgentKB.Get(context.Background(), bedrockAgentTestAccount, kbID)
+	kbRec, err := gw.KB.Get(context.Background(), bedrockAgentTestAccount, kbID)
 	require.NoError(t, err)
-	dsRec, err := gw.BedrockAgentDataSources.Get(context.Background(), bedrockAgentTestAccount, dsID)
+	dsRec, err := gw.DataSources.Get(context.Background(), bedrockAgentTestAccount, dsID)
 	require.NoError(t, err)
 	vector.ingestResp.Job.IndexID = kbRec.IndexID
 	vector.ingestResp.Job.DataSourceID = dsRec.ID
@@ -356,17 +352,17 @@ func TestBedrockAgentRequest_UnknownRouteReturnsInvalidAction(t *testing.T) {
 func TestBedrockAgentRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	gw := newBedrockAgentRequestGateway(t, &fakeBedrockAgentVectorService{})
 
-	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/knowledgebases/", nil))
+	req := httptest.NewRequest(http.MethodPost, "/knowledgebases/", nil)
 	w := httptest.NewRecorder()
-	// Account-less requests are rejected by the policy gate, which runs ahead
-	// of the handler's own account guard.
+	// Account-less requests are refused before anything is read or authorized.
 	err := gw.BedrockAgent_Request(w, req)
 	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
 func TestBedrockAgentRequest_NilDependenciesReturnServerInternal(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{IAMService: allowAllIAMService()})
+	gw := &testGateway{}
 
 	req := bedrockAgentRequestWithAccount(http.MethodPost, "/knowledgebases/", "")
 	w := httptest.NewRecorder()

@@ -12,6 +12,7 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
+	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
@@ -2697,6 +2698,7 @@ func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
 	require.NoError(t, b.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{})))
 	require.NoError(t, b.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{})))
 	require.NoError(t, b.Register(eksawsapi.NewRegistration(eksawsapi.Deps{})))
+	require.NoError(t, b.Register(ochreawsapi.NewRegistration(ochreawsapi.Deps{})))
 	gw.Services = b.Build()
 
 	for _, svc := range []string{"eks", "ecr", "acm", "ecs", "tagging",

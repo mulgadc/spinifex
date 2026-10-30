@@ -26,6 +26,7 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
@@ -697,98 +698,6 @@ func TestGetService(t *testing.T) {
 			name:    "tagging service",
 			ctxVal:  "tagging",
 			wantSvc: "tagging",
-		},
-		{
-			// bedrock and bedrock-runtime share the SigV4 signing name
-			// "bedrock"; a /model/ path is data-plane-exclusive, so it must
-			// resolve to bedrock-runtime even though the scope reads "bedrock".
-			name:    "bedrock scope on data-plane path resolves to bedrock-runtime",
-			ctxVal:  "bedrock",
-			path:    "/model/meta.llama3-70b-instruct-v1:0/converse",
-			wantSvc: "bedrock-runtime",
-		},
-		{
-			name:    "bedrock scope on streaming data-plane path resolves to bedrock-runtime",
-			ctxVal:  "bedrock",
-			path:    "/model/meta.llama3-70b-instruct-v1:0/converse-stream",
-			wantSvc: "bedrock-runtime",
-		},
-		{
-			name:    "bedrock scope on control-plane path stays bedrock",
-			ctxVal:  "bedrock",
-			path:    "/foundation-models",
-			wantSvc: "bedrock",
-		},
-		{
-			// A native bedrock-runtime scope is left untouched by the path check.
-			name:    "bedrock-runtime scope on data-plane path stays bedrock-runtime",
-			ctxVal:  "bedrock-runtime",
-			path:    "/model/meta.llama3-70b-instruct-v1:0/invoke",
-			wantSvc: "bedrock-runtime",
-		},
-		{
-			// ApplyGuardrail is a data-plane op registered under the singular
-			// /guardrail/ path, distinct from the plural control-plane CRUD.
-			name:    "bedrock scope on ApplyGuardrail path resolves to bedrock-runtime",
-			ctxVal:  "bedrock",
-			path:    "/guardrail/gr-abc123/version/1/apply",
-			wantSvc: "bedrock-runtime",
-		},
-		{
-			// CreateGuardrail is control-plane CRUD under the plural /guardrails
-			// path, which must not be captured by the singular /guardrail/ check.
-			name:    "bedrock scope on CreateGuardrail path stays bedrock",
-			ctxVal:  "bedrock",
-			path:    "/guardrails",
-			wantSvc: "bedrock",
-		},
-		{
-			name:    "bedrock scope on GetGuardrail path stays bedrock",
-			ctxVal:  "bedrock",
-			path:    "/guardrails/gr-abc123",
-			wantSvc: "bedrock",
-		},
-		{
-			// bedrock-agent shares the same "bedrock" signing name as the rest
-			// of the family; CreateKnowledgeBase's /knowledgebases/ path must
-			// resolve to bedrock-agent, not stay "bedrock".
-			name:    "bedrock scope on CreateKnowledgeBase path resolves to bedrock-agent",
-			ctxVal:  "bedrock",
-			path:    "/knowledgebases/",
-			wantSvc: "bedrock-agent",
-		},
-		{
-			name:    "bedrock scope on GetKnowledgeBase path resolves to bedrock-agent",
-			ctxVal:  "bedrock",
-			path:    "/knowledgebases/kb-123",
-			wantSvc: "bedrock-agent",
-		},
-		{
-			name:    "bedrock scope on CreateDataSource path resolves to bedrock-agent",
-			ctxVal:  "bedrock",
-			path:    "/knowledgebases/kb-123/datasources/",
-			wantSvc: "bedrock-agent",
-		},
-		{
-			// Retrieve's own path is itself a /knowledgebases/... path, so it
-			// must be checked ahead of the bare bedrock-agent prefix check.
-			name:    "bedrock scope on Retrieve path resolves to bedrock-agent-runtime",
-			ctxVal:  "bedrock",
-			path:    "/knowledgebases/kb-123/retrieve",
-			wantSvc: "bedrock-agent-runtime",
-		},
-		{
-			name:    "bedrock scope on RetrieveAndGenerate path resolves to bedrock-agent-runtime",
-			ctxVal:  "bedrock",
-			path:    "/retrieveAndGenerate",
-			wantSvc: "bedrock-agent-runtime",
-		},
-		{
-			// A native bedrock-agent-runtime scope is left untouched.
-			name:    "bedrock-agent-runtime scope stays bedrock-agent-runtime",
-			ctxVal:  "bedrock-agent-runtime",
-			path:    "/retrieveAndGenerate",
-			wantSvc: "bedrock-agent-runtime",
 		},
 	}
 
@@ -1484,7 +1393,7 @@ func TestWriteThrottleError_Route53(t *testing.T) {
 }
 
 func TestWriteThrottleError_Bedrock(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := withServices(&GatewayConfig{DisableLogging: true}, ochreawsapi.NewRegistration(ochreawsapi.Deps{}))
 
 	req := httptest.NewRequest(http.MethodPost, "/model/meta.llama3-2-1b-instruct-v1%3A0/converse", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxService, "bedrock"))
@@ -1502,7 +1411,7 @@ func TestWriteThrottleError_Bedrock(t *testing.T) {
 }
 
 func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := withServices(&GatewayConfig{DisableLogging: true}, ochreawsapi.NewRegistration(ochreawsapi.Deps{}))
 
 	req := httptest.NewRequest(http.MethodPost, "/model/meta.llama3-2-1b-instruct-v1%3A0/converse", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxService, "bedrock"))

@@ -43,6 +43,7 @@ import (
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
@@ -505,39 +506,26 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	registryHosts := ingresshttp.NewHostMatcher(config.AWS.ServicesDomain, "dkr", "ecr")
 	gw := gateway.GatewayConfig{
-		Debug:                   nodeConfig.AWSGW.Debug,
-		DisableLogging:          false,
-		NATSConn:                natsConn,
-		RootCAs:                 rootCAs,
-		Config:                  nodeConfig.AWSGW.Config,
-		ExpectedNodes:           len(config.Nodes),
-		NodeIDs:                 nodeIDs,
-		Region:                  nodeConfig.Region,
-		InternalSuffix:          config.AWS.ServicesDomain,
-		RegistryPort:            registryPort,
-		RegistryHost:            registryHost,
-		AZ:                      nodeConfig.AZ,
-		IAMService:              iamService,
-		STSService:              stsService,
-		Credentials:             credentials,
-		Admission:               admission,
-		Version:                 version,
-		Commit:                  commit,
-		OIDC:                    ekscluster.NewOIDCPublisher(jwksJS),
-		RegistryHandler:         registryHosts.Middleware(ecrBridge.Handler()),
-		BedrockCredentials:      bedrockCredentials,
-		BedrockEndpoints:        bedrockEndpoints,
-		BedrockEndpointResolver: bedrockEndpointResolver,
-		BedrockLoggingConfig:    bedrockLoggingConfig,
-		BedrockRecorder:         bedrockRecorder,
-		BedrockAccess:           bedrockAccess,
-		BedrockAccessAdmin:      bedrockAccess,
-		BedrockProvisioned:      bedrockProvisioned,
-		BedrockGuardrails:       bedrockGuardrails,
-		BedrockEmbedder:         bedrockEmbedder,
-		BedrockAgentKB:          bedrockAgentKB,
-		BedrockAgentDataSources: bedrockAgentDataSources,
-		BedrockAgentVector:      bedrockAgentVector,
+		Debug:           nodeConfig.AWSGW.Debug,
+		DisableLogging:  false,
+		NATSConn:        natsConn,
+		RootCAs:         rootCAs,
+		Config:          nodeConfig.AWSGW.Config,
+		ExpectedNodes:   len(config.Nodes),
+		NodeIDs:         nodeIDs,
+		Region:          nodeConfig.Region,
+		InternalSuffix:  config.AWS.ServicesDomain,
+		RegistryPort:    registryPort,
+		RegistryHost:    registryHost,
+		AZ:              nodeConfig.AZ,
+		IAMService:      iamService,
+		STSService:      stsService,
+		Credentials:     credentials,
+		Admission:       admission,
+		Version:         version,
+		Commit:          commit,
+		OIDC:            ekscluster.NewOIDCPublisher(jwksJS),
+		RegistryHandler: registryHosts.Middleware(ecrBridge.Handler()),
 	}
 
 	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{
@@ -622,6 +610,20 @@ func launchService(config *config.ClusterConfig) error {
 	})
 	ecsControlPlane := ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})
 	eksControlPlane := eksawsapi.NewRegistration(eksawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})
+	bedrockControlPlane := ochreawsapi.NewRegistration(ochreawsapi.Deps{
+		Credentials: bedrockCredentials,
+		Endpoints:   bedrockEndpointResolver,
+		Access:      bedrockAccess,
+		Recorder:    bedrockRecorder,
+		Logging:     bedrockLoggingConfig,
+		Provisioned: bedrockProvisioned,
+		Guardrails:  bedrockGuardrails,
+		Embedder:    bedrockEmbedder,
+		KB:          bedrockAgentKB,
+		DataSources: bedrockAgentDataSources,
+		Vector:      bedrockAgentVector,
+		Quota:       gw.Quota,
+	})
 	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
 	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
 	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsDeps)
@@ -642,7 +644,7 @@ func launchService(config *config.ClusterConfig) error {
 		BucketStore:       objStore,
 		SignupMaxAccounts: signupMaxAccounts,
 	})
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane); err != nil {
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
 

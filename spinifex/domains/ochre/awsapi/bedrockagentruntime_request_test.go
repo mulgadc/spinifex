@@ -4,7 +4,7 @@
 // sibling bedrock/bedrock-agent services.
 //
 //test:in-package
-package gateway
+package awsapi
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/bedrockagentruntime"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
@@ -27,32 +28,26 @@ import (
 // stores, allow-everything IAMService) plus newBedrockRequestGateway's vLLM
 // routing (BedrockEndpoints/BedrockAccess), since RetrieveAndGenerate's
 // generation step reaches ochre.Converse in-process.
-func newBedrockAgentRuntimeRequestGateway(t *testing.T, vector ochrevector.VectorService, vllmURL string) *GatewayConfig {
+func newBedrockAgentRuntimeRequestGateway(t *testing.T, vector ochrevector.VectorService, vllmURL string) *testGateway {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	return withVerifier(&GatewayConfig{
-		IAMService:              allowAllIAMService(),
-		BedrockAgentKB:          ochrevector.NewKBStore(js),
-		BedrockAgentDataSources: ochrevector.NewDataSourceStore(js),
-		BedrockAgentVector:      vector,
-		BedrockEndpoints: map[string]string{
-			bedrockTestLlamaModelID: vllmURL,
-		},
-		BedrockAccess: grantAllModels{},
-	})
+	return &testGateway{Deps: Deps{
+		KB:          ochrevector.NewKBStore(js),
+		DataSources: ochrevector.NewDataSourceStore(js),
+		Vector:      vector,
+		Endpoints:   ochre.NewStaticEndpointResolver(map[string]string{bedrockTestLlamaModelID: vllmURL}),
+		Access:      grantAllModels{},
+	}}
 }
 
 func bedrockAgentRuntimeRequestWithAccount(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	ctx := withPrincipalField(req.Context(), fieldAccountID, bedrockAgentTestAccount)
-	ctx = withPrincipalField(ctx, fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	return req.WithContext(ctx)
+	return req.WithContext(context.WithValue(req.Context(), accountKey{}, bedrockAgentTestAccount))
 }
 
-func newTestKnowledgeBaseRecord(t *testing.T, gw *GatewayConfig, kbID, indexID string) {
+func newTestKnowledgeBaseRecord(t *testing.T, gw *testGateway, kbID, indexID string) {
 	t.Helper()
-	require.NoError(t, gw.BedrockAgentKB.Create(context.Background(), bedrockAgentTestAccount, ochrevector.KBRecord{
+	require.NoError(t, gw.KB.Create(context.Background(), bedrockAgentTestAccount, ochrevector.KBRecord{
 		ID: kbID, Name: "docs", Status: ochrevector.StateReady,
 		EmbeddingModel: "amazon.titan-embed-text-v2:0", Dimension: 1024, IndexID: indexID,
 	}))
@@ -207,17 +202,17 @@ func TestBedrockAgentRuntimeRequest_MissingAccountIDReturnsInternalError(t *test
 	ts := newVLLMStub(t)
 	gw := newBedrockAgentRuntimeRequestGateway(t, &fakeBedrockAgentVectorService{}, ts.URL)
 
-	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/retrieveAndGenerate", nil))
+	req := httptest.NewRequest(http.MethodPost, "/retrieveAndGenerate", nil)
 	w := httptest.NewRecorder()
-	// Account-less requests are rejected by the policy gate, which runs ahead
-	// of the handler's own account guard.
+	// Account-less requests are refused before anything is read or authorized.
 	err := gw.BedrockAgentRuntime_Request(w, req)
 	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
 func TestBedrockAgentRuntimeRequest_NilDependenciesReturnServerInternal(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{IAMService: allowAllIAMService()})
+	gw := &testGateway{}
 
 	req := bedrockAgentRuntimeRequestWithAccount(http.MethodPost, "/knowledgebases/kb-1/retrieve", `{"retrievalQuery":{"text":"q"}}`)
 	w := httptest.NewRecorder()

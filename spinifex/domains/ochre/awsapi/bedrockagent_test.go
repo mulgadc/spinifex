@@ -4,7 +4,7 @@
 // functions.
 //
 //test:in-package
-package gateway
+package awsapi
 
 import (
 	"context"

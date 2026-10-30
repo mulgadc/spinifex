@@ -4,7 +4,7 @@
 // unexported-mapper and operation-level coverage.
 //
 //test:in-package
-package gateway
+package awsapi
 
 import (
 	"context"

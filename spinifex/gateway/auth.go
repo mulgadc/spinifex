@@ -248,9 +248,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 }
 
 // resolveNonQueryAction resolves the action for JSON-1.1 (X-Amz-Target) and
-// path-routed REST-JSON services (eks, the bedrock family), which carry no
+// path-routed REST-JSON services (eks), which carry no
 // query-protocol Action parameter. Empty on no match.
-func resolveNonQueryAction(r *http.Request, service string) string {
+func resolveNonQueryAction(r *http.Request) string {
 	if target := r.Header.Get("X-Amz-Target"); target != "" {
 		if _, after, ok := strings.CutLast(target, "."); ok {
 			return after
@@ -258,28 +258,6 @@ func resolveNonQueryAction(r *http.Request, service string) string {
 		return target
 	}
 
-	if service == "bedrock" {
-		service = resolveBedrockSubservice(r.URL.Path)
-	}
-	method, path := r.Method, r.URL.EscapedPath()
-	switch service {
-	case "bedrock":
-		if action, _, _, ok := bedrockRouter.Lookup(method, path); ok {
-			return action
-		}
-	case "bedrock-runtime":
-		if action, _, _, ok := bedrockRuntimeRouter.Lookup(method, path); ok {
-			return action
-		}
-	case "bedrock-agent":
-		if action, _, _, ok := bedrockAgentRouter.Lookup(method, path); ok {
-			return action
-		}
-	case "bedrock-agent-runtime":
-		if action, _, _, ok := bedrockAgentRuntimeRouter.Lookup(method, path); ok {
-			return action
-		}
-	}
 	return ""
 }
 

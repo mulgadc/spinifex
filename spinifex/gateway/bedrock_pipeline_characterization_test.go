@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -19,19 +20,45 @@ import (
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-const bedrockPipelineModelPath = "/model/" + bedrockTestLlamaModelID
+const bedrockPipelineModelPath = "/model/" + bedrockPipelineLlamaModel
 
 var retrieveBody = []byte(`{"retrievalQuery":{"text":"q"}}`)
 
+const bedrockPipelineLlamaModel = "meta.llama3-2-1b-instruct-v1:0"
+
+// grantAllModels grants every model, standing in for a provisioned grant store.
+type grantAllModels struct{}
+
+func (grantAllModels) Granted(_ context.Context, _, _ string) (bool, error) { return true, nil }
+
+// weightsStub resolves a weights snapshot for the one self-host model the
+// pipeline tests name.
+type weightsStub struct{}
+
+func (weightsStub) Resolve(_ context.Context, modelID string) (string, bool, error) {
+	if modelID != bedrockPipelineLlamaModel {
+		return "", false, nil
+	}
+	return "snap-stub", true, nil
+}
+
+// bedrockPipelineEnv is what a case may change before the app is built.
+type bedrockPipelineEnv struct {
+	Deps   ochreawsapi.Deps
+	NoNATS bool
+}
+
 // bedrockPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does,
-// over a real JetStream, with every Bedrock capability set unless mutate
-// clears it. Policy statements are the caller's only IAM policy.
-func bedrockPipelineApp(t *testing.T, mutate func(*GatewayConfig), statements ...iamdomain.Statement) http.Handler {
+// with the Bedrock registration over a real JetStream and every capability set
+// unless mutate clears it. Policy statements are the caller's only IAM policy.
+func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statements ...iamdomain.Statement) http.Handler {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
@@ -52,33 +79,43 @@ func bedrockPipelineApp(t *testing.T, mutate func(*GatewayConfig), statements ..
 		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 	}
 	_, nc, js := testutil.StartTestJetStream(t)
-	stub := newVLLMStub(t)
-	ochre.SetWeightsResolver(bedrockRequestWeightsStub{})
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2}}`))
+	}))
+	t.Cleanup(stub.Close)
+	ochre.SetWeightsResolver(weightsStub{})
 	t.Cleanup(func() { ochre.SetWeightsResolver(nil) })
 
-	cfg := &GatewayConfig{
-		DisableLogging:          true,
-		Region:                  testRegion,
-		NATSConn:                nc,
-		IAMService:              svc,
-		BedrockEndpoints:        map[string]string{bedrockTestLlamaModelID: stub.URL},
-		BedrockAccess:           grantAllModels{},
-		BedrockLoggingConfig:    ochre.NewLoggingConfigStore(js),
-		BedrockProvisioned:      ochre.NewProvisionedStore(js, testRegion, nil),
-		BedrockGuardrails:       ochre.NewGuardrailStore(js, testRegion),
-		BedrockAgentKB:          ochrevector.NewKBStore(js),
-		BedrockAgentDataSources: ochrevector.NewDataSourceStore(js),
-		BedrockAgentVector:      &fakeBedrockAgentVectorService{},
-	}
+	env := &bedrockPipelineEnv{Deps: ochreawsapi.Deps{
+		Endpoints:   ochre.NewStaticEndpointResolver(map[string]string{bedrockPipelineLlamaModel: stub.URL}),
+		Access:      grantAllModels{},
+		Logging:     ochre.NewLoggingConfigStore(js),
+		Provisioned: ochre.NewProvisionedStore(js, testRegion, nil),
+		Guardrails:  ochre.NewGuardrailStore(js, testRegion),
+		KB:          ochrevector.NewKBStore(js),
+		DataSources: ochrevector.NewDataSourceStore(js),
+		Vector:      unusedVector{},
+	}}
 	if mutate != nil {
-		mutate(cfg)
+		mutate(env)
 	}
+	cfg := &GatewayConfig{DisableLogging: true, Region: testRegion, NATSConn: nc, IAMService: svc}
+	if env.NoNATS {
+		cfg.NATSConn = nil
+	}
+	b := dispatch.NewBuilder()
+	require.NoError(t, b.Register(ochreawsapi.NewRegistration(env.Deps)))
+	cfg.Services = b.Build()
 	gw := withVerifier(cfg)
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", gw.Request)
 	return r
 }
+
+// unusedVector fails the test run if a request reaches the vector engine.
+type unusedVector struct{ ochrevector.VectorService }
 
 func signBedrockRequest(t *testing.T, scope, method, path string, body []byte) *http.Request {
 	t.Helper()
@@ -135,19 +172,19 @@ func TestBedrockPipeline_ErrorEnvelopes(t *testing.T) {
 		{"bedrock malformed body", bedrockPipelineApp(t, nil, allowBedrock()), signBedrockRequest(t, "bedrock", "POST", "/guardrails", []byte("{")), 400, "ValidationException"},
 		{"bedrock not found", bedrockPipelineApp(t, nil, allowBedrock()), signBedrockRequest(t, "bedrock", "GET", "/guardrails/gr-none", nil), 404, "ResourceNotFoundException"},
 		{"bedrock ok", bedrockPipelineApp(t, nil, allowBedrock()), signBedrockRequest(t, "bedrock", "POST", "/guardrails", guardrail), 200, ""},
-		{"bedrock no nats", bedrockPipelineApp(t, func(c *GatewayConfig) { c.NATSConn = nil }, allowBedrock()), signBedrockRequest(t, "bedrock", "GET", "/guardrails", nil), 503, "ServiceUnavailableException"},
+		{"bedrock no nats", bedrockPipelineApp(t, func(c *bedrockPipelineEnv) { c.NoNATS = true }, allowBedrock()), signBedrockRequest(t, "bedrock", "GET", "/guardrails", nil), 503, "ServiceUnavailableException"},
 		{"runtime unknown route", bedrockPipelineApp(t, nil, allowBedrock()), signBedrockRequest(t, "bedrock", "POST", "/model/m/nope", nil), 400, "InvalidActionException"},
 		{"runtime policy deny", bedrockPipelineApp(t, nil), signBedrockRequest(t, "bedrock", "POST", bedrockPipelineModelPath+"/converse", []byte("{}")), 403, "AccessDeniedException"},
 		{"runtime malformed body", bedrockPipelineApp(t, nil, allowBedrock()), signBedrockRequest(t, "bedrock", "POST", bedrockPipelineModelPath+"/converse", []byte("{")), 400, "ValidationException"},
-		{"runtime no nats", bedrockPipelineApp(t, func(c *GatewayConfig) { c.NATSConn = nil }, allowBedrock()), signBedrockRequest(t, "bedrock", "POST", bedrockPipelineModelPath+"/converse", []byte("{}")), 503, "ServiceUnavailableException"},
+		{"runtime no nats", bedrockPipelineApp(t, func(c *bedrockPipelineEnv) { c.NoNATS = true }, allowBedrock()), signBedrockRequest(t, "bedrock", "POST", bedrockPipelineModelPath+"/converse", []byte("{}")), 503, "ServiceUnavailableException"},
 		{"runtime stream pre-frame error", bedrockPipelineApp(t, nil, allowBedrock()), signBedrockRequest(t, "bedrock", "POST", bedrockPipelineModelPath+"/converse-stream", []byte("{")), 400, "ValidationException"},
 		{"agent unknown route", bedrockPipelineApp(t, nil, allowBedrock()), signBedrockRequest(t, "bedrock", "DELETE", "/knowledgebases/", nil), 400, "InvalidActionException"},
 		{"agent policy deny", bedrockPipelineApp(t, nil), signBedrockRequest(t, "bedrock", "GET", "/knowledgebases/kb1", nil), 403, "AccessDeniedException"},
 		{"agent not found", bedrockPipelineApp(t, nil, allowBedrock()), signBedrockRequest(t, "bedrock", "GET", "/knowledgebases/kb1", nil), 404, "ResourceNotFoundException"},
-		{"agent no vector", bedrockPipelineApp(t, func(c *GatewayConfig) { c.BedrockAgentVector = nil }, allowBedrock()), signBedrockRequest(t, "bedrock", "GET", "/knowledgebases/kb1", nil), 500, "ServerInternalException"},
+		{"agent no vector", bedrockPipelineApp(t, func(c *bedrockPipelineEnv) { c.Deps.Vector = nil }, allowBedrock()), signBedrockRequest(t, "bedrock", "GET", "/knowledgebases/kb1", nil), 500, "ServerInternalException"},
 		{"agent-runtime unknown route", bedrockPipelineApp(t, nil, allowBedrock()), signBedrockRequest(t, "bedrock", "GET", "/retrieveAndGenerate", nil), 400, "InvalidActionException"},
 		{"agent-runtime policy deny", bedrockPipelineApp(t, nil), signBedrockRequest(t, "bedrock", "POST", "/knowledgebases/kb1/retrieve", retrieveBody), 403, "AccessDeniedException"},
-		{"agent-runtime no vector", bedrockPipelineApp(t, func(c *GatewayConfig) { c.BedrockAgentVector = nil }, allowBedrock()), signBedrockRequest(t, "bedrock", "POST", "/knowledgebases/kb1/retrieve", retrieveBody), 500, "ServerInternalException"},
+		{"agent-runtime no vector", bedrockPipelineApp(t, func(c *bedrockPipelineEnv) { c.Deps.Vector = nil }, allowBedrock()), signBedrockRequest(t, "bedrock", "POST", "/knowledgebases/kb1/retrieve", retrieveBody), 500, "ServerInternalException"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -243,8 +280,8 @@ func TestBedrockPipeline_PathSplit(t *testing.T) {
 // request rate before it reads the body, agent-runtime only for
 // RetrieveAndGenerate, and nothing else meters.
 func TestBedrockPipeline_QuotaOrder(t *testing.T) {
-	limited := func(c *GatewayConfig) {
-		c.Quota = admissionquota.New(admissionquota.Limits{RequestsPerMinuteEnabled: true, RequestsPerMinute: 1}, nil)
+	limited := func(c *bedrockPipelineEnv) {
+		c.Deps.Quota = admissionquota.New(admissionquota.Limits{RequestsPerMinuteEnabled: true, RequestsPerMinute: 1}, nil)
 	}
 
 	t.Run("runtime throttles before the body is read", func(t *testing.T) {
@@ -276,7 +313,7 @@ func TestBedrockPipeline_QuotaOrder(t *testing.T) {
 
 	t.Run("agent-runtime RetrieveAndGenerate is metered after the gate", func(t *testing.T) {
 		app := bedrockPipelineApp(t, limited, allowBedrock())
-		body := []byte(`{"input":{"text":"q"},"retrieveAndGenerateConfiguration":{"type":"KNOWLEDGE_BASE","knowledgeBaseConfiguration":{"knowledgeBaseId":"kb1","modelArn":"arn:aws:bedrock:us-east-1::foundation-model/` + bedrockTestLlamaModelID + `"}}}`)
+		body := []byte(`{"input":{"text":"q"},"retrieveAndGenerateConfiguration":{"type":"KNOWLEDGE_BASE","knowledgeBaseConfiguration":{"knowledgeBaseId":"kb1","modelArn":"arn:aws:bedrock:us-east-1::foundation-model/` + bedrockPipelineLlamaModel + `"}}}`)
 		first := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "POST", "/retrieveAndGenerate", body))
 		require.NotEqual(t, "ThrottlingException", first.Type, first.Body)
 		second := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "POST", "/retrieveAndGenerate", body))
@@ -322,14 +359,14 @@ func TestBedrockPipeline_QueryFold(t *testing.T) {
 // looks like through the pipeline.
 func TestBedrockPipeline_NilCapabilityFallbacks(t *testing.T) {
 	t.Run("no access store hides the catalog", func(t *testing.T) {
-		app := bedrockPipelineApp(t, func(c *GatewayConfig) { c.BedrockAccess = nil }, allowBedrock())
+		app := bedrockPipelineApp(t, func(c *bedrockPipelineEnv) { c.Deps.Access = nil }, allowBedrock())
 		got := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "GET", "/foundation-models", nil))
 		require.Equal(t, http.StatusOK, got.Status, got.Body)
-		assert.NotContains(t, got.Body, bedrockTestLlamaModelID)
+		assert.NotContains(t, got.Body, bedrockPipelineLlamaModel)
 	})
 
 	t.Run("no access store refuses runtime", func(t *testing.T) {
-		app := bedrockPipelineApp(t, func(c *GatewayConfig) { c.BedrockAccess = nil }, allowBedrock())
+		app := bedrockPipelineApp(t, func(c *bedrockPipelineEnv) { c.Deps.Access = nil }, allowBedrock())
 		got := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "POST", bedrockPipelineModelPath+"/converse",
 			[]byte(`{"messages":[{"role":"user","content":[{"text":"hi"}]}]}`)))
 		require.Equal(t, http.StatusForbidden, got.Status, got.Body)
@@ -337,21 +374,21 @@ func TestBedrockPipeline_NilCapabilityFallbacks(t *testing.T) {
 	})
 
 	t.Run("no guardrail store errors without panicking", func(t *testing.T) {
-		app := bedrockPipelineApp(t, func(c *GatewayConfig) { c.BedrockGuardrails = nil }, allowBedrock())
+		app := bedrockPipelineApp(t, func(c *bedrockPipelineEnv) { c.Deps.Guardrails = nil }, allowBedrock())
 		got := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "GET", "/guardrails", nil))
 		require.Equal(t, http.StatusInternalServerError, got.Status, got.Body)
 		require.Equal(t, "InternalErrorException", got.Type)
 	})
 
 	t.Run("no logging store errors without panicking", func(t *testing.T) {
-		app := bedrockPipelineApp(t, func(c *GatewayConfig) { c.BedrockLoggingConfig = nil }, allowBedrock())
+		app := bedrockPipelineApp(t, func(c *bedrockPipelineEnv) { c.Deps.Logging = nil }, allowBedrock())
 		got := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "GET", "/logging/modelinvocations", nil))
 		require.Equal(t, http.StatusInternalServerError, got.Status, got.Body)
 		require.Equal(t, "InternalErrorException", got.Type)
 	})
 
 	t.Run("no provisioned store errors without panicking", func(t *testing.T) {
-		app := bedrockPipelineApp(t, func(c *GatewayConfig) { c.BedrockProvisioned = nil }, allowBedrock())
+		app := bedrockPipelineApp(t, func(c *bedrockPipelineEnv) { c.Deps.Provisioned = nil }, allowBedrock())
 		got := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "GET", "/provisioned-model-throughputs", nil))
 		require.Equal(t, http.StatusInternalServerError, got.Status, got.Body)
 		require.Equal(t, "InternalErrorException", got.Type)

@@ -1,4 +1,4 @@
-package gateway
+package awsapi
 
 import (
 	"context"
@@ -68,11 +68,8 @@ func (s stubEndpointResolver) EndpointForAccount(ctx context.Context, _, modelID
 // dynamic-resolution change hangs off: with a registry resolver configured the
 // gateway must use it, since it is the only path that can request a launch.
 func TestBedrockEndpointResolver_PrefersDynamic(t *testing.T) {
-	gw := &GatewayConfig{
-		BedrockEndpoints:        map[string]string{"m": "http://static:8000"},
-		BedrockEndpointResolver: stubEndpointResolver{baseURL: "http://dynamic:8000"},
-	}
-	baseURL, ok, err := gw.bedrockEndpointResolver().Endpoint(context.Background(), "m")
+	deps := Deps{Endpoints: stubEndpointResolver{baseURL: "http://dynamic:8000"}}
+	baseURL, ok, err := deps.endpointResolver().Endpoint(context.Background(), "m")
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "http://dynamic:8000", baseURL)
@@ -81,8 +78,8 @@ func TestBedrockEndpointResolver_PrefersDynamic(t *testing.T) {
 // TestBedrockEndpointResolver_FallsBackToStatic keeps every gateway built
 // without a registry resolver (including the tests) on its pinned map.
 func TestBedrockEndpointResolver_FallsBackToStatic(t *testing.T) {
-	gw := &GatewayConfig{BedrockEndpoints: map[string]string{"m": "http://static:8000"}}
-	baseURL, ok, err := gw.bedrockEndpointResolver().Endpoint(context.Background(), "m")
+	deps := Deps{Endpoints: ochre.NewStaticEndpointResolver(map[string]string{"m": "http://static:8000"})}
+	baseURL, ok, err := deps.endpointResolver().Endpoint(context.Background(), "m")
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "http://static:8000", baseURL)

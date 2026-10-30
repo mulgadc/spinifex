@@ -167,7 +167,7 @@ func newStoreFixture(t *testing.T, vms *storeVMs) *storeFixture {
 func (f *storeFixture) bindWorker(t *testing.T, nodeID string, record bool) {
 	t.Helper()
 	ctx := t.Context()
-	intent, err := f.ids.BeginLaunch(ctx, sqsTestRegion, workerident.LaunchRequest{ClaimID: "claim-worker-1",
+	intent, err := f.ids.BeginLaunch(ctx, sqsTestRegion, workerident.LaunchRequest{InstanceType: "t3.small", ClaimID: "claim-worker-1",
 		NodeID: nodeID, DataVolumeID: ensureVolume, DataVolumeEncrypted: true})
 	require.NoError(t, err)
 	require.NoError(t, f.ids.MarkDispatched(ctx, intent))

@@ -520,3 +520,39 @@ func TestEnsure_VisibleNetworkIsReusedOnResume(t *testing.T) {
 		t.Fatalf("creates=%d launches=%d", len(r.net.claims), r.vms.count())
 	}
 }
+
+// A request for another type neither resumes an undispatched intent nor
+// reports the bound VM as that type; only a replacement may change it.
+func TestEnsure_InstanceTypeIsFixedUntilReplacement(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.iam.fail.Store(1)
+	if _, err := r.l.Ensure(ctx, region, itype); err == nil {
+		t.Fatal("ensure succeeded with IAM failing")
+	}
+	if _, err := r.l.Ensure(ctx, region, "sys.other"); !errors.Is(err, workerident.ErrTypeChanged) {
+		t.Fatalf("resume with another type = %v, want ErrTypeChanged", err)
+	}
+	first, err := r.l.Ensure(ctx, region, itype)
+	if err != nil || first.InstanceType != itype || r.vms.count() != 1 {
+		t.Fatalf("resume = %+v, %v; launched %d", first, err, r.vms.count())
+	}
+	if _, err := r.l.Ensure(ctx, region, "sys.other"); !errors.Is(err, workerident.ErrTypeChanged) {
+		t.Fatalf("bound with another type = %v, want ErrTypeChanged", err)
+	}
+	if r.vms.count() != 1 {
+		t.Fatalf("a type mismatch launched: %d", r.vms.count())
+	}
+
+	intent := workerident.Intent{Region: region, Generation: 1, ClaimID: r.current(t).ClaimID}
+	if err := r.l.Identities.RecordStopped(ctx, intent, first.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	next, err := r.l.Ensure(ctx, region, "sys.other")
+	if err != nil || next.Generation != 2 || next.InstanceType != "sys.other" || r.vms.specs[1].InstanceType != "sys.other" {
+		t.Fatalf("replacement = %+v, %v", next, err)
+	}
+	if rec := r.current(t); rec.InstanceType != "sys.other" {
+		t.Fatalf("replacement record type = %q", rec.InstanceType)
+	}
+}

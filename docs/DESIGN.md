@@ -404,6 +404,7 @@ A reply lost to that timeout is reported as `ServiceUnavailable`; calling again 
 The reply names the bound VM's node, Region, instance ID and generation; bound is not ready, and it says nothing about the guest's boot, its key or the store.
 Stop/detach evidence for `RecordStopped` is not wired, the guest's metadata route and gateway TLS on a real ENI and worker-to-store TCP are unproven, and Viperblock's at-rest key is held by the platform.
 
+The worker identity record holds the instance type of its generation; a request for another type is refused as `IncorrectState`, before dispatch and after binding, the reply names the recorded type, and only a replacement after a confirmed stop may change it.
 Operators call both actions with `spx admin sqs ensure-worker --node --instance-type` and `spx admin sqs ensure-store --node --instance-type --volume-size-gib`, signed for the `spinifex` service with the standard AWS credential chain like the other `spx admin` gateway commands.
 Each command refuses missing inputs before sending anything and reports only the bound VM; a bound VM is not a ready worker or store.
 The super-admin `EnsureSQSStore` action takes a `NodeId`, an `InstanceType` and a `VolumeSizeGiB` and sends a request to `sqs.store.Ensure.v1.<node>` with no queue group; only the node the Region's worker is bound to can launch the store.
@@ -419,6 +420,7 @@ After boot, the worker's long-running `sqs-worker ready` step mounts and verifie
 It loads its key only if it matches that public key, then connects to the store's NATS on port 4222 with it and asks JetStream for account info, each pass bounded to 30 seconds.
 The step runs until shutdown with no overall deadline, so a store the operator launches at any time is picked up: it asks again every 5 seconds while the store is pending, not answering or the reply was lost, and re-checks a ready store every 30 seconds.
 A pass writes only the address and public key to `/run/sqs-worker/store-ready`; any failed pass removes that file, and so does the step's own exit.
+A start that finds shutdown in progress or no worker key logs once and waits in place rather than exiting, so init does not respawn it in a loop; shutdown stops it like a running watcher.
 Init respawns the step, at most once every 5 seconds, and every start removes a marker left by a watcher that was killed or crashed before the new watcher runs.
 A ready store that fails is noticed up to one re-check interval plus one bounded call later, so the marker can be up to about a minute stale.
 Shutdown blocks further respawns, removes the marker, and stops the watcher by its recorded PID and start time, escalating to SIGKILL after a budget; it unmounts the worker disk only once the watcher is confirmed gone, and a survivor leaves every mount in place.

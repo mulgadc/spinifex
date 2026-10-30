@@ -267,7 +267,7 @@ func newGWCluster(t *testing.T) gwCluster {
 func (c gwCluster) launch(t *testing.T, claim string, supersedes uint64, inst string) workerident.Intent {
 	t.Helper()
 	ctx := context.Background()
-	in, err := c.ids.BeginLaunch(ctx, testRegion, workerident.LaunchRequest{
+	in, err := c.ids.BeginLaunch(ctx, testRegion, workerident.LaunchRequest{InstanceType: "t3.small",
 		ClaimID: claim, Supersedes: supersedes, NodeID: "node-a", DataVolumeID: gwVolume, DataVolumeEncrypted: true,
 	})
 	if err != nil {
@@ -493,7 +493,7 @@ func otherCA(t *testing.T) []byte {
 func TestGateway_BootBeforeBindSucceedsAfterBinding(t *testing.T) {
 	c := newGWCluster(t)
 	ctx := context.Background()
-	intent, err := c.ids.BeginLaunch(ctx, testRegion, workerident.LaunchRequest{
+	intent, err := c.ids.BeginLaunch(ctx, testRegion, workerident.LaunchRequest{InstanceType: "t3.small",
 		ClaimID: "claim-0001", NodeID: "node-a", DataVolumeID: gwVolume, DataVolumeEncrypted: true,
 	})
 	if err != nil {

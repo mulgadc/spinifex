@@ -190,7 +190,8 @@ func TestEnsureSQSWorker_AdminLaunchesAndBindsOnce(t *testing.T) {
 	out, err := f.call(t, ensureNode, 30*time.Second)
 	require.NoError(t, err)
 	assert.Equal(t, workerlaunch.EnsureResponse{NodeID: ensureNode, Region: sqsTestRegion,
-		InstanceID: "i-0123456789abcdef0", Generation: 1, State: workerlaunch.StateBound}, *out)
+		InstanceID: "i-0123456789abcdef0", Generation: 1, InstanceType: ensureType,
+		State: workerlaunch.StateBound}, *out)
 
 	again, err := f.call(t, ensureNode, 30*time.Second)
 	require.NoError(t, err)
@@ -298,7 +299,7 @@ func TestEnsureSQSWorker_UnknownInstanceTypeAllocatesNothing(t *testing.T) {
 // A Region whose worker is pinned to another node is refused, not moved.
 func TestEnsureSQSWorker_PinnedElsewhereIsRefused(t *testing.T) {
 	f := newEnsureFixture(t, &ensureVMs{})
-	_, err := f.ids.BeginLaunch(t.Context(), sqsTestRegion, workerident.LaunchRequest{
+	_, err := f.ids.BeginLaunch(t.Context(), sqsTestRegion, workerident.LaunchRequest{InstanceType: ensureType,
 		ClaimID: "claim-0123456789abcdef01234567", NodeID: "node-2",
 		DataVolumeID: ensureVolume, DataVolumeEncrypted: true,
 	})
@@ -342,9 +343,11 @@ func TestSQSWorkerEnsurer_CancelledWaiterGivesUp(t *testing.T) {
 func TestEnsureSQSWorker_RefusesAnUnboundOrForeignReply(t *testing.T) {
 	f := newEnsureFixture(t, &ensureVMs{})
 	for _, reply := range []workerlaunch.EnsureResponse{
-		{NodeID: "node-2", InstanceID: "i-0123456789abcdef0", State: "launching"},
-		{NodeID: "node-1", InstanceID: "i-0123456789abcdef0", State: workerlaunch.StateBound},
-		{NodeID: "node-2", State: workerlaunch.StateBound},
+		{NodeID: "node-2", InstanceID: "i-0123456789abcdef0", InstanceType: ensureType, State: "launching"},
+		{NodeID: "node-1", InstanceID: "i-0123456789abcdef0", InstanceType: ensureType, State: workerlaunch.StateBound},
+		{NodeID: "node-2", InstanceType: ensureType, State: workerlaunch.StateBound},
+		{NodeID: "node-2", InstanceID: "i-0123456789abcdef0", InstanceType: "t3.large", State: workerlaunch.StateBound},
+		{NodeID: "node-2", InstanceID: "i-0123456789abcdef0", State: workerlaunch.StateBound},
 	} {
 		body, err := json.Marshal(reply)
 		require.NoError(t, err)
@@ -421,5 +424,19 @@ func TestEnsureSQSWorker_MissingImageLeavesAStoppedWorkerUntouched(t *testing.T)
 	after, err := f.ids.Current(t.Context(), sqsTestRegion)
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
+	assert.Equal(t, 1, f.vms.count())
+}
+
+// A known but different instance type for a bound worker is refused as
+// IncorrectState, naming the recorded type, and launches nothing.
+func TestEnsureSQSWorker_BoundWorkerRefusesAnotherType(t *testing.T) {
+	f := newEnsureFixture(t, &ensureVMs{})
+	_, err := f.call(t, ensureNode, 30*time.Second)
+	require.NoError(t, err)
+
+	f.d.resourceMgr.instanceTypes["t3.large"] = &ec2.InstanceTypeInfo{InstanceType: aws.String("t3.large")}
+	_, err = admin.EnsureSQSWorker(t.Context(), f.nc, ensureNodes, ensureNode, "t3.large",
+		awsidentifiers.DefaultAccountID(), 5*time.Second)
+	assert.Contains(t, requireAWSCode(t, err, awserrors.ErrorIncorrectState), ensureType)
 	assert.Equal(t, 1, f.vms.count())
 }

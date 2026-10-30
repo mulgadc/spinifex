@@ -22,7 +22,9 @@ type EnsureResponse struct {
 	Region     string `json:"Region"`
 	InstanceID string `json:"InstanceId"`
 	Generation uint64 `json:"Generation"`
-	State      string `json:"State"`
+	// The instance type the worker was launched with, fixed for its generation.
+	InstanceType string `json:"InstanceType"`
+	State        string `json:"State"`
 }
 
 // StateBound is the only state an EnsureResponse reports.

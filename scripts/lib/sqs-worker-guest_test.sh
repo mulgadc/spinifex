@@ -48,13 +48,13 @@ fresh() {
     export T
     mkdir -p "$T/run" "$T/data"
     echo UPUBLICKEY > "$T/run/public-key"
-    : > "$T/calls.log" "$T/console" "$T/mounts"
+    for f in calls.log console mounts; do : > "$T/$f"; done
 }
 gone() { [ ! -r "/proc/$1/status" ] || grep -q '^State:[[:space:]]*Z' "/proc/$1/status" 2>/dev/null; }
 waitfor() { i=0; while [ "$i" -lt 100 ] && ! eval "$1"; do i=$((i + 1)); sleep 0.05; done; eval "$1"; }
 # start_run: one init respawn of the readiness step, in the background.
 start_run() {
-    SQSW_RUN="$T/run" SQSW_CONSOLE="$T/console" SQSW_BIN="$TMP/bin/watcher" SQSW_RESPAWN_GAP="${GAP:-0}" \
+    SQSW_RUN="$T/run" SQSW_CONSOLE="$T/console" SQSW_BIN="$TMP/bin/watcher" SQSW_RESPAWN_GAP="${GAP:-0}" SQSW_PARK_INTERVAL="${PARK:-30}" \
         sh -c '. "$1"; sqsw_run' sh "$LIB" & pid=$!
     CHILDREN="$CHILDREN $pid"
 }
@@ -100,14 +100,31 @@ check "a start right after the previous one waits for the gap" '[ $((t1 - t0)) -
 kill -KILL "$pid" 2>/dev/null || true
 
 # --- Runs that must not start ---
+# A run that cannot start parks rather than exiting, so init does not respawn
+# it in a loop; a second is many park intervals, and it must log only once.
 fresh run-stopping; : > "$T/run/stopping"; echo stale > "$T/run/store-ready"
-start_run; waitfor "gone $pid" || true
-check "a start during shutdown starts no watcher and removes the marker" \
-    'gone "$pid" && [ ! -e "$T/watchers" ] && [ ! -e "$T/run/store-ready" ] && grep -q "shutdown in progress" "$T/console"'
+PARK=0.05 start_run; waitfor "grep -q 'shutdown in progress' \"\$T/console\"" || true
+sleep 1
+check "a start during shutdown parks instead of exiting and respawning" '! gone "$pid"'
+check "a parked start during shutdown starts no watcher and removes the marker" \
+    '[ ! -e "$T/watchers" ] && [ ! -e "$T/run/store-ready" ]'
+check "a parked start during shutdown logs once" '[ "$(grep -c "shutdown in progress" "$T/console")" -eq 1 ]'
+shutdown_step
+check "shutdown stops the parked start" 'waitfor "gone $pid"'
 
 fresh run-no-key; rm -f "$T/run/public-key"
-start_run; waitfor "gone $pid" || true
-check "a guest without a worker key starts no watcher" 'gone "$pid" && [ ! -e "$T/watchers" ] && grep -q "no worker key" "$T/console"'
+PARK=0.05 start_run; waitfor "grep -q 'no worker key' \"\$T/console\"" || true
+sleep 1
+check "a guest without a worker key parks instead of exiting and respawning" '! gone "$pid" && [ ! -e "$T/watchers" ]'
+check "a parked guest without a worker key logs once" '[ "$(grep -c "no worker key" "$T/console")" -eq 1 ]'
+echo UPUBLICKEY > "$T/run/public-key"
+check "a key that appears later starts the watcher" 'waitfor "[ -s \"\$T/watchers\" ]"'
+kill -KILL "$pid" 2>/dev/null || true
+
+fresh run-no-key-stop; rm -f "$T/run/public-key"
+PARK=0.05 start_run; waitfor "grep -q 'no worker key' \"\$T/console\"" || true
+shutdown_step
+check "shutdown stops a start parked for a missing key" 'waitfor "gone $pid" && [ ! -e "$T/watchers" ]'
 
 # --- Shutdown: unmount only once the watcher is confirmed gone ---
 fresh shutdown-orderly; echo "dev $T/data ext4 rw 0 0" > "$T/mounts"

@@ -41,7 +41,7 @@ func sqsCreds(t *testing.T) {
 func TestSQSEnsureWorker_SendsSignedActionAndReportsBoundVM(t *testing.T) {
 	sqsCreds(t)
 	srv, calls, form, header := sqsGateway(t, http.StatusOK,
-		`{"NodeId":"node2","Region":"ap-southeast-2","InstanceId":"i-0123456789abcdef0","Generation":3,"State":"bound"}`)
+		`{"NodeId":"node2","Region":"ap-southeast-2","InstanceId":"i-0123456789abcdef0","Generation":3,"InstanceType":"t3.small","State":"bound"}`)
 
 	var buf bytes.Buffer
 	err := cli.EnsureSQSWorkerRemote(t.Context(), cli.AdminTarget(srv.URL, "ap-southeast-2", writeServerCA(t, srv)), "node2", "t3.small", &buf)
@@ -55,7 +55,8 @@ func TestSQSEnsureWorker_SendsSignedActionAndReportsBoundVM(t *testing.T) {
 
 	out := buf.String()
 	assert.Contains(t, out, "i-0123456789abcdef0")
-	assert.Contains(t, out, "Generation:  3")
+	assert.Contains(t, out, "Generation:     3")
+	assert.Contains(t, out, "Instance type:  t3.small")
 	assert.Contains(t, out, "not a ready worker")
 	assert.NotContains(t, out, "is ready")
 }
@@ -85,9 +86,11 @@ func TestSQSEnsureStore_SendsSizeAndReportsBoundVM(t *testing.T) {
 func TestSQSEnsure_RefusesUnexpectedReplies(t *testing.T) {
 	sqsCreds(t)
 	worker := map[string]string{
-		"not bound":   `{"NodeId":"node2","InstanceId":"i-0123456789abcdef0","State":"launching"}`,
-		"other node":  `{"NodeId":"node3","InstanceId":"i-0123456789abcdef0","State":"bound"}`,
-		"no instance": `{"NodeId":"node2","State":"bound"}`,
+		"not bound":   `{"NodeId":"node2","InstanceId":"i-0123456789abcdef0","InstanceType":"t3.small","State":"launching"}`,
+		"other node":  `{"NodeId":"node3","InstanceId":"i-0123456789abcdef0","InstanceType":"t3.small","State":"bound"}`,
+		"no instance": `{"NodeId":"node2","InstanceType":"t3.small","State":"bound"}`,
+		"other type":  `{"NodeId":"node2","InstanceId":"i-0123456789abcdef0","InstanceType":"t3.large","State":"bound"}`,
+		"no type":     `{"NodeId":"node2","InstanceId":"i-0123456789abcdef0","State":"bound"}`,
 		"not json":    `<html/>`,
 	}
 	for name, reply := range worker {

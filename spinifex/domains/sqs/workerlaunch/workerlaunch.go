@@ -100,8 +100,9 @@ type Launcher struct {
 
 // Result is the Region's realized worker.
 type Result struct {
-	InstanceID string
-	Generation uint64
+	InstanceID   string
+	Generation   uint64
+	InstanceType string
 }
 
 // Ensure returns the Region's bound worker, or launches it. A record that is
@@ -130,8 +131,12 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 		return Result{}, err
 	case cur.NodeID != l.NodeID:
 		return Result{}, workerident.ErrWrongNode
+	case (cur.State == workerident.StateBound || cur.State == workerident.StateLaunching) &&
+		cur.InstanceType != instanceType:
+		// Changing the type needs a replacement, never a silent answer for the old VM.
+		return Result{}, fmt.Errorf("%w: %s", workerident.ErrTypeChanged, cur.InstanceType)
 	case cur.State == workerident.StateBound:
-		return Result{InstanceID: cur.InstanceID, Generation: cur.Generation}, nil
+		return Result{InstanceID: cur.InstanceID, Generation: cur.Generation, InstanceType: cur.InstanceType}, nil
 	case cur.State == workerident.StateLaunching && cur.Dispatched:
 		return Result{}, ErrOutcomeUnknown
 	case cur.State == workerident.StateLaunching:
@@ -158,6 +163,7 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 			NodeID: l.NodeID, DataVolumeID: cur.DataVolumeID}
 	}
 
+	req.InstanceType = instanceType
 	intent, err := l.begin(ctx, region, req)
 	if err != nil {
 		if fresh != "" {
@@ -189,7 +195,7 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 	if err := l.bind(ctx, intent, instanceID); err != nil {
 		return Result{}, fmt.Errorf("worker %s launched but not bound: %w", instanceID, err)
 	}
-	return Result{InstanceID: instanceID, Generation: intent.Generation}, nil
+	return Result{InstanceID: instanceID, Generation: intent.Generation, InstanceType: instanceType}, nil
 }
 
 // network reuses the claim's visible ENI, or marks the intent and sends one

@@ -13,6 +13,7 @@ SQSW_MOUNTS=${SQSW_MOUNTS:-/proc/mounts}
 SQSW_BIN=${SQSW_BIN:-/usr/local/bin/sqs-worker}
 SQSW_STOP_BUDGET_TENTHS=${SQSW_STOP_BUDGET_TENTHS:-100}
 SQSW_RESPAWN_GAP=${SQSW_RESPAWN_GAP:-5}
+SQSW_PARK_INTERVAL=${SQSW_PARK_INTERVAL:-30}
 UMOUNT=${UMOUNT:-umount}
 
 sqsw_log() { echo "[sqs-worker] $*" >> "$SQSW_CONSOLE"; }
@@ -37,13 +38,18 @@ sqsw_run() {
         rm -f "$SQSW_RUN/store-ready"
         sqsw_log "ready: removed a store-ready marker left by an earlier watcher"
     fi
-    if [ -e "$SQSW_RUN/stopping" ]; then
-        sqsw_log "ready: shutdown in progress, not starting"
-        return 2
-    fi
-    if [ ! -s "$SQSW_RUN/public-key" ]; then
-        sqsw_log "ready: no worker key; readiness not started"
-        return 2
+    # Returning here would make init respawn and log at once, forever. Park
+    # instead, logging once: shutdown stops this recorded process, and a key
+    # that appears later lets the watcher start.
+    if [ -e "$SQSW_RUN/stopping" ] || [ ! -s "$SQSW_RUN/public-key" ]; then
+        if [ -e "$SQSW_RUN/stopping" ]; then
+            sqsw_log "ready: shutdown in progress, not starting"
+        else
+            sqsw_log "ready: no worker key; readiness not started, waiting"
+        fi
+        while [ -e "$SQSW_RUN/stopping" ] || [ ! -s "$SQSW_RUN/public-key" ]; do
+            sleep "$SQSW_PARK_INTERVAL"
+        done
     fi
     # Init respawns at once; a watcher that keeps exiting restarts at most
     # once per gap instead of in a tight loop.

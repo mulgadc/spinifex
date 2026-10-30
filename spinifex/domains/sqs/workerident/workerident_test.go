@@ -18,9 +18,10 @@ import (
 )
 
 const (
-	region = "ap-southeast-2"
-	node   = "node-a"
-	volume = "vol-0123456789abcdef0"
+	region   = "ap-southeast-2"
+	node     = "node-a"
+	volume   = "vol-0123456789abcdef0"
+	testType = "t3.small"
 )
 
 func newStore(t *testing.T) (Store, jetstream.KeyValue) {
@@ -35,7 +36,7 @@ func newStore(t *testing.T) (Store, jetstream.KeyValue) {
 }
 
 func launch(claim string, supersedes uint64) LaunchRequest {
-	return LaunchRequest{ClaimID: claim, Supersedes: supersedes, NodeID: node, DataVolumeID: volume, DataVolumeEncrypted: true}
+	return LaunchRequest{ClaimID: claim, Supersedes: supersedes, NodeID: node, DataVolumeID: volume, DataVolumeEncrypted: true, InstanceType: testType}
 }
 
 func inst(n int) string { return fmt.Sprintf("i-%017x", n) }
@@ -859,5 +860,34 @@ func TestMarkNetworkAttempted_OnceForTheCurrentIntent(t *testing.T) {
 	}
 	if err := s.MarkNetworkAttempted(ctx, next); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The instance type is part of a generation's intent: a retry of the same
+// claim must name the same type, and a malformed type records nothing.
+func TestBeginLaunch_InstanceTypeIsFixedForAGeneration(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newStore(t)
+	bad := launch(claim(1), 0)
+	bad.InstanceType = ""
+	if _, err := s.BeginLaunch(ctx, region, bad); err == nil {
+		t.Fatal("an empty instance type was accepted")
+	}
+	if _, err := s.Current(ctx, region); err == nil {
+		t.Fatalf("a refused type recorded state: %v", err)
+	}
+	if _, err := s.BeginLaunch(ctx, region, launch(claim(1), 0)); err != nil {
+		t.Fatal(err)
+	}
+	other := launch(claim(1), 0)
+	other.InstanceType = "t3.large"
+	if _, err := s.BeginLaunch(ctx, region, other); !errors.Is(err, ErrTypeChanged) {
+		t.Fatalf("retry with another type = %v, want ErrTypeChanged", err)
+	}
+	if _, err := s.BeginLaunch(ctx, region, launch(claim(1), 0)); err != nil {
+		t.Fatalf("retry with the same type = %v", err)
+	}
+	if rec, err := s.Current(ctx, region); err != nil || rec.InstanceType != testType {
+		t.Fatalf("record = %+v, %v; want type %s", rec, err, testType)
 	}
 }

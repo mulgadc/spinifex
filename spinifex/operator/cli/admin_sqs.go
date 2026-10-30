@@ -76,11 +76,12 @@ func init() {
 
 // sqsWorkerEnsureOutput is the EnsureSQSWorker response body.
 type sqsWorkerEnsureOutput struct {
-	NodeID     string `json:"NodeId"`
-	Region     string `json:"Region"`
-	InstanceID string `json:"InstanceId"`
-	Generation uint64 `json:"Generation"`
-	State      string `json:"State"`
+	NodeID       string `json:"NodeId"`
+	Region       string `json:"Region"`
+	InstanceID   string `json:"InstanceId"`
+	Generation   uint64 `json:"Generation"`
+	InstanceType string `json:"InstanceType"`
+	State        string `json:"State"`
 }
 
 // sqsStoreEnsureOutput is the EnsureSQSStore response body.
@@ -160,8 +161,8 @@ func ensureSQSWorkerRemote(ctx context.Context, target adminTarget, node, instan
 	if err := callSpinifexAction(ctx, target, form, &out); err != nil {
 		return nil, err
 	}
-	if out.State != sqsBoundState || out.NodeID != node || out.InstanceID == "" {
-		return nil, fmt.Errorf("gateway returned an unexpected worker reply (state %q, node %q)", out.State, out.NodeID)
+	if out.State != sqsBoundState || out.NodeID != node || out.InstanceID == "" || out.InstanceType != instanceType {
+		return nil, fmt.Errorf("gateway returned an unexpected worker reply (state %q, node %q, type %q)", out.State, out.NodeID, out.InstanceType)
 	}
 	return &out, nil
 }
@@ -229,8 +230,8 @@ func callSpinifexAction(ctx context.Context, target adminTarget, form url.Values
 }
 
 func renderSQSWorkerEnsure(w io.Writer, out *sqsWorkerEnsureOutput) {
-	_, _ = fmt.Fprintf(w, "SQS worker VM bound\n  Node:        %s\n  Region:      %s\n  Instance:    %s\n  Generation:  %d\n",
-		out.NodeID, out.Region, out.InstanceID, out.Generation)
+	_, _ = fmt.Fprintf(w, "SQS worker VM bound\n  Node:           %s\n  Region:         %s\n  Instance:       %s\n  Instance type:  %s\n  Generation:     %d\n",
+		out.NodeID, out.Region, out.InstanceID, out.InstanceType, out.Generation)
 	_, _ = fmt.Fprintln(w, "A bound VM is not a ready worker; this does not check SQS or the store.")
 }
 

@@ -177,7 +177,7 @@ func (r *retained) Error() string { return "retained " + r.id }
 func (r *rig) bindWorker(t *testing.T, nodeID string, record bool) {
 	t.Helper()
 	ctx := context.Background()
-	intent, err := r.l.Workers.BeginLaunch(ctx, region, workerident.LaunchRequest{ClaimID: "claim-worker-1",
+	intent, err := r.l.Workers.BeginLaunch(ctx, region, workerident.LaunchRequest{InstanceType: "t3.small", ClaimID: "claim-worker-1",
 		NodeID: nodeID, DataVolumeID: "vol-0000000000000000a", DataVolumeEncrypted: true})
 	if err != nil {
 		t.Fatal(err)
@@ -485,7 +485,7 @@ func TestEnsure_WaitsForAReplacedWorkersSuccessorToClaim(t *testing.T) {
 	if err := r.l.FirstStore.Fence(ctx, region, 2); err != nil {
 		t.Fatal(err)
 	}
-	next, err := r.l.Workers.BeginLaunch(ctx, region, workerident.LaunchRequest{ClaimID: "claim-worker-2",
+	next, err := r.l.Workers.BeginLaunch(ctx, region, workerident.LaunchRequest{InstanceType: "t3.small", ClaimID: "claim-worker-2",
 		Supersedes: 1, NodeID: node, DataVolumeID: "vol-0000000000000000a", DataVolumeEncrypted: true})
 	if err != nil {
 		t.Fatal(err)

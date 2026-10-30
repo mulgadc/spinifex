@@ -395,7 +395,7 @@ func newCluster(t *testing.T) cluster {
 func (c cluster) launch(t *testing.T, claim string, supersedes uint64, inst string) workerident.Intent {
 	t.Helper()
 	ctx := context.Background()
-	in, err := c.ids.BeginLaunch(ctx, region, workerident.LaunchRequest{
+	in, err := c.ids.BeginLaunch(ctx, region, workerident.LaunchRequest{InstanceType: "t3.small",
 		ClaimID: claim, Supersedes: supersedes, NodeID: "node-a", DataVolumeID: volume, DataVolumeEncrypted: true,
 	})
 	if err != nil {

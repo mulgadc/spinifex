@@ -135,7 +135,7 @@ func (d *Daemon) handleSQSWorkerEnsure(msg *nats.Msg) string {
 	}
 	respondWithJSON(d.node, msg, workerlaunch.EnsureResponse{
 		NodeID: d.node, Region: d.config.Region, InstanceID: res.InstanceID,
-		Generation: res.Generation, State: workerlaunch.StateBound,
+		Generation: res.Generation, InstanceType: res.InstanceType, State: workerlaunch.StateBound,
 	})
 	return outcomeSuccess
 }
@@ -153,6 +153,8 @@ func sqsWorkerEnsureError(err error) (code, message string) {
 		return awserrors.ErrorServerInternal, unclaimed.Error()
 	}
 	switch {
+	case errors.Is(err, workerident.ErrTypeChanged):
+		return awserrors.ErrorIncorrectState, err.Error()
 	case errors.Is(err, workerident.ErrWrongNode):
 		return awserrors.ErrorInvalidParameterValue, "the Region's SQS worker is pinned to another node"
 	case errors.Is(err, workerlaunch.ErrUnencrypted):

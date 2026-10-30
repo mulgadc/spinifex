@@ -53,6 +53,7 @@ type Record struct {
 	ClaimID      string `json:"claimID"`
 	NodeID       string `json:"nodeID"`
 	DataVolumeID string `json:"dataVolumeID"`
+	InstanceType string `json:"instanceType"`
 	InstanceID   string `json:"instanceID,omitempty"`
 	// Dispatched is set once, before the launch is sent. A dispatched launch
 	// is never sent again: its outcome is reconciled, not retried.
@@ -81,6 +82,8 @@ type LaunchRequest struct {
 	NodeID              string
 	DataVolumeID        string
 	DataVolumeEncrypted bool
+	// InstanceType is fixed for a generation; only a replacement may change it.
+	InstanceType string
 }
 
 // Intent is a recorded launch the caller may realize.
@@ -109,6 +112,7 @@ var (
 	ErrConflict          = errors.New("worker identity conflicts with the recorded state")
 	ErrWrongNode         = errors.New("SQS worker is pinned to another node")
 	ErrVolumeMismatch    = errors.New("SQS worker is pinned to another data volume")
+	ErrTypeChanged       = errors.New("SQS worker launch holds a different instance type")
 	ErrUnencryptedVolume = errors.New("SQS worker data volume must be encrypted")
 	ErrUnreadable        = errors.New("worker identity record is unreadable")
 	ErrContended         = errors.New("worker identity changed concurrently; retry")
@@ -125,6 +129,7 @@ var (
 	claimPattern    = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
 	volumePattern   = regexp.MustCompile(`^vol-[0-9a-f]{17}$`)
 	nodePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
+	typePattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
 )
 
 // Store is the worker identity authority. Reads go to the stream leader and
@@ -191,6 +196,8 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 		return Intent{}, errors.New("invalid data volume ID")
 	case !req.DataVolumeEncrypted:
 		return Intent{}, ErrUnencryptedVolume
+	case !typePattern.MatchString(req.InstanceType):
+		return Intent{}, errors.New("invalid instance type")
 	}
 	for range maxAttempts {
 		rec, rev, err := s.readRecord(ctx, region)
@@ -199,7 +206,7 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 				return Intent{}, ErrConflict
 			}
 			next := Record{Region: region, State: StateLaunching, Generation: 1,
-				ClaimID: req.ClaimID, NodeID: req.NodeID, DataVolumeID: req.DataVolumeID}
+				ClaimID: req.ClaimID, NodeID: req.NodeID, DataVolumeID: req.DataVolumeID, InstanceType: req.InstanceType}
 			// A failed create may still have applied; the re-read decides.
 			if s.put(ctx, regionKey(region), next, 0) == nil {
 				return intentOf(next), nil
@@ -221,6 +228,9 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 			if rec.State != StateLaunching || rec.Generation != req.Supersedes+1 {
 				return Intent{}, ErrSuperseded
 			}
+			if rec.InstanceType != req.InstanceType {
+				return Intent{}, ErrTypeChanged
+			}
 		case req.Supersedes != rec.Generation:
 			return Intent{}, ErrSuperseded
 		case rec.State == StateLaunching || rec.State == StateBound:
@@ -231,6 +241,7 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 			}
 			next.State, next.Generation, next.ClaimID, next.InstanceID, next.Dispatched, next.NetworkAttempted =
 				StateLaunching, rec.Generation+1, req.ClaimID, "", false, false
+			next.InstanceType = req.InstanceType
 		}
 		// Unchanged for a retry: the rewrite proves the read was current.
 		if s.put(ctx, regionKey(region), next, rev) == nil {
@@ -532,7 +543,8 @@ func (s Store) readRecord(ctx context.Context, region string) (*Record, uint64, 
 
 func wellFormed(r *Record, region string) bool {
 	if r.Region != region || r.Generation == 0 || !claimPattern.MatchString(r.ClaimID) ||
-		!nodePattern.MatchString(r.NodeID) || !volumePattern.MatchString(r.DataVolumeID) {
+		!nodePattern.MatchString(r.NodeID) || !volumePattern.MatchString(r.DataVolumeID) ||
+		!typePattern.MatchString(r.InstanceType) {
 		return false
 	}
 	switch r.State {

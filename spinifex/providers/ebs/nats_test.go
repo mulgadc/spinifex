@@ -713,8 +713,13 @@ func TestTimeoutForSizesEachSubjectToItsWork(t *testing.T) {
 	ownerDescribe, err := GetVolumeOwnerSubject("vol-1")
 	require.NoError(t, err)
 
+	// A delete costs one round trip per object, so its duration is a function
+	// of the volume. On prod a 100 GiB volume's delete took 52 s against a 30 s
+	// budget, and the overrun was reported to the tenant as a 500 for a delete
+	// that was working.
 	slow := []string{
 		CreateVolumeSubject, ExpandVolumeSubject, CopySnapshotSubject,
+		DeleteVolumeSubject, DeleteSnapshotSubject,
 		snapshotCreate, ownerCopy, ownerExpand, ownerCreate,
 	}
 	for _, subject := range slow {
@@ -724,8 +729,7 @@ func TestTimeoutForSizesEachSubjectToItsWork(t *testing.T) {
 
 	fast := []string{
 		CapabilitiesSubject, GetVolumeSubject, ListVolumesSubject,
-		DeleteVolumeSubject, DeleteSnapshotSubject, ListSnapshotsSubject,
-		ownerDescribe,
+		ListSnapshotsSubject, ownerDescribe,
 	}
 	for _, subject := range fast {
 		assert.Equal(t, callerTimeout, p.timeoutFor(subject),

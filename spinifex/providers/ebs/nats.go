@@ -43,9 +43,11 @@ const dataMovementTimeout = 180 * time.Second
 // Everything absent answers from state already held and keeps the caller's
 // timeout, so a subject added without a deliberate decision stays fast.
 var dataMovementSubjects = map[string]struct{}{
-	CreateVolumeSubject: {},
-	ExpandVolumeSubject: {},
-	CopySnapshotSubject: {},
+	CreateVolumeSubject:   {},
+	ExpandVolumeSubject:   {},
+	CopySnapshotSubject:   {},
+	DeleteVolumeSubject:   {},
+	DeleteSnapshotSubject: {},
 }
 
 // timeoutFor sizes a request to the work its subject names. The per-volume

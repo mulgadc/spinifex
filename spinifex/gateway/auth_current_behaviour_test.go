@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
@@ -857,9 +858,9 @@ func TestCurrentBehaviour_AntiEnumeration_RejectionShapes(t *testing.T) {
 }
 
 // Pins CURRENT behaviour: the door caches only an account's ACTIVE status, per
-// gateway, for accountActiveTTL; keys and sessions are re-read on every request.
+// gateway, for accountadmission.ActiveTTL; keys and sessions are re-read on every request.
 func TestCurrentBehaviour_Cache_AccountStatusIsTheOnlyAuthCache(t *testing.T) {
-	require.Equal(t, 5*time.Second, accountActiveTTL)
+	require.Equal(t, 5*time.Second, accountadmission.ActiveTTL)
 
 	for _, status := range []string{iamdomain.AccountStatusSuspended, iamdomain.AccountStatusTerminating} {
 		t.Run(status, func(t *testing.T) {
@@ -872,7 +873,7 @@ func TestCurrentBehaviour_Cache_AccountStatusIsTheOnlyAuthCache(t *testing.T) {
 			// CURRENT: an out-of-band status write is not seen by a gateway
 			// holding a warm ACTIVE entry until that entry expires.
 			warm := e.callerIdentity(t, e.alice)
-			if time.Since(start) >= accountActiveTTL {
+			if time.Since(start) >= accountadmission.ActiveTTL {
 				t.Skip("cache window elapsed before the warm request; outcome not attributable")
 			}
 			assert.Equal(t, http.StatusOK, warm.Code)

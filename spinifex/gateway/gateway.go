@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"io"
 	"log/slog"
@@ -133,9 +134,9 @@ type GatewayConfig struct {
 	Credentials credential.Verifier
 	RateLimiter *authlimit.AuthRateLimiter // Per-IP auth failure rate limiter
 	Throttler   *ratelimit.Throttler       // Per-account+action API request throttler
-	// accountStatus caches which accounts are ACTIVE, so enforcing account
-	// status does not add a KV read to every authenticated request.
-	accountStatus *accountStatusCache
+	// Admission decides whether a request's account may proceed. Nil builds one
+	// over IAMService the first time the auth middleware is constructed.
+	Admission *accountadmission.Admitter
 	// Quota enforces per-account service quotas. Built unconditionally; a disabled
 	// config yields a no-op Service whose Exempt always returns true. Nil only in
 	// unit tests of unrelated routes, where no handler reaches the quota checks.

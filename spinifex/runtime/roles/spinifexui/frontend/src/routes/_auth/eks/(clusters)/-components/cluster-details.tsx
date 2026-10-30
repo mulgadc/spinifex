@@ -158,6 +158,7 @@ function Settings({
         </div>
       </PanelSection>
       <DeleteConfirmationDialog
+        confirmPhrase="delete"
         description={`This permanently deletes cluster "${clusterName}" and its control plane. This cannot be undone.`}
         isPending={deleteCluster.isPending}
         onConfirm={() => {

@@ -205,6 +205,7 @@ export function DBSnapshotsListPage({
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>
           <BulkDelete
+            confirmPhrase="delete"
             deleteOne={deleteSnapshot.mutateAsync}
             description="This deletes the DB snapshots and the data behind them. Each is refused while an instance restored from it still exists. Deleting a final snapshot also releases the data volume its instance left behind."
             ids={selection.ids}

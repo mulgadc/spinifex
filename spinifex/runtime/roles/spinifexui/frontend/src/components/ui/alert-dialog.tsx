@@ -65,6 +65,7 @@ export function AlertDialogContent({
   className,
   size = "default",
   width = "default",
+  onKeyDown,
   ...props
 }: AlertDialogPrimitive.Popup.Props &
   VariantProps<typeof alertDialogContentVariants> & {
@@ -77,6 +78,32 @@ export function AlertDialogContent({
         className={cn(alertDialogContentVariants({ className, width }))}
         data-size={size}
         data-slot="alert-dialog-content"
+        // ⌘↵ or Ctrl+Enter confirms, as does Enter in a typed confirmation,
+        // unless the confirm is disabled. Escape cancels through Base UI.
+        onKeyDown={(event) => {
+          onKeyDown?.(event)
+
+          if (
+            event.defaultPrevented ||
+            event.key !== "Enter" ||
+            !(
+              event.metaKey ||
+              event.ctrlKey ||
+              event.target instanceof HTMLInputElement
+            )
+          ) {
+            return
+          }
+
+          const action = event.currentTarget.querySelector<HTMLButtonElement>(
+            '[data-slot="alert-dialog-action"]',
+          )
+
+          if (action && !action.disabled) {
+            event.preventDefault()
+            action.click()
+          }
+        }}
         {...props}
       />
     </AlertDialogPortal>

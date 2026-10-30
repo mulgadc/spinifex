@@ -137,6 +137,7 @@ function DeleteZone({
         Delete zone
       </Button>
       <DeleteConfirmationDialog
+        confirmPhrase="delete"
         description={deleteDescription(zoneName, customerRecords.length)}
         isPending={remove.isPending}
         onConfirm={() => {

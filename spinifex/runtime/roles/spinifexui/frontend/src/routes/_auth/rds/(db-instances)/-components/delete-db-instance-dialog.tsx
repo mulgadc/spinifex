@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router"
 import { useState } from "react"
 
+import { ConfirmPhrase, phraseConfirmed } from "@/components/confirm-phrase"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -52,6 +53,7 @@ export function DeleteDBInstanceDialog({
   )
 
   const [typedIdentifier, setTypedIdentifier] = useState("")
+  const [typedPhrase, setTypedPhrase] = useState("")
 
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) {
@@ -60,6 +62,7 @@ export function DeleteDBInstanceDialog({
         defaultFinalSnapshotIdentifier(dbInstanceIdentifier),
       )
       setTypedIdentifier("")
+      setTypedPhrase("")
       deleteInstance.reset()
     }
 
@@ -71,8 +74,11 @@ export function DeleteDBInstanceDialog({
     : dbSnapshotIdentifierField.safeParse(snapshotIdentifier).error?.issues[0]
         ?.message
 
-  const confirmationMissing =
-    skipFinalSnapshot && typedIdentifier !== dbInstanceIdentifier
+  // Skipping the snapshot asks for the instance's name; keeping it asks for
+  // the same "delete" as every other irreversible delete.
+  const confirmationMissing = skipFinalSnapshot
+    ? typedIdentifier !== dbInstanceIdentifier
+    : !phraseConfirmed("delete", typedPhrase)
 
   const canDelete = !confirmationMissing && !snapshotNameError
 
@@ -184,6 +190,13 @@ export function DeleteDBInstanceDialog({
                   </p>
                 )}
               </Field>
+            )}
+            {!skipFinalSnapshot && (
+              <ConfirmPhrase
+                onChange={setTypedPhrase}
+                phrase="delete"
+                value={typedPhrase}
+              />
             )}
           </div>
         )}

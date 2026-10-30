@@ -139,6 +139,10 @@ describe("hosted zone details", () => {
         /Its 1 record set besides NS and SOA will be deleted first/,
       ),
     ).resolves.toBeInTheDocument()
+    await user.type(
+      await screen.findByLabelText(/^To confirm, type/u),
+      "delete",
+    )
     await user.click(screen.getByRole("button", { name: "Delete" }))
 
     await waitFor(() => {
@@ -170,6 +174,10 @@ describe("hosted zone details", () => {
     const user = userEvent.setup()
 
     await user.click(await screen.findByRole("button", { name: "Delete zone" }))
+    await user.type(
+      await screen.findByLabelText(/^To confirm, type/u),
+      "delete",
+    )
     await user.click(await screen.findByRole("button", { name: "Delete" }))
 
     await expect(

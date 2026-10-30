@@ -323,6 +323,7 @@ export function InstanceActions({
         }}
         onOpenChange={closeDialog}
         open={dialog === "terminate"}
+        confirmPhrase="terminate"
         pendingLabel="Terminating…"
         title="Terminate instance?"
       />

@@ -41,6 +41,7 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  onKeyDown,
   ...props
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean
@@ -50,6 +51,26 @@ function DialogContent({
       <DialogOverlay />
       <DialogPrimitive.Popup
         data-slot="dialog-content"
+        // ⌘↵ or Ctrl+Enter submits the dialog's form from any field,
+        // including a textarea where Enter alone adds a line.
+        onKeyDown={(event) => {
+          onKeyDown?.(event)
+
+          if (
+            event.defaultPrevented ||
+            event.key !== "Enter" ||
+            !(event.metaKey || event.ctrlKey)
+          ) {
+            return
+          }
+
+          const form = event.currentTarget.querySelector("form")
+
+          if (form) {
+            event.preventDefault()
+            form.requestSubmit()
+          }
+        }}
         className={cn(
           "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-xs/relaxed text-popover-foreground ring-1 ring-foreground/10 transition-[opacity,scale] duration-100 outline-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0 motion-reduce:transition-none sm:max-w-sm",
           className,

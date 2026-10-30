@@ -221,21 +221,23 @@
   --color-neutral-subtle: color-mix(in oklch, var(--neutral) 12%, transparent);
   --color-neutral-border: color-mix(in oklch, var(--neutral) 40%, transparent);
 
-  /* Dense console scale: 13px body and table text, 24px page titles. Code
-     sizes are set relative to the surrounding text. */
-  --text-2xs: 0.6875rem;
+  /* Console scale: 14px body and table text, 13px secondary text, 26px page
+     titles. Code sizes are set relative to the surrounding text. */
+  --text-2xs: 0.75rem;
   --text-2xs--line-height: 1rem;
-  --text-sm: 0.8125rem;
-  --text-sm--line-height: 1.25rem;
-  --text-base: 0.875rem;
-  --text-base--line-height: 1.375rem;
-  --text-lg: 1rem;
-  --text-lg--line-height: 1.5rem;
-  --text-xl: 1.25rem;
-  --text-xl--line-height: 1.75rem;
-  --text-2xl: 1.5rem;
-  --text-2xl--line-height: 2rem;
-  --text-code-block: 0.6875rem;
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.125rem;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.375rem;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.0625rem;
+  --text-lg--line-height: 1.625rem;
+  --text-xl: 1.375rem;
+  --text-xl--line-height: 1.875rem;
+  --text-2xl: 1.625rem;
+  --text-2xl--line-height: 2.125rem;
+  --text-code-block: 0.75rem;
   --text-code-inline: 0.85em;
 
   --font-heading: var(--font-heading);

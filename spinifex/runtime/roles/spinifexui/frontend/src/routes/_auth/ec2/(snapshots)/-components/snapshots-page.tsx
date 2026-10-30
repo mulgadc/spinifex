@@ -176,6 +176,7 @@ export function SnapshotsPage({
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>
           <BulkDelete
+            confirmPhrase="delete"
             deleteOne={deleteSnapshot.mutateAsync}
             description="An AMI registered from one must be deregistered first. This cannot be undone."
             ids={selection.ids}

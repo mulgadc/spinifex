@@ -158,6 +158,7 @@ export function ListHostedZonesPage({
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>
           <BulkDelete
+            confirmPhrase="delete"
             deleteOne={async (id) =>
               await deleteHostedZone(
                 queryClient,

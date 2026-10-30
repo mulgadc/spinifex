@@ -23,7 +23,7 @@ export function SelectionBar({
   return (
     <div
       aria-label="Selection actions"
-      className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2"
+      className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2"
       role="toolbar"
     >
       <span className="mr-auto text-sm font-medium">{count} selected</span>

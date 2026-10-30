@@ -57,6 +57,10 @@ describe("SnapshotsPage", () => {
     expect(
       within(dialog).getByRole("list", { name: "Selected snapshots" }),
     ).toHaveTextContent("snap-2")
+    await user.type(
+      await screen.findByLabelText(/^To confirm, type/u),
+      "delete",
+    )
     await user.click(within(dialog).getByRole("button", { name: "Delete 2" }))
 
     expect(

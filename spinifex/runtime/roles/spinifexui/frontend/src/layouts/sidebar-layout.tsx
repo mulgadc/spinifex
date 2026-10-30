@@ -43,10 +43,19 @@ function readCollapsedGroups(): string[] {
   }
 }
 
-// A group the user folded stays folded across reloads, except the one holding
-// the current page, which is always open so the active item is visible.
-function useCollapsedGroups() {
+// A group the user folded stays folded across reloads. Navigating into a group
+// unfolds it so the active item is visible, and it can then be folded again.
+function useCollapsedGroups(activeLabel: string | undefined) {
   const [collapsed, setCollapsed] = useState(readCollapsedGroups)
+  const [shownActive, setShownActive] = useState<string>()
+
+  if (activeLabel !== shownActive) {
+    setShownActive(activeLabel)
+
+    if (activeLabel && collapsed.includes(activeLabel)) {
+      setCollapsed(collapsed.filter((other) => other !== activeLabel))
+    }
+  }
 
   function setGroupOpen(label: string, open: boolean) {
     const next = open
@@ -119,7 +128,7 @@ export function SidebarLayout() {
   const { isAdmin } = useAdmin()
   const groups = visibleNav({ isAdmin, ochreEnabled: isOchreEnabled() })
   const active = activeNavItem(groups, pathname)
-  const { collapsed, setGroupOpen } = useCollapsedGroups()
+  const { collapsed, setGroupOpen } = useCollapsedGroups(active?.group.label)
   const { state, setOpenMobile } = useSidebar()
   // Icon-only mode has no group labels to unfold, so every item shows.
   const iconOnly = state === "collapsed"
@@ -154,11 +163,7 @@ export function SidebarLayout() {
             onOpenChange={(open) => {
               setGroupOpen(group.label, open)
             }}
-            open={
-              iconOnly ||
-              group === active?.group ||
-              !collapsed.includes(group.label)
-            }
+            open={iconOnly || !collapsed.includes(group.label)}
           />
         ))}
         {isAdmin && (

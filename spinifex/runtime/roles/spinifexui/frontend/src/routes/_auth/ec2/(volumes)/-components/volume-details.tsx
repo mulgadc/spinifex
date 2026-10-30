@@ -132,6 +132,7 @@ function Settings({
         </div>
       </PanelSection>
       <ResourceDeleteDialog
+        confirmPhrase="delete"
         description={`Delete ${id}? Its data is lost unless it has a snapshot. This cannot be undone.`}
         identifier={id}
         mutation={remove}

@@ -22,6 +22,7 @@ interface ResourceDeleteDialogProps<TIdentifier> {
   onDeleted?: () => void
   confirmLabel?: string
   pendingLabel?: string
+  confirmPhrase?: string
 }
 
 // The dialog stays open on failure so the refusal — which usually names what
@@ -37,6 +38,7 @@ export function ResourceDeleteDialog<TIdentifier>({
   onDeleted,
   confirmLabel,
   pendingLabel,
+  confirmPhrase,
 }: ResourceDeleteDialogProps<TIdentifier>) {
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) {
@@ -69,6 +71,7 @@ export function ResourceDeleteDialog<TIdentifier>({
         </>
       }
       confirmLabel={confirmLabel}
+      confirmPhrase={confirmPhrase}
       isPending={mutation.isPending}
       onConfirm={() => {
         void handleDelete()

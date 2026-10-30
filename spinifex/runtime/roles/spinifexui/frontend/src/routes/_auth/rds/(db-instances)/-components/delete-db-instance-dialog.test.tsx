@@ -72,6 +72,9 @@ describe("DeleteDBInstanceDialog", () => {
 
   it("sends a FinalDBSnapshotIdentifier on the default path", async () => {
     render()
+    fireEvent.change(screen.getByLabelText(/^To confirm, type/u), {
+      target: { value: "delete" },
+    })
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
     await waitFor(() => {
       expect(mockSend).toHaveBeenCalled()

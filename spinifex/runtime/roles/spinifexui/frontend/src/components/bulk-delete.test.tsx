@@ -79,4 +79,34 @@ describe("BulkDelete", () => {
 
     expect(deleteOne.mock.calls.map(([id]) => id)).toStrictEqual(["vol-2"])
   })
+
+  it("asks for the typed phrase where one is set", async () => {
+    const deleteOne = vi.fn(async (_id: string) => ({}))
+    const user = userEvent.setup()
+
+    render(
+      <BulkDelete
+        confirmPhrase="delete"
+        deleteOne={deleteOne}
+        ids={["vol-1", "vol-2"]}
+        noun={["volume", "volumes"]}
+        onDeleted={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+
+    const dialog = screen.getByRole("alertdialog")
+    const confirm = within(dialog).getByRole("button", { name: "Delete 2" })
+
+    expect(confirm).toBeDisabled()
+
+    await user.type(
+      within(dialog).getByLabelText("To confirm, type “delete” in this field."),
+      "DELETE",
+    )
+    await user.click(confirm)
+
+    expect(deleteOne).toHaveBeenCalledTimes(2)
+  })
 })

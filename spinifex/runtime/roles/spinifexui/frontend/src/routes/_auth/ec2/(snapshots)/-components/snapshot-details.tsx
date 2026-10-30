@@ -149,6 +149,7 @@ function Settings({
         snapshotId={id}
       />
       <ResourceDeleteDialog
+        confirmPhrase="delete"
         description={`Delete ${id}? An AMI registered from it must be deregistered first. This cannot be undone.`}
         identifier={id}
         mutation={remove}

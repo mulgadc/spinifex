@@ -185,6 +185,10 @@ describe("list-hosted-zones page", () => {
     await user.click(screen.getByRole("checkbox", { name: "Select ZLOST" }))
     await user.click(screen.getByRole("button", { name: "Delete" }))
     expect(screen.getByText("active.example. (ZACTIVE)")).toBeInTheDocument()
+    await user.type(
+      await screen.findByLabelText(/^To confirm, type/u),
+      "delete",
+    )
     await user.click(screen.getByRole("button", { name: "Delete 2" }))
 
     await waitFor(() => {

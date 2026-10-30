@@ -114,6 +114,10 @@ describe("DBInstancesListPage", () => {
     expect(
       within(dialog).getByText("Delete 2 DB instances?"),
     ).toBeInTheDocument()
+    await user.type(
+      await screen.findByLabelText(/^To confirm, type/u),
+      "delete",
+    )
     await user.click(within(dialog).getByRole("button", { name: "Delete 2" }))
 
     const deletes = () =>

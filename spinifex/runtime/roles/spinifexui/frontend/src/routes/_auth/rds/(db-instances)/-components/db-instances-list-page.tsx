@@ -159,6 +159,7 @@ export function DBInstancesListPage({
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>
           <BulkDelete
+            confirmPhrase="delete"
             deleteOne={deleteWithFinalSnapshot}
             description="This tears them down, each after taking a final snapshot named after it, which keeps its data until that snapshot is deleted. To delete without a final snapshot, delete an instance on its own."
             ids={selection.ids}

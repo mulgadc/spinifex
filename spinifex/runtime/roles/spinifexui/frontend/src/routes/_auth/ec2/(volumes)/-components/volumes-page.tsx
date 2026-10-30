@@ -169,6 +169,7 @@ export function VolumesPage({
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>
           <BulkDelete
+            confirmPhrase="delete"
             deleteOne={deleteVolume.mutateAsync}
             description="Their data is lost unless they have a snapshot. This cannot be undone."
             ids={selection.ids}

@@ -92,6 +92,7 @@ function Settings({
         </div>
       </PanelSection>
       <DeleteConfirmationDialog
+        confirmPhrase="delete"
         description={`This permanently deletes cluster "${name}" and force-stops every task it holds. This cannot be undone.`}
         isPending={remove.isPending}
         onConfirm={() => {

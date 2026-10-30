@@ -442,10 +442,11 @@ test.describe("instances list", () => {
     expect(terminated).toStrictEqual([])
 
     await page.getByRole("button", { name: "Terminate", exact: true }).click()
-    await page
-      .getByRole("alertdialog")
-      .getByRole("button", { name: "Terminate 5" })
-      .click()
+    const terminate = dialog.getByRole("button", { name: "Terminate 5" })
+    await expect(terminate).toBeDisabled()
+
+    await dialog.getByLabel(/^To confirm, type/u).fill("terminate")
+    await terminate.click()
     await expect(page.getByRole("alertdialog")).toBeHidden()
     expect(terminated).toHaveLength(1)
     expect(terminated[0]).toHaveLength(5)

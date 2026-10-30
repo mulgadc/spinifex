@@ -41,6 +41,24 @@ test.describe("breadcrumbs", () => {
   })
 })
 
+test.describe("sign in", () => {
+  test("keeps the shell in view but out of reach", async ({ page }) => {
+    await page.goto("/")
+    const sidebar = page.locator("[data-slot=sidebar]")
+    await sidebar.getByRole("button", { name: "Sign out" }).click()
+
+    await expect(page).toHaveURL(/\/login/u)
+    await expect(page.getByLabel("Access Key ID")).toBeVisible()
+    await expect(sidebar).toBeVisible()
+    await expect(page.locator("[inert] [data-slot=sidebar]")).toHaveCount(1)
+
+    // Backwards from the first field would land in the header or sidebar.
+    await page.getByLabel("Access Key ID").focus()
+    await page.keyboard.press("Shift+Tab")
+    await expect(page.locator("[inert] :focus")).toHaveCount(0)
+  })
+})
+
 test.describe("sidebar", () => {
   test("remembers a folded group across reloads", async ({ page }) => {
     await page.goto("/")
@@ -65,14 +83,25 @@ test.describe("sidebar", () => {
     ).toBeHidden()
   })
 
-  test("keeps the active group open even when folded", async ({ page }) => {
+  test("folds the active group, and unfolds a group on entering it", async ({
+    page,
+  }) => {
     await page.goto("/ec2/describe-vpcs")
     const sidebar = page.locator("[data-slot=sidebar]")
+    const vpcs = sidebar.getByRole("link", { name: "VPCs", exact: true })
+    await expect(vpcs).toHaveAttribute("data-active")
 
-    await sidebar.getByRole("button", { name: "EC2", exact: true }).click()
-    await expect(
-      sidebar.getByRole("link", { name: "VPCs", exact: true }),
-    ).toHaveAttribute("data-active")
+    await sidebar
+      .getByRole("button", { name: "Networking", exact: true })
+      .click()
+    await expect(vpcs).toBeHidden()
+
+    await sidebar.getByRole("link", { name: "Dashboard", exact: true }).click()
+    await expect(vpcs).toBeHidden()
+
+    await page.goto("/ec2/describe-vpcs")
+    await expect(vpcs).toBeVisible()
+    await expect(vpcs).toHaveAttribute("data-active")
   })
 
   test("opens as a sheet on a phone and closes on navigation", async ({

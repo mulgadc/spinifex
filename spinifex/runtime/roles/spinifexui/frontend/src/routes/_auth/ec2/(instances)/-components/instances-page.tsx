@@ -283,6 +283,7 @@ function BulkActions({ instances, onDone }: BulkActionsProps) {
         }}
         onOpenChange={setConfirmTerminate}
         open={confirmTerminate}
+        confirmPhrase="terminate"
         pendingLabel="Terminating…"
         title={`Terminate ${terminable.length} ${terminable.length === 1 ? "instance" : "instances"}?`}
       />
@@ -438,55 +439,60 @@ export function InstancesPage({
           )}
         </div>
 
-        {selectedVisible.length > 0 && (
-          <BulkActions
-            instances={selectedVisible}
-            onDone={() => {
-              setSelected(new Set())
-            }}
-          />
-        )}
+        <div>
+          {selectedVisible.length > 0 && (
+            <BulkActions
+              instances={selectedVisible}
+              onDone={() => {
+                setSelected(new Set())
+              }}
+            />
+          )}
 
-        <DataTable
-          caption="Instances"
-          columns={COLUMNS}
-          empty={
-            filtered ? (
-              "No instances match these filters."
-            ) : (
-              <span className="flex flex-col items-center gap-3">
-                No instances yet.
-                <Link
-                  className={buttonVariants({ size: "sm", variant: "outline" })}
-                  to="/ec2/run-instances"
-                >
-                  Launch your first instance
-                </Link>
-              </span>
-            )
-          }
-          activeId={open?.InstanceId}
-          getRowId={(instance) => instance.InstanceId ?? ""}
-          onRowClick={(id) => {
-            onSearchChange({ ...CLOSED_PANEL, selected: id })
-          }}
-          onSelectedChange={(next) => {
-            setSelected(next)
-
-            // The bulk bar and the panel compete for the same attention.
-            if (next.size > 0 && search.selected !== "") {
-              closePanel()
+          <DataTable
+            caption="Instances"
+            columns={COLUMNS}
+            empty={
+              filtered ? (
+                "No instances match these filters."
+              ) : (
+                <span className="flex flex-col items-center gap-3">
+                  No instances yet.
+                  <Link
+                    className={buttonVariants({
+                      size: "sm",
+                      variant: "outline",
+                    })}
+                    to="/ec2/run-instances"
+                  >
+                    Launch your first instance
+                  </Link>
+                </span>
+              )
             }
-          }}
-          onSortChange={(next) => {
-            onSearchChange({
-              sort: `${next.desc ? "-" : ""}${next.column}`,
-            })
-          }}
-          rows={visible}
-          selected={selected}
-          sort={sort}
-        />
+            activeId={open?.InstanceId}
+            getRowId={(instance) => instance.InstanceId ?? ""}
+            onRowClick={(id) => {
+              onSearchChange({ ...CLOSED_PANEL, selected: id })
+            }}
+            onSelectedChange={(next) => {
+              setSelected(next)
+
+              // The bulk bar and the panel compete for the same attention.
+              if (next.size > 0 && search.selected !== "") {
+                closePanel()
+              }
+            }}
+            onSortChange={(next) => {
+              onSearchChange({
+                sort: `${next.desc ? "-" : ""}${next.column}`,
+              })
+            }}
+            rows={visible}
+            selected={selected}
+            sort={sort}
+          />
+        </div>
 
         <p className="text-xs text-muted-foreground tabular-nums">
           {filtered

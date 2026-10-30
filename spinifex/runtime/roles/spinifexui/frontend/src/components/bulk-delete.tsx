@@ -1,6 +1,7 @@
 import { CircleCheck, CircleX, LoaderCircle, Trash2 } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
+import { ConfirmPhrase, phraseConfirmed } from "@/components/confirm-phrase"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,6 +30,8 @@ interface BulkDeleteProps {
   verb?: string
   pastVerb?: string
   pendingVerb?: string
+  // Typed before the confirm enables, for deletes that cannot be walked back.
+  confirmPhrase?: string
   // Deletes one resource. Most AWS delete calls take a single ID, so the
   // selection is deleted one call at a time and each failure is kept.
   deleteOne: (id: string) => Promise<object>
@@ -52,6 +55,7 @@ export function BulkDelete({
   verb = "Delete",
   pastVerb = "deleted",
   pendingVerb = "Deleting",
+  confirmPhrase,
   deleteOne,
   onDeleted,
 }: BulkDeleteProps) {
@@ -65,6 +69,7 @@ export function BulkDelete({
   )
 
   const [running, setRunning] = useState(false)
+  const [typed, setTyped] = useState("")
 
   const [outcomes, setOutcomes] = useState<ReadonlyMap<string, Outcome>>(
     () => new Map(),
@@ -135,6 +140,7 @@ export function BulkDelete({
         disabled={ids.length === 0}
         onClick={() => {
           setBatch([...ids])
+          setTyped("")
           setLabels(new Map(ids.map((id) => [id, label(id)])))
           setOpen(true)
         }}
@@ -186,12 +192,19 @@ export function BulkDelete({
               )
             })}
           </ul>
+          {confirmPhrase && failed.length === 0 && (
+            <ConfirmPhrase
+              onChange={setTyped}
+              phrase={confirmPhrase}
+              value={typed}
+            />
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={running}>
               {failed.length > 0 ? "Close" : "Cancel"}
             </AlertDialogCancel>
             <AlertDialogAction
-              disabled={running}
+              disabled={running || !phraseConfirmed(confirmPhrase, typed)}
               onClick={() => {
                 void run()
               }}

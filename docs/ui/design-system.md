@@ -68,13 +68,16 @@ Colour is never the only key: label every series.
 
 | Step | Size | Use |
 |---|---|---|
-| `2xl` | 24px | page title (`PageHeading`) |
-| `xl` | 20px | section heading |
-| `lg` | 16px | |
-| `base` | 14px | |
-| `sm` | 13px | body and table default |
-| `xs` | 12px | badges, secondary text |
-| `2xs` | 11px | mono eyebrow labels |
+| `2xl` | 26px | page title (`PageHeading`) |
+| `xl` | 22px | section heading |
+| `lg` | 17px | |
+| `base` | 15px | |
+| `sm` | 14px | body and table default |
+| `xs` | 13px | badges, secondary text |
+| `2xs` | 12px | mono eyebrow labels |
+
+The scale sits a step above Tailwind's defaults, as consoles such as Vultr's do, because 13px body text read as cramped on a wide screen.
+Code blocks are set at 12px (`--text-code-block`) so a long command still fits.
 
 ### Primary and contrast
 
@@ -115,6 +118,10 @@ The Go console serves `script-src 'self'; style-src 'self'`.
 Added in Phase 1: breadcrumb, checkbox, command (`cmdk`), dialog, hover-card, popover, resizable (`react-resizable-panels`), scroll-area, slider, switch, table, toggle and toggle-group.
 `button-group` joins buttons edge to edge, as the instance power buttons are.
 
+Every dialog closes on Escape.
+⌘↵ or Ctrl+Enter submits it: an `AlertDialog` clicks its action unless that is disabled, and a `Dialog` submits its form, including from a textarea where Enter alone adds a line.
+Enter in a typed confirmation confirms once the phrase matches.
+
 A disabled control stays visible and shows `cursor: not-allowed`, so it says why it does nothing rather than vanishing.
 An on/off setting is a `Switch`, orange when on; a `Checkbox` only picks items from a list, such as table rows, subnets or security groups.
 
@@ -146,9 +153,10 @@ The table test is a ratchet: `HAND_WRITTEN_TABLES` lists the routes that still h
 `src/lib/nav.ts` is the one description of the console's navigation.
 The sidebar, the command palette and the breadcrumbs all read it, and `nav.test.ts` checks every destination against the generated route tree, so a renamed route fails a test rather than leaving a dead link.
 
-- **Sidebar.** Each service group folds, and a folded group stays folded across reloads (`localStorage["spinifex-ui-nav-collapsed"]`). The group holding the current page is always open, so the active item is always visible. On a phone the sidebar is a sheet, and any navigation closes it.
+- **Sidebar.** Each service group folds, and a folded group stays folded across reloads (`localStorage["spinifex-ui-nav-collapsed"]`). Navigating into a folded group unfolds it so the active item shows, and it can then be folded again, the current group included. On a phone the sidebar is a sheet, and any navigation closes it.
 - **Command palette.** ⌘K or Ctrl K, or the Search button in the header. It lists every page the user can reach, every create flow (`create` on a nav item), and a theme toggle. It is navigation only, with no resource search yet.
 - **Breadcrumbs.** Service, then list page, then the resource or the create flow. A resource ID is set in mono. On a phone only the last crumb shows.
+- **Sign in.** The sign-in card sits over the shell on a blurred overlay rather than on a page of its own, so the console stays in view. The shell behind it is `inert`, which keeps pointer, keyboard and screen reader out of it until the user signs in.
 
 ## Layout
 
@@ -184,6 +192,16 @@ Every list with a delete action has row checkboxes. Selecting a row shows `Selec
 - **No pre-filtering.** The bar sends what was selected and lets AWS refuse, rather than guessing which deletes would fail. Instances are the exception, since one call takes many IDs and a mixed selection would fail as a whole.
 - **The bulk delete and the panel's delete are the same function.** Where a single delete is several calls, such as removing dependants first, the sequence lives in one place and both use it.
 - The verb follows the AWS console: Release for an Elastic IP, Deregister for an image.
+
+### Typed confirmation
+
+A delete that cannot be walked back asks the user to type a word first, as the AWS console does before deleting a volume.
+`ConfirmPhrase` (`src/components/confirm-phrase.tsx`) is the field, and the confirm stays disabled until it matches, ignoring case and surrounding space.
+`DeleteConfirmationDialog`, `ResourceDeleteDialog` and `BulkDelete` take it through `confirmPhrase`, so the panel's delete and the bulk delete ask the same way.
+
+- **"delete"** for volumes, snapshots, RDS instances and snapshots, EKS and ECS clusters and Route 53 hosted zones. An RDS instance deleted without a final snapshot asks for its identifier instead, which is stronger.
+- **"terminate"** for instances.
+- Not for anything cheap to recreate, such as a key pair, a security group rule or a tag.
 
 Key pairs is the smallest example (`ec2/(key)/-components/key-pairs-page.tsx`).
 

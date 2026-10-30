@@ -129,6 +129,7 @@ export function ClustersListPage({
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>
           <BulkDelete
+            confirmPhrase="delete"
             deleteOne={deleteCluster.mutateAsync}
             description="This permanently deletes these clusters and their control planes. This cannot be undone."
             ids={selection.ids}

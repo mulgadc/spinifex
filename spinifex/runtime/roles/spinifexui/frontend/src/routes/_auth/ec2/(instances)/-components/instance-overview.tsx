@@ -281,10 +281,10 @@ export function InstanceOverview({ instance }: { instance: Instance }) {
               </Link>
             )}
           </PanelField>
-          <PanelField label="Private DNS" mono>
+          <PanelField copy={instance.PrivateDnsName} label="Private DNS" mono>
             {instance.PrivateDnsName}
           </PanelField>
-          <PanelField label="Public DNS" mono>
+          <PanelField copy={instance.PublicDnsName} label="Public DNS" mono>
             {instance.PublicDnsName}
           </PanelField>
           <PanelField label="VPC" mono>

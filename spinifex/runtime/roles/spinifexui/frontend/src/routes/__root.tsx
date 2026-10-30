@@ -3,6 +3,7 @@ import {
   createRootRouteWithContext,
   HeadContent,
   Outlet,
+  useMatch,
 } from "@tanstack/react-router"
 
 import { Header } from "@/components/header"
@@ -22,18 +23,36 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       },
     ],
   }),
-  component: () => (
-    <>
-      <HeadContent />
-      <SidebarLayout />
-      <main className="flex min-w-0 flex-1 flex-col">
-        <Header />
-        <div className="flex flex-1 flex-col p-4 md:p-6 xl:p-8">
-          <Outlet />
-        </div>
-      </main>
-    </>
-  ),
+  component: RootLayout,
   errorComponent: ErrorBoundary,
   notFoundComponent: NotFound,
 })
+
+function RootLayout() {
+  const signingIn =
+    useMatch({ from: "/login", shouldThrow: false }) !== undefined
+
+  return (
+    <>
+      <HeadContent />
+      {/* Signed out, the shell stays in view behind the sign-in card but
+          cannot be reached by pointer, keyboard or screen reader. */}
+      <div className="contents" inert={signingIn}>
+        <SidebarLayout />
+        <main className="flex min-w-0 flex-1 flex-col">
+          <Header />
+          {!signingIn && (
+            <div className="flex flex-1 flex-col p-4 md:p-6 xl:p-8">
+              <Outlet />
+            </div>
+          )}
+        </main>
+      </div>
+      {signingIn && (
+        <div className="fixed inset-0 z-50 flex overflow-y-auto bg-background/70 p-4 backdrop-blur-sm">
+          <Outlet />
+        </div>
+      )}
+    </>
+  )
+}

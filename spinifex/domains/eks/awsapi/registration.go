@@ -75,9 +75,29 @@ func readBoundedBody(r *http.Request) ([]byte, error) {
 	return body, nil
 }
 
-// dispatch resolves the route, authorizes the request, then runs the action.
-// Errors are awserrors codes the gateway renders.
+// dispatch runs the action and renames the generic parameter error to the code
+// EKS declares. The internal routes keep theirs: the CP-VM agents match on it.
 func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
+	err := d.serve(w, inv)
+	if err == nil {
+		return nil
+	}
+	if action, _, _, ok := router.Lookup(inv.Request.Method, inv.Request.URL.EscapedPath()); ok && IsInternalAction(action) {
+		return err
+	}
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	if !ok || code != awserrors.ErrorInvalidParameterValue {
+		return err
+	}
+	if msg == "" {
+		return errors.New(awserrors.ErrorEKSInvalidParameter)
+	}
+	return awserrors.Errorf(awserrors.ErrorEKSInvalidParameter, "%s", msg)
+}
+
+// serve resolves the route, authorizes the request, then runs the action.
+// Errors are awserrors codes the gateway renders.
+func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 	r := inv.Request
 	action, params, handler, ok := router.Lookup(r.Method, r.URL.EscapedPath())
 	if !ok {
@@ -172,9 +192,9 @@ func (d Deps) checkPassRole(inv dispatch.Invocation, action, accountID string, b
 			if action == "CreateCluster" || action == "CreateNodegroup" {
 				return awserrors.Errorf(awserrors.ErrorAccessDeniedException, "Cross-account pass role is not allowed.")
 			}
-			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s is not a role ARN in account %s", roleARN, accountID)
+			return awserrors.Errorf(awserrors.ErrorEKSInvalidParameter, "%s is not a role ARN in account %s", roleARN, accountID)
 		case errors.Is(err, passrole.ErrNotFound):
-			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "role %s does not exist", roleARN)
+			return awserrors.Errorf(awserrors.ErrorEKSInvalidParameter, "role %s does not exist", roleARN)
 		default:
 			return err
 		}

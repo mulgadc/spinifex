@@ -76,7 +76,7 @@ func assertInvalidParameter(t *testing.T, err error) {
 	t.Helper()
 	code, ok := awserrors.ResolveErrorCode(err)
 	require.True(t, ok, "unresolvable error code: %v", err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, code)
 }
 
 // eks:* alone must not let a caller launch nodes under a role it cannot pass.

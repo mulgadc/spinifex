@@ -121,7 +121,7 @@ func TestECSEKSPipeline_Outcomes(t *testing.T) {
 		{"eks create not an ARN", containerPipelineApp(t, eksAll, pass), signContainerRequest(t, "eks", "POST", "/clusters", "", eksClusterBody("x")), 403, "AccessDeniedException"},
 		{"eks create foreign role", containerPipelineApp(t, eksAll, pass), signContainerRequest(t, "eks", "POST", "/clusters", "", eksClusterBody("arn:aws:iam::"+foreignAccountID+":role/r")), 403, "AccessDeniedException"},
 		{"eks create existing role without PassRole", containerPipelineApp(t, eksAll), signContainerRequest(t, "eks", "POST", "/clusters", "", eksClusterBody(eksNodeRoleARN)), 403, "AccessDeniedException"},
-		{"eks create missing role", containerPipelineApp(t, eksAll, pass), signContainerRequest(t, "eks", "POST", "/clusters", "", eksClusterBody(own+"gone")), 400, "InvalidParameterValueException"},
+		{"eks create missing role", containerPipelineApp(t, eksAll, pass), signContainerRequest(t, "eks", "POST", "/clusters", "", eksClusterBody(own+"gone")), 400, "InvalidParameterException"},
 		{"eks create missing role without PassRole", containerPipelineApp(t, eksAll), signContainerRequest(t, "eks", "POST", "/clusters", "", eksClusterBody(own+"gone")), 403, "AccessDeniedException"},
 		{"eks unparseable body", containerPipelineApp(t, eksAll), signContainerRequest(t, "eks", "POST", "/clusters", "", []byte("{")), 500, reachedHandler},
 	}

@@ -2,6 +2,7 @@ package awsapi_test
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -122,7 +123,7 @@ func TestRegistration_PassRoleCases(t *testing.T) {
 	}{
 		{"foreign role", `{"name":"c","roleArn":"arn:aws:iam::999999999999:role/r"}`, awserrors.ErrorAccessDeniedException, "Cross-account pass role is not allowed.", nil},
 		{"not an ARN", `{"name":"c","roleArn":"x"}`, awserrors.ErrorAccessDeniedException, "Cross-account pass role is not allowed.", nil},
-		{"missing role is authorized before it is reported", `{"name":"c","roleArn":"` + missing + `"}`, awserrors.ErrorInvalidParameterValue, "does not exist", []string{missing}},
+		{"missing role is authorized before it is reported", `{"name":"c","roleArn":"` + missing + `"}`, awserrors.ErrorEKSInvalidParameter, "does not exist", []string{missing}},
 		{"existing role reaches the daemon", `{"name":"c","roleArn":"` + existingRole + `"}`, awserrors.ErrorServerInternal, "", []string{existingRole}},
 	}
 	for _, tt := range tests {
@@ -173,4 +174,36 @@ func TestCallerFromActor_RoleNameComesFromTheRoleNotTheSession(t *testing.T) {
 	user := eksawsapi.CallerFromActor(dispatch.Actor{AccountID: dispatchAccount, PrincipalType: "user", UserName: "alice"})
 	assert.Equal(t, "alice", user.SessionName)
 	assert.Empty(t, user.RoleName)
+}
+
+// The addon role is not a cluster or nodegroup role, so a foreign one is a
+// parameter fault, reported under the code EKS declares.
+func TestRegistration_AddonForeignRoleIsInvalidParameter(t *testing.T) {
+	_, _, err := eksInvoke(t, http.MethodPost, "/clusters/c/addons", `{"addonName":"a","serviceAccountRoleArn":"arn:aws:iam::999999999999:role/r"}`, dispatchAccount, nil)
+
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, code)
+	assert.Contains(t, err.Error(), "is not a role ARN in account")
+}
+
+type failingBody struct{}
+
+func (failingBody) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+func (failingBody) Close() error             { return nil }
+
+// An unreadable body is a bare parameter fault on the public routes, renamed
+// to the EKS code. The internal routes keep the generic one their agents match.
+func TestRegistration_UnreadableBodyCode(t *testing.T) {
+	for _, tt := range []struct{ path, want string }{
+		{"/clusters", awserrors.ErrorEKSInvalidParameter},
+		{"/clusters/c/token-review", awserrors.ErrorInvalidParameterValue},
+	} {
+		req := httptest.NewRequest(http.MethodPost, tt.path, io.NopCloser(failingBody{}))
+		inv := dispatch.Invocation{Request: req, AccountID: dispatchAccount, Region: "us-east-1"}
+
+		err := eksawsapi.NewRegistration(eksawsapi.Deps{}).Dispatch(httptest.NewRecorder(), inv)
+
+		code, _ := awserrors.ResolveErrorCode(err)
+		assert.Equal(t, tt.want, code, tt.path)
+	}
 }

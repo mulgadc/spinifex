@@ -1597,6 +1597,10 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 	err = cleaner.DeleteVolumes(instance)
 	require.NoError(t, err, "the still-attached boot volume must be deleted, not rejected as VolumeInUse")
 
+	// The delete records the obligation and returns, so the reclaimer is what
+	// retires the document.
+	_, err = daemon.volumeService.NewVolumeReclaimReaper().Sweep(context.Background())
+	require.NoError(t, err)
 	_, err = daemon.volumeService.GetVolumeMetadata(testAccountID, volumeID)
 	require.Error(t, err, "the volume must actually be deleted")
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
@@ -1745,6 +1749,9 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 	_, err = reaper.Sweep(context.Background())
 	require.NoError(t, err)
 
+	// The retried delete records the obligation; the reclaimer retires it.
+	_, err = daemon.volumeService.NewVolumeReclaimReaper().Sweep(context.Background())
+	require.NoError(t, err)
 	_, err = daemon.volumeService.GetVolumeMetadata(testAccountID, volumeID)
 	require.Error(t, err, "the retried delete must actually remove the volume")
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)

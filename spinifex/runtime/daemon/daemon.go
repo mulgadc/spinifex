@@ -2448,6 +2448,7 @@ func (d *Daemon) startCluster() error {
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
+			reapers = append(reapers, d.volumeService.NewVolumeReclaimReaper())
 		}
 		if d.eksService != nil {
 			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))

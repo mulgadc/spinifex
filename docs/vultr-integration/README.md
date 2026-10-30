@@ -29,20 +29,14 @@ resources:
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [Instructions](#instructions)
-- [1.
-  Download Spinifex](#1-download-spinifex)
-- [2.
-  Choose a deployment](#2-choose-a-deployment)
-- [3.
-  Deploy](#3-deploy)
-- [4.
-  Restrict the API key](#4-restrict-the-api-key)
-- [5.
-  Check it worked](#5-check-it-worked)
-- [6.
-  Obtain AWS credentials](#6-obtain-aws-credentials)
-- [7.
-  Set up your cluster](#7-set-up-your-cluster)
+- [1. Download Spinifex](#1-download-spinifex)
+- [2. Choose a deployment](#2-choose-a-deployment)
+- [3. Deploy](#3-deploy)
+- [4. Restrict the API key](#4-restrict-the-api-key)
+- [5. Check it worked](#5-check-it-worked)
+- [6. Obtain AWS credentials](#6-obtain-aws-credentials)
+- [7. Set up your cluster](#7-set-up-your-cluster)
+- [8. Test resiliency](#8-test-resiliency)
 - [Removing the deployment](#removing-the-deployment)
 - [Limits](#limits)
 - [Troubleshooting](#troubleshooting)
@@ -270,6 +264,103 @@ An instance you launch into a public subnet gets a Vultr reserved IP, which you 
 
 ---
 
+## 8. Test resiliency
+
+A three-node deployment keeps running when a node fails.
+Spinifex restarts the failed node's instances on the surviving nodes, and moves each instance's Vultr reserved IP with it, so its public address keeps working.
+To watch it happen, run a load-balanced website across the three nodes, then power one of them off.
+
+### Launch a website on every node
+
+Import the Ubuntu image the web servers run on:
+
+```bash
+./deploy-vultr.sh ssh 'spx admin images import --name ubuntu-26.04-x86_64'
+```
+
+The [Nginx Web Server (Load Balanced)](/docs/nginx-alb) workbook launches web servers behind an Application Load Balancer.
+With these two variables it launches three, and a spread placement group puts each one on a different node:
+
+```bash
+cd docs/terraform-workbooks/nginx-alb
+export AWS_PROFILE=spinifex
+tofu init
+tofu apply -var region=us-east-1 \
+  -var spinifex_endpoint="$(aws configure get endpoint_url)" \
+  -var server_count=3 -var placement_strategy=spread
+```
+
+Use `terraform` in place of `tofu` if that is what you installed.
+Check that each web server is on its own node:
+
+```bash
+../../../scripts/terraform/vultr-spx/deploy-vultr.sh ssh 'spx get vms'
+```
+
+The `NODE` column shows `node1`, `node2` and `node3` once each, and the load balancer is the `sys.micro` instance.
+
+### Keep requests running
+
+Get the load balancer's address, and request the page once a second in a second terminal:
+
+```bash
+ALB_IP=$(aws elbv2 describe-load-balancers --names nginx-alb \
+  --query 'LoadBalancers[0].AvailabilityZones[].LoadBalancerAddresses[].IpAddress' --output text)
+while :; do
+  printf '%s %s\n' "$(date +%T)" "$(curl -s -m2 "http://$ALB_IP/" | grep -o 'Server [0-9]' || echo FAILED)"
+  sleep 1
+done
+```
+
+Each line names the web server that answered.
+
+### Power off a node
+
+From the `vultr-spx` directory, power off a node that runs a web server but not the load balancer:
+
+```bash
+./deploy-vultr.sh stop node3
+```
+
+This is a hard power-off through the Vultr API, as a hardware failure would be, so the node hands nothing over first.
+Watch the requests and `spx get vms`:
+
+1. For up to about a minute, a few requests fail while the load balancer's health checks find that one web server is gone.
+2. After that, the other two web servers answer every request.
+3. About three minutes after the power-off, the lost web server is `running` on one of the surviving nodes.
+4. About four minutes after the power-off, its own public address answers again, and the load balancer sends it requests once its health checks pass.
+
+Power the node back on:
+
+```bash
+./deploy-vultr.sh start node3
+```
+
+It rejoined the cluster about a minute after a VM started, and about five minutes after a bare-metal server started.
+Wait until `spx get nodes` shows it `Ready` before you power off another node.
+The instances that moved stay where they are.
+
+### What we measured
+
+On three `vx1-g-16c-64g` VMs and on three `vbm-8c-64gb-amd` bare-metal servers in Chicago, with the workbook above:
+
+| Node powered off | Deployment | Instance `running` elsewhere | Its public address answers | Load balancer requests failed |
+| --- | --- | --- | --- | --- |
+| A node with one web server | VMs | 173 s | 244 s | 5 of 91, all within 45 s |
+| A node with one web server | Bare metal | 172 s | 223 s | 6 of 83, all within 60 s |
+| node1, with a web server, the load balancer and the cluster's NATS leader | VMs | 167 s | 253 s | 22 of 66, all within 115 s |
+| A node with two web servers and the load balancer | Bare metal | 204 s | 271 s | 21 of 79, all within 114 s |
+
+Each case was measured once.
+The requests column counts one-second probes, so a run with more timed-out requests sends fewer of them.
+The load balancer recovers first, because it moves to a surviving node like any other instance.
+While node1 is off, the AWS endpoint in your `spinifex` profile does not answer, because it is node1's address.
+Call another node meanwhile by adding `--endpoint-url https://<node2-address>:9999` to an `aws` command.
+
+When you are done, remove the workbook with `tofu destroy` and the same `-var` options before [removing the deployment](#removing-the-deployment).
+
+---
+
 ## Removing the deployment
 
 Remove anything you built on the cluster first, then:
@@ -291,6 +382,10 @@ After removing the deployment, remove the node addresses from the API key's **Ac
 - **One or three nodes.** Other cluster sizes are not supported.
 - **At least 16 vCPU per VM.** Smaller VX plans report their vCPUs as hyperthreads, and Spinifex schedules half of them.
 - **A deleted reserved IP keeps its quota slot for 24 hours**, by Vultr's documentation, so creating and deleting many addresses in a day can reach the account's limit.
+- **A three-node deployment survives one failed node at a time.**
+  With two of the three nodes down, the cluster loses quorum, and in our test the instances on the remaining node went to `error` and stayed there after a second node returned.
+- **A recovered instance can share a node with another member of its spread placement group**, when only one node has room for it.
+  It stays there after the failed node returns.
 - **Disassociating an Elastic IP leaves the instance with no public address**, where AWS would give it a new one.
   Stopping and starting the instance gets it one.
 

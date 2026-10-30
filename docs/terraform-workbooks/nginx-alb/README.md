@@ -194,11 +194,39 @@ TG_ARN=$(aws elbv2 describe-target-groups \
 aws elbv2 describe-target-health --target-group-arn $TG_ARN
 ```
 
+### Step 6. Test resiliency
+
+On a cluster of three nodes, apply with `-var server_count=3 -var placement_strategy=spread`, then check that each web server is on its own node:
+
+```bash
+spx get vms
+```
+
+The `NODE` column names each node once for the three `t3.small` web servers, and the load balancer is the `sys.micro` instance.
+
+Request the page once a second in a second terminal:
+
+```bash
+while :; do
+  printf '%s %s\n' "$(date +%T)" "$(curl -s -m2 "http://$ALB_IP/" | grep -o 'Server [0-9]' || echo FAILED)"
+  sleep 1
+done
+```
+
+Then power off one node, the way a hardware failure would, without shutting it down first.
+On Vultr, `deploy-vultr.sh stop node3` does this, as described in [Running Spinifex on Vultr](/docs/vultr-integration#8-test-resiliency).
+
+Within about a minute the load balancer stops sending requests to the lost web server, and the other two answer every request.
+About three minutes after the power-off, Spinifex has restarted the lost web server on a surviving node with the same instance ID, private IP and public IP, and the load balancer sends it requests again once its health checks pass.
+Power the node back on and wait until `spx get nodes` shows it `Ready` before you test another node.
+
 ### Cleanup
 
 ```bash
 tofu destroy
 ```
+
+If you applied with `-var` options, pass the same ones to `tofu destroy`.
 
 ## Troubleshooting
 

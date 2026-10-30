@@ -259,6 +259,23 @@ These rules bound only the holder's own clock.
 The storage backend does not reject a stale writer, so a paused or partitioned host that resumes after its validity can still write; generation enforcement at the write boundary is required by Q-24 in the umbrella repository's `docs/specs/viperblock/rfc3-1_overview.md` and is not implemented.
 An export that survives a daemon restart writes without a renewed lease until recovery adopts it, and a survivor that recovery cannot adopt while a guest still uses it is left running without a lease or a fence.
 
+#### Unsealed writes and start elsewhere (interim)
+
+A volume is unsealed while its node holds writes the backend has not confirmed; the node records this in a dirty marker naming itself as owner (`providers/ebs/viperblock/volume_dirty.go`).
+Opening such a volume on another node loses those writes, so two guards stop it while the previous owner may still hold them.
+This is an interim guard until the instance lifecycle work defines ownership, and it is not a fence.
+
+When `ec2.start` is forwarded to the node that last ran a stopped instance and that node refuses for capacity, the forwarding node normally starts the instance locally.
+If the refusing node still holds unsealed writes for any of the instance's volumes, it sets the `X-Unsealed-Writes` NATS reply header and the forwarder relays `InsufficientInstanceCapacity` instead of starting elsewhere.
+The check asks the owner's viperblockd over the per-node `unsealed` verb with a 5 second bound, and a check that fails or times out counts as holding, so the refusal is kept.
+
+Independently, a node that finds another node's dirty marker on a volume refuses to open it when that node's daemon heartbeat (`heartbeat.<node>` in the cluster-state bucket) is under 60 seconds old.
+It also refuses when the heartbeat cannot be read or no heartbeat source is wired, and the refusal maps to the held-elsewhere error that recovery retries.
+A previous owner that has stopped heartbeating is opened over with a warning, as before.
+The heartbeat age is compared across node clocks, so the 60 second window is also the clock-skew allowance.
+
+EKS control-plane recovery treats both refusals, capacity and held-elsewhere, as retryable: it keeps retrying the stopped member and does not count them against its restart attempts.
+
 ### Predastore (S3)
 
 Object storage used for:

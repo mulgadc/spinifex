@@ -2478,6 +2478,7 @@ func (d *Daemon) configureEBSProvider() error {
 	provider := ebsprovider.NewNATSProvider(d.natsConn, ebsProviderRequestTimeout)
 	d.ebsProvider = provider
 	d.instanceService.SetEBSProvider(provider)
+	d.instanceService.SetUnsealedWritesChecker(provider, d.node)
 	d.imageService.SetEBSProvider(provider)
 	d.snapshotService.SetEBSProvider(provider)
 	d.volumeService.SetEBSProvider(provider)

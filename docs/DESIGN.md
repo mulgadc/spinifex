@@ -366,6 +366,7 @@ The authenticated caller that will carry this decision must derive the worker's 
 `domains/sqs/workerident` is that authoritative instance state: one record per Region in the `spinifex-sqs-worker-identity` KV bucket holds a monotonic generation, claim ID, pinned node and encrypted data volume, and moves from `launching` to `bound` to `stopped`, or from `launching` to `failed`, under compare-and-swap.
 A launch intent is refused while the previous attempt is `launching` or `bound`, including one whose outcome is unknown, so only one caller ever holds an intent to start a VM on the pinned volume.
 A replacement takes the next generation only after `FailLaunch` or `RecordStopped` records that nothing holds the volume, and each request names the generation it supersedes, so a replayed request cannot take a generation it never observed; there is no automatic takeover.
+The launch path then raises the first-store fence to the successor's generation with `firststore.Fence` before `BeginLaunch`, which refuses a replacement until a leader read shows that fence; the fence only rises, and `firststore` refuses every call from a generation below it.
 Only the current claim ID is recorded, so claim IDs are minted fresh per attempt and a VM launch must be idempotent on generation and claim together.
 Binding writes the instance's index entry first and then binds the record to that instance.
 The index is only a lookup: `Authorize` accepts an instance only while the Region's record is `bound` to exactly that instance, generation and claim, confirmed by a compare-and-swap at the leader-read revision, so an old, orphaned, rewritten or unbound entry authorizes nothing.
@@ -377,7 +378,8 @@ No worker launch calls this store yet, so nothing is ever bound.
 `domains/sqs/awsapi/worker` carries the decision to the worker as `ClaimFirstStore` and `RecordWorkerPublicKey`, served under the internal `spinifex-sqs` signing service, which no AWS SDK signs for; the public AmazonSQS action inventory is untouched.
 The gateway admits only an assumed-role session of `sqsWorkerRole` in the system account, then the role's policy, and only then resolves the session name, the instance ID STS set, through `workerident.Authorize`; the request carries no identity, and any parameter beyond the action's own is refused.
 The first-store identity is the current record's instance, claim and generation, and a worker bound to another Region is refused.
-A request that passed `Authorize` just before a confirmed stop and replacement still carries the old generation, and `firststore` refuses it once the successor has claimed.
+A request that passed `Authorize` just before a confirmed stop and replacement still carries the old generation; the fence was raised before the successor began, so `firststore` refuses it whether or not the successor has claimed yet.
+The adapter never logs a caller-chosen parameter name, because one could carry a secret.
 `RecordWorkerPublicKey` accepts only a valid public user key, so a seed is refused without being recorded, logged or echoed.
 The gateway binds both buckets per request and never creates them, so it provisions nothing and answers `ServiceUnavailable` until a worker launch has created them; the worker role's policy, instance profile and trust policy, which must admit only EC2, belong to that launch.
 No worker client calls these actions yet; the worker boot path above still accepts only `existing`.

@@ -1,6 +1,7 @@
 // Package firststore is the SQS domain's durable decision on whether the shared
 // SQS worker may create the store's client key. One record per Region moves
-// claimed -> key-recorded -> launch-intent under compare-and-swap.
+// claimed -> key-recorded -> launch-intent under compare-and-swap, behind a
+// generation fence the launch path raises before it replaces a worker.
 package firststore
 
 import (
@@ -32,6 +33,8 @@ func BucketConfig(replicas int) jetstream.KeyValueConfig {
 type State string
 
 const (
+	// Only a fence is recorded: no worker has claimed since it was raised.
+	StateOpen State = "open"
 	// A worker identity holds the claim; no key is recorded, so no store can
 	// have been launched with any key.
 	StateClaimed State = "claimed"
@@ -57,6 +60,9 @@ type Record struct {
 	State     State    `json:"state"`
 	Worker    Identity `json:"worker"`
 	PublicKey string   `json:"publicKey,omitempty"`
+	// Fence is the lowest generation still accepted. It only rises, so a
+	// request from a replaced worker that was already in flight is refused.
+	Fence uint64 `json:"fence,omitempty"`
 }
 
 // Decision is what a claim authorizes: create a key, or use exactly the
@@ -148,6 +154,17 @@ func (s Store) Claim(ctx context.Context, region string, id Identity) (Decision,
 		if err != nil {
 			return Decision{}, err
 		}
+		if id.Generation < rec.Fence {
+			return Decision{}, ErrStaleGeneration
+		}
+		if rec.State == StateOpen {
+			next := *rec
+			next.State, next.Worker = StateClaimed, id
+			if s.update(ctx, region, next, rev) == nil {
+				return Decision{CreateKey: true}, nil
+			}
+			continue
+		}
 		if err := checkGeneration(rec.Worker, id); err != nil {
 			return Decision{}, err
 		}
@@ -212,6 +229,12 @@ func (s Store) advance(ctx context.Context, region string, id Identity, pub stri
 		if err != nil {
 			return err
 		}
+		if id.Generation < rec.Fence {
+			return ErrStaleGeneration
+		}
+		if rec.State == StateOpen {
+			return ErrNotClaimed
+		}
 		if rec.Worker != id {
 			if err := checkGeneration(rec.Worker, id); err != nil {
 				return err
@@ -235,6 +258,47 @@ func (s Store) advance(ctx context.Context, region string, id Identity, pub stri
 		}
 	}
 	return ErrContended
+}
+
+// Fence raises the lowest accepted generation to gen and never lowers it. The
+// launch path calls it before it replaces a worker, so a request from the old
+// generation that is still in flight decides nothing once the fence is up.
+func (s Store) Fence(ctx context.Context, region string, gen uint64) error {
+	if !regionPattern.MatchString(region) || gen == 0 {
+		return errors.New("invalid fence")
+	}
+	for range maxAttempts {
+		rec, rev, err := s.read(ctx, region)
+		if errors.Is(err, ErrNotClaimed) {
+			if s.create(ctx, region, Record{Region: region, State: StateOpen, Fence: gen}) == nil {
+				return nil
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		next := *rec
+		next.Fence = max(rec.Fence, gen)
+		// Unchanged when already raised: the rewrite proves the read was current.
+		if s.update(ctx, region, next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// FencedAt is the Region's current fence, zero when none is recorded. The
+// fence only rises, so a value read from the leader stays a lower bound.
+func (s Store) FencedAt(ctx context.Context, region string) (uint64, error) {
+	rec, _, err := s.read(ctx, region)
+	if errors.Is(err, ErrNotClaimed) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return rec.Fence, nil
 }
 
 // checkGeneration refuses an older generation, and a different identity at
@@ -271,7 +335,13 @@ func (s Store) read(ctx context.Context, region string) (*Record, uint64, error)
 }
 
 func wellFormed(rec *Record, region string) bool {
-	if rec.Region != region || validate(region, rec.Worker) != nil {
+	if rec.Region != region {
+		return false
+	}
+	if rec.State == StateOpen {
+		return rec.Worker == Identity{} && rec.PublicKey == "" && rec.Fence > 0
+	}
+	if validate(region, rec.Worker) != nil {
 		return false
 	}
 	switch rec.State {

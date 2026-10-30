@@ -78,6 +78,16 @@ func mustStop(t *testing.T, s Store, in Intent, instanceID string) {
 	if err := s.RecordStopped(context.Background(), in, instanceID); err != nil {
 		t.Fatalf("record stopped: %v", err)
 	}
+	fence(t, s, in.Generation+1)
+}
+
+// fence raises the first-store fence, as the launch path does once a stop or
+// failure is confirmed and before it begins the replacement.
+func fence(t *testing.T, s Store, gen uint64) {
+	t.Helper()
+	if err := s.Fences.(firststore.Store).Fence(context.Background(), region, gen); err != nil {
+		t.Fatalf("fence: %v", err)
+	}
 }
 
 func TestLifecycle_BindAuthorizesAndRestartKeepsIdentity(t *testing.T) {
@@ -240,6 +250,7 @@ func TestAmbiguousPriorLaunch_BlocksOthers(t *testing.T) {
 	if err := s.FailLaunch(ctx, a); err != nil {
 		t.Fatal(err)
 	}
+	fence(t, s, 2)
 	if _, ok := l.start(t, s, launch(claim(2), 1)); !ok || l.count() != 2 {
 		t.Fatalf("launch after confirmed failure refused; launched %d", l.count())
 	}
@@ -253,6 +264,7 @@ func TestReplay_ABA(t *testing.T) {
 	if err := s.FailLaunch(ctx, a); err != nil {
 		t.Fatal(err)
 	}
+	fence(t, s, 2)
 	b, err := s.BeginLaunch(ctx, region, launch(claim(2), 1))
 	if err != nil || b.Generation != 2 {
 		t.Fatalf("B = %+v, %v", b, err)
@@ -304,6 +316,7 @@ func TestFailedLaunch(t *testing.T) {
 	if _, err := s.BeginLaunch(ctx, region, launch(claim(1), 0)); !errors.Is(err, ErrSuperseded) {
 		t.Fatalf("restarting a failed attempt = %v, want ErrSuperseded", err)
 	}
+	fence(t, s, 2)
 	next, err := s.BeginLaunch(ctx, region, launch(claim(2), 1))
 	if err != nil || next.Generation != 2 {
 		t.Fatalf("next launch = %+v, %v; want generation 2", next, err)
@@ -728,4 +741,30 @@ func TestBind_NeverCreatesAndRefusesNonDurable(t *testing.T) {
 			t.Fatal("bound an expiring bucket")
 		}
 	})
+}
+
+// A confirmed stop is not enough to replace a worker: the first-store fence
+// must already exclude its generation, and a store with no fence reader
+// refuses every replacement.
+func TestReplacement_NeedsTheFirstStoreFence(t *testing.T) {
+	s, kv := newStore(t)
+	ctx := context.Background()
+	first := mustBound(t, s, claim(1), inst(1), 0)
+	if err := s.RecordStopped(ctx, first, inst(1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BeginLaunch(ctx, region, launch(claim(2), 1)); !errors.Is(err, ErrNotFenced) {
+		t.Fatalf("replacement before the fence = %v, want ErrNotFenced", err)
+	}
+	if r := record(t, kv); r.Generation != 1 || r.State != StateStopped {
+		t.Fatalf("refused replacement changed the record: %+v", r)
+	}
+	unfenced := Store{JS: s.JS, KV: s.KV}
+	fence(t, s, 2)
+	if _, err := unfenced.BeginLaunch(ctx, region, launch(claim(2), 1)); !errors.Is(err, ErrNotFenced) {
+		t.Fatalf("replacement with no fence reader = %v, want ErrNotFenced", err)
+	}
+	if in, err := s.BeginLaunch(ctx, region, launch(claim(2), 1)); err != nil || in.Generation != 2 {
+		t.Fatalf("replacement after the fence = %+v, %v", in, err)
+	}
 }

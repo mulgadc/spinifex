@@ -357,9 +357,10 @@ func TestUnknownAndMissingActions(t *testing.T) {
 // --- Against the real stores on embedded JetStream. ---
 
 type cluster struct {
-	js   jetstream.JetStream
-	ids  workerident.Store
-	deps Deps
+	js    jetstream.JetStream
+	ids   workerident.Store
+	fence firststore.Store
+	deps  Deps
 }
 
 func newCluster(t *testing.T) cluster {
@@ -371,10 +372,11 @@ func newCluster(t *testing.T) cluster {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := firststore.Open(ctx, js); err != nil {
+	fence, err := firststore.Open(ctx, js)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return cluster{js: js, ids: ids, deps: JetStreamDeps(js)}
+	return cluster{js: js, ids: ids, fence: fence, deps: JetStreamDeps(js)}
 }
 
 func (c cluster) launch(t *testing.T, claim string, supersedes uint64, inst string) workerident.Intent {
@@ -390,6 +392,16 @@ func (c cluster) launch(t *testing.T, claim string, supersedes uint64, inst stri
 		t.Fatal(err)
 	}
 	return in
+}
+
+// replace follows the launch path's order once old is confirmed stopped: raise
+// the first-store fence past old's generation, then begin and bind the successor.
+func (c cluster) replace(t *testing.T, old workerident.Intent, claim, inst string) workerident.Intent {
+	t.Helper()
+	if err := c.fence.Fence(context.Background(), region, old.Generation+1); err != nil {
+		t.Fatal(err)
+	}
+	return c.launch(t, claim, old.Generation, inst)
 }
 
 // The full path: a bound worker claims, records its key, and after a confirmed
@@ -418,15 +430,14 @@ func TestRealStores_ClaimRecordAndReplace(t *testing.T) {
 	_, err = invoke(c.deps, "Action=ClaimFirstStore", workerActor(successor), &call{})
 	assertCode(t, err, awserrors.ErrorAccessDenied)
 
-	ctx := context.Background()
-	if err := c.ids.RecordStopped(ctx, first, instance); err != nil {
+	if err := c.ids.RecordStopped(context.Background(), first, instance); err != nil {
 		t.Fatal(err)
 	}
 	// Stopped but not yet replaced: the old instance is no longer current.
 	_, err = invoke(c.deps, "Action=ClaimFirstStore", workerActor(instance), &call{})
 	assertCode(t, err, awserrors.ErrorAccessDenied)
 
-	c.launch(t, "claim-0002", first.Generation, successor)
+	c.replace(t, first, "claim-0002", successor)
 	_, err = invoke(c.deps, "Action=ClaimFirstStore", workerActor(instance), &call{})
 	assertCode(t, err, awserrors.ErrorAccessDenied)
 	rec, err = invoke(c.deps, "Action=ClaimFirstStore", workerActor(successor), &call{})
@@ -452,7 +463,7 @@ func TestRealStores_InFlightOldGenerationLosesToTheSuccessor(t *testing.T) {
 	if err := c.ids.RecordStopped(context.Background(), first, instance); err != nil {
 		t.Fatal(err)
 	}
-	c.launch(t, "claim-0002", first.Generation, successor)
+	c.replace(t, first, "claim-0002", successor)
 	if _, err := invoke(c.deps, "Action=ClaimFirstStore", workerActor(successor), &call{}); err != nil {
 		t.Fatal(err)
 	}
@@ -500,5 +511,80 @@ func TestRealStores_AbsentBucketsFailClosedAndStayAbsent(t *testing.T) {
 		if _, err := js.KeyValue(context.Background(), name); !errors.Is(err, jetstream.ErrBucketNotFound) {
 			t.Fatalf("the gateway provisioned %s: %v", name, err)
 		}
+	}
+}
+
+// pausingIdentities runs the real Authorize, then runs between before the
+// request reaches firststore, standing in for a request delayed in flight.
+type pausingIdentities struct {
+	real    Identities
+	between func()
+}
+
+func (p pausingIdentities) Authorize(ctx context.Context, instanceID string) (workerident.Identity, error) {
+	id, err := p.real.Authorize(ctx, instanceID)
+	if err == nil {
+		p.between()
+	}
+	return id, err
+}
+
+// The other order: the old request passes Authorize, the old worker is stopped
+// and its successor bound, and the old request reaches firststore before the
+// successor has claimed. The fence refuses it, so the successor still decides.
+func TestRealStores_InFlightOldGenerationCannotPreemptTheSuccessor(t *testing.T) {
+	for _, action := range []string{"Action=ClaimFirstStore", "Action=RecordWorkerPublicKey&PublicKey="} {
+		t.Run(strings.TrimSuffix(strings.TrimPrefix(action, "Action="), "&PublicKey="), func(t *testing.T) {
+			c := newCluster(t)
+			oldKey := newUserKey(t)
+			first := c.launch(t, "claim-0001", 0, instance)
+			if strings.Contains(action, "Record") {
+				// The old worker has claimed, so only its key record is in flight.
+				if _, err := invoke(c.deps, "Action=ClaimFirstStore", workerActor(instance), &call{}); err != nil {
+					t.Fatal(err)
+				}
+				action += oldKey.pub
+			}
+			replaced := false
+			inFlight := Deps{
+				Identities: pausingIdentities{real: c.deps.Identities, between: func() {
+					if err := c.ids.RecordStopped(context.Background(), first, instance); err != nil {
+						t.Fatal(err)
+					}
+					c.replace(t, first, "claim-0002", successor)
+					replaced = true
+				}},
+				FirstStore: c.deps.FirstStore,
+			}
+			_, err := invoke(inFlight, action, workerActor(instance), &call{})
+			if !replaced {
+				t.Fatal("the replacement did not run inside the request")
+			}
+			assertCode(t, err, awserrors.ErrorAccessDenied)
+
+			rec, err := invoke(c.deps, "Action=ClaimFirstStore", workerActor(successor), &call{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, "<CreateKey>true</CreateKey>") || strings.Contains(body, oldKey.pub) {
+				t.Fatalf("successor got %q, want to create its own key", body)
+			}
+		})
+	}
+}
+
+// A caller-chosen parameter name never reaches the log.
+func TestUnexpectedParameterNameIsNotLogged(t *testing.T) {
+	logs := captureLogs(t)
+	_, _, deps := fakes()
+	secret := newUserKey(t).seed
+	_, err := invoke(deps, "Action=ClaimFirstStore&"+secret+"=1", workerActor(instance), &call{})
+	assertCode(t, err, awserrors.ErrorInvalidParameterValue)
+	if !strings.Contains(logs.String(), "unexpected parameter refused") {
+		t.Fatalf("refusal not logged: %q", logs.String())
+	}
+	if strings.Contains(logs.String(), secret) || strings.Contains(logs.String(), secret[2:12]) {
+		t.Fatal("parameter name reached the log")
 	}
 }

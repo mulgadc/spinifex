@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	sqsjs "github.com/mulgadc/spinifex/spinifex/domains/sqs/message/jetstream"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -105,6 +106,7 @@ var (
 	ErrUnencryptedVolume = errors.New("SQS worker data volume must be encrypted")
 	ErrUnreadable        = errors.New("worker identity record is unreadable")
 	ErrContended         = errors.New("worker identity changed concurrently; retry")
+	ErrNotFenced         = errors.New("first-store fence does not yet exclude the replaced generation")
 )
 
 const maxAttempts = 8
@@ -123,7 +125,18 @@ var (
 type Store struct {
 	JS jetstream.JetStream
 	KV jetstream.KeyValue
+	// Fences reads the first-store fence a replacement launch requires. A nil
+	// reader refuses every replacement.
+	Fences FenceReader
 }
+
+// FenceReader reports the lowest worker generation the first-store decision
+// still accepts in a Region.
+type FenceReader interface {
+	FencedAt(ctx context.Context, region string) (uint64, error)
+}
+
+var _ FenceReader = firststore.Store{}
 
 // Open opens or creates the bucket and refuses one that could lose records.
 func Open(ctx context.Context, js jetstream.JetStream) (Store, error) {
@@ -131,11 +144,16 @@ func Open(ctx context.Context, js jetstream.JetStream) (Store, error) {
 	if err != nil {
 		return Store{}, err
 	}
-	return Store{JS: js, KV: kv}, nil
+	fences, err := firststore.Open(ctx, js)
+	if err != nil {
+		return Store{}, err
+	}
+	return Store{JS: js, KV: kv, Fences: fences}, nil
 }
 
 // Bind binds the existing bucket without creating it, refusing one that could
-// lose records; a reader that must not provision state uses it.
+// lose records; a reader that must not provision state uses it. It reads no
+// fence, so it refuses every replacement launch.
 func Bind(ctx context.Context, js jetstream.JetStream) (Store, error) {
 	kv, err := sqsjs.BindDurableKV(ctx, js, Bucket)
 	if err != nil {
@@ -151,7 +169,8 @@ func indexKey(instanceID string) string { return "instance." + instanceID }
 // BeginLaunch records a launch intent. A retry of the same attempt returns the
 // same intent. A new attempt is refused while the previous one is launching or
 // bound, including one whose outcome is unknown; it takes the next generation
-// only after FailLaunch or RecordStopped confirmed nothing holds the volume.
+// only after FailLaunch or RecordStopped confirmed nothing holds the volume,
+// and only once the first-store fence admits no older generation.
 func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest) (Intent, error) {
 	switch {
 	case !regionPattern.MatchString(region):
@@ -199,6 +218,9 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 		case rec.State == StateLaunching || rec.State == StateBound:
 			return Intent{}, ErrInFlight
 		default:
+			if err := s.requireFence(ctx, region, rec.Generation+1); err != nil {
+				return Intent{}, err
+			}
 			next.State, next.Generation, next.ClaimID, next.InstanceID =
 				StateLaunching, rec.Generation+1, req.ClaimID, ""
 		}
@@ -208,6 +230,22 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 		}
 	}
 	return Intent{}, ErrContended
+}
+
+// requireFence refuses a replacement until the first-store fence is at least
+// gen. The fence never falls, so one leader read that satisfies it stays true.
+func (s Store) requireFence(ctx context.Context, region string, gen uint64) error {
+	if s.Fences == nil {
+		return ErrNotFenced
+	}
+	fence, err := s.Fences.FencedAt(ctx, region)
+	if err != nil {
+		return err
+	}
+	if fence < gen {
+		return ErrNotFenced
+	}
+	return nil
 }
 
 // BindInstance makes instanceID the worker for intent. The index entry is

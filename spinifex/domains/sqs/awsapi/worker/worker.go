@@ -138,7 +138,8 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	}
 	for name := range args {
 		if name != "Action" && name != "Version" && !slices.Contains(allowed, name) {
-			slog.DebugContext(ctx, "SQS internal: unexpected parameter refused", "action", action, "parameter", name)
+			// The name is caller-chosen and may carry a secret, so it is not logged.
+			slog.DebugContext(ctx, "SQS internal: unexpected parameter refused", "action", action)
 			return errors.New(awserrors.ErrorInvalidParameterValue)
 		}
 	}

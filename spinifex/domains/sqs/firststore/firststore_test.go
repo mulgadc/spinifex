@@ -454,3 +454,123 @@ func TestReads_UseLeaderMessageGet(t *testing.T) {
 		t.Fatalf("direct gets=%d leader gets=%d; want only leader reads", direct.Load(), leader.Load())
 	}
 }
+
+func mustFence(t *testing.T, s Store, gen uint64) {
+	t.Helper()
+	if err := s.Fence(context.Background(), region, gen); err != nil {
+		t.Fatalf("fence %d: %v", gen, err)
+	}
+}
+
+func fencedAt(t *testing.T, s Store) uint64 {
+	t.Helper()
+	f, err := s.FencedAt(context.Background(), region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// A fence raised before any claim leaves an open record: an older generation
+// can neither claim nor record, and the fenced generation claims as first.
+func TestFence_BeforeAnyClaim(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	if f := fencedAt(t, s); f != 0 {
+		t.Fatalf("fence with no record = %d, want 0", f)
+	}
+	mustFence(t, s, 2)
+	pub, _ := userPub(t)
+	if _, err := s.Claim(ctx, region, ident(1, 1)); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("old claim behind the fence = %v, want ErrStaleGeneration", err)
+	}
+	if err := s.RecordPublicKey(ctx, region, ident(1, 1), pub); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("old record behind the fence = %v, want ErrStaleGeneration", err)
+	}
+	if err := s.RecordPublicKey(ctx, region, ident(2, 2), pub); !errors.Is(err, ErrNotClaimed) {
+		t.Fatalf("record before any claim = %v, want ErrNotClaimed", err)
+	}
+	d, err := s.Claim(ctx, region, ident(2, 2))
+	if err != nil || !d.CreateKey {
+		t.Fatalf("fenced generation's claim = %+v, %v; want CreateKey", d, err)
+	}
+	if f := fencedAt(t, s); f != 2 {
+		t.Fatalf("claim moved the fence to %d", f)
+	}
+}
+
+// Raised over a recorded key, the fence refuses the old generation's every
+// call and keeps the key, which the successor alone receives.
+func TestFence_OverARecordedKey(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	old, next := ident(1, 1), ident(2, 2)
+	pub, _ := userPub(t)
+	if _, err := s.Claim(ctx, region, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordPublicKey(ctx, region, old, pub); err != nil {
+		t.Fatal(err)
+	}
+	mustFence(t, s, 2)
+	if _, err := s.Claim(ctx, region, old); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("old claim = %v, want ErrStaleGeneration", err)
+	}
+	if err := s.RecordPublicKey(ctx, region, old, pub); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("old retried record = %v, want ErrStaleGeneration", err)
+	}
+	if err := s.RecordLaunchIntent(ctx, region, old, pub); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("old launch intent = %v, want ErrStaleGeneration", err)
+	}
+	d, err := s.Claim(ctx, region, next)
+	if err != nil || d.CreateKey || d.PublicKey != pub {
+		t.Fatalf("successor = %+v, %v; want only the recorded key", d, err)
+	}
+}
+
+// The fence never falls, and repeating it is a no-op, so a retried or late
+// lower fence cannot readmit a replaced generation.
+func TestFence_OnlyRises(t *testing.T) {
+	s, _ := newStore(t)
+	for _, gen := range []uint64{3, 3, 1, 2} {
+		mustFence(t, s, gen)
+	}
+	if f := fencedAt(t, s); f != 3 {
+		t.Fatalf("fence = %d, want 3", f)
+	}
+	if _, err := s.Claim(context.Background(), region, ident(1, 2)); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("claim below the fence = %v, want ErrStaleGeneration", err)
+	}
+	if err := s.Fence(context.Background(), region, 0); err == nil {
+		t.Fatal("accepted a zero fence")
+	}
+}
+
+// An old-generation call racing the fence either lands before it, as a
+// completed write the successor inherits, or is refused; never both.
+func TestFence_RacesOldGenerationCalls(t *testing.T) {
+	for range 20 {
+		s, _ := newStore(t)
+		ctx := context.Background()
+		old := ident(1, 1)
+		pub, _ := userPub(t)
+		if _, err := s.Claim(ctx, region, old); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		var recErr error
+		wg.Go(func() { recErr = s.RecordPublicKey(ctx, region, old, pub) })
+		wg.Go(func() { mustFence(t, s, 2) })
+		wg.Wait()
+		d, err := s.Claim(ctx, region, ident(2, 2))
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case recErr == nil && (d.CreateKey || d.PublicKey != pub):
+			t.Fatalf("old key recorded but successor got %+v", d)
+		case recErr != nil && (!errors.Is(recErr, ErrStaleGeneration) || !d.CreateKey):
+			t.Fatalf("old record refused with %v but successor got %+v", recErr, d)
+		}
+	}
+}

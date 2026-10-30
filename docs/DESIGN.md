@@ -362,6 +362,13 @@ A claim authorizes key creation only while no public key is recorded; once one i
 An older generation, a different identity at the same generation or an unreadable record authorizes nothing, and the record holds no private key material.
 Reads are stream message gets answered by the stream leader, never direct gets a lagging replica can answer, and every authorizing answer is also confirmed by a compare-and-swap at the revision it read, so a stale or unavailable read authorizes nothing.
 The authenticated caller that will carry this decision must derive the worker's instance ID and generation from authoritative instance state; a generation supplied in a request cannot itself authorize a takeover.
+
+`domains/sqs/workerident` is that authoritative instance state: one record per Region in the `spinifex-sqs-worker-identity` KV bucket holds a monotonic generation, claim ID, pinned node and encrypted data volume, and moves from `launching` to `bound` or `failed` under compare-and-swap.
+A launch intent takes the next generation before any instance exists, which immediately stops the previous worker being current; binding writes the instance's index entry first and then binds the record to that instance.
+The index is only a lookup: `Authorize` accepts an instance only while the Region's record is `bound` to exactly that instance, generation and claim, confirmed by a compare-and-swap at the leader-read revision, so an old, orphaned, rewritten or unbound entry authorizes nothing.
+A same-instance reboot keeps its instance ID and identity; a replacement takes a new generation, and the first cut refuses another node or data volume and an unencrypted volume.
+Both buckets are opened through `OpenDurableKV`, which refuses an existing bucket whose stored configuration could expire, cap or evict records or holds too few replicas.
+Nothing calls this store yet: no worker launch, gateway action or credential uses it.
 `workerkey.Acquire` drives that decision: it syncs a new key to disk, records its public key and only then returns it, so a crash before recording reuses the key already on disk.
 No transport carries the decision yet; the worker boot path above still accepts only `existing`.
 The private key stays on the worker disk; the guest logs and publishes only the public key to `/run/sqs-worker/public-key`.

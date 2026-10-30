@@ -18,7 +18,8 @@ import (
 // Bucket is the SQS domain's KV bucket for first-store records.
 const Bucket = "spinifex-sqs-first-store"
 
-// BucketConfig is the bucket's configuration; replicas follows the cluster.
+// BucketConfig is the bucket's configuration for test fixtures; production
+// opens it through Open, which takes the replica count from the cluster.
 func BucketConfig(replicas int) jetstream.KeyValueConfig {
 	return jetstream.KeyValueConfig{
 		Bucket:   Bucket,
@@ -89,6 +90,15 @@ var (
 type Store struct {
 	JS jetstream.JetStream
 	KV jetstream.KeyValue
+}
+
+// Open opens or creates the bucket and refuses one that could lose records.
+func Open(ctx context.Context, js jetstream.JetStream) (Store, error) {
+	kv, err := sqsjs.OpenDurableKV(ctx, js, Bucket, "SQS first-store decisions: who may create the store key per Region")
+	if err != nil {
+		return Store{}, err
+	}
+	return Store{JS: js, KV: kv}, nil
 }
 
 func key(region string) string { return "region." + region }

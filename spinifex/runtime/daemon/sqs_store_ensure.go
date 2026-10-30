@@ -260,7 +260,7 @@ func (d *Daemon) handleSQSStoreEnsure(msg *nats.Msg) string {
 	}
 	respondWithJSON(d.node, msg, storelaunch.EnsureResponse{
 		NodeID: d.node, Region: d.config.Region, InstanceID: res.InstanceID,
-		Address: res.Address, State: storelaunch.StateBoundResponse,
+		Address: res.Address, InstanceType: res.InstanceType, State: storelaunch.StateBoundResponse,
 	})
 	return outcomeSuccess
 }
@@ -277,6 +277,9 @@ func sqsStoreEnsureError(err error) (code, message string) {
 			return awserrors.ErrorIncorrectState, msg
 		}
 	}
+	if errors.Is(err, storelaunch.ErrVolumeNotCreated) {
+		return awserrors.ErrorServiceUnavailable, err.Error()
+	}
 	if v, ok := errors.AsType[*storelaunch.VolumeError](err); ok {
 		if errors.Is(err, storelaunch.ErrUnencrypted) {
 			return awserrors.ErrorUnsupportedOperation, v.Error()
@@ -288,7 +291,7 @@ func sqsStoreEnsureError(err error) (code, message string) {
 		return awserrors.ErrorInvalidParameterValue, storelaunch.ErrWrongNode.Error()
 	case errors.Is(err, storelaunch.ErrWorkerNotBound), errors.Is(err, storelaunch.ErrKeyNotRecorded):
 		return awserrors.ErrorIncorrectState, err.Error()
-	case errors.Is(err, storelaunch.ErrSizeChanged), errors.Is(err, storelaunch.ErrKeyChanged), errors.Is(err, storelaunch.ErrSuperseded):
+	case errors.Is(err, storelaunch.ErrSizeChanged), errors.Is(err, storelaunch.ErrTypeChanged), errors.Is(err, storelaunch.ErrKeyChanged), errors.Is(err, storelaunch.ErrSuperseded):
 		return awserrors.ErrorIncorrectState, err.Error()
 	case errors.Is(err, storelaunch.ErrIncomplete), errors.Is(err, storelaunch.ErrHostNotReady):
 		return awserrors.ErrorServiceUnavailable, err.Error()

@@ -17,6 +17,7 @@ import (
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -29,19 +30,24 @@ import (
 
 const (
 	storeType     = "t3.small"
+	otherType     = "t3.large"
 	storeSize     = "8"
 	storeWorkerID = "i-0aaaaaaaaaaaaaaaa"
 )
 
 type storeVolumes struct {
-	mu        sync.Mutex
-	sizes     []int64
-	encrypted bool
+	mu         sync.Mutex
+	sizes      []int64
+	encrypted  bool
+	prepareErr error
 }
 
 func (v *storeVolumes) Prepare(_ context.Context, size int64) (string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.prepareErr != nil {
+		return "", v.prepareErr
+	}
 	v.sizes = append(v.sizes, size)
 	return fmt.Sprintf("vol-%017x", len(v.sizes)), nil
 }
@@ -139,6 +145,7 @@ func newStoreFixture(t *testing.T, vms *storeVMs) *storeFixture {
 		resourceMgr: &ResourceManager{instanceTypes: map[string]*ec2.InstanceTypeInfo{
 			storeType: {InstanceType: aws.String(storeType), MemoryInfo: &ec2.MemoryInfo{SizeInMiB: aws.Int64(2048)}},
 			"t3.nano": {InstanceType: aws.String("t3.nano"), MemoryInfo: &ec2.MemoryInfo{SizeInMiB: aws.Int64(512)}},
+			otherType: {InstanceType: aws.String(otherType), MemoryInfo: &ec2.MemoryInfo{SizeInMiB: aws.Int64(4096)}},
 		}},
 		sqsStore: newSQSStoreEnsurer(func(context.Context) (*storelaunch.Launcher, error) { return l, nil }),
 	}
@@ -220,7 +227,7 @@ func TestEnsureSQSStore_AdminLaunchesWithTheRecordedKeyOnce(t *testing.T) {
 	require.Len(t, enis, 1)
 	assert.Equal(t, storelaunch.EnsureResponse{NodeID: ensureNode, Region: sqsTestRegion,
 		InstanceID: "i-0bbbbbbbbbbbbbbbb", Address: aws.StringValue(enis[0].PrivateIpAddress),
-		State: storelaunch.StateBoundResponse}, *out)
+		InstanceType: storeType, State: storelaunch.StateBoundResponse}, *out)
 
 	spec := f.vms.specs[0]
 	assert.Equal(t, f.pub, spec.ClientNKey)
@@ -282,6 +289,46 @@ func TestEnsureSQSStore_AmbiguousLaunchIsNeverResent(t *testing.T) {
 	}
 	assert.Equal(t, 1, f.vms.count())
 	assert.Equal(t, 1, f.vols.count())
+}
+
+// A volume Prepare that sent no create (here a missing mkfs.ext4) is
+// retryable: the caller gets ServiceUnavailable, and once the host is fixed the
+// next call launches once.
+func TestEnsureSQSStore_VolumePrepareThatCreatedNothingIsRetryable(t *testing.T) {
+	f := newStoreFixture(t, &storeVMs{})
+	f.bindWorker(t, ensureNode, true)
+	f.vols.prepareErr = fmt.Errorf("%w: mkfs.ext4 is not installed", storevolume.ErrNotCreated)
+	for range 2 {
+		_, err := f.call(t, ensureNode, storeType, 30*time.Second)
+		assert.Contains(t, requireAWSCode(t, err, awserrors.ErrorServiceUnavailable), "mkfs.ext4")
+	}
+	f.vols.prepareErr = nil
+	out, err := f.call(t, ensureNode, storeType, 30*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, storeType, out.InstanceType)
+	assert.Equal(t, 1, f.vols.count())
+	assert.Equal(t, 1, f.vms.count())
+	assert.Len(t, f.storeENIs(t), 1)
+}
+
+// The instance type is fixed by the first request: a retry before dispatch
+// and a request after binding that ask for another type are both refused.
+func TestEnsureSQSStore_RefusesAnotherInstanceType(t *testing.T) {
+	f := newStoreFixture(t, &storeVMs{})
+	f.bindWorker(t, ensureNode, true)
+	f.vols.prepareErr = fmt.Errorf("%w: scratch dir is full", storevolume.ErrNotCreated)
+	_, err := f.call(t, ensureNode, storeType, 30*time.Second)
+	requireAWSCode(t, err, awserrors.ErrorServiceUnavailable)
+	_, err = f.call(t, ensureNode, otherType, 30*time.Second)
+	assert.Contains(t, requireAWSCode(t, err, awserrors.ErrorIncorrectState), storeType)
+
+	f.vols.prepareErr = nil
+	_, err = f.call(t, ensureNode, storeType, 30*time.Second)
+	require.NoError(t, err)
+	_, err = f.call(t, ensureNode, otherType, 30*time.Second)
+	assert.Contains(t, requireAWSCode(t, err, awserrors.ErrorIncorrectState), storeType)
+	assert.Equal(t, 1, f.vms.count())
+	assert.Equal(t, storeType, f.vms.specs[0].InstanceType)
 }
 
 // A volume whose own record is not encrypted is refused with its ID kept,
@@ -357,4 +404,28 @@ func TestEnsureSQSStore_RefusesBadParameters(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(reply.Data), awserrors.ErrorInvalidParameterValue)
 	f.nothingAllocated(t)
+}
+
+// The action accepts only a bound reply from the node it addressed that
+// names the instance type it asked for.
+func TestEnsureSQSStore_RefusesAMismatchedReply(t *testing.T) {
+	f := newStoreFixture(t, &storeVMs{})
+	ok := storelaunch.EnsureResponse{NodeID: "node-2", InstanceID: "i-0123456789abcdef0", Address: "10.240.0.9",
+		InstanceType: storeType, State: storelaunch.StateBoundResponse}
+	for _, mutate := range []func(*storelaunch.EnsureResponse){
+		func(r *storelaunch.EnsureResponse) { r.InstanceType = otherType },
+		func(r *storelaunch.EnsureResponse) { r.InstanceType = "" },
+		func(r *storelaunch.EnsureResponse) { r.NodeID = "node-1" },
+		func(r *storelaunch.EnsureResponse) { r.State = "launching" },
+	} {
+		reply := ok
+		mutate(&reply)
+		body, err := json.Marshal(reply)
+		require.NoError(t, err)
+		sub, err := f.nc.Subscribe(storelaunch.EnsureSubjectPrefix+"node-2", func(m *nats.Msg) { _ = m.Respond(body) })
+		require.NoError(t, err)
+		_, err = f.call(t, "node-2", storeType, 5*time.Second)
+		requireAWSCode(t, err, awserrors.ErrorServerInternal)
+		require.NoError(t, sub.Unsubscribe())
+	}
 }

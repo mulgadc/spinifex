@@ -87,27 +87,31 @@ var ErrToolMissing = errors.New("required host tool is missing")
 // may not, since mkfs lives in sbin.
 var sbinDirs = []string{"/usr/sbin", "/sbin"}
 
+// ErrNotCreated marks a Prepare failure from before any volume create was
+// sent, so the caller may safely retry.
+var ErrNotCreated = errors.New("storevolume: no volume was created")
+
 // Prepare creates a new volume, writes an empty ext4 filesystem to it and
 // releases it as available. It never writes any volume it did not just create.
 func (p *Preparer) Prepare(ctx context.Context, req Request) (string, error) {
 	if p.Volumes == nil || p.Provider == nil || p.WriteImage == nil || p.NodeID == "" || p.ScratchDir == "" {
-		return "", errors.New("storevolume: volume service, provider, image writer, node ID and scratch dir are required")
+		return "", fmt.Errorf("%w: volume service, provider, image writer, node ID and scratch dir are required", ErrNotCreated)
 	}
 	if req.AccountID == "" || req.AvailabilityZone == "" || req.SizeGiB < 1 {
-		return "", fmt.Errorf("storevolume: account, availability zone and a size of at least 1 GiB are required")
+		return "", fmt.Errorf("%w: account, availability zone and a size of at least 1 GiB are required", ErrNotCreated)
 	}
 	mkfs, err := p.findTool("mkfs.ext4")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", ErrNotCreated, err)
 	}
 	// The copy runs qemu-img by name, so only a PATH lookup proves it will run.
 	if _, err := p.findOnPath("qemu-img"); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", ErrNotCreated, err)
 	}
 
 	scratch, err := os.MkdirTemp(p.ScratchDir, "sqs-store-volume-")
 	if err != nil {
-		return "", fmt.Errorf("storevolume: scratch dir: %w", err)
+		return "", fmt.Errorf("%w: scratch dir: %w", ErrNotCreated, err)
 	}
 	defer func() {
 		if err := os.RemoveAll(scratch); err != nil {
@@ -116,7 +120,7 @@ func (p *Preparer) Prepare(ctx context.Context, req Request) (string, error) {
 	}()
 	image := filepath.Join(scratch, "ext4.raw")
 	if err := buildImage(ctx, p.mkfsRunner(), mkfs, image, req.SizeGiB); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", ErrNotCreated, err)
 	}
 
 	vol, err := p.Volumes.CreateVolumeForPreparation(ctx, &ec2.CreateVolumeInput{

@@ -32,7 +32,7 @@ func TestBegin_IsIdempotentAndRefusesChanges(t *testing.T) {
 	ctx := context.Background()
 	r, pub := newRecords(t)
 	for range 2 {
-		if err := r.Begin(ctx, region, "store-aaaa", node, pub, 8); err != nil {
+		if err := r.Begin(ctx, region, "store-aaaa", node, pub, "m5.large", 8); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -52,12 +52,46 @@ func TestBegin_IsIdempotentAndRefusesChanges(t *testing.T) {
 		{"a seed", "store-aaaa", node, "SUAEXAMPLE", 8, ErrInvalidRecording},
 	}
 	for _, tc := range cases {
-		if err := r.Begin(ctx, region, tc.claim, tc.nodeID, tc.key, tc.size); !errors.Is(err, tc.want) {
+		if err := r.Begin(ctx, region, tc.claim, tc.nodeID, tc.key, "m5.large", tc.size); !errors.Is(err, tc.want) {
 			t.Fatalf("%s: begin = %v, want %v", tc.name, err, tc.want)
 		}
 	}
+	if err := r.Begin(ctx, region, "store-aaaa", node, pub, "m5.xlarge", 8); !errors.Is(err, ErrTypeChanged) {
+		t.Fatalf("another type: begin = %v", err)
+	}
 	rec, err := r.Current(ctx, region)
-	if err != nil || rec.ClaimID != "store-aaaa" || rec.PublicKey != pub || rec.SizeGiB != 8 {
+	if err != nil || rec.ClaimID != "store-aaaa" || rec.PublicKey != pub || rec.SizeGiB != 8 || rec.InstanceType != "m5.large" {
+		t.Fatalf("record = %+v, %v", rec, err)
+	}
+}
+
+// The volume mark may be withdrawn only while it is set and no volume is
+// recorded; once a volume is recorded it stays one-shot.
+func TestClearVolumeAttempt_OnlyBeforeAVolumeIsRecorded(t *testing.T) {
+	ctx := context.Background()
+	r, pub := newRecords(t)
+	if err := r.Begin(ctx, region, "store-aaaa", node, pub, "m5.large", 8); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ClearVolumeAttempt(ctx, region, "store-aaaa"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("clear without a mark = %v", err)
+	}
+	if err := r.MarkVolumeAttempted(ctx, region, "store-aaaa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ClearVolumeAttempt(ctx, region, "store-aaaa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.MarkVolumeAttempted(ctx, region, "store-aaaa"); err != nil {
+		t.Fatalf("mark after clear = %v", err)
+	}
+	if err := r.RecordVolume(ctx, region, "store-aaaa", "vol-00000000000000001"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ClearVolumeAttempt(ctx, region, "store-aaaa"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("clear after a recorded volume = %v", err)
+	}
+	if rec, err := r.Current(ctx, region); err != nil || !rec.VolumeAttempted || rec.DataVolumeID == "" {
 		t.Fatalf("record = %+v, %v", rec, err)
 	}
 }
@@ -67,7 +101,7 @@ func TestBegin_IsIdempotentAndRefusesChanges(t *testing.T) {
 func TestMarks_AreOneShotAndOrdered(t *testing.T) {
 	ctx := context.Background()
 	r, pub := newRecords(t)
-	if err := r.Begin(ctx, region, "store-aaaa", node, pub, 8); err != nil {
+	if err := r.Begin(ctx, region, "store-aaaa", node, pub, "m5.large", 8); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.RecordVolume(ctx, region, "store-aaaa", "vol-00000000000000001"); !errors.Is(err, ErrConflict) {

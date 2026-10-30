@@ -24,7 +24,9 @@ type EnsureResponse struct {
 	Region     string `json:"Region"`
 	InstanceID string `json:"InstanceId"`
 	Address    string `json:"Address"`
-	State      string `json:"State"`
+	// The instance type the store was launched with, fixed by its first request.
+	InstanceType string `json:"InstanceType"`
+	State        string `json:"State"`
 }
 
 // StateBoundResponse is the only state an EnsureResponse reports.

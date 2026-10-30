@@ -177,6 +177,7 @@ func TestPrepare_MissingToolAllocatesNothing(t *testing.T) {
 			h := &harness{missing: map[string]bool{tool: true}}
 			_, err := prepare(t, h)
 			require.ErrorIs(t, err, ErrToolMissing)
+			require.ErrorIs(t, err, ErrNotCreated)
 			assert.Contains(t, err.Error(), tool)
 			assert.Empty(t, h.calls)
 		})
@@ -189,6 +190,7 @@ func TestPrepare_MissingImageWriterAllocatesNothing(t *testing.T) {
 	p.WriteImage = nil
 	_, err := p.Prepare(context.Background(), Request{AccountID: testAccount, AvailabilityZone: "ap-southeast-2a", SizeGiB: 1})
 	require.ErrorContains(t, err, "image writer")
+	require.ErrorIs(t, err, ErrNotCreated)
 	assert.Empty(t, h.calls)
 }
 
@@ -223,6 +225,7 @@ func TestPrepare_FailedFormatAllocatesNothing(t *testing.T) {
 	h := &harness{mkfsErr: errors.New("mkfs exploded")}
 	_, err := prepare(t, h)
 	require.ErrorContains(t, err, "mkfs exploded")
+	require.ErrorIs(t, err, ErrNotCreated)
 	assert.Equal(t, []string{"mkfs ext4.raw"}, h.calls)
 }
 
@@ -230,6 +233,7 @@ func TestPrepare_FailedCreateTouchesNoVolume(t *testing.T) {
 	h := &harness{createErr: errors.New("no capacity")}
 	_, err := prepare(t, h)
 	require.ErrorContains(t, err, "no capacity")
+	assert.NotErrorIs(t, err, ErrNotCreated, "a failed create may still have applied")
 	assert.Equal(t, []string{"mkfs ext4.raw", "create 000000000000 1GiB"}, h.calls)
 }
 
@@ -239,6 +243,7 @@ func TestPrepare_VolumeNotBornCreatingIsNeverWritten(t *testing.T) {
 	h := &harness{createState: "available"}
 	_, err := prepare(t, h)
 	requireRetained(t, err)
+	assert.NotErrorIs(t, err, ErrNotCreated)
 	assert.Equal(t, []string{"mkfs ext4.raw", "create 000000000000 1GiB"}, h.calls)
 }
 
@@ -246,6 +251,7 @@ func TestPrepare_FailedCopyUnpublishesThenDiscards(t *testing.T) {
 	h := &harness{writeErr: errors.New("qemu-img convert: broken pipe")}
 	_, err := prepare(t, h)
 	require.ErrorContains(t, err, "broken pipe")
+	assert.NotErrorIs(t, err, ErrNotCreated)
 	require.ErrorContains(t, err, "discarded")
 	var retained *RetainedVolumeError
 	assert.NotErrorAs(t, err, &retained)
@@ -402,7 +408,7 @@ func TestPrepare_RejectsIncompleteRequestBeforeAnything(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := &harness{}
 			_, err := h.preparer(t).Prepare(context.Background(), req)
-			require.Error(t, err)
+			require.ErrorIs(t, err, ErrNotCreated)
 			assert.Empty(t, h.calls)
 		})
 	}

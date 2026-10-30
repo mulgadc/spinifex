@@ -46,6 +46,8 @@ type Record struct {
 	NodeID    string `json:"nodeID"`
 	PublicKey string `json:"publicKey"`
 	SizeGiB   int64  `json:"sizeGiB"`
+	// The operator's instance type, fixed at Begin.
+	InstanceType string `json:"instanceType"`
 	// VolumeAttempted is set before the volume create is sent; DataVolumeID
 	// records its result. A set marker without a volume is never retried.
 	VolumeAttempted  bool   `json:"volumeAttempted,omitempty"`
@@ -64,6 +66,7 @@ var (
 	ErrMarked           = errors.New("SQS store launch step was already sent; its outcome must be reconciled")
 	ErrKeyChanged       = errors.New("SQS store launch record holds a different public key")
 	ErrSizeChanged      = errors.New("SQS store launch record holds a different volume size")
+	ErrTypeChanged      = errors.New("SQS store launch record holds a different instance type")
 	ErrInvalidRecording = errors.New("invalid SQS store launch value")
 )
 
@@ -78,6 +81,7 @@ var (
 	nodePattern     = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	volumePattern   = regexp.MustCompile(`^vol-[0-9a-f]{17}$`)
 	instancePattern = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
+	typePattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
 )
 
 // Records is the store launch state machine. Reads go to the stream leader
@@ -109,8 +113,9 @@ func (r Records) Current(ctx context.Context, region string) (Record, error) {
 
 // Begin creates the Region's launching record. A retry with the same claim,
 // key and size returns nil; any other existing record is refused.
-func (r Records) Begin(ctx context.Context, region, claimID, nodeID, publicKey string, sizeGiB int64) error {
-	next := Record{Region: region, State: StateLaunching, ClaimID: claimID, NodeID: nodeID, PublicKey: publicKey, SizeGiB: sizeGiB}
+func (r Records) Begin(ctx context.Context, region, claimID, nodeID, publicKey, instanceType string, sizeGiB int64) error {
+	next := Record{Region: region, State: StateLaunching, ClaimID: claimID, NodeID: nodeID, PublicKey: publicKey,
+		SizeGiB: sizeGiB, InstanceType: instanceType}
 	if !wellFormed(&next, region) {
 		return ErrInvalidRecording
 	}
@@ -134,6 +139,9 @@ func (r Records) Begin(ctx context.Context, region, claimID, nodeID, publicKey s
 		if rec.SizeGiB != sizeGiB {
 			return ErrSizeChanged
 		}
+		if rec.InstanceType != instanceType {
+			return ErrTypeChanged
+		}
 		// Unchanged for a retry: the rewrite proves the read was current.
 		if r.put(ctx, region, *rec, rev) == nil {
 			return nil
@@ -150,6 +158,18 @@ func (r Records) MarkVolumeAttempted(ctx context.Context, region, claimID string
 			return ErrMarked
 		}
 		rec.VolumeAttempted = true
+		return nil
+	})
+}
+
+// ClearVolumeAttempt withdraws the volume mark after a Prepare proven to have
+// sent no create, so a retry may try again. It refuses once a volume is recorded.
+func (r Records) ClearVolumeAttempt(ctx context.Context, region, claimID string) error {
+	return r.advance(ctx, region, claimID, func(rec *Record) error {
+		if !rec.VolumeAttempted || rec.DataVolumeID != "" {
+			return ErrConflict
+		}
+		rec.VolumeAttempted = false
 		return nil
 	})
 }
@@ -276,7 +296,8 @@ func (r Records) read(ctx context.Context, region string) (*Record, uint64, erro
 
 func wellFormed(r *Record, region string) bool {
 	if r.Region != region || !claimPattern.MatchString(r.ClaimID) || !nodePattern.MatchString(r.NodeID) ||
-		!nkeys.IsValidPublicUserKey(r.PublicKey) || r.SizeGiB < 1 || r.SizeGiB > MaxSizeGiB {
+		!nkeys.IsValidPublicUserKey(r.PublicKey) || r.SizeGiB < 1 || r.SizeGiB > MaxSizeGiB ||
+		!typePattern.MatchString(r.InstanceType) {
 		return false
 	}
 	if r.DataVolumeID != "" && (!r.VolumeAttempted || !volumePattern.MatchString(r.DataVolumeID)) {

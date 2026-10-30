@@ -10,6 +10,7 @@ import (
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
@@ -394,6 +395,50 @@ func TestEnsure_RefusesADifferentSizeBeforeDispatch(t *testing.T) {
 	_, err := r.l.Ensure(context.Background(), region, itype, sizeGiB+1)
 	if !errors.Is(err, ErrSizeChanged) {
 		t.Fatalf("ensure = %v", err)
+	}
+}
+
+// A Prepare that failed before sending any create (a missing tool, scratch or
+// mkfs failure) leaves the Region retryable, and the retry launches once.
+func TestEnsure_RetriesAVolumePrepareThatCreatedNothing(t *testing.T) {
+	r := newRig(t)
+	r.bindWorker(t, node, true)
+	r.vol.prepareErr = fmt.Errorf("%w: mkfs.ext4 not found", storevolume.ErrNotCreated)
+	for range 2 {
+		if _, err := r.l.Ensure(context.Background(), region, itype, sizeGiB); !errors.Is(err, ErrVolumeNotCreated) {
+			t.Fatalf("ensure = %v", err)
+		}
+		if rec := r.record(t); rec.VolumeAttempted || rec.DataVolumeID != "" {
+			t.Fatalf("record after an uncreated volume: %+v", rec)
+		}
+	}
+	r.vol.prepareErr = nil
+	res, err := r.l.Ensure(context.Background(), region, itype, sizeGiB)
+	if err != nil || res.InstanceID == "" || r.vms.count() != 1 || r.net.count() != 1 {
+		t.Fatalf("ensure after the fix = %+v, %v; %d VMs, %d ENIs", res, err, r.vms.count(), r.net.count())
+	}
+}
+
+// A retry before dispatch asking for a different instance type is refused,
+// and so is a request for another type once the store is bound.
+func TestEnsure_RefusesADifferentInstanceType(t *testing.T) {
+	r := newRig(t)
+	r.bindWorker(t, node, true)
+	r.net.fail = errors.New("eni quota")
+	_, _ = r.l.Ensure(context.Background(), region, itype, sizeGiB)
+	if _, err := r.l.Ensure(context.Background(), region, "sys.other", sizeGiB); !errors.Is(err, ErrTypeChanged) {
+		t.Fatalf("retry with another type = %v", err)
+	}
+	r.net.fail = nil
+	res, err := r.l.Ensure(context.Background(), region, itype, sizeGiB)
+	if err != nil || res.InstanceType != itype || r.vms.specs[0].InstanceType != itype {
+		t.Fatalf("ensure = %+v, %v", res, err)
+	}
+	if _, err := r.l.Ensure(context.Background(), region, "sys.other", sizeGiB); !errors.Is(err, ErrTypeChanged) {
+		t.Fatalf("bound store with another type = %v", err)
+	}
+	if r.vms.count() != 1 {
+		t.Fatalf("%d VMs", r.vms.count())
 	}
 }
 

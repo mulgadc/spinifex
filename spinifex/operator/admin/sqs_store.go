@@ -39,7 +39,8 @@ func EnsureSQSStore(ctx context.Context, nc *nats.Conn, nodeIDs []string, nodeID
 	case err != nil:
 		return nil, err
 	}
-	if out.State != storelaunch.StateBoundResponse || out.InstanceID == "" || out.Address == "" || out.NodeID != nodeID {
+	if out.State != storelaunch.StateBoundResponse || out.InstanceID == "" || out.Address == "" || out.NodeID != nodeID ||
+		out.InstanceType != instanceType {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	return out, nil

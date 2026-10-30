@@ -193,16 +193,16 @@ var _ workerlaunch.Volumes = sqsWorkerVolumes{}
 
 func (v sqsWorkerVolumes) Prepare(ctx context.Context) (string, error) {
 	if v.prep == nil || v.availabilityZone == "" || v.sizeGiB <= 0 {
-		return "", errors.New("sqs worker: volume preparer is not configured")
+		return "", fmt.Errorf("%w: sqs worker: volume preparer is not configured", storevolume.ErrNotCreated)
 	}
 	// Refuse before allocating: on a cluster without a storage key every
 	// attempt would otherwise strand an unencrypted volume.
 	enabled, err := ebsencryption.Enabled(v.encryptionKeyFile)
 	if err != nil {
-		return "", fmt.Errorf("sqs worker: read cluster storage key: %w", err)
+		return "", fmt.Errorf("%w: sqs worker: read cluster storage key: %w", storevolume.ErrNotCreated, err)
 	}
 	if !enabled {
-		return "", fmt.Errorf("%w: the cluster storage key is not configured", workerlaunch.ErrUnencrypted)
+		return "", fmt.Errorf("%w: %w: the cluster storage key is not configured", storevolume.ErrNotCreated, workerlaunch.ErrUnencrypted)
 	}
 	return v.prep.Prepare(ctx, storevolume.Request{
 		AccountID: awsidentifiers.GlobalAccountID, AvailabilityZone: v.availabilityZone, SizeGiB: v.sizeGiB,

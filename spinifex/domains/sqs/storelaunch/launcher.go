@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/nats-io/nats.go/jetstream"
@@ -57,6 +58,9 @@ var (
 	ErrKeyNotRecorded = errors.New("the SQS worker has not recorded its public key")
 	ErrWrongNode      = errors.New("the Region's SQS store is pinned to another node")
 	ErrUnencrypted    = errors.New("SQS store data volume is not encrypted")
+	// ErrVolumeNotCreated is a volume Prepare that sent no create; a retry may
+	// try again once its cause is fixed.
+	ErrVolumeNotCreated = errors.New("SQS store volume was not created")
 	// ErrOutcomeUnknown is returned for a dispatched launch whose result was
 	// not seen; it is never sent again until reconciled.
 	ErrOutcomeUnknown = errors.New("SQS store launch outcome is unknown; reconcile before relaunching")
@@ -100,8 +104,9 @@ type Launcher struct {
 
 // Result is the Region's bound store. Bound is not ready.
 type Result struct {
-	InstanceID string
-	Address    string
+	InstanceID   string
+	Address      string
+	InstanceType string
 }
 
 // Ensure returns the Region's bound store or launches it. Every step whose
@@ -120,8 +125,10 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string, size
 		return Result{}, err
 	case rec.NodeID != l.NodeID:
 		return Result{}, ErrWrongNode
+	case rec.InstanceType != instanceType:
+		return Result{}, fmt.Errorf("%w: %s", ErrTypeChanged, rec.InstanceType)
 	case rec.State == StateBound:
-		return Result{InstanceID: rec.InstanceID, Address: rec.Address}, nil
+		return Result{InstanceID: rec.InstanceID, Address: rec.Address, InstanceType: rec.InstanceType}, nil
 	case rec.Dispatched:
 		return Result{}, ErrOutcomeUnknown
 	}
@@ -138,7 +145,7 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string, size
 			return Result{}, err
 		}
 	}
-	if err := l.Records.Begin(ctx, region, claim, l.NodeID, pub, sizeGiB); err != nil {
+	if err := l.Records.Begin(ctx, region, claim, l.NodeID, pub, instanceType, sizeGiB); err != nil {
 		return Result{}, err
 	}
 	if rec, err = l.Records.Current(ctx, region); err != nil {
@@ -167,7 +174,7 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string, size
 	if err := l.bind(ctx, region, claim, instanceID, network.ENIIP); err != nil {
 		return Result{}, fmt.Errorf("store %s launched but not bound: %w", instanceID, err)
 	}
-	return Result{InstanceID: instanceID, Address: network.ENIIP}, nil
+	return Result{InstanceID: instanceID, Address: network.ENIIP, InstanceType: instanceType}, nil
 }
 
 // recordedKey requires the worker bound on this node and returns the public
@@ -212,6 +219,12 @@ func (l *Launcher) volume(ctx context.Context, region string, rec Record) (strin
 			return "", err
 		}
 		id, err := l.Volumes.Prepare(ctx, rec.SizeGiB)
+		if errors.Is(err, storevolume.ErrNotCreated) {
+			if cerr := l.Records.ClearVolumeAttempt(ctx, region, rec.ClaimID); cerr != nil {
+				return "", fmt.Errorf("%w: no volume was created, but its mark was not cleared: %w", ErrVolumeOutcomeUnknown, cerr)
+			}
+			return "", fmt.Errorf("%w: %w", ErrVolumeNotCreated, err)
+		}
 		if err != nil {
 			err = fmt.Errorf("%w: %w", ErrVolumeOutcomeUnknown, err)
 			if l.RetainedVolume != nil {

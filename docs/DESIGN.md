@@ -407,8 +407,10 @@ Stop/detach evidence for `RecordStopped` is not wired, the guest's metadata rout
 The super-admin `EnsureSQSStore` action takes a `NodeId`, an `InstanceType` and a `VolumeSizeGiB` and sends a request to `sqs.store.Ensure.v1.<node>` with no queue group; only the node the Region's worker is bound to can launch the store.
 That node refuses an instance type whose memory does not exceed 512 MiB, the store's `GOMEMLIMIT` under ADR-0011:S11; this is a floor, not a validated size, and no type is defaulted.
 It refuses before recording or allocating anything unless the store image and the cluster storage key are present, the worker is bound on this node, and that worker's identity has recorded its public key in the first-store decision, which it then advances to a launch intent.
-The store's own launch record in `spinifex-sqs-store-launch` holds only that public key, the claim, the node and the operator's size, and marks each step before its uncertain create: the volume, the ENI in the worker's private subnet, and the launch.
-A marked step whose result is not visible is reported as `IncorrectState` and never resent; a volume that is not encrypted by its own record is refused as `UnsupportedOperation` with its ID kept, and the daemon re-checks the volume's encryption and the guest's size at launch.
+The store's own launch record in `spinifex-sqs-store-launch` holds only that public key, the claim, the node and the operator's instance type and size, and marks each step before its uncertain create: the volume, the ENI in the worker's private subnet, and the launch.
+A later request for a different instance type or size is refused as `IncorrectState`, before dispatch and after binding, and the reply names the type the store was launched with.
+A volume preparation that failed before sending any create, such as a missing `mkfs.ext4` or a scratch or format failure, withdraws its mark and returns `ServiceUnavailable`, so a retry may try again once the host is fixed.
+Any other marked step whose result is not visible is reported as `IncorrectState` and never resent; a volume that is not encrypted by its own record is refused as `UnsupportedOperation` with its ID kept, and the daemon re-checks the volume's encryption and the guest's size at launch.
 The daemon never receives the worker's seed; the store's NATS server accepts only that public key, and the reply's bound VM and address are not readiness, which only the worker can check.
 
 ## Configuration

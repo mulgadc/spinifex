@@ -39,7 +39,6 @@ type v2Env struct {
 // v2Options tunes the fixture; the zero value is an allow-all user "dev".
 type v2Options struct {
 	policies []iamdomain.PolicyDocument
-	noIssuer bool
 }
 
 func newV2Env(t *testing.T, opts v2Options) *v2Env {
@@ -55,16 +54,13 @@ func newV2Env(t *testing.T, opts v2Options) *v2Env {
 	iamSvc.userPolicies[v2Account+"|dev"] = policies
 
 	gw := withVerifier(&GatewayConfig{
-		DisableLogging:   true,
-		Region:           ecrTestRegion,
-		InternalSuffix:   ecrTestSuffix,
-		IAMService:       iamSvc,
-		STSService:       stsSvc,
-		ECRTokenVerifier: verify,
+		DisableLogging: true,
+		Region:         ecrTestRegion,
+		InternalSuffix: ecrTestSuffix,
+		IAMService:     iamSvc,
+		STSService:     stsSvc,
 	})
-	if !opts.noIssuer {
-		gw.ECRTokenIssuer = iss
-	}
+	gw.RegistryHandler = newTestRegistryHandler(t, gw, iss, verify)
 	return &v2Env{handler: gw.SetupRoutes(), iam: iamSvc, sts: stsSvc, issuer: iss}
 }
 
@@ -330,7 +326,12 @@ func TestV2Pipeline_TokenEndpoint(t *testing.T) {
 
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 			assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
-			var body ociTokenResponse
+			var body struct {
+				Token       string `json:"token"`
+				AccessToken string `json:"access_token"`
+				ExpiresIn   int    `json:"expires_in"`
+				IssuedAt    string `json:"issued_at"`
+			}
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 			assert.NotEmpty(t, body.Token)
 			assert.Equal(t, body.Token, body.AccessToken)
@@ -394,16 +395,6 @@ func TestV2Pipeline_TokenEndpoint(t *testing.T) {
 
 		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 		assert.Equal(t, "UNKNOWN", w.errorCode(t))
-	})
-
-	t.Run("no issuer wired", func(t *testing.T) {
-		e := newV2Env(t, v2Options{noIssuer: true})
-		token := e.userToken(t)
-
-		w := e.do(http.MethodGet, "/v2/token", v2Host, basic(token))
-
-		assert.Equal(t, http.StatusNotImplemented, w.Code)
-		assert.Equal(t, "UNSUPPORTED", w.errorCode(t))
 	})
 }
 

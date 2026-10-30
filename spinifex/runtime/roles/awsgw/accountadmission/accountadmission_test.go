@@ -6,6 +6,7 @@ import (
 	"time"
 
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -77,4 +78,26 @@ func TestNilAdmitterForgetsAndReadsNothing(t *testing.T) {
 	var a *Admitter
 	a.Forget("1")
 	assert.False(t, a.activeUntil("1", time.Now()))
+}
+
+func TestActive(t *testing.T) {
+	cases := []struct {
+		name    string
+		iam     iamdomain.IAMService
+		active  bool
+		wantErr bool
+	}{
+		{"active", &fakeIAM{status: iamdomain.AccountStatusActive}, true, false},
+		{"suspended", &fakeIAM{status: iamdomain.AccountStatusSuspended}, false, false},
+		{"terminating", &fakeIAM{status: iamdomain.AccountStatusTerminating}, false, false},
+		{"deleted", &fakeIAM{err: errors.New(awserrors.ErrorIAMNoSuchEntity)}, false, false},
+		{"unreadable", &fakeIAM{err: errors.New("store down")}, false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			active, err := New(c.iam).Active("1", "")
+			assert.Equal(t, c.active, active)
+			assert.Equal(t, c.wantErr, err != nil)
+		})
+	}
 }

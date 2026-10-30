@@ -11,6 +11,7 @@ import (
 	"time"
 
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // ActiveTTL bounds how long an account is trusted to still be ACTIVE without
@@ -98,4 +99,18 @@ func (a *Admitter) markActive(accountID string, now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.active[accountID] = now.Add(ActiveTTL)
+}
+
+// Active reports whether the account may proceed. A suspended, terminating or deleted
+// account is (false, nil); only an unreadable status is an error.
+func (a *Admitter) Active(accountID, logIP string) (bool, error) {
+	err := a.Admit(accountID, logIP)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, ErrNotActive), awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity):
+		return false, nil
+	default:
+		return false, err
+	}
 }

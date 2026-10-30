@@ -28,8 +28,6 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
-	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
-	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
@@ -57,16 +55,6 @@ const (
 	ctxRegion    contextKey = "sigv4.region"
 	ctxAction    contextKey = "sigv4.action"
 	ctxQueryArgs contextKey = "sigv4.queryArgs"
-
-	// ctxAuthPrincipal carries the verified ECR token subject (principal ARN).
-	// The resolved account is stashed via ecrregistry.WithAuthAccount so the
-	// registry package can read it without sharing this package's key type.
-	ctxAuthPrincipal contextKey = "ecr.authPrincipal"
-	// ctxECRPrincipal carries the principalContext resolveECRPrincipal rebuilt
-	// from current IAM/STS state for the request's ECR token. The operation-
-	// authorization middleware reads this to run the same policy evaluator
-	// SigV4 requests use; it is never populated for non-ECR routes.
-	ctxECRPrincipal contextKey = "ecr.principal"
 )
 
 // Values of callerPrincipal.principalType. Downstream handlers that interpret
@@ -146,14 +134,10 @@ type GatewayConfig struct {
 	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil
 	// answers them with a 500 (e.g. in unit tests of unrelated routes).
 	OIDC OIDCPublisher
-	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
-	// to the 501 stub (e.g. in unit tests of unrelated routes).
-	ECRRegistry *ecrregistry.Registry
-	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
-	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
-	// in unit tests of unrelated routes).
-	ECRTokenIssuer   *ecrauth.Issuer
-	ECRTokenVerifier *ecrauth.Verifier
+	// RegistryHandler serves the registry host's /v2 subtree. It sits outside the
+	// SigV4 group and the AWS seam, which ADR-0002:S5 keeps off the registry. Nil
+	// answers 501.
+	RegistryHandler http.Handler
 	// BedrockCredentials resolves per-account provider API keys for bedrock
 	// routes. Nil falls back to no external providers (self-host models only).
 	BedrockCredentials *ochre.CredentialStore
@@ -329,7 +313,7 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 
 	// OCI Distribution registry (/v2/*). Token/host-authenticated rather than
 	// SigV4-credential-scoped, so it mounts outside the SigV4 group.
-	gw.mountOCIRegistry(r)
+	gw.mountRegistry(r)
 
 	// Authenticated AWS API surface.
 	r.Group(func(auth chi.Router) {

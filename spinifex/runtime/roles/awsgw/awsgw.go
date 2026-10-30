@@ -10,7 +10,10 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -51,6 +54,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
@@ -486,6 +490,20 @@ func launchService(config *config.ClusterConfig) error {
 	nodeIDs := slices.Collect(maps.Keys(config.Nodes))
 
 	ecrIssuer := ecrauth.NewIssuer(signingKey, ecrAudience)
+	ecrVerifier := ecrauth.NewVerifier(verifyKeys, ecrAudience)
+	credentials := credverify.New(iamService, stsService)
+	admission := accountadmission.New(iamService)
+	ecrBridge, err := ecrregistry.NewBridge(registryadapt.Config(ecrregistry.BridgeConfig{
+		Registry:  ecrRegistry,
+		Verifier:  ecrVerifier,
+		Issuer:    ecrIssuer,
+		Admission: admission,
+		Region:    nodeConfig.Region,
+	}, credentials, policyauth.New(iamService)))
+	if err != nil {
+		return fmt.Errorf("ECR registry bridge: %w", err)
+	}
+	registryHosts := ingresshttp.NewHostMatcher(config.AWS.ServicesDomain, "dkr", "ecr")
 	gw := gateway.GatewayConfig{
 		Debug:                   nodeConfig.AWSGW.Debug,
 		DisableLogging:          false,
@@ -501,13 +519,12 @@ func launchService(config *config.ClusterConfig) error {
 		AZ:                      nodeConfig.AZ,
 		IAMService:              iamService,
 		STSService:              stsService,
-		Credentials:             credverify.New(iamService, stsService),
+		Credentials:             credentials,
+		Admission:               admission,
 		Version:                 version,
 		Commit:                  commit,
 		OIDC:                    ekscluster.NewOIDCPublisher(jwksJS),
-		ECRRegistry:             ecrRegistry,
-		ECRTokenIssuer:          ecrIssuer,
-		ECRTokenVerifier:        ecrauth.NewVerifier(verifyKeys, ecrAudience),
+		RegistryHandler:         registryHosts.Middleware(ecrBridge.Handler()),
 		BedrockCredentials:      bedrockCredentials,
 		BedrockEndpoints:        bedrockEndpoints,
 		BedrockEndpointResolver: bedrockEndpointResolver,
@@ -538,7 +555,7 @@ func launchService(config *config.ClusterConfig) error {
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
 	// until their tokens expire. The rotator keeps the issuer/verifier current as
 	// keys roll. Bound to the same lifetime context as the STS janitor.
-	keyRotator, err := ecrauth.NewRotator(janitorCtx, js, masterKey, gw.ECRTokenIssuer, gw.ECRTokenVerifier)
+	keyRotator, err := ecrauth.NewRotator(janitorCtx, js, masterKey, ecrIssuer, ecrVerifier)
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: signing-key rotator: %w", err)
 	}

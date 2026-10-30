@@ -204,3 +204,9 @@ func principalTypeCondition(principalType string) (string, bool) {
 		return "", false
 	}
 }
+
+// Authorize evaluates one IAM action against resources for principal, using the
+// condition keys the request carries. It returns what Evaluate returns.
+func (e *Evaluator) Authorize(r *http.Request, principal credential.Principal, iamAction string, resources []string) error {
+	return e.Evaluate(principal, iamAction, resources, RequestConditionKeys(r, principal))
+}

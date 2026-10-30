@@ -1,12 +1,5 @@
 package gateway
 
-// AKID prefixes. Prefix-first dispatch prevents a misfiled record from being
-// resolved by the wrong lookup path.
-const (
-	longLivedAKIDPrefix = "AKIA"
-	sessionAKIDPrefix   = "ASIA"
-)
-
 // principalContext is the identity envelope set on the request context after
 // SigV4 verification succeeds.
 type principalContext struct {

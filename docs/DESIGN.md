@@ -404,6 +404,8 @@ A reply lost to that timeout is reported as `ServiceUnavailable`; calling again 
 The reply names the bound VM's node, Region, instance ID and generation; bound is not ready, and it says nothing about the guest's boot, its key or the store.
 Stop/detach evidence for `RecordStopped` is not wired, the guest's metadata route and gateway TLS on a real ENI and worker-to-store TCP are unproven, and Viperblock's at-rest key is held by the platform.
 
+Operators call both actions with `spx admin sqs ensure-worker --node --instance-type` and `spx admin sqs ensure-store --node --instance-type --volume-size-gib`, signed for the `spinifex` service with the standard AWS credential chain like the other `spx admin` gateway commands.
+Each command refuses missing inputs before sending anything and reports only the bound VM; a bound VM is not a ready worker or store.
 The super-admin `EnsureSQSStore` action takes a `NodeId`, an `InstanceType` and a `VolumeSizeGiB` and sends a request to `sqs.store.Ensure.v1.<node>` with no queue group; only the node the Region's worker is bound to can launch the store.
 That node refuses an instance type whose memory does not exceed 512 MiB, the store's `GOMEMLIMIT` under ADR-0011:S11; this is a floor, not a validated size, and no type is defaulted.
 It refuses before recording or allocating anything unless the store image and the cluster storage key are present, the worker is bound on this node, and that worker's identity has recorded its public key in the first-store decision, which it then advances to a launch intent.
@@ -416,7 +418,10 @@ The daemon never receives the worker's seed; the store's NATS server accepts onl
 After boot, the worker's long-running `sqs-worker ready` step mounts and verifies its disk again and calls the internal `spinifex-sqs` `DescribeStore` action, which admits only the current worker and returns the bound store's address and recorded public key, or pending.
 It loads its key only if it matches that public key, then connects to the store's NATS on port 4222 with it and asks JetStream for account info, each pass bounded to 30 seconds.
 The step runs until shutdown with no overall deadline, so a store the operator launches at any time is picked up: it asks again every 5 seconds while the store is pending, not answering or the reply was lost, and re-checks a ready store every 30 seconds.
-A pass writes only the address and public key to `/run/sqs-worker/store-ready`; any failed pass removes that file, and so do the step's exit and the guest's shutdown, which stops the step by its recorded PID.
+A pass writes only the address and public key to `/run/sqs-worker/store-ready`; any failed pass removes that file, and so does the step's own exit.
+Init respawns the step, at most once every 5 seconds, and every start removes a marker left by a watcher that was killed or crashed before the new watcher runs.
+A ready store that fails is noticed up to one re-check interval plus one bounded call later, so the marker can be up to about a minute stale.
+Shutdown blocks further respawns, removes the marker, and stops the watcher by its recorded PID and start time, escalating to SIGKILL after a budget; it unmounts the worker disk only once the watcher is confirmed gone, and a survivor leaves every mount in place.
 A mismatched key, a store that refuses the key, a key missing from the disk or an unclassified gateway refusal is asked again only every 5 minutes, so it never spins and still recovers if the operator fixes it; a missing key is never replaced.
 The NKey authenticates the worker to the store, but nothing authenticates the store to the worker: there is no TLS, so a pass means only that something at that address accepted the key.
 This is store readiness for the worker alone; there is no SQS API, and no production sizing or support is claimed.

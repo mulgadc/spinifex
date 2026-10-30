@@ -16,7 +16,7 @@ case "$PROFILE" in
     store)
         payload="usr/local/bin/nats-server usr/local/lib/sqs-store/sqs-store-lib.sh usr/local/lib/sqs-store/sqs-store-prepare usr/local/lib/sqs-store/sqs-store-run usr/local/lib/sqs-store/sqs-store-stop" ;;
     worker)
-        payload="usr/local/bin/sqs-worker usr/local/lib/sqs-worker/sqs-worker-prepare usr/local/lib/sqs-worker/sqs-worker-ready usr/local/lib/sqs-worker/sqs-worker-stop data" ;;
+        payload="usr/local/bin/sqs-worker usr/local/lib/sqs-worker/sqs-worker-lib.sh usr/local/lib/sqs-worker/sqs-worker-prepare usr/local/lib/sqs-worker/sqs-worker-ready usr/local/lib/sqs-worker/sqs-worker-stop data" ;;
     *) echo "ERROR: profile must be store or worker, not $PROFILE" >&2; exit 1 ;;
 esac
 tag="[build-sqs-$PROFILE-microvm-image]"

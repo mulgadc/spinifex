@@ -1,7 +1,6 @@
 #!/bin/sh
-# once: keep checking the operator-launched store's JetStream with the worker
-# key until shutdown. store-ready exists only while the check passes; a pass
-# proves the store accepted the worker key, not the store server's identity.
-[ -s /run/sqs-worker/public-key ] || { echo "[sqs-worker] no worker key; readiness skipped" >> /dev/console; exit 0; }
-echo $$ > /run/sqs-worker/ready.pid
-exec /usr/local/bin/sqs-worker ready >> /dev/console 2>&1
+# Respawned by init. A watcher that must not run parks here instead of exiting,
+# so init does not respawn it in a tight loop.
+. /usr/local/lib/sqs-worker/sqs-worker-lib.sh
+sqsw_run
+exec sleep 2147483647

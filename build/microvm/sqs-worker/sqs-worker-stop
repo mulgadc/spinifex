@@ -1,20 +1,5 @@
 #!/bin/sh
-# Shutdown: stop the readiness watcher by its recorded PID (only if it is still
-# sqs-worker), drop the readiness marker, then flush and unmount the worker
-# disk and remount everything else read-only.
-pid=$(cat /run/sqs-worker/ready.pid 2>/dev/null)
-if [ -n "$pid" ] && [ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = /usr/local/bin/sqs-worker ]; then
-    kill -TERM "$pid"
-    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -d "/proc/$pid" ] || break; sleep 0.5; done
-    echo "[sqs-worker] stop: readiness watcher pid=$pid stopped" >> /dev/console
-fi
-rm -f /run/sqs-worker/store-ready /run/sqs-worker/ready.pid
-sync
-if grep -q ' /data ' /proc/mounts 2>/dev/null; then
-    rc=0
-    umount /data || rc=$?
-    echo "[sqs-worker] stop: umount /data rc=$rc" >> /dev/console
-fi
-rc=0
-umount -a -r || rc=$?
-echo "[init] shutdown: umount -a -r rc=$rc" >> /dev/console
+# The only shutdown action: stop the readiness watcher and unmount the worker
+# disk, then run the generic read-only remount only if the watcher is gone.
+. /usr/local/lib/sqs-worker/sqs-worker-lib.sh
+sqsw_shutdown

@@ -343,10 +343,10 @@ Evidence is local only: unit tests, real QEMU boots against disposable scratch d
 Viperblock, volume encryption, the EC2 volume record path, multiple nodes and host reachability of the guest address are not tested.
 Credential issuance and rotation, store placement and NATS readiness checks do not exist, and there is no failover: a lost node leaves its store unavailable.
 
-### SQS worker guest (not wired)
+### SQS worker guest (operator-launched)
 
 The shared SQS worker guest holds the SQS store's client credential, so that no platform component does (ADR-0011:S2).
-Nothing activates it: no caller invokes the worker launcher below, and no worker service runs after boot.
+Only an operator activates it, with the super-admin `EnsureSQSWorker` action described below; nothing starts it at daemon startup, and no worker service runs after boot.
 
 `make build-sqs-worker-microvm-image` builds it with the store image's script and network `/init` under `SQS_MICROVM_PROFILE=worker`; it carries the static `sqs-worker` binary and the ext4 tools, no `nats-server`, and an empty `/data` mountpoint.
 At boot `sqs-worker boot` reads three firmware config values under `opt/spinifex/sqs-worker/`: the worker disk's serial, its Region and the gateway URL; none is a first-store decision, because a static value survives a guest reset.
@@ -396,7 +396,11 @@ A relaunch rebuilds that config from the VM record on the node that launched it 
 
 Evidence is local only: unit tests with a fake firmware config, sysfs and mount table, tests running the boot through the real client against the real `spinifex-sqs` registration and records, and QEMU boots of the built image against disposable scratch disks and a host-side test gateway and metadata service, showing the first boot creates the key, reboots reuse it, a key lost after recording is never replaced, and the seed reaches no log or request.
 The worker's network is a private SQS system VPC per Region, built by `systemvpc.EnsurePrivate` from the `[sqs]` supernet (default `10.240.0.0/14`): one VPC and one /24 subnet, with no internet gateway, NAT gateway, EIP, route table or daemon-to-store node port. Each launch claim gets one ENI in that subnet, in the VPC default security group, found again by its claim on a retry; two ENIs for one claim are refused. Worker-to-store TCP and the guest's route to the metadata service are not yet proven by any traffic test.
-A caller for the launcher and stop/detach evidence for `RecordStopped` are not wired, the guest's metadata route on a real ENI is unproven, and Viperblock's at-rest key is held by the platform.
+The super-admin `EnsureSQSWorker` action on the internal `spinifex` operator service takes a `NodeId`, which must be a node of this cluster and a single subject token, and an `InstanceType`, and sends a request to `sqs.worker.Ensure.v1.<node>` with no queue group, so only that node answers and the worker stays pinned.
+That node's daemon re-checks the node the request names and the instance type, then runs its one composed launcher for its own Region, one launch at a time, in the daemon's own context with a 30-minute bound, so a caller's timeout does not cancel it.
+A reply lost to that timeout is reported as `ServiceUnavailable`; calling again reports the bound worker, or `IncorrectState` for a dispatched launch whose outcome is unknown, which is never resent; a Region pinned to another node is refused as `InvalidParameterValue`.
+The reply names the bound VM's node, Region, instance ID and generation; bound is not ready, and it says nothing about the guest's boot, its key or the store.
+Stop/detach evidence for `RecordStopped` is not wired, the guest's metadata route and gateway TLS on a real ENI and worker-to-store TCP are unproven, and Viperblock's at-rest key is held by the platform.
 
 ## Configuration
 

@@ -78,6 +78,7 @@ import (
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	route53domain "github.com/mulgadc/spinifex/spinifex/domains/route53"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -170,6 +171,7 @@ type Daemon struct {
 	launchTemplateService *ec2launchtemplate.LaunchTemplateServiceImpl
 	spotInstanceService   *ec2spotinstance.SpotInstanceServiceImpl
 	vpcService            *ec2vpc.VPCServiceImpl
+	sqsWorker             *sqsWorkerEnsurer
 	eipService            ec2eip.EIPService
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
 	eksService            *ekscluster.EKSServiceImpl
@@ -902,6 +904,9 @@ type natsSub struct {
 
 // subscribeAll registers all NATS subscriptions using a table-driven approach.
 func (d *Daemon) subscribeAll() error {
+	if d.sqsWorker == nil {
+		d.sqsWorker = newSQSWorkerEnsurer(d.buildSQSWorkerLauncher)
+	}
 	subs := []natsSub{
 		// ec2.RunInstances is handled by dynamic per-instance-type subscriptions
 		// managed by ResourceManager.initSubscriptions()
@@ -965,6 +970,9 @@ func (d *Daemon) subscribeAll() error {
 		// Capacity reservations: Create is node-targeted (gateway pins one node);
 		// Describe fans out and Cancel broadcasts, so both use plain Subscribe.
 		{fmt.Sprintf("ec2.CreateCapacityReservation.%s", d.node), d.handleEC2CreateCapacityReservation, ""},
+		// The shared SQS worker is launched only on an operator's request to the
+		// node it is pinned to; nothing starts it automatically.
+		{workerlaunch.EnsureSubjectPrefix + d.node, d.handleSQSWorkerEnsure, ""},
 		{"ec2.DescribeCapacityReservations", d.handleEC2DescribeCapacityReservations, ""},
 		{"ec2.CancelCapacityReservation", d.handleEC2CancelCapacityReservation, ""},
 		{"ec2.CreateNatGateway", handleNATSRequest(d.node, d.natGatewayService.CreateNatGateway), "spinifex-workers"},

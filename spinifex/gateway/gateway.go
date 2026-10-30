@@ -59,12 +59,6 @@ const (
 	ctxAction    contextKey = "sigv4.action"
 	ctxQueryArgs contextKey = "sigv4.queryArgs"
 
-	// ctxTargetAccount carries the accountID parsed from a registry host
-	// ({accountID}.dkr.ecr.{region}.{suffix}) by the host-routing middleware.
-	ctxTargetAccount contextKey = "host.targetAccount"
-	// ctxTargetRegion carries the region parsed from the same registry host.
-	ctxTargetRegion contextKey = "host.targetRegion"
-
 	// ctxAuthPrincipal carries the verified ECR token subject (principal ARN).
 	// The resolved account is stashed via ecrregistry.WithAuthAccount so the
 	// registry package can read it without sharing this package's key type.

@@ -1,8 +1,8 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -100,7 +100,7 @@ func TestECRToken_CrossAccountForbidden(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/token", nil)
 	req.Header.Set("Authorization", mintBasic(t, iss, ecrTestAccount))
-	ctx := context.WithValue(req.Context(), ctxTargetAccount, "999999999999")
+	ctx := ingresshttp.WithTarget(req.Context(), "999999999999", ecrTestRegion)
 	w := httptest.NewRecorder()
 	gw.handleECRToken(w, req.WithContext(ctx))
 

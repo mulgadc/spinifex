@@ -1,4 +1,4 @@
-package gateway
+package http
 
 import (
 	"net/http"
@@ -76,7 +76,7 @@ func TestParseRegistryHost(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			acct, regn, ok := parseRegistryHost(tc.host, tc.suffix)
+			acct, regn, ok := NewHostMatcher(tc.suffix, "dkr", "ecr").Parse(tc.host)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
 			}
@@ -95,42 +95,52 @@ func TestParseRegistryHost(t *testing.T) {
 func TestHostMatch_PopulatesContextOnRegistryHost(t *testing.T) {
 	t.Parallel()
 
-	gw := &GatewayConfig{InternalSuffix: "spinifex.internal"}
+	m := NewHostMatcher("spinifex.internal", "dkr", "ecr")
 
 	var gotAcct, gotRegn string
-	var acctOK, regnOK bool
 	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		gotAcct, acctOK = r.Context().Value(ctxTargetAccount).(string)
-		gotRegn, regnOK = r.Context().Value(ctxTargetRegion).(string)
+		gotAcct, gotRegn = TargetAccount(r.Context()), TargetRegion(r.Context())
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/", nil)
 	req.Host = "123456789012.dkr.ecr.us-east-1.spinifex.internal"
-	gw.hostMatch(next).ServeHTTP(httptest.NewRecorder(), req)
+	m.Middleware(next).ServeHTTP(httptest.NewRecorder(), req)
 
-	if !acctOK || gotAcct != "123456789012" {
-		t.Errorf("target account = %q (ok=%v), want 123456789012", gotAcct, acctOK)
+	if gotAcct != "123456789012" {
+		t.Errorf("target account = %q, want 123456789012", gotAcct)
 	}
-	if !regnOK || gotRegn != "us-east-1" {
-		t.Errorf("target region = %q (ok=%v), want us-east-1", gotRegn, regnOK)
+	if gotRegn != "us-east-1" {
+		t.Errorf("target region = %q, want us-east-1", gotRegn)
 	}
 }
 
 func TestHostMatch_PassesThroughNonRegistryHost(t *testing.T) {
 	t.Parallel()
 
-	gw := &GatewayConfig{InternalSuffix: "spinifex.internal"}
+	m := NewHostMatcher("spinifex.internal", "dkr", "ecr")
 
 	var hadAccount bool
 	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		_, hadAccount = r.Context().Value(ctxTargetAccount).(string)
+		hadAccount = TargetAccount(r.Context()) != ""
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/", nil)
 	req.Host = "ecr.us-east-1.spinifex.internal"
-	gw.hostMatch(next).ServeHTTP(httptest.NewRecorder(), req)
+	m.Middleware(next).ServeHTTP(httptest.NewRecorder(), req)
 
 	if hadAccount {
 		t.Error("non-registry host should not populate target account context")
+	}
+}
+
+func TestHostMatcher_LabelsComeFromComposition(t *testing.T) {
+	t.Parallel()
+
+	m := NewHostMatcher("example.test", "reg")
+	if acct, regn, ok := m.Parse("42.reg.eu-west-1.example.test"); !ok || acct != "42" || regn != "eu-west-1" {
+		t.Errorf("Parse = %q %q %v, want 42 eu-west-1 true", acct, regn, ok)
+	}
+	if _, _, ok := m.Parse("42.dkr.eu-west-1.example.test"); ok {
+		t.Error("a host with other labels must not match")
 	}
 }

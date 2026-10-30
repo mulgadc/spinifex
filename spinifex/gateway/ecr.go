@@ -4,12 +4,13 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 )
 
 // mountOCIRegistry registers the OCI Distribution Spec v2 surface (/v2/*) on r.
 // These endpoints are host- and token-authenticated rather than
 // SigV4-credential-scoped, so they mount outside the SigV4 group behind the
-// hostMatch host-routing middleware.
+// host-matching middleware.
 //
 // OCI repository names may contain slashes (e.g. team/app), so the blob,
 // manifest and tag paths can't be expressed as fixed chi segments. The
@@ -18,14 +19,14 @@ import (
 // Registry is wired (e.g. unit tests of unrelated routes), the surface falls
 // back to the 501 stub.
 //
-// Requests flow hostMatch -> ecrAuthBridge -> ecrOperationAuthorization ->
+// Requests flow host matching -> ecrAuthBridge -> ecrOperationAuthorization ->
 // Registry: the bridge authenticates the token and rehydrates its principal
 // from current IAM/STS state, then authorization classifies the OCI
 // operation and evaluates it against that principal's policies before the
 // request ever reaches Registry's object/metadata stores.
 func (gw *GatewayConfig) mountOCIRegistry(r chi.Router) {
 	r.Route("/v2", func(v2 chi.Router) {
-		v2.Use(gw.hostMatch)
+		v2.Use(ingresshttp.NewHostMatcher(gw.InternalSuffix, "dkr", "ecr").Middleware)
 
 		// The token endpoint authenticates the presented credential in-band and
 		// issues a Bearer token, so it mounts outside the bearer auth bridge.

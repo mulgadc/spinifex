@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -52,7 +53,7 @@ func (gw *GatewayConfig) ecrAuthBridge(next http.Handler) http.Handler {
 
 		// Cross-account guard: a token is account-scoped, so it must match the
 		// account in the registry host it is presented against.
-		if target, _ := r.Context().Value(ctxTargetAccount).(string); target != "" && target != claims.AccountID {
+		if target := ingresshttp.TargetAccount(r.Context()); target != "" && target != claims.AccountID {
 			ecrregistry.WriteError(w, http.StatusForbidden, "DENIED", "token account does not match registry host")
 			return
 		}

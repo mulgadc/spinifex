@@ -1,9 +1,9 @@
 package gateway
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/base64"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -158,7 +158,7 @@ func TestECRAuthBridge_CrossAccountForbidden(t *testing.T) {
 	// Token is for ecrTestAccount, but the host targets a different account.
 	req := httptest.NewRequest(http.MethodGet, "/v2/", nil)
 	req.Header.Set("Authorization", mintBasic(t, iss, ecrTestAccount))
-	ctx := context.WithValue(req.Context(), ctxTargetAccount, "999999999999")
+	ctx := ingresshttp.WithTarget(req.Context(), "999999999999", ecrTestRegion)
 	w := httptest.NewRecorder()
 	gw.ecrAuthBridge(next).ServeHTTP(w, req.WithContext(ctx))
 

@@ -100,3 +100,20 @@ func TestLaunchClaimedInstance_RestampsLaunchTime(t *testing.T) {
 	assert.False(t, launchedAt.Before(before),
 		"the relaunch must start the pending watchdog's clock again, or a launch older than %s is terminated as stuck", vm.PendingWatchdogTimeout)
 }
+
+// A claimed instance has run before: it was started and stopped, or recovered
+// from a failed node. A failure of this launch must never be allowed to
+// terminate it and delete its volumes (ADR-0003:S7).
+func TestLaunchClaimedInstance_NeverAFirstLaunch(t *testing.T) {
+	var firstLaunch []bool
+	svc, _ := claimedRelaunchService(t, func(v *vm.VM) error {
+		firstLaunch = append(firstLaunch, v.FirstLaunch)
+		return nil
+	})
+
+	instance := &vm.VM{ID: "i-moved", AccountID: "acc", InstanceType: "t3.micro", FirstLaunch: true}
+	_ = svc.launchClaimedInstance(t.Context(), instance, func() {})
+
+	assert.Equal(t, []bool{false}, firstLaunch,
+		"ADR-0003:S7: a claimed relaunch reached launch still marked as a first launch, so its failure could terminate it")
+}

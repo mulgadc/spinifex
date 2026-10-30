@@ -336,6 +336,7 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 		ID:           instanceId,
 		Status:       vm.StateProvisioning,
 		InstanceType: *input.InstanceType,
+		FirstLaunch:  true,
 	}
 
 	// Create EC2 instance metadata
@@ -2612,6 +2613,9 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 	if instance.Instance != nil {
 		instance.Instance.LaunchTime = aws.Time(time.Now())
 	}
+	// A claimed instance has run before, so it must never be terminated by a
+	// failure of this launch.
+	instance.FirstLaunch = false
 
 	instanceType, ok := s.resourceMgr.InstanceTypes()[instance.InstanceType]
 	if !ok {

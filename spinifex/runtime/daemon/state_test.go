@@ -1225,7 +1225,7 @@ func TestRestoreInstances_UnknownTypeMigratedToStoppedWithReason(t *testing.T) {
 }
 
 // TestPendingWatchdog_MarksStuckInstanceFailed verifies that the pending watchdog
-// detects instances stuck in pending beyond the timeout and marks them failed.
+// detects a first launch stuck in pending beyond the timeout and marks it failed.
 func TestPendingWatchdog_MarksStuckInstanceFailed(t *testing.T) {
 	daemon := createDaemonWithJetStream(t)
 
@@ -1233,15 +1233,17 @@ func TestPendingWatchdog_MarksStuckInstanceFailed(t *testing.T) {
 	recentTime := time.Now()
 
 	daemon.vmMgr.Insert(&vm.VM{
-		ID:     "i-stuck",
-		Status: vm.StatePending,
+		ID:          "i-stuck",
+		Status:      vm.StatePending,
+		FirstLaunch: true,
 		Instance: &ec2.Instance{
 			LaunchTime: &staleTime,
 		},
 	})
 	daemon.vmMgr.Insert(&vm.VM{
-		ID:     "i-fresh",
-		Status: vm.StatePending,
+		ID:          "i-fresh",
+		Status:      vm.StatePending,
+		FirstLaunch: true,
 		Instance: &ec2.Instance{
 			LaunchTime: &recentTime,
 		},

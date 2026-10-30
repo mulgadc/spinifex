@@ -249,6 +249,11 @@ type VM struct {
 	// terminate may wedge before being force-completed.
 	ShuttingDownAt time.Time `json:"shutting_down_at,omitzero"`
 
+	// FirstLaunch is set from RunInstances until the instance first reaches
+	// running. Only then may automatic failure handling terminate it: any
+	// other instance holds data the customer owns (ADR-0003:S7).
+	FirstLaunch bool `json:"first_launch,omitempty"`
+
 	// CapacityReservationId is the On-Demand Capacity Reservation this instance
 	// was launched into (targeted launch). Empty for instances on general
 	// capacity. Drives slot restore to the reservation on stop/terminate.

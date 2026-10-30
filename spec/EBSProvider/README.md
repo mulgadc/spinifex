@@ -56,6 +56,15 @@ The contract that every implementation of the `EBSProvider` interface must meet.
   The Viperblock implementation ignores it.
 - Is `not_found` the right error for a volume that was deleted and recreated under the same ID?
 
+#### ListVolumes
+
+- Must following next tokens list every volume that exists throughout the walk exactly once?
+  The conformance suite tests it, but the specification describes each call alone, so it does not say how one page relates to the next.
+- What should a starting token that the implementation never issued do?
+  Every implementation treats any token as a position to resume after, while CSI refuses an invalid one with `ABORTED`.
+- May a page hold fewer refs than requested yet carry a next token?
+  AWS and CSI allow it, but here a next token comes only with a full page, so that a walk cannot stall on empty pages.
+
 #### ExpandVolume
 
 - Should a request below the current capacity succeed without change, as CSI recommends, rather than be refused with `invalid_argument`?
@@ -112,6 +121,12 @@ The contract that every implementation of the `EBSProvider` interface must meet.
   AWS refuses until it is.
 - What state does a copy start in?
   The memory implementation always returns `completed`, while AWS starts a copy as `pending`.
+
+#### ListSnapshots
+
+- The questions for ListVolumes apply here too.
+- Must a ref carry the source volume ID?
+  The Viperblock implementation leaves it empty, since reading it costs a fetch per snapshot, yet reconciliation needs it to act on a snapshot whose metadata is lost.
 
 #### DeleteSnapshot
 

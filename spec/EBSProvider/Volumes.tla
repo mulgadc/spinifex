@@ -104,6 +104,36 @@ GetVolume(req, val, err) ==
         /\ UNCHANGED vars
 
 
+ListVolumesRequests == [max_results    : -1..(MaxListResults + 1),
+                        starting_token : Optional(ListTokens)]
+
+ListVolumes(req, val, err) ==
+  (*******************************************************************************************************************)
+  (* Some of the volumes are listed, a page at a time, and nothing changes. A call with no starting token that       *)
+  (* returns no next token lists every volume.                                                                       *)
+  (*******************************************************************************************************************)
+  LET Errors ==
+    LET checks == [unsupported_capability |-> ~Capabilities.volume_enumeration]
+    IN {e \in DOMAIN checks : checks[e]}
+
+     \* The request was rejected, or the provider failed to answer.
+  IN \/ /\ val = None
+        /\ err \in Errors \union ProviderErrors
+        /\ UNCHANGED vars
+
+     \* The request was accepted.
+     \/ /\ Errors = {}
+        /\ LET refs == {[id |-> id, handle |-> volumes[id].handle] : id \in DOMAIN volumes}
+           \* The page and the next token are the implementation's choice.
+           IN \E page \in SUBSET refs, next \in Optional(ListTokens) :
+                /\ Cardinality(page) <= PageSize(req.max_results)
+                /\ next /= None => Cardinality(page) = PageSize(req.max_results)
+                /\ req.starting_token = None /\ next = None => page = refs
+                /\ val = [volumes |-> page, next_token |-> next]
+        /\ err = None
+        /\ UNCHANGED vars
+
+
 ExpandVolumeRequests == [volume_id      : Optional(VolumeIDs),
                          handle         : Optional(VolumeHandles),
                          capacity_range : CapacityRanges]

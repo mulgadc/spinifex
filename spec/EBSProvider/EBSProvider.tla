@@ -19,6 +19,7 @@ CONSTANTS
   SnapshotIDs, SnapshotHandles,
   AvailabilityZones, Timestamps,
   Parameters, ProviderData,
+  ListTokens, MaxListResults,
   \* The optional behaviour that the implementation advertises, which never changes.
   Capabilities,
   \* Whether the provider may fail to answer at any point in a behaviour.
@@ -30,8 +31,11 @@ ASSUME MaxBytes \in Nat \ {0}
 ASSUME VolumeIDs /= {} /\ VolumeHandles /= {}
 ASSUME NodeIDs /= {} => NBDURIs /= {} \/ DevicePaths /= {}
 ASSUME SnapshotIDs /= {} => SnapshotHandles /= {} /\ Timestamps /= {}
+ASSUME ListTokens /= {}
+ASSUME MaxListResults \in Nat \ {0}
+ASSUME ListTokens /= {}
 ASSUME None \notin UNION {VolumeIDs, VolumeHandles, NodeIDs, SnapshotIDs, SnapshotHandles,
-                          AvailabilityZones, Timestamps, Parameters, ProviderData}
+                          AvailabilityZones, Timestamps, Parameters, ProviderData, ListTokens}
 ASSUME Capabilities \in [online_expansion          : BOOLEAN,
                          sparse_extent_reporting   : BOOLEAN,
                          crash_consistent_snapshot : BOOLEAN,
@@ -137,6 +141,9 @@ PublicationView(volID, nodeID) == [volume_id |-> volID,
 
 \* The part of a snapshot that the implementation returns.
 SnapshotView(snapID) == ("id" :> snapID) @@ snapshots[snapID]
+
+\* The number of refs that a page may hold, with an omitted or oversized request clamped to the maximum.
+PageSize(m) == IF m <= 0 \/ m > MaxListResults THEN MaxListResults ELSE m
 
 -----------------------------------------------------------------------------------------------------------------------
 \* Invariants

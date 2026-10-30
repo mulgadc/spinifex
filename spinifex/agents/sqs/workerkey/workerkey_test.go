@@ -2,6 +2,7 @@ package workerkey
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,7 +55,7 @@ func assertNoSeed(t *testing.T, err error, seed []byte) {
 
 func TestEnsure_FirstBootPersistsAndRestartReusesKey(t *testing.T) {
 	s := newStore(t)
-	kp, err := s.Ensure("")
+	kp, err := s.ForNewStore()
 	if err != nil {
 		t.Fatalf("first boot: %v", err)
 	}
@@ -82,16 +83,21 @@ func TestEnsure_FirstBootPersistsAndRestartReusesKey(t *testing.T) {
 		t.Fatal("persisted seed does not match the returned key")
 	}
 
-	// A restart is a fresh Store over the same disk, with and without the
-	// store's authorized key; neither may generate a replacement.
-	for _, expected := range []string{pub, ""} {
-		again, err := Store{Dir: s.Dir}.Ensure(expected)
-		if err != nil {
-			t.Fatalf("restart with expected %q: %v", expected, err)
-		}
-		if publicKey(t, again) != pub {
-			t.Fatalf("restart with expected %q changed the key", expected)
-		}
+	// A restart is a fresh Store over the same disk; neither path may
+	// generate a replacement.
+	again, err := Store{Dir: s.Dir}.ForExistingStore(pub)
+	if err != nil {
+		t.Fatalf("restart for the existing store: %v", err)
+	}
+	if publicKey(t, again) != pub {
+		t.Fatal("restart for the existing store changed the key")
+	}
+	again, err = Store{Dir: s.Dir}.ForNewStore()
+	if err != nil {
+		t.Fatalf("repeated first start: %v", err)
+	}
+	if publicKey(t, again) != pub {
+		t.Fatal("repeated first start replaced the key")
 	}
 	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
@@ -104,7 +110,7 @@ func TestEnsure_FirstBootPersistsAndRestartReusesKey(t *testing.T) {
 
 func TestEnsure_ExistingStoreWithMissingKeyFailsClosed(t *testing.T) {
 	s := newStore(t)
-	_, err := s.Ensure(otherUserKey(t))
+	_, err := s.ForExistingStore(otherUserKey(t))
 	if !errors.Is(err, ErrKeyMissing) {
 		t.Fatalf("err = %v, want ErrKeyMissing", err)
 	}
@@ -115,12 +121,12 @@ func TestEnsure_ExistingStoreWithMissingKeyFailsClosed(t *testing.T) {
 
 func TestEnsure_MismatchedKeyFailsClosedAndKeepsFile(t *testing.T) {
 	s := newStore(t)
-	if _, err := s.Ensure(""); err != nil {
+	if _, err := s.ForNewStore(); err != nil {
 		t.Fatal(err)
 	}
 	before := readFile(t, s.path())
 
-	_, err := Store{Dir: s.Dir}.Ensure(otherUserKey(t))
+	_, err := Store{Dir: s.Dir}.ForExistingStore(otherUserKey(t))
 	if !errors.Is(err, ErrKeyMismatch) {
 		t.Fatalf("err = %v, want ErrKeyMismatch", err)
 	}
@@ -173,7 +179,7 @@ func TestEnsure_UnusableKeyFileIsNeverReplaced(t *testing.T) {
 			if err := os.Chmod(s.path(), tc.mode); err != nil {
 				t.Fatal(err)
 			}
-			_, err := s.Ensure("")
+			_, err := s.ForNewStore()
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
@@ -195,7 +201,7 @@ func TestEnsure_RefusesUnsafeDirectoryAndSymlink(t *testing.T) {
 		if err := os.Chmod(s.Dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Ensure(""); !errors.Is(err, ErrUnsafe) {
+		if _, err := s.ForNewStore(); !errors.Is(err, ErrUnsafe) {
 			t.Fatalf("err = %v, want ErrUnsafe", err)
 		}
 		if _, err := os.Lstat(s.path()); !errors.Is(err, os.ErrNotExist) {
@@ -205,7 +211,7 @@ func TestEnsure_RefusesUnsafeDirectoryAndSymlink(t *testing.T) {
 	t.Run("symlinked key", func(t *testing.T) {
 		s := newStore(t)
 		target := newStore(t)
-		if _, err := target.Ensure(""); err != nil {
+		if _, err := target.ForNewStore(); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.MkdirAll(s.Dir, 0o700); err != nil {
@@ -214,7 +220,7 @@ func TestEnsure_RefusesUnsafeDirectoryAndSymlink(t *testing.T) {
 		if err := os.Symlink(target.path(), s.path()); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Ensure(""); !errors.Is(err, ErrUnsafe) {
+		if _, err := s.ForNewStore(); !errors.Is(err, ErrUnsafe) {
 			t.Fatalf("err = %v, want ErrUnsafe", err)
 		}
 	})
@@ -231,7 +237,7 @@ func TestEnsure_CrashLeftoverTempIsNotAKey(t *testing.T) {
 	}
 
 	// A crash before the link means no store was authorized for it.
-	if _, err := s.Ensure(otherUserKey(t)); !errors.Is(err, ErrKeyMissing) {
+	if _, err := s.ForExistingStore(otherUserKey(t)); !errors.Is(err, ErrKeyMissing) {
 		t.Fatalf("err = %v, want ErrKeyMissing", err)
 	}
 	if _, err := os.Lstat(stale); !errors.Is(err, os.ErrNotExist) {
@@ -250,7 +256,7 @@ func TestEnsure_ConcurrentFirstBootAgreesOnOneKey(t *testing.T) {
 		for i := range n {
 			wg.Go(func() {
 				<-start
-				kp, err := Store{Dir: s.Dir}.Ensure("")
+				kp, err := Store{Dir: s.Dir}.ForNewStore()
 				if err != nil {
 					errs[i] = err
 					return
@@ -276,7 +282,7 @@ func TestEnsure_ConcurrentFirstBootAgreesOnOneKey(t *testing.T) {
 	}
 }
 
-func TestEnsure_RejectsInvalidExpectedKey(t *testing.T) {
+func TestForExistingStore_RejectsInvalidAuthorizedKey(t *testing.T) {
 	kp, err := nkeys.CreateUser()
 	if err != nil {
 		t.Fatal(err)
@@ -285,14 +291,87 @@ func TestEnsure_RejectsInvalidExpectedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := newStore(t)
-	_, err = s.Ensure(string(seed))
-	if err == nil {
-		t.Fatal("a seed was accepted as the expected public key")
+	// An empty key is what an unreadable store record would yield; it must not
+	// fall through to first-start generation.
+	for _, authorized := range []string{"", string(seed)} {
+		s := newStore(t)
+		_, err := s.ForExistingStore(authorized)
+		if err == nil {
+			t.Fatalf("authorized key %q was accepted", authorized[:min(len(authorized), 2)])
+		}
+		assertNoSeed(t, err, seed)
+		if _, err := os.Lstat(s.Dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("an invalid authorized key still touched the disk")
+		}
 	}
-	assertNoSeed(t, err, seed)
-	if _, err := os.Lstat(s.Dir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("an invalid expected key still touched the disk")
+}
+
+func TestForNewStore_RefusesUnmountedParent(t *testing.T) {
+	s := Store{Dir: filepath.Join(t.TempDir(), "not-mounted", "keys")}
+	if _, err := s.ForNewStore(); err == nil {
+		t.Fatal("a key directory was created without its parent")
+	}
+	if _, err := os.Lstat(filepath.Dir(s.Dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the missing parent was created")
+	}
+}
+
+// hookSyncs records every directory sync and fails call number failAt
+// (counted from one); zero fails none.
+func hookSyncs(t *testing.T, failAt int) *[]string {
+	t.Helper()
+	var synced []string
+	orig := syncDirFn
+	t.Cleanup(func() { syncDirFn = orig })
+	syncDirFn = func(dir string) error {
+		synced = append(synced, dir)
+		if len(synced) == failAt {
+			return errors.New("injected directory sync failure")
+		}
+		return orig(dir)
+	}
+	return &synced
+}
+
+func TestEnsure_RetryAfterFailedDirectorySyncKeepsKeyAndSyncs(t *testing.T) {
+	retries := map[string]func(s Store, pub string) (nkeys.KeyPair, error){
+		"first start": func(s Store, _ string) (nkeys.KeyPair, error) { return s.ForNewStore() },
+		"existing store": func(s Store, pub string) (nkeys.KeyPair, error) {
+			return s.ForExistingStore(pub)
+		},
+	}
+	for name, retry := range retries {
+		for failAt := 1; failAt <= 2; failAt++ {
+			t.Run(fmt.Sprintf("%s after sync %d failed", name, failAt), func(t *testing.T) {
+				s := newStore(t)
+				hookSyncs(t, failAt)
+				if _, err := s.ForNewStore(); err == nil {
+					t.Fatal("a key was returned although a directory sync failed")
+				}
+				first := readFile(t, s.path())
+				onDisk, err := nkeys.FromSeed(first)
+				if err != nil {
+					t.Fatal(err)
+				}
+				pub := publicKey(t, onDisk)
+
+				synced := hookSyncs(t, 0)
+				kp, err := retry(Store{Dir: s.Dir}, pub)
+				if err != nil {
+					t.Fatalf("retry: %v", err)
+				}
+				if string(readFile(t, s.path())) != string(first) {
+					t.Fatal("retry replaced the key")
+				}
+				if publicKey(t, kp) != pub {
+					t.Fatal("retry returned a key other than the persisted one")
+				}
+				want := []string{s.Dir, filepath.Dir(s.Dir)}
+				if len(*synced) != 2 || (*synced)[0] != want[0] || (*synced)[1] != want[1] {
+					t.Fatalf("retry synced %v, want %v", *synced, want)
+				}
+			})
+		}
 	}
 }
 
@@ -314,7 +393,7 @@ func TestEnsure_WaitsForDirectoryLock(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Store{Dir: s.Dir}.Ensure("")
+		_, err := Store{Dir: s.Dir}.ForNewStore()
 		done <- err
 	}()
 	deadline := time.Now().Add(300 * time.Millisecond)

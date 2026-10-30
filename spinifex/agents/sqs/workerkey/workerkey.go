@@ -36,13 +36,23 @@ type Store struct {
 	Dir string
 }
 
-// Ensure returns the worker's store-client key pair. An empty expected means no
-// store exists yet, so a missing key is generated and synced before it is
-// returned; a non-empty expected requires the existing key to match it.
-func (s Store) Ensure(expected string) (nkeys.KeyPair, error) {
-	if expected != "" && !nkeys.IsValidPublicUserKey(expected) {
-		return nil, errors.New("expected store key is not a user public NKey")
+// ForNewStore returns the worker's store-client key for a store that the
+// caller has positively established does not exist yet, generating it on first
+// use. An unreadable or absent store record is not that proof.
+func (s Store) ForNewStore() (nkeys.KeyPair, error) {
+	return s.ensure("")
+}
+
+// ForExistingStore returns the worker's key only if it is already on disk and
+// is the one the store authorizes; it never generates a key.
+func (s Store) ForExistingStore(authorized string) (nkeys.KeyPair, error) {
+	if !nkeys.IsValidPublicUserKey(authorized) {
+		return nil, errors.New("authorized store key is not a user public NKey")
 	}
+	return s.ensure(authorized)
+}
+
+func (s Store) ensure(expected string) (nkeys.KeyPair, error) {
 	unlock, err := s.prepareDir()
 	if err != nil {
 		return nil, err
@@ -69,18 +79,29 @@ func (s Store) Ensure(expected string) (nkeys.KeyPair, error) {
 			return nil, fmt.Errorf("%w: have %s, store authorizes %s", ErrKeyMismatch, pub, expected)
 		}
 	}
+	// Re-synced on every return, so a key whose earlier sync failed is never
+	// handed out before its name and directory are durable.
+	if err := s.syncNames(); err != nil {
+		kp.Wipe()
+		return nil, err
+	}
 	return kp, nil
 }
 
 func (s Store) path() string { return filepath.Join(s.Dir, keyFile) }
 
-// prepareDir creates the directory owner-only, refuses one that is not, takes
-// an exclusive lock on it and removes temporary files a crash left behind.
+// prepareDir creates only the key directory, inside a parent that must already
+// exist (the mounted worker disk), refuses one that is not owner-only, locks it
+// and removes temporary files a crash left behind.
 func (s Store) prepareDir() (unlock func(), err error) {
 	if s.Dir == "" {
 		return nil, errors.New("worker store key directory is not set")
 	}
-	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+	parent, err := os.Stat(filepath.Dir(s.Dir))
+	if err != nil || !parent.IsDir() {
+		return nil, errors.New("worker key directory parent is missing; the worker disk is not mounted")
+	}
+	if err := os.Mkdir(s.Dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return nil, fmt.Errorf("create worker key directory: %w", err)
 	}
 	fi, err := os.Lstat(s.Dir)
@@ -142,8 +163,8 @@ func (s Store) load() (nkeys.KeyPair, error) {
 	return kp, nil
 }
 
-// create writes a new seed to a synced temporary file, links it into place
-// without replacing anything, then syncs the directory so the name survives.
+// create writes a new seed to a synced temporary file and links it into place
+// without replacing anything; the caller syncs the directory names.
 func (s Store) create() (nkeys.KeyPair, error) {
 	kp, err := nkeys.CreateUser()
 	if err != nil {
@@ -173,11 +194,16 @@ func (s Store) create() (nkeys.KeyPair, error) {
 		}
 		return nil, fmt.Errorf("install worker store key file: %w", err)
 	}
-	if err := syncDir(s.Dir); err != nil {
-		kp.Wipe()
-		return nil, err
-	}
 	return kp, nil
+}
+
+// syncNames makes the key's directory entry and the key directory's own entry
+// in its parent durable.
+func (s Store) syncNames() error {
+	if err := syncDirFn(s.Dir); err != nil {
+		return err
+	}
+	return syncDirFn(filepath.Dir(s.Dir))
 }
 
 func writeSynced(f *os.File, data []byte) error {
@@ -198,6 +224,9 @@ func writeSynced(f *os.File, data []byte) error {
 	}
 	return nil
 }
+
+// syncDirFn is replaced in tests to fail a directory sync deterministically.
+var syncDirFn = syncDir
 
 func syncDir(dir string) error {
 	d, err := os.Open(dir)

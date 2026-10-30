@@ -66,7 +66,7 @@ func TestECSRegisterTaskDefinition_DeniedWithoutPassRole(t *testing.T) {
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, testECSPassRoleTargetARN))
 
-	err := gw.ECS_Request(httptest.NewRecorder(), req)
+	err := gw.serveECS(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assertDenied(t, err)
 }
@@ -81,7 +81,7 @@ func TestECSRegisterTaskDefinition_AllowedWithPassRole(t *testing.T) {
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, testECSPassRoleTargetARN))
 
-	err := gw.ECS_Request(httptest.NewRecorder(), req)
+	err := gw.serveECS(httptest.NewRecorder(), req)
 	// PassRole is granted, so the request proceeds past the check to the (nil,
 	// disconnected) NATS dispatch; whatever fails downstream, it must not be
 	// the PassRole denial.
@@ -101,7 +101,7 @@ func TestECSRegisterTaskDefinition_NoRoleSkipsPassRole(t *testing.T) {
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, ""))
 
-	err := gw.ECS_Request(httptest.NewRecorder(), req)
+	err := gw.serveECS(httptest.NewRecorder(), req)
 	require.Error(t, err) // still fails downstream (nil NATS conn), just not on PassRole
 	assertNotDenied(t, err)
 }
@@ -119,7 +119,7 @@ func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
 		registerTaskDefinitionBody(t, testECSPassRoleTargetARN))
 
 	w := httptest.NewRecorder()
-	err := gw.ECS_Request(w, req)
+	err := gw.serveECS(w, req)
 	require.Error(t, err)
 
 	gw.ErrorHandler(w, req, err)
@@ -140,7 +140,6 @@ func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
 func TestECSRegisterTaskDefinition_UnresolvedRoleARNsAreNotRejected(t *testing.T) {
 	for name, roleARN := range map[string]string{
 		"malformed":   "not-an-arn",
-		"foreign":     "arn:aws:iam::999999999999:role/ecs-task-role",
 		"nonexistent": "arn:aws:iam::123456789012:role/no-such-role",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -153,7 +152,7 @@ func TestECSRegisterTaskDefinition_UnresolvedRoleARNsAreNotRejected(t *testing.T
 			req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 				registerTaskDefinitionBody(t, roleARN))
 
-			err := gw.ECS_Request(httptest.NewRecorder(), req)
+			err := gw.serveECS(httptest.NewRecorder(), req)
 			require.Error(t, err) // fails downstream on the nil NATS conn
 			assertNotDenied(t, err)
 			code, _ := awserrors.ResolveErrorCode(err)

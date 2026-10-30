@@ -46,6 +46,8 @@ import (
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -199,6 +201,8 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// Tagging has no resource listers because no integration test aggregates.
 	require.NoError(t, services.Register(elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: nc})))
 	require.NoError(t, services.Register(rdsawsapi.NewRegistration(rdsawsapi.Deps{NATS: nc})))
+	require.NoError(t, services.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: nc})))
+	require.NoError(t, services.Register(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: nc, Roles: iamdomain.NewRoleResolver(iamSvc)})))
 	require.NoError(t, services.Register(iamawsapi.NewRegistration(iamawsapi.Deps{
 		IAM: iamSvc,
 		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {

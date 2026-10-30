@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
@@ -74,7 +75,7 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 			}
 			r := inv.Request
 			rds := rdsawsapi.CallerFromActor(actor)
-			eks := eksCaller(r)
+			eks := eksawsapi.CallerFromActor(actor)
 			seen = append(seen, actorObservation{
 				Actor:             actor,
 				Identity:          callerPrincipalOf(r).identity,
@@ -88,7 +89,7 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 				RDSSessionName: rds.SessionName, RDSRoleName: rds.RoleName,
 				EKSAccountID: eks.AccountID, EKSPrincipalType: eks.PrincipalType,
 				EKSSessionName: eks.SessionName, EKSRoleName: eks.RoleName,
-				EKSPrincipalARN: eksCallerPrincipalARN(r),
+				EKSPrincipalARN: actor.CallerARN,
 			})
 			w.WriteHeader(http.StatusOK)
 			return nil

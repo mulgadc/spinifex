@@ -23,7 +23,7 @@ import (
 func dispatchECS(t *testing.T, gw *GatewayConfig, action, body string) error {
 	t.Helper()
 	req := setupECSRequest(ecsawsapi.TargetPrefix+"."+action, body)
-	return gw.ECS_Request(httptest.NewRecorder(), req)
+	return gw.serveECS(httptest.NewRecorder(), req)
 }
 
 // assertReachedHandler asserts the policy gate passed. The request then fails on
@@ -160,7 +160,7 @@ func TestECSRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	req.Header.Set("X-Amz-Target", ecsawsapi.TargetPrefix+".ListClusters")
 	req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxService, "ecs")))
 
-	err := gw.ECS_Request(httptest.NewRecorder(), req)
+	err := gw.serveECS(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }

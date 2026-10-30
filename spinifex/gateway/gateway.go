@@ -288,19 +288,8 @@ func callerActor(ctx context.Context) (dispatch.Actor, error) {
 	return actor, err
 }
 
-// actorName is the name the caller goes by: the session name for a role
-// session and the user name for every other principal.
-func actorName(a dispatch.Actor) string {
-	if a.PrincipalType == principalTypeAssumedRole {
-		return a.SessionName
-	}
-	return a.UserName
-}
-
 var supportedServices = map[string]bool{
 	"ec2":                   true,
-	"eks":                   true,
-	"ecs":                   true,
 	"bedrock":               true,
 	"bedrock-runtime":       true,
 	"bedrock-agent":         true,
@@ -399,8 +388,7 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 // XML body to these clients is an unparseable "<?xml…" deserialization error.
 func jsonErrorService(svc string) bool {
 	switch svc {
-	case "eks", "ecs",
-		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime":
+	case "bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime":
 		return true
 	}
 	return false
@@ -514,8 +502,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		switch svc {
 		case "ec2":
 			err = gw.EC2_Request(w, r)
-		case "eks":
-			err = gw.EKS_Request(w, r)
 		case "bedrock":
 			err = gw.Bedrock_Request(w, r)
 		case "bedrock-runtime":
@@ -524,8 +510,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 			err = gw.BedrockAgent_Request(w, r)
 		case "bedrock-agent-runtime":
 			err = gw.BedrockAgentRuntime_Request(w, r)
-		case "ecs":
-			err = gw.ECS_Request(w, r)
 		default:
 			err = errors.New(awserrors.ErrorUnsupportedOperation)
 		}

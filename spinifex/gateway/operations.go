@@ -4,7 +4,6 @@ import (
 	"maps"
 	"slices"
 
-	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
@@ -25,13 +24,6 @@ func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]
 	inventory := map[string]ServiceOperationInventory{
 		"ec2": {
 			Registered: mapKeys(ec2Actions),
-		},
-		"ecs": {
-			Registered: mapKeys(ecsawsapi.Actions),
-			Stubbed:    ecsawsapi.StubbedActionNames(),
-		},
-		"eks": {
-			Registered: eksActionNames(),
 		},
 	}
 	for name, inv := range registered {

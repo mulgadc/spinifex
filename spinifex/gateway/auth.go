@@ -262,10 +262,6 @@ func resolveNonQueryAction(r *http.Request, service string) string {
 	}
 	method, path := r.Method, r.URL.EscapedPath()
 	switch service {
-	case "eks":
-		if action, _, _, ok := eksRouter.Lookup(method, path); ok {
-			return action
-		}
 	case "bedrock":
 		if action, _, _, ok := bedrockRouter.Lookup(method, path); ok {
 			return action

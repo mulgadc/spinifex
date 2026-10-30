@@ -10,6 +10,8 @@ import (
 	"github.com/mulgadc/spinifex/internal/awsmodel"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
@@ -60,6 +62,8 @@ func compareAll() ([]awsmodel.OperationCoverage, error) {
 		route53awsapi.ServiceName: route53awsapi.OperationInventory(),
 		elbv2awsapi.InventoryName: elbv2awsapi.OperationInventory(),
 		rdsawsapi.ServiceName:     rdsawsapi.OperationInventory(),
+		ecsawsapi.ServiceName:     ecsawsapi.OperationInventory(),
+		eksawsapi.ServiceName:     eksawsapi.OperationInventory(),
 		iamawsapi.ServiceName:     iamawsapi.OperationInventory(),
 		stsawsapi.ServiceName:     stsawsapi.OperationInventory(),
 	})

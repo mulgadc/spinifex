@@ -34,6 +34,8 @@ var allowlist = []allowance{
 	{From: "cmd/aws-model-coverage", To: "domains/route53/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/elbv2/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/rds/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
+	{From: "cmd/aws-model-coverage", To: "domains/ecs/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
+	{From: "cmd/aws-model-coverage", To: "domains/eks/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/iam/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/sts/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 
@@ -126,9 +128,7 @@ var allowlist = []allowance{
 
 	{From: "domains/sts/awsapi", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "GetCallerIdentity takes IAMService; needs an IAM capability"},
 
-	{From: "gateway", To: "domains/eks/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
 	{From: "gateway", To: "domains/sts/awsapi", Debt: "gateway (service registration)", Reason: "IAM, STS, EKS and RDS dispatch stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ecs/awsapi", Debt: "gateway (service registration)", Reason: "ECS and ELBv2 dispatch stays in gateway until the ingress registration seam"},
 	{From: "domains/ecs", To: "domains/ec2/ebs/metadata", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
 	{From: "domains/ecs", To: "domains/ec2/eip", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},
 	{From: "domains/ecs", To: "domains/ec2/instancetypes", Debt: "close-out: handlers/ecs (ADR-0004 blocked-dependency list; inventory-ecs boundary imports)", Reason: "legacy ECS calls another domain's implementation as an internal API"},

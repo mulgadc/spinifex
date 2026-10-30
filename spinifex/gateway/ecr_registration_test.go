@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"maps"
 	"net/http"
 
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -35,5 +36,7 @@ func (gw *GatewayConfig) serveECR(w http.ResponseWriter, r *http.Request) error 
 // ecrRegistrationInventory is the inventory the ECR registration declares to
 // a registry, keyed as AWSOperationInventory expects.
 func ecrRegistrationInventory() map[string]dispatch.Inventory {
-	return withECR(&GatewayConfig{}, awsapi.Deps{}).Services.Inventory()
+	inventory := withECR(&GatewayConfig{}, awsapi.Deps{}).Services.Inventory()
+	maps.Copy(inventory, withContainers(&GatewayConfig{}).Services.Inventory())
+	return inventory
 }

@@ -1,0 +1,1 @@
+import{D as e,O as t}from"./utils-CIaw-opd.js";import{n}from"./json-DzD4Ib4l.js";var r=e(),i=t();function a(e){let t=(0,r.c)(4),{document:a}=e,o;t[0]===a?o=t[1]:(o=n(a)??a,t[0]=a,t[1]=o);let s;return t[2]===o?s=t[3]:(s=(0,i.jsx)(`pre`,{className:`overflow-auto rounded-md border bg-muted p-4 font-mono text-sm`,children:o}),t[2]=o,t[3]=s),s}export{a as t};

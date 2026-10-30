@@ -1,0 +1,1 @@
+import{M as e,k as t}from"./utils-CIaw-opd.js";import{F as n,P as r}from"./reason-parts-Sa_ae0aj.js";var i=e(t(),1);function a(e,t){let a=i.useRef(e),o=n(t);r(()=>{a.current!==e&&o(a.current),a.current=e},[e,o])}export{a as t};

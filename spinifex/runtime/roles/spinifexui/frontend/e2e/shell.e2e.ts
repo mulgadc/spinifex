@@ -1,4 +1,10 @@
-import { expect, expectNoHorizontalOverflow, test } from "./console"
+import {
+  expect,
+  expectNoHorizontalOverflow,
+  STS_NAMESPACE,
+  test,
+  xml,
+} from "./console"
 
 test.describe("command palette", () => {
   test("opens on the shortcut and navigates", async ({ page }) => {
@@ -49,6 +55,7 @@ test.describe("sign in", () => {
 
     await expect(page).toHaveURL(/\/login/u)
     await expect(page.getByLabel("Access Key ID")).toBeVisible()
+    await expect(page.getByRole("status")).toHaveText("Signed out.")
     await expect(sidebar).toBeVisible()
     await expect(page.locator("[inert] [data-slot=sidebar]")).toHaveCount(1)
 
@@ -56,6 +63,39 @@ test.describe("sign in", () => {
     await page.getByLabel("Access Key ID").focus()
     await page.keyboard.press("Shift+Tab")
     await expect(page.locator("[inert] :focus")).toHaveCount(0)
+  })
+})
+
+test.describe("signing in", () => {
+  test("fades into the console without reloading the page", async ({
+    api,
+    page,
+  }) => {
+    api.handle("GetSessionToken", () => ({
+      body: xml(
+        "GetSessionToken",
+        "<GetSessionTokenResult><Credentials><AccessKeyId>ASIAE2EFORM00000000</AccessKeyId><SecretAccessKey>e2e-form-secret</SecretAccessKey><SessionToken>e2e-form-token</SessionToken><Expiration>2099-01-01T00:00:00Z</Expiration></Credentials></GetSessionTokenResult>",
+        STS_NAMESPACE,
+      ),
+    }))
+
+    await page.goto("/")
+    await page
+      .locator("[data-slot=sidebar]")
+      .getByRole("button", { name: "Sign out" })
+      .click()
+    await page.evaluate(() => {
+      document.documentElement.dataset.e2eStayed = "1"
+    })
+
+    await page.getByLabel("Access Key ID").fill("AKIAE2EFORM000000000")
+    await page.getByLabel("Secret Access Key").fill("e2e-form-secret")
+    await page.keyboard.press("Enter")
+
+    await expect(page).toHaveURL(/\/$/u)
+    await expect(page.getByLabel("Access Key ID")).toBeHidden()
+    await expect(page.locator("[inert]")).toHaveCount(0)
+    await expect(page.locator("html")).toHaveAttribute("data-e2e-stayed", "1")
   })
 })
 

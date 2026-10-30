@@ -240,6 +240,9 @@
   --text-code-block: 0.75rem;
   --text-code-inline: 0.85em;
 
+  /* Just enough to set the shell back behind the sign-in card. */
+  --blur-veil: 1px;
+
   --font-heading: var(--font-heading);
 
   /* Plain system font for the bootstrap failure page */
@@ -301,5 +304,19 @@
   button:not(:disabled),
   [role="button"]:not(:disabled) {
     cursor: pointer;
+  }
+}
+
+/* Signing out cross-fades the page into the sign-in card. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 300ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none;
   }
 }

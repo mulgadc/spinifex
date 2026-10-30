@@ -17,10 +17,7 @@ import {
 import { useAdmin } from "@/hooks/use-admin"
 import { isOchreEnabled } from "@/lib/cluster-config"
 import { visibleNav } from "@/lib/nav"
-
-const IS_MAC =
-  typeof navigator !== "undefined" &&
-  /Mac|iPhone|iPad/u.test(navigator.platform)
+import { IS_MAC } from "@/lib/shortcuts"
 
 export const PALETTE_SHORTCUT = IS_MAC ? "⌘K" : "Ctrl K"
 

@@ -23,6 +23,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { useAdmin } from "@/hooks/use-admin"
+import { clearCredentials } from "@/lib/auth"
 import { isOchreEnabled } from "@/lib/cluster-config"
 import { activeNavItem, type NavGroup, visibleNav } from "@/lib/nav"
 import { signOut } from "@/lib/query-client"
@@ -133,9 +134,16 @@ export function SidebarLayout() {
   // Icon-only mode has no group labels to unfold, so every item shows.
   const iconOnly = state === "collapsed"
 
-  function handleLogout() {
+  // The credentials go first, or the login route sends the user straight back.
+  // The cache is cleared once the sign-in card has faded in over the page.
+  async function handleLogout() {
+    clearCredentials()
+    await navigate({
+      to: "/login",
+      search: { reason: "signed-out" },
+      viewTransition: true,
+    })
     signOut(queryClient)
-    navigate({ to: "/login" })
   }
 
   return (

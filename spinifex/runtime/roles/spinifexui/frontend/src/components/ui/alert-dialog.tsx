@@ -3,6 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import type * as React from "react"
 
 import { Button } from "@/components/ui/button"
+import { CONFIRM_KEYS, CONFIRM_SHORTCUT } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 
 export function AlertDialog({ ...props }: AlertDialogPrimitive.Root.Props) {
@@ -190,16 +191,28 @@ export function AlertDialogDescription({
   )
 }
 
+// Shows the shortcut the popup's key handler answers; screen readers get it
+// from aria-keyshortcuts rather than as part of the button's name.
 export function AlertDialogAction({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof Button>) {
   return (
     <Button
+      aria-keyshortcuts={CONFIRM_KEYS}
       className={cn(className)}
       data-slot="alert-dialog-action"
       {...props}
-    />
+    >
+      {children}
+      <kbd
+        aria-hidden="true"
+        className="hidden font-mono text-2xs opacity-70 sm:inline"
+      >
+        {CONFIRM_SHORTCUT}
+      </kbd>
+    </Button>
   )
 }
 

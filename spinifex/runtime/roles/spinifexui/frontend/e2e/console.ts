@@ -119,6 +119,8 @@ export const NODES = {
   ],
 }
 
+export const STS_NAMESPACE = "https://sts.amazonaws.com/doc/2011-06-15/"
+
 export function stsIdentity(account: string): ApiHandler {
   return () => ({
     body: `<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">

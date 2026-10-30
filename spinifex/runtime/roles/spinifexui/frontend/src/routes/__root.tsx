@@ -42,14 +42,14 @@ function RootLayout() {
         <main className="flex min-w-0 flex-1 flex-col">
           <Header />
           {!signingIn && (
-            <div className="flex flex-1 flex-col p-4 md:p-6 xl:p-8">
+            <div className="flex flex-1 flex-col p-4 transition-opacity duration-300 motion-reduce:transition-none md:p-6 xl:p-8 starting:opacity-0">
               <Outlet />
             </div>
           )}
         </main>
       </div>
       {signingIn && (
-        <div className="fixed inset-0 z-50 flex overflow-y-auto bg-background/70 p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex overflow-y-auto p-4">
           <Outlet />
         </div>
       )}

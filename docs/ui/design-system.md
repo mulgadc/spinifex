@@ -121,6 +121,7 @@ Added in Phase 1: breadcrumb, checkbox, command (`cmdk`), dialog, hover-card, po
 Every dialog closes on Escape.
 ⌘↵ or Ctrl+Enter submits it: an `AlertDialog` clicks its action unless that is disabled, and a `Dialog` submits its form, including from a textarea where Enter alone adds a line.
 Enter in a typed confirmation confirms once the phrase matches.
+The confirm button shows the shortcut, ⌘↵ on a Mac and Ctrl ↵ elsewhere (`src/lib/shortcuts.ts`), and names it in `aria-keyshortcuts`.
 
 A disabled control stays visible and shows `cursor: not-allowed`, so it says why it does nothing rather than vanishing.
 An on/off setting is a `Switch`, orange when on; a `Checkbox` only picks items from a list, such as table rows, subnets or security groups.
@@ -156,7 +157,8 @@ The sidebar, the command palette and the breadcrumbs all read it, and `nav.test.
 - **Sidebar.** Each service group folds, and a folded group stays folded across reloads (`localStorage["spinifex-ui-nav-collapsed"]`). Navigating into a folded group unfolds it so the active item shows, and it can then be folded again, the current group included. On a phone the sidebar is a sheet, and any navigation closes it.
 - **Command palette.** ⌘K or Ctrl K, or the Search button in the header. It lists every page the user can reach, every create flow (`create` on a nav item), and a theme toggle. It is navigation only, with no resource search yet.
 - **Breadcrumbs.** Service, then list page, then the resource or the create flow. A resource ID is set in mono. On a phone only the last crumb shows.
-- **Sign in.** The sign-in card sits over the shell on a blurred overlay rather than on a page of its own, so the console stays in view. The shell behind it is `inert`, which keeps pointer, keyboard and screen reader out of it until the user signs in.
+- **Sign in.** The sign-in card sits over the shell on a light, barely blurred overlay rather than on a page of its own, so the console stays in view. The shell behind it is `inert`, which keeps pointer, keyboard and screen reader out of it until the user signs in.
+Signing in does not reload the page: the card shrinks and fades with its veil over 300ms, then the console routes to the dashboard in place, and the page content fades in. Signing out is a 300ms view-transition cross-fade into the sign-in card, which says "Signed out." in a warning-coloured notice. Under reduced motion both switch at once.
 
 ## Layout
 

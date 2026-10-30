@@ -206,3 +206,13 @@ func TestEKSUpdateAddon_NoRoleSkipsPassRole(t *testing.T) {
 	assertPermitted(t, dispatchEKS(t, gw, http.MethodPost,
 		"/clusters/prod/addons/aws-load-balancer-controller/update", updateAddonBody("")))
 }
+
+// Current behaviour: a store fault on the role lookup is returned before the
+// PassRole check, so a caller without iam:PassRole sees the fault, not a denial.
+func TestEKSCreateNodegroup_OutageIsReportedToACallerWithoutPassRole(t *testing.T) {
+	storeErr := errors.New("get role: nats: timeout")
+	iamService := eksPassRoleService(statement("Allow", "eks:*", "*"))
+	iamService.canonicalErr = storeErr
+	err := dispatchEKS(t, eksGatewayWithIAM(iamService), http.MethodPost, "/clusters/prod/node-groups", createNodegroupBody(eksNodeRoleARN))
+	require.ErrorIs(t, err, storeErr)
+}

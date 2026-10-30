@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +22,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,6 +116,7 @@ func newEnsureFixture(t *testing.T, vms *ensureVMs) *ensureFixture {
 		Volumes:    f.vols,
 		Roles:      ensureRoles{},
 		Network:    newSQSWorkerNetwork(vpc, &config.SQSConfig{}),
+		Host:       sqsWorkerHost{check: func() (string, error) { return f.d.sqsWorkerHostReady() }},
 		VMs:        vms,
 		NodeID:     ensureNode,
 	}
@@ -123,12 +127,38 @@ func newEnsureFixture(t *testing.T, vms *ensureVMs) *ensureFixture {
 		resourceMgr: &ResourceManager{instanceTypes: map[string]*ec2.InstanceTypeInfo{ensureType: microType()}},
 		sqsWorker:   newSQSWorkerEnsurer(func(context.Context) (*workerlaunch.Launcher, error) { return l, nil }),
 	}
+	ensureHost(t, f.d, true)
 	subject, err := workerlaunch.EnsureSubject(ensureNode)
 	require.NoError(t, err)
 	sub, err := nc.Subscribe(subject, func(m *nats.Msg) { f.d.handleSQSWorkerEnsure(m) })
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 	return f
+}
+
+// ensureHost gives d a mgmt bridge, a cluster CA and, when installed, a
+// complete worker image in a scratch microVM directory.
+func ensureHost(t *testing.T, d *Daemon, installed bool) {
+	t.Helper()
+	orig := microvmDir
+	microvmDir = t.TempDir()
+	t.Cleanup(func() { microvmDir = orig })
+	if installed {
+		installWorkerImage(t)
+	}
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(ca, []byte("-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"), 0o600))
+	d.config.NATS.CACert = ca
+	d.mgmtBridgeIP = "10.97.8.1"
+	d.mgmtIPAllocator = sysInstMgmtAllocator(t, "10.97.8.1")
+}
+
+func installWorkerImage(t *testing.T) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(sqsWorkerImageDir(), 0o755))
+	for _, n := range []string{"vmlinuz", "initramfs.cpio.gz"} {
+		require.NoError(t, os.WriteFile(filepath.Join(sqsWorkerImageDir(), n), []byte("x"), 0o644))
+	}
 }
 
 func (f *ensureFixture) call(t *testing.T, node string, wait time.Duration) (*workerlaunch.EnsureResponse, error) {
@@ -324,4 +354,72 @@ func TestEnsureSQSWorker_RefusesAnUnboundOrForeignReply(t *testing.T) {
 		requireAWSCode(t, err, awserrors.ErrorServerInternal)
 		require.NoError(t, sub.Unsubscribe())
 	}
+}
+
+// A node without a complete worker image refuses before allocating a volume
+// or network or recording any intent; once installed, the next call launches.
+func TestEnsureSQSWorker_MissingOrIncompleteImageAllocatesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		breakImage func(t *testing.T)
+	}{
+		{"missing", func(t *testing.T) {
+			require.NoError(t, os.RemoveAll(sqsWorkerImageDir()))
+		}},
+		{"empty initramfs", func(t *testing.T) {
+			require.NoError(t, os.Truncate(filepath.Join(sqsWorkerImageDir(), "initramfs.cpio.gz"), 0))
+		}},
+		{"no kernel", func(t *testing.T) {
+			require.NoError(t, os.Remove(filepath.Join(sqsWorkerImageDir(), "vmlinuz")))
+		}},
+		{"kernel is a directory", func(t *testing.T) {
+			p := filepath.Join(sqsWorkerImageDir(), "vmlinuz")
+			require.NoError(t, os.Remove(p))
+			require.NoError(t, os.Mkdir(p, 0o755))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newEnsureFixture(t, &ensureVMs{})
+			tc.breakImage(t)
+
+			_, err := f.call(t, ensureNode, 10*time.Second)
+			msg := requireAWSCode(t, err, awserrors.ErrorServiceUnavailable)
+			assert.Contains(t, msg, "sqs worker image")
+			assert.Zero(t, f.vols.prepared, "no volume may be prepared")
+			assert.Zero(t, f.workerENIs(t), "no network may be allocated")
+			assert.Zero(t, f.vms.count())
+			_, err = f.ids.Current(t.Context(), sqsTestRegion)
+			require.ErrorIs(t, err, jetstream.ErrKeyNotFound, "no intent may be recorded")
+
+			require.NoError(t, os.RemoveAll(sqsWorkerImageDir()))
+			installWorkerImage(t)
+			resp, err := f.call(t, ensureNode, 10*time.Second)
+			require.NoError(t, err)
+			assert.Equal(t, workerlaunch.StateBound, resp.State)
+			assert.Equal(t, 1, f.vols.prepared)
+			assert.Equal(t, 1, f.vms.count())
+		})
+	}
+}
+
+// A replacement after a confirmed stop is also refused before it fences or
+// begins, so the stopped record is left exactly as it was.
+func TestEnsureSQSWorker_MissingImageLeavesAStoppedWorkerUntouched(t *testing.T) {
+	f := newEnsureFixture(t, &ensureVMs{})
+	_, err := f.call(t, ensureNode, 10*time.Second)
+	require.NoError(t, err)
+	cur, err := f.ids.Current(t.Context(), sqsTestRegion)
+	require.NoError(t, err)
+	intent := workerident.Intent{Region: sqsTestRegion, Generation: cur.Generation, ClaimID: cur.ClaimID}
+	require.NoError(t, f.ids.RecordStopped(t.Context(), intent, cur.InstanceID))
+	before, err := f.ids.Current(t.Context(), sqsTestRegion)
+	require.NoError(t, err)
+
+	require.NoError(t, os.RemoveAll(sqsWorkerImageDir()))
+	_, err = f.call(t, ensureNode, 10*time.Second)
+	requireAWSCode(t, err, awserrors.ErrorServiceUnavailable)
+	after, err := f.ids.Current(t.Context(), sqsTestRegion)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	assert.Equal(t, 1, f.vms.count())
 }

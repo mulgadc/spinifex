@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -197,4 +199,35 @@ func topologyGateway(p netip.Prefix) (string, int, error) {
 	b := p.Masked().Addr().As4()
 	b[3]++
 	return netip.AddrFrom4(b).String(), p.Bits(), nil
+}
+
+// lostCreateVPC applies the first ENI create and then reports it failed, as a
+// create whose reply is lost does.
+type lostCreateVPC struct {
+	*ec2vpc.VPCServiceImpl
+
+	lost atomic.Bool
+}
+
+func (v *lostCreateVPC) CreateNetworkInterface(ctx context.Context, in *ec2.CreateNetworkInterfaceInput, acct string) (*ec2.CreateNetworkInterfaceOutput, error) {
+	out, err := v.VPCServiceImpl.CreateNetworkInterface(ctx, in, acct)
+	if err == nil && v.lost.CompareAndSwap(false, true) {
+		return nil, errors.New("nats: timeout")
+	}
+	return out, err
+}
+
+// A create that applied but lost its reply is found by the claim's retry, so
+// the claim still holds exactly one ENI.
+func TestSQSWorkerNetwork_LostCreateReplyReusesTheENI(t *testing.T) {
+	_, svc := sqsWorkerNetworkFixture(t, nil)
+	n := newSQSWorkerNetwork(&lostCreateVPC{VPCServiceImpl: svc}, nil)
+	_, err := n.WorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
+	require.ErrorContains(t, err, "create ENI")
+	net, err := n.WorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
+	require.NoError(t, err)
+	out, err := svc.DescribeNetworkInterfaces(t.Context(), &ec2.DescribeNetworkInterfacesInput{}, awsidentifiers.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.NetworkInterfaces, 1)
+	assert.Equal(t, aws.StringValue(out.NetworkInterfaces[0].NetworkInterfaceId), net.ENIID)
 }

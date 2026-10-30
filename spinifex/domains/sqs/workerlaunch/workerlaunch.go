@@ -57,6 +57,12 @@ type Spec struct {
 	Region       string
 }
 
+// Host reports whether this node can boot a worker now: its image is
+// complete and its boot inputs exist. It allocates and records nothing.
+type Host interface {
+	Ready(ctx context.Context) error
+}
+
 // VMLauncher starts the worker VM on this node. Any error leaves the outcome
 // unknown to the caller.
 type VMLauncher interface {
@@ -69,6 +75,7 @@ var (
 	ErrOutcomeUnknown = errors.New("SQS worker launch outcome is unknown; reconcile before relaunching")
 	ErrUnencrypted    = errors.New("SQS worker data volume is not encrypted")
 	ErrIncomplete     = errors.New("SQS worker launcher is missing a capability")
+	ErrHostNotReady   = errors.New("this node cannot boot an SQS worker yet")
 )
 
 // Launcher realizes the worker on NodeID, the node it runs on and the only
@@ -79,6 +86,7 @@ type Launcher struct {
 	Volumes    Volumes
 	Roles      Roles
 	Network    NetworkAllocator
+	Host       Host
 	VMs        VMLauncher
 	NodeID     string
 
@@ -97,7 +105,7 @@ type Result struct {
 // first-store fence excludes its generation.
 func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Result, error) {
 	if l.Identities.KV == nil || l.FirstStore.KV == nil || l.Volumes == nil || l.Roles == nil ||
-		l.Network == nil || l.VMs == nil || l.NodeID == "" || instanceType == "" {
+		l.Network == nil || l.Host == nil || l.VMs == nil || l.NodeID == "" || instanceType == "" {
 		return Result{}, ErrIncomplete
 	}
 	cur, err := l.Identities.Current(ctx, region)
@@ -105,6 +113,9 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 	var fresh string
 	switch {
 	case errors.Is(err, jetstream.ErrKeyNotFound):
+		if err := l.hostReady(ctx); err != nil {
+			return Result{}, err
+		}
 		req, err = l.first(ctx)
 		if err != nil {
 			return Result{}, err
@@ -120,11 +131,17 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 		return Result{}, ErrOutcomeUnknown
 	case cur.State == workerident.StateLaunching:
 		// An undispatched intent started nothing; resume it with its claim.
+		if err := l.hostReady(ctx); err != nil {
+			return Result{}, err
+		}
 		req = workerident.LaunchRequest{ClaimID: cur.ClaimID, Supersedes: cur.Generation - 1,
 			NodeID: l.NodeID, DataVolumeID: cur.DataVolumeID}
 	default:
 		// Stopped or failed: confirmed to hold nothing. Fence the replaced
 		// generation out of the first-store decision before the next begins.
+		if err := l.hostReady(ctx); err != nil {
+			return Result{}, err
+		}
 		if err := l.FirstStore.Fence(ctx, region, cur.Generation+1); err != nil {
 			return Result{}, fmt.Errorf("fence replaced worker generation: %w", err)
 		}
@@ -168,6 +185,15 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 		return Result{}, fmt.Errorf("worker %s launched but not bound: %w", instanceID, err)
 	}
 	return Result{InstanceID: instanceID, Generation: intent.Generation}, nil
+}
+
+// hostReady runs before any volume, intent, network or dispatch, so a node
+// that cannot boot the worker refuses with nothing allocated or recorded.
+func (l *Launcher) hostReady(ctx context.Context) error {
+	if err := l.Host.Ready(ctx); err != nil {
+		return fmt.Errorf("%w: %w", ErrHostNotReady, err)
+	}
+	return nil
 }
 
 // first prepares the Region's first worker volume, after everything that can

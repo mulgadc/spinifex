@@ -99,6 +99,7 @@ func (d *Daemon) buildSQSWorkerLauncher(ctx context.Context) (*workerlaunch.Laun
 		Volumes:    vols,
 		Roles:      sqsWorkerRoles{provider: d.systemRoleEnsurer},
 		Network:    newSQSWorkerNetwork(d.vpcService, &d.config.SQS),
+		Host:       sqsWorkerHost{check: d.sqsWorkerHostReady},
 		VMs:        sqsWorkerVMs{launch: d.LaunchSQSWorkerInstance},
 		NodeID:     d.node,
 	}, nil
@@ -153,7 +154,7 @@ func sqsWorkerEnsureError(err error) (code, message string) {
 		return awserrors.ErrorInvalidParameterValue, "the Region's SQS worker is pinned to another node"
 	case errors.Is(err, workerlaunch.ErrUnencrypted):
 		return awserrors.ErrorUnsupportedOperation, err.Error()
-	case errors.Is(err, workerlaunch.ErrIncomplete):
+	case errors.Is(err, workerlaunch.ErrIncomplete), errors.Is(err, workerlaunch.ErrHostNotReady):
 		return awserrors.ErrorServiceUnavailable, err.Error()
 	default:
 		return awserrors.ErrorServerInternal, err.Error()

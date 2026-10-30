@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 )
 
@@ -53,12 +54,16 @@ func (f *fakeRoles) EnsureWorkerProfile(context.Context) (string, error) {
 type fakeNetwork struct {
 	mu     sync.Mutex
 	claims []string
+	fail   error
 }
 
 func (f *fakeNetwork) WorkerNetwork(_ context.Context, _, claimID string) (*Network, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.claims = append(f.claims, claimID)
+	if f.fail != nil {
+		return nil, f.fail
+	}
 	return &Network{SubnetID: "subnet-1", ENIID: "eni-1", ENIMac: "02:00:00:00:00:01",
 		ENIIP: "10.240.0.10", CIDR: "10.240.0.10/24", Gateway: "10.240.0.1"}, nil
 }
@@ -85,12 +90,24 @@ func (f *fakeVMs) count() int {
 	return len(f.specs)
 }
 
+type fakeHost struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (f *fakeHost) Ready(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err
+}
+
 type rig struct {
-	l   *Launcher
-	vol *fakeVolumes
-	iam *fakeRoles
-	net *fakeNetwork
-	vms *fakeVMs
+	l    *Launcher
+	host *fakeHost
+	vol  *fakeVolumes
+	iam  *fakeRoles
+	net  *fakeNetwork
+	vms  *fakeVMs
 }
 
 func newRig(t *testing.T) rig {
@@ -105,8 +122,8 @@ func newRig(t *testing.T) rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := rig{vol: &fakeVolumes{encrypted: true}, iam: &fakeRoles{}, net: &fakeNetwork{}, vms: &fakeVMs{}}
-	r.l = &Launcher{Identities: ids, FirstStore: fs, Volumes: r.vol, Roles: r.iam, Network: r.net, VMs: r.vms, NodeID: node}
+	r := rig{vol: &fakeVolumes{encrypted: true}, iam: &fakeRoles{}, net: &fakeNetwork{}, vms: &fakeVMs{}, host: &fakeHost{}}
+	r.l = &Launcher{Identities: ids, FirstStore: fs, Volumes: r.vol, Roles: r.iam, Network: r.net, Host: r.host, VMs: r.vms, NodeID: node}
 	return r
 }
 
@@ -347,6 +364,7 @@ func TestEnsure_RefusesWithoutEveryCapability(t *testing.T) {
 		"volumes": func(l *Launcher) { l.Volumes = nil },
 		"roles":   func(l *Launcher) { l.Roles = nil },
 		"network": func(l *Launcher) { l.Network = nil },
+		"host":    func(l *Launcher) { l.Host = nil },
 		"vms":     func(l *Launcher) { l.VMs = nil },
 		"node":    func(l *Launcher) { l.NodeID = "" },
 	} {
@@ -358,5 +376,70 @@ func TestEnsure_RefusesWithoutEveryCapability(t *testing.T) {
 	}
 	if r.vms.count() != 0 || len(r.vol.prepared) != 0 {
 		t.Fatal("an incomplete launcher did work")
+	}
+}
+
+// A host that cannot boot the worker refuses the first launch before a volume,
+// intent, network or dispatch exists, and the next ready call launches.
+func TestEnsure_HostNotReadyRefusesBeforeAllocating(t *testing.T) {
+	r := newRig(t)
+	r.host.err = errors.New("image missing")
+	if _, err := r.l.Ensure(context.Background(), region, itype); !errors.Is(err, ErrHostNotReady) {
+		t.Fatalf("Ensure = %v, want ErrHostNotReady", err)
+	}
+	if len(r.vol.prepared) != 0 || len(r.net.claims) != 0 || r.vms.count() != 0 {
+		t.Fatalf("allocated: volumes=%d claims=%d launches=%d", len(r.vol.prepared), len(r.net.claims), r.vms.count())
+	}
+	if _, err := r.l.Identities.Current(context.Background(), region); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("record after refusal: %v", err)
+	}
+	r.host.err = nil
+	if _, err := r.l.Ensure(context.Background(), region, itype); err != nil {
+		t.Fatal(err)
+	}
+	if r.vms.count() != 1 || len(r.vol.prepared) != 1 {
+		t.Fatalf("ready retry: launches=%d volumes=%d", r.vms.count(), len(r.vol.prepared))
+	}
+}
+
+// An undispatched intent is not dispatched while the host is not ready, and
+// a stopped worker is neither fenced nor replaced.
+func TestEnsure_HostNotReadyLeavesRecordsUntouched(t *testing.T) {
+	r := newRig(t)
+	r.net.fail = errors.New("network down")
+	if _, err := r.l.Ensure(context.Background(), region, itype); err == nil {
+		t.Fatal("want network failure")
+	}
+	r.net.fail = nil
+	before := r.current(t)
+	r.host.err = errors.New("image missing")
+	if _, err := r.l.Ensure(context.Background(), region, itype); !errors.Is(err, ErrHostNotReady) {
+		t.Fatalf("resume = %v, want ErrHostNotReady", err)
+	}
+	if after := r.current(t); after != before || r.vms.count() != 0 {
+		t.Fatalf("resume changed the record or launched: %+v", after)
+	}
+
+	r.host.err = nil
+	first, err := r.l.Ensure(context.Background(), region, itype)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur := r.current(t)
+	intent := workerident.Intent{Region: region, Generation: cur.Generation, ClaimID: cur.ClaimID}
+	if err := r.l.Identities.RecordStopped(context.Background(), intent, first.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	stopped := r.current(t)
+	r.host.err = errors.New("image missing")
+	if _, err := r.l.Ensure(context.Background(), region, itype); !errors.Is(err, ErrHostNotReady) {
+		t.Fatalf("replace = %v, want ErrHostNotReady", err)
+	}
+	if after := r.current(t); after != stopped || r.vms.count() != 1 {
+		t.Fatalf("replacement changed the record or launched: %+v", after)
+	}
+	fence, err := r.l.FirstStore.FencedAt(context.Background(), region)
+	if err != nil || fence > stopped.Generation {
+		t.Fatalf("fence = %d, %v while the host was not ready", fence, err)
 	}
 }

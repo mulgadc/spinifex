@@ -78,22 +78,9 @@ func (d *Daemon) prepareSQSWorkerLaunch(ctx context.Context, input *elbv2domain.
 	if _, ok := d.resourceMgr.instanceTypes[input.InstanceType]; !ok {
 		return nil, fmt.Errorf("unknown instance type: %s", input.InstanceType)
 	}
-	// The gateway URL names this node's bridge, so it must exist here; the
-	// fallback gateway host is not reachable from the guest.
-	if d.mgmtIPAllocator == nil || d.mgmtBridgeIP == "" {
-		return nil, errors.New("sqs worker: this node has no mgmt bridge")
-	}
-	for _, name := range []string{"vmlinuz", "initramfs.cpio.gz"} {
-		if _, err := os.Stat(filepath.Join(sqsWorkerImageDir(), name)); err != nil {
-			return nil, fmt.Errorf("sqs worker image is not installed (%s): %w", name, err)
-		}
-	}
-	if d.config == nil || d.config.NATS.CACert == "" {
-		return nil, errors.New("sqs worker: no cluster CA is configured")
-	}
-	ca, err := os.ReadFile(d.config.NATS.CACert)
-	if err != nil || len(strings.TrimSpace(string(ca))) == 0 {
-		return nil, fmt.Errorf("sqs worker: cluster CA %s is unreadable or empty", d.config.NATS.CACert)
+	ca, err := d.sqsWorkerHostReady()
+	if err != nil {
+		return nil, err
 	}
 	if err := d.checkSQSWorkerVolume(ctx, input.SQSWorker.DataVolumeID); err != nil {
 		return nil, err
@@ -102,8 +89,42 @@ func (d *Daemon) prepareSQSWorkerLaunch(ctx context.Context, input *elbv2domain.
 		volumeID:   input.SQSWorker.DataVolumeID,
 		region:     input.SQSWorker.Region,
 		gatewayURL: d.resolveSystemGatewayBaseURL(),
-		caCert:     string(ca),
+		caCert:     ca,
 	}, nil
+}
+
+// sqsWorkerHostReady checks what this node needs to boot a worker: a complete
+// image, the mgmt bridge the gateway URL names, and the cluster CA. It
+// returns the CA. The launcher calls it before allocating anything.
+func (d *Daemon) sqsWorkerHostReady() (string, error) {
+	if d.mgmtIPAllocator == nil || d.mgmtBridgeIP == "" {
+		return "", errors.New("sqs worker: this node has no mgmt bridge")
+	}
+	for _, name := range []string{"vmlinuz", "initramfs.cpio.gz"} {
+		info, err := os.Stat(filepath.Join(sqsWorkerImageDir(), name))
+		if err != nil {
+			return "", fmt.Errorf("sqs worker image is not installed (%s): %w", name, err)
+		}
+		if !info.Mode().IsRegular() || info.Size() == 0 {
+			return "", fmt.Errorf("sqs worker image is incomplete: %s is empty or not a file", name)
+		}
+	}
+	if d.config == nil || d.config.NATS.CACert == "" {
+		return "", errors.New("sqs worker: no cluster CA is configured")
+	}
+	ca, err := os.ReadFile(d.config.NATS.CACert)
+	if err != nil || len(strings.TrimSpace(string(ca))) == 0 {
+		return "", fmt.Errorf("sqs worker: cluster CA %s is unreadable or empty", d.config.NATS.CACert)
+	}
+	return string(ca), nil
+}
+
+// sqsWorkerHost is the launcher's view of sqsWorkerHostReady.
+type sqsWorkerHost struct{ check func() (string, error) }
+
+func (h sqsWorkerHost) Ready(context.Context) error {
+	_, err := h.check()
+	return err
 }
 
 // checkSQSWorkerVolume requires the volume's own record, in the system

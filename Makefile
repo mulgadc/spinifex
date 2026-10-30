@@ -189,6 +189,12 @@ install-sqs-store-microvm: $(SQS_STORE_MICROVM_ARTIFACTS) ## Install the SQS sto
 	sudo install -m 0644 $(SQS_STORE_MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/sqs-store/vmlinuz
 	sudo install -m 0644 $(SQS_STORE_MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/sqs-store/initramfs.cpio.gz
 
+install-sqs-worker-microvm: $(SQS_WORKER_MICROVM_ARTIFACTS) ## Install the SQS worker microVM image to /usr/share/spinifex/microvm/sqs-worker/
+	sudo install -d /usr/share/spinifex/microvm/sqs-worker
+	sudo rm -f /usr/share/spinifex/microvm/sqs-worker/initramfs.cpio.gz
+	sudo install -m 0644 $(SQS_WORKER_MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/sqs-worker/vmlinuz
+	sudo install -m 0644 $(SQS_WORKER_MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/sqs-worker/initramfs.cpio.gz
+
 install-microvm: $(MICROVM_ARTIFACTS) $(QBOOT_ARTIFACTS) ## Install microVM artifacts to /usr/share/spinifex/microvm/
 	sudo install -d /usr/share/spinifex/microvm
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/vmlinuz
@@ -490,6 +496,7 @@ distro-amd64:
 		echo "[distro-amd64]          run 'make build-microvm-image' before 'make distro-amd64'"; \
 	fi
 	./scripts/lib/stage-sqs-store-microvm.sh $(SQS_STORE_MICROVM_OUT_DIR) dist/amd64
+	./scripts/lib/stage-sqs-store-microvm.sh $(SQS_WORKER_MICROVM_OUT_DIR) dist/amd64 sqs-worker
 	tar -czf dist/spinifex-$(VERSION)-linux-amd64.tar.gz -C dist/amd64 .
 	sha256sum dist/spinifex-$(VERSION)-linux-amd64.tar.gz > dist/spinifex-$(VERSION)-linux-amd64.tar.gz.sha256
 
@@ -508,7 +515,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-store-microvm-image build-sqs-worker-microvm-image install-microvm install-sqs-store-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-store-microvm-image build-sqs-worker-microvm-image install-microvm install-sqs-store-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

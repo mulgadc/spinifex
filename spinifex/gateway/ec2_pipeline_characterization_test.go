@@ -22,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
+	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -92,6 +93,10 @@ func (d *ec2Daemon) body(subject string) []byte {
 type ec2PipelineEnv struct {
 	NoNATS     bool
 	ResolveErr error
+	// Outer runs ahead of SigV4, as the telemetry and audit middleware do.
+	Outer []func(http.Handler) http.Handler
+	// Throttler, when set, is installed after the action enricher as SetupRoutes does.
+	Throttler *ratelimit.Throttler
 }
 
 type ec2PipelineApp struct {
@@ -144,7 +149,14 @@ func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdo
 	}
 	gw := withVerifier(cfg)
 	r := chi.NewRouter()
+	for _, mw := range env.Outer {
+		r.Use(mw)
+	}
 	r.Use(gw.SigV4AuthMiddleware())
+	r.Use(traceActionEnricher)
+	if env.Throttler != nil {
+		r.Use(env.Throttler.Middleware(gw.throttleKeyFuncs(), gw.writeThrottleError))
+	}
 	r.HandleFunc("/*", gw.Request)
 	return ec2PipelineApp{Handler: r, Daemon: daemon}
 }

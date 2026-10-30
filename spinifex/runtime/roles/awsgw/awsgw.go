@@ -32,6 +32,8 @@ import (
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -601,6 +603,8 @@ func launchService(config *config.ClusterConfig) error {
 			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
 		},
 	})
+	ecsControlPlane := ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: natsConn})
+	eksControlPlane := eksawsapi.NewRegistration(eksawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})
 	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
 	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
 	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsDeps)
@@ -621,7 +625,7 @@ func launchService(config *config.ClusterConfig) error {
 		BucketStore:       objStore,
 		SignupMaxAccounts: signupMaxAccounts,
 	})
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane); err != nil {
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
 

@@ -68,7 +68,7 @@ func TestEKSRequest_InternalAddonsWireBody(t *testing.T) {
 		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+ekscluster.CPInstanceRoleName)
 	ctx = withPrincipalField(ctx, fieldAssumedRoleARN,
 		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+ekscluster.CPInstanceRoleName+"/"+cpInstanceID)
-	require.NoError(t, gw.EKS_Request(rec, req.WithContext(ctx)))
+	require.NoError(t, gw.serveEKS(rec, req.WithContext(ctx)))
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, `{"Addons":[`+

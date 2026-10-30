@@ -23,13 +23,6 @@ func setupECSRequest(target, body string) *http.Request {
 	return withTestIdentity(req.WithContext(ctx))
 }
 
-func TestECSActionFromTarget(t *testing.T) {
-	assert.Equal(t, "RunTask",
-		ecsActionFromTarget("AmazonEC2ContainerServiceV20141113.RunTask"))
-	assert.Equal(t, "CreateCluster", ecsActionFromTarget("CreateCluster"))
-	assert.Empty(t, ecsActionFromTarget(""))
-}
-
 // The Actions map is the v1 API contract (ecs-v1.md §1): every action across the
 // Cluster / TaskDefinition / Task / Service / ContainerInstance / Account / Tags
 // surfaces must be registered, whether wired to the daemon or a 501 stub.
@@ -63,14 +56,14 @@ func TestECSActionsMap_NamespaceRegistered(t *testing.T) {
 
 func TestECSRequest_MissingTarget(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.ECS_Request(httptest.NewRecorder(), setupECSRequest("", ""))
+	err := gw.serveECS(httptest.NewRecorder(), setupECSRequest("", ""))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
 }
 
 func TestECSRequest_UnknownAction(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.ECS_Request(httptest.NewRecorder(),
+	err := gw.serveECS(httptest.NewRecorder(),
 		setupECSRequest("AmazonEC2ContainerServiceV20141113.MadeUpAction", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
@@ -79,7 +72,7 @@ func TestECSRequest_UnknownAction(t *testing.T) {
 // An action whose real handler has not yet landed still resolves to the 501 stub.
 func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.ECS_Request(httptest.NewRecorder(),
+	err := gw.serveECS(httptest.NewRecorder(),
 		setupECSRequest("AmazonEC2ContainerServiceV20141113.UpdateCluster", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
@@ -95,7 +88,7 @@ func TestECSRequest_MissingAccountID(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	// Account-less requests are rejected by the policy gate, which runs ahead of
 	// the handler's own account guard.
-	err := gw.ECS_Request(httptest.NewRecorder(), req)
+	err := gw.serveECS(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }

@@ -197,7 +197,7 @@ func TestErrorHandler_ACMResourceInUse_UsesACMWording(t *testing.T) {
 // own ResourceInUseException must keep its existing wording, unaffected by the
 // ACM-specific override.
 func TestErrorHandler_EKSResourceInUse_UsesEKSWording(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withContainers(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
 	req = req.WithContext(ctx)

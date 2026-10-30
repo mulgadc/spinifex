@@ -49,7 +49,7 @@ func containerPipelineApp(t *testing.T, statements ...iamdomain.Statement) http.
 		},
 	}
 	_, nc := testutil.StartTestNATS(t)
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: testRegion, NATSConn: nc, IAMService: svc})
+	gw := withVerifier(withContainers(&GatewayConfig{DisableLogging: true, Region: testRegion, NATSConn: nc, IAMService: svc}))
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", gw.Request)

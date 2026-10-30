@@ -39,7 +39,6 @@ func assertRoutesResolve[H any](t *testing.T, rr *rest.Router[H], routes []rest.
 }
 
 func TestRESTRouters_EveryRouteResolves(t *testing.T) {
-	t.Run("eks", func(t *testing.T) { assertRoutesResolve(t, eksRouter, eksRoutes) })
 	t.Run("bedrock", func(t *testing.T) { assertRoutesResolve(t, bedrockRouter, bedrockRoutes) })
 	t.Run("bedrock-runtime", func(t *testing.T) {
 		assertRoutesResolve(t, bedrockRuntimeRouter, bedrockRuntimeRoutes)
@@ -52,30 +51,6 @@ func TestRESTRouters_EveryRouteResolves(t *testing.T) {
 	})
 }
 
-// The regex tables anchored every pattern, so a path had to match end to end.
-func TestRESTRouter_NoMatchCases(t *testing.T) {
-	cases := []struct {
-		name   string
-		method string
-		path   string
-	}{
-		{"empty param segment", "GET", "/clusters/"},
-		{"empty wildcard", "GET", "/tags/"},
-		{"unregistered method", "PATCH", "/clusters/alpha"},
-		{"trailing slash on a slashless pattern", "GET", "/clusters/alpha/"},
-		{"unknown suffix", "GET", "/clusters/alpha/wat"},
-		{"wrong method on a deep route", "GET", "/clusters/alpha/node-groups/ng/update-config"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			action, params, _, ok := eksRouter.Lookup(tc.method, tc.path)
-			assert.False(t, ok)
-			assert.Empty(t, action)
-			assert.Nil(t, params)
-		})
-	}
-}
-
 // bedrock-agent's real AWS paths carry a trailing slash on the collection
 // routes; chi reports those patterns without it, so the entry key trims both.
 func TestRESTRouter_TrailingSlashIsExact(t *testing.T) {
@@ -85,25 +60,6 @@ func TestRESTRouter_TrailingSlashIsExact(t *testing.T) {
 
 	_, _, _, ok = bedrockAgentRouter.Lookup("PUT", "/knowledgebases")
 	assert.False(t, ok, "the slashless path is a different route to AWS")
-}
-
-// Params arrive percent-encoded so an ARN stays one path segment; the wildcard
-// route keeps the slashes the encoding hides.
-func TestRESTRouter_UnescapesParams(t *testing.T) {
-	const (
-		arn     = "arn:aws:iam::000000000001:user/admin"
-		escaped = "arn%3Aaws%3Aiam%3A%3A000000000001%3Auser%2Fadmin"
-	)
-
-	action, params, _, ok := eksRouter.Lookup("GET", "/clusters/alpha/access-entries/"+escaped)
-	require.True(t, ok)
-	assert.Equal(t, "DescribeAccessEntry", action)
-	assert.Equal(t, []string{"alpha", arn}, params)
-
-	action, params, _, ok = eksRouter.Lookup("GET", "/tags/"+escaped)
-	require.True(t, ok)
-	assert.Equal(t, "ListTagsForResource", action)
-	assert.Equal(t, []string{arn}, params)
 }
 
 // chi keeps the last registration of a duplicated method+pattern silently,
@@ -119,7 +75,6 @@ func assertNoDuplicateRoutes[H any](t *testing.T, routes []rest.Route[H]) {
 }
 
 func TestRESTRouters_NoDuplicateRoutes(t *testing.T) {
-	t.Run("eks", func(t *testing.T) { assertNoDuplicateRoutes(t, eksRoutes) })
 	t.Run("bedrock", func(t *testing.T) { assertNoDuplicateRoutes(t, bedrockRoutes) })
 	t.Run("bedrock-runtime", func(t *testing.T) { assertNoDuplicateRoutes(t, bedrockRuntimeRoutes) })
 	t.Run("bedrock-agent", func(t *testing.T) { assertNoDuplicateRoutes(t, bedrockAgentRoutes) })

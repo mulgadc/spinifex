@@ -181,12 +181,17 @@ type Daemon struct {
 
 Tracks available and allocated CPU/memory to prevent overcommit, and drives the dynamic `ec2.RunInstances.{type}` subscriptions:
 
+One instance vCPU is one CPU the kernel has online: a thread with SMT on, a core with SMT off or on ARM, as AWS counts a vCPU.
+The OS and Spinifex's own services keep 1 CPU on a host with up to 8, 2 up to 16, 4 up to 63 and 8 from 64, and every other CPU is schedulable one-to-one with no overcommit.
+[ADR-0015](https://github.com/mulgadc/mulga/blob/main/docs/adr/0015-host-cpu-capacity-and-reservation.md) fixes this rule.
+
+
 ```go
 type ResourceManager struct {
     mu            sync.RWMutex
-    hostVCPU      int                                // raw runtime.NumCPU
+    hostVCPU      int                                // online CPUs (ADR-0015:S1)
     hostMemGB     float64                            // raw /proc/meminfo MemTotal
-    reservedVCPU  int                                // held back for spinifex services
+    reservedVCPU  int                                // ADR-0015:S2 tier: 1, 2, 4 or 8
     reservedMem   float64                            // held back for spinifex services
     allocatedVCPU int
     allocatedMem  float64

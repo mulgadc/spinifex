@@ -105,7 +105,7 @@ type ResourceManager struct {
 	hostVCPU  int
 	hostMemGB float64
 	// reservedVCPU / reservedMem: resources held back for the daemon and
-	// co-located services. See hostReserve / defaultHostReserve.
+	// co-located services. See hostReserve / reservedVCPUFor (ADR-0015).
 	reservedVCPU  int
 	reservedMem   float64
 	allocatedVCPU int
@@ -508,15 +508,15 @@ func parsePhysicalCores(data []byte) (int, bool) {
 // NewResourceManager creates a new ResourceManager. Errors if memory detection
 // fails or if the host is too small to satisfy the daemon's reserve.
 func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instancetypes.MIGProfileSpec, gpuMgr *gpu.Manager) (*ResourceManager, error) {
-	// Use physical cores (not SMT threads); SPINIFEX_HOST_VCPU overrides.
-	hostVCPU := resolveHostVCPU(os.Getenv, physicalCoreCount())
+	// One instance vCPU per online CPU, as AWS counts (ADR-0015:S1).
+	hostVCPU := resolveHostVCPU(os.Getenv, hostCPUCount())
 
 	totalMemGB, err := getSystemMemory()
 	if err != nil {
 		return nil, fmt.Errorf("detect system memory: %w", err)
 	}
 
-	reserve := resolveHostReserve(os.Getenv)
+	reserve := resolveHostReserve(os.Getenv, hostVCPU)
 	reservedVCPU, reservedMem, err := applyHostReserve(reserve, hostVCPU, totalMemGB)
 	if err != nil {
 		slog.Error("host below minimum reserve — daemon refuses to start",
@@ -536,7 +536,7 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 	}
 
 	slog.Info("System resources detected",
-		"hostVCPU", hostVCPU, "logicalCPU", runtime.NumCPU(), "hostMemGB", totalMemGB,
+		"hostVCPU", hostVCPU, "physicalCores", physicalCoreCount(), "smt", smtState(), "hostMemGB", totalMemGB,
 		"reservedVCPU", reservedVCPU, "reservedMemGB", reservedMem,
 		"schedulableVCPU", hostVCPU-reservedVCPU, "schedulableMemGB", totalMemGB-reservedMem,
 		"instanceTypes", len(instanceTypes))

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"maps"
 	"net/http"
@@ -41,8 +42,8 @@ func registerTestCodes(t *testing.T, codes map[string]awserrors.ErrorMessage) {
 
 func sdkConfig(url string) aws.Config {
 	return aws.Config{
-		Region:           testRegion,
-		Credentials:      credentials.NewStaticCredentialsProvider(testAccessKey, testSecretKey, ""),
+		Region:           gwfix.Region,
+		Credentials:      credentials.NewStaticCredentialsProvider(gwfix.AccessKey, gwfix.SecretKey, ""),
 		RetryMaxAttempts: 1,
 		BaseEndpoint:     aws.String(url),
 	}

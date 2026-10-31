@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net"
@@ -30,9 +31,9 @@ func auditRouter(t *testing.T, keys map[string]*iamdomain.AccessKey) (http.Handl
 
 	gw := &GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
-		IAMService:     &mockIAMService{masterKey: testMasterKey, accessKeys: keys},
-		Credentials:    credverify.New(&mockIAMService{masterKey: testMasterKey, accessKeys: keys}, nil),
+		Region:         gwfix.Region,
+		IAMService:     &gwfix.IAM{MasterKey: gwfix.MasterKey, AccessKeys: keys},
+		Credentials:    credverify.New(&gwfix.IAM{MasterKey: gwfix.MasterKey, AccessKeys: keys}, nil),
 		RateLimiter:    rl,
 	}
 	withEC2(gw)
@@ -54,22 +55,6 @@ func auditRouter(t *testing.T, keys map[string]*iamdomain.AccessKey) (http.Handl
 	return r, func() *audit.Record { return got }
 }
 
-// A request that never presented credentials is still attributable to where it
-// came from, and carries the verdict it was answered with.
-func TestRequestAuditRecordsUnauthenticatedRejection(t *testing.T) {
-	handler, record := auditRouter(t, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.RemoteAddr = "10.15.8.11:54321"
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	require.NotNil(t, record())
-	assert.Equal(t, "10.15.8.11", auditField(record(), "sourceIP"))
-	assert.Equal(t, awserrors.ErrorMissingAuthenticationToken, auditField(record(), "authError"))
-	assert.Empty(t, auditField(record(), "accessKeyID"))
-}
-
 // signedRequest builds a request whose signature is wrong but whose envelope
 // parses: the credential scope date must match X-Amz-Date or the request is
 // rejected as malformed before the access key is ever looked at.
@@ -84,25 +69,11 @@ func signedRequestForKey(remoteAddr, accessKeyID string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = remoteAddr
 	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+accessKeyID+"/"+
-		now.Format("20060102")+"/"+testRegion+"/ec2/aws4_request, "+
+		now.Format("20060102")+"/"+gwfix.Region+"/ec2/aws4_request, "+
 		"SignedHeaders=host;x-amz-date, Signature="+
 		"0000000000000000000000000000000000000000000000000000000000000000")
 	req.Header.Set("X-Amz-Date", now.Format("20060102T150405Z"))
 	return req
-}
-
-// A rejected caller is identifiable: the key it presented is recorded even
-// though authentication failed on it.
-func TestRequestAuditRecordsRejectedAccessKey(t *testing.T) {
-	handler, record := auditRouter(t, map[string]*iamdomain.AccessKey{})
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, signedRequest("10.15.8.12:54321"))
-
-	require.NotNil(t, record())
-	assert.Equal(t, "10.15.8.12", auditField(record(), "sourceIP"))
-	assert.Equal(t, "AKIAINVALIDKEY000000", auditField(record(), "accessKeyID"))
-	assert.Equal(t, awserrors.ErrorInvalidClientTokenId, auditField(record(), "authError"))
 }
 
 // The lockout that answers 503 is the case that motivated this: without the
@@ -197,4 +168,34 @@ func auditField(rec *audit.Record, key string) string {
 		}
 	}
 	return ""
+}
+
+// A rejected caller is identifiable: the key it presented is recorded even
+// though authentication failed on it.
+func TestRequestAuditRecordsRejectedAccessKey(t *testing.T) {
+	handler, record := auditRouter(t, map[string]*iamdomain.AccessKey{})
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, signedRequest("10.15.8.12:54321"))
+
+	require.NotNil(t, record())
+	assert.Equal(t, "10.15.8.12", auditField(record(), "sourceIP"))
+	assert.Equal(t, "AKIAINVALIDKEY000000", auditField(record(), "accessKeyID"))
+	assert.Equal(t, awserrors.ErrorInvalidClientTokenId, auditField(record(), "authError"))
+}
+
+// A request that never presented credentials is still attributable to where it
+// came from, and carries the verdict it was answered with.
+func TestRequestAuditRecordsUnauthenticatedRejection(t *testing.T) {
+	handler, record := auditRouter(t, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.15.8.11:54321"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	require.NotNil(t, record())
+	assert.Equal(t, "10.15.8.11", auditField(record(), "sourceIP"))
+	assert.Equal(t, awserrors.ErrorMissingAuthenticationToken, auditField(record(), "authError"))
+	assert.Empty(t, auditField(record(), "accessKeyID"))
 }

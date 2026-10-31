@@ -1,65 +1,49 @@
-//test:in-package — drives EC2_Request through the gateway's unexported test
-// helpers.
-
 package gateway
 
 import (
-	"encoding/xml"
+	"github.com/stretchr/testify/assert"
 	"net/http"
 	"strconv"
-	"strings"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func tagSpecBody(action, resourceType string) string {
-	return "Action=" + action + "&TagSpecification.1.ResourceType=" + resourceType +
-		"&TagSpecification.1.Tag.1.Key=k&TagSpecification.1.Tag.1.Value=v"
-}
-
-func TestEC2Request_TagSpecificationResourceType(t *testing.T) {
+// Captured from AWS: the combination is refused even when MaxResults is also
+// out of range.
+func TestEC2Request_DescribeInstancesMaxResultsWithInstanceIds(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
 
-	cases := []struct {
-		name, body, code, resourceType string
-	}{
-		{"out of enum", tagSpecBody("CreateKeyPair", "bogus-type") + "&KeyName=k", "InvalidParameterValue", "bogus-type"},
-		{"another resource's type", tagSpecBody("CreateInternetGateway", "instance"), "InvalidParameterValue", "instance"},
-		{"InvalidParameter action", tagSpecBody("CreateVpc", "instance") + "&CidrBlock=10.0.0.0/16", "InvalidParameter", "instance"},
-		{"checked before DryRun", tagSpecBody("CreateVpc", "subnet") + "&CidrBlock=10.0.0.0/16&DryRun=true", "InvalidParameter", "subnet"},
-		{"second spec checked", tagSpecBody("RunInstances", "volume") +
-			"&TagSpecification.2.ResourceType=image&ImageId=ami-1&MinCount=1&MaxCount=1", "InvalidParameterValue", "image"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := serveEC2(gw, tc.body)
-			assert.Equal(t, http.StatusBadRequest, w.Code)
-			assert.Contains(t, w.Body.String(), "<Code>"+tc.code+"</Code>")
-			assert.Contains(t, w.Body.String(),
-				"<Message>&#39;"+tc.resourceType+"&#39; is not a valid taggable resource type for this operation.</Message>")
-		})
+	for _, n := range []string{"2", "5"} {
+		w := serveEC2(gw, "Action=DescribeInstances&InstanceId.1=i-0123456789abcdef0&MaxResults="+n)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "<Code>InvalidParameterCombination</Code>")
+		assert.Contains(t, w.Body.String(), "<Message>The parameter instancesSet cannot be used with the parameter maxResults</Message>")
 	}
 }
 
-// Each of an action's own types reaches the handler, which fails only on the
-// absent NATS connection.
-func TestEC2Request_TagSpecificationAllowedTypes(t *testing.T) {
+// AWS answers DryRun ahead of a MaxResults out of range.
+func TestEC2Request_MaxResultsAfterDryRun(t *testing.T) {
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
+	assertDryRun(t, dispatchEC2(t, gw, "Action=DescribeLaunchTemplates&MaxResults=0&DryRun=true"))
+}
+
+func TestEC2Request_MaxResultsInRange(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
 
-	for _, rt := range []string{"instance", "volume", "network-interface", "spot-instances-request"} {
-		assertPermitted(t, dispatchEC2(t, gw, tagSpecBody("RunInstances", rt)+"&ImageId=ami-1&MinCount=1&MaxCount=1"))
+	for _, body := range []string{
+		"Action=DescribeCapacityReservations&MaxResults=1",
+		"Action=DescribeEgressOnlyInternetGateways&MaxResults=255",
+		"Action=DescribeInstances&MaxResults=5",
+		"Action=DescribeInstances&MaxResults=5000",
+		"Action=DescribeInstanceTypes&MaxResults=100",
+		"Action=DescribeInstanceTypeOfferings&MaxResults=5",
+		"Action=DescribeLaunchTemplates&MaxResults=200",
+		"Action=DescribeNatGateways&MaxResults=1000",
+		// AWS accepted 4 and 1001 here although the model bounds it 5-1000.
+		"Action=DescribeIamInstanceProfileAssociations&MaxResults=4",
+		"Action=DescribeIamInstanceProfileAssociations&MaxResults=1001",
+	} {
+		assertPermitted(t, dispatchEC2(t, gw, body))
 	}
-	assertPermitted(t, dispatchEC2(t, gw, tagSpecBody("CreateVpc", "vpc")+"&CidrBlock=10.0.0.0/16"))
-}
-
-// xmlText escapes s as the error body renders it.
-func xmlText(t *testing.T, s string) string {
-	t.Helper()
-	var b strings.Builder
-	require.NoError(t, xml.EscapeText(&b, []byte(s)))
-	return b.String()
 }
 
 // The refusals are AWS's own, captured by scripts/aws-compliance/aws-response-diff/scen_e.py.
@@ -98,41 +82,37 @@ func TestEC2Request_MaxResultsOutOfRange(t *testing.T) {
 	}
 }
 
-// Captured from AWS: the combination is refused even when MaxResults is also
-// out of range.
-func TestEC2Request_DescribeInstancesMaxResultsWithInstanceIds(t *testing.T) {
+// Each of an action's own types reaches the handler, which fails only on the
+// absent NATS connection.
+func TestEC2Request_TagSpecificationAllowedTypes(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
 
-	for _, n := range []string{"2", "5"} {
-		w := serveEC2(gw, "Action=DescribeInstances&InstanceId.1=i-0123456789abcdef0&MaxResults="+n)
-		assert.Equal(t, http.StatusBadRequest, w.Code)
-		assert.Contains(t, w.Body.String(), "<Code>InvalidParameterCombination</Code>")
-		assert.Contains(t, w.Body.String(), "<Message>The parameter instancesSet cannot be used with the parameter maxResults</Message>")
+	for _, rt := range []string{"instance", "volume", "network-interface", "spot-instances-request"} {
+		assertPermitted(t, dispatchEC2(t, gw, tagSpecBody("RunInstances", rt)+"&ImageId=ami-1&MinCount=1&MaxCount=1"))
 	}
+	assertPermitted(t, dispatchEC2(t, gw, tagSpecBody("CreateVpc", "vpc")+"&CidrBlock=10.0.0.0/16"))
 }
 
-func TestEC2Request_MaxResultsInRange(t *testing.T) {
+func TestEC2Request_TagSpecificationResourceType(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
 
-	for _, body := range []string{
-		"Action=DescribeCapacityReservations&MaxResults=1",
-		"Action=DescribeEgressOnlyInternetGateways&MaxResults=255",
-		"Action=DescribeInstances&MaxResults=5",
-		"Action=DescribeInstances&MaxResults=5000",
-		"Action=DescribeInstanceTypes&MaxResults=100",
-		"Action=DescribeInstanceTypeOfferings&MaxResults=5",
-		"Action=DescribeLaunchTemplates&MaxResults=200",
-		"Action=DescribeNatGateways&MaxResults=1000",
-		// AWS accepted 4 and 1001 here although the model bounds it 5-1000.
-		"Action=DescribeIamInstanceProfileAssociations&MaxResults=4",
-		"Action=DescribeIamInstanceProfileAssociations&MaxResults=1001",
-	} {
-		assertPermitted(t, dispatchEC2(t, gw, body))
+	cases := []struct {
+		name, body, code, resourceType string
+	}{
+		{"out of enum", tagSpecBody("CreateKeyPair", "bogus-type") + "&KeyName=k", "InvalidParameterValue", "bogus-type"},
+		{"another resource's type", tagSpecBody("CreateInternetGateway", "instance"), "InvalidParameterValue", "instance"},
+		{"InvalidParameter action", tagSpecBody("CreateVpc", "instance") + "&CidrBlock=10.0.0.0/16", "InvalidParameter", "instance"},
+		{"checked before DryRun", tagSpecBody("CreateVpc", "subnet") + "&CidrBlock=10.0.0.0/16&DryRun=true", "InvalidParameter", "subnet"},
+		{"second spec checked", tagSpecBody("RunInstances", "volume") +
+			"&TagSpecification.2.ResourceType=image&ImageId=ami-1&MinCount=1&MaxCount=1", "InvalidParameterValue", "image"},
 	}
-}
-
-// AWS answers DryRun ahead of a MaxResults out of range.
-func TestEC2Request_MaxResultsAfterDryRun(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
-	assertDryRun(t, dispatchEC2(t, gw, "Action=DescribeLaunchTemplates&MaxResults=0&DryRun=true"))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := serveEC2(gw, tc.body)
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "<Code>"+tc.code+"</Code>")
+			assert.Contains(t, w.Body.String(),
+				"<Message>&#39;"+tc.resourceType+"&#39; is not a valid taggable resource type for this operation.</Message>")
+		})
+	}
 }

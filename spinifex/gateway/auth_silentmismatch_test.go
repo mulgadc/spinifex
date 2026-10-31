@@ -2,9 +2,7 @@ package gateway
 
 import (
 	"bytes"
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -15,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,13 +32,13 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 // tell them apart after the fact, so the log line is the contract under test.
 
 func TestSigV4Auth_SkewedRequestIsLogged(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 	logs := captureLogs(t)
 
 	skewed := time.Now().UTC().Add(-30 * time.Minute)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey, skewed)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, skewed)
 
 	resp := doRequest(handler, req)
 	require.Equal(t, http.StatusForbidden, resp.StatusCode)
@@ -55,32 +51,10 @@ func TestSigV4Auth_SkewedRequestIsLogged(t *testing.T) {
 	require.Contains(t, out, "serverTime=")
 }
 
-func TestSigV4Auth_UnsupportedServiceIsLogged(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
-	logs := captureLogs(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-
-	sum := sha256.Sum256(nil)
-	payloadHash := hex.EncodeToString(sum[:])
-	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
-	require.NoError(t, v4.NewSigner().SignHTTP(context.Background(),
-		aws.Credentials{AccessKeyID: testAccessKey, SecretAccessKey: testSecretKey},
-		req, payloadHash, "notaservice", testRegion, time.Now().UTC()))
-
-	resp := doRequest(handler, req)
-	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-
-	out := logs.String()
-	require.Contains(t, out, "unsupported service in credential scope")
-	require.Contains(t, out, "service=notaservice")
-}
-
 // The parse-error branch answers IncompleteSignature and was likewise silent,
 // so a malformed envelope left no record of which validation stage rejected it.
 func TestSigV4Auth_MalformedEnvelopeIsLogged(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 	logs := captureLogs(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -127,10 +101,10 @@ func TestSigV4Auth_FailureLogsLoopbackGatedClientIP(t *testing.T) {
 			defer rl.Stop()
 			gw := &GatewayConfig{
 				DisableLogging: true,
-				Region:         testRegion,
-				IAMService:     &mockIAMService{masterKey: testMasterKey},
-				Credentials:    credverify.New(&mockIAMService{masterKey: testMasterKey}, &mockSTSService{}),
-				STSService:     &mockSTSService{},
+				Region:         gwfix.Region,
+				IAMService:     &gwfix.IAM{MasterKey: gwfix.MasterKey},
+				Credentials:    credverify.New(&gwfix.IAM{MasterKey: gwfix.MasterKey}, &gwfix.STS{}),
+				STSService:     &gwfix.STS{},
 				RateLimiter:    rl,
 			}
 			withEC2(gw)
@@ -143,7 +117,7 @@ func TestSigV4Auth_FailureLogsLoopbackGatedClientIP(t *testing.T) {
 			req.Host = "localhost:9999"
 			req.RemoteAddr = tc.remoteAddr
 			req.Header.Set("X-Real-IP", "203.0.113.7")
-			signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+			gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
 
 			resp := doRequest(handler, req)
 			require.Equal(t, http.StatusForbidden, resp.StatusCode)

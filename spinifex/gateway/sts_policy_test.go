@@ -1,129 +1,79 @@
-// (stsRequestParams, principalTypeUser, the context keys) and shares the
-// policy mocks with the other in-package authz suites.
-//
-//test:in-package — the gate is exercised through unexported request wiring
 package gateway
 
 import (
-	"errors"
-	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"testing"
-
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"io"
+	"net/http"
+	"testing"
 )
 
-const (
-	stsTestRoleName = "app"
-	stsTestRoleARN  = "arn:aws:iam::000000000000:role/app"
-)
-
-// stsPolicyIAMService serves the identity policies the STS gate evaluates, the
-// GetUser lookup GetCallerIdentity performs, and the GetRole the gate resolves
-// the target role with.
-type stsPolicyIAMService struct {
-	policyMockIAMService
-
-	roles map[string]string
-}
-
-func (m *stsPolicyIAMService) GetUser(_ string, _ *iam.GetUserInput) (*iam.GetUserOutput, error) {
-	return &iam.GetUserOutput{User: &iam.User{UserId: aws.String("AIDAALICE000")}}, nil
-}
-
-func (m *stsPolicyIAMService) GetRole(_ string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
-	arn, ok := m.roles[aws.StringValue(input.RoleName)]
-	if !ok {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+// TestSTSRequest_AssumeRole_AssumedRoleCallerIsGated is the case that would
+// have caught the ECS agent regression: a role session whose underlying role
+// grants a non-sts action and nothing else must not be able to assume anything.
+func TestSTSRequest_AssumeRole_AssumedRoleCallerIsGated(t *testing.T) {
+	body := "Action=AssumeRole&RoleArn=" + stsTestRoleARN + "&RoleSessionName=s1"
+	params := func(iamSvc iamdomain.IAMService, stsSvc *flexMockSTSService) stsRequestParams {
+		return stsRequestParams{
+			accountID:         awsidentifiers.GlobalAccountID,
+			identity:          "s1",
+			principalType:     gwfix.PrincipalTypeAssumedRole,
+			accessKey:         "ASIAEXAMPLE",
+			assumedRoleARN:    "arn:aws:sts::000000000000:assumed-role/ecsInstanceRole/s1",
+			assumedRoleID:     "AROAECS:s1",
+			underlyingRoleARN: "arn:aws:iam::000000000000:role/ecsInstanceRole",
+			stsSvc:            stsSvc,
+			iamSvc:            iamSvc,
+		}
 	}
-	return &iam.GetRoleOutput{Role: &iam.Role{
-		RoleName: input.RoleName,
-		Arn:      aws.String(arn),
-	}}, nil
+
+	t.Run("ecs-only role denied", func(t *testing.T) {
+		svc := stsIdentityPolicy(stsStatement("Allow", "ecs:*", "*"))
+		resp := stsPolicyRequestAs(t, params(svc, deniedSTSService(t)), body)
+		assertSTSAccessDenied(t, resp)
+	})
+
+	t.Run("role granted sts:AssumeRole reaches handler", func(t *testing.T) {
+		svc := stsIdentityPolicy(
+			stsStatement("Allow", "ecs:*", "*"),
+			stsStatement("Allow", "sts:AssumeRole", "arn:aws:iam::000000000000:role/*"),
+		)
+		resp := stsPolicyRequestAs(t, params(svc, &flexMockSTSService{}), body)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
 }
 
-// stsIdentityPolicy builds an IAM service returning the given statements as the
-// caller's only identity policy, for a user and for an assumed role alike. The
-// one stored role is the pathless `app`; withRoles replaces the set.
-func stsIdentityPolicy(statements ...iamdomain.Statement) *stsPolicyIAMService {
-	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
-	svc := &stsPolicyIAMService{roles: map[string]string{stsTestRoleName: stsTestRoleARN}}
-	svc.getUserPoliciesFn = func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-		return docs, nil
-	}
-	svc.getRolePoliciesFn = func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-		return docs, nil
-	}
-	return svc
-}
+// TestSTSRequest_AssumeRole_DenialDoesNotDiscloseRoleExistence keeps the
+// detailed denial message safe to return: it must read identically whether or
+// not the role exists, which a lookup added ahead of the gate would break.
+func TestSTSRequest_AssumeRole_DenialDoesNotDiscloseRoleExistence(t *testing.T) {
+	body := "Action=AssumeRole&RoleArn=" + stsTestRoleARN + "&RoleSessionName=s1"
 
-// withRoles replaces the roles GetRole answers for, keyed by name and mapped to
-// the ARN IAM stored — which is what a resource-scoped grant is matched against.
-func (m *stsPolicyIAMService) withRoles(roles map[string]string) *stsPolicyIAMService {
-	m.roles = roles
-	return m
-}
+	existing := assertSTSAccessDenied(t, stsPolicyRequest(t, stsIdentityPolicy(), nil, body))
+	missing := assertSTSAccessDenied(t,
+		stsPolicyRequest(t, stsIdentityPolicy().withRoles(nil), nil, body))
 
-// stsStatement is shorthand for a single-action, single-resource statement.
-func stsStatement(effect, action, resource string) iamdomain.Statement {
-	return iamdomain.Statement{
-		Effect:   effect,
-		Action:   iamdomain.StringOrArr{action},
-		Resource: iamdomain.StringOrArr{resource},
-	}
-}
+	assert.Equal(t, stripRequestID(existing), stripRequestID(missing))
+	assert.Contains(t, existing, "is not authorized to perform: sts:AssumeRole on resource: "+stsTestRoleARN)
 
-// deniedSTSService fails the test if any gated handler is reached, so a passing
-// denial can only have come from the gate.
-func deniedSTSService(t *testing.T) *flexMockSTSService {
-	t.Helper()
-	return &flexMockSTSService{
-		assumeRoleFn: func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
-			t.Fatal("handler reached: the identity-policy gate should have denied this request")
-			return nil, nil
-		},
-	}
-}
+	// A pathed role is where the two can diverge: a resolved role names its
+	// stored ARN, so an unresolved one must name what the caller supplied
+	// rather than any form derived from it.
+	const pathed = "arn:aws:iam::000000000000:role/team/svc"
+	pathedBody := "Action=AssumeRole&RoleArn=" + pathed + "&RoleSessionName=s1"
 
-// stsPolicyRequest dispatches an STS action as alice with the given identity
-// policies.
-func stsPolicyRequest(t *testing.T, iamSvc iamdomain.IAMService, stsSvc *flexMockSTSService, body string) *http.Response {
-	t.Helper()
-	if stsSvc == nil {
-		stsSvc = deniedSTSService(t)
-	}
-	return stsPolicyRequestAs(t, stsRequestParams{
-		accountID:     awsidentifiers.GlobalAccountID,
-		identity:      "alice",
-		principalType: principalTypeUser,
-		accessKey:     "AKIAEXAMPLE",
-		stsSvc:        stsSvc,
-		iamSvc:        iamSvc,
-	}, body)
-}
+	pathedExisting := assertSTSAccessDenied(t, stsPolicyRequest(t,
+		stsIdentityPolicy().withRoles(map[string]string{"svc": pathed}), nil, pathedBody))
+	pathedMissing := assertSTSAccessDenied(t,
+		stsPolicyRequest(t, stsIdentityPolicy().withRoles(nil), nil, pathedBody))
 
-func stsPolicyRequestAs(t *testing.T, p stsRequestParams, body string) *http.Response {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	return doRequest(setupSTSRequestHandler(p), req)
-}
-
-func assertSTSAccessDenied(t *testing.T, resp *http.Response) string {
-	t.Helper()
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
-	b, _ := io.ReadAll(resp.Body)
-	assert.Contains(t, string(b), "AccessDenied")
-	return string(b)
+	assert.Equal(t, stripRequestID(pathedExisting), stripRequestID(pathedMissing))
+	assert.Contains(t, pathedExisting, "on resource: "+pathed)
 }
 
 // TestSTSRequest_AssumeRole_IdentityPolicyGate covers the identity-side gate.
@@ -161,64 +111,6 @@ func TestSTSRequest_AssumeRole_IdentityPolicyGate(t *testing.T) {
 	})
 }
 
-// TestSTSRequest_AssumeRole_AssumedRoleCallerIsGated is the case that would
-// have caught the ECS agent regression: a role session whose underlying role
-// grants a non-sts action and nothing else must not be able to assume anything.
-func TestSTSRequest_AssumeRole_AssumedRoleCallerIsGated(t *testing.T) {
-	body := "Action=AssumeRole&RoleArn=" + stsTestRoleARN + "&RoleSessionName=s1"
-	params := func(iamSvc iamdomain.IAMService, stsSvc *flexMockSTSService) stsRequestParams {
-		return stsRequestParams{
-			accountID:         awsidentifiers.GlobalAccountID,
-			identity:          "s1",
-			principalType:     principalTypeAssumedRole,
-			accessKey:         "ASIAEXAMPLE",
-			assumedRoleARN:    "arn:aws:sts::000000000000:assumed-role/ecsInstanceRole/s1",
-			assumedRoleID:     "AROAECS:s1",
-			underlyingRoleARN: "arn:aws:iam::000000000000:role/ecsInstanceRole",
-			stsSvc:            stsSvc,
-			iamSvc:            iamSvc,
-		}
-	}
-
-	t.Run("ecs-only role denied", func(t *testing.T) {
-		svc := stsIdentityPolicy(stsStatement("Allow", "ecs:*", "*"))
-		resp := stsPolicyRequestAs(t, params(svc, deniedSTSService(t)), body)
-		assertSTSAccessDenied(t, resp)
-	})
-
-	t.Run("role granted sts:AssumeRole reaches handler", func(t *testing.T) {
-		svc := stsIdentityPolicy(
-			stsStatement("Allow", "ecs:*", "*"),
-			stsStatement("Allow", "sts:AssumeRole", "arn:aws:iam::000000000000:role/*"),
-		)
-		resp := stsPolicyRequestAs(t, params(svc, &flexMockSTSService{}), body)
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-	})
-}
-
-// TestSTSRequest_AssumeRole_PolicyScopedToRole proves the gate evaluates the
-// target role ARN, not "*", so a grant on one role does not open another.
-func TestSTSRequest_AssumeRole_PolicyScopedToRole(t *testing.T) {
-	roles := map[string]string{
-		stsTestRoleName: stsTestRoleARN,
-		"other":         "arn:aws:iam::000000000000:role/other",
-	}
-
-	t.Run("granted role allowed", func(t *testing.T) {
-		svc := stsIdentityPolicy(stsStatement("Allow", "sts:AssumeRole", stsTestRoleARN)).withRoles(roles)
-		resp := stsPolicyRequest(t, svc, &flexMockSTSService{},
-			"Action=AssumeRole&RoleArn="+stsTestRoleARN+"&RoleSessionName=s1")
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-	})
-
-	t.Run("other role denied", func(t *testing.T) {
-		svc := stsIdentityPolicy(stsStatement("Allow", "sts:AssumeRole", stsTestRoleARN)).withRoles(roles)
-		resp := stsPolicyRequest(t, svc, nil,
-			"Action=AssumeRole&RoleArn=arn:aws:iam::000000000000:role/other&RoleSessionName=s1")
-		assertSTSAccessDenied(t, resp)
-	})
-}
-
 // TestSTSRequest_AssumeRole_PathIsResolvedNotTrusted pins the gate to the ARN
 // IAM stored, so a role genuinely stored under a path is matched by its full
 // ARN. An ARN that is not the stored one is refused by role resolution itself
@@ -251,43 +143,38 @@ func TestSTSRequest_AssumeRole_PathIsResolvedNotTrusted(t *testing.T) {
 	})
 }
 
-// TestSTSRequest_AssumeRole_DenialDoesNotDiscloseRoleExistence keeps the
-// detailed denial message safe to return: it must read identically whether or
-// not the role exists, which a lookup added ahead of the gate would break.
-func TestSTSRequest_AssumeRole_DenialDoesNotDiscloseRoleExistence(t *testing.T) {
-	body := "Action=AssumeRole&RoleArn=" + stsTestRoleARN + "&RoleSessionName=s1"
+// TestSTSRequest_AssumeRole_PolicyScopedToRole proves the gate evaluates the
+// target role ARN, not "*", so a grant on one role does not open another.
+func TestSTSRequest_AssumeRole_PolicyScopedToRole(t *testing.T) {
+	roles := map[string]string{
+		stsTestRoleName: stsTestRoleARN,
+		"other":         "arn:aws:iam::000000000000:role/other",
+	}
 
-	existing := assertSTSAccessDenied(t, stsPolicyRequest(t, stsIdentityPolicy(), nil, body))
-	missing := assertSTSAccessDenied(t,
-		stsPolicyRequest(t, stsIdentityPolicy().withRoles(nil), nil, body))
+	t.Run("granted role allowed", func(t *testing.T) {
+		svc := stsIdentityPolicy(stsStatement("Allow", "sts:AssumeRole", stsTestRoleARN)).withRoles(roles)
+		resp := stsPolicyRequest(t, svc, &flexMockSTSService{},
+			"Action=AssumeRole&RoleArn="+stsTestRoleARN+"&RoleSessionName=s1")
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
 
-	assert.Equal(t, stripRequestID(existing), stripRequestID(missing))
-	assert.Contains(t, existing, "is not authorized to perform: sts:AssumeRole on resource: "+stsTestRoleARN)
-
-	// A pathed role is where the two can diverge: a resolved role names its
-	// stored ARN, so an unresolved one must name what the caller supplied
-	// rather than any form derived from it.
-	const pathed = "arn:aws:iam::000000000000:role/team/svc"
-	pathedBody := "Action=AssumeRole&RoleArn=" + pathed + "&RoleSessionName=s1"
-
-	pathedExisting := assertSTSAccessDenied(t, stsPolicyRequest(t,
-		stsIdentityPolicy().withRoles(map[string]string{"svc": pathed}), nil, pathedBody))
-	pathedMissing := assertSTSAccessDenied(t,
-		stsPolicyRequest(t, stsIdentityPolicy().withRoles(nil), nil, pathedBody))
-
-	assert.Equal(t, stripRequestID(pathedExisting), stripRequestID(pathedMissing))
-	assert.Contains(t, pathedExisting, "on resource: "+pathed)
+	t.Run("other role denied", func(t *testing.T) {
+		svc := stsIdentityPolicy(stsStatement("Allow", "sts:AssumeRole", stsTestRoleARN)).withRoles(roles)
+		resp := stsPolicyRequest(t, svc, nil,
+			"Action=AssumeRole&RoleArn=arn:aws:iam::000000000000:role/other&RoleSessionName=s1")
+		assertSTSAccessDenied(t, resp)
+	})
 }
 
-// stripRequestID removes the per-request UUID so two error bodies can be
-// compared for everything else.
-func stripRequestID(body string) string {
-	start := strings.Index(body, "<RequestId>")
-	end := strings.Index(body, "</RequestId>")
-	if start < 0 || end < start {
-		return body
-	}
-	return body[:start] + body[end:]
+// TestSTSRequest_GetCallerIdentity_NotGated pins the AWS contract: the action
+// requires no permission and cannot be denied by policy.
+func TestSTSRequest_GetCallerIdentity_NotGated(t *testing.T) {
+	svc := stsIdentityPolicy(stsStatement("Deny", "sts:*", "*"))
+	resp := stsPolicyRequest(t, svc, &flexMockSTSService{}, "Action=GetCallerIdentity")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	b, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(b), "GetCallerIdentityResult")
 }
 
 // TestSTSRequest_GetSessionToken_NotGated pins the AWS contract: it is an
@@ -309,15 +196,4 @@ func TestSTSRequest_GetSessionToken_NotGated(t *testing.T) {
 	resp := stsPolicyRequest(t, svc, stsSvc, "Action=GetSessionToken&DurationSeconds=3600")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.True(t, called)
-}
-
-// TestSTSRequest_GetCallerIdentity_NotGated pins the AWS contract: the action
-// requires no permission and cannot be denied by policy.
-func TestSTSRequest_GetCallerIdentity_NotGated(t *testing.T) {
-	svc := stsIdentityPolicy(stsStatement("Deny", "sts:*", "*"))
-	resp := stsPolicyRequest(t, svc, &flexMockSTSService{}, "Action=GetCallerIdentity")
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	b, _ := io.ReadAll(resp.Body)
-	assert.Contains(t, string(b), "GetCallerIdentityResult")
 }

@@ -1,11 +1,12 @@
 //test:in-package — requestConditionKeys, checkPolicyResources, credential.Principal
 //and ctxAccountID are all unexported, and the file reuses the in-package
-//policyMockIAMService and withTestIdentity doubles.
+//gwfix.PolicyIAM and withTestIdentity doubles.
 
 package gateway
 
 import (
 	"crypto/tls"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"net/http"
@@ -27,7 +28,7 @@ func TestRequestConditionKeys_PopulatesAvailableKeys(t *testing.T) {
 	principal := credential.Principal{
 		Identity:      "alice",
 		AccountID:     "000000000001",
-		PrincipalType: principalTypeUser,
+		PrincipalType: gwfix.PrincipalTypeUser,
 		UserID:        "AIDAALICE",
 	}
 
@@ -62,9 +63,9 @@ func TestRequestConditionKeys_PrincipalType(t *testing.T) {
 		want          string
 		omitted       bool
 	}{
-		{principalType: principalTypeUser, want: iampolicy.PrincipalTypeUser},
-		{principalType: principalTypeAssumedRole, want: iampolicy.PrincipalTypeAssumedRole},
-		{principalType: principalTypeRoot, want: iampolicy.PrincipalTypeAccount},
+		{principalType: gwfix.PrincipalTypeUser, want: iampolicy.PrincipalTypeUser},
+		{principalType: gwfix.PrincipalTypeAssumedRole, want: iampolicy.PrincipalTypeAssumedRole},
+		{principalType: gwfix.PrincipalTypeRoot, want: iampolicy.PrincipalTypeAccount},
 		{principalType: "", omitted: true},
 	}
 	for _, tt := range tests {
@@ -87,7 +88,7 @@ func TestRequestConditionKeys_UserIDForAssumedRole(t *testing.T) {
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{
 		Identity:      "session",
 		AccountID:     "000000000001",
-		PrincipalType: principalTypeAssumedRole,
+		PrincipalType: gwfix.PrincipalTypeAssumedRole,
 		AssumedRoleID: "AROASHAREDOPS:session",
 		UserID:        "AROASHAREDOPS:session",
 	})
@@ -102,7 +103,7 @@ func TestRequestConditionKeys_OmitsUnresolvableUserID(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{
-		Identity: "alice", AccountID: "000000000001", PrincipalType: principalTypeUser,
+		Identity: "alice", AccountID: "000000000001", PrincipalType: gwfix.PrincipalTypeUser,
 	})
 	assert.NotContains(t, keys, iampolicy.KeyUserID)
 }
@@ -115,7 +116,7 @@ func TestRequestConditionKeys_OmitsUsernameForAssumedRole(t *testing.T) {
 	principal := credential.Principal{
 		Identity:       "alice",
 		AccountID:      "000000000001",
-		PrincipalType:  principalTypeAssumedRole,
+		PrincipalType:  gwfix.PrincipalTypeAssumedRole,
 		AssumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/alice",
 	}
 
@@ -131,7 +132,7 @@ func TestRequestConditionKeys_OmitsS3Prefix(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/?prefix=home/", nil)
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{
 		Identity:      "alice",
-		PrincipalType: principalTypeUser,
+		PrincipalType: gwfix.PrincipalTypeUser,
 	})
 
 	assert.NotContains(t, keys, iampolicy.KeyS3Prefix)
@@ -143,7 +144,7 @@ func TestRequestConditionKeys_OmitsS3Prefix(t *testing.T) {
 func TestRequestConditionKeys_OmitsEmptyValues(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.RemoteAddr = ""
-	keys := policyauth.RequestConditionKeys(r, credential.Principal{PrincipalType: principalTypeUser})
+	keys := policyauth.RequestConditionKeys(r, credential.Principal{PrincipalType: gwfix.PrincipalTypeUser})
 
 	assert.NotContains(t, keys, iampolicy.KeySourceIP)
 	assert.NotContains(t, keys, iampolicy.KeyUsername)
@@ -159,7 +160,7 @@ func TestRequestConditionKeys_SourceIPWithoutAuthMiddleware(t *testing.T) {
 
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{
 		Identity:      "alice",
-		PrincipalType: principalTypeUser,
+		PrincipalType: gwfix.PrincipalTypeUser,
 	})
 
 	assert.Equal(t, "10.4.1.9", keys[iampolicy.KeySourceIP])
@@ -167,7 +168,7 @@ func TestRequestConditionKeys_SourceIPWithoutAuthMiddleware(t *testing.T) {
 
 // conditionedPolicyIAMService serves one statement carrying cond, so a test can
 // drive a real condition through checkPolicyResources.
-func conditionedPolicyIAMService(effect string, cond map[string]map[string]iamdomain.ConditionValue) *policyMockIAMService {
+func conditionedPolicyIAMService(effect string, cond map[string]map[string]iamdomain.ConditionValue) *gwfix.PolicyIAM {
 	docs := []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
 		Statement: []iamdomain.Statement{
@@ -183,9 +184,9 @@ func conditionedPolicyIAMService(effect string, cond map[string]map[string]iamdo
 	if effect == "Allow" {
 		docs[0].Statement = docs[0].Statement[1:]
 	}
-	return &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-		getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	return &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		GetRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 	}
 }
 
@@ -193,7 +194,7 @@ func conditionedPolicyIAMService(effect string, cond map[string]map[string]iamdo
 // nil keys from checkPolicyResources would leave every other test green while
 // silently killing every conditional Allow on this path.
 func TestCheckPolicyResources_ConditionalAllowHonoursSourceIP(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{
+	gw := withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		IAMService: conditionedPolicyIAMService("Allow", map[string]map[string]iamdomain.ConditionValue{
 			iampolicy.OpIPAddress: {iampolicy.KeySourceIP: {"10.0.0.0/8"}},
@@ -232,7 +233,7 @@ func TestCheckPolicyResources_ConditionalAllowHonoursSourceIP(t *testing.T) {
 // the one direction where an absent key widens access. Pin it so the omission
 // is a decision rather than an accident.
 func TestCheckPolicyResources_ConditionalDenyHonoursSourceIP(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{
+	gw := withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		IAMService: conditionedPolicyIAMService("Deny", map[string]map[string]iamdomain.ConditionValue{
 			iampolicy.OpIPAddress: {iampolicy.KeySourceIP: {"203.0.113.0/24"}},

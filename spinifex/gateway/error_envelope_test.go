@@ -6,6 +6,7 @@ package gateway
 import (
 	"bytes"
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
 	"net/http"
@@ -264,7 +265,7 @@ func TestErrorEnvelope_OversizeBody(t *testing.T) {
 	send := func(t *testing.T, app http.Handler, service string) *http.Response {
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversized))
 		req.Host = "localhost:9999"
-		signTestRequestAs(t, req, oversized, testAccessKey, testSecretKey, service, time.Now().UTC())
+		gwfix.SignRequestAs(t, req, oversized, gwfix.AccessKey, gwfix.SecretKey, service, time.Now().UTC())
 		return doRequest(app, req)
 	}
 	c := &dispatchCapture{}

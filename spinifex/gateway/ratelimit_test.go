@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
@@ -26,14 +27,14 @@ import (
 func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *authlimit.AuthRateLimiter) http.Handler {
 	t.Helper()
 
-	encryptedSecret, err := iamdomain.EncryptSecret(secretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(secretKey, gwfix.MasterKey)
 	if err != nil {
 		panic("failed to encrypt test secret: " + err.Error())
 	}
 
-	mockSvc := &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{
+	mockSvc := &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
 			accessKey: {
 				AccessKeyID:     accessKey,
 				SecretAccessKey: encryptedSecret,
@@ -50,7 +51,7 @@ func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *
 
 	gw := &GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 		Credentials:    credverify.New(mockSvc, nil),
 		RateLimiter:    rl,
@@ -71,7 +72,7 @@ func TestRateLimitIntegration_LockedIPGets503(t *testing.T) {
 	rl := authlimit.NewAuthRateLimiter()
 	defer rl.Stop()
 
-	handler := setupTestAppWithRateLimiter(t, testAccessKey, testSecretKey, rl)
+	handler := setupTestAppWithRateLimiter(t, gwfix.AccessKey, gwfix.SecretKey, rl)
 
 	// Send maxFailures requests with invalid signatures to trigger lockout.
 	for range authlimit.MaxFailures {
@@ -105,7 +106,7 @@ func TestRateLimitIntegration_SuccessResetsLockout(t *testing.T) {
 	rl := authlimit.NewAuthRateLimiter()
 	defer rl.Stop()
 
-	handler := setupTestAppWithRateLimiter(t, testAccessKey, testSecretKey, rl)
+	handler := setupTestAppWithRateLimiter(t, gwfix.AccessKey, gwfix.SecretKey, rl)
 
 	// Accumulate failures below threshold.
 	for range authlimit.MaxFailures - 1 {
@@ -121,7 +122,7 @@ func TestRateLimitIntegration_SuccessResetsLockout(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	req.RemoteAddr = "10.99.0.2:54321"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 	if resp.StatusCode != http.StatusOK {

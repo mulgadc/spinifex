@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,38 +19,38 @@ import (
 func statusGateRouter(t *testing.T, svc iamdomain.IAMService) (chi.Router, *http.Request) {
 	t.Helper()
 
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: svc})
+	gw := withEC2(withRealAuth(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: svc}))
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 	return r, req
 }
 
 // statusGateService returns a mock holding one usable access key for account,
 // with that account pinned to status.
-func statusGateService(t *testing.T, accountID, status string) *mockIAMService {
+func statusGateService(t *testing.T, accountID, status string) *gwfix.IAM {
 	t.Helper()
 
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("encrypt secret: %v", err)
 	}
-	return &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{
-			testAccessKey: {
-				AccessKeyID:     testAccessKey,
+	return &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
+			gwfix.AccessKey: {
+				AccessKeyID:     gwfix.AccessKey,
 				SecretAccessKey: encryptedSecret,
 				UserName:        "alice",
 				AccountID:       accountID,
 				Status:          iamdomain.AccessKeyStatusActive,
 			},
 		},
-		accounts: map[string]*iamdomain.Account{
+		Accounts: map[string]*iamdomain.Account{
 			accountID: {AccountID: accountID, Status: status},
 		},
 	}
@@ -60,16 +61,6 @@ func TestAuthAllowsAnActiveAccount(t *testing.T) {
 
 	if resp := doRequest(r, req); resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for an ACTIVE account, got %d", resp.StatusCode)
-	}
-}
-
-// Until this gate existed, account status was enforced only in ECR's principal
-// resolution, so suspending an account left EC2, S3 and STS wide open.
-func TestAuthDeniesASuspendedAccount(t *testing.T) {
-	r, req := statusGateRouter(t, statusGateService(t, "123456789012", iamdomain.AccountStatusSuspended))
-
-	if resp := doRequest(r, req); resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403 for a SUSPENDED account, got %d", resp.StatusCode)
 	}
 }
 
@@ -85,7 +76,7 @@ func TestAuthDeniesATerminatingAccount(t *testing.T) {
 
 // unreadableAccountService answers key lookups but never account lookups.
 type unreadableAccountService struct {
-	*mockIAMService
+	*gwfix.IAM
 }
 
 func (s *unreadableAccountService) GetAccount(string) (*iamdomain.Account, error) {

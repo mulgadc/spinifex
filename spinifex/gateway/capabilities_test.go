@@ -58,16 +58,7 @@ func TestCheckPolicy_ReturnsTheEvaluatorVerdict(t *testing.T) {
 	assert.ErrorIs(t, gw.checkPolicyResources(req, "ec2", "DescribeVpcs", []string{"*"}), verdict)
 }
 
-// withoutDefaultCapabilities removes the test defaults so a nil capability stays nil.
-func withoutDefaultCapabilities(t *testing.T) {
-	t.Helper()
-	prev := defaultCapabilities
-	defaultCapabilities = nil
-	t.Cleanup(func() { defaultCapabilities = prev })
-}
-
 func TestCheckPolicy_NoEvaluatorFailsClosed(t *testing.T) {
-	withoutDefaultCapabilities(t)
 	gw := &GatewayConfig{}
 	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/", nil))
 
@@ -77,7 +68,6 @@ func TestCheckPolicy_NoEvaluatorFailsClosed(t *testing.T) {
 }
 
 func TestCheckAccountActive_MapsAdmissionVerdicts(t *testing.T) {
-	withoutDefaultCapabilities(t)
 	src := authSource{}
 	cases := []struct {
 		name string

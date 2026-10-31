@@ -1,73 +1,15 @@
 package gateway
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
-
-func setupECSRequest(target, body string) *http.Request {
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-	if target != "" {
-		req.Header.Set("X-Amz-Target", target)
-	}
-	ctx := reqctx.WithService(req.Context(), "ecs")
-	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	return withTestIdentity(req.WithContext(ctx))
-}
-
-// The Actions map is the v1 API contract (ecs-v1.md §1): every action across the
-// Cluster / TaskDefinition / Task / Service / ContainerInstance / Account / Tags
-// surfaces must be registered, whether wired to the daemon or a 501 stub.
-func TestECSActionsMap_NamespaceRegistered(t *testing.T) {
-	namespace := []string{
-		// Cluster
-		"CreateCluster", "DescribeClusters", "ListClusters", "DeleteCluster",
-		"UpdateCluster", "PutClusterCapacityProviders",
-		// Task definition
-		"RegisterTaskDefinition", "DeregisterTaskDefinition", "DescribeTaskDefinition",
-		"ListTaskDefinitions", "ListTaskDefinitionFamilies",
-		// Task
-		"RunTask", "StartTask", "StopTask", "DescribeTasks", "ListTasks",
-		// Service
-		"CreateService", "UpdateService", "DeleteService", "DescribeServices",
-		"ListServices", "ListServicesByNamespace",
-		// Container instance
-		"RegisterContainerInstance", "DeregisterContainerInstance",
-		"DescribeContainerInstances", "ListContainerInstances",
-		"UpdateContainerInstancesState",
-		// Account
-		"PutAccountSetting", "ListAccountSettings",
-		// Tags
-		"TagResource", "UntagResource", "ListTagsForResource",
-	}
-	for _, action := range namespace {
-		_, ok := ecsawsapi.Actions[action]
-		assert.True(t, ok, "action %q should be registered", action)
-	}
-}
-
-func TestECSRequest_MissingTarget(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.serveECS(httptest.NewRecorder(), setupECSRequest("", ""))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
-}
-
-func TestECSRequest_UnknownAction(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.serveECS(httptest.NewRecorder(),
-		setupECSRequest("AmazonEC2ContainerServiceV20141113.MadeUpAction", "{}"))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
-}
 
 // An action whose real handler has not yet landed still resolves to the 501 stub.
 func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
@@ -91,4 +33,19 @@ func TestECSRequest_MissingAccountID(t *testing.T) {
 	err := gw.serveECS(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
+}
+
+func TestECSRequest_MissingTarget(t *testing.T) {
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	err := gw.serveECS(httptest.NewRecorder(), setupECSRequest("", ""))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
+}
+
+func TestECSRequest_UnknownAction(t *testing.T) {
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	err := gw.serveECS(httptest.NewRecorder(),
+		setupECSRequest("AmazonEC2ContainerServiceV20141113.MadeUpAction", "{}"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }

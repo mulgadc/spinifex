@@ -41,3 +41,11 @@ func (h *Harness) AssertGatePassed(t *testing.T) {
 	require.True(t, h.GateCalled, "policy gate was never consulted")
 	require.NoError(t, h.LastGateErr)
 }
+
+// AssertNotDenied asserts the request failed, but not with a policy denial.
+func AssertNotDenied(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.NotEqual(t, awserrors.ErrorAccessDenied, code)
+}

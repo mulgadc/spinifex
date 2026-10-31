@@ -28,15 +28,15 @@ const (
 type policyIAM struct {
 	iamdomain.IAMService
 
-	docs []iamdomain.PolicyDocument
+	resolve func(accountID, name string) ([]iamdomain.PolicyDocument, error)
 }
 
-func (p policyIAM) GetUserPolicies(_, _ string) ([]iamdomain.PolicyDocument, error) {
-	return p.docs, nil
+func (p policyIAM) GetUserPolicies(accountID, name string) ([]iamdomain.PolicyDocument, error) {
+	return p.resolve(accountID, name)
 }
 
-func (p policyIAM) GetRolePolicies(_, _ string) ([]iamdomain.PolicyDocument, error) {
-	return p.docs, nil
+func (p policyIAM) GetRolePolicies(accountID, name string) ([]iamdomain.PolicyDocument, error) {
+	return p.resolve(accountID, name)
 }
 
 // Statement is one policy statement naming a single action and resource.
@@ -55,15 +55,27 @@ type Harness struct {
 	AccountID string
 	Region    string
 	Policy    pipeline.PolicyEvaluator
+	// Caller overrides the default caller, an IAM user named alice.
+	Caller *credential.Principal
 }
 
 // Scoped returns a harness whose caller holds one policy of statements.
 func Scoped(statements ...iamdomain.Statement) *Harness {
-	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+	return FromDocs([]iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}})
+}
+
+// FromDocs returns a harness whose caller holds exactly these policy documents.
+func FromDocs(docs []iamdomain.PolicyDocument) *Harness {
+	return FromResolver(func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil })
+}
+
+// FromResolver returns a harness whose caller's policies come from resolve,
+// which sees every user or role lookup, so a test can count them.
+func FromResolver(resolve func(accountID, name string) ([]iamdomain.PolicyDocument, error)) *Harness {
 	return &Harness{
 		AccountID: AccountID,
 		Region:    Region,
-		Policy:    policyauth.New(policyIAM{docs: docs}),
+		Policy:    policyauth.New(policyIAM{resolve: resolve}),
 	}
 }
 
@@ -79,12 +91,17 @@ func (h *Harness) Dispatch(reg dispatch.Registration, service string, w http.Res
 		AccountID:     h.AccountID,
 		Identity:      "alice",
 		PrincipalType: stsdomain.PrincipalTypeUser,
+		CallerARN:     "arn:aws:iam::" + h.AccountID + ":user/alice",
+	}
+	if h.Caller != nil {
+		caller = *h.Caller
 	}
 	return reg.Dispatch(w, dispatch.Invocation{
 		Request:   r,
 		AccountID: h.AccountID,
 		Service:   service,
 		Region:    h.Region,
+		Actor:     func() (dispatch.Actor, error) { return pipeline.ActorFor(caller, "") },
 		Authorize: func(svc, action string, resources []string, actionKeys iampolicy.ConditionKeys) error {
 			return pipeline.Authorize(h.Policy, r, caller, true, svc, action, resources, actionKeys)
 		},

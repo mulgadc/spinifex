@@ -22,4 +22,8 @@ type ServiceTraits struct {
 	XMLThrottleCode string
 	// XMLErrorShape is the XML body the scope's errors render in.
 	XMLErrorShape XMLErrorShape
+	// GlobalSigningRegion is the credential-scope region clients of a global
+	// service sign with on its default endpoint. Unset, only the gateway's own
+	// region is accepted.
+	GlobalSigningRegion string
 }

@@ -357,19 +357,13 @@ func signedService(r *http.Request) string {
 	return reqctx.Service(r.Context())
 }
 
-// globalSigningRegions maps a global AWS service to the region its clients sign
-// with when they use the default endpoint. A client given an endpoint override
-// signs with its own configured region instead, so both are accepted.
-var globalSigningRegions = map[string]string{
-	"route53": "us-east-1",
-}
-
 // expectedSigningRegion returns the credential-scope region a request for
 // service must carry: the global service's signing region when the client
-// claimed it, else the gateway's own region.
+// claimed it, else the gateway's own region. A client given an endpoint
+// override signs with its own configured region, so both are accepted.
 func (gw *GatewayConfig) expectedSigningRegion(service, claimed string) string {
-	if global, ok := globalSigningRegions[service]; ok && claimed == global {
-		return global
+	if traits, ok := gw.selector().Traits(service); ok && traits.GlobalSigningRegion != "" && claimed == traits.GlobalSigningRegion {
+		return traits.GlobalSigningRegion
 	}
 	return gw.Region
 }

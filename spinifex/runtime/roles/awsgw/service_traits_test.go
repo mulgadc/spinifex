@@ -68,3 +68,12 @@ func TestWireServiceRegistry_DeclaresTheS3Scope(t *testing.T) {
 	_, served := gw.Services.Lookup("s3")
 	assert.False(t, served, "a declared scope is not a served service")
 }
+
+func TestProductionServiceTraits_GlobalSigningRegion(t *testing.T) {
+	got := productionTraits(t)
+
+	assert.Equal(t, "us-east-1", got["route53"].GlobalSigningRegion)
+	for _, svc := range []string{"iam", "sts", "eks", "ec2", "spinifex"} {
+		assert.Empty(t, got[svc].GlobalSigningRegion, svc)
+	}
+}

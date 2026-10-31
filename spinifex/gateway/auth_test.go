@@ -11,6 +11,7 @@ import (
 	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
+	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
@@ -1888,7 +1889,7 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 // default endpoint and for the configured region against an override. Every
 // other service stays pinned to the gateway's region.
 func TestExpectedSigningRegion(t *testing.T) {
-	gw := &GatewayConfig{Region: "ap-southeast-2"}
+	gw := withServices(&GatewayConfig{Region: "ap-southeast-2"}, route53awsapi.NewRegistration(route53awsapi.Deps{}))
 	for _, tc := range []struct {
 		service, claimed, want string
 	}{

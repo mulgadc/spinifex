@@ -56,6 +56,19 @@ build-ui:
 	@echo -e "\n....Building spinifex-ui frontend...."
 	cd spinifex/runtime/roles/spinifexui/frontend && pnpm build
 
+# Playwright suite for the console, against Vite dev and the built dist under
+# the console's CSP. Not part of preflight; needs `pnpm exec playwright install chromium`.
+test-ui-e2e: build-ui
+	cd spinifex/runtime/roles/spinifexui/frontend && pnpm e2e
+
+# The same suite inside the pinned Playwright image CI uses (podman or docker),
+# so screenshots compare as they will on the runner. ui-baselines redraws them.
+ui-e2e-container:
+	scripts/ui-playwright.sh compare
+
+ui-baselines:
+	scripts/ui-playwright.sh baselines
+
 # GO commands
 VERSION ?= $(shell git describe --tags --always --dirty --exclude '*-dev')
 COMMIT  ?= $(shell git rev-parse --short HEAD)
@@ -515,7 +528,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-store-microvm-image build-sqs-worker-microvm-image install-microvm install-sqs-store-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-store-microvm-image build-sqs-worker-microvm-image install-microvm install-sqs-store-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

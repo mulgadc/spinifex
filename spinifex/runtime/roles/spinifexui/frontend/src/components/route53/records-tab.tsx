@@ -1,10 +1,11 @@
 import type { Change, ResourceRecordSet } from "@aws-sdk/client-route-53"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { Pencil, Trash2 } from "lucide-react"
+import { Pencil, Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { useForm, useWatch } from "react-hook-form"
 
+import { type DataColumn, DataTable } from "@/components/data-table"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { ErrorBanner } from "@/components/error-banner"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
@@ -95,6 +96,109 @@ export function editChanges(
   ]
 }
 
+interface RecordActionsProps {
+  recordSet: ResourceRecordSet
+  zoneName: string
+  onEdit: () => void
+  onDelete: () => void
+}
+
+// The zone's own NS and SOA are not the customer's to change.
+function RecordActions({
+  recordSet,
+  zoneName,
+  onEdit,
+  onDelete,
+}: RecordActionsProps) {
+  const label = recordLabel(recordSet)
+
+  if (isZoneOwnedRecord(recordSet, zoneName)) {
+    return (
+      <span className="text-xs text-muted-foreground">Managed by the zone</span>
+    )
+  }
+
+  const editable = !recordSet.AliasTarget && isEditableType(recordSet.Type)
+
+  return (
+    <div className="flex justify-end gap-1">
+      {editable && (
+        <Button
+          aria-label={`Edit record ${label}`}
+          onClick={onEdit}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <Pencil />
+        </Button>
+      )}
+      <Button
+        aria-label={`Delete record ${label}`}
+        onClick={onDelete}
+        size="icon-sm"
+        variant="ghost"
+      >
+        <Trash2 />
+      </Button>
+    </div>
+  )
+}
+
+function recordColumns(
+  zoneName: string,
+  onEdit: (recordSet: ResourceRecordSet) => void,
+  onDelete: (recordSet: ResourceRecordSet) => void,
+): DataColumn<ResourceRecordSet>[] {
+  return [
+    {
+      id: "name",
+      header: "Name",
+      cell: (recordSet) => (
+        <span className="font-mono text-xs break-all">
+          {decodeRecordName(recordSet.Name ?? "")}
+        </span>
+      ),
+    },
+    { id: "type", header: "Type", cell: (recordSet) => recordSet.Type },
+    {
+      id: "ttl",
+      header: "TTL",
+      hideBelow: "sm",
+      cell: (recordSet) => recordSet.TTL ?? "—",
+    },
+    {
+      id: "value",
+      header: "Value",
+      cell: (recordSet) => (
+        <span className="font-mono text-xs break-all">
+          {recordValues(recordSet).map((value) => (
+            <span className="block" key={value}>
+              {value}
+            </span>
+          ))}
+        </span>
+      ),
+    },
+    {
+      id: "actions",
+      header: "Actions",
+      align: "end",
+      cell: (recordSet) => (
+        <RecordActions
+          onDelete={() => {
+            onDelete(recordSet)
+          }}
+          onEdit={() => {
+            onEdit(recordSet)
+          }}
+          recordSet={recordSet}
+          zoneName={zoneName}
+        />
+      ),
+    },
+  ]
+}
+
 export function RecordsTab({
   zoneId,
   zoneName,
@@ -162,8 +266,20 @@ export function RecordsTab({
     setDeleteTarget(undefined)
   }
 
+  const columns = recordColumns(
+    zoneName,
+    (recordSet) => {
+      changeMutation.reset()
+      setEditTarget(recordSet)
+    },
+    (recordSet) => {
+      changeMutation.reset()
+      setDeleteTarget(recordSet)
+    },
+  )
+
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       {notServed && (
         <div className="rounded-md border border-warning bg-warning/10 p-3 text-sm text-warning-foreground">
           Records are not served until the domain is verified. You can add them
@@ -190,92 +306,18 @@ export function RecordsTab({
           }}
           size="sm"
         >
+          <Plus data-icon="inline-start" />
           Add record
         </Button>
       </div>
 
-      {recordSets.length === 0 ? (
-        <p className="text-muted-foreground">No records.</p>
-      ) : (
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-2 font-medium">Name</th>
-                <th className="px-4 py-2 font-medium">Type</th>
-                <th className="px-4 py-2 font-medium">TTL</th>
-                <th className="px-4 py-2 font-medium">Value</th>
-                <th className="px-4 py-2 font-medium">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {recordSets.map((recordSet) => {
-                const label = recordLabel(recordSet)
-                const zoneOwned = isZoneOwnedRecord(recordSet, zoneName)
-
-                const editable =
-                  !zoneOwned &&
-                  !recordSet.AliasTarget &&
-                  isEditableType(recordSet.Type)
-
-                return (
-                  <tr
-                    className="border-b align-top last:border-0"
-                    key={recordKey(recordSet)}
-                  >
-                    <td className="px-4 py-2 font-mono text-xs">
-                      {decodeRecordName(recordSet.Name ?? "")}
-                    </td>
-                    <td className="px-4 py-2">{recordSet.Type}</td>
-                    <td className="px-4 py-2">{recordSet.TTL ?? "—"}</td>
-                    <td className="px-4 py-2 font-mono text-xs break-all">
-                      {recordValues(recordSet).map((value) => (
-                        <div key={value}>{value}</div>
-                      ))}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      {zoneOwned ? (
-                        <span className="text-xs text-muted-foreground">
-                          Managed by the zone
-                        </span>
-                      ) : (
-                        <div className="flex justify-end gap-1">
-                          {editable && (
-                            <Button
-                              aria-label={`Edit record ${label}`}
-                              onClick={() => {
-                                changeMutation.reset()
-                                setEditTarget(recordSet)
-                              }}
-                              size="sm"
-                              variant="ghost"
-                            >
-                              <Pencil className="size-4" />
-                            </Button>
-                          )}
-                          <Button
-                            aria-label={`Delete record ${label}`}
-                            onClick={() => {
-                              changeMutation.reset()
-                              setDeleteTarget(recordSet)
-                            }}
-                            size="sm"
-                            variant="ghost"
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <DataTable
+        caption="Records"
+        columns={columns}
+        empty="No records."
+        getRowId={recordKey}
+        rows={recordSets}
+      />
 
       {/* Mounted only while open so every session starts from blank defaults. */}
       {addOpen && (

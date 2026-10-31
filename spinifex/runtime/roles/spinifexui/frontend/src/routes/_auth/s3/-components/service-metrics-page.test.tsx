@@ -74,7 +74,8 @@ function clusterHealth(): string {
 
 // metaRow returns one body row of the meta nodes table; row 0 is the header.
 function metaRow(index: number): HTMLElement {
-  const row = screen.getAllByRole("row")[index + 1]
+  const table = screen.getByRole("table", { name: "Meta consensus nodes" })
+  const row = within(table).getAllByRole("row")[index + 1]
 
   if (!row) {
     throw new Error(`no meta node row at index ${index}`)

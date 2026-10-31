@@ -1,5 +1,6 @@
-import type { ReactNode } from "react"
+import { type ReactNode, useState } from "react"
 
+import { ConfirmPhrase, phraseConfirmed } from "@/components/confirm-phrase"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,6 +21,8 @@ interface DeleteConfirmationDialogProps {
   onConfirm: () => void
   confirmLabel?: string
   pendingLabel?: string
+  // Typed before the confirm enables, for deletes that cannot be walked back.
+  confirmPhrase?: string
 }
 
 export function DeleteConfirmationDialog({
@@ -31,7 +34,17 @@ export function DeleteConfirmationDialog({
   onConfirm,
   confirmLabel = "Delete",
   pendingLabel = "Deleting\u2026",
+  confirmPhrase,
 }: DeleteConfirmationDialogProps) {
+  const [typed, setTyped] = useState("")
+  const [shownOpen, setShownOpen] = useState(open)
+
+  // However the dialog closes, it asks afresh next time.
+  if (open !== shownOpen) {
+    setShownOpen(open)
+    setTyped("")
+  }
+
   return (
     <AlertDialog onOpenChange={onOpenChange} open={open}>
       <AlertDialogContent>
@@ -39,9 +52,19 @@ export function DeleteConfirmationDialog({
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
+        {confirmPhrase && (
+          <ConfirmPhrase
+            onChange={setTyped}
+            phrase={confirmPhrase}
+            value={typed}
+          />
+        )}
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction disabled={isPending} onClick={onConfirm}>
+          <AlertDialogAction
+            disabled={isPending || !phraseConfirmed(confirmPhrase, typed)}
+            onClick={onConfirm}
+          >
             {isPending ? pendingLabel : confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>

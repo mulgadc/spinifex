@@ -61,11 +61,11 @@ function seed(): QueryClient {
   return qc
 }
 
-function render() {
+function render(onOpenChange = vi.fn()) {
   return renderWithClient(
     <ModifyDBInstanceDialog
       instance={INSTANCE}
-      onOpenChange={vi.fn()}
+      onOpenChange={onOpenChange}
       open={true}
     />,
     seed(),
@@ -144,5 +144,24 @@ describe("ModifyDBInstanceDialog", () => {
     expect(input.DBInstanceIdentifier).toBe("orders-db")
     expect(input.ApplyImmediately).toBeTruthy()
     expect(input.MasterUserPassword).toBeUndefined()
+  })
+
+  it("shows a refused save in the dialog and keeps it open", async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error("DB instance orders-db is not available"), {
+        name: "InvalidDBInstanceState",
+      }),
+    )
+    const onOpenChange = vi.fn()
+    render(onOpenChange)
+    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }))
+
+    await expect(
+      screen.findByText(
+        "InvalidDBInstanceState: DB instance orders-db is not available",
+      ),
+    ).resolves.toBeInTheDocument()
+    expect(onOpenChange).not.toHaveBeenCalled()
+    expect(screen.getByRole("button", { name: "Save Changes" })).toBeEnabled()
   })
 })

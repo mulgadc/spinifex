@@ -5,11 +5,11 @@ import (
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 )
 
-// spinifexAdminActions is the set of Query actions the spinifex registration
-// serves, which the characterization tests walk.
+// spinifexAdminActions is the set of super-admin Query actions the spinifex
+// registration serves, which the characterization tests walk.
 var spinifexAdminActions = func() map[string]bool {
 	m := map[string]bool{}
-	for _, name := range operatoradmin.ActionNames() {
+	for _, name := range operatoradmin.AdminActionNames() {
 		m[name] = true
 	}
 	return m

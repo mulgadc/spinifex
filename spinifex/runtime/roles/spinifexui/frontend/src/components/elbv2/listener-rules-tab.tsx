@@ -10,6 +10,7 @@ import { useState } from "react"
 import { Controller, useFieldArray, useForm } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { PanelField, PanelFields } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import {
   AlertDialog,
@@ -150,66 +151,59 @@ export function ListenerRulesTab({
         </Button>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border bg-card">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b text-left text-muted-foreground">
-              <th className="px-4 py-2 font-medium">Priority</th>
-              <th className="px-4 py-2 font-medium">Conditions</th>
-              <th className="px-4 py-2 font-medium">Forward to</th>
-              <th className="px-4 py-2 font-medium">
-                <span className="sr-only">Actions</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {rules.map((rule) => (
-              <tr
-                className="border-b last:border-0"
-                key={rule.RuleArn ?? rule.Priority ?? "default"}
-              >
-                <td className="px-4 py-2">{rule.Priority}</td>
-                <td className="px-4 py-2 text-xs">
-                  {formatConditions(rule.Conditions, rule.IsDefault === true)}
-                </td>
-                <td className="px-4 py-2 text-xs">
+      <ul className="flex flex-col gap-2">
+        {rules.map((rule) => (
+          <li
+            className="rounded-md border bg-card"
+            key={rule.RuleArn ?? rule.Priority ?? "default"}
+          >
+            <div className="flex items-center justify-between gap-2 py-1 pr-1 pl-3">
+              <span className="text-sm font-medium">
+                Priority {rule.Priority}
+              </span>
+              {rule.IsDefault === true ? (
+                <span className="pr-2 text-xs text-muted-foreground">
+                  Edit via listener
+                </span>
+              ) : (
+                <div className="flex gap-1">
+                  <Button
+                    aria-label={`Edit rule ${rule.Priority}`}
+                    onClick={() => {
+                      setEditTarget(rule)
+                    }}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <Pencil />
+                  </Button>
+                  <Button
+                    aria-label={`Delete rule ${rule.Priority}`}
+                    onClick={() => {
+                      setDeleteTarget(rule)
+                    }}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              )}
+            </div>
+            <div className="border-t px-3">
+              {/* Conditions can be long, so they wrap rather than truncate. */}
+              <p className="border-b py-1.5 text-xs break-words">
+                {formatConditions(rule.Conditions, rule.IsDefault === true)}
+              </p>
+              <PanelFields>
+                <PanelField label="Forward to">
                   {formatActions(rule, tgNameByArn)}
-                </td>
-                <td className="px-4 py-2 text-right">
-                  {rule.IsDefault === true ? (
-                    <span className="text-xs text-muted-foreground">
-                      Edit via listener
-                    </span>
-                  ) : (
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        aria-label={`Edit rule ${rule.Priority}`}
-                        onClick={() => {
-                          setEditTarget(rule)
-                        }}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <Pencil className="size-4" />
-                      </Button>
-                      <Button
-                        aria-label={`Delete rule ${rule.Priority}`}
-                        onClick={() => {
-                          setDeleteTarget(rule)
-                        }}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                </PanelField>
+              </PanelFields>
+            </div>
+          </li>
+        ))}
+      </ul>
 
       {/* Mounted only while open so every session starts from blank defaults. */}
       {addOpen && (

@@ -1,14 +1,16 @@
 import type { InstanceTypeInfo } from "@aws-sdk/client-ec2"
-import { fireEvent, screen } from "@testing-library/react"
+import { fireEvent, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
+const send = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(vi.fn().mockResolvedValue({}))
+  return mockAwsClients(send)
 })
 
 import { NodegroupsTab } from "./nodegroups-tab"
@@ -236,5 +238,40 @@ describe("NodegroupsTab", () => {
     expect(
       screen.getByText("nvidia.com/gpu=present:NoSchedule"),
     ).toBeInTheDocument()
+  })
+
+  it("shows a refused create in the dialog and keeps it open", async () => {
+    send.mockRejectedValueOnce(
+      Object.assign(new Error("Nodegroup already exists with name ng-2"), {
+        name: "ResourceInUseException",
+      }),
+    )
+    renderWithClient(
+      <NodegroupsTab
+        clusterName={CLUSTER}
+        clusterVersion="1.29"
+        vpcId="vpc-1"
+      />,
+      seed(),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Add node group" }))
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "ng-2" },
+    })
+    fireEvent.change(screen.getByLabelText("Node IAM role"), {
+      target: { value: "arn:aws:iam::0:role/node" },
+    })
+    fireEvent.click(screen.getByLabelText("Subnet subnet-a"))
+    const dialog = screen.getByRole("alertdialog")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }))
+
+    await expect(
+      within(dialog).findByText(
+        "ResourceInUseException: Nodegroup already exists with name ng-2",
+      ),
+    ).resolves.toBeInTheDocument()
+    expect(send.mock.calls[0]?.[0].input.nodegroupName).toBe("ng-2")
+    expect(screen.getByLabelText("Name")).toHaveValue("ng-2")
+    expect(within(dialog).getByRole("button", { name: "Create" })).toBeEnabled()
   })
 })

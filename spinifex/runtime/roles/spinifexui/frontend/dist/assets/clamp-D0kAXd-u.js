@@ -1,0 +1,1 @@
+function e(e,t=-(2**53-1),n=2**53-1){return Math.max(t,Math.min(e,n))}export{e as t};

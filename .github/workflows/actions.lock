@@ -18,6 +18,11 @@ workflows:
         - 'actions/create-github-app-token@v3.3.0'
         - 'actions/upload-artifact@v7.0.2'
         - 'hashicorp/setup-terraform@v4.0.1'
+    '.github/workflows/e2e-cloudvendor-vultr.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'actions/create-github-app-token@v3.3.0'
+        - 'actions/upload-artifact@v7.0.2'
+        - 'hashicorp/setup-terraform@v4.0.1'
     '.github/workflows/e2e-ddil.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/create-github-app-token@v3.3.0'

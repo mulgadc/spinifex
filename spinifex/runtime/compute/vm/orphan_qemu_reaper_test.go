@@ -113,6 +113,37 @@ func TestOrphanQEMUReaper(t *testing.T) {
 			"the instance's ENI teardown must be handed off too")
 	})
 
+	// QEMU exits seconds into a terminate, which then spends tens of seconds
+	// deleting volumes, IPs and its placement. Reporting it terminated in that
+	// window let Terraform's DeletePlacementGroup see the group still in use.
+	t.Run("a terminate whose QEMU just exited is left to finish tearing down", func(t *testing.T) {
+		reaper, store := newOrphanReaperManager(t)
+		m := reaper.m
+
+		const id = "i-tearing-down"
+		m.InsertIfAbsent(&VM{ID: id, Status: StateShuttingDown, ShuttingDownAt: time.Now().Add(-5 * time.Second)})
+
+		reaped, err := reaper.Sweep(context.Background())
+		require.NoError(t, err)
+		assert.Zero(t, reaped, "a terminate inside its grace window must not be finalized from under it")
+		_, ok := m.Get(id)
+		assert.True(t, ok, "the instance must stay in the running map for its own terminate to finish")
+		assert.NotContains(t, store.terminated, id, "it must not be reported terminated before its teardown is done")
+	})
+
+	t.Run("a terminate whose QEMU vanished past the grace window is reconciled", func(t *testing.T) {
+		reaper, store := newOrphanReaperManager(t)
+		m := reaper.m
+
+		const id = "i-wedged-late"
+		m.InsertIfAbsent(&VM{ID: id, Status: StateShuttingDown, ShuttingDownAt: time.Now().Add(-vanishedQEMUGrace - time.Second)})
+
+		reaped, err := reaper.Sweep(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, 1, reaped, "a terminate wedged past the grace window must be finalized")
+		assert.Contains(t, store.terminated, id)
+	})
+
 	t.Run("a shutting-down instance with a live QEMU is left to finish terminating", func(t *testing.T) {
 		reaper, _ := newOrphanReaperManager(t)
 		m := reaper.m

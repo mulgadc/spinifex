@@ -6,34 +6,19 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
-// ClaimResult reports what an affinity pass moved, so a caller can log it and a
-// test can assert on it without reading the fake's internals.
-type ClaimResult struct {
-	// Claimed is the public addresses whose private half this node took over.
-	Claimed []string
-	// Local is how many bindings this node already owned, moved or not.
-	Local int
-	// Stalled is every address whose guest runs here and which OCI is not
-	// delivering here, after the pass has tried to move it and re-read the
-	// answer. Empty is the healthy result, and a non-empty entry names a guest
-	// that is running and unreachable on its public address.
-	Stalled []StalledAddress
-}
+// ClaimResult and StalledAddress are shared with every cloud pool, so the
+// daemon reaches one reachability verdict across providers.
+type (
+	ClaimResult    = external.ClaimResult
+	StalledAddress = external.StalledAddress
+)
 
-// StalledAddress is one address the pass could not put where its guest is.
-//
-// It carries the ENI rather than the instance because that is what this layer
-// knows: a caller that wants to name the guest has the port-to-instance map and
-// this package does not.
-type StalledAddress struct {
-	PublicIP string
-	ENIID    string
-	Reason   string
-}
+var _ external.AddressClaimer = (*PoolAllocator)(nil)
 
 // ClaimLocalAddresses makes OCI agree with where the guests actually are.
 //

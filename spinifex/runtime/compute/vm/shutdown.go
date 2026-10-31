@@ -264,16 +264,21 @@ func (m *Manager) Terminate(id string) error {
 	return m.finalizeTerminated(instance)
 }
 
-// MarkFailed sets a failure reason, transitions to shutting-down synchronously,
-// then runs the cleanup chain in a goroutine so callers return immediately.
-// Tolerates instances already in a cleanup state (no-op).
+// MarkFailed terminates a first launch that failed, as AWS does, and runs the
+// cleanup in a goroutine. An instance that has run before is never terminated
+// here: it is marked recovery-failed with its volumes kept (ADR-0003:S7).
 func (m *Manager) MarkFailed(ctx context.Context, instance *VM, reason string) {
 	skip := false
+	firstLaunch := false
 	var observed InstanceState
 	m.Inspect(instance, func(v *VM) {
 		observed = v.Status
+		firstLaunch = v.FirstLaunch
 		if v.Status == StateShuttingDown || v.Status == StateTerminated {
 			skip = true
+			return
+		}
+		if !firstLaunch {
 			return
 		}
 		if v.Instance != nil {
@@ -286,6 +291,12 @@ func (m *Manager) MarkFailed(ctx context.Context, instance *VM, reason string) {
 	if skip {
 		slog.Info("MarkFailed: instance already in cleanup state, skipping",
 			"instanceId", instance.ID, "status", string(observed), "reason", reason)
+		return
+	}
+	if !firstLaunch {
+		slog.ErrorContext(ctx, "MarkFailed: refusing to terminate an instance that has run before; keeping its volumes",
+			"instanceId", instance.ID, "status", string(observed), "reason", reason)
+		m.MarkRecoveryFailed(instance, reason)
 		return
 	}
 

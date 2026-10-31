@@ -71,6 +71,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/exonet"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/floating"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
@@ -194,6 +195,9 @@ type Daemon struct {
 	routeTableService     *ec2routetable.RouteTableServiceImpl
 	natGatewayService     *ec2natgw.NatGatewayServiceImpl
 	externalIPAM          *ec2vpc.ExternalIPAM
+	// floatingAllocators is every floating-address pool (source="vultr") on
+	// this node, written once during startup like ociAllocators.
+	floatingAllocators []floatingPool
 	// ociAllocators is every source="oci" pool on this node. Written once during
 	// startup, before anything reads it.
 	ociAllocators []ociPool
@@ -1532,6 +1536,11 @@ func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, any
 			ExoscaleConfigFile: p.ExoscaleConfigFile,
 			ExoscaleAccount:    p.ExoscaleAccount,
 			ExoscaleBinary:     p.ExoscaleBinary,
+
+			VultrRegion:    p.VultrRegion,
+			VultrKeyFile:   p.VultrKeyFile,
+			LabelPrefix:    p.LabelPrefix,
+			ProviderHostID: d.clusterConfig.Nodes[d.clusterConfig.Node].ProviderHostID,
 		})
 		if p.Source == "dhcp" {
 			anyDHCP = true
@@ -1577,7 +1586,6 @@ func (d *Daemon) installOCIAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.Je
 		}
 	}
 	if len(d.ociAllocators) > 0 {
-		go d.runOCIAffinityLoop()
 		go d.runOCIReconcileLoop()
 	}
 	return nil
@@ -1608,6 +1616,67 @@ func (d *Daemon) installExoscaleAllocators(ipam *ec2vpc.ExternalIPAM, js jetstre
 	return nil
 }
 
+// installFloatingAllocators builds one allocator per floating-address pool and
+// runs its first reconcile. That pass only marks unbound addresses; the
+// periodic one collects them, since another node may be mid-allocation.
+func (d *Daemon) installFloatingAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.JetStream) error {
+	for _, p := range ipam.PoolsWithSource(external.SourceVultr) {
+		alloc, err := floating.FromPoolConfig(d.ctx, js, p, d.ovnSBAddr())
+		if err != nil {
+			return fmt.Errorf("build floating allocator for pool %q: %w", p.Name, err)
+		}
+		if err := ipam.InstallAllocator(p.Name, alloc); err != nil {
+			return err
+		}
+		pool := floatingPool{name: p.Name, alloc: alloc}
+		d.floatingAllocators = append(d.floatingAllocators, pool)
+		pool.reconcile(d.ctx)
+	}
+	if len(d.floatingAllocators) > 0 {
+		go d.runFloatingReconcileLoop()
+	}
+	return nil
+}
+
+// floatingPool pairs a floating pool's allocator with its name.
+type floatingPool struct {
+	name  string
+	alloc *floating.PoolAllocator
+}
+
+// reconcile runs one pass and logs its outcome. A failure leaks money and
+// quota, not reachability, so it is logged and the next pass retries.
+func (p floatingPool) reconcile(ctx context.Context) {
+	res, err := p.alloc.Reconcile(ctx)
+	switch {
+	case err != nil:
+		slog.Error("floating allocator reconcile failed; leaked addresses may be billing",
+			"pool", p.name, "collected", len(res.Collected), "err", err)
+	case len(res.Collected) > 0 || len(res.Missing) > 0:
+		slog.Info("floating allocator reconcile", "pool", p.name,
+			"collected", len(res.Collected), "suspect", res.Suspect, "missing", len(res.Missing), "skipped", res.Skipped)
+	default:
+		slog.Debug("floating allocator reconcile clean", "pool", p.name, "suspect", res.Suspect, "skipped", res.Skipped)
+	}
+}
+
+// runFloatingReconcileLoop repeats the reconcile on the OCI cadence, for the
+// same reason: leaks come from releases and guests long after start.
+func (d *Daemon) runFloatingReconcileLoop() {
+	ticker := time.NewTicker(ociReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for _, p := range d.floatingAllocators {
+			p.reconcile(d.ctx)
+		}
+	}
+}
+
 // ociPool pairs a pool's allocator with its name, so one pass can cover every
 // pool and reach a single verdict about each guest. Per-pool loops could not: a
 // guest is impaired or it is not, and two loops writing that answer from half the
@@ -1628,12 +1697,20 @@ const ociAffinityInterval = 15 * time.Second
 // quota, not reachability, and the pass lists a whole compartment.
 const ociReconcileInterval = 10 * time.Minute
 
-// runOCIAffinityLoop keeps OCI's idea of where an address lives in step with
-// where its guest actually runs. Every node runs its own, like the host EIP
-// loop and for the same reason: the question is about this host's guests, and a
-// node that never wins the reconcile lease would otherwise never claim the
-// addresses of the instances it is running.
-func (d *Daemon) runOCIAffinityLoop() {
+// startAddressAffinityLoop starts the claim pass when any cloud pool needs
+// its addresses delivered to the node running their owner.
+func (d *Daemon) startAddressAffinityLoop() {
+	if len(d.addressClaimers()) > 0 {
+		go d.runAddressAffinityLoop()
+	}
+}
+
+// runAddressAffinityLoop keeps the cloud's idea of where an address lives in
+// step with where its guest actually runs. Every node runs its own, like the
+// host EIP loop and for the same reason: the question is about this host's
+// guests, and a node that never wins the reconcile lease would otherwise never
+// claim the addresses of the instances it is running.
+func (d *Daemon) runAddressAffinityLoop() {
 	ticker := time.NewTicker(ociAffinityInterval)
 	defer ticker.Stop()
 	for {
@@ -1642,7 +1719,7 @@ func (d *Daemon) runOCIAffinityLoop() {
 			return
 		case <-ticker.C:
 		}
-		d.ClaimOCIAddresses(d.ctx)
+		d.ClaimCloudAddresses(d.ctx)
 	}
 }
 
@@ -1711,39 +1788,61 @@ func (p ociPool) retryStartupReconcile(ctx context.Context, initialBackoff, maxB
 		})
 }
 
-// ClaimOCIAddresses runs one affinity pass over every OCI pool and records which
-// guests OCI is not delivering an address to.
+// namedClaimer is one cloud pool the affinity pass drives, with the provider
+// it names in logs.
+type namedClaimer struct {
+	name     string
+	provider string
+	claimer  external.AddressClaimer
+}
+
+// addressClaimers is every pool whose addresses follow their owner's node.
+func (d *Daemon) addressClaimers() []namedClaimer {
+	out := make([]namedClaimer, 0, len(d.ociAllocators)+len(d.floatingAllocators))
+	for _, p := range d.ociAllocators {
+		out = append(out, namedClaimer{name: p.name, provider: "OCI", claimer: p.alloc})
+	}
+	for _, p := range d.floatingAllocators {
+		out = append(out, namedClaimer{name: p.name, provider: p.alloc.Pool().Source, claimer: p.alloc})
+	}
+	return out
+}
+
+// ClaimCloudAddresses runs one affinity pass over every cloud pool and records
+// which guests the cloud is not delivering an address to. One pass over all of
+// them, because a guest is impaired or it is not, and per-pool passes writing
+// that answer from half the evidence would take turns contradicting each other.
 //
 // Exported because the recovery path calls it in line: a guest relaunched here is
-// reported running the moment it boots, and until this has run OCI still delivers
-// its address to the node that died. Waiting for the ticker would mean up to a
-// full interval in which the records say recovered and the address says nothing.
+// reported running the moment it boots, and until this has run the cloud still
+// delivers its address to the node that died.
 //
 // A pass that could not read its own inputs marks nothing. It learned that no
-// guest is reachable, not that every guest is, and clearing on that would turn an
-// OCI outage into a clean bill of health.
-func (d *Daemon) ClaimOCIAddresses(ctx context.Context) {
-	if len(d.ociAllocators) == 0 {
+// guest is reachable, not that every guest is, and clearing on that would turn a
+// cloud outage into a clean bill of health.
+func (d *Daemon) ClaimCloudAddresses(ctx context.Context) {
+	claimers := d.addressClaimers()
+	if len(claimers) == 0 {
 		return
 	}
 
 	complete := true
 	stalled := make(map[string]string)
-	for _, p := range d.ociAllocators {
-		res, err := p.alloc.ClaimLocalAddresses(ctx)
+	for _, p := range claimers {
+		res, err := p.claimer.ClaimLocalAddresses(ctx)
 		if err != nil {
-			slog.Error("OCI address affinity pass failed; a guest here may be unreachable on its public address",
-				"pool", p.name, "err", err)
+			slog.Error("Cloud address affinity pass failed; a guest here may be unreachable on its public address",
+				"provider", p.provider, "pool", p.name, "err", err)
 			complete = false
 			continue
 		}
 		if len(res.Claimed) > 0 {
-			slog.Info("OCI addresses moved to this node", "pool", p.name,
+			slog.Info("Cloud addresses moved to this node", "provider", p.provider, "pool", p.name,
 				"claimed", res.Claimed, "local_bindings", res.Local)
 		}
 		for _, s := range res.Stalled {
-			slog.Error("OCI is not delivering an address to the node running its guest",
-				"pool", p.name, "public_ip", s.PublicIP, "eni_id", s.ENIID, "reason", s.Reason)
+			slog.Error("Cloud is not delivering an address to the node running its guest",
+				"provider", p.provider, "pool", p.name, "public_ip", s.PublicIP, "eni_id", s.ENIID, "reason", s.Reason)
 			if s.ENIID != "" {
 				stalled[s.ENIID] = s.Reason
 			}
@@ -2022,6 +2121,10 @@ func (d *Daemon) startCluster() error {
 			if exoErr := d.installExoscaleAllocators(ipam, js); exoErr != nil {
 				return nil, exoErr
 			}
+			if fErr := d.installFloatingAllocators(ipam, js); fErr != nil {
+				return nil, fErr
+			}
+			d.startAddressAffinityLoop()
 			return ipam, nil
 		})
 		if err != nil {

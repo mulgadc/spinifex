@@ -8,7 +8,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/internal/testkit/gwtest"
-	. "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
@@ -30,7 +30,7 @@ func ecrRequest(target, body string) *http.Request {
 // a permitted request fails there rather than on authorization.
 func dispatchECR(t *testing.T, h *gwtest.Harness, action, body string) error {
 	t.Helper()
-	return h.Dispatch(NewRegistration(Deps{}), ServiceName, httptest.NewRecorder(), ecrRequest(TargetPrefix+"."+action, body))
+	return h.Dispatch(awsapi.NewRegistration(awsapi.Deps{}), awsapi.ServiceName, httptest.NewRecorder(), ecrRequest(awsapi.TargetPrefix+"."+action, body))
 }
 
 func assertECRPermitted(t *testing.T, err error) {
@@ -143,9 +143,9 @@ func TestECRRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 	body := []byte(`{"repositoryName":"app","repositoryNames":["app"],` +
 		`"resourceArn":"arn:aws:ecr:` + gwtest.Region + `:` + gwtest.AccountID + `:repository/app"}`)
 
-	for _, action := range ScopedActions() {
+	for _, action := range awsapi.ScopedActions() {
 		t.Run(action, func(t *testing.T) {
-			resources, err := ResourceARNs(action, gwtest.Region, gwtest.AccountID, body)
+			resources, err := awsapi.ResourceARNs(action, gwtest.Region, gwtest.AccountID, body)
 			require.NoError(t, err)
 			assert.NoError(t, pipeline.Authorize(gw.Policy, req, caller, true, "ecr", action, resources, nil))
 		})

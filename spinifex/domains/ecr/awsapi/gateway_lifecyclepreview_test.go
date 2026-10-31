@@ -1,12 +1,12 @@
-package gateway
+package awsapi_test
 
 import (
 	"encoding/json"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -91,12 +91,7 @@ func TestLifecyclePreview_Errors(t *testing.T) {
 }
 
 func TestLifecyclePreview_MissingComposition(t *testing.T) {
-	gw := &GatewayConfig{
-		Region:         ecrTestRegion,
-		DisableLogging: true,
-		IAMService:     allowAllIAMService(),
-		Credentials:    credverify.New(allowAllIAMService(), nil),
-	}
+	gw := newECRGW(nil, awsapi.Deps{})
 
 	_, err := callImage(t, gw, "StartLifecyclePolicyPreview", previewBody("team/app", previewExpireOldest))
 	require.Error(t, err)

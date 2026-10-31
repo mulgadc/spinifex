@@ -31,25 +31,6 @@ func dispatchACM(t *testing.T, h *gwtest.Harness, action, body string) error {
 	return h.Dispatch(NewRegistration(Deps{}), ServiceName, httptest.NewRecorder(), acmRequest("CertificateManager."+action, body))
 }
 
-// assertDenied matches on the resolved code, not the message: a policy denial
-// names the principal, action and resource ahead of the code.
-func assertDenied(t *testing.T, err error) {
-	t.Helper()
-	require.Error(t, err)
-	code, ok := awserrors.ResolveErrorCode(err)
-	require.True(t, ok, "unresolvable error code: %v", err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, code)
-}
-
-// assertPermitted asserts the policy gate passed. The request then fails on the
-// absent NATS connection rather than on authorization, so a denial cannot hide
-// behind a not-found.
-func assertPermitted(t *testing.T, err error) {
-	t.Helper()
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
-
 func TestACMRequest_MissingTarget(t *testing.T) {
 	err := gwtest.AllowAll().Dispatch(NewRegistration(Deps{}), ServiceName, httptest.NewRecorder(), acmRequest("", ""))
 	require.Error(t, err)
@@ -83,8 +64,8 @@ func TestACMRequest_ScopedDenyFires(t *testing.T) {
 		gwtest.Statement("Deny", "acm:DeleteCertificate", acmCertARN("prod-1111")),
 	)
 
-	assertDenied(t, dispatchACM(t, gw, "DeleteCertificate", `{"CertificateArn":"`+acmCertARN("prod-1111")+`"}`))
-	assertPermitted(t, dispatchACM(t, gw, "DeleteCertificate", `{"CertificateArn":"`+acmCertARN("dev-2222")+`"}`))
+	gwtest.AssertDenied(t, dispatchACM(t, gw, "DeleteCertificate", `{"CertificateArn":"`+acmCertARN("prod-1111")+`"}`))
+	gwtest.AssertPermitted(t, dispatchACM(t, gw, "DeleteCertificate", `{"CertificateArn":"`+acmCertARN("dev-2222")+`"}`))
 }
 
 // TestACMRequest_ScopedAllowGrants is the other half: a least-privilege policy
@@ -96,8 +77,8 @@ func TestACMRequest_ScopedAllowGrants(t *testing.T) {
 		gwtest.Statement("Allow", "acm:DescribeCertificate", acmCertARN("dev-2222")),
 	)
 
-	assertPermitted(t, dispatchACM(t, gw, "DescribeCertificate", `{"CertificateArn":"`+acmCertARN("dev-2222")+`"}`))
-	assertDenied(t, dispatchACM(t, gw, "DescribeCertificate", `{"CertificateArn":"`+acmCertARN("prod-1111")+`"}`))
+	gwtest.AssertPermitted(t, dispatchACM(t, gw, "DescribeCertificate", `{"CertificateArn":"`+acmCertARN("dev-2222")+`"}`))
+	gwtest.AssertDenied(t, dispatchACM(t, gw, "DescribeCertificate", `{"CertificateArn":"`+acmCertARN("prod-1111")+`"}`))
 }
 
 // A caller-supplied region or account in the ARN would let a request slide out
@@ -108,7 +89,7 @@ func TestACMRequest_CallerSuppliedAnchorIsIgnored(t *testing.T) {
 		gwtest.Statement("Deny", "acm:DeleteCertificate", acmCertARN("prod-1111")),
 	)
 
-	assertDenied(t, dispatchACM(t, gw, "DeleteCertificate",
+	gwtest.AssertDenied(t, dispatchACM(t, gw, "DeleteCertificate",
 		`{"CertificateArn":"arn:aws:acm:us-east-1:999999999999:certificate/prod-1111"}`))
 }
 
@@ -119,15 +100,15 @@ func TestACMRequest_ImportResolvesBothShapes(t *testing.T) {
 	create := gwtest.Scoped(
 		gwtest.Statement("Allow", "acm:ImportCertificate", acmCertARN("*")),
 	)
-	assertPermitted(t, dispatchACM(t, create, "ImportCertificate", `{"Certificate":"pem"}`))
+	gwtest.AssertPermitted(t, dispatchACM(t, create, "ImportCertificate", `{"Certificate":"pem"}`))
 
 	fenced := gwtest.Scoped(
 		gwtest.Statement("Allow", "acm:*", "*"),
 		gwtest.Statement("Deny", "acm:ImportCertificate", acmCertARN("prod-1111")),
 	)
-	assertDenied(t, dispatchACM(t, fenced, "ImportCertificate",
+	gwtest.AssertDenied(t, dispatchACM(t, fenced, "ImportCertificate",
 		`{"CertificateArn":"`+acmCertARN("prod-1111")+`","Certificate":"pem"}`))
-	assertPermitted(t, dispatchACM(t, fenced, "ImportCertificate", `{"Certificate":"pem"}`))
+	gwtest.AssertPermitted(t, dispatchACM(t, fenced, "ImportCertificate", `{"Certificate":"pem"}`))
 }
 
 // RequestCertificate has no id at gate time, so it resolves the type.
@@ -135,12 +116,12 @@ func TestACMRequest_RequestCertificateResolvesTheType(t *testing.T) {
 	gw := gwtest.Scoped(
 		gwtest.Statement("Allow", "acm:RequestCertificate", acmCertARN("*")),
 	)
-	assertPermitted(t, dispatchACM(t, gw, "RequestCertificate", `{"DomainName":"example.com"}`))
+	gwtest.AssertPermitted(t, dispatchACM(t, gw, "RequestCertificate", `{"DomainName":"example.com"}`))
 
 	scoped := gwtest.Scoped(
 		gwtest.Statement("Allow", "acm:RequestCertificate", acmCertARN("prod-1111")),
 	)
-	assertDenied(t, dispatchACM(t, scoped, "RequestCertificate", `{"DomainName":"example.com"}`))
+	gwtest.AssertDenied(t, dispatchACM(t, scoped, "RequestCertificate", `{"DomainName":"example.com"}`))
 }
 
 // A grant scoped to one certificate does not become a licence to mint new ones
@@ -150,7 +131,7 @@ func TestACMRequest_RequestCertificateIgnoresACertificateArnInTheBody(t *testing
 		gwtest.Statement("Allow", "acm:*", acmCertARN("team-a-1")),
 	)
 
-	assertDenied(t, dispatchACM(t, gw, "RequestCertificate",
+	gwtest.AssertDenied(t, dispatchACM(t, gw, "RequestCertificate",
 		`{"DomainName":"evil.example","CertificateArn":"`+acmCertARN("team-a-1")+`"}`))
 }
 
@@ -160,10 +141,10 @@ func TestACMRequest_ListIsAccountLevel(t *testing.T) {
 	scoped := gwtest.Scoped(
 		gwtest.Statement("Allow", "acm:ListCertificates", acmCertARN("dev-2222")),
 	)
-	assertDenied(t, dispatchACM(t, scoped, "ListCertificates", `{}`))
+	gwtest.AssertDenied(t, dispatchACM(t, scoped, "ListCertificates", `{}`))
 
 	wide := gwtest.Scoped(gwtest.Statement("Allow", "acm:ListCertificates", "*"))
-	assertPermitted(t, dispatchACM(t, wide, "ListCertificates", `{}`))
+	gwtest.AssertPermitted(t, dispatchACM(t, wide, "ListCertificates", `{}`))
 }
 
 // The property the per-service rollout rests on: every policy that works today
@@ -173,7 +154,7 @@ func TestACMRequest_WildcardPolicyStillPermitsEveryAction(t *testing.T) {
 
 	for _, action := range ScopedActions() {
 		t.Run(action, func(t *testing.T) {
-			assertPermitted(t, dispatchACM(t, gw, action, `{"CertificateArn":"`+acmCertARN("aaaa-1111")+`"}`))
+			gwtest.AssertPermitted(t, dispatchACM(t, gw, action, `{"CertificateArn":"`+acmCertARN("aaaa-1111")+`"}`))
 		})
 	}
 }
@@ -186,7 +167,7 @@ func TestACMRequest_AbsentIdentifierStaysTheHandlersFault(t *testing.T) {
 		gwtest.Statement("Deny", "acm:DeleteCertificate", acmCertARN("prod-1111")),
 	)
 
-	assertPermitted(t, dispatchACM(t, gw, "DeleteCertificate", `{}`))
+	gwtest.AssertPermitted(t, dispatchACM(t, gw, "DeleteCertificate", `{}`))
 }
 
 // A body the gate cannot parse authorizes account-wide for the same reason.
@@ -196,7 +177,7 @@ func TestACMRequest_UnparseableBodyStaysTheHandlersFault(t *testing.T) {
 		gwtest.Statement("Deny", "acm:DeleteCertificate", acmCertARN("prod-1111")),
 	)
 
-	assertPermitted(t, dispatchACM(t, gw, "DeleteCertificate", "{not json"))
+	gwtest.AssertPermitted(t, dispatchACM(t, gw, "DeleteCertificate", "{not json"))
 }
 
 // A body spelling one field two ways is rejected rather than authorized against

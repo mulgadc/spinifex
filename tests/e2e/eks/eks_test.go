@@ -45,6 +45,10 @@ const (
 // One cluster fixture is shared across the subtests (create once, delete in
 // Cleanup) — control-plane boot is the slowest step, so re-creating per subtest
 // would blow the suite timeout on dev nodes.
+// noopAddon is the delivery fixture (Namespace + ConfigMap), independent of the
+// CSI and load-balancer bundles.
+const noopAddon = "spinifex-noop"
+
 func TestEKS(t *testing.T) {
 	env := harness.LoadEnv(t)
 	harness.RequireDNSEnabled(t, env)
@@ -136,17 +140,15 @@ func TestEKS(t *testing.T) {
 		kcPath := writeKubeconfig(t, artifacts, fx.Cluster)
 		kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
 
-		// Poll until a Ready node appears. k3s may crash once during bootstrap
-		// (etcd fsync latency under I/O contention) and be respawned; the generous
-		// envelope allows the control plane to stabilise after the first ACTIVE.
+		// Control-plane hosts never register as Nodes, so a cluster without a
+		// nodegroup lists none. A Ready worker is asserted once a nodegroup exists.
 		harness.EventuallyErr(t, func() error {
-			out, err := kc.Run(30*time.Second, "get", "nodes",
-				"-o", `jsonpath={range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`)
+			out, err := kc.Run(30*time.Second, "get", "nodes", "-o", "name")
 			if err != nil {
 				return fmt.Errorf("kubectl get nodes: %v\n%s", err, out)
 			}
-			if !strings.Contains(out, "=True") {
-				return fmt.Errorf("no Ready node yet:\n%s", out)
+			if strings.TrimSpace(out) != "" {
+				return fmt.Errorf("cluster without a nodegroup must list no Nodes:\n%s", out)
 			}
 			return nil
 		}, 6*time.Minute, 5*time.Second)
@@ -162,7 +164,7 @@ func TestEKS(t *testing.T) {
 		// gateway, renders the baked bundle into the K3s auto-deploy dir, and
 		// reports ready, which flips the record to ACTIVE. spinifex-noop is the
 		// fixture (Namespace + ConfigMap) — no dependency on the CSI/LB bundles.
-		const addon = "spinifex-noop"
+		const addon = noopAddon
 		_, err := c.EKS.CreateAddon(&eks.CreateAddonInput{
 			ClusterName: aws.String(fx.ClusterName),
 			AddonName:   aws.String(addon),
@@ -194,41 +196,15 @@ func TestEKS(t *testing.T) {
 		require.NoError(t, err, "addon ConfigMap must exist: %s", out)
 		assert.Contains(t, out, "delivered", "addon ConfigMap must carry the marker")
 
-		// The aggregated metrics API must be Available: apiserver discovery
-		// dials it through the konnectivity tunnel, and on a zero-worker or
-		// GPU-only cluster a konnectivity-agent gap makes it perpetually
-		// Unavailable — which is exactly what wedges namespace GC below, on
-		// every namespace, not just this one.
-		apiSvcOut, err := kc.Run(30*time.Second, "get", "apiservice", "v1beta1.metrics.k8s.io",
-			"-o", `jsonpath={.status.conditions[?(@.type=="Available")].status}`)
-		require.NoError(t, err, "get apiservice v1beta1.metrics.k8s.io: %s", apiSvcOut)
-		assert.Equal(t, "True", strings.TrimSpace(apiSvcOut),
-			"v1beta1.metrics.k8s.io must be Available or namespace GC (below) will never clear the kubernetes finalizer")
-
-		// DeleteAddon unstages the manifest; the agent GCs the rendered file and
-		// k3s' auto-deploy controller removes the objects.
-		_, err = c.EKS.DeleteAddon(&eks.DeleteAddonInput{
-			ClusterName: aws.String(fx.ClusterName),
-			AddonName:   aws.String(addon),
-		})
-		require.NoError(t, err, "delete-addon")
-
-		// Namespace GC enumerates every API group before it can clear the
-		// `kubernetes` finalizer, so a stuck aggregated API (checked above)
-		// leaves this stuck in Terminating forever rather than retrying it
-		// down — proving deletion actually completes, not just that it was
-		// attempted.
-		harness.EventuallyErr(t, func() error {
-			out, runErr := kc.Run(30*time.Second, "get", "namespace", "spinifex-noop",
-				"--ignore-not-found", "-o", `jsonpath={.metadata.name}`)
-			if runErr != nil {
-				return fmt.Errorf("kubectl get namespace: %v\n%s", runErr, out)
-			}
-			if strings.TrimSpace(out) != "" {
-				return fmt.Errorf("namespace still present")
-			}
-			return nil
-		}, 3*time.Minute, 10*time.Second)
+		// The bundled metrics-server objects are delivered with the cluster. They
+		// cannot become Available until a worker exists, so only presence is checked.
+		for _, obj := range [][]string{
+			{"deployment", "metrics-server", "-n", "kube-system"},
+			{"apiservice", "v1beta1.metrics.k8s.io"},
+		} {
+			got, gerr := kc.Run(30*time.Second, append([]string{"get"}, append(obj, "-o", "name")...)...)
+			require.NoErrorf(t, gerr, "bundled %s must be delivered: %s", obj[0], got)
+		}
 	})
 
 	t.Run("IRSAWebIdentity", func(t *testing.T) {

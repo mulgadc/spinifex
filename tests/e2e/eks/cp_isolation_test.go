@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,15 +23,32 @@ const cpIsolationNodegroup = "cpiso-e2e-ng"
 // column is empty for a Node that is not a nodegroup worker.
 const nodeGroupLabelRows = `jsonpath={range .items[*]}{.metadata.name} {.metadata.labels.eks\.amazonaws\.com/nodegroup}{"\n"}{end}`
 
+// nodeReadyRows prints one "<node>=<Ready status>" row per Node.
+const nodeReadyRows = `jsonpath={range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`
+
 // runCPIsolation proves control-plane hosts never register as Nodes, as on AWS:
-// only nodegroup workers are listed, a DaemonSet tolerating every taint runs on
-// workers only, metrics-server is Ready, and logs work for every kube-system pod.
+// only nodegroup workers are listed and one becomes Ready, a DaemonSet tolerating
+// every taint runs on workers only, metrics-server and its APIService become
+// available, and logs work for every kube-system pod on a Ready node.
 func runCPIsolation(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string, fx *clusterFixture) {
 	nodeRoleArn, _ := ensureNodeRole(t, c, fx)
 	createWorkerNodegroup(t, c, fx, cpIsolationNodegroup, nodeRoleArn, nil)
 
 	kcPath := writeKubeconfig(t, artifacts, fx.Cluster)
 	kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
+
+	t.Run("WorkerNodeReady", func(t *testing.T) {
+		harness.EventuallyErr(t, func() error {
+			out, err := kc.Run(30*time.Second, "get", "nodes", "-o", nodeReadyRows)
+			if err != nil {
+				return fmt.Errorf("kubectl get nodes: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, "=True") {
+				return fmt.Errorf("no Ready node yet:\n%s", out)
+			}
+			return nil
+		}, 6*time.Minute, 5*time.Second)
+	})
 
 	t.Run("OnlyWorkersAreNodes", func(t *testing.T) {
 		out, err := kc.Run(30*time.Second, "get", "nodes", "-o", nodeGroupLabelRows)
@@ -92,7 +111,22 @@ func runCPIsolation(t *testing.T, c *harness.AWSClient, env *harness.Env, artifa
 				return fmt.Errorf("metrics-server has no ready replica (%q)", strings.TrimSpace(out))
 			}
 			return nil
-		}, 5*time.Minute, 10*time.Second)
+		}, 10*time.Minute, 10*time.Second)
+
+		// The aggregated metrics API must be Available: apiserver discovery dials
+		// it through the konnectivity tunnel, and while it is not, namespace GC
+		// never clears the kubernetes finalizer.
+		harness.EventuallyErr(t, func() error {
+			out, err := kc.Run(30*time.Second, "get", "apiservice", "v1beta1.metrics.k8s.io",
+				"-o", `jsonpath={.status.conditions[?(@.type=="Available")].status}`)
+			if err != nil {
+				return fmt.Errorf("get apiservice v1beta1.metrics.k8s.io: %v\n%s", err, out)
+			}
+			if strings.TrimSpace(out) != "True" {
+				return fmt.Errorf("v1beta1.metrics.k8s.io Available=%q", strings.TrimSpace(out))
+			}
+			return nil
+		}, 3*time.Minute, 10*time.Second)
 
 		harness.EventuallyErr(t, func() error {
 			out, err := kc.Run(60*time.Second, "top", "nodes")
@@ -103,16 +137,56 @@ func runCPIsolation(t *testing.T, c *harness.AWSClient, env *harness.Env, artifa
 		}, 3*time.Minute, 10*time.Second)
 	})
 
-	t.Run("LogsWorkForEveryKubeSystemPod", func(t *testing.T) {
-		out, err := kc.Run(30*time.Second, "get", "pods", "-n", "kube-system",
-			"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}")
-		require.NoErrorf(t, err, "list kube-system pods:\n%s", out)
-		pods := strings.Fields(out)
-		require.NotEmpty(t, pods, "kube-system must have pods")
-		for _, pod := range pods {
-			logs, err := kc.Run(60*time.Second, "logs", pod, "-n", "kube-system", "--all-containers", "--tail=1")
-			assert.NoErrorf(t, err, "kubectl logs %s must work:\n%s", pod, logs)
+	t.Run("AddonDeletion", func(t *testing.T) {
+		// Namespace GC needs every aggregated API available, so addon deletion
+		// is checked once a worker exists.
+		if _, err := c.EKS.DescribeAddon(&eks.DescribeAddonInput{
+			ClusterName: aws.String(fx.ClusterName),
+			AddonName:   aws.String(noopAddon),
+		}); err != nil {
+			t.Skipf("addon %s was not created: %v", noopAddon, err)
 		}
+		_, err := c.EKS.DeleteAddon(&eks.DeleteAddonInput{
+			ClusterName: aws.String(fx.ClusterName),
+			AddonName:   aws.String(noopAddon),
+		})
+		require.NoError(t, err, "delete-addon")
+		harness.EventuallyErr(t, func() error {
+			out, runErr := kc.Run(30*time.Second, "get", "namespace", noopAddon,
+				"--ignore-not-found", "-o", `jsonpath={.metadata.name}`)
+			if runErr != nil {
+				return fmt.Errorf("kubectl get namespace: %v\n%s", runErr, out)
+			}
+			if strings.TrimSpace(out) != "" {
+				return fmt.Errorf("namespace still present")
+			}
+			return nil
+		}, 3*time.Minute, 10*time.Second)
+	})
+
+	t.Run("LogsWorkForEveryKubeSystemPod", func(t *testing.T) {
+		nodes, err := kc.Run(30*time.Second, "get", "nodes", "-o", nodeReadyRows)
+		require.NoErrorf(t, err, "get nodes:\n%s", nodes)
+		ready := map[string]bool{}
+		for _, row := range strings.Fields(nodes) {
+			if name, status, ok := strings.Cut(row, "="); ok && status == "True" {
+				ready[name] = true
+			}
+		}
+		out, err := kc.Run(30*time.Second, "get", "pods", "-n", "kube-system",
+			"-o", `jsonpath={range .items[*]}{.metadata.name} {.spec.nodeName}{"\n"}{end}`)
+		require.NoErrorf(t, err, "list kube-system pods:\n%s", out)
+		checked := 0
+		for _, row := range strings.Split(strings.TrimSpace(out), "\n") {
+			f := strings.Fields(row)
+			if len(f) != 2 || !ready[f[1]] {
+				continue
+			}
+			checked++
+			logs, err := kc.Run(60*time.Second, "logs", f[0], "-n", "kube-system", "--all-containers", "--tail=1")
+			assert.NoErrorf(t, err, "kubectl logs %s must work:\n%s", f[0], logs)
+		}
+		require.NotZero(t, checked, "kube-system must have pods on a Ready node")
 	})
 }
 

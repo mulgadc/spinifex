@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
@@ -13,6 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 )
 
 // productionTraits is the traits each production registration declares.
@@ -24,9 +26,11 @@ func productionTraits(t *testing.T) map[string]dispatch.ServiceTraits {
 		stsawsapi.NewRegistration(stsawsapi.Deps{}),
 		route53awsapi.NewRegistration(route53awsapi.Deps{}),
 		eksawsapi.NewRegistration(eksawsapi.Deps{}),
+		ec2awsapi.NewRegistration(ec2awsapi.Deps{}),
+		operatoradmin.NewRegistration(operatoradmin.Deps{}),
 	))
 	out := map[string]dispatch.ServiceTraits{}
-	for _, svc := range []string{"iam", "sts", "route53", "eks"} {
+	for _, svc := range []string{"iam", "sts", "route53", "eks", "ec2", "spinifex"} {
 		e, ok := gw.Services.Lookup(svc)
 		require.True(t, ok, svc)
 		out[svc] = e.Traits()
@@ -41,4 +45,26 @@ func TestProductionServiceTraits_XMLThrottleCode(t *testing.T) {
 		assert.Equal(t, awserrors.ErrorThrottling, got[svc].XMLThrottleCode, svc)
 	}
 	assert.Empty(t, got["eks"].XMLThrottleCode, "EKS is a JSON registration and never renders the XML throttle")
+}
+
+func TestProductionServiceTraits_XMLErrorShape(t *testing.T) {
+	got := productionTraits(t)
+
+	assert.Equal(t, dispatch.XMLErrorShapeEC2, got["ec2"].XMLErrorShape)
+	assert.Equal(t, dispatch.XMLErrorShapeEC2, got["spinifex"].XMLErrorShape)
+	for _, svc := range []string{"iam", "sts", "route53", "eks"} {
+		assert.Equal(t, dispatch.XMLErrorShapeGeneric, got[svc].XMLErrorShape, svc)
+	}
+}
+
+// S3 is not served here, but its rejections keep S3's body.
+func TestWireServiceRegistry_DeclaresTheS3Scope(t *testing.T) {
+	gw := &gateway.GatewayConfig{}
+	require.NoError(t, wireServiceRegistry(gw, iamawsapi.NewRegistration(iamawsapi.Deps{})))
+
+	traits, ok := gw.Services.Traits("s3")
+	require.True(t, ok)
+	assert.Equal(t, dispatch.XMLErrorShapeS3, traits.XMLErrorShape)
+	_, served := gw.Services.Lookup("s3")
+	assert.False(t, served, "a declared scope is not a served service")
 }

@@ -379,3 +379,23 @@ func TestRegisterXMLThrottleCodeNeedsXMLEnvelope(t *testing.T) {
 	r.Traits = ServiceTraits{XMLThrottleCode: "Throttling"}
 	assert.Error(t, NewBuilder().Register(r))
 }
+
+func TestDeclareScope(t *testing.T) {
+	b := NewBuilder()
+	require.NoError(t, b.Register(validReg("svc")))
+	require.NoError(t, b.DeclareScope("other", ServiceTraits{XMLErrorShape: XMLErrorShapeS3}))
+
+	assert.Error(t, b.DeclareScope("svc", ServiceTraits{}), "a served service cannot be declared")
+	assert.Error(t, b.DeclareScope("other", ServiceTraits{}), "a scope is declared once")
+	assert.Error(t, b.DeclareScope("Bad Name", ServiceTraits{}))
+
+	reg := b.Build()
+	traits, ok := reg.Traits("other")
+	require.True(t, ok)
+	assert.Equal(t, XMLErrorShapeS3, traits.XMLErrorShape)
+	_, served := reg.Lookup("other")
+	assert.False(t, served)
+	_, ok = reg.Traits("unknown")
+	assert.False(t, ok)
+	assert.ErrorIs(t, b.DeclareScope("late", ServiceTraits{}), ErrSealed)
+}

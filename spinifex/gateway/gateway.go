@@ -261,7 +261,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 		return
 	}
 
-	xmlBody := xmlErrorBody(svc, awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID, r.URL.Path)
+	xmlBody := gw.xmlErrorBody(svc, awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID, r.URL.Path)
 
 	w.Header().Set("Content-Type", envelope.XMLContentType)
 	w.WriteHeader(http.StatusServiceUnavailable)
@@ -296,7 +296,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	xmlErr := xmlErrorBody(svc, errorCode, errorMsg.Message, requestID, r.URL.Path)
+	xmlErr := gw.xmlErrorBody(svc, errorCode, errorMsg.Message, requestID, r.URL.Path)
 
 	w.Header().Set("Content-Type", envelope.XMLContentType)
 	w.WriteHeader(errorMsg.HTTPCode)
@@ -454,7 +454,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		return
 	}
 
-	xmlError := xmlErrorBody(svc, code, errorMsg.Message, requestId, r.URL.Path)
+	xmlError := gw.xmlErrorBody(svc, code, errorMsg.Message, requestId, r.URL.Path)
 
 	slog.Debug("Generated error response", "error", err, "code", code, "xml", string(xmlError), "requestId", requestId)
 
@@ -471,24 +471,26 @@ func ParseAWSQueryArgs(body string) (map[string]string, error) {
 	return query.ParseArgs(body)
 }
 
-// xmlErrorBody renders an error in the XML envelope svc's clients expect. The
-// one place the service-to-envelope mapping lives, so a service cannot be
-// added to some emitters and missed by others. JSON services never reach
-// here — every caller checks jsonErrorService first.
-func xmlErrorBody(svc, code, message, requestID, resource string) []byte {
-	switch svc {
-	case "s3":
+// xmlErrorBody renders an error in the XML envelope svc's clients expect, from
+// the shape its registration (or the composition, for a scope it does not
+// serve) declares. JSON services never reach here — every caller checks
+// errorProtocol first. No scope yet means the signature never parsed; that
+// keeps EC2's shape rather than changing a path this is not about.
+func (gw *GatewayConfig) xmlErrorBody(svc, code, message, requestID, resource string) []byte {
+	if svc == "" {
+		return envelope.EC2Body(code, message, requestID)
+	}
+	traits, _ := gw.selector().Traits(svc)
+	switch traits.XMLErrorShape {
+	case dispatch.XMLErrorShapeS3:
 		return envelope.S3Body(code, message, requestID, resource)
-	case "ec2", "spinifex", "":
-		// Both speak the Action-parameter query protocol, and their clients
-		// parse the EC2 <Response><Errors> shape, not the generic ErrorResponse.
-		// Empty means the signature never parsed, so no service is known yet;
-		// keep EC2's shape there rather than changing a path this is not about.
+	case dispatch.XMLErrorShapeEC2:
+		// The Action-parameter query clients parse the EC2 <Response><Errors>
+		// shape, not the generic ErrorResponse.
 		return envelope.EC2Body(code, message, requestID)
 	default:
-		// iam, sts, elasticloadbalancing, rds, and any unenumerated or
-		// unserved scope: the generic REST-XML ErrorResponse envelope, never
-		// EC2's shape, which a REST-XML client cannot deserialize.
+		// Any other or unserved scope: the generic REST-XML ErrorResponse,
+		// never EC2's shape, which a REST-XML client cannot deserialize.
 		return envelope.IAMBody(code, message, requestID)
 	}
 }

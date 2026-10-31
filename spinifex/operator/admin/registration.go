@@ -93,6 +93,7 @@ func NewRegistration(deps Deps) dispatch.Registration {
 		ResolveAction: resolveAction,
 		Dispatch:      deps.dispatch,
 		Errors:        dispatch.ErrorEnvelopeXML,
+		Traits:        dispatch.ServiceTraits{XMLErrorShape: dispatch.XMLErrorShapeEC2},
 		Inventory:     dispatch.Inventory{Registered: ActionNames()},
 	}
 }

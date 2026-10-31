@@ -187,6 +187,11 @@ func wireServiceRegistry(gw *gateway.GatewayConfig, regs ...dispatch.Registratio
 			return err
 		}
 	}
+	// S3 is served by the object store, not this gateway; its clients still
+	// expect S3's error body when a request for it is rejected here.
+	if err := b.DeclareScope("s3", dispatch.ServiceTraits{XMLErrorShape: dispatch.XMLErrorShapeS3}); err != nil {
+		return err
+	}
 	gw.Services = b.Build()
 	return gw.ValidateServices()
 }

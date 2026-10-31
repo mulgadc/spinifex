@@ -31,7 +31,7 @@ func TestWriteThrottleError_ByService(t *testing.T) {
 		{"iam", awserrors.ErrorThrottling, "<ErrorResponse>", http.StatusServiceUnavailable, "application/xml", withIAM},
 		{"sts", awserrors.ErrorThrottling, "<ErrorResponse>", http.StatusServiceUnavailable, "application/xml", withSTS},
 		{"eks", "", `"__type"`, 0, envelope.JSONContentType, withContainers},
-		{"s3", awserrors.ErrorRequestLimitExceeded, "<Error>", http.StatusServiceUnavailable, "application/xml", nil},
+		{"s3", awserrors.ErrorRequestLimitExceeded, "<Error>", http.StatusServiceUnavailable, "application/xml", func(gw *GatewayConfig) *GatewayConfig { return withServices(gw) }},
 		{"unserved-service", awserrors.ErrorRequestLimitExceeded, "<ErrorResponse>", http.StatusServiceUnavailable, "application/xml", nil},
 		{"", awserrors.ErrorRequestLimitExceeded, "<Response>", http.StatusServiceUnavailable, "application/xml", nil},
 	} {
@@ -61,7 +61,7 @@ func TestWriteThrottleError_ByService(t *testing.T) {
 
 // An unparsed signature leaves no service, and the rejection keeps EC2's shape.
 func TestXMLErrorBody_EmptyServiceKeepsEC2Shape(t *testing.T) {
-	body := xmlErrorBody("", "AccessDenied", "denied", "req-1", "/")
+	body := (&GatewayConfig{}).xmlErrorBody("", "AccessDenied", "denied", "req-1", "/")
 
 	assert.Equal(t, "Response", xmlRootName(t, body))
 	assert.Contains(t, string(body), "<Errors>")

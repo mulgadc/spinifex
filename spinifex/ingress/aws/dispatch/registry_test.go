@@ -364,3 +364,18 @@ func TestEntryErrorNamespacePerCodeOverride(t *testing.T) {
 	assert.Equal(t, "com.amazonaws.sqs", e.ErrorNamespace("QueueDoesNotExist"))
 	assert.Equal(t, "com.amazon.coral.service", e.ErrorNamespace("SerializationException"))
 }
+
+func TestRegisterXMLThrottleCodeNeedsXMLEnvelope(t *testing.T) {
+	r := validReg("svc")
+	r.Errors = ErrorEnvelopeXML
+	r.Traits = ServiceTraits{XMLThrottleCode: "Throttling"}
+	b := NewBuilder()
+	require.NoError(t, b.Register(r))
+	e, _ := b.Build().Lookup("svc")
+	assert.Equal(t, "Throttling", e.Traits().XMLThrottleCode)
+
+	r = validReg("other")
+	r.Errors = ErrorEnvelopeJSON
+	r.Traits = ServiceTraits{XMLThrottleCode: "Throttling"}
+	assert.Error(t, NewBuilder().Register(r))
+}

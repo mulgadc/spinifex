@@ -276,8 +276,8 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	svc := reqctx.Service(r.Context())
 
 	errorCode := awserrors.ErrorRequestLimitExceeded
-	if svc == "iam" || svc == "sts" || svc == "eks" || svc == "route53" {
-		errorCode = awserrors.ErrorThrottling
+	if traits, ok := gw.selector().Traits(svc); ok && traits.XMLThrottleCode != "" {
+		errorCode = traits.XMLThrottleCode
 	}
 	errorMsg := awserrors.LookupErrorMessage(svc, errorCode)
 

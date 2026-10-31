@@ -160,6 +160,8 @@ type Registration struct {
 	// Unset, a REST-JSON or JSON 1.0 registration gets the protocol's own
 	// throttle error and any other keeps the gateway default. JSON only.
 	Throttle *ErrorSpec
+	// Traits are the per-service behaviours the pipeline reads by scope.
+	Traits ServiceTraits
 	// QueryErrorCodes maps an error code to the legacy query code sent in
 	// x-amzn-query-error; a code absent from it is sent as itself. JSON 1.0
 	// only.
@@ -235,6 +237,7 @@ func (b *Builder) Register(reg Registration) error {
 		handle:     reg.Dispatch,
 		errors:     reg.Errors,
 		throttle:   reg.Throttle,
+		traits:     reg.Traits,
 		queryCodes: maps.Clone(reg.QueryErrorCodes),
 		internal:   reg.InternalErrorCode,
 		namespace:  reg.ErrorNamespace,
@@ -289,6 +292,9 @@ func validate(reg Registration) ([]string, error) {
 }
 
 func validateErrorSpecs(reg Registration) error {
+	if reg.Traits.XMLThrottleCode != "" && reg.Errors != ErrorEnvelopeXML {
+		return errors.New("XML throttle code needs the XML error envelope")
+	}
 	if t := reg.Throttle; t != nil {
 		if !reg.Errors.IsJSON() {
 			return errors.New("throttle error needs a JSON error envelope")
@@ -394,11 +400,15 @@ type Entry struct {
 	errors  ErrorEnvelope
 
 	throttle   *ErrorSpec
+	traits     ServiceTraits
 	queryCodes map[string]string
 	internal   string
 	namespace  string
 	namespaces map[string]string
 }
+
+// Traits returns the registration's declared service traits.
+func (e *Entry) Traits() ServiceTraits { return e.traits }
 
 // Service returns the registration's primary credential-scope name.
 func (e *Entry) Service() string { return e.service }

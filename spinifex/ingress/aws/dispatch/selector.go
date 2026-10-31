@@ -44,6 +44,14 @@ func (s *Selector) Lookup(service string) (*Entry, bool) {
 	return s.registry.Lookup(service)
 }
 
+// Traits returns the traits declared for service by its registration.
+func (s *Selector) Traits(service string) (ServiceTraits, bool) {
+	if e, ok := s.Lookup(service); ok {
+		return e.Traits(), true
+	}
+	return ServiceTraits{}, false
+}
+
 // Served reports whether either dispatch path serves service.
 func (s *Selector) Served(service string) bool {
 	if _, ok := s.Lookup(service); ok {

@@ -967,7 +967,7 @@ func TestWriteThrottleError_EC2(t *testing.T) {
 }
 
 func TestWriteThrottleError_IAM(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withIAM(withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), "iam")
@@ -987,7 +987,7 @@ func TestWriteThrottleError_IAM(t *testing.T) {
 // Route 53 throttles with a 400 carrying the Throttling code, which SDK
 // retryers classify by code rather than status.
 func TestWriteThrottleError_Route53(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := withServices(&GatewayConfig{DisableLogging: true}, route53awsapi.NewRegistration(route53awsapi.Deps{}))
 	req := httptest.NewRequest(http.MethodGet, "/2013-04-01/hostedzone", nil)
 	req = req.WithContext(reqctx.WithService(req.Context(), "route53"))
 	w := httptest.NewRecorder()

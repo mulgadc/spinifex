@@ -84,8 +84,22 @@ sweep() {
     fi
 }
 
+# collect_node_logs copies each node's install and deploy logs into the
+# artifacts before a teardown takes them, so a failed run can be diagnosed.
+collect_node_logs() {
+    local name ip
+    "$DEPLOY" status "${DEPLOY_ARGS[@]}" 2>/dev/null | awk '/^node[0-9] / {print $1, $2}' |
+        while read -r name ip; do
+            mkdir -p "$ARTIFACT_DIR/$name"
+            scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+                -o BatchMode=yes -o ConnectTimeout=10 -q "root@$ip:/root/*.log" "$ARTIFACT_DIR/$name/" ||
+                log "could not copy logs from $name ($ip)"
+        done
+}
+
 finish() {
     local rc="$1"
+    [ "$rc" = 0 ] || collect_node_logs
     if [ "$rc" != 0 ] && [ "${VULTR_KEEP_ON_FAIL:-0}" = 1 ]; then
         log "keeping $NAME up for inspection; it keeps billing until destroyed"
     else

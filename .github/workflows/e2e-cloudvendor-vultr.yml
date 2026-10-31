@@ -138,4 +138,5 @@ jobs:
             ${{ runner.temp }}/e2e-vultr.log
             ${{ github.workspace }}/e2e-vultr/*.log
             ${{ github.workspace }}/e2e-vultr/verdict.txt
+            ${{ github.workspace }}/e2e-vultr/node*/*.log
           retention-days: 14

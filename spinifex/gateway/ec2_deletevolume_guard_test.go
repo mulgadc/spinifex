@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"context"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http/httptest"
 	"sync/atomic"
@@ -54,10 +55,10 @@ func TestDeleteVolumeAction_MissingConfiguredNodeIsRetryableAndDeletesNothing(t 
 	gw := &GatewayConfig{
 		DisableLogging: true,
 		NATSConn:       nc,
-		NodeIDs:        []string{"node-1", "node-2"},
 		IAMService:     allowAllIAMService(),
 		Credentials:    credverify.New(allowAllIAMService(), nil),
 	}
+	withEC2(gw, func(d *ec2awsapi.Deps) { d.NodeIDs = []string{"node-1", "node-2"} })
 	req := setupEC2Request("Action=DeleteVolume&VolumeId=vol-0123456789abcdef0", "123456789012")
 	ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
 	defer cancel()

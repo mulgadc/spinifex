@@ -4,21 +4,41 @@ import tables from "./cn-tables.gen"
 
 export const cn = createCn(tables)
 
-const dateFormatter = new Intl.DateTimeFormat(undefined, {
+const DATE_PARTS = {
   year: "numeric",
-  month: "long",
-  day: "numeric",
+  month: "2-digit",
+  day: "2-digit",
   hour: "2-digit",
   minute: "2-digit",
-  second: "2-digit",
-})
+  hourCycle: "h23",
+  timeZoneName: "shortOffset",
+} satisfies Intl.DateTimeFormatOptions
 
-export function formatDateTime(date: Date | string | undefined): string {
+const localDateFormatter = new Intl.DateTimeFormat("en-US", DATE_PARTS)
+
+// The AWS console's form, in the viewer's zone: "2026/06/04 02:00 GMT-5".
+export function formatDateTime(
+  date: Date | string | undefined,
+  timeZone?: string,
+): string {
   if (!date) {
     return "Unknown"
   }
 
-  return dateFormatter.format(new Date(date))
+  const formatter = timeZone
+    ? new Intl.DateTimeFormat("en-US", { ...DATE_PARTS, timeZone })
+    : localDateFormatter
+
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(new Date(date))
+      .map((part) => [part.type, part.value]),
+  )
+
+  // ICU builds disagree on UTC, some writing "GMT+0"; the console writes "GMT".
+  const zone = parts.timeZoneName === "GMT+0" ? "GMT" : parts.timeZoneName
+
+  return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute} ${zone}`
 }
 
 export function formatVRAMMiB(mib: number): string {

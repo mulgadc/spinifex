@@ -56,6 +56,7 @@ func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *
 		RateLimiter:    rl,
 		NATSConn:       nc,
 	}
+	withEC2(gw)
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())

@@ -468,6 +468,7 @@ func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) 
 			},
 		},
 	})
+	withServices(gw, stsRegistration(gw), ec2Registration(gw))
 	handler := gw.SigV4AuthMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := gw.STS_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)

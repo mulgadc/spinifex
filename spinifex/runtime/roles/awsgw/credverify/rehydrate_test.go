@@ -168,3 +168,35 @@ func TestRehydrate_SessionPrincipalContinuityVerdicts(t *testing.T) {
 		})
 	}
 }
+
+// Only an expired or missing session record is SessionGone; the bridge falls back to
+// the live role on that and on nothing else.
+func TestRehydrate_SessionGoneMarksOnlyExpiredAndMissingSessions(t *testing.T) {
+	expired := roleSession("AROAX")
+	expired.ExpiresAt = time.Now().Add(-time.Minute)
+	cases := []struct {
+		name string
+		v    *Verifier
+		gone bool
+	}{
+		{"expired", New(&fakeIAM{}, &fakeSTS{cred: expired}), true},
+		{"missing", New(&fakeIAM{}, &fakeSTS{}), true},
+		{"other account", New(&fakeIAM{}, &fakeSTS{cred: roleSession("AROAX")}), false},
+		{"principal gone", New(&fakeIAM{}, &fakeSTS{cred: roleSession("AROAX"), principalErr: stsdomain.ErrSessionPrincipalGone}), false},
+		{"unknown key", New(&fakeIAM{}, nil), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			akid, acct := testSession, testAccount
+			switch tc.name {
+			case "other account":
+				acct = "000000000002"
+			case "unknown key":
+				akid = testAKID
+			}
+			_, f := tc.v.Rehydrate(akid, acct)
+			require.NotNil(t, f)
+			assert.Equal(t, tc.gone, f.SessionGone)
+		})
+	}
+}

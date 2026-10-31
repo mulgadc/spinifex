@@ -1,7 +1,16 @@
 import type { KnowledgeBaseSummary } from "@aws-sdk/client-bedrock-agent"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
+
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
@@ -9,25 +18,31 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal)
 })
 
-import { knowledgeBasesQueryOptions } from "@/queries/bedrockAgent"
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 
 import { KnowledgeBasesPage } from "./knowledge-bases-page"
 
-function renderSeeded(knowledgeBaseSummaries: KnowledgeBaseSummary[]) {
+function renderSeeded(
+  knowledgeBaseSummaries: KnowledgeBaseSummary[],
+  search: PanelSearch = CLOSED_PANEL,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
 
-  queryClient.setQueryData(knowledgeBasesQueryOptions.queryKey, {
-    $metadata: {},
-    knowledgeBaseSummaries,
-  })
+  const onSearchChange = vi.fn()
 
-  return render(
+  render(
     <QueryClientProvider client={queryClient}>
-      <KnowledgeBasesPage />
+      <KnowledgeBasesPage
+        knowledgeBases={knowledgeBaseSummaries}
+        onSearchChange={onSearchChange}
+        search={search}
+      />
     </QueryClientProvider>,
   )
+
+  return onSearchChange
 }
 
 const KB = {
@@ -38,23 +53,18 @@ const KB = {
 } satisfies KnowledgeBaseSummary
 
 describe("KnowledgeBasesPage", () => {
-  it("renders knowledge base cards sorted by name", () => {
+  it("lists knowledge bases sorted by name", () => {
     renderSeeded([
       { ...KB, knowledgeBaseId: "kb-2", name: "zebra" },
       { ...KB, knowledgeBaseId: "kb-1", name: "alpha" },
     ])
 
-    const links = screen
+    const names = screen
       .getAllByRole("link")
-      .filter(
-        (l) =>
-          l.getAttribute("href") !== "/bedrock/list-knowledge-bases/create",
-      )
+      .map((link) => link.textContent)
+      .filter((text) => text !== "Create knowledge base")
 
-    expect(links.map((l) => l.getAttribute("href"))).toStrictEqual([
-      "/bedrock/list-knowledge-bases/kb-1",
-      "/bedrock/list-knowledge-bases/kb-2",
-    ])
+    expect(names).toStrictEqual(["alpha", "zebra"])
   })
 
   it("shows empty state when no knowledge bases", () => {
@@ -62,12 +72,16 @@ describe("KnowledgeBasesPage", () => {
     expect(screen.getByText("No knowledge bases found.")).toBeInTheDocument()
   })
 
-  it("links each knowledge base to its detail route", () => {
-    renderSeeded([KB])
-    expect(screen.getByRole("link", { name: /docs-kb/ })).toHaveAttribute(
-      "href",
-      "/bedrock/list-knowledge-bases/kb-1",
-    )
+  it("opens a knowledge base's panel from its row", async () => {
+    const onSearchChange = renderSeeded([KB])
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText("kb-1"))
+
+    expect(onSearchChange).toHaveBeenCalledWith({
+      ...CLOSED_PANEL,
+      selected: "kb-1",
+    })
   })
 
   it("shows the knowledge base id and status", () => {
@@ -76,10 +90,50 @@ describe("KnowledgeBasesPage", () => {
     expect(screen.getByText("ACTIVE")).toBeInTheDocument()
   })
 
-  it("links to the create knowledge base route", () => {
+  it("renders a create knowledge base link", () => {
     renderSeeded([])
     expect(
       screen.getByRole("link", { name: "Create knowledge base" }),
-    ).toHaveAttribute("href", "/bedrock/list-knowledge-bases/create")
+    ).toBeInTheDocument()
+  })
+
+  it("opens the create form in the side panel", async () => {
+    renderSeeded([], { ...CLOSED_PANEL, create: true })
+
+    const panel = screen.getByRole("region", { name: "Create knowledge base" })
+
+    await expect(
+      within(panel).findByRole("button", { name: "Create Knowledge Base" }),
+    ).resolves.toBeInTheDocument()
+  })
+
+  it("deletes each selected knowledge base with its own call", async () => {
+    mockSend.mockClear()
+    renderSeeded([
+      { ...KB, knowledgeBaseId: "kb-1", name: "alpha" },
+      { ...KB, knowledgeBaseId: "kb-2", name: "zebra" },
+    ])
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole("checkbox", { name: "Select kb-1" }))
+    await user.click(screen.getByRole("checkbox", { name: "Select kb-2" }))
+    await user.click(screen.getByRole("button", { name: "Delete" }))
+
+    const dialog = screen.getByRole("alertdialog")
+
+    expect(within(dialog).getByText("alpha (kb-1)")).toBeInTheDocument()
+    await user.click(within(dialog).getByRole("button", { name: "Delete 2" }))
+
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalledTimes(2)
+    })
+
+    const ids = mockSend.mock.calls.map(
+      ([command]) =>
+        (command as { input: { knowledgeBaseId: string } }).input
+          .knowledgeBaseId,
+    )
+
+    expect(ids).toStrictEqual(["kb-1", "kb-2"])
   })
 })

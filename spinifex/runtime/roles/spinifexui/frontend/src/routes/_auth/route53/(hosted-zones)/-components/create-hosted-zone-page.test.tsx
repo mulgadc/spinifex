@@ -33,6 +33,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 
 import { CreateHostedZonePage } from "./create-hosted-zone-page"
 
+const onClose = vi.fn()
+
 const NAME_SERVERS = ["ns1.spx3.net", "ns2.spx3.net"]
 
 const PENDING: HostedZoneActivation = {
@@ -78,6 +80,7 @@ describe("create-hosted-zone walkthrough", () => {
     sdk.setHandler("ListHostedZonesCommand", () => ({ HostedZones: [] }))
     activation.get.mockReset()
     activation.verify.mockReset()
+    onClose.mockReset()
   })
 
   afterEach(() => {
@@ -90,7 +93,10 @@ describe("create-hosted-zone walkthrough", () => {
         name: "InvalidDomainName",
       })
     })
-    renderWithClient(<CreateHostedZonePage />, createTestQueryClient())
+    renderWithClient(
+      <CreateHostedZonePage onClose={onClose} />,
+      createTestQueryClient(),
+    )
     const user = userEvent.setup()
 
     await addDomain(user)
@@ -101,11 +107,15 @@ describe("create-hosted-zone walkthrough", () => {
     expect(
       screen.getByText("The domain could not be added"),
     ).toBeInTheDocument()
-    expect(screen.getByLabelText("Domain name")).toBeInTheDocument()
+    expect(screen.getByLabelText("Domain name")).toBeEnabled()
+    expect(onClose).not.toHaveBeenCalled()
   })
 
   it("refuses a malformed domain before calling the API", async () => {
-    renderWithClient(<CreateHostedZonePage />, createTestQueryClient())
+    renderWithClient(
+      <CreateHostedZonePage onClose={onClose} />,
+      createTestQueryClient(),
+    )
     const user = userEvent.setup()
 
     await user.type(screen.getByLabelText("Domain name"), "localhost")
@@ -119,7 +129,10 @@ describe("create-hosted-zone walkthrough", () => {
 
   it("creates the zone and lists its name servers with copy buttons", async () => {
     sdk.setHandler("CreateHostedZoneCommand", createdZone)
-    renderWithClient(<CreateHostedZonePage />, createTestQueryClient())
+    renderWithClient(
+      <CreateHostedZonePage onClose={onClose} />,
+      createTestQueryClient(),
+    )
     const user = userEvent.setup()
 
     await addDomain(user)
@@ -130,20 +143,25 @@ describe("create-hosted-zone walkthrough", () => {
       HostedZoneConfig: { Comment: "prod site" },
     })
     expect(screen.getByText("ns2.spx3.net")).toBeInTheDocument()
-    expect(
-      screen.getByRole("link", { name: "Skip and add records now" }),
-    ).toHaveAttribute("href", "/route53/list-hosted-zones/Z1")
 
     await user.click(screen.getByRole("button", { name: "Copy ns2.spx3.net" }))
     await expect(navigator.clipboard.readText()).resolves.toBe("ns2.spx3.net")
     expect(activation.get).not.toHaveBeenCalled()
+
+    await user.click(
+      screen.getByRole("button", { name: "Skip and add records now" }),
+    )
+    expect(onClose).toHaveBeenCalledWith("Z1")
   })
 
   it("shows the parent's answer while pending and Registered after Check now", async () => {
     sdk.setHandler("CreateHostedZoneCommand", createdZone)
     activation.get.mockResolvedValue(PENDING)
     activation.verify.mockResolvedValue(ACTIVE)
-    renderWithClient(<CreateHostedZonePage />, createTestQueryClient())
+    renderWithClient(
+      <CreateHostedZonePage onClose={onClose} />,
+      createTestQueryClient(),
+    )
     const user = userEvent.setup()
 
     await addDomain(user)
@@ -167,16 +185,18 @@ describe("create-hosted-zone walkthrough", () => {
 
     await expect(screen.findByText("Registered")).resolves.toBeInTheDocument()
     expect(activation.verify).toHaveBeenCalledWith("Z1")
-    expect(
-      screen.getByRole("link", { name: "Go to the zone" }),
-    ).toHaveAttribute("href", "/route53/list-hosted-zones/Z1")
+    await user.click(screen.getByRole("button", { name: "Go to the zone" }))
+    expect(onClose).toHaveBeenCalledWith("Z1")
   })
 
   it("polls every 5 s and turns Registered when the delegation lands", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     sdk.setHandler("CreateHostedZoneCommand", createdZone)
     activation.get.mockResolvedValue(PENDING)
-    renderWithClient(<CreateHostedZonePage />, createTestQueryClient())
+    renderWithClient(
+      <CreateHostedZonePage onClose={onClose} />,
+      createTestQueryClient(),
+    )
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
 
     await addDomain(user)

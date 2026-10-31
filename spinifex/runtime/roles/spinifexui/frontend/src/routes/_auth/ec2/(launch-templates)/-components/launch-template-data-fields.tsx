@@ -3,7 +3,7 @@ import { ChevronDown } from "lucide-react"
 import type { Control, FieldErrors, UseFormRegister } from "react-hook-form"
 import { Controller, useWatch } from "react-hook-form"
 
-import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
+import { SecurityGroupPicker } from "@/components/security-group-picker"
 import {
   Collapsible,
   CollapsibleContent,
@@ -231,7 +231,7 @@ export function LaunchTemplateDataFields({
           control={control}
           name="securityGroupIds"
           render={({ field }) => (
-            <SecurityGroupCheckboxes
+            <SecurityGroupPicker
               emptyText="No security groups available."
               groups={vpcSecurityGroups}
               onChange={field.onChange}

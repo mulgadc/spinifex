@@ -1,5 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { useSuspenseQuery } from "@tanstack/react-query"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
+import { BackLink } from "@/components/back-link"
+import { panelSearchFields } from "@/lib/panel-search"
 import { safeDecodeURIComponent } from "@/lib/utils"
 import {
   rdsAutomatedBackupsQueryOptions,
@@ -9,11 +13,13 @@ import {
   rdsTagsQueryOptions,
 } from "@/queries/rds"
 
-import { DBInstanceDetailPage } from "../-components/db-instance-detail-page"
+import { DBInstanceDetails } from "../-components/db-instance-details"
 
 export const Route = createFileRoute(
   "/_auth/rds/(db-instances)/describe-db-instances/$id",
 )({
+  validateSearch: z.object({ tab: panelSearchFields.tab }),
+  search: { middlewares: [stripSearchParams({ tab: "overview" })] },
   loader: async ({ context, params }) => {
     const id = safeDecodeURIComponent(params.id)
 
@@ -54,10 +60,34 @@ export const Route = createFileRoute(
   component: RouteComponent,
 })
 
+// The database's own page: the side panel's tabs, laid out for the full width.
 function RouteComponent() {
-  const { id } = Route.useParams()
+  const id = safeDecodeURIComponent(Route.useParams().id)
+  const { tab } = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const { data } = useSuspenseQuery(rdsDBInstanceQueryOptions(id))
+  const instance = data.DBInstances?.[0]
+
+  if (!instance?.DBInstanceIdentifier) {
+    return (
+      <>
+        <BackLink to="/rds/describe-db-instances">Back to databases</BackLink>
+        <p className="text-muted-foreground">DB instance not found.</p>
+      </>
+    )
+  }
 
   return (
-    <DBInstanceDetailPage dbInstanceIdentifier={safeDecodeURIComponent(id)} />
+    <DBInstanceDetails
+      instance={instance}
+      layout="page"
+      onClose={() => {
+        void navigate({ to: "/rds/describe-db-instances" })
+      }}
+      onTabChange={(next) => {
+        void navigate({ search: { tab: next }, replace: true })
+      }}
+      tab={tab}
+    />
   )
 }

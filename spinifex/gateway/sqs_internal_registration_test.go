@@ -125,7 +125,6 @@ func TestSQSInternal_PublicSQSUnchanged(t *testing.T) {
 	gw, _, ids := newSQSInternalGateway(allowPolicy("*"))
 	_, ok := gw.registered("sqs")
 	assert.False(t, ok, "the sqs signing service must stay unserved")
-	assert.False(t, legacyServices{}.Serves("sqs"))
 	inv := gw.Services.Inventory()
 	assert.NotContains(t, inv, "sqs")
 	assert.ElementsMatch(t, sqsworkerapi.ActionNames(), inv[sqsworkerapi.ServiceName].Registered)

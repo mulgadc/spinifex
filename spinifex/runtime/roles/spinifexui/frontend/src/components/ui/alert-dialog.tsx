@@ -3,6 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import type * as React from "react"
 
 import { Button } from "@/components/ui/button"
+import { CONFIRM_KEYS, CONFIRM_SHORTCUT } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 
 export function AlertDialog({ ...props }: AlertDialogPrimitive.Root.Props) {
@@ -65,6 +66,7 @@ export function AlertDialogContent({
   className,
   size = "default",
   width = "default",
+  onKeyDown,
   ...props
 }: AlertDialogPrimitive.Popup.Props &
   VariantProps<typeof alertDialogContentVariants> & {
@@ -77,6 +79,32 @@ export function AlertDialogContent({
         className={cn(alertDialogContentVariants({ className, width }))}
         data-size={size}
         data-slot="alert-dialog-content"
+        // ⌘↵ or Ctrl+Enter confirms, as does Enter in a typed confirmation,
+        // unless the confirm is disabled. Escape cancels through Base UI.
+        onKeyDown={(event) => {
+          onKeyDown?.(event)
+
+          if (
+            event.defaultPrevented ||
+            event.key !== "Enter" ||
+            !(
+              event.metaKey ||
+              event.ctrlKey ||
+              event.target instanceof HTMLInputElement
+            )
+          ) {
+            return
+          }
+
+          const action = event.currentTarget.querySelector<HTMLButtonElement>(
+            '[data-slot="alert-dialog-action"]',
+          )
+
+          if (action && !action.disabled) {
+            event.preventDefault()
+            action.click()
+          }
+        }}
         {...props}
       />
     </AlertDialogPortal>
@@ -163,16 +191,28 @@ export function AlertDialogDescription({
   )
 }
 
+// Shows the shortcut the popup's key handler answers; screen readers get it
+// from aria-keyshortcuts rather than as part of the button's name.
 export function AlertDialogAction({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof Button>) {
   return (
     <Button
+      aria-keyshortcuts={CONFIRM_KEYS}
       className={cn(className)}
       data-slot="alert-dialog-action"
       {...props}
-    />
+    >
+      {children}
+      <kbd
+        aria-hidden="true"
+        className="hidden font-mono text-2xs opacity-70 sm:inline"
+      >
+        {CONFIRM_SHORTCUT}
+      </kbd>
+    </Button>
   )
 }
 

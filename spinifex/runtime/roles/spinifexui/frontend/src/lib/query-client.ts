@@ -1,5 +1,7 @@
 import { MutationCache, QueryCache, QueryClient } from "@tanstack/react-query"
 
+import { uploads } from "@/lib/uploads"
+
 import { clearCredentials, onSessionChangedInOtherTab } from "./auth"
 import { isStaleCredentialsError } from "./auth-error"
 import { clearClients } from "./awsClient"
@@ -11,6 +13,7 @@ let recovering = false
 // Ending a session clears all three: stored credentials, cached SDK clients
 // and every cached query.
 export function signOut(queryClient: QueryClient): void {
+  uploads.cancel()
   clearCredentials()
   clearClients()
   queryClient.clear()

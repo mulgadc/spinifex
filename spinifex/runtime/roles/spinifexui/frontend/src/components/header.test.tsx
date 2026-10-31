@@ -7,6 +7,15 @@ vi.mock("@/components/theme-switch", () => ({
   ThemeSwitch: () => null,
 }))
 
+// Both read the router; the header's own behaviour is the upgrade link.
+vi.mock("@/components/app-breadcrumbs", () => ({
+  AppBreadcrumbs: () => null,
+}))
+
+vi.mock("@/components/command-palette", () => ({
+  CommandPalette: () => null,
+}))
+
 vi.mock("@/components/ui/sidebar", () => ({
   SidebarTrigger: () => null,
 }))

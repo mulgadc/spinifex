@@ -29,6 +29,7 @@ type fakeIAM struct {
 	key       *iamdomain.AccessKey
 	lookupErr error
 	getUserFn func(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error)
+	getRoleFn func(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
 	getUsers  atomic.Int32
 	decrypts  atomic.Int32
 }
@@ -55,6 +56,10 @@ func (f *fakeIAM) GetUser(accountID string, input *iam.GetUserInput) (*iam.GetUs
 	}
 	name := aws.StringValue(input.UserName)
 	return &iam.GetUserOutput{User: &iam.User{UserName: aws.String(name), UserId: aws.String("AIDA" + name)}}, nil
+}
+
+func (f *fakeIAM) GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+	return f.getRoleFn(accountID, input)
 }
 
 type fakeSTS struct {

@@ -1,16 +1,24 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { ListCard } from "@/components/list-card"
-import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
-import { StateBadge } from "@/components/state-badge"
-import { Button } from "@/components/ui/button"
+import {
+  CLOSED_PANEL,
+  type PanelSearch,
+  panelSearchFields,
+} from "@/lib/panel-search"
 import { ec2PlacementGroupsQueryOptions } from "@/queries/ec2"
+
+import { PlacementGroupsPage } from "../-components/placement-groups-page"
+
+const searchSchema = z.object(panelSearchFields)
 
 export const Route = createFileRoute(
   "/_auth/ec2/(placement-groups)/describe-placement-groups/",
 )({
+  validateSearch: searchSchema,
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...ec2PlacementGroupsQueryOptions,
@@ -29,34 +37,22 @@ export const Route = createFileRoute(
 
 function PlacementGroups() {
   const { data } = useSuspenseQuery(ec2PlacementGroupsQueryOptions)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
 
-  const placementGroups = data.PlacementGroups ?? []
+  // Opening or closing a panel adds a history entry, so Back closes it.
+  function onSearchChange(next: Partial<PanelSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next || "create" in next),
+    })
+  }
 
   return (
-    <>
-      <PageHeading
-        actions={
-          <Link to="/ec2/create-placement-group">
-            <Button>Create Placement Group</Button>
-          </Link>
-        }
-        title="Placement Groups"
-      />
-
-      <ResourceList
-        empty="No placement groups found."
-        getKey={(pg) => pg.GroupId}
-        items={placementGroups}
-        renderItem={(pg, id) => (
-          <ListCard
-            badge={<StateBadge state={pg.State} />}
-            params={{ id }}
-            subtitle={`${pg.Strategy} \u2022 ${id}`}
-            title={pg.GroupName ?? id}
-            to="/ec2/describe-placement-groups/$id"
-          />
-        )}
-      />
-    </>
+    <PlacementGroupsPage
+      onSearchChange={onSearchChange}
+      placementGroups={data.PlacementGroups ?? []}
+      search={search}
+    />
   )
 }

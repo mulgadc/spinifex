@@ -1,7 +1,6 @@
 package awsgw
 
 import (
-	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,7 +10,6 @@ import (
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	sqsworkerapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi/worker"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -71,17 +69,6 @@ func TestWireServiceRegistry(t *testing.T) {
 		assert.True(t, ok)
 		_, ok = gw.Services.Lookup("sqs")
 		assert.False(t, ok, "the public sqs signing service must stay unserved")
-	})
-
-	t.Run("a registration claiming a legacy name fails startup", func(t *testing.T) {
-		gw := &gateway.GatewayConfig{}
-		err := wireServiceRegistry(gw, dispatch.Registration{
-			Service:   "ec2",
-			Dispatch:  func(http.ResponseWriter, dispatch.Invocation) error { return nil },
-			Errors:    dispatch.ErrorEnvelopeJSON,
-			Inventory: dispatch.Inventory{Registered: []string{"Whatever"}},
-		})
-		require.Error(t, err)
 	})
 }
 

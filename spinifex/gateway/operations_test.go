@@ -11,6 +11,7 @@ import (
 func TestAWSOperationInventoryClassifiesDispatchers(t *testing.T) {
 	registered := ecrRegistrationInventory()
 	maps.Copy(registered, rdsRegistrationInventory())
+	maps.Copy(registered, ec2RegistrationInventory())
 	inventory := AWSOperationInventory(registered)
 
 	require.Contains(t, inventory["ec2"].Registered, "DescribeInstances")

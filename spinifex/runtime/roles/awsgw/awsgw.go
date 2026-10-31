@@ -59,7 +59,7 @@ import (
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
+	instancecache "github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
@@ -67,6 +67,25 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	toml "github.com/pelletier/go-toml/v2"
 )
+
+// startInstanceStatus starts the read-only informer over the live instance
+// record space and pairs it with node liveness. The describe path still serves
+// from the fan-out and KV; only status synthesis reads the cache. Without it a
+// node that stops answering takes its instances out of DescribeInstanceStatus
+// entirely, so a dead host reads as no host.
+func startInstanceStatus(ctx context.Context, js jetstream.JetStream) ec2instanceapi.StatusSynthesis {
+	records := instancecache.New(js, instancecache.Config{
+		Bucket:            kvstore.Config{Name: daemon.InstanceStateBucket, History: 1},
+		Prefix:            daemon.InstanceRecordPrefix,
+		VisibleToCaller:   ec2instance.IsInstanceVisibleToCaller,
+		FallbackAccountID: awsidentifiers.GlobalAccountID,
+	})
+	go records.Run(ctx)
+	return ec2instanceapi.StatusSynthesis{
+		Records:  records,
+		Liveness: instancecache.NewLiveness(js, kvstore.Config{Name: daemon.ClusterStateBucket, History: 1}),
+	}
+}
 
 var serviceName = "awsgw"
 
@@ -513,12 +532,8 @@ func launchService(config *config.ClusterConfig) error {
 		RootCAs:         rootCAs,
 		Config:          nodeConfig.AWSGW.Config,
 		ExpectedNodes:   len(config.Nodes),
-		NodeIDs:         nodeIDs,
 		Region:          nodeConfig.Region,
 		InternalSuffix:  config.AWS.ServicesDomain,
-		RegistryPort:    registryPort,
-		RegistryHost:    registryHost,
-		AZ:              nodeConfig.AZ,
 		IAMService:      iamService,
 		STSService:      stsService,
 		Credentials:     credentials,
@@ -569,19 +584,19 @@ func launchService(config *config.ClusterConfig) error {
 			return fmt.Errorf("init account quota bucket: %w", err)
 		}
 	}
-	gw.Quota = admissionquota.New(quotaCfg, usageBucket)
-	gw.Quota.SetOverrides(quotaOverrides)
+	quotaSvc := admissionquota.New(quotaCfg, usageBucket)
+	quotaSvc.SetOverrides(quotaOverrides)
 
 	// Seal precondition: the quota owner's only fact from IAM, read directly
 	// rather than through the gateway's cached IAMService, so a seal sees a
 	// TERMINATING flip the moment IAM commits it.
-	gw.Quota.SetAccountTerminationChecker(iamdomain.NewAccountStatusReader(js))
+	quotaSvc.SetAccountTerminationChecker(iamdomain.NewAccountStatusReader(js))
 	// SealAccountOverrides opens the override bucket itself when this
 	// gateway's quotas are disabled, so the seal subject works regardless of
 	// quotaCfg.Enabled and never touches the bucket at startup.
-	gw.Quota.SetJetStream(js)
+	quotaSvc.SetJetStream(js)
 
-	quotaSealSub, err := registerQuotaOverrideSeal(natsConn, gw.Quota)
+	quotaSealSub, err := registerQuotaOverrideSeal(natsConn, quotaSvc)
 	if err != nil {
 		return fmt.Errorf("subscribe quota override seal: %w", err)
 	}
@@ -593,15 +608,31 @@ func launchService(config *config.ClusterConfig) error {
 
 	// Bedrock token quota reads the stream-fed usage counters built above,
 	// independent of whether the standing-infra dimensions are enabled.
-	gw.Quota.SetBedrockUsage(bedrockUsage)
+	quotaSvc.SetBedrockUsage(bedrockUsage)
 
+	// Composed after the quota service and the instance cache it consumes.
+	// Without the status synthesis a node that stops answering takes its
+	// instances out of DescribeInstanceStatus entirely, so a dead host reads as
+	// no host.
+	ec2ControlPlane := newEC2Registration(ec2Wiring{
+		NATS:           natsConn,
+		IAM:            iamService,
+		Quota:          quotaSvc,
+		ActiveNodes:    gw.DiscoverActiveNodes,
+		ExpectedNodes:  len(config.Nodes),
+		NodeIDs:        nodeIDs,
+		AZ:             nodeConfig.AZ,
+		RegistryHost:   registryHost,
+		RegistryPort:   registryPort,
+		InstanceStatus: startInstanceStatus(janitorCtx, js),
+	})
 	// Composed after the quota service because ELBv2 enforces and reports the
 	// load balancer cap through it.
-	elbv2ControlPlane := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: natsConn, Quota: gw.Quota})
+	elbv2ControlPlane := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: natsConn, Quota: quotaSvc})
 	rdsControlPlane := rdsawsapi.NewRegistration(rdsawsapi.Deps{
 		NATS:          natsConn,
 		ExpectedNodes: len(config.Nodes),
-		Quota:         gw.Quota,
+		Quota:         quotaSvc,
 	})
 	iamControlPlane := iamawsapi.NewRegistration(iamawsapi.Deps{
 		IAM: iamService,
@@ -623,7 +654,7 @@ func launchService(config *config.ClusterConfig) error {
 		KB:          bedrockAgentKB,
 		DataSources: bedrockAgentDataSources,
 		Vector:      bedrockAgentVector,
-		Quota:       gw.Quota,
+		Quota:       quotaSvc,
 	})
 	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
 	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
@@ -639,7 +670,7 @@ func launchService(config *config.ClusterConfig) error {
 		Access:      bedrockAccess,
 
 		IAM:               iamService,
-		Quota:             gw.Quota,
+		Quota:             quotaSvc,
 		ExpectedNodes:     len(config.Nodes),
 		NodeIDs:           nodeIDs,
 		BucketStore:       objStore,
@@ -648,7 +679,7 @@ func launchService(config *config.ClusterConfig) error {
 	// The SQS worker's internal surface binds its buckets per request and never
 	// creates them, so it refuses every caller until a worker launch has.
 	sqsWorkerControlPlane := sqsworkerapi.NewRegistration(sqsworkerapi.JetStreamDeps(js))
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane); err != nil {
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane, ec2ControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
 
@@ -657,34 +688,14 @@ func launchService(config *config.ClusterConfig) error {
 	// terminations free quota. Started only when quotas are enabled so default-off
 	// gateways spin no ticker.
 	if quotaCfg.Enabled {
-		go runQuotaReconcile(janitorCtx, gw.Quota, natsConn, js, activeAccountIDs(iamService), len(config.Nodes))
+		go runQuotaReconcile(janitorCtx, quotaSvc, natsConn, js, activeAccountIDs(iamService), len(config.Nodes))
 	}
 
 	// Bedrock RPM enforcement is local and immediate (never gated on
 	// quotaCfg.Enabled); this loop only pushes a periodic observability
 	// snapshot to KV and is itself a no-op when the RPM dimension is
 	// disabled.
-	go gw.Quota.RunBedrockRPMSync(janitorCtx, js)
-
-	// Instance cache: a read-only informer over the live instance record space,
-	// started now so it is warm well before anything reads it. The describe
-	// path still serves from the fan-out and KV; only status synthesis reads it.
-	instanceCache := instancecache.New(js, instancecache.Config{
-		Bucket:            kvstore.Config{Name: daemon.InstanceStateBucket, History: 1},
-		Prefix:            daemon.InstanceRecordPrefix,
-		VisibleToCaller:   ec2instance.IsInstanceVisibleToCaller,
-		FallbackAccountID: awsidentifiers.GlobalAccountID,
-	})
-	go instanceCache.Run(janitorCtx)
-
-	// Without this a node that stops answering takes its instances out of
-	// DescribeInstanceStatus entirely, so a dead host reads as no host.
-	gw.InstanceStatus = ec2instanceapi.StatusSynthesis{
-		Records: instanceCache,
-		Liveness: instancecache.NewLiveness(js, kvstore.Config{
-			Name: daemon.ClusterStateBucket, History: 1,
-		}),
-	}
+	go quotaSvc.RunBedrockRPMSync(janitorCtx, js)
 
 	handler := gw.SetupRoutes()
 

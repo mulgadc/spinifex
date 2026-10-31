@@ -1,36 +1,9 @@
-import type { ResponseLaunchTemplateData } from "@aws-sdk/client-ec2"
-import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
-import { Rocket, Star, Trash2 } from "lucide-react"
-import { useState } from "react"
-import { useForm } from "react-hook-form"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
-import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { DeleteResourceButton } from "@/components/delete-resource-button"
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
-import { ErrorBanner } from "@/components/error-banner"
-import { PageHeading } from "@/components/page-heading"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Field, FieldTitle } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { formatDateTime } from "@/lib/utils"
-import {
-  useCreateLaunchTemplateVersion,
-  useDeleteLaunchTemplate,
-  useDeleteLaunchTemplateVersions,
-  useModifyLaunchTemplate,
-} from "@/mutations/ec2"
+import { panelSearchFields } from "@/lib/panel-search"
 import {
   ec2ImagesQueryOptions,
   ec2InstanceTypesQueryOptions,
@@ -40,47 +13,29 @@ import {
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
 } from "@/queries/ec2"
-import {
-  type LaunchTemplateFormData,
-  createLaunchTemplateVersionSchema,
-} from "@/types/ec2"
 
-import { LaunchTemplateDataFields } from "../-components/launch-template-data-fields"
+import { LaunchTemplateDetails } from "../-components/launch-template-details"
 
 export const Route = createFileRoute(
   "/_auth/ec2/(launch-templates)/describe-launch-templates/$id",
 )({
+  validateSearch: z.object({ tab: panelSearchFields.tab }),
+  search: { middlewares: [stripSearchParams({ tab: "overview" })] },
   loader: async ({ context, params }) => {
-    await Promise.all([
-      context.queryClient.query({
-        ...ec2LaunchTemplatesQueryOptions,
-        staleTime: "static",
-      }),
-      context.queryClient.query({
-        ...ec2LaunchTemplateVersionsQueryOptions(params.id),
-        staleTime: "static",
-      }),
-      context.queryClient.query({
-        ...ec2ImagesQueryOptions,
-        staleTime: "static",
-      }),
-      context.queryClient.query({
-        ...ec2InstanceTypesQueryOptions,
-        staleTime: "static",
-      }),
-      context.queryClient.query({
-        ...ec2KeyPairsQueryOptions,
-        staleTime: "static",
-      }),
-      context.queryClient.query({
-        ...ec2SubnetsQueryOptions,
-        staleTime: "static",
-      }),
-      context.queryClient.query({
-        ...ec2SecurityGroupsQueryOptions,
-        staleTime: "static",
-      }),
-    ])
+    await Promise.all(
+      [
+        ec2LaunchTemplatesQueryOptions,
+        ec2LaunchTemplateVersionsQueryOptions(params.id),
+        ec2ImagesQueryOptions,
+        ec2InstanceTypesQueryOptions,
+        ec2KeyPairsQueryOptions,
+        ec2SubnetsQueryOptions,
+        ec2SecurityGroupsQueryOptions,
+      ].map(
+        async (options) =>
+          await context.queryClient.query({ ...options, staleTime: "static" }),
+      ),
+    )
   },
   head: ({ params }) => ({
     meta: [
@@ -92,97 +47,13 @@ export const Route = createFileRoute(
   component: LaunchTemplateDetail,
 })
 
-function decodeUserData(encoded: string | undefined): string {
-  if (!encoded) {
-    return ""
-  }
-
-  try {
-    const binary = atob(encoded)
-    const bytes = new Uint8Array(binary.length)
-
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.codePointAt(i) ?? 0
-    }
-
-    return new TextDecoder().decode(bytes)
-  } catch {
-    return ""
-  }
-}
-
-// versionToFormData maps a stored version's data back to the form subset so a
-// new version can be cloned from it (clone-and-override).
-function versionToFormData(
-  data: ResponseLaunchTemplateData | undefined,
-): Partial<LaunchTemplateFormData> {
-  if (!data) {
-    return {}
-  }
-
-  const primaryNic = data.NetworkInterfaces?.[0]
-  const rootEbs = data.BlockDeviceMappings?.[0]?.Ebs
-
-  return {
-    imageId: data.ImageId ?? "",
-    instanceType: data.InstanceType ?? "",
-    keyName: data.KeyName,
-    subnetId: primaryNic?.SubnetId,
-    securityGroupIds: primaryNic?.Groups ?? data.SecurityGroupIds ?? [],
-    userData: decodeUserData(data.UserData),
-    rootVolumeSize: rootEbs?.VolumeSize,
-    rootVolumeType: rootEbs?.VolumeType === "gp3" ? "gp3" : undefined,
-  }
-}
-
-const BLANK_DATA_FIELDS: Partial<LaunchTemplateFormData> = {
-  imageId: "",
-  instanceType: "",
-  keyName: undefined,
-  subnetId: undefined,
-  securityGroupIds: [],
-  userData: "",
-  rootVolumeSize: undefined,
-  rootVolumeType: undefined,
-}
-
+// The template's own page: the side panel's tabs, laid out for the full width.
 function LaunchTemplateDetail() {
   const { id } = Route.useParams()
-  const { data: listData } = useSuspenseQuery(ec2LaunchTemplatesQueryOptions)
-
-  const { data: versionsData } = useSuspenseQuery(
-    ec2LaunchTemplateVersionsQueryOptions(id),
-  )
-
-  const setDefault = useModifyLaunchTemplate()
-  const deleteVersions = useDeleteLaunchTemplateVersions()
-  const deleteTemplate = useDeleteLaunchTemplate()
-  const createVersion = useCreateLaunchTemplateVersion()
-
-  const [versionToDelete, setVersionToDelete] = useState<number | null>(null)
-
-  const lt = listData.LaunchTemplates?.find((t) => t.LaunchTemplateId === id)
-
-  const versions = (versionsData.LaunchTemplateVersions ?? []).toSorted(
-    (a, b) => (b.VersionNumber ?? 0) - (a.VersionNumber ?? 0),
-  )
-
-  const versionForm = useForm<LaunchTemplateFormData>({
-    resolver: zodResolver(createLaunchTemplateVersionSchema),
-    defaultValues: {
-      versionDescription: "",
-      ...BLANK_DATA_FIELDS,
-    },
-  })
-
-  const {
-    control,
-    handleSubmit,
-    register,
-    getValues,
-    reset,
-    formState: { errors, isSubmitting },
-  } = versionForm
+  const { tab } = Route.useSearch()
+  const navigate = Route.useNavigate()
+  const { data } = useSuspenseQuery(ec2LaunchTemplatesQueryOptions)
+  const lt = data.LaunchTemplates?.find((t) => t.LaunchTemplateId === id)
 
   if (!lt?.LaunchTemplateId) {
     return (
@@ -195,287 +66,17 @@ function LaunchTemplateDetail() {
     )
   }
 
-  const defaultVersion = lt.DefaultVersionNumber
-
-  const applySourceVersion = (value: string) => {
-    if (value === "none") {
-      reset({
-        ...getValues(),
-        sourceVersion: undefined,
-        ...BLANK_DATA_FIELDS,
-      })
-
-      return
-    }
-
-    const src = versions.find((v) => String(v.VersionNumber) === value)
-    reset({
-      ...getValues(),
-      sourceVersion: value,
-      ...versionToFormData(src?.LaunchTemplateData),
-    })
-  }
-
-  const handleSetDefault = async (versionNumber: number) => {
-    await setDefault.mutateAsync({
-      launchTemplateId: id,
-      defaultVersion: String(versionNumber),
-    })
-  }
-
-  const handleDeleteVersion = async () => {
-    if (versionToDelete === null) {
-      return
-    }
-
-    try {
-      await deleteVersions.mutateAsync({
-        launchTemplateId: id,
-        versions: [String(versionToDelete)],
-      })
-    } catch {
-      // Error is stored in deleteVersions.error and rendered above the table
-    } finally {
-      setVersionToDelete(null)
-    }
-  }
-
-  const onCreateVersion = async (data: LaunchTemplateFormData) => {
-    await createVersion.mutateAsync({ ...data, launchTemplateId: id })
-    reset({
-      versionDescription: "",
-      sourceVersion: undefined,
-      ...BLANK_DATA_FIELDS,
-    })
-  }
-
-  const rowError = setDefault.error ?? deleteVersions.error
-
   return (
-    <>
-      <BackLink to="/ec2/describe-launch-templates">
-        Back to launch templates
-      </BackLink>
-
-      <div className="space-y-6">
-        <PageHeading
-          actions={
-            <div className="flex items-center gap-2">
-              <DeleteResourceButton
-                description={`Are you sure you want to delete the launch template "${lt.LaunchTemplateName ?? lt.LaunchTemplateId}"? All versions will be deleted. This action cannot be undone.`}
-                id={id}
-                mutation={deleteTemplate}
-                title="Delete Launch Template"
-                to="/ec2/describe-launch-templates"
-              />
-              <Badge variant="secondary">default v{defaultVersion}</Badge>
-            </div>
-          }
-          subtitle="Launch Template Details"
-          title={lt.LaunchTemplateName ?? lt.LaunchTemplateId}
-        />
-
-        <DetailCard>
-          <DetailCard.Header>Launch Template Information</DetailCard.Header>
-          <DetailCard.Content>
-            <DetailRow label="Launch Template ID" value={lt.LaunchTemplateId} />
-            <DetailRow label="Name" value={lt.LaunchTemplateName} />
-            <DetailRow
-              label="Default Version"
-              value={String(lt.DefaultVersionNumber)}
-            />
-            <DetailRow
-              label="Latest Version"
-              value={String(lt.LatestVersionNumber)}
-            />
-            <DetailRow label="Created" value={formatDateTime(lt.CreateTime)} />
-          </DetailCard.Content>
-        </DetailCard>
-
-        <DetailCard>
-          <DetailCard.Header>Versions</DetailCard.Header>
-          <div className="space-y-4 p-4">
-            {rowError && (
-              <ErrorBanner error={rowError} msg="Failed to update version" />
-            )}
-            <div className="overflow-x-auto rounded-md border">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-left text-muted-foreground">
-                  <tr>
-                    <th className="p-2 font-medium">Version</th>
-                    <th className="p-2 font-medium">Description</th>
-                    <th className="p-2 font-medium">Default</th>
-                    <th className="p-2 font-medium">Created</th>
-                    <th className="p-2">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {versions.map((version) => {
-                    const versionNumber = version.VersionNumber
-                    const isDefault = versionNumber === defaultVersion
-
-                    return (
-                      <tr className="border-t" key={versionNumber}>
-                        <td className="p-2 font-mono">{versionNumber}</td>
-                        <td className="p-2">
-                          {version.VersionDescription ?? "—"}
-                        </td>
-                        <td className="p-2">
-                          {isDefault ? (
-                            <Badge variant="secondary">Default</Badge>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td className="p-2">
-                          {formatDateTime(version.CreateTime)}
-                        </td>
-                        <td className="p-2">
-                          <div className="flex items-center justify-end gap-1">
-                            <Link
-                              search={{
-                                launchTemplateId: id,
-                                launchTemplateVersion: String(versionNumber),
-                              }}
-                              to="/ec2/run-instances"
-                            >
-                              <Button size="sm" variant="ghost">
-                                <Rocket className="size-4" />
-                                Launch
-                              </Button>
-                            </Link>
-                            {!isDefault && versionNumber !== undefined && (
-                              <Button
-                                disabled={setDefault.isPending}
-                                onClick={async () => {
-                                  await handleSetDefault(versionNumber)
-                                }}
-                                size="sm"
-                                variant="ghost"
-                              >
-                                <Star className="size-4" />
-                                Set default
-                              </Button>
-                            )}
-                            <Button
-                              disabled={
-                                isDefault ||
-                                deleteVersions.isPending ||
-                                versionNumber === undefined
-                              }
-                              onClick={() => {
-                                if (versionNumber !== undefined) {
-                                  setVersionToDelete(versionNumber)
-                                }
-                              }}
-                              size="sm"
-                              variant="ghost"
-                            >
-                              <Trash2 className="size-4" />
-                              <span className="sr-only">
-                                Delete version {versionNumber}
-                              </span>
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </DetailCard>
-
-        <DetailCard>
-          <DetailCard.Header>Create Version</DetailCard.Header>
-          <div className="p-4">
-            {createVersion.error && (
-              <ErrorBanner
-                error={createVersion.error}
-                msg="Failed to create version"
-              />
-            )}
-            <form
-              className="space-y-6"
-              onSubmit={handleSubmit(onCreateVersion)}
-            >
-              <Field>
-                <FieldTitle>
-                  <label htmlFor="sourceVersion">Clone from version</label>
-                </FieldTitle>
-                <Select
-                  onValueChange={(value) => {
-                    applySourceVersion(value ?? "none")
-                  }}
-                  value={getValues("sourceVersion") ?? "none"}
-                >
-                  <SelectTrigger className="w-full" id="sourceVersion">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">none (start blank)</SelectItem>
-                    {versions.map((version) => (
-                      <SelectItem
-                        key={version.VersionNumber}
-                        value={String(version.VersionNumber)}
-                      >
-                        v{version.VersionNumber}
-                        {version.VersionDescription
-                          ? ` — ${version.VersionDescription}`
-                          : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-
-              <Field>
-                <FieldTitle>
-                  <label htmlFor="versionDescription">
-                    Version Description
-                  </label>
-                </FieldTitle>
-                <Input
-                  id="versionDescription"
-                  placeholder="What changed in this version"
-                  {...register("versionDescription")}
-                />
-              </Field>
-
-              <LaunchTemplateDataFields
-                control={control}
-                errors={errors}
-                register={register}
-              />
-
-              <Button
-                disabled={isSubmitting || createVersion.isPending}
-                type="submit"
-              >
-                {isSubmitting || createVersion.isPending
-                  ? "Creating…"
-                  : "Create Version"}
-              </Button>
-            </form>
-          </div>
-        </DetailCard>
-      </div>
-
-      <DeleteConfirmationDialog
-        description={`Delete version ${versionToDelete} of "${lt.LaunchTemplateName ?? lt.LaunchTemplateId}"? This action cannot be undone.`}
-        isPending={deleteVersions.isPending}
-        onConfirm={handleDeleteVersion}
-        onOpenChange={(open) => {
-          if (!open) {
-            setVersionToDelete(null)
-          }
-        }}
-        open={versionToDelete !== null}
-        title="Delete Launch Template Version"
-      />
-    </>
+    <LaunchTemplateDetails
+      launchTemplate={lt}
+      layout="page"
+      onClose={() => {
+        void navigate({ to: "/ec2/describe-launch-templates" })
+      }}
+      onTabChange={(next) => {
+        void navigate({ search: { tab: next }, replace: true })
+      }}
+      tab={tab}
+    />
   )
 }

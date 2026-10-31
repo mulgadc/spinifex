@@ -1,4 +1,4 @@
-package gateway
+package awsapi_test
 
 import (
 	"encoding/json"
@@ -11,12 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func putTagMutability(t *testing.T, gw *GatewayConfig, body string) (*httptest.ResponseRecorder, error) {
+func putTagMutability(t *testing.T, gw *ecrGW, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	req := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.PutImageTagMutability", body)
-	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	return w, gw.serveECR(w, req.WithContext(ctx))
+	return w, gw.serveECR(w, req)
 }
 
 type tagMutabilityOut struct {
@@ -106,7 +105,6 @@ func TestECRRequest_PutImageTagMutabilityDispatched(t *testing.T) {
 	require.NoError(t, err)
 
 	req := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.PutImageTagMutability", `{"repositoryName":"team/app","imageTagMutability":"IMMUTABLE"}`)
-	req = req.WithContext(withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount))
 	w := httptest.NewRecorder()
 	require.NoError(t, gw.serveECR(w, req))
 	assert.Equal(t, http.StatusOK, w.Code)

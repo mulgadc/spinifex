@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,33 +29,6 @@ func setupECRRequest(target, body string) *http.Request {
 	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 	ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAECRTESTCONTROLPL1")
 	return req.WithContext(ctx)
-}
-
-func TestECRRequest_MissingTarget(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.serveECR(httptest.NewRecorder(), setupECRRequest("", ""))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
-}
-
-func TestECRRequest_UnknownAction(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.serveECR(httptest.NewRecorder(),
-		setupECRRequest("AmazonEC2ContainerRegistry_V20150921.MadeUpAction", "{}"))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
-}
-
-// A registered-but-unimplemented action resolves to the 501 stub until its
-// handler lands. Repository actions may use a transitional gateway adapter and
-// image actions a composed registry capability, so ListRepositories stands in
-// as a still-stubbed action.
-func TestECRRequest_KnownActionNotImplemented(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.serveECR(httptest.NewRecorder(),
-		setupECRRequest("AmazonEC2ContainerRegistry_V20150921.ListRepositories", "{}"))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }
 
 func TestOCIRegistry_StubReturns501(t *testing.T) {

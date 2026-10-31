@@ -1,4 +1,4 @@
-package gateway
+package awsapi_test
 
 import (
 	"context"
@@ -21,18 +21,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newImageGateway wires a GatewayConfig with an in-memory OCI registry (memory
+// newImageGateway wires the ECR registration over an in-memory OCI registry (memory
 // object store + memory meta) and its composed ECR JSON image-action service.
-func newImageGateway(t *testing.T) *GatewayConfig {
+func newImageGateway(t *testing.T) *ecrGW {
 	t.Helper()
 	meta := ecrdomain.NewMemoryMetaStore()
 	reg := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), meta, ecrTestAccount)
-	gw := withECR(withVerifier(&GatewayConfig{
-		Region:         ecrTestRegion,
-		InternalSuffix: ecrTestSuffix,
-		DisableLogging: true,
-		IAMService:     allowAllIAMService(),
-	}), awsapi.Deps{Registry: awsapi.NewRegistryActionService(reg, reg, reg, reg), LifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg)})
+	gw := newECRGW(nil, awsapi.Deps{Registry: awsapi.NewRegistryActionService(reg, reg, reg, reg), LifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg)})
 	imageRegistries.Store(gw, reg)
 	return gw
 }
@@ -40,21 +35,21 @@ func newImageGateway(t *testing.T) *GatewayConfig {
 // imageRegistries maps a newImageGateway config to its registry so seeds can reach it.
 var imageRegistries sync.Map
 
-func registryOf(gw *GatewayConfig) *ecrregistry.Registry {
+func registryOf(gw *ecrGW) *ecrregistry.Registry {
 	reg, _ := imageRegistries.Load(gw)
 	return reg.(*ecrregistry.Registry)
 }
 
 // seedGatewayRepo creates the repository metadata so push/PutImage handlers —
 // which require an existing repository — accept writes. Idempotent.
-func seedGatewayRepo(t *testing.T, gw *GatewayConfig, repo string) {
+func seedGatewayRepo(t *testing.T, gw *ecrGW, repo string) {
 	t.Helper()
 	require.NoError(t, registryOf(gw).Meta.PutRepo(context.Background(), ecrTestAccount, ecrdomain.RepoMeta{Name: repo}))
 }
 
 // seedTaggedImage stores a layerless manifest under repo:tag, returning its
 // digest. A unique manifest per tag yields a unique digest.
-func seedTaggedImage(t *testing.T, gw *GatewayConfig, repo, tag string) string {
+func seedTaggedImage(t *testing.T, gw *ecrGW, repo, tag string) string {
 	t.Helper()
 	seedGatewayRepo(t, gw, repo)
 	manifest := fmt.Appendf(nil,
@@ -67,10 +62,10 @@ func seedTaggedImage(t *testing.T, gw *GatewayConfig, repo, tag string) string {
 func imageReq(t *testing.T, action, body string) *http.Request {
 	t.Helper()
 	req := setupECRRequest(awsapi.TargetPrefix+"."+action, body)
-	return req.WithContext(withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount))
+	return req
 }
 
-func callImage(t *testing.T, gw *GatewayConfig, action, body string) (*httptest.ResponseRecorder, error) {
+func callImage(t *testing.T, gw *ecrGW, action, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	w := httptest.NewRecorder()
 	return w, gw.serveECR(w, imageReq(t, action, body))
@@ -305,12 +300,14 @@ func TestImageHandlers_GuardRails(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"repositoryName":"team/app"}`))
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".ListImages")
+	gw.h.AccountID = ""
 	err = gw.serveECR(w, req)
 	require.Error(t, err)
 	assert.Equal(t, "InternalError", err.Error())
+	gw.h.AccountID = ecrTestAccount
 
 	// A missing registry-action composition -> ServerInternal.
-	bare := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	bare := newECRGW(nil, awsapi.Deps{})
 	err = bare.serveECR(httptest.NewRecorder(), imageReq(t, "ListImages", `{"repositoryName":"team/app"}`))
 	require.Error(t, err)
 	assert.Equal(t, "ServerInternal", err.Error())

@@ -1,8 +1,7 @@
-package gateway
+package awsapi_test
 
 import (
 	"context"
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,14 +9,37 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/internal/testkit/gwtest"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
-	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestEKSRequest_UnknownActionReturnsInvalidAction(t *testing.T) {
+	gw := &eksGateway{Harness: gwtest.AllowAll()}
+	gw.AccountID = "111122223333"
+	req := httptest.NewRequest(http.MethodGet, "/totally-unknown", nil)
+
+	w := httptest.NewRecorder()
+	err := gw.serve(w, req)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
+}
+
+func TestEKSRequest_MissingNATSReturnsServerInternal(t *testing.T) {
+	gw := &eksGateway{Harness: gwtest.AllowAll()}
+	gw.AccountID = "111122223333"
+	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+
+	w := httptest.NewRecorder()
+	err := gw.serve(w, req)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
 
 // The body the CP agent receives is built by the SDK REST-JSON marshaller,
 // which ignores the json tags: field names are Go names and empty strings are
@@ -57,19 +79,11 @@ func TestEKSRequest_InternalAddonsWireBody(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
-	gw.NATSConn = nc
+	gw := scopedEKS(gwtest.Statement("Allow", "eks:*", "*"))
+	gw.nc = nc
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/clusters/prod/internal-addons/"+authzAccountID, nil)
-	ctx := reqctx.WithService(req.Context(), "eks")
-	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
-	ctx = withPrincipalField(ctx, fieldIdentity, cpInstanceID)
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
-	ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN,
-		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+ekscluster.CPInstanceRoleName)
-	ctx = withPrincipalField(ctx, fieldAssumedRoleARN,
-		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+ekscluster.CPInstanceRoleName+"/"+cpInstanceID)
-	require.NoError(t, gw.serveEKS(rec, req.WithContext(ctx)))
+	require.NoError(t, gw.as(cpAgentContext(cpInstanceID)).serve(rec, req))
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, `{"Addons":[`+

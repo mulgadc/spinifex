@@ -1,4 +1,4 @@
-package gateway
+package awsapi_test
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 
 // newRepoLifecycleGateway wires the repo create/describe/delete + manifest
 // subjects against an embedded KV-backed service, returning a gateway client.
-func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
+func newRepoLifecycleGateway(t *testing.T) (*ecrGW, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
@@ -30,28 +30,24 @@ func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
 	serveECRMeta(t, nc, ecr.SubjectRepoDelete, svc.RepoDelete)
 	serveECRMeta(t, nc, ecr.SubjectManifestPut, svc.ManifestPut)
 	serveECRMeta(t, nc, ecr.SubjectManifestList, svc.ManifestList)
-	gw := withECR(withVerifier(&GatewayConfig{
-		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
-		IAMService: allowAllIAMService(),
-	}), awsapi.Deps{Repository: awsapi.NewRepositoryActionService(ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
+	gw := newECRGW(nc, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
 		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
 	})})
 	return gw, nc
 }
 
-func ecrRepositoryRequest(t *testing.T, gw *GatewayConfig, action, body string) (*httptest.ResponseRecorder, error) {
+func ecrRepositoryRequest(t *testing.T, gw *ecrGW, action, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	req := setupECRRequest(awsapi.TargetPrefix+"."+action, body)
-	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	return w, gw.serveECR(w, req.WithContext(ctx))
+	return w, gw.serveECR(w, req)
 }
 
-func createRepo(t *testing.T, gw *GatewayConfig, body string) (*httptest.ResponseRecorder, error) {
+func createRepo(t *testing.T, gw *ecrGW, body string) (*httptest.ResponseRecorder, error) {
 	return ecrRepositoryRequest(t, gw, "CreateRepository", body)
 }
 
-func deleteRepo(t *testing.T, gw *GatewayConfig, body string) (*httptest.ResponseRecorder, error) {
+func deleteRepo(t *testing.T, gw *ecrGW, body string) (*httptest.ResponseRecorder, error) {
 	return ecrRepositoryRequest(t, gw, "DeleteRepository", body)
 }
 
@@ -202,9 +198,11 @@ func TestCreateRepository_NoAccountAndMalformed(t *testing.T) {
 
 	req := noAccountRequest(`{"repositoryName":"team/app"}`)
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".CreateRepository")
+	gw.h.AccountID = ""
 	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, "InternalError", err.Error())
+	gw.h.AccountID = ecrTestAccount
 
 	_, err = createRepo(t, gw, `{`)
 	require.Error(t, err)
@@ -216,9 +214,11 @@ func TestDeleteRepository_NoAccountAndMalformed(t *testing.T) {
 
 	req := noAccountRequest(`{"repositoryName":"team/app"}`)
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".DeleteRepository")
+	gw.h.AccountID = ""
 	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, "InternalError", err.Error())
+	gw.h.AccountID = ecrTestAccount
 
 	_, err = deleteRepo(t, gw, `{`)
 	require.Error(t, err)
@@ -287,24 +287,18 @@ func TestECRRequest_CreateDeleteDispatched(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
 
 	create := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.CreateRepository", `{"repositoryName":"team/app"}`)
-	create = create.WithContext(withPrincipalField(create.Context(), fieldAccountID, ecrTestAccount))
 	wc := httptest.NewRecorder()
 	require.NoError(t, gw.serveECR(wc, create))
 	assert.Equal(t, http.StatusOK, wc.Code)
 
 	del := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.DeleteRepository", `{"repositoryName":"team/app"}`)
-	del = del.WithContext(withPrincipalField(del.Context(), fieldAccountID, ecrTestAccount))
 	wd := httptest.NewRecorder()
 	require.NoError(t, gw.serveECR(wd, del))
 	assert.Equal(t, http.StatusOK, wd.Code)
 }
 
 func TestRepositoryActions_MissingComposition(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{
-		Region:         ecrTestRegion,
-		DisableLogging: true,
-		IAMService:     allowAllIAMService(),
-	})
+	gw := newECRGW(nil, awsapi.Deps{})
 
 	_, err := ecrRepositoryRequest(t, gw, "CreateRepository", `{"repositoryName":"team/app"}`)
 	require.Error(t, err)

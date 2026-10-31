@@ -2,11 +2,12 @@
 // pipeline as ecs.go and eks.go implement it today. They assert current
 // behaviour, not AWS parity.
 
-package gateway
+package awsgw_test
 
 import (
 	"bytes"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -50,7 +51,7 @@ func containerPipelineApp(t *testing.T, statements ...iamdomain.Statement) http.
 		},
 	}
 	_, nc := testutil.StartTestNATS(t)
-	gw := withVerifier(withContainers(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, NATSConn: nc, IAMService: svc}))
+	gw := withVerifier(withContainers(&gateway.GatewayConfig{DisableLogging: true, Region: gwfix.Region, NATSConn: nc, IAMService: svc}))
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", gw.Request)

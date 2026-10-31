@@ -1,6 +1,7 @@
-package gateway
+package awsgw_test
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,7 @@ import (
 )
 
 func TestErrorHandler_EKSEmitsJSONNotXML(t *testing.T) {
-	gw := withContainers(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
+	gw := withContainers(withVerifier(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
 	ctx := reqctx.WithService(req.Context(), "eks")
 	req = req.WithContext(ctx)

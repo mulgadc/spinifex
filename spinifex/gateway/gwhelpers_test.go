@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/go-chi/chi/v5"
+	"github.com/mulgadc/bluebottle/pkg/auth"
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
@@ -24,6 +26,8 @@ import (
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
@@ -35,6 +39,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
@@ -1729,4 +1734,192 @@ func (m *ecrMockIAMService) LookupAccessKey(accessKeyID string) (*iamdomain.Acce
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 	return ak, nil
+}
+
+func (gw *GatewayConfig) serveECS(w http.ResponseWriter, r *http.Request) error {
+	return gw.serveRegistered(ecsawsapi.ServiceName, w, r)
+}
+
+// withContainers registers ECS and EKS on gw with the NATS connection and
+// mock IAM service it holds, as the awsgw role composes them.
+func withContainers(gw *GatewayConfig) *GatewayConfig {
+	b := dispatch.NewBuilder()
+	if err := b.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: gw.NATSConn})); err != nil {
+		panic(err)
+	}
+	roles, _ := gw.IAMService.(IAMServiceLike)
+	if err := b.Register(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: gw.NATSConn, Roles: mockRoleResolver{iam: roles}})); err != nil {
+		panic(err)
+	}
+	gw.Services = b.Build()
+	return gw
+}
+
+// setupECSUserRequest is setupECSRequest plus an authenticated user identity.
+func setupECSUserRequest(target, body string) *http.Request {
+	req := setupECSRequest(target, body)
+	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
+	return req.WithContext(ctx)
+}
+
+func registerTaskDefinitionBody(t *testing.T, taskRoleARN string) string {
+	t.Helper()
+	input := &ecs.RegisterTaskDefinitionInput{Family: aws.String("web")}
+	if taskRoleARN != "" {
+		input.TaskRoleArn = aws.String(taskRoleARN)
+	}
+	body, err := json.Marshal(input)
+	require.NoError(t, err)
+	return string(body)
+}
+
+// TestECSRegisterTaskDefinition_PassRole exercises the full gw.ECS_Request
+// dispatch (X-Amz-Target parsing, action-level checkPolicy, then the
+// iam:PassRole resource check gateway/ecs.go builds and threads through
+// ecsawsapi.Handler) with a real authenticated user identity, so the IAM
+// policy is actually evaluated rather than taking the pre-IAM bypass.
+const testECSPassRoleTargetARN = "arn:aws:iam::123456789012:role/ecs-task-role"
+
+// dispatchEKS drives the gateway with no NATS connection, so a permitted request
+// reaches the NATS guard and fails there.
+func dispatchEKS(t *testing.T, gw *GatewayConfig, method, path, body string) error {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	ctx := reqctx.WithService(req.Context(), "eks")
+	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
+	req = withTestIdentity(req.WithContext(ctx))
+	return gw.serveEKS(httptest.NewRecorder(), req)
+}
+
+func createNodegroupBody(nodeRole string) string {
+	return `{"nodegroupName":"workers","nodeRole":"` + nodeRole + `"}`
+}
+
+const eksNodeRoleARN = "arn:aws:iam::" + authzAccountID + ":role/eks/node-role"
+
+func eksPassRoleGateway(statements ...iamdomain.Statement) *GatewayConfig {
+	return eksGatewayWithIAM(eksPassRoleService(statements...))
+}
+
+const ecsPipelineTarget = "AmazonEC2ContainerServiceV20141113."
+
+func (gw *GatewayConfig) serveRegistered(service string, w http.ResponseWriter, r *http.Request) error {
+	if gw.Services == nil {
+		withContainers(gw)
+	}
+	entry, ok := gw.registered(service)
+	if !ok {
+		panic(service + " is not registered on this gateway")
+	}
+	return gw.dispatchRegistered(entry, w, r)
+}
+
+func (gw *GatewayConfig) serveEKS(w http.ResponseWriter, r *http.Request) error {
+	return gw.serveRegistered(eksawsapi.ServiceName, w, r)
+}
+
+// IAMServiceLike is the slice of the IAM service the mock resolver reads.
+type IAMServiceLike interface {
+	CanonicalResourceARN(accountID string, kind arn.IAMResourceType, name string) (string, error)
+}
+
+// mockRoleResolver resolves roles through the gateway's mock IAM service, the
+// way the IAM-owned resolver does against the real store.
+type mockRoleResolver struct{ iam IAMServiceLike }
+
+func (m mockRoleResolver) ResolveRole(accountID, roleARN string) (passrole.Role, error) {
+	roleAccount, name, err := auth.ParseRoleARN(roleARN)
+	if err != nil {
+		return passrole.Role{}, passrole.ErrMalformed
+	}
+	if roleAccount != accountID {
+		return passrole.Role{}, passrole.ErrForeignAccount
+	}
+	canonical, err := m.iam.CanonicalResourceARN(roleAccount, arn.IAMRole, name)
+	if err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity) {
+			return passrole.Role{}, passrole.ErrNotFound
+		}
+		return passrole.Role{}, err
+	}
+	if canonical != roleARN {
+		return passrole.Role{}, passrole.ErrNotFound
+	}
+	return passrole.Role{ARN: canonical, Name: name}, nil
+}
+
+func setupECSRequest(target, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	if target != "" {
+		req.Header.Set("X-Amz-Target", target)
+	}
+	ctx := reqctx.WithService(req.Context(), "ecs")
+	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
+	return withTestIdentity(req.WithContext(ctx))
+}
+
+func eksGatewayWithIAM(iamService *roleStoreIAMService) *GatewayConfig {
+	return withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: iamService})
+}
+
+// The foreign account holds a role of the same name, so only the gateway's
+// account check stops its ARN from resolving.
+func eksPassRoleService(statements ...iamdomain.Statement) *roleStoreIAMService {
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+	return &roleStoreIAMService{
+		PolicyIAM: gwfix.PolicyIAM{
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		},
+		roles: map[string]map[string]string{
+			authzAccountID:   {"node-role": eksNodeRoleARN},
+			foreignAccountID: {"node-role": "arn:aws:iam::" + foreignAccountID + ":role/eks/node-role"},
+		},
+	}
+}
+
+func createAddonBody(roleARN string) string {
+	return `{"addonName":"aws-load-balancer-controller","serviceAccountRoleArn":"` + roleARN + `"}`
+}
+
+const foreignAccountID = "999999999999"
+
+// The AWS capture of 2026-10-30 refuses a foreign or non-role ARN on CreateCluster
+// and CreateNodegroup with AccessDeniedException before PassRole is evaluated.
+func assertCrossAccountPassRole(t *testing.T, err error) {
+	t.Helper()
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok, "unresolvable error code: %v", err)
+	assert.Equal(t, awserrors.ErrorAccessDeniedException, code)
+	assert.Contains(t, err.Error(), "Cross-account pass role is not allowed.")
+}
+
+func assertInvalidParameter(t *testing.T, err error) {
+	t.Helper()
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok, "unresolvable error code: %v", err)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, code)
+}
+
+func updateAddonBody(roleARN string) string {
+	return `{"serviceAccountRoleArn":"` + roleARN + `"}`
+}
+
+// roleStoreIAMService evaluates policy from docs and resolves role names to the
+// ARNs in roles, keyed by account then name, the way the IAM store does.
+type roleStoreIAMService struct {
+	gwfix.PolicyIAM
+
+	roles        map[string]map[string]string
+	canonicalErr error
+}
+
+func (s *roleStoreIAMService) CanonicalResourceARN(account string, _ arn.IAMResourceType, name string) (string, error) {
+	if s.canonicalErr != nil {
+		return "", s.canonicalErr
+	}
+	if roleARN, ok := s.roles[account][name]; ok {
+		return roleARN, nil
+	}
+	return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
 }

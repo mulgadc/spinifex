@@ -101,6 +101,24 @@ sqs_starttime() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
 # sqs_same <pid> <starttime>: the recorded process is still alive.
 sqs_same() { [ -n "$2" ] && sqs_alive "$1" && [ "$(sqs_starttime "$1")" = "$2" ]; }
 
+# sqs_write_config <addr> <nkey> <file>: the dedicated server's config. Its
+# max_payload admits a 1 MiB SQS message with its headers (ADR-0011:S4); the
+# 1MB NATS default does not.
+sqs_write_config() {
+    cat > "$3" <<EOF
+listen: "$1:$SQS_PORT"
+server_name: "sqs-store"
+max_payload: 2MiB
+jetstream {
+  store_dir: "$SQS_DATA"
+  sync_interval: always
+}
+authorization {
+  users = [ { nkey: "$2" } ]
+}
+EOF
+}
+
 # sqs_prepare: validate the contract, check and mount the data disk, write the
 # server config and mark the store ready. Returns non-zero, unready, on any refusal.
 sqs_prepare() {
@@ -117,17 +135,7 @@ sqs_prepare() {
     # The server checks the config, including the NKey checksum, before the
     # disk is touched.
     umask 077
-    cat > "$SQS_RUN/nats.conf" <<EOF
-listen: "$addr:$SQS_PORT"
-server_name: "sqs-store"
-jetstream {
-  store_dir: "$SQS_DATA"
-  sync_interval: always
-}
-authorization {
-  users = [ { nkey: "$nkey" } ]
-}
-EOF
+    sqs_write_config "$addr" "$nkey" "$SQS_RUN/nats.conf" || return 1
     if ! "$NATS_BIN" -t -c "$SQS_RUN/nats.conf" > "$SQS_RUN/config-test.out" 2>&1; then
         sqs_fatal "server config test failed: $(sed 's/U[A-Z2-7]\{55\}/<nkey>/g' "$SQS_RUN/config-test.out" | tr '\n' ' ')"
         return 1

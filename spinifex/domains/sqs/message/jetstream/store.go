@@ -276,9 +276,16 @@ func (s *Store) stream(ctx context.Context, ns message.Namespace) (jsapi.Stream,
 	return stream, nil
 }
 
-// owned reads the message at pos if it belongs to the namespace's subject;
-// a position on a neighbour's subject is reported as ErrNotFound.
+// errDirectGet refuses a read the client would serve by direct get, which
+// any replica may answer with a stale copy.
+var errDirectGet = errors.New("stream allows direct get; leader read cannot be assured")
+
+// owned reads the message at pos from the stream leader if it belongs to the
+// namespace's subject; a neighbour's position is reported as ErrNotFound.
 func (s *Store) owned(ctx context.Context, stream jsapi.Stream, ns message.Namespace, pos message.Position) (*jsapi.RawStreamMsg, error) {
+	if info := stream.CachedInfo(); info == nil || info.Config.AllowDirect || info.Config.MirrorDirect {
+		return nil, fmt.Errorf("get message %s/%d: %w", ns.Queue, pos, errDirectGet)
+	}
 	raw, err := stream.GetMsg(ctx, uint64(pos))
 	switch {
 	case errors.Is(err, jsapi.ErrMsgNotFound):
@@ -413,12 +420,13 @@ func (s *Store) Feed(ctx context.Context, messageShard message.Shard, after mess
 	f := &feed{shard: messageShard, stream: stream, cursor: uint64(after), idleCheck: feedIdleCheck, closeWait: feedCloseWait}
 	f.closing, f.closeNow = context.WithCancel(context.Background())
 	if after == math.MaxUint64 {
-		// No position follows the maximum cursor; only later appends can.
-		info, err := stream.Info(ctx)
+		// No position follows the maximum cursor; only later appends can. A
+		// fresh handle: refreshing the shared one would race its readers.
+		fresh, err := s.js.Stream(ctx, StreamName(messageShard))
 		if err != nil {
 			return nil, fmt.Errorf("open feed on %s: %w", StreamName(messageShard), err)
 		}
-		f.cursor = info.State.LastSeq
+		f.cursor = fresh.CachedInfo().State.LastSeq
 	}
 	if err := f.start(ctx); err != nil {
 		f.closeNow()
@@ -1068,19 +1076,19 @@ func (s *Store) Scan(ctx context.Context, messageShard message.Shard, from messa
 	if err := message.ValidateScan(from, limit); err != nil {
 		return message.ScanPage{}, err
 	}
-	stream, err := s.stream(ctx, message.Namespace{MessageShard: messageShard, Queue: "scan"})
-	if err != nil {
+	if _, err := s.stream(ctx, message.Namespace{MessageShard: messageShard, Queue: "scan"}); err != nil {
 		return message.ScanPage{}, err
 	}
 	if from.Bound == 0 {
-		info, err := stream.Info(ctx)
+		// A fresh handle: refreshing the shared one would race its readers.
+		fresh, err := s.js.Stream(ctx, StreamName(messageShard))
 		if err != nil {
 			return message.ScanPage{}, fmt.Errorf("scan %s: %w", StreamName(messageShard), err)
 		}
-		from.Bound = message.Cursor(info.State.LastSeq)
+		from.Bound = message.Cursor(fresh.CachedInfo().State.LastSeq)
 	}
 	page := message.ScanPage{Next: from}
-	last, done, err := readRange(ctx, s.js, stream.CachedInfo().Config.Name, shardFilter(messageShard), uint64(from.After), uint64(from.Bound), func(msg *jsapi.RawStreamMsg) (bool, error) {
+	last, done, err := readRange(ctx, s.js, StreamName(messageShard), shardFilter(messageShard), uint64(from.After), uint64(from.Bound), func(msg *jsapi.RawStreamMsg) (bool, error) {
 		seq := msg.Sequence
 		ns, err := decodeNamespace(messageShard, msg.Subject, msg.Header)
 		if err != nil {

@@ -22,11 +22,7 @@ var (
 
 func TestMain(m *testing.M) {
 	// Pin host vCPU so the resource manager is deterministic regardless of the
-	// runner's CPU topology. Without this, scheduling is denominated by physical
-	// cores (physicalCoreCount), and a 2-physical-core CI runner would leave 0
-	// schedulable after the default 2-vCPU reserve, so NewResourceManager would
-	// refuse to start and every daemon-constructing test would fail. 4 keeps the
-	// default reserve intact with 2 schedulable cores — enough for these tests.
+	// runner's CPU count. 4 online CPUs reserve 1 (ADR-0015:S2), leaving 3.
 	os.Setenv("SPINIFEX_HOST_VCPU", "4")
 	// Admission otherwise also clamps on the host's live MemAvailable, which a
 	// loaded box running tests in parallel can drop below the reserve. The gate

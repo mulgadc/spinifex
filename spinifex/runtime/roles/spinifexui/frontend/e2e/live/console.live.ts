@@ -48,6 +48,12 @@ async function terminate(page: Page, instanceId: string): Promise<void> {
   await page.goto("/ec2/describe-instances")
   await page.getByRole("checkbox", { name: `Select ${instanceId}` }).check()
   await page.getByRole("button", { name: "Terminate", exact: true }).click()
+
+  // The dialog holds its confirm disabled until the phrase is typed, as AWS
+  // does before an irreversible delete.
+  await page
+    .getByRole("textbox", { name: /type .terminate./ })
+    .fill("terminate")
   await page.getByRole("button", { name: /^Terminate \d+$/ }).click()
 }
 
@@ -57,9 +63,19 @@ test("an operator signs in with an access key and reaches the dashboard", async 
   signedIn,
 }) => {
   await signedIn.goto("/")
-  await expect(signedIn.getByText("Ready").first()).toBeVisible({
+  await expect(signedIn.getByRole("link", { name: "Dashboard" })).toBeVisible({
     timeout: APPEAR_TIMEOUT,
   })
+
+  // The nodes page is where the cluster's own capacity is reported, from the
+  // daemon's node status rather than from the EC2 listing.
+  await signedIn.goto("/nodes")
+  await expect(
+    signedIn.getByRole("table", { name: "Resource usage by node" }),
+  ).toBeVisible({ timeout: APPEAR_TIMEOUT })
+  await expect(
+    signedIn.getByRole("table", { name: "Instance type capacity" }),
+  ).toBeVisible()
 })
 
 // The regression guard for the defect this suite was written for: a cluster
@@ -110,9 +126,10 @@ test("an instance launches, serves metrics and terminates", async ({
   let launched = ""
 
   try {
-    // The OS tiles are radios; the first picks a distribution at its newest
-    // version for the architecture.
-    await signedIn.getByRole("radio").first().check()
+    // The OS tiles put a visually-hidden radio inside its label, so the click
+    // goes to the label and the browser forwards it. The first tile picks a
+    // distribution at its newest version for the architecture.
+    await signedIn.locator('label:has(input[type="radio"])').first().click()
     await selectOption(
       signedIn,
       "#instanceType",

@@ -14,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
-	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -102,31 +101,8 @@ func runWorkerIMDS(t *testing.T, c *harness.AWSClient, env *harness.Env, artifac
 	gatewayBaseURL := u.Scheme + "://" + u.Host
 	region := envOr("SPINIFEX_AWS_REGION", "ap-southeast-2")
 
+	// The node role carries no permission policy: GetCallerIdentity needs none.
 	nodeRoleArn, nodeRoleName := ensureNodeRole(t, c, fx)
-
-	// awsgw enforces IAM on assumed-role STS calls, so the node role needs an
-	// explicit allow for the pod's GetCallerIdentity.
-	const stsPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:GetCallerIdentity","Resource":"*"}]}`
-	polOut, err := c.IAM.CreatePolicy(&iam.CreatePolicyInput{
-		PolicyName:     aws.String(nodeRoleName + "-imds-policy"),
-		PolicyDocument: aws.String(stsPolicy),
-	})
-	require.NoError(t, err, "create-policy")
-	policyArn := aws.StringValue(polOut.Policy.Arn)
-	t.Cleanup(func() {
-		_, _ = c.IAM.DeletePolicy(&iam.DeletePolicyInput{PolicyArn: aws.String(policyArn)})
-	})
-	_, err = c.IAM.AttachRolePolicy(&iam.AttachRolePolicyInput{
-		RoleName:  aws.String(nodeRoleName),
-		PolicyArn: aws.String(policyArn),
-	})
-	require.NoError(t, err, "attach-role-policy")
-	t.Cleanup(func() {
-		_, _ = c.IAM.DetachRolePolicy(&iam.DetachRolePolicyInput{
-			RoleName:  aws.String(nodeRoleName),
-			PolicyArn: aws.String(policyArn),
-		})
-	})
 
 	const nodegroup = "imds-e2e-ng"
 	createWorkerNodegroup(t, c, fx, nodegroup, nodeRoleArn, nil)

@@ -41,8 +41,6 @@ resources:
 - [Limits](#limits)
 - [Troubleshooting](#troubleshooting)
 
----
-
 ## Overview
 
 Spinifex is an open-source infrastructure platform that brings core AWS services to bare-metal, edge, and on-prem environments.
@@ -69,8 +67,6 @@ It deletes the reserved IP again when the resource goes away.
 The key is copied to the nodes over SSH and stored at `/etc/spinifex/vultr/api-key`, readable only by the Spinifex daemon.
 It is never written to the Terraform state or to the instance metadata.
 
----
-
 ## Prerequisites
 
 You need:
@@ -81,7 +77,7 @@ You need:
   The nodes call the API to manage their addresses, and their addresses do not exist until the deploy creates them.
   You replace `0.0.0.0/0` with the real addresses in [step 4](#4-restrict-the-api-key).
 - **OpenTofu or Terraform**, version 1.5 or newer. Install [OpenTofu](https://opentofu.org/docs/intro/install/) or [Terraform](https://developer.hashicorp.com/terraform/install); the deploy script uses whichever it finds, preferring OpenTofu.
-- **The AWS CLI v2** and `python3`.
+- **The [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)** and `python3`.
 - **An SSH key pair** at `~/.ssh/id_ed25519`.
   Create one with `ssh-keygen -t ed25519` if you do not have one.
   The deploy installs the public key on every node.
@@ -91,8 +87,7 @@ The API key page, with the key and the temporary `0.0.0.0/0` entry in its access
 <p align="center">
   <img src="../../.github/assets/images/vultr/vultr-api-keys.png" alt="Vultr API Access page, showing an API key and an access control list that allows 0.0.0.0/0" width="900">
 </p>
-
----
+<p align="center"><em>Create a Vultr API key in the web console, with 0.0.0.0/0 allowed until the deploy finishes.</em></p>
 
 ## Instructions
 
@@ -112,8 +107,6 @@ cd scripts/terraform/vultr-spx
 > `git switch dev` gives you the deploy script for it, and `--channel dev` in [step 3](#3-deploy) installs the matching Spinifex build, the pre-release published from every change to `dev`.
 > Once Vultr support is in a release, skip `git switch dev` and pass `--channel latest`.
 
----
-
 ## 2. Choose a deployment
 
 | Use | Nodes | Plan | Cost while running |
@@ -129,8 +122,6 @@ Spinifex keeps 2 of its 16 vCPUs for the host and its own services and offers th
 `vbm-8c-64gb-amd` is the smallest bare-metal server we recommend for production workloads, as one server or as three.
 
 Bare metal takes longer to deliver than a VM, and Vultr bills a bare-metal server from the moment it is created, whether it is running or stopped.
-
----
 
 ## 3. Deploy
 
@@ -176,8 +167,6 @@ api_key_allowlist=203.0.113.10/32
 
 A three-node deployment lists `node2` and `node3` as well, and all three addresses in `api_key_allowlist`.
 
----
-
 ## 4. Restrict the API key
 
 Now that the node addresses are known, close the API key to everything else.
@@ -188,8 +177,6 @@ In the Vultr portal, open your user menu, then **API Access**, and under **Acces
 3. Remove the `0.0.0.0/0` entry, and the IPv6 `::/0` entry if your list has one.
 
 `./deploy-vultr.sh status` prints the node addresses again whenever you need them.
-
----
 
 ## 5. Check it worked
 
@@ -206,6 +193,7 @@ These are the servers that run Spinifex, and the AWS workloads and services you 
 <p align="center">
   <img src="../../.github/assets/images/vultr/vultr-instances.png" alt="Vultr Instances page, showing Spinifex nodes named spinifex-deployment-nodeN with the spinifex and deployment tags" width="900">
 </p>
+<p align="center"><em>Spinifex nodes in the Vultr console, tagged with their deployment.</em></p>
 
 To log in to a node:
 
@@ -220,9 +208,15 @@ For a three-node deployment, check that every node has joined:
 ./deploy-vultr.sh ssh 'spx get nodes'
 ```
 
-Expect three nodes with `Ready` status.
+Expect three nodes with `Ready` status:
 
----
+```text
+NAME  │ STATUS │ ROLES         │ IP        │ REGION    │ AZ         │ UPTIME │ VMs │ SERVICES
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+node1 │ Ready  │ nats:leader   │ 10.10.8.5 │ us-east-1 │ us-east-1a │ 12m    │ 0   │ nats,predastore,viperblock,daemon,awsgw,vpcd,ui
+node2 │ Ready  │ nats:follower │ 10.10.8.4 │ us-east-1 │ us-east-1a │ 11m    │ 0   │ nats,predastore,viperblock,daemon,awsgw,vpcd,ui
+node3 │ Ready  │ nats:follower │ 10.10.8.3 │ us-east-1 │ us-east-1a │ 11m    │ 0   │ nats,predastore,viperblock,daemon,awsgw,vpcd,ui
+```
 
 ## 6. Obtain AWS credentials
 
@@ -265,10 +259,9 @@ If this returns a list of available instance types, your installation is working
 <p align="center">
   <img src="../../.github/assets/spinifex-ui.jpg" alt="Spinifex Web UI" width="900">
 </p>
+<p align="center"><em>The Spinifex web console, on port 3000 of node 1.</em></p>
 
 **Congratulations, Spinifex is installed.**
-
----
 
 ## 7. Set up your cluster
 
@@ -277,11 +270,10 @@ Spinifex is running, but it holds nothing yet: no machine images, no networks, n
 Continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to import an AMI, create an SSH key pair, create a VPC with a public subnet, and launch your first instance.
 An instance you launch into a public subnet gets a Vultr reserved IP, which you can see in the Vultr portal under **Network → Reserved IPs**.
 
----
-
 ## 8. Test resiliency
 
-A three-node deployment keeps running when a node fails.
+A three-node deployment is for high availability: it protects your workloads against any one machine going down.
+The three nodes form one cluster, a lightweight AWS region on Vultr, and the cluster and everything on it keep running when a node fails.
 Spinifex restarts the failed node's instances on the surviving nodes, and moves each instance's Vultr reserved IP with it, so its public address keeps working.
 To watch it happen, run a load-balanced website across the three nodes, then power one of them off.
 
@@ -374,8 +366,6 @@ Call another node meanwhile by adding `--endpoint-url https://<node2-address>:99
 
 When you are done, remove the workbook with `tofu destroy` and the same `-var` options before [removing the deployment](#removing-the-deployment).
 
----
-
 ## Removing the deployment
 
 Remove anything you built on the cluster first, then:
@@ -390,21 +380,12 @@ When it finishes, nothing of the deployment is left, and if anything is, it list
 
 After removing the deployment, remove the node addresses from the API key's **Access Control** list, since Vultr may give them to someone else.
 
----
-
 ## Limits
 
 - **One or three nodes.** Other cluster sizes are not supported.
-- **16 vCPU per node is the recommended minimum.** Spinifex keeps 1 CPU on a node with up to 8, 2 on one with up to 16 and 4 on one with up to 63, and offers the rest to instances one to one, so a 16-vCPU node offers 14 and an 8-vCPU node 7.
+- **16 vCPU per node is the recommended minimum.** On a 16-vCPU node, Spinifex keeps 2 vCPU for the OS and its own services, and the other 14 are available for your EC2 instances and AWS services.
 - **A deleted reserved IP keeps its quota slot for 24 hours**, by Vultr's documentation, so creating and deleting many addresses in a day can reach the account's limit.
-- **A three-node deployment survives one failed node at a time.**
-  With two of the three nodes down, the cluster loses quorum, and in our test the instances on the remaining node went to `error` and stayed there after a second node returned.
-- **A recovered instance can share a node with another member of its spread placement group**, when only one node has room for it.
-  It stays there after the failed node returns.
-- **Disassociating an Elastic IP leaves the instance with no public address**, where AWS would give it a new one.
-  Stopping and starting the instance gets it one.
-
----
+- **A three-node deployment survives one failed node at a time.** The cluster needs a majority of its nodes, two of three, online to keep running.
 
 ## Troubleshooting
 

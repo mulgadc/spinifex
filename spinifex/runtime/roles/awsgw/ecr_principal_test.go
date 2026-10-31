@@ -1,4 +1,4 @@
-package gateway
+package awsgw_test
 
 import (
 	"errors"
@@ -146,12 +146,6 @@ func (m *ecrMockSTSService) VerifySessionPrincipal(cred *stsdomain.SessionCreden
 	return live, err
 }
 
-const (
-	ecrPrincipalTestAccount = "000000000042"
-	ecrPrincipalTestAKID    = "AKIATESTLONGLIVED0001"
-	ecrPrincipalTestASID    = "ASIATESTSESSION000001"
-)
-
 func seedECRTestUser(iamSvc *ecrMockIAMService, accountID, userName, akid string) {
 	iamSvc.accessKeys[akid] = &iamdomain.AccessKey{
 		AccessKeyID: akid,
@@ -166,8 +160,6 @@ func seedECRTestUser(iamSvc *ecrMockIAMService, accountID, userName, akid string
 	}
 	iamSvc.accounts[accountID] = &iamdomain.Account{AccountID: accountID, Status: iamdomain.AccountStatusActive}
 }
-
-const ecrPathedUserARN = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/eng/dev"
 
 func seedECRSessionUser(iamSvc *ecrMockIAMService, stsSvc *ecrMockSTSService, accountID, userName, asid string, expiresAt time.Time) {
 	iamSvc.users[accountID+"|"+userName] = &iam.User{

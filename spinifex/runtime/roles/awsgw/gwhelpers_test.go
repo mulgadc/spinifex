@@ -8,26 +8,34 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/go-chi/chi/v5"
+	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
-	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/clusterready"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/ec2quota"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
@@ -551,4 +559,69 @@ func statement(effect, action, resource string) iamdomain.Statement {
 		Action:   iamdomain.StringOrArr{action},
 		Resource: iamdomain.StringOrArr{resource},
 	}
+}
+
+// withContainers registers ECS and EKS on gw with the NATS connection and
+// mock IAM service it holds, as the awsgw role composes them.
+func withContainers(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
+	b := dispatch.NewBuilder()
+	if err := b.Register(awsapi.NewRegistration(awsapi.Deps{NATS: gw.NATSConn})); err != nil {
+		panic(err)
+	}
+	roles, _ := gw.IAMService.(IAMServiceLike)
+	if err := b.Register(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: gw.NATSConn, Roles: mockRoleResolver{iam: roles}})); err != nil {
+		panic(err)
+	}
+	gw.Services = b.Build()
+	return gw
+}
+
+// newTestRegistryHandler composes the /v2 handler the way the awsgw role does, over
+// gw's IAM and STS services, with registry serving authorized requests.
+func newTestRegistryHandler(t *testing.T, gw *gateway.GatewayConfig, iss *ecrauth.Issuer, verify *ecrauth.Verifier, registry ...http.Handler) http.Handler {
+	t.Helper()
+	cfg := ecrregistry.BridgeConfig{
+		Verifier:  verify,
+		Issuer:    iss,
+		Admission: accountadmission.New(gw.IAMService),
+		Region:    gw.Region,
+	}
+	cfg = registryadapt.Config(cfg, credverify.New(gw.IAMService, gw.STSService),
+		policyauth.New(gw.IAMService, policyauth.WithRetryBase(time.Millisecond)))
+	if len(registry) > 0 {
+		cfg.Registry = registry[0]
+	}
+	b, err := ecrregistry.NewBridge(cfg)
+	require.NoError(t, err)
+	return ingresshttp.NewHostMatcher(gw.InternalSuffix, "dkr", "ecr").Middleware(b.Handler())
+}
+
+// IAMServiceLike is the slice of the IAM service the mock resolver reads.
+type IAMServiceLike interface {
+	CanonicalResourceARN(accountID string, kind arn.IAMResourceType, name string) (string, error)
+}
+
+// mockRoleResolver resolves roles through the gateway's mock IAM service, the
+// way the IAM-owned resolver does against the real store.
+type mockRoleResolver struct{ iam IAMServiceLike }
+
+func (m mockRoleResolver) ResolveRole(accountID, roleARN string) (passrole.Role, error) {
+	roleAccount, name, err := auth.ParseRoleARN(roleARN)
+	if err != nil {
+		return passrole.Role{}, passrole.ErrMalformed
+	}
+	if roleAccount != accountID {
+		return passrole.Role{}, passrole.ErrForeignAccount
+	}
+	canonical, err := m.iam.CanonicalResourceARN(roleAccount, arn.IAMRole, name)
+	if err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity) {
+			return passrole.Role{}, passrole.ErrNotFound
+		}
+		return passrole.Role{}, err
+	}
+	if canonical != roleARN {
+		return passrole.Role{}, passrole.ErrNotFound
+	}
+	return passrole.Role{ARN: canonical, Name: name}, nil
 }

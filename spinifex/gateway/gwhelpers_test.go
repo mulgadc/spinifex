@@ -3,6 +3,8 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -20,6 +22,8 @@ import (
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
@@ -40,6 +44,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1460,4 +1465,268 @@ type operatorAdminError struct {
 		Message string `json:"message"`
 	} `json:"error"`
 	RequestID string `json:"requestId"`
+}
+
+// allowAllECRDocs is the policy ecrPipelineApp uses when the test is not
+// exercising authorization itself.
+func allowAllECRDocs() []iamdomain.PolicyDocument {
+	return []iamdomain.PolicyDocument{{
+		Version: "2012-10-17",
+		Statement: []iamdomain.Statement{
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"*"}, Resource: iamdomain.StringOrArr{"*"}},
+		},
+	}}
+}
+
+const (
+	ecrTestRegion   = "ap-southeast-2"
+	ecrTestSuffix   = "spinifex.internal"
+	ecrTestAudience = "ecr." + ecrTestRegion + "." + ecrTestSuffix
+	ecrTestAccount  = "000000000001"
+)
+
+func decodeJSONError(t *testing.T, resp *http.Response) jsonErrorEnvelope {
+	t.Helper()
+	var out jsonErrorEnvelope
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	return out
+}
+
+// ecrRegistrationInventory is the inventory the ECR registration declares to
+// a registry, keyed as AWSOperationInventory expects.
+func ecrRegistrationInventory() map[string]dispatch.Inventory {
+	inventory := withECR(&GatewayConfig{}, awsapi.Deps{}).Services.Inventory()
+	maps.Copy(inventory, withContainers(&GatewayConfig{}).Services.Inventory())
+	return inventory
+}
+
+// serveECR dispatches r to gw's registered ECR service exactly as Request does
+// past its NATS gate, first registering one with no capabilities if needed.
+func (gw *GatewayConfig) serveECR(w http.ResponseWriter, r *http.Request) error {
+	entry, ok := gw.registered(awsapi.ServiceName)
+	if !ok {
+		withECR(gw, awsapi.Deps{})
+		entry, _ = gw.registered(awsapi.ServiceName)
+	}
+	return gw.dispatchRegistered(entry, w, r)
+}
+
+// jsonErrorEnvelope is the AWS JSON 1.1 error body shape.
+type jsonErrorEnvelope struct {
+	Type    string `json:"__type"`
+	Message string `json:"message"`
+}
+
+// withECR registers the ECR control plane on gw backed by deps, as the awsgw
+// role composes it. An unset deps.NATS takes gw.NATSConn.
+func withECR(gw *GatewayConfig, deps awsapi.Deps) *GatewayConfig {
+	if deps.NATS == nil {
+		deps.NATS = gw.NATSConn
+	}
+	b := dispatch.NewBuilder()
+	if err := b.Register(awsapi.NewRegistration(deps)); err != nil {
+		panic(err)
+	}
+	gw.Services = b.Build()
+	return gw
+}
+
+// ecrPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
+// live test NATS so Request dispatches. docs is every principal's policy; the
+// region is gwfix.Region because gwfix.SignRequestAs always signs for it.
+func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConfig, http.Handler) {
+	t.Helper()
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
+	require.NoError(t, err)
+	_, nc := testutil.StartTestNATS(t)
+
+	gw := withVerifier(&GatewayConfig{
+		DisableLogging: true,
+		Region:         gwfix.Region,
+		InternalSuffix: ecrTestSuffix,
+		NATSConn:       nc,
+		IAMService: &gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
+						SecretAccessKey: encryptedSecret,
+						UserName:        "alice",
+						AccountID:       ecrTestAccount,
+						Status:          "Active",
+					},
+				},
+			},
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		},
+	})
+
+	withECR(gw, awsapi.Deps{})
+
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", gw.Request)
+	return gw, r
+}
+
+// signECRRequest builds a POST / signed with credential-scope service "ecr",
+// the shape every ECR JSON 1.1 client sends.
+func signECRRequest(t *testing.T, target string, body []byte) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Host = "localhost:9999"
+	if target != "" {
+		req.Header.Set("X-Amz-Target", target)
+	}
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "ecr", time.Now().UTC())
+	return req
+}
+
+// newECRAuth builds a wired issuer+verifier over a freshly generated signing key.
+func newECRAuth(t *testing.T) (*ecrauth.Issuer, *ecrauth.Verifier) {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, verify, err := ecrauth.LoadOrCreateSigningKey(t.Context(), js, ecrTestMasterKey(t))
+	require.NoError(t, err)
+	return ecrauth.NewIssuer(key, ecrTestAudience), ecrauth.NewVerifier(verify, ecrTestAudience)
+}
+
+// decodeAuthToken decodes an ECR authorizationToken ("AWS:<jwt>") to the jwt.
+func decodeAuthToken(token string) (string, error) {
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		return "", err
+	}
+	_, jwtStr, _ := strings.Cut(string(decoded), ":")
+	return jwtStr, nil
+}
+
+func newECRMockIAMService() *ecrMockIAMService {
+	return &ecrMockIAMService{
+		accessKeys:   map[string]*iamdomain.AccessKey{},
+		users:        map[string]*iam.User{},
+		roles:        map[string]*iam.Role{},
+		accounts:     map[string]*iamdomain.Account{},
+		userPolicies: map[string][]iamdomain.PolicyDocument{},
+		rolePolicies: map[string][]iamdomain.PolicyDocument{},
+	}
+}
+
+func seedECRTestUser(iamSvc *ecrMockIAMService, accountID, userName, akid string) {
+	iamSvc.accessKeys[akid] = &iamdomain.AccessKey{
+		AccessKeyID: akid,
+		UserName:    userName,
+		AccountID:   accountID,
+		Status:      iamdomain.AccessKeyStatusActive,
+	}
+	iamSvc.users[accountID+"|"+userName] = &iam.User{
+		UserName: aws.String(userName),
+		UserId:   aws.String("AIDA" + strings.ToUpper(userName)),
+		Arn:      aws.String("arn:aws:iam::" + accountID + ":user/" + userName),
+	}
+	iamSvc.accounts[accountID] = &iamdomain.Account{AccountID: accountID, Status: iamdomain.AccountStatusActive}
+}
+
+const (
+	ecrPrincipalTestAccount = "000000000042"
+	ecrPrincipalTestAKID    = "AKIATESTLONGLIVED0001"
+	ecrPrincipalTestASID    = "ASIATESTSESSION000001"
+)
+
+const ecrPathedUserARN = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/eng/dev"
+
+func ecrTestMasterKey(t *testing.T) []byte {
+	t.Helper()
+	k := make([]byte, 32)
+	_, err := rand.Read(k)
+	require.NoError(t, err)
+	return k
+}
+
+// ecrMockIAMService implements iamdomain.IAMService for ECR principal
+// rehydration tests. Only the methods resolveECRPrincipal calls are wired;
+// any other method nil-panics on the embedded nil interface, surfacing an
+// unexpected call rather than silently returning a zero value.
+type ecrMockIAMService struct {
+	iamdomain.IAMService
+
+	accessKeys   map[string]*iamdomain.AccessKey
+	users        map[string]*iam.User
+	roles        map[string]*iam.Role
+	accounts     map[string]*iamdomain.Account
+	userPolicies map[string][]iamdomain.PolicyDocument
+	rolePolicies map[string][]iamdomain.PolicyDocument
+
+	// genericErr, when set, is returned by LookupAccessKey/GetUser/GetRole/
+	// GetAccount/GetUserPolicies/GetRolePolicies instead of the usual
+	// not-found error, simulating an IAM backend outage rather than a
+	// missing record.
+	genericErr error
+
+	// userPolicyErr fails only the policy read, so a test can let the principal
+	// rehydrate and then break authorization.
+	userPolicyErr error
+}
+
+func (m *ecrMockIAMService) GetAccount(accountID string) (*iamdomain.Account, error) {
+	if m.genericErr != nil {
+		return nil, m.genericErr
+	}
+	a, ok := m.accounts[accountID]
+	if !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	return a, nil
+}
+
+func (m *ecrMockIAMService) GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+	if m.genericErr != nil {
+		return nil, m.genericErr
+	}
+	r, ok := m.roles[accountID+"|"+aws.StringValue(input.RoleName)]
+	if !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	return &iam.GetRoleOutput{Role: r}, nil
+}
+
+func (m *ecrMockIAMService) GetRolePolicies(accountID, roleName string) ([]iamdomain.PolicyDocument, error) {
+	if m.genericErr != nil {
+		return nil, m.genericErr
+	}
+	return m.rolePolicies[accountID+"|"+roleName], nil
+}
+
+func (m *ecrMockIAMService) GetUser(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error) {
+	if m.genericErr != nil {
+		return nil, m.genericErr
+	}
+	u, ok := m.users[accountID+"|"+aws.StringValue(input.UserName)]
+	if !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	return &iam.GetUserOutput{User: u}, nil
+}
+
+func (m *ecrMockIAMService) GetUserPolicies(accountID, userName string) ([]iamdomain.PolicyDocument, error) {
+	if m.genericErr != nil {
+		return nil, m.genericErr
+	}
+	if m.userPolicyErr != nil {
+		return nil, m.userPolicyErr
+	}
+	return m.userPolicies[accountID+"|"+userName], nil
+}
+
+func (m *ecrMockIAMService) LookupAccessKey(accessKeyID string) (*iamdomain.AccessKey, error) {
+	if m.genericErr != nil {
+		return nil, m.genericErr
+	}
+	ak, ok := m.accessKeys[accessKeyID]
+	if !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	return ak, nil
 }

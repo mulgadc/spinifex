@@ -1,10 +1,11 @@
-package gateway
+package awsgw_test
 
 import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -55,7 +56,7 @@ func newV2Env(t *testing.T, opts v2Options) *v2Env {
 	}
 	iamSvc.userPolicies[v2Account+"|dev"] = policies
 
-	gw := withVerifier(&GatewayConfig{
+	gw := withVerifier(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         ecrTestRegion,
 		InternalSuffix: ecrTestSuffix,

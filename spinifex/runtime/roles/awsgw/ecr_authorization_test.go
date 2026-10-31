@@ -1,4 +1,4 @@
-package gateway
+package awsgw_test
 
 import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"

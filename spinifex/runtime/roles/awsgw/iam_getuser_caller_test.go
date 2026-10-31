@@ -1,4 +1,4 @@
-package gateway
+package awsgw_test
 
 import (
 	"net/http"

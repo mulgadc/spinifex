@@ -1,14 +1,24 @@
 package awsgw_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/go-chi/chi/v5"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -18,12 +28,17 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/ec2quota"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -31,11 +46,9 @@ import (
 // policyRetryBase shortens the backoff between policy-resolve attempts.
 var policyRetryBase = 200 * time.Millisecond
 
-// withVerifier authenticates through the same IAM and STS instances the config
-// holds and fills any unset policy, admission and readiness capability from
-// them, as the awsgw role composes them.
-func withVerifier(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
-	gw.Credentials = credverify.New(gw.IAMService, gw.STSService)
+// withCapabilities fills any unset policy, admission and readiness capability
+// from the config's IAM service and bus, as the awsgw role composes them.
+func withCapabilities(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
 	if gw.Policy == nil {
 		gw.Policy = policyauth.New(gw.IAMService, policyauth.WithRetryBase(policyRetryBase))
 	}
@@ -46,6 +59,13 @@ func withVerifier(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
 		gw.Readiness = clusterready.New(gw.NATSConn)
 	}
 	return gw
+}
+
+// withVerifier authenticates through the same IAM and STS instances the config
+// holds, so a test that changes one of them changes authentication too.
+func withVerifier(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
+	gw.Credentials = credverify.New(gw.IAMService, gw.STSService)
+	return withCapabilities(gw)
 }
 
 const (
@@ -287,4 +307,240 @@ type principalField int
 func withQuota(gw *gateway.GatewayConfig, q *admissionquota.Service) *gateway.GatewayConfig {
 	quotaByGateway.Store(gw, q)
 	return gw
+}
+
+// cbOutcome is the wire verdict a client sees: status, AWS error code, message.
+type cbOutcome struct {
+	status  int
+	code    string
+	message string
+}
+
+type cbEnv struct {
+	nc        *nats.Conn // the gateway's connection
+	iamNC     *nats.Conn // IAM/STS connection; == nc unless separateIAMConn
+	js        jetstream.JetStream
+	iam       *iamdomain.IAMServiceImpl
+	sts       *stsdomain.STSServiceImpl
+	counter   *cbDecryptCounter
+	h         http.Handler
+	accountID string
+	alice     cbCreds
+	aliceID   string
+	addr      atomic.Uint32
+}
+
+func (e *cbEnv) assumeRole(t *testing.T, roleARN, session string) cbCreds {
+	t.Helper()
+	return cbSessionFrom(t, e.request(t, e.h, e.alice, "sts",
+		cbForm("AssumeRole", "RoleArn", roleARN, "RoleSessionName", session)))
+}
+
+// createAssumableRole creates role name trusting alice, and grants alice
+// sts:AssumeRole on it.
+func (e *cbEnv) createAssumableRole(t *testing.T, name string) (roleARN, roleID string) {
+	t.Helper()
+	trust := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::` +
+		e.accountID + `:user/alice"},"Action":"sts:AssumeRole"}]}`
+	out, err := e.iam.CreateRole(e.accountID, &iam.CreateRoleInput{
+		RoleName: aws.String(name), AssumeRolePolicyDocument: aws.String(trust),
+	})
+	require.NoError(t, err)
+	roleARN = aws.StringValue(out.Role.Arn)
+	e.putUserPolicy(t, "alice", `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole","Resource":"*"}]}`)
+	return roleARN, aws.StringValue(out.Role.RoleId)
+}
+
+// gateway builds a router over the env's services with its own (cold) caches.
+func (e *cbEnv) gateway() http.Handler {
+	gw := &gateway.GatewayConfig{
+		DisableLogging: true,
+		NATSConn:       e.nc,
+		Region:         gwfix.Region,
+		ExpectedNodes:  1,
+		IAMService:     e.counter,
+		Credentials:    credverify.New(e.counter, e.sts),
+		STSService:     e.sts,
+	}
+	withCapabilities(gw)
+	withIAMAndSTS(gw)
+	return gw.SetupRoutes()
+}
+
+func (e *cbEnv) newKey(t *testing.T, user string) cbCreds {
+	t.Helper()
+	k, err := e.iam.CreateAccessKey(e.accountID, &iam.CreateAccessKeyInput{UserName: aws.String(user)})
+	require.NoError(t, err)
+	return cbCreds{akid: aws.StringValue(k.AccessKey.AccessKeyId), secret: aws.StringValue(k.AccessKey.SecretAccessKey)}
+}
+
+func (e *cbEnv) newUser(t *testing.T, name string) (cbCreds, string) {
+	t.Helper()
+	u, err := e.iam.CreateUser(e.accountID, &iam.CreateUserInput{UserName: aws.String(name)})
+	require.NoError(t, err)
+	return e.newKey(t, name), aws.StringValue(u.User.UserId)
+}
+
+func (e *cbEnv) putUserPolicy(t *testing.T, user, doc string) {
+	t.Helper()
+	_, err := e.iam.PutUserPolicy(e.accountID, &iam.PutUserPolicyInput{
+		UserName: aws.String(user), PolicyName: aws.String("p"), PolicyDocument: aws.String(doc),
+	})
+	require.NoError(t, err)
+}
+
+// request builds a signed (or, for a zero cbCreds, unsigned) query-protocol POST.
+// Each request gets a distinct source address so the auth-failure lockout,
+// which is per source IP, never couples one case to another.
+func (e *cbEnv) request(t *testing.T, h http.Handler, c cbCreds, service string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	body := []byte(form.Encode())
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Host = "localhost:9999"
+	n := e.addr.Add(1)
+	req.RemoteAddr = fmt.Sprintf("10.%d.%d.%d:40000", (n>>16)&0xff, (n>>8)&0xff, n&0xff)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if c.token != "" {
+		req.Header.Set("X-Amz-Security-Token", c.token)
+	}
+	if c.akid != "" {
+		gwfix.SignRequestAs(t, req, body, c.akid, c.secret, service, time.Now().UTC())
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+type cbCreds struct {
+	akid, secret, token string
+}
+
+func newCBEnv(t *testing.T, opts cbEnvOpts) *cbEnv {
+	t.Helper()
+	srv, nc, _ := testutil.StartTestJetStream(t)
+	e := &cbEnv{nc: nc, iamNC: nc, js: testutil.NewJetStream(t, nc)}
+	if opts.separateIAMConn {
+		iamNC, err := nats.Connect(srv.ClientURL())
+		require.NoError(t, err)
+		t.Cleanup(iamNC.Close)
+		e.iamNC = iamNC
+	}
+
+	masterKey, err := iamdomain.GenerateMasterKey()
+	require.NoError(t, err)
+	e.iam, err = iamdomain.NewIAMServiceImpl(t.Context(), e.iamNC, masterKey)
+	require.NoError(t, err)
+	iamJS := testutil.NewJetStream(t, e.iamNC)
+	e.sts, err = stsdomain.NewSTSServiceImpl(t.Context(), e.iamNC, e.iam, masterKey, ekscluster.NewOIDCJWKSReader(iamJS))
+	require.NoError(t, err)
+	if !opts.noRevoker {
+		e.iam.SetSessionRevoker(e.sts)
+	}
+
+	encrypted, err := iamdomain.EncryptSecret(cbRootSecret, masterKey)
+	require.NoError(t, err)
+	require.NoError(t, e.iam.SeedBootstrap(&iamdomain.BootstrapData{
+		AccessKeyID: cbRootAKID, EncryptedSecret: encrypted, AccountID: awsidentifiers.GlobalAccountID,
+	}))
+
+	acct, err := e.iam.CreateAccount("tenant")
+	require.NoError(t, err)
+	require.Equal(t, testDiscAccount, acct.AccountID, "web-identity fixtures assume the first tenant account")
+	e.accountID = acct.AccountID
+	e.alice, e.aliceID = e.newUser(t, "alice")
+
+	e.counter = &cbDecryptCounter{IAMServiceImpl: e.iam}
+	e.h = e.gateway()
+	return e
+}
+
+type cbEnvOpts struct {
+	// noRevoker leaves IAM without the STS session revoker, standing in for a
+	// revocation that failed at delete time.
+	noRevoker bool
+	// separateIAMConn gives IAM and STS their own NATS connection, so it can be
+	// closed while the gateway's own connection stays up.
+	separateIAMConn bool
+}
+
+func cbOutcomeOf(rec *httptest.ResponseRecorder) cbOutcome {
+	body := rec.Body.String()
+	return cbOutcome{status: rec.Code, code: cbXML(body, "Code"), message: cbXML(body, "Message")}
+}
+
+func cbRegistry(code string) cbOutcome {
+	m := awserrors.ErrorLookup[code]
+	return cbOutcome{status: m.HTTPCode, code: code, message: m.Message}
+}
+
+func cbForm(action string, kv ...string) url.Values {
+	v := url.Values{"Action": {action}, "Version": {"2011-06-15"}}
+	if cbIAMActions[action] {
+		v.Set("Version", "2010-05-08")
+	}
+	for i := 0; i+1 < len(kv); i += 2 {
+		v.Set(kv[i], kv[i+1])
+	}
+	return v
+}
+
+func cbXML(body, tag string) string {
+	m := regexp.MustCompile(`<` + tag + `>([^<]*)</` + tag + `>`).FindStringSubmatch(body)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+const (
+	cbRootAKID   = "AKIACBROOTKEYAAAAAAA"
+	cbRootSecret = "cb-root-secret-0123456789abcdefghijklmn"
+	cbUnknownKey = "AKIACBUNKNOWNKEYAAAA"
+	cbUnknownSes = "ASIACBUNKNOWNSESSION"
+	cbBadSecret  = "WRONG-secret-0123456789abcdefghijklmnop"
+)
+
+// cbDecryptCounter is the real IAM service with DecryptSecret counted, so a test
+// can observe whether the door decrypted a secret before rejecting a request.
+type cbDecryptCounter struct {
+	*iamdomain.IAMServiceImpl
+
+	decrypts atomic.Int32
+}
+
+func (c *cbDecryptCounter) DecryptSecret(ciphertext string) (string, error) {
+	c.decrypts.Add(1)
+	return c.IAMServiceImpl.DecryptSecret(ciphertext)
+}
+
+func cbSessionFrom(t *testing.T, rec *httptest.ResponseRecorder) cbCreds {
+	t.Helper()
+	require.Equalf(t, http.StatusOK, rec.Code, "mint failed: %s", rec.Body.String())
+	body := rec.Body.String()
+	c := cbCreds{akid: cbXML(body, "AccessKeyId"), secret: cbXML(body, "SecretAccessKey"), token: cbXML(body, "SessionToken")}
+	require.True(t, strings.HasPrefix(c.akid, "ASIA"), "session AKID %q", c.akid)
+	require.NotEmpty(t, c.token)
+	return c
+}
+
+// withIAMAndSTS registers IAM and STS together on gw, with the unsigned
+// web-identity capability, as awsgw composes them.
+func withIAMAndSTS(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
+	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	return withServices(gw, iamRegistration(gw), stsRegistration(gw))
+}
+
+const (
+	testDiscAccount = "000000000001"
+	testDiscCluster = "h1"
+	testDiscIssuer  = "https://10.0.0.1:9999/oidc/eks/ap-southeast-2/000000000001/h1"
+)
+
+// cbIAMActions are the IAM actions these tests send; every other action is STS.
+var cbIAMActions = map[string]bool{"ListUsers": true, "CreateUser": true, "GetUser": true}
+
+// stsRegistration is the STS registration over the IAMService and STSService
+// gw holds, as the awsgw role composes it. Set them on gw first.
+func stsRegistration(gw *gateway.GatewayConfig) dispatch.Registration {
+	return stsawsapi.NewRegistration(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
 }

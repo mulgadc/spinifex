@@ -5,7 +5,7 @@
 // credentials and identity-policy outcomes are pinned in
 // auth_current_behaviour_test.go and are not repeated here.
 
-package gateway
+package awsgw_test
 
 import (
 	"bytes"

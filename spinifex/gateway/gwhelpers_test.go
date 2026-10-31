@@ -2,22 +2,33 @@ package gateway
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"encoding/xml"
+	"errors"
+	"fmt"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -329,4 +340,513 @@ func elbv2Request(accountID, body string) *http.Request {
 	ctx := reqctx.WithService(req.Context(), "elasticloadbalancing")
 	ctx = withPrincipalField(ctx, fieldAccountID, accountID)
 	return withTestIdentity(req.WithContext(ctx))
+}
+
+// withServices makes regs the gateway's registered services.
+func withServices(gw *GatewayConfig, regs ...dispatch.Registration) *GatewayConfig {
+	b := dispatch.NewBuilder()
+	for _, reg := range regs {
+		if err := b.Register(reg); err != nil {
+			panic(err)
+		}
+	}
+	gw.Services = b.Build()
+	return gw
+}
+
+// withIAM registers IAM alone on gw.
+func withIAM(gw *GatewayConfig) *GatewayConfig {
+	return withServices(gw, iamRegistration(gw))
+}
+
+// iamRegistration is the IAM registration over the IAMService, NATS connection
+// and node count gw holds, as the awsgw role composes it. Set them on gw first.
+func iamRegistration(gw *GatewayConfig) dispatch.Registration {
+	return iamawsapi.NewRegistration(iamawsapi.Deps{
+		IAM: gw.IAMService,
+		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
+		},
+	})
+}
+
+// flexMockIAMService is a configurable mock with per-method overrides. It
+// embeds the interface so it satisfies the full contract; only the fn-field
+// methods below are wired, and any other method nil-panics if a test reaches
+// an unmocked path.
+type flexMockIAMService struct {
+	iamdomain.IAMService
+
+	createUserFn           func(string, *iam.CreateUserInput) (*iam.CreateUserOutput, error)
+	getUserFn              func(string, *iam.GetUserInput) (*iam.GetUserOutput, error)
+	listUsersFn            func(string, *iam.ListUsersInput) (*iam.ListUsersOutput, error)
+	deleteUserFn           func(string, *iam.DeleteUserInput) (*iam.DeleteUserOutput, error)
+	createAccessKeyFn      func(string, *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error)
+	listAccessKeysFn       func(string, *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error)
+	deleteAccessKeyFn      func(string, *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error)
+	updateAccessKeyFn      func(string, *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error)
+	canonicalResourceARNFn func(string, arn.IAMResourceType, string) (string, error)
+	lookupAccessKeyFn      func(string) (*iamdomain.AccessKey, error)
+
+	getAccountSummaryFn func(string, *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error)
+	getRoleFn           func(string, *iam.GetRoleInput) (*iam.GetRoleOutput, error)
+}
+
+func (m *flexMockIAMService) AddUserToGroup(_ string, _ *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
+	return &iam.AddUserToGroupOutput{}, nil
+}
+
+func (m *flexMockIAMService) AttachGroupPolicy(_ string, _ *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
+	return &iam.AttachGroupPolicyOutput{}, nil
+}
+
+func (m *flexMockIAMService) CanonicalResourceARN(accountID string, kind arn.IAMResourceType, name string) (string, error) {
+	if m.canonicalResourceARNFn != nil {
+		return m.canonicalResourceARNFn(accountID, kind, name)
+	}
+	return arn.FormatIAMPath(kind, accountID, "/", name), nil
+}
+
+func (m *flexMockIAMService) CreateAccessKey(accountID string, input *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error) {
+	if m.createAccessKeyFn != nil {
+		return m.createAccessKeyFn(accountID, input)
+	}
+	return &iam.CreateAccessKeyOutput{}, nil
+}
+
+func (m *flexMockIAMService) CreateGroup(_ string, _ *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
+	return &iam.CreateGroupOutput{}, nil
+}
+
+func (m *flexMockIAMService) CreateUser(accountID string, input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
+	if m.createUserFn != nil {
+		return m.createUserFn(accountID, input)
+	}
+	return &iam.CreateUserOutput{}, nil
+}
+
+func (m *flexMockIAMService) DeleteAccessKey(accountID string, input *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error) {
+	if m.deleteAccessKeyFn != nil {
+		return m.deleteAccessKeyFn(accountID, input)
+	}
+	return &iam.DeleteAccessKeyOutput{}, nil
+}
+
+func (m *flexMockIAMService) DeleteGroup(_ string, _ *iam.DeleteGroupInput) (*iam.DeleteGroupOutput, error) {
+	return &iam.DeleteGroupOutput{}, nil
+}
+
+func (m *flexMockIAMService) DeleteGroupPolicy(_ string, _ *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	return &iam.DeleteGroupPolicyOutput{}, nil
+}
+
+func (m *flexMockIAMService) DeleteUser(accountID string, input *iam.DeleteUserInput) (*iam.DeleteUserOutput, error) {
+	if m.deleteUserFn != nil {
+		return m.deleteUserFn(accountID, input)
+	}
+	return &iam.DeleteUserOutput{}, nil
+}
+
+func (m *flexMockIAMService) DeleteUserPolicy(_ string, _ *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
+	return &iam.DeleteUserPolicyOutput{}, nil
+}
+
+func (m *flexMockIAMService) DetachGroupPolicy(_ string, _ *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
+	return &iam.DetachGroupPolicyOutput{}, nil
+}
+
+func (m *flexMockIAMService) GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+	if m.getAccountSummaryFn != nil {
+		return m.getAccountSummaryFn(accountID, input)
+	}
+	return &iam.GetAccountSummaryOutput{}, nil
+}
+
+func (m *flexMockIAMService) GetGroup(_ string, _ *iam.GetGroupInput) (*iam.GetGroupOutput, error) {
+	return &iam.GetGroupOutput{}, nil
+}
+
+func (m *flexMockIAMService) GetGroupPolicy(_ string, _ *iam.GetGroupPolicyInput) (*iam.GetGroupPolicyOutput, error) {
+	return &iam.GetGroupPolicyOutput{}, nil
+}
+
+// GetRole answers NoSuchEntity by default: the STS identity gate resolves the
+// target role, and a mock that invented one would let a test pass against a
+// role the account does not hold.
+func (m *flexMockIAMService) GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+	if m.getRoleFn != nil {
+		return m.getRoleFn(accountID, input)
+	}
+	return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+}
+
+func (m *flexMockIAMService) GetUser(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error) {
+	if m.getUserFn != nil {
+		return m.getUserFn(accountID, input)
+	}
+	return &iam.GetUserOutput{}, nil
+}
+
+func (m *flexMockIAMService) GetUserPolicy(_ string, _ *iam.GetUserPolicyInput) (*iam.GetUserPolicyOutput, error) {
+	return &iam.GetUserPolicyOutput{}, nil
+}
+
+func (m *flexMockIAMService) ListAccessKeys(accountID string, input *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error) {
+	if m.listAccessKeysFn != nil {
+		return m.listAccessKeysFn(accountID, input)
+	}
+	return &iam.ListAccessKeysOutput{}, nil
+}
+
+func (m *flexMockIAMService) ListAccountAliases(_ string, _ *iam.ListAccountAliasesInput) (*iam.ListAccountAliasesOutput, error) {
+	return &iam.ListAccountAliasesOutput{}, nil
+}
+
+func (m *flexMockIAMService) ListAttachedGroupPolicies(_ string, _ *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
+	return &iam.ListAttachedGroupPoliciesOutput{}, nil
+}
+
+func (m *flexMockIAMService) ListGroupPolicies(_ string, _ *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
+	return &iam.ListGroupPoliciesOutput{}, nil
+}
+
+func (m *flexMockIAMService) ListGroups(_ string, _ *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
+	return &iam.ListGroupsOutput{}, nil
+}
+
+func (m *flexMockIAMService) ListGroupsForUser(_ string, _ *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
+	return &iam.ListGroupsForUserOutput{}, nil
+}
+
+func (m *flexMockIAMService) ListUserPolicies(_ string, _ *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
+	return &iam.ListUserPoliciesOutput{}, nil
+}
+
+func (m *flexMockIAMService) ListUsers(accountID string, input *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
+	if m.listUsersFn != nil {
+		return m.listUsersFn(accountID, input)
+	}
+	return &iam.ListUsersOutput{}, nil
+}
+
+func (m *flexMockIAMService) LookupAccessKey(accessKeyID string) (*iamdomain.AccessKey, error) {
+	if m.lookupAccessKeyFn != nil {
+		return m.lookupAccessKeyFn(accessKeyID)
+	}
+	return &iamdomain.AccessKey{AccessKeyID: accessKeyID, AccountID: "000000000000", UserName: "user"}, nil
+}
+
+func (m *flexMockIAMService) PutGroupPolicy(_ string, _ *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
+	return &iam.PutGroupPolicyOutput{}, nil
+}
+
+func (m *flexMockIAMService) PutUserPolicy(_ string, _ *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
+	return &iam.PutUserPolicyOutput{}, nil
+}
+
+func (m *flexMockIAMService) RemoveUserFromGroup(_ string, _ *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
+	return &iam.RemoveUserFromGroupOutput{}, nil
+}
+
+func (m *flexMockIAMService) UpdateAccessKey(accountID string, input *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error) {
+	if m.updateAccessKeyFn != nil {
+		return m.updateAccessKeyFn(accountID, input)
+	}
+	return &iam.UpdateAccessKeyOutput{}, nil
+}
+
+// IAM_Request dispatches r to the registered IAM service exactly as Request
+// does, registering it first from the fields gw holds when the test has not.
+func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) error {
+	if gw.Services == nil {
+		withIAM(gw)
+	}
+	entry, ok := gw.registered(iamawsapi.ServiceName)
+	if !ok {
+		panic("IAM is not registered on this gateway")
+	}
+	return gw.dispatchRegistered(entry, w, r)
+}
+
+func loadIAMExamples(t *testing.T) iamExamplesFile {
+	t.Helper()
+
+	data, err := os.ReadFile("testdata/aws/examples-1.json")
+	require.NoError(t, err)
+
+	var examples iamExamplesFile
+	require.NoError(t, json.Unmarshal(data, &examples))
+	require.NotEmpty(t, examples.Examples)
+	return examples
+}
+
+type echoIAMService struct {
+	flexMockIAMService
+
+	wantOutput   any
+	gotAccountID string
+	gotInput     any
+}
+
+func (svc *echoIAMService) AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
+	return echoIAMCall[iam.AddRoleToInstanceProfileInput, iam.AddRoleToInstanceProfileOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) AddUserToGroup(accountID string, input *iam.AddUserToGroupInput) (*iam.AddUserToGroupOutput, error) {
+	return echoIAMCall[iam.AddUserToGroupInput, iam.AddUserToGroupOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) AttachGroupPolicy(accountID string, input *iam.AttachGroupPolicyInput) (*iam.AttachGroupPolicyOutput, error) {
+	return echoIAMCall[iam.AttachGroupPolicyInput, iam.AttachGroupPolicyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) AttachRolePolicy(accountID string, input *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
+	return echoIAMCall[iam.AttachRolePolicyInput, iam.AttachRolePolicyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) AttachUserPolicy(accountID string, input *iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error) {
+	return echoIAMCall[iam.AttachUserPolicyInput, iam.AttachUserPolicyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) CreateAccessKey(accountID string, input *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error) {
+	return echoIAMCall[iam.CreateAccessKeyInput, iam.CreateAccessKeyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) CreateGroup(accountID string, input *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
+	return echoIAMCall[iam.CreateGroupInput, iam.CreateGroupOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
+	return echoIAMCall[iam.CreateInstanceProfileInput, iam.CreateInstanceProfileOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) CreateOpenIDConnectProvider(accountID string, input *iam.CreateOpenIDConnectProviderInput) (*iam.CreateOpenIDConnectProviderOutput, error) {
+	return echoIAMCall[iam.CreateOpenIDConnectProviderInput, iam.CreateOpenIDConnectProviderOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) CreateRole(accountID string, input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
+	return echoIAMCall[iam.CreateRoleInput, iam.CreateRoleOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) CreateUser(accountID string, input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
+	return echoIAMCall[iam.CreateUserInput, iam.CreateUserOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) DeleteAccessKey(accountID string, input *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error) {
+	return echoIAMCall[iam.DeleteAccessKeyInput, iam.DeleteAccessKeyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) DeleteGroupPolicy(accountID string, input *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	return echoIAMCall[iam.DeleteGroupPolicyInput, iam.DeleteGroupPolicyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) DeleteInstanceProfile(accountID string, input *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error) {
+	return echoIAMCall[iam.DeleteInstanceProfileInput, iam.DeleteInstanceProfileOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) DeleteRole(accountID string, input *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
+	return echoIAMCall[iam.DeleteRoleInput, iam.DeleteRoleOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) DeleteRolePolicy(accountID string, input *iam.DeleteRolePolicyInput) (*iam.DeleteRolePolicyOutput, error) {
+	return echoIAMCall[iam.DeleteRolePolicyInput, iam.DeleteRolePolicyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) DeleteUser(accountID string, input *iam.DeleteUserInput) (*iam.DeleteUserOutput, error) {
+	return echoIAMCall[iam.DeleteUserInput, iam.DeleteUserOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) DeleteUserPolicy(accountID string, input *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
+	return echoIAMCall[iam.DeleteUserPolicyInput, iam.DeleteUserPolicyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
+	return echoIAMCall[iam.GetAccountSummaryInput, iam.GetAccountSummaryOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
+	if _, ok := svc.wantOutput.(*iam.GetInstanceProfileOutput); !ok {
+		return &iam.GetInstanceProfileOutput{InstanceProfile: &iam.InstanceProfile{}}, nil
+	}
+	return echoIAMCall[iam.GetInstanceProfileInput, iam.GetInstanceProfileOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+	return echoIAMCall[iam.GetRoleInput, iam.GetRoleOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) GetUser(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error) {
+	return echoIAMCall[iam.GetUserInput, iam.GetUserOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) ListAccessKeys(accountID string, input *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error) {
+	return echoIAMCall[iam.ListAccessKeysInput, iam.ListAccessKeysOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) ListAccountAliases(accountID string, input *iam.ListAccountAliasesInput) (*iam.ListAccountAliasesOutput, error) {
+	return echoIAMCall[iam.ListAccountAliasesInput, iam.ListAccountAliasesOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) ListGroupPolicies(accountID string, input *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
+	return echoIAMCall[iam.ListGroupPoliciesInput, iam.ListGroupPoliciesOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) ListGroups(accountID string, input *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
+	return echoIAMCall[iam.ListGroupsInput, iam.ListGroupsOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) ListGroupsForUser(accountID string, input *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
+	return echoIAMCall[iam.ListGroupsForUserInput, iam.ListGroupsForUserOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) ListRoleTags(accountID string, input *iam.ListRoleTagsInput) (*iam.ListRoleTagsOutput, error) {
+	return echoIAMCall[iam.ListRoleTagsInput, iam.ListRoleTagsOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) ListUserTags(accountID string, input *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
+	return echoIAMCall[iam.ListUserTagsInput, iam.ListUserTagsOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) ListUsers(accountID string, input *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
+	return echoIAMCall[iam.ListUsersInput, iam.ListUsersOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) PutGroupPolicy(accountID string, input *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
+	return echoIAMCall[iam.PutGroupPolicyInput, iam.PutGroupPolicyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) PutRolePolicy(accountID string, input *iam.PutRolePolicyInput) (*iam.PutRolePolicyOutput, error) {
+	return echoIAMCall[iam.PutRolePolicyInput, iam.PutRolePolicyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) PutUserPolicy(accountID string, input *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
+	return echoIAMCall[iam.PutUserPolicyInput, iam.PutUserPolicyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) RemoveRoleFromInstanceProfile(accountID string, input *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
+	return echoIAMCall[iam.RemoveRoleFromInstanceProfileInput, iam.RemoveRoleFromInstanceProfileOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) RemoveUserFromGroup(accountID string, input *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
+	return echoIAMCall[iam.RemoveUserFromGroupInput, iam.RemoveUserFromGroupOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) TagRole(accountID string, input *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
+	return echoIAMCall[iam.TagRoleInput, iam.TagRoleOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) TagUser(accountID string, input *iam.TagUserInput) (*iam.TagUserOutput, error) {
+	return echoIAMCall[iam.TagUserInput, iam.TagUserOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) UntagRole(accountID string, input *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
+	return echoIAMCall[iam.UntagRoleInput, iam.UntagRoleOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) UntagUser(accountID string, input *iam.UntagUserInput) (*iam.UntagUserOutput, error) {
+	return echoIAMCall[iam.UntagUserInput, iam.UntagUserOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) UpdateAccessKey(accountID string, input *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error) {
+	return echoIAMCall[iam.UpdateAccessKeyInput, iam.UpdateAccessKeyOutput](svc, accountID, input)
+}
+
+func (svc *echoIAMService) UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
+	return echoIAMCall[iam.UpdateAssumeRolePolicyInput, iam.UpdateAssumeRolePolicyOutput](svc, accountID, input)
+}
+
+// setupIAMRequestHandler wires an http.Handler for IAM_Request with injected SigV4 context values.
+func setupIAMRequestHandler(svc iamdomain.IAMService) http.Handler {
+	gw := &GatewayConfig{
+		DisableLogging: true,
+		IAMService:     svc,
+		Credentials:    credverify.New(svc, nil),
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		ctx = reqctx.WithService(ctx, "iam")
+		ctx = withPrincipalField(ctx, fieldAccountID, "000000000000")
+		ctx = withPrincipalField(ctx, fieldIdentity, "root")
+		ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
+		r = r.WithContext(ctx)
+		if err := gw.IAM_Request(w, r); err != nil {
+			gw.ErrorHandler(w, r, err)
+		}
+	})
+}
+
+func unmarshalIAMExample(t *testing.T, action, field string, data json.RawMessage, target any) {
+	t.Helper()
+
+	if len(data) == 0 || string(data) == "null" {
+		return
+	}
+	require.NoError(t, json.Unmarshal(data, target), "%s example %s", action, field)
+}
+
+func normalizeEmptySlices(v reflect.Value) {
+	if !v.IsValid() {
+		return
+	}
+	if v.Kind() == reflect.Interface && !v.IsNil() {
+		v = v.Elem()
+	}
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return
+		}
+		normalizeEmptySlices(v.Elem())
+		return
+	}
+	if v.Kind() != reflect.Struct {
+		return
+	}
+
+	for _, field := range v.Fields() {
+		switch field.Kind() {
+		case reflect.Slice:
+			if field.Len() == 0 && field.CanSet() {
+				field.Set(reflect.Zero(field.Type()))
+			}
+			for j := 0; j < field.Len(); j++ {
+				normalizeEmptySlices(field.Index(j))
+			}
+		case reflect.Pointer, reflect.Struct, reflect.Interface:
+			normalizeEmptySlices(field)
+		}
+	}
+}
+
+// realAliasesIAMService answers ListAccountAliases from the real service, which
+// needs no storage, so the test sees the response the gateway actually sends.
+type realAliasesIAMService struct {
+	flexMockIAMService
+}
+
+func (realAliasesIAMService) ListAccountAliases(accountID string, input *iam.ListAccountAliasesInput) (*iam.ListAccountAliasesOutput, error) {
+	return (&iamdomain.IAMServiceImpl{}).ListAccountAliases(accountID, input)
+}
+
+type iamExamplesFile struct {
+	Examples map[string][]iamExample `json:"examples"`
+}
+
+func echoIAMCall[In any, Out any](svc *echoIAMService, accountID string, input *In) (*Out, error) {
+	svc.gotAccountID = accountID
+	svc.gotInput = input
+
+	if svc.wantOutput == nil {
+		return new(Out), nil
+	}
+	output, ok := svc.wantOutput.(*Out)
+	if !ok {
+		return nil, fmt.Errorf("echo IAM output type %T is not %T", svc.wantOutput, new(Out))
+	}
+	return output, nil
+}
+
+type iamExample struct {
+	Input  json.RawMessage `json:"input"`
+	Output json.RawMessage `json:"output"`
+	Title  string          `json:"title"`
 }

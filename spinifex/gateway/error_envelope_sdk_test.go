@@ -27,23 +27,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// registerTestCodes adds the codes the SDK fixtures raise for one test, then
-// restores the table: a code the registry already defines gets its own entry
-// back rather than being removed.
+// registerTestCodes adds codes only the SDK fixtures raise, as the Lambda and
+// SQS domains would, and removes them afterwards.
 func registerTestCodes(t *testing.T, codes map[string]awserrors.ErrorMessage) {
 	t.Helper()
-	prior := map[string]awserrors.ErrorMessage{}
-	for code := range codes {
-		if m, ok := awserrors.ErrorLookup[code]; ok {
-			prior[code] = m
-		}
-	}
 	maps.Copy(awserrors.ErrorLookup, codes)
 	t.Cleanup(func() {
 		for code := range codes {
 			delete(awserrors.ErrorLookup, code)
 		}
-		maps.Copy(awserrors.ErrorLookup, prior)
 	})
 }
 

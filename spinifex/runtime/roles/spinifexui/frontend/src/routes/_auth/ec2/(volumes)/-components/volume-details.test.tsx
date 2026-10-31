@@ -1,5 +1,5 @@
 import type { Volume } from "@aws-sdk/client-ec2"
-import { screen, waitFor } from "@testing-library/react"
+import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -77,6 +77,12 @@ const INSTANCES = [
   },
 ]
 
+async function openAttachForm(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Attach" }))
+
+  return within(screen.getByRole("region", { name: "Attach volume" }))
+}
+
 function renderVolume(
   volume: Volume,
   tab: PanelTab = "overview",
@@ -131,10 +137,10 @@ describe("VolumeDetails", () => {
     const user = userEvent.setup()
     renderVolume(AVAILABLE)
 
-    await user.click(screen.getByRole("button", { name: "Attach" }))
-    await user.click(screen.getByLabelText("Instance"))
+    const form = await openAttachForm(user)
+    await user.click(form.getByLabelText("Instance"))
     await user.click(await screen.findByRole("option", { name: "i-9" }))
-    await user.click(screen.getByRole("button", { name: "Attach" }))
+    await user.click(form.getByRole("button", { name: "Attach" }))
 
     await waitFor(() => {
       expect(sdk.send).toHaveBeenCalled()
@@ -142,14 +148,19 @@ describe("VolumeDetails", () => {
     expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
       input: { VolumeId: "vol-2", InstanceId: "i-9" },
     })
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("region", { name: "Attach volume" }),
+      ).not.toBeInTheDocument()
+    })
   })
 
   it("offers running and stopped instances in the volume's zone only", async () => {
     const user = userEvent.setup()
     renderVolume(AVAILABLE)
 
-    await user.click(screen.getByRole("button", { name: "Attach" }))
-    await user.click(screen.getByLabelText("Instance"))
+    const form = await openAttachForm(user)
+    await user.click(form.getByLabelText("Instance"))
     await screen.findByRole("option", { name: "i-9" })
 
     expect(
@@ -161,12 +172,12 @@ describe("VolumeDetails", () => {
     const user = userEvent.setup()
     renderVolume(AVAILABLE, "overview", INSTANCES.slice(2))
 
-    await user.click(screen.getByRole("button", { name: "Attach" }))
+    const form = await openAttachForm(user)
 
     await expect(
-      screen.findByText("No running or stopped instances in us-east-1a."),
+      form.findByText("No running or stopped instances in us-east-1a."),
     ).resolves.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Attach" })).toBeDisabled()
+    expect(form.getByRole("button", { name: "Attach" })).toBeDisabled()
   })
 
   it("keeps resize and delete visible but disabled while attached", () => {
@@ -176,13 +187,23 @@ describe("VolumeDetails", () => {
     expect(screen.getByRole("button", { name: "Delete volume" })).toBeDisabled()
   })
 
-  it("links an available volume to its resize page", () => {
+  it("resizes an available volume from its settings", async () => {
+    const user = userEvent.setup()
     renderVolume(AVAILABLE, "settings")
 
-    expect(screen.getByRole("link", { name: "Resize" })).toHaveAttribute(
-      "href",
-      "/ec2/modify-volume/vol-2",
-    )
     expect(screen.getByRole("button", { name: "Delete volume" })).toBeEnabled()
+    await user.click(screen.getByRole("button", { name: "Resize" }))
+    const form = within(screen.getByRole("region", { name: "Resize volume" }))
+    const size = form.getByLabelText("New size (GiB)")
+    await user.clear(size)
+    await user.type(size, "50")
+    await user.click(form.getByRole("button", { name: "Resize volume" }))
+
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalled()
+    })
+    expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
+      input: { VolumeId: "vol-2", Size: 50 },
+    })
   })
 })

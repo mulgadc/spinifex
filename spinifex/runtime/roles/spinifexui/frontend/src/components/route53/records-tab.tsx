@@ -1,57 +1,23 @@
 import type { Change, ResourceRecordSet } from "@aws-sdk/client-route-53"
-import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { Pencil, Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
-import { useForm, useWatch } from "react-hook-form"
 
 import { type DataColumn, DataTable } from "@/components/data-table"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { ErrorBanner } from "@/components/error-banner"
-import { SelectField, selectOptions, TextField } from "@/components/form-fields"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+import { editChanges, RecordForm } from "@/components/route53/record-form"
 import { Button } from "@/components/ui/button"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldTitle,
-} from "@/components/ui/field"
-import { Textarea } from "@/components/ui/textarea"
 import type { ActivationState } from "@/lib/route53-activation"
 import { useChangeResourceRecordSets } from "@/mutations/route53"
 import { route53RecordSetsQueryOptions } from "@/queries/route53"
 import {
   decodeRecordName,
-  EDITABLE_RECORD_TYPES,
-  ensureTrailingDot,
   isEditableType,
   isZoneOwnedRecord,
-  RECORD_VALUE_HINTS,
   type RecordSetFormData,
-  recordSetSchema,
-  sameName,
-  toFormValues,
   toRecordSet,
 } from "@/types/route53"
-
-const DEFAULT_TTL_SECONDS = 300
-
-const NEW_RECORD_DEFAULTS: RecordSetFormData = {
-  name: "",
-  type: "A",
-  ttl: DEFAULT_TTL_SECONDS,
-  values: "",
-}
 
 interface RecordsTabProps {
   zoneId: string
@@ -73,27 +39,6 @@ function recordValues(recordSet: ResourceRecordSet): string[] {
   }
 
   return (recordSet.ResourceRecords ?? []).map((r) => r.Value ?? "")
-}
-
-// editChanges is the batch that turns `original` into `updated`. A record set
-// is keyed by name and type, so changing either is a delete and a create in one
-// atomic batch; otherwise it is an UPSERT.
-export function editChanges(
-  original: ResourceRecordSet,
-  updated: ResourceRecordSet,
-): Change[] {
-  const sameKey =
-    sameName(original.Name ?? "", updated.Name ?? "") &&
-    original.Type === updated.Type
-
-  if (sameKey) {
-    return [{ Action: "UPSERT", ResourceRecordSet: updated }]
-  }
-
-  return [
-    { Action: "DELETE", ResourceRecordSet: original },
-    { Action: "CREATE", ResourceRecordSet: updated },
-  ]
 }
 
 interface RecordActionsProps {
@@ -220,7 +165,7 @@ export function RecordsTab({
   const notServed =
     activationState !== undefined && activationState !== "ACTIVE"
 
-  const dialogOpen = addOpen || editTarget !== undefined
+  const formOpen = addOpen || editTarget !== undefined
 
   const submitChanges = async (changes: Change[]): Promise<boolean> => {
     try {
@@ -287,8 +232,8 @@ export function RecordsTab({
         </div>
       )}
 
-      {/* An open dialog shows the refusal itself, beside the values refused. */}
-      {changeMutation.error && !dialogOpen && (
+      {/* An open form shows the refusal itself, beside the values refused. */}
+      {changeMutation.error && !formOpen && (
         <ErrorBanner
           error={changeMutation.error}
           msg="Failed to change records"
@@ -321,28 +266,31 @@ export function RecordsTab({
 
       {/* Mounted only while open so every session starts from blank defaults. */}
       {addOpen && (
-        <RecordDialog
+        <RecordForm
           error={changeMutation.error}
           isPending={changeMutation.isPending}
-          mode="add"
-          onOpenChange={setAddOpen}
+          onClose={() => {
+            changeMutation.reset()
+            setAddOpen(false)
+          }}
           onSubmit={handleCreate}
+          zoneId={zoneId}
           zoneName={zoneName}
         />
       )}
 
       {editTarget && (
-        <RecordDialog
+        <RecordForm
           error={changeMutation.error}
-          initialValues={toFormValues(editTarget, zoneName)}
           isPending={changeMutation.isPending}
-          mode="edit"
-          onOpenChange={(open) => {
-            if (!open) {
-              setEditTarget(undefined)
-            }
+          key={recordKey(editTarget)}
+          onClose={() => {
+            changeMutation.reset()
+            setEditTarget(undefined)
           }}
           onSubmit={handleEdit}
+          original={editTarget}
+          zoneId={zoneId}
           zoneName={zoneName}
         />
       )}
@@ -364,114 +312,5 @@ export function RecordsTab({
         title="Delete record"
       />
     </div>
-  )
-}
-
-interface RecordDialogProps {
-  mode: "add" | "edit"
-  zoneName: string
-  initialValues?: RecordSetFormData
-  isPending: boolean
-  error: Error | null
-  onOpenChange: (open: boolean) => void
-  onSubmit: (data: RecordSetFormData) => Promise<void>
-}
-
-function RecordDialog({
-  mode,
-  zoneName,
-  initialValues,
-  isPending,
-  error,
-  onOpenChange,
-  onSubmit,
-}: RecordDialogProps) {
-  const {
-    control,
-    register,
-    handleSubmit,
-    formState: { errors },
-  } = useForm<RecordSetFormData>({
-    resolver: zodResolver(recordSetSchema),
-    defaultValues: initialValues ?? NEW_RECORD_DEFAULTS,
-  })
-
-  const type = useWatch({ control, name: "type" })
-  const handleConfirm = handleSubmit(onSubmit)
-  const isAdd = mode === "add"
-
-  let actionLabel = isAdd ? "Add record" : "Save changes"
-
-  if (isPending) {
-    actionLabel = isAdd ? "Adding…" : "Saving…"
-  }
-
-  return (
-    <AlertDialog onOpenChange={onOpenChange} open>
-      <AlertDialogContent width="md">
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            {isAdd ? "Add record" : "Edit record"}
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            Records in {ensureTrailingDot(zoneName)}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-
-        {error && <ErrorBanner error={error} msg="The change was refused" />}
-
-        <form
-          className="min-w-0 space-y-4"
-          onSubmit={(e) => {
-            e.preventDefault()
-            void handleConfirm()
-          }}
-        >
-          <TextField
-            description={`Leave blank for ${ensureTrailingDot(zoneName)} itself. The zone name is added for you.`}
-            error={errors.name}
-            id="record-name"
-            label="Record name"
-            placeholder="www"
-            {...register("name")}
-          />
-          <SelectField
-            control={control}
-            id="record-type"
-            label="Record type"
-            name="type"
-            options={selectOptions(EDITABLE_RECORD_TYPES)}
-          />
-          <TextField
-            error={errors.ttl}
-            id="record-ttl"
-            label="TTL (seconds)"
-            type="number"
-            {...register("ttl", { valueAsNumber: true })}
-          />
-          <Field>
-            <FieldTitle>
-              <label htmlFor="record-values">Value</label>
-            </FieldTitle>
-            <Textarea
-              aria-invalid={!!errors.values}
-              id="record-values"
-              rows={4}
-              variant="code"
-              {...register("values")}
-            />
-            <FieldDescription>{RECORD_VALUE_HINTS[type]}</FieldDescription>
-            <FieldError errors={[errors.values]} />
-          </Field>
-        </form>
-
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
-          <AlertDialogAction disabled={isPending} onClick={handleConfirm}>
-            {actionLabel}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
   )
 }

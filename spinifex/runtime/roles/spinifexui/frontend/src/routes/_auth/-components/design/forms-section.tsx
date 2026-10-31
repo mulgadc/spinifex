@@ -14,6 +14,7 @@ import { PanelSection } from "@/components/detail-panel"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { FormLock } from "@/components/form-lock"
+import { FormPanel } from "@/components/form-panel"
 import { SwitchList } from "@/components/switch-list"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import { Button } from "@/components/ui/button"
@@ -181,11 +182,12 @@ function SampleCreateForm({ onClose }: { onClose: () => void }) {
 
 export function FormsSection() {
   const [panelOpen, setPanelOpen] = useState(false)
+  const [formOpen, setFormOpen] = useState(false)
   const [picked, setPicked] = useState(["subnet-0a1b2c3d"])
 
   return (
     <CatalogueSection
-      description="Every create flow opens in the side panel. Submitting spins the button in place and locks the form; a failure shows beside the button and releases it."
+      description="Every create flow opens in the side panel, and a form opened from a resource's panel lies over that panel. Submitting spins the button in place and locks the form; a failure shows beside the button and releases it."
       title="Forms"
     >
       <Specimen label="Create flow">
@@ -196,6 +198,16 @@ export function FormsSection() {
         >
           <Plus data-icon="inline-start" />
           Open in the create panel
+        </Button>
+      </Specimen>
+      <Specimen label="Form from a resource's panel">
+        <Button
+          onClick={() => {
+            setFormOpen(true)
+          }}
+          variant="outline"
+        >
+          Open a form panel
         </Button>
       </Specimen>
       <Specimen label="Create form, submit fails after 1.5 s">
@@ -245,6 +257,21 @@ export function FormsSection() {
           />
         </div>
       </Specimen>
+      {formOpen && (
+        <FormPanel
+          onClose={() => {
+            setFormOpen(false)
+          }}
+          subtitle="vol-0a1b2c3d4e5f60718"
+          title="Attach volume"
+        >
+          <SampleCreateForm
+            onClose={() => {
+              setFormOpen(false)
+            }}
+          />
+        </FormPanel>
+      )}
       {panelOpen && (
         <CreatePanel
           onClose={() => {

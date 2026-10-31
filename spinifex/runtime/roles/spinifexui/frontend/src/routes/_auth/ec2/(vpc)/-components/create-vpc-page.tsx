@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import {
   Select,
   SelectContent,
@@ -160,26 +161,30 @@ export function CreateVpcPage({ onClose }: CreateVpcPageProps) {
         {/* Section 1: Resources to create */}
         <Field>
           <FieldTitle>Resources to create</FieldTitle>
-          <div className="flex gap-4">
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                aria-label="VPC only"
-                type="radio"
-                value="vpc-only"
-                {...register("mode")}
-              />
-              VPC only
-            </label>
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                aria-label="VPC and more"
-                type="radio"
-                value="vpc-and-more"
-                {...register("mode")}
-              />
-              VPC and more
-            </label>
-          </div>
+          <Controller
+            control={control}
+            name="mode"
+            render={({ field }) => (
+              <RadioGroup
+                aria-label="Resources to create"
+                className="flex w-auto"
+                onValueChange={field.onChange}
+                value={field.value}
+              >
+                <Label>
+                  <RadioGroupItem aria-label="VPC only" value="vpc-only" />
+                  VPC only
+                </Label>
+                <Label>
+                  <RadioGroupItem
+                    aria-label="VPC and more"
+                    value="vpc-and-more"
+                  />
+                  VPC and more
+                </Label>
+              </RadioGroup>
+            )}
+          />
         </Field>
 
         {/* Section 2: Name tag auto-generation */}

@@ -190,7 +190,7 @@ describe("CreateLoadBalancerPage", () => {
       "my-tg",
     )
     await selectSubnets(user)
-    await user.click(screen.getByLabelText("Internal"))
+    await user.click(screen.getByRole("radio", { name: "Internal" }))
     await user.click(screen.getByLabelText("Security group sg-1 (web)"))
 
     await user.click(
@@ -277,7 +277,9 @@ describe("CreateLoadBalancerPage", () => {
 
     renderWithClient(<CreateLoadBalancerPage onClose={onClose} />, seedClient())
 
-    await user.click(screen.getByLabelText("Network Load Balancer"))
+    await user.click(
+      screen.getByRole("radio", { name: "Network Load Balancer" }),
+    )
 
     await user.type(
       screen.getByLabelText("Name", { selector: "#lb-name" }),

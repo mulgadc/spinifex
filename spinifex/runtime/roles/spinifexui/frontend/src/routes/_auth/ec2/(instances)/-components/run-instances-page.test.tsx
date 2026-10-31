@@ -409,12 +409,14 @@ describe("run-instances security group mode", () => {
     setup()
 
     await expect(
-      screen.findByLabelText("Create new security group"),
+      screen.findByRole("radio", { name: "Create new security group" }),
     ).resolves.toBeChecked()
     expect(screen.getByLabelText("Allow SSH")).toBeChecked()
     expect(screen.getByLabelText("Allow HTTP")).not.toBeChecked()
 
-    await user.click(screen.getByLabelText("Select existing security group"))
+    await user.click(
+      screen.getByRole("radio", { name: "Select existing security group" }),
+    )
 
     expect(
       screen.getByText("No security groups in the resolved VPC."),

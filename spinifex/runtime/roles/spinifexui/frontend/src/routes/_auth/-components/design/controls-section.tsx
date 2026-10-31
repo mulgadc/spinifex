@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import {
   Select,
   SelectContent,
@@ -123,6 +124,21 @@ export function ControlsSection() {
           <Checkbox defaultChecked id="design-check" />
           <Label htmlFor="design-check">sg-0a1b2c3d (web)</Label>
         </div>
+        {/* One of a few exclusive choices in a form. */}
+        <RadioGroup
+          aria-label="Load balancer type"
+          className="flex w-auto"
+          defaultValue="application"
+        >
+          <Label>
+            <RadioGroupItem value="application" />
+            Application
+          </Label>
+          <Label>
+            <RadioGroupItem value="network" />
+            Network
+          </Label>
+        </RadioGroup>
         <ToggleGroup defaultValue={["1D"]} variant="outline">
           {TIME_RANGES.map((range) => (
             <ToggleGroupItem key={range} value={range}>

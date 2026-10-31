@@ -1,7 +1,7 @@
 package gateway
 
 //test:in-package — the gate steps under test are unexported and take their
-// capabilities through the PolicyEvaluator and AccountAdmission interfaces.
+// capabilities through the pipeline.PolicyEvaluator and pipeline.AccountAdmission interfaces.
 
 import (
 	"errors"

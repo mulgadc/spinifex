@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"log/slog"
@@ -82,14 +83,14 @@ type GatewayConfig struct {
 	Throttler   *ratelimit.Throttler       // Per-account+action API request throttler
 	// Admission decides whether a request's account may proceed. Nil fails every
 	// authenticated request closed with InternalError.
-	Admission AccountAdmission
+	Admission pipeline.AccountAdmission
 	// Policy decides authorization for a verified principal. Nil fails every
 	// authorization closed with InternalError.
-	Policy PolicyEvaluator
+	Policy pipeline.PolicyEvaluator
 	// Readiness reports whether the message bus is reachable. Nil skips the
 	// early refusal in the auth middleware and makes the service gate answer
 	// cluster-unavailable.
-	Readiness Readiness
+	Readiness pipeline.Readiness
 	Version   string // Build-time version string (set from cmd.Version)
 	Commit    string // Build-time commit hash (set from cmd.Commit)
 	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil

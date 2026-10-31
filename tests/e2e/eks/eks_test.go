@@ -241,6 +241,16 @@ func TestEKS(t *testing.T) {
 		runIRSAPod(t, c, env, artifacts, fx)
 	})
 
+	t.Run("WorkerIMDS", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runWorkerIMDS(t, c, env, artifacts, fx)
+	})
+
+	t.Run("WorkerIMDSLaunchTemplate", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runWorkerIMDSLaunchTemplate(t, c, fx)
+	})
+
 	t.Run("EBSCSIVolume", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		runEBSCSIVolume(t, c, env, artifacts, fx)
@@ -496,31 +506,7 @@ func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts 
 	_, roleArn, roleName := registerOIDCRole(t, c, fx, "irsa-pod", "E2E IRSA pod role")
 	t.Logf("IRSA pod role: %s", roleArn)
 
-	// awsgw enforces IAM on assumed-role STS calls, so the role needs a
-	// permission policy allowing GetCallerIdentity — an AWS-managed ARN is
-	// opaque and grants nothing, so use a customer-managed policy with an
-	// explicit allow (same pattern as the EBS CSI role below).
-	const stsPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:GetCallerIdentity","Resource":"*"}]}`
-	polOut, err := c.IAM.CreatePolicy(&iam.CreatePolicyInput{
-		PolicyName:     aws.String(roleName + "-policy"),
-		PolicyDocument: aws.String(stsPolicy),
-	})
-	require.NoError(t, err, "create-policy")
-	policyArn := aws.StringValue(polOut.Policy.Arn)
-	t.Cleanup(func() {
-		_, _ = c.IAM.DeletePolicy(&iam.DeletePolicyInput{PolicyArn: aws.String(policyArn)})
-	})
-	_, err = c.IAM.AttachRolePolicy(&iam.AttachRolePolicyInput{
-		RoleName:  aws.String(roleName),
-		PolicyArn: aws.String(policyArn),
-	})
-	require.NoError(t, err, "attach-role-policy")
-	t.Cleanup(func() {
-		_, _ = c.IAM.DetachRolePolicy(&iam.DetachRolePolicyInput{
-			RoleName:  aws.String(roleName),
-			PolicyArn: aws.String(policyArn),
-		})
-	})
+	// The role carries no permission policy: GetCallerIdentity needs none.
 
 	// gatewayBaseURL is the issuer with its /oidc/eks/<region>/<acct>/<cluster>
 	// path stripped — the customer-facing WAN advertise addr (:9999) in-cluster

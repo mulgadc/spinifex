@@ -58,6 +58,10 @@ Authentication uses **EKS access entries** (the API authentication mode) — IAM
 - **Access entries are the only auth path.** `authentication_mode` accepts `API` (the default when unset) and `API_AND_CONFIG_MAP`; bare `CONFIG_MAP` is rejected. Spinifex has no `aws-auth` ConfigMap path, so `API_AND_CONFIG_MAP` behaves as `API`: grant access with access entries.
 - **Security groups are auto-managed.** Spinifex creates the cluster and node-group security groups deterministically (e.g. `eks-cluster-<name>-nodegroup-sg`); `vpc_config.security_group_ids` is ignored. To expose a workload you add an ingress rule to the auto-managed node-group SG.
 - **The worker image is fixed.** Node groups always boot Spinifex's `eks-node` image. `ami_type` is recorded but does not select the image, and the image must be registered on the cluster before you create a node group.
+- **Workers launch with IMDSv2 required and an IMDS hop limit of 2.**
+  This matches AWS managed node groups and lets a pod without IRSA reach the node role through the SDK default credential chain.
+  A node group launch template that sets `metadata_options` overrides each field it sets, and any field it leaves unset keeps the default.
+  Existing workers keep their hop limit until they are replaced or changed with `ModifyInstanceMetadataOptions`.
 - **Default Kubernetes version is `1.32`.**
 
 ### Control plane readiness and kubectl authentication

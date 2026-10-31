@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	instancesvc "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	filterutil "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/nats-io/nats.go"
@@ -43,18 +44,24 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 	}
 
 	var allInstanceTypes []*ec2.InstanceTypeInfo
+	availability := make(map[string]int64)
 	answered := make(map[string]bool, len(frames))
+	usable := 0
 	for _, frame := range frames {
-		var nodeOutput ec2.DescribeInstanceTypesOutput
+		var nodeOutput instancesvc.DescribeInstanceTypesNodeOutput
 		if json.Unmarshal(frame.Data, &nodeOutput) == nil {
 			allInstanceTypes = append(allInstanceTypes, nodeOutput.InstanceTypes...)
+			for name, count := range nodeOutput.Availability {
+				availability[name] += count
+			}
+			usable++
 			if frame.NodeID != "" {
 				answered[frame.NodeID] = true
 			}
 		}
 	}
 
-	// capacity=true filter shows all slots (including duplicates) across nodes.
+	// capacity=true reports cluster-wide free slots per type.
 	showCapacity := false
 	for _, f := range input.Filters {
 		if f.Name != nil && *f.Name == "capacity" {
@@ -76,7 +83,17 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 
 	var finalInstanceTypes []*ec2.InstanceTypeInfo
 	if showCapacity {
-		finalInstanceTypes = allInstanceTypes
+		// No node answered, so nothing is known about capacity. Reporting an
+		// empty list here reads as "no capacity anywhere", which is what made
+		// the console refuse every launch.
+		if usable == 0 {
+			return nil, awserrors.WithRetryAfter(
+				awserrors.Errorf(awserrors.ErrorServiceUnavailable,
+					"cannot determine cluster capacity: no node answered the describe fan-out"),
+				describeIncompleteRetryAfter,
+			)
+		}
+		finalInstanceTypes = expandAvailability(allInstanceTypes, availability)
 	} else {
 		seen := make(map[string]bool)
 		for _, it := range allInstanceTypes {
@@ -141,6 +158,34 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 
 	slog.InfoContext(ctx, "DescribeInstanceTypes: Aggregated response", "total_instance_types", len(finalInstanceTypes), "show_capacity", showCapacity)
 	return output, nil
+}
+
+// expandAvailability returns one entry per free cluster-wide slot for each
+// type, deduplicating the per-node descriptions first.
+//
+// The client SDK drops response fields it does not model, so a count cannot
+// reach the console any other way. Nodes send counts, and only this last hop
+// repeats the entry.
+func expandAvailability(types []*ec2.InstanceTypeInfo, availability map[string]int64) []*ec2.InstanceTypeInfo {
+	byName := make(map[string]*ec2.InstanceTypeInfo, len(types))
+	order := make([]string, 0, len(types))
+	for _, it := range types {
+		if it == nil || it.InstanceType == nil {
+			continue
+		}
+		if _, seen := byName[*it.InstanceType]; !seen {
+			byName[*it.InstanceType] = it
+			order = append(order, *it.InstanceType)
+		}
+	}
+
+	expanded := make([]*ec2.InstanceTypeInfo, 0, len(order))
+	for _, name := range order {
+		for range availability[name] {
+			expanded = append(expanded, byName[name])
+		}
+	}
+	return expanded
 }
 
 // missingInstanceTypes returns the requested types absent from found, in the

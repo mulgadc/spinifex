@@ -10,34 +10,7 @@ import (
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
-
-func TestEKSRequest_UnknownActionReturnsInvalidAction(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	req := httptest.NewRequest(http.MethodGet, "/totally-unknown", nil)
-	ctx := reqctx.WithService(req.Context(), "eks")
-	ctx = withPrincipalField(ctx, fieldAccountID, "111122223333")
-	req = withTestIdentity(req.WithContext(ctx))
-
-	w := httptest.NewRecorder()
-	err := gw.serveEKS(w, req)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
-}
-
-func TestEKSRequest_MissingNATSReturnsServerInternal(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
-	ctx := reqctx.WithService(req.Context(), "eks")
-	ctx = withPrincipalField(ctx, fieldAccountID, "111122223333")
-	req = withTestIdentity(req.WithContext(ctx))
-
-	w := httptest.NewRecorder()
-	err := gw.serveEKS(w, req)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
 
 func TestErrorHandler_EKSEmitsJSONNotXML(t *testing.T) {
 	gw := withContainers(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))

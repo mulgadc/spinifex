@@ -3,7 +3,11 @@ package gateway
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
@@ -11,6 +15,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// dispatchEKS drives the gateway with no NATS connection, so a permitted request
+// reaches the NATS guard and fails there.
+func dispatchEKS(t *testing.T, gw *GatewayConfig, method, path, body string) error {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	ctx := reqctx.WithService(req.Context(), "eks")
+	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
+	req = withTestIdentity(req.WithContext(ctx))
+	return gw.serveEKS(httptest.NewRecorder(), req)
+}
 
 const eksNodeRoleARN = "arn:aws:iam::" + authzAccountID + ":role/eks/node-role"
 

@@ -1,15 +1,9 @@
-//test:in-package — drives EKS_Request through the gateway's unexported test
-// helpers (withTestIdentity, policyMockIAMService) and auth context keys.
-
-package gateway
+package awsapi_test
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,57 +12,91 @@ import (
 	"time"
 
 	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
-
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/internal/testkit/gwtest"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+// eksGateway is the policy harness plus the NATS connection the registration is
+// composed with; a nil connection fails the actions that reach the daemon.
+type eksGateway struct {
+	*gwtest.Harness
+
+	nc *nats.Conn
+}
+
+func scopedEKS(statements ...iamdomain.Statement) *eksGateway {
+	return &eksGateway{Harness: gwtest.Scoped(statements...)}
+}
+
+// as returns the same gateway acting as caller, in caller's own account.
+func (g *eksGateway) as(caller credential.Principal) *eksGateway {
+	h := *g.Harness
+	h.AccountID = caller.AccountID
+	h.Caller = &caller
+	return &eksGateway{Harness: &h, nc: g.nc}
+}
+
+func (g *eksGateway) serve(w http.ResponseWriter, r *http.Request) error {
+	return g.Dispatch(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: g.nc}), eksawsapi.ServiceName, w, r)
+}
+
+func assertNotDenied(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.NotEqual(t, awserrors.ErrorAccessDenied, code)
+}
+
 // dispatchEKS drives the gateway with no NATS connection. A permitted request
 // therefore reaches the NATS guard and fails there, which is what proves the
 // policy check ran ahead of the resource existing at all.
-func dispatchEKS(t *testing.T, gw *GatewayConfig, method, path, body string) error {
+func dispatchEKS(t *testing.T, gw *eksGateway, method, path, body string) error {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	ctx := reqctx.WithService(req.Context(), "eks")
-	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
-	req = withTestIdentity(req.WithContext(ctx))
-	return gw.serveEKS(httptest.NewRecorder(), req)
+	return gw.serve(httptest.NewRecorder(), req)
 }
 
 func eksARN(resource string) string {
-	return "arn:aws:eks:" + authzRegion + ":" + authzAccountID + ":" + resource
+	return "arn:aws:eks:" + gwtest.Region + ":" + gwtest.AccountID + ":" + resource
 }
 
 // TestEKSRequest_ScopedDenyFires is the bypass this work closes. An operator
 // fences a production cluster; before the resolver the fence was inert and
 // DeleteCluster against it was permitted with nothing logged.
 func TestEKSRequest_ScopedDenyFires(t *testing.T) {
-	gw := scopedPolicyGateway(
-		statement("Allow", "eks:*", "*"),
-		statement("Deny", "eks:DeleteCluster", "arn:aws:eks:*:*:cluster/prod"),
+	gw := scopedEKS(
+		gwtest.Statement("Allow", "eks:*", "*"),
+		gwtest.Statement("Deny", "eks:DeleteCluster", "arn:aws:eks:*:*:cluster/prod"),
 	)
 
-	assertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod", ""))
-	assertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev", ""))
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod", ""))
+	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev", ""))
 }
 
 // TestEKSRequest_ScopedAllowGrants is the other half: a least-privilege policy
 // used to deny everything, so the only working policy shape was Resource "*".
 func TestEKSRequest_ScopedAllowGrants(t *testing.T) {
-	gw := scopedPolicyGateway(
-		statement("Allow", "eks:DeleteCluster", "arn:aws:eks:*:*:cluster/dev"),
+	gw := scopedEKS(
+		gwtest.Statement("Allow", "eks:DeleteCluster", "arn:aws:eks:*:*:cluster/dev"),
 	)
 
-	assertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev", ""))
-	assertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod", ""))
+	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev", ""))
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod", ""))
 }
 
 // The bypass this work closes. A tenant pastes the ARN out of DescribeNodegroup
@@ -76,94 +104,94 @@ func TestEKSRequest_ScopedAllowGrants(t *testing.T) {
 // wildcarded spelling that this exact-ARN pattern could not match, so the fence
 // was inert and the delete went through.
 func TestEKSRequest_NodegroupScopeMatchesExactStoredARN(t *testing.T) {
-	stored := arn.FormatEKSNodegroup(authzRegion, authzAccountID, "prod", "workers",
-		arn.EKSNodegroupDiscriminator(authzAccountID, "prod", "workers"))
+	stored := arn.FormatEKSNodegroup(gwtest.Region, gwtest.AccountID, "prod", "workers",
+		arn.EKSNodegroupDiscriminator(gwtest.AccountID, "prod", "workers"))
 
-	gw := scopedPolicyGateway(
-		statement("Allow", "eks:*", "*"),
-		statement("Deny", "eks:DeleteNodegroup", stored),
+	gw := scopedEKS(
+		gwtest.Statement("Allow", "eks:*", "*"),
+		gwtest.Statement("Deny", "eks:DeleteNodegroup", stored),
 	)
 
-	assertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/workers", ""))
-	assertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/batch", ""))
-	assertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev/node-groups/workers", ""))
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/workers", ""))
+	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/batch", ""))
+	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev/node-groups/workers", ""))
 }
 
 // The AWS-documented policy spelling wildcards the discriminator, and was the
 // only spelling that worked before. It must keep working.
 func TestEKSRequest_NodegroupScopeMatchesWildcardUUID(t *testing.T) {
-	gw := scopedPolicyGateway(
-		statement("Allow", "eks:*", "*"),
-		statement("Deny", "eks:DeleteNodegroup", "arn:aws:eks:*:*:nodegroup/prod/workers/*"),
+	gw := scopedEKS(
+		gwtest.Statement("Allow", "eks:*", "*"),
+		gwtest.Statement("Deny", "eks:DeleteNodegroup", "arn:aws:eks:*:*:nodegroup/prod/workers/*"),
 	)
 
-	assertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/workers", ""))
-	assertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/batch", ""))
-	assertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev/node-groups/workers", ""))
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/workers", ""))
+	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/prod/node-groups/batch", ""))
+	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, "/clusters/dev/node-groups/workers", ""))
 }
 
 // CreateCluster names its cluster in the body, so the body read has to happen
 // before the gate for a fence on a name prefix to fire at all.
 func TestEKSRequest_CreateClusterScopesFromBody(t *testing.T) {
-	gw := scopedPolicyGateway(
-		statement("Allow", "eks:*", "*"),
-		statement("Deny", "eks:CreateCluster", "arn:aws:eks:*:*:cluster/prod-*"),
+	gw := scopedEKS(
+		gwtest.Statement("Allow", "eks:*", "*"),
+		gwtest.Statement("Deny", "eks:CreateCluster", "arn:aws:eks:*:*:cluster/prod-*"),
 	)
 
-	assertDenied(t, dispatchEKS(t, gw, http.MethodPost, "/clusters", `{"name":"prod-1"}`))
-	assertPermitted(t, dispatchEKS(t, gw, http.MethodPost, "/clusters", `{"name":"dev-1"}`))
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodPost, "/clusters", `{"name":"prod-1"}`))
+	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodPost, "/clusters", `{"name":"dev-1"}`))
 	// An unreadable body authorizes account-wide and stays the handler's fault.
-	assertPermitted(t, dispatchEKS(t, gw, http.MethodPost, "/clusters", "{not json"))
+	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodPost, "/clusters", "{not json"))
 }
 
 // The access-entry principal arrives percent-encoded in the path; the ARN the
 // gate builds must be the one the handler's own builder produces.
 func TestEKSRequest_AccessEntryPathIsUnescaped(t *testing.T) {
 	const principal = "arn:aws:iam::123456789012:role/app/admin"
-	entry := arn.FormatEKSAccessEntry(authzRegion, authzAccountID, "prod", access.PrincipalARNHash(principal))
+	entry := arn.FormatEKSAccessEntry(gwtest.Region, gwtest.AccountID, "prod", access.PrincipalARNHash(principal))
 
-	gw := scopedPolicyGateway(
-		statement("Allow", "eks:*", "*"),
-		statement("Deny", "eks:DeleteAccessEntry", entry),
+	gw := scopedEKS(
+		gwtest.Statement("Allow", "eks:*", "*"),
+		gwtest.Statement("Deny", "eks:DeleteAccessEntry", entry),
 	)
 
 	path := "/clusters/prod/access-entries/" + url.PathEscape(principal)
-	assertDenied(t, dispatchEKS(t, gw, http.MethodDelete, path, ""))
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodDelete, path, ""))
 
 	other := "/clusters/prod/access-entries/" + url.PathEscape("arn:aws:iam::123456789012:role/app/reader")
-	assertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, other, ""))
+	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodDelete, other, ""))
 }
 
 // A tag request names its resource by ARN. The handler ignores that ARN's
 // account and works in the caller's, so the gate must too.
 func TestEKSRequest_TagResourceScopesTheNamedResource(t *testing.T) {
-	gw := scopedPolicyGateway(
-		statement("Allow", "eks:*", "*"),
-		statement("Deny", "eks:TagResource", eksARN("cluster/prod")),
+	gw := scopedEKS(
+		gwtest.Statement("Allow", "eks:*", "*"),
+		gwtest.Statement("Deny", "eks:TagResource", eksARN("cluster/prod")),
 	)
 
-	assertDenied(t, dispatchEKS(t, gw, http.MethodPost,
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodPost,
 		"/tags/"+url.PathEscape(eksARN("cluster/prod")), `{"tags":{"k":"v"}}`))
-	assertPermitted(t, dispatchEKS(t, gw, http.MethodPost,
+	gwtest.AssertPermitted(t, dispatchEKS(t, gw, http.MethodPost,
 		"/tags/"+url.PathEscape(eksARN("cluster/dev")), `{"tags":{"k":"v"}}`))
 	// The same cluster spelled under another account is still the caller's.
-	assertDenied(t, dispatchEKS(t, gw, http.MethodPost,
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodPost,
 		"/tags/"+url.PathEscape("arn:aws:eks:us-east-1:999999999999:cluster/prod"), `{"tags":{"k":"v"}}`))
 }
 
 // The property the per-service rollout rests on: passing a real ARN where "*"
 // was passed before cannot withdraw access a working policy already grants.
 func TestEKSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
-	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
-	req := withTestIdentity(httptest.NewRequest(http.MethodGet, "/clusters", nil).
-		WithContext(withPrincipalField(context.Background(), fieldAccountID, authzAccountID)))
+	gw := scopedEKS(gwtest.Statement("Allow", "eks:*", "*"))
+	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
+	caller := userContext(gwtest.AccountID, "alice")
 
 	for _, action := range eksawsapi.ScopedActions() {
 		t.Run(action, func(t *testing.T) {
-			resources, err := eksawsapi.ResourceARNs(action, authzRegion, authzAccountID,
+			resources, err := eksawsapi.ResourceARNs(action, gwtest.Region, gwtest.AccountID,
 				[]string{"prod", "workers", "extra"}, []byte(`{"name":"prod","nodegroupName":"workers","addonName":"coredns","principalArn":"arn:aws:iam::123456789012:role/app"}`))
 			require.NoError(t, err)
-			assert.NoError(t, gw.checkPolicyResources(req, "eks", action, resources))
+			assert.NoError(t, pipeline.Authorize(gw.Policy, req, caller, true, "eks", action, resources, nil))
 		})
 	}
 }
@@ -172,31 +200,22 @@ func TestEKSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 // evaluated as permitted and returned another tenant's cluster state. The
 // principal gate now rejects the tenant ahead of the policy check.
 func TestEKSRequest_InternalRoutesRejectTenantPrincipal(t *testing.T) {
-	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
+	gw := scopedEKS(gwtest.Statement("Allow", "eks:*", "*"))
 
-	assertDenied(t, dispatchEKS(t, gw, http.MethodGet, "/clusters/prod/internal-addons/999988887777", ""))
-	assertDenied(t, dispatchEKS(t, gw, http.MethodGet,
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodGet, "/clusters/prod/internal-addons/999988887777", ""))
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodGet,
 		"/clusters/prod/internal-recovery/999988887777/i-0abc", ""))
 	// Its own account is no different: a tenant is not a control-plane VM.
-	assertDenied(t, dispatchEKS(t, gw, http.MethodGet, "/clusters/prod/internal-addons/"+authzAccountID, ""))
+	gwtest.AssertDenied(t, dispatchEKS(t, gw, http.MethodGet, "/clusters/prod/internal-addons/"+gwtest.AccountID, ""))
 }
 
 // dispatchEKSAsCPAgent drives the gateway with the auth context a CP VM's IMDS
 // credentials actually produce, so the gate is exercised through eksCaller's
 // field mapping rather than a hand-built Caller.
-func dispatchEKSAsCPAgent(t *testing.T, gw *GatewayConfig, path, instanceID string) error {
+func dispatchEKSAsCPAgent(t *testing.T, gw *eksGateway, path, instanceID string) error {
 	t.Helper()
-	roleName := ekscluster.CPInstanceRoleName
 	req := httptest.NewRequest(http.MethodGet, path, nil)
-	ctx := reqctx.WithService(req.Context(), "eks")
-	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
-	ctx = withPrincipalField(ctx, fieldIdentity, instanceID)
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
-	ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN,
-		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+roleName)
-	ctx = withPrincipalField(ctx, fieldAssumedRoleARN,
-		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+roleName+"/"+instanceID)
-	return gw.serveEKS(httptest.NewRecorder(), req.WithContext(ctx))
+	return gw.as(cpAgentContext(instanceID)).serve(httptest.NewRecorder(), req)
 }
 
 // The denial tests above all fail on the first clause of the class gate, so on
@@ -207,7 +226,7 @@ func TestEKSRequest_InternalRoutesAdmitTheCPAgentPrincipal(t *testing.T) {
 	const cpInstanceID = "i-cp0000000000001"
 	_, nc, js := testutil.StartTestJetStream(t)
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
-		Bucket: ekscluster.AccountBucketName(authzAccountID),
+		Bucket: ekscluster.AccountBucketName(gwtest.AccountID),
 	})
 	require.NoError(t, err)
 	require.NoError(t, ekscluster.PutClusterMeta(t.Context(), kv, &ekscluster.ClusterMeta{
@@ -215,29 +234,29 @@ func TestEKSRequest_InternalRoutesAdmitTheCPAgentPrincipal(t *testing.T) {
 		ControlPlaneNodes: []ekscluster.ControlPlaneNode{{InstanceID: cpInstanceID}},
 	}))
 
-	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
-	gw.NATSConn = nc
+	gw := scopedEKS(gwtest.Statement("Allow", "eks:*", "*"))
+	gw.nc = nc
 
 	// No eks daemon is subscribed, so the handler fails on the absent responder.
 	// Anything but AccessDenied means the gate and the policy check both passed.
 	assertNotDenied(t, dispatchEKSAsCPAgent(t, gw,
-		"/clusters/prod/internal-addons/"+authzAccountID, cpInstanceID))
+		"/clusters/prod/internal-addons/"+gwtest.AccountID, cpInstanceID))
 	assertNotDenied(t, dispatchEKSAsCPAgent(t, gw,
-		"/clusters/prod/internal-recovery/"+authzAccountID+"/"+cpInstanceID, cpInstanceID))
+		"/clusters/prod/internal-recovery/"+gwtest.AccountID+"/"+cpInstanceID, cpInstanceID))
 
 	// Same credentials, a cluster this VM does not serve: the binding still bites.
-	assertDenied(t, dispatchEKSAsCPAgent(t, gw,
-		"/clusters/other/internal-addons/"+authzAccountID, cpInstanceID))
+	gwtest.AssertDenied(t, dispatchEKSAsCPAgent(t, gw,
+		"/clusters/other/internal-addons/"+gwtest.AccountID, cpInstanceID))
 }
 
 // The account-ID read moved above the gate, which used to reject a missing
 // account itself. InternalError is the code the caller has always seen.
 func TestEKSRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
-	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
-	req := withTestIdentity(httptest.NewRequest(http.MethodGet, "/clusters", nil).
-		WithContext(reqctx.WithService(context.Background(), "eks")))
+	gw := scopedEKS(gwtest.Statement("Allow", "eks:*", "*"))
+	gw.AccountID = ""
+	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
 
-	err := gw.serveEKS(httptest.NewRecorder(), req)
+	err := gw.serve(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
@@ -245,7 +264,7 @@ func TestEKSRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 // publishFixture seeds two clusters in the caller's account and one in another,
 // each served by its own control-plane VM, and subscribes to every EKS subject.
 type publishFixture struct {
-	gw  *GatewayConfig
+	gw  *eksGateway
 	nc  *nats.Conn
 	sub *nats.Subscription
 }
@@ -262,8 +281,8 @@ func newPublishFixture(t *testing.T) *publishFixture {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
 	for _, c := range []struct{ acct, cluster, member string }{
-		{authzAccountID, "alpha", publishCPAlpha},
-		{authzAccountID, "beta", publishCPBeta},
+		{gwtest.AccountID, "alpha", publishCPAlpha},
+		{gwtest.AccountID, "beta", publishCPBeta},
 		{publishOtherAcct, "gamma", publishCPGamma},
 	} {
 		kv, err := ekscluster.GetOrCreateAccountBucket(t.Context(), js, c.acct)
@@ -277,17 +296,17 @@ func newPublishFixture(t *testing.T) *publishFixture {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
-	gw.NATSConn = nc
+	gw := scopedEKS(gwtest.Statement("Allow", "eks:*", "*"))
+	gw.nc = nc
 	return &publishFixture{gw: gw, nc: nc, sub: sub}
 }
 
 // publish POSTs body to cluster's internal-publish route under ctx's identity.
-func (f *publishFixture) publish(t *testing.T, ctx context.Context, cluster, body string) (*httptest.ResponseRecorder, error) {
+func (f *publishFixture) publish(t *testing.T, caller credential.Principal, cluster, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/clusters/"+cluster+"/internal-publish", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	return rec, f.gw.serveEKS(rec, req.WithContext(ctx))
+	return rec, f.gw.as(caller).serve(rec, req)
 }
 
 // requireNothingPublished proves a denial stopped the relay, not just the reply.
@@ -299,24 +318,27 @@ func (f *publishFixture) requireNothingPublished(t *testing.T) {
 	require.Zero(t, pending, "relayed onto eks.>")
 }
 
-// cpAgentContext is the auth context a CP VM's IMDS credentials produce.
-func cpAgentContext(instanceID string) context.Context {
+// cpAgentContext is the caller a CP VM's IMDS credentials produce.
+func cpAgentContext(instanceID string) credential.Principal {
 	roleName := ekscluster.CPInstanceRoleName
-	ctx := reqctx.WithService(context.Background(), "eks")
-	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
-	ctx = withPrincipalField(ctx, fieldIdentity, instanceID)
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
-	ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN,
-		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+roleName)
-	return withPrincipalField(ctx, fieldAssumedRoleARN,
-		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+roleName+"/"+instanceID)
+	assumed := "arn:aws:sts::" + awsidentifiers.GlobalAccountID + ":assumed-role/" + roleName + "/" + instanceID
+	return credential.Principal{
+		AccountID:         awsidentifiers.GlobalAccountID,
+		Identity:          instanceID,
+		PrincipalType:     dispatch.PrincipalTypeAssumedRole,
+		UnderlyingRoleARN: "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":role/" + roleName,
+		AssumedRoleARN:    assumed,
+		CallerARN:         assumed,
+	}
 }
 
-func userContext(accountID, name string) context.Context {
-	ctx := reqctx.WithService(context.Background(), "eks")
-	ctx = withPrincipalField(ctx, fieldAccountID, accountID)
-	ctx = withPrincipalField(ctx, fieldIdentity, name)
-	return withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+func userContext(accountID, name string) credential.Principal {
+	return credential.Principal{
+		AccountID:     accountID,
+		Identity:      name,
+		PrincipalType: stsdomain.PrincipalTypeUser,
+		CallerARN:     "arn:aws:iam::" + accountID + ":user/" + name,
+	}
 }
 
 // publishChannel is one body shape PublishInternal relays, and where it lands.
@@ -348,7 +370,7 @@ func publishChannels() []publishChannel {
 
 const publishPayload = `{"healthz":"ok", "node_count":1,"ts":42}`
 
-func publishBody(accountID string, ch publishChannel) string {
+func relayBody(accountID string, ch publishChannel) string {
 	return `{"accountId":"` + accountID + `",` + ch.fields + `,"payload":` + publishPayload + `}`
 }
 
@@ -358,14 +380,14 @@ func TestEKSRequest_PublishInternalRelaysForTheCallersOwnCluster(t *testing.T) {
 	f := newPublishFixture(t)
 	for _, ch := range publishChannels() {
 		t.Run(ch.name, func(t *testing.T) {
-			rec, err := f.publish(t, cpAgentContext(publishCPAlpha), "alpha", publishBody(authzAccountID, ch))
+			rec, err := f.publish(t, cpAgentContext(publishCPAlpha), "alpha", relayBody(gwtest.AccountID, ch))
 			require.NoError(t, err)
 			assert.Equal(t, http.StatusOK, rec.Code)
 			assert.JSONEq(t, `{}`, rec.Body.String())
 
 			msg, err := f.sub.NextMsg(2 * time.Second)
 			require.NoError(t, err)
-			assert.Equal(t, ch.subject(authzAccountID, "alpha"), msg.Subject)
+			assert.Equal(t, ch.subject(gwtest.AccountID, "alpha"), msg.Subject)
 			assert.Equal(t, publishPayload, string(msg.Data))
 			f.requireNothingPublished(t)
 		})
@@ -380,18 +402,18 @@ func TestEKSRequest_PublishInternalDeniesAClusterTheCallerDoesNotServe(t *testin
 	targets := []struct {
 		name, account, cluster string
 	}{
-		{"its own account, another cluster", authzAccountID, "beta"},
+		{"its own account, another cluster", gwtest.AccountID, "beta"},
 		{"another account's cluster", publishOtherAcct, "gamma"},
 		{"its own cluster's name in another account", publishOtherAcct, "alpha"},
-		{"a cluster that does not exist", authzAccountID, "delta"},
+		{"a cluster that does not exist", gwtest.AccountID, "delta"},
 		{"an account with no clusters", publishNoClusters, "alpha"},
 		{"an account no bucket can be named for", publishOtherAcct + ".gamma", "alpha"},
-		{"a cluster no key can be named for", authzAccountID, "*"},
+		{"a cluster no key can be named for", gwtest.AccountID, "*"},
 	}
 	for _, ch := range publishChannels() {
 		for _, target := range targets {
 			t.Run(ch.name+"/"+target.name, func(t *testing.T) {
-				_, err := f.publish(t, cpAgentContext(publishCPAlpha), url.PathEscape(target.cluster), publishBody(target.account, ch))
+				_, err := f.publish(t, cpAgentContext(publishCPAlpha), url.PathEscape(target.cluster), relayBody(target.account, ch))
 				require.Error(t, err)
 				assert.Equal(t, awserrors.ErrorAccessDenied, awserrors.ValidErrorCodeFromError(err))
 				assert.Equal(t, errors.New(awserrors.ErrorAccessDenied), err)
@@ -408,29 +430,29 @@ func TestEKSRequest_PublishInternalRedirectionIsDenied(t *testing.T) {
 	state := publishChannels()[0]
 
 	// URL names the caller's cluster, body names another account.
-	_, err := f.publish(t, cpAgentContext(publishCPAlpha), "alpha", publishBody(publishOtherAcct, state))
-	assertDenied(t, err)
+	_, err := f.publish(t, cpAgentContext(publishCPAlpha), "alpha", relayBody(publishOtherAcct, state))
+	gwtest.AssertDenied(t, err)
 	f.requireNothingPublished(t)
 
 	// encoding/json folds case, so a re-cased key is the account the handler reads.
 	_, err = f.publish(t, cpAgentContext(publishCPAlpha), "gamma",
 		`{"AccountID":"`+publishOtherAcct+`","channel":"state","payload":{"x":1}}`)
-	assertDenied(t, err)
+	gwtest.AssertDenied(t, err)
 	f.requireNothingPublished(t)
 
 	// A repeated key decodes to its last value, which is what the gate binds.
 	_, err = f.publish(t, cpAgentContext(publishCPAlpha), "alpha",
-		`{"accountId":"`+authzAccountID+`","accountId":"`+publishOtherAcct+`","channel":"state","payload":{"x":1}}`)
-	assertDenied(t, err)
+		`{"accountId":"`+gwtest.AccountID+`","accountId":"`+publishOtherAcct+`","channel":"state","payload":{"x":1}}`)
+	gwtest.AssertDenied(t, err)
 	f.requireNothingPublished(t)
 
 	// The body has no cluster field; the route's cluster is the only one used.
 	_, err = f.publish(t, cpAgentContext(publishCPAlpha), "alpha",
-		`{"accountId":"`+authzAccountID+`","clusterName":"beta","channel":"state","payload":{"x":1}}`)
+		`{"accountId":"`+gwtest.AccountID+`","clusterName":"beta","channel":"state","payload":{"x":1}}`)
 	require.NoError(t, err)
 	msg, err := f.sub.NextMsg(2 * time.Second)
 	require.NoError(t, err)
-	assert.Equal(t, ekscluster.StateSubject(authzAccountID, "alpha"), msg.Subject)
+	assert.Equal(t, ekscluster.StateSubject(gwtest.AccountID, "alpha"), msg.Subject)
 	f.requireNothingPublished(t)
 }
 
@@ -440,17 +462,17 @@ func TestEKSRequest_PublishInternalRejectsNonCPCallers(t *testing.T) {
 	f := newPublishFixture(t)
 	callers := []struct {
 		name string
-		ctx  context.Context
+		ctx  credential.Principal
 	}{
-		{"tenant user, own account", userContext(authzAccountID, "alice")},
+		{"tenant user, own account", userContext(gwtest.AccountID, "alice")},
 		{"tenant user, another account", userContext(publishOtherAcct, "mallory")},
 		{"static system credentials", userContext(awsidentifiers.GlobalAccountID, "admin")},
 	}
 	for _, ch := range publishChannels() {
 		for _, caller := range callers {
 			t.Run(ch.name+"/"+caller.name, func(t *testing.T) {
-				_, err := f.publish(t, caller.ctx, "alpha", publishBody(authzAccountID, ch))
-				assertDenied(t, err)
+				_, err := f.publish(t, caller.ctx, "alpha", relayBody(gwtest.AccountID, ch))
+				gwtest.AssertDenied(t, err)
 				f.requireNothingPublished(t)
 			})
 		}
@@ -461,11 +483,11 @@ func TestEKSRequest_PublishInternalRejectsNonCPCallers(t *testing.T) {
 // granting one principal a group named for its cluster, and a stand-in STS
 // verifier that records which cluster each review was pinned to.
 type tokenReviewFixture struct {
-	gw       *GatewayConfig
+	gw       *eksGateway
 	verified chan string
 }
 
-const tokenReviewPrincipal = "arn:aws:iam::" + authzAccountID + ":role/admin"
+const tokenReviewPrincipal = "arn:aws:iam::" + gwtest.AccountID + ":role/admin"
 
 var tokenReviewToken = "k8s-aws-v1." + base64.RawURLEncoding.EncodeToString([]byte("https://sts/?Action=GetCallerIdentity"))
 
@@ -475,11 +497,11 @@ func newTokenReviewFixture(t *testing.T) *tokenReviewFixture {
 	js, err := jetstream.New(f.nc)
 	require.NoError(t, err)
 	for _, c := range []struct{ acct, cluster string }{
-		{authzAccountID, "alpha"}, {authzAccountID, "beta"}, {publishOtherAcct, "gamma"},
+		{gwtest.AccountID, "alpha"}, {gwtest.AccountID, "beta"}, {publishOtherAcct, "gamma"},
 	} {
 		kv, err := ekscluster.GetOrCreateAccountBucket(t.Context(), js, c.acct)
 		require.NoError(t, err)
-		_, err = access.New(authzRegion).Create(t.Context(), kv, c.acct, access.Spec{
+		_, err = access.New(gwtest.Region).Create(t.Context(), kv, c.acct, access.Spec{
 			Cluster: c.cluster, PrincipalARN: tokenReviewPrincipal,
 			Groups: []string{"group-" + c.cluster}, Type: access.EntryTypeStandard,
 		})
@@ -492,7 +514,7 @@ func newTokenReviewFixture(t *testing.T) *tokenReviewFixture {
 		_ = json.Unmarshal(m.Data, &req)
 		verified <- req.ClusterName
 		resp, _ := json.Marshal(ekscluster.TokenVerifyResponse{
-			AccountID: authzAccountID, ARN: tokenReviewPrincipal, UserID: "AROAEXAMPLE:session",
+			AccountID: gwtest.AccountID, ARN: tokenReviewPrincipal, UserID: "AROAEXAMPLE:session",
 		})
 		_ = m.Respond(resp)
 	})
@@ -501,15 +523,15 @@ func newTokenReviewFixture(t *testing.T) *tokenReviewFixture {
 	return &tokenReviewFixture{gw: f.gw, verified: verified}
 }
 
-func tokenReviewBody(accountID string) string {
+func reviewBody(accountID string) string {
 	return `{"accountId":"` + accountID + `","token":"` + tokenReviewToken + `"}`
 }
 
-func (f *tokenReviewFixture) review(t *testing.T, ctx context.Context, cluster, body string) (*httptest.ResponseRecorder, error) {
+func (f *tokenReviewFixture) review(t *testing.T, caller credential.Principal, cluster, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/clusters/"+cluster+"/token-review", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	return rec, f.gw.serveEKS(rec, req.WithContext(ctx))
+	return rec, f.gw.as(caller).serve(rec, req)
 }
 
 func (f *tokenReviewFixture) nextVerified(t *testing.T) string {
@@ -546,7 +568,7 @@ func requireIndistinguishableDenial(t *testing.T, rec *httptest.ResponseRecorder
 // identity it always did, verified against that cluster.
 func TestEKSRequest_WebhookTokenReviewResolvesForTheCallersOwnCluster(t *testing.T) {
 	f := newTokenReviewFixture(t)
-	rec, err := f.review(t, cpAgentContext(publishCPAlpha), "alpha", tokenReviewBody(authzAccountID))
+	rec, err := f.review(t, cpAgentContext(publishCPAlpha), "alpha", reviewBody(gwtest.AccountID))
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.JSONEq(t, `{"authenticated":true,"username":"`+tokenReviewPrincipal+`",`+
@@ -563,17 +585,17 @@ func TestEKSRequest_WebhookTokenReviewDeniesAClusterTheCallerDoesNotServe(t *tes
 	targets := []struct {
 		name, account, cluster string
 	}{
-		{"its own account, another cluster", authzAccountID, "beta"},
+		{"its own account, another cluster", gwtest.AccountID, "beta"},
 		{"another account's cluster", publishOtherAcct, "gamma"},
 		{"its own cluster's name in another account", publishOtherAcct, "alpha"},
-		{"a cluster that does not exist", authzAccountID, "delta"},
+		{"a cluster that does not exist", gwtest.AccountID, "delta"},
 		{"an account with no clusters", publishNoClusters, "alpha"},
 		{"an account no bucket can be named for", publishOtherAcct + ".gamma", "alpha"},
-		{"a cluster no key can be named for", authzAccountID, "*"},
+		{"a cluster no key can be named for", gwtest.AccountID, "*"},
 	}
 	for _, target := range targets {
 		t.Run(target.name, func(t *testing.T) {
-			rec, err := f.review(t, cpAgentContext(publishCPAlpha), url.PathEscape(target.cluster), tokenReviewBody(target.account))
+			rec, err := f.review(t, cpAgentContext(publishCPAlpha), url.PathEscape(target.cluster), reviewBody(target.account))
 			requireIndistinguishableDenial(t, rec, err)
 			f.requireNothingVerified(t)
 		})
@@ -585,11 +607,11 @@ func TestEKSRequest_WebhookTokenReviewDeniesAClusterTheCallerDoesNotServe(t *tes
 func TestEKSRequest_WebhookTokenReviewRedirectionIsDenied(t *testing.T) {
 	f := newTokenReviewFixture(t)
 	cases := []struct{ name, cluster, body string }{
-		{"URL names its cluster, body another account", "alpha", tokenReviewBody(publishOtherAcct)},
+		{"URL names its cluster, body another account", "alpha", reviewBody(publishOtherAcct)},
 		{"re-cased key the handler folds onto accountId", "gamma",
 			`{"AccountID":"` + publishOtherAcct + `","token":"` + tokenReviewToken + `"}`},
 		{"repeated key, whose last value the handler reads", "gamma",
-			`{"accountId":"` + authzAccountID + `","accountId":"` + publishOtherAcct + `","token":"` + tokenReviewToken + `"}`},
+			`{"accountId":"` + gwtest.AccountID + `","accountId":"` + publishOtherAcct + `","token":"` + tokenReviewToken + `"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -600,7 +622,7 @@ func TestEKSRequest_WebhookTokenReviewRedirectionIsDenied(t *testing.T) {
 	}
 
 	rec, err := f.review(t, cpAgentContext(publishCPAlpha), "alpha",
-		`{"accountId":"`+authzAccountID+`","clusterName":"beta","token":"`+tokenReviewToken+`"}`)
+		`{"accountId":"`+gwtest.AccountID+`","clusterName":"beta","token":"`+tokenReviewToken+`"}`)
 	require.NoError(t, err)
 	assert.Contains(t, rec.Body.String(), `"group-alpha"`)
 	assert.Equal(t, "alpha", f.nextVerified(t))
@@ -612,16 +634,16 @@ func TestEKSRequest_WebhookTokenReviewRejectsNonCPCallers(t *testing.T) {
 	f := newTokenReviewFixture(t)
 	cases := []struct {
 		name, cluster, account string
-		ctx                    context.Context
+		ctx                    credential.Principal
 	}{
-		{"tenant, its own cluster", "alpha", authzAccountID, userContext(authzAccountID, "alice")},
-		{"tenant, another account's cluster", "gamma", publishOtherAcct, userContext(authzAccountID, "alice")},
-		{"other account's tenant, this cluster", "alpha", authzAccountID, userContext(publishOtherAcct, "mallory")},
-		{"static system credentials", "alpha", authzAccountID, userContext(awsidentifiers.GlobalAccountID, "admin")},
+		{"tenant, its own cluster", "alpha", gwtest.AccountID, userContext(gwtest.AccountID, "alice")},
+		{"tenant, another account's cluster", "gamma", publishOtherAcct, userContext(gwtest.AccountID, "alice")},
+		{"other account's tenant, this cluster", "alpha", gwtest.AccountID, userContext(publishOtherAcct, "mallory")},
+		{"static system credentials", "alpha", gwtest.AccountID, userContext(awsidentifiers.GlobalAccountID, "admin")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec, err := f.review(t, tc.ctx, tc.cluster, tokenReviewBody(tc.account))
+			rec, err := f.review(t, tc.ctx, tc.cluster, reviewBody(tc.account))
 			requireIndistinguishableDenial(t, rec, err)
 			f.requireNothingVerified(t)
 		})
@@ -632,12 +654,12 @@ func TestEKSRequest_WebhookTokenReviewRejectsNonCPCallers(t *testing.T) {
 // tenant sending one is refused on its class before the body matters.
 func TestEKSRequest_WebhookTokenReviewMalformedBody(t *testing.T) {
 	f := newTokenReviewFixture(t)
-	for _, body := range []string{`{not-json`, `{"token":"` + tokenReviewToken + `"}`, `{"accountId":"` + authzAccountID + `","token":""}`} {
+	for _, body := range []string{`{not-json`, `{"token":"` + tokenReviewToken + `"}`, `{"accountId":"` + gwtest.AccountID + `","token":""}`} {
 		_, err := f.review(t, cpAgentContext(publishCPAlpha), "alpha", body)
 		require.Error(t, err)
 		assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err), "body %q", body)
 
-		rec, err := f.review(t, userContext(authzAccountID, "alice"), "alpha", body)
+		rec, err := f.review(t, userContext(gwtest.AccountID, "alice"), "alpha", body)
 		requireIndistinguishableDenial(t, rec, err)
 	}
 	f.requireNothingVerified(t)

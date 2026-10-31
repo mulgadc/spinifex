@@ -1,7 +1,8 @@
 #!/bin/sh
 # node-reset_test.sh — tests the QEMU process match node-reset.sh uses to stop
 # guests before it deletes Viperblock state, against real processes, and the
-# instance and mounted-volume counts it and uninstall-spx.sh report before deleting.
+# instance and mounted-volume counts it and uninstall-spx.sh report before deleting,
+# and the libreswan NSS entries it deletes.
 #
 # Each fake guest is a copy of sleep named like a QEMU binary, so the kernel
 # gives it the same comm, including the 15-character truncation.
@@ -128,6 +129,32 @@ empty="$TMP/empty"
 mkdir -p "$empty"
 expect "counts no instances without a state file" "$(count count_instances "$empty")" 0
 expect "counts no mounted volumes without a viperblock directory" "$(count count_mounted_volumes "$empty")" 0
+
+echo "-- node-reset.sh libreswan NSS nicknames"
+
+sed -n '/^# --- BEGIN ovs nss nicknames ---$/,/^# --- END ovs nss nicknames ---$/p' \
+    "$SCRIPT_DIR/node-reset.sh" > "$TMP/nss.sh"
+# `certutil -L` as it prints a database holding an operator's own identity and
+# CA beside what ovs-monitor-ipsec imported, one peer listed twice.
+cat > "$TMP/certutil-L" <<'EOF'
+
+Certificate Nickname                                         Trust Attributes
+                                                             SSL,S/MIME,JAR/XPI
+
+ovs_certkey_node1                                            u,u,u
+ovs_cert_cacert                                              CT,,
+ovs_cert_node2                                               P,P,P
+ovs_cert_node2                                               P,P,P
+site-vpn                                                     u,u,u
+corp-ca                                                      CT,C,C
+ovs_certificate_store                                        ,,
+EOF
+if [ ! -s "$TMP/nss.sh" ]; then
+    fail "no ovs nss nicknames block in node-reset.sh"
+else
+    got=$(bash -c '. "$1"; ovs_nss_nicknames < "$2"' _ "$TMP/nss.sh" "$TMP/certutil-L" | tr '\n' ' ')
+    expect "selects only ovs-monitor-ipsec's entries, once each" "$got" "ovs_cert_cacert ovs_cert_node2 ovs_certkey_node1 "
+fi
 
 if [ "$fails" -gt 0 ]; then
     echo "$fails failure(s)"

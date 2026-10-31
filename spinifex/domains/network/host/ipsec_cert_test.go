@@ -68,7 +68,7 @@ func TestGenerateIPSecPeerCert(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		require.NoError(t, GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-1", "10.0.0.5"))
+		require.NoError(t, GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-1", "10.0.0.5", false))
 
 		certPath, keyPath := IPSecCertPaths(dir)
 		certPEM, err := os.ReadFile(certPath)
@@ -109,8 +109,8 @@ func TestGenerateIPSecPeerCert(t *testing.T) {
 	t.Run("idempotent overwrite", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		require.NoError(t, GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-2", "10.0.0.6"))
-		require.NoError(t, GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-2", "10.0.0.7"))
+		require.NoError(t, GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-2", "10.0.0.6", false))
+		require.NoError(t, GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-2", "10.0.0.7", false))
 
 		certPath, _ := IPSecCertPaths(dir)
 		certPEM, _ := os.ReadFile(certPath)
@@ -122,7 +122,7 @@ func TestGenerateIPSecPeerCert(t *testing.T) {
 	t.Run("rejects missing hostname", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		err := GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "", "10.0.0.5")
+		err := GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "", "10.0.0.5", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "hostname required")
 	})
@@ -130,7 +130,7 @@ func TestGenerateIPSecPeerCert(t *testing.T) {
 	t.Run("rejects missing nodeIP", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		err := GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-1", "")
+		err := GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-1", "", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "nodeIP required")
 	})
@@ -138,7 +138,7 @@ func TestGenerateIPSecPeerCert(t *testing.T) {
 	t.Run("rejects invalid nodeIP", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		err := GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-1", "not-an-ip")
+		err := GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-1", "not-an-ip", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid nodeIP")
 	})
@@ -146,7 +146,7 @@ func TestGenerateIPSecPeerCert(t *testing.T) {
 	t.Run("missing CA file", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		err := GenerateIPSecPeerCert(dir, filepath.Join(dir, "ghost-ca.pem"), caKeyPath, "node-1", "10.0.0.5")
+		err := GenerateIPSecPeerCert(dir, filepath.Join(dir, "ghost-ca.pem"), caKeyPath, "node-1", "10.0.0.5", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "read CA cert")
 	})
@@ -213,3 +213,31 @@ func TestInstallCAIntoCharonTrustStore_SwallowsRereadError(t *testing.T) {
 type stubError string
 
 func (e stubError) Error() string { return string(e) }
+
+// ovs-monitor-ipsec imports the CA into libreswan's NSS database itself, so
+// strongSwan's cacerts directory and rereadcacerts stay untouched there.
+func TestGenerateIPSecPeerCert_LibreswanLeavesCharonTrustStoreAlone(t *testing.T) {
+	origTrustDir := charonCATrustDir
+	charonCATrustDir = filepath.Join(t.TempDir(), "cacerts")
+	t.Cleanup(func() { charonCATrustDir = origTrustDir })
+
+	origReread := charonRereadCAs
+	charonRereadCAs = func() error {
+		t.Error("ipsec rereadcacerts run on a libreswan host")
+		return nil
+	}
+	t.Cleanup(func() { charonRereadCAs = origReread })
+
+	caDir := t.TempDir()
+	caCertPath := filepath.Join(caDir, "ca.pem")
+	caKeyPath := filepath.Join(caDir, "ca.key")
+	writeTestCA(t, caCertPath, caKeyPath)
+
+	dir := t.TempDir()
+	require.NoError(t, GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-1", "10.0.0.5", true))
+
+	certPath, keyPath := IPSecCertPaths(dir)
+	assert.FileExists(t, certPath)
+	assert.FileExists(t, keyPath)
+	assert.NoDirExists(t, charonCATrustDir, "strongSwan trust store created on a libreswan host")
+}

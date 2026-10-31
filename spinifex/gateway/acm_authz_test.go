@@ -4,7 +4,6 @@
 package gateway
 
 import (
-	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -183,7 +182,7 @@ func TestACMRequest_OversizedBodyIsRejected(t *testing.T) {
 func TestACMRequest_MissingAccountID(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "acm:*", "*"))
 	req := setupACMRequest("CertificateManager.ListCertificates", `{}`)
-	req = req.WithContext(context.WithValue(req.Context(), ctxAccountID, ""))
+	req = req.WithContext(withPrincipalField(req.Context(), fieldAccountID, ""))
 
 	err := gw.serveACM(httptest.NewRecorder(), req)
 	require.Error(t, err)

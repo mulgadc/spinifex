@@ -5,7 +5,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestAdvertisedEndpoint_ResolvesFromRegistryHost asserts DescribeRegions'
@@ -32,18 +31,4 @@ func TestAdvertisedEndpoint_ResolvesFromRegistryHost(t *testing.T) {
 			assert.Equal(t, tc.want, gw.AdvertisedEndpoint())
 		})
 	}
-}
-
-// TestDescribeRegions_UsesAdvertisedEndpoint drives the real dispatch entry
-// EC2_Request uses and asserts the resolved gateway address reaches the wire
-// response. A caller on a concrete-host deployment must never be told to
-// dial its own loopback, which is the defect this guards against.
-func TestDescribeRegions_UsesAdvertisedEndpoint(t *testing.T) {
-	gw := &gateway.GatewayConfig{Region: "ap-southeast-2", RegistryHost: "10.0.0.5", RegistryPort: "9999"}
-	xmlOutput, err := gateway.DispatchEC2Action(gw, "DescribeRegions", map[string]string{}, "acct-123")
-	require.NoError(t, err)
-
-	body := string(xmlOutput)
-	assert.Contains(t, body, "<regionEndpoint>https://10.0.0.5:9999</regionEndpoint>")
-	assert.NotContains(t, body, "localhost", "must not advertise the gateway's own loopback")
 }

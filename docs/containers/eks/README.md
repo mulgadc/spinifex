@@ -60,6 +60,36 @@ Authentication uses **EKS access entries** (the API authentication mode) — IAM
 - **The worker image is fixed.** Node groups always boot Spinifex's `eks-node` image. `ami_type` is recorded but does not select the image, and the image must be registered on the cluster before you create a node group.
 - **Default Kubernetes version is `1.32`.**
 
+### Control plane readiness and kubectl authentication
+
+Each control-plane VM authenticates `kubectl` tokens through a webhook that calls the AWS gateway on the host the VM runs on.
+When that gateway is stopped, the webhook cannot validate tokens and `kubectl` reports `Unauthorized` for the share of requests that the load balancer sends to that control plane.
+
+The webhook serves `/readyz` on port 8444 of each control-plane VM.
+It returns 200 only when the host gateway answers a TLS handshake and the local API server accepts a TCP connection, and 503 otherwise.
+The API server target group health-checks `HTTP :8444/readyz` every 5 seconds with a healthy and unhealthy threshold of 2.
+The target group still forwards TCP on 6443.
+A control plane that cannot authenticate leaves rotation, and returns when its gateway is back.
+
+Measured on a three-node cluster, one control plane per host, with `kubectl get ns` run continuously after stopping one gateway:
+
+| Gateway stopped | Result |
+| --- | --- |
+| Host without the cluster load balancer VM, first run | 4 of 20 calls failed in the first round, 0 of 20 in the next round 54 s after the stop |
+| Host without the cluster load balancer VM, second run | 2 failures in 100 s, at 3 s and 8 s after the stop |
+| Host running the cluster load balancer VM | Not fixed: 20 of 60 calls failed over 100 s |
+
+Before this change the same test failed 3, 4 and 3 calls of 10 per stopped gateway.
+
+Limits:
+
+- Only clusters created with the current `eks-node` image get the readiness listener, and only clusters created from now on get the health check on the target group.
+  Older clusters keep the TCP check on 6443 and are not changed.
+- A cluster created with an older image gets the health check on its target group but no listener on 8444, so every control plane fails the check and the load balancer fails open to all of them.
+- A stopped gateway on the host that runs the cluster load balancer VM is not covered.
+  The load balancer VM reports target health through its own host's gateway, so while that gateway is down the unhealthy control plane stays in rotation.
+- Not measured: more than one control plane per host, a physical-node failure instead of a stopped gateway, and the target health state as `DescribeTargetHealth` reports it, because the load balancer and control-plane VMs belong to the system account.
+
 ## Prerequisites
 
 > [!IMPORTANT]
@@ -123,7 +153,7 @@ aws eks describe-cluster --name demo --query 'cluster.status'
 aws eks create-nodegroup \
   --cluster-name demo \
   --nodegroup-name default \
-  --node-role-arn arn:aws:iam::000000000000:role/eks-node-role \
+  --node-role arn:aws:iam::000000000000:role/eks-node-role \
   --subnets subnet-aaaa subnet-bbbb \
   --scaling-config minSize=1,maxSize=2,desiredSize=1 \
   --instance-types t3.medium
@@ -255,6 +285,10 @@ The workbooks form a ladder. **eks-quickstart** is a NodePort demo; **eks-https-
 **Cluster stuck in `CREATING`.** The control plane is still booting. Check `aws eks describe-cluster --name <name> --query 'cluster.health'` for reported issues. The control plane needs egress to bootstrap, so confirm its subnet has an Internet Gateway route.
 
 **`kubectl` cannot connect.** Re-run `aws eks update-kubeconfig --name <name>` to refresh the endpoint and CA, and confirm the cluster is `ACTIVE`. `aws sts get-caller-identity` verifies your credentials reach the Spinifex endpoint.
+
+**`kubectl` returns `Unauthorized` for some requests and works for others.**
+One control plane cannot reach its host's AWS gateway, so check `systemctl status spinifex-awsgw` on each node.
+Control plane readiness and kubectl authentication above lists which clusters recover on their own.
 
 **Workers stay `NotReady`.** Almost always an egress or IAM problem:
 - Confirm the workers can pull images — a default route to an Internet Gateway (public) or NAT Gateway (private).

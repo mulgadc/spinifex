@@ -1,4 +1,10 @@
-import type { Instance, IpPermission, SecurityGroup } from "@aws-sdk/client-ec2"
+import type {
+  Address,
+  Image,
+  Instance,
+  IpPermission,
+  SecurityGroup,
+} from "@aws-sdk/client-ec2"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 
@@ -175,6 +181,184 @@ function NetworkInterfaces({ instance }: { instance: Instance }) {
   )
 }
 
+function ImageField({
+  image,
+  instance,
+}: {
+  image: Image | undefined
+  instance: Instance
+}) {
+  return (
+    <PanelField
+      info={
+        image && (
+          <InfoList
+            items={[
+              ["AMI", image.ImageId],
+              ["Name", image.Name],
+              ["Description", image.Description],
+              ["Architecture", image.Architecture],
+              ["Boot mode", image.BootMode],
+              ["Platform", image.PlatformDetails],
+              [
+                "Created",
+                image.CreationDate && formatDateTime(image.CreationDate),
+              ],
+            ]}
+          />
+        )
+      }
+      label="Image"
+      mono
+    >
+      {instance.ImageId && (
+        <Link
+          className={LINK}
+          params={{ id: instance.ImageId }}
+          title={image?.Name}
+          to="/ec2/describe-images/$id"
+        >
+          {image?.Name ?? instance.ImageId}
+        </Link>
+      )}
+    </PanelField>
+  )
+}
+
+function InstanceInformation({
+  image,
+  instance,
+}: {
+  image: Image | undefined
+  instance: Instance
+}) {
+  return (
+    <PanelSection title="Instance information">
+      <PanelFields>
+        <PanelField copy={instance.InstanceId} label="Instance ID" mono>
+          {instance.InstanceId}
+        </PanelField>
+        <PanelField label="Type" mono>
+          {instance.InstanceType}
+        </PanelField>
+        <PanelField label="Zone">
+          {instance.Placement?.AvailabilityZone}
+        </PanelField>
+        <PanelField label="Placement group">
+          {instance.Placement?.GroupName && (
+            <Link className={LINK} to="/ec2/describe-placement-groups">
+              {instance.Placement.GroupName}
+            </Link>
+          )}
+        </PanelField>
+        <ImageField image={image} instance={instance} />
+        <PanelField label="Key pair">{instance.KeyName}</PanelField>
+        <PanelField label="Launched">
+          {instance.LaunchTime && formatDateTime(instance.LaunchTime)}
+        </PanelField>
+        {instance.State?.Name === "running" && (
+          <SSHAccess image={image} instance={instance} />
+        )}
+      </PanelFields>
+    </PanelSection>
+  )
+}
+
+function Networking({
+  elasticIp,
+  instance,
+}: {
+  elasticIp: Address | undefined
+  instance: Instance
+}) {
+  return (
+    <PanelSection title="Networking">
+      <PanelFields>
+        <PanelField copy={instance.PrivateIpAddress} label="Private IP" mono>
+          {instance.PrivateIpAddress}
+        </PanelField>
+        <PanelField copy={instance.PublicIpAddress} label="Public IP" mono>
+          {instance.PublicIpAddress}
+        </PanelField>
+        <PanelField
+          info="A static public address the account owns. It stays with the account when the instance stops or is terminated."
+          label="Elastic IP"
+          mono
+        >
+          {elasticIp?.AllocationId && (
+            <Link
+              className={LINK}
+              params={{ id: elasticIp.AllocationId }}
+              title={elasticIp.AllocationId}
+              to="/ec2/describe-addresses/$id"
+            >
+              {elasticIp.PublicIp}
+            </Link>
+          )}
+        </PanelField>
+        <PanelField copy={instance.PrivateDnsName} label="Private DNS" mono>
+          {instance.PrivateDnsName}
+        </PanelField>
+        <PanelField copy={instance.PublicDnsName} label="Public DNS" mono>
+          {instance.PublicDnsName}
+        </PanelField>
+        <PanelField label="VPC" mono>
+          {instance.VpcId && (
+            <Link
+              className={LINK}
+              params={{ id: instance.VpcId }}
+              to="/ec2/describe-vpcs/$id"
+            >
+              {instance.VpcId}
+            </Link>
+          )}
+        </PanelField>
+        <PanelField label="Subnet" mono>
+          {instance.SubnetId && (
+            <Link
+              className={LINK}
+              params={{ id: instance.SubnetId }}
+              to="/ec2/describe-subnets/$id"
+            >
+              {instance.SubnetId}
+            </Link>
+          )}
+        </PanelField>
+      </PanelFields>
+    </PanelSection>
+  )
+}
+
+function Storage({ instance }: { instance: Instance }) {
+  if ((instance.BlockDeviceMappings?.length ?? 0) === 0) {
+    return null
+  }
+
+  return (
+    <PanelSection title="Storage">
+      <PanelFields>
+        {instance.BlockDeviceMappings?.map((device) => (
+          <PanelField
+            key={device.DeviceName}
+            label={device.DeviceName ?? "—"}
+            mono
+          >
+            {device.Ebs?.VolumeId && (
+              <Link
+                className={LINK}
+                params={{ id: device.Ebs.VolumeId }}
+                to="/ec2/describe-volumes/$id"
+              >
+                {device.Ebs.VolumeId}
+              </Link>
+            )}
+          </PanelField>
+        ))}
+      </PanelFields>
+    </PanelSection>
+  )
+}
+
 export function InstanceOverview({ instance }: { instance: Instance }) {
   const { isAdmin } = useAdmin()
   const { data: imageData } = useQuery(ec2ImageQueryOptions(instance.ImageId))
@@ -197,145 +381,11 @@ export function InstanceOverview({ instance }: { instance: Instance }) {
 
   return (
     <>
-      <PanelSection title="Instance information">
-        <PanelFields>
-          <PanelField copy={instance.InstanceId} label="Instance ID" mono>
-            {instance.InstanceId}
-          </PanelField>
-          <PanelField label="Type" mono>
-            {instance.InstanceType}
-          </PanelField>
-          <PanelField label="Zone">
-            {instance.Placement?.AvailabilityZone}
-          </PanelField>
-          <PanelField label="Placement group">
-            {instance.Placement?.GroupName && (
-              <Link className={LINK} to="/ec2/describe-placement-groups">
-                {instance.Placement.GroupName}
-              </Link>
-            )}
-          </PanelField>
-          <PanelField
-            info={
-              image && (
-                <InfoList
-                  items={[
-                    ["AMI", image.ImageId],
-                    ["Name", image.Name],
-                    ["Description", image.Description],
-                    ["Architecture", image.Architecture],
-                    ["Boot mode", image.BootMode],
-                    ["Platform", image.PlatformDetails],
-                    [
-                      "Created",
-                      image.CreationDate && formatDateTime(image.CreationDate),
-                    ],
-                  ]}
-                />
-              )
-            }
-            label="Image"
-            mono
-          >
-            {instance.ImageId && (
-              <Link
-                className={LINK}
-                params={{ id: instance.ImageId }}
-                title={image?.Name}
-                to="/ec2/describe-images/$id"
-              >
-                {image?.Name ?? instance.ImageId}
-              </Link>
-            )}
-          </PanelField>
-          <PanelField label="Key pair">{instance.KeyName}</PanelField>
-          <PanelField label="Launched">
-            {instance.LaunchTime && formatDateTime(instance.LaunchTime)}
-          </PanelField>
-          {instance.State?.Name === "running" && (
-            <SSHAccess image={image} instance={instance} />
-          )}
-        </PanelFields>
-      </PanelSection>
-      <PanelSection title="Networking">
-        <PanelFields>
-          <PanelField copy={instance.PrivateIpAddress} label="Private IP" mono>
-            {instance.PrivateIpAddress}
-          </PanelField>
-          <PanelField copy={instance.PublicIpAddress} label="Public IP" mono>
-            {instance.PublicIpAddress}
-          </PanelField>
-          <PanelField
-            info="A static public address the account owns. It stays with the account when the instance stops or is terminated."
-            label="Elastic IP"
-            mono
-          >
-            {elasticIp?.AllocationId && (
-              <Link
-                className={LINK}
-                params={{ id: elasticIp.AllocationId }}
-                title={elasticIp.AllocationId}
-                to="/ec2/describe-addresses/$id"
-              >
-                {elasticIp.PublicIp}
-              </Link>
-            )}
-          </PanelField>
-          <PanelField copy={instance.PrivateDnsName} label="Private DNS" mono>
-            {instance.PrivateDnsName}
-          </PanelField>
-          <PanelField copy={instance.PublicDnsName} label="Public DNS" mono>
-            {instance.PublicDnsName}
-          </PanelField>
-          <PanelField label="VPC" mono>
-            {instance.VpcId && (
-              <Link
-                className={LINK}
-                params={{ id: instance.VpcId }}
-                to="/ec2/describe-vpcs/$id"
-              >
-                {instance.VpcId}
-              </Link>
-            )}
-          </PanelField>
-          <PanelField label="Subnet" mono>
-            {instance.SubnetId && (
-              <Link
-                className={LINK}
-                params={{ id: instance.SubnetId }}
-                to="/ec2/describe-subnets/$id"
-              >
-                {instance.SubnetId}
-              </Link>
-            )}
-          </PanelField>
-        </PanelFields>
-      </PanelSection>
+      <InstanceInformation image={image} instance={instance} />
+      <Networking elasticIp={elasticIp} instance={instance} />
       <SecurityGroups instance={instance} />
       <NetworkInterfaces instance={instance} />
-      {(instance.BlockDeviceMappings?.length ?? 0) > 0 && (
-        <PanelSection title="Storage">
-          <PanelFields>
-            {instance.BlockDeviceMappings?.map((device) => (
-              <PanelField
-                key={device.DeviceName}
-                label={device.DeviceName ?? "—"}
-                mono
-              >
-                {device.Ebs?.VolumeId && (
-                  <Link
-                    className={LINK}
-                    params={{ id: device.Ebs.VolumeId }}
-                    to="/ec2/describe-volumes/$id"
-                  >
-                    {device.Ebs.VolumeId}
-                  </Link>
-                )}
-              </PanelField>
-            ))}
-          </PanelFields>
-        </PanelSection>
-      )}
+      <Storage instance={instance} />
       {instance.InstanceId && <IamRolePanel instanceId={instance.InstanceId} />}
       {isAdmin && <GpuSection gpus={gpus} />}
     </>

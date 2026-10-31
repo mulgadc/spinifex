@@ -3,6 +3,7 @@ package gateway
 import (
 	"fmt"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,7 @@ func auditRouter(t *testing.T, keys map[string]*iamdomain.AccessKey) (http.Handl
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     &mockIAMService{masterKey: testMasterKey, accessKeys: keys},
+		Credentials:    credverify.New(&mockIAMService{masterKey: testMasterKey, accessKeys: keys}, nil),
 		RateLimiter:    rl,
 	}
 

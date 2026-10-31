@@ -56,7 +56,7 @@ func runVolumeLifecycle(t *testing.T, fix *Fixture) {
 	// through harness.EnsureVolume because the fixture's terminate-on-cleanup
 	// would later try to re-delete a volume this test has just deleted in-line.
 	harness.Step(t, "create-volume size=%d az=%s", volumeResizeFromGiB, az)
-	// e2e:allow-create — the resized volume is the subject under test.
+	// The resized volume is the subject under test.
 	createOut, err := fix.AWS.EC2.CreateVolume(&ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String(az),
 		Size:             aws.Int64(volumeResizeFromGiB),

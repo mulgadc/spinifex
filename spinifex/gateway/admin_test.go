@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sort"
 	"strings"
 	"testing"
 
@@ -20,30 +19,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestAdminPathMethod(t *testing.T) {
-	tests := []struct {
-		name   string
-		path   string
-		want   string
-		wantOK bool
-	}{
-		{"known method", "/admin/CreateAccount", "CreateAccount", true},
-		{"deletion method", "/admin/DeleteAccount", "DeleteAccount", true},
-		{"unknown method", "/admin/PurgeEverything", "", false},
-		{"nested path", "/admin/CreateAccount/extra", "", false},
-		{"bare prefix", "/admin/", "", false},
-		{"not admin", "/", "", false},
-		{"case mismatch", "/admin/createaccount", "", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := adminPathMethod(tc.path)
-			assert.Equal(t, tc.wantOK, ok)
-			assert.Equal(t, tc.want, got)
-		})
-	}
-}
 
 // createAccountPolicy grants exactly the action the signup principal holds.
 func createAccountPolicy() *policyMockIAMService {
@@ -61,105 +36,6 @@ func createAccountPolicy() *policyMockIAMService {
 		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
 		getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
 	}
-}
-
-// Every gate must deny on its own, and every denial must be indistinguishable
-// from the others so a caller cannot learn which one it failed.
-func TestAuthorizeAdminGates(t *testing.T) {
-	tests := []struct {
-		name          string
-		service       string
-		accountID     string
-		identity      string
-		principalType string
-		policy        *policyMockIAMService
-		wantErr       string
-	}{
-		{
-			name:          "permitted signup principal",
-			service:       "spinifex",
-			accountID:     awsidentifiers.DefaultAccountID(),
-			identity:      "signup",
-			principalType: principalTypeUser,
-			policy:        createAccountPolicy(),
-		},
-		{
-			name:          "credential scope is not spinifex",
-			service:       "ec2",
-			accountID:     awsidentifiers.DefaultAccountID(),
-			identity:      "signup",
-			principalType: principalTypeUser,
-			policy:        createAccountPolicy(),
-			wantErr:       awserrors.ErrorAccessDenied,
-		},
-		{
-			name:          "not the super-admin account",
-			service:       "spinifex",
-			accountID:     "123456789012",
-			identity:      "signup",
-			principalType: principalTypeUser,
-			policy:        createAccountPolicy(),
-			wantErr:       awserrors.ErrorAccessDenied,
-		},
-		{
-			name:          "assumed-role session",
-			service:       "spinifex",
-			accountID:     awsidentifiers.DefaultAccountID(),
-			identity:      "signup",
-			principalType: principalTypeAssumedRole,
-			policy:        createAccountPolicy(),
-			wantErr:       awserrors.ErrorAccessDenied,
-		},
-		{
-			name:          "no identity",
-			service:       "spinifex",
-			accountID:     awsidentifiers.DefaultAccountID(),
-			identity:      "",
-			principalType: principalTypeUser,
-			policy:        createAccountPolicy(),
-			wantErr:       awserrors.ErrorAccessDenied,
-		},
-		{
-			name:          "policy does not grant CreateAccount",
-			service:       "spinifex",
-			accountID:     awsidentifiers.DefaultAccountID(),
-			identity:      "signup",
-			principalType: principalTypeUser,
-			policy:        &policyMockIAMService{},
-			wantErr:       awserrors.ErrorAccessDenied,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			gw := &GatewayConfig{DisableLogging: true, IAMService: tc.policy}
-			req := httptest.NewRequest(http.MethodPost, "/admin/CreateAccount", nil)
-			ctx := context.WithValue(req.Context(), ctxService, tc.service)
-			ctx = context.WithValue(ctx, ctxAccountID, tc.accountID)
-			ctx = context.WithValue(ctx, ctxIdentity, tc.identity)
-			ctx = context.WithValue(ctx, ctxPrincipalType, tc.principalType)
-
-			err := gw.authorizeAdmin(req.WithContext(ctx), "CreateAccount")
-			if tc.wantErr == "" {
-				assert.NoError(t, err)
-				return
-			}
-			require.Error(t, err)
-			code, _ := awserrors.ResolveErrorCode(err)
-			assert.Equal(t, tc.wantErr, code)
-		})
-	}
-}
-
-// An unauthenticated request carries no auth context at all, which must not
-// read as a permitted principal.
-func TestAuthorizeAdminDeniesUnauthenticated(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	req := httptest.NewRequest(http.MethodPost, "/admin/CreateAccount", nil)
-
-	err := gw.authorizeAdmin(req, "CreateAccount")
-	require.Error(t, err)
-	assertDenied(t, err)
 }
 
 // adminRequest drives Admin_Request with the chi route param the router sets.
@@ -184,7 +60,7 @@ func decodeAdminError(t *testing.T, rec *httptest.ResponseRecorder) adminErrorBo
 // An unknown method is rejected before authorization, so it never discloses
 // whether the caller would have been permitted.
 func TestAdminRequestUnknownMethod(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withOperator(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 
 	rec := adminRequest(gw, "PurgeEverything", `{}`)
 
@@ -193,7 +69,7 @@ func TestAdminRequestUnknownMethod(t *testing.T) {
 }
 
 func TestAdminRequestDeniesUnauthorizedCaller(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withOperator(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 
 	rec := adminRequest(gw, "CreateAccount", `{}`)
 
@@ -205,7 +81,7 @@ func TestAdminRequestDeniesUnauthorizedCaller(t *testing.T) {
 // The request ID ties a client failure to the gateway log line, so it must be
 // present on the header and in the body even for a denial.
 func TestAdminRequestAlwaysCarriesRequestID(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withOperator(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 
 	rec := adminRequest(gw, "CreateAccount", `{}`)
 
@@ -228,7 +104,7 @@ func TestWriteAdminErrorFallsBackOnUnknownCode(t *testing.T) {
 // The router serves every verb from one pattern, so the handler is what
 // refuses a GET — a second route would shadow the POST one.
 func TestAdminRequestRejectsNonPost(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withOperator(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 	req := httptest.NewRequest(http.MethodGet, "/admin/CreateAccount", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("method", "CreateAccount")
@@ -256,9 +132,9 @@ func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *ht
 
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
 	ctx = context.WithValue(ctx, ctxService, "spinifex")
-	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.DefaultAccountID())
-	ctx = context.WithValue(ctx, ctxIdentity, "admin")
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.DefaultAccountID())
+	ctx = withPrincipalField(ctx, fieldIdentity, "admin")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
 
 	rec := httptest.NewRecorder()
 	gw.Admin_Request(rec, req.WithContext(ctx))
@@ -268,23 +144,23 @@ func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *ht
 // An authorized caller must still get a clear answer when the cluster is not
 // reachable, rather than a panic or a silent success.
 func TestAdminRequestReportsClusterUnavailable(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy()}
+	gw := withOperator(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy()}))
 
 	rec := authorizedAdminRequest(gw, `{}`)
 
 	assert.Equal(t, awserrors.ErrorServiceUnavailable, decodeAdminError(t, rec).Error.Code)
 }
 
-// The credential-minting CLI grants these by name. A method served but absent
-// from the list would be uncallable by every key an operator issues.
-func TestAdminMethodNamesCoverTheRoutedMethods(t *testing.T) {
-	names := AdminMethodNames()
+// Each admin method is a separate grant. The signup Worker holds
+// spinifex:CreateAccount and must not reach deletion with it.
+func TestCreateAccountGrantDoesNotAllowDeleteAccount(t *testing.T) {
+	gw := withOperator(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: createAccountPolicy()}))
 
-	require.Len(t, names, len(adminMethods))
-	assert.True(t, sort.StringsAreSorted(names), "names must be sorted for stable help text")
-	for _, name := range names {
-		method, ok := adminPathMethod(adminPathPrefix + name)
-		assert.True(t, ok, "%s is granted but not routed", name)
-		assert.Equal(t, name, method)
+	for _, method := range []string{"DeleteAccount", "DescribeAccountDeletion", "ListAccounts"} {
+		t.Run(method, func(t *testing.T) {
+			rec := authorizedAdminRequestForMethod(gw, method, `{}`)
+
+			assert.Equal(t, awserrors.ErrorAccessDenied, decodeAdminError(t, rec).Error.Code)
+		})
 	}
 }

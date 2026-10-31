@@ -233,6 +233,22 @@ func populatedVM() *vm.VM {
 		TerminatedAt:                    time.Date(2026, 8, 28, 2, 0, 0, 0, time.UTC),
 		ShuttingDownAt:                  time.Date(2026, 8, 28, 3, 0, 0, 0, time.UTC),
 
+		SQSStoreGuest: &vm.SQSStoreGuest{
+			NodeID:       "node-1",
+			DataVolumeID: "vol-0123456789abcdef0",
+			ListenAddr:   "10.0.0.5",
+			ClientNKey:   "UCLIENTPUBLICKEY",
+			Netcfg:       "netcfg-1",
+		},
+		SQSWorkerGuest: &vm.SQSWorkerGuest{
+			NodeID:       "node-1",
+			DataVolumeID: "vol-0123456789abcdef1",
+			Region:       "ap-southeast-2",
+			GatewayURL:   "https://10.255.0.1:9999",
+			CACert:       "ca-1",
+			Netcfg:       "netcfg-2",
+		},
+
 		QMPClient: &qmp.QMPClient{},
 	}
 	v.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-1", Boot: true}}

@@ -191,6 +191,8 @@ func attachDetachErrorCode(err error) string {
 		return awserrors.ErrorInvalidInstanceIDNotFound
 	case errors.Is(err, vm.ErrInvalidTransition):
 		return awserrors.ErrorIncorrectInstanceState
+	case errors.Is(err, vm.ErrHotAttachUnsupported):
+		return awserrors.ErrorUnsupportedOperation
 	case errors.Is(err, vm.ErrAttachmentLimitExceeded):
 		return awserrors.ErrorAttachmentLimitExceeded
 	case errors.Is(err, vm.ErrVolumeNotAttached):

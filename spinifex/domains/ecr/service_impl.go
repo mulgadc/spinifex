@@ -185,6 +185,14 @@ func (s *MetaServiceImpl) ManifestDelete(ctx context.Context, req *ManifestDelet
 	return &ManifestDeleteResponse{Found: true}, nil
 }
 
+func (s *MetaServiceImpl) ReferrerList(ctx context.Context, req *ReferrerListRequest, accountID string) (*ReferrerListResponse, error) {
+	referrers, err := s.store.ListReferrers(ctx, accountID, req.Repo, req.Subject)
+	if err != nil {
+		return nil, err
+	}
+	return &ReferrerListResponse{Referrers: referrers}, nil
+}
+
 func (s *MetaServiceImpl) ManifestDescribe(ctx context.Context, req *ManifestDescribeRequest, accountID string) (*ManifestDescribeResponse, error) {
 	meta, err := s.store.GetManifestMeta(ctx, accountID, req.Repo, req.Digest)
 	if errors.Is(err, ErrNotFound) {

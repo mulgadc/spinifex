@@ -148,10 +148,7 @@ func generateNLBStreamConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord
 		}
 		us := nginxUpstream{Name: name}
 		if tg, ok := tgByArn[tgArn]; ok {
-			for _, t := range tg.Targets {
-				if t.PrivateIP == "" || t.HealthState == TargetHealthDraining {
-					continue
-				}
+			for _, t := range routableTargets(tg.Targets) {
 				us.Servers = append(us.Servers, nginxUpstreamServer{
 					Addr:        t.PrivateIP,
 					Port:        t.Port,
@@ -329,6 +326,7 @@ func buildNLBHealthTargets(tgByArn map[string]*TargetGroupRecord) []HealthTarget
 	var out []HealthTargetSpec
 	for _, tg := range tgByArn {
 		for _, t := range tg.Targets {
+			// Unhealthy targets stay probed so they can recover.
 			if t.PrivateIP == "" || t.HealthState == TargetHealthDraining {
 				continue
 			}

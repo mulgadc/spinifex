@@ -1919,3 +1919,38 @@ func TestCmdlineHasPauseAction(t *testing.T) {
 		})
 	}
 }
+
+// TestAttachVolume_DirectBootRejectedWithoutSideEffects covers a microvm guest:
+// hot-attach plugs into a PCIe root port it does not have, so the request is
+// refused before the volume is mounted or any instance or volume state moves.
+func TestAttachVolume_DirectBootRejectedWithoutSideEffects(t *testing.T) {
+	for _, device := range []string{"", "/dev/sdf"} {
+		t.Run("device="+device, func(t *testing.T) {
+			mounter := &fakeVolumeMounter{mountOneURI: "nbd://127.0.0.1:10809"}
+			states := &fakeVolumeStateUpdater{}
+			m := NewManagerWithDeps(Deps{VolumeMounter: mounter, VolumeStateUpdater: states})
+			existing := EBSRequest{Name: "vol-data-a", NBDURI: "nbd://127.0.0.1:10810", DeviceName: "/dev/sdf"}
+			v := &VM{
+				ID:         "i-db",
+				Status:     StateRunning,
+				DirectBoot: true,
+				Instance:   &ec2.Instance{},
+				Config:     Config{MachineType: "microvm,acpi=on"},
+			}
+			v.EBSRequests.Requests = []EBSRequest{existing}
+			m.Insert(v)
+
+			_, err := m.AttachVolume(t.Context(), "i-db", "vol-new", device)
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrHotAttachUnsupported)
+			assert.Empty(t, mounter.mountedOne, "volume must not be mounted")
+			assert.Empty(t, mounter.unmountedOne)
+			assert.Empty(t, states.calls, "volume metadata must not change")
+			assert.Equal(t, []EBSRequest{existing}, v.EBSRequests.Requests)
+			assert.Empty(t, v.Instance.BlockDeviceMappings)
+			assert.Equal(t, StateRunning, v.Status)
+			assert.Equal(t, Config{MachineType: "microvm,acpi=on"}, v.Config)
+		})
+	}
+}

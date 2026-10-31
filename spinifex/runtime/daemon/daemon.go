@@ -59,6 +59,7 @@ import (
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
@@ -77,6 +78,8 @@ import (
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	route53domain "github.com/mulgadc/spinifex/spinifex/domains/route53"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -133,7 +136,10 @@ type ResourceManager struct {
 	instanceSubs  map[string]*nats.Subscription
 	handler       natsHandler
 	systemHandler natsHandler // handles system.LaunchInstance.* requests (ALB-VM fan-out)
-	nodeID        string      // node identifier for node-specific topic subscriptions
+	// sqsStoreHandler serves the versioned SQS store launch subjects; nil
+	// leaves them unsubscribed, so a launch there finds no responder.
+	sqsStoreHandler natsHandler
+	nodeID          string // node identifier for node-specific topic subscriptions
 }
 
 // Compile-time guarantee that the RouteTable service satisfies the IGW
@@ -166,6 +172,8 @@ type Daemon struct {
 	launchTemplateService *ec2launchtemplate.LaunchTemplateServiceImpl
 	spotInstanceService   *ec2spotinstance.SpotInstanceServiceImpl
 	vpcService            *ec2vpc.VPCServiceImpl
+	sqsWorker             *sqsWorkerEnsurer
+	sqsStore              *sqsStoreEnsurer
 	eipService            ec2eip.EIPService
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
 	eksService            *ekscluster.EKSServiceImpl
@@ -898,6 +906,12 @@ type natsSub struct {
 
 // subscribeAll registers all NATS subscriptions using a table-driven approach.
 func (d *Daemon) subscribeAll() error {
+	if d.sqsWorker == nil {
+		d.sqsWorker = newSQSWorkerEnsurer(d.buildSQSWorkerLauncher)
+	}
+	if d.sqsStore == nil {
+		d.sqsStore = newSQSStoreEnsurer(d.buildSQSStoreLauncher)
+	}
 	subs := []natsSub{
 		// ec2.RunInstances is handled by dynamic per-instance-type subscriptions
 		// managed by ResourceManager.initSubscriptions()
@@ -961,6 +975,10 @@ func (d *Daemon) subscribeAll() error {
 		// Capacity reservations: Create is node-targeted (gateway pins one node);
 		// Describe fans out and Cancel broadcasts, so both use plain Subscribe.
 		{fmt.Sprintf("ec2.CreateCapacityReservation.%s", d.node), d.handleEC2CreateCapacityReservation, ""},
+		// The shared SQS worker is launched only on an operator's request to the
+		// node it is pinned to; nothing starts it automatically.
+		{workerlaunch.EnsureSubjectPrefix + d.node, d.handleSQSWorkerEnsure, ""},
+		{storelaunch.EnsureSubjectPrefix + d.node, d.handleSQSStoreEnsure, ""},
 		{"ec2.DescribeCapacityReservations", d.handleEC2DescribeCapacityReservations, ""},
 		{"ec2.CancelCapacityReservation", d.handleEC2CancelCapacityReservation, ""},
 		{"ec2.CreateNatGateway", handleNATSRequest(d.node, d.natGatewayService.CreateNatGateway), "spinifex-workers"},
@@ -1289,6 +1307,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{ecr.SubjectManifestDescribe, handleNATSRequest(d.node, d.ecrMetaService.ManifestDescribe), "spinifex-workers"},
 			natsSub{ecr.SubjectManifestList, handleNATSRequest(d.node, d.ecrMetaService.ManifestList), "spinifex-workers"},
 			natsSub{ecr.SubjectManifestDelete, handleNATSRequest(d.node, d.ecrMetaService.ManifestDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectReferrerList, handleNATSRequest(d.node, d.ecrMetaService.ReferrerList), "spinifex-workers"},
 			natsSub{ecr.SubjectUploadCreate, handleNATSRequest(d.node, d.ecrMetaService.UploadCreate), "spinifex-workers"},
 			natsSub{ecr.SubjectUploadGet, handleNATSRequest(d.node, d.ecrMetaService.UploadGet), "spinifex-workers"},
 			natsSub{ecr.SubjectUploadUpdate, handleNATSRequest(d.node, d.ecrMetaService.UploadUpdate), "spinifex-workers"},
@@ -2397,6 +2416,7 @@ func (d *Daemon) startCluster() error {
 	}
 
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.
+	d.resourceMgr.sqsStoreHandler = d.handleSQSStoreLaunch
 	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.handleSystemLaunchInstance, d.node)
 
 	d.startHeartbeat()
@@ -2428,6 +2448,7 @@ func (d *Daemon) startCluster() error {
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
+			reapers = append(reapers, d.volumeService.NewVolumeReclaimReaper())
 		}
 		if d.eksService != nil {
 			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))
@@ -2472,6 +2493,7 @@ func (d *Daemon) configureEBSProvider() error {
 	provider := ebsprovider.NewNATSProvider(d.natsConn, ebsProviderRequestTimeout)
 	d.ebsProvider = provider
 	d.instanceService.SetEBSProvider(provider)
+	d.instanceService.SetUnsealedWritesChecker(provider, d.node)
 	d.imageService.SetEBSProvider(provider)
 	d.snapshotService.SetEBSProvider(provider)
 	d.volumeService.SetEBSProvider(provider)
@@ -3427,41 +3449,49 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 			}
 			subjectRoot = "system.LaunchInstance"
 			handler = rm.systemHandler
+			if rm.sqsStoreHandler != nil {
+				rm.syncTypeSubscriptions(systeminstance.SQSStoreLaunchSubjectRoot, typeName, queueGroup, rm.sqsStoreHandler, canFit, gate)
+			}
 		}
+		rm.syncTypeSubscriptions(subjectRoot, typeName, queueGroup, handler, canFit, gate)
+	}
+}
 
-		queueTopic := fmt.Sprintf("%s.%s", subjectRoot, typeName)
-		measured := natsMetricsHandler(queueTopic, handler)
-		_, subscribed := rm.instanceSubs[queueTopic]
-		if canFit && !subscribed {
-			sub, err := rm.natsConn.QueueSubscribe(queueTopic, queueGroup, measured)
+// syncTypeSubscriptions holds one subject root's queue and node-targeted
+// subscriptions for an instance type in line with whether it can fit.
+func (rm *ResourceManager) syncTypeSubscriptions(subjectRoot, typeName, queueGroup string, handler natsHandler, canFit bool, gate string) {
+	queueTopic := fmt.Sprintf("%s.%s", subjectRoot, typeName)
+	measured := natsMetricsHandler(queueTopic, handler)
+	_, subscribed := rm.instanceSubs[queueTopic]
+	if canFit && !subscribed {
+		sub, err := rm.natsConn.QueueSubscribe(queueTopic, queueGroup, measured)
+		if err != nil {
+			slog.Error("Failed to subscribe to instance type topic", "topic", queueTopic, "err", err)
+			return
+		}
+		rm.instanceSubs[queueTopic] = sub
+		slog.Debug("Subscribed to instance type", "topic", queueTopic)
+	} else if !canFit && subscribed {
+		if err := rm.instanceSubs[queueTopic].Unsubscribe(); err != nil {
+			slog.Error("Failed to unsubscribe from instance type topic", "topic", queueTopic, "err", err)
+		}
+		delete(rm.instanceSubs, queueTopic)
+		slog.Info("Unsubscribed from instance type (capacity full)", "topic", queueTopic, "gate", gate)
+	}
+
+	if rm.nodeID != "" {
+		// Node-targeted topic stays subscribed even when capacity is full:
+		// a committed reservation (e.g. spread placement) must not fail with
+		// "no responders". Capacity is enforced at launch time by allocate().
+		nodeTopic := fmt.Sprintf("%s.%s.%s", subjectRoot, typeName, rm.nodeID)
+		if _, nodeSubscribed := rm.instanceSubs[nodeTopic]; canFit && !nodeSubscribed {
+			sub, err := rm.natsConn.Subscribe(nodeTopic, measured)
 			if err != nil {
-				slog.Error("Failed to subscribe to instance type topic", "topic", queueTopic, "err", err)
-				continue
+				slog.Error("Failed to subscribe to node-specific topic", "topic", nodeTopic, "err", err)
+				return
 			}
-			rm.instanceSubs[queueTopic] = sub
-			slog.Debug("Subscribed to instance type", "topic", queueTopic)
-		} else if !canFit && subscribed {
-			if err := rm.instanceSubs[queueTopic].Unsubscribe(); err != nil {
-				slog.Error("Failed to unsubscribe from instance type topic", "topic", queueTopic, "err", err)
-			}
-			delete(rm.instanceSubs, queueTopic)
-			slog.Info("Unsubscribed from instance type (capacity full)", "topic", queueTopic, "gate", gate)
-		}
-
-		if rm.nodeID != "" {
-			// Node-targeted topic stays subscribed even when capacity is full:
-			// a committed reservation (e.g. spread placement) must not fail with
-			// "no responders". Capacity is enforced at launch time by allocate().
-			nodeTopic := fmt.Sprintf("%s.%s.%s", subjectRoot, typeName, rm.nodeID)
-			if _, nodeSubscribed := rm.instanceSubs[nodeTopic]; canFit && !nodeSubscribed {
-				sub, err := rm.natsConn.Subscribe(nodeTopic, measured)
-				if err != nil {
-					slog.Error("Failed to subscribe to node-specific topic", "topic", nodeTopic, "err", err)
-					continue
-				}
-				rm.instanceSubs[nodeTopic] = sub
-				slog.Debug("Subscribed to node-specific instance type", "topic", nodeTopic)
-			}
+			rm.instanceSubs[nodeTopic] = sub
+			slog.Debug("Subscribed to node-specific instance type", "topic", nodeTopic)
 		}
 	}
 }

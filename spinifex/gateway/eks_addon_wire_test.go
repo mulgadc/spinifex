@@ -61,14 +61,14 @@ func TestEKSRequest_InternalAddonsWireBody(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/clusters/prod/internal-addons/"+authzAccountID, nil)
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
-	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.GlobalAccountID)
-	ctx = context.WithValue(ctx, ctxIdentity, cpInstanceID)
-	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeAssumedRole)
-	ctx = context.WithValue(ctx, ctxUnderlyingRoleARN,
+	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
+	ctx = withPrincipalField(ctx, fieldIdentity, cpInstanceID)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
+	ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN,
 		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+ekscluster.CPInstanceRoleName)
-	ctx = context.WithValue(ctx, ctxAssumedRoleARN,
+	ctx = withPrincipalField(ctx, fieldAssumedRoleARN,
 		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+ekscluster.CPInstanceRoleName+"/"+cpInstanceID)
-	require.NoError(t, gw.EKS_Request(rec, req.WithContext(ctx)))
+	require.NoError(t, gw.serveEKS(rec, req.WithContext(ctx)))
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, `{"Addons":[`+

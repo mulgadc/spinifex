@@ -59,6 +59,10 @@ type EKSServiceDeps struct {
 	// used to compose the worker's ECR registry host.
 	InternalSuffix string
 
+	// RegistryHosts returns every gateway's ECR registry host:port as it appears
+	// in a repositoryUri, local node first. Nil means only the parity name.
+	RegistryHosts func() []string
+
 	// Gateway broker config for the K3s server VM (SigV4 HTTPS to AWSGW).
 	// SystemGatewayURL is the mgmt-reachable endpoint; GatewayCACert signs its TLS cert.
 	SystemGatewayURL string
@@ -1115,10 +1119,7 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 	meta, err := GetClusterMeta(ctx, acctKV, name)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			// Idempotent: a cluster already swept from KV is "deleted". Returning
-			// success lets a tofu destroy retry / double-targeted delete converge
-			// instead of failing the run (Common Resource Lifecycle Contract #1).
-			return &eks.DeleteClusterOutput{}, nil
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
 	}

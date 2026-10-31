@@ -40,7 +40,7 @@ Runs **on** a node, shelling out to `ip`/`iptables`/`ovn-nbctl` locally. Skips u
 
 Phases 7 and 8 are gated on a cluster by what the datapath can actually do: the transit segment is a localnet, so host-to-guest Tier 1 ingress only exists where the VPC's gateway router port and the guest are both on this host. The VPC ingress route itself is installed on every node, so phase 8 checks it unconditionally.
 
-Three nightly cells run it: `nat-single` (cell 19), its Oracle Linux twin (cell 36) and `nat-multi` (cell 30). Cell 20 is the bare-metal job and is not in the permutation matrix at all, which is why the multi-node NAT cell is numbered past the end rather than filling a gap.
+Four nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 30), and their Oracle Linux twins (cells 36 and 38). Cell 20 is the bare-metal job and is not in the permutation matrix at all, which is why the multi-node NAT cell is numbered past the end rather than filling a gap.
 
 ### `multinode` — behaviour that only exists on more than one node
 
@@ -49,6 +49,17 @@ Three nightly cells run it: `nat-single` (cell 19), its Oracle Linux twin (cell 
 **`TestMultinodeJetStreamReplicas` is a whole-cluster sweep, not a named list, and it lives here on purpose.** It audits every KV bucket the cluster has and fails any that is replicated across fewer nodes than the cluster has, capped at JetStream's ceiling of five. Naming buckets would only ever cover the ones somebody remembered — a replica count is set where a bucket is created, and there is a bucket-creating call in most services — so the sweep is the assertion and the three daemon-owned buckets are named only so that a run enumerating nothing still fails. Because `multinode` is in `E2E_SUITES_NIGHTLY_MULTI`, this runs in every multi-node permutation cell, and no cell can be added that quietly opts out of it.
 
 **`TestMultinodeDNS` convergence budgets are env-tunable.** `SPINIFEX_MULTINODE_DNS_TOPOLOGY_TIMEOUT` (default `90s`) bounds every node agreeing on the NS topology, `SPINIFEX_MULTINODE_DNS_TIMEOUT` (default `2m`) bounds a record becoming answerable from a guest or a node, and `SPINIFEX_MULTINODE_DNS_POLL` (default `3s`) is the poll interval for both. Values are Go durations; a malformed or non-positive value panics rather than falling back to the default.
+
+**`TestMultinodeOVNRaft` restarts each node's OVN central in turn before it kills the NB leader.**
+A `setup-ovn.sh` rerun restarts a node's NB and SB members together, on EL through the one `ovn-northd.service`, so the test does the same on every database node in turn, waits for both members to be back as cluster members under a known leader, and requires an NB write to land after each step and the full quorum with one leader at the end.
+
+**`TestMultinodeIPSec` proves guest traffic is encrypted on the wire, not only that IPsec is configured.**
+It first requires every node to carry the OVS certificate, key and CA pointers, `NB_Global.ipsec=true` never asserted over an unconfigured chassis, and an AES-GCM SA in `ip xfrm state`.
+None of those fails when SAs exist but traffic bypasses them, so it then launches two instances on distinct nodes and sends 200 pings of 1000 bytes between them.
+For each direction of that pair it fails unless the outbound SAs to the peer's `ovn-encap-ip` carried at least the payload sent, an outbound-only capture on the interface routing to the peer saw ESP (raw or UDP/4500-encapsulated), and that capture saw no plaintext Geneve (UDP/6081).
+The capture is outbound-only because inbound ESP is decrypted and seen again as Geneve on the same interface, which would read as plaintext on a healthy node.
+It proves the node pair the guests landed on; the SA check covers every node.
+It skips when the node config sets `network.ipsec_enabled=false`, or when the scheduler places all four launches on one node.
 
 ### `kvquorum` — the cluster's own state survives losing a node (multi-node, needs three)
 
@@ -104,9 +115,12 @@ CA installed and downloadable, fingerprint matches config, hostnames present in 
 
 Internal and internet-facing ALB and NLB, HTTPS listeners, listener rules, `ModifyListener`, and NLB UDP.
 
+Unhealthy-target routing: an NLB with an HTTP health check on a TCP target group stops sending traffic to a target that fails it while still accepting TCP, sends traffic again once it recovers, and fails open when every target is unhealthy.
+An ALB whose targets all fail their health check keeps serving from them instead of answering 503.
+
 ### `eks`, `ecs`, `ecr` — container services
 
-`eks`: cluster create/delete, access entries, addon delivery, `GetToken`, kubeconfig artifacts, the EBS CSI volume path, and an IRSA pod wired with a projected SA token. `ecs`: clusters, container instances, the three network modes (`awsvpc`, `bridge`, `host`), task-role credentials fetched from the container credentials endpoint, a service behind an ELB, and ENI release on terminate. `ecr`: control-plane CRUD plus a real OCI data plane — docker login/build/push/pull round trips, multi-layer images, and raw blob HTTP.
+`eks`: cluster create/delete, access entries, addon delivery, `GetToken`, kubeconfig artifacts, the EBS CSI volume path, an IRSA web-identity exchange under the stock AWS trust policy (`StringEquals` on the issuer host-path `:sub`/`:aud`, a mismatched `:sub` denied with `AccessDenied`, a `StringLike` `:sub` granted), and an IRSA pod wired with a projected SA token. `ecs`: clusters, container instances, the three network modes (`awsvpc`, `bridge`, `host`), task-role credentials fetched from the container credentials endpoint, a service behind an ELB, and ENI release on terminate. `ecr`: control-plane CRUD plus a real OCI data plane — docker login/build/push/pull round trips, multi-layer images, and raw blob HTTP.
 
 ### `rds` — managed databases
 
@@ -129,7 +143,6 @@ The create/describe/connect path against a live cluster: a DB VM that actually b
 - **`ddil`** — Denied, Disrupted, Intermittent, Limited network scenarios.
 - **`teardown`** — sweeps leftovers.
 - **`harness`** — shared primitives, not a suite. `harness/vpc_egress.go` carries the VPC/subnet/IGW/NAT-gateway fixtures the egress scenarios build on.
-- **`manifest-check`, `manifest-lint`** — manifest validation, not cluster behaviour.
 
 ## Keeping this honest
 

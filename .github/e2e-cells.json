@@ -223,5 +223,27 @@
     "runner": "ci-single",
     "extra": "nat-single",
     "suite": ""
+  },
+  {
+    "cell": 37,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "dhcp",
+    "host": "oracle-10",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "",
+    "suite": ""
+  },
+  {
+    "cell": 38,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "nat",
+    "host": "oracle-10",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "nat-multi",
+    "suite": ""
   }
 ]

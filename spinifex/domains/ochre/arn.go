@@ -60,10 +60,10 @@ func ParseProvisionedModelARN(arn, region, accountID string) (ParsedProvisionedM
 	return ParsedProvisionedModelARN{Region: parts[3], AccountID: parts[4], ID: id}, nil
 }
 
-// resolveProvisionedModelID accepts either a bare id or a full ARN (the shape
+// ResolveProvisionedModelID accepts either a bare id or a full ARN (the shape
 // every PT op's ProvisionedModelId field allows) and returns the bare id,
 // validating region/account ownership when an ARN is given.
-func resolveProvisionedModelID(idOrARN, region, accountID string) (string, error) {
+func ResolveProvisionedModelID(idOrARN, region, accountID string) (string, error) {
 	if !strings.HasPrefix(idOrARN, "arn:") {
 		return idOrARN, nil
 	}
@@ -78,12 +78,12 @@ func ptARNError(arn, why string) error {
 	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%q is not a valid provisioned-model ARN: %s", arn, why)
 }
 
-// looksLikeProvisionedModelARN is the cheap shape guard the inference path
+// LooksLikeProvisionedModelARN is the cheap shape guard the inference path
 // uses to decide whether a modelId needs the (heavier) parse-and-load
 // translation at all: a bare modelId or a foundation-model ARN
 // ("arn:aws:bedrock:*::foundation-model/...") must fall straight through to
 // the existing GlobalAccountID-shorthand path unchanged.
-func looksLikeProvisionedModelARN(modelID string) bool {
+func LooksLikeProvisionedModelARN(modelID string) bool {
 	return strings.HasPrefix(modelID, "arn:") && strings.Contains(modelID, ":"+provisionedModelResourceType+"/")
 }
 
@@ -144,10 +144,10 @@ func ParseGuardrailARN(arn, region, accountID string) (ParsedGuardrailARN, error
 	return ParsedGuardrailARN{Region: parts[3], AccountID: parts[4], ID: id}, nil
 }
 
-// resolveGuardrailID accepts either a bare id or a full ARN (the shape every
+// ResolveGuardrailID accepts either a bare id or a full ARN (the shape every
 // guardrail op's GuardrailIdentifier field allows) and returns the bare id,
 // validating region/account ownership when an ARN is given.
-func resolveGuardrailID(idOrARN, region, accountID string) (string, error) {
+func ResolveGuardrailID(idOrARN, region, accountID string) (string, error) {
 	if !strings.HasPrefix(idOrARN, "arn:") {
 		return idOrARN, nil
 	}
@@ -179,7 +179,7 @@ func guardrailARNError(arn, why string) error {
 // is the original modelID unchanged, so a caller logging the attempt still
 // records what was actually requested.
 func resolveInferenceTarget(ctx context.Context, accountID, modelID string, store *ProvisionedStore) (targetAccountID, targetModelID string, err error) {
-	if !looksLikeProvisionedModelARN(modelID) {
+	if !LooksLikeProvisionedModelARN(modelID) {
 		return "", modelID, nil
 	}
 	if store == nil {

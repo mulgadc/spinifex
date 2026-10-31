@@ -34,6 +34,10 @@ type attrResource[R any] struct {
 	defaults    func(*R) map[string]string
 	attrsOf     func(*R) map[string]string
 	setAttrs    func(*R, map[string]string)
+	// validate rejects a bad value for a known key before anything is stored.
+	validate func(key, value string) error
+	// afterChange runs once the changed keys are persisted; its error fails the call.
+	afterChange func(rec *R, changedKeys []string) error
 }
 
 // load fetches and authorises the record. An empty accountID is rejected
@@ -66,12 +70,22 @@ func modifyResourceAttributes[R any](res attrResource[R], pairs []attrPair, rawC
 	known := res.defaults(rec)
 	attrs := res.attrsOf(rec)
 	submitted := make([]attrPair, 0, len(pairs))
-	dirty := false
+	var changed []string
 	for _, p := range pairs {
 		if _, ok := known[p.Key]; !ok {
 			slog.Warn(res.opName+": rejecting unknown attribute key", "arn", res.arn, "key", p.Key)
 			return nil, errors.New(awserrors.ErrorValidationError)
 		}
+		if res.validate != nil {
+			if err := res.validate(p.Key, p.Value); err != nil {
+				slog.Warn(res.opName+": rejecting attribute value", "arn", res.arn, "key", p.Key)
+				return nil, err
+			}
+		}
+	}
+	// The merge below mutates the record's own map, so it starts only once every
+	// pair has passed validation.
+	for _, p := range pairs {
 		submitted = append(submitted, p)
 		if existing, ok := attrs[p.Key]; ok && existing == p.Value {
 			continue // value already matches stored — no mutation needed
@@ -80,7 +94,7 @@ func modifyResourceAttributes[R any](res attrResource[R], pairs []attrPair, rawC
 			attrs = make(map[string]string)
 		}
 		attrs[p.Key] = p.Value
-		dirty = true
+		changed = append(changed, p.Key)
 	}
 
 	// Caller sent attributes but every one was dropped by nil filtering: surface
@@ -94,11 +108,16 @@ func modifyResourceAttributes[R any](res attrResource[R], pairs []attrPair, rawC
 	// Skip the NATS/KV write when nothing changed. Terraform re-applies the same
 	// attribute set on every drift check, so this kills ~all Modify traffic
 	// during steady state and narrows the read-modify-write race window.
-	if dirty {
+	if len(changed) > 0 {
 		res.setAttrs(rec, attrs)
 		if err := res.save(rec); err != nil {
 			slog.Error(res.opName+": failed to persist", "arn", res.arn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if res.afterChange != nil {
+			if err := res.afterChange(rec, changed); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -190,13 +209,65 @@ func (s *ELBv2ServiceImpl) lbAttrResource(ctx context.Context, arn, accountID, o
 		opName:    opName,
 		notFound:  awserrors.ErrorELBv2LoadBalancerNotFound,
 		// See tgAttrResource: the generic helpers carry no context.
-		fetch:       func(arn string) (*LoadBalancerRecord, error) { return s.store.GetLoadBalancerByArn(ctx, arn) },
-		save:        func(lb *LoadBalancerRecord) error { return s.store.PutLoadBalancer(ctx, lb) },
+		fetch: func(arn string) (*LoadBalancerRecord, error) { return s.store.GetLoadBalancerByArn(ctx, arn) },
+		// CAS the attribute field alone so a concurrent config re-render survives.
+		save: func(lb *LoadBalancerRecord) error {
+			_, err := s.store.UpdateLoadBalancer(ctx, lb.LoadBalancerID, func(rec *LoadBalancerRecord) (bool, error) {
+				rec.Attributes = lb.Attributes
+				return true, nil
+			})
+			return err
+		},
 		accountIDOf: func(r *LoadBalancerRecord) string { return r.AccountID },
 		defaults:    func(r *LoadBalancerRecord) map[string]string { return DefaultLoadBalancerAttributes(r.Type) },
 		attrsOf:     func(r *LoadBalancerRecord) map[string]string { return r.Attributes },
 		setAttrs:    func(r *LoadBalancerRecord, m map[string]string) { r.Attributes = m },
+		validate:    validateLBAttribute,
+		afterChange: func(rec *LoadBalancerRecord, changed []string) error {
+			return s.reRenderForAttributes(ctx, rec.LoadBalancerID, changed)
+		},
 	}
+}
+
+// validateLBAttribute checks the values of the load balancer attributes that
+// shape the rendered configuration; other keys are stored as submitted.
+func validateLBAttribute(key, value string) error {
+	switch key {
+	case AttrXFFHeaderProcessing:
+		switch value {
+		case XFFModeAppend, XFFModePreserve, XFFModeRemove:
+			return nil
+		}
+		return awserrors.Errorf(awserrors.ErrorValidationError,
+			"Invalid value '%s' for attribute '%s': must be one of append, preserve, remove", value, key)
+	case AttrXFFClientPort:
+		if value == "true" || value == "false" {
+			return nil
+		}
+		return awserrors.Errorf(awserrors.ErrorValidationError,
+			"Invalid value '%s' for attribute '%s': must be true or false", value, key)
+	}
+	return nil
+}
+
+// reRenderForAttributes regenerates the stored data-plane config when a changed
+// attribute is one the config renders, so the change reaches the load balancer.
+func (s *ELBv2ServiceImpl) reRenderForAttributes(ctx context.Context, lbID string, changed []string) error {
+	if !slices.ContainsFunc(changed, func(k string) bool {
+		return k == AttrXFFHeaderProcessing || k == AttrXFFClientPort
+	}) {
+		return nil
+	}
+	lb, err := s.store.GetLoadBalancer(ctx, lbID)
+	if err != nil || lb == nil {
+		slog.ErrorContext(ctx, "ModifyLoadBalancerAttributes: failed to re-read load balancer", "lbId", lbID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.updateStoredConfig(ctx, lb); err != nil {
+		slog.ErrorContext(ctx, "ModifyLoadBalancerAttributes: failed to update config", "lbId", lbID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	return nil
 }
 
 func tgAttrKeyVal(a *elbv2.TargetGroupAttribute) (*string, *string) {

@@ -566,6 +566,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_KONNECTIVITY_HOST="+konnHost,
 		"EKS_KONNECTIVITY_SANS="+strings.Join(konnSANs, ","),
 		"EKS_KONNECTIVITY_SERVER_COUNT="+strconv.Itoa(konnCount),
+		"EKS_WEBHOOK_READY_ADDR=0.0.0.0:"+strconv.FormatInt(webhookReadyPort, 10),
 	)
 	// A replacement CP prunes the terminated member it supersedes from etcd once
 	// it has joined (k3s-first-boot deletes the dead Node → embedded-etcd drops

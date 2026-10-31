@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -183,7 +184,7 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []
 
 	hc := newHealthChecker(store)
 
-	return &ELBv2ServiceImpl{
+	svc := &ELBv2ServiceImpl{
 		config:         cfg,
 		store:          store,
 		acmStore:       acmStore,
@@ -195,7 +196,9 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []
 		cancel:         cancel,
 		hc:             hc,
 		reaperInterval: lbReaperInterval,
-	}, nil
+	}
+	hc.onChanged = svc.reRenderForTargetGroups
+	return svc, nil
 }
 
 // Close cancels background goroutines.
@@ -715,18 +718,35 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalan
 		return fmt.Errorf("generate config: %w", err)
 	}
 
-	hash := configCertHash(configContent, certFiles)
+	// NLBs: the agent actively probes targets (nginx has no upstream probing).
+	var healthTargets []HealthTargetSpec
+	if lb.Type == LoadBalancerTypeNetwork {
+		healthTargets = buildNLBHealthTargets(tgByArn)
+	}
+	// The agent re-fetches only when the hash moves, so probe settings are part of it.
+	hashed := configContent
+	if len(healthTargets) > 0 {
+		probes, err := json.Marshal(healthTargets)
+		if err != nil {
+			return fmt.Errorf("marshal health targets: %w", err)
+		}
+		hashed += "\n# probes " + string(probes)
+	}
+	hash := configCertHash(hashed, certFiles)
 	lb.ConfigText = configContent
 	lb.ConfigHash = hash
 	lb.CertFiles = certFiles
-	// NLBs: the agent actively probes targets (nginx has no upstream probing).
-	if lb.Type == LoadBalancerTypeNetwork {
-		lb.HealthTargets = buildNLBHealthTargets(tgByArn)
-	} else {
-		lb.HealthTargets = nil
-	}
+	lb.HealthTargets = healthTargets
 
-	if err := s.store.PutLoadBalancer(ctx, lb); err != nil {
+	// Only the rendered fields are written, under CAS, so a concurrent heartbeat
+	// or re-render of the same LB is never overwritten with a stale record.
+	if _, err := s.store.UpdateLoadBalancer(ctx, lb.LoadBalancerID, func(rec *LoadBalancerRecord) (bool, error) {
+		rec.ConfigText = lb.ConfigText
+		rec.ConfigHash = lb.ConfigHash
+		rec.CertFiles = lb.CertFiles
+		rec.HealthTargets = lb.HealthTargets
+		return true, nil
+	}); err != nil {
 		slog.ErrorContext(ctx, "updateStoredConfig: failed to persist LB", "lbId", lb.LoadBalancerID, "err", err)
 		return fmt.Errorf("persist LB: %w", err)
 	}
@@ -734,6 +754,46 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalan
 	slog.InfoContext(ctx, "updateStoredConfig: config stored",
 		"lbId", lb.LoadBalancerID, "hash", hash[:12], "size", len(configContent), "certs", len(certFiles))
 	return nil
+}
+
+// reRenderForTargetGroups regenerates the stored config of every load balancer
+// that references one of tgIDs, so a target health change reaches the data plane.
+// The LB is re-read just before rendering and failures are logged, never returned.
+func (s *ELBv2ServiceImpl) reRenderForTargetGroups(ctx context.Context, tgIDs []string) {
+	changed := make(map[string]struct{}, len(tgIDs))
+	for _, id := range tgIDs {
+		changed[id] = struct{}{}
+	}
+	lbs, err := s.store.ListLoadBalancers(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "reRenderForTargetGroups: failed to list load balancers", "err", err)
+		return
+	}
+	for _, listed := range lbs {
+		tgs, err := s.store.TargetGroupsForLB(ctx, listed.LoadBalancerID)
+		if err != nil {
+			slog.ErrorContext(ctx, "reRenderForTargetGroups: failed to resolve target groups", "lbId", listed.LoadBalancerID, "err", err)
+			continue
+		}
+		uses := false
+		for _, tg := range tgs {
+			if _, ok := changed[tg.TargetGroupID]; ok {
+				uses = true
+				break
+			}
+		}
+		if !uses {
+			continue
+		}
+		lb, err := s.store.GetLoadBalancer(ctx, listed.LoadBalancerID)
+		if err != nil || lb == nil {
+			slog.ErrorContext(ctx, "reRenderForTargetGroups: failed to re-read load balancer", "lbId", listed.LoadBalancerID, "err", err)
+			continue
+		}
+		if err := s.updateStoredConfig(ctx, lb); err != nil {
+			slog.ErrorContext(ctx, "reRenderForTargetGroups: re-render failed", "lbId", lb.LoadBalancerID, "err", err)
+		}
+	}
 }
 
 // resolveListenerCerts resolves each distinct certificate ARN to its combined PEM.
@@ -1068,8 +1128,21 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 	heartbeatStale := now.Sub(lb.LastHeartbeat) >= heartbeatPersistInterval
 	lb.LastHeartbeat = now
 
+	// Both writes touch only the fields this heartbeat owns, under CAS, so a
+	// concurrent config re-render of the same LB is never rolled back.
 	switch {
 	case stateChanged:
+		if _, err := s.store.UpdateLoadBalancer(ctx, lbID, func(rec *LoadBalancerRecord) (bool, error) {
+			if rec.State == StateProvisioning {
+				rec.State = StateActive
+				rec.StateReason = ""
+			}
+			rec.LastHeartbeat = now
+			return true, nil
+		}); err != nil {
+			slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to persist activation", "lbId", lbID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 		// Build data-plane config on activation: reactive calls during create
 		// no-op while InstanceID is empty, so we build it now from existing listeners/targets.
 		if err := s.updateStoredConfig(ctx, lb); err != nil {
@@ -1078,7 +1151,10 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 		}
 	case heartbeatStale:
 		// Refresh the heartbeat timestamp only; avoid writing the full record on every tick.
-		if err := s.store.PutLoadBalancer(ctx, lb); err != nil {
+		if _, err := s.store.UpdateLoadBalancer(ctx, lbID, func(rec *LoadBalancerRecord) (bool, error) {
+			rec.LastHeartbeat = now
+			return true, nil
+		}); err != nil {
 			slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to persist LB", "lbId", lbID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -2094,6 +2170,8 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.M
 	if err != nil {
 		return nil, err
 	}
+
+	s.reRenderForTargetGroups(ctx, []string{tg.TargetGroupID})
 
 	slog.InfoContext(ctx, "ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
 

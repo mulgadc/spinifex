@@ -8,6 +8,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -128,6 +129,7 @@ func TestSigV4Auth_FailureLogsLoopbackGatedClientIP(t *testing.T) {
 				DisableLogging: true,
 				Region:         testRegion,
 				IAMService:     &mockIAMService{masterKey: testMasterKey},
+				Credentials:    credverify.New(&mockIAMService{masterKey: testMasterKey}, &mockSTSService{}),
 				STSService:     &mockSTSService{},
 				RateLimiter:    rl,
 			}

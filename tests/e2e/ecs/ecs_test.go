@@ -241,7 +241,7 @@ func setupECSFixture(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 func createNetwork(t *testing.T, c *harness.AWSClient, fx *ecsFixture) {
 	t.Helper()
 
-	vpc, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(ecsVPCCIDR)}) // e2e:allow-create — the ECS fixture VPC.
+	vpc, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(ecsVPCCIDR)}) // The ECS fixture VPC.
 	require.NoError(t, err, "create-vpc")
 	fx.VPCID = aws.StringValue(vpc.Vpc.VpcId)
 	t.Cleanup(func() {
@@ -250,7 +250,7 @@ func createNetwork(t *testing.T, c *harness.AWSClient, fx *ecsFixture) {
 		}
 	})
 
-	igw, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}) // e2e:allow-create
+	igw, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{})
 	require.NoError(t, err, "create-internet-gateway")
 	fx.IGWID = aws.StringValue(igw.InternetGateway.InternetGatewayId)
 	_, err = c.EC2.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
@@ -273,7 +273,7 @@ func createNetwork(t *testing.T, c *harness.AWSClient, fx *ecsFixture) {
 	fx.SubnetAID = createSubnet(t, c, fx.VPCID, ecsSubnetACIDR)
 	fx.SubnetBID = createSubnet(t, c, fx.VPCID, ecsSubnetBCIDR)
 
-	rt, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(fx.VPCID)}) // e2e:allow-create
+	rt, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(fx.VPCID)})
 	require.NoError(t, err, "create-route-table")
 	fx.RTID = aws.StringValue(rt.RouteTable.RouteTableId)
 	_, err = c.EC2.CreateRoute(&ec2.CreateRouteInput{
@@ -304,7 +304,7 @@ func createNetwork(t *testing.T, c *harness.AWSClient, fx *ecsFixture) {
 		})
 	}
 
-	sg, err := c.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{ // e2e:allow-create — the ECS fixture SG.
+	sg, err := c.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{ // The ECS fixture SG.
 		VpcId:       aws.String(fx.VPCID),
 		GroupName:   aws.String(fx.ClusterName + "-sg"),
 		Description: aws.String("ecs e2e: SSH + HTTP in, all out"),
@@ -328,7 +328,7 @@ func createNetwork(t *testing.T, c *harness.AWSClient, fx *ecsFixture) {
 
 func createSubnet(t *testing.T, c *harness.AWSClient, vpcID, cidr string) string {
 	t.Helper()
-	out, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{ // e2e:allow-create
+	out, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{
 		VpcId: aws.String(vpcID), CidrBlock: aws.String(cidr),
 	})
 	require.NoError(t, err, "create-subnet %s", cidr)
@@ -466,7 +466,7 @@ func launchContainerInstance(t *testing.T, c *harness.AWSClient, env *harness.En
 	t.Helper()
 
 	fx.KeyName = fx.ClusterName + "-node"
-	kp, err := c.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(fx.KeyName)}) // e2e:allow-create — RunInstances requires a key.
+	kp, err := c.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(fx.KeyName)}) // RunInstances requires a key.
 	require.NoError(t, err, "create-key-pair")
 	keyPath := filepath.Join(artifacts, fx.KeyName+".pem")
 	_ = os.WriteFile(keyPath, []byte(aws.StringValue(kp.KeyMaterial)), 0o600)
@@ -477,7 +477,7 @@ func launchContainerInstance(t *testing.T, c *harness.AWSClient, env *harness.En
 	amiID := resolveECSNodeAMI(t, c)
 	userData := guestUserData(t, env, fx)
 
-	out, err := c.EC2.RunInstances(&ec2.RunInstancesInput{ // e2e:allow-create — the container instance is the subject under test.
+	out, err := c.EC2.RunInstances(&ec2.RunInstancesInput{ // The container instance is the subject under test.
 		ImageId:          aws.String(amiID),
 		InstanceType:     aws.String(ecsInstanceTyp),
 		KeyName:          aws.String(fx.KeyName),
@@ -704,7 +704,7 @@ func waitTaskRunning(t *testing.T, c *harness.AWSClient, cluster, taskArn string
 func runServiceWithELB(t *testing.T, c *harness.AWSClient, env *harness.Env, fx *ecsFixture) {
 	t.Helper()
 
-	tg, err := c.ELBv2.CreateTargetGroup(&elbv2.CreateTargetGroupInput{ // e2e:allow-create — the service target group is the subject under test.
+	tg, err := c.ELBv2.CreateTargetGroup(&elbv2.CreateTargetGroupInput{ // The service target group is the subject under test.
 		Name:                       aws.String(shortName(fx.ClusterName + "-tg")),
 		Port:                       aws.Int64(80),
 		Protocol:                   aws.String("HTTP"),
@@ -721,7 +721,7 @@ func runServiceWithELB(t *testing.T, c *harness.AWSClient, env *harness.Env, fx 
 		_, _ = c.ELBv2.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{TargetGroupArn: aws.String(tgArn)})
 	})
 
-	lb, err := c.ELBv2.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{ // e2e:allow-create — the ELB-attached service is the subject under test.
+	lb, err := c.ELBv2.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{ // The ELB-attached service is the subject under test.
 		Name:           aws.String(shortName(fx.ClusterName + "-alb")),
 		Type:           aws.String("application"),
 		Scheme:         aws.String("internet-facing"),
@@ -735,7 +735,7 @@ func runServiceWithELB(t *testing.T, c *harness.AWSClient, env *harness.Env, fx 
 	})
 	harness.WaitForLBActive(t, c, lbArn, "ecs-alb", 3*time.Minute)
 
-	lis, err := c.ELBv2.CreateListener(&elbv2.CreateListenerInput{ // e2e:allow-create — listener forwards to the service target group.
+	lis, err := c.ELBv2.CreateListener(&elbv2.CreateListenerInput{ // Listener forwards to the service target group.
 		LoadBalancerArn: aws.String(lbArn),
 		Port:            aws.Int64(80),
 		Protocol:        aws.String("HTTP"),

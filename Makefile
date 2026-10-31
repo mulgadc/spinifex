@@ -153,6 +153,38 @@ $(MICROVM_ARTIFACTS) &: $(MICROVM_INPUTS)
 bin/lb-agent:
 	$(MAKE) build-lb-agent
 
+# The SQS store microVM image: a separate artifact from the LB image above, not
+# installed or released by any target yet.
+SQS_STORE_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/sqs-store
+SQS_STORE_MICROVM_ARTIFACTS := $(SQS_STORE_MICROVM_OUT_DIR)/vmlinuz $(SQS_STORE_MICROVM_OUT_DIR)/initramfs.cpio.gz
+SQS_STORE_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_STORE_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_STORE_MICROVM_OUT_DIR)/,sqs-store-lib.sh sqs-store-prepare sqs-store-run sqs-store-stop) bin/nats-server
+
+$(SQS_STORE_MICROVM_ARTIFACTS) &: $(SQS_STORE_MICROVM_INPUTS)
+	./scripts/build-sqs-store-microvm-image.sh
+
+# The dedicated SQS store server, built from the go.mod-pinned module so the
+# image ships exactly the reviewed version. Static for the musl guest.
+bin/nats-server: go.mod go.sum
+	@mkdir -p bin
+	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ github.com/nats-io/nats-server/v2
+
+build-sqs-store-microvm-image: $(SQS_STORE_MICROVM_ARTIFACTS) ## Build the SQS store microVM kernel and initramfs
+
+# The shared SQS worker microVM image: the store image's /init and kernel with
+# the worker binary instead of nats-server. Not installed or released yet.
+SQS_WORKER_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/sqs-worker
+SQS_WORKER_MICROVM_ARTIFACTS := $(SQS_WORKER_MICROVM_OUT_DIR)/vmlinuz $(SQS_WORKER_MICROVM_OUT_DIR)/initramfs.cpio.gz
+SQS_WORKER_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_WORKER_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_WORKER_MICROVM_OUT_DIR)/,sqs-worker-lib.sh sqs-worker-prepare sqs-worker-ready sqs-worker-stop) bin/sqs-worker
+
+$(SQS_WORKER_MICROVM_ARTIFACTS) &: $(SQS_WORKER_MICROVM_INPUTS)
+	SQS_MICROVM_PROFILE=worker ./scripts/build-sqs-store-microvm-image.sh
+
+bin/sqs-worker: go.mod go.sum $(shell find cmd/sqs-worker spinifex/agents/sqs -name '*.go' ! -name '*_test.go')
+	@mkdir -p bin
+	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/sqs-worker
+
+build-sqs-worker-microvm-image: $(SQS_WORKER_MICROVM_ARTIFACTS) ## Build the shared SQS worker microVM kernel and initramfs
+
 # qboot is the microvm firmware. The source tarball ships with each release
 # because qboot is GPL-2.0.
 QBOOT_COMMIT := $(shell sed -n 's/^QBOOT_COMMIT="\(.*\)"$$/\1/p' scripts/build-qboot.sh)
@@ -164,6 +196,18 @@ $(QBOOT_ARTIFACTS) &: scripts/build-qboot.sh
 
 build-microvm-image: $(MICROVM_ARTIFACTS) $(QBOOT_ARTIFACTS) ## Build microVM kernel, initramfs and qboot firmware (incremental — skips when up to date)
 
+install-sqs-store-microvm: $(SQS_STORE_MICROVM_ARTIFACTS) ## Install the SQS store microVM image to /usr/share/spinifex/microvm/sqs-store/
+	sudo install -d /usr/share/spinifex/microvm/sqs-store
+	sudo rm -f /usr/share/spinifex/microvm/sqs-store/initramfs.cpio.gz
+	sudo install -m 0644 $(SQS_STORE_MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/sqs-store/vmlinuz
+	sudo install -m 0644 $(SQS_STORE_MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/sqs-store/initramfs.cpio.gz
+
+install-sqs-worker-microvm: $(SQS_WORKER_MICROVM_ARTIFACTS) ## Install the SQS worker microVM image to /usr/share/spinifex/microvm/sqs-worker/
+	sudo install -d /usr/share/spinifex/microvm/sqs-worker
+	sudo rm -f /usr/share/spinifex/microvm/sqs-worker/initramfs.cpio.gz
+	sudo install -m 0644 $(SQS_WORKER_MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/sqs-worker/vmlinuz
+	sudo install -m 0644 $(SQS_WORKER_MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/sqs-worker/initramfs.cpio.gz
+
 install-microvm: $(MICROVM_ARTIFACTS) $(QBOOT_ARTIFACTS) ## Install microVM artifacts to /usr/share/spinifex/microvm/
 	sudo install -d /usr/share/spinifex/microvm
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/vmlinuz
@@ -171,15 +215,14 @@ install-microvm: $(MICROVM_ARTIFACTS) $(QBOOT_ARTIFACTS) ## Install microVM arti
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/qboot.rom /usr/share/spinifex/microvm/qboot.rom
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/qboot.LICENSE /usr/share/spinifex/microvm/qboot.LICENSE
 
-# the pre-commit gate: manifest checks, lint, vuln, and the unit and e2e-harness tiers.
+# the pre-commit gate: lint, vuln, and the unit and e2e-harness tiers.
 # integration and race tests skipped to keep quick, they run in CI.
 #
 # -j2 overlaps the only two heavy gates, lint and test-cover: alone each leaves
 # most of the machine idle, so pairing them cuts a cold run by about a quarter.
 # -Otarget keeps each gate's output in one block instead of interleaving them.
-# manifest-check manifest-lint test-package-check removed, can add back later
 preflight:
-	@$(MAKE) --no-print-directory -j2 -Otarget QUIET=1 lint govulncheck test-cover diff-coverage test-harness test-build-scripts manifest-check manifest-lint
+	@$(MAKE) --no-print-directory -j2 -Otarget QUIET=1 lint govulncheck test-cover diff-coverage test-harness test-build-scripts
 	@echo -e "\n ✅ Preflight passed — safe to commit."
 
 # Shell suites + shellcheck for build/scripts/, the systemd-unit helpers that
@@ -191,7 +234,7 @@ preflight:
 # reason: between them they install the software, wire OVN, erase the state and
 # remove the install, so a shellcheck warning in one is an outage or a wrong
 # deletion, not a style note.
-NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/install-node.sh scripts/smoke-test.sh scripts/node-reset.sh scripts/uninstall-spx.sh scripts/lib/distro.sh
+NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/install-node.sh scripts/smoke-test.sh scripts/node-reset.sh scripts/uninstall-spx.sh scripts/lib/distro.sh scripts/lib/stage-sqs-store-microvm.sh
 
 test-build-scripts:
 	@echo -e "\n....Running build/scripts/**/*_test.sh...."
@@ -199,13 +242,14 @@ test-build-scripts:
 		echo "-- $$t"; \
 		sh "$$t" || exit 1; \
 	done
-	@echo -e "\n....Running scripts/*_test.sh and scripts/lib/*_test.sh...."
-	@for t in $$( (find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib -name '*_test.sh') | sort); do \
+	@echo -e "\n....Running scripts/*_test.sh, scripts/lib/*_test.sh and scripts/appliance/*_test.sh...."
+	@for t in $$( (find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib scripts/appliance -name '*_test.sh') | sort); do \
 		echo "-- $$t"; \
 		sh "$$t" || exit 1; \
 	done
 	@echo -e "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
 	shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
+	shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)
 	@echo "  test-build-scripts ok"
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
@@ -251,23 +295,6 @@ aws-model-coverage: generate-aws-model-coverage
 test-segscan-oracle:
 	@echo -e "\n....Running segscan storage oracle test...."
 	$(_Q)LOG_IGNORE=1 go test -tags=integration,segscanoracle -timeout 120s ./tests/integration/... -run TestSegscanOracle $(_RACEQ)
-
-# Validate docs/service-interfaces.yaml. Schema check + cross-reference
-# of services/suites/fixtures + on-disk path existence.
-manifest-check:
-	@echo -e "\n....Checking service-interfaces.yaml...."
-	@go run ./tests/e2e/manifest-check/cmd/manifest-check -repo-root . -manifest docs/service-interfaces.yaml
-
-# Drift guards: direct-create fixture lint + NATS subject lint,
-# ratcheted against tests/e2e/manifest-lint/baseline.txt. Fails only on NEW
-# drift beyond the baseline.
-manifest-lint:
-	@echo -e "\n....Linting manifest drift (fixtures + subjects)...."
-	@go run ./tests/e2e/manifest-lint/cmd/manifest-lint -repo-root .
-
-# Accept current drift into the baseline. Run after an intentional change.
-manifest-lint-update:
-	@go run ./tests/e2e/manifest-lint/cmd/manifest-lint -repo-root . -update
 
 # Run unit tests
 test:
@@ -481,6 +508,8 @@ distro-amd64:
 		echo "[distro-amd64] WARNING: microvm artifacts missing — tarball will not include them"; \
 		echo "[distro-amd64]          run 'make build-microvm-image' before 'make distro-amd64'"; \
 	fi
+	./scripts/lib/stage-sqs-store-microvm.sh $(SQS_STORE_MICROVM_OUT_DIR) dist/amd64
+	./scripts/lib/stage-sqs-store-microvm.sh $(SQS_WORKER_MICROVM_OUT_DIR) dist/amd64 sqs-worker
 	tar -czf dist/spinifex-$(VERSION)-linux-amd64.tar.gz -C dist/amd64 .
 	sha256sum dist/spinifex-$(VERSION)-linux-amd64.tar.gz > dist/spinifex-$(VERSION)-linux-amd64.tar.gz.sha256
 
@@ -499,7 +528,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
+.PHONY: test-package-check build build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-store-microvm-image build-sqs-worker-microvm-image install-microvm install-sqs-store-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

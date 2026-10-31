@@ -23,7 +23,7 @@ import (
 func dispatchECS(t *testing.T, gw *GatewayConfig, action, body string) error {
 	t.Helper()
 	req := setupECSRequest(ecsawsapi.TargetPrefix+"."+action, body)
-	return gw.ECS_Request(httptest.NewRecorder(), req)
+	return gw.serveECS(httptest.NewRecorder(), req)
 }
 
 // assertReachedHandler asserts the policy gate passed. The request then fails on
@@ -138,7 +138,7 @@ func TestECSRequest_OversizedBodyIsRejected(t *testing.T) {
 func TestECSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "ecs:*", "*"))
 	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/", nil).
-		WithContext(context.WithValue(context.Background(), ctxAccountID, authzAccountID)))
+		WithContext(withPrincipalField(context.Background(), fieldAccountID, authzAccountID)))
 	body := []byte(`{"cluster":"prod","service":"web","serviceName":"web","task":"t-1",` +
 		`"containerInstance":"ci-1","taskDefinition":"app:1","name":"cp","capacityProvider":"cp",` +
 		`"clusterName":"prod","resourceArn":"` + ecsResourceARN("cluster/prod") + `"}`)
@@ -160,7 +160,7 @@ func TestECSRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	req.Header.Set("X-Amz-Target", ecsawsapi.TargetPrefix+".ListClusters")
 	req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxService, "ecs")))
 
-	err := gw.ECS_Request(httptest.NewRecorder(), req)
+	err := gw.serveECS(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }

@@ -117,8 +117,3 @@ func TestEncodeRequestRejectsUnmodelledMember(t *testing.T) {
 	_, err := awsmodel.EncodeRequest(awsmodel.IAM, "GetRole", map[string]any{"RoleName": "app", "Bogus": "x"})
 	require.ErrorContains(t, err, `no member "Bogus"`)
 }
-
-func TestEncodeRequestS3IsNotSupported(t *testing.T) {
-	_, err := awsmodel.EncodeRequest(awsmodel.S3, "ListBuckets", map[string]any{})
-	require.ErrorContains(t, err, "not implemented")
-}

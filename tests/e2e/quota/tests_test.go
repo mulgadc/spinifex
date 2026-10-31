@@ -54,7 +54,7 @@ func TestQuotaVPCLimit(t *testing.T) {
 	vpcID := createVPC(t, tenant, "10.180.0.0/16")
 
 	harness.Step(t, "the next is refused")
-	// e2e:allow-create — the refusal is the assertion.
+	// The refusal is the assertion.
 	_, err := tenant.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String("10.181.0.0/16")})
 	harness.AssertAWSError(t, err, quotaExceeded)
 
@@ -74,7 +74,7 @@ func TestQuotaSubnetLimit(t *testing.T) {
 	vpcID := createVPC(t, tenant, "10.183.0.0/16")
 	headroom(t, fix.Tenant.AccountID, "subnets", countSubnets(t, tenant))
 
-	// e2e:allow-create — the create path is the subject under test.
+	// The create path is the subject under test.
 	out, err := tenant.EC2.CreateSubnet(&ec2.CreateSubnetInput{
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String("10.183.1.0/24"),
@@ -85,7 +85,7 @@ func TestQuotaSubnetLimit(t *testing.T) {
 		_, _ = tenant.EC2.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)})
 	})
 
-	// e2e:allow-create — the refusal is the assertion.
+	// The refusal is the assertion.
 	_, err = tenant.EC2.CreateSubnet(&ec2.CreateSubnetInput{
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String("10.183.2.0/24"),
@@ -105,7 +105,7 @@ func TestQuotaEIPLimit(t *testing.T) {
 	tenant := fix.Tenant.Client
 
 	allocate := func() (*ec2.AllocateAddressOutput, error) {
-		// e2e:allow-create — the allocation is the checked operation.
+		// The allocation is the checked operation.
 		return tenant.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
 	}
 
@@ -157,7 +157,7 @@ func TestQuotaVolumeLimits(t *testing.T) {
 		volID := createVolume(t, tenant, az, 1)
 		require.NotEmpty(t, volID)
 
-		// e2e:allow-create — the refusal is the assertion.
+		// The refusal is the assertion.
 		_, err := tenant.EC2.CreateVolume(&ec2.CreateVolumeInput{
 			AvailabilityZone: aws.String(az), Size: aws.Int64(1),
 		})
@@ -172,7 +172,7 @@ func TestQuotaVolumeLimits(t *testing.T) {
 
 		require.NotEmpty(t, createVolume(t, tenant, az, 1), "the GiB the account has room for")
 
-		// e2e:allow-create — the refusal is the assertion.
+		// The refusal is the assertion.
 		_, err := tenant.EC2.CreateVolume(&ec2.CreateVolumeInput{
 			AvailabilityZone: aws.String(az), Size: aws.Int64(1),
 		})
@@ -266,7 +266,7 @@ func TestQuotaLoadBalancerLimit(t *testing.T) {
 
 	create := func() error {
 		// The gate runs before the input is validated, which is what lets this
-		// assert the limit without provisioning a balancer. e2e:allow-create
+		// assert the limit without provisioning a balancer.
 		_, err := tenant.ELBv2.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
 			Name:    aws.String("e2e-quota-lb"),
 			Type:    aws.String("network"),
@@ -296,7 +296,7 @@ func TestQuotaRDSInstanceLimit(t *testing.T) {
 	create := func() error {
 		// The gate runs before the input is validated, so the limit is asserted
 		// without booting a database.
-		_, err := tenant.RDS.CreateDBInstance(&rds.CreateDBInstanceInput{ //nolint:staticcheck // e2e:allow-create
+		_, err := tenant.RDS.CreateDBInstance(&rds.CreateDBInstanceInput{ //nolint:staticcheck // the create path is the subject under test
 			DBInstanceIdentifier: aws.String("e2e-quota-db"),
 			DBInstanceClass:      aws.String("db.t3.micro"),
 			Engine:               aws.String("mariadb"),
@@ -327,7 +327,7 @@ func TestQuotaOverrideIsPerAccount(t *testing.T) {
 
 	setLimit(t, fix.Tenant.AccountID, "vpcs", 0)
 
-	// e2e:allow-create — the refusal is the assertion.
+	// The refusal is the assertion.
 	_, err := fix.Tenant.Client.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String("10.184.0.0/16")})
 	harness.AssertAWSError(t, err, quotaExceeded)
 

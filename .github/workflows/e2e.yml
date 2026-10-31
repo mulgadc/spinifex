@@ -536,6 +536,13 @@ jobs:
           log-dir: ${{ env.ARTIFACT_DIR }}
           title: "E2E failure analysis"
 
+      # The WAN capture is most of the artifact and only matters when a run
+      # failed. Anything short of a clean pass (suite rc, a failed setup or
+      # collect step, a missing rc) keeps it.
+      - name: Drop the packet capture from a passing single-node run
+        if: always() && steps.e2e.outputs.rc == '0' && job.status == 'success'
+        run: rm -f "${ARTIFACT_DIR}"/net-diag/wan.pcap
+
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
@@ -989,6 +996,13 @@ jobs:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           log-dir: ${{ env.ARTIFACT_DIR }}
           title: "Multi-Node E2E failure analysis"
+
+      # The WAN captures are 90% of the artifact and only matter when a run
+      # failed. Anything short of a clean pass (suite rc, a failed setup or
+      # collect step, a missing rc) keeps them.
+      - name: Drop the packet captures from a passing multi-node run
+        if: always() && steps.e2e.outputs.rc == '0' && job.status == 'success'
+        run: rm -f "${ARTIFACT_DIR}"/net-diag-node*/wan.pcap
 
       - uses: actions/upload-artifact@v7.0.2
         if: always()

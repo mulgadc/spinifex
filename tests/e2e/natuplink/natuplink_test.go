@@ -284,7 +284,7 @@ func phaseEIPDisabled(t *testing.T, fix *fixture) {
 
 	harness.Step(t, "allocate-address returns UnsupportedOperation")
 	harness.ExpectError(t, "UnsupportedOperation", func() error {
-		// e2e:allow-create — negative-path call; nat mode must reject it, nothing is created.
+		// Negative-path call; nat mode must reject it, nothing is created.
 		_, aerr := fix.aws.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
 		return aerr
 	})
@@ -297,7 +297,7 @@ func phaseEIPEnabled(t *testing.T, fix *fixture) {
 	t.Helper()
 
 	harness.Step(t, "allocate-address succeeds from public pool")
-	// e2e:allow-create — scratch EIP, released at the end of this phase.
+	// Scratch EIP, released at the end of this phase.
 	alloc, err := fix.aws.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
 	require.NoError(t, err, "allocate-address must succeed with a public pool configured")
 	allocID := aws.StringValue(alloc.AllocationId)
@@ -389,7 +389,7 @@ func phaseInstanceEgress(t *testing.T, fix *fixture, def harness.VPCInfo) egress
 	harness.Detail(t, "type", instType, "ami", amiID, "key", keyName)
 
 	harness.Step(t, "run-instances (default subnet, egress-probe user-data)")
-	// e2e:allow-create — throwaway probe VM; the egress-probe user-data makes it unshareable.
+	// Throwaway probe VM; the egress-probe user-data makes it unshareable.
 	runOut, err := fix.aws.EC2.RunInstances(&ec2.RunInstancesInput{
 		ImageId:      aws.String(amiID),
 		InstanceType: aws.String(instType),
@@ -515,7 +515,7 @@ func phaseUniqueTransitIP(t *testing.T, fix *fixture, defaultGwIP string) {
 	t.Helper()
 
 	harness.Step(t, "create-vpc %s", secondVPCCIDR)
-	// e2e:allow-create — scratch VPC owned end to end by this uniqueness check.
+	// Scratch VPC owned end to end by this uniqueness check.
 	vpcOut, err := fix.aws.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(secondVPCCIDR)})
 	require.NoError(t, err, "create-vpc")
 	vpcID := aws.StringValue(vpcOut.Vpc.VpcId)
@@ -524,7 +524,7 @@ func phaseUniqueTransitIP(t *testing.T, fix *fixture, defaultGwIP string) {
 	})
 
 	harness.Step(t, "create + attach internet gateway")
-	// e2e:allow-create — scratch IGW owned by this uniqueness check.
+	// Scratch IGW owned by this uniqueness check.
 	igwOut, err := fix.aws.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{})
 	require.NoError(t, err, "create-internet-gateway")
 	igwID := aws.StringValue(igwOut.InternetGateway.InternetGatewayId)
@@ -602,7 +602,7 @@ func phaseEIPIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egre
 	assertDistributedEIP(t, probe.publicIP)
 
 	harness.Step(t, "allocate + associate a fresh EIP")
-	// e2e:allow-create — scratch EIP owned end to end by this phase.
+	// Scratch EIP owned end to end by this phase.
 	alloc, err := fix.aws.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")})
 	require.NoError(t, err, "allocate-address")
 	allocID := aws.StringValue(alloc.AllocationId)
@@ -738,7 +738,7 @@ func launchSpreadGuests(t *testing.T, fix *fixture, def harness.VPCInfo, count i
 
 	harness.Step(t, "create spread placement group + %d egress-probe guests", count)
 	pgName := "natuplink-spread"
-	// e2e:allow-create — scratch placement group owned end to end by this phase.
+	// Scratch placement group owned end to end by this phase.
 	_, err := fix.aws.EC2.CreatePlacementGroup(&ec2.CreatePlacementGroupInput{
 		GroupName: aws.String(pgName), Strategy: aws.String("spread"),
 	})
@@ -747,7 +747,7 @@ func launchSpreadGuests(t *testing.T, fix *fixture, def harness.VPCInfo, count i
 		_, _ = fix.aws.EC2.DeletePlacementGroup(&ec2.DeletePlacementGroupInput{GroupName: aws.String(pgName)})
 	})
 
-	// e2e:allow-create — throwaway probe VMs; the egress-probe user-data makes them unshareable.
+	// Throwaway probe VMs; the egress-probe user-data makes them unshareable.
 	runOut, err := fix.aws.EC2.RunInstances(&ec2.RunInstancesInput{
 		ImageId:      aws.String(amiID),
 		InstanceType: aws.String(instType),

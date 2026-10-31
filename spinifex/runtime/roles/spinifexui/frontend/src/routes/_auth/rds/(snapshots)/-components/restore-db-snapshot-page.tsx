@@ -11,30 +11,16 @@ import {
   optionalFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
-import {
-  PanelField,
-  PanelFields,
-  PanelSection,
-} from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { PageHeading } from "@/components/page-heading"
 import {
-  SecurityGroupPicker,
   defaultSecurityGroupIdForVpc,
   securityGroupIdsForVpc,
   securityGroupsForVpc,
 } from "@/components/security-group-picker"
-import { SystemImageRequired } from "@/components/system-image-required"
 import { TagsFieldArray } from "@/components/tags-field-array"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldTitle,
-} from "@/components/ui/field"
-import { isRdsSystemImage, rdsImportCommand } from "@/lib/system-managed"
 import { useRestoreDBInstanceFromDBSnapshot } from "@/mutations/rds"
 import {
   ec2ImagesQueryOptions,
@@ -49,16 +35,25 @@ import {
 } from "@/queries/rds"
 import {
   type RestoreDBInstanceFormData,
-  canRestoreSnapshot,
   restoreDBInstanceSchema,
-  suggestedIdentifier,
 } from "@/types/rds"
 
 import {
   DeletionProtectionField,
+  FieldNotes,
   instanceClassOptions,
+  parameterGroupOptions,
   parameterGroupsForEngine,
+  subnetGroupOptions,
 } from "../../-components/rds-form-fields"
+import {
+  type RestoreCliValues,
+  restoreBlockedView,
+  restoreCliValues,
+  restoreDefaults,
+  RestoreSecurityGroupsField,
+  RestoringFromSection,
+} from "./restore-db-snapshot-fields"
 
 interface Props {
   dbSnapshotIdentifier: string
@@ -127,21 +122,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     setValue,
   } = useForm<RestoreDBInstanceFormData>({
     resolver: zodResolver(restoreDBInstanceSchema),
-    defaultValues: {
-      snapshotAllocatedStorage: snapshotStorage,
-      dbInstanceIdentifier: suggestedIdentifier(
-        snapshot?.DBInstanceIdentifier ?? "",
-        "restored",
-      ),
-      dbInstanceClass: "",
-      allocatedStorage: snapshotStorage,
-      port: snapshot?.Port ? String(snapshot.Port) : "",
-      dbSubnetGroupName: "",
-      vpcSecurityGroupIds: [],
-      dbParameterGroupName: "",
-      deletionProtection: false,
-      tags: [],
-    },
+    defaultValues: restoreDefaults(snapshot),
   })
 
   const values = useWatch({ control })
@@ -207,50 +188,14 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     })
   }
 
-  if (!snapshot?.DBSnapshotIdentifier) {
-    return (
-      <>
-        <BackLink to="/rds/describe-db-snapshots">Back to snapshots</BackLink>
-        <p className="text-muted-foreground">DB snapshot not found.</p>
-      </>
-    )
-  }
+  const blocked = restoreBlockedView(
+    snapshot,
+    imagesData.Images ?? [],
+    dbSnapshotIdentifier,
+  )
 
-  // A snapshot still being taken has no data to restore from, and the backend
-  // refuses it rather than waiting.
-  if (!canRestoreSnapshot(snapshot.Status)) {
-    return (
-      <>
-        <BackLink to="/rds/describe-db-snapshots">Back to snapshots</BackLink>
-        <PageHeading subtitle={dbSnapshotIdentifier} title="Restore Snapshot" />
-        <p className="text-muted-foreground">
-          {dbSnapshotIdentifier} is {snapshot.Status}. A snapshot can only be
-          restored once it is available.
-        </p>
-      </>
-    )
-  }
-
-  const images = imagesData.Images ?? []
-
-  // The engine is the snapshot's and cannot be changed, so a cluster without
-  // that engine's image cannot run this restore at all.
-  if (
-    !images.some((image) =>
-      isRdsSystemImage(image, engine, snapshot.EngineVersion ?? ""),
-    )
-  ) {
-    return (
-      <>
-        <BackLink to="/rds/describe-db-snapshots">Back to snapshots</BackLink>
-        <PageHeading subtitle={dbSnapshotIdentifier} title="Restore Snapshot" />
-        <SystemImageRequired
-          description={`This snapshot holds ${engine} data and can only be restored onto a ${engine} instance, but no ${engine} image is imported on this cluster.`}
-          importCommand={rdsImportCommand(engine)}
-          title={`${engine} image not found`}
-        />
-      </>
-    )
+  if (blocked !== undefined || !snapshot) {
+    return blocked
   }
 
   const { instanceClasses, classNotice } = instanceClassOptions(
@@ -287,26 +232,10 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
       )}
 
       <div className="max-w-4xl space-y-6">
-        <PanelSection title="Restoring from">
-          <PanelFields>
-            <PanelField label="Snapshot" mono>
-              {dbSnapshotIdentifier}
-            </PanelField>
-            <PanelField label="Source DB instance" mono>
-              {snapshot.DBInstanceIdentifier}
-            </PanelField>
-            <PanelField label="Engine">
-              {[engine, snapshot.EngineVersion].filter(Boolean).join(" ") ||
-                undefined}
-            </PanelField>
-            <PanelField label="Master username">
-              {snapshot.MasterUsername}
-            </PanelField>
-            <PanelField label="Snapshot storage">
-              {snapshotStorage ? `${snapshotStorage} GiB` : undefined}
-            </PanelField>
-          </PanelFields>
-        </PanelSection>
+        <RestoringFromSection
+          dbSnapshotIdentifier={dbSnapshotIdentifier}
+          snapshot={snapshot}
+        />
 
         <form className="space-y-6" onSubmit={handleSubmit(onSubmit)}>
           <TextField
@@ -358,40 +287,24 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
             label="DB subnet group"
             name="dbSubnetGroupName"
             onValueChange={handleSubnetGroupChange}
-            options={subnetGroups.map((g) => ({
-              value: g.DBSubnetGroupName ?? "",
-              label: `${g.DBSubnetGroupName} (${g.VpcId})`,
-            }))}
+            options={subnetGroupOptions(subnetGroups)}
             placeholder="The snapshot's subnet group"
           />
 
-          <Field>
-            <FieldTitle>VPC security groups</FieldTitle>
-            <SecurityGroupPicker
-              emptyText={
-                placementVpcId
-                  ? `No security groups available in ${placementVpcId}.`
-                  : "The snapshot does not identify a placement VPC."
-              }
-              groups={securityGroups}
-              onChange={setSecurityGroups}
-              selected={selectedSecurityGroups}
-            />
-            <FieldDescription>
-              Leave every box clear to inherit the groups the snapshot recorded.
-            </FieldDescription>
-            <FieldError errors={[errors.vpcSecurityGroupIds]} />
-          </Field>
+          <RestoreSecurityGroupsField
+            error={errors.vpcSecurityGroupIds}
+            groups={securityGroups}
+            onChange={setSecurityGroups}
+            placementVpcId={placementVpcId}
+            selected={selectedSecurityGroups}
+          />
 
           <SelectField
             control={control}
             id="restore-parameter-group"
             label="DB parameter group"
             name="dbParameterGroupName"
-            options={parameterGroups.map((g) => ({
-              value: g.DBParameterGroupName ?? "",
-              label: g.DBParameterGroupName ?? "",
-            }))}
+            options={parameterGroupOptions(parameterGroups)}
             placeholder="The snapshot's parameter group"
           />
 
@@ -402,27 +315,17 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
 
           <TagsFieldArray control={control} name="tags" />
 
-          <div className="space-y-2 rounded-md border border-border p-4">
-            <h3 className="text-xs font-medium">Inherited from the snapshot</h3>
-            {INHERITED_FIELDS.map((entry) => (
-              <p className="text-xs text-muted-foreground" key={entry.label}>
-                <span className="font-medium">{entry.label}</span> —{" "}
-                {entry.note}
-              </p>
-            ))}
-          </div>
+          <FieldNotes
+            className="space-y-2 rounded-md border border-border p-4"
+            entries={INHERITED_FIELDS}
+            title="Inherited from the snapshot"
+          />
 
           <CliCommandPanel
-            commands={buildRestoreCommands(dbSnapshotIdentifier, {
-              dbInstanceIdentifier: values.dbInstanceIdentifier ?? "",
-              dbInstanceClass: values.dbInstanceClass ?? "",
-              allocatedStorage: values.allocatedStorage ?? snapshotStorage,
-              port: values.port ?? "",
-              dbSubnetGroupName: selectedSubnetGroup,
-              vpcSecurityGroupIds: selectedSecurityGroups,
-              dbParameterGroupName: values.dbParameterGroupName ?? "",
-              deletionProtection: values.deletionProtection ?? false,
-            })}
+            commands={buildRestoreCommands(
+              dbSnapshotIdentifier,
+              restoreCliValues(values, snapshotStorage),
+            )}
           />
 
           <FormActions
@@ -440,16 +343,9 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   )
 }
 
-// Everything the CLI panel renders, flattened out of the form state so the
-// builder needs no optional handling of its own.
-type CliValues = Omit<
-  RestoreDBInstanceFormData,
-  "snapshotAllocatedStorage" | "tags"
->
-
 function buildRestoreCommands(
   dbSnapshotIdentifier: string,
-  values: CliValues,
+  values: RestoreCliValues,
 ): CliCommand[] {
   const parts: CliCommand["parts"] = [
     {

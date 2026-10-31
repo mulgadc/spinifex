@@ -30,10 +30,10 @@ func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
 	serveECRMeta(t, nc, ecr.SubjectRepoDelete, svc.RepoDelete)
 	serveECRMeta(t, nc, ecr.SubjectManifestPut, svc.ManifestPut)
 	serveECRMeta(t, nc, ecr.SubjectManifestList, svc.ManifestList)
-	gw := withECR(&GatewayConfig{
+	gw := withECR(withVerifier(&GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
 		IAMService: allowAllIAMService(),
-	}, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
+	}), awsapi.Deps{Repository: awsapi.NewRepositoryActionService(ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
 		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
 	})})
 	return gw, nc
@@ -42,7 +42,7 @@ func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
 func ecrRepositoryRequest(t *testing.T, gw *GatewayConfig, action, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	req := setupECRRequest(awsapi.TargetPrefix+"."+action, body)
-	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
+	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
 	return w, gw.serveECR(w, req.WithContext(ctx))
 }
@@ -287,24 +287,24 @@ func TestECRRequest_CreateDeleteDispatched(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
 
 	create := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.CreateRepository", `{"repositoryName":"team/app"}`)
-	create = create.WithContext(context.WithValue(create.Context(), ctxAccountID, ecrTestAccount))
+	create = create.WithContext(withPrincipalField(create.Context(), fieldAccountID, ecrTestAccount))
 	wc := httptest.NewRecorder()
 	require.NoError(t, gw.serveECR(wc, create))
 	assert.Equal(t, http.StatusOK, wc.Code)
 
 	del := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.DeleteRepository", `{"repositoryName":"team/app"}`)
-	del = del.WithContext(context.WithValue(del.Context(), ctxAccountID, ecrTestAccount))
+	del = del.WithContext(withPrincipalField(del.Context(), fieldAccountID, ecrTestAccount))
 	wd := httptest.NewRecorder()
 	require.NoError(t, gw.serveECR(wd, del))
 	assert.Equal(t, http.StatusOK, wd.Code)
 }
 
 func TestRepositoryActions_MissingComposition(t *testing.T) {
-	gw := &GatewayConfig{
+	gw := withVerifier(&GatewayConfig{
 		Region:         ecrTestRegion,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
-	}
+	})
 
 	_, err := ecrRepositoryRequest(t, gw, "CreateRepository", `{"repositoryName":"team/app"}`)
 	require.Error(t, err)

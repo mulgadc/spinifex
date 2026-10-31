@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"slices"
+	"maps"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/awsmodel"
@@ -9,7 +9,9 @@ import (
 )
 
 func TestAWSOperationInventoryClassifiesDispatchers(t *testing.T) {
-	inventory := AWSOperationInventory(ecrRegistrationInventory())
+	registered := ecrRegistrationInventory()
+	maps.Copy(registered, rdsRegistrationInventory())
+	inventory := AWSOperationInventory(registered)
 
 	require.Contains(t, inventory["ec2"].Registered, "DescribeInstances")
 	require.NotContains(t, inventory["ec2"].Stubbed, "DescribeInstances")
@@ -57,13 +59,6 @@ func TestAWSOperationInventoryMeasuresEKSAgainstTheModel(t *testing.T) {
 	for _, action := range eks.Extra {
 		require.NotContains(t, eks.Implemented, action)
 	}
-}
-
-func TestEKSActionNamesAreSortedAndDistinct(t *testing.T) {
-	names := eksActionNames()
-
-	require.True(t, slices.IsSorted(names), "actions are not sorted: %v", names)
-	require.Len(t, slices.Compact(slices.Clone(names)), len(names), "actions contain duplicates: %v", names)
 }
 
 func TestAWSOperationInventoryStatusesAreDisjointSubsets(t *testing.T) {

@@ -145,6 +145,9 @@ type Config struct {
 	// to scope its IntentState scan to local-AZ KV records; new VPC records
 	// are stamped with this value at create time.
 	AZ string
+	// Region is this node's configured region. IMDS serves it as
+	// placement/region and in the identity document and hostnames.
+	Region string
 	// NorthstarBaseDomain is the cluster's authoritative base domain (northstar
 	// default_domain, e.g. "spx3.net"). IMDS uses it to serve public-hostname.
 	// Empty disables the public-hostname metadata key.
@@ -605,6 +608,7 @@ func launchService(cfg *Config) error {
 		cfg.LocalVMs,
 		records,
 		listTaps,
+		cfg.Region,
 		cfg.NorthstarBaseDomain,
 		cfg.NorthstarInternalDomain,
 		cfg.ServicesDomain,
@@ -684,6 +688,7 @@ func launchService(cfg *Config) error {
 		NATMode:       natMode,
 		FlowsBarrier:  flowsBarrier,
 		RoutedIngress: routedIngress,
+		GatewayMTU:    topology.GatewayMTU(cfg.UnderlayMTU, cfg.IPSecEnabled),
 		NexthopSeed: func(ctx context.Context, lrpName, nexthopIP string) error {
 			return host.SeedNexthopMAC(ctx, host.NewExecRunner(), cfg.OVNNBAddr, lrpName, nexthopIP)
 		},
@@ -815,6 +820,10 @@ func launchService(cfg *Config) error {
 	// own, and a node that never wins the lease would otherwise have no path to
 	// the guests it is running.
 	go runHostEIPLoop(loopCtx, rec)
+
+	// Host MSS clamp for peers behind NAT that never receive gateway_mtu's ICMP;
+	// physical uplinks have no host hop, so the loop only clears a stale table.
+	go runMSSClampLoop(loopCtx, host.NewExecRunner(), uplinkMode, topology.GatewayMTU(cfg.UnderlayMTU, cfg.IPSecEnabled))
 
 	slog.Info("vpcd service started, waiting for VPC lifecycle events",
 		"subscriptions", len(subs))

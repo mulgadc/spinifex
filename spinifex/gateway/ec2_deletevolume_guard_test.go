@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
@@ -22,6 +23,7 @@ import (
 // a guest there could still map the volume. The public action must refuse with
 // a retryable ServiceUnavailable and never reach the volume service.
 func TestDeleteVolumeAction_MissingConfiguredNodeIsRetryableAndDeletesNothing(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	answer := func(subject, node string) {
 		sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
@@ -54,6 +56,7 @@ func TestDeleteVolumeAction_MissingConfiguredNodeIsRetryableAndDeletesNothing(t 
 		NATSConn:       nc,
 		NodeIDs:        []string{"node-1", "node-2"},
 		IAMService:     allowAllIAMService(),
+		Credentials:    credverify.New(allowAllIAMService(), nil),
 	}
 	req := setupEC2Request("Action=DeleteVolume&VolumeId=vol-0123456789abcdef0", "123456789012")
 	ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)

@@ -115,7 +115,7 @@ func TestAuthorization(t *testing.T) {
 		// being waited for: what is under test is the record's namespace, not the
 		// engine behind it.
 		t.Run("TheSameIdentifierIsADifferentInstance", func(t *testing.T) {
-			twin, err := other.RDS.CreateDBInstance(validCreateInput(id)) //nolint:staticcheck // e2e:allow-create — the second tenant's own instance
+			twin, err := other.RDS.CreateDBInstance(validCreateInput(id)) //nolint:staticcheck // The second tenant's own instance.
 			require.NoError(t, err, "an identifier held by another tenant must still be available here")
 			t.Cleanup(func() { deleteInstanceAs(t, other, id) })
 

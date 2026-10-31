@@ -1,4 +1,8 @@
-import type { OrderableDBInstanceOption } from "@aws-sdk/client-rds"
+import type {
+  DBParameterGroup,
+  DBSubnetGroup,
+  OrderableDBInstanceOption,
+} from "@aws-sdk/client-rds"
 import {
   type Control,
   type FieldValues,
@@ -87,4 +91,44 @@ export function instanceClassOptions(
       empty: `No instance class this cluster's nodes can run is available for ${engine}.`,
     }),
   }
+}
+
+export function subnetGroupOptions(
+  groups: DBSubnetGroup[],
+): { value: string; label: string }[] {
+  return groups.map((g) => ({
+    value: g.DBSubnetGroupName ?? "",
+    label: `${g.DBSubnetGroupName} (${g.VpcId})`,
+  }))
+}
+
+export function parameterGroupOptions(
+  groups: DBParameterGroup[],
+): { value: string; label: string }[] {
+  return groups.map((g) => ({
+    value: g.DBParameterGroupName ?? "",
+    label: g.DBParameterGroupName ?? "",
+  }))
+}
+
+// A boxed list of the settings a form cannot change, each with the reason.
+export function FieldNotes({
+  className,
+  entries,
+  title,
+}: {
+  className: string
+  entries: { label: string; note: string }[]
+  title: string
+}) {
+  return (
+    <div className={className}>
+      <h3 className="text-xs font-medium">{title}</h3>
+      {entries.map((entry) => (
+        <p className="text-xs text-muted-foreground" key={entry.label}>
+          <span className="font-medium">{entry.label}</span> — {entry.note}
+        </p>
+      ))}
+    </div>
+  )
 }

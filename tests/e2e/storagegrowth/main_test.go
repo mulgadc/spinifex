@@ -55,12 +55,10 @@
 // multi-pass, multi-MiB workload would wreck for sibling tests, and
 // multinode/'s fixture hard-skips outside ModeMultinode — meaningless on
 // the single-node topology this fault was observed on. It is also
-// deliberately excluded from the default e2e run and from
-// docs/service-interfaces.yaml: like gpu/, select-suites never selects it
-// automatically, so it is driven only by its own `make e2e-storagegrowth`
-// target. Nothing under tests/e2e/harness/ is modified by this suite —
-// that path is an infra glob, and editing it forces the full CI matrix on
-// every change.
+// deliberately excluded from the default e2e run, so it is driven only by
+// its own `make e2e-storagegrowth` target. Nothing under tests/e2e/harness/
+// is modified by this suite: that path is an infra glob, and editing it
+// forces the full CI matrix on every change.
 package storagegrowth
 
 import (

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,21 +14,13 @@ import (
 	"uuid"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
-	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
-)
-
-// AKID prefixes. Prefix-first dispatch prevents a misfiled record from being
-// resolved by the wrong lookup path.
-const (
-	longLivedAKIDPrefix = "AKIA"
-	sessionAKIDPrefix   = "ASIA"
 )
 
 // authSource is the caller's address as the auth path uses it. The rate limiter
@@ -43,8 +36,8 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = authlimit.NewAuthRateLimiter()
 	}
-	if gw.accountStatus == nil {
-		gw.accountStatus = newAccountStatusCache()
+	if gw.Admission == nil {
+		gw.Admission = accountadmission.New(gw.IAMService)
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -132,77 +125,74 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			if gw.IAMService == nil {
-				slog.Error("SigV4 auth: IAM service not initialized")
+			if gw.Credentials == nil {
+				// No verifier means no way to authenticate: fail closed, never allow.
+				slog.Error("SigV4 auth: credential verifier not configured")
 				gw.writeSigV4Error(w, r, awserrors.ErrorInternalError, "")
 				return
 			}
 
-			var (
-				secret     string
-				principal  principalContext
-				lookupCode string
-			)
-			switch {
-			case strings.HasPrefix(sig.Credential.AccessKeyID, longLivedAKIDPrefix):
-				secret, principal, lookupCode = gw.resolveLongLivedAKID(sig.Credential.AccessKeyID, src)
-			case strings.HasPrefix(sig.Credential.AccessKeyID, sessionAKIDPrefix):
-				secret, principal, lookupCode = gw.resolveSessionAKID(r, sig.Credential.AccessKeyID, src)
-			default:
-				slog.Warn("Auth failure: unknown AKID prefix", "accessKeyID", sig.Credential.AccessKeyID, "sourceIP", src.logIP)
-				gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("unknown-prefix", sig.Credential.AccessKeyID))
-				gw.writeSigV4Error(w, r, awserrors.ErrorInvalidClientTokenId, "")
-				return
-			}
-			if lookupCode != "" {
-				gw.writeSigV4Error(w, r, lookupCode, "")
-				return
+			credReq := credential.Request{
+				AccessKeyID:   sig.Credential.AccessKeyID,
+				SecurityToken: r.Header.Get("X-Amz-Security-Token"),
+				SourceIP:      src.logIP,
 			}
 
 			// Region is the gateway's, or a global service's fixed signing region;
 			// service is the client-claimed scope, gated against supportedServices above.
-			if _, err := sig.Verify(secret, gw.expectedSigningRegion(sig.Credential.Service, sig.Credential.Region), sig.Credential.Service); err != nil {
-				// A mismatch means our canonical request differs from the one the client
-				// signed, so log ours to diff against the SDK's. Warn, not Debug: these
-				// failures are intermittent and never reproduce on demand.
-				slog.Warn("Auth failure: verification failed",
-					"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", src.logIP,
-					"service", sig.Credential.Service,
-					"action", mismatchAction(r, sig.Credential.Service),
-					"canonicalRequest", sig.RedactedCanonicalRequest(),
-					"err", err)
-				// Fingerprinted by the signature as well as the key id: each guess at a
-				// secret produces a different one, while a client retrying an identical
-				// bad request produces the same one.
-				gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("signature", sig.Credential.AccessKeyID, sig.Signature))
-				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch, "")
+			var sigErr error
+			authed, f := gw.Credentials.Authenticate(credReq, func(secret string) error {
+				_, sigErr = sig.Verify(secret, gw.expectedSigningRegion(sig.Credential.Service, sig.Credential.Region), sig.Credential.Service)
+				return sigErr
+			})
+			if f != nil {
+				if f.SignatureMismatch {
+					// A mismatch means our canonical request differs from the one the client
+					// signed, so log ours to diff against the SDK's. Warn, not Debug: these
+					// failures are intermittent and never reproduce on demand.
+					slog.Warn("Auth failure: verification failed",
+						"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", src.logIP,
+						"service", sig.Credential.Service,
+						"action", mismatchAction(r, sig.Credential.Service),
+						"canonicalRequest", sig.RedactedCanonicalRequest(),
+						"err", sigErr)
+					// Fingerprinted by the signature as well as the key id: each guess at a
+					// secret produces a different one, while a client retrying an identical
+					// bad request produces the same one.
+					gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("signature", sig.Credential.AccessKeyID, sig.Signature))
+				} else {
+					gw.recordCredentialFailure(src, f)
+				}
+				gw.writeSigV4Error(w, r, f.Code, "")
 				return
 			}
 
 			// Only after the signature holds: an unauthenticated prober must not
 			// be able to use this to tell a suspended account from a live one.
-			if errCode := gw.checkAccountActive(principal.accountID, src); errCode != "" {
+			if errCode := gw.checkAccountActive(authed.AccountID, src); errCode != "" {
 				gw.writeSigV4Error(w, r, errCode, "")
 				return
 			}
 
-			// Principal state, same class as the account check above and deferred for
-			// the same reason: a session name resolves to whichever principal holds it
-			// now, so it has to be checked against the ID the session was minted for.
-			if errCode := gw.checkSessionPrincipal(principal, sig.Credential.AccessKeyID, src); errCode != "" {
-				gw.writeSigV4Error(w, r, errCode, "")
+			// Principal state and the caller's user ID, resolved here once rather than
+			// per policy check: a fault must fail the request rather than authorize it
+			// against a context missing the key.
+			caller, f := gw.Credentials.Resolve(credReq, authed)
+			if f != nil {
+				gw.recordCredentialFailure(src, f)
+				gw.writeSigV4Error(w, r, f.Code, "")
 				return
 			}
-
-			// Resolved here, once, rather than per policy check: a fault must fail
-			// the request rather than authorize it against a context missing the key.
-			userID, userARN, err := gw.principalUser(principal)
-			if err != nil {
-				gw.writeSigV4Error(w, r, err.Error(), "")
-				return
+			principal := principalContext{
+				identity:          caller.Identity,
+				accountID:         caller.AccountID,
+				principalType:     caller.PrincipalType,
+				assumedRoleARN:    caller.AssumedRoleARN,
+				assumedRoleID:     caller.AssumedRoleID,
+				underlyingRoleARN: caller.UnderlyingRoleARN,
+				userID:            caller.UserID,
+				userARN:           caller.UserARN,
 			}
-			principal.userID = userID
-			principal.userARN = userARN
 
 			// Parse rewound the body; re-read it for query-arg parsing, then rewind
 			// again for the downstream handler.
@@ -215,29 +205,21 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			r.Body = io.NopCloser(bytes.NewReader(body))
 
 			ctx := r.Context()
-			ctx = context.WithValue(ctx, ctxIdentity, principal.identity)
-			ctx = context.WithValue(ctx, ctxAccountID, principal.accountID)
+			ctx = withCallerPrincipal(ctx, callerPrincipal{
+				identity:          principal.identity,
+				accountID:         principal.accountID,
+				accessKeyID:       sig.Credential.AccessKeyID,
+				principalType:     principal.principalType,
+				assumedRoleARN:    principal.assumedRoleARN,
+				assumedRoleID:     principal.assumedRoleID,
+				underlyingRoleARN: principal.underlyingRoleARN,
+				userID:            principal.userID,
+				userARN:           principal.userARN,
+			})
 			ctx = context.WithValue(ctx, ctxService, sig.Credential.Service)
 			ctx = context.WithValue(ctx, ctxRegion, sig.Credential.Region)
-			ctx = context.WithValue(ctx, ctxAccessKey, sig.Credential.AccessKeyID)
-			ctx = context.WithValue(ctx, ctxPrincipalType, principal.principalType)
 			audit.From(ctx).SetIdentity(sig.Credential.AccessKeyID, principal.accountID,
 				sig.Credential.Region, sig.Credential.Service, principal.principalType)
-			if principal.assumedRoleARN != "" {
-				ctx = context.WithValue(ctx, ctxAssumedRoleARN, principal.assumedRoleARN)
-			}
-			if principal.assumedRoleID != "" {
-				ctx = context.WithValue(ctx, ctxAssumedRoleID, principal.assumedRoleID)
-			}
-			if principal.underlyingRoleARN != "" {
-				ctx = context.WithValue(ctx, ctxUnderlyingRoleARN, principal.underlyingRoleARN)
-			}
-			if principal.userID != "" {
-				ctx = context.WithValue(ctx, ctxUserID, principal.userID)
-			}
-			if principal.userARN != "" {
-				ctx = context.WithValue(ctx, ctxUserARN, principal.userARN)
-			}
 
 			// Parse once; dispatchers reuse via ctxQueryArgs. On error the
 			// dispatcher re-parses and returns MalformedQueryString.
@@ -246,13 +228,6 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				if action := args["Action"]; action != "" {
 					ctx = context.WithValue(ctx, ctxAction, action)
 				}
-			}
-
-			// /admin carries its method in the path and a JSON body, so the
-			// query-arg parse above finds no Action. Without this every admin
-			// method would share one "unknown" throttle bucket and trace label.
-			if method, ok := adminPathMethod(r.URL.Path); ok {
-				ctx = context.WithValue(ctx, ctxAction, method)
 			}
 
 			// A registered service names its own action; everything else keeps
@@ -273,9 +248,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 }
 
 // resolveNonQueryAction resolves the action for JSON-1.1 (X-Amz-Target) and
-// path-routed REST-JSON services (eks, the bedrock family), which carry no
+// path-routed REST-JSON services (eks), which carry no
 // query-protocol Action parameter. Empty on no match.
-func resolveNonQueryAction(r *http.Request, service string) string {
+func resolveNonQueryAction(r *http.Request) string {
 	if target := r.Header.Get("X-Amz-Target"); target != "" {
 		if _, after, ok := strings.CutLast(target, "."); ok {
 			return after
@@ -283,32 +258,6 @@ func resolveNonQueryAction(r *http.Request, service string) string {
 		return target
 	}
 
-	if service == "bedrock" {
-		service = resolveBedrockSubservice(r.URL.Path)
-	}
-	method, path := r.Method, r.URL.EscapedPath()
-	switch service {
-	case "eks":
-		if action, _, _, ok := eksRouter.Lookup(method, path); ok {
-			return action
-		}
-	case "bedrock":
-		if action, _, _, ok := bedrockRouter.Lookup(method, path); ok {
-			return action
-		}
-	case "bedrock-runtime":
-		if action, _, _, ok := bedrockRuntimeRouter.Lookup(method, path); ok {
-			return action
-		}
-	case "bedrock-agent":
-		if action, _, _, ok := bedrockAgentRouter.Lookup(method, path); ok {
-			return action
-		}
-	case "bedrock-agent-runtime":
-		if action, _, _, ok := bedrockAgentRuntimeRouter.Lookup(method, path); ok {
-			return action
-		}
-	}
 	return ""
 }
 
@@ -352,165 +301,12 @@ func mismatchAction(r *http.Request, service string) string {
 	return args["Action"]
 }
 
-// principalContext is the identity envelope set on the request context after
-// SigV4 verification succeeds.
-type principalContext struct {
-	identity          string
-	accountID         string
-	principalType     string
-	assumedRoleARN    string
-	assumedRoleID     string
-	underlyingRoleARN string
-	// userID is aws:userid, resolved where the principal is so the value cannot
-	// differ between two policy checks in the same request.
-	userID string
-	// userARN is an IAM user's stored ARN, path included, from the same read as
-	// userID. Empty for every other principal type.
-	userARN string
-	// sessionCred is the rehydrated STS record on the ASIA path, nil on the
-	// long-lived one. It carries the continuity check past sig.Verify.
-	sessionCred *stsdomain.SessionCredential
-}
-
-// resolveLongLivedAKID handles the AKIA path: IAM lookup, status check, secret decrypt.
-func (gw *GatewayConfig) resolveLongLivedAKID(accessKeyID string, src authSource) (string, principalContext, string) {
-	ak, err := gw.IAMService.LookupAccessKey(accessKeyID)
-	if err != nil {
-		if strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity) {
-			slog.Warn("Auth failure: access key not found", "accessKeyID", accessKeyID, "sourceIP", src.logIP)
-			gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("akid-not-found", accessKeyID))
-			return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
-		}
-		slog.Error("IAM lookup failed", "accessKeyID", accessKeyID, "err", err)
-		return "", principalContext{}, awserrors.ErrorInternalError
+// recordCredentialFailure counts a verifier rejection toward the source's lockout.
+func (gw *GatewayConfig) recordCredentialFailure(src authSource, f *credential.Failure) {
+	if f.FingerprintKind == "" {
+		return
 	}
-	if ak.Status != iamdomain.AccessKeyStatusActive {
-		slog.Warn("Auth failure: access key inactive", "accessKeyID", accessKeyID, "sourceIP", src.logIP)
-		gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("akid-inactive", accessKeyID))
-		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
-	}
-	secret, err := gw.IAMService.DecryptSecret(ak.SecretAccessKey)
-	if err != nil {
-		// Undecryptable secret (e.g. master key rotated): treat as auth failure, not
-		// server fault, so the client re-authenticates instead of retrying a dead request.
-		slog.Error("Failed to decrypt IAM secret", "accessKeyID", accessKeyID, "err", err)
-		gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("akid-secret", accessKeyID))
-		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
-	}
-	return secret, principalContext{
-		identity:      ak.UserName,
-		accountID:     ak.AccountID,
-		principalType: principalTypeUser,
-	}, ""
-}
-
-// resolveSessionAKID handles the ASIA path: STS lookup, expiry check,
-// X-Amz-Security-Token HMAC verify, secret decrypt. Nil STSService surfaces
-// as InternalError so misconfiguration is loud at startup.
-func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID string, src authSource) (string, principalContext, string) {
-	if gw.STSService == nil {
-		slog.Error("SigV4 auth: STS service not initialized but session AKID presented", "accessKeyID", accessKeyID)
-		return "", principalContext{}, awserrors.ErrorInternalError
-	}
-	cred, err := gw.STSService.LookupSessionCredential(accessKeyID)
-	if err != nil {
-		slog.Error("STS lookup failed", "accessKeyID", accessKeyID, "err", err)
-		return "", principalContext{}, awserrors.ErrorInternalError
-	}
-	if cred == nil {
-		slog.Warn("Auth failure: session credential not found", "accessKeyID", accessKeyID, "sourceIP", src.logIP)
-		gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("session-not-found", accessKeyID))
-		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
-	}
-	if time.Now().UTC().After(cred.ExpiresAt) {
-		slog.Warn("Auth failure: session credential expired",
-			"accessKeyID", accessKeyID, "sourceIP", src.logIP, "expiresAt", cred.ExpiresAt)
-		gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("session-expired", accessKeyID))
-		return "", principalContext{}, awserrors.ErrorExpiredToken
-	}
-
-	tokenHeader := r.Header.Get("X-Amz-Security-Token")
-	if tokenHeader == "" {
-		slog.Warn("Auth failure: session AKID presented without X-Amz-Security-Token",
-			"accessKeyID", accessKeyID, "sourceIP", src.logIP)
-		gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("session-no-token", accessKeyID))
-		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
-	}
-	if !gw.STSService.VerifySessionToken(cred, tokenHeader) {
-		slog.Warn("Auth failure: session token HMAC mismatch",
-			"accessKeyID", accessKeyID, "sourceIP", src.logIP)
-		gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("session-token-mismatch", accessKeyID, authlimit.TokenDigest(tokenHeader)))
-		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
-	}
-
-	secret, err := gw.IAMService.DecryptSecret(cred.SecretEncrypted)
-	if err != nil {
-		// Unverifiable secret: same auth-failure reasoning as resolveLongLivedAKID.
-		slog.Error("Failed to decrypt session secret", "accessKeyID", accessKeyID, "err", err)
-		gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("session-secret", accessKeyID))
-		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
-	}
-	if cred.PrincipalType == principalTypeUser {
-		// GetSessionToken session: resolve to the user so policy is evaluated as a user.
-		return secret, principalContext{
-			identity:      cred.SessionName,
-			accountID:     cred.AccountID,
-			principalType: principalTypeUser,
-			sessionCred:   cred,
-		}, ""
-	}
-
-	// "assumed-role" or empty (pre-PrincipalType records) — both resolve as role session.
-	return secret, principalContext{
-		identity:          cred.SessionName,
-		accountID:         cred.AccountID,
-		principalType:     principalTypeAssumedRole,
-		assumedRoleARN:    cred.AssumedRoleARN,
-		assumedRoleID:     cred.AssumedRoleID,
-		underlyingRoleARN: cred.UnderlyingRoleARN,
-		sessionCred:       cred,
-	}, ""
-}
-
-// checkSessionPrincipal re-verifies that a session's backing principal still
-// exists with the immutable ID the session was minted for, returning an AWS
-// error code to fail with or "" to proceed. A nil sessionCred (long-lived
-// credential) is a no-op.
-//
-// Deliberately not folded into resolveSessionAKID: that runs pre-signature
-// because it must produce the secret, whereas this reads the IAM users and
-// roles buckets. An AKID travels in cleartext, so running it there would let
-// anyone holding a copied one drive IAM reads with garbage signatures.
-func (gw *GatewayConfig) checkSessionPrincipal(principal principalContext, accessKeyID string, src authSource) string {
-	if principal.sessionCred == nil {
-		return ""
-	}
-	if gw.STSService == nil {
-		slog.Error("SigV4 auth: STS service not initialized", "accessKeyID", accessKeyID)
-		return awserrors.ErrorInternalError
-	}
-
-	if _, err := gw.STSService.VerifySessionPrincipal(principal.sessionCred); err != nil {
-		if !stsdomain.IsSessionPrincipalVerdict(err) {
-			slog.Error("Session principal continuity check faulted, refusing to authorize",
-				"accessKeyID", accessKeyID, "err", err)
-			return awserrors.ErrorInternalError
-		}
-		// InvalidClientTokenId, not ExpiredToken: the credential has not expired,
-		// the principal behind it is no longer the one it was minted for.
-		slog.Warn("Auth failure: session principal continuity check failed",
-			"accessKeyID", accessKeyID, "sourceIP", src.logIP,
-			"identity", principal.identity, "principalType", principal.principalType,
-			"reason", err)
-		// Every legacy record fails at once on the deploy that ships this check, so
-		// counting them would lock out a shared egress address on distinct-attempt
-		// volume alone and answer "retry later" to a fleet that cannot act on it.
-		if !errors.Is(err, stsdomain.ErrSessionPrincipalLegacy) {
-			gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("session-principal", accessKeyID))
-		}
-		return awserrors.ErrorInvalidClientTokenId
-	}
-	return ""
+	gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint(f.FingerprintKind, f.FingerprintParts...))
 }
 
 // writeSigV4Error writes an auth-failure error in the service-appropriate

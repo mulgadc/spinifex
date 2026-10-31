@@ -24,7 +24,7 @@ func TestTraceActionEnricher(t *testing.T) {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), ctxAction, "RunInstances")
 			ctx = context.WithValue(ctx, ctxService, "ec2")
-			ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+			ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 			ctx = context.WithValue(ctx, ctxRegion, "ap-southeast-2")
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

@@ -1,11 +1,9 @@
 package gateway
 
 import (
-	"maps"
 	"slices"
 
-	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
-	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
@@ -25,27 +23,7 @@ type ServiceOperationInventory struct {
 func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]ServiceOperationInventory {
 	inventory := map[string]ServiceOperationInventory{
 		"ec2": {
-			Registered: mapKeys(ec2Actions),
-		},
-		"ecs": {
-			Registered: mapKeys(ecsawsapi.Actions),
-			Stubbed:    ecsawsapi.StubbedActionNames(),
-		},
-		"eks": {
-			Registered: eksActionNames(),
-		},
-		"elasticloadbalancingv2": {
-			Registered: mapKeys(elbv2Actions),
-		},
-		"iam": {
-			Registered: mapKeys(iamActions),
-		},
-		"rds": {
-			Registered:  rdsawsapi.ActionNames(),
-			Unsupported: rdsawsapi.UnsupportedActionNames(),
-		},
-		"sts": {
-			Registered: mapKeys(stsActions),
+			Registered: ec2awsapi.ActionNames(),
 		},
 	}
 	for name, inv := range registered {
@@ -56,8 +34,4 @@ func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]
 		}
 	}
 	return inventory
-}
-
-func mapKeys[V any](values map[string]V) []string {
-	return slices.Sorted(maps.Keys(values))
 }

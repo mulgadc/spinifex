@@ -131,6 +131,7 @@ func TestGeneratedRequestsBreakOnlyTheirConstraint(t *testing.T) {
 				for _, request := range plan.Cases {
 					require.False(t, rejecting && request.Acceptance(), "%s acceptance %s follows a rejection", operationName, request.Path)
 					rejecting = !request.Acceptance()
+					// Predastore serves S3, so its requests are never sent.
 					if service != S3 {
 						_, err := EncodeRequest(service, operationName, request.Input)
 						require.NoError(t, err, "%s %s %s encodes", operationName, request.Constraint, request.Path)
@@ -241,6 +242,17 @@ func TestGenerateRequestsTargetsFixturesOutsideCreateAndDelete(t *testing.T) {
 	}
 }
 
+func TestGenerateRequestsPrefersOperationScopedFixtures(t *testing.T) {
+	options := testRequestOptions
+	options.Fixtures = map[string]string{"Id": "Z0FIXTURE", "GetChange.Id": "C0FIXTURE"}
+	for operation, want := range map[string]string{"GetChange": "C0FIXTURE", "GetHostedZone": "Z0FIXTURE"} {
+		plan, err := GenerateRequests(Route53, operation, options)
+		require.NoError(t, err)
+		require.True(t, plan.Cases[0].Acceptance())
+		require.Equal(t, want, plan.Cases[0].Input["Id"], operation)
+	}
+}
+
 func TestGenerateRequestsAttributesRejections(t *testing.T) {
 	plan, err := GenerateRequests(IAM, "CreateRole", testRequestOptions)
 	require.NoError(t, err)
@@ -323,6 +335,20 @@ func TestGenerateRequestsSkipsAcceptanceForUnguessableMembers(t *testing.T) {
 	}
 	require.ElementsMatch(t, []string{"", "MaxItems", "PathPrefix"}, acceptance)
 	require.NotEmpty(t, markerRejections, "a pagination token still gets rejection requests")
+}
+
+func TestGenerateRequestsAcceptsAFixtureForAnUnguessableMember(t *testing.T) {
+	options := testRequestOptions
+	options.Fixtures = map[string]string{"ListRoles.Marker": "fixture-marker"}
+	plan, err := GenerateRequests(IAM, "ListRoles", options)
+	require.NoError(t, err)
+	var markers []any
+	for _, request := range plan.Cases {
+		if request.Acceptance() && request.Member == "Marker" {
+			markers = append(markers, request.Input["Marker"])
+		}
+	}
+	require.Equal(t, []any{"fixture-marker"}, markers)
 }
 
 func TestGenerateRequestsUsesResourceHints(t *testing.T) {

@@ -144,6 +144,27 @@ The guest MTU moves with the setting, but a running guest holds its DHCP lease f
 
 **Expect launches to fail for a minute or two after re-enabling.** `RunInstances` returns `ServerInternal` with `vpc.add-nat` timing out, because the OVN flows-ready barrier cannot confirm while `ovn-controller` reprograms every tunnel for the new SAs. It clears once `ip xfrm state` settles. The error is reported as a capacity problem, which it is not.
 
+### Containers and nested overlays inside a guest
+
+A Docker bridge, Kubernetes pod network or other overlay inside a guest defaults to an MTU of 1500, which is larger than the guest's 1408 or 1442.
+Downloads from the internet still work for TCP on the veth and routed uplinks, because vpcd clamps the TCP MSS on the host hop (see [Performance Tuning → MTU](/docs/performance-tuning#4-mtu)).
+That was measured on a single node (env12) with a Docker container; it was not measured on a physical uplink or on a multi-node cluster.
+
+On a physical uplink there is no host hop to clamp, and UDP is never clamped, so set the inner MTU to the guest MTU.
+For Docker, in `/etc/docker/daemon.json`:
+
+```json
+{
+  "mtu": 1408,
+  "default-network-opts": {
+    "bridge": { "com.docker.network.driver.mtu": "1408" }
+  }
+}
+```
+
+Use 1442 when `ipsec_enabled = false`, and restart the Docker daemon so the default bridge is recreated.
+The gateway MTU follows `ipsec_enabled` and converges on the next reconcile pass, so change the inner MTU together with the guest MTU.
+
 ## Private vs Public Subnets
 
 A subnet's behavior depends on three things: whether the VPC has an Internet Gateway, whether the subnet's route table has a default route to that IGW, and whether the subnet has `MapPublicIpOnLaunch` enabled.

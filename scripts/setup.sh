@@ -16,8 +16,8 @@
 #   VERBOSE                    Set to 1 to echo "[setup] <stage>" before each top-level step.
 #   SETUP_STAGES               Comma-separated subset of stages to run:
 #                                deps, aws, dns, users, sudoers, firewall, timesync, files,
-#                                directories, env, systemd, sysctl, modules, logrotate,
-#                                udev, fixown, migrations
+#                                directories, env, systemd, sysctl, needrestart, modules,
+#                                logrotate, udev, fixown, migrations
 #                              Unset = run every stage appropriate for the current mode.
 
 set -e
@@ -283,7 +283,6 @@ create_service_users() {
     # Create per-service users with correct home directories
     declare -A SERVICE_HOMES=(
         [nats]="/var/lib/spinifex/nats"
-        [sqsstore]="/var/lib/spinifex/sqs-store"
         [gw]="/var/lib/spinifex/awsgw"
         [daemon]="/var/lib/spinifex/spinifex"
         [storage]="/var/lib/spinifex/predastore"
@@ -292,7 +291,7 @@ create_service_users() {
         [vpcd]="/var/lib/spinifex"
         [ui]="/var/lib/spinifex"
     )
-    for svc in nats sqsstore gw daemon storage northstar viperblock vpcd ui; do
+    for svc in nats gw daemon storage northstar viperblock vpcd ui; do
         local user="spinifex-${svc}"
         if ! id "$user" > /dev/null 2>&1; then
             $SUDO useradd --system --no-create-home \
@@ -324,7 +323,7 @@ create_service_users() {
     # Daemon consumes viperblock's NBD socket — join the producer-typed group.
     $SUDO usermod -aG spinifex-viperblock spinifex-daemon
 
-    info "Service users created (spinifex-{nats,sqsstore,gw,daemon,storage,northstar,viperblock,vpcd,ui})"
+    info "Service users created (spinifex-{nats,gw,daemon,storage,northstar,viperblock,vpcd,ui})"
 }
 
 # --- Install scoped sudoers rules ---
@@ -390,9 +389,67 @@ install_ipsec_state_helper() {
 set -eu
 
 if [ "$#" -ne 1 ]; then
-    echo "usage: $0 <on|off>" >&2
+    echo "usage: $0 <on|off|guard|unguard>" >&2
     exit 2
 fi
+
+# libreswan drops a tunnel's xfrm policies while IKE fails, and pluto flushes
+# the whole xfrm table when it starts or stops, so Geneve from the encap address
+# is dropped in nft unless the route carries an SA.
+GUARD_TABLE="inet spinifex_ipsec_guard"
+
+unguard() {
+    printf 'table %s\ndelete table %s\n' "$GUARD_TABLE" "$GUARD_TABLE" | nft -f -
+}
+
+want=""
+want_src() {
+    case "$1" in
+        *.*.*.*) case "$1" in *[!0-9.]*) src=0.0.0.0/0 ;; *) src="$1/32" ;; esac ;;
+        *) src=0.0.0.0/0 ;;
+    esac
+    case " $want " in *" $src "*) ;; *) want="$want $src" ;; esac
+}
+
+# One source per local address of a tunnel with a remote_name, which
+# ovn-controller sets only while NB_Global.ipsec is on. A tunnel without a
+# usable local_ip is guarded from every source rather than left open.
+guard() {
+    ifaces=$(ovs-vsctl --timeout=5 --bare --columns=name find Interface type=geneve)
+    for iface in $ifaces; do
+        peer=$(ovs-vsctl --timeout=5 --if-exists get Interface "$iface" options:remote_name)
+        [ -n "$peer" ] || continue
+        want_src "$(ovs-vsctl --timeout=5 --if-exists get Interface "$iface" options:local_ip | tr -d '"')"
+    done
+    # At boot pluto is up before ovn-controller builds the tunnels, and its
+    # callers guard only while encryption is wanted, so guard the encap address
+    # until the tunnels say otherwise.
+    if [ -z "$ifaces" ]; then
+        encap=$(ovs-vsctl --timeout=5 --if-exists get Open_vSwitch . external_ids:ovn-encap-ip | tr -d '"')
+        for ip in $(echo "$encap" | tr ',' ' '); do want_src "$ip"; done
+        [ -n "$want" ] || want_src ""
+    fi
+    if [ -z "$want" ]; then
+        unguard
+        return
+    fi
+    # One transaction, so the old set is never gone before the new one is in.
+    nft -f - << NFT
+table $GUARD_TABLE
+delete table $GUARD_TABLE
+table $GUARD_TABLE {
+    set srcs {
+        type ipv4_addr
+        flags interval
+        elements = { $(echo $want | tr ' ' ',') }
+    }
+    chain out {
+        type filter hook output priority 0; policy accept;
+        ip saddr @srcs udp dport 6081 rt ipsec missing drop
+    }
+}
+NFT
+}
 
 # mask/unmask rather than disable/enable. The daemon's unit sets
 # ProtectSystem=full, so /etc is read-only in the namespace its children inherit,
@@ -401,12 +458,24 @@ fi
 
 # ovs-monitor-ipsec execs the strongSwan starter itself rather than going through
 # this unit, so leaving it enabled only contends for UDP 500/4500. Off in both
-# states. Absent on a host without strongswan, which is not an error.
-systemctl mask --now strongswan-starter.service >/dev/null 2>&1 || true
+# states. Masking a unit no package ships leaves a stray /dev/null link, so a
+# host without strongSwan gets none, and loses one an older helper left.
+if [ -e /usr/lib/systemd/system/strongswan-starter.service ] || [ -e /lib/systemd/system/strongswan-starter.service ]; then
+    systemctl mask --now strongswan-starter.service >/dev/null 2>&1 || true
+elif [ "$(systemctl is-enabled strongswan-starter.service 2>/dev/null)" = masked ]; then
+    systemctl unmask strongswan-starter.service >/dev/null 2>&1 || true
+fi
 
 case "$1" in
     on)
-        systemctl unmask openvswitch-ipsec.service
+        if [ -x /usr/libexec/ipsec/pluto ]; then
+            # ovs-monitor-ipsec drives pluto over its control socket but does
+            # not start it, so pluto comes up first under its own unit.
+            systemctl unmask ipsec.service openvswitch-ipsec.service
+            systemctl start ipsec.service
+        else
+            systemctl unmask openvswitch-ipsec.service
+        fi
         exec systemctl start openvswitch-ipsec.service
         ;;
     off)
@@ -415,7 +484,14 @@ case "$1" in
         # On Debian that name is strongswan-starter's alias, masked above.
         if [ -x /usr/libexec/ipsec/pluto ]; then
             systemctl mask --now ipsec.service
+            unguard
         fi
+        ;;
+    guard)
+        guard
+        ;;
+    unguard)
+        unguard
         ;;
     *)
         echo "state not permitted: $1" >&2
@@ -624,7 +700,7 @@ table inet spinifex_filter {
         # inventory and running instances to anyone who asks. 8660 is
         # predastore's unauthenticated /healthz and /readyz, which name the
         # peers a gate cannot reach, so it belongs here for the same reason.
-        ip saddr $spinifex_peers tcp dport { 4222, 4223, 4248, 4249, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
+        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
         ip saddr $spinifex_peers udp dport { 5300, 6660, 7660 } accept
 
         # Encap plane, peer-scoped: Geneve, IKE, NAT-T and ESP. Geneve is a
@@ -1466,6 +1542,47 @@ install_files() {
         $SUDO cp "$EXTRACT_DIR/microvm/"* /usr/share/spinifex/microvm/
         info "  /usr/share/spinifex/microvm/*"
     fi
+    install_sqs_store_image
+    install_sqs_worker_image
+}
+
+# The SQS images ship beside the load balancer's, not inside it: an older
+# installer copies microvm/* without -r and would stop at a subdirectory.
+install_sqs_store_image() { install_sqs_microvm_image sqs-store "SQS store"; }
+install_sqs_worker_image() { install_sqs_microvm_image sqs-worker "SQS worker"; }
+
+# install_sqs_microvm_image <name> <label>
+install_sqs_microvm_image() {
+    local name=$1 label=$2 f
+    local src="$EXTRACT_DIR/microvm-$name"
+    local dest="${SPINIFEX_MICROVM_DIR:-/usr/share/spinifex/microvm}/$name"
+    # A previously installed image belongs to an older release, and this
+    # release's daemon must not boot it. Only the two image files are removed.
+    if [ ! -d "$src" ]; then
+        remove_sqs_microvm_image "$dest" "$label"
+        warn "This release has no $label microVM image; $label launches will be refused"
+        return 0
+    fi
+    for f in vmlinuz initramfs.cpio.gz; do
+        if [ ! -s "$src/$f" ]; then
+            remove_sqs_microvm_image "$dest" "$label"
+            fatal "The $label microVM image in this release is incomplete: $f is missing"
+        fi
+    done
+    # The initramfs goes last, so an interrupted install leaves no pair the
+    # daemon would boot: it refuses a launch while either file is missing.
+    $SUDO install -d "$dest"
+    $SUDO rm -f "$dest/initramfs.cpio.gz"
+    $SUDO install -m 0644 "$src/vmlinuz" "$dest/vmlinuz"
+    $SUDO install -m 0644 "$src/initramfs.cpio.gz" "$dest/initramfs.cpio.gz"
+    info "  $dest/vmlinuz, $dest/initramfs.cpio.gz"
+}
+
+# Running VMs keep their already-loaded kernel; the files are read at boot.
+remove_sqs_microvm_image() {
+    [ -e "$1/initramfs.cpio.gz" ] || [ -e "$1/vmlinuz" ] || return 0
+    $SUDO rm -f "$1/initramfs.cpio.gz" "$1/vmlinuz"
+    warn "Removed the $2 microVM image left by an earlier install from $1"
 }
 
 # --- Create directories ---
@@ -1521,12 +1638,6 @@ TMPEOF
     $SUDO chown "spinifex-nats:$SPINIFEX_GROUP" /etc/spinifex/nats
     $SUDO chmod 0750 /etc/spinifex/nats
 
-    # The SQS store holds its own token: 0700 keeps every other spinifex-*
-    # service in the shared group out.
-    $SUDO mkdir -p /etc/spinifex/sqs-store
-    $SUDO chown "spinifex-sqsstore:$SPINIFEX_GROUP" /etc/spinifex/sqs-store
-    $SUDO chmod 0700 /etc/spinifex/sqs-store
-
     $SUDO mkdir -p /etc/spinifex/predastore
     $SUDO chown "spinifex-storage:$SPINIFEX_GROUP" /etc/spinifex/predastore
     $SUDO chmod 0750 /etc/spinifex/predastore
@@ -1553,10 +1664,6 @@ TMPEOF
     $SUDO mkdir -p /var/lib/spinifex/nats
     $SUDO chown "spinifex-nats:$SPINIFEX_GROUP" /var/lib/spinifex/nats
     $SUDO chmod 0700 /var/lib/spinifex/nats
-
-    $SUDO mkdir -p /var/lib/spinifex/sqs-store
-    $SUDO chown "spinifex-sqsstore:$SPINIFEX_GROUP" /var/lib/spinifex/sqs-store
-    $SUDO chmod 0700 /var/lib/spinifex/sqs-store
 
     $SUDO mkdir -p /var/lib/spinifex/spinifex
     $SUDO chown "spinifex-daemon:$SPINIFEX_GROUP" /var/lib/spinifex/spinifex
@@ -1639,7 +1746,6 @@ fix_file_ownership() {
     # Per-service data dirs — recursive chown so existing files are accessible
     for entry in \
         nats:spinifex-nats \
-        sqs-store:spinifex-sqsstore \
         predastore:spinifex-storage \
         northstar:spinifex-northstar \
         spinifex:spinifex-daemon \
@@ -1657,11 +1763,6 @@ fix_file_ownership() {
     if [ -d /etc/spinifex/nats ]; then
         $SUDO chown -R "spinifex-nats:$SPINIFEX_GROUP" /etc/spinifex/nats \
             || fatal "Failed to set ownership on /etc/spinifex/nats"
-    fi
-    if [ -d /etc/spinifex/sqs-store ]; then
-        $SUDO chown -R "spinifex-sqsstore:$SPINIFEX_GROUP" /etc/spinifex/sqs-store \
-            || fatal "Failed to set ownership on /etc/spinifex/sqs-store"
-        $SUDO chmod 0700 /etc/spinifex/sqs-store
     fi
     if [ -d /etc/spinifex/predastore ]; then
         $SUDO chown -R "spinifex-storage:$SPINIFEX_GROUP" /etc/spinifex/predastore \
@@ -1769,6 +1870,18 @@ CPUWeight=300
 EOF
     info "  /etc/systemd/system/system.slice.d/spinifex-reserve.conf"
 
+    # The plaintext Geneve guard is not persisted, so it goes in when pluto
+    # starts at boot, before ovn-controller builds the tunnels. `-`: the guard
+    # must never fail the unit, and the daemon re-asserts it each pass.
+    if [ -x /usr/libexec/ipsec/pluto ]; then
+        $SUDO mkdir -p /etc/systemd/system/ipsec.service.d
+        $SUDO tee /etc/systemd/system/ipsec.service.d/spinifex-guard.conf > /dev/null << EOF
+[Service]
+ExecStartPost=-${IPSEC_STATE_HELPER} guard
+EOF
+        info "  /etc/systemd/system/ipsec.service.d/spinifex-guard.conf"
+    fi
+
     # daemon-reload / enable require a running systemd — skip inside the ISO
     # chroot. Unit files are still dropped into place; firstboot enables them.
     if [ "${ISO_BUILD:-0}" = "1" ]; then
@@ -1821,6 +1934,28 @@ SYSCTL
         $SUDO sysctl -q --system 2>/dev/null || true
     fi
     info "Kernel tunables installed (net.core.rmem_max/wmem_max = 16MB)"
+}
+
+# --- Keep needrestart off the Spinifex, OVS and OVN units ---
+# Guest QEMU runs in spinifex-daemon's cgroup, so needrestart charges QEMU's
+# replaced libraries to the daemon and restarts it after every dpkg run, which
+# never clears them and ends at the unit's start limit. Restarting the stack
+# after an upgrade is the operator's call; needrestart still lists the units.
+install_needrestart_conf() {
+    stage "installing needrestart override"
+    local dir="${DISTRO_ROOT:-}/etc/needrestart/conf.d"
+    $SUDO install -d "$dir"
+    $SUDO tee "$dir/90-spinifex.conf" > /dev/null << 'NEEDRESTART'
+# Managed by spinifex setup.sh — edits are overwritten.
+# Never restart these automatically; restart them by hand when it suits.
+$nrconf{override_rc}{qr(^spinifex-)} = 0;
+$nrconf{override_rc}{qr(^ovs-)} = 0;
+$nrconf{override_rc}{qr(^ovsdb-)} = 0;
+$nrconf{override_rc}{qr(^ovn-)} = 0;
+$nrconf{override_rc}{qr(^openvswitch-)} = 0;
+NEEDRESTART
+    $SUDO chmod 0644 "$dir/90-spinifex.conf"
+    info "needrestart will not restart the spinifex, OVS or OVN units"
 }
 
 # --- Install logrotate ---
@@ -2017,6 +2152,7 @@ main() {
     stage_enabled fixown     && fix_file_ownership
     stage_enabled systemd    && install_systemd
     stage_enabled sysctl     && install_sysctl
+    stage_enabled needrestart && install_needrestart_conf
     stage_enabled modules    && install_kernel_modules
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev

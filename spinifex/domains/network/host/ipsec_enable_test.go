@@ -43,6 +43,8 @@ type recordingSudo struct {
 	// change on the socket, a missing binary, a timed-out transaction. Each of
 	// those is a real fault.
 	nbError string
+	// guardError makes the helper's guard verb fail with this message.
+	guardError string
 }
 
 func (r *recordingSudo) stub(name string, args ...string) *exec.Cmd {
@@ -59,6 +61,9 @@ func (r *recordingSudo) stub(name string, args ...string) *exec.Cmd {
 			return exec.Command("printf", "%s\n", r.nbIPSec)
 		}
 		return exec.Command("true")
+	}
+	if name == ipsecStateHelper && slices.Equal(args, []string{"guard"}) && r.guardError != "" {
+		return exec.Command("sh", "-c", `echo "`+r.guardError+`" >&2; exit 1`)
 	}
 	if name != "systemctl" || len(args) < 2 {
 		return exec.Command("true")
@@ -497,20 +502,90 @@ func TestReconcileOVNIPSec_LibreswanAlreadyOffIsNoOp(t *testing.T) {
 	assert.Empty(t, recorder.helperRuns())
 }
 
-// OVN IPsec does not run on libreswan yet, so a cluster that asks for it gets
-// the off state on such a host rather than a half-armed one.
-func TestReconcileOVNIPSec_LibreswanStaysOffWhenTheClusterAsksForIPsec(t *testing.T) {
+// ipsecOnLibreswanHost is a libreswan host already in the on state, with
+// strongSwan absent.
+func ipsecOnLibreswanHost() *recordingSudo {
+	return &recordingSudo{
+		enabledOutput: map[string]string{
+			strongswanStarterUnit: "Failed to get unit file state for strongswan-starter.service: No such file or directory\n",
+			ovsIPSecUnit:          "enabled\n",
+			libreswanUnit:         "enabled\n",
+		},
+		activePerUnit: map[string]string{
+			strongswanStarterUnit: "inactive\n",
+			ovsIPSecUnit:          "active\n",
+			libreswanUnit:         "active\n",
+		},
+		nbUnreachable: true,
+	}
+}
+
+func TestReconcileOVNIPSec_LibreswanTurnsIPsecOnWhenTheClusterAsks(t *testing.T) {
 	recorder := ipsecOffHost()
-	recorder.activePerUnit[libreswanUnit] = "active\n"
+	recorder.nbUnreachable = true
+	// The probe after the helper ran; the static stub cannot change state mid-pass.
+	recorder.activePerUnit[ovsIPSecUnit] = "active\n"
 	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 	require.NoError(t, ReconcileOVNIPSec(t.Context(), configPath, multiNodeIPSecConfig(true), allReady(), true))
 
-	assert.Equal(t, [][]string{{ipsecStateHelper, "off"}}, recorder.helperRuns())
-	for _, run := range recorder.runs {
-		assert.NotEqual(t, "ovs-vsctl", run[0], "must not configure OVS IPsec on libreswan: %v", run)
+	assert.Equal(t, [][]string{{ipsecStateHelper, "on"}, {ipsecStateHelper, "guard"}}, recorder.helperRuns())
+	assert.Contains(t, strings.Join(recorder.ovsSets(), "\n"), "ipsec_encapsulation=true")
+}
+
+// ovs-monitor-ipsec does not start pluto on EL, so openvswitch-ipsec running
+// alone is not the on state.
+func TestReconcileOVNIPSec_LibreswanPlutoStoppedIsTurnedOn(t *testing.T) {
+	for _, tc := range []struct{ name, enabled, active string }{
+		{name: "inactive", enabled: "enabled\n", active: "inactive\n"},
+		{name: "masked", enabled: "masked\n", active: "inactive\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := ipsecOnLibreswanHost()
+			recorder.enabledOutput[libreswanUnit] = tc.enabled
+			recorder.activePerUnit[libreswanUnit] = tc.active
+			t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
+
+			configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
+			require.NoError(t, ReconcileOVNIPSec(t.Context(), configPath, multiNodeIPSecConfig(true), allReady(), true))
+			assert.Equal(t, [][]string{{ipsecStateHelper, "on"}, {ipsecStateHelper, "guard"}}, recorder.helperRuns())
+		})
 	}
+}
+
+// The units are left alone in the steady state. The guard is not: a peer that
+// joined since the last pass has a tunnel the block does not cover yet.
+func TestReconcileOVNIPSec_LibreswanAlreadyOnOnlyResyncsTheGuard(t *testing.T) {
+	recorder := ipsecOnLibreswanHost()
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
+
+	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
+	require.NoError(t, ReconcileOVNIPSec(t.Context(), configPath, multiNodeIPSecConfig(true), allReady(), true))
+	assert.Equal(t, [][]string{{ipsecStateHelper, "guard"}}, recorder.helperRuns())
+}
+
+// A guard that did not go in leaves plaintext Geneve possible, so the pass must
+// fail and retry rather than report IPsec configured.
+func TestReconcileOVNIPSec_LibreswanGuardFailureFailsThePass(t *testing.T) {
+	recorder := ipsecOnLibreswanHost()
+	recorder.guardError = "ovs-vsctl: unix:/var/run/openvswitch/db.sock: database connection failed"
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
+
+	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
+	err := ReconcileOVNIPSec(t.Context(), configPath, multiNodeIPSecConfig(true), allReady(), true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "database connection failed")
+}
+
+// The block outlives pluto, so a host that turned IPsec off must not keep
+// re-adding it; the helper's off verb is what removes it.
+func TestReconcileOVNIPSec_LibreswanOffNeverGuards(t *testing.T) {
+	recorder := ipsecOnLibreswanHost()
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
+
+	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false), allReady(), true))
+	assert.Equal(t, [][]string{{ipsecStateHelper, "off"}}, recorder.helperRuns())
 }
 
 // On Debian ipsec.service is an alias of strongswan-starter, which is already

@@ -11,7 +11,6 @@ import (
 // completed move whose line must be deleted.
 var frozenLegacyPackages = []string{
 	"gateway",
-	"gateway/spx",
 }
 
 // retiredLegacyRoots were legacy roots whose every package has moved to its

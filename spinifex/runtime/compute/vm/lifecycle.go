@@ -401,8 +401,21 @@ const (
 	qemuStartupTimeout = 5 * time.Second
 )
 
+// waitForNBDReady is a test seam over nbd.WaitForNBDReady.
+var waitForNBDReady = nbd.WaitForNBDReady
+
 // startQEMU launches the QEMU process for instance and waits for startup to
 // confirm.
+// qemuStderrLevel reports the level a QEMU stderr line belongs at. QEMU
+// announces its own exit on stderr, so the notice for the signal a stop sends
+// it is the shutdown working rather than a fault.
+func qemuStderrLevel(line string) slog.Level {
+	if strings.Contains(line, "terminating on signal") {
+		return slog.LevelInfo
+	}
+	return slog.LevelError
+}
+
 func (m *Manager) startQEMU(instance *VM) error {
 	pidFile, err := hostprocess.GeneratePidFile(instance.ID)
 	if err != nil {
@@ -607,13 +620,29 @@ func (m *Manager) startQEMU(instance *VM) error {
 		refreshTelemetryMeta(instance)
 	}
 
+	// One snapshot feeds both the readiness probes and the direct-boot command,
+	// so a concurrent remount cannot launch an endpoint that was never checked.
+	instance.EBSRequests.Mu.Lock()
+	requests := slices.Clone(instance.EBSRequests.Requests)
+	instance.EBSRequests.Mu.Unlock()
+
+	// A direct-boot Config is the launcher's saved base, so mounted data volumes
+	// go on a launch-only copy and their current endpoints are never saved.
+	launchCfg := &instance.Config
+	if instance.DirectBoot && len(requests) > 0 {
+		composed, err := directBootLaunchConfig(instance.Config, requests, instance.Config.CPUCount)
+		if err != nil {
+			return err
+		}
+		launchCfg = &composed
+	}
+
 	// An NBD export is waited on until it accepts connections; a block export
 	// is local to the host and only has to exist. An invalid request has no
 	// endpoint to probe (buildDrives rejects it on the command-line path).
-	instance.EBSRequests.Mu.Lock()
-	nbdEndpoints := make([]struct{ name, uri string }, 0, len(instance.EBSRequests.Requests))
+	nbdEndpoints := make([]struct{ name, uri string }, 0, len(requests))
 	var blockDevices []struct{ name, path string }
-	for _, req := range instance.EBSRequests.Requests {
+	for _, req := range requests {
 		switch kind, _ := classifyVolumeExport(req); kind {
 		case volumeExportNBD:
 			nbdEndpoints = append(nbdEndpoints, struct{ name, uri string }{req.Name, req.NBDURI})
@@ -621,9 +650,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 			blockDevices = append(blockDevices, struct{ name, path string }{req.Name, req.BlockDevice})
 		}
 	}
-	instance.EBSRequests.Mu.Unlock()
 	for _, ep := range nbdEndpoints {
-		if err := nbd.WaitForNBDReady(ep.uri, nbdReadyTimeout); err != nil {
+		if err := waitForNBDReady(ep.uri, nbdReadyTimeout); err != nil {
 			return fmt.Errorf("nbd endpoint not ready for %s: %w", ep.name, err)
 		}
 	}
@@ -638,7 +666,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 	startupConfirmed := make(chan bool, 1)
 
 	go func() {
-		cmd, err := instance.Config.Execute()
+		cmd, err := launchCfg.Execute()
 		if err != nil {
 			slog.Error("Failed to execute VM", "err", err)
 			processChan <- 0
@@ -681,7 +709,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 			scanner := bufio.NewScanner(stderr)
 			slog.Info("QEMU stderr reader started")
 			for scanner.Scan() {
-				slog.Error("[qemu-stderr]", "line", scanner.Text())
+				line := scanner.Text()
+				slog.Log(context.Background(), qemuStderrLevel(line), "[qemu-stderr]", "line", line)
 			}
 		}()
 
@@ -1456,6 +1485,32 @@ type driveConfig struct {
 	Blockdevs []Blockdev
 }
 
+// directBootLaunchConfig returns a launch-only copy of a clean direct-boot base
+// with the mounted data volumes appended after its devices. Neither input is
+// modified, so composing again from the same base never accumulates entries.
+func directBootLaunchConfig(base Config, requests []EBSRequest, cpuCount int) (Config, error) {
+	if !IsMMIO(base.MachineType) {
+		return Config{}, fmt.Errorf("direct-boot launch config needs a microvm base, got machine type %q", base.MachineType)
+	}
+	for _, r := range requests {
+		if r.Boot || r.EFI {
+			return Config{}, fmt.Errorf("volume %s: a direct-boot microvm takes data volumes only", r.Name)
+		}
+	}
+	drives, err := buildDrives(slices.Clone(requests), cpuCount, base.MachineType)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg := base
+	cfg.Drives = slices.Clone(base.Drives)
+	cfg.NetDevs = slices.Clone(base.NetDevs)
+	cfg.FwCfg = slices.Clone(base.FwCfg)
+	cfg.IOThreads = append(slices.Clone(base.IOThreads), drives.IOThreads...)
+	cfg.Blockdevs = append(slices.Clone(base.Blockdevs), drives.Blockdevs...)
+	cfg.Devices = append(slices.Clone(base.Devices), drives.Devices...)
+	return cfg, nil
+}
+
 // buildDrives converts EBS requests into QEMU drive/iothread/device/blockdev
 // configs. Returns an error if any volume has no valid export (see
 // classifyVolumeExport), or if the EBS hot-plug port pool is exhausted while
@@ -1535,12 +1590,14 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 			})
 
 		default:
+			// microvm has no PCIe root ports, so its data volumes take none.
+			mmio := IsMMIO(machineType)
 			// A data (non-boot, non-EFI) volume. Allocate a stable hot-plug
 			// port when the persisted state predates port accounting, or the
 			// volume was attached at RunInstances time without one;
 			// freeHotplugEBSPort re-scans requests as mutated so far in this
 			// loop, so two unset data volumes in one call cannot collide.
-			if v.HotplugPort == 0 {
+			if v.HotplugPort == 0 && !mmio {
 				port := freeHotplugEBSPort(requests)
 				if port == 0 {
 					return driveConfig{}, fmt.Errorf("no free EBS hot-plug port for volume %s", v.Name)
@@ -1550,7 +1607,6 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 
 			nodeName := VolumeNodeName(v.Name)
 			iothreadID := VolumeIOThreadID(v.Name)
-			bus := HotplugEBSBus(v.HotplugPort)
 
 			var blockdev Blockdev
 			if kind == volumeExportBlock {
@@ -1570,7 +1626,11 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 
 			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})
 			cfg.Blockdevs = append(cfg.Blockdevs, blockdev)
-			cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, bus))
+			if mmio {
+				cfg.Devices = append(cfg.Devices, volumeMMIOBlkDevice(v.Name, nodeName, iothreadID))
+			} else {
+				cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, HotplugEBSBus(v.HotplugPort)))
+			}
 			// Deliberately no entry in cfg.Drives: the bare anonymous -drive
 			// this case used to emit (no id=, no node-name=) is exactly what
 			// left the volume undetachable.

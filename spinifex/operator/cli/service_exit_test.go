@@ -217,14 +217,6 @@ func TestServiceStartCmdsReturnErrorOnMissingConfig(t *testing.T) {
 			},
 			wantErr: "start nats service",
 		},
-		{
-			name: "sqs-store start (missing config file)",
-			cmd:  sqsStoreStartCmd,
-			setup: func(t *testing.T) {
-				resetGlobalViper(t)
-			},
-			wantErr: "create sqs-store service",
-		},
 		{name: "spinifex start (missing config)", cmd: spinifexStartCmd},
 		{
 			name: "spinifex start (config file load failure)",

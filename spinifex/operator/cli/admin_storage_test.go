@@ -10,16 +10,16 @@ import (
 	"testing"
 
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
-	gateway_spx "github.com/mulgadc/spinifex/spinifex/gateway/spx"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/operator/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func storageStatusBody(t *testing.T, metas []gateway_spx.MetaNodeStatus) string {
+func storageStatusBody(t *testing.T, metas []admin.MetaNodeStatus) string {
 	t.Helper()
-	out := gateway_spx.StorageStatusOutput{
-		Encoding:  gateway_spx.StorageEncodingOutput{Type: "Reed-Solomon", DataShards: 2, ParityShards: 1},
+	out := admin.StorageStatusOutput{
+		Encoding:  admin.StorageEncodingOutput{Type: "Reed-Solomon", DataShards: 2, ParityShards: 1},
 		MetaNodes: metas,
 		BlobNodes: []operatorv1.StorageBlobNode{{ID: 1, Host: "10.0.0.1", Port: 9991}},
 	}
@@ -54,7 +54,7 @@ func TestStorageStatusRendersMetaNodeRaftState(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
 
-	response := storageStatusBody(t, []gateway_spx.MetaNodeStatus{
+	response := storageStatusBody(t, []admin.MetaNodeStatus{
 		{ID: 1, Host: "10.0.0.1", Port: 6660, Healthy: true, State: "Leader", Leader: "1", Term: "4", CommitIdx: "120", AppliedIdx: "119", IsLeader: true},
 		{ID: 2, Host: "10.0.0.2", Port: 6660, Healthy: true, State: "Follower", Leader: "1", Term: "4", CommitIdx: "120", AppliedIdx: "120"},
 		{ID: 3, Host: "10.0.0.3", Port: 6660},
@@ -93,22 +93,22 @@ func TestStorageStatusClusterHealth(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		metas []gateway_spx.MetaNodeStatus
+		metas []admin.MetaNodeStatus
 		want  string
 	}{
 		{"no meta nodes", nil, "Unknown"},
-		{"one agreed leader", []gateway_spx.MetaNodeStatus{
+		{"one agreed leader", []admin.MetaNodeStatus{
 			{ID: 1, Healthy: true, State: "Leader", Leader: "1"},
 			{ID: 2, Healthy: true, State: "Follower", Leader: "1"},
 		}, "Healthy"},
-		{"readyz-only nodes carry no raft state", []gateway_spx.MetaNodeStatus{
+		{"readyz-only nodes carry no raft state", []admin.MetaNodeStatus{
 			{ID: 1, Healthy: true}, {ID: 2, Healthy: true},
 		}, "Healthy"},
-		{"split leaders", []gateway_spx.MetaNodeStatus{
+		{"split leaders", []admin.MetaNodeStatus{
 			{ID: 1, Healthy: true, State: "Leader", Leader: "1"},
 			{ID: 2, Healthy: true, State: "Leader", Leader: "2"},
 		}, "Degraded"},
-		{"leaderless candidate", []gateway_spx.MetaNodeStatus{
+		{"leaderless candidate", []admin.MetaNodeStatus{
 			{ID: 1, Healthy: true, State: "Candidate"},
 		}, "Degraded"},
 	}

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 
+	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
@@ -79,11 +80,43 @@ type Actor struct {
 	CallerARN     string
 	PrincipalType string
 	AccessKeyID   string
+	// PrincipalARN is the user ARN, the account root ARN, or for a role
+	// session the ARN of the role behind it. CallerARN is the session ARN.
+	PrincipalARN string
+	// UserID is aws:userid.
+	UserID string
+	// UserName is set for user principals only, GetSessionToken sessions included.
+	UserName string
+	// SessionName is set for assumed-role sessions only. The caller chose it.
+	SessionName string
+}
+
+// RoleName is the name of the role behind an assumed-role session. It is empty
+// for any other principal and when the role is not in the caller's own account.
+func (a Actor) RoleName() string {
+	if a.PrincipalType != "assumed-role" {
+		return ""
+	}
+	roleAccount, roleName, err := auth.ParseRoleARN(a.PrincipalARN)
+	if err != nil || roleAccount != a.AccountID {
+		return ""
+	}
+	return roleName
 }
 
 // AuthorizeFunc asks ingress for an IAM decision on the authenticated caller.
 // A nil error permits the operation; otherwise the error is the AWS result.
 type AuthorizeFunc func(service, action string, resources []string, keys iampolicy.ConditionKeys) error
+
+// PolicyDenialError is the error an AuthorizeFunc wraps when the caller's identity
+// policy denies the action. It reads as a bare AccessDenied; a service whose
+// resource is safe to name may match it with errors.As and answer in detail.
+type PolicyDenialError struct {
+	Action   string
+	Resource string
+}
+
+func (d *PolicyDenialError) Error() string { return awserrors.ErrorAccessDenied }
 
 // ActorFunc resolves the verified caller on demand, so a request that never
 // needs it cannot fail on it.
@@ -94,6 +127,8 @@ type ActorFunc func() (Actor, error)
 type Invocation struct {
 	Request   *http.Request
 	AccountID string
+	// Service is the service the request's SigV4 credential scope names.
+	Service   string
 	Region    string
 	Authorize AuthorizeFunc
 	Actor     ActorFunc

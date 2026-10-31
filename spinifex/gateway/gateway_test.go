@@ -1184,9 +1184,9 @@ func TestCheckPolicy_MissingAccountID(t *testing.T) {
 // the production backoff. Tests that call it must not run in parallel.
 func shortenPolicyResolveRetry(t *testing.T) {
 	t.Helper()
-	prev := policyResolveRetryBase
-	policyResolveRetryBase = time.Millisecond
-	t.Cleanup(func() { policyResolveRetryBase = prev })
+	prev := policyRetryBase
+	policyRetryBase = time.Millisecond
+	t.Cleanup(func() { policyRetryBase = prev })
 }
 
 func TestCheckPolicy_NATSTransientRetriesAllAttempts(t *testing.T) {

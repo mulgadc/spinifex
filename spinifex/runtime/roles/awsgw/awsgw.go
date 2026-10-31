@@ -538,6 +538,7 @@ func launchService(config *config.ClusterConfig) error {
 		STSService:      stsService,
 		Credentials:     credentials,
 		Admission:       admission,
+		Policy:          policyauth.New(iamService),
 		Version:         version,
 		Commit:          commit,
 		OIDC:            ekscluster.NewOIDCPublisher(jwksJS),

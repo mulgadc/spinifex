@@ -3,6 +3,11 @@
 // domain, so the adapter can live beside IAM and STS without importing the gateway.
 package credential
 
+import "errors"
+
+// ErrAccountNotActive means the account exists but is suspended or being torn down.
+var ErrAccountNotActive = errors.New("account is not active")
+
 // Request is what the gateway knows about a credential before it is verified.
 type Request struct {
 	AccessKeyID string

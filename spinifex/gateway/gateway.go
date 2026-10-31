@@ -10,8 +10,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -82,9 +80,12 @@ type GatewayConfig struct {
 	Credentials credential.Verifier
 	RateLimiter *authlimit.AuthRateLimiter // Per-IP auth failure rate limiter
 	Throttler   *ratelimit.Throttler       // Per-account+action API request throttler
-	// Admission decides whether a request's account may proceed. Nil builds one
-	// over IAMService the first time the auth middleware is constructed.
-	Admission *accountadmission.Admitter
+	// Admission decides whether a request's account may proceed. Nil fails every
+	// authenticated request closed with InternalError.
+	Admission AccountAdmission
+	// Policy decides authorization for a verified principal. Nil fails every
+	// authorization closed with InternalError.
+	Policy PolicyEvaluator
 	Version   string // Build-time version string (set from cmd.Version)
 	Commit    string // Build-time commit hash (set from cmd.Commit)
 	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil
@@ -433,8 +434,9 @@ func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, 
 	// point with its resolved action, so telemetry enrichment lives here.
 	recordResolvedAction(r.Context(), service, action)
 
-	if gw.IAMService == nil {
-		slog.Error("checkPolicy: IAM service not available", "service", service, "action", action)
+	gw.fillDefaultCapabilities()
+	if gw.Policy == nil {
+		slog.Error("checkPolicy: policy evaluator not available", "service", service, "action", action)
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
@@ -453,21 +455,17 @@ func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, 
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	keys := policyauth.RequestConditionKeys(r, caller)
+	keys := gw.Policy.RequestConditionKeys(r, caller)
 	maps.Copy(keys, actionKeys)
 	return gw.evaluatePrincipalPolicyResources(caller, policy.IAMAction(service, action), resources, keys)
 }
-
-// policyResolveRetryBase scales the backoff between policy-resolve attempts
-// after a transient NATS error. A var only so tests can shorten it.
-var policyResolveRetryBase = 200 * time.Millisecond
 
 // evaluatePrincipalPolicyResources resolves policies once and evaluates every
 // resource in the request against that same snapshot.
 func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 	principal credential.Principal, iamAction string, resources []string, keys iampolicy.ConditionKeys,
 ) error {
-	return policyauth.New(gw.IAMService, policyauth.WithRetryBase(policyResolveRetryBase)).Evaluate(principal, iamAction, resources, keys)
+	return gw.Policy.Evaluate(principal, iamAction, resources, keys)
 }
 
 func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {

@@ -261,15 +261,19 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// The OCI /v2 data plane. Its Meta store is a NATS client, so a test that
 	// pushes or pulls must call StartECRDaemonLite or every request times out.
 	// Blob and manifest bytes are memory-backed: no predastore.
+	if cfg.Policy == nil {
+		cfg.Policy = policyauth.New(cfg.IAMService)
+	}
+	admission := accountadmission.New(cfg.IAMService)
+	if cfg.Admission == nil {
+		cfg.Admission = admission
+	}
 	if cfg.RegistryHandler == nil {
-		if cfg.Admission == nil {
-			cfg.Admission = accountadmission.New(cfg.IAMService)
-		}
 		bridge, err := ecrregistry.NewBridge(registryadapt.Config(ecrregistry.BridgeConfig{
 			Registry:  ecrRegistry,
 			Verifier:  ecrVerifier,
 			Issuer:    ecrIssuer,
-			Admission: cfg.Admission,
+			Admission: admission,
 			Region:    cfg.Region,
 		}, credverify.New(cfg.IAMService, cfg.STSService), policyauth.New(cfg.IAMService)))
 		require.NoError(t, err)

@@ -205,6 +205,12 @@ func principalTypeCondition(principalType string) (string, bool) {
 	}
 }
 
+// RequestConditionKeys is the package function of the same name, so a consumer that
+// holds an Evaluator behind an interface can build the request keys through it.
+func (e *Evaluator) RequestConditionKeys(r *http.Request, principal credential.Principal) iampolicy.ConditionKeys {
+	return RequestConditionKeys(r, principal)
+}
+
 // Authorize evaluates one IAM action against resources for principal, using the
 // condition keys the request carries. It returns what Evaluate returns.
 func (e *Evaluator) Authorize(r *http.Request, principal credential.Principal, iamAction string, resources []string) error {

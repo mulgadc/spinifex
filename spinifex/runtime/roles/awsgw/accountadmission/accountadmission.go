@@ -12,6 +12,7 @@ import (
 
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 )
 
 // ActiveTTL bounds how long an account is trusted to still be ACTIVE without
@@ -21,7 +22,7 @@ import (
 const ActiveTTL = 5 * time.Second
 
 // ErrNotActive means the account exists but is suspended or being torn down.
-var ErrNotActive = errors.New("account is not active")
+var ErrNotActive = credential.ErrAccountNotActive
 
 // Admitter reads account status through the IAM service. Every authenticated request
 // needs the answer and the account record changes perhaps twice in its lifetime, so

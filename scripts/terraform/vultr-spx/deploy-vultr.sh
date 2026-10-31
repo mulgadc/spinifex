@@ -204,6 +204,11 @@ wait_host() {
     done
     ssh-keygen -R "$IP" -f "$KNOWN_HOSTS" >/dev/null 2>&1 || true
     on 'cloud-init status --wait >/dev/null; test -e /dev/kvm' || die "no /dev/kvm on $IP"
+    # Vultr's image writes a static resolv.conf, so the node would bypass the
+    # split DNS Spinifex sets in resolved for its LB and EKS names.
+    on 'if [ ! -L /etc/resolv.conf ] && systemctl is-active -q systemd-resolved; then
+            ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf; fi' ||
+        die "could not point /etc/resolv.conf at systemd-resolved on $IP"
 }
 
 install_spinifex() {

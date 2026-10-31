@@ -241,6 +241,16 @@ func TestEKS(t *testing.T) {
 		runIRSAPod(t, c, env, artifacts, fx)
 	})
 
+	t.Run("WorkerIMDS", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runWorkerIMDS(t, c, env, artifacts, fx)
+	})
+
+	t.Run("WorkerIMDSLaunchTemplate", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runWorkerIMDSLaunchTemplate(t, c, fx)
+	})
+
 	t.Run("EBSCSIVolume", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		runEBSCSIVolume(t, c, env, artifacts, fx)

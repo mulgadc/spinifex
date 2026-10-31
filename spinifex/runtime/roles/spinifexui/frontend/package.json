@@ -12,7 +12,8 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "e2e": "playwright test",
-    "e2e:update": "playwright test --update-snapshots"
+    "e2e:update": "playwright test --update-snapshots",
+    "e2e:live": "playwright test --config playwright.live.config.ts"
   },
   "dependencies": {
     "@aws-crypto/sha256-browser": "^5.2.0",

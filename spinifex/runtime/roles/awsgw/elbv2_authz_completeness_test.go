@@ -1,7 +1,7 @@
 //test:in-package — the served-action list is a gateway test helper, and the
 // completeness test exists to compare it against the scope table.
 
-package gateway
+package awsgw_test
 
 import (
 	"testing"

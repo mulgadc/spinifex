@@ -283,3 +283,8 @@ var requestIDPattern = regexp.MustCompile(`<RequestId>[^<]*</RequestId>`)
 // principalField names one field of the sealed principal, so a test can
 // build a caller one fact at a time.
 type principalField int
+
+func withQuota(gw *gateway.GatewayConfig, q *admissionquota.Service) *gateway.GatewayConfig {
+	quotaByGateway.Store(gw, q)
+	return gw
+}

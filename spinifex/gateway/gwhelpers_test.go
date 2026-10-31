@@ -2,12 +2,16 @@ package gateway
 
 import (
 	"bytes"
+	"encoding/xml"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"github.com/nats-io/nats.go"
@@ -193,4 +197,136 @@ func withRDS(gw *GatewayConfig) *GatewayConfig {
 	}
 	gw.Services = b.Build()
 	return gw
+}
+
+// withELBv2 registers ELBv2 on gw with the NATS connection and quota it holds,
+// as the awsgw role composes it. Set both on gw before calling.
+func withELBv2(gw *GatewayConfig) *GatewayConfig {
+	b := dispatch.NewBuilder()
+	reg := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: gw.NATSConn, Quota: quotaFor(gw)})
+	if err := b.Register(reg); err != nil {
+		panic(err)
+	}
+	gw.Services = b.Build()
+	return gw
+}
+
+// serveAccountLimits runs DescribeAccountLimits through the service with live
+// NATS, so the request is dispatched rather than stopped at the NATS guard.
+func serveAccountLimits(t *testing.T, gw *GatewayConfig, accountID, body string) ([]byte, error) {
+	t.Helper()
+	_, nc := testutil.StartTestNATS(t)
+	gw.NATSConn = nc
+	gw.IAMService = allowAllIAMService()
+	withELBv2(gw)
+
+	w := httptest.NewRecorder()
+	if err := gw.serveELBv2(w, elbv2Request(accountID, body)); err != nil {
+		return nil, err
+	}
+	return w.Body.Bytes(), nil
+}
+
+// accountLimitsResponse is the wire shape a caller parses, so the test asserts
+// on what leaves the gateway rather than on the struct behind it.
+type accountLimitsResponse struct {
+	XMLName xml.Name `xml:"DescribeAccountLimitsResponse"`
+	Limits  []struct {
+		Name string `xml:"Name"`
+		Max  string `xml:"Max"`
+	} `xml:"DescribeAccountLimitsResult>Limits>member"`
+}
+
+// describeAccountLimits decodes the XML DescribeAccountLimits writes, keyed by
+// limit name.
+func describeAccountLimits(t *testing.T, gw *GatewayConfig, accountID string) map[string]string {
+	t.Helper()
+
+	body, err := serveAccountLimits(t, gw, accountID, "Action=DescribeAccountLimits")
+	require.NoError(t, err)
+
+	var decoded accountLimitsResponse
+	require.NoError(t, xml.Unmarshal(body, &decoded))
+	require.NotEmpty(t, decoded.Limits)
+
+	byName := make(map[string]string, len(decoded.Limits))
+	for _, limit := range decoded.Limits {
+		byName[limit.Name] = limit.Max
+	}
+	return byName
+}
+
+// elbv2PipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
+// live test NATS, with docs as every principal's policy.
+func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admissionquota.Service) (*GatewayConfig, http.Handler) {
+	t.Helper()
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
+	require.NoError(t, err)
+	_, nc := testutil.StartTestNATS(t)
+
+	gw := withVerifier(&GatewayConfig{
+		DisableLogging: true,
+		Region:         gwfix.Region,
+		NATSConn:       nc,
+		IAMService: &gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
+						SecretAccessKey: encryptedSecret,
+						UserName:        "alice",
+						AccountID:       authzAccountID,
+						Status:          "Active",
+					},
+				},
+			},
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		},
+	})
+	withELBv2(withQuota(gw, quota))
+
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", gw.Request)
+	return gw, r
+}
+
+func pipelineListener(lbName, lbID, id string) string {
+	return arn.FormatELBv2Listener(gwfix.Region, authzAccountID, lbName, lbID, id, "application")
+}
+
+// signELBv2Request builds a signed Query-protocol POST for the
+// elasticloadbalancing credential scope.
+func signELBv2Request(t *testing.T, body string) *http.Request {
+	t.Helper()
+	b := []byte(body)
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(b))
+	req.Host = "localhost:9999"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	gwfix.SignRequestAs(t, req, b, gwfix.AccessKey, gwfix.SecretKey, "elasticloadbalancing", time.Now().UTC())
+	return req
+}
+
+// serveELBv2 dispatches r to the registered ELBv2 service exactly as Request
+// does past its NATS gate, registering it first from the fields gw holds when
+// the test has not.
+func (gw *GatewayConfig) serveELBv2(w http.ResponseWriter, r *http.Request) error {
+	if gw.Services == nil {
+		withELBv2(gw)
+	}
+	entry, ok := gw.registered(elbv2awsapi.ServiceName)
+	if !ok {
+		panic("ELBv2 is not registered on this gateway")
+	}
+	return gw.dispatchRegistered(entry, w, r)
+}
+
+// elbv2Request builds an authenticated Query request for body, as the SigV4
+// middleware would hand it to the service.
+func elbv2Request(accountID, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	ctx := reqctx.WithService(req.Context(), "elasticloadbalancing")
+	ctx = withPrincipalField(ctx, fieldAccountID, accountID)
+	return withTestIdentity(req.WithContext(ctx))
 }

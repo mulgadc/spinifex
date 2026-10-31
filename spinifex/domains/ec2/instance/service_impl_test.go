@@ -693,6 +693,7 @@ type fakeResourceCapacityProvider struct {
 	allocated      []*ec2.InstanceTypeInfo
 	deallocated    []*ec2.InstanceTypeInfo
 	canAllocFn     func(*ec2.InstanceTypeInfo, int) int
+	availableFn    func(*ec2.InstanceTypeInfo) int64
 
 	reservationAllocErr  error
 	reservationAllocated []*ec2.InstanceTypeInfo
@@ -704,10 +705,18 @@ type fakeResourceCapacityProvider struct {
 
 func (f *fakeResourceCapacityProvider) HostUnderMemoryPressure() bool { return f.memPressure }
 
-func (f *fakeResourceCapacityProvider) GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo {
+func (f *fakeResourceCapacityProvider) GetInstanceTypeAvailability() []InstanceTypeAvailability {
 	f.calls++
-	f.gotShowCap = showCapacity
-	return f.types
+	f.gotShowCap = true
+	avail := make([]InstanceTypeAvailability, 0, len(f.types))
+	for _, it := range f.types {
+		slots := int64(1)
+		if f.availableFn != nil {
+			slots = f.availableFn(it)
+		}
+		avail = append(avail, InstanceTypeAvailability{Info: it, Available: slots})
+	}
+	return avail
 }
 
 func (f *fakeResourceCapacityProvider) GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeInfo {

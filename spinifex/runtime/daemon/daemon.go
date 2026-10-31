@@ -604,14 +604,19 @@ func (rm *ResourceManager) GetInstanceTypeInfos() []*ec2.InstanceTypeInfo {
 	return infos
 }
 
-// GetAvailableInstanceTypeInfos returns instance types based on total host capacity.
-// If showCapacity is true, it returns multiple entries representing available slots.
-// If showCapacity is false, it returns each supported type only once.
-func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo {
+// GetInstanceTypeAvailability returns each admissible instance type once with
+// the number of instances of it this node can currently take. Types with no
+// free slot are omitted.
+//
+// The count is returned as a number rather than as one entry per free slot.
+// Repeating the entry made the reply grow with free capacity, so an idle host
+// could exceed the NATS maximum payload and report no capacity at all.
+func (rm *ResourceManager) GetInstanceTypeAvailability() []ec2instance.InstanceTypeAvailability {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
-	var infos []*ec2.InstanceTypeInfo
+	avail := make([]ec2instance.InstanceTypeAvailability, 0, len(rm.instanceTypes))
+	totalSlots := int64(0)
 
 	for name, it := range rm.instanceTypes {
 		if instancetypes.IsSystemType(name) {
@@ -625,44 +630,37 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 			continue
 		}
 
+		var count int64
+
 		// GPU types are capacity-gated by GPU pool size, not host CPU/memory.
 		// The GPU is the scarce resource; CPU/memory on GPU-class hardware is abundant.
 		if instancetypes.IsGPUType(it) {
-			count := rm.admissibleGPUInstances(name)
-			if showCapacity {
-				for range count {
-					infos = append(infos, it)
-				}
-			} else if count > 0 {
-				infos = append(infos, it)
-			}
+			count = int64(rm.admissibleGPUInstances(name))
+		} else {
+			count = int64(canAllocateCount(
+				rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
+				rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
+				vCPUs, rm.instanceMemChargeMiB(it),
+				1<<30, // effectively unlimited — let resources be the constraint
+				0, false,
+			))
+		}
+
+		if count <= 0 {
 			continue
 		}
 
-		count := canAllocateCount(
-			rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
-			rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
-			vCPUs, rm.instanceMemChargeMiB(it),
-			1<<30, // effectively unlimited — let resources be the constraint
-			0, false,
-		)
-
-		if showCapacity {
-			for range count {
-				infos = append(infos, it)
-			}
-		} else if count > 0 {
-			infos = append(infos, it)
-		}
+		avail = append(avail, ec2instance.InstanceTypeAvailability{Info: it, Available: count})
+		totalSlots += count
 	}
 
-	slog.Info("GetAvailableInstanceTypeInfos", "total_types", len(rm.instanceTypes), "total_available_slots", len(infos),
+	slog.Info("GetInstanceTypeAvailability", "total_types", len(rm.instanceTypes),
+		"available_types", len(avail), "total_available_slots", totalSlots,
 		"hostVCPU", rm.hostVCPU, "hostMem", rm.hostMemGB,
 		"reservedVCPU", rm.reservedVCPU, "reservedMem", rm.reservedMem,
-		"reservedCRVCPU", rm.reservedCRVCPU, "reservedCRMem", rm.reservedCRMem,
-		"showCapacity", showCapacity)
+		"reservedCRVCPU", rm.reservedCRVCPU, "reservedCRMem", rm.reservedCRMem)
 
-	return infos
+	return avail
 }
 
 // GetSupportedInstanceTypeInfos returns every supported instance type regardless

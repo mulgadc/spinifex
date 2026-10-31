@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	instancesvc "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -87,52 +88,79 @@ func TestDescribeInstanceTypes_DeduplicatesAcrossNodes(t *testing.T) {
 	assert.Equal(t, 1, seen["m5.large"])
 }
 
-func TestDescribeInstanceTypes_CapacityFilterShowsDuplicates(t *testing.T) {
+func TestDescribeInstanceTypes_CapacityFilterSumsPerNodeCounts(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
 	// Node 1
 	nc.Subscribe("ec2.DescribeInstanceTypes", func(msg *nats.Msg) {
-		data, _ := json.Marshal(&ec2.DescribeInstanceTypesOutput{
-			InstanceTypes: []*ec2.InstanceTypeInfo{
-				{InstanceType: aws.String("t3.micro")},
-			},
-		})
-		msg.Respond(data)
+		msg.Respond(capacityPayload(t, map[string]int64{"t3.micro": 1}))
 	})
 
-	// Node 2 reports same type
+	// Node 2 reports the same type
 	nc2, err := nats.Connect(nc.ConnectedUrl())
 	require.NoError(t, err)
 	defer nc2.Close()
 
 	nc2.Subscribe("ec2.DescribeInstanceTypes", func(msg *nats.Msg) {
-		data, _ := json.Marshal(&ec2.DescribeInstanceTypesOutput{
-			InstanceTypes: []*ec2.InstanceTypeInfo{
-				{InstanceType: aws.String("t3.micro")},
-			},
-		})
-		msg.Respond(data)
+		msg.Respond(capacityPayload(t, map[string]int64{"t3.micro": 1}))
 	})
 
 	nc.Flush()
 	nc2.Flush()
 
-	// With capacity filter = true, duplicates should be preserved
-	input := &ec2.DescribeInstanceTypesInput{
-		Filters: []*ec2.Filter{
-			{
-				Name:   aws.String("capacity"),
-				Values: []*string{aws.String("true")},
-			},
-		},
-	}
-	output, err := DescribeInstanceTypes(context.Background(), input, nc, 2, nil, "")
+	output, err := DescribeInstanceTypes(context.Background(), capacityInput(), nc, 2, nil, "")
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
-	// Both slots should appear since capacity filter is enabled
+	// One entry per free slot across both nodes.
 	assert.Len(t, output.InstanceTypes, 2)
+}
+
+// A node reports a count, not one entry per slot, so the reply stays the same
+// size whether the host is idle or full.
+func TestDescribeInstanceTypes_CapacityIsBoundedByTypeCountNotFreeSlots(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	payload := capacityPayload(t, map[string]int64{"t3.micro": 4096})
+	require.Less(t, len(payload), 4096, "the node reply must not grow with free capacity")
+
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n1", payload)
+
+	output, err := DescribeInstanceTypes(context.Background(), capacityInput(), nc, 1, nil, "")
+	require.NoError(t, err)
+	assert.Len(t, output.InstanceTypes, 4096)
+}
+
+// Nothing is known about capacity when no node answered, so the request fails
+// rather than reporting an empty list the console reads as no capacity.
+func TestDescribeInstanceTypes_CapacityWithNoResponsesIsRetryable(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	_, err := DescribeInstanceTypes(context.Background(), capacityInput(), nc, 0, nil, "")
+
+	code, _, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, code)
+}
+
+func capacityInput() *ec2.DescribeInstanceTypesInput {
+	return &ec2.DescribeInstanceTypesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("capacity"), Values: []*string{aws.String("true")}}},
+	}
+}
+
+func capacityPayload(t *testing.T, availability map[string]int64) []byte {
+	t.Helper()
+	out := &instancesvc.DescribeInstanceTypesNodeOutput{Availability: availability}
+	for name := range availability {
+		out.InstanceTypes = append(out.InstanceTypes, &ec2.InstanceTypeInfo{InstanceType: aws.String(name)})
+	}
+	data, err := json.Marshal(out)
+	require.NoError(t, err)
+	return data
 }
 
 func TestDescribeInstanceTypes_CapacityFilterFalseDeduplicates(t *testing.T) {

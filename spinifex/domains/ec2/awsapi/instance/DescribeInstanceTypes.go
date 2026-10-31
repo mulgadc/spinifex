@@ -93,17 +93,9 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 				describeIncompleteRetryAfter,
 			)
 		}
-		finalInstanceTypes = expandAvailability(allInstanceTypes, availability)
+		finalInstanceTypes = dedupeByName(allInstanceTypes, availability)
 	} else {
-		seen := make(map[string]bool)
-		for _, it := range allInstanceTypes {
-			if it != nil && it.InstanceType != nil {
-				if !seen[*it.InstanceType] {
-					seen[*it.InstanceType] = true
-					finalInstanceTypes = append(finalInstanceTypes, it)
-				}
-			}
-		}
+		finalInstanceTypes = dedupeByName(allInstanceTypes, nil)
 	}
 
 	if len(requestedTypes) > 0 {
@@ -145,8 +137,8 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 
 	output := &ec2.DescribeInstanceTypesOutput{InstanceTypes: finalInstanceTypes}
 
-	// Unpaged unless asked: the capacity listing the UI reads has one entry per
-	// free slot and does not follow NextToken.
+	// Unpaged unless asked. The listing is one entry per instance type, which is
+	// inside the page cap AWS declares, so a caller that wants pages asks.
 	if input.MaxResults != nil || aws.StringValue(input.NextToken) != "" {
 		page, nextToken, err := pageByOffset(finalInstanceTypes, input.NextToken, input.MaxResults)
 		if err != nil {
@@ -160,32 +152,26 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 	return output, nil
 }
 
-// expandAvailability returns one entry per free cluster-wide slot for each
-// type, deduplicating the per-node descriptions first.
+// dedupeByName returns one entry per instance type name. Every node describes
+// the types it hosts, so the fan-out carries a copy per node.
 //
-// The client SDK drops response fields it does not model, so a count cannot
-// reach the console any other way. Nodes send counts, and only this last hop
-// repeats the entry.
-func expandAvailability(types []*ec2.InstanceTypeInfo, availability map[string]int64) []*ec2.InstanceTypeInfo {
-	byName := make(map[string]*ec2.InstanceTypeInfo, len(types))
-	order := make([]string, 0, len(types))
+// A non-nil availability keeps only the types with a free slot, which is the
+// capacity request. The count itself is not carried here: the reply is bounded
+// by the catalogue, never by how much capacity is free.
+func dedupeByName(types []*ec2.InstanceTypeInfo, availability map[string]int64) []*ec2.InstanceTypeInfo {
+	seen := make(map[string]bool, len(types))
+	deduped := make([]*ec2.InstanceTypeInfo, 0, len(types))
 	for _, it := range types {
-		if it == nil || it.InstanceType == nil {
+		if it == nil || it.InstanceType == nil || seen[*it.InstanceType] {
 			continue
 		}
-		if _, seen := byName[*it.InstanceType]; !seen {
-			byName[*it.InstanceType] = it
-			order = append(order, *it.InstanceType)
+		if availability != nil && availability[*it.InstanceType] <= 0 {
+			continue
 		}
+		seen[*it.InstanceType] = true
+		deduped = append(deduped, it)
 	}
-
-	expanded := make([]*ec2.InstanceTypeInfo, 0, len(order))
-	for _, name := range order {
-		for range availability[name] {
-			expanded = append(expanded, byName[name])
-		}
-	}
-	return expanded
+	return deduped
 }
 
 // missingInstanceTypes returns the requested types absent from found, in the

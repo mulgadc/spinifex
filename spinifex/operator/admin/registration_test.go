@@ -248,6 +248,7 @@ func TestNewRegistration_DeclaresTheAdminActionsAsItsInventory(t *testing.T) {
 		"EnsureSQSStore",
 		"EnsureSQSWorker",
 		"GetInstanceMetrics",
+		"GetInstanceTypeCapacity",
 	}, reg.Inventory.Registered)
 	assert.NoError(t, dispatch.NewBuilder().Register(reg))
 }

@@ -56,24 +56,6 @@ export function defaultTypeName(names: readonly string[]): string | undefined {
   return names.find((name) => name.endsWith(".nano")) ?? names[0]
 }
 
-// Entries per instance type name, which the form reads as the available
-// capacity for that type.
-export function countInstanceTypes(types: readonly InstanceTypeInfo[]) {
-  const counts: Record<string, number> = {}
-
-  for (const type of types) {
-    const typeName = type.InstanceType
-
-    if (!typeName) {
-      continue
-    }
-
-    counts[typeName] = (counts[typeName] ?? 0) + 1
-  }
-
-  return counts
-}
-
 // The first architecture any instance type on the cluster can run, so the
 // form opens on a launchable pairing.
 export function initialArchitecture(
@@ -223,14 +205,20 @@ export function runInstancesDefaults({
 export function runInstancesResolver(
   images: readonly Image[],
   allInstanceTypes: readonly InstanceTypeInfo[],
-  instanceTypeCounts: Record<string, number>,
+  instanceTypeCapacity: Record<string, number>,
 ) {
   return zodResolver(
     createInstanceSchema
       .refine(
-        (data) =>
-          !data.instanceType ||
-          data.count <= (instanceTypeCounts[data.instanceType] ?? 1),
+        (data) => {
+          // An unknown figure is not a refusal: the launch decides, and
+          // RunInstances answers InsufficientInstanceCapacity if it cannot.
+          const available = data.instanceType
+            ? instanceTypeCapacity[data.instanceType]
+            : undefined
+
+          return available === undefined || data.count <= available
+        },
         {
           message: "Cannot exceed available capacity",
           path: ["count"],

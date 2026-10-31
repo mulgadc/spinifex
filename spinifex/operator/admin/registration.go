@@ -81,7 +81,7 @@ func AdminActionNames() []string {
 
 // ActionNames lists every action the registration dispatches, sorted.
 func ActionNames() []string {
-	names := append(AdminActionNames(), GetInstanceMetricsAction)
+	names := append(AdminActionNames(), GetInstanceMetricsAction, GetInstanceTypeCapacityAction)
 	slices.Sort(names)
 	return names
 }
@@ -193,6 +193,11 @@ func (d Deps) run(ctx context.Context, action string, args map[string]string, ac
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		return GetNodes(ctx, d.NATS, d.activeNodes(ctx))
+	case GetInstanceTypeCapacityAction:
+		if d.NATS == nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		return GetInstanceTypeCapacity(ctx, d.NATS, d.activeNodes(ctx), accountID)
 	case "GetVMs":
 		if d.NATS == nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)

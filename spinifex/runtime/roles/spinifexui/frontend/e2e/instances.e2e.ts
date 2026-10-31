@@ -2,6 +2,7 @@ import {
   ec2,
   expect,
   expectNoHorizontalOverflow,
+  instanceTypeCapacity,
   liveMetrics,
   test,
   type Theme,
@@ -509,8 +510,8 @@ test("an empty account is offered a first launch", async ({ page }) => {
   await expect(page).toHaveURL(/\/ec2\/describe-instances\?create=true$/u)
 })
 
-// The launch form decides whether the cluster has compute from the capacity
-// listing alone, so it says "no compute" for an empty list whatever the
+// The launch form decides whether the cluster has compute from the instance
+// type listing alone, so it says "no compute" for an empty list whatever the
 // reason the list is empty. An idle production cluster hit exactly that: the
 // node replies were dropped and the empty result read as no capacity.
 const NO_COMPUTE =
@@ -535,16 +536,9 @@ test("the launch form offers the types the capacity listing reports", async ({
 }) => {
   api.handle(
     "DescribeInstanceTypes",
-    ec2(
-      "DescribeInstanceTypes",
-      // Three free slots of one type, as the gateway expands a per-type count.
-      instanceTypeSet([
-        ["t3.micro", 2, 1024],
-        ["t3.micro", 2, 1024],
-        ["t3.micro", 2, 1024],
-      ]),
-    ),
+    ec2("DescribeInstanceTypes", instanceTypeSet([["t3.micro", 2, 1024]])),
   )
+  api.handle("GetInstanceTypeCapacity", instanceTypeCapacity({ "t3.micro": 3 }))
 
   await page.goto("/ec2/describe-instances?create=true")
 
@@ -560,14 +554,9 @@ test("the launch form reports the free slot count for the selected type", async 
 }) => {
   api.handle(
     "DescribeInstanceTypes",
-    ec2(
-      "DescribeInstanceTypes",
-      instanceTypeSet([
-        ["t3.micro", 2, 1024],
-        ["t3.micro", 2, 1024],
-      ]),
-    ),
+    ec2("DescribeInstanceTypes", instanceTypeSet([["t3.micro", 2, 1024]])),
   )
+  api.handle("GetInstanceTypeCapacity", instanceTypeCapacity({ "t3.micro": 2 }))
 
   await page.goto("/ec2/describe-instances?create=true")
   await page.locator("#instanceType").click()
@@ -576,6 +565,34 @@ test("the launch form reports the free slot count for the selected type", async 
   await expect(
     page.getByText("Available capacity for t3.micro: 2"),
   ).toBeVisible()
+})
+
+// A session whose policy does not grant the capacity action reads no figure.
+// Reporting a cap of 1 there would refuse a launch the cluster would take, so
+// the form claims nothing and RunInstances decides.
+test("a type with no capacity figure is offered without one", async ({
+  api,
+  page,
+}) => {
+  api.handle(
+    "DescribeInstanceTypes",
+    ec2("DescribeInstanceTypes", instanceTypeSet([["t3.micro", 2, 1024]])),
+  )
+  api.handle("GetInstanceTypeCapacity", () => ({
+    status: 403,
+    contentType: "text/xml",
+    body: `<ErrorResponse><Error><Code>AccessDenied</Code><Message>no grant</Message></Error><RequestId>e2e</RequestId></ErrorResponse>`,
+  }))
+
+  await page.goto("/ec2/describe-instances?create=true")
+  await page.locator("#instanceType").click()
+  await page.getByRole("option").filter({ hasText: "t3.micro" }).first().click()
+
+  await expect(page.getByText(NO_COMPUTE)).toHaveCount(0)
+  await expect(page.getByText(/Available capacity for/u)).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Create Instance" }),
+  ).toBeEnabled()
 })
 
 test("an account with no capacity is told so, and cannot launch", async ({

@@ -88,7 +88,9 @@ func TestDescribeInstanceTypes_DeduplicatesAcrossNodes(t *testing.T) {
 	assert.Equal(t, 1, seen["m5.large"])
 }
 
-func TestDescribeInstanceTypes_CapacityFilterSumsPerNodeCounts(t *testing.T) {
+// Every node describes the types it hosts, so a four-node cluster sends four
+// copies. The listing reports each type once.
+func TestDescribeInstanceTypes_CapacityReportsEachTypeOncePerCluster(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
@@ -113,24 +115,48 @@ func TestDescribeInstanceTypes_CapacityFilterSumsPerNodeCounts(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, output)
-	// One entry per free slot across both nodes.
-	assert.Len(t, output.InstanceTypes, 2)
+	assert.Len(t, output.InstanceTypes, 1)
+	assert.Equal(t, "t3.micro", aws.StringValue(output.InstanceTypes[0].InstanceType))
 }
 
-// A node reports a count, not one entry per slot, so the reply stays the same
-// size whether the host is idle or full.
+// The reply is bounded by the catalogue, so its size is the same whether the
+// cluster is idle or full. This is the property the per-slot encoding lost: at
+// 44,346 free slots the same shape exceeded the NATS maximum payload and the
+// console was told the cluster had no compute at all.
 func TestDescribeInstanceTypes_CapacityIsBoundedByTypeCountNotFreeSlots(t *testing.T) {
+	t.Parallel()
+
+	for name, slots := range map[string]int64{"idle": 44346, "nearly full": 1} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, nc := startTestNATSServer(t)
+
+			payload := capacityPayload(t, map[string]int64{"t3.micro": slots})
+			require.Less(t, len(payload), 4096, "the node reply must not grow with free capacity")
+
+			subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n1", payload)
+
+			output, err := DescribeInstanceTypes(context.Background(), capacityInput(), nc, 1, nil, "")
+			require.NoError(t, err)
+			assert.Len(t, output.InstanceTypes, 1)
+		})
+	}
+}
+
+// A type the node could not admit is absent from the listing, so the console
+// does not offer a type the cluster would refuse.
+func TestDescribeInstanceTypes_CapacityOmitsTypesWithNoFreeSlot(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	payload := capacityPayload(t, map[string]int64{"t3.micro": 4096})
-	require.Less(t, len(payload), 4096, "the node reply must not grow with free capacity")
-
-	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n1", payload)
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n1",
+		capacityPayload(t, map[string]int64{"t3.micro": 4, "x2gd.metal": 0}))
 
 	output, err := DescribeInstanceTypes(context.Background(), capacityInput(), nc, 1, nil, "")
+
 	require.NoError(t, err)
-	assert.Len(t, output.InstanceTypes, 4096)
+	require.Len(t, output.InstanceTypes, 1)
+	assert.Equal(t, "t3.micro", aws.StringValue(output.InstanceTypes[0].InstanceType))
 }
 
 // Nothing is known about capacity when no node answered, so the request fails

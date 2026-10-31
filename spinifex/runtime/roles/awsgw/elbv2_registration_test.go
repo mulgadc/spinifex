@@ -1,0 +1,25 @@
+package awsgw_test
+
+import (
+	"github.com/mulgadc/spinifex/spinifex/gateway"
+
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+)
+
+// withELBv2 registers ELBv2 on gw with the NATS connection and quota it holds,
+// as the awsgw role composes it. Set both on gw before calling.
+func withELBv2(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
+	b := dispatch.NewBuilder()
+	reg := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: gw.NATSConn, Quota: quotaFor(gw)})
+	if err := b.Register(reg); err != nil {
+		panic(err)
+	}
+	gw.Services = b.Build()
+	return gw
+}
+
+// elbv2ServedActions lists every action the ELBv2 service dispatches.
+func elbv2ServedActions() []string {
+	return elbv2awsapi.ActionNames()
+}

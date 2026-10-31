@@ -39,15 +39,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Values of callerPrincipal.principalType. Downstream handlers that interpret
-// callerPrincipal.identity as an IAM user name MUST gate on principalTypeUser; otherwise a
-// session whose SessionName collides with a user name inherits that user's policies.
-const (
-	principalTypeUser        = "user"
-	principalTypeAssumedRole = "assumed-role"
-	principalTypeRoot        = "root"
-)
-
 // GatewayConfig is the AWS API gateway's shared state: its NATS connection, region and cluster
 // facts, auth and throttling collaborators, and lazily built caches. Its methods are the
 // per-service request handlers.
@@ -327,7 +318,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 
 	// Fail fast when NATS is down; every NATS-bound handler would otherwise hang
 	// until per-call timeout.
-	gw.fillDefaultCapabilities()
 	if gw.Readiness == nil || !gw.Readiness.Available() {
 		gw.writeClusterUnavailable(w, r, svc)
 		return
@@ -417,7 +407,6 @@ func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, 
 	// point with its resolved action, so telemetry enrichment lives here.
 	recordResolvedAction(r.Context(), service, action)
 
-	gw.fillDefaultCapabilities()
 	caller, authenticated := reqctx.Principal(r.Context())
 	return pipeline.Authorize(gw.Policy, r, caller, authenticated, service, action, resources, actionKeys)
 }

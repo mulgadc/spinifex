@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
@@ -36,7 +37,8 @@ import (
 type eksGateway struct {
 	*gwtest.Harness
 
-	nc *nats.Conn
+	nc    *nats.Conn
+	roles passrole.Resolver
 }
 
 func scopedEKS(statements ...iamdomain.Statement) *eksGateway {
@@ -52,7 +54,7 @@ func (g *eksGateway) as(caller credential.Principal) *eksGateway {
 }
 
 func (g *eksGateway) serve(w http.ResponseWriter, r *http.Request) error {
-	return g.Dispatch(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: g.nc}), eksawsapi.ServiceName, w, r)
+	return g.Dispatch(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: g.nc, Roles: g.roles}), eksawsapi.ServiceName, w, r)
 }
 
 func assertNotDenied(t *testing.T, err error) {

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -68,7 +69,7 @@ func sqsWorkerRequest(service, body, session string) *http.Request {
 	ctx := reqctx.WithService(req.Context(), service)
 	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
 	ctx = withPrincipalField(ctx, fieldIdentity, session)
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeAssumedRole)
 	ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN, roleARN)
 	ctx = withPrincipalField(ctx, fieldAssumedRoleARN,
 		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+sqsworkerapi.WorkerRoleName+"/"+session)
@@ -92,7 +93,7 @@ func newSQSInternalGateway(policies []iamdomain.PolicyDocument) (*GatewayConfig,
 // The worker's session, signed for spinifex-sqs, reaches the internal surface
 // and is evaluated against its role policy under the spinifex-sqs prefix.
 func TestSQSInternal_RoutedBySigningServiceAndRolePolicy(t *testing.T) {
-	gw, probe, ids := newSQSInternalGateway(allowPolicy("spinifex-sqs:ClaimFirstStore"))
+	gw, probe, ids := newSQSInternalGateway(gwfix.AllowPolicy("spinifex-sqs:ClaimFirstStore"))
 	rec := httptest.NewRecorder()
 	require.NoError(t, serveSigned(gw, rec, sqsWorkerRequest(sqsworkerapi.ServiceName, "Action=ClaimFirstStore", sqsWorkerInstance)))
 	assert.Equal(t, 1, probe.consulted)
@@ -103,7 +104,7 @@ func TestSQSInternal_RoutedBySigningServiceAndRolePolicy(t *testing.T) {
 // The role policy is real: a worker session whose policy grants another
 // service's action is denied before any store is consulted.
 func TestSQSInternal_PolicyForAnotherServiceDenies(t *testing.T) {
-	gw, probe, ids := newSQSInternalGateway(allowPolicy("sqs:ClaimFirstStore"))
+	gw, probe, ids := newSQSInternalGateway(gwfix.AllowPolicy("sqs:ClaimFirstStore"))
 	err := serveSigned(gw, httptest.NewRecorder(), sqsWorkerRequest(sqsworkerapi.ServiceName, "Action=ClaimFirstStore", sqsWorkerInstance))
 	assertDenied(t, err)
 	assert.Equal(t, 1, probe.consulted)
@@ -112,7 +113,7 @@ func TestSQSInternal_PolicyForAnotherServiceDenies(t *testing.T) {
 
 // A customer administrator holding every action is refused by the class gate.
 func TestSQSInternal_CustomerAdminDenied(t *testing.T) {
-	gw, probe, ids := newSQSInternalGateway(allowPolicy("*"))
+	gw, probe, ids := newSQSInternalGateway(gwfix.AllowPolicy("*"))
 	req := setupRDSUserRequest("Action=ClaimFirstStore", rdsTestAccountID)
 	req = req.WithContext(reqctx.WithService(req.Context(), sqsworkerapi.ServiceName))
 	assertDenied(t, serveSigned(gw, httptest.NewRecorder(), req))
@@ -123,7 +124,7 @@ func TestSQSInternal_CustomerAdminDenied(t *testing.T) {
 // Public SQS is untouched: nothing serves the sqs signing service, and the
 // internal actions do not answer under RDS's name either.
 func TestSQSInternal_PublicSQSUnchanged(t *testing.T) {
-	gw, _, ids := newSQSInternalGateway(allowPolicy("*"))
+	gw, _, ids := newSQSInternalGateway(gwfix.AllowPolicy("*"))
 	_, ok := gw.registered("sqs")
 	assert.False(t, ok, "the sqs signing service must stay unserved")
 	inv := gw.Services.Inventory()

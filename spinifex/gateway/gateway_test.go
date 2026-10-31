@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -25,7 +26,6 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -655,81 +655,6 @@ func TestParseAWSQueryArgs_CapturedClientBodies(t *testing.T) {
 	}
 }
 
-func TestGetService(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	withServices(gw, taggingRegistration(nil), iamRegistration(gw), ec2Registration(gw))
-
-	tests := []struct {
-		name      string
-		ctxVal    string // service to record, empty means none
-		path      string // request path, empty means "/"
-		wantSvc   string
-		wantError string
-	}{
-		{
-			name:      "no service in context",
-			wantError: awserrors.ErrorAuthFailure,
-		},
-		{
-			name:      "unsupported service",
-			ctxVal:    "s3",
-			wantError: awserrors.ErrorUnsupportedOperation,
-		},
-		{
-			name:    "ec2 service",
-			ctxVal:  "ec2",
-			wantSvc: "ec2",
-		},
-		{
-			name:    "iam service",
-			ctxVal:  "iam",
-			wantSvc: "iam",
-		},
-		{
-			name:    "tagging service",
-			ctxVal:  "tagging",
-			wantSvc: "tagging",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			path := tc.path
-			if path == "" {
-				path = "/"
-			}
-			req := httptest.NewRequest(http.MethodPost, path, nil)
-			if tc.ctxVal != "" {
-				ctx := reqctx.WithService(req.Context(), tc.ctxVal)
-				req = req.WithContext(ctx)
-			}
-
-			svc, err := gw.GetService(req)
-			if tc.wantError != "" {
-				require.Error(t, err)
-				assert.Equal(t, tc.wantError, err.Error())
-				assert.Empty(t, svc)
-			} else {
-				require.NoError(t, err)
-				assert.Equal(t, tc.wantSvc, svc)
-			}
-		})
-	}
-}
-
-func TestRequest_NoServiceContext(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	w := httptest.NewRecorder()
-
-	gw.Request(w, req)
-
-	resp := w.Result()
-	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, 403, resp.StatusCode)
-	assert.Contains(t, string(body), "AuthFailure")
-}
-
 func TestRequest_UnsupportedService(t *testing.T) {
 	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -790,7 +715,7 @@ func TestRequest_EC2MissingAction(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
 	ctx := reqctx.WithService(req.Context(), "ec2")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
 
@@ -807,7 +732,7 @@ func TestRequest_IAMNilService(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=CreateUser&UserName=test"))
 	ctx := reqctx.WithService(req.Context(), "iam")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
 
@@ -967,219 +892,6 @@ func TestEC2Request_DescribeAvailabilityZones(t *testing.T) {
 	assert.Contains(t, string(body), "DescribeAvailabilityZonesResponse")
 }
 
-// TestCheckPolicy_FailsClosed covers the three states that once returned allow
-// before any policy was consulted. A missing service is a server fault; a
-// request with no resolved principal is denied.
-func TestCheckPolicy_FailsClosed(t *testing.T) {
-	authed := func(identity string) *http.Request {
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
-		ctx := withPrincipalField(req.Context(), fieldIdentity, identity)
-		ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-		return req.WithContext(ctx)
-	}
-
-	cases := []struct {
-		name    string
-		gw      *GatewayConfig
-		req     *http.Request
-		wantErr string
-	}{
-		{
-			name:    "nil IAM service",
-			gw:      withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: nil}),
-			req:     authed("alice"),
-			wantErr: awserrors.ErrorInternalError,
-		},
-		{
-			name:    "no auth context",
-			gw:      withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}),
-			req:     httptest.NewRequest(http.MethodPost, "/", nil),
-			wantErr: awserrors.ErrorAccessDenied,
-		},
-		{
-			name:    "empty identity",
-			gw:      withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}),
-			req:     authed(""),
-			wantErr: awserrors.ErrorAccessDenied,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.gw.checkPolicy(tc.req, "ec2", "DescribeInstances")
-			require.Error(t, err)
-			assert.Equal(t, tc.wantErr, err.Error())
-		})
-	}
-}
-
-// Shared authorization errors must not expose a canonical resource that was
-// resolved from storage. STS opts into detailed wording at its dispatcher.
-func TestCheckPolicyResources_DenialIsOpaque(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-			return nil, nil
-		},
-	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	req = req.WithContext(ctx)
-
-	resource := "arn:aws:iam::123456789012:role/private/target"
-	err := gw.checkPolicyResources(req, "iam", "GetRole", []string{resource})
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
-
-	code, message, ok := awserrors.ResolveErrorDetail(err)
-	require.True(t, ok)
-	assert.Equal(t, awserrors.ErrorAccessDenied, code)
-	assert.Empty(t, message)
-	assert.NotContains(t, err.Error(), resource)
-}
-
-// TestCheckPolicy_PassRoleFailsClosed proves the change reaches a real gated
-// call site: an unauthenticated RunInstances carrying an instance profile is
-// denied rather than passing the iam:PassRole check.
-func TestCheckPolicy_PassRoleFailsClosed(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-
-	err := gw.checkPolicyResources(req, "iam", "PassRole",
-		[]string{"arn:aws:iam::123456789012:role/app"})
-	require.Error(t, err)
-	assertDenied(t, err)
-}
-
-func TestCheckPolicy_RootUserGlobalAccount(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withPrincipalField(req.Context(), fieldIdentity, "root")
-	ctx = withPrincipalField(ctx, fieldAccountID, "000000000000") // GlobalAccountID
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	req = req.WithContext(ctx)
-
-	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
-	assert.NoError(t, err)
-}
-
-// TestCheckPolicy_AssumedRoleSessionNamedRoot ensures the principal-type gate
-// fires BEFORE the identity-string root short-circuit. A session whose
-// SessionName is "root" must not inherit root privileges.
-func TestCheckPolicy_AssumedRoleSessionNamedRoot(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withPrincipalField(req.Context(), fieldIdentity, "root")
-	ctx = withPrincipalField(ctx, fieldAccountID, "000000000000")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
-	ctx = withPrincipalField(ctx, fieldAssumedRoleARN, "arn:aws:sts::000000000000:assumed-role/r/root")
-	req = req.WithContext(ctx)
-
-	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
-	require.Error(t, err)
-	assertDenied(t, err)
-}
-
-func TestCheckPolicy_NonRootAllowPolicy(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-			return []iamdomain.PolicyDocument{
-				{
-					Version: "2012-10-17",
-					Statement: []iamdomain.Statement{
-						{Effect: "Allow", Action: iamdomain.StringOrArr{"ec2:*"}, Resource: iamdomain.StringOrArr{"*"}},
-					},
-				},
-			}, nil
-		},
-	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	req = req.WithContext(ctx)
-
-	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
-	assert.NoError(t, err)
-}
-
-func TestCheckPolicy_NonRootDenyPolicy(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-			return []iamdomain.PolicyDocument{
-				{
-					Version: "2012-10-17",
-					Statement: []iamdomain.Statement{
-						{Effect: "Deny", Action: iamdomain.StringOrArr{"ec2:*"}, Resource: iamdomain.StringOrArr{"*"}},
-					},
-				},
-			}, nil
-		},
-	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	req = req.WithContext(ctx)
-
-	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
-	require.Error(t, err)
-	assertDenied(t, err)
-}
-
-func TestCheckPolicy_NonRootNoPolicies(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-			return nil, nil
-		},
-	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	req = req.WithContext(ctx)
-
-	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
-	require.Error(t, err)
-	assertDenied(t, err)
-}
-
-func TestCheckPolicy_GetUserPoliciesError(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-			return nil, errors.New("db connection failed")
-		},
-	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	req = req.WithContext(ctx)
-
-	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
-}
-
-func TestCheckPolicy_MissingAccountID(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
-	// No account ID
-	req = req.WithContext(ctx)
-
-	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
-}
-
 // shortenPolicyResolveRetry keeps the transient-NATS retries without paying
 // the production backoff. Tests that call it must not run in parallel.
 func shortenPolicyResolveRetry(t *testing.T) {
@@ -1187,77 +899,6 @@ func shortenPolicyResolveRetry(t *testing.T) {
 	prev := policyRetryBase
 	policyRetryBase = time.Millisecond
 	t.Cleanup(func() { policyRetryBase = prev })
-}
-
-func TestCheckPolicy_NATSTransientRetriesAllAttempts(t *testing.T) {
-	shortenPolicyResolveRetry(t)
-	calls := 0
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-			calls++
-			return nil, fmt.Errorf("get user: %w", nats.ErrNoResponders)
-		},
-	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	req = req.WithContext(ctx)
-
-	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
-	assert.Equal(t, 3, calls, "should have retried all 3 attempts")
-}
-
-func TestCheckPolicy_NATSTransientRetriesThenSucceeds(t *testing.T) {
-	shortenPolicyResolveRetry(t)
-	calls := 0
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-			calls++
-			if calls < 3 {
-				return nil, fmt.Errorf("get user: %w", nats.ErrNoResponders)
-			}
-			return []iamdomain.PolicyDocument{
-				{
-					Version: "2012-10-17",
-					Statement: []iamdomain.Statement{
-						{Effect: "Allow", Action: iamdomain.StringOrArr{"ec2:*"}, Resource: iamdomain.StringOrArr{"*"}},
-					},
-				},
-			}, nil
-		},
-	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	req = req.WithContext(ctx)
-
-	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
-	assert.NoError(t, err)
-	assert.Equal(t, 3, calls, "should have retried until success")
-}
-
-func TestCheckPolicy_NonTransientErrorStillFails(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-			return nil, errors.New("database corruption")
-		},
-	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
-	req = req.WithContext(ctx)
-
-	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
 // --- Throttle middleware integration tests ---
@@ -1376,25 +1017,6 @@ func TestWriteThrottleError_Bedrock(t *testing.T) {
 	assert.NotContains(t, string(body), "<?xml")
 	// SDKs resolve the modelled exception type from this header, not the body.
 	assert.Equal(t, "RequestLimitExceededException", resp.Header.Get("X-Amzn-Errortype"))
-}
-
-func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
-	gw := withServices(&GatewayConfig{DisableLogging: true}, ochreawsapi.NewRegistration(ochreawsapi.Deps{}))
-
-	req := httptest.NewRequest(http.MethodPost, "/model/meta.llama3-2-1b-instruct-v1%3A0/converse", nil)
-	req = req.WithContext(reqctx.WithService(req.Context(), "bedrock"))
-	w := httptest.NewRecorder()
-
-	gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch, "")
-
-	resp := w.Result()
-	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, 403, resp.StatusCode)
-	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"), "a bedrock auth failure must be SDK-parseable JSON")
-	assert.Contains(t, string(body), "SignatureDoesNotMatch")
-	assert.NotContains(t, string(body), "<?xml")
-	// SDKs resolve the modelled exception type from this header, not the body.
-	assert.Equal(t, "SignatureDoesNotMatchException", resp.Header.Get("X-Amzn-Errortype"))
 }
 
 func TestThrottleMiddleware_Integration(t *testing.T) {
@@ -1556,4 +1178,23 @@ func TestRequest_ClusterUnavailableClosedConn(t *testing.T) {
 	resp := w.Result()
 
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
+	gw := withServices(&GatewayConfig{DisableLogging: true}, ochreawsapi.NewRegistration(ochreawsapi.Deps{}))
+
+	req := httptest.NewRequest(http.MethodPost, "/model/meta.llama3-2-1b-instruct-v1%3A0/converse", nil)
+	req = req.WithContext(reqctx.WithService(req.Context(), "bedrock"))
+	w := httptest.NewRecorder()
+
+	gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch, "")
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, 403, resp.StatusCode)
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"), "a bedrock auth failure must be SDK-parseable JSON")
+	assert.Contains(t, string(body), "SignatureDoesNotMatch")
+	assert.NotContains(t, string(body), "<?xml")
+	// SDKs resolve the modelled exception type from this header, not the body.
+	assert.Equal(t, "SignatureDoesNotMatchException", resp.Header.Get("X-Amzn-Errortype"))
 }

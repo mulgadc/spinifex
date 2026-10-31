@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -26,7 +27,7 @@ func setupECRRequest(target, body string) *http.Request {
 	ctx := reqctx.WithService(req.Context(), "ecr")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 	ctx = withPrincipalField(ctx, fieldIdentity, "dev")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAECRTESTCONTROLPL1")
 	return req.WithContext(ctx)
 }

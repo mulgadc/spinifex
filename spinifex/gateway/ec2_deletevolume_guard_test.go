@@ -1,23 +1,19 @@
-//test:in-package — drives the public DeleteVolume action through EC2_Request
-// with the gateway's unexported test helpers.
-
 package gateway
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
+	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
-	"github.com/nats-io/nats.go"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // A configured node that never answers leaves the instance view incomplete, so

@@ -24,9 +24,6 @@ import (
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
-	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
-	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
@@ -77,38 +74,15 @@ type GatewayConfig struct {
 	RootCAs       *x509.CertPool
 	ExpectedNodes int    // Number of expected spinifex nodes for multi-node operations
 	Region        string // Region this gateway is running in
-	// NodeIDs is the configured cluster node set — the keys of
-	// config.ClusterConfig.Nodes — used to judge a fan-out's completeness by
-	// responder identity rather than by count. Distinct from ExpectedNodes,
-	// which stays a count for the callers that only want one.
-	NodeIDs []string
 	// The last discovered node count and when it was discovered, so the
 	// discovery fan-out runs once per activeNodesTTL rather than once per
 	// request that needs to know how many nodes to wait for.
 	activeNodesMu    sync.RWMutex
 	activeNodesCount int
 	activeNodesAt    time.Time
-	// The EC2 handler, built on first use so its client-token binding is reused
-	// across requests.
-	ec2Once        sync.Once
-	ec2Handler     *ec2awsapi.Handler
-	InternalSuffix string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
-	// RegistryPort is the gateway's advertised port, appended to the ECR
-	// registry host so docker login/tag/push dial the right port. Empty or
-	// "443" renders a port-less host (standard HTTPS parity).
-	RegistryPort string
-	// RegistryHost is the gateway's advertised registry host. When set, ECR URIs
-	// use it (account comes from the auth token), so docker needs no DNS — it is
-	// the same reachable, cert-covered host clients use for the AWS API. Empty
-	// falls back to the per-account <acct>.dkr.ecr.<region>.<suffix> name.
-	RegistryHost string
-	AZ           string // Availability zone this gateway is running in
-	// InstanceStatus backfills DescribeInstanceStatus for instances whose node
-	// stopped answering, which would otherwise drop out of the answer entirely.
-	// Zero value keeps the pre-existing fan-out-only behaviour.
-	InstanceStatus ec2instanceapi.StatusSynthesis
-	IAMService     iamdomain.IAMService
-	STSService     stsdomain.STSService
+	InternalSuffix   string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
+	IAMService       iamdomain.IAMService
+	STSService       stsdomain.STSService
 	// AnonymousSTS serves the unsigned STS actions that authenticate by a token
 	// in the body. Nil answers them with InternalError.
 	AnonymousSTS stsawsapi.AnonymousFunc
@@ -120,12 +94,8 @@ type GatewayConfig struct {
 	// Admission decides whether a request's account may proceed. Nil builds one
 	// over IAMService the first time the auth middleware is constructed.
 	Admission *accountadmission.Admitter
-	// Quota enforces per-account service quotas. Built unconditionally; a disabled
-	// config yields a no-op Service whose Exempt always returns true. Nil only in
-	// unit tests of unrelated routes, where no handler reaches the quota checks.
-	Quota   *quota.Service
-	Version string // Build-time version string (set from cmd.Version)
-	Commit  string // Build-time commit hash (set from cmd.Commit)
+	Version   string // Build-time version string (set from cmd.Version)
+	Commit    string // Build-time commit hash (set from cmd.Commit)
 	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil
 	// answers them with a 500 (e.g. in unit tests of unrelated routes).
 	OIDC OIDCPublisher
@@ -135,29 +105,16 @@ type GatewayConfig struct {
 	RegistryHandler http.Handler
 
 	// Services holds the signed AWS services dispatched through the
-	// registration seam. Nil means nothing is registered, so every request
-	// falls through to the legacy switch in Request.
+	// registration seam. Nil means nothing is registered, so every signed
+	// request is refused as an unserved service.
 	Services *dispatch.Registry
 }
 
-// selector answers service selection over Services and the legacy tables. It
-// holds only the two pointers, so it is built per call and needs no cache.
+// selector answers service selection over Services. It holds only the one
+// pointer, so it is built per call and needs no cache.
 func (gw *GatewayConfig) selector() *dispatch.Selector {
-	return dispatch.NewSelector(gw.Services, legacyServices{})
+	return dispatch.NewSelector(gw.Services, nil)
 }
-
-// legacyServices answers selection for services still on Request's switch.
-type legacyServices struct{}
-
-var _ dispatch.Legacy = legacyServices{}
-
-func (legacyServices) Serves(svc string) bool { return supportedServices[svc] }
-
-func (legacyServices) ResolveAction(r *http.Request, svc string) string {
-	return resolveNonQueryAction(r)
-}
-
-func (legacyServices) JSONErrors(svc string) bool { return jsonErrorService(svc) }
 
 // registered reports whether svc is served through the registration seam. A
 // nil registry (no registrations) always reports false.
@@ -165,9 +122,7 @@ func (gw *GatewayConfig) registered(svc string) (*dispatch.Entry, bool) {
 	return gw.selector().Lookup(svc)
 }
 
-// ValidateServices fails if a name the registry serves is also served by the
-// legacy supportedServices table, so no service is ever reachable down both
-// dispatch paths at once.
+// ValidateServices fails if the registry's service names are inconsistent.
 func (gw *GatewayConfig) ValidateServices() error {
 	return gw.selector().Validate()
 }
@@ -202,10 +157,6 @@ func callerActor(ctx context.Context) (dispatch.Actor, error) {
 		actor.UserName = p.identity
 	}
 	return actor, err
-}
-
-var supportedServices = map[string]bool{
-	"ec2": true,
 }
 
 func (gw *GatewayConfig) SetupRoutes() http.Handler {
@@ -293,13 +244,6 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 			return "unknown", nil
 		},
 	}
-}
-
-// jsonErrorService reports whether svc returns AWS JSON 1.1 errors rather than
-// XML. One source of truth so every error emitter agrees with ErrorHandler; an
-// XML body to these clients is an unparseable "<?xml…" deserialization error.
-func jsonErrorService(svc string) bool {
-	return false
 }
 
 // errorProtocol reports the JSON wire format svc's errors use; ok is false when
@@ -396,24 +340,14 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fail fast when NATS is down; every NATS-bound handler would otherwise hang
-	// until per-call timeout. Applies ahead of either dispatch path below.
+	// until per-call timeout.
 	if gw.NATSConn == nil || !gw.NATSConn.IsConnected() {
 		gw.writeClusterUnavailable(w, r, svc)
 		return
 	}
 
-	if entry, ok := gw.registered(svc); ok {
-		err = gw.dispatchRegistered(entry, w, r)
-	} else {
-		// Legacy dispatch path for every service not yet registered through
-		// the seam. This switch must only shrink as services register.
-		switch svc {
-		case "ec2":
-			err = gw.EC2_Request(w, r)
-		default:
-			err = errors.New(awserrors.ErrorUnsupportedOperation)
-		}
-	}
+	entry, _ := gw.registered(svc)
+	err = gw.dispatchRegistered(entry, w, r)
 
 	if err != nil {
 		slog.Log(r.Context(), serviceErrorLevel(svc, err), "Service request error",
@@ -467,12 +401,7 @@ func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
 	if !ok {
 		return "", errors.New(awserrors.ErrorAuthFailure)
 	}
-	// A registered service needs no bedrock sub-service rewriting: that
-	// rewrite exists only for the legacy "bedrock" signing-name split below.
-	if _, ok := gw.registered(svc); ok {
-		return svc, nil
-	}
-	if !supportedServices[svc] {
+	if _, ok := gw.registered(svc); !ok {
 		slog.Debug("Unsupported service", "service", svc)
 		return "", errors.New(awserrors.ErrorUnsupportedOperation)
 	}

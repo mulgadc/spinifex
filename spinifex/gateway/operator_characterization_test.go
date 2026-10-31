@@ -318,7 +318,7 @@ func TestOperatorAdmin_ListAccounts_JSONSuccess(t *testing.T) {
 
 func TestOperatorAdmin_GetAccountQuota_DefaultsComeFromConfig(t *testing.T) {
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), func(gw *GatewayConfig) {
-		gw.Quota = admissionquota.New(admissionquota.Limits{Enabled: true}, nil)
+		withQuota(gw, admissionquota.New(admissionquota.Limits{Enabled: true}, nil))
 	})
 	resp := adminCall(t, app, http.MethodPost, "GetAccountQuota", "spinifex", `{"accountId":"000000000002"}`)
 
@@ -336,7 +336,7 @@ func TestOperatorAdmin_GetAccountQuota_DefaultsComeFromConfig(t *testing.T) {
 // that parses one, and MissingParameter where a required field is absent.
 func TestOperatorAdmin_BodyErrors(t *testing.T) {
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), func(gw *GatewayConfig) {
-		gw.Quota = admissionquota.New(admissionquota.Limits{Enabled: true}, nil)
+		withQuota(gw, admissionquota.New(admissionquota.Limits{Enabled: true}, nil))
 	})
 
 	tests := []struct {

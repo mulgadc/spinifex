@@ -35,6 +35,7 @@ func auditRouter(t *testing.T, keys map[string]*iamdomain.AccessKey) (http.Handl
 		Credentials:    credverify.New(&mockIAMService{masterKey: testMasterKey, accessKeys: keys}, nil),
 		RateLimiter:    rl,
 	}
+	withEC2(gw)
 
 	var got *audit.Record
 	r := chi.NewRouter()

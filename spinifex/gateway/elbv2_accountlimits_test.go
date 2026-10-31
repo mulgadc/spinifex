@@ -83,7 +83,7 @@ func TestELBv2DescribeAccountLimitsReportsStoredQuota(t *testing.T) {
 	assert.Equal(t, "2", byName["application-load-balancers"])
 	assert.Equal(t, "2", byName["network-load-balancers"])
 
-	require.NoError(t, gw.Quota.PutAccountQuota(t.Context(), account,
+	require.NoError(t, quotaFor(gw).PutAccountQuota(t.Context(), account,
 		quota.Overrides{LoadBalancers: quotaPtr(9)}, "operator"))
 
 	byName = describeAccountLimits(t, gw, account)
@@ -97,9 +97,9 @@ func TestELBv2DescribeAccountLimitsIsPerAccount(t *testing.T) {
 	gw, account := quotaTestGateway(t)
 	const other = "000000000043"
 
-	require.NoError(t, gw.Quota.PutAccountQuota(t.Context(), account,
+	require.NoError(t, quotaFor(gw).PutAccountQuota(t.Context(), account,
 		quota.Overrides{LoadBalancers: quotaPtr(9)}, "operator"))
-	require.NoError(t, gw.Quota.PutAccountQuota(t.Context(), other,
+	require.NoError(t, quotaFor(gw).PutAccountQuota(t.Context(), other,
 		quota.Overrides{LoadBalancers: quotaPtr(4)}, "operator"))
 
 	assert.Equal(t, "9", describeAccountLimits(t, gw, account)["application-load-balancers"])
@@ -112,7 +112,7 @@ func TestELBv2DescribeAccountLimitsDefaultsWhenQuotaDisabled(t *testing.T) {
 	disabled := quota.New(quota.Limits{LoadBalancers: 0}, nil)
 
 	for name, gw := range map[string]*GatewayConfig{
-		"disabled": {DisableLogging: true, Quota: disabled},
+		"disabled": withQuota(&GatewayConfig{DisableLogging: true}, disabled),
 		"unwired":  {DisableLogging: true},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -140,8 +140,8 @@ func TestELBv2DescribeAccountLimitsReportsUnenforcedLimits(t *testing.T) {
 // than the generic InternalError every other read failure maps to.
 func TestELBv2DescribeAccountLimitsBlockedOnSealedRecord(t *testing.T) {
 	gw, account := quotaTestGateway(t)
-	gw.Quota.SetAccountTerminationChecker(&quotaStubChecker{terminating: map[string]bool{account: true}})
-	_, err := gw.Quota.SealAccountOverrides(t.Context(), account)
+	quotaFor(gw).SetAccountTerminationChecker(&quotaStubChecker{terminating: map[string]bool{account: true}})
+	_, err := quotaFor(gw).SealAccountOverrides(t.Context(), account)
 	require.NoError(t, err)
 
 	body, err := serveAccountLimits(t, gw, account, "Action=DescribeAccountLimits")

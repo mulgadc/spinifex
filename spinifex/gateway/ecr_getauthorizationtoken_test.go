@@ -112,7 +112,7 @@ func TestGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
 	iss, _ := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix, RegistryPort: "9999"}
 	gw := withECR(withVerifier(&GatewayConfig{
-		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, RegistryPort: "9999",
+		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
 	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})

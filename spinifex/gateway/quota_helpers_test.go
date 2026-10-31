@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -14,6 +15,21 @@ import (
 )
 
 func quotaPtr(v int) *int { return &v }
+
+// quotaByGateway carries the quota service a test built for a gateway, which no
+// longer holds one: the registration helpers read it back to compose Deps.
+var quotaByGateway sync.Map
+
+func withQuota(gw *GatewayConfig, q *admissionquota.Service) *GatewayConfig {
+	quotaByGateway.Store(gw, q)
+	return gw
+}
+
+func quotaFor(gw *GatewayConfig) *admissionquota.Service {
+	q, _ := quotaByGateway.Load(gw)
+	svc, _ := q.(*admissionquota.Service)
+	return svc
+}
 
 // quotaIAMService resolves exactly one account.
 type quotaIAMService struct {
@@ -48,11 +64,10 @@ func quotaTestGateway(t *testing.T) (*GatewayConfig, string) {
 	quota.SetOverrides(kv)
 
 	svc := &quotaIAMService{known: account}
-	return withVerifier(&GatewayConfig{
+	return withQuota(withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		IAMService:     svc,
-		Quota:          quota,
-	}), account
+	}), quota), account
 }
 
 // quotaStubChecker answers AccountTerminating from a fixed set, so a test can

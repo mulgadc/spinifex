@@ -416,18 +416,6 @@ func TestValidateServices(t *testing.T) {
 		gw := &GatewayConfig{Services: dispatch.NewBuilder().Build()}
 		assert.NoError(t, gw.ValidateServices())
 	})
-
-	t.Run("claiming a legacy name fails", func(t *testing.T) {
-		b := dispatch.NewBuilder()
-		require.NoError(t, b.Register(dispatch.Registration{
-			Service:   "ec2",
-			Dispatch:  func(http.ResponseWriter, dispatch.Invocation) error { return nil },
-			Errors:    dispatch.ErrorEnvelopeJSON,
-			Inventory: dispatch.Inventory{Registered: []string{fakeAction}},
-		}))
-		gw := &GatewayConfig{Services: b.Build()}
-		assert.Error(t, gw.ValidateServices())
-	})
 }
 
 // --- i. a registered service with no resolver still dispatches -------------

@@ -1,13 +1,17 @@
 import type { AddonInfo } from "@aws-sdk/client-eks"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { ArrowUpCircle, Trash2 } from "lucide-react"
+import { ArrowUpCircle, Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
+import {
+  PanelField,
+  PanelFields,
+  PanelSection,
+} from "@/components/detail-panel"
+import { ErrorBanner } from "@/components/error-banner"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -92,13 +96,19 @@ function AddAddonDialog({
   }
 
   const onSubmit = async (data: CreateAddonFormValues) => {
-    await createAddon.mutateAsync({
-      clusterName,
-      addonName: data.addonName,
-      addonVersion: data.addonVersion || undefined,
-      serviceAccountRoleArn: data.serviceAccountRoleArn.trim() || undefined,
-      configurationValues: data.configurationValues.trim() || undefined,
-    })
+    try {
+      await createAddon.mutateAsync({
+        clusterName,
+        addonName: data.addonName,
+        addonVersion: data.addonVersion || undefined,
+        serviceAccountRoleArn: data.serviceAccountRoleArn.trim() || undefined,
+        configurationValues: data.configurationValues.trim() || undefined,
+      })
+    } catch {
+      // Surfaced in the dialog through the mutation's error.
+      return
+    }
+
     reset()
     onOpenChange(false)
   }
@@ -109,6 +119,14 @@ function AddAddonDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Add add-on</AlertDialogTitle>
         </AlertDialogHeader>
+
+        {createAddon.error && (
+          <ErrorBanner
+            className="mb-0"
+            error={createAddon.error}
+            msg="Failed to add the add-on"
+          />
+        )}
 
         <form className="space-y-4" id="add-addon-form">
           <Field>
@@ -378,47 +396,50 @@ function AddonRow({
       .filter(Boolean) ?? []
 
   return (
-    <DetailCard>
-      <DetailCard.Header>
-        <div className="flex items-center justify-between">
-          <span>{addonName}</span>
-          <div className="flex items-center gap-1">
-            <Badge variant={addonStatusVariant(addon?.status)}>
-              {addon?.status ?? "UNKNOWN"}
-            </Badge>
-            <Button
-              aria-label="Update add-on"
-              onClick={() => {
-                setShowUpdate(true)
-              }}
-              size="icon"
-              variant="ghost"
-            >
-              <ArrowUpCircle className="size-4" />
-            </Button>
-            <Button
-              aria-label="Remove add-on"
-              onClick={() => {
-                onDelete(addonName)
-              }}
-              size="icon"
-              variant="ghost"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </div>
+    <div className="rounded-md border px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 truncate text-sm font-medium">
+          {addonName}
+        </span>
+        <div className="flex items-center gap-1">
+          <Badge variant={addonStatusVariant(addon?.status)}>
+            {addon?.status ?? "UNKNOWN"}
+          </Badge>
+          <Button
+            aria-label="Update add-on"
+            onClick={() => {
+              setShowUpdate(true)
+            }}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <ArrowUpCircle />
+          </Button>
+          <Button
+            aria-label="Remove add-on"
+            onClick={() => {
+              onDelete(addonName)
+            }}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <Trash2 />
+          </Button>
         </div>
-      </DetailCard.Header>
-      <DetailCard.Content>
-        <DetailRow label="Version" value={addon?.addonVersion} />
-        <DetailRow label="IRSA role" value={addon?.serviceAccountRoleArn} />
+      </div>
+      <PanelFields>
+        <PanelField label="Version" mono>
+          {addon?.addonVersion}
+        </PanelField>
+        <PanelField copy={addon?.serviceAccountRoleArn} label="IRSA role" mono>
+          {addon?.serviceAccountRoleArn}
+        </PanelField>
         {issue && (
-          <DetailRow
-            label="Issue"
-            value={<span className="text-destructive">{issue}</span>}
-          />
+          <PanelField label="Issue">
+            <span className="text-destructive">{issue}</span>
+          </PanelField>
         )}
-      </DetailCard.Content>
+      </PanelFields>
 
       {showUpdate && (
         <UpdateAddonDialog
@@ -433,7 +454,7 @@ function AddonRow({
           versions={versions}
         />
       )}
-    </DetailCard>
+    </div>
   )
 }
 
@@ -449,36 +470,41 @@ export function AddonsTab({ clusterName }: { clusterName: string }) {
 
   return (
     <>
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <p className="text-xs text-muted-foreground">
-          Add-on manifests are staged; activation completes when the cluster
-          reports the workload ready.
-        </p>
-        <Button
-          onClick={() => {
-            setShowAdd(true)
-          }}
-          size="sm"
-        >
-          Add add-on
-        </Button>
-      </div>
-
-      {addons.length > 0 ? (
-        <div className="space-y-4">
-          {addons.map((name) => (
-            <AddonRow
-              addonName={name}
-              catalog={catalog}
-              clusterName={clusterName}
-              key={name}
-              onDelete={setPendingDelete}
-            />
-          ))}
+      <PanelSection title={`Add-ons (${addons.length})`}>
+        <div className="flex flex-col gap-3 py-1">
+          <p className="text-xs text-muted-foreground">
+            Add-on manifests are staged; activation completes when the cluster
+            reports the workload ready.
+          </p>
+          <div>
+            <Button
+              onClick={() => {
+                setShowAdd(true)
+              }}
+              size="sm"
+              variant="outline"
+            >
+              <Plus data-icon="inline-start" />
+              Add add-on
+            </Button>
+          </div>
+          {addons.length > 0 ? (
+            addons.map((name) => (
+              <AddonRow
+                addonName={name}
+                catalog={catalog}
+                clusterName={clusterName}
+                key={name}
+                onDelete={setPendingDelete}
+              />
+            ))
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No add-ons installed.
+            </p>
+          )}
         </div>
-      ) : (
-        <p className="text-muted-foreground">No add-ons installed.</p>
-      )}
+      </PanelSection>
 
       <AddAddonDialog
         catalog={catalog}

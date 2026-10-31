@@ -2,10 +2,11 @@ import type { Listener } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { Pencil, Trash2 } from "lucide-react"
-import { Fragment, useState } from "react"
+import { useState } from "react"
 import { useForm } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { PanelField, PanelFields } from "@/components/detail-panel"
 import { ListenerForm } from "@/components/elbv2/listener-form"
 import { ListenerRulesTab } from "@/components/elbv2/listener-rules-tab"
 import { ErrorBanner } from "@/components/error-banner"
@@ -236,90 +237,75 @@ export function ListenersTab({
       </div>
 
       {listeners.length === 0 ? (
-        <p className="text-muted-foreground">No listeners configured.</p>
+        <p className="text-sm text-muted-foreground">
+          No listeners configured.
+        </p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-2 font-medium">Protocol</th>
-                <th className="px-4 py-2 font-medium">Port</th>
-                <th className="px-4 py-2 font-medium">TLS</th>
-                <th className="px-4 py-2 font-medium">Default action</th>
-                <th className="px-4 py-2 font-medium">Listener ARN</th>
-                <th className="px-4 py-2 font-medium">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {listeners.map((listener) => {
-                const arn = listener.ListenerArn ?? ""
-                const rulesOpen = rulesOpenArn === arn
+        <ul className="flex flex-col gap-2">
+          {listeners.map((listener) => {
+            const arn = listener.ListenerArn ?? ""
+            const rulesOpen = rulesOpenArn === arn
+            const name = `${listener.Protocol}:${listener.Port}`
 
-                return (
-                  <Fragment key={arn}>
-                    <tr className="border-b last:border-0">
-                      <td className="px-4 py-2">{listener.Protocol}</td>
-                      <td className="px-4 py-2">{listener.Port}</td>
-                      <td className="px-4 py-2 text-xs">
-                        {formatTls(listener)}
-                      </td>
-                      <td className="px-4 py-2 text-xs">
-                        {formatDefaultAction(listener)}
-                      </td>
-                      <td className="px-4 py-2 font-mono text-xs">{arn}</td>
-                      <td className="px-4 py-2 text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            aria-label={`${rulesOpen ? "Hide" : "Show"} rules for listener ${listener.Protocol}:${listener.Port}`}
-                            onClick={() => {
-                              setRulesOpenArn(rulesOpen ? undefined : arn)
-                            }}
-                            size="sm"
-                            variant="ghost"
-                          >
-                            {rulesOpen ? "Hide rules" : "Rules"}
-                          </Button>
-                          <Button
-                            aria-label={`Edit listener ${listener.Protocol}:${listener.Port}`}
-                            onClick={() => {
-                              setEditTarget(listener)
-                            }}
-                            size="sm"
-                            variant="ghost"
-                          >
-                            <Pencil className="size-4" />
-                          </Button>
-                          <Button
-                            aria-label={`Delete listener ${listener.Protocol}:${listener.Port}`}
-                            onClick={() => {
-                              setDeleteTarget(listener)
-                            }}
-                            size="sm"
-                            variant="ghost"
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                    {rulesOpen && arn && (
-                      <tr className="border-b bg-muted/30 last:border-0">
-                        <td className="px-4 py-3" colSpan={6}>
-                          <ListenerRulesTab
-                            listenerArn={arn}
-                            targetGroups={vpcTgs}
-                          />
-                        </td>
-                      </tr>
+            return (
+              <li className="rounded-md border bg-card" key={arn}>
+                <div className="flex items-center justify-between gap-2 py-1 pr-1 pl-3">
+                  <span className="text-sm font-medium">{name}</span>
+                  <div className="flex gap-1">
+                    <Button
+                      aria-label={`${rulesOpen ? "Hide" : "Show"} rules for listener ${name}`}
+                      onClick={() => {
+                        setRulesOpenArn(rulesOpen ? undefined : arn)
+                      }}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      {rulesOpen ? "Hide rules" : "Rules"}
+                    </Button>
+                    <Button
+                      aria-label={`Edit listener ${name}`}
+                      onClick={() => {
+                        setEditTarget(listener)
+                      }}
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      <Pencil />
+                    </Button>
+                    <Button
+                      aria-label={`Delete listener ${name}`}
+                      onClick={() => {
+                        setDeleteTarget(listener)
+                      }}
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
+                </div>
+                <div className="border-t px-3">
+                  <PanelFields>
+                    {listener.Protocol === "HTTPS" && (
+                      <PanelField label="TLS">{formatTls(listener)}</PanelField>
                     )}
-                  </Fragment>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                    <PanelField label="Default action">
+                      {formatDefaultAction(listener)}
+                    </PanelField>
+                    <PanelField copy={arn} label="Listener ARN" mono>
+                      {arn}
+                    </PanelField>
+                  </PanelFields>
+                </div>
+                {rulesOpen && arn && (
+                  <div className="border-t bg-muted/30 p-3">
+                    <ListenerRulesTab listenerArn={arn} targetGroups={vpcTgs} />
+                  </div>
+                )}
+              </li>
+            )
+          })}
+        </ul>
       )}
 
       {/* Mounted only while open so every session starts from blank defaults. */}

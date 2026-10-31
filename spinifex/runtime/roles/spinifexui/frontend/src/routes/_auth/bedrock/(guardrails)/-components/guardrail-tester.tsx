@@ -89,8 +89,7 @@ export function GuardrailTester({
   const action = applyGuardrail.data?.action
 
   return (
-    <div className="rounded-lg border bg-card p-4">
-      <h2 className="mb-2 font-semibold">Guardrail tester</h2>
+    <div>
       <p className="mb-4 text-sm text-muted-foreground">
         Apply this guardrail (version {guardrailVersion}) to sample content and
         see whether it intervenes.
@@ -152,7 +151,7 @@ export function GuardrailTester({
               className={
                 action === "GUARDRAIL_INTERVENED"
                   ? "text-destructive"
-                  : "text-positive-foreground"
+                  : "text-success-foreground"
               }
             >
               {action}

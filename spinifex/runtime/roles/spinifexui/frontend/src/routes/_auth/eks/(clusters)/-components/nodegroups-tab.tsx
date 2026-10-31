@@ -1,17 +1,22 @@
 import type { InstanceTypeInfo } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { SlidersHorizontal, Trash2 } from "lucide-react"
+import { Plus, SlidersHorizontal, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
+import {
+  PanelField,
+  PanelFields,
+  PanelSection,
+} from "@/components/detail-panel"
+import { ErrorBanner } from "@/components/error-banner"
 import {
   GpuInstanceTypeSelect,
   isGpuInstanceType,
 } from "@/components/gpu-instance-type-select"
+import { StateBadge } from "@/components/state-badge"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -197,62 +202,57 @@ function NodegroupRow({
   const isGpu = isGpuAmiType(ng?.amiType)
 
   return (
-    <DetailCard>
-      <DetailCard.Header>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span>{nodegroupName}</span>
-            {isGpu && <Badge variant="secondary">GPU</Badge>}
-          </div>
-          <div className="flex items-center gap-1">
-            <Button
-              aria-label="Scale node group"
-              onClick={() => {
-                setShowScale(true)
-              }}
-              size="icon"
-              variant="ghost"
-            >
-              <SlidersHorizontal className="size-4" />
-            </Button>
-            <Button
-              aria-label="Delete node group"
-              onClick={() => {
-                onDelete(nodegroupName)
-              }}
-              size="icon"
-              variant="ghost"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </div>
+    <div className="rounded-md border px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-medium">{nodegroupName}</span>
+          {isGpu && <Badge variant="secondary">GPU</Badge>}
         </div>
-      </DetailCard.Header>
-      <DetailCard.Content>
-        <DetailRow label="Status" value={ng?.status} />
-        <DetailRow
-          label="Kubernetes version"
-          value={
-            updateAvailable
-              ? `${ng?.version} (cluster on ${clusterVersion})`
-              : ng?.version
-          }
-        />
-        <DetailRow
-          label="Instance types"
-          value={ng?.instanceTypes?.join(", ")}
-        />
-        <DetailRow label="AMI type" value={ng?.amiType} />
-        <DetailRow label="Capacity type" value={ng?.capacityType} />
-        <DetailRow
-          label="Scaling (min / desired / max)"
-          value={
-            scaling
-              ? `${scaling.minSize} / ${scaling.desiredSize} / ${scaling.maxSize}`
-              : undefined
-          }
-        />
-      </DetailCard.Content>
+        <div className="flex items-center gap-1">
+          <Button
+            aria-label="Scale node group"
+            onClick={() => {
+              setShowScale(true)
+            }}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <SlidersHorizontal />
+          </Button>
+          <Button
+            aria-label="Delete node group"
+            onClick={() => {
+              onDelete(nodegroupName)
+            }}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <Trash2 />
+          </Button>
+        </div>
+      </div>
+      <PanelFields>
+        <PanelField label="Status">
+          {ng?.status && <StateBadge state={ng.status} />}
+        </PanelField>
+        <PanelField label="Kubernetes version">
+          {updateAvailable
+            ? `${ng?.version} (cluster on ${clusterVersion})`
+            : ng?.version}
+        </PanelField>
+        <PanelField label="Instance types" mono>
+          {ng?.instanceTypes?.join(", ")}
+        </PanelField>
+        <PanelField label="AMI type" mono>
+          {ng?.amiType}
+        </PanelField>
+        <PanelField label="Capacity type">{ng?.capacityType}</PanelField>
+        <PanelField label="Scaling (min / desired / max)">
+          {scaling
+            ? `${scaling.minSize} / ${scaling.desiredSize} / ${scaling.maxSize}`
+            : undefined}
+        </PanelField>
+      </PanelFields>
 
       {showScale && (
         <ScaleNodegroupDialog
@@ -262,7 +262,7 @@ function NodegroupRow({
           onOpenChange={setShowScale}
         />
       )}
-    </DetailCard>
+    </div>
   )
 }
 
@@ -323,22 +323,28 @@ function AddNodegroupDialog({
   }
 
   const onSubmit = async (data: CreateNodegroupFormValues) => {
-    await createNodegroup.mutateAsync({
-      clusterName,
-      nodegroupName: data.nodegroupName,
-      nodeRole: data.nodeRole,
-      subnetIds: data.subnetIds,
-      instanceTypes: data.instanceTypes
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean),
-      amiType: data.amiType,
-      capacityType: data.capacityType,
-      diskSize: data.diskSize,
-      minSize: data.minSize,
-      desiredSize: data.desiredSize,
-      maxSize: data.maxSize,
-    })
+    try {
+      await createNodegroup.mutateAsync({
+        clusterName,
+        nodegroupName: data.nodegroupName,
+        nodeRole: data.nodeRole,
+        subnetIds: data.subnetIds,
+        instanceTypes: data.instanceTypes
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean),
+        amiType: data.amiType,
+        capacityType: data.capacityType,
+        diskSize: data.diskSize,
+        minSize: data.minSize,
+        desiredSize: data.desiredSize,
+        maxSize: data.maxSize,
+      })
+    } catch {
+      // Surfaced in the dialog through the mutation's error.
+      return
+    }
+
     reset()
     onOpenChange(false)
   }
@@ -349,6 +355,14 @@ function AddNodegroupDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Add node group</AlertDialogTitle>
         </AlertDialogHeader>
+
+        {createNodegroup.error && (
+          <ErrorBanner
+            className="mb-0"
+            error={createNodegroup.error}
+            msg="Failed to create the node group"
+          />
+        )}
 
         <form className="space-y-4" id="add-nodegroup-form">
           <Field>
@@ -558,32 +572,35 @@ export function NodegroupsTab({
 
   return (
     <>
-      <div className="mb-4 flex justify-end">
-        <Button
-          onClick={() => {
-            setShowAdd(true)
-          }}
-          size="sm"
-        >
-          Add node group
-        </Button>
-      </div>
-
-      {nodegroups.length > 0 ? (
-        <div className="space-y-4">
-          {nodegroups.map((ng) => (
-            <NodegroupRow
-              clusterName={clusterName}
-              clusterVersion={clusterVersion}
-              key={ng}
-              nodegroupName={ng}
-              onDelete={setPendingDelete}
-            />
-          ))}
+      <PanelSection title={`Node groups (${nodegroups.length})`}>
+        <div className="flex flex-col gap-3 py-1">
+          <div>
+            <Button
+              onClick={() => {
+                setShowAdd(true)
+              }}
+              size="sm"
+              variant="outline"
+            >
+              <Plus data-icon="inline-start" />
+              Add node group
+            </Button>
+          </div>
+          {nodegroups.length > 0 ? (
+            nodegroups.map((ng) => (
+              <NodegroupRow
+                clusterName={clusterName}
+                clusterVersion={clusterVersion}
+                key={ng}
+                nodegroupName={ng}
+                onDelete={setPendingDelete}
+              />
+            ))
+          ) : (
+            <p className="text-sm text-muted-foreground">No node groups.</p>
+          )}
         </div>
-      ) : (
-        <p className="text-muted-foreground">No node groups.</p>
-      )}
+      </PanelSection>
 
       <AddNodegroupDialog
         clusterName={clusterName}

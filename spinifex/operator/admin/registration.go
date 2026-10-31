@@ -74,9 +74,16 @@ var adminActions = map[string]bool{
 	"EnsureSQSStore":    true,
 }
 
+// AdminActionNames lists the actions only the super-admin account may call, sorted.
+func AdminActionNames() []string {
+	return slices.Sorted(maps.Keys(adminActions))
+}
+
 // ActionNames lists every action the registration dispatches, sorted.
 func ActionNames() []string {
-	return slices.Sorted(maps.Keys(adminActions))
+	names := append(AdminActionNames(), GetInstanceMetricsAction)
+	slices.Sort(names)
+	return names
 }
 
 // NewRegistration returns the spinifex Query control-plane registration.
@@ -134,6 +141,12 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	action := args["Action"]
 	if action == "" {
 		return errors.New(awserrors.ErrorMissingAction)
+	}
+
+	// Checked against the instance's ARN rather than "*", so a policy can grant
+	// or deny it per instance.
+	if action == GetInstanceMetricsAction {
+		return d.getInstanceMetrics(w, inv, args)
 	}
 
 	if err := inv.Authorize(ServiceName, action, []string{"*"}, nil); err != nil {

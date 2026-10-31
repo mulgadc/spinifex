@@ -66,10 +66,15 @@ function ModifyVolume() {
   }
 
   const onSubmit = async (formData: ModifyVolumeFormData) => {
-    await modifyMutation.mutateAsync({
-      ...formData,
-      volumeId,
-    })
+    try {
+      await modifyMutation.mutateAsync({
+        ...formData,
+        volumeId,
+      })
+    } catch {
+      // Surfaced in the error banner through the mutation's error.
+      return
+    }
 
     navigate({ to: "/ec2/describe-volumes/$id", params: { id: volumeId } })
   }

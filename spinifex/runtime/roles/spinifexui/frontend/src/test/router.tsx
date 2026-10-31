@@ -52,6 +52,8 @@ export async function mockRouter(
         <TOptions,>(options: TOptions) => ({
           options,
           useParams: () => params,
+          useSearch: () => ({}),
+          useNavigate: () => navigate,
         }),
     }),
   }

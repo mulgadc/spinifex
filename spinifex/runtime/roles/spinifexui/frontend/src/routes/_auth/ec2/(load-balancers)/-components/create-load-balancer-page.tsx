@@ -1,7 +1,5 @@
-import type { Subnet } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
 import {
   Controller,
@@ -10,7 +8,6 @@ import {
   useWatch,
 } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
@@ -22,24 +19,16 @@ import {
 } from "@/components/cli-command-panel"
 import { CertificateImportDialog } from "@/components/elbv2/certificate-import-dialog"
 import { listenerProtocolDefaults } from "@/components/elbv2/listener-form"
-import { TargetGroupForm } from "@/components/elbv2/target-group-form"
-import { ErrorBanner } from "@/components/error-banner"
+import { subnetSwitchItems } from "@/components/elbv2/subnets-editor"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
-import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
+import { FormLock } from "@/components/form-lock"
+import { SecurityGroupPicker } from "@/components/security-group-picker"
+import { SwitchList } from "@/components/switch-list"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { VpcSelectField } from "@/components/vpc-select-field"
 import { WizardFailureBanner } from "@/components/wizard-failure-banner"
-import { getNameTag } from "@/lib/utils"
 import { useCreateLoadBalancerWizard } from "@/mutations/elbv2"
 import { acmCertificatesQueryOptions } from "@/queries/acm"
 import {
@@ -64,22 +53,7 @@ import {
   protocolsForType,
 } from "@/types/elbv2"
 
-import {
-  ExistingTargetGroupField,
-  SecureListenerFields,
-} from "./create-load-balancer-listener-fields"
-
-function subnetLabel(subnet: Subnet): string {
-  const name = getNameTag(subnet.Tags)
-  const suffix = name ? `${subnet.SubnetId} (${name})` : subnet.SubnetId
-
-  return `${suffix} · ${subnet.CidrBlock}`
-}
-
-interface GroupedSubnets {
-  az: string
-  subnets: Subnet[]
-}
+import { CreateLoadBalancerListenerSection } from "./create-load-balancer-listener-section"
 
 // The target-group protocol the wizard creates for a given listener protocol.
 // HTTP and HTTPS both forward to an HTTP target group; secure NLB (TLS) and TCP
@@ -102,23 +76,15 @@ function targetGroupProtocolFor(
   return "HTTP"
 }
 
-function groupSubnetsByAz(subnets: Subnet[]): GroupedSubnets[] {
-  const byAz = new Map<string, Subnet[]>()
-
-  for (const subnet of subnets) {
-    const az = subnet.AvailabilityZone ?? "unknown"
-    const list = byAz.get(az) ?? []
-    list.push(subnet)
-    byAz.set(az, list)
-  }
-
-  return [...byAz.entries()]
-    .toSorted((a, b) => a[0].localeCompare(b[0]))
-    .map(([az, list]) => ({ az, subnets: list }))
+interface CreateLoadBalancerPageProps {
+  // Called with the new load balancer's ARN once created, or with nothing on
+  // cancel.
+  onClose: (arn?: string) => void
 }
 
-export function CreateLoadBalancerPage() {
-  const navigate = useNavigate()
+export function CreateLoadBalancerPage({
+  onClose,
+}: CreateLoadBalancerPageProps) {
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: sgsData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
@@ -196,7 +162,6 @@ export function CreateLoadBalancerPage() {
   const selectedVpc = useWatch({ control, name: "vpcId" })
   const selectedSubnets = useWatch({ control, name: "subnetIds" })
   const selectedSgs = useWatch({ control, name: "securityGroupIds" })
-  const selectedSubnetSet = new Set(selectedSubnets)
   const lbType = useWatch({ control, name: "type" })
   const listenerProtocol = useWatch({ control, name: "listener.protocol" })
   const tgMode = useWatch({ control, name: "listener.targetGroupMode" })
@@ -258,16 +223,6 @@ export function CreateLoadBalancerPage() {
     tgForm.setValue("vpcId", next)
   }
 
-  const toggleSubnet = (subnetId: string) => {
-    const current = getValues("subnetIds")
-
-    const next = current.includes(subnetId)
-      ? current.filter((id) => id !== subnetId)
-      : [...current, subnetId]
-
-    setValue("subnetIds", next, { shouldValidate: true })
-  }
-
   const onSubmit = async (data: CreateLoadBalancerFormData) => {
     wizardMutation.reset()
 
@@ -283,58 +238,45 @@ export function CreateLoadBalancerPage() {
       newTargetGroup = tgForm.getValues()
     }
 
-    const result = await wizardMutation.mutateAsync({
-      lb: {
-        name: data.name,
-        type: data.type,
-        scheme: data.scheme,
-        vpcId: data.vpcId,
-        subnetIds: data.subnetIds,
-        securityGroupIds: data.securityGroupIds,
-        tags: data.tags,
-      },
-      listener: {
-        protocol: data.listener.protocol,
-        port: data.listener.port,
-        targetGroupMode: data.listener.targetGroupMode,
-        existingTargetGroupArn: data.listener.existingTargetGroupArn,
-        certificateArn: data.listener.certificateArn,
-        sslPolicy: data.listener.sslPolicy,
-        newTargetGroup,
-      },
-    })
+    let result
+
+    try {
+      result = await wizardMutation.mutateAsync({
+        lb: {
+          name: data.name,
+          type: data.type,
+          scheme: data.scheme,
+          vpcId: data.vpcId,
+          subnetIds: data.subnetIds,
+          securityGroupIds: data.securityGroupIds,
+          tags: data.tags,
+        },
+        listener: {
+          protocol: data.listener.protocol,
+          port: data.listener.port,
+          targetGroupMode: data.listener.targetGroupMode,
+          existingTargetGroupArn: data.listener.existingTargetGroupArn,
+          certificateArn: data.listener.certificateArn,
+          sslPolicy: data.listener.sslPolicy,
+          newTargetGroup,
+        },
+      })
+    } catch {
+      // Surfaced beside the submit button through the mutation's error.
+      return
+    }
 
     if (!result.error && result.loadBalancerArn) {
-      navigate({
-        to: "/ec2/describe-load-balancers/$id",
-        params: { id: encodeURIComponent(result.loadBalancerArn) },
-      })
+      onClose(result.loadBalancerArn)
     }
   }
 
-  const groupedSubnets = groupSubnetsByAz(vpcSubnets)
-
   return (
-    <>
-      <BackLink to="/ec2/describe-load-balancers">
-        Back to load balancers
-      </BackLink>
-
-      <PageHeading title="Create Load Balancer" />
-
-      {wizardMutation.error && (
-        <ErrorBanner
-          error={wizardMutation.error}
-          msg="Failed to create load balancer"
-        />
-      )}
-
-      <WizardFailureBanner
-        createdHeading="Successfully created resources (clean up manually if needed):"
-        result={wizardMutation.data}
-      />
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={wizardMutation.isPending || isSubmitting}
+      >
         <Field>
           <FieldTitle>
             <label htmlFor="lb-name">Name</label>
@@ -419,46 +361,22 @@ export function CreateLoadBalancerPage() {
 
         <Field>
           <FieldTitle>Subnets (select at least 1)</FieldTitle>
-          {groupedSubnets.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No subnets in the selected VPC.
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {groupedSubnets.map((group) => (
-                <div key={group.az}>
-                  <p className="mb-1 text-xs font-medium text-muted-foreground">
-                    {group.az}
-                  </p>
-                  <div className="space-y-1">
-                    {group.subnets.map((subnet) => (
-                      <label
-                        className="flex items-center gap-2 text-xs"
-                        key={subnet.SubnetId}
-                      >
-                        <input
-                          aria-label={`Subnet ${subnetLabel(subnet)}`}
-                          checked={selectedSubnetSet.has(subnet.SubnetId ?? "")}
-                          onChange={() => {
-                            toggleSubnet(subnet.SubnetId ?? "")
-                          }}
-                          type="checkbox"
-                        />
-                        <span className="font-mono">{subnetLabel(subnet)}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          <SwitchList
+            emptyText="No subnets in the selected VPC."
+            itemLabel="Subnet"
+            items={subnetSwitchItems(vpcSubnets)}
+            onChange={(next) => {
+              setValue("subnetIds", next, { shouldValidate: true })
+            }}
+            selected={selectedSubnets}
+          />
           <FieldError errors={[errors.subnetIds]} />
         </Field>
 
         {!isNlb && (
           <Field>
             <FieldTitle>Security groups</FieldTitle>
-            <SecurityGroupCheckboxes
+            <SecurityGroupPicker
               emptyText="No security groups in the selected VPC."
               groups={vpcSgs}
               onChange={(next) => {
@@ -471,111 +389,23 @@ export function CreateLoadBalancerPage() {
 
         <TagsFieldArray control={control} name="tags" />
 
-        <div className="space-y-4 rounded-md border bg-card p-4">
-          <h2 className="text-sm font-semibold">
-            First listener &amp; default target group
-          </h2>
-
-          <Field>
-            <FieldTitle>
-              <label htmlFor="listener-protocol">Protocol</label>
-            </FieldTitle>
-            <Controller
-              control={control}
-              name="listener.protocol"
-              render={({ field }) => (
-                <Select
-                  onValueChange={(next: ListenerProtocolValue | null) => {
-                    if (next) {
-                      handleProtocolChange(next)
-                    }
-                  }}
-                  value={field.value}
-                >
-                  <SelectTrigger className="w-full" id="listener-protocol">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {listenerProtocols.map((p) => (
-                      <SelectItem key={p} value={p}>
-                        {p}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </Field>
-
-          <Field>
-            <FieldTitle>
-              <label htmlFor="listener-port">Port</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.listener?.port}
-              id="listener-port"
-              inputMode="numeric"
-              type="number"
-              {...register("listener.port", { valueAsNumber: true })}
-            />
-            <FieldError errors={[errors.listener?.port]} />
-          </Field>
-
-          {isSecure && (
-            <SecureListenerFields
-              certificates={certificates}
-              control={control}
-              errors={errors}
-              onImportClick={() => {
-                setImportOpen(true)
-              }}
-              showSslPolicy={listenerProtocol === "HTTPS"}
-              sslPolicies={sslPolicies}
-            />
-          )}
-
-          <Field>
-            <FieldTitle>Default target group</FieldTitle>
-            <div className="flex gap-4">
-              <label className="flex items-center gap-2 text-xs">
-                <input
-                  aria-label="Create new target group"
-                  type="radio"
-                  value="new"
-                  {...register("listener.targetGroupMode")}
-                />
-                Create new
-              </label>
-              <label className="flex items-center gap-2 text-xs">
-                <input
-                  aria-label="Use existing target group"
-                  type="radio"
-                  value="existing"
-                  {...register("listener.targetGroupMode")}
-                />
-                Use existing
-              </label>
-            </div>
-          </Field>
-
-          {tgMode === "existing" && (
-            <ExistingTargetGroupField
-              control={control}
-              errors={errors}
-              targetGroups={vpcTgs}
-            />
-          )}
-
-          {tgMode === "new" && (
-            <div className="space-y-4 border-l-2 border-muted pl-4">
-              <TargetGroupForm
-                allowedProtocols={targetGroupProtocols}
-                form={tgForm}
-                vpcs={vpcs}
-              />
-            </div>
-          )}
-        </div>
+        <CreateLoadBalancerListenerSection
+          certificates={certificates}
+          form={lbForm}
+          isSecure={isSecure}
+          listenerProtocol={listenerProtocol}
+          listenerProtocols={listenerProtocols}
+          onImportCertificate={() => {
+            setImportOpen(true)
+          }}
+          onProtocolChange={handleProtocolChange}
+          sslPolicies={sslPolicies}
+          targetGroupProtocols={targetGroupProtocols}
+          tgForm={tgForm}
+          tgMode={tgMode}
+          vpcTgs={vpcTgs}
+          vpcs={vpcs}
+        />
 
         <CertificateImportDialog
           onImported={(arn) => {
@@ -587,17 +417,24 @@ export function CreateLoadBalancerPage() {
 
         <CliCommandPanel commands={buildCreateLbCommands(values, tgValues)} />
 
+        <WizardFailureBanner
+          createdHeading="Successfully created resources (clean up manually if needed):"
+          result={wizardMutation.data}
+        />
+
         <FormActions
+          error={wizardMutation.error}
+          errorMsg="Failed to create load balancer"
           isPending={wizardMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => {
-            await navigate({ to: "/ec2/describe-load-balancers" })
+          onCancel={() => {
+            onClose()
           }}
           pendingLabel="Creating…"
           submitLabel="Create Load Balancer"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
 }
 

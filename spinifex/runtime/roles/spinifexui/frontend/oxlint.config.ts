@@ -94,6 +94,40 @@ export default defineConfig({
   },
   overrides: [
     {
+      // Pages chart through the design system's chart components, so the
+      // library can change in one place.
+      files: ["src/routes/**/*.{ts,tsx}"],
+      rules: {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            patterns: [
+              {
+                group: [
+                  "recharts",
+                  "recharts/*",
+                  "chart.js",
+                  "chart.js/*",
+                  "react-chartjs-2",
+                  "echarts",
+                  "echarts/*",
+                  "echarts-for-react",
+                  "uplot",
+                  "uplot-react",
+                  "d3",
+                  "d3-*",
+                  "@visx/*",
+                  "@nivo/*",
+                ],
+                message:
+                  "Use the chart components in src/components, not a chart library.",
+              },
+            ],
+          },
+        ],
+      },
+    },
+    {
       files: [
         "**/*.{test,spec}.{ts,tsx,js,jsx}",
         "**/__tests__/**/*.{ts,tsx,js,jsx}",

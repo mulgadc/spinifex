@@ -1,12 +1,16 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { Trash2 } from "lucide-react"
+import { Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
+import {
+  PanelField,
+  PanelFields,
+  PanelSection,
+} from "@/components/detail-panel"
+import { ErrorBanner } from "@/components/error-banner"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -62,96 +66,91 @@ function AccessEntryRow({
   const associated = policyData?.associatedAccessPolicies ?? []
 
   return (
-    <DetailCard>
-      <DetailCard.Header>
-        <div className="flex items-center justify-between gap-2">
-          <span className="truncate font-mono text-xs">{principalArn}</span>
-          <Button
-            onClick={() => {
-              onDelete(principalArn)
-            }}
-            size="icon"
-            variant="ghost"
-          >
-            <Trash2 className="size-4" />
-            <span className="sr-only">Delete access entry</span>
-          </Button>
-        </div>
-      </DetailCard.Header>
-      <DetailCard.Content>
-        <DetailRow label="Type" value={entry?.type} />
-        <DetailRow
-          label="Kubernetes groups"
-          value={
-            entry?.kubernetesGroups?.length
-              ? entry.kubernetesGroups.join(", ")
-              : "—"
-          }
-        />
-        <DetailRow
-          label="Access policies"
-          value={
-            associated.length > 0 ? (
-              <div className="space-y-1">
-                {associated.map((p) => (
-                  <div
-                    className="flex items-center justify-between gap-2"
-                    key={p.policyArn}
-                  >
-                    <span>{arnResourceId(p.policyArn)}</span>
-                    <Button
-                      onClick={() => {
-                        disassociate.mutate({
-                          clusterName,
-                          principalArn,
-                          policyArn: p.policyArn ?? "",
-                        })
-                      }}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              "—"
-            )
-          }
-        />
-        <div className="flex items-center gap-2 pt-2">
-          <select
-            aria-label="Access policy"
-            className="h-7 flex-1 rounded-md border border-input bg-input/20 px-2 text-sm"
-            onChange={(e) => {
-              setPolicyArn(e.target.value)
-            }}
-            value={policyArn}
-          >
-            {EKS_ACCESS_POLICIES.map((p) => (
-              <option key={p.arn} value={p.arn}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <Button
-            disabled={associate.isPending}
-            onClick={() => {
-              associate.mutate({
-                clusterName,
-                principalArn,
-                policyArn,
-                accessScopeType: "cluster",
-              })
-            }}
-            size="sm"
-          >
-            Associate
-          </Button>
-        </div>
-      </DetailCard.Content>
-    </DetailCard>
+    <div className="rounded-md border px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 truncate font-mono text-xs">
+          {principalArn}
+        </span>
+        <Button
+          aria-label="Delete access entry"
+          onClick={() => {
+            onDelete(principalArn)
+          }}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <Trash2 />
+        </Button>
+      </div>
+      <PanelFields>
+        <PanelField label="Type">{entry?.type}</PanelField>
+        <PanelField label="Kubernetes groups">
+          {entry?.kubernetesGroups?.length
+            ? entry.kubernetesGroups.join(", ")
+            : undefined}
+        </PanelField>
+        {associated.length > 0 ? (
+          associated.map((p, index) => (
+            <div
+              className="flex items-center justify-between gap-4 py-1.5 text-sm"
+              key={p.policyArn}
+            >
+              <span className="shrink-0 text-muted-foreground">
+                {index === 0 ? "Access policies" : ""}
+              </span>
+              <span className="flex min-w-0 items-center gap-1">
+                <span className="truncate">{arnResourceId(p.policyArn)}</span>
+                <Button
+                  onClick={() => {
+                    disassociate.mutate({
+                      clusterName,
+                      principalArn,
+                      policyArn: p.policyArn ?? "",
+                    })
+                  }}
+                  size="xs"
+                  variant="ghost"
+                >
+                  Remove
+                </Button>
+              </span>
+            </div>
+          ))
+        ) : (
+          <PanelField label="Access policies" />
+        )}
+      </PanelFields>
+      <div className="flex items-center gap-2 pt-2">
+        <select
+          aria-label="Access policy"
+          className="h-7 min-w-0 flex-1 rounded-md border border-input bg-input/20 px-2 text-sm"
+          onChange={(e) => {
+            setPolicyArn(e.target.value)
+          }}
+          value={policyArn}
+        >
+          {EKS_ACCESS_POLICIES.map((p) => (
+            <option key={p.arn} value={p.arn}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+        <Button
+          disabled={associate.isPending}
+          onClick={() => {
+            associate.mutate({
+              clusterName,
+              principalArn,
+              policyArn,
+              accessScopeType: "cluster",
+            })
+          }}
+          size="sm"
+        >
+          Associate
+        </Button>
+      </div>
+    </div>
   )
 }
 
@@ -177,14 +176,20 @@ function AddAccessEntryDialog({
   })
 
   const onSubmit = async (data: CreateAccessEntryFormValues) => {
-    await createEntry.mutateAsync({
-      clusterName,
-      principalArn: data.principalArn,
-      kubernetesGroups: data.kubernetesGroups
-        .split(",")
-        .map((g) => g.trim())
-        .filter(Boolean),
-    })
+    try {
+      await createEntry.mutateAsync({
+        clusterName,
+        principalArn: data.principalArn,
+        kubernetesGroups: data.kubernetesGroups
+          .split(",")
+          .map((g) => g.trim())
+          .filter(Boolean),
+      })
+    } catch {
+      // Surfaced in the dialog through the mutation's error.
+      return
+    }
+
     reset()
     onOpenChange(false)
   }
@@ -195,6 +200,14 @@ function AddAccessEntryDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Add access entry</AlertDialogTitle>
         </AlertDialogHeader>
+
+        {createEntry.error && (
+          <ErrorBanner
+            className="mb-0"
+            error={createEntry.error}
+            msg="Failed to create the access entry"
+          />
+        )}
 
         <form className="space-y-4" id="add-access-entry-form">
           <Field>
@@ -249,31 +262,34 @@ export function AccessTab({ clusterName }: { clusterName: string }) {
 
   return (
     <>
-      <div className="mb-4 flex justify-end">
-        <Button
-          onClick={() => {
-            setShowAdd(true)
-          }}
-          size="sm"
-        >
-          Add access entry
-        </Button>
-      </div>
-
-      {entries.length > 0 ? (
-        <div className="space-y-4">
-          {entries.map((arn) => (
-            <AccessEntryRow
-              clusterName={clusterName}
-              key={arn}
-              onDelete={setPendingDelete}
-              principalArn={arn}
-            />
-          ))}
+      <PanelSection title={`Access entries (${entries.length})`}>
+        <div className="flex flex-col gap-3 py-1">
+          <div>
+            <Button
+              onClick={() => {
+                setShowAdd(true)
+              }}
+              size="sm"
+              variant="outline"
+            >
+              <Plus data-icon="inline-start" />
+              Add access entry
+            </Button>
+          </div>
+          {entries.length > 0 ? (
+            entries.map((arn) => (
+              <AccessEntryRow
+                clusterName={clusterName}
+                key={arn}
+                onDelete={setPendingDelete}
+                principalArn={arn}
+              />
+            ))
+          ) : (
+            <p className="text-sm text-muted-foreground">No access entries.</p>
+          )}
         </div>
-      ) : (
-        <p className="text-muted-foreground">No access entries.</p>
-      )}
+      </PanelSection>
 
       <AddAccessEntryDialog
         clusterName={clusterName}

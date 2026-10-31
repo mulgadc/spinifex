@@ -122,8 +122,7 @@ describe("ListenersTab", () => {
       },
     )
     expect(screen.getByText("forward → my-tg")).toBeInTheDocument()
-    expect(screen.getByText("HTTP")).toBeInTheDocument()
-    expect(screen.getByText("80")).toBeInTheDocument()
+    expect(screen.getByText("HTTP:80")).toBeInTheDocument()
   })
 
   it("opens delete confirm and calls DeleteListenerCommand", async () => {

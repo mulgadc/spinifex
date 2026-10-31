@@ -3,6 +3,7 @@ import { useState } from "react"
 
 import { ErrorBanner } from "@/components/error-banner"
 import { GpuInstanceTypeSelect } from "@/components/gpu-instance-type-select"
+import { SystemImageRequired } from "@/components/system-image-required"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,9 +16,11 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Field, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { isEcsSystemImage } from "@/lib/system-managed"
 import { securityGroupLabel } from "@/lib/utils"
 import { useProvisionCapacity } from "@/mutations/ecs"
 import {
+  ec2ImagesQueryOptions,
   ec2InstanceTypesQueryOptions,
   ec2KeyPairsQueryOptions,
   ec2SecurityGroupsQueryOptions,
@@ -43,6 +46,12 @@ export function ProvisionCapacityDialog({
   const { data: sgData } = useQuery(ec2SecurityGroupsQueryOptions)
   const { data: keyPairsData } = useQuery(ec2KeyPairsQueryOptions)
   const { data: instanceTypesData } = useQuery(ec2InstanceTypesQueryOptions)
+  const { data: imagesData } = useQuery(ec2ImagesQueryOptions)
+
+  // Container instances boot the ECS node image; the cluster itself does not.
+  const missingImage =
+    imagesData !== undefined &&
+    !(imagesData.Images ?? []).some(isEcsSystemImage)
 
   const subnets = subnetsData?.Subnets ?? []
   const securityGroups = sgData?.SecurityGroups ?? []
@@ -85,7 +94,10 @@ export function ProvisionCapacityDialog({
   }
 
   const disabled =
-    provision.isPending || subnetId === "" || securityGroupId === ""
+    missingImage ||
+    provision.isPending ||
+    subnetId === "" ||
+    securityGroupId === ""
 
   return (
     <AlertDialog onOpenChange={handleClose} open={open}>
@@ -98,99 +110,107 @@ export function ProvisionCapacityDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
 
-        <div className="space-y-4">
-          <Field>
-            <FieldTitle>
-              <label htmlFor="provision-instance-type">Instance type</label>
-            </FieldTitle>
-            <GpuInstanceTypeSelect
-              id="provision-instance-type"
-              instanceTypes={instanceTypes}
-              onValueChange={setInstanceType}
-              value={instanceType}
-            />
-          </Field>
+        {missingImage ? (
+          <SystemImageRequired
+            description="Container instances boot a Spinifex-managed node image (containerd + ecs-agent). Import it before provisioning capacity."
+            importCommand="spx admin images import --name spinifex-ecs-node"
+            title="ECS system image not found"
+          />
+        ) : (
+          <div className="space-y-4">
+            <Field>
+              <FieldTitle>
+                <label htmlFor="provision-instance-type">Instance type</label>
+              </FieldTitle>
+              <GpuInstanceTypeSelect
+                id="provision-instance-type"
+                instanceTypes={instanceTypes}
+                onValueChange={setInstanceType}
+                value={instanceType}
+              />
+            </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="provision-count">Count</label>
-            </FieldTitle>
-            <Input
-              id="provision-count"
-              max={10}
-              min={1}
-              onChange={(e) => {
-                setCount(Number(e.target.value))
-              }}
-              type="number"
-              value={count}
-            />
-          </Field>
+            <Field>
+              <FieldTitle>
+                <label htmlFor="provision-count">Count</label>
+              </FieldTitle>
+              <Input
+                id="provision-count"
+                max={10}
+                min={1}
+                onChange={(e) => {
+                  setCount(Number(e.target.value))
+                }}
+                type="number"
+                value={count}
+              />
+            </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="provision-subnet">Subnet</label>
-            </FieldTitle>
-            <select
-              className={SELECT_CLASS}
-              id="provision-subnet"
-              onChange={(e) => {
-                setSubnetId(e.target.value)
-              }}
-              value={subnetId}
-            >
-              <option value="">Select a subnet</option>
-              {subnets.map((s) => (
-                <option key={s.SubnetId} value={s.SubnetId ?? ""}>
-                  {s.SubnetId} ({s.CidrBlock}
-                  {s.AvailabilityZone ? `, ${s.AvailabilityZone}` : ""})
-                </option>
-              ))}
-            </select>
-          </Field>
+            <Field>
+              <FieldTitle>
+                <label htmlFor="provision-subnet">Subnet</label>
+              </FieldTitle>
+              <select
+                className={SELECT_CLASS}
+                id="provision-subnet"
+                onChange={(e) => {
+                  setSubnetId(e.target.value)
+                }}
+                value={subnetId}
+              >
+                <option value="">Select a subnet</option>
+                {subnets.map((s) => (
+                  <option key={s.SubnetId} value={s.SubnetId ?? ""}>
+                    {s.SubnetId} ({s.CidrBlock}
+                    {s.AvailabilityZone ? `, ${s.AvailabilityZone}` : ""})
+                  </option>
+                ))}
+              </select>
+            </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="provision-sg">Security group</label>
-            </FieldTitle>
-            <select
-              className={SELECT_CLASS}
-              id="provision-sg"
-              onChange={(e) => {
-                setSecurityGroupId(e.target.value)
-              }}
-              value={securityGroupId}
-            >
-              <option value="">Select a security group</option>
-              {securityGroups.map((sg) => (
-                <option key={sg.GroupId} value={sg.GroupId ?? ""}>
-                  {securityGroupLabel(sg)}
-                </option>
-              ))}
-            </select>
-          </Field>
+            <Field>
+              <FieldTitle>
+                <label htmlFor="provision-sg">Security group</label>
+              </FieldTitle>
+              <select
+                className={SELECT_CLASS}
+                id="provision-sg"
+                onChange={(e) => {
+                  setSecurityGroupId(e.target.value)
+                }}
+                value={securityGroupId}
+              >
+                <option value="">Select a security group</option>
+                {securityGroups.map((sg) => (
+                  <option key={sg.GroupId} value={sg.GroupId ?? ""}>
+                    {securityGroupLabel(sg)}
+                  </option>
+                ))}
+              </select>
+            </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="provision-key">Key pair</label>
-            </FieldTitle>
-            <select
-              className={SELECT_CLASS}
-              id="provision-key"
-              onChange={(e) => {
-                setKeyName(e.target.value)
-              }}
-              value={keyName}
-            >
-              <option value="">None</option>
-              {keyPairs.map((kp) => (
-                <option key={kp.KeyPairId} value={kp.KeyName ?? ""}>
-                  {kp.KeyName}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
+            <Field>
+              <FieldTitle>
+                <label htmlFor="provision-key">Key pair</label>
+              </FieldTitle>
+              <select
+                className={SELECT_CLASS}
+                id="provision-key"
+                onChange={(e) => {
+                  setKeyName(e.target.value)
+                }}
+                value={keyName}
+              >
+                <option value="">None</option>
+                {keyPairs.map((kp) => (
+                  <option key={kp.KeyPairId} value={kp.KeyName ?? ""}>
+                    {kp.KeyName}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        )}
 
         {provision.error && (
           <ErrorBanner

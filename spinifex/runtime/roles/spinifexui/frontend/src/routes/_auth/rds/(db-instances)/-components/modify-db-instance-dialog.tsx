@@ -1,13 +1,12 @@
-import type { DBInstance, DBParameterGroup } from "@aws-sdk/client-rds"
+import type { DBInstance } from "@aws-sdk/client-rds"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery } from "@tanstack/react-query"
-import { type Control, Controller, useForm, useWatch } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
-import { PickerNoticeText, pickerNotice } from "@/components/picker-notice"
-import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
+import { pickerNotice } from "@/components/picker-notice"
 import {
   AlertDialog,
   AlertDialogContent,
@@ -15,7 +14,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Field, FieldTitle } from "@/components/ui/field"
 import { useModifyDBInstance } from "@/mutations/rds"
 import { ec2SecurityGroupsQueryOptions } from "@/queries/ec2"
 import {
@@ -31,9 +29,18 @@ import {
 
 import {
   DeletionProtectionField,
+  FieldNotes,
   instanceClassOptions,
+  parameterGroupOptions,
   parameterGroupsForEngine,
 } from "../../-components/rds-form-fields"
+import {
+  ApplyImmediatelyField,
+  currentSecurityGroupIds,
+  InstanceSecurityGroupsField,
+  modifyDefaults,
+  securityGroupsForInstance,
+} from "./modify-db-instance-fields"
 
 // ModifyDBInstance refuses these outright, and they are the ones users reach
 // for first, so they are shown read-only rather than left unexplained.
@@ -56,81 +63,6 @@ const READ_ONLY_FIELDS: { label: string; note: string }[] = [
   },
 ]
 
-function modifyDefaults(instance: DBInstance): ModifyDBInstanceFormData {
-  const currentStorage = instance.AllocatedStorage ?? 0
-
-  const currentGroups =
-    instance.VpcSecurityGroups?.map((g) => g.VpcSecurityGroupId ?? "").filter(
-      Boolean,
-    ) ?? []
-
-  return {
-    currentAllocatedStorage: currentStorage,
-    dbInstanceClass: instance.DBInstanceClass ?? "",
-    allocatedStorage: currentStorage,
-    dbParameterGroupName:
-      instance.DBParameterGroups?.[0]?.DBParameterGroupName ?? "",
-    vpcSecurityGroupIds: currentGroups,
-    deletionProtection: instance.DeletionProtection ?? false,
-    backupRetentionPeriod: instance.BackupRetentionPeriod ?? 0,
-    preferredBackupWindow: instance.PreferredBackupWindow ?? "",
-    preferredMaintenanceWindow: instance.PreferredMaintenanceWindow ?? "",
-    masterUserPassword: "",
-    applyImmediately: false,
-  }
-}
-
-function parameterGroupOptions(
-  groups: DBParameterGroup[],
-): { value: string; label: string }[] {
-  return groups.map((g) => ({
-    value: g.DBParameterGroupName ?? "",
-    label: g.DBParameterGroupName ?? "",
-  }))
-}
-
-function ApplyImmediatelyField({
-  control,
-}: {
-  control: Control<ModifyDBInstanceFormData>
-}) {
-  return (
-    <Field>
-      <FieldTitle>Apply immediately</FieldTitle>
-      <Controller
-        control={control}
-        name="applyImmediately"
-        render={({ field }) => (
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              aria-label="Apply immediately"
-              checked={field.value}
-              onChange={(e) => {
-                field.onChange(e.target.checked)
-              }}
-              type="checkbox"
-            />
-            <span>Apply now instead of waiting for the maintenance window</span>
-          </label>
-        )}
-      />
-    </Field>
-  )
-}
-
-function FixedAtCreateNote() {
-  return (
-    <div className="space-y-2 rounded-md border border-border p-3">
-      <h3 className="text-xs font-medium">Fixed at create</h3>
-      {READ_ONLY_FIELDS.map((entry) => (
-        <p className="text-xs text-muted-foreground" key={entry.label}>
-          <span className="font-medium">{entry.label}</span> — {entry.note}
-        </p>
-      ))}
-    </div>
-  )
-}
-
 interface ModifyDBInstanceDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -147,10 +79,14 @@ export function ModifyDBInstanceDialog({
   const securityGroupsQuery = useQuery(ec2SecurityGroupsQueryOptions)
   const engineVersionsQuery = useQuery(rdsEngineVersionsQueryOptions)
 
-  const engine = instance.Engine ?? ""
-  const orderableQuery = useQuery(rdsOrderableOptionsQueryOptions(engine))
+  const orderableQuery = useQuery(
+    rdsOrderableOptionsQueryOptions(instance.Engine ?? ""),
+  )
+
   const identifier = instance.DBInstanceIdentifier ?? ""
   const currentStorage = instance.AllocatedStorage ?? 0
+
+  const currentGroups = currentSecurityGroupIds(instance)
 
   const {
     control,
@@ -160,7 +96,7 @@ export function ModifyDBInstanceDialog({
     setValue,
   } = useForm<ModifyDBInstanceFormData>({
     resolver: zodResolver(modifyDBInstanceSchema),
-    defaultValues: modifyDefaults(instance),
+    defaultValues: modifyDefaults(instance, currentGroups),
   })
 
   const values = useWatch({ control })
@@ -170,22 +106,19 @@ export function ModifyDBInstanceDialog({
 
   const { instanceClasses, classNotice } = instanceClassOptions(
     orderableQuery,
-    engine,
+    instance.Engine ?? "",
   )
 
   const parameterGroups = parameterGroupsForEngine(
     parameterGroupsQuery.data?.DBParameterGroups ?? [],
     engineVersionsQuery.data?.DBEngineVersions ?? [],
-    engine,
+    instance.Engine ?? "",
   )
 
-  // The instance's ENI is already placed, so a group from another VPC cannot be
-  // attached to it.
-  const instanceVpc = instance.DBSubnetGroup?.VpcId
-
-  const securityGroups = (
-    securityGroupsQuery.data?.SecurityGroups ?? []
-  ).filter((g) => instanceVpc === undefined || g.VpcId === instanceVpc)
+  const securityGroups = securityGroupsForInstance(
+    securityGroupsQuery.data?.SecurityGroups,
+    instance,
+  )
 
   const classChanged = selectedClass !== instance.DBInstanceClass
   const storageChanged = selectedStorage !== currentStorage
@@ -215,10 +148,16 @@ export function ModifyDBInstanceDialog({
   }
 
   const onSubmit = async (data: ModifyDBInstanceFormData) => {
-    await modifyInstance.mutateAsync({
-      ...data,
-      dbInstanceIdentifier: identifier,
-    })
+    try {
+      await modifyInstance.mutateAsync({
+        ...data,
+        dbInstanceIdentifier: identifier,
+      })
+    } catch {
+      // Surfaced in the dialog through the mutation's error.
+      return
+    }
+
     onOpenChange(false)
   }
 
@@ -272,19 +211,12 @@ export function ModifyDBInstanceDialog({
             placeholder="Engine default group"
           />
 
-          <Field>
-            <FieldTitle>VPC security groups</FieldTitle>
-            {securityGroupNotice ? (
-              <PickerNoticeText notice={securityGroupNotice} />
-            ) : (
-              <SecurityGroupCheckboxes
-                emptyText="No security group in this instance's VPC is available."
-                groups={securityGroups}
-                onChange={setSecurityGroups}
-                selected={selectedGroups}
-              />
-            )}
-          </Field>
+          <InstanceSecurityGroupsField
+            groups={securityGroups}
+            notice={securityGroupNotice}
+            onChange={setSecurityGroups}
+            selected={selectedGroups}
+          />
 
           <TextField
             error={errors.backupRetentionPeriod}
@@ -328,7 +260,11 @@ export function ModifyDBInstanceDialog({
 
           <ApplyImmediatelyField control={control} />
 
-          <FixedAtCreateNote />
+          <FieldNotes
+            className="space-y-2 rounded-md border border-border p-3"
+            entries={READ_ONLY_FIELDS}
+            title="Fixed at create"
+          />
 
           {modifyInstance.error && (
             <ErrorBanner

@@ -20,8 +20,14 @@ vi.mock("@/lib/ecs-provision", () => ({
 
 import { ProvisionCapacityDialog } from "./provision-capacity-dialog"
 
-function seed() {
+const ECS_NODE_IMAGE = {
+  ImageId: "ami-ecs",
+  Tags: [{ Key: "spinifex:managed-by", Value: "ecs" }],
+}
+
+function seed(images = [ECS_NODE_IMAGE]) {
   const qc = createTestQueryClient()
+  qc.setQueryData(["ec2", "images"], { Images: images })
   qc.setQueryData(["ec2", "subnets"], {
     Subnets: [
       {
@@ -110,6 +116,16 @@ describe("ProvisionCapacityDialog", () => {
     await waitFor(() => {
       expect(onOpenChange).toHaveBeenCalledWith(false)
     })
+  })
+
+  it("asks for the ECS node image in place of the fields when it is missing", () => {
+    renderWithClient(
+      <ProvisionCapacityDialog clusterName="web" onOpenChange={vi.fn()} open />,
+      seed([]),
+    )
+    expect(screen.getByText("ECS system image not found")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Subnet")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Provision" })).toBeDisabled()
   })
 
   it("disables submit until required fields are selected", () => {

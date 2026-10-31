@@ -1,118 +1,159 @@
 import type { Repository } from "@aws-sdk/client-ecr"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
+import { Plus } from "lucide-react"
 import { useState } from "react"
 
+import { CreatePanel } from "@/components/create-panel"
+import {
+  type DataColumn,
+  DataTable,
+  type SortState,
+} from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
-import { Button } from "@/components/ui/button"
+import { ResourceView } from "@/components/resource-view"
+import { Button, buttonVariants } from "@/components/ui/button"
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteRepository } from "@/mutations/ecr"
 import { ecrRepositoriesQueryOptions } from "@/queries/ecr"
 
-import { CreateRepositoryDialog } from "./create-repository-dialog"
+import { CreateRepositoryPage } from "./create-repository-page"
 
-export function RepositoriesPage() {
+function repositoryColumns(
+  onDelete: (name: string) => void,
+): DataColumn<Repository>[] {
+  return [
+    {
+      id: "name",
+      header: "Name",
+      sortValue: (repo) => repo.repositoryName,
+      cell: (repo) => {
+        const name = repo.repositoryName ?? ""
+
+        return (
+          <Link
+            className="font-medium text-primary hover:underline"
+            params={{ id: encodeURIComponent(name) }}
+            to="/ecr/list-repositories/$id"
+          >
+            {name}
+          </Link>
+        )
+      },
+    },
+    {
+      id: "uri",
+      header: "URI",
+      sortValue: (repo) => repo.repositoryUri,
+      hideBelow: "lg",
+      cell: (repo) => (
+        <span className="font-mono text-xs">{repo.repositoryUri ?? ""}</span>
+      ),
+    },
+    {
+      id: "mutability",
+      header: "Tag Mutability",
+      sortValue: (repo) => repo.imageTagMutability,
+      hideBelow: "md",
+      cell: (repo) => repo.imageTagMutability ?? "",
+    },
+    {
+      id: "created",
+      header: "Created",
+      sortValue: (repo) => repo.createdAt?.getTime(),
+      hideBelow: "xl",
+      cell: (repo) => (
+        <span className="tabular-nums">{formatDateTime(repo.createdAt)}</span>
+      ),
+    },
+    {
+      id: "actions",
+      header: "Actions",
+      align: "end",
+      cell: (repo) => (
+        <Button
+          onClick={() => {
+            onDelete(repo.repositoryName ?? "")
+          }}
+          size="sm"
+          variant="destructive"
+        >
+          Delete
+        </Button>
+      ),
+    },
+  ]
+}
+
+interface RepositoriesPageProps {
+  search: PanelSearch
+  onSearchChange: (next: Partial<PanelSearch>) => void
+}
+
+export function RepositoriesPage({
+  search,
+  onSearchChange,
+}: RepositoriesPageProps) {
   const navigate = useNavigate()
   const { data } = useSuspenseQuery(ecrRepositoriesQueryOptions)
   const deleteRepository = useDeleteRepository()
-  const [createOpen, setCreateOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
-  const repositories = data.repositories ?? []
+  const [sort, setSort] = useState<SortState>()
+  const columns = repositoryColumns(setDeleteTarget)
+
+  const repositories = (data.repositories ?? []).filter(
+    (repo) => repo.repositoryName,
+  )
+
+  function closePanel() {
+    onSearchChange(CLOSED_PANEL)
+  }
+
+  const panel = search.create ? (
+    <CreatePanel onClose={closePanel} title="Create repository">
+      <CreateRepositoryPage onClose={closePanel} />
+    </CreatePanel>
+  ) : null
 
   return (
-    <>
+    <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Button
-            onClick={() => {
-              setCreateOpen(true)
-            }}
+          <Link
+            className={buttonVariants()}
+            from="/ecr/list-repositories/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
           >
-            Create Repository
-          </Button>
+            <Plus data-icon="inline-start" />
+            Create repository
+          </Link>
         }
         title="Repositories"
       />
 
-      {repositories.length > 0 ? (
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-2 font-medium">Name</th>
-                <th className="px-4 py-2 font-medium">URI</th>
-                <th className="px-4 py-2 font-medium">Tag Mutability</th>
-                <th className="px-4 py-2 font-medium">Created</th>
-                <th className="px-4 py-2 font-medium">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {repositories.map((repo: Repository) => {
-                if (!repo.repositoryName) {
-                  return null
-                }
-
-                const name = repo.repositoryName
-
-                return (
-                  <tr
-                    className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
-                    key={name}
-                    onClick={async () => {
-                      await navigate({
-                        to: "/ecr/list-repositories/$id",
-                        params: { id: encodeURIComponent(name) },
-                      })
-                    }}
-                  >
-                    <td className="px-4 py-2 font-medium">
-                      <Link
-                        className="text-primary hover:underline"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                        }}
-                        params={{ id: encodeURIComponent(name) }}
-                        to="/ecr/list-repositories/$id"
-                      >
-                        {name}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-2 font-mono text-xs">
-                      {repo.repositoryUri ?? ""}
-                    </td>
-                    <td className="px-4 py-2">
-                      {repo.imageTagMutability ?? ""}
-                    </td>
-                    <td className="px-4 py-2 text-xs">
-                      {formatDateTime(repo.createdAt)}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <Button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setDeleteTarget(name)
-                        }}
-                        size="sm"
-                        variant="destructive"
-                      >
-                        Delete
-                      </Button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No repositories found.</p>
-      )}
-
-      <CreateRepositoryDialog onOpenChange={setCreateOpen} open={createOpen} />
+      <DataTable
+        caption="Repositories"
+        columns={columns}
+        empty="No repositories found."
+        getRowId={(repo) => repo.repositoryName ?? ""}
+        onRowClick={(name) => {
+          void navigate({
+            to: "/ecr/list-repositories/$id",
+            params: { id: encodeURIComponent(name) },
+          })
+        }}
+        onSortChange={setSort}
+        rows={repositories}
+        sort={sort}
+      />
 
       <ResourceDeleteDialog
         description={
@@ -131,6 +172,6 @@ export function RepositoriesPage() {
         open={deleteTarget !== null}
         title="Delete repository?"
       />
-    </>
+    </ResourceView>
   )
 }

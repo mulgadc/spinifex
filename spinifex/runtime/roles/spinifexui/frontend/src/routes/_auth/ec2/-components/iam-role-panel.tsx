@@ -2,8 +2,11 @@ import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import { useState } from "react"
 
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
+import {
+  PanelField,
+  PanelFields,
+  PanelSection,
+} from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
@@ -46,10 +49,16 @@ export function IamRolePanel({ instanceId }: { instanceId: string }) {
       return
     }
 
-    await associateMutation.mutateAsync({
-      instanceId,
-      instanceProfileName: selectedProfile,
-    })
+    try {
+      await associateMutation.mutateAsync({
+        instanceId,
+        instanceProfileName: selectedProfile,
+      })
+    } catch {
+      // Surfaced in the error banner through the mutation's error.
+      return
+    }
+
     setSelectedProfile("")
   }
 
@@ -58,56 +67,58 @@ export function IamRolePanel({ instanceId }: { instanceId: string }) {
       return
     }
 
-    await disassociateMutation.mutateAsync({
-      associationId: association.AssociationId,
-      instanceId,
-    })
+    try {
+      await disassociateMutation.mutateAsync({
+        associationId: association.AssociationId,
+        instanceId,
+      })
+    } catch {
+      // Surfaced in the error banner through the mutation's error.
+    }
   }
 
   return (
-    <DetailCard>
-      <DetailCard.Header>IAM Role</DetailCard.Header>
-      <DetailCard.Content>
+    <PanelSection title="IAM role">
+      <div className="flex flex-col gap-3">
         {associateMutation.error && (
-          <div className="col-span-2">
-            <ErrorBanner
-              error={associateMutation.error}
-              msg="Failed to associate instance profile"
-            />
-          </div>
+          <ErrorBanner
+            error={associateMutation.error}
+            msg="Failed to associate instance profile"
+          />
         )}
         {disassociateMutation.error && (
-          <div className="col-span-2">
-            <ErrorBanner
-              error={disassociateMutation.error}
-              msg="Failed to disassociate instance profile"
-            />
-          </div>
+          <ErrorBanner
+            error={disassociateMutation.error}
+            msg="Failed to disassociate instance profile"
+          />
         )}
 
         {association ? (
           <>
-            <DetailRow
-              label="Instance Profile ARN"
-              value={association.IamInstanceProfile?.Arn}
-            />
-            <DetailRow
-              label="State"
-              value={<StateBadge state={association.State} />}
-            />
-            <div className="col-span-2 flex justify-end">
-              <Button
-                disabled={disassociateMutation.isPending}
-                onClick={handleDisassociate}
-                size="sm"
-                variant="destructive"
+            <PanelFields>
+              <PanelField
+                copy={association.IamInstanceProfile?.Arn}
+                label="Instance profile"
+                mono
               >
-                {disassociateMutation.isPending ? "Detaching…" : "Detach"}
-              </Button>
-            </div>
+                {association.IamInstanceProfile?.Arn}
+              </PanelField>
+              <PanelField label="State">
+                <StateBadge state={association.State} />
+              </PanelField>
+            </PanelFields>
+            <Button
+              className="self-start"
+              disabled={disassociateMutation.isPending}
+              onClick={handleDisassociate}
+              size="sm"
+              variant="destructive"
+            >
+              {disassociateMutation.isPending ? "Detaching…" : "Detach"}
+            </Button>
           </>
         ) : (
-          <div className="col-span-2 space-y-3">
+          <>
             <p className="text-sm text-muted-foreground">
               No instance profile is associated. Associate one to flow role
               credentials to this instance via IMDS.
@@ -120,7 +131,10 @@ export function IamRolePanel({ instanceId }: { instanceId: string }) {
                   }}
                   value={selectedProfile}
                 >
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger
+                    aria-label="Instance profile"
+                    className="w-full"
+                  >
                     <SelectValue placeholder="Select an instance profile" />
                   </SelectTrigger>
                   <SelectContent>
@@ -147,16 +161,17 @@ export function IamRolePanel({ instanceId }: { instanceId: string }) {
                 No instance profiles exist.{" "}
                 <Link
                   className="text-primary hover:underline"
-                  to="/iam/create-instance-profile"
+                  search={{ create: true }}
+                  to="/iam/list-instance-profiles"
                 >
                   Create one
                 </Link>{" "}
                 first.
               </p>
             )}
-          </div>
+          </>
         )}
-      </DetailCard.Content>
-    </DetailCard>
+      </div>
+    </PanelSection>
   )
 }

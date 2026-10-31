@@ -23,9 +23,11 @@ const (
 )
 
 // withPrincipalField sets one field on the caller sealed in ctx, sealing a new
-// caller when ctx has none.
+// caller when ctx has none. The record seals a caller once, so this rebuilds the
+// context from the recorded facts when one is already sealed; it then keeps no
+// other value ctx carries, which the hand-built requests it is used on do not have.
 func withPrincipalField(ctx context.Context, f principalField, v string) context.Context {
-	p, _ := reqctx.Principal(ctx)
+	p, sealed := reqctx.Principal(ctx)
 	key := reqctx.AccessKeyID(ctx)
 	switch f {
 	case fieldIdentity:
@@ -47,5 +49,18 @@ func withPrincipalField(ctx context.Context, f principalField, v string) context
 	case fieldUserARN:
 		p.UserARN = v
 	}
-	return reqctx.WithPrincipal(ctx, p, key)
+	if !sealed {
+		return reqctx.WithPrincipal(ctx, p, key)
+	}
+	fresh := context.Background()
+	if svc := reqctx.Service(ctx); svc != "" {
+		fresh = reqctx.WithService(fresh, svc)
+	}
+	if region := reqctx.Region(ctx); region != "" {
+		fresh = reqctx.WithRegion(fresh, region)
+	}
+	if action := reqctx.Action(ctx); action != "" {
+		fresh = reqctx.WithAction(fresh, action)
+	}
+	return reqctx.WithPrincipal(fresh, p, key)
 }

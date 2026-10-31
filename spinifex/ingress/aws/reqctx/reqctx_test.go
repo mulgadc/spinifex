@@ -52,3 +52,17 @@ func TestActionMayBeRefined(t *testing.T) {
 	ctx = reqctx.WithAction(ctx, "ListClusters")
 	assert.Equal(t, "ListClusters", reqctx.Action(ctx))
 }
+
+// The caller is sealed once: a later write cannot swap the identity.
+func TestSecondPrincipalKeepsTheFirst(t *testing.T) {
+	first := credential.Principal{Identity: "alice", AccountID: "111111111111", PrincipalType: "user"}
+	second := credential.Principal{Identity: "mallory", AccountID: "222222222222", PrincipalType: "user"}
+	sealed := reqctx.WithPrincipal(context.Background(), first, "AKIAFIRST")
+
+	got := reqctx.WithPrincipal(sealed, second, "AKIASECOND")
+
+	p, ok := reqctx.Principal(got)
+	assert.True(t, ok)
+	assert.Equal(t, first, p)
+	assert.Equal(t, "AKIAFIRST", reqctx.AccessKeyID(got))
+}

@@ -8,6 +8,7 @@ package reqctx
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 )
@@ -65,9 +66,15 @@ func WithAction(ctx context.Context, action string) context.Context {
 func Action(ctx context.Context) string { return load(ctx).action }
 
 // WithPrincipal seals the verified caller and the access key id it presented.
-// The SigV4 stage calls it once, after Resolve succeeds.
+// The SigV4 stage calls it once, after Resolve succeeds. A second call keeps the
+// first caller and returns ctx unchanged, so no later stage can swap the identity.
 func WithPrincipal(ctx context.Context, p credential.Principal, accessKeyID string) context.Context {
 	r := load(ctx)
+	if r.hasPrincipal {
+		slog.Error("reqctx: principal already sealed; keeping the first caller",
+			"sealed_account", r.principal.AccountID, "attempted_account", p.AccountID)
+		return ctx
+	}
 	r.principal = p
 	r.accessKeyID = accessKeyID
 	r.hasPrincipal = true

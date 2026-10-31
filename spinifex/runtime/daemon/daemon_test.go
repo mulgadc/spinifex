@@ -297,14 +297,14 @@ func TestGetInstanceTypeInfos(t *testing.T) {
 	}
 }
 
-// TestGetAvailableInstanceTypeInfos_ResourceFiltering tests that instance types are filtered by available resources.
-func TestGetAvailableInstanceTypeInfos_ResourceFiltering(t *testing.T) {
+// TestGetInstanceTypeAvailability_ResourceFiltering tests that instance types are filtered by available resources.
+func TestGetInstanceTypeAvailability_ResourceFiltering(t *testing.T) {
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
 	// Get initial count of all available types
 	allTypes := rm.GetInstanceTypeInfos()
-	initialAvailable := rm.GetAvailableInstanceTypeInfos(false)
+	initialAvailable := availableTypeInfos(rm, false)
 
 	t.Logf("System has %d vCPUs, %.2f GB RAM (reserved: %d vCPU, %.2f GB)",
 		rm.hostVCPU, rm.hostMemGB, rm.reservedVCPU, rm.reservedMem)
@@ -351,7 +351,7 @@ func TestGetAvailableInstanceTypeInfos_ResourceFiltering(t *testing.T) {
 		nanoKey, rm.allocatedVCPU, rm.allocatedMem)
 
 	// Now get available types - should be fewer or equal (depending on system resources)
-	afterAllocation := rm.GetAvailableInstanceTypeInfos(false)
+	afterAllocation := availableTypeInfos(rm, false)
 	t.Logf("Available after allocation: %d", len(afterAllocation))
 
 	// Verify all returned types fit within REMAINING schedulable resources
@@ -374,7 +374,7 @@ func TestGetAvailableInstanceTypeInfos_ResourceFiltering(t *testing.T) {
 
 	// Deallocate and verify we get the same available types as before
 	rm.deallocate(nanoType)
-	afterDeallocation := rm.GetAvailableInstanceTypeInfos(false)
+	afterDeallocation := availableTypeInfos(rm, false)
 	assert.Len(t, afterDeallocation, len(initialAvailable),
 		"Should have same available types after deallocation")
 }
@@ -562,7 +562,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		// type near the schedulable-memory boundary that the allocator then
 		// rejects, flaking the test on small hosts.
 		var instanceType2CPU *ec2.InstanceTypeInfo
-		for _, it := range daemon.resourceMgr.GetAvailableInstanceTypeInfos(true) {
+		for _, it := range availableTypeInfos(daemon.resourceMgr, true) {
 			if it.VCpuInfo == nil || it.VCpuInfo.DefaultVCpus == nil || *it.VCpuInfo.DefaultVCpus != 2 ||
 				it.MemoryInfo == nil || it.MemoryInfo.SizeInMiB == nil {
 				continue
@@ -645,7 +645,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		reply, err := daemon.natsConn.Request("ec2.DescribeInstanceTypes", msgData, 5*time.Second)
 		require.NoError(t, err)
 
-		var output ec2.DescribeInstanceTypesOutput
+		var output ec2instance.DescribeInstanceTypesNodeOutput
 		err = json.Unmarshal(reply.Data, &output)
 		require.NoError(t, err)
 
@@ -676,13 +676,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		err = json.Unmarshal(reply.Data, &output)
 		require.NoError(t, err)
 
-		// Verify duplicate slots exist — find a nano type and confirm it has 2 slots
-		typeCounts := make(map[string]int)
-		for _, info := range output.InstanceTypes {
-			if info.InstanceType != nil {
-				typeCounts[*info.InstanceType]++
-			}
-		}
+		// Verify the count rises with capacity — find a nano type and confirm 2 slots
 		// Find any nano type in the generated types
 		var nanoType string
 		for name := range daemon.resourceMgr.instanceTypes {
@@ -692,7 +686,7 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 			}
 		}
 		require.NotEmpty(t, nanoType, "Should have at least one nano type")
-		assert.Equal(t, 2, typeCounts[nanoType], "Should have 2 slots for %s with 4 vCPUs", nanoType)
+		assert.Equal(t, int64(2), output.Availability[nanoType], "Should have 2 slots for %s with 4 vCPUs", nanoType)
 	})
 }
 
@@ -2995,9 +2989,25 @@ func TestDaemon_LoadState_CorruptFileFatal(t *testing.T) {
 	assert.Contains(t, err.Error(), "read local state")
 }
 
-// --- GetAvailableInstanceTypeInfos edge cases ---
+// availableTypeInfos expands the availability counts the way the gateway does,
+// so these tests can keep asserting on free slots or on distinct types.
+func availableTypeInfos(rm *ResourceManager, showCapacity bool) []*ec2.InstanceTypeInfo {
+	var infos []*ec2.InstanceTypeInfo
+	for _, a := range rm.GetInstanceTypeAvailability() {
+		if !showCapacity {
+			infos = append(infos, a.Info)
+			continue
+		}
+		for range a.Available {
+			infos = append(infos, a.Info)
+		}
+	}
+	return infos
+}
 
-func TestGetAvailableInstanceTypeInfos_Overcommitted(t *testing.T) {
+// --- GetInstanceTypeAvailability edge cases ---
+
+func TestGetInstanceTypeAvailability_Overcommitted(t *testing.T) {
 	rm := &ResourceManager{
 		hostVCPU:      4,
 		hostMemGB:     8.0,
@@ -3012,14 +3022,14 @@ func TestGetAvailableInstanceTypeInfos_Overcommitted(t *testing.T) {
 		},
 	}
 
-	infos := rm.GetAvailableInstanceTypeInfos(true)
+	infos := availableTypeInfos(rm, true)
 	assert.Empty(t, infos, "overcommitted resources should return 0 available slots")
 
-	infos = rm.GetAvailableInstanceTypeInfos(false)
+	infos = availableTypeInfos(rm, false)
 	assert.Empty(t, infos)
 }
 
-func TestGetAvailableInstanceTypeInfos_ShowCapacity(t *testing.T) {
+func TestGetInstanceTypeAvailability_ShowCapacity(t *testing.T) {
 	rm := &ResourceManager{
 		hostVCPU:      8,
 		hostMemGB:     16.0,
@@ -3035,15 +3045,15 @@ func TestGetAvailableInstanceTypeInfos_ShowCapacity(t *testing.T) {
 	}
 
 	// With showCapacity=true, should return multiple entries
-	infos := rm.GetAvailableInstanceTypeInfos(true)
+	infos := availableTypeInfos(rm, true)
 	assert.Greater(t, len(infos), 1)
 
 	// With showCapacity=false, should return exactly 1
-	infos = rm.GetAvailableInstanceTypeInfos(false)
+	infos = availableTypeInfos(rm, false)
 	assert.Len(t, infos, 1)
 }
 
-// --- GPU-gated GetAvailableInstanceTypeInfos ---
+// --- GPU-gated GetInstanceTypeAvailability ---
 
 func makeGPUInstanceType(name string, vcpus int64, memMiB int64) *ec2.InstanceTypeInfo {
 	return &ec2.InstanceTypeInfo{
@@ -3066,7 +3076,7 @@ func makeGPUDevice() gpu.GPUDevice {
 }
 
 // GPU types with no gpuManager are hidden — there is no GPU hardware on this node.
-func TestGetAvailableInstanceTypeInfos_GPUType_NoManager_Hidden(t *testing.T) {
+func TestGetInstanceTypeAvailability_GPUType_NoManager_Hidden(t *testing.T) {
 	rm := &ResourceManager{
 		hostVCPU:  128,
 		hostMemGB: 1024.0,
@@ -3074,13 +3084,13 @@ func TestGetAvailableInstanceTypeInfos_GPUType_NoManager_Hidden(t *testing.T) {
 			"g7e.4xlarge": makeGPUInstanceType("g7e.4xlarge", 16, 128*1024),
 		},
 	}
-	infos := rm.GetAvailableInstanceTypeInfos(false)
+	infos := availableTypeInfos(rm, false)
 	assert.Empty(t, infos, "GPU type must not appear when gpuManager is nil")
 }
 
 // GPU types gate on pool availability, not host CPU/memory — even a tiny host
 // with a GPU pool exposes the type.
-func TestGetAvailableInstanceTypeInfos_GPUType_GatedByPool(t *testing.T) {
+func TestGetInstanceTypeAvailability_GPUType_GatedByPool(t *testing.T) {
 	mgr := gpu.NewManager([]gpu.GPUDevice{makeGPUDevice(), makeGPUDevice()})
 	rm := &ResourceManager{
 		hostVCPU:  4,   // would normally block a 16-vCPU instance
@@ -3090,12 +3100,12 @@ func TestGetAvailableInstanceTypeInfos_GPUType_GatedByPool(t *testing.T) {
 		},
 		gpuManager: mgr,
 	}
-	infos := rm.GetAvailableInstanceTypeInfos(false)
+	infos := availableTypeInfos(rm, false)
 	assert.Len(t, infos, 1, "GPU type must appear when pool has free GPUs regardless of CPU/memory")
 }
 
 // Multi-GPU type (g7e.12xlarge, needs 2) appears only when pool has ≥ 2 free GPUs.
-func TestGetAvailableInstanceTypeInfos_MultiGPUType_RequiresTwoGPUs(t *testing.T) {
+func TestGetInstanceTypeAvailability_MultiGPUType_RequiresTwoGPUs(t *testing.T) {
 	oneGPU := gpu.NewManager([]gpu.GPUDevice{makeGPUDevice()})
 	rm := &ResourceManager{
 		hostVCPU:  128,
@@ -3105,17 +3115,17 @@ func TestGetAvailableInstanceTypeInfos_MultiGPUType_RequiresTwoGPUs(t *testing.T
 		},
 		gpuManager: oneGPU,
 	}
-	infos := rm.GetAvailableInstanceTypeInfos(false)
+	infos := availableTypeInfos(rm, false)
 	assert.Empty(t, infos, "g7e.12xlarge must not appear with only 1 free GPU")
 
 	twoGPUs := gpu.NewManager([]gpu.GPUDevice{makeGPUDevice(), makeGPUDevice()})
 	rm.gpuManager = twoGPUs
-	infos = rm.GetAvailableInstanceTypeInfos(false)
+	infos = availableTypeInfos(rm, false)
 	assert.Len(t, infos, 1, "g7e.12xlarge must appear when pool has ≥ 2 free GPUs")
 }
 
 // showCapacity=true for GPU types emits pool/gpuCount slots.
-func TestGetAvailableInstanceTypeInfos_GPUType_ShowCapacity(t *testing.T) {
+func TestGetInstanceTypeAvailability_GPUType_ShowCapacity(t *testing.T) {
 	mgr := gpu.NewManager([]gpu.GPUDevice{makeGPUDevice(), makeGPUDevice(), makeGPUDevice(), makeGPUDevice()})
 	rm := &ResourceManager{
 		hostVCPU:  128,
@@ -3127,7 +3137,7 @@ func TestGetAvailableInstanceTypeInfos_GPUType_ShowCapacity(t *testing.T) {
 		gpuManager: mgr,
 	}
 	// 4 GPUs → 4× g7e.4xlarge (1 GPU each) or 2× g7e.12xlarge (2 GPUs each)
-	infos := rm.GetAvailableInstanceTypeInfos(true)
+	infos := availableTypeInfos(rm, true)
 	count4xl := 0
 	count12xl := 0
 	for _, it := range infos {
@@ -3212,7 +3222,7 @@ func TestGetSupportedInstanceTypeInfos_IgnoresFreeSlots(t *testing.T) {
 	}
 
 	// Capacity-gated view: nothing fits because resources are exhausted.
-	assert.Empty(t, rm.GetAvailableInstanceTypeInfos(false),
+	assert.Empty(t, availableTypeInfos(rm, false),
 		"capacity-gated set must be empty when resources are exhausted")
 
 	// Supported view: every loaded type is still announced.

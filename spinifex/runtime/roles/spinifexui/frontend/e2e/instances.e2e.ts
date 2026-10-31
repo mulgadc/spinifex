@@ -508,3 +508,84 @@ test("an empty account is offered a first launch", async ({ page }) => {
   await page.getByRole("link", { name: "Launch your first instance" }).click()
   await expect(page).toHaveURL(/\/ec2\/describe-instances\?create=true$/u)
 })
+
+// The launch form decides whether the cluster has compute from the capacity
+// listing alone, so it says "no compute" for an empty list whatever the
+// reason the list is empty. An idle production cluster hit exactly that: the
+// node replies were dropped and the empty result read as no capacity.
+const NO_COMPUTE =
+  "No compute available. No new instances can be created until compute is available."
+
+function instanceTypeSet(types: readonly [string, number, number][]): string {
+  const items = types.map(
+    ([name, vcpu, memMiB]) =>
+      `<item><instanceType>${name}</instanceType>` +
+      `<vCpuInfo><defaultVCpus>${vcpu}</defaultVCpus></vCpuInfo>` +
+      `<memoryInfo><sizeInMiB>${memMiB}</sizeInMiB></memoryInfo>` +
+      `<processorInfo><supportedArchitectures><item>x86_64</item></supportedArchitectures></processorInfo>` +
+      `</item>`,
+  )
+
+  return `<instanceTypeSet>${items.join("")}</instanceTypeSet>`
+}
+
+test("the launch form offers the types the capacity listing reports", async ({
+  api,
+  page,
+}) => {
+  api.handle(
+    "DescribeInstanceTypes",
+    ec2(
+      "DescribeInstanceTypes",
+      // Three free slots of one type, as the gateway expands a per-type count.
+      instanceTypeSet([
+        ["t3.micro", 2, 1024],
+        ["t3.micro", 2, 1024],
+        ["t3.micro", 2, 1024],
+      ]),
+    ),
+  )
+
+  await page.goto("/ec2/describe-instances?create=true")
+
+  await expect(page.getByText(NO_COMPUTE)).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Create Instance" }),
+  ).toBeEnabled()
+})
+
+test("the launch form reports the free slot count for the selected type", async ({
+  api,
+  page,
+}) => {
+  api.handle(
+    "DescribeInstanceTypes",
+    ec2(
+      "DescribeInstanceTypes",
+      instanceTypeSet([
+        ["t3.micro", 2, 1024],
+        ["t3.micro", 2, 1024],
+      ]),
+    ),
+  )
+
+  await page.goto("/ec2/describe-instances?create=true")
+  await page.locator("#instanceType").click()
+  await page.getByRole("option").filter({ hasText: "t3.micro" }).first().click()
+
+  await expect(
+    page.getByText("Available capacity for t3.micro: 2"),
+  ).toBeVisible()
+})
+
+test("an account with no capacity is told so, and cannot launch", async ({
+  page,
+}) => {
+  // The default handler answers with an empty instanceTypeSet.
+  await page.goto("/ec2/describe-instances?create=true")
+
+  await expect(page.getByText(NO_COMPUTE)).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Create Instance" }),
+  ).toBeDisabled()
+})

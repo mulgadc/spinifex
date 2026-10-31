@@ -2141,9 +2141,9 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 }
 
 // DescribeInstanceTypes returns supported instance types. With filter
-// capacity=true, expands each type to one entry per free slot for cluster-wide
-// capacity aggregation.
-func (s *InstanceServiceImpl) DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypesInput, _ string) (*ec2.DescribeInstanceTypesOutput, error) {
+// capacity=true, each admissible type is returned once with the number of
+// instances of it this node can take, for cluster-wide capacity aggregation.
+func (s *InstanceServiceImpl) DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypesInput, _ string) (*DescribeInstanceTypesNodeOutput, error) {
 	slog.InfoContext(ctx, "Processing DescribeInstanceTypes request from this node")
 
 	if s.resourceMgr == nil {
@@ -2162,14 +2162,30 @@ func (s *InstanceServiceImpl) DescribeInstanceTypes(ctx context.Context, input *
 		}
 	}
 
-	var filteredTypes []*ec2.InstanceTypeInfo
-	if showCapacity {
-		filteredTypes = s.resourceMgr.GetAvailableInstanceTypeInfos(true)
-	} else {
-		filteredTypes = s.resourceMgr.GetSupportedInstanceTypeInfos()
+	if !showCapacity {
+		types := s.resourceMgr.GetSupportedInstanceTypeInfos()
+		slog.InfoContext(ctx, "DescribeInstanceTypes completed", "count", len(types), "showCapacity", false)
+		return &DescribeInstanceTypesNodeOutput{InstanceTypes: types}, nil
 	}
-	slog.InfoContext(ctx, "DescribeInstanceTypes completed", "count", len(filteredTypes), "showCapacity", showCapacity)
-	return &ec2.DescribeInstanceTypesOutput{InstanceTypes: filteredTypes}, nil
+
+	avail := s.resourceMgr.GetInstanceTypeAvailability()
+	out := &DescribeInstanceTypesNodeOutput{
+		InstanceTypes: make([]*ec2.InstanceTypeInfo, 0, len(avail)),
+		Availability:  make(map[string]int64, len(avail)),
+	}
+	totalSlots := int64(0)
+	for _, a := range avail {
+		if a.Info == nil || a.Info.InstanceType == nil || a.Available <= 0 {
+			continue
+		}
+		out.InstanceTypes = append(out.InstanceTypes, a.Info)
+		out.Availability[*a.Info.InstanceType] = a.Available
+		totalSlots += a.Available
+	}
+
+	slog.InfoContext(ctx, "DescribeInstanceTypes completed", "count", len(out.InstanceTypes),
+		"total_available_slots", totalSlots, "showCapacity", true)
+	return out, nil
 }
 
 // DescribeStoppedInstances returns stopped instances from shared KV.

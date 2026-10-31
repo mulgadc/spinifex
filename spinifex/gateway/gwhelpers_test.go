@@ -215,7 +215,7 @@ func newRDSGatewayWithResolver(
 	}
 	// Both branches are wired: an assumed-role principal resolves by role, and a
 	// test that only stubbed users would miss it entirely.
-	return withVerifier(&GatewayConfig{
+	return withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         "ap-southeast-2",
 		IAMService: &gwfix.PolicyIAM{
@@ -381,6 +381,7 @@ func withServices(gw *GatewayConfig, regs ...dispatch.Registration) *GatewayConf
 		}
 	}
 	gw.Services = b.Build()
+	withFakeCapabilities(gw)
 	return gw
 }
 
@@ -1070,7 +1071,7 @@ func setupSTSRequestHandler(p stsRequestParams) http.Handler {
 	if p.iamSvc == nil {
 		p.iamSvc = &flexMockIAMService{}
 	}
-	gw := withVerifier(&GatewayConfig{
+	gw := withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		STSService:     p.stsSvc,
 		IAMService:     p.iamSvc,
@@ -1266,7 +1267,7 @@ func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.Policy
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&GatewayConfig{
+	gw := &GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		NATSConn:       nc,
@@ -1287,12 +1288,12 @@ func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.Policy
 			},
 			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	})
+	}
 	gw.IAMService = operatorIAM{gw.IAMService.(*gwfix.PolicyIAM)}
 	if mutate != nil {
 		mutate(gw)
 	}
-	withOperator(gw)
+	withOperator(withRealAuth(gw))
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -2001,7 +2002,7 @@ func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdo
 	if env.NoNATS {
 		cfg.NATSConn = nil
 	}
-	gw := withEC2(withVerifier(cfg), func(d *ec2awsapi.Deps) {
+	gw := withEC2(withRealAuth(cfg), func(d *ec2awsapi.Deps) {
 		d.AZ = gwfix.Region + "a"
 		d.Endpoint = "https://registry.example"
 	})

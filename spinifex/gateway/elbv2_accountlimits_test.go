@@ -31,8 +31,8 @@ func TestELBv2DescribeAccountLimitsDefaultsWhenQuotaDisabled(t *testing.T) {
 	disabled := quota.New(quota.Limits{LoadBalancers: 0}, nil)
 
 	for name, gw := range map[string]*GatewayConfig{
-		"disabled": withQuota(&GatewayConfig{DisableLogging: true}, disabled),
-		"unwired":  {DisableLogging: true},
+		"disabled": withFakeCapabilities(withQuota(&GatewayConfig{DisableLogging: true}, disabled)),
+		"unwired":  withFakeCapabilities(&GatewayConfig{DisableLogging: true}),
 	} {
 		t.Run(name, func(t *testing.T) {
 			byName := describeAccountLimits(t, gw, "000000000042")

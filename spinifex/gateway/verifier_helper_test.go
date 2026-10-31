@@ -1,10 +1,10 @@
 package gateway
 
-import "github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
+import "github.com/mulgadc/spinifex/internal/testkit/gwfix"
 
-// withVerifier authenticates through the same IAM and STS instances the config
-// holds, so a test that changes one of them changes authentication too.
+// withVerifier authenticates through the IAM service the config holds, so a
+// test that changes it changes authentication too.
 func withVerifier(gw *GatewayConfig) *GatewayConfig {
-	gw.Credentials = credverify.New(gw.IAMService, gw.STSService)
-	return gw
+	gw.Credentials = &gwfix.Verifier{IAM: gw.IAMService}
+	return withFakeCapabilities(gw)
 }

@@ -312,7 +312,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 
 	// Fail fast when NATS is down; every NATS-bound handler would otherwise hang
 	// until per-call timeout.
-	gw.fillDefaultCapabilities()
 	if gw.Readiness == nil || !gw.Readiness.Available() {
 		gw.writeClusterUnavailable(w, r, svc)
 		return
@@ -402,7 +401,6 @@ func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, 
 	// point with its resolved action, so telemetry enrichment lives here.
 	recordResolvedAction(r.Context(), service, action)
 
-	gw.fillDefaultCapabilities()
 	caller, authenticated := reqctx.Principal(r.Context())
 	return pipeline.Authorize(gw.Policy, r, caller, authenticated, service, action, resources, actionKeys)
 }

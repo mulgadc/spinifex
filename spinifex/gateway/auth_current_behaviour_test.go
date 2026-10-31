@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -132,10 +131,9 @@ func (e *cbEnv) gateway() http.Handler {
 		Region:         gwfix.Region,
 		ExpectedNodes:  1,
 		IAMService:     e.counter,
-		Credentials:    credverify.New(e.counter, e.sts),
 		STSService:     e.sts,
 	}
-	withIAMAndSTS(gw)
+	withIAMAndSTS(withRealAuth(gw))
 	return gw.SetupRoutes()
 }
 

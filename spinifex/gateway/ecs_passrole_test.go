@@ -19,7 +19,7 @@ func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
 			return gwfix.AllowPolicyResource("ecs:RegisterTaskDefinition", "*"), nil
 		},
 	}
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: mock})
+	gw := withRealAuth(&GatewayConfig{DisableLogging: true, IAMService: mock})
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, testECSPassRoleTargetARN))
 

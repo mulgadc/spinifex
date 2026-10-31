@@ -12,7 +12,6 @@ import (
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"strings"
 	"testing"
@@ -102,9 +101,9 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 		Region:         gwfix.Region,
 		ExpectedNodes:  1,
 		IAMService:     e.counter,
-		Credentials:    credverify.New(e.counter, e.sts),
 		STSService:     e.sts,
 	}
+	withRealAuth(gw)
 	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
 	require.NoError(t, b.Register(stsRegistration(gw)))
 	gw.Services = b.Build()

@@ -194,7 +194,7 @@ func conditionedPolicyIAMService(effect string, cond map[string]map[string]iamdo
 // nil keys from checkPolicyResources would leave every other test green while
 // silently killing every conditional Allow on this path.
 func TestCheckPolicyResources_ConditionalAllowHonoursSourceIP(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{
+	gw := withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		IAMService: conditionedPolicyIAMService("Allow", map[string]map[string]iamdomain.ConditionValue{
 			iampolicy.OpIPAddress: {iampolicy.KeySourceIP: {"10.0.0.0/8"}},
@@ -233,7 +233,7 @@ func TestCheckPolicyResources_ConditionalAllowHonoursSourceIP(t *testing.T) {
 // the one direction where an absent key widens access. Pin it so the omission
 // is a decision rather than an accident.
 func TestCheckPolicyResources_ConditionalDenyHonoursSourceIP(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{
+	gw := withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		IAMService: conditionedPolicyIAMService("Deny", map[string]map[string]iamdomain.ConditionValue{
 			iampolicy.OpIPAddress: {iampolicy.KeySourceIP: {"203.0.113.0/24"}},

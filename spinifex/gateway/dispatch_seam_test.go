@@ -148,7 +148,7 @@ func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...disp
 		require.NoError(t, b.Register(reg))
 	}
 
-	gw := withVerifier(&GatewayConfig{
+	gw := withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		NATSConn:       nc,
@@ -342,7 +342,7 @@ func TestDispatchSeam_NATSDownGetsSame503AsLegacy(t *testing.T) {
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(fakeJSONRegistration(&dispatchCapture{})))
 
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Services: b.Build()})
+	gw := withRealAuth(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Services: b.Build()})
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), fakeJSONService)
@@ -369,7 +369,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
-	gw := withVerifier(&GatewayConfig{
+	gw := withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		Services:       b.Build(),

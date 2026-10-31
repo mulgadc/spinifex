@@ -57,7 +57,7 @@ func setupTestApp(accessKey, secretKey string) http.Handler {
 		},
 	}
 
-	gw := withVerifier(&GatewayConfig{
+	gw := withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
@@ -90,7 +90,7 @@ func userIDApp(t *testing.T, svc *gwfix.IAM) (http.Handler, *string) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: svc})
+	gw := withEC2(withRealAuth(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: svc}))
 	seen := new(string)
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -185,11 +185,11 @@ func TestSigV4Auth_ValidSignatureWithQueryString(t *testing.T) {
 }
 
 func TestSigV4Auth_NilIAMService(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2(withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     nil,
-	})
+	}))
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -417,7 +417,7 @@ func TestSigV4Auth_ContextPropagation(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
@@ -499,7 +499,7 @@ func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
@@ -539,7 +539,7 @@ func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
 
 func TestSigV4Auth_LookupAccessKeyUnexpectedError(t *testing.T) {
 	// A non-NoSuchEntity error from LookupAccessKey should yield 500 InternalError.
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     &gwfix.ErrorLookupIAM{Err: errors.New("nats: connection closed")},
@@ -616,7 +616,7 @@ func TestSigV4Auth_SignedContentType(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
@@ -743,7 +743,7 @@ func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
@@ -803,7 +803,7 @@ func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
@@ -863,7 +863,7 @@ func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
@@ -924,7 +924,7 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
@@ -966,7 +966,7 @@ func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
@@ -1010,7 +1010,7 @@ func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
@@ -1040,7 +1040,7 @@ func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 	}
 	nc.Close() // disconnected — IsConnected() returns false
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		NATSConn:       nc,
@@ -1126,7 +1126,7 @@ func mountSessionGateway(t *testing.T, cred *stsdomain.SessionCredential) (http.
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     iamMock,
@@ -1294,7 +1294,7 @@ func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 			},
 		},
 	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: iamMock})
+	gw := withEC2RealAuth(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: iamMock})
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -1324,7 +1324,7 @@ func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
 		AccessKeys: map[string]*iamdomain.AccessKey{},
 	}
 	_ = encryptedSecret
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     iamMock,
@@ -1398,7 +1398,7 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 		Tokens:   map[string]string{gwfix.SessionAKID: gwfix.SessionToken},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     iamMock,
@@ -1442,7 +1442,7 @@ func newAssumedRoleEnforcementGateway(t *testing.T, cred *stsdomain.SessionCrede
 		Sessions: map[string]*stsdomain.SessionCredential{cred.AccessKeyID: cred},
 		Tokens:   map[string]string{cred.AccessKeyID: gwfix.SessionToken},
 	}
-	return withEC2Verifier(&GatewayConfig{
+	return withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     iamMock,
@@ -1829,7 +1829,7 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 			},
 		},
 	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: mockSvc})
+	gw := withEC2RealAuth(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: mockSvc})
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
 	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
@@ -2022,7 +2022,7 @@ func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2RealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
@@ -2168,7 +2168,7 @@ func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
 }
 
 func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: allowAllIAMService()})
+	gw := withEC2RealAuth(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: allowAllIAMService()})
 
 	testCases := []struct {
 		errorCode      string
@@ -2219,7 +2219,7 @@ func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
 }
 
 func TestWriteSigV4Error_IgnoresClientRequestID(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: allowAllIAMService()})
+	gw := withEC2RealAuth(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: allowAllIAMService()})
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

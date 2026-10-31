@@ -58,7 +58,7 @@ func TestSTSRequest_AssumeRole_NilIAMService_InternalError(t *testing.T) {
 			return nil, nil
 		},
 	}
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, STSService: svc, IAMService: nil})
+	gw := withRealAuth(&GatewayConfig{DisableLogging: true, STSService: svc, IAMService: nil})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
@@ -186,7 +186,7 @@ func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) 
 	const pathed = "arn:aws:iam::123456789012:user/eng/alice"
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
-	gw := withVerifier(&GatewayConfig{
+	gw := withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		STSService:     &flexMockSTSService{},
@@ -343,7 +343,7 @@ func TestSTSRequest_MissingAction(t *testing.T) {
 }
 
 func TestSTSRequest_NilService_InternalError(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, STSService: nil, IAMService: &flexMockIAMService{}})
+	gw := withRealAuth(&GatewayConfig{DisableLogging: true, STSService: nil, IAMService: &flexMockIAMService{}})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)

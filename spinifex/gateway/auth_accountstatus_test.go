@@ -19,7 +19,7 @@ import (
 func statusGateRouter(t *testing.T, svc iamdomain.IAMService) (chi.Router, *http.Request) {
 	t.Helper()
 
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: svc})
+	gw := withEC2(withRealAuth(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: svc}))
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })

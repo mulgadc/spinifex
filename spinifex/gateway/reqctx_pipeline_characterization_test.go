@@ -97,7 +97,7 @@ func reqctxGateway(t *testing.T, env reqctxGatewayEnv, statements ...iamdomain.S
 			nc.Close()
 		}
 	}
-	gw := withVerifier(&GatewayConfig{
+	gw := withRealAuth(&GatewayConfig{
 		DisableLogging: true,
 		Region:         reqctxRegion,
 		NATSConn:       nc,

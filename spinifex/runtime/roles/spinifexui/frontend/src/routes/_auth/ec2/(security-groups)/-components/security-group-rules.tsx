@@ -1,213 +1,21 @@
 import type { IpPermission, SecurityGroup } from "@aws-sdk/client-ec2"
-import { zodResolver } from "@hookform/resolvers/zod"
 import { Link } from "@tanstack/react-router"
 import { Plus, X } from "lucide-react"
 import { useState } from "react"
-import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { PanelSection } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
-import { Field, FieldError, FieldTitle } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
-  useAuthorizeSecurityGroupEgress,
-  useAuthorizeSecurityGroupIngress,
   useRevokeSecurityGroupEgress,
   useRevokeSecurityGroupIngress,
 } from "@/mutations/ec2"
-import {
-  type SecurityGroupRuleFormData,
-  securityGroupRuleSchema,
-} from "@/types/ec2"
 
 import { describeRulePorts } from "../../(instances)/-components/instance-overview"
+import { AddSecurityGroupRuleForm } from "./add-security-group-rule-form"
 
 type Direction = "ingress" | "egress"
-
-interface AddRuleDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  direction: Direction
-  groupId: string
-}
-
-function AddRuleDialog({
-  open,
-  onOpenChange,
-  direction,
-  groupId,
-}: AddRuleDialogProps) {
-  const authorizeIngress = useAuthorizeSecurityGroupIngress()
-  const authorizeEgress = useAuthorizeSecurityGroupEgress()
-  const mutation = direction === "ingress" ? authorizeIngress : authorizeEgress
-
-  const {
-    control,
-    handleSubmit,
-    register,
-    reset,
-    formState: { errors },
-  } = useForm<SecurityGroupRuleFormData>({
-    resolver: zodResolver(securityGroupRuleSchema),
-    defaultValues: {
-      ipProtocol: "tcp",
-      fromPort: 0,
-      toPort: 0,
-      cidrIp: "0.0.0.0/0",
-    },
-  })
-
-  const selectedProtocol = useWatch({ control, name: "ipProtocol" })
-  const portsDisabled = selectedProtocol === "-1" || selectedProtocol === "icmp"
-
-  const onSubmit = async (data: SecurityGroupRuleFormData) => {
-    try {
-      await mutation.mutateAsync({
-        groupId,
-        ipProtocol: data.ipProtocol,
-        fromPort: portsDisabled ? -1 : data.fromPort,
-        toPort: portsDisabled ? -1 : data.toPort,
-        cidrIp: data.cidrIp,
-      })
-    } catch {
-      // Surfaced in the error banner through the mutation's error.
-      return
-    }
-
-    reset()
-    onOpenChange(false)
-  }
-
-  return (
-    <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            Add {direction === "ingress" ? "inbound" : "outbound"} rule
-          </AlertDialogTitle>
-        </AlertDialogHeader>
-
-        {mutation.error && (
-          <ErrorBanner error={mutation.error} msg="Failed to add rule" />
-        )}
-
-        <form
-          className="space-y-4"
-          id={`add-${direction}-rule-form`}
-          onSubmit={handleSubmit(onSubmit)}
-        >
-          <Field>
-            <FieldTitle>
-              <label htmlFor={`${direction}-ipProtocol`}>Protocol</label>
-            </FieldTitle>
-            <Controller
-              control={control}
-              name="ipProtocol"
-              render={({ field }) => (
-                <Select onValueChange={field.onChange} value={field.value}>
-                  <SelectTrigger
-                    className="w-full"
-                    id={`${direction}-ipProtocol`}
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="tcp">TCP</SelectItem>
-                    <SelectItem value="udp">UDP</SelectItem>
-                    <SelectItem value="icmp">ICMP</SelectItem>
-                    <SelectItem value="-1">All traffic (-1)</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-            />
-            <FieldError errors={[errors.ipProtocol]} />
-          </Field>
-
-          <div className="grid grid-cols-2 gap-4">
-            <Field>
-              <FieldTitle>
-                <label htmlFor={`${direction}-fromPort`}>From port</label>
-              </FieldTitle>
-              <Input
-                aria-invalid={!!errors.fromPort}
-                disabled={portsDisabled}
-                id={`${direction}-fromPort`}
-                type="number"
-                {...register("fromPort", { valueAsNumber: true })}
-              />
-              <FieldError errors={[errors.fromPort]} />
-            </Field>
-
-            <Field>
-              <FieldTitle>
-                <label htmlFor={`${direction}-toPort`}>To port</label>
-              </FieldTitle>
-              <Input
-                aria-invalid={!!errors.toPort}
-                disabled={portsDisabled}
-                id={`${direction}-toPort`}
-                type="number"
-                {...register("toPort", { valueAsNumber: true })}
-              />
-              <FieldError errors={[errors.toPort]} />
-            </Field>
-          </div>
-
-          <Field>
-            <FieldTitle>
-              <label htmlFor={`${direction}-cidrIp`}>
-                {direction === "ingress" ? "Source" : "Destination"} CIDR
-              </label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.cidrIp}
-              id={`${direction}-cidrIp`}
-              placeholder="0.0.0.0/0"
-              {...register("cidrIp")}
-            />
-            <FieldError errors={[errors.cidrIp]} />
-          </Field>
-        </form>
-
-        <AlertDialogFooter>
-          <AlertDialogCancel
-            onClick={() => {
-              reset()
-              mutation.reset()
-            }}
-          >
-            Cancel
-          </AlertDialogCancel>
-          <AlertDialogAction
-            disabled={mutation.isPending}
-            form={`add-${direction}-rule-form`}
-            type="submit"
-          >
-            {mutation.isPending ? "Adding…" : "Add rule"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
 
 // A rule's source/destination: a CIDR, a referenced security group (the AWS
 // default SG references itself), an IPv6 CIDR or a prefix list. The console
@@ -377,12 +185,15 @@ export function SecurityGroupRules({ sg, direction }: SecurityGroupRulesProps) {
           </Button>
         </div>
       </div>
-      <AddRuleDialog
-        direction={direction}
-        groupId={groupId}
-        onOpenChange={setAdding}
-        open={adding}
-      />
+      {adding && (
+        <AddSecurityGroupRuleForm
+          direction={direction}
+          groupId={groupId}
+          onClose={() => {
+            setAdding(false)
+          }}
+        />
+      )}
     </PanelSection>
   )
 }

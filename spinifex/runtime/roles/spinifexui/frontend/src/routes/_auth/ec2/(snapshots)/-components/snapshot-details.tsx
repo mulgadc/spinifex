@@ -24,7 +24,8 @@ import type { PanelTab } from "@/lib/panel-search"
 import { formatDateTime, getNameTag } from "@/lib/utils"
 import { useDeleteSnapshot } from "@/mutations/ec2"
 
-import { CopySnapshotDialog, RegisterImageDialog } from "./snapshot-actions"
+import { CopySnapshotForm } from "./copy-snapshot-form"
+import { RegisterImageForm } from "./register-image-form"
 
 function Overview({ snapshot }: { snapshot: Snapshot }) {
   return (
@@ -137,16 +138,22 @@ function Settings({
           </Button>
         </div>
       </PanelSection>
-      <CopySnapshotDialog
-        onOpenChange={onOpenChange}
-        open={dialog === "copy"}
-        snapshotId={id}
-      />
-      <RegisterImageDialog
-        onOpenChange={onOpenChange}
-        open={dialog === "register"}
-        snapshotId={id}
-      />
+      {dialog === "copy" && (
+        <CopySnapshotForm
+          onClose={() => {
+            setDialog(null)
+          }}
+          snapshotId={id}
+        />
+      )}
+      {dialog === "register" && (
+        <RegisterImageForm
+          onClose={() => {
+            setDialog(null)
+          }}
+          snapshotId={id}
+        />
+      )}
       <ResourceDeleteDialog
         confirmPhrase="delete"
         description={`Delete ${id}? An AMI registered from it must be deregistered first. This cannot be undone.`}

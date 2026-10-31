@@ -84,7 +84,7 @@ describe("CreateVpcPage", () => {
     sdk.setHandler("AssociateRouteTableCommand", () => ({}))
     renderPage()
 
-    await user.click(screen.getByLabelText("VPC and more"))
+    await user.click(screen.getByRole("radio", { name: "VPC and more" }))
     expect(screen.getByText("Number of public subnets")).toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "Create VPC" }))

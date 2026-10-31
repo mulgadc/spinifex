@@ -140,18 +140,24 @@ describe("SecurityGroupDetails", () => {
     })
   })
 
-  it("adds an inbound rule from the dialog", async () => {
+  it("adds an inbound rule from its form", async () => {
     const user = userEvent.setup()
     renderDetails()
 
     await user.click(screen.getByRole("button", { name: "Add inbound rule" }))
-    const from = screen.getByLabelText("From port")
-    const to = screen.getByLabelText("To port")
+
+    const form = within(
+      screen.getByRole("region", { name: "Add inbound rule" }),
+    )
+
+    const from = form.getByLabelText("From port")
+    const to = form.getByLabelText("To port")
+
     await user.clear(from)
     await user.type(from, "22")
     await user.clear(to)
     await user.type(to, "22")
-    await user.click(screen.getByRole("button", { name: "Add rule" }))
+    await user.click(form.getByRole("button", { name: "Add rule" }))
 
     await waitFor(() => {
       expect(sdk.send).toHaveBeenCalled()

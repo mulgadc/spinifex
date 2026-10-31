@@ -1,0 +1,1 @@
+import{Fo as e,Go as t,ea as n}from"./awsClient-lo5RjjXh.js";var r=t(n,`AmazonBedrockFrontendService`,`BedrockRuntimeClient`,e),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

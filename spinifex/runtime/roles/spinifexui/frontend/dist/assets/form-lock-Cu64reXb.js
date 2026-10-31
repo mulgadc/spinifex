@@ -1,1 +1,0 @@
-import{I as e,Mt as t,kt as n}from"./schemas-G2SrKsAc.js";var r=n(),i=t();function a(t){let n=(0,r.c)(6),{locked:a,className:o,children:s}=t,c;n[0]===o?c=n[1]:(c=e(`min-w-0`,o),n[0]=o,n[1]=c);let l;return n[2]!==s||n[3]!==a||n[4]!==c?(l=(0,i.jsx)(`fieldset`,{className:c,disabled:a,children:s}),n[2]=s,n[3]=a,n[4]=c,n[5]=l):l=n[5],l}export{a as t};

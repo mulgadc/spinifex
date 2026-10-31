@@ -24,6 +24,7 @@ import type { PanelTab } from "@/lib/panel-search"
 import { formatDateTime, getNameTag } from "@/lib/utils"
 import { useDeleteVolume } from "@/mutations/ec2"
 
+import { ModifyVolumeForm } from "./modify-volume-form"
 import { isVolumeAvailable, VolumeAttachment } from "./volume-attachment"
 
 function Overview({ volume }: { volume: Volume }) {
@@ -82,6 +83,7 @@ function Settings({
   const available = isVolumeAvailable(volume)
   const remove = useDeleteVolume()
   const [confirm, setConfirm] = useState(false)
+  const [resizing, setResizing] = useState(false)
 
   return (
     <>
@@ -94,21 +96,17 @@ function Settings({
             </p>
           )}
           <div className="flex flex-wrap gap-2">
-            {available ? (
-              <Link
-                className={buttonVariants({ size: "sm", variant: "outline" })}
-                params={{ id }}
-                to="/ec2/modify-volume/$id"
-              >
-                <Scaling data-icon="inline-start" />
-                Resize
-              </Link>
-            ) : (
-              <Button disabled size="sm" variant="outline">
-                <Scaling data-icon="inline-start" />
-                Resize
-              </Button>
-            )}
+            <Button
+              disabled={!available}
+              onClick={() => {
+                setResizing(true)
+              }}
+              size="sm"
+              variant="outline"
+            >
+              <Scaling data-icon="inline-start" />
+              Resize
+            </Button>
             <Link
               className={buttonVariants({ size: "sm", variant: "outline" })}
               search={{ create: true, volume: id }}
@@ -131,6 +129,15 @@ function Settings({
           </Button>
         </div>
       </PanelSection>
+      {resizing && (
+        <ModifyVolumeForm
+          currentSize={volume.Size ?? 1}
+          onClose={() => {
+            setResizing(false)
+          }}
+          volumeId={id}
+        />
+      )}
       <ResourceDeleteDialog
         confirmPhrase="delete"
         description={`Delete ${id}? Its data is lost unless it has a snapshot. This cannot be undone.`}

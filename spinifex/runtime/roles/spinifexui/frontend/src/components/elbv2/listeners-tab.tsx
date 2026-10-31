@@ -1,25 +1,13 @@
 import type { Listener } from "@aws-sdk/client-elastic-load-balancing-v2"
-import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { Pencil, Trash2 } from "lucide-react"
 import { useState } from "react"
-import { useForm } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { PanelField, PanelFields } from "@/components/detail-panel"
-import { ListenerForm } from "@/components/elbv2/listener-form"
+import { ListenerEditForm } from "@/components/elbv2/listener-edit-form"
 import { ListenerRulesTab } from "@/components/elbv2/listener-rules-tab"
 import { ErrorBanner } from "@/components/error-banner"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { arnResourceId } from "@/lib/utils"
 import {
@@ -35,11 +23,7 @@ import {
 } from "@/queries/elbv2"
 import {
   type CreateListenerFormData,
-  createListenerSchema,
-  defaultProtocolForType,
-  isSecureProtocol,
   type LbType,
-  type ListenerProtocolValue,
   protocolsForType,
 } from "@/types/elbv2"
 
@@ -47,37 +31,6 @@ interface ListenersTabProps {
   loadBalancerArn: string
   vpcId: string | undefined
   lbType: LbType
-}
-
-// NLB listeners default to TCP, ALB to HTTP — both on port 80.
-function listenerDefaults(lbType: LbType): CreateListenerFormData {
-  return {
-    protocol: defaultProtocolForType(lbType),
-    port: 80,
-    defaultTargetGroupArn: "",
-  }
-}
-
-// Projects an existing listener onto the form shape. TLS fields are dropped for
-// plaintext protocols so a downgrade does not carry a stale certificate.
-function listenerFormValues(
-  listener: Listener,
-  protocols: readonly ListenerProtocolValue[],
-): CreateListenerFormData {
-  const protocol: ListenerProtocolValue =
-    protocols.find((p) => p === listener.Protocol) ?? protocols[0] ?? "HTTP"
-
-  const secure = isSecureProtocol(protocol)
-
-  return {
-    protocol,
-    port: listener.Port ?? 80,
-    defaultTargetGroupArn: listener.DefaultActions?.[0]?.TargetGroupArn ?? "",
-    certificateArn: secure
-      ? listener.Certificates?.[0]?.CertificateArn
-      : undefined,
-    sslPolicy: protocol === "HTTPS" ? listener.SslPolicy : undefined,
-  }
 }
 
 function formatTls(listener: Listener): string {
@@ -203,18 +156,6 @@ export function ListenersTab({
 
   return (
     <div className="space-y-3">
-      {createMutation.error && (
-        <ErrorBanner
-          error={createMutation.error}
-          msg="Failed to create listener"
-        />
-      )}
-      {modifyMutation.error && (
-        <ErrorBanner
-          error={modifyMutation.error}
-          msg="Failed to modify listener"
-        />
-      )}
       {deleteMutation.error && (
         <ErrorBanner
           error={deleteMutation.error}
@@ -308,39 +249,44 @@ export function ListenersTab({
         </ul>
       )}
 
-      {/* Mounted only while open so every session starts from blank defaults. */}
+      {/* Mounted only while open so every session starts from fresh values. */}
       {addOpen && (
-        <ListenerDialog
+        <ListenerEditForm
           certificates={certificates}
+          error={createMutation.error}
           isPending={createMutation.isPending}
           lbType={lbType}
-          mode="add"
-          onOpenChange={setAddOpen}
+          loadBalancerArn={loadBalancerArn}
+          onClose={() => {
+            createMutation.reset()
+            setAddOpen(false)
+          }}
           onSubmit={handleCreate}
-          open={addOpen}
           protocols={protocols}
           sslPolicies={sslPolicies}
           targetGroups={vpcTgs}
         />
       )}
 
-      <ListenerDialog
-        certificates={certificates}
-        initialListener={editTarget}
-        isPending={modifyMutation.isPending}
-        lbType={lbType}
-        mode="edit"
-        onOpenChange={(open) => {
-          if (!open) {
+      {editTarget && (
+        <ListenerEditForm
+          certificates={certificates}
+          error={modifyMutation.error}
+          isPending={modifyMutation.isPending}
+          key={editTarget.ListenerArn}
+          lbType={lbType}
+          listener={editTarget}
+          loadBalancerArn={loadBalancerArn}
+          onClose={() => {
+            modifyMutation.reset()
             setEditTarget(undefined)
-          }
-        }}
-        onSubmit={handleEdit}
-        open={editTarget !== undefined}
-        protocols={protocols}
-        sslPolicies={sslPolicies}
-        targetGroups={vpcTgs}
-      />
+          }}
+          onSubmit={handleEdit}
+          protocols={protocols}
+          sslPolicies={sslPolicies}
+          targetGroups={vpcTgs}
+        />
+      )}
 
       <DeleteConfirmationDialog
         description={
@@ -360,92 +306,4 @@ export function ListenersTab({
       />
     </div>
   )
-}
-
-interface ListenerDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  lbType: LbType
-  protocols: readonly ListenerProtocolValue[]
-  targetGroups: React.ComponentProps<typeof ListenerForm>["targetGroups"]
-  certificates: React.ComponentProps<typeof ListenerForm>["certificates"]
-  sslPolicies: React.ComponentProps<typeof ListenerForm>["sslPolicies"]
-  isPending: boolean
-  onSubmit: (data: CreateListenerFormData) => void
-  mode: "add" | "edit"
-  initialListener?: Listener
-}
-
-function ListenerDialog({
-  open,
-  onOpenChange,
-  lbType,
-  protocols,
-  targetGroups,
-  certificates,
-  sslPolicies,
-  isPending,
-  onSubmit,
-  mode,
-  initialListener,
-}: ListenerDialogProps) {
-  const form = useForm<CreateListenerFormData>({
-    resolver: zodResolver(createListenerSchema),
-    defaultValues: listenerDefaults(lbType),
-    // Re-seeds the form whenever a different listener is selected. Left
-    // undefined while closing so the fields do not visibly reset mid-animation.
-    values: initialListener
-      ? listenerFormValues(initialListener, protocols)
-      : undefined,
-  })
-
-  const handleConfirm = form.handleSubmit(onSubmit)
-
-  return (
-    <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent width="md">
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            {mode === "add" ? "Add listener" : "Edit listener"}
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            {mode === "add"
-              ? "Listeners forward incoming traffic to a default target group."
-              : "Update port, protocol, or default target group. Changes apply without dropping the listener."}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-
-        <form
-          className="min-w-0 space-y-4"
-          onSubmit={(e) => {
-            e.preventDefault()
-            void handleConfirm()
-          }}
-        >
-          <ListenerForm
-            certificates={certificates}
-            form={form}
-            protocols={protocols}
-            sslPolicies={sslPolicies}
-            targetGroups={targetGroups}
-          />
-        </form>
-
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
-          <AlertDialogAction disabled={isPending} onClick={handleConfirm}>
-            {actionLabel(mode, isPending)}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
-
-function actionLabel(mode: "add" | "edit", isPending: boolean): string {
-  if (isPending) {
-    return mode === "add" ? "Adding…" : "Saving…"
-  }
-
-  return mode === "add" ? "Add listener" : "Save changes"
 }

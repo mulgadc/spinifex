@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query"
-import { fireEvent, screen, within } from "@testing-library/react"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
@@ -90,9 +91,12 @@ describe("AddonsTab", () => {
     expect(screen.getByText("missing IAM role")).toBeInTheDocument()
   })
 
-  it("offers uninstalled catalog add-ons in the add dialog", () => {
+  it("offers uninstalled catalog add-ons in the add form", async () => {
+    const user = userEvent.setup()
     renderWithClient(<AddonsTab clusterName={CLUSTER} />, seed())
     fireEvent.click(screen.getByRole("button", { name: "Add add-on" }))
+    const panel = screen.getByRole("region", { name: "Add add-on" })
+    await user.click(within(panel).getByLabelText("Add-on"))
     expect(
       screen.getByRole("option", { name: "aws-load-balancer-controller" }),
     ).toBeInTheDocument()
@@ -110,29 +114,88 @@ describe("AddonsTab", () => {
     ).toBeInTheDocument()
   })
 
-  it("shows a refused add in the dialog and keeps it open", async () => {
+  it("updates an add-on with the chosen version and closes the panel", async () => {
+    send.mockResolvedValue({})
+    const qc = seed()
+    qc.setQueryData(["eks", "addon-versions"], {
+      addons: [
+        {
+          addonName: "coredns",
+          addonVersions: [
+            { addonVersion: "v1.1.0" },
+            { addonVersion: "v1.0.0" },
+          ],
+        },
+      ],
+    })
+    const user = userEvent.setup()
+    renderWithClient(<AddonsTab clusterName={CLUSTER} />, qc)
+    await user.click(screen.getByRole("button", { name: "Update add-on" }))
+    const panel = screen.getByRole("region", { name: "Update coredns" })
+    await user.click(within(panel).getByLabelText("Version"))
+    await user.click(screen.getByRole("option", { name: "v1.1.0" }))
+    await user.click(within(panel).getByRole("button", { name: "Update" }))
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("region", { name: "Update coredns" }),
+      ).not.toBeInTheDocument()
+    })
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          clusterName: CLUSTER,
+          addonName: "coredns",
+          addonVersion: "v1.1.0",
+          serviceAccountRoleArn: "arn:aws:iam::0:role/coredns",
+        }),
+      }),
+    )
+  })
+
+  it("refuses an update whose configuration is not JSON", async () => {
+    const user = userEvent.setup()
+    renderWithClient(<AddonsTab clusterName={CLUSTER} />, seed())
+    await user.click(screen.getByRole("button", { name: "Update add-on" }))
+    const panel = screen.getByRole("region", { name: "Update coredns" })
+    fireEvent.change(
+      within(panel).getByLabelText("Configuration values (JSON)"),
+      { target: { value: "{not json" } },
+    )
+    await user.click(within(panel).getByRole("button", { name: "Update" }))
+
+    expect(send).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole("region", { name: "Update coredns" }),
+    ).toBeInTheDocument()
+  })
+
+  it("shows a refused add in the panel and keeps it open", async () => {
     send.mockRejectedValueOnce(
       Object.assign(new Error("The service account role is required."), {
         name: "InvalidParameterException",
       }),
     )
     renderWithClient(<AddonsTab clusterName={CLUSTER} />, seed())
+    const user = userEvent.setup()
     fireEvent.click(screen.getByRole("button", { name: "Add add-on" }))
-    fireEvent.change(screen.getByLabelText("Add-on"), {
-      target: { value: "aws-load-balancer-controller" },
-    })
-    const dialog = screen.getByRole("alertdialog")
-    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }))
+    const dialog = screen.getByRole("region", { name: "Add add-on" })
+    await user.click(within(dialog).getByLabelText("Add-on"))
+    await user.click(
+      screen.getByRole("option", { name: "aws-load-balancer-controller" }),
+    )
+    await user.click(within(dialog).getByRole("button", { name: "Add" }))
 
     await expect(
       within(dialog).findByText(
         "InvalidParameterException: The service account role is required.",
       ),
     ).resolves.toBeInTheDocument()
-    expect(send.mock.calls[0]?.[0].input.addonName).toBe(
-      "aws-load-balancer-controller",
-    )
-    expect(screen.getByLabelText("Add-on")).toHaveValue(
+    expect(send.mock.calls[0]?.[0].input).toMatchObject({
+      addonName: "aws-load-balancer-controller",
+      addonVersion: "v2.0.0",
+    })
+    expect(within(dialog).getByLabelText("Add-on")).toHaveTextContent(
       "aws-load-balancer-controller",
     )
     expect(within(dialog).getByRole("button", { name: "Add" })).toBeEnabled()

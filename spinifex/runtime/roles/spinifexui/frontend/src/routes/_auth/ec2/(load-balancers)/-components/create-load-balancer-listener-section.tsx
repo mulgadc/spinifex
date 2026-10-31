@@ -10,6 +10,8 @@ import { TargetGroupForm } from "@/components/elbv2/target-group-form"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import {
   Select,
   SelectContent,
@@ -284,26 +286,33 @@ export function CreateLoadBalancerListenerSection({
 
       <Field>
         <FieldTitle>Default target group</FieldTitle>
-        <div className="flex gap-4">
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              aria-label="Create new target group"
-              type="radio"
-              value="new"
-              {...register("listener.targetGroupMode")}
-            />
-            Create new
-          </label>
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              aria-label="Use existing target group"
-              type="radio"
-              value="existing"
-              {...register("listener.targetGroupMode")}
-            />
-            Use existing
-          </label>
-        </div>
+        <Controller
+          control={control}
+          name="listener.targetGroupMode"
+          render={({ field }) => (
+            <RadioGroup
+              aria-label="Default target group"
+              className="flex w-auto"
+              onValueChange={field.onChange}
+              value={field.value}
+            >
+              <Label>
+                <RadioGroupItem
+                  aria-label="Create new target group"
+                  value="new"
+                />
+                Create new
+              </Label>
+              <Label>
+                <RadioGroupItem
+                  aria-label="Use existing target group"
+                  value="existing"
+                />
+                Use existing
+              </Label>
+            </RadioGroup>
+          )}
+        />
       </Field>
 
       {tgMode === "existing" && (

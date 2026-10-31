@@ -129,6 +129,11 @@ Bare metal takes longer to deliver than a VM, and Vultr bills a bare-metal serve
 OpenTofu or Terraform creates a private Vultr VPC and the nodes.
 The script then installs Spinifex on every node over SSH and forms the cluster.
 
+<p align="center">
+  <img src="../../.github/assets/diagrams/vultr-deployment.svg" alt="Spinifex on Vultr: deploy-vultr.sh builds a Vultr VPC with one or three nodes, which cluster over the private network, call the Vultr API for reserved IPs, and run EC2, load balancers, EKS, ECS, RDS, S3, EBS and IAM across the fleet" width="900">
+</p>
+<p align="center"><em>One node or three in a private Vultr VPC, running AWS services across the fleet.</em></p>
+
 Each node runs **Ubuntu 24.04 LTS** as its host operating system, and Spinifex runs on top of it.
 Vultr installs the operating system when it creates the node, so there is no host to prepare first.
 

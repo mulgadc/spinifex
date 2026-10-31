@@ -12,7 +12,6 @@ import (
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"log/slog"
-	"maps"
 	"net/http"
 	"strconv"
 	"sync"
@@ -28,7 +27,6 @@ import (
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
@@ -441,37 +439,8 @@ func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, 
 	recordResolvedAction(r.Context(), service, action)
 
 	gw.fillDefaultCapabilities()
-	if gw.Policy == nil {
-		slog.Error("checkPolicy: policy evaluator not available", "service", service, "action", action)
-		return errors.New(awserrors.ErrorInternalError)
-	}
-
 	caller, authenticated := reqctx.Principal(r.Context())
-	if !authenticated {
-		slog.Warn("checkPolicy: request carries no auth context", "service", service, "action", action)
-		return errors.New(awserrors.ErrorAccessDenied)
-	}
-	if caller.Identity == "" {
-		slog.Warn("checkPolicy: authenticated request carries no identity name",
-			"service", service, "action", action)
-		return errors.New(awserrors.ErrorAccessDenied)
-	}
-	if caller.AccountID == "" {
-		slog.Error("checkPolicy: no account ID in auth context", "user", caller.Identity)
-		return errors.New(awserrors.ErrorInternalError)
-	}
-
-	keys := gw.Policy.RequestConditionKeys(r, caller)
-	maps.Copy(keys, actionKeys)
-	return gw.evaluatePrincipalPolicyResources(caller, policy.IAMAction(service, action), resources, keys)
-}
-
-// evaluatePrincipalPolicyResources resolves policies once and evaluates every
-// resource in the request against that same snapshot.
-func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
-	principal credential.Principal, iamAction string, resources []string, keys iampolicy.ConditionKeys,
-) error {
-	return gw.Policy.Evaluate(principal, iamAction, resources, keys)
+	return pipeline.Authorize(gw.Policy, r, caller, authenticated, service, action, resources, actionKeys)
 }
 
 func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {

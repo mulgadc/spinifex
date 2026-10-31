@@ -2,12 +2,13 @@
 // rds.go today, pinned ahead of moving dispatch out of gateway into a
 // registration seam. These assert current behaviour, not AWS parity.
 
-package gateway
+package awsgw_test
 
 import (
 	"bytes"
 	"encoding/xml"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -26,13 +27,13 @@ import (
 
 // rdsPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as the caller's policy.
-func rdsPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConfig, http.Handler) {
+func rdsPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*gateway.GatewayConfig, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&GatewayConfig{
+	gw := withVerifier(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		NATSConn:       nc,
@@ -215,7 +216,7 @@ func TestRDSPipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) {
 }
 
 func TestRDSPipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withVerifier(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	withRDS(gw)
 
 	w := httptest.NewRecorder()

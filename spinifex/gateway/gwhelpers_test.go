@@ -7,11 +7,14 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -105,4 +108,89 @@ func signACMRequest(t *testing.T, target string, body []byte) *http.Request {
 	}
 	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "acm", time.Now().UTC())
 	return req
+}
+
+func setupRDSRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	ctx := reqctx.WithService(req.Context(), "rds")
+	ctx = withPrincipalField(ctx, fieldAccountID, rdsTestAccountID)
+	return withTestIdentity(req.WithContext(ctx))
+}
+
+// Counts policy resolutions, so a test can tell an authorized request from one
+// that failed some other guard before the evaluator was ever reached.
+type rdsPolicyProbe struct{ consulted int }
+
+// A gateway whose IAM service answers with policies, so the RDS dispatch path
+// runs a real evaluation for either principal branch.
+func newRDSPolicyGateway(policies []iamdomain.PolicyDocument) (*GatewayConfig, *rdsPolicyProbe) {
+	return newRDSGatewayWithResolver(func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+		return policies, nil
+	})
+}
+
+// A signed customer request: an IAM user with a resolvable identity, which is
+// what turns the policy check from the pre-IAM bypass into a real evaluation.
+func setupRDSUserRequest(body, accountID string) *http.Request {
+	req := setupRDSRequest(body)
+	ctx := withPrincipalField(req.Context(), fieldAccountID, accountID)
+	ctx = withPrincipalField(ctx, fieldIdentity, "alice")
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
+	return req.WithContext(ctx)
+}
+
+const rdsTestAccountID = "123456789012"
+
+// rdsRegistrationInventory is the inventory the RDS registration declares to a
+// registry, keyed as AWSOperationInventory expects.
+func rdsRegistrationInventory() map[string]dispatch.Inventory {
+	return withRDS(&GatewayConfig{}).Services.Inventory()
+}
+
+// serveRDS dispatches r to the registered RDS service exactly as Request does,
+// registering it first from the fields gw holds when the test has not.
+func (gw *GatewayConfig) serveRDS(w http.ResponseWriter, r *http.Request) error {
+	if gw.Services == nil {
+		withRDS(gw)
+	}
+	entry, ok := gw.registered(rdsawsapi.ServiceName)
+	if !ok {
+		panic("RDS is not registered on this gateway")
+	}
+	return gw.dispatchRegistered(entry, w, r)
+}
+
+func newRDSGatewayWithResolver(
+	resolve func(accountID, name string) ([]iamdomain.PolicyDocument, error),
+) (*GatewayConfig, *rdsPolicyProbe) {
+	probe := &rdsPolicyProbe{}
+	counted := func(accountID, name string) ([]iamdomain.PolicyDocument, error) {
+		probe.consulted++
+		return resolve(accountID, name)
+	}
+	// Both branches are wired: an assumed-role principal resolves by role, and a
+	// test that only stubbed users would miss it entirely.
+	return withVerifier(&GatewayConfig{
+		DisableLogging: true,
+		Region:         "ap-southeast-2",
+		IAMService: &gwfix.PolicyIAM{
+			GetUserPoliciesFn: counted,
+			GetRolePoliciesFn: counted,
+		},
+	}), probe
+}
+
+// withRDS registers RDS on gw with the NATS connection and node count it holds,
+// as the awsgw role composes it. Set both on gw before calling.
+func withRDS(gw *GatewayConfig) *GatewayConfig {
+	deps := rdsawsapi.Deps{NATS: gw.NATSConn, ExpectedNodes: gw.ExpectedNodes}
+	if quotaFor(gw) != nil {
+		deps.Quota = quotaFor(gw)
+	}
+	b := dispatch.NewBuilder()
+	if err := b.Register(rdsawsapi.NewRegistration(deps)); err != nil {
+		panic(err)
+	}
+	gw.Services = b.Build()
+	return gw
 }

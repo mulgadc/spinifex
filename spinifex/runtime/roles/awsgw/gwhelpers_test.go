@@ -1,6 +1,7 @@
 package awsgw_test
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
@@ -11,14 +12,17 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/clusterready"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/ec2quota"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"github.com/stretchr/testify/require"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -170,3 +174,112 @@ func quotaFor(gw *gateway.GatewayConfig) *admissionquota.Service {
 // quotaByGateway carries the quota service a test built for a gateway, which no
 // longer holds one: the registration helpers read it back to compose Deps.
 var quotaByGateway sync.Map
+
+func allowAllTaggingDocs() []iamdomain.PolicyDocument {
+	return []iamdomain.PolicyDocument{{
+		Version: "2012-10-17",
+		Statement: []iamdomain.Statement{
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"*"}, Resource: iamdomain.StringOrArr{"*"}},
+		},
+	}}
+}
+
+func normalizeRequestID(s string) string {
+	return requestIDPattern.ReplaceAllString(s, "<RequestId>ID</RequestId>")
+}
+
+func readBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	b, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return string(b)
+}
+
+func scopedTaggingDocs(effect, action, resource string) []iamdomain.PolicyDocument {
+	return []iamdomain.PolicyDocument{{
+		Version: "2012-10-17",
+		Statement: []iamdomain.Statement{
+			{Effect: effect, Action: iamdomain.StringOrArr{action}, Resource: iamdomain.StringOrArr{resource}},
+		},
+	}}
+}
+
+// withPrincipalField sets one field on the caller sealed in ctx, sealing a new
+// caller when ctx has none. The record seals a caller once, so this rebuilds the
+// context from the recorded facts when one is already sealed; it then keeps no
+// other value ctx carries, which the hand-built requests it is used on do not have.
+func withPrincipalField(ctx context.Context, f principalField, v string) context.Context {
+	p, sealed := reqctx.Principal(ctx)
+	key := reqctx.AccessKeyID(ctx)
+	switch f {
+	case fieldIdentity:
+		p.Identity = v
+	case fieldAccountID:
+		p.AccountID = v
+	case fieldAccessKey:
+		key = v
+	case fieldPrincipalType:
+		p.PrincipalType = v
+	case fieldAssumedRoleARN:
+		p.AssumedRoleARN = v
+	case fieldAssumedRoleID:
+		p.AssumedRoleID = v
+	case fieldUnderlyingRoleARN:
+		p.UnderlyingRoleARN = v
+	case fieldUserID:
+		p.UserID = v
+	case fieldUserARN:
+		p.UserARN = v
+	}
+	p.CallerARN = ""
+	if arn, err := credverify.CallerARN(p); err == nil {
+		p.CallerARN = arn
+	}
+	if !sealed {
+		return reqctx.WithPrincipal(ctx, p, key)
+	}
+	fresh := context.Background()
+	if svc := reqctx.Service(ctx); svc != "" {
+		fresh = reqctx.WithService(fresh, svc)
+	}
+	if region := reqctx.Region(ctx); region != "" {
+		fresh = reqctx.WithRegion(fresh, region)
+	}
+	if action := reqctx.Action(ctx); action != "" {
+		fresh = reqctx.WithAction(fresh, action)
+	}
+	return reqctx.WithPrincipal(fresh, p, key)
+}
+
+const (
+	fieldIdentity principalField = iota
+	fieldAccountID
+	fieldAccessKey
+	fieldPrincipalType
+	fieldAssumedRoleARN
+	fieldAssumedRoleID
+	fieldUnderlyingRoleARN
+	fieldUserID
+	fieldUserARN
+)
+
+// withTestIdentity attaches the identity half of the auth context the SigV4
+// middleware sets, so a hand-built request reaches the handler instead of being
+// denied. Existing values are preserved for tests that set their own principal.
+func withTestIdentity(req *http.Request) *http.Request {
+	ctx := req.Context()
+	have, _ := reqctx.Principal(ctx)
+	if have.Identity == "" {
+		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
+	}
+	if have.PrincipalType == "" {
+		ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
+	}
+	return req.WithContext(ctx)
+}
+
+var requestIDPattern = regexp.MustCompile(`<RequestId>[^<]*</RequestId>`)
+
+// principalField names one field of the sealed principal, so a test can
+// build a caller one fact at a time.
+type principalField int

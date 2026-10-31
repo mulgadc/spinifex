@@ -166,3 +166,40 @@ func TestLaunchOneWorker_TemplateRequestShape(t *testing.T) {
 		})
 	}
 }
+
+// A template that sets only the hop limit leaves the tokens unset on the
+// worker request, so EC2 RunInstances applies its own default (IMDSv2 required).
+func TestLaunchOneWorker_TemplateWithOnlyHopLimitLeavesTokensUnset(t *testing.T) {
+	t.Parallel()
+	reader := &fakeLaunchTemplates{out: templateVersionWith(&ec2.LaunchTemplateInstanceMetadataOptions{
+		HttpPutResponseHopLimit: aws.Int64(4),
+	})}
+	f, err := launchWorkerWith(t, &NodegroupLaunchTemplate{ID: "lt-0123", Version: "1"}, reader)
+	require.NoError(t, err)
+
+	opts := launchedMetadata(t, f)
+	require.NotNil(t, opts)
+	assert.Equal(t, int64(4), aws.Int64Value(opts.HttpPutResponseHopLimit))
+	assert.Nil(t, opts.HttpTokens)
+}
+
+func TestLaunchOneWorker_EveryTemplateMetadataFieldIsCarriedThrough(t *testing.T) {
+	t.Parallel()
+	reader := &fakeLaunchTemplates{out: templateVersionWith(&ec2.LaunchTemplateInstanceMetadataOptions{
+		HttpTokens:              aws.String(ec2.LaunchTemplateHttpTokensStateOptional),
+		HttpPutResponseHopLimit: aws.Int64(3),
+		HttpEndpoint:            aws.String(ec2.LaunchTemplateInstanceMetadataEndpointStateEnabled),
+		HttpProtocolIpv6:        aws.String(ec2.LaunchTemplateInstanceMetadataProtocolIpv6Disabled),
+		InstanceMetadataTags:    aws.String(ec2.LaunchTemplateInstanceMetadataTagsStateDisabled),
+	})}
+	f, err := launchWorkerWith(t, &NodegroupLaunchTemplate{Name: "ng-template", Version: "1"}, reader)
+	require.NoError(t, err)
+
+	assert.Equal(t, &ec2.InstanceMetadataOptionsRequest{
+		HttpTokens:              aws.String(ec2.HttpTokensStateOptional),
+		HttpPutResponseHopLimit: aws.Int64(3),
+		HttpEndpoint:            aws.String(ec2.InstanceMetadataEndpointStateEnabled),
+		HttpProtocolIpv6:        aws.String(ec2.InstanceMetadataProtocolStateDisabled),
+		InstanceMetadataTags:    aws.String(ec2.InstanceMetadataTagsStateDisabled),
+	}, launchedMetadata(t, f))
+}

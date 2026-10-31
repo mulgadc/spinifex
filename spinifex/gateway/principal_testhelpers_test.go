@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 )
 
 // principalField names one field of the sealed principal, so a test can
@@ -48,6 +49,10 @@ func withPrincipalField(ctx context.Context, f principalField, v string) context
 		p.UserID = v
 	case fieldUserARN:
 		p.UserARN = v
+	}
+	p.CallerARN = ""
+	if arn, err := credverify.CallerARN(p); err == nil {
+		p.CallerARN = arn
 	}
 	if !sealed {
 		return reqctx.WithPrincipal(ctx, p, key)

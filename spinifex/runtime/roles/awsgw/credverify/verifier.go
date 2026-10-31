@@ -117,6 +117,10 @@ func (v *Verifier) Resolve(req credential.Request, auth credential.Authenticated
 		return credential.Principal{}, fail(err.Error())
 	}
 	p.UserID, p.UserARN = userID, userARN
+	// An unbuildable ARN stays empty so the failure surfaces only to a reader that needs it.
+	if arn, err := CallerARN(p); err == nil {
+		p.CallerARN = arn
+	}
 	return p, nil
 }
 

@@ -120,7 +120,7 @@ func (gw *GatewayConfig) ValidateServices() error {
 
 // registeredActorFunc returns the lazy Actor resolver a registered
 // dispatcher's Invocation carries. It reads the SigV4 identity context through
-// the shared buildCallerARN helper, so nothing is computed until called.
+// the caller ARN the verifier built, so nothing is computed until called.
 func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
 	return func() (dispatch.Actor, error) {
 		return callerActor(r.Context())
@@ -132,7 +132,12 @@ func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc
 // could be composed, so a reader that needs no ARN may ignore it.
 func callerActor(ctx context.Context) (dispatch.Actor, error) {
 	p, _ := reqctx.Principal(ctx)
-	callerARN, err := buildCallerARN(p.AccountID, p.Identity, p.PrincipalType, p.AssumedRoleARN, p.UserARN)
+	callerARN := p.CallerARN
+	var err error
+	if callerARN == "" {
+		slog.Error("caller ARN could not be composed", "principalType", p.PrincipalType)
+		err = errors.New(awserrors.ErrorInternalError)
+	}
 	actor := dispatch.Actor{
 		AccountID:     p.AccountID,
 		CallerARN:     callerARN,

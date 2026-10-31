@@ -46,7 +46,6 @@ func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admi
 		DisableLogging: true,
 		Region:         testRegion,
 		NATSConn:       nc,
-		Quota:          quota,
 		IAMService: &policyMockIAMService{
 			mockIAMService: mockIAMService{
 				masterKey: testMasterKey,
@@ -63,7 +62,7 @@ func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admi
 			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	})
-	withELBv2(gw)
+	withELBv2(withQuota(gw, quota))
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())

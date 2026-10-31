@@ -23,6 +23,7 @@ import (
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
@@ -48,6 +49,7 @@ func TestRequestConformance(t *testing.T) {
 		route53awsapi.ServiceName: route53awsapi.OperationInventory(),
 		elbv2awsapi.InventoryName: elbv2awsapi.OperationInventory(),
 		rdsawsapi.ServiceName:     rdsawsapi.OperationInventory(),
+		ec2awsapi.ServiceName:     ec2awsapi.OperationInventory(),
 		ecsawsapi.ServiceName:     ecsawsapi.OperationInventory(),
 		eksawsapi.ServiceName:     eksawsapi.OperationInventory(),
 		iamawsapi.ServiceName:     iamawsapi.OperationInventory(),

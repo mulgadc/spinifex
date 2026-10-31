@@ -9,6 +9,7 @@ import (
 	"github.com/mulgadc/predastore/s3api"
 	"github.com/mulgadc/spinifex/internal/awsmodel"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
@@ -62,6 +63,7 @@ func compareAll() ([]awsmodel.OperationCoverage, error) {
 		route53awsapi.ServiceName: route53awsapi.OperationInventory(),
 		elbv2awsapi.InventoryName: elbv2awsapi.OperationInventory(),
 		rdsawsapi.ServiceName:     rdsawsapi.OperationInventory(),
+		ec2awsapi.ServiceName:     ec2awsapi.OperationInventory(),
 		ecsawsapi.ServiceName:     ecsawsapi.OperationInventory(),
 		eksawsapi.ServiceName:     eksawsapi.OperationInventory(),
 		iamawsapi.ServiceName:     iamawsapi.OperationInventory(),

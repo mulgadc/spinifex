@@ -34,6 +34,7 @@ var allowlist = []allowance{
 	{From: "cmd/aws-model-coverage", To: "domains/route53/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/elbv2/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/rds/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
+	{From: "cmd/aws-model-coverage", To: "domains/ec2/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/ecs/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/eks/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/iam/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
@@ -98,9 +99,6 @@ var allowlist = []allowance{
 	{From: "domains/ochre", To: "runtime/compute/gpu", Debt: "Domain → runtime", Reason: "GPU runtime state read directly; needs a domain-owned projection"},
 
 	{From: "domains/ochre/vector", To: "domains/iam", Debt: "Cross-domain", Reason: "consumes another domain's implementation rather than a capability"},
-
-	{From: "gateway", To: "domains/ec2/awsapi", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
-	{From: "gateway", To: "domains/ec2/awsapi/instance", Debt: "gateway/ec2.go (registration)", Reason: "EC2 dispatch map stays in gateway until the ingress registration seam"},
 
 	{From: "domains/rds/awsapi", To: "domains/ec2/awsapi/instance", Debt: "Instance adapter consumers outside EC2", Reason: "enginecatalog.go calls the instance adapter; needs an EC2 capability"},
 

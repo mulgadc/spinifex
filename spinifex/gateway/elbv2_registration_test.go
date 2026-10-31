@@ -11,7 +11,7 @@ import (
 // as the awsgw role composes it. Set both on gw before calling.
 func withELBv2(gw *GatewayConfig) *GatewayConfig {
 	b := dispatch.NewBuilder()
-	reg := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: gw.NATSConn, Quota: gw.Quota})
+	reg := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: gw.NATSConn, Quota: quotaFor(gw)})
 	if err := b.Register(reg); err != nil {
 		panic(err)
 	}

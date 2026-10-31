@@ -346,6 +346,7 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 		ID:           instanceId,
 		Status:       vm.StateProvisioning,
 		InstanceType: *input.InstanceType,
+		FirstLaunch:  true,
 	}
 
 	// Create EC2 instance metadata
@@ -2673,6 +2674,15 @@ func (s *InstanceServiceImpl) capacityRefusal(ctx context.Context, instance *vm.
 // was taken from.
 func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instance *vm.VM, undo func()) error {
 	instance.ResetNodeLocalState()
+
+	// AWS restamps LaunchTime on every start. The pending watchdog times a
+	// launch from it, so a stale one terminates the instance mid-boot.
+	if instance.Instance != nil {
+		instance.Instance.LaunchTime = aws.Time(time.Now())
+	}
+	// A claimed instance has run before, so it must never be terminated by a
+	// failure of this launch.
+	instance.FirstLaunch = false
 
 	instanceType, ok := s.resourceMgr.InstanceTypes()[instance.InstanceType]
 	if !ok {

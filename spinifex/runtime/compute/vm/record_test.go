@@ -232,6 +232,7 @@ func populatedVM() *vm.VM {
 		Teardown:                        map[string]string{"volume": "done"},
 		TerminatedAt:                    time.Date(2026, 8, 28, 2, 0, 0, 0, time.UTC),
 		ShuttingDownAt:                  time.Date(2026, 8, 28, 3, 0, 0, 0, time.UTC),
+		FirstLaunch:                     true,
 
 		SQSStoreGuest: &vm.SQSStoreGuest{
 			NodeID:       "node-1",

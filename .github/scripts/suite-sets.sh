@@ -117,8 +117,9 @@ e2e_suite_timeout() {
     # storage case waits for a pause measured at 4m47s and then holds four
     # minutes to prove nothing moved. Three tests, each taking a node away and
     # bringing it back, and the partition case adds a lease validity, a lease
-    # TTL and a boot on top of everything the other two wait for.
-    instancerecovery) echo "90m" ;;
+    # TTL and a boot on top of everything the other two wait for. The data
+    # test lets its guest age past the pending watchdog twice, about 20 more.
+    instancerecovery) echo "110m" ;;
     # lbrecovery pays for a load balancer twice: once to stand one up with two
     # backends placed around it, and once for the recovery itself — a stale
     # owner, a lease, a boot, HAProxy's own start, and its health checks against

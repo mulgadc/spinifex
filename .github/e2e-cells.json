@@ -165,7 +165,7 @@
     "runner": "ci-multi",
     "extra": "",
     "suite": "instancerecovery",
-    "timeout_minutes": 105
+    "timeout_minutes": 125
   },
   {
     "cell": 32,

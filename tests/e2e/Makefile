@@ -71,7 +71,7 @@ e2e-route53:    ; $(MAKE) e2e PKG=./route53/...
 e2e-storagefault: ; $(MAKE) e2e PKG=./storagefault/... TIMEOUT=45m
 # Takes a node away twice and freezes predastore once. Almost all of its budget
 # is waiting for staleness, a boot and a pause that is measured in minutes.
-e2e-instancerecovery: ; $(MAKE) e2e PKG=./instancerecovery/... TIMEOUT=60m
+e2e-instancerecovery: ; $(MAKE) e2e PKG=./instancerecovery/... TIMEOUT=110m
 # Stands a load balancer and its backends up before it breaks anything, then
 # takes the load balancer's node away and brings it back.
 e2e-lbrecovery: ; $(MAKE) e2e PKG=./lbrecovery/... TIMEOUT=75m

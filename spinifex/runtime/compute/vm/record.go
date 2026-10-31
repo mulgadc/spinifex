@@ -98,6 +98,7 @@ type InstanceStatus struct {
 	Teardown       map[string]string `json:"teardown,omitempty"`
 	TerminatedAt   time.Time         `json:"terminated_at,omitzero"`
 	ShuttingDownAt time.Time         `json:"shutting_down_at,omitzero"`
+	FirstLaunch    bool              `json:"first_launch,omitempty"`
 
 	// The request slices are carried without their mutexes: a lock is process
 	// state, not something a record describes. The wrappers are rebuilt with
@@ -161,6 +162,7 @@ func (v *VM) Record() *InstanceRecord {
 			Teardown:                        v.Teardown,
 			TerminatedAt:                    v.TerminatedAt,
 			ShuttingDownAt:                  v.ShuttingDownAt,
+			FirstLaunch:                     v.FirstLaunch,
 			EBSRequests:                     v.EBSRequests.Requests,
 			ENIAvailableSlots:               v.ENIRequests.AvailableSlots,
 			ENIAttachedByID:                 v.ENIRequests.AttachedByENIID,
@@ -219,6 +221,7 @@ func VMFromRecord(r *InstanceRecord) *VM {
 		Teardown:                        r.Status.Teardown,
 		TerminatedAt:                    r.Status.TerminatedAt,
 		ShuttingDownAt:                  r.Status.ShuttingDownAt,
+		FirstLaunch:                     r.Status.FirstLaunch,
 	}
 	v.EBSRequests.Requests = r.Status.EBSRequests
 	v.ENIRequests.AvailableSlots = r.Status.ENIAvailableSlots

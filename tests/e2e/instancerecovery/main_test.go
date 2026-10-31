@@ -89,6 +89,12 @@ func TestInstanceAutoRecovery(t *testing.T) {
 	runInstanceAutoRecovery(t, requireFixture(t))
 }
 
+// TestInstanceRecoveryKeepsAnOlderInstanceAndItsDisk runs second: like the
+// first it takes a node away and leaves the cluster whole again.
+func TestInstanceRecoveryKeepsAnOlderInstanceAndItsDisk(t *testing.T) {
+	runRecoveryKeepsAnOlderInstanceAndItsDisk(t, requireFixture(t))
+}
+
 // TestInstanceRecoveryRefusesStorageFault is sequential and declared after the
 // recovery test, because it asserts the opposite outcome and a reconciler that
 // cannot tell the two faults apart passes one and fails the other.

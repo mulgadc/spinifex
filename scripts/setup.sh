@@ -556,6 +556,11 @@ resolve_firewall_mode() {
         info "Host firewall: firewalld is active, so the Spinifex policy will be armed in its place"
         return 0
     fi
+    if [ "${ISO_BUILD:-0}" != "1" ] && ufw_active; then
+        INSTALL_SPINIFEX_FIREWALL="on"
+        info "Host firewall: ufw is active, so the Spinifex policy will be armed in its place"
+        return 0
+    fi
     # The ISO is an appliance and arms; any other host was already doing something.
     if [ "${ISO_BUILD:-0}" = "1" ]; then
         INSTALL_SPINIFEX_FIREWALL="on"
@@ -590,6 +595,29 @@ mask_firewalld() {
     warn "  firewalld's rules were not migrated. The Spinifex policy filters input only, accepts ssh"
     warn "  from every IPv4 source until \$trusted_ssh_peers in $FIREWALL_CUSTOM narrows it, and opens"
     warn "  53, 443, 3000, 8443 and 9999 to any source. Restate any other restriction in that file."
+    if [ "$INSTALL_SPINIFEX_FIREWALL" = "on" ]; then
+        warn "  Until the daemon first loads the policy, this host accepts every connection."
+    else
+        warn "  The Spinifex policy is not armed (--firewall=off), so this host now has no firewall."
+    fi
+}
+
+ufw_active() {
+    command -v ufw > /dev/null 2>&1 || return 1
+    ${SUDO:-} ufw status 2>/dev/null | grep -q '^Status: active'
+}
+
+# Disable ufw if it is enforcing, as some cloud images ship it (Vultr's Ubuntu
+# does, with INPUT DROP). Its rules would have to accept everything the Spinifex
+# policy does, so guest IMDS, routed NAT and the API break with nothing logged.
+# `ufw disable` is persistent and reversible; the rules are kept, not migrated.
+disable_ufw() {
+    [ "${ISO_BUILD:-0}" = "1" ] && return 0
+    ufw_active || return 0
+    $SUDO ufw disable > /dev/null \
+        || fatal "Cannot disable ufw. The Spinifex nftables policy cannot run beside it"
+    warn "ufw is now disabled: the Spinifex nftables policy is the only supported node firewall."
+    warn "  ufw's rules were not migrated. Restate any restriction you relied on in $FIREWALL_CUSTOM."
     if [ "$INSTALL_SPINIFEX_FIREWALL" = "on" ]; then
         warn "  Until the daemon first loads the policy, this host accepts every connection."
     else
@@ -651,9 +679,12 @@ table inet spinifex_filter {
         # would expose every wildcard-bound host service (sshd, the AWS gateway,
         # northstar, the UI) to any tenant. IMDS is HTTP on .254:80; VPC DNS is
         # 53 on .253. Everything else on these ports falls through to policy drop.
-        iifname "ime-*" ip daddr 169.254.169.254 tcp dport 80 accept
-        iifname "ime-*" ip daddr 169.254.169.253 udp dport 53 accept
-        iifname "ime-*" ip daddr 169.254.169.253 tcp dport 53 accept
+        #
+        # Matched on the pre-DNAT destination: with imds_host_meta_ip set, the
+        # remap rewrites the address in prerouting, before this hook sees it.
+        iifname "ime-*" ct original ip daddr 169.254.169.254 tcp dport 80 accept
+        iifname "ime-*" ct original ip daddr 169.254.169.253 udp dport 53 accept
+        iifname "ime-*" ct original ip daddr 169.254.169.253 tcp dport 53 accept
 
         # PMTUD is not optional under a Geneve overlay.
         icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } accept
@@ -771,8 +802,9 @@ CUSTOM
     info "  $FIREWALL_MODE_FILE ($INSTALL_SPINIFEX_FIREWALL)"
 
     # After the mode file, so a retry after an interrupted install still finds
-    # 'on' once firewalld is no longer active.
+    # 'on' once firewalld or ufw is no longer active.
     mask_firewalld
+    disable_ufw
 
     $SUDO tee "$FIREWALL_APPLY" > /dev/null << 'APPLY'
 #!/bin/sh
@@ -1171,7 +1203,7 @@ APT_RUNTIME_PACKAGES="nbdkit
 qemu-utils gdisk ovmf qemu-efi-aarch64 less
 libvirt-daemon-system libvirt-clients
 pciutils
-jq curl iproute2 ethtool netcat-openbsd wget unzip xz-utils file
+jq curl iproute2 iputils-arping ethtool netcat-openbsd wget unzip xz-utils file
 ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon dhcpcd-base
 chrony nftables"
 
@@ -1181,7 +1213,7 @@ chrony nftables"
 OL_RUNTIME_PACKAGES="nbdkit nbdkit-basic-filters
 qemu-kvm qemu-img edk2-ovmf seabios-bin less
 pciutils
-jq curl iproute ethtool nmap-ncat wget unzip xz file
+jq curl iproute iputils ethtool nmap-ncat wget unzip xz file
 ovn25.03-central ovn25.03-host openvswitch3.5 openvswitch3.5-ipsec libreswan dhcpcd
 chrony nftables iptables-nft systemd-resolved"
 

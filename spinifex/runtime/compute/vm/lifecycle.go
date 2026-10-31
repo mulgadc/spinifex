@@ -348,6 +348,10 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 		return nil
 	}
 
+	// Cleared before the running state is written, so the record that says
+	// running never also says the instance may be terminated on a failure.
+	m.Inspect(instance, func(v *VM) { v.FirstLaunch = false })
+
 	if m.deps.TransitionState != nil {
 		_, stateSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.persist_state")
 		transitionErr := m.deps.TransitionState(instance, StateRunning)

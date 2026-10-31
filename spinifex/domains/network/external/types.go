@@ -45,6 +45,17 @@ type ExternalPoolConfig struct {
 	ExoscaleConfigFile string
 	ExoscaleAccount    string
 	ExoscaleBinary     string
+	// Vultr* configure a source="vultr" pool: the Vultr region the reserved
+	// IPs are created in and the file holding the API key. LabelPrefix marks
+	// every address this deployment made, so two deployments in one account
+	// never judge each other's.
+	VultrRegion  string
+	VultrKeyFile string
+	LabelPrefix  string
+	// ProviderHostID is this node's instance ID at the provider, which a
+	// floating address is attached to. Per node, so it is filled from the
+	// node's own config rather than the shared pool section.
+	ProviderHostID string
 }
 
 // IsDHCP reports whether the pool sources IPs from an upstream DHCP server.
@@ -68,6 +79,11 @@ func (p *ExternalPoolConfig) IsExoscale() bool {
 	return p != nil && p.Source == SourceExoscale
 }
 
+// IsVultr reports whether the pool sources IPs from Vultr reserved IPs.
+func (p *ExternalPoolConfig) IsVultr() bool {
+	return p != nil && p.Source == SourceVultr
+}
+
 const (
 	// SourceStatic is the default pool source (inline range math, KV-backed).
 	SourceStatic = "static"
@@ -82,6 +98,10 @@ const (
 	// attached through the exo CLI. A manual EIP arrives addressed to itself,
 	// so unlike OCI there is no private half to map.
 	SourceExoscale = "exoscale"
+	// SourceVultr delegates allocation to Vultr reserved IPs, delivered to the
+	// holder addressed to itself, so like Exoscale there is no private half.
+	// A VM is routed it by MAC; bare metal is ARPed for it on the public NIC.
+	SourceVultr = "vultr"
 
 	// OCIAuthConfigFile authenticates from an API-key config file. The default,
 	// because it is what an operator already has from `oci setup config`.

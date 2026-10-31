@@ -43,39 +43,40 @@ type Result struct {
 	Error  *WireError      `json:"error,omitempty"`
 }
 
-// WireError is an owner error by kind, so the ingress can map it exactly as
-// it would the owner's own sentinel. Message is the owner's error text.
+// WireError is an owner error by kind alone. Owner and backend text never
+// crosses the wire, since a wrapped error can carry a handle, body or secret.
 type WireError struct {
-	Kind    string `json:"kind"`
-	Message string `json:"message"`
+	Kind string `json:"kind"`
 }
 
-// kinds lists every owner sentinel the adapter distinguishes. Order matters:
-// the first match names the error, so wrapped sentinels resolve stably.
+// kinds lists every owner sentinel the adapter distinguishes with the fixed
+// text the ingress answers it with. The first match names the error, so
+// Unavailable comes first: an uncertain write is never reported as settled.
 var kinds = []struct {
 	name string
 	err  error
+	msg  string
 }{
-	{"queue.QueueDoesNotExist", queue.ErrQueueDoesNotExist},
-	{"queue.QueueNameExists", queue.ErrQueueNameExists},
-	{"queue.QueueDeletedRecently", queue.ErrQueueDeletedRecently},
-	{"queue.InvalidIdentity", queue.ErrInvalidIdentity},
-	{"queue.InvalidAttributeName", queue.ErrInvalidAttributeName},
-	{"queue.InvalidAttributeValue", queue.ErrInvalidAttributeValue},
-	{"queue.UnsupportedAttribute", queue.ErrUnsupportedAttribute},
-	{"queue.InvalidQueueName", queue.ErrInvalidQueueName},
-	{"queue.InvalidTag", queue.ErrInvalidTag},
-	{"queue.InvalidListRequest", queue.ErrInvalidListRequest},
-	{"queue.Unavailable", queue.ErrUnavailable},
-	{"message.QueueDoesNotExist", message.ErrQueueDoesNotExist},
-	{"message.BodyRequired", message.ErrBodyRequired},
-	{"message.InvalidContents", message.ErrInvalidContents},
-	{"message.InvalidParameter", message.ErrInvalidParameter},
-	{"message.Unsupported", message.ErrUnsupported},
-	{"message.ReceiptInvalid", message.ErrReceiptInvalid},
-	{"message.NotInflight", message.ErrNotInflight},
-	{"message.VisibilityCap", message.ErrVisibilityCap},
-	{"message.Unavailable", message.ErrUnavailable},
+	{"queue.Unavailable", queue.ErrUnavailable, "The queue service is temporarily unavailable."},
+	{"message.Unavailable", message.ErrUnavailable, "The queue service is temporarily unavailable."},
+	{"queue.QueueDoesNotExist", queue.ErrQueueDoesNotExist, "The specified queue does not exist."},
+	{"queue.QueueNameExists", queue.ErrQueueNameExists, "A queue already exists with the same name and a different value for attribute(s)."},
+	{"queue.QueueDeletedRecently", queue.ErrQueueDeletedRecently, "You must wait 60 seconds after deleting a queue before you can create another with the same name."},
+	{"queue.InvalidIdentity", queue.ErrInvalidIdentity, "The request identity is not valid."},
+	{"queue.InvalidAttributeName", queue.ErrInvalidAttributeName, "An attribute name is not valid."},
+	{"queue.InvalidAttributeValue", queue.ErrInvalidAttributeValue, "An attribute value is not valid."},
+	{"queue.UnsupportedAttribute", queue.ErrUnsupportedAttribute, "An attribute is not supported."},
+	{"queue.InvalidQueueName", queue.ErrInvalidQueueName, "Can only include alphanumeric characters, hyphens, or underscores. 1 to 80 in length."},
+	{"queue.InvalidTag", queue.ErrInvalidTag, "A tag is not valid."},
+	{"queue.InvalidListRequest", queue.ErrInvalidListRequest, "The list request is not valid."},
+	{"message.QueueDoesNotExist", message.ErrQueueDoesNotExist, "The specified queue does not exist."},
+	{"message.BodyRequired", message.ErrBodyRequired, "The request must contain the parameter MessageBody."},
+	{"message.InvalidContents", message.ErrInvalidContents, "The message contains characters outside the allowed set."},
+	{"message.InvalidParameter", message.ErrInvalidParameter, "A parameter value is not valid."},
+	{"message.Unsupported", message.ErrUnsupported, "A parameter or operation is not supported."},
+	{"message.ReceiptInvalid", message.ErrReceiptInvalid, "The receipt handle is not valid."},
+	{"message.NotInflight", message.ErrNotInflight, "The message is not in flight."},
+	{"message.VisibilityCap", message.ErrVisibilityCap, "The total visibility timeout for the message is beyond the 12-hour limit."},
 }
 
 // errWorkerFault is a worker error that is not an owner sentinel; the
@@ -86,14 +87,14 @@ var errWorkerFault = errors.New("relay: SQS worker failed the request")
 func encodeError(err error) *WireError {
 	for _, k := range kinds {
 		if errors.Is(err, k.err) {
-			return &WireError{Kind: k.name, Message: err.Error()}
+			return &WireError{Kind: k.name}
 		}
 	}
 	return &WireError{Kind: "fault"}
 }
 
-// remoteError is a decoded owner error: its text is the owner's and it
-// unwraps to the owner's sentinel.
+// remoteError is a decoded owner error: fixed text that unwraps to the
+// owner's sentinel.
 type remoteError struct {
 	sentinel error
 	msg      string
@@ -105,7 +106,7 @@ func (e *remoteError) Unwrap() error { return e.sentinel }
 func decodeError(w *WireError) error {
 	for _, k := range kinds {
 		if k.name == w.Kind {
-			return &remoteError{sentinel: k.err, msg: w.Message}
+			return &remoteError{sentinel: k.err, msg: k.msg}
 		}
 	}
 	return errWorkerFault

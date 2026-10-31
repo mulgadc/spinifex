@@ -133,7 +133,11 @@ func (o Owners) run(ctx context.Context, w Work) (json.RawMessage, []Claim, erro
 		if err != nil {
 			return nil, nil, err
 		}
-		return encodeOut(o.Queues.Tags(ctx, in.Account, in.Region, in.Name))
+		tags, err := o.Queues.Tags(ctx, in.Account, in.Region, in.Name)
+		if tags == nil {
+			tags = map[string]string{}
+		}
+		return encodeOut(tags, err)
 	case OpSendMessage:
 		in, err := decodeIn[message.SendInput](w.Input)
 		if err != nil {

@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -142,5 +143,147 @@ func TestReceiveLimit_WorstCaseFitsOnePost(t *testing.T) {
 	back, err := fromWireReceived(toWireReceived(msgs))
 	if err != nil || string(back[0].Body) != string(msgs[0].Body) || back[0].Attributes.MD5() != set.MD5() {
 		t.Fatalf("round trip changed the message: %v", err)
+	}
+}
+
+// An uncertain write wrapped with a client fault stays unavailable, for both
+// owners, so the caller is never told a write was settled when it was not.
+func TestEncodeError_UnavailableWinsOverClientFaults(t *testing.T) {
+	for _, tc := range []struct{ unavailable, fault error }{
+		{message.ErrUnavailable, message.ErrInvalidParameter},
+		{message.ErrUnavailable, message.ErrReceiptInvalid},
+		{queue.ErrUnavailable, queue.ErrInvalidAttributeValue},
+		{queue.ErrUnavailable, queue.ErrQueueDoesNotExist},
+	} {
+		got := decodeError(encodeError(errors.Join(tc.fault, tc.unavailable)))
+		if !errors.Is(got, tc.unavailable) || errors.Is(got, tc.fault) {
+			t.Fatalf("%v + %v decoded as %v", tc.fault, tc.unavailable, got)
+		}
+	}
+}
+
+// Owner and backend text never crosses the wire: the caller sees only the
+// fixed text for the kind.
+func TestEncodeError_CarriesNoOwnerText(t *testing.T) {
+	const secret = "AQEBsecretReceiptHandle"
+	wire := encodeError(fmt.Errorf("%w: handle %s rejected", message.ErrReceiptInvalid, secret))
+	body, err := MarshalResult(Result{Error: wire})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeError(wire)
+	if strings.Contains(string(body), secret) || strings.Contains(got.Error(), secret) || !errors.Is(got, message.ErrReceiptInvalid) {
+		t.Fatalf("wire %s, decoded %q", body, got)
+	}
+}
+
+// answer runs one call through the relay with the worker posting output.
+func answer(t *testing.T, output string, call func(r *Relay) error) error {
+	t.Helper()
+	r := &Relay{}
+	present(r)
+	done := make(chan error, 1)
+	go func() { done <- call(r) }()
+	w := takeOne(t, r, worker)
+	if _, err := r.Complete(worker, w.ID, Result{Output: []byte(output)}); err != nil {
+		t.Fatal(err)
+	}
+	return <-done
+}
+
+// A malformed, empty or mismatched success from the worker is reported as
+// unavailable, never as a confirmed send, receive, delete or queue.
+func TestRelay_IncompleteSuccessIsUnavailable(t *testing.T) {
+	const acct, region = "123456789012", "ap-southeast-2"
+	send := func(r *Relay) error {
+		_, err := r.Send(context.Background(), message.SendInput{Account: acct, Region: region, Queue: "orders", Body: []byte("hi")})
+		return err
+	}
+	goodMD5 := md5Of([]byte("hi"))
+	for name, out := range map[string]string{
+		"null":         "null",
+		"empty":        "{}",
+		"no id":        `{"MD5OfBody":"` + goodMD5 + `"}`,
+		"wrong md5":    `{"MessageID":"m","MD5OfBody":"` + md5Of([]byte("other")) + `"}`,
+		"attrs md5":    `{"MessageID":"m","MD5OfBody":"` + goodMD5 + `","MD5OfMessageAttributes":"` + goodMD5 + `"}`,
+		"not an array": `{"MessageID":"m"`,
+		"no position":  `{"MessageID":"m","MD5OfBody":"` + goodMD5 + `","EnqueuedAt":"2026-10-31T00:00:00Z"}`,
+		"no enqueue":   `{"MessageID":"m","MD5OfBody":"` + goodMD5 + `","Position":7}`,
+	} {
+		if err := answer(t, out, send); !errors.Is(err, message.ErrUnavailable) {
+			t.Fatalf("send %s = %v", name, err)
+		}
+	}
+	const done = `,"Position":7,"EnqueuedAt":"2026-10-31T00:00:00Z"}`
+	if err := answer(t, `{"MessageID":"m","MD5OfBody":"`+goodMD5+`"`+done, send); err != nil {
+		t.Fatalf("complete send = %v", err)
+	}
+
+	const times = `,"SentAt":"2026-10-31T00:00:00Z","FirstReceive":"2026-10-31T00:00:00Z","Deadline":"2026-10-31T00:01:00Z","ReceiveCount":1`
+	full := `{"MessageID":"m","ReceiptHandle":"h","Body":"aGk=","MD5OfBody":"` + goodMD5 + `","SenderID":"AIDA"` + times + `}`
+	recv := func(r *Relay) error {
+		_, err := r.Receive(context.Background(), message.ReceiveInput{Account: acct, Region: region, Queue: "orders"})
+		return err
+	}
+	for name, out := range map[string]string{
+		"null":      "null",
+		"no handle": `[{"MessageID":"m","Body":"aGk=","MD5OfBody":"` + goodMD5 + `"}]`,
+		"bad md5":   `[{"MessageID":"m","ReceiptHandle":"h","Body":"aGk=","MD5OfBody":"` + md5Of(nil) + `"}]`,
+		"no sender": `[{"MessageID":"m","ReceiptHandle":"h","Body":"aGk=","MD5OfBody":"` + goodMD5 + `"` + times + `}]`,
+		"too many":  `[` + full + `,` + full + `]`,
+	} {
+		if err := answer(t, out, recv); !errors.Is(err, message.ErrUnavailable) {
+			t.Fatalf("receive %s = %v", name, err)
+		}
+	}
+
+	if err := answer(t, `[`+full+`]`, recv); err != nil {
+		t.Fatalf("complete receive = %v", err)
+	}
+
+	del := func(r *Relay) error {
+		return r.Delete(context.Background(), message.DeleteInput{Account: acct, Region: region, Queue: "orders", ReceiptHandle: "h"})
+	}
+	if err := answer(t, "null", del); !errors.Is(err, message.ErrUnavailable) {
+		t.Fatalf("delete null = %v", err)
+	}
+
+	resolve := func(r *Relay) error {
+		_, err := r.Resolve(context.Background(), acct, region, "orders")
+		return err
+	}
+	for name, out := range map[string]string{
+		"null":          "null",
+		"no queue id":   `{"account":"` + acct + `","region":"` + region + `","name":"orders"}`,
+		"other account": `{"queueId":"q1","account":"210987654321","region":"` + region + `","name":"orders"}`,
+		"other name":    `{"queueId":"q1","account":"` + acct + `","region":"` + region + `","name":"payments"}`,
+		"deleting":      `{"queueId":"q1","account":"` + acct + `","region":"` + region + `","name":"orders","state":"deleting"}`,
+	} {
+		if err := answer(t, out, resolve); !errors.Is(err, queue.ErrUnavailable) {
+			t.Fatalf("resolve %s = %v", name, err)
+		}
+	}
+}
+
+// Pending work is bounded by bytes as well as count: a call that would push
+// the held inputs past the bound fails at once and holds nothing.
+func TestCall_PendingBytesAreBounded(t *testing.T) {
+	r := &Relay{MaxPendingBytes: 64 << 10, CallLimit: time.Second}
+	present(r)
+	big := message.SendInput{Account: "123456789012", Region: "ap-southeast-2", Queue: "orders", Body: make([]byte, 40<<10)}
+	go func() { _, _ = r.Send(context.Background(), big) }()
+	first := takeOne(t, r, worker)
+	start := time.Now()
+	if _, err := r.Send(context.Background(), big); !errors.Is(err, ErrNoWorker) || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("second send = %v after %s", err, time.Since(start))
+	}
+	if _, err := r.Complete(worker, first.ID, Result{Error: encodeError(message.ErrUnavailable)}); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	held := r.bytes
+	r.mu.Unlock()
+	if held != 0 {
+		t.Fatalf("bytes held after completion = %d", held)
 	}
 }

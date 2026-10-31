@@ -1,11 +1,17 @@
 package workerserve
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
+	"runtime"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
 )
 
@@ -54,5 +60,104 @@ func TestHandle_ReleasesOnlyWhenTheCallerProvablyLeft(t *testing.T) {
 				t.Fatalf("released = %v, want %v", got, tc.release)
 			}
 		})
+	}
+}
+
+// The store records a fingerprint the key cannot be read from; a restart
+// with the same key serves and any other key is refused.
+func TestCheckReceiptKey_BindsTheFirstKeyByFingerprintOnly(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	ctx := context.Background()
+	key := bytes.Repeat([]byte{0x5a}, 32)
+	if err := CheckReceiptKey(ctx, js, key); err != nil {
+		t.Fatalf("first bind: %v", err)
+	}
+	kv, err := js.KeyValue(ctx, markerBucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := kv.Get(ctx, markerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := entry.Value(); bytes.Contains(v, key) || bytes.Contains(v, []byte(hex.EncodeToString(key))) {
+		t.Fatal("marker holds the receipt key")
+	}
+	if err := CheckReceiptKey(ctx, js, key); err != nil {
+		t.Fatalf("restart with the same key: %v", err)
+	}
+	if err := CheckReceiptKey(ctx, js, bytes.Repeat([]byte{0xa5}, 32)); !errors.Is(err, ErrReceiptKeyChanged) {
+		t.Fatalf("changed key = %v; want ErrReceiptKeyChanged", err)
+	}
+}
+
+type flakyGateway struct {
+	mu       sync.Mutex
+	failures int
+	offered  bool
+	posted   []string
+}
+
+func (g *flakyGateway) PollWork(ctx context.Context) ([]relay.Work, error) {
+	g.mu.Lock()
+	switch {
+	case g.failures > 0:
+		g.failures--
+		g.mu.Unlock()
+		return nil, errors.New("gateway unreachable")
+	case !g.offered:
+		g.offered = true
+		g.mu.Unlock()
+		return []relay.Work{{ID: "w1", Op: relay.OpListQueues, Deadline: time.Now().Add(time.Minute)}}, nil
+	}
+	g.mu.Unlock()
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (g *flakyGateway) CompleteWork(_ context.Context, id string, _ []byte) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.posted = append(g.posted, id)
+	return OutcomeDelivered, nil
+}
+
+// Repeated poll failures are logged once and do not stop the loop: work the
+// gateway offers after it recovers is still run and posted.
+func TestServe_KeepsPollingThroughGatewayFailures(t *testing.T) {
+	gw := &flakyGateway{failures: 3}
+	var logs []string
+	var mu sync.Mutex
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, Config{Gateway: gw, Executor: &claimingExec{}, Backoff: time.Millisecond, Log: func(s string) {
+			mu.Lock()
+			logs = append(logs, s)
+			mu.Unlock()
+		}})
+	}()
+	for {
+		gw.mu.Lock()
+		n := len(gw.posted)
+		gw.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatal("work offered after recovery was never posted")
+		}
+		runtime.Gosched()
+	}
+	cancel()
+	<-done
+	if len(gw.posted) != 1 || gw.posted[0] != "w1" {
+		t.Fatalf("posted %v; want w1 once", gw.posted)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(logs) != 2 || !strings.HasPrefix(logs[0], "poll failed") {
+		t.Fatalf("logs = %q; want one failure line and one recovery line", logs)
 	}
 }

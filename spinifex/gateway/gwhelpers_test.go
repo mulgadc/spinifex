@@ -8,23 +8,29 @@ import (
 	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
+	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
@@ -34,6 +40,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
@@ -1106,4 +1113,129 @@ func (m *stsPolicyIAMService) GetUser(_ string, _ *iam.GetUserInput) (*iam.GetUs
 func (m *stsPolicyIAMService) withRoles(roles map[string]string) *stsPolicyIAMService {
 	m.roles = roles
 	return m
+}
+
+func allowAllTaggingDocs() []iamdomain.PolicyDocument {
+	return []iamdomain.PolicyDocument{{
+		Version: "2012-10-17",
+		Statement: []iamdomain.Statement{
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"*"}, Resource: iamdomain.StringOrArr{"*"}},
+		},
+	}}
+}
+
+// taggingRegistration is the Tagging registration over agg.
+func taggingRegistration(agg *tagging.Aggregator) dispatch.Registration {
+	return taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: agg})
+}
+
+const taggingTargetPrefix = "ResourceGroupsTaggingAPI_20170126."
+
+// withTagging registers the Resource Groups Tagging API on gw backed by agg, as
+// the awsgw role composes it.
+func withTagging(gw *GatewayConfig, agg *tagging.Aggregator) *GatewayConfig {
+	return withServices(gw, taggingRegistration(agg))
+}
+
+// taggingPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does,
+// on live test NATS, with docs as every principal's policy.
+func taggingPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, agg *tagging.Aggregator) (*GatewayConfig, http.Handler) {
+	t.Helper()
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
+	require.NoError(t, err)
+	_, nc := testutil.StartTestNATS(t)
+
+	gw := withVerifier(&GatewayConfig{
+		DisableLogging: true,
+		Region:         gwfix.Region,
+		NATSConn:       nc,
+		IAMService: &gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
+						SecretAccessKey: encryptedSecret,
+						UserName:        "alice",
+						AccountID:       authzAccountID,
+						Status:          "Active",
+					},
+				},
+			},
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		},
+	})
+	withTagging(gw, agg)
+
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", gw.Request)
+	return gw, r
+}
+
+// signTaggingRequest builds a POST / signed with credential-scope service
+// "tagging", the shape every Resource Groups Tagging API client sends.
+func signTaggingRequest(t *testing.T, target string, body []byte) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Host = "localhost:9999"
+	if target != "" {
+		req.Header.Set("X-Amz-Target", target)
+	}
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "tagging", time.Now().UTC())
+	return req
+}
+
+// newTaggingCBGateway serves ec2.CreateTags from a real TagsServiceImpl
+// over a fresh JetStream bucket, with no legacy object store.
+func newTaggingCBGateway(t *testing.T) (*GatewayConfig, *ec2tags.TagsServiceImpl) {
+	t.Helper()
+	_, nc, js := testutil.StartTestJetStream(t)
+	kv, err := ec2tags.GetOrCreateTagsBucket(t.Context(), js)
+	require.NoError(t, err)
+	svc := ec2tags.NewTagsServiceImplWithStore(&config.Config{}, nil, kv)
+
+	serve := func(subject string, fn func(*nats.Msg)) {
+		sub, err := nc.Subscribe(subject, fn)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+	}
+	serve("ec2.CreateTags", func(msg *nats.Msg) {
+		natsmsg.ServeNATSRequestCtx(msg, func(ctx context.Context, in *ec2.CreateTagsInput) (*ec2.CreateTagsOutput, error) {
+			return svc.CreateTags(ctx, in, natsmsg.AccountIDFromMsg(msg))
+		})
+	})
+
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), NATSConn: nc})
+	return gw, svc
+}
+
+func requireEC2OK(t *testing.T, gw *GatewayConfig, body string) {
+	t.Helper()
+	w := serveEC2(gw, body)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+}
+
+// ec2TagQuery builds a CreateTags or DeleteTags query body.
+func ec2TagQuery(action string, resources []string, tags map[string]string) string {
+	q := url.Values{"Action": {action}}
+	for i, r := range resources {
+		q.Set(fmt.Sprintf("ResourceId.%d", i+1), r)
+	}
+	i := 0
+	for k, v := range tags {
+		i++
+		q.Set(fmt.Sprintf("Tag.%d.Key", i), k)
+		q.Set(fmt.Sprintf("Tag.%d.Value", i), v)
+	}
+	return q.Encode()
+}
+
+func centralTagCount(t *testing.T, svc *ec2tags.TagsServiceImpl, resourceID string) int {
+	t.Helper()
+	out, err := svc.DescribeTags(t.Context(), &ec2.DescribeTagsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("resource-id"), Values: []*string{aws.String(resourceID)}}},
+	}, authzAccountID)
+	require.NoError(t, err)
+	return len(out.Tags)
 }

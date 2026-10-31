@@ -7,7 +7,9 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
@@ -18,13 +20,18 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -849,4 +856,254 @@ type iamExample struct {
 	Input  json.RawMessage `json:"input"`
 	Output json.RawMessage `json:"output"`
 	Title  string          `json:"title"`
+}
+
+// stsRegistration is the STS registration over the IAMService and STSService
+// gw holds, as the awsgw role composes it. Set them on gw first.
+func stsRegistration(gw *GatewayConfig) dispatch.Registration {
+	return stsawsapi.NewRegistration(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+}
+
+// withIAMAndSTS registers IAM and STS together on gw, with the unsigned
+// web-identity capability, as awsgw composes them.
+func withIAMAndSTS(gw *GatewayConfig) *GatewayConfig {
+	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	return withServices(gw, iamRegistration(gw), stsRegistration(gw))
+}
+
+// withSTS registers STS alone on gw and composes its unsigned web-identity
+// capability, as awsgw does.
+func withSTS(gw *GatewayConfig) *GatewayConfig {
+	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	return withServices(gw, stsRegistration(gw))
+}
+
+// STS_Request dispatches r to the registered STS service exactly as Request
+// does, registering it first from the fields gw holds when the test has not.
+func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) error {
+	if gw.Services == nil {
+		withSTS(gw)
+	}
+	entry, ok := gw.registered(stsawsapi.ServiceName)
+	if !ok {
+		panic("STS is not registered on this gateway")
+	}
+	return gw.dispatchRegistered(entry, w, r)
+}
+
+// flexMockSTSService is a configurable STSService mock with per-method
+// overrides. It embeds the interface so it satisfies the full contract; only
+// the fn-field methods below are wired, and any other method nil-panics if a
+// test reaches an unmocked path.
+type flexMockSTSService struct {
+	stsdomain.STSService
+
+	assumeRoleFn        func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
+	getCallerIdentityFn func(string, string, string, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
+	getSessionTokenFn   func(string, string, string, string, *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
+	lookupSessionFn     func(string) (*stsdomain.SessionCredential, error)
+	assumeWebIdentityFn func(*sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error)
+}
+
+func (m *flexMockSTSService) AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
+	if m.assumeRoleFn != nil {
+		return m.assumeRoleFn(callerAccountID, callerARN, callerIdentity, input)
+	}
+	return &sts.AssumeRoleOutput{}, nil
+}
+
+func (m *flexMockSTSService) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
+	if m.assumeWebIdentityFn != nil {
+		return m.assumeWebIdentityFn(input)
+	}
+	return nil, errors.New(awserrors.ErrorNotImplemented)
+}
+
+func (m *flexMockSTSService) GetCallerIdentity(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+	if m.getCallerIdentityFn != nil {
+		return m.getCallerIdentityFn(callerAccountID, callerARN, callerUserID, input)
+	}
+	return &sts.GetCallerIdentityOutput{
+		Account: aws.String(callerAccountID),
+		Arn:     aws.String(callerARN),
+		UserId:  aws.String(callerUserID),
+	}, nil
+}
+
+func (m *flexMockSTSService) GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+	if m.getSessionTokenFn != nil {
+		return m.getSessionTokenFn(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID, input)
+	}
+	return &sts.GetSessionTokenOutput{}, nil
+}
+
+func (m *flexMockSTSService) LookupSessionCredential(akid string) (*stsdomain.SessionCredential, error) {
+	if m.lookupSessionFn != nil {
+		return m.lookupSessionFn(akid)
+	}
+	return nil, nil
+}
+
+const (
+	stsTestRoleName = "app"
+	stsTestRoleARN  = "arn:aws:iam::000000000000:role/app"
+)
+
+// stsRequestParams holds identity values the STS dispatcher reads from SigV4 context.
+type stsRequestParams struct {
+	accountID      string
+	identity       string
+	principalType  string
+	accessKey      string
+	assumedRoleARN string
+	assumedRoleID  string
+	// underlyingRoleARN is what the policy gate resolves an assumed-role
+	// caller's policies by; SessionName never participates.
+	underlyingRoleARN string
+	stsSvc            stsdomain.STSService
+	iamSvc            iamdomain.IAMService
+}
+
+// stsIdentityPolicy builds an IAM service returning the given statements as the
+// caller's only identity policy, for a user and for an assumed role alike. The
+// one stored role is the pathless `app`; withRoles replaces the set.
+func stsIdentityPolicy(statements ...iamdomain.Statement) *stsPolicyIAMService {
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+	svc := &stsPolicyIAMService{roles: map[string]string{stsTestRoleName: stsTestRoleARN}}
+	svc.GetUserPoliciesFn = func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+		return docs, nil
+	}
+	svc.GetRolePoliciesFn = func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+		return docs, nil
+	}
+	return svc
+}
+
+// stsStatement is shorthand for a single-action, single-resource statement.
+func stsStatement(effect, action, resource string) iamdomain.Statement {
+	return iamdomain.Statement{
+		Effect:   effect,
+		Action:   iamdomain.StringOrArr{action},
+		Resource: iamdomain.StringOrArr{resource},
+	}
+}
+
+func stsPolicyRequestAs(t *testing.T, p stsRequestParams, body string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return doRequest(setupSTSRequestHandler(p), req)
+}
+
+// deniedSTSService fails the test if any gated handler is reached, so a passing
+// denial can only have come from the gate.
+func deniedSTSService(t *testing.T) *flexMockSTSService {
+	t.Helper()
+	return &flexMockSTSService{
+		assumeRoleFn: func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
+			t.Fatal("handler reached: the identity-policy gate should have denied this request")
+			return nil, nil
+		},
+	}
+}
+
+func assertSTSAccessDenied(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	b, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(b), "AccessDenied")
+	return string(b)
+}
+
+// stsPolicyRequest dispatches an STS action as alice with the given identity
+// policies.
+func stsPolicyRequest(t *testing.T, iamSvc iamdomain.IAMService, stsSvc *flexMockSTSService, body string) *http.Response {
+	t.Helper()
+	if stsSvc == nil {
+		stsSvc = deniedSTSService(t)
+	}
+	return stsPolicyRequestAs(t, stsRequestParams{
+		accountID:     awsidentifiers.GlobalAccountID,
+		identity:      "alice",
+		principalType: gwfix.PrincipalTypeUser,
+		accessKey:     "AKIAEXAMPLE",
+		stsSvc:        stsSvc,
+		iamSvc:        iamSvc,
+	}, body)
+}
+
+// stripRequestID removes the per-request UUID so two error bodies can be
+// compared for everything else.
+func stripRequestID(body string) string {
+	start := strings.Index(body, "<RequestId>")
+	end := strings.Index(body, "</RequestId>")
+	if start < 0 || end < start {
+		return body
+	}
+	return body[:start] + body[end:]
+}
+
+func setupSTSRequestHandler(p stsRequestParams) http.Handler {
+	if p.iamSvc == nil {
+		p.iamSvc = &flexMockIAMService{}
+	}
+	gw := withVerifier(&GatewayConfig{
+		DisableLogging: true,
+		STSService:     p.stsSvc,
+		IAMService:     p.iamSvc,
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		ctx = reqctx.WithService(ctx, "sts")
+		ctx = withPrincipalField(ctx, fieldAccountID, p.accountID)
+		ctx = withPrincipalField(ctx, fieldIdentity, p.identity)
+		ctx = withPrincipalField(ctx, fieldPrincipalType, p.principalType)
+		ctx = withPrincipalField(ctx, fieldAccessKey, p.accessKey)
+		if p.assumedRoleARN != "" {
+			ctx = withPrincipalField(ctx, fieldAssumedRoleARN, p.assumedRoleARN)
+		}
+		if p.assumedRoleID != "" {
+			ctx = withPrincipalField(ctx, fieldAssumedRoleID, p.assumedRoleID)
+			// The door seals aws:userid as the assumed-role ID for a role session.
+			ctx = withPrincipalField(ctx, fieldUserID, p.assumedRoleID)
+		}
+		if p.underlyingRoleARN != "" {
+			ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN, p.underlyingRoleARN)
+		}
+		r = r.WithContext(ctx)
+		if err := gw.STS_Request(w, r); err != nil {
+			gw.ErrorHandler(w, r, err)
+		}
+	})
+}
+
+// stsPolicyIAMService serves the identity policies the STS gate evaluates, the
+// GetUser lookup GetCallerIdentity performs, and the GetRole the gate resolves
+// the target role with.
+type stsPolicyIAMService struct {
+	gwfix.PolicyIAM
+
+	roles map[string]string
+}
+
+func (m *stsPolicyIAMService) GetRole(_ string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+	arn, ok := m.roles[aws.StringValue(input.RoleName)]
+	if !ok {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	return &iam.GetRoleOutput{Role: &iam.Role{
+		RoleName: input.RoleName,
+		Arn:      aws.String(arn),
+	}}, nil
+}
+
+func (m *stsPolicyIAMService) GetUser(_ string, _ *iam.GetUserInput) (*iam.GetUserOutput, error) {
+	return &iam.GetUserOutput{User: &iam.User{UserId: aws.String("AIDAALICE000")}}, nil
+}
+
+// withRoles replaces the roles GetRole answers for, keyed by name and mapped to
+// the ARN IAM stored — which is what a resource-scoped grant is matched against.
+func (m *stsPolicyIAMService) withRoles(roles map[string]string) *stsPolicyIAMService {
+	m.roles = roles
+	return m
 }

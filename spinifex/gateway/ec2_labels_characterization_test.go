@@ -1,16 +1,6 @@
-// Characterization tests for the labels an EC2 request carries through the
-// signed pipeline today: the trace span, the audit action, the throttle key,
-// and the service and action the policy gate evaluates. Also the order of the
-// cluster-unavailable gate against the checks that follow it. They assert
-// current behaviour, not AWS parity.
-
 package gateway
 
 import (
-	"net/http"
-	"slices"
-	"testing"
-
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -20,17 +10,39 @@ import (
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"net/http"
+	"slices"
+	"testing"
 )
 
-// ec2LabelCases span the query-protocol shapes: a daemon-backed read, the
-// gateway-local actions, an idempotent create and a key import.
-var ec2LabelCases = []struct{ action, body string }{
-	{"DescribeVpcs", "Action=DescribeVpcs"},
-	{"DescribeInstances", "Action=DescribeInstances"},
-	{"DescribeRegions", "Action=DescribeRegions"},
-	{"DescribeAvailabilityZones", "Action=DescribeAvailabilityZones"},
-	{"CreateEgressOnlyInternetGateway", "Action=CreateEgressOnlyInternetGateway&VpcId=vpc-1"},
-	{"ImportKeyPair", "Action=ImportKeyPair&KeyName=k&PublicKeyMaterial=c3NoLXJzYQ%3D%3D"},
+// The cluster-unavailable gate runs ahead of everything after authentication:
+// a caller the policy would refuse, an action that does not exist and a
+// gateway-local action all get the same 503, so none of them reach dispatch.
+func TestEC2Labels_ClusterUnavailableGateOrder(t *testing.T) {
+	cases := []struct {
+		name string
+		deny bool
+		body string
+	}{
+		{"policy would deny", true, "Action=DescribeVpcs"},
+		{"unknown action", false, "Action=NoSuchAction"},
+		{"missing action", false, "Foo=bar"},
+		{"gateway-local DescribeRegions", false, "Action=DescribeRegions"},
+		{"dry run", false, "Action=DescribeVpcs&DryRun=true"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var stmts []iamdomain.Statement
+			if !c.deny {
+				stmts = append(stmts, allowEC2())
+			}
+			app := ec2Pipeline(t, func(e *ec2PipelineEnv) { e.NoNATS = true }, stmts...)
+			got := probeEC2(t, app.Handler, c.body)
+			assert.Equal(t, http.StatusServiceUnavailable, got.Status, got.Body)
+			assert.Equal(t, "ServiceUnavailable", got.Code)
+			assert.Contains(t, got.Message, "cluster unavailable", got.Message)
+		})
+	}
 }
 
 // The policy gate evaluates service "ec2" and the request's own Action: a
@@ -106,34 +118,4 @@ func TestEC2Labels_ThrottleKeyIsAccountAndAction(t *testing.T) {
 
 	other := probeEC2(t, app.Handler, "Action=DescribeInstances")
 	assert.Less(t, other.Status, 400, other.Body)
-}
-
-// The cluster-unavailable gate runs ahead of everything after authentication:
-// a caller the policy would refuse, an action that does not exist and a
-// gateway-local action all get the same 503, so none of them reach dispatch.
-func TestEC2Labels_ClusterUnavailableGateOrder(t *testing.T) {
-	cases := []struct {
-		name string
-		deny bool
-		body string
-	}{
-		{"policy would deny", true, "Action=DescribeVpcs"},
-		{"unknown action", false, "Action=NoSuchAction"},
-		{"missing action", false, "Foo=bar"},
-		{"gateway-local DescribeRegions", false, "Action=DescribeRegions"},
-		{"dry run", false, "Action=DescribeVpcs&DryRun=true"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			var stmts []iamdomain.Statement
-			if !c.deny {
-				stmts = append(stmts, allowEC2())
-			}
-			app := ec2Pipeline(t, func(e *ec2PipelineEnv) { e.NoNATS = true }, stmts...)
-			got := probeEC2(t, app.Handler, c.body)
-			assert.Equal(t, http.StatusServiceUnavailable, got.Status, got.Body)
-			assert.Equal(t, "ServiceUnavailable", got.Code)
-			assert.Contains(t, got.Message, "cluster unavailable", got.Message)
-		})
-	}
 }

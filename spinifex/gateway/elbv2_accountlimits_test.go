@@ -25,20 +25,6 @@ func TestELBv2DescribeAccountLimitsAcceptsPaging(t *testing.T) {
 	assert.NotContains(t, string(body), "NextMarker")
 }
 
-// A sealed override must refuse the load balancer cap with Blocked rather
-// than the generic InternalError every other read failure maps to.
-func TestELBv2DescribeAccountLimitsBlockedOnSealedRecord(t *testing.T) {
-	gw, account := quotaTestGateway(t)
-	quotaFor(gw).SetAccountTerminationChecker(&quotaStubChecker{terminating: map[string]bool{account: true}})
-	_, err := quotaFor(gw).SealAccountOverrides(t.Context(), account)
-	require.NoError(t, err)
-
-	body, err := serveAccountLimits(t, gw, account, "Action=DescribeAccountLimits")
-	require.Error(t, err)
-	require.Equal(t, awserrors.ErrorBlocked, err.Error())
-	assert.Empty(t, body)
-}
-
 // A disabled quota means "not enforced", not "nothing permitted", so the entries
 // report the AWS default rather than the unconsulted configured value.
 func TestELBv2DescribeAccountLimitsDefaultsWhenQuotaDisabled(t *testing.T) {
@@ -99,4 +85,18 @@ func TestELBv2DescribeAccountLimitsReportsUnenforcedLimits(t *testing.T) {
 	assert.Equal(t, "100", byName["rules-per-application-load-balancer"])
 	assert.Equal(t, "1000", byName["targets-per-application-load-balancer"])
 	assert.Equal(t, "25", byName["certificates-per-application-load-balancer"])
+}
+
+// A sealed override must refuse the load balancer cap with Blocked rather
+// than the generic InternalError every other read failure maps to.
+func TestELBv2DescribeAccountLimitsBlockedOnSealedRecord(t *testing.T) {
+	gw, account := quotaTestGateway(t)
+	quotaFor(gw).SetAccountTerminationChecker(&quotaStubChecker{terminating: map[string]bool{account: true}})
+	_, err := quotaFor(gw).SealAccountOverrides(t.Context(), account)
+	require.NoError(t, err)
+
+	body, err := serveAccountLimits(t, gw, account, "Action=DescribeAccountLimits")
+	require.Error(t, err)
+	require.Equal(t, awserrors.ErrorBlocked, err.Error())
+	assert.Empty(t, body)
 }

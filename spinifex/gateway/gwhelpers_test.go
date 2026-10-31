@@ -16,12 +16,14 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/auth"
+	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
@@ -45,6 +47,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/ec2quota"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,6 +59,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1922,4 +1926,355 @@ func (s *roleStoreIAMService) CanonicalResourceARN(account string, _ arn.IAMReso
 		return roleARN, nil
 	}
 	return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
+}
+
+const (
+	authzAccountID = "123456789012"
+	authzRegion    = "ap-southeast-2"
+)
+
+// serveEC2 runs a request through EC2_Request and, on error, ErrorHandler, so
+// the assertion sees the status and body a client would.
+func serveEC2(gw *GatewayConfig, body string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	r := setupEC2Request(body, authzAccountID)
+	if err := gw.EC2_Request(w, r); err != nil {
+		gw.ErrorHandler(w, r, err)
+	}
+	return w
+}
+
+// ec2Registration composes the EC2 registration from the NATS connection, IAM
+// service and node count gw holds, as the awsgw role does. mutate adjusts the
+// rest.
+func ec2Registration(gw *GatewayConfig, mutate ...func(*ec2awsapi.Deps)) dispatch.Registration {
+	deps := ec2awsapi.Deps{
+		NATS:          gw.NATSConn,
+		IAM:           gw.IAMService,
+		Quota:         ec2quota.Adapter{Service: quotaFor(gw)},
+		ActiveNodes:   gw.DiscoverActiveNodes,
+		ExpectedNodes: gw.ExpectedNodes,
+	}
+	for _, m := range mutate {
+		m(&deps)
+	}
+	return ec2awsapi.NewRegistration(deps)
+}
+
+// withEC2Verifier is withVerifier for a test that signs as EC2: the service
+// must be registered for the auth gate to serve its credential scope.
+func withEC2Verifier(gw *GatewayConfig) *GatewayConfig {
+	return withEC2(withVerifier(gw))
+}
+
+// withEC2 registers EC2 alone on gw.
+func withEC2(gw *GatewayConfig, mutate ...func(*ec2awsapi.Deps)) *GatewayConfig {
+	return withServices(gw, ec2Registration(gw, mutate...))
+}
+
+func statement(effect, action, resource string) iamdomain.Statement {
+	return iamdomain.Statement{
+		Effect:   effect,
+		Action:   iamdomain.StringOrArr{action},
+		Resource: iamdomain.StringOrArr{resource},
+	}
+}
+
+// assertPermitted asserts the policy gate passed. The request then fails on the
+// absent NATS connection rather than on authorization, so a denial cannot hide
+// behind a not-found.
+func assertPermitted(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+// assertDenied matches on the resolved code, not the message: a policy denial
+// names the principal, action and resource ahead of the code.
+func assertDenied(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok, "unresolvable error code: %v", err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, code)
+}
+
+// scopedPolicyGateway serves one policy document to every principal.
+func scopedPolicyGateway(statements ...iamdomain.Statement) *GatewayConfig {
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+	return withVerifier(&GatewayConfig{
+		DisableLogging: true,
+		Region:         authzRegion,
+		IAMService: &gwfix.PolicyIAM{
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			GetRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		},
+	})
+}
+
+// dispatchEC2 drives the gateway with no NATS connection. A permitted request
+// therefore reaches the handler and fails there, which is what proves the policy
+// check ran ahead of the resource existing at all.
+func dispatchEC2(t *testing.T, gw *GatewayConfig, body string) error {
+	t.Helper()
+	return gw.EC2_Request(httptest.NewRecorder(), setupEC2Request(body, authzAccountID))
+}
+
+// assertUnauthorized asserts EC2's policy denial, UnauthorizedOperation.
+func assertUnauthorized(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorUnauthorizedOperation, err.Error())
+}
+
+func ec2RegistrationInventory() map[string]dispatch.Inventory {
+	return withEC2(&GatewayConfig{}).Services.Inventory()
+}
+
+// profileIAMService resolves every instance profile to one holding role app, or
+// fails resolution with resolveErr.
+type profileIAMService struct {
+	gwfix.PolicyIAM
+
+	resolveErr error
+}
+
+func (s *profileIAMService) CanonicalResourceARN(accountID string, _ arn.IAMResourceType, name string) (string, error) {
+	return "arn:aws:iam::" + accountID + ":role/" + name, nil
+}
+
+func (s *profileIAMService) ResolveInstanceProfile(accountID, _ string) (*iamdomain.InstanceProfile, error) {
+	if s.resolveErr != nil {
+		return nil, s.resolveErr
+	}
+	return &iamdomain.InstanceProfile{AccountID: accountID, RoleName: "app"}, nil
+}
+
+// assertNotDenied asserts the policy gate passed where the handler failure that
+// follows is not fixed. It resolves the code for the same reason assertDenied
+// does: the denial message is no longer the bare code.
+func assertNotDenied(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.NotEqual(t, awserrors.ErrorAccessDenied, code)
+}
+
+// EC2_Request dispatches r to the registered EC2 service exactly as Request
+// does past its NATS gate, registering it first from the fields gw holds when
+// the test has not.
+func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) error {
+	if _, ok := gw.registered(ec2awsapi.ServiceName); !ok {
+		withEC2(gw)
+	}
+	entry, _ := gw.registered(ec2awsapi.ServiceName)
+	return gw.dispatchRegistered(entry, w, r)
+}
+
+const dryRunMessage = "Request would have succeeded, but DryRun flag is set."
+
+func assertDryRun(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorDryRunOperation, err.Error())
+}
+
+func allowEC2() iamdomain.Statement { return statement("Allow", "ec2:*", "*") }
+
+// ec2Pipeline wires SigV4AuthMiddleware -> Request as SetupRoutes does, with
+// EC2 on the legacy switch over a real JetStream and a stub daemon. Policy
+// statements are the caller's only IAM policy.
+func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdomain.Statement) ec2PipelineApp {
+	t.Helper()
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
+	require.NoError(t, err)
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+	env := &ec2PipelineEnv{}
+	if mutate != nil {
+		mutate(env)
+	}
+	svc := &profileIAMService{resolveErr: env.ResolveErr, PolicyIAM: gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       authzAccountID,
+					Status:          "Active",
+				},
+			},
+		},
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}}
+	_, nc, _ := testutil.StartTestJetStream(t)
+	daemon := newEC2Daemon(t, nc)
+
+	cfg := &GatewayConfig{
+		DisableLogging: true,
+		Region:         gwfix.Region,
+		NATSConn:       nc,
+		IAMService:     svc,
+		ExpectedNodes:  1,
+	}
+	if env.NoNATS {
+		cfg.NATSConn = nil
+	}
+	gw := withEC2(withVerifier(cfg), func(d *ec2awsapi.Deps) {
+		d.AZ = gwfix.Region + "a"
+		d.Endpoint = "https://registry.example"
+	})
+	r := chi.NewRouter()
+	for _, mw := range env.Outer {
+		r.Use(mw)
+	}
+	r.Use(gw.SigV4AuthMiddleware())
+	r.Use(traceActionEnricher)
+	if env.Throttler != nil {
+		r.Use(env.Throttler.Middleware(gw.throttleKeyFuncs(), gw.writeThrottleError))
+	}
+	r.HandleFunc("/*", gw.Request)
+	return ec2PipelineApp{Handler: r, Daemon: daemon}
+}
+
+// ec2PipelineEnv is what a case may change before the app is built.
+type ec2PipelineEnv struct {
+	NoNATS     bool
+	ResolveErr error
+	// Outer runs ahead of SigV4, as the telemetry and audit middleware do.
+	Outer []func(http.Handler) http.Handler
+	// Throttler, when set, is installed after the action enricher as SetupRoutes does.
+	Throttler *ratelimit.Throttler
+}
+
+func probeEC2(t *testing.T, app http.Handler, body string) ec2Outcome {
+	t.Helper()
+	resp := doRequest(app, signEC2Request(t, body))
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	out := ec2Outcome{Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: string(raw)}
+	if resp.StatusCode >= 400 {
+		var env ec2ErrorBody
+		require.NoError(t, xml.Unmarshal(raw, &env), string(raw))
+		out.Code, out.Message, out.RequestID = env.Errors.Error.Code, env.Errors.Error.Message, env.RequestID
+	}
+	return out
+}
+
+// ec2LabelCases span the query-protocol shapes: a daemon-backed read, the
+// gateway-local actions, an idempotent create and a key import.
+var ec2LabelCases = []struct{ action, body string }{
+	{"DescribeVpcs", "Action=DescribeVpcs"},
+	{"DescribeInstances", "Action=DescribeInstances"},
+	{"DescribeRegions", "Action=DescribeRegions"},
+	{"DescribeAvailabilityZones", "Action=DescribeAvailabilityZones"},
+	{"CreateEgressOnlyInternetGateway", "Action=CreateEgressOnlyInternetGateway&VpcId=vpc-1"},
+	{"ImportKeyPair", "Action=ImportKeyPair&KeyName=k&PublicKeyMaterial=c3NoLXJzYQ%3D%3D"},
+}
+
+type ec2Outcome struct {
+	Status      int
+	ContentType string
+	Body        string
+	Code        string
+	Message     string
+	RequestID   string
+}
+
+const runInstancesBase = "Action=RunInstances&InstanceType=t3.micro&MinCount=1&MaxCount=1"
+
+// xmlText escapes s as the error body renders it.
+func xmlText(t *testing.T, s string) string {
+	t.Helper()
+	var b strings.Builder
+	require.NoError(t, xml.EscapeText(&b, []byte(s)))
+	return b.String()
+}
+
+func tagSpecBody(action, resourceType string) string {
+	return "Action=" + action + "&TagSpecification.1.ResourceType=" + resourceType +
+		"&TagSpecification.1.Tag.1.Key=k&TagSpecification.1.Tag.1.Value=v"
+}
+
+type ec2PipelineApp struct {
+	Handler http.Handler
+	Daemon  *ec2Daemon
+}
+
+func newEC2Daemon(t *testing.T, nc *nats.Conn) *ec2Daemon {
+	t.Helper()
+	d := &ec2Daemon{calls: map[string]int{}, bodies: map[string][]byte{}, replies: map[string]string{}}
+	sub, err := nc.Subscribe("ec2.>", func(m *nats.Msg) {
+		d.mu.Lock()
+		d.calls[m.Subject]++
+		d.bodies[m.Subject] = append([]byte(nil), m.Data...)
+		reply := `{}`
+		switch m.Subject {
+		case "ec2.CreateEgressOnlyInternetGateway":
+			d.eigw++
+			reply = fmt.Sprintf(`{"EgressOnlyInternetGateway":{"EgressOnlyInternetGatewayId":"eigw-%04d"}}`, d.eigw)
+		case "ec2.DescribeVpcs":
+			reply = `{"Vpcs":[]}`
+		}
+		if r, ok := d.replies[m.Subject]; ok {
+			reply = r
+		}
+		d.mu.Unlock()
+		_ = m.Respond([]byte(reply))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, nc.Flush())
+	return d
+}
+
+func signEC2Request(t *testing.T, body string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Host = "localhost:9999"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+	gwfix.SignRequestAs(t, req, []byte(body), gwfix.AccessKey, gwfix.SecretKey, "ec2", time.Now().UTC())
+	return req
+}
+
+type ec2ErrorBody struct {
+	XMLName xml.Name `xml:"Response"`
+	Errors  struct {
+		Error struct {
+			Code    string `xml:"Code"`
+			Message string `xml:"Message"`
+		} `xml:"Error"`
+	} `xml:"Errors"`
+	RequestID string `xml:"RequestID"`
+}
+
+// ec2Daemon stands in for the daemons behind the ec2.* NATS subjects. It
+// records what the gateway forwarded and answers every subject with an empty
+// output unless a case needs a real shape.
+type ec2Daemon struct {
+	mu     sync.Mutex
+	calls  map[string]int
+	bodies map[string][]byte
+	eigw   int
+	// replies overrides the canned answer for a subject.
+	replies map[string]string
+}
+
+func (d *ec2Daemon) body(subject string) []byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.bodies[subject]
+}
+
+func (d *ec2Daemon) count(subject string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls[subject]
+}
+
+func (d *ec2Daemon) reply(subject, body string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.replies[subject] = body
 }

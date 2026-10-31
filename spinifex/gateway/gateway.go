@@ -136,27 +136,7 @@ func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc
 // could be composed, so a reader that needs no ARN may ignore it.
 func callerActor(ctx context.Context) (dispatch.Actor, error) {
 	p, _ := reqctx.Principal(ctx)
-	callerARN := p.CallerARN
-	var err error
-	if callerARN == "" {
-		slog.Error("caller ARN could not be composed", "principalType", p.PrincipalType)
-		err = errors.New(awserrors.ErrorInternalError)
-	}
-	actor := dispatch.Actor{
-		AccountID:     p.AccountID,
-		CallerARN:     callerARN,
-		PrincipalType: p.PrincipalType,
-		AccessKeyID:   reqctx.AccessKeyID(ctx),
-		UserID:        p.UserID,
-	}
-	if p.PrincipalType == principalTypeAssumedRole {
-		actor.PrincipalARN = p.UnderlyingRoleARN
-		actor.SessionName = p.Identity
-	} else {
-		actor.PrincipalARN = callerARN
-		actor.UserName = p.Identity
-	}
-	return actor, err
+	return pipeline.ActorFor(p, reqctx.AccessKeyID(ctx))
 }
 
 func (gw *GatewayConfig) SetupRoutes() http.Handler {

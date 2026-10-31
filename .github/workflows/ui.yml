@@ -7,6 +7,11 @@ on:
       - dev
     paths:
       - spinifex/runtime/roles/spinifexui/frontend/**
+      - spinifex/runtime/roles/spinifexui/*.go
+      - spinifex/operator/admin/instance_metrics*.go
+      - spinifex/operator/admin/live_streams*.go
+      - spinifex/runtime/roles/qmpcollector/**
+      - contracts/telemetry/**
       - .github/workflows/ui.yml
   pull_request:
     branches:
@@ -14,6 +19,11 @@ on:
       - dev
     paths:
       - spinifex/runtime/roles/spinifexui/frontend/**
+      - spinifex/runtime/roles/spinifexui/*.go
+      - spinifex/operator/admin/instance_metrics*.go
+      - spinifex/operator/admin/live_streams*.go
+      - spinifex/runtime/roles/qmpcollector/**
+      - contracts/telemetry/**
       - .github/workflows/ui.yml
   workflow_dispatch:
 

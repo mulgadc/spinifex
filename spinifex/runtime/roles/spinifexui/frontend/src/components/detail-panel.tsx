@@ -91,6 +91,19 @@ function isPanelTab(value: unknown): value is PanelTab {
 const LIST_CONTROLS =
   "a, button, input, select, textarea, label, tr, [role=checkbox], [role=combobox]"
 
+// Escape belongs to these first: the popup it was pressed in, a combobox whose
+// list is open, or a modal anywhere, which lies over the panel too.
+const ESCAPE_OWNERS =
+  "[role=dialog], [role=alertdialog], [role=menu], [role=listbox], [role=combobox][aria-expanded=true]"
+
+const MODALS = "[role=alertdialog], [role=dialog][aria-modal=true]"
+
+function escapeOwned(target: EventTarget | null): boolean {
+  const owned = target instanceof Element && target.closest(ESCAPE_OWNERS)
+
+  return Boolean(owned) || document.querySelector(MODALS) !== null
+}
+
 // Faster than the slide in, so dismissing never feels like waiting.
 const CLOSE_MS = 150
 
@@ -114,7 +127,24 @@ export function DetailPanel({
   const wideLayout = useWideLayout()
   const wide = layout === "auto" && wideLayout
   const sectionRef = useRef<HTMLElement>(null)
+  const headingRef = useRef<HTMLHeadingElement>(null)
   const [closing, setClosing] = useState(false)
+
+  // Opening moves focus into the panel, and closing hands it back to whatever
+  // opened it, usually the row, if that is still on the page.
+  useEffect(() => {
+    const opener = wide ? document.activeElement : null
+
+    if (wide) {
+      headingRef.current?.focus({ preventScroll: true })
+    }
+
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) {
+        opener.focus({ preventScroll: true })
+      }
+    }
+  }, [wide])
 
   // The panel slides out the way it slid in, then the route drops it.
   const close = useCallback(() => {
@@ -128,19 +158,15 @@ export function DetailPanel({
     }
   }, [wide, onClose])
 
-  // Escape closes the panel, unless it is closing a dialog or menu over it. A
-  // page is somewhere the user navigated to, so it ignores Escape.
+  // Escape closes the panel, unless a popup or modal owns it. A page is
+  // somewhere the user navigated to, so it ignores Escape.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      const overlay = document.querySelector(
-        "[role=dialog], [role=alertdialog], [role=menu], [role=listbox]",
-      )
-
       if (
         layout === "auto" &&
         event.key === "Escape" &&
         !event.defaultPrevented &&
-        !overlay
+        !escapeOwned(event.target)
       ) {
         close()
       }
@@ -295,7 +321,13 @@ export function DetailPanel({
           {fullPage}
         </span>
         <div className="min-w-0 flex-1 text-center">
-          <h2 className="truncate text-sm font-semibold">{title}</h2>
+          <h2
+            className="truncate text-sm font-semibold outline-none"
+            ref={headingRef}
+            tabIndex={-1}
+          >
+            {title}
+          </h2>
           {subtitle && (
             <p className="truncate font-mono text-xs text-muted-foreground">
               {subtitle}

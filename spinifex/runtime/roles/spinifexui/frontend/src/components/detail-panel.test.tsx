@@ -60,6 +60,75 @@ describe("DetailPanel", () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
+  it("ignores a list mounted elsewhere that Escape was not pressed in", () => {
+    const onClose = vi.fn()
+    render(
+      <>
+        <DetailPanel
+          closeLabel="Close"
+          label="Details"
+          onClose={onClose}
+          title="vpc-1"
+        >
+          body
+        </DetailPanel>
+        {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- stands in for a popup's list */}
+        <div role="listbox">always here</div>
+      </>,
+    )
+
+    fireEvent.keyDown(document, { key: "Escape" })
+    expect(screen.getByRole("region", { name: "Details" })).toHaveAttribute(
+      "data-closing",
+    )
+  })
+
+  it("leaves Escape to a menu it was pressed in", () => {
+    const onClose = vi.fn()
+    render(
+      <DetailPanel
+        closeLabel="Close"
+        label="Details"
+        onClose={onClose}
+        title="vpc-1"
+      >
+        <div role="menu">
+          <button type="button">Stop</button>
+        </div>
+      </DetailPanel>,
+    )
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Stop" }), {
+      key: "Escape",
+    })
+    expect(screen.getByRole("region", { name: "Details" })).not.toHaveAttribute(
+      "data-closing",
+    )
+  })
+
+  it("takes focus on open and hands it back to the row on close", () => {
+    const row = document.createElement("button")
+    document.body.append(row)
+    row.focus()
+
+    const { unmount } = render(
+      <DetailPanel
+        closeLabel="Close"
+        label="Details"
+        onClose={vi.fn()}
+        title="vpc-1"
+      >
+        body
+      </DetailPanel>,
+    )
+
+    expect(screen.getByRole("heading", { name: "vpc-1" })).toHaveFocus()
+
+    unmount()
+    expect(row).toHaveFocus()
+    row.remove()
+  })
+
   it("keeps a failure inside the panel", () => {
     render(
       <DetailPanel

@@ -1,0 +1,3 @@
+# The committed bundle carries the AWS SDK's template strings verbatim,
+# including trailing spaces that are part of their values.
+spinifex/runtime/roles/spinifexui/frontend/dist/** -whitespace

@@ -12,6 +12,7 @@ import (
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/nats-io/nats.go"
 )
@@ -69,6 +70,22 @@ func (d Deps) getInstanceMetrics(w http.ResponseWriter, inv dispatch.Invocation,
 		slog.ErrorContext(r.Context(), "GetInstanceMetrics: response writer cannot flush")
 		return errors.New(awserrors.ErrorInternalError)
 	}
+
+	release, ok, accountFull := liveStreams.acquire(accountID)
+	if !ok {
+		outcome := otelsetup.LiveStreamRefusedTotal
+		if accountFull {
+			outcome = otelsetup.LiveStreamRefusedAccount
+		}
+		otelsetup.RecordLiveStream(r.Context(), outcome)
+		slog.WarnContext(r.Context(), "GetInstanceMetrics: too many live streams",
+			"account_id", accountID, "instance_id", instanceID, "cap", string(outcome))
+		return errors.New(awserrors.ErrorRequestLimitExceeded)
+	}
+	defer release()
+	otelsetup.RecordLiveStream(r.Context(), otelsetup.LiveStreamOpened)
+	otelsetup.RecordLiveStreamOpen(r.Context(), 1)
+	defer otelsetup.RecordLiveStreamOpen(r.Context(), -1)
 
 	return streamInstanceMetrics(w, r, d.NATS, accountID, instanceID, since)
 }

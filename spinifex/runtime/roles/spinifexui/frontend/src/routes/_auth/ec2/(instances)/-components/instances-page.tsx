@@ -18,6 +18,7 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
 import {
@@ -311,7 +312,6 @@ export function InstancesPage({
   search,
   onSearchChange,
 }: InstancesPageProps) {
-  const [selected, setSelected] = useState<Set<string>>(new Set())
   const sort = parseSort(search.sort)
 
   const counts = Object.fromEntries(
@@ -326,12 +326,6 @@ export function InstancesPage({
       matchesState(instance, search.state) && matchesQuery(instance, search.q),
   )
 
-  // Selection is pruned to what the filters show, so actions never reach a
-  // row the customer can no longer see.
-  const selectedVisible = visible.filter(
-    (instance) => instance.InstanceId && selected.has(instance.InstanceId),
-  )
-
   const filtered = search.q !== "" || search.state !== "all"
 
   const open = instances.find(
@@ -342,6 +336,19 @@ export function InstancesPage({
   function closePanel() {
     onSearchChange(CLOSED_INSTANCES_PANEL)
   }
+
+  // Selection follows what the filters show, so actions never reach a row the
+  // customer can no longer see.
+  const selection = useRowSelection(
+    visible.map((instance) => instance.InstanceId ?? ""),
+    search.selected !== "",
+    closePanel,
+  )
+
+  const selectedVisible = visible.filter(
+    (instance) =>
+      instance.InstanceId && selection.selected.has(instance.InstanceId),
+  )
 
   function showInstance(id: string) {
     onSearchChange({ ...CLOSED_INSTANCES_PANEL, selected: id })
@@ -456,12 +463,7 @@ export function InstancesPage({
 
         <div>
           {selectedVisible.length > 0 && (
-            <BulkActions
-              instances={selectedVisible}
-              onDone={() => {
-                setSelected(new Set())
-              }}
-            />
+            <BulkActions instances={selectedVisible} onDone={selection.clear} />
           )}
 
           <DataTable
@@ -496,21 +498,14 @@ export function InstancesPage({
             onRowClick={(id) => {
               showInstance(id)
             }}
-            onSelectedChange={(next) => {
-              setSelected(next)
-
-              // The bulk bar and the panel compete for the same attention.
-              if (next.size > 0 && search.selected !== "") {
-                closePanel()
-              }
-            }}
+            onSelectedChange={selection.onSelectedChange}
             onSortChange={(next) => {
               onSearchChange({
                 sort: `${next.desc ? "-" : ""}${next.column}`,
               })
             }}
             rows={visible}
-            selected={selected}
+            selected={selection.selected}
             sort={sort}
           />
         </div>

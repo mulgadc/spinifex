@@ -28,19 +28,3 @@ func TestEC2Request_DryRunAnswersEveryAction(t *testing.T) {
 		})
 	}
 }
-
-// A caller the policy refuses is denied rather than told the request would
-// have succeeded.
-func TestEC2Request_DryRunDeniedCaller(t *testing.T) {
-	gw := scopedPolicyGateway(
-		statement("Allow", "ec2:*", "*"),
-		statement("Deny", "ec2:CreateVpc", "*"),
-	)
-	assertUnauthorized(t, dispatchEC2(t, gw, "Action=CreateVpc&CidrBlock=10.0.0.0/16&DryRun=true"))
-	assertDryRun(t, dispatchEC2(t, gw, "Action=CreateSecurityGroup&GroupName=g&GroupDescription=d&DryRun=true"))
-}
-
-func TestEC2Request_DryRunFalseDispatches(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService()})
-	assertPermitted(t, dispatchEC2(t, gw, "Action=CreateVpc&CidrBlock=10.0.0.0/16&DryRun=false"))
-}

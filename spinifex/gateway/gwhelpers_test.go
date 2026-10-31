@@ -1785,27 +1785,6 @@ func registerTaskDefinitionBody(t *testing.T, taskRoleARN string) string {
 // policy is actually evaluated rather than taking the pre-IAM bypass.
 const testECSPassRoleTargetARN = "arn:aws:iam::123456789012:role/ecs-task-role"
 
-// dispatchEKS drives the gateway with no NATS connection, so a permitted request
-// reaches the NATS guard and fails there.
-func dispatchEKS(t *testing.T, gw *GatewayConfig, method, path, body string) error {
-	t.Helper()
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	ctx := reqctx.WithService(req.Context(), "eks")
-	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
-	req = withTestIdentity(req.WithContext(ctx))
-	return gw.serveEKS(httptest.NewRecorder(), req)
-}
-
-func createNodegroupBody(nodeRole string) string {
-	return `{"nodegroupName":"workers","nodeRole":"` + nodeRole + `"}`
-}
-
-const eksNodeRoleARN = "arn:aws:iam::" + authzAccountID + ":role/eks/node-role"
-
-func eksPassRoleGateway(statements ...iamdomain.Statement) *GatewayConfig {
-	return eksGatewayWithIAM(eksPassRoleService(statements...))
-}
-
 const ecsPipelineTarget = "AmazonEC2ContainerServiceV20141113."
 
 func (gw *GatewayConfig) serveRegistered(service string, w http.ResponseWriter, r *http.Request) error {
@@ -1817,10 +1796,6 @@ func (gw *GatewayConfig) serveRegistered(service string, w http.ResponseWriter, 
 		panic(service + " is not registered on this gateway")
 	}
 	return gw.dispatchRegistered(entry, w, r)
-}
-
-func (gw *GatewayConfig) serveEKS(w http.ResponseWriter, r *http.Request) error {
-	return gw.serveRegistered(eksawsapi.ServiceName, w, r)
 }
 
 // IAMServiceLike is the slice of the IAM service the mock resolver reads.
@@ -1861,71 +1836,6 @@ func setupECSRequest(target, body string) *http.Request {
 	ctx := reqctx.WithService(req.Context(), "ecs")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 	return withTestIdentity(req.WithContext(ctx))
-}
-
-func eksGatewayWithIAM(iamService *roleStoreIAMService) *GatewayConfig {
-	return withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: iamService})
-}
-
-// The foreign account holds a role of the same name, so only the gateway's
-// account check stops its ARN from resolving.
-func eksPassRoleService(statements ...iamdomain.Statement) *roleStoreIAMService {
-	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
-	return &roleStoreIAMService{
-		PolicyIAM: gwfix.PolicyIAM{
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-		},
-		roles: map[string]map[string]string{
-			authzAccountID:   {"node-role": eksNodeRoleARN},
-			foreignAccountID: {"node-role": "arn:aws:iam::" + foreignAccountID + ":role/eks/node-role"},
-		},
-	}
-}
-
-func createAddonBody(roleARN string) string {
-	return `{"addonName":"aws-load-balancer-controller","serviceAccountRoleArn":"` + roleARN + `"}`
-}
-
-const foreignAccountID = "999999999999"
-
-// The AWS capture of 2026-10-30 refuses a foreign or non-role ARN on CreateCluster
-// and CreateNodegroup with AccessDeniedException before PassRole is evaluated.
-func assertCrossAccountPassRole(t *testing.T, err error) {
-	t.Helper()
-	code, ok := awserrors.ResolveErrorCode(err)
-	require.True(t, ok, "unresolvable error code: %v", err)
-	assert.Equal(t, awserrors.ErrorAccessDeniedException, code)
-	assert.Contains(t, err.Error(), "Cross-account pass role is not allowed.")
-}
-
-func assertInvalidParameter(t *testing.T, err error) {
-	t.Helper()
-	code, ok := awserrors.ResolveErrorCode(err)
-	require.True(t, ok, "unresolvable error code: %v", err)
-	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, code)
-}
-
-func updateAddonBody(roleARN string) string {
-	return `{"serviceAccountRoleArn":"` + roleARN + `"}`
-}
-
-// roleStoreIAMService evaluates policy from docs and resolves role names to the
-// ARNs in roles, keyed by account then name, the way the IAM store does.
-type roleStoreIAMService struct {
-	gwfix.PolicyIAM
-
-	roles        map[string]map[string]string
-	canonicalErr error
-}
-
-func (s *roleStoreIAMService) CanonicalResourceARN(account string, _ arn.IAMResourceType, name string) (string, error) {
-	if s.canonicalErr != nil {
-		return "", s.canonicalErr
-	}
-	if roleARN, ok := s.roles[account][name]; ok {
-		return roleARN, nil
-	}
-	return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
 }
 
 const (
@@ -1999,32 +1909,12 @@ func assertDenied(t *testing.T, err error) {
 	assert.Equal(t, awserrors.ErrorAccessDenied, code)
 }
 
-// scopedPolicyGateway serves one policy document to every principal.
-func scopedPolicyGateway(statements ...iamdomain.Statement) *GatewayConfig {
-	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
-	return withVerifier(&GatewayConfig{
-		DisableLogging: true,
-		Region:         authzRegion,
-		IAMService: &gwfix.PolicyIAM{
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-			GetRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-		},
-	})
-}
-
 // dispatchEC2 drives the gateway with no NATS connection. A permitted request
 // therefore reaches the handler and fails there, which is what proves the policy
 // check ran ahead of the resource existing at all.
 func dispatchEC2(t *testing.T, gw *GatewayConfig, body string) error {
 	t.Helper()
 	return gw.EC2_Request(httptest.NewRecorder(), setupEC2Request(body, authzAccountID))
-}
-
-// assertUnauthorized asserts EC2's policy denial, UnauthorizedOperation.
-func assertUnauthorized(t *testing.T, err error) {
-	t.Helper()
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorUnauthorizedOperation, err.Error())
 }
 
 func ec2RegistrationInventory() map[string]dispatch.Inventory {
@@ -2048,16 +1938,6 @@ func (s *profileIAMService) ResolveInstanceProfile(accountID, _ string) (*iamdom
 		return nil, s.resolveErr
 	}
 	return &iamdomain.InstanceProfile{AccountID: accountID, RoleName: "app"}, nil
-}
-
-// assertNotDenied asserts the policy gate passed where the handler failure that
-// follows is not fixed. It resolves the code for the same reason assertDenied
-// does: the denial message is no longer the bare code.
-func assertNotDenied(t *testing.T, err error) {
-	t.Helper()
-	require.Error(t, err)
-	code, _ := awserrors.ResolveErrorCode(err)
-	assert.NotEqual(t, awserrors.ErrorAccessDenied, code)
 }
 
 // EC2_Request dispatches r to the registered EC2 service exactly as Request

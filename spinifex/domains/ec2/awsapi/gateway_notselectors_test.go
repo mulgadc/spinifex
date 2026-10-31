@@ -1,30 +1,28 @@
-//test:in-package — drives EC2_Request through the gateway's unexported test
-// helpers (scopedPolicyGateway, dispatchEC2).
-
-package gateway
+package awsapi_test
 
 import (
 	"testing"
 
+	"github.com/mulgadc/spinifex/internal/testkit/gwtest"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 // The PowerUserAccess shape: an Allow on everything except the listed actions.
 func TestEC2Request_AllowNotActionGrantsTheComplement(t *testing.T) {
-	gw := scopedPolicyGateway(iamdomain.Statement{
+	h := gwtest.Scoped(iamdomain.Statement{
 		Effect:    "Allow",
 		NotAction: iamdomain.StringOrArr{"iam:*", "ec2:TerminateInstances"},
 		Resource:  iamdomain.StringOrArr{"*"},
 	})
 
-	assertPermitted(t, dispatchEC2(t, gw, "Action=StopInstances&InstanceId.1=i-dev"))
-	assertUnauthorized(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.1=i-dev"))
+	gwtest.AssertPermitted(t, dispatchEC2(t, h, "Action=StopInstances&InstanceId.1=i-dev"))
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=TerminateInstances&InstanceId.1=i-dev"))
 }
 
 // A Deny on NotResource fences every instance but the named one.
 func TestEC2Request_DenyNotResourceFencesTheComplement(t *testing.T) {
-	gw := scopedPolicyGateway(
-		statement("Allow", "ec2:*", "*"),
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
 		iamdomain.Statement{
 			Effect:      "Deny",
 			Action:      iamdomain.StringOrArr{"ec2:TerminateInstances"},
@@ -32,6 +30,6 @@ func TestEC2Request_DenyNotResourceFencesTheComplement(t *testing.T) {
 		},
 	)
 
-	assertPermitted(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.1=i-dev"))
-	assertUnauthorized(t, dispatchEC2(t, gw, "Action=TerminateInstances&InstanceId.1=i-prod"))
+	gwtest.AssertPermitted(t, dispatchEC2(t, h, "Action=TerminateInstances&InstanceId.1=i-dev"))
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=TerminateInstances&InstanceId.1=i-prod"))
 }

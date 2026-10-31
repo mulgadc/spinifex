@@ -1,6 +1,7 @@
 package etcdmember
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -99,4 +100,30 @@ func TestRemove_RemoveFailureIsReturned(t *testing.T) {
 	err := Remove(context.Background(), c, Config{PeerIP: "10.0.0.12", SelfIP: "10.0.0.10"})
 	require.ErrorIs(t, err, boom)
 	assert.Equal(t, []uint64{2}, c.removed)
+}
+
+func TestRun_ExitCodeMapping(t *testing.T) {
+	boom := errors.New("etcd unreachable")
+	cfg := Config{PeerIP: "10.0.0.12", SelfIP: "10.0.0.10"}
+	cases := []struct {
+		name     string
+		client   *fakeClient
+		cfg      Config
+		wantCode int
+		wantOut  string
+	}{
+		{"removed", &fakeClient{members: threeMembers()}, cfg, 0, "removed etcd member 10.0.0.12"},
+		{"already absent is success", &fakeClient{members: threeMembers()}, Config{PeerIP: "10.0.0.99", SelfIP: "10.0.0.10"}, 0, "member already absent: 10.0.0.99"},
+		{"self refused", &fakeClient{members: threeMembers()}, Config{PeerIP: "10.0.0.10", SelfIP: "10.0.0.10"}, 1, "refusing to remove the local etcd member"},
+		{"ambiguous refused", &fakeClient{members: append(threeMembers(), Member{ID: 4, Name: "dup", PeerURLs: []string{"https://10.0.0.12:2380"}})}, cfg, 1, "more than one etcd member"},
+		{"list error", &fakeClient{listErr: boom}, cfg, 1, "etcd unreachable"},
+		{"remove error", &fakeClient{members: threeMembers(), removeErr: boom}, cfg, 1, "etcd unreachable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			assert.Equal(t, tc.wantCode, Run(context.Background(), tc.client, tc.cfg, &out))
+			assert.Contains(t, out.String(), tc.wantOut)
+		})
+	}
 }

@@ -625,10 +625,9 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "FAKEPUB")
 
 	assert.Contains(t, udata, "path: "+k3sConfigPath)
-	// The control plane is tainted so user workloads never schedule on it (EKS
-	// parity, and it keeps image pulls off the etcd disk).
-	assert.Contains(t, udata, "node-taint:")
-	assert.Contains(t, udata, "  - CriticalAddonsOnly=true:NoExecute")
+	// The control plane runs no agent, so it is never a Node and needs no taint.
+	assert.Contains(t, udata, "disable-agent: true")
+	assert.NotContains(t, udata, "node-taint:")
 	// AWS parity: K3s' bundled traefik + servicelb are always disabled; Service
 	// type=LoadBalancer / Ingress are the AWS LB Controller's job. local-storage is
 	// disabled too so its local-path provisioner does not add a second default

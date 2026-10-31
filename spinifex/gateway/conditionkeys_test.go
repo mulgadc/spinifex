@@ -1,11 +1,12 @@
 //test:in-package — requestConditionKeys, checkPolicyResources, credential.Principal
 //and ctxAccountID are all unexported, and the file reuses the in-package
-//policyMockIAMService and withTestIdentity doubles.
+//gwfix.PolicyIAM and withTestIdentity doubles.
 
 package gateway
 
 import (
 	"crypto/tls"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"net/http"
@@ -167,7 +168,7 @@ func TestRequestConditionKeys_SourceIPWithoutAuthMiddleware(t *testing.T) {
 
 // conditionedPolicyIAMService serves one statement carrying cond, so a test can
 // drive a real condition through checkPolicyResources.
-func conditionedPolicyIAMService(effect string, cond map[string]map[string]iamdomain.ConditionValue) *policyMockIAMService {
+func conditionedPolicyIAMService(effect string, cond map[string]map[string]iamdomain.ConditionValue) *gwfix.PolicyIAM {
 	docs := []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
 		Statement: []iamdomain.Statement{
@@ -183,9 +184,9 @@ func conditionedPolicyIAMService(effect string, cond map[string]map[string]iamdo
 	if effect == "Allow" {
 		docs[0].Statement = docs[0].Statement[1:]
 	}
-	return &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-		getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	return &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		GetRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 	}
 }
 

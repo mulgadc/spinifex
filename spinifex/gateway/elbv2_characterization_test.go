@@ -7,6 +7,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/xml"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -38,20 +39,20 @@ var requestIDPattern = regexp.MustCompile(`<RequestId>[^<]*</RequestId>`)
 // live test NATS, with docs as every principal's policy.
 func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admissionquota.Service) (*GatewayConfig, http.Handler) {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
 	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		NATSConn:       nc,
-		IAMService: &policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
+		IAMService: &gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
 						SecretAccessKey: encryptedSecret,
 						UserName:        "alice",
 						AccountID:       authzAccountID,
@@ -59,7 +60,7 @@ func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admi
 					},
 				},
 			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	})
 	withELBv2(withQuota(gw, quota))
@@ -78,7 +79,7 @@ func signELBv2Request(t *testing.T, body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(b))
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	signTestRequestAs(t, req, b, testAccessKey, testSecretKey, "elasticloadbalancing", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, b, gwfix.AccessKey, gwfix.SecretKey, "elasticloadbalancing", time.Now().UTC())
 	return req
 }
 
@@ -303,13 +304,13 @@ func TestELBv2Pipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
 // --- Oversized body over HTTP -------------------------------------------------
 
 func TestELBv2Pipeline_OversizedBody_413OverHTTP(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	oversized := bytes.Repeat([]byte("x"), int(sigv4.MaxPayloadLen)+1)
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversized))
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	signTestRequestAs(t, req, oversized, testAccessKey, testSecretKey, "elasticloadbalancing", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, oversized, gwfix.AccessKey, gwfix.SecretKey, "elasticloadbalancing", time.Now().UTC())
 
 	resp := doRequest(handler, req)
 
@@ -371,12 +372,12 @@ func TestELBv2Pipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 	assert.Equal(t, "DescribeListenerAttributes", auditField(got, "action"))
 }
 
-// The pipeline signs in testRegion, so ARNs must carry it to pass the
+// The pipeline signs in gwfix.Region, so ARNs must carry it to pass the
 // endpoint-region check.
 func pipelineLB(name, id string) string {
-	return arn.FormatELBv2LoadBalancer(testRegion, authzAccountID, name, id, "application")
+	return arn.FormatELBv2LoadBalancer(gwfix.Region, authzAccountID, name, id, "application")
 }
 
 func pipelineListener(lbName, lbID, id string) string {
-	return arn.FormatELBv2Listener(testRegion, authzAccountID, lbName, lbID, id, "application")
+	return arn.FormatELBv2Listener(gwfix.Region, authzAccountID, lbName, lbID, id, "application")
 }

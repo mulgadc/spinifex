@@ -7,6 +7,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +23,7 @@ import (
 )
 
 // createAccountPolicy grants exactly the action the signup principal holds.
-func createAccountPolicy() *policyMockIAMService {
+func createAccountPolicy() *gwfix.PolicyIAM {
 	allow := []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
 		Statement: []iamdomain.Statement{
@@ -33,9 +34,9 @@ func createAccountPolicy() *policyMockIAMService {
 			},
 		},
 	}}
-	return &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
-		getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
+	return &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
+		GetRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -993,13 +994,13 @@ func TestCheckPolicy_FailsClosed(t *testing.T) {
 		},
 		{
 			name:    "no auth context",
-			gw:      withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}),
+			gw:      withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &gwfix.IAM{}}),
 			req:     httptest.NewRequest(http.MethodPost, "/", nil),
 			wantErr: awserrors.ErrorAccessDenied,
 		},
 		{
 			name:    "empty identity",
-			gw:      withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}),
+			gw:      withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &gwfix.IAM{}}),
 			req:     authed(""),
 			wantErr: awserrors.ErrorAccessDenied,
 		},
@@ -1017,8 +1018,8 @@ func TestCheckPolicy_FailsClosed(t *testing.T) {
 // Shared authorization errors must not expose a canonical resource that was
 // resolved from storage. STS opts into detailed wording at its dispatcher.
 func TestCheckPolicyResources_DenialIsOpaque(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+	mock := &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, nil
 		},
 	}
@@ -1055,7 +1056,7 @@ func TestCheckPolicy_PassRoleFailsClosed(t *testing.T) {
 }
 
 func TestCheckPolicy_RootUserGlobalAccount(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}})
+	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &gwfix.IAM{}})
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "root")
 	ctx = withPrincipalField(ctx, fieldAccountID, "000000000000") // GlobalAccountID
@@ -1070,7 +1071,7 @@ func TestCheckPolicy_RootUserGlobalAccount(t *testing.T) {
 // fires BEFORE the identity-string root short-circuit. A session whose
 // SessionName is "root" must not inherit root privileges.
 func TestCheckPolicy_AssumedRoleSessionNamedRoot(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}})
+	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &gwfix.IAM{}})
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "root")
 	ctx = withPrincipalField(ctx, fieldAccountID, "000000000000")
@@ -1084,8 +1085,8 @@ func TestCheckPolicy_AssumedRoleSessionNamedRoot(t *testing.T) {
 }
 
 func TestCheckPolicy_NonRootAllowPolicy(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+	mock := &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return []iamdomain.PolicyDocument{
 				{
 					Version: "2012-10-17",
@@ -1108,8 +1109,8 @@ func TestCheckPolicy_NonRootAllowPolicy(t *testing.T) {
 }
 
 func TestCheckPolicy_NonRootDenyPolicy(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+	mock := &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return []iamdomain.PolicyDocument{
 				{
 					Version: "2012-10-17",
@@ -1133,8 +1134,8 @@ func TestCheckPolicy_NonRootDenyPolicy(t *testing.T) {
 }
 
 func TestCheckPolicy_NonRootNoPolicies(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+	mock := &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, nil
 		},
 	}
@@ -1151,8 +1152,8 @@ func TestCheckPolicy_NonRootNoPolicies(t *testing.T) {
 }
 
 func TestCheckPolicy_GetUserPoliciesError(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+	mock := &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, errors.New("db connection failed")
 		},
 	}
@@ -1169,7 +1170,7 @@ func TestCheckPolicy_GetUserPoliciesError(t *testing.T) {
 }
 
 func TestCheckPolicy_MissingAccountID(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}})
+	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: &gwfix.IAM{}})
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
 	// No account ID
@@ -1192,8 +1193,8 @@ func shortenPolicyResolveRetry(t *testing.T) {
 func TestCheckPolicy_NATSTransientRetriesAllAttempts(t *testing.T) {
 	shortenPolicyResolveRetry(t)
 	calls := 0
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+	mock := &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			calls++
 			return nil, fmt.Errorf("get user: %w", nats.ErrNoResponders)
 		},
@@ -1214,8 +1215,8 @@ func TestCheckPolicy_NATSTransientRetriesAllAttempts(t *testing.T) {
 func TestCheckPolicy_NATSTransientRetriesThenSucceeds(t *testing.T) {
 	shortenPolicyResolveRetry(t)
 	calls := 0
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+	mock := &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			calls++
 			if calls < 3 {
 				return nil, fmt.Errorf("get user: %w", nats.ErrNoResponders)
@@ -1243,8 +1244,8 @@ func TestCheckPolicy_NATSTransientRetriesThenSucceeds(t *testing.T) {
 }
 
 func TestCheckPolicy_NonTransientErrorStillFails(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+	mock := &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, errors.New("database corruption")
 		},
 	}

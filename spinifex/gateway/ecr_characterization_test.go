@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -46,24 +47,24 @@ func decodeAuthToken(token string) (string, error) {
 
 // ecrPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS so Request dispatches. docs is every principal's policy; the
-// region is testRegion because signTestRequestAs always signs for it.
+// region is gwfix.Region because gwfix.SignRequestAs always signs for it.
 func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConfig, http.Handler) {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
 	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		InternalSuffix: ecrTestSuffix,
 		NATSConn:       nc,
-		IAMService: &policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
+		IAMService: &gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
 						SecretAccessKey: encryptedSecret,
 						UserName:        "alice",
 						AccountID:       ecrTestAccount,
@@ -71,7 +72,7 @@ func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConf
 					},
 				},
 			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	})
 
@@ -103,7 +104,7 @@ func signECRRequest(t *testing.T, target string, body []byte) *http.Request {
 	if target != "" {
 		req.Header.Set("X-Amz-Target", target)
 	}
-	signTestRequestAs(t, req, body, testAccessKey, testSecretKey, "ecr", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "ecr", time.Now().UTC())
 	return req
 }
 
@@ -309,13 +310,13 @@ func TestECRInventory_ScanningActionsReturnOperationNotSupported(t *testing.T) {
 // whose body exceeds the SigV4 cap is rejected inside SigV4AuthMiddleware,
 // before ECR dispatch ever runs, with the JSON error envelope.
 func TestECRPipeline_OversizedBody_413OverHTTP(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	oversized := bytes.Repeat([]byte("x"), int(sigv4.MaxPayloadLen)+1)
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversized))
 	req.Host = "localhost:9999"
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".ListRepositories")
-	signTestRequestAs(t, req, oversized, testAccessKey, testSecretKey, "ecr", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, oversized, gwfix.AccessKey, gwfix.SecretKey, "ecr", time.Now().UTC())
 
 	resp := doRequest(handler, req)
 
@@ -369,7 +370,7 @@ func TestECRPipeline_AuthzGateBlocksComposedAction(t *testing.T) {
 			{
 				Effect:   "Allow",
 				Action:   iamdomain.StringOrArr{"ecr:CreateRepository"},
-				Resource: iamdomain.StringOrArr{"arn:aws:ecr:" + testRegion + ":" + ecrTestAccount + ":repository/other"},
+				Resource: iamdomain.StringOrArr{"arn:aws:ecr:" + gwfix.Region + ":" + ecrTestAccount + ":repository/other"},
 			},
 		},
 	}}

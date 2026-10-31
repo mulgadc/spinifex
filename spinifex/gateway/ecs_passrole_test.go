@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -42,9 +43,9 @@ func registerTaskDefinitionBody(t *testing.T, taskRoleARN string) string {
 // TestECSRegisterTaskDefinition_DenialRendersAccessDenied403 proves shared
 // policy denials stay opaque while retaining the service's 403 envelope.
 func TestECSRegisterTaskDefinition_DenialRendersAccessDenied403(t *testing.T) {
-	mock := &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-			return allowPolicyResource("ecs:RegisterTaskDefinition", "*"), nil
+	mock := &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+			return gwfix.AllowPolicyResource("ecs:RegisterTaskDefinition", "*"), nil
 		},
 	}
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: mock})

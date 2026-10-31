@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"net/http"
@@ -31,7 +32,7 @@ const (
 // GetUser lookup GetCallerIdentity performs, and the GetRole the gate resolves
 // the target role with.
 type stsPolicyIAMService struct {
-	policyMockIAMService
+	gwfix.PolicyIAM
 
 	roles map[string]string
 }
@@ -57,10 +58,10 @@ func (m *stsPolicyIAMService) GetRole(_ string, input *iam.GetRoleInput) (*iam.G
 func stsIdentityPolicy(statements ...iamdomain.Statement) *stsPolicyIAMService {
 	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
 	svc := &stsPolicyIAMService{roles: map[string]string{stsTestRoleName: stsTestRoleARN}}
-	svc.getUserPoliciesFn = func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+	svc.GetUserPoliciesFn = func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return docs, nil
 	}
-	svc.getRolePoliciesFn = func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+	svc.GetRolePoliciesFn = func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return docs, nil
 	}
 	return svc

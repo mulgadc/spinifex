@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"bytes"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,16 +25,16 @@ const ecsPipelineTarget = "AmazonEC2ContainerServiceV20141113."
 // validation therefore stops at the handler with ServerInternal.
 func containerPipelineApp(t *testing.T, statements ...iamdomain.Statement) http.Handler {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
 	svc := &roleStoreIAMService{
-		policyMockIAMService: policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
+		PolicyIAM: gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
 						SecretAccessKey: encryptedSecret,
 						UserName:        "alice",
 						AccountID:       authzAccountID,
@@ -41,7 +42,7 @@ func containerPipelineApp(t *testing.T, statements ...iamdomain.Statement) http.
 					},
 				},
 			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 		roles: map[string]map[string]string{
 			authzAccountID:   {"node-role": eksNodeRoleARN},
@@ -49,7 +50,7 @@ func containerPipelineApp(t *testing.T, statements ...iamdomain.Statement) http.
 		},
 	}
 	_, nc := testutil.StartTestNATS(t)
-	gw := withVerifier(withContainers(&GatewayConfig{DisableLogging: true, Region: testRegion, NATSConn: nc, IAMService: svc}))
+	gw := withVerifier(withContainers(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, NATSConn: nc, IAMService: svc}))
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", gw.Request)
@@ -63,7 +64,7 @@ func signContainerRequest(t *testing.T, service, method, path, target string, bo
 	if target != "" {
 		req.Header.Set("X-Amz-Target", target)
 	}
-	signTestRequestAs(t, req, body, testAccessKey, testSecretKey, service, time.Now().UTC())
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, service, time.Now().UTC())
 	return req
 }
 

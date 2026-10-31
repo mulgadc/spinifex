@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -66,15 +67,15 @@ type reqctxGatewayEnv struct {
 // optional route53 probe over a caller who holds only the given statements.
 func reqctxGateway(t *testing.T, env reqctxGatewayEnv, statements ...iamdomain.Statement) *GatewayConfig {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
-	base := policyMockIAMService{
-		mockIAMService: mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {
-					AccessKeyID:     testAccessKey,
+	base := gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "alice",
 					AccountID:       authzAccountID,
@@ -82,11 +83,11 @@ func reqctxGateway(t *testing.T, env reqctxGatewayEnv, statements ...iamdomain.S
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 	}
 	svc := &iamAuthzPolicyService{
-		policyMockIAMService: base,
-		arns:                 map[string]string{"alice": "arn:aws:iam::" + authzAccountID + ":user/alice"},
+		PolicyIAM: base,
+		arns:      map[string]string{"alice": "arn:aws:iam::" + authzAccountID + ":user/alice"},
 	}
 
 	var nc *nats.Conn
@@ -139,7 +140,7 @@ func signReqctx(t *testing.T, req *http.Request, body []byte, service, region st
 	payloadHash := sha256Hex(body)
 	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
 	require.NoError(t, v4.NewSigner().SignHTTP(t.Context(),
-		aws.Credentials{AccessKeyID: testAccessKey, SecretAccessKey: testSecretKey},
+		aws.Credentials{AccessKeyID: gwfix.AccessKey, SecretAccessKey: gwfix.SecretKey},
 		req, payloadHash, service, region, time.Now().UTC()))
 	return req
 }
@@ -436,7 +437,7 @@ func TestReqctxPipeline_CredentialScopeRegionVersusInvocationRegion(t *testing.T
 
 // iamAuthzPolicyService resolves a role or user name to a fixed ARN.
 type iamAuthzPolicyService struct {
-	policyMockIAMService
+	gwfix.PolicyIAM
 
 	arns map[string]string
 }

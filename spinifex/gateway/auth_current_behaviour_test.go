@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
@@ -135,7 +136,7 @@ func (e *cbEnv) gateway() http.Handler {
 	gw := &GatewayConfig{
 		DisableLogging: true,
 		NATSConn:       e.nc,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		ExpectedNodes:  1,
 		IAMService:     e.counter,
 		Credentials:    credverify.New(e.counter, e.sts),
@@ -182,7 +183,7 @@ func (e *cbEnv) request(t *testing.T, h http.Handler, c cbCreds, service string,
 		req.Header.Set("X-Amz-Security-Token", c.token)
 	}
 	if c.akid != "" {
-		signTestRequestAs(t, req, body, c.akid, c.secret, service, time.Now().UTC())
+		gwfix.SignRequestAs(t, req, body, c.akid, c.secret, service, time.Now().UTC())
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

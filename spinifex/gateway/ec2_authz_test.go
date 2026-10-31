@@ -1,9 +1,10 @@
 //test:in-package — drives EC2_Request through the gateway's unexported test
-// helpers (setupEC2Request, policyMockIAMService) and auth context keys.
+// helpers (setupEC2Request, gwfix.PolicyIAM) and auth context keys.
 
 package gateway
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http/httptest"
 	"testing"
 
@@ -25,9 +26,9 @@ func scopedPolicyGateway(statements ...iamdomain.Statement) *GatewayConfig {
 	return withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         authzRegion,
-		IAMService: &policyMockIAMService{
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-			getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		IAMService: &gwfix.PolicyIAM{
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			GetRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	})
 }
@@ -87,7 +88,7 @@ func assertPermitted(t *testing.T, err error) {
 // profileIAMService resolves every instance profile to one holding role app, or
 // fails resolution with resolveErr.
 type profileIAMService struct {
-	policyMockIAMService
+	gwfix.PolicyIAM
 
 	resolveErr error
 }

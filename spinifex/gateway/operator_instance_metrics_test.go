@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -57,7 +58,7 @@ func postSignedMetrics(t *testing.T, srv *httptest.Server) *http.Response {
 	require.NoError(t, err)
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	signTestRequestAs(t, req, body, testAccessKey, testSecretKey, "spinifex", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "spinifex", time.Now().UTC())
 	resp, err := srv.Client().Do(req)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
@@ -67,7 +68,7 @@ func postSignedMetrics(t *testing.T, srv *httptest.Server) *http.Response {
 // Through the signed pipeline, a tenant's policy naming the instance's ARN is
 // enough, and the first sample arrives while the stream is still open.
 func TestOperatorQuery_GetInstanceMetrics_StreamsThroughThePipeline(t *testing.T) {
-	instanceARN := "arn:aws:ec2:" + testRegion + ":" + streamAccount + ":instance/" + streamInstance
+	instanceARN := "arn:aws:ec2:" + gwfix.Region + ":" + streamAccount + ":instance/" + streamInstance
 	gw, app := operatorPipelineApp(t, streamAccount, instanceMetricsDocs(instanceARN), nil)
 	answerWatches(t, gw.NATSConn)
 	srv := httptest.NewServer(app)
@@ -98,7 +99,7 @@ func TestOperatorQuery_GetInstanceMetrics_StreamsThroughThePipeline(t *testing.T
 }
 
 func TestOperatorQuery_GetInstanceMetrics_PolicyOnAnotherInstanceIsDenied(t *testing.T) {
-	otherARN := "arn:aws:ec2:" + testRegion + ":" + streamAccount + ":instance/i-0fffffffffffffff0"
+	otherARN := "arn:aws:ec2:" + gwfix.Region + ":" + streamAccount + ":instance/i-0fffffffffffffff0"
 	gw, app := operatorPipelineApp(t, streamAccount, instanceMetricsDocs(otherARN), nil)
 	answerWatches(t, gw.NATSConn)
 	srv := httptest.NewServer(app)

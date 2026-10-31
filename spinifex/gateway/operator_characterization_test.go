@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,7 +29,7 @@ import (
 // operatorIAM adds the account listing /admin/ListAccounts reads to the policy
 // mock, which leaves it to a nil embedded interface.
 type operatorIAM struct {
-	*policyMockIAMService
+	*gwfix.PolicyIAM
 }
 
 func (operatorIAM) ListAccounts() ([]*iamdomain.Account, error) {
@@ -40,26 +41,26 @@ func (operatorIAM) ListAccounts() ([]*iamdomain.Account, error) {
 
 // operatorPipelineApp wires SigV4AuthMiddleware -> the two operator routes as
 // SetupRoutes does, on live test NATS, with docs as every principal's policy.
-// accountID owns the signing key; the region is testRegion because
-// signTestRequestAs always signs for it.
+// accountID owns the signing key; the region is gwfix.Region because
+// gwfix.SignRequestAs always signs for it.
 func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.PolicyDocument, mutate func(*GatewayConfig)) (*GatewayConfig, http.Handler) {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
 	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		NATSConn:       nc,
 		Version:        "v9.9.9-test",
 		Commit:         "abc1234",
-		IAMService: &policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
+		IAMService: &gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
 						SecretAccessKey: encryptedSecret,
 						UserName:        "admin",
 						AccountID:       accountID,
@@ -67,10 +68,10 @@ func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.Policy
 					},
 				},
 			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	})
-	gw.IAMService = operatorIAM{gw.IAMService.(*policyMockIAMService)}
+	gw.IAMService = operatorIAM{gw.IAMService.(*gwfix.PolicyIAM)}
 	if mutate != nil {
 		mutate(gw)
 	}
@@ -99,7 +100,7 @@ func signOperatorRequest(t *testing.T, method, path, service string, body []byte
 	t.Helper()
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
 	req.Host = "localhost:9999"
-	signTestRequestAs(t, req, body, testAccessKey, testSecretKey, service, time.Now().UTC())
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, service, time.Now().UTC())
 	return req
 }
 

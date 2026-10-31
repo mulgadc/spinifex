@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"sync"
 	"testing"
 
@@ -33,7 +34,7 @@ func quotaFor(gw *GatewayConfig) *admissionquota.Service {
 
 // quotaIAMService resolves exactly one account.
 type quotaIAMService struct {
-	policyMockIAMService
+	gwfix.PolicyIAM
 
 	known string
 }

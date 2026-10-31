@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"strings"
 	"time"
 
@@ -138,7 +139,7 @@ func (m *ecrMockSTSService) VerifySessionPrincipal(cred *stsdomain.SessionCreden
 	if m.principalErr != nil {
 		return nil, m.principalErr
 	}
-	live, err := stubSessionPrincipal(cred)
+	live, err := gwfix.StubSessionPrincipal(cred)
 	if err == nil && cred.PrincipalType == principalTypeUser {
 		live.UserARN = m.liveUserARN
 	}

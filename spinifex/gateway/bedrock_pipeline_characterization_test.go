@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -60,15 +61,15 @@ type bedrockPipelineEnv struct {
 // unless mutate clears it. Policy statements are the caller's only IAM policy.
 func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statements ...iamdomain.Statement) http.Handler {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
-	svc := &policyMockIAMService{
-		mockIAMService: mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {
-					AccessKeyID:     testAccessKey,
+	svc := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "alice",
 					AccountID:       authzAccountID,
@@ -76,7 +77,7 @@ func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statemen
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 	}
 	_, nc, js := testutil.StartTestJetStream(t)
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -91,8 +92,8 @@ func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statemen
 		Endpoints:   ochre.NewStaticEndpointResolver(map[string]string{bedrockPipelineLlamaModel: stub.URL}),
 		Access:      grantAllModels{},
 		Logging:     ochre.NewLoggingConfigStore(js),
-		Provisioned: ochre.NewProvisionedStore(js, testRegion, nil),
-		Guardrails:  ochre.NewGuardrailStore(js, testRegion),
+		Provisioned: ochre.NewProvisionedStore(js, gwfix.Region, nil),
+		Guardrails:  ochre.NewGuardrailStore(js, gwfix.Region),
 		KB:          ochrevector.NewKBStore(js),
 		DataSources: ochrevector.NewDataSourceStore(js),
 		Vector:      unusedVector{},
@@ -100,7 +101,7 @@ func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statemen
 	if mutate != nil {
 		mutate(env)
 	}
-	cfg := &GatewayConfig{DisableLogging: true, Region: testRegion, NATSConn: nc, IAMService: svc}
+	cfg := &GatewayConfig{DisableLogging: true, Region: gwfix.Region, NATSConn: nc, IAMService: svc}
 	if env.NoNATS {
 		cfg.NATSConn = nil
 	}
@@ -121,7 +122,7 @@ func signBedrockRequest(t *testing.T, scope, method, path string, body []byte) *
 	t.Helper()
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
 	req.Host = "localhost:9999"
-	signTestRequestAs(t, req, body, testAccessKey, testSecretKey, scope, time.Now().UTC())
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, scope, time.Now().UTC())
 	return req
 }
 

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
 	"net/http"
@@ -52,20 +53,20 @@ func (f *fakeTaggedLister) ListTagged(_ context.Context, _ string, _ map[string]
 // on live test NATS, with docs as every principal's policy.
 func taggingPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, agg *tagging.Aggregator) (*GatewayConfig, http.Handler) {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
 	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		NATSConn:       nc,
-		IAMService: &policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
+		IAMService: &gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
 						SecretAccessKey: encryptedSecret,
 						UserName:        "alice",
 						AccountID:       authzAccountID,
@@ -73,7 +74,7 @@ func taggingPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, agg *tagg
 					},
 				},
 			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	})
 	withTagging(gw, agg)
@@ -111,7 +112,7 @@ func signTaggingRequest(t *testing.T, target string, body []byte) *http.Request 
 	if target != "" {
 		req.Header.Set("X-Amz-Target", target)
 	}
-	signTestRequestAs(t, req, body, testAccessKey, testSecretKey, "tagging", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "tagging", time.Now().UTC())
 	return req
 }
 
@@ -124,11 +125,11 @@ func readBody(t *testing.T, resp *http.Response) string {
 
 func taggingFixture() (*fakeTaggedLister, *fakeTaggedLister) {
 	elb := &fakeTaggedLister{resources: []tagging.TaggedResource{
-		{ARN: "arn:aws:elasticloadbalancing:" + testRegion + ":" + authzAccountID + ":loadbalancer/app/web/1", Tags: map[string]string{"env": "prod", "team": "a"}},
+		{ARN: "arn:aws:elasticloadbalancing:" + gwfix.Region + ":" + authzAccountID + ":loadbalancer/app/web/1", Tags: map[string]string{"env": "prod", "team": "a"}},
 	}}
 	ec2 := &fakeTaggedLister{resources: []tagging.TaggedResource{
-		{ARN: "arn:aws:ec2:" + testRegion + ":" + authzAccountID + ":instance/i-1", Tags: map[string]string{"env": "dev"}},
-		{ARN: "arn:aws:ec2:" + testRegion + ":" + authzAccountID + ":volume/vol-1"},
+		{ARN: "arn:aws:ec2:" + gwfix.Region + ":" + authzAccountID + ":instance/i-1", Tags: map[string]string{"env": "dev"}},
+		{ARN: "arn:aws:ec2:" + gwfix.Region + ":" + authzAccountID + ":volume/vol-1"},
 	}}
 	return elb, ec2
 }
@@ -178,9 +179,9 @@ func TestTaggingPipeline_GetResources_GoldenAllResources(t *testing.T) {
 	assert.Equal(t, tagging.JSONContentType, resp.Header.Get("Content-Type"))
 	// Results come back sorted by ARN, not in lister order.
 	assert.JSONEq(t, `{"PaginationToken":"","ResourceTagMappingList":[`+
-		`{"ResourceARN":"arn:aws:ec2:`+testRegion+`:`+authzAccountID+`:instance/i-1","Tags":[{"Key":"env","Value":"dev"}]},`+
-		`{"ResourceARN":"arn:aws:ec2:`+testRegion+`:`+authzAccountID+`:volume/vol-1","Tags":[]},`+
-		`{"ResourceARN":"arn:aws:elasticloadbalancing:`+testRegion+`:`+authzAccountID+`:loadbalancer/app/web/1","Tags":[{"Key":"env","Value":"prod"},{"Key":"team","Value":"a"}]}]}`,
+		`{"ResourceARN":"arn:aws:ec2:`+gwfix.Region+`:`+authzAccountID+`:instance/i-1","Tags":[{"Key":"env","Value":"dev"}]},`+
+		`{"ResourceARN":"arn:aws:ec2:`+gwfix.Region+`:`+authzAccountID+`:volume/vol-1","Tags":[]},`+
+		`{"ResourceARN":"arn:aws:elasticloadbalancing:`+gwfix.Region+`:`+authzAccountID+`:loadbalancer/app/web/1","Tags":[{"Key":"env","Value":"prod"},{"Key":"team","Value":"a"}]}]}`,
 		readBody(t, resp))
 }
 
@@ -192,7 +193,7 @@ func TestTaggingPipeline_GetResources_GoldenTagFilter(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.JSONEq(t, `{"PaginationToken":"","ResourceTagMappingList":[`+
-		`{"ResourceARN":"arn:aws:ec2:`+testRegion+`:`+authzAccountID+`:instance/i-1","Tags":[{"Key":"env","Value":"dev"}]}]}`,
+		`{"ResourceARN":"arn:aws:ec2:`+gwfix.Region+`:`+authzAccountID+`:instance/i-1","Tags":[{"Key":"env","Value":"dev"}]}]}`,
 		readBody(t, resp))
 }
 
@@ -204,7 +205,7 @@ func TestTaggingPipeline_GetResources_GoldenPagination(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.JSONEq(t, `{"PaginationToken":"1","ResourceTagMappingList":[`+
-		`{"ResourceARN":"arn:aws:ec2:`+testRegion+`:`+authzAccountID+`:instance/i-1","Tags":[{"Key":"env","Value":"dev"}]}]}`,
+		`{"ResourceARN":"arn:aws:ec2:`+gwfix.Region+`:`+authzAccountID+`:instance/i-1","Tags":[{"Key":"env","Value":"dev"}]}]}`,
 		readBody(t, resp))
 }
 
@@ -291,13 +292,13 @@ func TestTaggingPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 // --- Oversized body over HTTP ----------------------------------------------
 
 func TestTaggingPipeline_OversizedBody_413OverHTTP(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	oversized := bytes.Repeat([]byte("x"), int(sigv4.MaxPayloadLen)+1)
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversized))
 	req.Host = "localhost:9999"
 	req.Header.Set("X-Amz-Target", taggingTargetPrefix+"GetResources")
-	signTestRequestAs(t, req, oversized, testAccessKey, testSecretKey, "tagging", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, oversized, gwfix.AccessKey, gwfix.SecretKey, "tagging", time.Now().UTC())
 
 	resp := doRequest(handler, req)
 
@@ -340,7 +341,7 @@ func TestTaggingPipeline_NoAggregator_500ServerInternal(t *testing.T) {
 // Every tagging action is account-level: a grant scoped to a resource ARN does
 // not reach it, and a wildcard grant does.
 func TestTaggingPipeline_Authz_ScopedAllowDenied_WildcardPermitted(t *testing.T) {
-	scoped := scopedTaggingDocs("Allow", "tagging:GetResources", "arn:aws:ec2:"+testRegion+":"+authzAccountID+":instance/i-dev")
+	scoped := scopedTaggingDocs("Allow", "tagging:GetResources", "arn:aws:ec2:"+gwfix.Region+":"+authzAccountID+":instance/i-dev")
 	lister := &fakeTaggedLister{}
 	_, app := taggingPipelineApp(t, scoped, tagging.NewAggregator(lister))
 	resp := doRequest(app, signTaggingRequest(t, taggingTargetPrefix+"GetResources", []byte("{}")))
@@ -361,7 +362,7 @@ func TestTaggingPipeline_Authz_ScopedDenyDoesNotFire(t *testing.T) {
 		Version: "2012-10-17",
 		Statement: []iamdomain.Statement{
 			{Effect: "Allow", Action: iamdomain.StringOrArr{"tagging:*"}, Resource: iamdomain.StringOrArr{"*"}},
-			{Effect: "Deny", Action: iamdomain.StringOrArr{"tagging:GetResources"}, Resource: iamdomain.StringOrArr{"arn:aws:ec2:" + testRegion + ":" + authzAccountID + ":instance/i-prod"}},
+			{Effect: "Deny", Action: iamdomain.StringOrArr{"tagging:GetResources"}, Resource: iamdomain.StringOrArr{"arn:aws:ec2:" + gwfix.Region + ":" + authzAccountID + ":instance/i-prod"}},
 		},
 	}}
 	_, app := taggingPipelineApp(t, docs, tagging.NewAggregator())

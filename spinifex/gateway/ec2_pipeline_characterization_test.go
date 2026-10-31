@@ -10,6 +10,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	"io"
 	"net/http"
@@ -110,19 +111,19 @@ type ec2PipelineApp struct {
 // statements are the caller's only IAM policy.
 func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdomain.Statement) ec2PipelineApp {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
 	env := &ec2PipelineEnv{}
 	if mutate != nil {
 		mutate(env)
 	}
-	svc := &profileIAMService{resolveErr: env.ResolveErr, policyMockIAMService: policyMockIAMService{
-		mockIAMService: mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {
-					AccessKeyID:     testAccessKey,
+	svc := &profileIAMService{resolveErr: env.ResolveErr, PolicyIAM: gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "alice",
 					AccountID:       authzAccountID,
@@ -130,14 +131,14 @@ func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdo
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 	}}
 	_, nc, _ := testutil.StartTestJetStream(t)
 	daemon := newEC2Daemon(t, nc)
 
 	cfg := &GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		NATSConn:       nc,
 		IAMService:     svc,
 		ExpectedNodes:  1,
@@ -146,7 +147,7 @@ func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdo
 		cfg.NATSConn = nil
 	}
 	gw := withEC2(withVerifier(cfg), func(d *ec2awsapi.Deps) {
-		d.AZ = testRegion + "a"
+		d.AZ = gwfix.Region + "a"
 		d.Endpoint = "https://registry.example"
 	})
 	r := chi.NewRouter()
@@ -167,7 +168,7 @@ func signEC2Request(t *testing.T, body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-	signTestRequestAs(t, req, []byte(body), testAccessKey, testSecretKey, "ec2", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, []byte(body), gwfix.AccessKey, gwfix.SecretKey, "ec2", time.Now().UTC())
 	return req
 }
 
@@ -289,7 +290,7 @@ func TestEC2Pipeline_Success(t *testing.T) {
 		before := app.Daemon.count("ec2.DescribeRegions")
 		got := probeEC2(t, app.Handler, "Action=DescribeRegions")
 		require.Equal(t, 200, got.Status, got.Body)
-		assert.Contains(t, got.Body, testRegion)
+		assert.Contains(t, got.Body, gwfix.Region)
 		assert.Contains(t, got.Body, "https://registry.example", "endpoint is built from the registry host and port")
 		assert.Equal(t, before, app.Daemon.count("ec2.DescribeRegions"))
 	})
@@ -297,7 +298,7 @@ func TestEC2Pipeline_Success(t *testing.T) {
 	t.Run("DescribeAvailabilityZones needs no daemon", func(t *testing.T) {
 		got := probeEC2(t, app.Handler, "Action=DescribeAvailabilityZones")
 		require.Equal(t, 200, got.Status, got.Body)
-		assert.Contains(t, got.Body, testRegion+"a")
+		assert.Contains(t, got.Body, gwfix.Region+"a")
 	})
 
 	t.Run("DescribeAccountAttributes looks up the default VPC", func(t *testing.T) {

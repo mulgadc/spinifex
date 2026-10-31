@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,7 +35,7 @@ const foreignAccountID = "999999999999"
 // roleStoreIAMService evaluates policy from docs and resolves role names to the
 // ARNs in roles, keyed by account then name, the way the IAM store does.
 type roleStoreIAMService struct {
-	policyMockIAMService
+	gwfix.PolicyIAM
 
 	roles        map[string]map[string]string
 	canonicalErr error
@@ -55,8 +56,8 @@ func (s *roleStoreIAMService) CanonicalResourceARN(account string, _ arn.IAMReso
 func eksPassRoleService(statements ...iamdomain.Statement) *roleStoreIAMService {
 	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
 	return &roleStoreIAMService{
-		policyMockIAMService: policyMockIAMService{
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		PolicyIAM: gwfix.PolicyIAM{
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 		roles: map[string]map[string]string{
 			authzAccountID:   {"node-role": eksNodeRoleARN},

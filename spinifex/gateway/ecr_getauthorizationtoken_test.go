@@ -68,7 +68,7 @@ func TestGetAuthorizationToken_PathedUserRoundTrips(t *testing.T) {
 	iamSvc := newECRMockIAMService()
 	seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
 	iamSvc.users[ecrPrincipalTestAccount+"|dev"].Arn = aws.String(ecrPathedUserARN)
-	allow, _ := allowAllIAMService().getUserPoliciesFn(ecrPrincipalTestAccount, "dev")
+	allow, _ := allowAllIAMService().GetUserPoliciesFn(ecrPrincipalTestAccount, "dev")
 	iamSvc.userPolicies[ecrPrincipalTestAccount+"|dev"] = allow
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}

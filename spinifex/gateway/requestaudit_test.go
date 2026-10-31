@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net"
@@ -30,9 +31,9 @@ func auditRouter(t *testing.T, keys map[string]*iamdomain.AccessKey) (http.Handl
 
 	gw := &GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
-		IAMService:     &mockIAMService{masterKey: testMasterKey, accessKeys: keys},
-		Credentials:    credverify.New(&mockIAMService{masterKey: testMasterKey, accessKeys: keys}, nil),
+		Region:         gwfix.Region,
+		IAMService:     &gwfix.IAM{MasterKey: gwfix.MasterKey, AccessKeys: keys},
+		Credentials:    credverify.New(&gwfix.IAM{MasterKey: gwfix.MasterKey, AccessKeys: keys}, nil),
 		RateLimiter:    rl,
 	}
 	withEC2(gw)
@@ -84,7 +85,7 @@ func signedRequestForKey(remoteAddr, accessKeyID string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = remoteAddr
 	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+accessKeyID+"/"+
-		now.Format("20060102")+"/"+testRegion+"/ec2/aws4_request, "+
+		now.Format("20060102")+"/"+gwfix.Region+"/ec2/aws4_request, "+
 		"SignedHeaders=host;x-amz-date, Signature="+
 		"0000000000000000000000000000000000000000000000000000000000000000")
 	req.Header.Set("X-Amz-Date", now.Format("20060102T150405Z"))

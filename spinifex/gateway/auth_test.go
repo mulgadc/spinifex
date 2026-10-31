@@ -2,12 +2,10 @@ package gateway
 
 import (
 	"bytes"
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
@@ -25,14 +23,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
-	awsv1 "github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
@@ -45,112 +39,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const (
-	testAccessKey = "AKIAIOSFODNN7EXAMPLE"
-	testSecretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-	testRegion    = "us-east-1"
-	testService   = "ec2"
-)
-
-// mockIAMService implements iamdomain.IAMService for auth tests. It embeds
-// the interface so it satisfies the full contract; the SigV4 middleware drives
-// LookupAccessKey, DecryptSecret and GetUser, so those are the methods wired.
-// Any other method nil-panics, surfacing an unexpected call.
-type mockIAMService struct {
-	iamdomain.IAMService
-
-	accessKeys map[string]*iamdomain.AccessKey
-	masterKey  []byte
-
-	// accounts overrides the status the auth gate reads. An empty map means
-	// every account is ACTIVE, which is what most tests here are asserting
-	// around rather than asserting about.
-	accounts map[string]*iamdomain.Account
-
-	// getUserFn overrides the synthetic user record below, for a test that cares
-	// what aws:userid resolves to or that it fails to resolve at all.
-	getUserFn func(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error)
-}
-
-func (m *mockIAMService) LookupAccessKey(accessKeyID string) (*iamdomain.AccessKey, error) {
-	ak, ok := m.accessKeys[accessKeyID]
-	if !ok {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-	return ak, nil
-}
-
-func (m *mockIAMService) DecryptSecret(ciphertext string) (string, error) {
-	return iamdomain.DecryptSecret(ciphertext, m.masterKey)
-}
-
-func (m *mockIAMService) GetAccount(accountID string) (*iamdomain.Account, error) {
-	if account, ok := m.accounts[accountID]; ok {
-		return account, nil
-	}
-	return &iamdomain.Account{AccountID: accountID, Status: iamdomain.AccountStatusActive}, nil
-}
-
-// GetUser answers with a unique ID derived from the name, so aws:userid resolves
-// on the authorization path without every test defining a user record.
-func (m *mockIAMService) GetUser(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error) {
-	if m.getUserFn != nil {
-		return m.getUserFn(accountID, input)
-	}
-	name := awsv1.StringValue(input.UserName)
-	return &iam.GetUserOutput{User: &iam.User{
-		UserName: awsv1.String(name),
-		UserId:   awsv1.String("AIDA" + strings.ToUpper(name)),
-	}}, nil
-}
-
-// testMasterKey is a fixed 32-byte key for deterministic tests.
-var testMasterKey []byte
-
-func init() {
-	var err error
-	testMasterKey, err = iamdomain.GenerateMasterKey()
-	if err != nil {
-		panic("failed to generate test master key: " + err.Error())
-	}
-}
-
-// signTestRequest signs req in place with the aws-sdk-go-v2 v4 signer — the same
-// path production callers use via gwsign — so the gateway verifies a real SDK
-// signature. body must match what the middleware reads from r.Body so the payload
-// hash agrees. An optional signingTime pins the clock for skew tests.
-func signTestRequest(t *testing.T, req *http.Request, body []byte, accessKey, secret string, signingTime ...time.Time) {
-	t.Helper()
-	when := time.Now().UTC()
-	if len(signingTime) > 0 {
-		when = signingTime[0]
-	}
-	signTestRequestAs(t, req, body, accessKey, secret, testService, when)
-}
-
-// signTestRequestAs signs with an explicit credential-scope service, so a test
-// can drive a scope the gateway does not serve.
-func signTestRequestAs(t *testing.T, req *http.Request, body []byte, accessKey, secret, service string, when time.Time) {
-	t.Helper()
-	sum := sha256.Sum256(body)
-	payloadHash := hex.EncodeToString(sum[:])
-	// gwsign sets this header so the SDK signs it; sigv4 reproduces it when
-	// reconstructing the canonical request.
-	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
-	require.NoError(t, v4.NewSigner().SignHTTP(context.Background(),
-		aws.Credentials{AccessKeyID: accessKey, SecretAccessKey: secret},
-		req, payloadHash, service, testRegion, when))
-}
-
 func setupTestApp(accessKey, secretKey string) http.Handler {
-	encryptedSecret, err := iamdomain.EncryptSecret(secretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(secretKey, gwfix.MasterKey)
 	if err != nil {
 		panic("failed to encrypt test secret: " + err.Error())
 	}
 
-	mockSvc := &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{
+	mockSvc := &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
 			accessKey: {
 				AccessKeyID:     accessKey,
 				SecretAccessKey: encryptedSecret,
@@ -162,7 +59,7 @@ func setupTestApp(accessKey, secretKey string) http.Handler {
 
 	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 	withServices(gw, awsapi.NewRegistration(awsapi.Deps{}), ec2Registration(gw))
@@ -178,14 +75,14 @@ func setupTestApp(accessKey, secretKey string) http.Handler {
 
 // userIDApp signs requests for alice on a real account, so the middleware takes
 // the aws:userid branch that a user principal reaches in production.
-func userIDApp(t *testing.T, svc *mockIAMService) (http.Handler, *string) {
+func userIDApp(t *testing.T, svc *gwfix.IAM) (http.Handler, *string) {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
-	svc.masterKey = testMasterKey
-	svc.accessKeys = map[string]*iamdomain.AccessKey{
-		testAccessKey: {
-			AccessKeyID:     testAccessKey,
+	svc.MasterKey = gwfix.MasterKey
+	svc.AccessKeys = map[string]*iamdomain.AccessKey{
+		gwfix.AccessKey: {
+			AccessKeyID:     gwfix.AccessKey,
 			SecretAccessKey: encryptedSecret,
 			UserName:        "alice",
 			AccountID:       "000000000001",
@@ -193,7 +90,7 @@ func userIDApp(t *testing.T, svc *mockIAMService) (http.Handler, *string) {
 		},
 	}
 
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: svc})
+	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: svc})
 	seen := new(string)
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -207,11 +104,11 @@ func userIDApp(t *testing.T, svc *mockIAMService) (http.Handler, *string) {
 // aws:userid is resolved once, by the middleware, so every policy check in the
 // request evaluates the same value rather than re-reading the user record.
 func TestSigV4Auth_StashesUserID(t *testing.T) {
-	handler, seen := userIDApp(t, &mockIAMService{})
+	handler, seen := userIDApp(t, &gwfix.IAM{})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -222,15 +119,15 @@ func TestSigV4Auth_StashesUserID(t *testing.T) {
 // An IAM fault must fail the request, not authorize it against a context missing
 // aws:userid: that silently narrows an Allow and widens a Deny to everything.
 func TestSigV4Auth_UserIDDependencyFaultFailsClosed(t *testing.T) {
-	handler, _ := userIDApp(t, &mockIAMService{
-		getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
+	handler, _ := userIDApp(t, &gwfix.IAM{
+		GetUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
 			return nil, errors.New("nats: no responders available for request")
 		},
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -240,7 +137,7 @@ func TestSigV4Auth_UserIDDependencyFaultFailsClosed(t *testing.T) {
 }
 
 func TestSigV4Auth_NoAuthorizationHeader(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
@@ -258,7 +155,7 @@ func TestSigV4Auth_NoAuthorizationHeader(t *testing.T) {
 }
 
 func TestSigV4Auth_MalformedHeader(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	testCases := []struct {
 		name       string
@@ -293,11 +190,11 @@ func TestSigV4Auth_MalformedHeader(t *testing.T) {
 }
 
 func TestSigV4Auth_InvalidAccessKey(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, "INVALID_ACCESS_KEY", testSecretKey)
+	gwfix.SignRequest(t, req, nil, "INVALID_ACCESS_KEY", gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -312,11 +209,11 @@ func TestSigV4Auth_InvalidAccessKey(t *testing.T) {
 }
 
 func TestSigV4Auth_InvalidSignature(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, "WRONG_SECRET_KEY")
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, "WRONG_SECRET_KEY")
 
 	resp := doRequest(handler, req)
 
@@ -331,11 +228,11 @@ func TestSigV4Auth_InvalidSignature(t *testing.T) {
 }
 
 func TestSigV4Auth_ValidSignature(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -346,13 +243,13 @@ func TestSigV4Auth_ValidSignature(t *testing.T) {
 }
 
 func TestSigV4Auth_ValidSignatureWithBody(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	body := []byte("Action=DescribeInstances&Version=2016-11-15")
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	signTestRequest(t, req, body, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, body, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -363,12 +260,12 @@ func TestSigV4Auth_ValidSignatureWithBody(t *testing.T) {
 }
 
 func TestSigV4Auth_ValidSignatureWithQueryString(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	queryString := "Action=DescribeInstances&Version=2016-11-15"
 	req := httptest.NewRequest(http.MethodGet, "/?"+queryString, nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -379,16 +276,16 @@ func TestSigV4Auth_ValidSignatureWithQueryString(t *testing.T) {
 }
 
 func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
-	mockSvc := &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{
-			testAccessKey: {
-				AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
+			gwfix.AccessKey: {
+				AccessKeyID:     gwfix.AccessKey,
 				SecretAccessKey: encryptedSecret,
 				UserName:        "root",
 				Status:          "Inactive",
@@ -398,7 +295,7 @@ func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -410,7 +307,7 @@ func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(r, req)
 
@@ -427,7 +324,7 @@ func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
 func TestSigV4Auth_NilIAMService(t *testing.T) {
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     nil,
 	})
 
@@ -439,7 +336,7 @@ func TestSigV4Auth_NilIAMService(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(r, req)
 
@@ -492,16 +389,16 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMasterKey() error: %v", err)
 	}
-	encryptedWithOther, err := iamdomain.EncryptSecret(testSecretKey, otherKey)
+	encryptedWithOther, err := iamdomain.EncryptSecret(gwfix.SecretKey, otherKey)
 	if err != nil {
 		t.Fatalf("EncryptSecret() error: %v", err)
 	}
 
-	mockSvc := &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{
-			testAccessKey: {
-				AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
+			gwfix.AccessKey: {
+				AccessKeyID:     gwfix.AccessKey,
 				SecretAccessKey: encryptedWithOther, // encrypted with wrong key
 				UserName:        "root",
 				Status:          "Active",
@@ -511,7 +408,7 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -523,7 +420,7 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(r, req)
 
@@ -538,13 +435,13 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 }
 
 func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	oversizedBody := []byte(strings.Repeat("x", sigv4.MaxPayloadLen+1))
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversizedBody))
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	signTestRequest(t, req, oversizedBody, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, oversizedBody, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -561,13 +458,13 @@ func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 // A body the gateway cannot read is a transport failure: it answers InternalError
 // and leaves the lockout alone, so a flaky link cannot lock out its own IP.
 func TestSigV4Auth_BodyReadFailureDoesNotCountTowardLockout(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	for range authlimit.MaxFailures + 1 {
 		req := httptest.NewRequest(http.MethodPost, "/", iotest.ErrReader(io.ErrUnexpectedEOF))
 		req.Host = "localhost:9999"
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		signTestRequest(t, req, []byte("Action=DescribeInstances"), testAccessKey, testSecretKey)
+		gwfix.SignRequest(t, req, []byte("Action=DescribeInstances"), gwfix.AccessKey, gwfix.SecretKey)
 
 		resp := doRequest(handler, req)
 		body, _ := io.ReadAll(resp.Body)
@@ -577,7 +474,7 @@ func TestSigV4Auth_BodyReadFailureDoesNotCountTowardLockout(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "body-read failures must not lock out the IP")
@@ -586,12 +483,12 @@ func TestSigV4Auth_BodyReadFailureDoesNotCountTowardLockout(t *testing.T) {
 // --- Clock Skew / Replay Protection Tests ---
 
 func TestSigV4Auth_ExpiredTimestamp(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	past := time.Now().UTC().Add(-16 * time.Minute) // exceeds sigv4 15-minute MaxClockSkew
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey, past)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, past)
 
 	resp := doRequest(handler, req)
 
@@ -606,12 +503,12 @@ func TestSigV4Auth_ExpiredTimestamp(t *testing.T) {
 }
 
 func TestSigV4Auth_FutureTimestamp(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	future := time.Now().UTC().Add(16 * time.Minute) // exceeds sigv4 15-minute MaxClockSkew
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey, future)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, future)
 
 	resp := doRequest(handler, req)
 
@@ -626,12 +523,12 @@ func TestSigV4Auth_FutureTimestamp(t *testing.T) {
 }
 
 func TestSigV4Auth_TimestampWithinSkew(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	recent := time.Now().UTC().Add(-14 * time.Minute) // within the 15-minute window
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey, recent)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, recent)
 
 	resp := doRequest(handler, req)
 
@@ -644,7 +541,7 @@ func TestSigV4Auth_TimestampWithinSkew(t *testing.T) {
 // --- Clock Skew Boundary Tests ---
 
 func TestSigV4Auth_ClockSkewBoundary(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	testCases := []struct {
 		name       string
@@ -663,7 +560,7 @@ func TestSigV4Auth_ClockSkewBoundary(t *testing.T) {
 			at := time.Now().UTC().Add(tc.offset)
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Host = "localhost:9999"
-			signTestRequest(t, req, nil, testAccessKey, testSecretKey, at)
+			gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, at)
 
 			resp := doRequest(handler, req)
 
@@ -679,11 +576,11 @@ func TestSigV4Auth_ClockSkewBoundary(t *testing.T) {
 }
 
 func TestSigV4Auth_MissingXAmzDate(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 	req.Header.Del("X-Amz-Date")
 
 	resp := doRequest(handler, req)
@@ -699,11 +596,11 @@ func TestSigV4Auth_MissingXAmzDate(t *testing.T) {
 }
 
 func TestSigV4Auth_MalformedTimestamp(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 	req.Header.Set("X-Amz-Date", "not-a-valid-date")
 
 	resp := doRequest(handler, req)
@@ -721,7 +618,7 @@ func TestSigV4Auth_MalformedTimestamp(t *testing.T) {
 // --- writeSigV4Error Response Format Tests ---
 
 func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: allowAllIAMService()})
 
 	testCases := []struct {
 		errorCode      string
@@ -772,7 +669,7 @@ func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
 }
 
 func TestWriteSigV4Error_IgnoresClientRequestID(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: allowAllIAMService()})
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -793,7 +690,7 @@ func TestWriteSigV4Error_IgnoresClientRequestID(t *testing.T) {
 // rejected on credential scope before any verb or path parsing. Every S3 verb
 // therefore takes one path, and all that varies below is the request shape.
 func TestSigV4Auth_S3ScopeReturnsFlatS3Error(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	testCases := []struct {
 		name   string
@@ -810,7 +707,7 @@ func TestSigV4Auth_S3ScopeReturnsFlatS3Error(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path, bytes.NewReader(tc.body))
 			req.Host = "localhost:9999"
-			signTestRequestAs(t, req, tc.body, testAccessKey, testSecretKey, "s3", time.Now().UTC())
+			gwfix.SignRequestAs(t, req, tc.body, gwfix.AccessKey, gwfix.SecretKey, "s3", time.Now().UTC())
 
 			resp := doRequest(handler, req)
 			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -840,16 +737,16 @@ func TestSigV4Auth_S3ScopeReturnsFlatS3Error(t *testing.T) {
 // --- Context Propagation Tests ---
 
 func TestSigV4Auth_ContextPropagation(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
-	mockSvc := &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{
-			testAccessKey: {
-				AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
+			gwfix.AccessKey: {
+				AccessKeyID:     gwfix.AccessKey,
 				SecretAccessKey: encryptedSecret,
 				UserName:        "alice",
 				AccountID:       "123456789012",
@@ -860,7 +757,7 @@ func TestSigV4Auth_ContextPropagation(t *testing.T) {
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -879,7 +776,7 @@ func TestSigV4Auth_ContextPropagation(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(r, req)
 
@@ -899,7 +796,7 @@ func TestSigV4Auth_ContextPropagation(t *testing.T) {
 		{"accountId", "accountId=123456789012"},
 		{"service", "service=ec2"},
 		{"region", "region=us-east-1"},
-		{"accessKey", "accessKey=" + testAccessKey},
+		{"accessKey", "accessKey=" + gwfix.AccessKey},
 	}
 	for _, check := range checks {
 		if !strings.Contains(result, check.expected) {
@@ -909,22 +806,22 @@ func TestSigV4Auth_ContextPropagation(t *testing.T) {
 }
 
 func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
 	secondKey := "AKIAIOSFODNN7SECOND0"
-	encryptedSecret2, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret2, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
-	mockSvc := &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{
-			testAccessKey: {
-				AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
+			gwfix.AccessKey: {
+				AccessKeyID:     gwfix.AccessKey,
 				SecretAccessKey: encryptedSecret,
 				UserName:        "alice",
 				AccountID:       "111111111111",
@@ -942,7 +839,7 @@ func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -956,7 +853,7 @@ func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
 	// First request as alice
 	req1 := httptest.NewRequest(http.MethodGet, "/", nil)
 	req1.Host = "localhost:9999"
-	signTestRequest(t, req1, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req1, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp1 := doRequest(r, req1)
 	body1, _ := io.ReadAll(resp1.Body)
@@ -967,7 +864,7 @@ func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
 	// Second request as bob
 	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
 	req2.Host = "localhost:9999"
-	signTestRequest(t, req2, nil, secondKey, testSecretKey)
+	gwfix.SignRequest(t, req2, nil, secondKey, gwfix.SecretKey)
 
 	resp2 := doRequest(r, req2)
 	body2, _ := io.ReadAll(resp2.Body)
@@ -982,8 +879,8 @@ func TestSigV4Auth_LookupAccessKeyUnexpectedError(t *testing.T) {
 	// A non-NoSuchEntity error from LookupAccessKey should yield 500 InternalError.
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
-		IAMService:     &errorLookupMockIAMService{err: errors.New("nats: connection closed")},
+		Region:         gwfix.Region,
+		IAMService:     &gwfix.ErrorLookupIAM{Err: errors.New("nats: connection closed")},
 	})
 
 	r := chi.NewRouter()
@@ -994,7 +891,7 @@ func TestSigV4Auth_LookupAccessKeyUnexpectedError(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(r, req)
 
@@ -1011,7 +908,7 @@ func TestSigV4Auth_LookupAccessKeyUnexpectedError(t *testing.T) {
 // --- Signature Edge Cases ---
 
 func TestSigV4Auth_PathWithSpecialCharacters(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	testCases := []struct {
 		name    string
@@ -1026,7 +923,7 @@ func TestSigV4Auth_PathWithSpecialCharacters(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tc.reqPath, nil)
 			req.Host = "localhost:9999"
-			signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+			gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 			resp := doRequest(handler, req)
 
@@ -1040,16 +937,16 @@ func TestSigV4Auth_PathWithSpecialCharacters(t *testing.T) {
 
 func TestSigV4Auth_SignedContentType(t *testing.T) {
 	// Verify signature works when content-type is included in signed headers.
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
-	mockSvc := &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{
-			testAccessKey: {
-				AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
+			gwfix.AccessKey: {
+				AccessKeyID:     gwfix.AccessKey,
 				SecretAccessKey: encryptedSecret,
 				UserName:        "root",
 				Status:          "Active",
@@ -1059,7 +956,7 @@ func TestSigV4Auth_SignedContentType(t *testing.T) {
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -1073,7 +970,7 @@ func TestSigV4Auth_SignedContentType(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	signTestRequest(t, req, body, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, body, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(r, req)
 
@@ -1084,12 +981,12 @@ func TestSigV4Auth_SignedContentType(t *testing.T) {
 }
 
 func TestSigV4Auth_EmptyBodyPOST(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	// POST with empty body — payload hash is hash of ""
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1100,13 +997,13 @@ func TestSigV4Auth_EmptyBodyPOST(t *testing.T) {
 }
 
 func TestSigV4Auth_MultipartContentType(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	body := []byte("Action=DescribeInstances")
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=something")
-	signTestRequest(t, req, body, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, body, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1117,7 +1014,7 @@ func TestSigV4Auth_MultipartContentType(t *testing.T) {
 }
 
 func TestSigV4Auth_QueryStringEdgeCases(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	testCases := []struct {
 		name        string
@@ -1132,7 +1029,7 @@ func TestSigV4Auth_QueryStringEdgeCases(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/?"+tc.queryString, nil)
 			req.Host = "localhost:9999"
-			signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+			gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 			resp := doRequest(handler, req)
 
@@ -1145,41 +1042,6 @@ func TestSigV4Auth_QueryStringEdgeCases(t *testing.T) {
 }
 
 // --- Policy Enforcement Tests (checkPolicy) ---
-
-// policyMockIAMService extends mockIAMService with configurable GetUserPolicies
-// and GetRolePolicies resolvers, so checkPolicy tests can drive both the user
-// and assumed-role enforcement branches.
-type policyMockIAMService struct {
-	mockIAMService
-
-	getUserPoliciesFn func(accountID, userName string) ([]iamdomain.PolicyDocument, error)
-	getRolePoliciesFn func(accountID, roleName string) ([]iamdomain.PolicyDocument, error)
-}
-
-func (m *policyMockIAMService) GetUserPolicies(accountID, userName string) ([]iamdomain.PolicyDocument, error) {
-	if m.getUserPoliciesFn != nil {
-		return m.getUserPoliciesFn(accountID, userName)
-	}
-	return nil, nil
-}
-
-func (m *policyMockIAMService) GetRolePolicies(accountID, roleName string) ([]iamdomain.PolicyDocument, error) {
-	if m.getRolePoliciesFn != nil {
-		return m.getRolePoliciesFn(accountID, roleName)
-	}
-	return nil, nil
-}
-
-// errorLookupMockIAMService returns a configurable error from LookupAccessKey.
-type errorLookupMockIAMService struct {
-	mockIAMService
-
-	err error
-}
-
-func (m *errorLookupMockIAMService) LookupAccessKey(_ string) (*iamdomain.AccessKey, error) {
-	return nil, m.err
-}
 
 // setupPolicyTestHandler creates an http.Handler that authenticates with SigV4 then calls checkPolicy.
 func setupPolicyTestHandler(gw *GatewayConfig) http.Handler {
@@ -1196,17 +1058,17 @@ func setupPolicyTestHandler(gw *GatewayConfig) http.Handler {
 }
 
 func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
-	mockSvc := &policyMockIAMService{
-		mockIAMService: mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {
-					AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "alice",
 					AccountID:       "123456789012",
@@ -1214,14 +1076,14 @@ func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, nil // no policies
 		},
 	}
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -1229,7 +1091,7 @@ func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1245,17 +1107,17 @@ func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
 }
 
 func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
-	mockSvc := &policyMockIAMService{
-		mockIAMService: mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {
-					AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "alice",
 					AccountID:       "123456789012",
@@ -1263,7 +1125,7 @@ func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return []iamdomain.PolicyDocument{
 				{
 					Version: "2012-10-17",
@@ -1281,7 +1143,7 @@ func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -1289,7 +1151,7 @@ func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1300,17 +1162,17 @@ func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
 }
 
 func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
-	mockSvc := &policyMockIAMService{
-		mockIAMService: mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {
-					AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "alice",
 					AccountID:       "123456789012",
@@ -1318,7 +1180,7 @@ func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return []iamdomain.PolicyDocument{
 				{
 					Version: "2012-10-17",
@@ -1341,7 +1203,7 @@ func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -1349,7 +1211,7 @@ func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1365,17 +1227,17 @@ func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
 }
 
 func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
-	mockSvc := &policyMockIAMService{
-		mockIAMService: mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {
-					AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "root",
 					AccountID:       awsidentifiers.GlobalAccountID,
@@ -1383,7 +1245,7 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			// Return explicit deny — root should bypass anyway
 			return []iamdomain.PolicyDocument{
 				{
@@ -1402,7 +1264,7 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -1410,7 +1272,7 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1421,18 +1283,18 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 }
 
 func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
 	// AccessKey with empty AccountID — checkPolicy should return InternalError
-	mockSvc := &policyMockIAMService{
-		mockIAMService: mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {
-					AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "alice",
 					AccountID:       "", // empty
@@ -1444,7 +1306,7 @@ func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -1452,7 +1314,7 @@ func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1463,17 +1325,17 @@ func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
 }
 
 func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
-	mockSvc := &policyMockIAMService{
-		mockIAMService: mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {
-					AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "alice",
 					AccountID:       "123456789012",
@@ -1481,14 +1343,14 @@ func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, errors.New("nats: timeout")
 		},
 	}
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -1496,7 +1358,7 @@ func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1509,17 +1371,17 @@ func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
 func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 	// A user named "root" but on a non-global account should still have
 	// policies evaluated (only root + GlobalAccountID bypasses).
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
-	mockSvc := &policyMockIAMService{
-		mockIAMService: mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {
-					AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "root",
 					AccountID:       "999999999999", // not GlobalAccountID
@@ -1527,14 +1389,14 @@ func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, nil // no policies → should deny
 		},
 	}
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
 
@@ -1542,7 +1404,7 @@ func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1559,7 +1421,7 @@ func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 // signature comparison. Omitting either enables Authorization header replay
 // across vhosts or outside the clock-skew window.
 func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	rewriteSignedHeaders := func(authHeader, list string) string {
 		parts := strings.Split(authHeader, ", ")
@@ -1583,7 +1445,7 @@ func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Host = "localhost:9999"
-			signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+			gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 			req.Header.Set("Authorization",
 				rewriteSignedHeaders(req.Header.Get("Authorization"), tc.signedList))
 
@@ -1613,7 +1475,7 @@ func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		NATSConn:       nc,
 		IAMService:     nil,
 	})
@@ -1626,7 +1488,7 @@ func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(r, req)
 
@@ -1648,103 +1510,21 @@ func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 
 // --- Session credential (ASIA) auth tests ---
 
-// mockSTSService implements stsdomain.STSService for auth-middleware tests.
-// It embeds the interface so it satisfies the full contract; only
-// LookupSessionCredential and VerifySessionToken are exercised, and any other
-// method nil-panics so a misrouted call fails loudly instead of silently
-// allowing.
-type mockSTSService struct {
-	stsdomain.STSService
-
-	sessions  map[string]*stsdomain.SessionCredential
-	tokens    map[string]string // AKID → plaintext wire token for HMAC equivalence
-	lookupErr error
-	lookups   atomic.Int32 // counts LookupSessionCredential calls for negative-side-effect assertions
-
-	principalErr    error        // verdict or fault the continuity check returns
-	principalChecks atomic.Int32 // counts VerifySessionPrincipal calls, to pin its ordering
-}
-
-func (m *mockSTSService) LookupSessionCredential(accessKeyID string) (*stsdomain.SessionCredential, error) {
-	m.lookups.Add(1)
-	if m.lookupErr != nil {
-		return nil, m.lookupErr
-	}
-	if !strings.HasPrefix(accessKeyID, "ASIA") {
-		return nil, nil
-	}
-	cred, ok := m.sessions[accessKeyID]
-	if !ok {
-		return nil, nil
-	}
-	return cred, nil
-}
-
-// VerifySessionToken uses plaintext equality rather than HMAC to keep tests
-// simple while preserving the contract shape.
-func (m *mockSTSService) VerifySessionToken(cred *stsdomain.SessionCredential, wireToken string) bool {
-	if cred == nil {
-		return false
-	}
-	want, ok := m.tokens[cred.AccessKeyID]
-	if !ok {
-		return false
-	}
-	return want == wireToken
-}
-
-// VerifySessionPrincipal defaults to "still the same principal"; principalErr
-// drives the rejection-verdict and dependency-fault branches.
-func (m *mockSTSService) VerifySessionPrincipal(cred *stsdomain.SessionCredential) (*stsdomain.SessionPrincipal, error) {
-	m.principalChecks.Add(1)
-	if m.principalErr != nil {
-		return nil, m.principalErr
-	}
-	return stubSessionPrincipal(cred)
-}
-
-// stubSessionPrincipal is the shared "principal unchanged" answer for both
-// package doubles. It derives RoleName from the underlying role ARN rather than
-// the session name, because that is what the real implementation returns: a
-// stub echoing SessionName would let a door read the wrong field and stay green.
-func stubSessionPrincipal(cred *stsdomain.SessionCredential) (*stsdomain.SessionPrincipal, error) {
-	if cred == nil {
-		return nil, errors.New("nil session credential")
-	}
-	roleName := cred.UnderlyingRoleARN
-	if idx := strings.LastIndex(roleName, "/"); idx >= 0 {
-		roleName = roleName[idx+1:]
-	}
-	return &stsdomain.SessionPrincipal{
-		UserID:   cred.UserID,
-		RoleID:   cred.RoleID,
-		RoleName: roleName,
-		RoleARN:  cred.UnderlyingRoleARN,
-	}, nil
-}
-
-const (
-	testSessionAKID  = "ASIATESTSESSIONAAAAA"
-	testSessionToken = "wire-session-token-plain"
-	testRoleARN      = "arn:aws:iam::123456789012:role/test-role"
-	testAssumedARN   = "arn:aws:sts::123456789012:assumed-role/test-role/test-session"
-)
-
 // setupSessionTestApp wires a gateway with IAM+STS mocks. The stored secret is
 // real AES-GCM so the SigV4 verify path exercises the actual decrypt code.
-func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *mockSTSService) {
+func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *gwfix.STS) {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 
 	cred := &stsdomain.SessionCredential{
-		AccessKeyID:       testSessionAKID,
+		AccessKeyID:       gwfix.SessionAKID,
 		SecretEncrypted:   encryptedSecret,
 		SessionTokenHMAC:  "ignored-in-mock", // mock verifies by plaintext map
 		AccountID:         "123456789012",
 		PrincipalType:     principalTypeAssumedRole,
-		AssumedRoleARN:    testAssumedARN,
-		UnderlyingRoleARN: testRoleARN,
+		AssumedRoleARN:    gwfix.AssumedARN,
+		UnderlyingRoleARN: gwfix.RoleARN,
 		RoleID:            "AROAEXAMPLEAAAAAA",
 		AssumedRoleID:     "AROAEXAMPLEAAAAAA:test-session",
 		SessionName:       "test-session",
@@ -1756,21 +1536,21 @@ func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *mock
 
 // mountSessionGateway wires SigV4 middleware over a handler that echoes the
 // principal context; varies cred to drive the principal-type branch in resolveSessionAKID.
-func mountSessionGateway(t *testing.T, cred *stsdomain.SessionCredential) (http.Handler, *mockSTSService) {
+func mountSessionGateway(t *testing.T, cred *stsdomain.SessionCredential) (http.Handler, *gwfix.STS) {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 
-	stsMock := &mockSTSService{
-		sessions: map[string]*stsdomain.SessionCredential{cred.AccessKeyID: cred},
-		tokens:   map[string]string{cred.AccessKeyID: testSessionToken},
+	stsMock := &gwfix.STS{
+		Sessions: map[string]*stsdomain.SessionCredential{cred.AccessKeyID: cred},
+		Tokens:   map[string]string{cred.AccessKeyID: gwfix.SessionToken},
 	}
 
-	iamMock := &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{
-			testAccessKey: {
-				AccessKeyID:     testAccessKey,
+	iamMock := &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
+			gwfix.AccessKey: {
+				AccessKeyID:     gwfix.AccessKey,
 				SecretAccessKey: encryptedSecret,
 				UserName:        "alice",
 				AccountID:       "999999999999",
@@ -1781,7 +1561,7 @@ func mountSessionGateway(t *testing.T, cred *stsdomain.SessionCredential) (http.
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     iamMock,
 		STSService:     stsMock,
 	})
@@ -1801,20 +1581,12 @@ func mountSessionGateway(t *testing.T, cred *stsdomain.SessionCredential) (http.
 	return r, stsMock
 }
 
-// signSessionRequest sets X-Amz-Security-Token before signing so it's included
-// in SignedHeaders, matching what the AWS CLI/SDK do with session credentials.
-func signSessionRequest(t *testing.T, req *http.Request, body []byte, accessKey, secret, sessionToken string) {
-	t.Helper()
-	req.Header.Set("X-Amz-Security-Token", sessionToken)
-	signTestRequest(t, req, body, accessKey, secret)
-}
-
 func TestSigV4Auth_Session_ValidSignature(t *testing.T) {
 	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
@@ -1824,16 +1596,16 @@ func TestSigV4Auth_Session_ValidSignature(t *testing.T) {
 	assert.Contains(t, bodyStr, "identity=test-session")
 	assert.Contains(t, bodyStr, "accountId=123456789012")
 	assert.Contains(t, bodyStr, "principalType=assumed-role")
-	assert.Contains(t, bodyStr, "assumedRoleARN="+testAssumedARN)
+	assert.Contains(t, bodyStr, "assumedRoleARN="+gwfix.AssumedARN)
 }
 
 func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
 	// GetSessionToken session (PrincipalType "user") must resolve back to the IAM
 	// user with no assumed-role fields, so buildCallerARN yields arn:aws:iam::A:user/N.
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	cred := &stsdomain.SessionCredential{
-		AccessKeyID:      testSessionAKID,
+		AccessKeyID:      gwfix.SessionAKID,
 		SecretEncrypted:  encryptedSecret,
 		SessionTokenHMAC: "ignored-in-mock",
 		AccountID:        "123456789012",
@@ -1846,7 +1618,7 @@ func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
@@ -1862,16 +1634,16 @@ func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
 
 func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) {
 	// Pre-PrincipalType records have an empty value and must still resolve as assumed-role.
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	cred := &stsdomain.SessionCredential{
-		AccessKeyID:       testSessionAKID,
+		AccessKeyID:       gwfix.SessionAKID,
 		SecretEncrypted:   encryptedSecret,
 		SessionTokenHMAC:  "ignored-in-mock",
 		AccountID:         "123456789012",
 		PrincipalType:     "", // pre-migration record
-		AssumedRoleARN:    testAssumedARN,
-		UnderlyingRoleARN: testRoleARN,
+		AssumedRoleARN:    gwfix.AssumedARN,
+		UnderlyingRoleARN: gwfix.RoleARN,
 		RoleID:            "AROAEXAMPLEAAAAAA",
 		AssumedRoleID:     "AROAEXAMPLEAAAAAA:test-session",
 		SessionName:       "test-session",
@@ -1882,7 +1654,7 @@ func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) 
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
@@ -1891,7 +1663,7 @@ func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) 
 	bodyStr := string(body)
 	assert.Contains(t, bodyStr, "identity=test-session")
 	assert.Contains(t, bodyStr, "principalType=assumed-role")
-	assert.Contains(t, bodyStr, "assumedRoleARN="+testAssumedARN)
+	assert.Contains(t, bodyStr, "assumedRoleARN="+gwfix.AssumedARN)
 }
 
 func TestSigV4Auth_Session_Expired(t *testing.T) {
@@ -1900,7 +1672,7 @@ func TestSigV4Auth_Session_Expired(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
@@ -1914,7 +1686,7 @@ func TestSigV4Auth_Session_WrongSecurityToken(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, "wrong-wire-token")
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, "wrong-wire-token")
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
@@ -1929,7 +1701,7 @@ func TestSigV4Auth_Session_MissingSecurityToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	// No X-Amz-Security-Token — ASIA path requires it.
-	signTestRequest(t, req, nil, testSessionAKID, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
@@ -1943,7 +1715,7 @@ func TestSigV4Auth_Session_AKIDNotInBucket(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, "ASIAOTHERAKIDAAAAAAA", testSecretKey, testSessionToken)
+	gwfix.SignSessionRequest(t, req, nil, "ASIAOTHERAKIDAAAAAAA", gwfix.SecretKey, gwfix.SessionToken)
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
@@ -1967,11 +1739,11 @@ func TestSigV4Auth_Session_StalePrincipalRejected(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
-			stsMock.principalErr = tc.err
+			stsMock.PrincipalErr = tc.err
 
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Host = "localhost:9999"
-			signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+			gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
 
 			resp := doRequest(handler, req)
 			body, _ := io.ReadAll(resp.Body)
@@ -1986,11 +1758,11 @@ func TestSigV4Auth_Session_StalePrincipalRejected(t *testing.T) {
 // client retries rather than discarding a credential that is still good.
 func TestSigV4Auth_Session_PrincipalCheckFault_IsInternalError(t *testing.T) {
 	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
-	stsMock.principalErr = errors.New("jetstream unavailable")
+	stsMock.PrincipalErr = errors.New("jetstream unavailable")
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
@@ -2004,17 +1776,17 @@ func TestSigV4Auth_Session_PrincipalCheckFault_IsInternalError(t *testing.T) {
 // sig.Verify, so a bad signature is answered without the check running at all.
 func TestSigV4Auth_Session_StalePrincipal_BadSignatureWinsFirst(t *testing.T) {
 	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
-	stsMock.principalErr = stsdomain.ErrSessionPrincipalReplaced
+	stsMock.PrincipalErr = stsdomain.ErrSessionPrincipalReplaced
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, testSessionAKID, "wrong-secret-key", testSessionToken)
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, "wrong-secret-key", gwfix.SessionToken)
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
 
 	assert.Contains(t, string(body), awserrors.ErrorSignatureDoesNotMatch)
-	assert.Zero(t, stsMock.principalChecks.Load(),
+	assert.Zero(t, stsMock.PrincipalChecks.Load(),
 		"continuity check must not run before the signature verifies")
 }
 
@@ -2024,13 +1796,13 @@ func TestSigV4Auth_Session_ValidSignature_RunsPrincipalCheck(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
 
 	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
-	assert.Equal(t, int32(1), stsMock.principalChecks.Load())
+	assert.Equal(t, int32(1), stsMock.PrincipalChecks.Load())
 }
 
 // The check runs past sig.Verify, so everything reaching it holds a real
@@ -2058,20 +1830,20 @@ func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 			gw := &GatewayConfig{DisableLogging: true, RateLimiter: rl}
 
 			// The real verifier decides whether a verdict counts; the gateway records it.
-			encrypted, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+			encrypted, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 			require.NoError(t, err)
 			cred := &stsdomain.SessionCredential{
-				AccessKeyID: testSessionAKID, SecretEncrypted: encrypted, AccountID: "123456789012",
+				AccessKeyID: gwfix.SessionAKID, SecretEncrypted: encrypted, AccountID: "123456789012",
 				PrincipalType: principalTypeAssumedRole, SessionName: "test-session",
 				ExpiresAt: time.Now().UTC().Add(time.Hour),
 			}
-			sts := &mockSTSService{
-				sessions:     map[string]*stsdomain.SessionCredential{testSessionAKID: cred},
-				tokens:       map[string]string{testSessionAKID: testSessionToken},
-				principalErr: tc.err,
+			sts := &gwfix.STS{
+				Sessions:     map[string]*stsdomain.SessionCredential{gwfix.SessionAKID: cred},
+				Tokens:       map[string]string{gwfix.SessionAKID: gwfix.SessionToken},
+				PrincipalErr: tc.err,
 			}
-			v := credverify.New(&mockIAMService{masterKey: testMasterKey}, sts)
-			req := credential.Request{AccessKeyID: testSessionAKID, SecurityToken: testSessionToken}
+			v := credverify.New(&gwfix.IAM{MasterKey: gwfix.MasterKey}, sts)
+			req := credential.Request{AccessKeyID: gwfix.SessionAKID, SecurityToken: gwfix.SessionToken}
 			authed, f := v.Authenticate(req, func(string) error { return nil })
 			require.Nil(t, f)
 			_, f = v.Resolve(req, authed)
@@ -2104,10 +1876,10 @@ func TestSigV4Auth_LongLived_SkipsPrincipalCheck(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 
 	doRequest(handler, req)
-	assert.Zero(t, stsMock.principalChecks.Load())
+	assert.Zero(t, stsMock.PrincipalChecks.Load())
 }
 
 func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
@@ -2116,26 +1888,26 @@ func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	// Neither AKIA nor ASIA — must reject without any IAM/STS lookup.
-	signTestRequest(t, req, nil, "ZZIATESTAKIDXXXXXXXX", testSecretKey)
+	gwfix.SignRequest(t, req, nil, "ZZIATESTAKIDXXXXXXXX", gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
 
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	assert.Contains(t, string(body), "InvalidClientTokenId")
-	assert.Equal(t, int32(0), stsMock.lookups.Load(), "STSService must not be consulted for unknown-prefix AKIDs")
+	assert.Equal(t, int32(0), stsMock.Lookups.Load(), "STSService must not be consulted for unknown-prefix AKIDs")
 }
 
 func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 	// Long-lived AKIA path must seal principalType=user for correct policy gating.
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 
-	iamMock := &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{
-			testAccessKey: {
-				AccessKeyID:     testAccessKey,
+	iamMock := &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
+			gwfix.AccessKey: {
+				AccessKeyID:     gwfix.AccessKey,
 				SecretAccessKey: encryptedSecret,
 				UserName:        "alice",
 				AccountID:       "111111111111",
@@ -2143,7 +1915,7 @@ func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 			},
 		},
 	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: iamMock})
+	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: iamMock})
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -2154,7 +1926,7 @@ func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
 	resp := doRequest(r, req)
 	body, _ := io.ReadAll(resp.Body)
 
@@ -2166,16 +1938,16 @@ func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 
 func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
 	// Session AKID with nil STSService is a misconfiguration — must fail with InternalError.
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
-	iamMock := &mockIAMService{
-		masterKey:  testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{},
+	iamMock := &gwfix.IAM{
+		MasterKey:  gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{},
 	}
 	_ = encryptedSecret
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     iamMock,
 		STSService:     nil,
 	})
@@ -2186,7 +1958,7 @@ func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
 
 	resp := doRequest(r, req)
 	body, _ := io.ReadAll(resp.Body)
@@ -2200,7 +1972,7 @@ func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
 // that grants nothing. The enforcement path must resolve the underlying role —
 // never the SessionName — so the request is denied and GetUserPolicies is never called.
 func TestCheckPolicy_SessionNameCollision(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 
 	var userPoliciesCalled bool
@@ -2208,12 +1980,12 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 
 	// If SessionName were ever used as the policy-lookup key, the request would
 	// inherit alice's ec2:* permissions.
-	iamMock := &policyMockIAMService{
-		mockIAMService: mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {
-					AccessKeyID:     testAccessKey,
+	iamMock := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "alice",
 					AccountID:       "123456789012",
@@ -2221,18 +1993,18 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			userPoliciesCalled = true
-			return allowPolicy("ec2:*"), nil
+			return gwfix.AllowPolicy("ec2:*"), nil
 		},
-		getRolePoliciesFn: func(_, roleName string) ([]iamdomain.PolicyDocument, error) {
+		GetRolePoliciesFn: func(_, roleName string) ([]iamdomain.PolicyDocument, error) {
 			resolvedRoleName = roleName
 			return nil, nil
 		},
 	}
 
 	cred := &stsdomain.SessionCredential{
-		AccessKeyID:       testSessionAKID,
+		AccessKeyID:       gwfix.SessionAKID,
 		SecretEncrypted:   encryptedSecret,
 		AccountID:         "123456789012",
 		PrincipalType:     principalTypeAssumedRole,
@@ -2242,14 +2014,14 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 		ExpiresAt:         time.Now().UTC().Add(time.Hour),
 		CreatedAt:         time.Now().UTC().Add(-time.Minute),
 	}
-	stsMock := &mockSTSService{
-		sessions: map[string]*stsdomain.SessionCredential{testSessionAKID: cred},
-		tokens:   map[string]string{testSessionAKID: testSessionToken},
+	stsMock := &gwfix.STS{
+		Sessions: map[string]*stsdomain.SessionCredential{gwfix.SessionAKID: cred},
+		Tokens:   map[string]string{gwfix.SessionAKID: gwfix.SessionToken},
 	}
 
 	gw := withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     iamMock,
 		STSService:     stsMock,
 	})
@@ -2258,7 +2030,7 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
 
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
@@ -2269,63 +2041,31 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 	assert.False(t, userPoliciesCalled, "priv-esc: assumed-role session must not consult GetUserPolicies")
 }
 
-// allowPolicy returns a single-statement Allow policy granting action on "*".
-func allowPolicy(action string) []iamdomain.PolicyDocument {
-	return allowPolicyResource(action, "*")
-}
-
-// allowPolicyResource returns a single-statement Allow policy for action on resource.
-func allowPolicyResource(action, resource string) []iamdomain.PolicyDocument {
-	return []iamdomain.PolicyDocument{{
-		Version: "2012-10-17",
-		Statement: []iamdomain.Statement{{
-			Effect:   "Allow",
-			Action:   iamdomain.StringOrArr{action},
-			Resource: iamdomain.StringOrArr{resource},
-		}},
-	}}
-}
-
-// assumedRoleSessionCred builds an assumed-role SessionCredential.
-// SecretEncrypted is filled in by the gateway builder.
-func assumedRoleSessionCred(sessionName, underlyingRoleARN, accountID string) *stsdomain.SessionCredential {
-	return &stsdomain.SessionCredential{
-		AccessKeyID:       testSessionAKID,
-		AccountID:         accountID,
-		PrincipalType:     principalTypeAssumedRole,
-		AssumedRoleARN:    "arn:aws:sts::" + accountID + ":assumed-role/role/" + sessionName,
-		UnderlyingRoleARN: underlyingRoleARN,
-		SessionName:       sessionName,
-		ExpiresAt:         time.Now().UTC().Add(time.Hour),
-		CreatedAt:         time.Now().UTC().Add(-time.Minute),
-	}
-}
-
 // newAssumedRoleEnforcementGateway wires a gateway for assumed-role checkPolicy tests.
 // The user resolver fails the test if called — an assumed-role must never be evaluated as a user.
 func newAssumedRoleEnforcementGateway(t *testing.T, cred *stsdomain.SessionCredential,
 	getRoleFn func(accountID, roleName string) ([]iamdomain.PolicyDocument, error),
 ) *GatewayConfig {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	cred.SecretEncrypted = encryptedSecret
 
-	iamMock := &policyMockIAMService{
-		mockIAMService: mockIAMService{masterKey: testMasterKey},
-		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+	iamMock := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{MasterKey: gwfix.MasterKey},
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			t.Errorf("priv-esc: assumed-role principal must not consult GetUserPolicies")
 			return nil, nil
 		},
-		getRolePoliciesFn: getRoleFn,
+		GetRolePoliciesFn: getRoleFn,
 	}
-	stsMock := &mockSTSService{
-		sessions: map[string]*stsdomain.SessionCredential{cred.AccessKeyID: cred},
-		tokens:   map[string]string{cred.AccessKeyID: testSessionToken},
+	stsMock := &gwfix.STS{
+		Sessions: map[string]*stsdomain.SessionCredential{cred.AccessKeyID: cred},
+		Tokens:   map[string]string{cred.AccessKeyID: gwfix.SessionToken},
 	}
 	return withEC2Verifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		IAMService:     iamMock,
 		STSService:     stsMock,
 	})
@@ -2351,7 +2091,7 @@ func doSessionPolicyRequest(t *testing.T, handler http.Handler, akid string) *ht
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signSessionRequest(t, req, nil, akid, testSecretKey, testSessionToken)
+	gwfix.SignSessionRequest(t, req, nil, akid, gwfix.SecretKey, gwfix.SessionToken)
 	return doRequest(handler, req)
 }
 
@@ -2359,10 +2099,10 @@ func doSessionPolicyRequest(t *testing.T, handler http.Handler, akid string) *ht
 // policy grants the action, so the session is allowed — the symmetric twin of
 // predastore's assumed-role S3 enforcement.
 func TestCheckPolicy_AssumedRole_AllowedByRolePolicy(t *testing.T) {
-	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, roleName string) ([]iamdomain.PolicyDocument, error) {
 		require.Equal(t, "app-role", roleName)
-		return allowPolicy("ec2:RunInstances"), nil
+		return gwfix.AllowPolicy("ec2:RunInstances"), nil
 	})
 
 	resp := doSessionPolicyRequest(t, setupPolicyTestHandler(gw), cred.AccessKeyID)
@@ -2373,9 +2113,9 @@ func TestCheckPolicy_AssumedRole_AllowedByRolePolicy(t *testing.T) {
 // TestCheckPolicy_AssumedRole_ImplicitDeny: the role policy matches neither the
 // action nor an explicit Deny, so the default deny applies.
 func TestCheckPolicy_AssumedRole_ImplicitDeny(t *testing.T) {
-	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-		return allowPolicy("ec2:DescribeInstances"), nil // does not cover RunInstances
+		return gwfix.AllowPolicy("ec2:DescribeInstances"), nil // does not cover RunInstances
 	})
 
 	resp := doSessionPolicyRequest(t, setupPolicyTestHandler(gw), cred.AccessKeyID)
@@ -2387,7 +2127,7 @@ func TestCheckPolicy_AssumedRole_ImplicitDeny(t *testing.T) {
 // TestCheckPolicy_AssumedRole_ExplicitDeny: an explicit Deny in the role policy
 // overrides any Allow.
 func TestCheckPolicy_AssumedRole_ExplicitDeny(t *testing.T) {
-	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return []iamdomain.PolicyDocument{{
 			Version: "2012-10-17",
@@ -2408,7 +2148,7 @@ func TestCheckPolicy_AssumedRole_ExplicitDeny(t *testing.T) {
 // has no attached policies can do nothing — assumability does not imply
 // permissions.
 func TestCheckPolicy_AssumedRole_ZeroPolicyRole_DenyAll(t *testing.T) {
-	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return nil, nil // role exists, zero attached policies
 	})
@@ -2424,7 +2164,7 @@ func TestCheckPolicy_AssumedRole_ZeroPolicyRole_DenyAll(t *testing.T) {
 // user-branch root short-circuit; it is evaluated against its role like any
 // other session.
 func TestCheckPolicy_AssumedRole_SessionNamedRoot_NoBypass(t *testing.T) {
-	cred := assumedRoleSessionCred("root",
+	cred := gwfix.AssumedRoleSessionCred("root",
 		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/sneaky-role", awsidentifiers.GlobalAccountID)
 	var roleResolved bool
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, roleName string) ([]iamdomain.PolicyDocument, error) {
@@ -2455,7 +2195,7 @@ func TestCheckPolicy_AssumedRole_EdgeARNs_Denied(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cred := assumedRoleSessionCred("app", tc.underlyingRoleARN, "123456789012")
+			cred := gwfix.AssumedRoleSessionCred("app", tc.underlyingRoleARN, "123456789012")
 			gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 				t.Errorf("role resolver must not be consulted for an edge-case ARN (%s)", tc.name)
 				return nil, nil
@@ -2472,7 +2212,7 @@ func TestCheckPolicy_AssumedRole_EdgeARNs_Denied(t *testing.T) {
 // TestCheckPolicy_AssumedRole_ResolveError_InternalError: a non-transient role
 // resolve error fails closed — never an allow-on-error.
 func TestCheckPolicy_AssumedRole_ResolveError_InternalError(t *testing.T) {
-	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity) // role deleted after mint
 	})
@@ -2487,7 +2227,7 @@ func TestCheckPolicy_AssumedRole_ResolveError_InternalError(t *testing.T) {
 // error is retried 3× then fails closed (no allow-on-error).
 func TestCheckPolicy_AssumedRole_TransientNATS_RetriesThenFails(t *testing.T) {
 	shortenPolicyResolveRetry(t)
-	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	var calls int
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		calls++
@@ -2506,9 +2246,9 @@ func TestCheckPolicy_AssumedRole_TransientNATS_RetriesThenFails(t *testing.T) {
 // target role ARN, so passing that role is allowed.
 func TestCheckPolicy_AssumedRole_PassRole_ScopedToTargetARN_Allowed(t *testing.T) {
 	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
-	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
+	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-		return allowPolicyResource("iam:PassRole", targetRoleARN), nil
+		return gwfix.AllowPolicyResource("iam:PassRole", targetRoleARN), nil
 	})
 
 	handler := setupPolicyResourceTestHandler(gw, "iam", "PassRole", targetRoleARN)
@@ -2521,9 +2261,9 @@ func TestCheckPolicy_AssumedRole_PassRole_ScopedToTargetARN_Allowed(t *testing.T
 // to a different role ARN must not authorise passing the target role.
 func TestCheckPolicy_AssumedRole_PassRole_ScopedToOtherARN_Denied(t *testing.T) {
 	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
-	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
+	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-		return allowPolicyResource("iam:PassRole", "arn:aws:iam::123456789012:role/some-other-role"), nil
+		return gwfix.AllowPolicyResource("iam:PassRole", "arn:aws:iam::123456789012:role/some-other-role"), nil
 	})
 
 	handler := setupPolicyResourceTestHandler(gw, "iam", "PassRole", targetRoleARN)
@@ -2538,9 +2278,9 @@ func TestCheckPolicy_AssumedRole_PassRole_ScopedToOtherARN_Denied(t *testing.T) 
 // wildcard PassRole grant. Locks the wildcard branch of the resource match.
 func TestCheckPolicy_AssumedRole_PassRole_WildcardResource_Allowed(t *testing.T) {
 	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
-	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
+	cred := gwfix.AssumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-		return allowPolicyResource("iam:PassRole", "*"), nil
+		return gwfix.AllowPolicyResource("iam:PassRole", "*"), nil
 	})
 
 	handler := setupPolicyResourceTestHandler(gw, "iam", "PassRole", targetRoleARN)
@@ -2576,7 +2316,7 @@ func TestRedactedCanonicalRequest_MasksSessionToken(t *testing.T) {
 	body := []byte("Action=DescribeInstances")
 	req := httptest.NewRequest(http.MethodPost, "http://gw.local/", bytes.NewReader(body))
 	req.Header.Set("X-Amz-Security-Token", token)
-	signTestRequest(t, req, body, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, body, gwfix.AccessKey, gwfix.SecretKey)
 
 	sig, err := sigv4.Parse(req)
 	require.NoError(t, err)
@@ -2599,11 +2339,11 @@ func TestRedactedCanonicalRequest_MasksSessionToken(t *testing.T) {
 // envelope rather than the EC2 query shape a non-query client cannot
 // deserialize.
 func TestSigV4Auth_UnservedServiceNamesServiceNotCredentials(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "sqs", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, "sqs", time.Now().UTC())
 
 	resp := doRequest(handler, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -2632,12 +2372,12 @@ func TestSigV4Auth_UnservedServiceNamesServiceNotCredentials(t *testing.T) {
 // for a scope the gateway does not serve, so without the request-derived
 // fallback this always fell through to XML the client's SDK cannot parse.
 func TestSigV4Auth_UnservedServiceJSONClientGetsJSONEnvelope(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Host = "localhost:9999"
 	req.Header.Set("X-Amz-Target", "AmazonSQS.ListQueues")
-	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "sqs", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, "sqs", time.Now().UTC())
 
 	resp := doRequest(handler, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -2653,12 +2393,12 @@ func TestSigV4Auth_UnservedServiceJSONClientGetsJSONEnvelope(t *testing.T) {
 // The same, driven by Content-Type rather than X-Amz-Target: some JSON
 // clients (dynamodb) identify themselves this way instead.
 func TestSigV4Auth_UnservedServiceJSONContentTypeGetsJSONEnvelope(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
-	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "dynamodb", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, "dynamodb", time.Now().UTC())
 
 	resp := doRequest(handler, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -2673,11 +2413,11 @@ func TestSigV4Auth_UnservedServiceJSONContentTypeGetsJSONEnvelope(t *testing.T) 
 // An unserved scope whose request carries neither tell (a REST-XML client
 // such as cloudfront's) must keep the XML envelope, which is correct for it.
 func TestSigV4Auth_UnservedServiceNoJSONTellGetsXMLEnvelope(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "cloudfront", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, "cloudfront", time.Now().UTC())
 
 	resp := doRequest(handler, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -2724,13 +2464,13 @@ func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
 // unserved-scope InvalidAction change may make a real signature failure
 // unrecognisable.
 func TestSigV4Auth_ServedScopeSignatureMismatchStillSignatureDoesNotMatch(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	// Signed with the wrong secret: the credential scope (ec2) is served, so
 	// this must fail verification rather than the unserved-service gate.
-	signTestRequestAs(t, req, nil, testAccessKey, "wrong-secret-entirely", testService, time.Now().UTC())
+	gwfix.SignRequestAs(t, req, nil, gwfix.AccessKey, "wrong-secret-entirely", gwfix.Service, time.Now().UTC())
 
 	resp := doRequest(handler, req)
 	require.Equal(t, http.StatusForbidden, resp.StatusCode)
@@ -2757,14 +2497,14 @@ func TestSigV4Auth_ServedScopeSignatureMismatchStillSignatureDoesNotMatch(t *tes
 // so before the fix ctxAction stayed empty and every such request shared the
 // throttle bucket "<account>:unknown", which no per-action limit can match.
 func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 
-	mockSvc := &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*iamdomain.AccessKey{
-			testAccessKey: {
-				AccessKeyID:     testAccessKey,
+	mockSvc := &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
+			gwfix.AccessKey: {
+				AccessKeyID:     gwfix.AccessKey,
 				SecretAccessKey: encryptedSecret,
 				UserName:        "alice",
 				AccountID:       "123456789012",
@@ -2772,7 +2512,7 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 			},
 		},
 	}
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: mockSvc})
+	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: mockSvc})
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
 	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
@@ -2815,7 +2555,7 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 			if tc.target != "" {
 				req.Header.Set("X-Amz-Target", tc.target)
 			}
-			signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, tc.service, time.Now().UTC())
+			gwfix.SignRequestAs(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, tc.service, time.Now().UTC())
 
 			resp := doRequest(r, req)
 			require.Equal(t, http.StatusOK, resp.StatusCode)

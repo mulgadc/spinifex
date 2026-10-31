@@ -6,7 +6,7 @@ import (
 
 // ecrAllowPolicy and ecrDenyPolicy build single-statement policy documents for
 // the ECR operation-authorization tests below. They are distinct from
-// auth_test.go's allowPolicy/allowPolicyResource helpers because those are
+// auth_test.go's gwfix.AllowPolicy/gwfix.AllowPolicyResource helpers because those are
 // fixed to a single action string; ECR route classification can require
 // multiple actions per operation (e.g. cross-repo mount).
 func ecrAllowPolicy(actions, resources []string) iamdomain.PolicyDocument {

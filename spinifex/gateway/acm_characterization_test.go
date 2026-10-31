@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"bytes"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -31,23 +32,23 @@ import (
 
 // acmPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as every principal's policy. The region is
-// testRegion because signTestRequestAs always signs for it.
+// gwfix.Region because gwfix.SignRequestAs always signs for it.
 func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConfig, http.Handler) {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
 	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		NATSConn:       nc,
-		IAMService: &policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
+		IAMService: &gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
 						SecretAccessKey: encryptedSecret,
 						UserName:        "alice",
 						AccountID:       authzAccountID,
@@ -55,7 +56,7 @@ func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConf
 					},
 				},
 			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	})
 
@@ -87,7 +88,7 @@ func signACMRequest(t *testing.T, target string, body []byte) *http.Request {
 	if target != "" {
 		req.Header.Set("X-Amz-Target", target)
 	}
-	signTestRequestAs(t, req, body, testAccessKey, testSecretKey, "acm", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "acm", time.Now().UTC())
 	return req
 }
 
@@ -188,13 +189,13 @@ func TestACMActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 // whose body exceeds the SigV4 cap is rejected inside SigV4AuthMiddleware,
 // before ACM dispatch ever runs, with the JSON error envelope.
 func TestACMPipeline_OversizedBody_413OverHTTP(t *testing.T) {
-	handler := setupTestApp(testAccessKey, testSecretKey)
+	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
 	oversized := bytes.Repeat([]byte("x"), int(sigv4.MaxPayloadLen)+1)
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversized))
 	req.Host = "localhost:9999"
 	req.Header.Set("X-Amz-Target", "CertificateManager.ListCertificates")
-	signTestRequestAs(t, req, oversized, testAccessKey, testSecretKey, "acm", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, oversized, gwfix.AccessKey, gwfix.SecretKey, "acm", time.Now().UTC())
 
 	resp := doRequest(handler, req)
 
@@ -216,7 +217,7 @@ func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
 			{
 				Effect:   "Allow",
 				Action:   iamdomain.StringOrArr{"acm:DeleteCertificate"},
-				Resource: iamdomain.StringOrArr{"arn:aws:acm:" + testRegion + ":" + authzAccountID + ":certificate/other"},
+				Resource: iamdomain.StringOrArr{"arn:aws:acm:" + gwfix.Region + ":" + authzAccountID + ":certificate/other"},
 			},
 		},
 	}}
@@ -224,7 +225,7 @@ func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
 	calls := subscribeACMCounter(t, gw.NATSConn, "acm.DeleteCertificate", []byte(`{}`))
 
 	target := "CertificateManager.DeleteCertificate"
-	body := []byte(`{"CertificateArn":"arn:aws:acm:` + testRegion + `:` + authzAccountID + `:certificate/prod-1111"}`)
+	body := []byte(`{"CertificateArn":"arn:aws:acm:` + gwfix.Region + `:` + authzAccountID + `:certificate/prod-1111"}`)
 	resp := doRequest(app, signACMRequest(t, target, body))
 
 	require.Equal(t, http.StatusForbidden, resp.StatusCode)

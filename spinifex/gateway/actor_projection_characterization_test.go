@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
@@ -98,7 +99,7 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 	gw := &GatewayConfig{
 		DisableLogging: true,
 		NATSConn:       e.nc,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		ExpectedNodes:  1,
 		IAMService:     e.counter,
 		Credentials:    credverify.New(e.counter, e.sts),

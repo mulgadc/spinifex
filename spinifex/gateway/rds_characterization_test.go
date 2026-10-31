@@ -7,6 +7,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/xml"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,21 +28,21 @@ import (
 // live test NATS, with docs as the caller's policy.
 func rdsPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConfig, http.Handler) {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
 	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		NATSConn:       nc,
 		ExpectedNodes:  1,
-		IAMService: &policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
+		IAMService: &gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
 						SecretAccessKey: encryptedSecret,
 						UserName:        "alice",
 						AccountID:       authzAccountID,
@@ -49,7 +50,7 @@ func rdsPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConf
 					},
 				},
 			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	})
 	withRDS(gw)
@@ -66,7 +67,7 @@ func signRDSRequest(t *testing.T, body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(b))
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	signTestRequestAs(t, req, b, testAccessKey, testSecretKey, "rds", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, b, gwfix.AccessKey, gwfix.SecretKey, "rds", time.Now().UTC())
 	return req
 }
 
@@ -84,7 +85,7 @@ func respondRDS(t *testing.T, nc *nats.Conn, subject, payload string) *int {
 }
 
 func rdsInstanceARN(id string) string {
-	return "arn:aws:rds:" + testRegion + ":" + authzAccountID + ":db:" + id
+	return "arn:aws:rds:" + gwfix.Region + ":" + authzAccountID + ":db:" + id
 }
 
 func TestRDSPipeline_ErrorEnvelopes_GoldenXML(t *testing.T) {
@@ -233,7 +234,7 @@ func TestRDSPipeline_OversizedBody_413OverHTTP(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversized))
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	signTestRequestAs(t, req, oversized, testAccessKey, testSecretKey, "rds", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, oversized, gwfix.AccessKey, gwfix.SecretKey, "rds", time.Now().UTC())
 	resp := doRequest(app, req)
 
 	require.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)

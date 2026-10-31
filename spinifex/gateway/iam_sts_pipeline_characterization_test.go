@@ -10,6 +10,7 @@ package gateway
 import (
 	"bytes"
 	"fmt"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -49,7 +50,7 @@ func (e *cbEnv) rawRequest(t *testing.T, c cbCreds, service, body string) *httpt
 	if c.token != "" {
 		req.Header.Set("X-Amz-Security-Token", c.token)
 	}
-	signTestRequestAs(t, req, b, c.akid, c.secret, service, time.Now().UTC())
+	gwfix.SignRequestAs(t, req, b, c.akid, c.secret, service, time.Now().UTC())
 	rec := httptest.NewRecorder()
 	e.h.ServeHTTP(rec, req)
 	return rec

@@ -7,6 +7,7 @@ package gateway
 import (
 	"crypto/tls"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
@@ -121,7 +122,7 @@ func emittedKeys(t *testing.T) map[string]string {
 		},
 	}
 
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}})
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: &gwfix.IAM{}})
 	union := make(map[string]string)
 	for name, principal := range principals {
 		r := httptest.NewRequest(http.MethodPost, "/?prefix=home/&max-keys=100", nil)

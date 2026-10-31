@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -64,9 +65,9 @@ func newRDSGatewayWithResolver(
 	return withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         "ap-southeast-2",
-		IAMService: &policyMockIAMService{
-			getUserPoliciesFn: counted,
-			getRolePoliciesFn: counted,
+		IAMService: &gwfix.PolicyIAM{
+			GetUserPoliciesFn: counted,
+			GetRolePoliciesFn: counted,
 		},
 	}), probe
 }

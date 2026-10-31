@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -30,8 +31,8 @@ func passRoleToGateway(t *testing.T, statements ...iamdomain.Statement) *Gateway
 		Region:         authzRegion,
 		NATSConn:       startTestNATS(t),
 		IAMService: &profileIAMService{
-			policyMockIAMService: policyMockIAMService{
-				getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			PolicyIAM: gwfix.PolicyIAM{
+				GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 			},
 		},
 	})

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
 	"net/http"
@@ -138,7 +139,7 @@ func fakeNoResolverRegistration(c *dispatchCapture) dispatch.Registration {
 // fake service's full pipeline mirrors ecrPipelineApp for a real one.
 func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...dispatch.Registration) (*GatewayConfig, http.Handler) {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
@@ -149,15 +150,15 @@ func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...disp
 
 	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		NATSConn:       nc,
 		Services:       b.Build(),
-		IAMService: &policyMockIAMService{
-			mockIAMService: mockIAMService{
-				masterKey: testMasterKey,
-				accessKeys: map[string]*iamdomain.AccessKey{
-					testAccessKey: {
-						AccessKeyID:     testAccessKey,
+		IAMService: &gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
 						SecretAccessKey: encryptedSecret,
 						UserName:        "alice",
 						AccountID:       ecrTestAccount,
@@ -165,7 +166,7 @@ func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...disp
 					},
 				},
 			},
-			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	})
 
@@ -184,7 +185,7 @@ func signDispatchRequest(t *testing.T, service string, body []byte) *http.Reques
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Host = "localhost:9999"
 	req.Header.Set("X-Amz-Target", "Whatever."+fakeAction)
-	signTestRequestAs(t, req, body, testAccessKey, testSecretKey, service, time.Now().UTC())
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, service, time.Now().UTC())
 	return req
 }
 
@@ -200,7 +201,7 @@ func TestDispatchSeam_RequestReachesDispatcherWithContext(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.True(t, capt.bodyRead, "dispatcher must have read the request body")
 	assert.Equal(t, ecrTestAccount, capt.accountID)
-	assert.Equal(t, testRegion, capt.region)
+	assert.Equal(t, gwfix.Region, capt.region)
 	assert.Equal(t, body, capt.body, "dispatcher must see the full body")
 }
 
@@ -253,8 +254,8 @@ func TestDispatchSeam_ResolvedActionReachesThrottleTraceAndAudit(t *testing.T) {
 // --- c. Authorize denies or allows ------------------------------------------
 
 func TestDispatchSeam_AuthorizeDeniesOnMismatchAllowsOnMatch(t *testing.T) {
-	const allowedResource = "arn:aws:testsvc:" + testRegion + ":" + ecrTestAccount + ":widget/widget1"
-	const otherResource = "arn:aws:testsvc:" + testRegion + ":" + ecrTestAccount + ":widget/other"
+	const allowedResource = "arn:aws:testsvc:" + gwfix.Region + ":" + ecrTestAccount + ":widget/widget1"
+	const otherResource = "arn:aws:testsvc:" + gwfix.Region + ":" + ecrTestAccount + ":widget/other"
 
 	t.Run("scoped to a different resource is denied", func(t *testing.T) {
 		capt := &dispatchCapture{authorizeResource: allowedResource}
@@ -306,7 +307,7 @@ func TestDispatchSeam_ActorReturnsVerifiedCallerIgnoringBody(t *testing.T) {
 	assert.Equal(t, ecrTestAccount, capt.actor.AccountID)
 	assert.Equal(t, "arn:aws:iam::"+ecrTestAccount+":user/alice", capt.actor.CallerARN)
 	assert.Equal(t, principalTypeUser, capt.actor.PrincipalType)
-	assert.Equal(t, testAccessKey, capt.actor.AccessKeyID)
+	assert.Equal(t, gwfix.AccessKey, capt.actor.AccessKeyID)
 }
 
 // --- e. dispatcher error renders in the registration's declared envelope ---
@@ -366,16 +367,16 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(fakeJSONRegistration(&dispatchCapture{})))
 
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		Services:       b.Build(),
-		IAMService: &mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{
-				testAccessKey: {AccessKeyID: testAccessKey, SecretAccessKey: encryptedSecret, UserName: "root", Status: "Active"},
+		IAMService: &gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {AccessKeyID: gwfix.AccessKey, SecretAccessKey: encryptedSecret, UserName: "root", Status: "Active"},
 			},
 		},
 	})
@@ -386,7 +387,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "sqs", time.Now().UTC())
+	gwfix.SignRequestAs(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, "sqs", time.Now().UTC())
 
 	resp := doRequest(r, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)

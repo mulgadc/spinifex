@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
@@ -449,19 +450,19 @@ func TestSTSRequest_GetCallerIdentity_User_LookupIAM(t *testing.T) {
 // resolved by the SigV4 middleware rather than reformatted at "/".
 func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) {
 	const pathed = "arn:aws:iam::123456789012:user/eng/alice"
-	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
-		Region:         testRegion,
+		Region:         gwfix.Region,
 		STSService:     &flexMockSTSService{},
-		IAMService: &mockIAMService{
-			masterKey: testMasterKey,
-			accessKeys: map[string]*iamdomain.AccessKey{testAccessKey: {
-				AccessKeyID: testAccessKey, SecretAccessKey: encryptedSecret,
+		IAMService: &gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{gwfix.AccessKey: {
+				AccessKeyID: gwfix.AccessKey, SecretAccessKey: encryptedSecret,
 				UserName: "alice", AccountID: "123456789012", Status: "Active",
 			}},
-			getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
+			GetUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
 				return &iam.GetUserOutput{User: &iam.User{
 					UserName: aws.String("alice"), UserId: aws.String("AIDAALICE"), Arn: aws.String(pathed),
 				}}, nil
@@ -479,7 +480,7 @@ func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
 	req.Host = "localhost:9999"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	signTestRequest(t, req, body, testAccessKey, testSecretKey)
+	gwfix.SignRequest(t, req, body, gwfix.AccessKey, gwfix.SecretKey)
 
 	resp := doRequest(handler, req)
 	b, _ := io.ReadAll(resp.Body)

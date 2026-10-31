@@ -47,6 +47,8 @@ type ReadyConfig struct {
 	// Refused is the wait after a failure that cannot clear by itself, such
 	// as a refused or mismatched key; zero is five minutes.
 	Refused time.Duration
+	// Serve, when set, also serves SQS owner calls while Watch runs.
+	Serve *ServeConfig
 }
 
 // ErrStoreKeyMismatch is a bound store launched for a key other than the one
@@ -80,6 +82,15 @@ func Watch(ctx context.Context, cfg ReadyConfig) error {
 		return fmt.Errorf("build gateway client: %w", err)
 	}
 	keys := workerkey.Store{Dir: filepath.Join(cfg.DataDir, keyDirName)}
+	if cfg.Serve != nil {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			serve(ctx, cfg, c, d, keys)
+		}()
+		// Calls in flight finish before the marker is removed and Watch returns.
+		defer func() { <-done }()
+	}
 	callTimeout := orDefault(cfg.CallTimeout, 30*time.Second)
 	refresh := orDefault(cfg.Refresh, 30*time.Second)
 	refused := orDefault(cfg.Refused, 5*time.Minute)

@@ -246,6 +246,12 @@ type gwCluster struct {
 
 func newGWCluster(t *testing.T) gwCluster {
 	t.Helper()
+	return newGWClusterWith(t, nil)
+}
+
+// newGWClusterWith also hands the gateway's work actions to work.
+func newGWClusterWith(t *testing.T, work sqsworkerapi.Work) gwCluster {
+	t.Helper()
 	clustersize.DeclareForTest(t, 1)
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
@@ -261,7 +267,9 @@ func newGWCluster(t *testing.T) gwCluster {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return gwCluster{ids: ids, fence: fence, stores: stores, gw: newLocalGateway(t, sqsworkerapi.JetStreamDeps(js))}
+	deps := sqsworkerapi.JetStreamDeps(js)
+	deps.Work = work
+	return gwCluster{ids: ids, fence: fence, stores: stores, gw: newLocalGateway(t, deps)}
 }
 
 func (c gwCluster) launch(t *testing.T, claim string, supersedes uint64, inst string) workerident.Intent {

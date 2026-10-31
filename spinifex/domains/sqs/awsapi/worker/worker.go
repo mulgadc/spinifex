@@ -6,6 +6,8 @@ package worker
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -13,10 +15,13 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"regexp"
 	"slices"
+	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
@@ -36,7 +41,19 @@ const (
 	ActionClaimFirstStore       = workerrole.ActionClaimFirstStore
 	ActionDescribeStore         = workerrole.ActionDescribeStore
 	ActionRecordWorkerPublicKey = workerrole.ActionRecordWorkerPublicKey
+	ActionPollWork              = workerrole.ActionPollWork
+	ActionCompleteWork          = workerrole.ActionCompleteWork
 )
+
+// pollWait bounds one PollWork long poll; pollBatch and pollBytes bound the
+// items one poll hands out.
+const (
+	pollWait  = 20 * time.Second
+	pollBatch = 16
+	pollBytes = 16 << 20
+)
+
+var workIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 const principalTypeAssumedRole = "assumed-role"
 
@@ -46,6 +63,8 @@ var params = map[string][]string{
 	ActionClaimFirstStore:       {},
 	ActionDescribeStore:         {},
 	ActionRecordWorkerPublicKey: {"PublicKey"},
+	ActionPollWork:              {},
+	ActionCompleteWork:          {"WorkId"},
 }
 
 // ActionNames lists every action the registration dispatches, sorted.
@@ -75,12 +94,22 @@ var (
 	_ FirstStore = firststore.Store{}
 )
 
-// Deps are the capabilities the actions run against. Either one nil answers
-// every authorized request with ServiceUnavailable, never a decision.
+// Work is the relay the worker pulls owner calls from and posts results to.
+type Work interface {
+	Take(ctx context.Context, taker relay.Taker, limit, maxBytes int) []relay.Work
+	Complete(taker relay.Taker, id string, res relay.Result) (relay.Outcome, error)
+}
+
+var _ Work = (*relay.Relay)(nil)
+
+// Deps are the capabilities the actions run against. Any one nil answers
+// every authorized request with ServiceUnavailable, never a decision; a nil
+// Work does so for the work actions only.
 type Deps struct {
 	Identities Identities
 	FirstStore FirstStore
 	Stores     Stores
+	Work       Work
 }
 
 // NewRegistration returns the internal SQS worker Query registration.
@@ -103,7 +132,12 @@ func resolveAction(r *http.Request) string {
 }
 
 // readQueryArgs parses the Query body and rewinds it for a second read.
+// CompleteWork carries its arguments in the signed query string instead,
+// because its body is the result.
 func readQueryArgs(r *http.Request) (map[string]string, error) {
+	if r.URL.Query().Get("Action") == ActionCompleteWork {
+		return query.ParseArgs(r.URL.RawQuery)
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
 	if err != nil {
 		return nil, err
@@ -166,6 +200,15 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	id := firststore.Identity{InstanceID: ident.InstanceID, ClaimID: ident.ClaimID, Generation: ident.Generation}
 
 	switch action {
+	case ActionPollWork, ActionCompleteWork:
+		if d.Work == nil {
+			return errors.New(awserrors.ErrorServiceUnavailable)
+		}
+		taker := relay.Taker{InstanceID: ident.InstanceID, Generation: ident.Generation, ClaimID: ident.ClaimID}
+		if action == ActionPollWork {
+			return d.pollWork(ctx, w, taker)
+		}
+		return d.completeWork(ctx, w, r, taker, args["WorkId"])
 	case ActionDescribeStore:
 		return d.describeStore(ctx, w, ident.Region)
 	case ActionClaimFirstStore:
@@ -243,6 +286,88 @@ func (d Deps) describeStore(ctx context.Context, w http.ResponseWriter, region s
 	return writeXML(ctx, w, describeResponse{Result: describeResult{
 		State: StoreBound, Address: rec.Address, PublicKey: rec.PublicKey,
 	}})
+}
+
+// pollWork hands this worker queued owner calls, waiting up to pollWait.
+// Each item is the Work JSON, base64 encoded.
+func (d Deps) pollWork(ctx context.Context, w http.ResponseWriter, taker relay.Taker) error {
+	pollCtx, cancel := context.WithTimeout(ctx, pollWait)
+	defer cancel()
+	works := d.Work.Take(pollCtx, taker, pollBatch, pollBytes)
+	res := pollResult{Items: make([]string, 0, len(works))}
+	for _, wk := range works {
+		b, err := json.Marshal(wk)
+		if err != nil {
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		res.Items = append(res.Items, base64.StdEncoding.EncodeToString(b))
+	}
+	return writeXML(ctx, w, pollResponse{Result: res})
+}
+
+// completeWork posts the result in the body for the item the same worker
+// identity took. The outcome tells the worker whether delivery is disproved.
+func (d Deps) completeWork(ctx context.Context, w http.ResponseWriter, r *http.Request, taker relay.Taker, id string) error {
+	if !workIDPattern.MatchString(id) {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
+	if err != nil {
+		return errors.New(awserrors.ErrorMalformedQueryString)
+	}
+	if int64(len(body)) > sigv4.MaxPayloadLen {
+		return errors.New(awserrors.ErrorRequestEntityTooLarge)
+	}
+	var res relay.Result
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&res); err != nil || (res.Error == nil) == (res.Output == nil) {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	outcome, err := d.Work.Complete(taker, id, res)
+	if errors.Is(err, relay.ErrNotTaker) {
+		return errors.New(awserrors.ErrorAccessDenied)
+	}
+	if err != nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	return writeXML(ctx, w, completeResponse{Result: completeResult{Outcome: OutcomeName(outcome)}})
+}
+
+// CompleteWork outcomes on the wire.
+const (
+	OutcomeDelivered  = "delivered"
+	OutcomeCallerGone = "caller-gone"
+	OutcomeUnknown    = "unknown"
+)
+
+// OutcomeName is the wire name of o.
+func OutcomeName(o relay.Outcome) string {
+	switch o {
+	case relay.Delivered:
+		return OutcomeDelivered
+	case relay.CallerGone:
+		return OutcomeCallerGone
+	}
+	return OutcomeUnknown
+}
+
+type pollResult struct {
+	Items []string `xml:"Items>member"`
+}
+
+type pollResponse struct {
+	XMLName xml.Name   `xml:"PollWorkResponse"`
+	Result  pollResult `xml:"PollWorkResult"`
+}
+
+type completeResult struct {
+	Outcome string `xml:"Outcome"`
+}
+
+type completeResponse struct {
+	XMLName xml.Name       `xml:"CompleteWorkResponse"`
+	Result  completeResult `xml:"CompleteWorkResult"`
 }
 
 // DescribeStore states.

@@ -17,9 +17,11 @@ const (
 	ActionClaimFirstStore       = "ClaimFirstStore"
 	ActionDescribeStore         = "DescribeStore"
 	ActionRecordWorkerPublicKey = "RecordWorkerPublicKey"
+	ActionPollWork              = "PollWork"
+	ActionCompleteWork          = "CompleteWork"
 )
 
 // Actions lists every internal worker action, sorted.
 func Actions() []string {
-	return []string{ActionClaimFirstStore, ActionDescribeStore, ActionRecordWorkerPublicKey}
+	return []string{ActionClaimFirstStore, ActionCompleteWork, ActionDescribeStore, ActionPollWork, ActionRecordWorkerPublicKey}
 }

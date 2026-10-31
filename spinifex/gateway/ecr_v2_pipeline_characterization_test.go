@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
@@ -67,6 +68,18 @@ func newV2Env(t *testing.T, opts v2Options) *v2Env {
 func (e *v2Env) mint(t *testing.T, account, arn, principalType, akid string) string {
 	t.Helper()
 	tok, _, err := e.issuer.Mint(ecrauth.Principal{AccountID: account, ARN: arn, Type: principalType, AccessKeyID: akid})
+	require.NoError(t, err)
+	return tok
+}
+
+// mintRole is a role session's token carrying the role's immutable ID, as
+// GetAuthorizationToken now issues it.
+func (e *v2Env) mintRole(t *testing.T, roleID string) string {
+	t.Helper()
+	tok, _, err := e.issuer.Mint(ecrauth.Principal{
+		AccountID: v2Account, ARN: "arn:aws:sts::" + v2Account + ":assumed-role/deploy/s1",
+		Type: principalTypeAssumedRole, AccessKeyID: v2ASID, RoleID: roleID,
+	})
 	require.NoError(t, err)
 	return tok
 }
@@ -260,6 +273,75 @@ func TestV2Pipeline_PrincipalRehydration(t *testing.T) {
 			assert.Equal(t, tt.wantCode, w.errorCode(t))
 			if tt.wantStatus == http.StatusUnauthorized {
 				assert.Equal(t, v2Challenge, w.Header().Get("WWW-Authenticate"))
+			}
+		})
+	}
+}
+
+// AWS keeps an ECR token valid after the session that minted it expires and judges
+// the role as it is now: its policy on every request, and its existence.
+func TestV2Pipeline_TokenOutlivesItsRoleSession(t *testing.T) {
+	const roleID = "AROAV2ROLE000001"
+	const manifest = "/v2/team/app/manifests/latest"
+	seed := func(e *v2Env) {
+		seedECRAssumedRole(e.iam, e.sts, v2Account, "deploy", roleID, v2ASID, "s1", time.Now().Add(-time.Minute))
+		e.iam.rolePolicies[v2Account+"|deploy"] = []iamdomain.PolicyDocument{ecrAllowPolicy([]string{"ecr:*"}, []string{"*"})}
+	}
+	withID := func(e *v2Env) string { return e.mintRole(t, roleID) }
+	withoutID := func(e *v2Env) string { return e.mintRole(t, "") }
+
+	tests := []struct {
+		name       string
+		token      func(*v2Env) string
+		mutate     func(*v2Env)
+		wantStatus int
+		wantCode   string
+		challenge  bool
+		roleGone   bool
+	}{
+		{"session expired, role live", withID, seed, http.StatusNotImplemented, "UNSUPPORTED", false, false},
+		{"session swept, role live", withID, func(e *v2Env) {
+			seed(e)
+			delete(e.sts.sessions, v2ASID)
+		}, http.StatusNotImplemented, "UNSUPPORTED", false, false},
+		{"session expired, role policy removed", withID, func(e *v2Env) {
+			seed(e)
+			e.iam.rolePolicies[v2Account+"|deploy"] = nil
+		}, http.StatusForbidden, "DENIED", false, false},
+		{"session expired, role deleted", withID, func(e *v2Env) {
+			seed(e)
+			delete(e.iam.roles, v2Account+"|deploy")
+		}, http.StatusForbidden, "DENIED", false, true},
+		{"session expired, role recreated under a new ID", withID, func(e *v2Env) {
+			seed(e)
+			e.iam.roles[v2Account+"|deploy"].RoleId = aws.String("AROAV2ROLE000002")
+		}, http.StatusForbidden, "DENIED", false, true},
+		{"session expired, account suspended", withID, func(e *v2Env) {
+			seed(e)
+			e.iam.accounts[v2Account].Status = "SUSPENDED"
+		}, http.StatusUnauthorized, "UNAUTHORIZED", true, false},
+		{"session expired, IAM outage", withID, func(e *v2Env) {
+			seed(e)
+			e.iam.genericErr = errors.New("nats: timeout")
+		}, http.StatusServiceUnavailable, "UNKNOWN", false, false},
+		{"session expired, token without a role ID", withoutID, seed, http.StatusUnauthorized, "UNAUTHORIZED", true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newV2Env(t, v2Options{})
+			tt.mutate(e)
+
+			w := e.do(http.MethodGet, manifest, v2Host, basic(tt.token(e)))
+
+			assert.Equal(t, tt.wantStatus, w.Code, w.Body.String())
+			assert.Equal(t, tt.wantCode, w.errorCode(t))
+			if tt.challenge {
+				assert.Equal(t, v2Challenge, w.Header().Get("WWW-Authenticate"))
+			} else {
+				assert.Empty(t, w.Header().Get("WWW-Authenticate"))
+			}
+			if tt.roleGone {
+				assert.JSONEq(t, `{"errors":[{"code":"DENIED","message":"The security token included in the request is invalid."}]}`, w.Body.String())
 			}
 		})
 	}

@@ -273,7 +273,13 @@ func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, ar
 	// 1) Register the cluster's OIDC provider in the caller account and create a
 	//    role whose trust policy federates it, so the STS handler accepts
 	//    web-identity tokens carrying this issuer.
-	providerArn, roleArn, roleName := registerOIDCRole(t, c, fx, "irsa", "E2E IRSA web-identity role")
+	//    The trust policy is the stock AWS IRSA form: StringEquals on
+	//    <issuer-without-https>:sub and :aud, as Terraform builds it.
+	const defaultSA = "system:serviceaccount:default:default"
+	providerArn := registerOIDCProvider(t, c, fx)
+	issuer := aws.StringValue(fx.Cluster.Identity.Oidc.Issuer)
+	roleArn, roleName := createWebIdentityRole(t, c, fx, providerArn, "irsa", "E2E IRSA web-identity role",
+		stockIRSACondition(issuer, defaultSA))
 	t.Logf("OIDC provider: %s", providerArn)
 	t.Logf("role: %s", roleArn)
 
@@ -292,13 +298,16 @@ func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, ar
 	// 3) Exchange the token. AssumeRoleWithWebIdentity is anonymous (the SDK
 	//    strips SigV4 for this op); the JWT is the identity.
 	const sessionName = "e2e-irsa"
-	var assumeOut *sts.AssumeRoleWithWebIdentityOutput
-	harness.EventuallyErr(t, func() error {
-		out, aerr := c.STS.AssumeRoleWithWebIdentity(&sts.AssumeRoleWithWebIdentityInput{
-			RoleArn:          aws.String(roleArn),
+	assume := func(arn string) (*sts.AssumeRoleWithWebIdentityOutput, error) {
+		return c.STS.AssumeRoleWithWebIdentity(&sts.AssumeRoleWithWebIdentityInput{
+			RoleArn:          aws.String(arn),
 			RoleSessionName:  aws.String(sessionName),
 			WebIdentityToken: aws.String(token),
 		})
+	}
+	var assumeOut *sts.AssumeRoleWithWebIdentityOutput
+	harness.EventuallyErr(t, func() error {
+		out, aerr := assume(roleArn)
 		if aerr != nil {
 			return fmt.Errorf("assume-role-with-web-identity: %w", aerr)
 		}
@@ -323,16 +332,68 @@ func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, ar
 	assert.Contains(t, aws.StringValue(ident.Arn), "assumed-role/"+roleName,
 		"caller ARN must reflect the assumed IRSA role")
 	t.Logf("GetCallerIdentity (web-identity creds): %s", aws.StringValue(ident.Arn))
+
+	// 5) Condition matching against the same token. A role STS cannot resolve
+	//    yet also answers AccessDenied, so a denial only counts when it follows
+	//    a grant on the same role.
+	t.Run("StringLikeSubjectGrants", func(t *testing.T) {
+		prefix := strings.TrimPrefix(issuer, "https://")
+		likeArn, _ := createWebIdentityRole(t, c, fx, providerArn, "irsa-like", "E2E IRSA StringLike role",
+			fmt.Sprintf(`{"StringEquals":{%q:"sts.amazonaws.com"},"StringLike":{%q:"system:serviceaccount:default:*"}}`,
+				prefix+":aud", prefix+":sub"))
+		var out *sts.AssumeRoleWithWebIdentityOutput
+		harness.EventuallyErr(t, func() error {
+			var aerr error
+			out, aerr = assume(likeArn)
+			return aerr
+		}, 60*time.Second, 5*time.Second)
+		assert.Equal(t, defaultSA, aws.StringValue(out.SubjectFromWebIdentityToken))
+	})
+	t.Run("MismatchedSubjectDenied", func(t *testing.T) {
+		// The primary role was just assumed, so it resolves. Rebinding it to another SA turns the
+		// grant into a denial only once the new policy is evaluated.
+		_, err := c.IAM.UpdateAssumeRolePolicy(&iam.UpdateAssumeRolePolicyInput{
+			RoleName: aws.String(roleName),
+			PolicyDocument: aws.String(webIdentityTrustPolicy(providerArn,
+				stockIRSACondition(issuer, "system:serviceaccount:default:other"))),
+		})
+		require.NoError(t, err, "update-assume-role-policy")
+		harness.EventuallyErr(t, func() error {
+			_, aerr := assume(roleArn)
+			if aerr == nil {
+				return errors.New("token for the default SA still assumes a role bound to another SA")
+			}
+			var awsErr awserr.Error
+			if !errors.As(aerr, &awsErr) || awsErr.Code() != "AccessDenied" {
+				return fmt.Errorf("want AccessDenied, got: %w", aerr)
+			}
+			return nil
+		}, 60*time.Second, 5*time.Second)
+	})
+}
+
+// stockIRSACondition is the Condition block of the stock AWS IRSA trust policy: StringEquals on the
+// issuer host-path (https:// stripped, as Terraform builds it) :sub and :aud.
+func stockIRSACondition(issuer, sub string) string {
+	prefix := strings.TrimPrefix(issuer, "https://")
+	return fmt.Sprintf(`{"StringEquals":{%q:%q,%q:"sts.amazonaws.com"}}`, prefix+":sub", sub, prefix+":aud")
 }
 
 // registerOIDCRole registers the cluster's OIDC provider in the caller account
 // and creates a role whose trust policy federates it — the shared setup every
-// IRSA scenario needs before a web-identity token can be exchanged. No
-// Condition block on the trust policy — the Federated principal +
-// AssumeRoleWithWebIdentity action are sufficient to grant, which keeps
-// callers independent of the condition-key issuer-prefix format. Both
-// resources are torn down via t.Cleanup (LIFO: role before provider).
+// IRSA scenario needs before a web-identity token can be exchanged. The trust
+// policy has no Condition block, so the Federated principal and the
+// AssumeRoleWithWebIdentity action are sufficient to grant. Both resources are
+// torn down via t.Cleanup (LIFO: role before provider).
 func registerOIDCRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture, roleNameSuffix, description string) (providerArn, roleArn, roleName string) {
+	t.Helper()
+	providerArn = registerOIDCProvider(t, c, fx)
+	roleArn, roleName = createWebIdentityRole(t, c, fx, providerArn, roleNameSuffix, description, "")
+	return providerArn, roleArn, roleName
+}
+
+// registerOIDCProvider registers the cluster's OIDC issuer as an IAM OIDC provider, deleted via t.Cleanup.
+func registerOIDCProvider(t *testing.T, c *harness.AWSClient, fx *clusterFixture) string {
 	t.Helper()
 	require.NotNil(t, fx.Cluster.Identity, "ACTIVE cluster must expose Identity")
 	require.NotNil(t, fx.Cluster.Identity.Oidc, "ACTIVE cluster must expose Identity.Oidc")
@@ -345,19 +406,33 @@ func registerOIDCRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture, ro
 		ThumbprintList: aws.StringSlice([]string{"0000000000000000000000000000000000000000"}),
 	})
 	require.NoError(t, err, "create-open-id-connect-provider")
-	providerArn = aws.StringValue(oidcOut.OpenIDConnectProviderArn)
+	providerArn := aws.StringValue(oidcOut.OpenIDConnectProviderArn)
 	require.NotEmpty(t, providerArn, "OIDC provider ARN empty")
 	t.Cleanup(func() {
 		_, _ = c.IAM.DeleteOpenIDConnectProvider(&iam.DeleteOpenIDConnectProviderInput{
 			OpenIDConnectProviderArn: aws.String(providerArn),
 		})
 	})
+	return providerArn
+}
 
+// webIdentityTrustPolicy trusts providerArn for AssumeRoleWithWebIdentity, with an optional Condition block (JSON object).
+func webIdentityTrustPolicy(providerArn, condition string) string {
+	conditionJSON := ""
+	if condition != "" {
+		conditionJSON = `,"Condition":` + condition
+	}
+	return fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"%s}]}`, providerArn, conditionJSON)
+}
+
+// createWebIdentityRole creates a role trusting providerArn for AssumeRoleWithWebIdentity,
+// with an optional Condition block (JSON object; empty for none), deleted via t.Cleanup.
+func createWebIdentityRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture, providerArn, roleNameSuffix, description, condition string) (roleArn, roleName string) {
+	t.Helper()
 	roleName = fmt.Sprintf("%s-%s", fx.ClusterName, roleNameSuffix)
-	trustPolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"}]}`, providerArn)
 	roleOut, err := c.IAM.CreateRole(&iam.CreateRoleInput{
 		RoleName:                 aws.String(roleName),
-		AssumeRolePolicyDocument: aws.String(trustPolicy),
+		AssumeRolePolicyDocument: aws.String(webIdentityTrustPolicy(providerArn, condition)),
 		Description:              aws.String(description),
 	})
 	require.NoError(t, err, "create-role")
@@ -366,7 +441,7 @@ func registerOIDCRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture, ro
 	t.Cleanup(func() {
 		_, _ = c.IAM.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(roleName)})
 	})
-	return providerArn, roleArn, roleName
+	return roleArn, roleName
 }
 
 // ensureNodeRole creates the cluster's worker-node IAM role (standard

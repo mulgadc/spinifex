@@ -59,22 +59,10 @@ func TestECRRequest_KnownActionNotImplemented(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }
 
-func TestOCIRegistry_VersionCheck(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	r := chi.NewRouter()
-	gw.mountOCIRegistry(r)
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v2/", nil))
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "registry/2.0", w.Header().Get("Docker-Distribution-Api-Version"))
-}
-
 func TestOCIRegistry_StubReturns501(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	r := chi.NewRouter()
-	gw.mountOCIRegistry(r)
+	gw.mountRegistry(r)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v2/team/app/tags/list", nil))

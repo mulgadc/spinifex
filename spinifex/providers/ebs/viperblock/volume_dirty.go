@@ -149,19 +149,49 @@ func (d *volumeDirty) purge(ctx context.Context, volumeName string) error {
 // that cannot be read is reported as absent: refusing every mount because the
 // bucket is unreadable would convert a degraded cluster into a stopped one.
 func (d *volumeDirty) holder(ctx context.Context, volumeName string) (viperblocklegacyv1.DirtyRecord, bool) {
-	entry, err := d.kv.Get(ctx, volumeName)
+	record, ok, err := d.lookup(ctx, volumeName)
 	if err != nil {
-		if !errors.Is(err, jetstream.ErrKeyNotFound) {
-			slog.Warn("volume dirty: could not read marker", "volume", volumeName, "err", err)
-		}
+		slog.Warn("volume dirty: could not read marker", "volume", volumeName, "err", err)
 		return viperblocklegacyv1.DirtyRecord{}, false
+	}
+	return record, ok
+}
+
+// lookup is holder for a caller that must tell "no marker" from "could not
+// read the marker", because acting on the second as the first is unsafe.
+func (d *volumeDirty) lookup(ctx context.Context, volumeName string) (viperblocklegacyv1.DirtyRecord, bool, error) {
+	entry, err := d.kv.Get(ctx, volumeName)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return viperblocklegacyv1.DirtyRecord{}, false, nil
+	}
+	if err != nil {
+		return viperblocklegacyv1.DirtyRecord{}, false, err
 	}
 	var record viperblocklegacyv1.DirtyRecord
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		slog.Warn("volume dirty: unreadable marker", "volume", volumeName, "err", err)
-		return viperblocklegacyv1.DirtyRecord{}, false
+		return viperblocklegacyv1.DirtyRecord{}, false, fmt.Errorf("unreadable marker: %w", err)
 	}
-	return record, true
+	return record, true, nil
+}
+
+// unsealedWritesHeld returns the volumes in volumeNames whose marker names this
+// node. A marker that cannot be read fails the whole call: the answer is used to
+// refuse a start elsewhere, and a guess of "none" would allow it.
+func (cfg *Config) unsealedWritesHeld(ctx context.Context, volumeNames []string) ([]string, error) {
+	if cfg.dirty == nil {
+		return nil, errors.New("volume dirty markers are not available on this node")
+	}
+	var held []string
+	for _, name := range volumeNames {
+		record, ok, err := cfg.dirty.lookup(ctx, name)
+		if err != nil {
+			return nil, fmt.Errorf("read dirty mark on %s: %w", name, err)
+		}
+		if ok && record.Owner == cfg.dirty.owner {
+			held = append(held, name)
+		}
+	}
+	return held, nil
 }
 
 // markVolumeDirty records that this node holds writes for volumeName.
@@ -218,6 +248,34 @@ func (cfg *Config) purgeVolumeDirty(ctx context.Context, volumeName string) {
 	}
 }
 
+// refuseWhileOwnerLive refuses a takeover from a node still heartbeating: its
+// unsealed writes are in its memory, and opening from the backend checkpoint
+// would discard them. A liveness that cannot be read, or is not wired, refuses
+// too, because a guess of "gone" is the unsafe one.
+func (cfg *Config) refuseWhileOwnerLive(ctx context.Context, volumeName string, record viperblocklegacyv1.DirtyRecord) error {
+	if cfg.liveness == nil {
+		slog.ErrorContext(ctx, "refusing to open a volume whose previous owner may be live: no node liveness source is wired",
+			"volume", volumeName, "previous_owner", record.Owner)
+		return fmt.Errorf("%w: %s holds unsealed writes and its liveness is unknown", errVolumeLeaseHeld, record.Owner)
+	}
+	seen, found, err := cfg.liveness.LastSeen(ctx, record.Owner)
+	if err != nil {
+		slog.ErrorContext(ctx, "refusing to open a volume whose previous owner may be live: could not read its heartbeat",
+			"volume", volumeName, "previous_owner", record.Owner, "err", err)
+		return fmt.Errorf("%w: %s holds unsealed writes and its liveness could not be read", errVolumeLeaseHeld, record.Owner)
+	}
+	if !found {
+		return nil
+	}
+	age := time.Since(seen)
+	if age > nodeLivenessWindow {
+		return nil
+	}
+	slog.WarnContext(ctx, "refusing to open a volume whose previous owner is still live",
+		"volume", volumeName, "previous_owner", record.Owner, "last_seen_ms", telemetry.Millis(age))
+	return fmt.Errorf("%w: %s is still live and holds unsealed writes", errVolumeLeaseHeld, record.Owner)
+}
+
 // reportVolumeTakeover records that this node is opening a volume another node
 // holds unsealed writes for, and takes ownership of the marker.
 //
@@ -235,6 +293,10 @@ func (cfg *Config) reportVolumeTakeover(ctx context.Context, volumeName string, 
 	record, ok := cfg.dirty.holder(ctx, volumeName)
 	if !ok || record.Owner == "" || record.Owner == cfg.dirty.owner {
 		return false, nil
+	}
+
+	if err := cfg.refuseWhileOwnerLive(ctx, volumeName, record); err != nil {
+		return false, err
 	}
 
 	slog.WarnContext(ctx, "opening a volume whose writes were last held by another node, from the backend checkpoint instead",

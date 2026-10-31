@@ -566,7 +566,7 @@ func TestBuildDirectBootConfig_MmioSlotsPacked_MgmtSkipped(t *testing.T) {
 		},
 	}
 
-	cfg, err := d.buildDirectBootConfig("i-mmio-test", input)
+	cfg, err := d.buildDirectBootConfig("i-mmio-test", input, nil)
 	require.NoError(t, err)
 
 	// Only 2 real devices (mgmt skipped) → slots packed at 0 and 1, not 0 and 2.
@@ -597,7 +597,7 @@ func TestBuildDirectBootConfig_MmioSlotsUnchanged_MgmtProvisioned(t *testing.T) 
 		},
 	}
 
-	cfg, err := d.buildDirectBootConfig("i-mmio-test2", input)
+	cfg, err := d.buildDirectBootConfig("i-mmio-test2", input, nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, cfg.KernelCmdline, "virtio_mmio.device=0x200@0xfeb00000:5")

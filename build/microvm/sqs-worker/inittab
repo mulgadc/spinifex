@@ -1,0 +1,8 @@
+# The power button loads here, not in /init: busybox init has its SIGUSR2
+# (poweroff) handler installed before sysinit runs, so a press can never reach
+# the pre-exec shell PID 1. A press before this line is lost; the host re-sends.
+::sysinit:/sbin/modprobe tiny_power_button power_signal=12
+::sysinit:/usr/local/lib/sqs-worker/sqs-worker-prepare
+::respawn:/usr/local/lib/sqs-worker/sqs-worker-ready
+::ctrlaltdel:/sbin/reboot
+::shutdown:/usr/local/lib/sqs-worker/sqs-worker-stop

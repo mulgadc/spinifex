@@ -140,6 +140,38 @@ $(MICROVM_ARTIFACTS) &: $(MICROVM_INPUTS)
 bin/lb-agent:
 	$(MAKE) build-lb-agent
 
+# The SQS store microVM image: a separate artifact from the LB image above, not
+# installed or released by any target yet.
+SQS_STORE_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/sqs-store
+SQS_STORE_MICROVM_ARTIFACTS := $(SQS_STORE_MICROVM_OUT_DIR)/vmlinuz $(SQS_STORE_MICROVM_OUT_DIR)/initramfs.cpio.gz
+SQS_STORE_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_STORE_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_STORE_MICROVM_OUT_DIR)/,sqs-store-lib.sh sqs-store-prepare sqs-store-run sqs-store-stop) bin/nats-server
+
+$(SQS_STORE_MICROVM_ARTIFACTS) &: $(SQS_STORE_MICROVM_INPUTS)
+	./scripts/build-sqs-store-microvm-image.sh
+
+# The dedicated SQS store server, built from the go.mod-pinned module so the
+# image ships exactly the reviewed version. Static for the musl guest.
+bin/nats-server: go.mod go.sum
+	@mkdir -p bin
+	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ github.com/nats-io/nats-server/v2
+
+build-sqs-store-microvm-image: $(SQS_STORE_MICROVM_ARTIFACTS) ## Build the SQS store microVM kernel and initramfs
+
+# The shared SQS worker microVM image: the store image's /init and kernel with
+# the worker binary instead of nats-server. Not installed or released yet.
+SQS_WORKER_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/sqs-worker
+SQS_WORKER_MICROVM_ARTIFACTS := $(SQS_WORKER_MICROVM_OUT_DIR)/vmlinuz $(SQS_WORKER_MICROVM_OUT_DIR)/initramfs.cpio.gz
+SQS_WORKER_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_WORKER_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_WORKER_MICROVM_OUT_DIR)/,sqs-worker-lib.sh sqs-worker-prepare sqs-worker-ready sqs-worker-stop) bin/sqs-worker
+
+$(SQS_WORKER_MICROVM_ARTIFACTS) &: $(SQS_WORKER_MICROVM_INPUTS)
+	SQS_MICROVM_PROFILE=worker ./scripts/build-sqs-store-microvm-image.sh
+
+bin/sqs-worker: go.mod go.sum $(shell find cmd/sqs-worker spinifex/agents/sqs -name '*.go' ! -name '*_test.go')
+	@mkdir -p bin
+	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/sqs-worker
+
+build-sqs-worker-microvm-image: $(SQS_WORKER_MICROVM_ARTIFACTS) ## Build the shared SQS worker microVM kernel and initramfs
+
 # qboot is the microvm firmware. The source tarball ships with each release
 # because qboot is GPL-2.0.
 QBOOT_COMMIT := $(shell sed -n 's/^QBOOT_COMMIT="\(.*\)"$$/\1/p' scripts/build-qboot.sh)
@@ -150,6 +182,18 @@ $(QBOOT_ARTIFACTS) &: scripts/build-qboot.sh
 	./scripts/build-qboot.sh
 
 build-microvm-image: $(MICROVM_ARTIFACTS) $(QBOOT_ARTIFACTS) ## Build microVM kernel, initramfs and qboot firmware (incremental — skips when up to date)
+
+install-sqs-store-microvm: $(SQS_STORE_MICROVM_ARTIFACTS) ## Install the SQS store microVM image to /usr/share/spinifex/microvm/sqs-store/
+	sudo install -d /usr/share/spinifex/microvm/sqs-store
+	sudo rm -f /usr/share/spinifex/microvm/sqs-store/initramfs.cpio.gz
+	sudo install -m 0644 $(SQS_STORE_MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/sqs-store/vmlinuz
+	sudo install -m 0644 $(SQS_STORE_MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/sqs-store/initramfs.cpio.gz
+
+install-sqs-worker-microvm: $(SQS_WORKER_MICROVM_ARTIFACTS) ## Install the SQS worker microVM image to /usr/share/spinifex/microvm/sqs-worker/
+	sudo install -d /usr/share/spinifex/microvm/sqs-worker
+	sudo rm -f /usr/share/spinifex/microvm/sqs-worker/initramfs.cpio.gz
+	sudo install -m 0644 $(SQS_WORKER_MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/sqs-worker/vmlinuz
+	sudo install -m 0644 $(SQS_WORKER_MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/sqs-worker/initramfs.cpio.gz
 
 install-microvm: $(MICROVM_ARTIFACTS) $(QBOOT_ARTIFACTS) ## Install microVM artifacts to /usr/share/spinifex/microvm/
 	sudo install -d /usr/share/spinifex/microvm
@@ -177,7 +221,7 @@ preflight:
 # reason: between them they install the software, wire OVN, erase the state and
 # remove the install, so a shellcheck warning in one is an outage or a wrong
 # deletion, not a style note.
-NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/install-node.sh scripts/smoke-test.sh scripts/node-reset.sh scripts/uninstall-spx.sh scripts/lib/distro.sh
+NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/install-node.sh scripts/smoke-test.sh scripts/node-reset.sh scripts/uninstall-spx.sh scripts/lib/distro.sh scripts/lib/stage-sqs-store-microvm.sh
 
 test-build-scripts:
 	@echo -e "\n....Running build/scripts/**/*_test.sh...."
@@ -451,6 +495,8 @@ distro-amd64:
 		echo "[distro-amd64] WARNING: microvm artifacts missing — tarball will not include them"; \
 		echo "[distro-amd64]          run 'make build-microvm-image' before 'make distro-amd64'"; \
 	fi
+	./scripts/lib/stage-sqs-store-microvm.sh $(SQS_STORE_MICROVM_OUT_DIR) dist/amd64
+	./scripts/lib/stage-sqs-store-microvm.sh $(SQS_WORKER_MICROVM_OUT_DIR) dist/amd64 sqs-worker
 	tar -czf dist/spinifex-$(VERSION)-linux-amd64.tar.gz -C dist/amd64 .
 	sha256sum dist/spinifex-$(VERSION)-linux-amd64.tar.gz > dist/spinifex-$(VERSION)-linux-amd64.tar.gz.sha256
 
@@ -469,7 +515,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-store-microvm-image build-sqs-worker-microvm-image install-microvm install-sqs-store-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

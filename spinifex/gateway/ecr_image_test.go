@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -26,20 +27,29 @@ func newImageGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
 	meta := ecrdomain.NewMemoryMetaStore()
 	reg := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), meta, ecrTestAccount)
-	return withECR(withVerifier(&GatewayConfig{
-		ECRRegistry:    reg,
+	gw := withECR(withVerifier(&GatewayConfig{
 		Region:         ecrTestRegion,
 		InternalSuffix: ecrTestSuffix,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
 	}), awsapi.Deps{Registry: awsapi.NewRegistryActionService(reg, reg, reg, reg), LifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg)})
+	imageRegistries.Store(gw, reg)
+	return gw
+}
+
+// imageRegistries maps a newImageGateway config to its registry so seeds can reach it.
+var imageRegistries sync.Map
+
+func registryOf(gw *GatewayConfig) *ecrregistry.Registry {
+	reg, _ := imageRegistries.Load(gw)
+	return reg.(*ecrregistry.Registry)
 }
 
 // seedGatewayRepo creates the repository metadata so push/PutImage handlers —
 // which require an existing repository — accept writes. Idempotent.
 func seedGatewayRepo(t *testing.T, gw *GatewayConfig, repo string) {
 	t.Helper()
-	require.NoError(t, gw.ECRRegistry.Meta.PutRepo(context.Background(), ecrTestAccount, ecrdomain.RepoMeta{Name: repo}))
+	require.NoError(t, registryOf(gw).Meta.PutRepo(context.Background(), ecrTestAccount, ecrdomain.RepoMeta{Name: repo}))
 }
 
 // seedTaggedImage stores a layerless manifest under repo:tag, returning its
@@ -49,7 +59,7 @@ func seedTaggedImage(t *testing.T, gw *GatewayConfig, repo, tag string) string {
 	seedGatewayRepo(t, gw, repo)
 	manifest := fmt.Appendf(nil,
 		`{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","layers":[],"annotations":{"tag":"%s"}}`, tag)
-	digest, err := gw.ECRRegistry.StoreManifest(context.Background(), ecrTestAccount, repo, tag, "application/vnd.docker.distribution.manifest.v2+json", manifest)
+	digest, err := registryOf(gw).StoreManifest(context.Background(), ecrTestAccount, repo, tag, "application/vnd.docker.distribution.manifest.v2+json", manifest)
 	require.NoError(t, err)
 	return digest
 }

@@ -62,11 +62,21 @@ func createNodegroupBody(nodeRole string) string {
 	return `{"nodegroupName":"workers","nodeRole":"` + nodeRole + `"}`
 }
 
+// The AWS capture of 2026-10-30 refuses a foreign or non-role ARN on CreateCluster
+// and CreateNodegroup with AccessDeniedException before PassRole is evaluated.
+func assertCrossAccountPassRole(t *testing.T, err error) {
+	t.Helper()
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok, "unresolvable error code: %v", err)
+	assert.Equal(t, awserrors.ErrorAccessDeniedException, code)
+	assert.Contains(t, err.Error(), "Cross-account pass role is not allowed.")
+}
+
 func assertInvalidParameter(t *testing.T, err error) {
 	t.Helper()
 	code, ok := awserrors.ResolveErrorCode(err)
 	require.True(t, ok, "unresolvable error code: %v", err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, code)
 }
 
 // eks:* alone must not let a caller launch nodes under a role it cannot pass.
@@ -102,7 +112,7 @@ func TestEKSCreateNodegroup_ForeignAccountRoleIsRefused(t *testing.T) {
 	)
 	err := dispatchEKS(t, gw, http.MethodPost, "/clusters/prod/node-groups",
 		createNodegroupBody("arn:aws:iam::"+foreignAccountID+":role/eks/node-role"))
-	assertInvalidParameter(t, err)
+	assertCrossAccountPassRole(t, err)
 }
 
 func TestEKSCreateNodegroup_NonRoleARNIsRefused(t *testing.T) {
@@ -112,7 +122,7 @@ func TestEKSCreateNodegroup_NonRoleARNIsRefused(t *testing.T) {
 	)
 	err := dispatchEKS(t, gw, http.MethodPost, "/clusters/prod/node-groups",
 		createNodegroupBody("arn:aws:iam::"+authzAccountID+":user/node-role"))
-	assertInvalidParameter(t, err)
+	assertCrossAccountPassRole(t, err)
 }
 
 // A store fault is not evidence the role is absent, so it must not surface as
@@ -205,4 +215,14 @@ func TestEKSUpdateAddon_NoRoleSkipsPassRole(t *testing.T) {
 	gw := eksPassRoleGateway(statement("Allow", "eks:*", "*"))
 	assertPermitted(t, dispatchEKS(t, gw, http.MethodPost,
 		"/clusters/prod/addons/aws-load-balancer-controller/update", updateAddonBody("")))
+}
+
+// Current behaviour: a store fault on the role lookup is returned before the
+// PassRole check, so a caller without iam:PassRole sees the fault, not a denial.
+func TestEKSCreateNodegroup_OutageIsReportedToACallerWithoutPassRole(t *testing.T) {
+	storeErr := errors.New("get role: nats: timeout")
+	iamService := eksPassRoleService(statement("Allow", "eks:*", "*"))
+	iamService.canonicalErr = storeErr
+	err := dispatchEKS(t, eksGatewayWithIAM(iamService), http.MethodPost, "/clusters/prod/node-groups", createNodegroupBody(eksNodeRoleARN))
+	require.ErrorIs(t, err, storeErr)
 }

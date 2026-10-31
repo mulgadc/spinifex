@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/iam"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,7 +34,7 @@ func TestIAMExamplesContract(t *testing.T) {
 	covered := 0
 
 	for action, actionExamples := range examples.Examples {
-		if _, ok := iamActions[action]; !ok {
+		if !slices.Contains(iamawsapi.ActionNames(), action) {
 			continue
 		}
 

@@ -208,3 +208,25 @@ func ExecuteRoot(args []string, stderr io.Writer) error {
 	_, err := rootCmd.ExecuteC()
 	return err
 }
+
+// EnsureSQSWorkerRemote exposes ensureSQSWorkerRemote for testing, rendering
+// the result as spx admin sqs ensure-worker prints it.
+func EnsureSQSWorkerRemote(ctx context.Context, target adminTarget, node, instanceType string, w io.Writer) error {
+	out, err := ensureSQSWorkerRemote(ctx, target, node, instanceType)
+	if err != nil {
+		return err
+	}
+	renderSQSWorkerEnsure(w, out)
+	return nil
+}
+
+// EnsureSQSStoreRemote exposes ensureSQSStoreRemote for testing, rendering
+// the result as spx admin sqs ensure-store prints it.
+func EnsureSQSStoreRemote(ctx context.Context, target adminTarget, node, instanceType string, sizeGiB int, w io.Writer) error {
+	out, err := ensureSQSStoreRemote(ctx, target, node, instanceType, sizeGiB)
+	if err != nil {
+		return err
+	}
+	renderSQSStoreEnsure(w, out)
+	return nil
+}

@@ -20,6 +20,7 @@
 package integration
 
 import (
+	"context"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"encoding/json"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -41,12 +42,23 @@ import (
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
@@ -179,6 +191,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	ecrMeta := ecrdomain.NewNATSMetaStore(nc)
 	ecrRegistry := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), ecrMeta, awsidentifiers.GlobalAccountID)
 	ecrIssuer := ecrauth.NewIssuer(signingKey, testECRAudience)
+	ecrVerifier := ecrauth.NewVerifier(verifyKeys, testECRAudience)
 	ecrEndpoint := awsapi.RepositoryEndpoint{Region: testRegion, ServicesDomain: testECRServicesDomain}
 	services := awsdispatch.NewBuilder()
 	require.NoError(t, services.Register(awsapi.NewRegistration(awsapi.Deps{
@@ -193,6 +206,23 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// Composed as awsgw composes them. The harness has no quota service, and
 	// Tagging has no resource listers because no integration test aggregates.
 	require.NoError(t, services.Register(elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: nc})))
+	require.NoError(t, services.Register(rdsawsapi.NewRegistration(rdsawsapi.Deps{NATS: nc})))
+	// Ochre model access is deny-by-default, so without a grant store every
+	// bedrock route refuses. Tests sign as the system account, which the store
+	// exempts from grants exactly as it does in production, so the catalog is
+	// visible here without provisioning grants per test; a test signing as a
+	// tenant account would have to grant first.
+	require.NoError(t, services.Register(ochreawsapi.NewRegistration(ochreawsapi.Deps{Access: bedrockAccess})))
+	require.NoError(t, services.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: nc})))
+	require.NoError(t, services.Register(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: nc, Roles: iamdomain.NewRoleResolver(iamSvc)})))
+	require.NoError(t, services.Register(iamawsapi.NewRegistration(iamawsapi.Deps{
+		IAM: iamSvc,
+		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, nc, 1, accountID, profileARN)
+		},
+	})))
+	stsDeps := stsawsapi.Deps{STS: stsSvc, IAM: iamSvc}
+	require.NoError(t, services.Register(stsawsapi.NewRegistration(stsDeps)))
 	require.NoError(t, services.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: tagging.NewAggregator()})))
 
 	cfg := &gateway.GatewayConfig{
@@ -204,21 +234,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		AZ:             testAZ,
 		IAMService:     iamSvc,
 		STSService:     stsSvc,
-		// ECRRegistry serves the OCI Distribution v2 (/v2/*) data plane; its
-		// Meta store is a NATS client, so a test that pushes/pulls or manages
-		// repositories must additionally call StartECRDaemonLite to subscribe a
-		// real MetaServiceImpl or every ECR request will time out with no
-		// responder. Blob/manifest bytes are memory-backed: no predastore.
-		ECRRegistry:      ecrRegistry,
-		ECRTokenIssuer:   ecrIssuer,
-		ECRTokenVerifier: ecrauth.NewVerifier(verifyKeys, testECRAudience),
-		// Ochre model access is deny-by-default, so without a grant store every
-		// bedrock route refuses. Tests sign as the system account, which the
-		// store exempts from grants exactly as it does in production, so the
-		// catalog is visible here without provisioning grants per test; a test
-		// signing as a tenant account would have to grant first.
-		BedrockAccess:      bedrockAccess,
-		BedrockAccessAdmin: bedrockAccess,
+		AnonymousSTS:   stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsDeps),
 	}
 	for _, opt := range opts {
 		opt(cfg)
@@ -227,6 +243,24 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// verifier follow it, as production wires the verifier over the same services.
 	if cfg.Credentials == nil {
 		cfg.Credentials = credverify.New(cfg.IAMService, cfg.STSService)
+	}
+
+	// The OCI /v2 data plane. Its Meta store is a NATS client, so a test that
+	// pushes or pulls must call StartECRDaemonLite or every request times out.
+	// Blob and manifest bytes are memory-backed: no predastore.
+	if cfg.RegistryHandler == nil {
+		if cfg.Admission == nil {
+			cfg.Admission = accountadmission.New(cfg.IAMService)
+		}
+		bridge, err := ecrregistry.NewBridge(registryadapt.Config(ecrregistry.BridgeConfig{
+			Registry:  ecrRegistry,
+			Verifier:  ecrVerifier,
+			Issuer:    ecrIssuer,
+			Admission: cfg.Admission,
+			Region:    cfg.Region,
+		}, credverify.New(cfg.IAMService, cfg.STSService), policyauth.New(cfg.IAMService)))
+		require.NoError(t, err)
+		cfg.RegistryHandler = ingresshttp.NewHostMatcher(cfg.InternalSuffix, "dkr", "ecr").Middleware(bridge.Handler())
 	}
 
 	handler := cfg.SetupRoutes()

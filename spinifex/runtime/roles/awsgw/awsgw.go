@@ -10,7 +10,10 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -32,20 +35,28 @@ import (
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
+	sqsworkerapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi/worker"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
@@ -481,43 +492,41 @@ func launchService(config *config.ClusterConfig) error {
 	nodeIDs := slices.Collect(maps.Keys(config.Nodes))
 
 	ecrIssuer := ecrauth.NewIssuer(signingKey, ecrAudience)
+	ecrVerifier := ecrauth.NewVerifier(verifyKeys, ecrAudience)
+	credentials := credverify.New(iamService, stsService)
+	admission := accountadmission.New(iamService)
+	ecrBridge, err := ecrregistry.NewBridge(registryadapt.Config(ecrregistry.BridgeConfig{
+		Registry:  ecrRegistry,
+		Verifier:  ecrVerifier,
+		Issuer:    ecrIssuer,
+		Admission: admission,
+		Region:    nodeConfig.Region,
+	}, credentials, policyauth.New(iamService)))
+	if err != nil {
+		return fmt.Errorf("ECR registry bridge: %w", err)
+	}
+	registryHosts := ingresshttp.NewHostMatcher(config.AWS.ServicesDomain, "dkr", "ecr")
 	gw := gateway.GatewayConfig{
-		Debug:                   nodeConfig.AWSGW.Debug,
-		DisableLogging:          false,
-		NATSConn:                natsConn,
-		RootCAs:                 rootCAs,
-		Config:                  nodeConfig.AWSGW.Config,
-		ExpectedNodes:           len(config.Nodes),
-		NodeIDs:                 nodeIDs,
-		Region:                  nodeConfig.Region,
-		InternalSuffix:          config.AWS.ServicesDomain,
-		RegistryPort:            registryPort,
-		RegistryHost:            registryHost,
-		AZ:                      nodeConfig.AZ,
-		IAMService:              iamService,
-		BucketStore:             objStore,
-		STSService:              stsService,
-		Credentials:             credverify.New(iamService, stsService),
-		Version:                 version,
-		Commit:                  commit,
-		OIDC:                    ekscluster.NewOIDCPublisher(jwksJS),
-		ECRRegistry:             ecrRegistry,
-		ECRTokenIssuer:          ecrIssuer,
-		ECRTokenVerifier:        ecrauth.NewVerifier(verifyKeys, ecrAudience),
-		BedrockCredentials:      bedrockCredentials,
-		BedrockEndpoints:        bedrockEndpoints,
-		BedrockEndpointResolver: bedrockEndpointResolver,
-		BedrockLoggingConfig:    bedrockLoggingConfig,
-		BedrockRecorder:         bedrockRecorder,
-		BedrockAccess:           bedrockAccess,
-		BedrockAccessAdmin:      bedrockAccess,
-		BedrockProvisioned:      bedrockProvisioned,
-		BedrockGuardrails:       bedrockGuardrails,
-		BedrockEmbedder:         bedrockEmbedder,
-		SignupMaxAccounts:       signupMaxAccounts,
-		BedrockAgentKB:          bedrockAgentKB,
-		BedrockAgentDataSources: bedrockAgentDataSources,
-		BedrockAgentVector:      bedrockAgentVector,
+		Debug:           nodeConfig.AWSGW.Debug,
+		DisableLogging:  false,
+		NATSConn:        natsConn,
+		RootCAs:         rootCAs,
+		Config:          nodeConfig.AWSGW.Config,
+		ExpectedNodes:   len(config.Nodes),
+		NodeIDs:         nodeIDs,
+		Region:          nodeConfig.Region,
+		InternalSuffix:  config.AWS.ServicesDomain,
+		RegistryPort:    registryPort,
+		RegistryHost:    registryHost,
+		AZ:              nodeConfig.AZ,
+		IAMService:      iamService,
+		STSService:      stsService,
+		Credentials:     credentials,
+		Admission:       admission,
+		Version:         version,
+		Commit:          commit,
+		OIDC:            ekscluster.NewOIDCPublisher(jwksJS),
+		RegistryHandler: registryHosts.Middleware(ecrBridge.Handler()),
 	}
 
 	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{
@@ -535,7 +544,7 @@ func launchService(config *config.ClusterConfig) error {
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
 	// until their tokens expire. The rotator keeps the issuer/verifier current as
 	// keys roll. Bound to the same lifetime context as the STS janitor.
-	keyRotator, err := ecrauth.NewRotator(janitorCtx, js, masterKey, gw.ECRTokenIssuer, gw.ECRTokenVerifier)
+	keyRotator, err := ecrauth.NewRotator(janitorCtx, js, masterKey, ecrIssuer, ecrVerifier)
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: signing-key rotator: %w", err)
 	}
@@ -589,6 +598,36 @@ func launchService(config *config.ClusterConfig) error {
 	// Composed after the quota service because ELBv2 enforces and reports the
 	// load balancer cap through it.
 	elbv2ControlPlane := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: natsConn, Quota: gw.Quota})
+	rdsControlPlane := rdsawsapi.NewRegistration(rdsawsapi.Deps{
+		NATS:          natsConn,
+		ExpectedNodes: len(config.Nodes),
+		Quota:         gw.Quota,
+	})
+	iamControlPlane := iamawsapi.NewRegistration(iamawsapi.Deps{
+		IAM: iamService,
+		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
+		},
+	})
+	ecsControlPlane := ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})
+	eksControlPlane := eksawsapi.NewRegistration(eksawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})
+	bedrockControlPlane := ochreawsapi.NewRegistration(ochreawsapi.Deps{
+		Credentials: bedrockCredentials,
+		Endpoints:   bedrockEndpointResolver,
+		Access:      bedrockAccess,
+		Recorder:    bedrockRecorder,
+		Logging:     bedrockLoggingConfig,
+		Provisioned: bedrockProvisioned,
+		Guardrails:  bedrockGuardrails,
+		Embedder:    bedrockEmbedder,
+		KB:          bedrockAgentKB,
+		DataSources: bedrockAgentDataSources,
+		Vector:      bedrockAgentVector,
+		Quota:       gw.Quota,
+	})
+	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
+	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
+	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsDeps)
 	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
 		Version:     gw.Version,
 		Commit:      gw.Commit,
@@ -598,8 +637,18 @@ func launchService(config *config.ClusterConfig) error {
 		ModelAccess: bedrockAccess,
 		Credentials: bedrockCredentials,
 		Access:      bedrockAccess,
+
+		IAM:               iamService,
+		Quota:             gw.Quota,
+		ExpectedNodes:     len(config.Nodes),
+		NodeIDs:           nodeIDs,
+		BucketStore:       objStore,
+		SignupMaxAccounts: signupMaxAccounts,
 	})
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, operatorControlPlane); err != nil {
+	// The SQS worker's internal surface binds its buckets per request and never
+	// creates them, so it refuses every caller until a worker launch has.
+	sqsWorkerControlPlane := sqsworkerapi.NewRegistration(sqsworkerapi.JetStreamDeps(js))
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
 

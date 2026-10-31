@@ -1574,6 +1574,47 @@ install_files() {
         $SUDO cp "$EXTRACT_DIR/microvm/"* /usr/share/spinifex/microvm/
         info "  /usr/share/spinifex/microvm/*"
     fi
+    install_sqs_store_image
+    install_sqs_worker_image
+}
+
+# The SQS images ship beside the load balancer's, not inside it: an older
+# installer copies microvm/* without -r and would stop at a subdirectory.
+install_sqs_store_image() { install_sqs_microvm_image sqs-store "SQS store"; }
+install_sqs_worker_image() { install_sqs_microvm_image sqs-worker "SQS worker"; }
+
+# install_sqs_microvm_image <name> <label>
+install_sqs_microvm_image() {
+    local name=$1 label=$2 f
+    local src="$EXTRACT_DIR/microvm-$name"
+    local dest="${SPINIFEX_MICROVM_DIR:-/usr/share/spinifex/microvm}/$name"
+    # A previously installed image belongs to an older release, and this
+    # release's daemon must not boot it. Only the two image files are removed.
+    if [ ! -d "$src" ]; then
+        remove_sqs_microvm_image "$dest" "$label"
+        warn "This release has no $label microVM image; $label launches will be refused"
+        return 0
+    fi
+    for f in vmlinuz initramfs.cpio.gz; do
+        if [ ! -s "$src/$f" ]; then
+            remove_sqs_microvm_image "$dest" "$label"
+            fatal "The $label microVM image in this release is incomplete: $f is missing"
+        fi
+    done
+    # The initramfs goes last, so an interrupted install leaves no pair the
+    # daemon would boot: it refuses a launch while either file is missing.
+    $SUDO install -d "$dest"
+    $SUDO rm -f "$dest/initramfs.cpio.gz"
+    $SUDO install -m 0644 "$src/vmlinuz" "$dest/vmlinuz"
+    $SUDO install -m 0644 "$src/initramfs.cpio.gz" "$dest/initramfs.cpio.gz"
+    info "  $dest/vmlinuz, $dest/initramfs.cpio.gz"
+}
+
+# Running VMs keep their already-loaded kernel; the files are read at boot.
+remove_sqs_microvm_image() {
+    [ -e "$1/initramfs.cpio.gz" ] || [ -e "$1/vmlinuz" ] || return 0
+    $SUDO rm -f "$1/initramfs.cpio.gz" "$1/vmlinuz"
+    warn "Removed the $2 microVM image left by an earlier install from $1"
 }
 
 # --- Create directories ---

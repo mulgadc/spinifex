@@ -46,7 +46,7 @@ func registerTaskDefinition(t *testing.T, gw *GatewayConfig) error {
 	t.Helper()
 	req := setupECSUserRequest("AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition",
 		registerTaskDefinitionBody(t, testECSPassRoleTargetARN))
-	return gw.ECS_Request(httptest.NewRecorder(), req)
+	return gw.serveECS(httptest.NewRecorder(), req)
 }
 
 func createNodegroup(t *testing.T, gw *GatewayConfig) error {

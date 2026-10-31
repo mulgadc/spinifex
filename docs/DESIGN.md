@@ -181,12 +181,17 @@ type Daemon struct {
 
 Tracks available and allocated CPU/memory to prevent overcommit, and drives the dynamic `ec2.RunInstances.{type}` subscriptions:
 
+One instance vCPU is one CPU the kernel has online: a thread with SMT on, a core with SMT off or on ARM, as AWS counts a vCPU.
+The OS and Spinifex's own services keep 1 CPU on a host with up to 8, 2 up to 16, 4 up to 63 and 8 from 64, and every other CPU is schedulable one-to-one with no overcommit.
+[ADR-0015](https://github.com/mulgadc/mulga/blob/main/docs/adr/0015-host-cpu-capacity-and-reservation.md) fixes this rule.
+
+
 ```go
 type ResourceManager struct {
     mu            sync.RWMutex
-    hostVCPU      int                                // raw runtime.NumCPU
+    hostVCPU      int                                // online CPUs (ADR-0015:S1)
     hostMemGB     float64                            // raw /proc/meminfo MemTotal
-    reservedVCPU  int                                // held back for spinifex services
+    reservedVCPU  int                                // ADR-0015:S2 tier: 1, 2, 4 or 8
     reservedMem   float64                            // held back for spinifex services
     allocatedVCPU int
     allocatedMem  float64
@@ -259,6 +264,23 @@ These rules bound only the holder's own clock.
 The storage backend does not reject a stale writer, so a paused or partitioned host that resumes after its validity can still write; generation enforcement at the write boundary is required by Q-24 in the umbrella repository's `docs/specs/viperblock/rfc3-1_overview.md` and is not implemented.
 An export that survives a daemon restart writes without a renewed lease until recovery adopts it, and a survivor that recovery cannot adopt while a guest still uses it is left running without a lease or a fence.
 
+#### Unsealed writes and start elsewhere (interim)
+
+A volume is unsealed while its node holds writes the backend has not confirmed; the node records this in a dirty marker naming itself as owner (`providers/ebs/viperblock/volume_dirty.go`).
+Opening such a volume on another node loses those writes, so two guards stop it while the previous owner may still hold them.
+This is an interim guard until the instance lifecycle work defines ownership, and it is not a fence.
+
+When `ec2.start` is forwarded to the node that last ran a stopped instance and that node refuses for capacity, the forwarding node normally starts the instance locally.
+If the refusing node still holds unsealed writes for any of the instance's volumes, it sets the `X-Unsealed-Writes` NATS reply header and the forwarder relays `InsufficientInstanceCapacity` instead of starting elsewhere.
+The check asks the owner's viperblockd over the per-node `unsealed` verb with a 5 second bound, and a check that fails or times out counts as holding, so the refusal is kept.
+
+Independently, a node that finds another node's dirty marker on a volume refuses to open it when that node's daemon heartbeat (`heartbeat.<node>` in the cluster-state bucket) is under 60 seconds old.
+It also refuses when the heartbeat cannot be read or no heartbeat source is wired, and the refusal maps to the held-elsewhere error that recovery retries.
+A previous owner that has stopped heartbeating is opened over with a warning, as before.
+The heartbeat age is compared across node clocks, so the 60 second window is also the clock-skew allowance.
+
+EKS control-plane recovery treats both refusals, capacity and held-elsewhere, as retryable: it keeps retrying the stopped member and does not count them against its restart attempts.
+
 ### Predastore (S3)
 
 Object storage used for:
@@ -290,7 +312,7 @@ storage-provider contract.
 
 `domains/sqs/message` defines the store-neutral interface the SQS domain reaches its message store through (ADR-0011:S6), with a JetStream adapter in `domains/sqs/message/jetstream` and a shared conformance suite in `domains/sqs/message/conformance`.
 It is an internal primitive: nothing outside the SQS domain uses it, no daemon or service is wired to it, and it does not itself deliver an SQS API.
-The dedicated JetStream server ADR-0011 describes is not deployed by this code, and Spinifex ships no host service, unit, user or firewall rule for it.
+The dedicated JetStream server ADR-0011 describes is not deployed by this code, and Spinifex ships no host service, unit, user or firewall rule for it; the guest that could run it is described under *SQS store system instance (not wired)*.
 
 The interface covers durable and idempotent append, body and metadata reads, conditional state writes and deletes, per-namespace counts, namespace enumeration, an ordered change feed, a bounded paginated scan, namespace deletion and a sweep of tombstoned bodies.
 A namespace carries an immutable message-shard and state-shard allocation chosen when the queue is created, so a later change in shard counts never moves an existing queue.
@@ -308,6 +330,125 @@ If that consumer delivers nothing for about two seconds while the stream holds a
 `Close` is terminal, waits for consumer opens and deletes in progress and retries failed deletes, but cleanup is best effort for a create whose outcome is unknown: a consumer that lands after its last delete is removed by the server's one-minute inactive threshold.
 
 Coverage is unit and conformance tests on in-process R1 and R3 servers; there is no end-to-end or multi-host validation of this code, and earlier multi-host evidence predates the final feed.
+
+### SQS store system instance (not wired)
+
+Spinifex can build, install, launch, restart and give storage to a dedicated SQS store microVM, but nothing calls any of it.
+No SQS API, domain service, admin command or daemon start-up path creates a store, so none of this is in production use.
+
+The guest image is built by `make build-sqs-store-microvm-image`, separate from the load balancer image, and bundles the `nats-server` version pinned in `go.mod` plus the ext4 tools.
+Release tarballs carry it as `microvm-sqs-store/`, and `setup.sh` installs it to `/usr/share/spinifex/microvm/sqs-store/`.
+A release without a complete image removes any previously installed one, so a launch is then refused rather than booting a stale image.
+
+At boot the guest reads three firmware config values: the data disk's serial, an IPv4 address on one of its interfaces, and one NATS user NKey public key.
+It mounts exactly one matching disk at `/data` after `e2fsck -p`, refuses a missing, duplicate, unformatted or unrepairable disk, and never formats.
+JetStream keeps its data on `/data` with `sync_interval: always` (ADR-0011:S3), and the server listens only on that address and accepts only that key.
+On shutdown the store is stopped before `/data` is unmounted; a store that survives SIGKILL leaves every mount in place.
+
+A launch uses the versioned subject `system.LaunchSQSStore.v1`, which a daemon without this code does not serve, so it fails with no responder instead of booting another guest.
+The legacy `system.LaunchInstance` path refuses the store kind on both send and receive.
+Every input check runs before capacity is reserved, and the data volume must be an available system-account volume.
+It is mounted through the normal EBS path and detached, never deleted, on terminate, which is the protection standard EBS gives today and nothing stronger.
+CPU mitigations stay enabled for the store, unlike the load balancer.
+A successful launch means the VM is running, not that NATS is ready.
+
+The instance record keeps the store's non-secret guest settings so a restart on the node that launched it rewrites the firmware config files.
+A relaunch on any other node is refused, and cross-node recovery never claims a store.
+Both checks exist only in daemons with this code: an older daemon can still claim and relaunch a store elsewhere, and an explicit start served by another node claims the instance before its relaunch is refused.
+
+`domains/sqs/storevolume` prepares a fresh data volume, because the guest never formats.
+It checks for `mkfs.ext4` and `qemu-img` before allocating, creates the volume in `creating`, writes an empty ext4 image to it over NBD on the local node, unpublishes it, and only then makes it `available`.
+While a volume is `creating`, attach, delete, modify, force-detach and snapshot are refused.
+A volume is deleted only after a confirmed unpublish; any publish error, an unconfirmed unpublish or a failed release keeps it and reports its ID, with its state reported as unknown after a failed release.
+
+Evidence is local only: unit tests, real QEMU boots against disposable scratch disks, and one run of the preparer against the `qemunbdd` provider whose volume kept acknowledged writes across a reboot.
+Viperblock, volume encryption, the EC2 volume record path, multiple nodes and host reachability of the guest address are not tested.
+Credential issuance and rotation, store placement and NATS readiness checks do not exist, and there is no failover: a lost node leaves its store unavailable.
+
+### SQS worker guest (operator-launched)
+
+The shared SQS worker guest holds the SQS store's client credential, so that no platform component does (ADR-0011:S2).
+Only an operator activates it, with the super-admin `EnsureSQSWorker` action described below; nothing starts it at daemon startup, and no worker service runs after boot.
+
+`make build-sqs-worker-microvm-image` builds it with the store image's script and network `/init` under `SQS_MICROVM_PROFILE=worker`; it carries the static `sqs-worker` binary and the ext4 tools, no `nats-server`, and an empty `/data` mountpoint.
+Releases build it beside the store image and ship it as `microvm-sqs-worker`, which `setup.sh` installs to `/usr/share/spinifex/microvm/sqs-worker` with the store image's rules: a release without it removes an earlier one, and an incomplete one is refused.
+At boot `sqs-worker boot` reads three firmware config values under `opt/spinifex/sqs-worker/`: the worker disk's serial, its Region and the gateway URL; none is a first-store decision, because a static value survives a guest reset.
+A missing, empty or malformed value refuses before any disk is touched.
+
+It selects exactly one disk with that serial, runs `e2fsck -p`, mounts it at `/data` and then confirms from `/proc/self/mountinfo` that this disk, as a whole ext4 filesystem, is what is mounted there; an empty mountpoint, a foreign mount or a failed check or mount refuses, and the guest never formats.
+Only then does it ask the gateway for the current decision with `ClaimFirstStore`, signed by `internal/sqsworkergw` with credentials from the instance metadata service only (`gwsign.NewInstanceRole`, no environment, profile or static-key fallback), over TLS 1.3 that trusts only the cluster CA from `opt/spinifex/ca-cert` and never follows a redirect.
+Under that decision `workerkey.Acquire` creates the key on `/data/sqs-worker-key`, owner-only and synced, records only its public key and then uses it, or loads the recorded key; a missing or different key once one is recorded refuses and is never replaced.
+The VM can start before its launch binds the instance, so its first calls are legitimately `AccessDenied`; that denial creates nothing and is asked again, as are a lost reply and a `ServiceUnavailable` or `Throttling` refusal, all within one bound (60 attempts 5 seconds apart), after which a worker that was never bound, or was replaced, refuses the boot.
+A signature or other refusal, or an answer that is neither "create" nor one valid public key, refuses the boot at once.
+
+`domains/sqs/firststore` is the SQS domain's first-store decision: one record per Region in the `spinifex-sqs-first-store` KV bucket moves from `claimed` to `key-recorded` to `launch-intent` under compare-and-swap, bound to the worker's instance ID, claim ID and generation.
+A claim authorizes key creation only while no public key is recorded; once one is, every claim returns only that key, and a store launch intent needs it recorded first.
+An older generation, a different identity at the same generation or an unreadable record authorizes nothing, and the record holds no private key material.
+Reads are stream message gets answered by the stream leader, never direct gets a lagging replica can answer, and every authorizing answer is also confirmed by a compare-and-swap at the revision it read, so a stale or unavailable read authorizes nothing.
+The authenticated caller that will carry this decision must derive the worker's instance ID and generation from authoritative instance state; a generation supplied in a request cannot itself authorize a takeover.
+
+`domains/sqs/workerident` is that authoritative instance state: one record per Region in the `spinifex-sqs-worker-identity` KV bucket holds a monotonic generation, claim ID, pinned node and encrypted data volume, and moves from `launching` to `bound` to `stopped`, or from `launching` to `failed`, under compare-and-swap.
+A launch intent is refused while the previous attempt is `launching` or `bound`, including one whose outcome is unknown, so only one caller ever holds an intent to start a VM on the pinned volume.
+A replacement takes the next generation only after `FailLaunch` or `RecordStopped` records that nothing holds the volume, and each request names the generation it supersedes, so a replayed request cannot take a generation it never observed; there is no automatic takeover.
+The launch path then raises the first-store fence to the successor's generation with `firststore.Fence` before `BeginLaunch`, which refuses a replacement until a leader read shows that fence; the fence only rises, and `firststore` refuses every call from a generation below it.
+Only the current claim ID is recorded, so claim IDs are minted fresh per attempt and a VM launch must be idempotent on generation and claim together.
+Binding writes the instance's index entry first and then binds the record to that instance.
+The index is only a lookup: `Authorize` accepts an instance only while the Region's record is `bound` to exactly that instance, generation and claim, confirmed by a compare-and-swap at the leader-read revision, so an old, orphaned, rewritten or unbound entry authorizes nothing.
+A same-instance reboot keeps its instance ID and identity; a replacement takes a new generation, and the first cut refuses another node or data volume and an unencrypted volume, although the encryption flag is the caller's claim and the launch wiring must verify it from the volume's metadata.
+Both buckets are opened through `OpenDurableKV`, which refuses an existing bucket whose effective stream configuration could expire, evict, lose, lag or refuse records: non-limits retention, an age, per-message or delete-marker TTL, memory storage, asynchronous flush, a size, count or message-size cap, a discard policy other than discard-new, unacknowledged writes, a sealed stream, a mirror or sources, or fewer replicas than the cluster needs.
+`workerkey.Acquire` drives that decision: it syncs a new key to disk, records its public key and only then returns it, so a crash before recording reuses the key already on disk.
+
+`domains/sqs/awsapi/worker` carries the decision to the worker as `ClaimFirstStore` and `RecordWorkerPublicKey`, served under the internal `spinifex-sqs` signing service, which no AWS SDK signs for; the public AmazonSQS action inventory is untouched.
+The gateway admits only an assumed-role session of `sqsWorkerRole` in the system account, then the role's policy, and only then resolves the session name, the instance ID STS set, through `workerident.Authorize`; the request carries no identity, and any parameter beyond the action's own is refused.
+The first-store identity is the current record's instance, claim and generation, and a worker bound to another Region is refused.
+A request that passed `Authorize` just before a confirmed stop and replacement still carries the old generation; the fence was raised before the successor began, so `firststore` refuses it whether or not the successor has claimed yet.
+The adapter never logs a caller-chosen parameter name, because one could carry a secret.
+`RecordWorkerPublicKey` accepts only a valid public user key, so a seed is refused without being recorded, logged or echoed.
+The gateway binds both buckets per request and never creates them, so it provisions nothing and answers `ServiceUnavailable` until a worker launch has created them; the worker launch below ensures the role.
+The private key stays on the worker disk; the guest logs and publishes only the public key to `/run/sqs-worker/public-key`.
+
+`domains/sqs/workerlaunch` realizes the worker on the node it runs on, its only node: a bound record is returned as is; otherwise it takes the intent, then on the first launch marks the intent's one volume create, prepares the volume and records its ID, reads the volume's own record and refuses it unless encrypted, ensures the role, finds or creates the network for the claim and reads the recorded store key, and marks the intent dispatched before launching.
+A dispatched launch is never sent again: a lost reply or error leaves the intent `launching` and dispatched, and every later call returns `ErrOutcomeUnknown` until the outcome is reconciled, since the launch path is not idempotent.
+A failure before dispatch leaves an undispatched intent that the next call resumes with the same claim; a confirmed stop or failure is replaced only after `firststore.Fence` excludes the old generation, reusing the pinned volume.
+The launch passes no store decision or key: the guest asks the gateway at boot.
+The intent exists before any volume, so concurrent first launches allocate nothing for the losers. A Prepare proven to have sent no create withdraws the mark and returns `ServiceUnavailable`, or `UnsupportedOperation` when the cluster storage key is not configured, and a retry may prepare the volume; a create that may have applied is never sent again, and every later call returns `IncorrectState` until it is reconciled. A volume the call knows of but cannot use is reported with its ID in a `VolumeError` and left in place, never deleted. An intent that has sent no create may be re-typed; one that has keeps its type until replaced. The worker role is created with EC2-only trust, and an existing role is checked for that trust before any policy is granted; the instance profile must carry exactly the worker role, and one holding any other role is refused unchanged.
+The daemon's `LaunchSQSWorkerInstance` boots the `sqs-worker` image through the same direct-boot path as the store, with the data volume attached at boot and kept on terminate, a required instance profile, and a required mgmt NIC; it re-reads the volume's own record and refuses one that is not available and encrypted, before anything is allocated.
+Its firmware config adds the gateway URL on this node's mgmt bridge and the cluster CA from the daemon's own trust store; the caller cannot supply either, and no value written is secret.
+A relaunch rebuilds that config from the VM record on the node that launched it and is refused anywhere else, and membership takeover already skips SQS-managed instances.
+`sqsWorkerRole` is ensured in the system account granting exactly `spinifex-sqs:ClaimFirstStore` and `spinifex-sqs:RecordWorkerPublicKey`, from the `domains/sqs/workerrole` contract the gateway gate also reads; an existing role whose trust admits more than the EC2 service is refused.
+
+Evidence is local only: unit tests with a fake firmware config, sysfs and mount table, tests running the boot through the real client against the real `spinifex-sqs` registration and records, and QEMU boots of the built image against disposable scratch disks and a host-side test gateway and metadata service, showing the first boot creates the key, reboots reuse it, a key lost after recording is never replaced, and the seed reaches no log or request.
+The worker's network is a private SQS system VPC per Region, built by `systemvpc.EnsurePrivate` from the `[sqs]` supernet (default `10.240.0.0/14`): one VPC and one /24 subnet, with no internet gateway, NAT gateway, EIP, route table or daemon-to-store node port. Each launch claim gets one ENI in that subnet, in the VPC default security group, found again by its claim on a retry; two ENIs for one claim are refused. The launch intent is marked before the one create is sent, so a create whose ENI is not yet visible is never sent again: the launch fails closed with `IncorrectState` until the ENI appears or the outcome is reconciled. Worker-to-store TCP and the guest's route to the metadata service are not yet proven by any traffic test.
+The super-admin `EnsureSQSWorker` action on the internal `spinifex` operator service takes a `NodeId`, which must be a node of this cluster and a single subject token, and an `InstanceType`, and sends a request to `sqs.worker.Ensure.v1.<node>` with no queue group, so only that node answers and the worker stays pinned.
+That node's daemon re-checks the node the request names and the instance type, and refuses as `ServiceUnavailable` before allocating a volume or network or recording an intent unless the worker image's kernel and initramfs are non-empty files, its mgmt bridge exists and the cluster CA is readable; a call after the image is installed then launches.
+It then runs its one composed launcher for its own Region, one launch at a time, in the daemon's own context with a 30-minute bound, so a caller's timeout does not cancel it.
+A reply lost to that timeout is reported as `ServiceUnavailable`; calling again reports the bound worker, or `IncorrectState` for a dispatched launch whose outcome is unknown, which is never resent; a Region pinned to another node is refused as `InvalidParameterValue`.
+The reply names the bound VM's node, Region, instance ID and generation; bound is not ready, and it says nothing about the guest's boot, its key or the store.
+Stop/detach evidence for `RecordStopped` is not wired, the guest's metadata route and gateway TLS on a real ENI and worker-to-store TCP are unproven, and Viperblock's at-rest key is held by the platform.
+
+The worker identity record holds the instance type of its generation; a request for another type is refused as `IncorrectState`, before dispatch and after binding, the reply names the recorded type, and only a replacement after a confirmed stop may change it.
+Operators call both actions with `spx admin sqs ensure-worker --node --instance-type` and `spx admin sqs ensure-store --node --instance-type --volume-size-gib`, signed for the `spinifex` service with the standard AWS credential chain like the other `spx admin` gateway commands.
+Each command refuses missing inputs before sending anything and reports only the bound VM; a bound VM is not a ready worker or store.
+The super-admin `EnsureSQSStore` action takes a `NodeId`, an `InstanceType` and a `VolumeSizeGiB` and sends a request to `sqs.store.Ensure.v1.<node>` with no queue group; only the node the Region's worker is bound to can launch the store.
+That node refuses an instance type whose memory does not exceed 512 MiB, the store's `GOMEMLIMIT` under ADR-0011:S11; this is a floor, not a validated size, and no type is defaulted.
+It refuses before recording or allocating anything unless the store image and the cluster storage key are present, the worker is bound on this node, and that worker's identity has recorded its public key in the first-store decision, which it then advances to a launch intent.
+The store's own launch record in `spinifex-sqs-store-launch` holds only that public key, the claim, the node and the operator's instance type and size, and marks each step before its uncertain create: the volume, the ENI in the worker's private subnet, and the launch.
+A later request for a different instance type or size is refused as `IncorrectState`, before dispatch and after binding, and the reply names the type the store was launched with.
+A volume preparation that failed before sending any create, such as a missing `mkfs.ext4` or a scratch or format failure, withdraws its mark and returns `ServiceUnavailable`, so a retry may try again once the host is fixed.
+Any other marked step whose result is not visible is reported as `IncorrectState` and never resent; a volume that is not encrypted by its own record is refused as `UnsupportedOperation` with its ID kept, and the daemon re-checks the volume's encryption and the guest's size at launch.
+The daemon never receives the worker's seed; the store's NATS server accepts only that public key, and the reply's bound VM and address are not readiness, which only the worker can check.
+
+After boot, the worker's long-running `sqs-worker ready` step mounts and verifies its disk again and calls the internal `spinifex-sqs` `DescribeStore` action, which admits only the current worker and returns the bound store's address and recorded public key, or pending.
+It loads its key only if it matches that public key, then connects to the store's NATS on port 4222 with it and asks JetStream for account info, each pass bounded to 30 seconds.
+The step runs until shutdown with no overall deadline, so a store the operator launches at any time is picked up: it asks again every 5 seconds while the store is pending, not answering or the reply was lost, and re-checks a ready store every 30 seconds.
+A pass writes only the address and public key to `/run/sqs-worker/store-ready`; any failed pass removes that file, and so does the step's own exit.
+A start that finds shutdown in progress or no worker key logs once and waits in place rather than exiting, so init does not respawn it in a loop; shutdown stops it like a running watcher.
+Init respawns the step, at most once every 5 seconds, and every start removes a marker left by a watcher that was killed or crashed before the new watcher runs.
+A ready store that fails is noticed up to one re-check interval plus one bounded call later, so the marker can be up to about a minute stale.
+Shutdown blocks further respawns, removes the marker, and stops the watcher by its recorded PID and start time, escalating to SIGKILL after a budget; it unmounts the worker disk only once the watcher is confirmed gone, and a survivor leaves every mount in place.
+A mismatched key, a store that refuses the key, a key missing from the disk or an unclassified gateway refusal is asked again only every 5 minutes, so it never spins and still recovers if the operator fixes it; a missing key is never replaced.
+The NKey authenticates the worker to the store, but nothing authenticates the store to the worker: there is no TLS, so a pass means only that something at that address accepted the key.
+This is store readiness for the worker alone; there is no SQS API, and no production sizing or support is claimed.
 
 ## Configuration
 

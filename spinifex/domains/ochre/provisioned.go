@@ -247,7 +247,7 @@ func GetProvisionedModelThroughput(ctx context.Context, accountID string, store 
 	if input == nil || aws.StringValue(input.ProvisionedModelId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
-	id, err := resolveProvisionedModelID(aws.StringValue(input.ProvisionedModelId), store.region, accountID)
+	id, err := ResolveProvisionedModelID(aws.StringValue(input.ProvisionedModelId), store.region, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +324,7 @@ func UpdateProvisionedModelThroughput(ctx context.Context, accountID string, sto
 	if input == nil || aws.StringValue(input.ProvisionedModelId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
-	id, err := resolveProvisionedModelID(aws.StringValue(input.ProvisionedModelId), store.region, accountID)
+	id, err := ResolveProvisionedModelID(aws.StringValue(input.ProvisionedModelId), store.region, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +361,7 @@ func DeleteProvisionedModelThroughput(ctx context.Context, accountID string, sto
 	if input == nil || aws.StringValue(input.ProvisionedModelId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
-	id, err := resolveProvisionedModelID(aws.StringValue(input.ProvisionedModelId), store.region, accountID)
+	id, err := ResolveProvisionedModelID(aws.StringValue(input.ProvisionedModelId), store.region, accountID)
 	if err != nil {
 		return nil, err
 	}

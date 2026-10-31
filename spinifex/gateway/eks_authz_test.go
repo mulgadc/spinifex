@@ -39,7 +39,7 @@ func dispatchEKS(t *testing.T, gw *GatewayConfig, method, path, body string) err
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
 	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
 	req = withTestIdentity(req.WithContext(ctx))
-	return gw.EKS_Request(httptest.NewRecorder(), req)
+	return gw.serveEKS(httptest.NewRecorder(), req)
 }
 
 func eksARN(resource string) string {
@@ -195,7 +195,7 @@ func dispatchEKSAsCPAgent(t *testing.T, gw *GatewayConfig, path, instanceID stri
 		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+roleName)
 	ctx = withPrincipalField(ctx, fieldAssumedRoleARN,
 		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+roleName+"/"+instanceID)
-	return gw.EKS_Request(httptest.NewRecorder(), req.WithContext(ctx))
+	return gw.serveEKS(httptest.NewRecorder(), req.WithContext(ctx))
 }
 
 // The denial tests above all fail on the first clause of the class gate, so on
@@ -236,7 +236,7 @@ func TestEKSRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	req := withTestIdentity(httptest.NewRequest(http.MethodGet, "/clusters", nil).
 		WithContext(context.WithValue(context.Background(), ctxService, "eks")))
 
-	err := gw.EKS_Request(httptest.NewRecorder(), req)
+	err := gw.serveEKS(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
@@ -286,7 +286,7 @@ func (f *publishFixture) publish(t *testing.T, ctx context.Context, cluster, bod
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/clusters/"+cluster+"/internal-publish", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	return rec, f.gw.EKS_Request(rec, req.WithContext(ctx))
+	return rec, f.gw.serveEKS(rec, req.WithContext(ctx))
 }
 
 // requireNothingPublished proves a denial stopped the relay, not just the reply.
@@ -508,7 +508,7 @@ func (f *tokenReviewFixture) review(t *testing.T, ctx context.Context, cluster, 
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/clusters/"+cluster+"/token-review", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	return rec, f.gw.EKS_Request(rec, req.WithContext(ctx))
+	return rec, f.gw.serveEKS(rec, req.WithContext(ctx))
 }
 
 func (f *tokenReviewFixture) nextVerified(t *testing.T) string {

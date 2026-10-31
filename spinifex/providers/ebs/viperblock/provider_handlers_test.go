@@ -802,6 +802,54 @@ func TestProviderHandlers_DeleteVolume_MountedVolumeRefused(t *testing.T) {
 	assert.NoError(t, statErr, "a refused delete must leave the NBD socket alone")
 }
 
+// listFailingObjectStore fails every listing, which is the shape of a blob
+// node that stops answering partway through a delete.
+type listFailingObjectStore struct {
+	objectstore.ObjectStore
+
+	err error
+}
+
+func (s *listFailingObjectStore) ListObjectsV2(context.Context, *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+	return nil, s.err
+}
+
+// TestProviderHandlers_DeleteVolume_LocalStateGoesBeforeTheObjects pins the
+// ordering a 100 GiB volume on prod needed. Object deletion costs one round
+// trip per object, so it is the half that runs out of time; behind it the local
+// WAL and the dirty marker are never reached and stay on the node for good.
+func TestProviderHandlers_DeleteVolume_LocalStateGoesBeforeTheObjects(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	prev := providerObjectStoreFactory
+	providerObjectStoreFactory = func(*Config) objectstore.ObjectStore {
+		return &listFailingObjectStore{
+			ObjectStore: objectstore.NewMemoryObjectStore(),
+			err:         errors.New("dial node 6: quic dial 10.10.8.5:6660: timeout"),
+		}
+	}
+	t.Cleanup(func() { providerObjectStoreFactory = prev })
+
+	const volumeName = "vol-deleteordering1"
+	localPath, err := localVolumeDir(cfg.BaseDir, volumeName)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(localPath, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(localPath, "wal.0000000001.bin"), []byte("unflushed"), 0o600))
+
+	body := marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion, "volume_id": volumeName})
+	msg := requestProvider(t, nc, ebsprovider.DeleteVolumeSubject, body)
+
+	var resp ebsprovider.DeleteVolumeResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.NotNil(t, resp.Error, "an unreachable object store must be reported")
+
+	_, statErr := os.Stat(localPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"local teardown is fixed-cost and must not sit behind the half that scales with the volume")
+}
+
 // TestProviderHandlers_PublishVolume_IdempotentRepublish covers the double-
 // writer hazard this provider boundary exists to prevent: republishing a
 // volume this node already has mounted must return the existing attachment
@@ -989,8 +1037,8 @@ func TestProviderHandlers_PublishUnpublish_RequireNodeName(t *testing.T) {
 	cfgNamed := setupTestConfig(t, natsURL2)
 	ncNamed := startProviderSubjects(t, cfgNamed, natsURL2)
 
-	assert.Equal(t, ncNamed.NumSubscriptions()-2, ncNoNode.NumSubscriptions(),
-		"an empty NodeName must skip exactly the publish and unpublish subscriptions")
+	assert.Equal(t, ncNamed.NumSubscriptions()-3, ncNoNode.NumSubscriptions(),
+		"an empty NodeName must skip exactly the publish, unpublish and unsealed-writes subscriptions")
 
 	// The other provider subjects must still work without a node name.
 	body := marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion})

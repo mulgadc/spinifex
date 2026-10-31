@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -97,7 +98,7 @@ const volumeLeaseCheckInterval = 5 * time.Second
 
 // errVolumeLeaseHeld reports that another claimant owns the volume. It is the
 // one lease failure a caller can do something about, so it is distinguishable.
-var errVolumeLeaseHeld = errors.New("volume is leased by another owner")
+var errVolumeLeaseHeld = errors.New(ec2v1.VolumeHeldElsewhereText)
 
 // errNoVolumeLeaseStore reports that exclusive access could not be established
 // at all. Distinguishable from a refusal so a caller can tell "somebody else
@@ -690,6 +691,11 @@ func (cfg *Config) acquireVolumeLease(ctx context.Context, volumeName string) (*
 	if err == nil && !took {
 		err = cfg.markVolumeDirty(ctx, volumeName, lease.generation,
 			"volume open, writes not yet confirmed to the backend")
+	}
+	if errors.Is(err, errVolumeLeaseHeld) {
+		// A refused takeover is the lease's verdict, not a failure to record.
+		cfg.leases.release(ctx, lease)
+		return nil, err
 	}
 	if err != nil {
 		// Opening anyway would leave writes nothing records, so a later takeover

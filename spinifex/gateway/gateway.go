@@ -1,3 +1,4 @@
+// Package gateway provides the AWS-compatible API gateway for the Spinifex platform.
 package gateway
 
 import (
@@ -6,34 +7,29 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
-	"io"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"log/slog"
 	"maps"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 	"uuid"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
-	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
-	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
-	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
-	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -42,10 +38,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
-	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
-	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -58,22 +51,6 @@ const (
 	ctxRegion    contextKey = "sigv4.region"
 	ctxAction    contextKey = "sigv4.action"
 	ctxQueryArgs contextKey = "sigv4.queryArgs"
-
-	// ctxTargetAccount carries the accountID parsed from a registry host
-	// ({accountID}.dkr.ecr.{region}.{suffix}) by the host-routing middleware.
-	ctxTargetAccount contextKey = "host.targetAccount"
-	// ctxTargetRegion carries the region parsed from the same registry host.
-	ctxTargetRegion contextKey = "host.targetRegion"
-
-	// ctxAuthPrincipal carries the verified ECR token subject (principal ARN).
-	// The resolved account is stashed via ecrregistry.WithAuthAccount so the
-	// registry package can read it without sharing this package's key type.
-	ctxAuthPrincipal contextKey = "ecr.authPrincipal"
-	// ctxECRPrincipal carries the principalContext resolveECRPrincipal rebuilt
-	// from current IAM/STS state for the request's ECR token. The operation-
-	// authorization middleware reads this to run the same policy evaluator
-	// SigV4 requests use; it is never populated for non-ECR routes.
-	ctxECRPrincipal contextKey = "ecr.principal"
 )
 
 // Values of callerPrincipal.principalType. Downstream handlers that interpret
@@ -111,11 +88,10 @@ type GatewayConfig struct {
 	activeNodesMu    sync.RWMutex
 	activeNodesCount int
 	activeNodesAt    time.Time
-	// The EC2 client-token KV binding, bound on first use and reused after, so
-	// the creates that honour ClientToken do not rebind it per request.
-	ec2TokenOnce   sync.Once
-	ec2TokenKV     jetstream.KeyValue
-	ec2TokenErr    error
+	// The EC2 handler, built on first use so its client-token binding is reused
+	// across requests.
+	ec2Once        sync.Once
+	ec2Handler     *ec2awsapi.Handler
 	InternalSuffix string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
 	// RegistryPort is the gateway's advertised port, appended to the ECR
 	// registry host so docker login/tag/push dial the right port. Empty or
@@ -132,20 +108,18 @@ type GatewayConfig struct {
 	// Zero value keeps the pre-existing fan-out-only behaviour.
 	InstanceStatus ec2instanceapi.StatusSynthesis
 	IAMService     iamdomain.IAMService
-	// BucketStore reaps a tenant's S3 buckets during account teardown. It
-	// signs with the config service credential, which predastore already
-	// trusts to reach any bucket, so this grants enumeration, not access.
-	// Nil makes DeleteAccount refuse rather than tear down around the data.
-	BucketStore accountteardown.BucketStore
-	STSService  stsdomain.STSService
+	STSService     stsdomain.STSService
+	// AnonymousSTS serves the unsigned STS actions that authenticate by a token
+	// in the body. Nil answers them with InternalError.
+	AnonymousSTS stsawsapi.AnonymousFunc
 
 	// Credentials verifies SigV4 credentials. Nil fails every request closed.
 	Credentials credential.Verifier
 	RateLimiter *authlimit.AuthRateLimiter // Per-IP auth failure rate limiter
 	Throttler   *ratelimit.Throttler       // Per-account+action API request throttler
-	// accountStatus caches which accounts are ACTIVE, so enforcing account
-	// status does not add a KV read to every authenticated request.
-	accountStatus *accountStatusCache
+	// Admission decides whether a request's account may proceed. Nil builds one
+	// over IAMService the first time the auth middleware is constructed.
+	Admission *accountadmission.Admitter
 	// Quota enforces per-account service quotas. Built unconditionally; a disabled
 	// config yields a no-op Service whose Exempt always returns true. Nil only in
 	// unit tests of unrelated routes, where no handler reaches the quota checks.
@@ -155,75 +129,10 @@ type GatewayConfig struct {
 	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil
 	// answers them with a 500 (e.g. in unit tests of unrelated routes).
 	OIDC OIDCPublisher
-	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
-	// to the 501 stub (e.g. in unit tests of unrelated routes).
-	ECRRegistry *ecrregistry.Registry
-	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
-	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
-	// in unit tests of unrelated routes).
-	ECRTokenIssuer   *ecrauth.Issuer
-	ECRTokenVerifier *ecrauth.Verifier
-	// BedrockCredentials resolves per-account provider API keys for bedrock
-	// routes. Nil falls back to no external providers (self-host models only).
-	BedrockCredentials *ochre.CredentialStore
-	// BedrockEndpoints maps a self-hosted modelId to its OpenAI-compatible base
-	// URL. These endpoints are pinned/always-resident, so this is static
-	// config, and they resolve ahead of the dynamic registry so a pinned
-	// endpoint bypasses the lifecycle entirely.
-	BedrockEndpoints map[string]string
-	// BedrockEndpointResolver resolves self-host endpoints through the daemon's
-	// registry, requesting a launch for a model that has no endpoint yet. Nil
-	// falls back to BedrockEndpoints alone, under which a model that was never
-	// pinned is never reachable.
-	BedrockEndpointResolver ochre.EndpointResolver
-	// BedrockLoggingConfig persists per-account invocation-logging preferences
-	// (PutModelInvocationLoggingConfiguration and friends). Nil falls back to
-	// an unconfigured store, under which reads/writes error rather than panic.
-	BedrockLoggingConfig *ochre.LoggingConfigStore
-	// BedrockRecorder durably records every Bedrock invocation. Nil falls back
-	// to a no-op recorder, so routes stay safe to exercise before the
-	// invocation stream is wired in (e.g. unit tests of unrelated routes).
-	BedrockRecorder ochre.Recorder
-	// BedrockAccess resolves per-account model-access grants. Access is
-	// deny-by-default, so nil means no account may list or invoke any model.
-	// It is the AccessResolver interface rather than the concrete store so a
-	// test can inject a fixed grant set without standing up JetStream.
-	BedrockAccess ochre.AccessResolver
-	// BedrockAccessAdmin is the writable side of the same grant store, used by
-	// the spinifex admin actions. Nil disables grant administration, which is
-	// how a gateway with an injected read-only resolver behaves.
-	BedrockAccessAdmin *ochre.ModelAccessStore
-	// BedrockProvisioned persists provisioned-throughput commitments and
-	// drives the pinned endpoint underneath each one. Nil falls back to an
-	// unconfigured store, under which reads/writes error rather than panic.
-	BedrockProvisioned *ochre.ProvisionedStore
-	// BedrockGuardrails persists guardrail control-plane records (CreateGuardrail
-	// and friends). Nil falls back to an unconfigured store, under which
-	// reads/writes error rather than panic.
-	BedrockGuardrails *ochre.GuardrailStore
-	// BedrockEmbedder drives guardrail topicPolicy's semantic match, reusing
-	// the same embedding endpoint the Ochre KB path resolves models through.
-	// Nil leaves topicPolicy on its literal (word-boundary) matcher alone.
-	BedrockEmbedder ochre.Embedder
-
-	// SignupMaxAccounts caps how many accounts /admin/CreateAccount will allow
-	// to exist. Zero means uncapped, which is the behaviour of every cluster
-	// that has not opted into self-service signup.
-	SignupMaxAccounts int
-
-	// BedrockAgentKB and BedrockAgentDataSources persist bedrock-agent
-	// knowledge-base and data-source resource metadata (D-arch: gateway-owned,
-	// not the daemon-owned vector engine). Nil for either fails
-	// BedrockAgent_Request with ServerInternal rather than panicking, the same
-	// as an unconfigured gw.NATSConn does for every other service.
-	BedrockAgentKB          *ochrevector.KBStore
-	BedrockAgentDataSources *ochrevector.DataSourceStore
-	// BedrockAgentVector forwards CreateIndex/DeleteIndex/Ingest/DescribeJob/
-	// ListJobs calls to .9's daemon-side VectorService over NATS
-	// (ochrevector.NewNATSVectorService). It is the interface, not
-	// the concrete client, so a test can inject a fake without a live NATS
-	// connection.
-	BedrockAgentVector ochrevector.VectorService
+	// RegistryHandler serves the registry host's /v2 subtree. It sits outside the
+	// SigV4 group and the AWS seam, which ADR-0002:S5 keeps off the registry. Nil
+	// answers 501.
+	RegistryHandler http.Handler
 
 	// Services holds the signed AWS services dispatched through the
 	// registration seam. Nil means nothing is registered, so every request
@@ -245,7 +154,7 @@ var _ dispatch.Legacy = legacyServices{}
 func (legacyServices) Serves(svc string) bool { return supportedServices[svc] }
 
 func (legacyServices) ResolveAction(r *http.Request, svc string) string {
-	return resolveNonQueryAction(r, svc)
+	return resolveNonQueryAction(r)
 }
 
 func (legacyServices) JSONErrors(svc string) bool { return jsonErrorService(svc) }
@@ -268,11 +177,7 @@ func (gw *GatewayConfig) ValidateServices() error {
 // the shared buildCallerARN helper, so nothing is computed until called.
 func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
 	return func() (dispatch.Actor, error) {
-		actor, err := callerActor(r.Context())
-		if err != nil {
-			return dispatch.Actor{}, err
-		}
-		return actor, nil
+		return callerActor(r.Context())
 	}
 }
 
@@ -299,26 +204,8 @@ func callerActor(ctx context.Context) (dispatch.Actor, error) {
 	return actor, err
 }
 
-// actorName is the name the caller goes by: the session name for a role
-// session and the user name for every other principal.
-func actorName(a dispatch.Actor) string {
-	if a.PrincipalType == principalTypeAssumedRole {
-		return a.SessionName
-	}
-	return a.UserName
-}
-
 var supportedServices = map[string]bool{
-	"ec2":                   true,
-	"iam":                   true,
-	"sts":                   true,
-	"eks":                   true,
-	"ecs":                   true,
-	"rds":                   true,
-	"bedrock":               true,
-	"bedrock-runtime":       true,
-	"bedrock-agent":         true,
-	"bedrock-agent-runtime": true,
+	"ec2": true,
 }
 
 func (gw *GatewayConfig) SetupRoutes() http.Handler {
@@ -361,7 +248,7 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 
 	// OCI Distribution registry (/v2/*). Token/host-authenticated rather than
 	// SigV4-credential-scoped, so it mounts outside the SigV4 group.
-	gw.mountOCIRegistry(r)
+	gw.mountRegistry(r)
 
 	// Authenticated AWS API surface.
 	r.Group(func(auth chi.Router) {
@@ -412,11 +299,6 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 // XML. One source of truth so every error emitter agrees with ErrorHandler; an
 // XML body to these clients is an unparseable "<?xml…" deserialization error.
 func jsonErrorService(svc string) bool {
-	switch svc {
-	case "eks", "ecs",
-		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime":
-		return true
-	}
 	return false
 }
 
@@ -528,35 +410,34 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		switch svc {
 		case "ec2":
 			err = gw.EC2_Request(w, r)
-		case "iam":
-			err = gw.IAM_Request(w, r)
-		case "sts":
-			err = gw.STS_Request(w, r)
-		case "eks":
-			err = gw.EKS_Request(w, r)
-		case "bedrock":
-			err = gw.Bedrock_Request(w, r)
-		case "bedrock-runtime":
-			err = gw.BedrockRuntime_Request(w, r)
-		case "bedrock-agent":
-			err = gw.BedrockAgent_Request(w, r)
-		case "bedrock-agent-runtime":
-			err = gw.BedrockAgentRuntime_Request(w, r)
-		case "ecs":
-			err = gw.ECS_Request(w, r)
-		case "rds":
-			err = gw.RDS_Request(w, r)
 		default:
 			err = errors.New(awserrors.ErrorUnsupportedOperation)
 		}
 	}
 
 	if err != nil {
-		slog.Error("Service request error", "service", svc, "action", action, "error", err)
+		slog.Log(r.Context(), serviceErrorLevel(svc, err), "Service request error",
+			"service", svc, "action", action, "error", err)
 		gw.ErrorHandler(w, r, err)
 	} else {
 		slog.Info("Service request completed", "service", svc, "action", action)
 	}
+}
+
+// serviceErrorLevel reports the level a dispatch failure belongs at, taken from
+// the status the caller is about to be given. A 4xx is the client's own
+// request, and DryRunOperation is a 412 that AWS documents as the success
+// answer to a dry run, so only a 5xx is a fault of ours.
+func serviceErrorLevel(svc string, err error) slog.Level {
+	code, _, ok := awserrors.ResolveErrorDetail(err)
+	if !ok {
+		return slog.LevelError
+	}
+	status := awserrors.LookupErrorMessage(svc, code).HTTPCode
+	if status >= 400 && status < 500 {
+		return slog.LevelInfo
+	}
+	return slog.LevelError
 }
 
 // dispatchRegistered hands the authenticated request to a registered service
@@ -566,12 +447,19 @@ func (gw *GatewayConfig) dispatchRegistered(entry *dispatch.Entry, w http.Respon
 	return entry.Dispatch(w, dispatch.Invocation{
 		Request:   r,
 		AccountID: callerPrincipalOf(r).accountID,
+		Service:   requestService(r),
 		Region:    gw.Region,
 		Authorize: func(service, action string, resources []string, keys iampolicy.ConditionKeys) error {
 			return gw.checkPolicyResourcesWithKeys(r, service, action, resources, keys)
 		},
 		Actor: gw.registeredActorFunc(r),
 	})
+}
+
+// requestService is the service the request's credential scope names.
+func requestService(r *http.Request) string {
+	svc, _ := r.Context().Value(ctxService).(string)
+	return svc
 }
 
 func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
@@ -584,55 +472,11 @@ func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
 	if _, ok := gw.registered(svc); ok {
 		return svc, nil
 	}
-	// The whole Bedrock family shares the SigV4 signing name "bedrock"; the
-	// request path is the only discriminator, since the gateway serves one endpoint.
-	if svc == "bedrock" {
-		svc = resolveBedrockSubservice(r.URL.Path)
-	}
 	if !supportedServices[svc] {
 		slog.Debug("Unsupported service", "service", svc)
 		return "", errors.New(awserrors.ErrorUnsupportedOperation)
 	}
 	return svc, nil
-}
-
-// resolveBedrockSubservice maps a bedrock-family request path to its real
-// sub-service, the only discriminator since all four share one signing name.
-// Shared by GetService (post-auth dispatch) and SigV4 auth (action resolution).
-func resolveBedrockSubservice(path string) string {
-	switch {
-	case strings.HasPrefix(path, "/model/") || strings.HasPrefix(path, "/guardrail/"):
-		return "bedrock-runtime"
-	case path == "/retrieveAndGenerate" || (strings.HasPrefix(path, "/knowledgebases/") && strings.HasSuffix(path, "/retrieve")):
-		return "bedrock-agent-runtime"
-	case strings.HasPrefix(path, "/knowledgebases/"):
-		return "bedrock-agent"
-	default:
-		return "bedrock"
-	}
-}
-
-// isNATSTransient reports whether err represents a transient NATS/JetStream
-// failure that may resolve after cluster leader election completes.
-func isNATSTransient(err error) bool {
-	return err != nil && (errors.Is(err, nats.ErrNoResponders) ||
-		errors.Is(err, nats.ErrTimeout) ||
-		errors.Is(err, nats.ErrNoStreamResponse))
-}
-
-// readBoundedBody reads a request body under the same cap the signed path
-// applies, so a body read ahead of the policy gate can neither be used to
-// bypass the gate nor to exhaust memory. On the signed path sigv4.Parse has
-// already buffered and rewound these bytes, so this re-reads a buffer.
-func readBoundedBody(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return body, nil
 }
 
 // checkPolicy evaluates IAM policies against the literal resource "*", so it
@@ -657,13 +501,6 @@ const (
 	ecsTasksServicePrincipal = "ecs-tasks.amazonaws.com"
 	eksServicePrincipal      = "eks.amazonaws.com"
 )
-
-// checkPassRole enforces iam:PassRole on roleARN. iam:PassedToService is fixed
-// by the call site handing the role over, never read from the request.
-func (gw *GatewayConfig) checkPassRole(r *http.Request, roleARN, passedTo string) error {
-	return gw.checkPolicyResourcesWithKeys(r, "iam", "PassRole", []string{roleARN},
-		iampolicy.ConditionKeys{iampolicy.KeyPassedToService: passedTo})
-}
 
 // checkPolicyResourcesWithKeys is checkPolicyResources with action-scoped
 // condition keys layered over the request's own.
@@ -698,62 +535,18 @@ func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, 
 	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources, keys)
 }
 
-// requestConditionKeys resolves the IAM condition context keys available on the
-// AWS API path. s3:prefix has no meaning here and is deliberately absent, so a
-// policy conditioned on it does not fire.
-//
-// Every key is omitted rather than set empty when unknown: an empty value reads
-// as a real value that matches nothing, and on a Deny that silently widens
-// access instead of narrowing it.
-func requestConditionKeys(r *http.Request, principal principalContext) iampolicy.ConditionKeys {
-	keys := iampolicy.ConditionKeys{
-		iampolicy.KeySecureTransport: strconv.FormatBool(r.TLS != nil),
-	}
-	// aws:username is user-only in AWS. A role session's identity is the
-	// caller-chosen RoleSessionName, so gating authorization on it here would
-	// let any principal that may assume the role satisfy the condition at will.
-	if principal.principalType == principalTypeUser && principal.identity != "" {
-		keys[iampolicy.KeyUsername] = principal.identity
-	}
-	if principal.accountID != "" {
-		keys[iampolicy.KeyPrincipalAccount] = principal.accountID
-	}
-	// Resolved once where the principal was, so a per-check lookup cannot leave
-	// one check in a request evaluating against a different context than the next.
-	if principal.userID != "" {
-		keys[iampolicy.KeyUserID] = principal.userID
-	}
-	// Derived from the request rather than read from the context: the OCI
-	// registry chain never runs SigV4AuthMiddleware, so a context-carried
-	// address would be absent there and every aws:SourceIp condition inert.
-	if ip := ingresshttp.ClientIP(r.RemoteAddr); ip != "" {
-		keys[iampolicy.KeySourceIP] = ip
-	}
-	// Resolved from the credential record, never from anything the caller
-	// supplies, so unlike aws:username it is safe for a role session too.
-	if v, ok := principalTypeCondition(principal.principalType); ok {
-		keys[iampolicy.KeyPrincipalType] = v
-	}
-	// The server clock, never a request header, as aws:CurrentTime is in AWS.
-	keys.SetRequestTime(time.Now())
-	return keys
-}
-
-// principalTypeCondition maps this gateway's internal principal-type spelling
-// to the canonical aws:PrincipalType value AWS documents, so a policy written
-// against the documented value applies here and at predastore identically. An
-// empty or unrecognized principal type reports false so the door omits the
-// key rather than supplying an empty string.
-func principalTypeCondition(principalType string) (string, bool) {
-	switch principalType {
-	case principalTypeUser:
-		return iampolicy.PrincipalTypeUser, true
-	case principalTypeAssumedRole:
-		return iampolicy.PrincipalTypeAssumedRole, true
-	case principalTypeRoot:
-		return iampolicy.PrincipalTypeAccount, true
-	default:
-		return "", false
+// credential projects the gateway's principal onto the credential vocabulary the
+// shared policy evaluator takes.
+func (p principalContext) credential() credential.Principal {
+	return credential.Principal{
+		Identity:          p.identity,
+		AccountID:         p.accountID,
+		PrincipalType:     p.principalType,
+		AssumedRoleARN:    p.assumedRoleARN,
+		AssumedRoleID:     p.assumedRoleID,
+		UnderlyingRoleARN: p.underlyingRoleARN,
+		UserID:            p.userID,
+		UserARN:           p.userARN,
 	}
 }
 
@@ -761,108 +554,18 @@ func principalTypeCondition(principalType string) (string, bool) {
 // after a transient NATS error. A var only so tests can shorten it.
 var policyResolveRetryBase = 200 * time.Millisecond
 
+// requestConditionKeys resolves the request's IAM condition keys through the shared
+// policy evaluator package.
+func requestConditionKeys(r *http.Request, principal principalContext) iampolicy.ConditionKeys {
+	return policyauth.RequestConditionKeys(r, principal.credential())
+}
+
 // evaluatePrincipalPolicyResources resolves policies once and evaluates every
 // resource in the request against that same snapshot.
 func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 	principal principalContext, iamAction string, resources []string, keys iampolicy.ConditionKeys,
 ) error {
-	if gw.IAMService == nil {
-		slog.Error("evaluatePrincipalPolicy: IAM service not available", "action", iamAction)
-		return errors.New(awserrors.ErrorInternalError)
-	}
-
-	// Each branch resolves the policy resolver and log identity for its principal
-	// type. Identity-sensitive decisions (root bypass, resolver selection) are
-	// fully inside their branch so an assumed-role SessionName of "root" cannot
-	// reach the user-branch root short-circuit.
-	var resolve func() ([]iamdomain.PolicyDocument, error)
-	var logIdentity string
-
-	switch principal.principalType {
-	case principalTypeUser:
-		if principal.identity == "root" && principal.accountID == awsidentifiers.GlobalAccountID {
-			// Global root bypass — user branch only.
-			return nil
-		}
-		resolve = func() ([]iamdomain.PolicyDocument, error) {
-			return gw.IAMService.GetUserPolicies(principal.accountID, principal.identity)
-		}
-		logIdentity = principal.identity
-	case principalTypeAssumedRole:
-		// Resolve by the session's underlying role, never by SessionName (attacker-influenced).
-		// A missing/legacy, cross-account, or malformed ARN fails closed with AccessDenied.
-		roleAcct, roleName, perr := auth.ParseRoleARN(principal.underlyingRoleARN)
-		if perr != nil || roleAcct != principal.accountID {
-			slog.Warn("evaluatePrincipalPolicy: unresolvable or cross-account assumed-role principal denied",
-				"underlyingRoleARN", principal.underlyingRoleARN,
-				"accountID", principal.accountID,
-				"action", iamAction,
-				"err", perr)
-			return errors.New(awserrors.ErrorAccessDenied)
-		}
-		resolve = func() ([]iamdomain.PolicyDocument, error) {
-			return gw.IAMService.GetRolePolicies(principal.accountID, roleName)
-		}
-		logIdentity = principal.assumedRoleARN
-	default:
-		slog.Error("evaluatePrincipalPolicy: unknown principal type", "principalType", principal.principalType)
-		return errors.New(awserrors.ErrorInternalError)
-	}
-
-	// Resolve policies, retrying transient NATS errors. Fail-closed on non-transient errors.
-	var policies []iamdomain.PolicyDocument
-	var err error
-	for attempt := range 3 {
-		policies, err = resolve()
-		if err == nil || !isNATSTransient(err) {
-			break
-		}
-		if attempt < 2 {
-			slog.Debug("evaluatePrincipalPolicy: transient NATS error, retrying",
-				"identity", logIdentity, "attempt", attempt+1, "err", err)
-			time.Sleep(time.Duration(attempt+1) * policyResolveRetryBase)
-		}
-	}
-	if err != nil {
-		slog.Error("evaluatePrincipalPolicy: failed to resolve policies", "identity", logIdentity, "err", err)
-		return errors.New(awserrors.ErrorInternalError)
-	}
-
-	for _, resource := range resources {
-		if iampolicy.EvaluateWithKeys(iamAction, resource, policies, keys) == iampolicy.Deny {
-			slog.Info("evaluatePrincipalPolicy: access denied",
-				"identity", logIdentity, "action", iamAction, "resource", resource)
-			return &identityPolicyDenialError{
-				principal: principal, logIdentity: logIdentity,
-				action: iamAction, resource: resource,
-			}
-		}
-	}
-	return nil
-}
-
-// identityPolicyDenialError keeps shared authorization failures opaque. A
-// caller that proves its resource is non-sensitive may opt into details.
-type identityPolicyDenialError struct {
-	principal   principalContext
-	logIdentity string
-	action      string
-	resource    string
-}
-
-func (d *identityPolicyDenialError) Error() string {
-	return awserrors.ErrorAccessDenied
-}
-
-func (d *identityPolicyDenialError) detailedError() error {
-	callerARN, err := buildCallerARN(d.principal.accountID, d.principal.identity,
-		d.principal.principalType, d.principal.assumedRoleARN, d.principal.userARN)
-	if err != nil {
-		callerARN = d.logIdentity
-	}
-	return awserrors.Errorf(awserrors.ErrorAccessDenied,
-		"User: %s is not authorized to perform: %s on resource: %s",
-		callerARN, d.action, d.resource)
+	return policyauth.New(gw.IAMService, policyauth.WithRetryBase(policyResolveRetryBase)).Evaluate(principal.credential(), iamAction, resources, keys)
 }
 
 func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
@@ -917,24 +620,6 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	if _, err := w.Write(xmlError); err != nil {
 		slog.Error("Failed to write error response", "err", err)
 	}
-}
-
-// readQueryArgs returns parsed query args from context (set by SigV4) or falls
-// back to parsing the body (unauthenticated/test paths only).
-func readQueryArgs(r *http.Request) (map[string]string, error) {
-	if args, ok := r.Context().Value(ctxQueryArgs).(map[string]string); ok {
-		return args, nil
-	}
-	// Same cap as the signed path: this fallback only runs when the context
-	// carries no pre-parsed args, so the body has not been bounded upstream.
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
-	}
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return ParseAWSQueryArgs(string(body))
 }
 
 // ParseAWSQueryArgs parses an AWS query-protocol body. Returns an error on

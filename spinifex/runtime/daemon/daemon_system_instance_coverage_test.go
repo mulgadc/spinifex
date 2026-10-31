@@ -796,7 +796,7 @@ func TestBuildDirectBootConfig_InstanceTypeShape(t *testing.T) {
 		InstanceType: itype,
 		ENIID:        "eni-shape",
 		NICs:         []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:02", IsDefault: true}},
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, int(instanceTypeVCPUs(it)), cfg.CPUCount)
 	assert.Equal(t, int(instanceTypeMemoryMiB(it)), cfg.Memory)
@@ -810,7 +810,7 @@ func TestBuildDirectBootConfig_BootsTheShippedQboot(t *testing.T) {
 
 	cfg, err := d.buildDirectBootConfig("i-qboot", &elbv2domain.SystemInstanceInput{
 		NICs: []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:05", IsDefault: true}},
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(microvmDir, vm.MicroVMFirmware), cfg.BIOS)
 	for _, e := range cfg.FwCfg {
@@ -827,7 +827,7 @@ func TestBuildDirectBootConfig_MissingFirmwareFailsByName(t *testing.T) {
 
 	_, err := (&Daemon{resourceMgr: &ResourceManager{}}).buildDirectBootConfig("i-nofw", &elbv2domain.SystemInstanceInput{
 		NICs: []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:06", IsDefault: true}},
-	})
+	}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), filepath.Join(microvmDir, vm.MicroVMFirmware))
 	entries, readErr := os.ReadDir(runtimeDir)
@@ -842,7 +842,7 @@ func TestBuildDirectBootConfig_FwCfgWriteError(t *testing.T) {
 
 	_, err := (&Daemon{resourceMgr: &ResourceManager{}}).buildDirectBootConfig("i-werr", &elbv2domain.SystemInstanceInput{
 		NICs: []elbv2domain.NICConfig{{MAC: "02:00:00:00:00:03", IsDefault: true}},
-	})
+	}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "write fw_cfg blobs")
 }

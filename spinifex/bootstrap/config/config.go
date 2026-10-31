@@ -265,6 +265,7 @@ type Config struct {
 	ACM         ACMConfig         `json:"ACM" mapstructure:"acm"`
 	Bedrock     BedrockConfig     `json:"Bedrock" mapstructure:"bedrock"`
 	OchreVector OchreVectorConfig `json:"OchreVector" mapstructure:"ochre_vector"`
+	SQS         SQSConfig         `json:"SQS" mapstructure:"sqs"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -464,6 +465,19 @@ type BedrockConfig struct {
 // space at 10.244.0.0/14, immediately below and disjoint from both the RDS
 // (10.248.0.0/14) and EKS control-plane (10.252.0.0/14) supernets.
 const BedrockDefaultSystemVPCSupernet = "10.244.0.0/14"
+
+// SQSConfig is a node's [sqs] section. The SQS worker and store VMs share one
+// private system VPC per region, with no internet or NAT gateway.
+type SQSConfig struct {
+	// The IPv4 /14 the system VPC's /22 is carved from. It must not overlap the
+	// RDS, Bedrock or EKS control-plane supernets or any customer VPC CIDR.
+	SystemVPCSupernet string `json:"SystemVPCSupernet" mapstructure:"system_vpc_supernet"`
+}
+
+// SQSDefaultSystemVPCSupernet anchors the SQS system VPC address space at
+// 10.240.0.0/14, immediately below and disjoint from the Bedrock, RDS and EKS
+// control-plane supernets.
+const SQSDefaultSystemVPCSupernet = "10.240.0.0/14"
 
 // OchreVectorConfig gates the Ochre vector store's platform Postgres
 // appliance and VectorService NATS surface. Disabled by default: an unset

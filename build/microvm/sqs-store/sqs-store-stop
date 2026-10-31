@@ -1,0 +1,5 @@
+#!/bin/sh
+# The only shutdown action: stop the store and unmount its disk, then run the
+# generic read-only remount only if the store is gone.
+. /usr/local/lib/sqs-store/sqs-store-lib.sh
+sqs_shutdown

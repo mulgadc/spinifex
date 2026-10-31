@@ -9,10 +9,10 @@ import (
 // withTagging registers the Resource Groups Tagging API on gw backed by agg, as
 // the awsgw role composes it.
 func withTagging(gw *GatewayConfig, agg *tagging.Aggregator) *GatewayConfig {
-	b := dispatch.NewBuilder()
-	if err := b.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: agg})); err != nil {
-		panic(err)
-	}
-	gw.Services = b.Build()
-	return gw
+	return withServices(gw, taggingRegistration(agg))
+}
+
+// taggingRegistration is the Tagging registration over agg.
+func taggingRegistration(agg *tagging.Aggregator) dispatch.Registration {
+	return taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: agg})
 }

@@ -170,9 +170,8 @@ func TestECRPipeline_StubbedAction_501NotImplementedException(t *testing.T) {
 // successful ECR action answers 200 with the AWS JSON 1.1 content type
 // through the full pipeline.
 func TestECRPipeline_GetAuthorizationToken_200JSONContentType(t *testing.T) {
-	iss, verify := newECRAuth(t)
+	iss, _ := newECRAuth(t)
 	gw, app := ecrPipelineApp(t, allowAllECRDocs())
-	gw.ECRTokenIssuer, gw.ECRTokenVerifier = iss, verify
 	withECR(gw, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, awsapi.RepositoryEndpoint{
 		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
 	})})
@@ -209,7 +208,7 @@ func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 			req.Header.Set("X-Amz-Target", tc.target)
 			assert.Equal(t, tc.wantAction, ecrEntry.ResolveAction(req))
 
-			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req, "ecr"),
+			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req),
 				"dispatch and telemetry parsers must agree on %q", tc.target)
 		})
 	}
@@ -397,8 +396,8 @@ func TestGetAuthorizationToken_IgnoresRequestSuppliedIdentity(t *testing.T) {
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
 	gw := withECR(withVerifier(&GatewayConfig{
 		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
-		ECRTokenIssuer: iss, ECRTokenVerifier: verify, DisableLogging: true,
-		IAMService: allowAllIAMService(),
+		DisableLogging: true,
+		IAMService:     allowAllIAMService(),
 	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"registryIds":["999999999999"]}`))

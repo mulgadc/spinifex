@@ -100,7 +100,7 @@ func (v *Verifier) Resolve(req credential.Request, auth credential.Authenticated
 		slog.Error("SigV4 auth: Resolve called with a handle this verifier did not issue")
 		return credential.Principal{}, fail(awserrors.ErrorInternalError)
 	}
-	if f := v.checkSessionPrincipal(req, sess); f != nil {
+	if _, f := v.checkSessionPrincipal(req, sess); f != nil {
 		return credential.Principal{}, f
 	}
 
@@ -120,28 +120,38 @@ func (v *Verifier) Resolve(req credential.Request, auth credential.Authenticated
 	return p, nil
 }
 
-// resolveLongLived handles the AKIA path: IAM lookup, status check, secret decrypt.
-func (v *Verifier) resolveLongLived(req credential.Request) (string, session, *credential.Failure) {
+// lookupAccessKey is the AKIA lookup shared by Authenticate and Rehydrate: the
+// record must exist and be active.
+func (v *Verifier) lookupAccessKey(req credential.Request) (*iamdomain.AccessKey, *credential.Failure) {
 	accessKeyID := req.AccessKeyID
 	ak, err := v.iam.LookupAccessKey(accessKeyID)
 	if err != nil {
 		if strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity) {
 			slog.Warn("Auth failure: access key not found", "accessKeyID", accessKeyID, "sourceIP", req.SourceIP)
-			return "", session{}, failCounted(awserrors.ErrorInvalidClientTokenId, "akid-not-found", accessKeyID)
+			return nil, failCounted(awserrors.ErrorInvalidClientTokenId, "akid-not-found", accessKeyID)
 		}
 		slog.Error("IAM lookup failed", "accessKeyID", accessKeyID, "err", err)
-		return "", session{}, fail(awserrors.ErrorInternalError)
+		return nil, fail(awserrors.ErrorInternalError)
 	}
 	if ak.Status != iamdomain.AccessKeyStatusActive {
 		slog.Warn("Auth failure: access key inactive", "accessKeyID", accessKeyID, "sourceIP", req.SourceIP)
-		return "", session{}, failCounted(awserrors.ErrorInvalidClientTokenId, "akid-inactive", accessKeyID)
+		return nil, failCounted(awserrors.ErrorInvalidClientTokenId, "akid-inactive", accessKeyID)
+	}
+	return ak, nil
+}
+
+// resolveLongLived handles the AKIA path: IAM lookup, status check, secret decrypt.
+func (v *Verifier) resolveLongLived(req credential.Request) (string, session, *credential.Failure) {
+	ak, f := v.lookupAccessKey(req)
+	if f != nil {
+		return "", session{}, f
 	}
 	secret, err := v.iam.DecryptSecret(ak.SecretAccessKey)
 	if err != nil {
 		// Undecryptable secret (e.g. master key rotated): treat as auth failure, not
 		// server fault, so the client re-authenticates instead of retrying a dead request.
-		slog.Error("Failed to decrypt IAM secret", "accessKeyID", accessKeyID, "err", err)
-		return "", session{}, failCounted(awserrors.ErrorInvalidClientTokenId, "akid-secret", accessKeyID)
+		slog.Error("Failed to decrypt IAM secret", "accessKeyID", req.AccessKeyID, "err", err)
+		return "", session{}, failCounted(awserrors.ErrorInvalidClientTokenId, "akid-secret", req.AccessKeyID)
 	}
 	return secret, session{
 		identity:      ak.UserName,
@@ -150,28 +160,62 @@ func (v *Verifier) resolveLongLived(req credential.Request) (string, session, *c
 	}, nil
 }
 
-// resolveSession handles the ASIA path: STS lookup, expiry check,
-// X-Amz-Security-Token HMAC verify, secret decrypt. A nil STS service surfaces
-// as InternalError so misconfiguration is loud at startup.
-func (v *Verifier) resolveSession(req credential.Request) (string, session, *credential.Failure) {
+// lookupSession is the ASIA lookup shared by Authenticate and Rehydrate: the
+// record must exist and be unexpired. A nil STS service surfaces as InternalError
+// so misconfiguration is loud at startup.
+func (v *Verifier) lookupSession(req credential.Request) (*stsdomain.SessionCredential, *credential.Failure) {
 	accessKeyID := req.AccessKeyID
 	if v.sts == nil {
 		slog.Error("SigV4 auth: STS service not initialized but session AKID presented", "accessKeyID", accessKeyID)
-		return "", session{}, fail(awserrors.ErrorInternalError)
+		return nil, fail(awserrors.ErrorInternalError)
 	}
 	cred, err := v.sts.LookupSessionCredential(accessKeyID)
 	if err != nil {
 		slog.Error("STS lookup failed", "accessKeyID", accessKeyID, "err", err)
-		return "", session{}, fail(awserrors.ErrorInternalError)
+		return nil, fail(awserrors.ErrorInternalError)
 	}
 	if cred == nil {
 		slog.Warn("Auth failure: session credential not found", "accessKeyID", accessKeyID, "sourceIP", req.SourceIP)
-		return "", session{}, failCounted(awserrors.ErrorInvalidClientTokenId, "session-not-found", accessKeyID)
+		return nil, failCounted(awserrors.ErrorInvalidClientTokenId, "session-not-found", accessKeyID)
 	}
 	if time.Now().UTC().After(cred.ExpiresAt) {
 		slog.Warn("Auth failure: session credential expired",
 			"accessKeyID", accessKeyID, "sourceIP", req.SourceIP, "expiresAt", cred.ExpiresAt)
-		return "", session{}, failCounted(awserrors.ErrorExpiredToken, "session-expired", accessKeyID)
+		return nil, failCounted(awserrors.ErrorExpiredToken, "session-expired", accessKeyID)
+	}
+	return cred, nil
+}
+
+// sessionOf maps a session record to the principal it resolves as.
+func sessionOf(cred *stsdomain.SessionCredential) session {
+	if cred.PrincipalType == stsdomain.PrincipalTypeUser {
+		// GetSessionToken session: resolve to the user so policy is evaluated as a user.
+		return session{
+			identity:      cred.SessionName,
+			accountID:     cred.AccountID,
+			principalType: stsdomain.PrincipalTypeUser,
+			cred:          cred,
+		}
+	}
+	// "assumed-role" or empty (pre-PrincipalType records) both resolve as role session.
+	return session{
+		identity:          cred.SessionName,
+		accountID:         cred.AccountID,
+		principalType:     stsdomain.PrincipalTypeAssumedRole,
+		assumedRoleARN:    cred.AssumedRoleARN,
+		assumedRoleID:     cred.AssumedRoleID,
+		underlyingRoleARN: cred.UnderlyingRoleARN,
+		cred:              cred,
+	}
+}
+
+// resolveSession handles the ASIA path: STS lookup, expiry check,
+// X-Amz-Security-Token HMAC verify, secret decrypt.
+func (v *Verifier) resolveSession(req credential.Request) (string, session, *credential.Failure) {
+	accessKeyID := req.AccessKeyID
+	cred, f := v.lookupSession(req)
+	if f != nil {
+		return "", session{}, f
 	}
 
 	if req.SecurityToken == "" {
@@ -192,26 +236,7 @@ func (v *Verifier) resolveSession(req credential.Request) (string, session, *cre
 		slog.Error("Failed to decrypt session secret", "accessKeyID", accessKeyID, "err", err)
 		return "", session{}, failCounted(awserrors.ErrorInvalidClientTokenId, "session-secret", accessKeyID)
 	}
-	if cred.PrincipalType == stsdomain.PrincipalTypeUser {
-		// GetSessionToken session: resolve to the user so policy is evaluated as a user.
-		return secret, session{
-			identity:      cred.SessionName,
-			accountID:     cred.AccountID,
-			principalType: stsdomain.PrincipalTypeUser,
-			cred:          cred,
-		}, nil
-	}
-
-	// "assumed-role" or empty (pre-PrincipalType records) — both resolve as role session.
-	return secret, session{
-		identity:          cred.SessionName,
-		accountID:         cred.AccountID,
-		principalType:     stsdomain.PrincipalTypeAssumedRole,
-		assumedRoleARN:    cred.AssumedRoleARN,
-		assumedRoleID:     cred.AssumedRoleID,
-		underlyingRoleARN: cred.UnderlyingRoleARN,
-		cred:              cred,
-	}, nil
+	return secret, sessionOf(cred), nil
 }
 
 // checkSessionPrincipal re-verifies that a session's backing principal still
@@ -222,20 +247,21 @@ func (v *Verifier) resolveSession(req credential.Request) (string, session, *cre
 // because it must produce the secret, whereas this reads the IAM users and roles
 // buckets. An AKID travels in cleartext, so running it there would let anyone
 // holding a copied one drive IAM reads with garbage signatures.
-func (v *Verifier) checkSessionPrincipal(req credential.Request, sess session) *credential.Failure {
+func (v *Verifier) checkSessionPrincipal(req credential.Request, sess session) (*stsdomain.SessionPrincipal, *credential.Failure) {
 	if sess.cred == nil {
-		return nil
+		return nil, nil
 	}
 	if v.sts == nil {
 		slog.Error("SigV4 auth: STS service not initialized", "accessKeyID", req.AccessKeyID)
-		return fail(awserrors.ErrorInternalError)
+		return nil, fail(awserrors.ErrorInternalError)
 	}
 
-	if _, err := v.sts.VerifySessionPrincipal(sess.cred); err != nil {
+	live, err := v.sts.VerifySessionPrincipal(sess.cred)
+	if err != nil {
 		if !stsdomain.IsSessionPrincipalVerdict(err) {
 			slog.Error("Session principal continuity check faulted, refusing to authorize",
 				"accessKeyID", req.AccessKeyID, "err", err)
-			return fail(awserrors.ErrorInternalError)
+			return nil, fail(awserrors.ErrorInternalError)
 		}
 		// InvalidClientTokenId, not ExpiredToken: the credential has not expired,
 		// the principal behind it is no longer the one it was minted for.
@@ -247,11 +273,17 @@ func (v *Verifier) checkSessionPrincipal(req credential.Request, sess session) *
 		// counting them would lock out a shared egress address on distinct-attempt
 		// volume alone and answer "retry later" to a fleet that cannot act on it.
 		if errors.Is(err, stsdomain.ErrSessionPrincipalLegacy) {
-			return fail(awserrors.ErrorInvalidClientTokenId)
+			return nil, fail(awserrors.ErrorInvalidClientTokenId)
 		}
-		return failCounted(awserrors.ErrorInvalidClientTokenId, "session-principal", req.AccessKeyID)
+		return nil, failCounted(awserrors.ErrorInvalidClientTokenId, "session-principal", req.AccessKeyID)
 	}
-	return nil
+	return live, nil
+}
+
+// callerUser reads the principal's user record, the one read Resolve and Rehydrate share.
+func (v *Verifier) callerUser(sess session) (userID, userARN string, err error) {
+	return stsdomain.ResolveCallerUser(sess.accountID, sess.principalType,
+		sess.identity, sess.assumedRoleID, v.iam)
 }
 
 // principalUser resolves aws:userid and an IAM user's stored ARN once, where the
@@ -260,8 +292,7 @@ func (v *Verifier) principalUser(sess session) (userID, userARN string, err erro
 	if sess.identity == "" || sess.accountID == "" {
 		return "", "", nil
 	}
-	userID, userARN, err = stsdomain.ResolveCallerUser(sess.accountID, sess.principalType,
-		sess.identity, sess.assumedRoleID, v.iam)
+	userID, userARN, err = v.callerUser(sess)
 	switch {
 	case err == nil:
 		if userID == "" {

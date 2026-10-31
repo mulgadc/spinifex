@@ -45,6 +45,8 @@ type Principal struct {
 	// UserID is aws:userid; UserARN is an IAM user's stored ARN, empty otherwise.
 	UserID  string
 	UserARN string
+	// CallerARN is the caller's canonical ARN. Rehydrate fills it; Resolve leaves it empty.
+	CallerARN string
 }
 
 // Verifier authenticates a request's credential. The secret never leaves it.
@@ -56,4 +58,13 @@ type Verifier interface {
 	// gateway's account-active check: session-principal continuity and the
 	// caller's user ID.
 	Resolve(req Request, auth Authenticated) (Principal, *Failure)
+}
+
+// Rehydrator rebuilds the caller an access key id names from current identity
+// state, for a bearer that already proved the key once (an ECR registry token).
+// It reads no secret and checks no signature. A Failure with Code InternalError
+// is a dependency fault; any other Code is an invalid or revoked credential.
+// The account-active check is the caller's, as for Resolve.
+type Rehydrator interface {
+	Rehydrate(accessKeyID, accountID string) (Principal, *Failure)
 }

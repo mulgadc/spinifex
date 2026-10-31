@@ -233,6 +233,11 @@ func ConnectNATSWithRetry(host, token, caCertPath string, opts ...RetryOption) (
 // AWS account ID from the gateway to daemon handlers.
 const AccountIDHeader = "X-Account-ID"
 
+// UnsealedWritesHeader marks an ec2.start reply whose capacity refusal came
+// from a node still holding unsealed writes for the instance's volumes, so the
+// forwarder must relay it instead of starting the instance elsewhere.
+const UnsealedWritesHeader = "X-Unsealed-Writes"
+
 // PrincipalARNHeader carries the caller's resolved IAM principal ARN from gateway to daemon handlers.
 const PrincipalARNHeader = "X-Principal-ARN"
 

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -100,28 +99,5 @@ func TestAuthFailsClosedWhenTheAccountCannotBeRead(t *testing.T) {
 
 	if resp := doRequest(r, req); resp.StatusCode == http.StatusOK {
 		t.Fatal("expected an unreadable account to be denied, got 200")
-	}
-}
-
-func TestAccountStatusCacheOnlyRemembersActive(t *testing.T) {
-	cache := newAccountStatusCache()
-	now := time.Now()
-
-	if cache.activeUntil("123456789012", now) {
-		t.Fatal("an unseen account must not read as active")
-	}
-
-	cache.markActive("123456789012", now)
-	if !cache.activeUntil("123456789012", now) {
-		t.Fatal("a just-marked account must read as active")
-	}
-	if cache.activeUntil("123456789012", now.Add(accountActiveTTL+time.Second)) {
-		t.Fatal("the entry must expire with the TTL")
-	}
-
-	cache.markActive("123456789012", now)
-	cache.forget("123456789012")
-	if cache.activeUntil("123456789012", now) {
-		t.Fatal("forget must drop the entry so a status change takes effect at once")
 	}
 }

@@ -26,6 +26,7 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
@@ -84,7 +85,7 @@ func TestXMLErrorBody_EnvelopePerService(t *testing.T) {
 }
 
 func TestErrorHandler_IAMService(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withIAM(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "iam")
@@ -197,7 +198,7 @@ func TestErrorHandler_ACMResourceInUse_UsesACMWording(t *testing.T) {
 // own ResourceInUseException must keep its existing wording, unaffected by the
 // ACM-specific override.
 func TestErrorHandler_EKSResourceInUse_UsesEKSWording(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withContainers(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
 	req = req.WithContext(ctx)
@@ -658,7 +659,8 @@ func TestParseAWSQueryArgs_CapturedClientBodies(t *testing.T) {
 }
 
 func TestGetService(t *testing.T) {
-	gw := withTagging(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}), nil)
+	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	withServices(gw, taggingRegistration(nil), iamRegistration(gw))
 
 	tests := []struct {
 		name      string
@@ -696,98 +698,6 @@ func TestGetService(t *testing.T) {
 			name:    "tagging service",
 			ctxVal:  "tagging",
 			wantSvc: "tagging",
-		},
-		{
-			// bedrock and bedrock-runtime share the SigV4 signing name
-			// "bedrock"; a /model/ path is data-plane-exclusive, so it must
-			// resolve to bedrock-runtime even though the scope reads "bedrock".
-			name:    "bedrock scope on data-plane path resolves to bedrock-runtime",
-			ctxVal:  "bedrock",
-			path:    "/model/meta.llama3-70b-instruct-v1:0/converse",
-			wantSvc: "bedrock-runtime",
-		},
-		{
-			name:    "bedrock scope on streaming data-plane path resolves to bedrock-runtime",
-			ctxVal:  "bedrock",
-			path:    "/model/meta.llama3-70b-instruct-v1:0/converse-stream",
-			wantSvc: "bedrock-runtime",
-		},
-		{
-			name:    "bedrock scope on control-plane path stays bedrock",
-			ctxVal:  "bedrock",
-			path:    "/foundation-models",
-			wantSvc: "bedrock",
-		},
-		{
-			// A native bedrock-runtime scope is left untouched by the path check.
-			name:    "bedrock-runtime scope on data-plane path stays bedrock-runtime",
-			ctxVal:  "bedrock-runtime",
-			path:    "/model/meta.llama3-70b-instruct-v1:0/invoke",
-			wantSvc: "bedrock-runtime",
-		},
-		{
-			// ApplyGuardrail is a data-plane op registered under the singular
-			// /guardrail/ path, distinct from the plural control-plane CRUD.
-			name:    "bedrock scope on ApplyGuardrail path resolves to bedrock-runtime",
-			ctxVal:  "bedrock",
-			path:    "/guardrail/gr-abc123/version/1/apply",
-			wantSvc: "bedrock-runtime",
-		},
-		{
-			// CreateGuardrail is control-plane CRUD under the plural /guardrails
-			// path, which must not be captured by the singular /guardrail/ check.
-			name:    "bedrock scope on CreateGuardrail path stays bedrock",
-			ctxVal:  "bedrock",
-			path:    "/guardrails",
-			wantSvc: "bedrock",
-		},
-		{
-			name:    "bedrock scope on GetGuardrail path stays bedrock",
-			ctxVal:  "bedrock",
-			path:    "/guardrails/gr-abc123",
-			wantSvc: "bedrock",
-		},
-		{
-			// bedrock-agent shares the same "bedrock" signing name as the rest
-			// of the family; CreateKnowledgeBase's /knowledgebases/ path must
-			// resolve to bedrock-agent, not stay "bedrock".
-			name:    "bedrock scope on CreateKnowledgeBase path resolves to bedrock-agent",
-			ctxVal:  "bedrock",
-			path:    "/knowledgebases/",
-			wantSvc: "bedrock-agent",
-		},
-		{
-			name:    "bedrock scope on GetKnowledgeBase path resolves to bedrock-agent",
-			ctxVal:  "bedrock",
-			path:    "/knowledgebases/kb-123",
-			wantSvc: "bedrock-agent",
-		},
-		{
-			name:    "bedrock scope on CreateDataSource path resolves to bedrock-agent",
-			ctxVal:  "bedrock",
-			path:    "/knowledgebases/kb-123/datasources/",
-			wantSvc: "bedrock-agent",
-		},
-		{
-			// Retrieve's own path is itself a /knowledgebases/... path, so it
-			// must be checked ahead of the bare bedrock-agent prefix check.
-			name:    "bedrock scope on Retrieve path resolves to bedrock-agent-runtime",
-			ctxVal:  "bedrock",
-			path:    "/knowledgebases/kb-123/retrieve",
-			wantSvc: "bedrock-agent-runtime",
-		},
-		{
-			name:    "bedrock scope on RetrieveAndGenerate path resolves to bedrock-agent-runtime",
-			ctxVal:  "bedrock",
-			path:    "/retrieveAndGenerate",
-			wantSvc: "bedrock-agent-runtime",
-		},
-		{
-			// A native bedrock-agent-runtime scope is left untouched.
-			name:    "bedrock-agent-runtime scope stays bedrock-agent-runtime",
-			ctxVal:  "bedrock-agent-runtime",
-			path:    "/retrieveAndGenerate",
-			wantSvc: "bedrock-agent-runtime",
 		},
 	}
 
@@ -865,6 +775,9 @@ func TestRequest_MalformedQueryString_EndToEnd(t *testing.T) {
 			if tc.service == "spinifex" {
 				withOperator(gw)
 			}
+			if tc.service == "iam" {
+				withIAM(gw)
+			}
 			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
 			ctx := context.WithValue(req.Context(), ctxService, tc.service)
 			ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
@@ -899,7 +812,7 @@ func TestRequest_EC2MissingAction(t *testing.T) {
 }
 
 func TestRequest_IAMNilService(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: nil, NATSConn: connectedNATS(t)})
+	gw := withIAM(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: nil, NATSConn: connectedNATS(t)}))
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=CreateUser&UserName=test"))
 	ctx := context.WithValue(req.Context(), ctxService, "iam")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
@@ -1358,35 +1271,6 @@ func TestCheckPolicy_NonTransientErrorStillFails(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
-func TestIsNATSTransient(t *testing.T) {
-	assert.False(t, isNATSTransient(nil))
-	assert.True(t, isNATSTransient(nats.ErrNoResponders))
-	assert.True(t, isNATSTransient(nats.ErrTimeout))
-	assert.True(t, isNATSTransient(fmt.Errorf("get user: %w", nats.ErrNoResponders)))
-	assert.False(t, isNATSTransient(errors.New("some other error")))
-}
-
-func TestImportKeyPair_Base64PaddingWorkaround(t *testing.T) {
-	// The ImportKeyPair handler decodes URL-encoded Base64 padding (%3D%3D → ==)
-	// before passing to the generic handler.
-	handler := ec2Actions["ImportKeyPair"]
-	require.NotNil(t, handler)
-
-	q := map[string]string{
-		"Action":            "ImportKeyPair",
-		"KeyName":           "test-key",
-		"PublicKeyMaterial": "c3NoLXJzYSBBQUFBQjNOemFDMXljMkVBQUFBREFRQUJBQUFCZ1FD%3D%3D",
-	}
-
-	_, err := handler.parse(q)
-	require.NoError(t, err)
-
-	assert.True(t, strings.HasSuffix(q["PublicKeyMaterial"], "=="),
-		"Expected PublicKeyMaterial to end with == but got: %s", q["PublicKeyMaterial"])
-	assert.NotContains(t, q["PublicKeyMaterial"], "%3D",
-		"Expected no URL-encoded padding remaining")
-}
-
 // --- Throttle middleware integration tests ---
 
 func TestThrottleKeyFuncs_ExtractsAccountAndAction(t *testing.T) {
@@ -1488,7 +1372,7 @@ func TestWriteThrottleError_Route53(t *testing.T) {
 }
 
 func TestWriteThrottleError_Bedrock(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := withServices(&GatewayConfig{DisableLogging: true}, ochreawsapi.NewRegistration(ochreawsapi.Deps{}))
 
 	req := httptest.NewRequest(http.MethodPost, "/model/meta.llama3-2-1b-instruct-v1%3A0/converse", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxService, "bedrock"))
@@ -1506,7 +1390,7 @@ func TestWriteThrottleError_Bedrock(t *testing.T) {
 }
 
 func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := withServices(&GatewayConfig{DisableLogging: true}, ochreawsapi.NewRegistration(ochreawsapi.Deps{}))
 
 	req := httptest.NewRequest(http.MethodPost, "/model/meta.llama3-2-1b-instruct-v1%3A0/converse", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxService, "bedrock"))
@@ -1649,7 +1533,7 @@ func TestRequest_ClusterUnavailableNilConn_EC2(t *testing.T) {
 }
 
 func TestRequest_ClusterUnavailableNilConn_IAM(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withIAM(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxService, "iam")

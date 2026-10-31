@@ -8,6 +8,9 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"net/http"
 	"strings"
@@ -71,11 +74,8 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 				return err
 			}
 			r := inv.Request
-			rds, err := rdsCaller(r)
-			if err != nil {
-				return err
-			}
-			eks := eksCaller(r)
+			rds := rdsawsapi.CallerFromActor(actor)
+			eks := eksawsapi.CallerFromActor(actor)
 			seen = append(seen, actorObservation{
 				Actor:             actor,
 				Identity:          callerPrincipalOf(r).identity,
@@ -89,7 +89,7 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 				RDSSessionName: rds.SessionName, RDSRoleName: rds.RoleName,
 				EKSAccountID: eks.AccountID, EKSPrincipalType: eks.PrincipalType,
 				EKSSessionName: eks.SessionName, EKSRoleName: eks.RoleName,
-				EKSPrincipalARN: eksCallerPrincipalARN(r),
+				EKSPrincipalARN: actor.CallerARN,
 			})
 			w.WriteHeader(http.StatusOK)
 			return nil
@@ -103,8 +103,10 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 		IAMService:     e.counter,
 		Credentials:    credverify.New(e.counter, e.sts),
 		STSService:     e.sts,
-		Services:       b.Build(),
 	}
+	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	require.NoError(t, b.Register(stsRegistration(gw)))
+	gw.Services = b.Build()
 	return gw.SetupRoutes(), &seen
 }
 

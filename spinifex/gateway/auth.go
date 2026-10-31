@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"io"
 	"log/slog"
 	"net/http"
@@ -35,8 +36,8 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = authlimit.NewAuthRateLimiter()
 	}
-	if gw.accountStatus == nil {
-		gw.accountStatus = newAccountStatusCache()
+	if gw.Admission == nil {
+		gw.Admission = accountadmission.New(gw.IAMService)
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -229,13 +230,6 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				}
 			}
 
-			// /admin carries its method in the path and a JSON body, so the
-			// query-arg parse above finds no Action. Without this every admin
-			// method would share one "unknown" throttle bucket and trace label.
-			if method, ok := adminPathMethod(r.URL.Path); ok {
-				ctx = context.WithValue(ctx, ctxAction, method)
-			}
-
 			// A registered service names its own action; everything else keeps
 			// resolving JSON-1.1/path-routed REST-JSON actions through the legacy
 			// resolver, since those carry no query-protocol Action to parse above.
@@ -254,9 +248,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 }
 
 // resolveNonQueryAction resolves the action for JSON-1.1 (X-Amz-Target) and
-// path-routed REST-JSON services (eks, the bedrock family), which carry no
+// path-routed REST-JSON services (eks), which carry no
 // query-protocol Action parameter. Empty on no match.
-func resolveNonQueryAction(r *http.Request, service string) string {
+func resolveNonQueryAction(r *http.Request) string {
 	if target := r.Header.Get("X-Amz-Target"); target != "" {
 		if _, after, ok := strings.CutLast(target, "."); ok {
 			return after
@@ -264,32 +258,6 @@ func resolveNonQueryAction(r *http.Request, service string) string {
 		return target
 	}
 
-	if service == "bedrock" {
-		service = resolveBedrockSubservice(r.URL.Path)
-	}
-	method, path := r.Method, r.URL.EscapedPath()
-	switch service {
-	case "eks":
-		if action, _, _, ok := eksRouter.Lookup(method, path); ok {
-			return action
-		}
-	case "bedrock":
-		if action, _, _, ok := bedrockRouter.Lookup(method, path); ok {
-			return action
-		}
-	case "bedrock-runtime":
-		if action, _, _, ok := bedrockRuntimeRouter.Lookup(method, path); ok {
-			return action
-		}
-	case "bedrock-agent":
-		if action, _, _, ok := bedrockAgentRouter.Lookup(method, path); ok {
-			return action
-		}
-	case "bedrock-agent-runtime":
-		if action, _, _, ok := bedrockAgentRuntimeRouter.Lookup(method, path); ok {
-			return action
-		}
-	}
 	return ""
 }
 

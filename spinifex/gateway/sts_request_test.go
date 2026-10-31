@@ -1,9 +1,9 @@
 package gateway
 
 import (
-	"context"
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -101,7 +101,7 @@ func setupSTSRequestHandler(p stsRequestParams) http.Handler {
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		ctx = context.WithValue(ctx, ctxService, "sts")
+		ctx = reqctx.WithService(ctx, "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, p.accountID)
 		ctx = withPrincipalField(ctx, fieldIdentity, p.identity)
 		ctx = withPrincipalField(ctx, fieldPrincipalType, p.principalType)
@@ -337,7 +337,7 @@ func TestSTSRequest_AssumeRole_MissingRoleArn(t *testing.T) {
 func TestSTSRequest_NilService_InternalError(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, STSService: nil, IAMService: &flexMockIAMService{}})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), ctxService, "sts")
+		ctx := reqctx.WithService(r.Context(), "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
 		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
 		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
@@ -369,7 +369,7 @@ func TestSTSRequest_AssumeRole_NilIAMService_InternalError(t *testing.T) {
 	}
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, STSService: svc, IAMService: nil})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), ctxService, "sts")
+		ctx := reqctx.WithService(r.Context(), "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
 		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
 		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
@@ -485,28 +485,4 @@ func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) 
 	b, _ := io.ReadAll(resp.Body)
 	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(b))
 	assert.Contains(t, string(b), "<Arn>"+pathed+"</Arn>")
-}
-
-func TestBuildCallerARN(t *testing.T) {
-	const acct = "123456789012"
-	cases := []struct {
-		name, accountID, identity, principalType, assumedRoleARN, userARN, want string
-	}{
-		{"pathed user takes its stored ARN", acct, "alice", principalTypeUser, "",
-			"arn:aws:iam::" + acct + ":user/eng/alice", "arn:aws:iam::" + acct + ":user/eng/alice"},
-		{"user with no record formats at the root path", acct, "alice", principalTypeUser, "", "",
-			"arn:aws:iam::" + acct + ":user/alice"},
-		{"global root ignores a user ARN", awsidentifiers.GlobalAccountID, "root", principalTypeUser, "",
-			"arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":user/root", "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":root"},
-		{"root principal", acct, "", principalTypeRoot, "", "", "arn:aws:iam::" + acct + ":root"},
-		{"assumed role keeps its session ARN", acct, "s", principalTypeAssumedRole,
-			"arn:aws:sts::" + acct + ":assumed-role/Ops/s", "", "arn:aws:sts::" + acct + ":assumed-role/Ops/s"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := buildCallerARN(tc.accountID, tc.identity, tc.principalType, tc.assumedRoleARN, tc.userARN)
-			require.NoError(t, err)
-			assert.Equal(t, tc.want, got)
-		})
-	}
 }

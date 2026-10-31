@@ -1,8 +1,8 @@
 package gateway
 
 import (
-	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
 	"net/http"
@@ -196,7 +196,7 @@ func setupIAMRequestHandler(svc iamdomain.IAMService) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		ctx = context.WithValue(ctx, ctxService, "iam")
+		ctx = reqctx.WithService(ctx, "iam")
 		ctx = withPrincipalField(ctx, fieldAccountID, "000000000000")
 		ctx = withPrincipalField(ctx, fieldIdentity, "root")
 		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
@@ -382,7 +382,7 @@ func TestIAMRequest_NilService(t *testing.T) {
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		ctx = context.WithValue(ctx, ctxService, "iam")
+		ctx = reqctx.WithService(ctx, "iam")
 		ctx = withPrincipalField(ctx, fieldAccountID, "000000000000")
 		ctx = withPrincipalField(ctx, fieldIdentity, "root")
 		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
@@ -429,7 +429,7 @@ func TestIAMRequest_MissingAccountID(t *testing.T) {
 		Credentials:    credverify.New(&flexMockIAMService{}, nil),
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), ctxService, "iam")
+		ctx := reqctx.WithService(r.Context(), "iam")
 		r = withTestIdentity(r.WithContext(ctx))
 		if err := gw.IAM_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)

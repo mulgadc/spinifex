@@ -1,6 +1,9 @@
 package layering
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // rule is one ADR-0001 dependency rule over a classified import edge.
 type rule struct {
@@ -149,6 +152,18 @@ var rules = []rule{
 		forbids: func(f, t class, _ string) bool {
 			return f.domainShaped() && f.domain == "sts" && t.domain == "eks" &&
 				(importsDomainImplementation(t) || t.layer == layerAgents)
+		},
+	},
+	{
+		id:      "S7_RequestRecordPrivateToIngress",
+		clause:  "ADR-0002:S7: the request record is private to ingress, so no domain, runtime or operator package reads it; only the gateway and packages under ingress/aws may import ingress/aws/reqctx",
+		hint:    "receive what you need through dispatch.Invocation instead of the request record",
+		subject: func(_ class, _ string) bool { return true },
+		forbids: func(_, t class, fromName string) bool {
+			if !t.requestRecord {
+				return false
+			}
+			return fromName != "gateway" && !strings.HasPrefix(fromName, "ingress/aws/")
 		},
 	},
 	{

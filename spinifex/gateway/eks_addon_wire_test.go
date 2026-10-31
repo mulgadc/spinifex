@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -60,7 +61,7 @@ func TestEKSRequest_InternalAddonsWireBody(t *testing.T) {
 	gw.NATSConn = nc
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/clusters/prod/internal-addons/"+authzAccountID, nil)
-	ctx := context.WithValue(req.Context(), ctxService, "eks")
+	ctx := reqctx.WithService(req.Context(), "eks")
 	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
 	ctx = withPrincipalField(ctx, fieldIdentity, cpInstanceID)
 	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)

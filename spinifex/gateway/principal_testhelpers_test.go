@@ -1,8 +1,13 @@
 package gateway
 
-import "context"
+import (
+	"context"
 
-// principalField names one field of the sealed callerPrincipal, so a test can
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
+)
+
+// principalField names one field of the sealed principal, so a test can
 // build a caller one fact at a time.
 type principalField int
 
@@ -19,28 +24,48 @@ const (
 )
 
 // withPrincipalField sets one field on the caller sealed in ctx, sealing a new
-// caller when ctx has none.
+// caller when ctx has none. The record seals a caller once, so this rebuilds the
+// context from the recorded facts when one is already sealed; it then keeps no
+// other value ctx carries, which the hand-built requests it is used on do not have.
 func withPrincipalField(ctx context.Context, f principalField, v string) context.Context {
-	p, _ := callerPrincipalFrom(ctx)
+	p, sealed := reqctx.Principal(ctx)
+	key := reqctx.AccessKeyID(ctx)
 	switch f {
 	case fieldIdentity:
-		p.identity = v
+		p.Identity = v
 	case fieldAccountID:
-		p.accountID = v
+		p.AccountID = v
 	case fieldAccessKey:
-		p.accessKeyID = v
+		key = v
 	case fieldPrincipalType:
-		p.principalType = v
+		p.PrincipalType = v
 	case fieldAssumedRoleARN:
-		p.assumedRoleARN = v
+		p.AssumedRoleARN = v
 	case fieldAssumedRoleID:
-		p.assumedRoleID = v
+		p.AssumedRoleID = v
 	case fieldUnderlyingRoleARN:
-		p.underlyingRoleARN = v
+		p.UnderlyingRoleARN = v
 	case fieldUserID:
-		p.userID = v
+		p.UserID = v
 	case fieldUserARN:
-		p.userARN = v
+		p.UserARN = v
 	}
-	return withCallerPrincipal(ctx, p)
+	p.CallerARN = ""
+	if arn, err := credverify.CallerARN(p); err == nil {
+		p.CallerARN = arn
+	}
+	if !sealed {
+		return reqctx.WithPrincipal(ctx, p, key)
+	}
+	fresh := context.Background()
+	if svc := reqctx.Service(ctx); svc != "" {
+		fresh = reqctx.WithService(fresh, svc)
+	}
+	if region := reqctx.Region(ctx); region != "" {
+		fresh = reqctx.WithRegion(fresh, region)
+	}
+	if action := reqctx.Action(ctx); action != "" {
+		fresh = reqctx.WithAction(fresh, action)
+	}
+	return reqctx.WithPrincipal(fresh, p, key)
 }

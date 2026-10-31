@@ -3,8 +3,8 @@
 package gateway
 
 import (
-	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,7 +62,7 @@ func dispatchIAM(t *testing.T, gw *GatewayConfig, body string) error {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	ctx := context.WithValue(req.Context(), ctxService, "iam")
+	ctx := reqctx.WithService(req.Context(), "iam")
 	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
 	req = withTestIdentity(req.WithContext(ctx))
 	return gw.IAM_Request(httptest.NewRecorder(), req)

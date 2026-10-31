@@ -6,9 +6,9 @@ package gateway
 
 import (
 	"bytes"
-	"context"
 	"encoding/xml"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -224,7 +224,7 @@ func TestDispatchSeam_ResolvedActionReachesThrottleTraceAndAudit(t *testing.T) {
 	r.Use(traceActionEnricher)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			gotCtxAction, _ = r.Context().Value(ctxAction).(string)
+			gotCtxAction = reqctx.Action(r.Context())
 			next.ServeHTTP(w, r)
 			gotAudit = audit.From(r.Context())
 		})
@@ -344,7 +344,7 @@ func TestDispatchSeam_NATSDownGetsSame503AsLegacy(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Services: b.Build()})
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxService, fakeJSONService)
+	ctx := reqctx.WithService(req.Context(), fakeJSONService)
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()
@@ -432,7 +432,7 @@ func TestDispatchSeam_NoResolverDispatchesWithLegacyFallback(t *testing.T) {
 	r.Use(gw.SigV4AuthMiddleware())
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, ctxActionSet = r.Context().Value(ctxAction).(string)
+			ctxActionSet = reqctx.Action(r.Context()) != ""
 			next.ServeHTTP(w, r)
 		})
 	})

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -313,7 +314,7 @@ func TestRequest_ClusterUnavailableNilConn_Tagging(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-Amz-Target", taggingTargetPrefix+"GetResources")
-	req = req.WithContext(context.WithValue(req.Context(), ctxService, "tagging"))
+	req = req.WithContext(reqctx.WithService(req.Context(), "tagging"))
 
 	w := httptest.NewRecorder()
 	gw.Request(w, req)

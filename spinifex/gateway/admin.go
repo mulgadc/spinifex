@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"log/slog"
 	"net/http"
 	"uuid"
@@ -26,7 +27,7 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	action, _ := r.Context().Value(ctxAction).(string)
+	action := reqctx.Action(r.Context())
 	if err := gw.dispatchRegistered(entry, w, r); err != nil {
 		slog.Log(r.Context(), serviceErrorLevel(operatoradmin.ServiceName, err), "Service request error",
 			"service", operatoradmin.ServiceName, "action", action, "requestId", requestID, "error", err)

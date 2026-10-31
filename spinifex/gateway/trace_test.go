@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"context"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,10 +22,10 @@ func TestTraceActionEnricher(t *testing.T) {
 	// SigV4AuthMiddleware does, before the enricher runs.
 	fakeAuth := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), ctxAction, "RunInstances")
-			ctx = context.WithValue(ctx, ctxService, "ec2")
+			ctx := reqctx.WithAction(r.Context(), "RunInstances")
+			ctx = reqctx.WithService(ctx, "ec2")
 			ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-			ctx = context.WithValue(ctx, ctxRegion, "ap-southeast-2")
+			ctx = reqctx.WithRegion(ctx, "ap-southeast-2")
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

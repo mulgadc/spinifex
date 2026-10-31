@@ -133,7 +133,7 @@ func (v *Verifier) principalOf(accessKeyID string, sess session, live *stsdomain
 		return credential.Principal{}, f
 	}
 
-	arn, err := callerARN(p)
+	arn, err := CallerARN(p)
 	if err != nil {
 		slog.Warn("credential rehydrate: cannot build caller ARN", "accessKeyID", accessKeyID, "err", err)
 		return credential.Principal{}, fail(awserrors.ErrorInvalidClientTokenId)
@@ -173,10 +173,13 @@ func (v *Verifier) rehydrateUser(p *credential.Principal, sess session, live *st
 	return nil
 }
 
-// callerARN is the canonical ARN of p: the sealed role-session ARN, or the stored
-// user ARN with path, or the pathless user ARN when no record supplies one. The bootstrap root user maps to the account root ARN.
-func callerARN(p credential.Principal) (string, error) {
+// CallerARN is the canonical ARN of p: the sealed role-session ARN, or the stored
+// user ARN with path, or the pathless user ARN when no record supplies one. The account
+// root principal and the bootstrap root user map to the account root ARN.
+func CallerARN(p credential.Principal) (string, error) {
 	switch p.PrincipalType {
+	case stsdomain.PrincipalTypeRoot:
+		return spxarn.FormatIAMRoot(p.AccountID), nil
 	case stsdomain.PrincipalTypeAssumedRole:
 		if p.AssumedRoleARN == "" {
 			return "", errors.New("assumed-role principal without ARN")

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -64,7 +65,7 @@ func withSQSInternal(gw *GatewayConfig, deps sqsworkerapi.Deps) *GatewayConfig {
 func sqsWorkerRequest(service, body, session string) *http.Request {
 	req := setupRDSRequest(body)
 	roleARN := "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":role/" + sqsworkerapi.WorkerRoleName
-	ctx := context.WithValue(req.Context(), ctxService, service)
+	ctx := reqctx.WithService(req.Context(), service)
 	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
 	ctx = withPrincipalField(ctx, fieldIdentity, session)
 	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
@@ -113,7 +114,7 @@ func TestSQSInternal_PolicyForAnotherServiceDenies(t *testing.T) {
 func TestSQSInternal_CustomerAdminDenied(t *testing.T) {
 	gw, probe, ids := newSQSInternalGateway(allowPolicy("*"))
 	req := setupRDSUserRequest("Action=ClaimFirstStore", rdsTestAccountID)
-	req = req.WithContext(context.WithValue(req.Context(), ctxService, sqsworkerapi.ServiceName))
+	req = req.WithContext(reqctx.WithService(req.Context(), sqsworkerapi.ServiceName))
 	assertDenied(t, serveSigned(gw, httptest.NewRecorder(), req))
 	assert.Zero(t, probe.consulted)
 	assert.Zero(t, ids.asked)

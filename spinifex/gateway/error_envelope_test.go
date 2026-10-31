@@ -5,8 +5,8 @@ package gateway
 
 import (
 	"bytes"
-	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -59,7 +59,7 @@ func throttleResponse(t *testing.T, regs ...dispatch.Registration) func(svc stri
 	gw := &GatewayConfig{DisableLogging: true, Services: b.Build()}
 	return func(svc string) *http.Response {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)
-		req = req.WithContext(context.WithValue(req.Context(), ctxService, svc))
+		req = req.WithContext(reqctx.WithService(req.Context(), svc))
 		w := httptest.NewRecorder()
 		gw.writeThrottleError(w, req)
 		return w.Result()
@@ -240,7 +240,7 @@ func TestErrorEnvelope_ClusterUnavailable(t *testing.T) {
 
 	call := func(svc string) *http.Response {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)
-		req = req.WithContext(context.WithValue(req.Context(), ctxService, svc))
+		req = req.WithContext(reqctx.WithService(req.Context(), svc))
 		w := httptest.NewRecorder()
 		gw.Request(w, req)
 		return w.Result()

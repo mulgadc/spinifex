@@ -2,8 +2,8 @@ package gateway
 
 import (
 	"bytes"
-	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,9 +20,7 @@ func (gw *GatewayConfig) anonymousSTSInterceptor(next http.Handler) http.Handler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.Header.Get("Authorization") == "" {
 			if args, ok := gw.anonymousSTSArgs(r); ok {
-				ctx := context.WithValue(r.Context(), ctxQueryArgs, args)
-				ctx = context.WithValue(ctx, ctxService, "sts")
-				r = r.WithContext(ctx)
+				r = r.WithContext(reqctx.WithService(r.Context(), "sts"))
 				if err := gw.serveAnonymousSTS(w, args); err != nil {
 					gw.ErrorHandler(w, r, err)
 				}

@@ -8,9 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -38,16 +38,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-)
-
-// contextKey is a typed key for request context values.
-type contextKey string
-
-const (
-	ctxService   contextKey = "sigv4.service"
-	ctxRegion    contextKey = "sigv4.region"
-	ctxAction    contextKey = "sigv4.action"
-	ctxQueryArgs contextKey = "sigv4.queryArgs"
 )
 
 // Values of callerPrincipal.principalType. Downstream handlers that interpret
@@ -91,9 +81,16 @@ type GatewayConfig struct {
 	Credentials credential.Verifier
 	RateLimiter *authlimit.AuthRateLimiter // Per-IP auth failure rate limiter
 	Throttler   *ratelimit.Throttler       // Per-account+action API request throttler
-	// Admission decides whether a request's account may proceed. Nil builds one
-	// over IAMService the first time the auth middleware is constructed.
-	Admission *accountadmission.Admitter
+	// Admission decides whether a request's account may proceed. Nil fails every
+	// authenticated request closed with InternalError.
+	Admission pipeline.AccountAdmission
+	// Policy decides authorization for a verified principal. Nil fails every
+	// authorization closed with InternalError.
+	Policy pipeline.PolicyEvaluator
+	// Readiness reports whether the message bus is reachable. Nil skips the
+	// early refusal in the auth middleware and makes the service gate answer
+	// cluster-unavailable.
+	Readiness pipeline.Readiness
 	Version   string // Build-time version string (set from cmd.Version)
 	Commit    string // Build-time commit hash (set from cmd.Commit)
 	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil
@@ -129,7 +126,7 @@ func (gw *GatewayConfig) ValidateServices() error {
 
 // registeredActorFunc returns the lazy Actor resolver a registered
 // dispatcher's Invocation carries. It reads the SigV4 identity context through
-// the shared buildCallerARN helper, so nothing is computed until called.
+// the caller ARN the verifier built, so nothing is computed until called.
 func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
 	return func() (dispatch.Actor, error) {
 		return callerActor(r.Context())
@@ -140,21 +137,26 @@ func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc
 // actor is fully populated even when err is set: err reports that no caller ARN
 // could be composed, so a reader that needs no ARN may ignore it.
 func callerActor(ctx context.Context) (dispatch.Actor, error) {
-	p, _ := callerPrincipalFrom(ctx)
-	callerARN, err := buildCallerARN(p.accountID, p.identity, p.principalType, p.assumedRoleARN, p.userARN)
-	actor := dispatch.Actor{
-		AccountID:     p.accountID,
-		CallerARN:     callerARN,
-		PrincipalType: p.principalType,
-		AccessKeyID:   p.accessKeyID,
-		UserID:        p.userID,
+	p, _ := reqctx.Principal(ctx)
+	callerARN := p.CallerARN
+	var err error
+	if callerARN == "" {
+		slog.Error("caller ARN could not be composed", "principalType", p.PrincipalType)
+		err = errors.New(awserrors.ErrorInternalError)
 	}
-	if p.principalType == principalTypeAssumedRole {
-		actor.PrincipalARN = p.underlyingRoleARN
-		actor.SessionName = p.identity
+	actor := dispatch.Actor{
+		AccountID:     p.AccountID,
+		CallerARN:     callerARN,
+		PrincipalType: p.PrincipalType,
+		AccessKeyID:   reqctx.AccessKeyID(ctx),
+		UserID:        p.UserID,
+	}
+	if p.PrincipalType == principalTypeAssumedRole {
+		actor.PrincipalARN = p.UnderlyingRoleARN
+		actor.SessionName = p.Identity
 	} else {
 		actor.PrincipalARN = callerARN
-		actor.UserName = p.identity
+		actor.UserName = p.Identity
 	}
 	return actor, err
 }
@@ -230,14 +232,14 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 	return []ratelimit.KeyFunc{
 		func(r *http.Request) (string, error) {
-			acct := callerPrincipalOf(r).accountID
+			acct := callerOf(r).AccountID
 			if acct == "" {
 				return "", fmt.Errorf("account-id missing from request context")
 			}
 			return acct, nil
 		},
 		func(r *http.Request) (string, error) {
-			action, _ := r.Context().Value(ctxAction).(string)
+			action := reqctx.Action(r.Context())
 			if action != "" {
 				return action, nil
 			}
@@ -296,7 +298,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 // writeThrottleError writes the service-appropriate throttle rejection response.
 func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.NewV4().String()
-	svc, _ := r.Context().Value(ctxService).(string)
+	svc := reqctx.Service(r.Context())
 
 	errorCode := awserrors.ErrorRequestLimitExceeded
 	if svc == "iam" || svc == "sts" || svc == "eks" || svc == "route53" {
@@ -330,7 +332,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 
 func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	svc, err := gw.GetService(r)
-	action, _ := r.Context().Value(ctxAction).(string)
+	action := reqctx.Action(r.Context())
 	slog.Info("Request", "service", svc, "action", action, "method", r.Method, "path", r.URL.Path)
 
 	if err != nil {
@@ -341,7 +343,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 
 	// Fail fast when NATS is down; every NATS-bound handler would otherwise hang
 	// until per-call timeout.
-	if gw.NATSConn == nil || !gw.NATSConn.IsConnected() {
+	gw.fillDefaultCapabilities()
+	if gw.Readiness == nil || !gw.Readiness.Available() {
 		gw.writeClusterUnavailable(w, r, svc)
 		return
 	}
@@ -380,7 +383,7 @@ func serviceErrorLevel(svc string, err error) slog.Level {
 func (gw *GatewayConfig) dispatchRegistered(entry *dispatch.Entry, w http.ResponseWriter, r *http.Request) error {
 	return entry.Dispatch(w, dispatch.Invocation{
 		Request:   r,
-		AccountID: callerPrincipalOf(r).accountID,
+		AccountID: callerOf(r).AccountID,
 		Service:   requestService(r),
 		Region:    gw.Region,
 		Authorize: func(service, action string, resources []string, keys iampolicy.ConditionKeys) error {
@@ -392,13 +395,12 @@ func (gw *GatewayConfig) dispatchRegistered(entry *dispatch.Entry, w http.Respon
 
 // requestService is the service the request's credential scope names.
 func requestService(r *http.Request) string {
-	svc, _ := r.Context().Value(ctxService).(string)
-	return svc
+	return reqctx.Service(r.Context())
 }
 
 func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
-	svc, ok := r.Context().Value(ctxService).(string)
-	if !ok {
+	svc := reqctx.Service(r.Context())
+	if svc == "" {
 		return "", errors.New(awserrors.ErrorAuthFailure)
 	}
 	if _, ok := gw.registered(svc); !ok {
@@ -438,63 +440,38 @@ func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, 
 	// point with its resolved action, so telemetry enrichment lives here.
 	recordResolvedAction(r.Context(), service, action)
 
-	if gw.IAMService == nil {
-		slog.Error("checkPolicy: IAM service not available", "service", service, "action", action)
+	gw.fillDefaultCapabilities()
+	if gw.Policy == nil {
+		slog.Error("checkPolicy: policy evaluator not available", "service", service, "action", action)
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	caller, authenticated := callerPrincipalFrom(r.Context())
+	caller, authenticated := reqctx.Principal(r.Context())
 	if !authenticated {
 		slog.Warn("checkPolicy: request carries no auth context", "service", service, "action", action)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
-	if caller.identity == "" {
+	if caller.Identity == "" {
 		slog.Warn("checkPolicy: authenticated request carries no identity name",
 			"service", service, "action", action)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
-	if caller.accountID == "" {
-		slog.Error("checkPolicy: no account ID in auth context", "user", caller.identity)
+	if caller.AccountID == "" {
+		slog.Error("checkPolicy: no account ID in auth context", "user", caller.Identity)
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	principal := caller.policyPrincipal()
-	keys := requestConditionKeys(r, principal)
+	keys := gw.Policy.RequestConditionKeys(r, caller)
 	maps.Copy(keys, actionKeys)
-	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources, keys)
-}
-
-// credential projects the gateway's principal onto the credential vocabulary the
-// shared policy evaluator takes.
-func (p principalContext) credential() credential.Principal {
-	return credential.Principal{
-		Identity:          p.identity,
-		AccountID:         p.accountID,
-		PrincipalType:     p.principalType,
-		AssumedRoleARN:    p.assumedRoleARN,
-		AssumedRoleID:     p.assumedRoleID,
-		UnderlyingRoleARN: p.underlyingRoleARN,
-		UserID:            p.userID,
-		UserARN:           p.userARN,
-	}
-}
-
-// policyResolveRetryBase scales the backoff between policy-resolve attempts
-// after a transient NATS error. A var only so tests can shorten it.
-var policyResolveRetryBase = 200 * time.Millisecond
-
-// requestConditionKeys resolves the request's IAM condition keys through the shared
-// policy evaluator package.
-func requestConditionKeys(r *http.Request, principal principalContext) iampolicy.ConditionKeys {
-	return policyauth.RequestConditionKeys(r, principal.credential())
+	return gw.evaluatePrincipalPolicyResources(caller, policy.IAMAction(service, action), resources, keys)
 }
 
 // evaluatePrincipalPolicyResources resolves policies once and evaluates every
 // resource in the request against that same snapshot.
 func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
-	principal principalContext, iamAction string, resources []string, keys iampolicy.ConditionKeys,
+	principal credential.Principal, iamAction string, resources []string, keys iampolicy.ConditionKeys,
 ) error {
-	return policyauth.New(gw.IAMService, policyauth.WithRetryBase(policyResolveRetryBase)).Evaluate(principal.credential(), iamAction, resources, keys)
+	return gw.Policy.Evaluate(principal, iamAction, resources, keys)
 }
 
 func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
@@ -680,15 +657,13 @@ func recordResolvedAction(ctx context.Context, service, action string) {
 func traceActionEnricher(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		action, _ := ctx.Value(ctxAction).(string)
-		svc, _ := ctx.Value(ctxService).(string)
-		recordResolvedAction(ctx, svc, action)
+		recordResolvedAction(ctx, reqctx.Service(ctx), reqctx.Action(ctx))
 
 		span := trace.SpanFromContext(ctx)
-		if acct := callerPrincipalOf(r).accountID; acct != "" {
+		if acct := callerOf(r).AccountID; acct != "" {
 			span.SetAttributes(attribute.String("aws.account_id", acct))
 		}
-		if region, _ := ctx.Value(ctxRegion).(string); region != "" {
+		if region := reqctx.Region(ctx); region != "" {
 			span.SetAttributes(attribute.String("aws.region", region))
 		}
 		next.ServeHTTP(w, r)

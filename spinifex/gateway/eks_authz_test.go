@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -36,7 +37,7 @@ import (
 func dispatchEKS(t *testing.T, gw *GatewayConfig, method, path, body string) error {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	ctx := context.WithValue(req.Context(), ctxService, "eks")
+	ctx := reqctx.WithService(req.Context(), "eks")
 	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
 	req = withTestIdentity(req.WithContext(ctx))
 	return gw.serveEKS(httptest.NewRecorder(), req)
@@ -187,7 +188,7 @@ func dispatchEKSAsCPAgent(t *testing.T, gw *GatewayConfig, path, instanceID stri
 	t.Helper()
 	roleName := ekscluster.CPInstanceRoleName
 	req := httptest.NewRequest(http.MethodGet, path, nil)
-	ctx := context.WithValue(req.Context(), ctxService, "eks")
+	ctx := reqctx.WithService(req.Context(), "eks")
 	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
 	ctx = withPrincipalField(ctx, fieldIdentity, instanceID)
 	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
@@ -234,7 +235,7 @@ func TestEKSRequest_InternalRoutesAdmitTheCPAgentPrincipal(t *testing.T) {
 func TestEKSRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
 	req := withTestIdentity(httptest.NewRequest(http.MethodGet, "/clusters", nil).
-		WithContext(context.WithValue(context.Background(), ctxService, "eks")))
+		WithContext(reqctx.WithService(context.Background(), "eks")))
 
 	err := gw.serveEKS(httptest.NewRecorder(), req)
 	require.Error(t, err)
@@ -301,7 +302,7 @@ func (f *publishFixture) requireNothingPublished(t *testing.T) {
 // cpAgentContext is the auth context a CP VM's IMDS credentials produce.
 func cpAgentContext(instanceID string) context.Context {
 	roleName := ekscluster.CPInstanceRoleName
-	ctx := context.WithValue(context.Background(), ctxService, "eks")
+	ctx := reqctx.WithService(context.Background(), "eks")
 	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
 	ctx = withPrincipalField(ctx, fieldIdentity, instanceID)
 	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
@@ -312,7 +313,7 @@ func cpAgentContext(instanceID string) context.Context {
 }
 
 func userContext(accountID, name string) context.Context {
-	ctx := context.WithValue(context.Background(), ctxService, "eks")
+	ctx := reqctx.WithService(context.Background(), "eks")
 	ctx = withPrincipalField(ctx, fieldAccountID, accountID)
 	ctx = withPrincipalField(ctx, fieldIdentity, name)
 	return withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)

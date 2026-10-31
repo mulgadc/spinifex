@@ -2,10 +2,9 @@ package gateway
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
 	"log/slog"
 	"net/http"
@@ -36,9 +35,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = authlimit.NewAuthRateLimiter()
 	}
-	if gw.Admission == nil {
-		gw.Admission = accountadmission.New(gw.IAMService)
-	}
+	gw.fillDefaultCapabilities()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			src := authSource{limitKey: ingresshttp.ClientIP(r.RemoteAddr), logIP: ingresshttp.RequestClientIP(r)}
@@ -100,7 +97,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			// Carry the signed service now, so a rejection below (a signature
 			// mismatch on a bedrock Converse) renders in the client's format —
 			// GetService reads this to pick JSON over XML for the bedrock family.
-			r = r.WithContext(context.WithValue(r.Context(), ctxService, sig.Credential.Service))
+			r = r.WithContext(reqctx.WithService(r.Context(), sig.Credential.Service))
 
 			// Reject unknown services before crypto; otherwise Verify re-signs with
 			// the client-claimed service name and rubber-stamps the scope. A
@@ -118,8 +115,8 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			}
 
 			// Fail fast when NATS is down; LookupAccessKey would hang 5 s otherwise.
-			// Nil NATSConn (test helpers) skips this check.
-			if gw.NATSConn != nil && !gw.NATSConn.IsConnected() {
+			// No configured readiness (test helpers) skips this check.
+			if gw.Readiness != nil && !gw.Readiness.Available() {
 				gw.writeClusterUnavailable(w, r, sig.Credential.Service)
 				return
 			}
@@ -182,17 +179,6 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				gw.writeSigV4Error(w, r, f.Code, "")
 				return
 			}
-			principal := principalContext{
-				identity:          caller.Identity,
-				accountID:         caller.AccountID,
-				principalType:     caller.PrincipalType,
-				assumedRoleARN:    caller.AssumedRoleARN,
-				assumedRoleID:     caller.AssumedRoleID,
-				underlyingRoleARN: caller.UnderlyingRoleARN,
-				userID:            caller.UserID,
-				userARN:           caller.UserARN,
-			}
-
 			// Parse rewound the body; re-read it for query-arg parsing, then rewind
 			// again for the downstream handler.
 			body, err := io.ReadAll(r.Body)
@@ -204,41 +190,30 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			r.Body = io.NopCloser(bytes.NewReader(body))
 
 			ctx := r.Context()
-			ctx = withCallerPrincipal(ctx, callerPrincipal{
-				identity:          principal.identity,
-				accountID:         principal.accountID,
-				accessKeyID:       sig.Credential.AccessKeyID,
-				principalType:     principal.principalType,
-				assumedRoleARN:    principal.assumedRoleARN,
-				assumedRoleID:     principal.assumedRoleID,
-				underlyingRoleARN: principal.underlyingRoleARN,
-				userID:            principal.userID,
-				userARN:           principal.userARN,
-			})
-			ctx = context.WithValue(ctx, ctxService, sig.Credential.Service)
-			ctx = context.WithValue(ctx, ctxRegion, sig.Credential.Region)
-			audit.From(ctx).SetIdentity(sig.Credential.AccessKeyID, principal.accountID,
-				sig.Credential.Region, sig.Credential.Service, principal.principalType)
+			ctx = reqctx.WithPrincipal(ctx, caller, sig.Credential.AccessKeyID)
+			ctx = reqctx.WithService(ctx, sig.Credential.Service)
+			ctx = reqctx.WithRegion(ctx, sig.Credential.Region)
+			audit.From(ctx).SetIdentity(sig.Credential.AccessKeyID, caller.AccountID,
+				sig.Credential.Region, sig.Credential.Service, caller.PrincipalType)
 
-			// Parse once; dispatchers reuse via ctxQueryArgs. On error the
-			// dispatcher re-parses and returns MalformedQueryString.
+			// A malformed body keeps the action unset; the dispatcher re-parses it and
+			// returns MalformedQueryString.
 			if args, err := ParseAWSQueryArgs(string(body)); err == nil {
-				ctx = context.WithValue(ctx, ctxQueryArgs, args)
 				if action := args["Action"]; action != "" {
-					ctx = context.WithValue(ctx, ctxAction, action)
+					ctx = reqctx.WithAction(ctx, action)
 				}
 			}
 
 			// A registered service names its own action; an
 			// empty answer keeps the query-protocol Action parsed above.
 			if action := gw.selector().ResolveAction(r, sig.Credential.Service); action != "" {
-				ctx = context.WithValue(ctx, ctxAction, action)
+				ctx = reqctx.WithAction(ctx, action)
 			}
 
 			slog.Debug("SigV4 authentication successful",
 				"accessKey", sig.Credential.AccessKeyID,
-				"identity", principal.identity,
-				"principalType", principal.principalType)
+				"identity", caller.Identity,
+				"principalType", caller.PrincipalType)
 			gw.RateLimiter.RecordSuccess(src.limitKey)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -380,8 +355,7 @@ func credentialScopeService(r *http.Request) string {
 // including a scope the gateway does not serve. A rejection has to render in
 // the client's format, and GetService reports those scopes as empty.
 func signedService(r *http.Request) string {
-	svc, _ := r.Context().Value(ctxService).(string)
-	return svc
+	return reqctx.Service(r.Context())
 }
 
 // globalSigningRegions maps a global AWS service to the region its clients sign

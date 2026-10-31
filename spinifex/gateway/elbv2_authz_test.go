@@ -4,7 +4,7 @@
 package gateway
 
 import (
-	"context"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,7 +34,7 @@ func elbv2Listener(lbName, lbID, id string) string {
 func dispatchELBv2(t *testing.T, gw *GatewayConfig, body string) error {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-	ctx := context.WithValue(req.Context(), ctxService, "elasticloadbalancing")
+	ctx := reqctx.WithService(req.Context(), "elasticloadbalancing")
 	ctx = withPrincipalField(ctx, fieldAccountID, authzAccountID)
 	return gw.serveELBv2(httptest.NewRecorder(), withTestIdentity(req.WithContext(ctx)))
 }
@@ -160,7 +160,7 @@ func TestELBv2Request_MissingAccountIDIsInternalError(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "elasticloadbalancing:*", "*"))
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=DescribeLoadBalancers"))
-	ctx := context.WithValue(req.Context(), ctxService, "elasticloadbalancing")
+	ctx := reqctx.WithService(req.Context(), "elasticloadbalancing")
 	err := gw.serveELBv2(httptest.NewRecorder(), withTestIdentity(req.WithContext(ctx)))
 
 	require.Error(t, err)

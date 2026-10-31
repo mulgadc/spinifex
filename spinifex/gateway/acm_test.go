@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"context"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +17,7 @@ func setupACMRequest(target, body string) *http.Request {
 	if target != "" {
 		req.Header.Set("X-Amz-Target", target)
 	}
-	ctx := context.WithValue(req.Context(), ctxService, "acm")
+	ctx := reqctx.WithService(req.Context(), "acm")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 	return withTestIdentity(req.WithContext(ctx))
 }

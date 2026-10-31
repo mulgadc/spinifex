@@ -1,4 +1,4 @@
-//test:in-package — requestConditionKeys, principalContext and the principal type
+//test:in-package — requestConditionKeys, credential.Principal and the principal type
 // constants are unexported, and the gate exists to compare what they emit with
 // the evaluator's registries.
 
@@ -8,6 +8,8 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -104,18 +106,18 @@ func withIfExists(values map[string]string) map[string]string {
 func emittedKeys(t *testing.T) map[string]string {
 	t.Helper()
 
-	principals := map[string]principalContext{
+	principals := map[string]credential.Principal{
 		"user": {
-			identity:      "alice",
-			accountID:     "000000000001",
-			principalType: principalTypeUser,
+			Identity:      "alice",
+			AccountID:     "000000000001",
+			PrincipalType: principalTypeUser,
 		},
 		"assumed-role": {
-			identity:       "session",
-			accountID:      "000000000001",
-			principalType:  principalTypeAssumedRole,
-			assumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/session",
-			assumedRoleID:  "AROASHAREDOPS:session",
+			Identity:       "session",
+			AccountID:      "000000000001",
+			PrincipalType:  principalTypeAssumedRole,
+			AssumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/session",
+			AssumedRoleID:  "AROASHAREDOPS:session",
 		},
 	}
 
@@ -127,11 +129,11 @@ func emittedKeys(t *testing.T) map[string]string {
 		r.RemoteAddr = "10.4.1.9:52344"
 		// Resolved the way the middleware resolves it, so the gate cannot pass on
 		// a value only the test supplies.
-		userID, _, err := stsdomain.ResolveCallerUser(principal.accountID, principal.principalType,
-			principal.identity, principal.assumedRoleID, gw.IAMService)
+		userID, _, err := stsdomain.ResolveCallerUser(principal.AccountID, principal.PrincipalType,
+			principal.Identity, principal.AssumedRoleID, gw.IAMService)
 		require.NoError(t, err)
-		principal.userID = userID
-		for key := range requestConditionKeys(r, principal) {
+		principal.UserID = userID
+		for key := range policyauth.RequestConditionKeys(r, principal) {
 			union[key] = name
 		}
 	}

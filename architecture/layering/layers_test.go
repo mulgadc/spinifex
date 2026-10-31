@@ -43,6 +43,8 @@ type class struct {
 	domain string // owning domain for domain-shaped and agent packages
 	kind   domainKind
 	daemon bool // runtime/daemon, the interim daemon -> gateway -> handlers root
+	// requestRecord marks ingress/aws/reqctx, the request record ADR-0002:S7 keeps private to ingress.
+	requestRecord bool
 }
 
 func (c class) domainShaped() bool { return c.kind != notDomain }
@@ -103,7 +105,7 @@ func classifyApp(app []string) (class, bool) {
 	case "foundation":
 		return class{layer: layerFoundation}, true
 	case "ingress":
-		return class{layer: layerIngress}, true
+		return class{layer: layerIngress, requestRecord: len(app) >= 3 && app[1] == "aws" && app[2] == "reqctx"}, true
 	case "runtime":
 		return class{layer: layerRuntime, daemon: len(app) >= 2 && app[1] == "daemon"}, true
 	case "operator":

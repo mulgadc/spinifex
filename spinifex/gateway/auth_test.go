@@ -136,97 +136,6 @@ func TestSigV4Auth_UserIDDependencyFaultFailsClosed(t *testing.T) {
 	assert.Contains(t, string(body), awserrors.ErrorInternalError)
 }
 
-func TestSigV4Auth_NoAuthorizationHeader(t *testing.T) {
-	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-
-	resp := doRequest(handler, req)
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("Expected status 403, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "MissingAuthenticationToken") {
-		t.Errorf("Expected MissingAuthenticationToken error, got: %s", string(body))
-	}
-}
-
-func TestSigV4Auth_MalformedHeader(t *testing.T) {
-	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
-
-	testCases := []struct {
-		name       string
-		authHeader string
-	}{
-		{"empty prefix", "InvalidPrefix Credential=test"},
-		{"missing parts", "AWS4-HMAC-SHA256 Credential=test"},
-		{"invalid credential format", "AWS4-HMAC-SHA256 Credential=a/b/c, SignedHeaders=host, Signature=sig"},
-		{"missing SignedHeaders prefix", "AWS4-HMAC-SHA256 Credential=a/b/c/d/aws4_request, Headers=host, Signature=sig"},
-		{"missing Signature prefix", "AWS4-HMAC-SHA256 Credential=a/b/c/d/aws4_request, SignedHeaders=host, Sig=abc"},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			req.Host = "localhost:9999"
-			req.Header.Set("Authorization", tc.authHeader)
-			req.Header.Set("X-Amz-Date", time.Now().UTC().Format("20060102T150405Z"))
-
-			resp := doRequest(handler, req)
-
-			if resp.StatusCode != http.StatusBadRequest {
-				t.Errorf("Expected status 400, got %d", resp.StatusCode)
-			}
-
-			body, _ := io.ReadAll(resp.Body)
-			if !strings.Contains(string(body), "IncompleteSignature") {
-				t.Errorf("Expected IncompleteSignature error, got: %s", string(body))
-			}
-		})
-	}
-}
-
-func TestSigV4Auth_InvalidAccessKey(t *testing.T) {
-	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignRequest(t, req, nil, "INVALID_ACCESS_KEY", gwfix.SecretKey)
-
-	resp := doRequest(handler, req)
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("Expected status 403, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "InvalidClientTokenId") {
-		t.Errorf("Expected InvalidClientTokenId error, got: %s", string(body))
-	}
-}
-
-func TestSigV4Auth_InvalidSignature(t *testing.T) {
-	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, "WRONG_SECRET_KEY")
-
-	resp := doRequest(handler, req)
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("Expected status 403, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "SignatureDoesNotMatch") {
-		t.Errorf("Expected SignatureDoesNotMatch error, got: %s", string(body))
-	}
-}
-
 func TestSigV4Auth_ValidSignature(t *testing.T) {
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
@@ -272,52 +181,6 @@ func TestSigV4Auth_ValidSignatureWithQueryString(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		t.Errorf("Expected status 200, got %d, body: %s", resp.StatusCode, string(respBody))
-	}
-}
-
-func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
-	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
-	if err != nil {
-		t.Fatalf("Failed to encrypt secret: %v", err)
-	}
-
-	mockSvc := &gwfix.IAM{
-		MasterKey: gwfix.MasterKey,
-		AccessKeys: map[string]*iamdomain.AccessKey{
-			gwfix.AccessKey: {
-				AccessKeyID:     gwfix.AccessKey,
-				SecretAccessKey: encryptedSecret,
-				UserName:        "root",
-				Status:          "Inactive",
-			},
-		},
-	}
-
-	gw := withEC2Verifier(&GatewayConfig{
-		DisableLogging: true,
-		Region:         gwfix.Region,
-		IAMService:     mockSvc,
-	})
-
-	r := chi.NewRouter()
-	r.Use(gw.SigV4AuthMiddleware())
-	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("OK"))
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
-
-	resp := doRequest(r, req)
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("Expected status 403 for inactive key, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "InvalidClientTokenId") {
-		t.Errorf("Expected InvalidClientTokenId error, got: %s", string(body))
 	}
 }
 
@@ -382,58 +245,6 @@ func TestParseAWSQueryArgs_URLDecoding(t *testing.T) {
 	}
 }
 
-func TestSigV4Auth_DecryptFailure(t *testing.T) {
-	// Secret encrypted under a rotated master key — unverifiable credential must
-	// return 403 InvalidClientTokenId, not 500, so the client re-authenticates.
-	otherKey, err := iamdomain.GenerateMasterKey()
-	if err != nil {
-		t.Fatalf("GenerateMasterKey() error: %v", err)
-	}
-	encryptedWithOther, err := iamdomain.EncryptSecret(gwfix.SecretKey, otherKey)
-	if err != nil {
-		t.Fatalf("EncryptSecret() error: %v", err)
-	}
-
-	mockSvc := &gwfix.IAM{
-		MasterKey: gwfix.MasterKey,
-		AccessKeys: map[string]*iamdomain.AccessKey{
-			gwfix.AccessKey: {
-				AccessKeyID:     gwfix.AccessKey,
-				SecretAccessKey: encryptedWithOther, // encrypted with wrong key
-				UserName:        "root",
-				Status:          "Active",
-			},
-		},
-	}
-
-	gw := withEC2Verifier(&GatewayConfig{
-		DisableLogging: true,
-		Region:         gwfix.Region,
-		IAMService:     mockSvc,
-	})
-
-	r := chi.NewRouter()
-	r.Use(gw.SigV4AuthMiddleware())
-	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("OK"))
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
-
-	resp := doRequest(r, req)
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("Expected status 403 for decrypt failure, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), awserrors.ErrorInvalidClientTokenId) {
-		t.Errorf("Expected InvalidClientTokenId, got: %s", string(body))
-	}
-}
-
 func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
 
@@ -481,46 +292,6 @@ func TestSigV4Auth_BodyReadFailureDoesNotCountTowardLockout(t *testing.T) {
 }
 
 // --- Clock Skew / Replay Protection Tests ---
-
-func TestSigV4Auth_ExpiredTimestamp(t *testing.T) {
-	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
-
-	past := time.Now().UTC().Add(-16 * time.Minute) // exceeds sigv4 15-minute MaxClockSkew
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, past)
-
-	resp := doRequest(handler, req)
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("Expected status 403, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "SignatureDoesNotMatch") {
-		t.Errorf("Expected SignatureDoesNotMatch error, got: %s", string(body))
-	}
-}
-
-func TestSigV4Auth_FutureTimestamp(t *testing.T) {
-	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
-
-	future := time.Now().UTC().Add(16 * time.Minute) // exceeds sigv4 15-minute MaxClockSkew
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey, future)
-
-	resp := doRequest(handler, req)
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("Expected status 403, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "SignatureDoesNotMatch") {
-		t.Errorf("Expected SignatureDoesNotMatch error, got: %s", string(body))
-	}
-}
 
 func TestSigV4Auth_TimestampWithinSkew(t *testing.T) {
 	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
@@ -575,116 +346,7 @@ func TestSigV4Auth_ClockSkewBoundary(t *testing.T) {
 	}
 }
 
-func TestSigV4Auth_MissingXAmzDate(t *testing.T) {
-	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
-	req.Header.Del("X-Amz-Date")
-
-	resp := doRequest(handler, req)
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("Expected status 400, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "IncompleteSignature") {
-		t.Errorf("Expected IncompleteSignature error, got: %s", string(body))
-	}
-}
-
-func TestSigV4Auth_MalformedTimestamp(t *testing.T) {
-	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
-	req.Header.Set("X-Amz-Date", "not-a-valid-date")
-
-	resp := doRequest(handler, req)
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("Expected status 400, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "IncompleteSignature") {
-		t.Errorf("Expected IncompleteSignature error, got: %s", string(body))
-	}
-}
-
 // --- writeSigV4Error Response Format Tests ---
-
-func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: allowAllIAMService()})
-
-	testCases := []struct {
-		errorCode      string
-		expectedStatus int
-	}{
-		{awserrors.ErrorMissingAuthenticationToken, 403},
-		{awserrors.ErrorIncompleteSignature, 400},
-		{awserrors.ErrorInvalidClientTokenId, 403},
-		{awserrors.ErrorSignatureDoesNotMatch, 403},
-		{awserrors.ErrorInternalError, 500},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.errorCode, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
-
-			gw.writeSigV4Error(w, req, tc.errorCode, "")
-			resp := w.Result()
-
-			// Correct HTTP status code
-			if resp.StatusCode != tc.expectedStatus {
-				t.Errorf("Expected status %d for %s, got %d", tc.expectedStatus, tc.errorCode, resp.StatusCode)
-			}
-
-			// Content-Type is application/xml
-			ct := resp.Header.Get("Content-Type")
-			if ct != "application/xml" {
-				t.Errorf("Expected Content-Type application/xml, got %q", ct)
-			}
-
-			// No ctxService is set here, so the signature never parsed and the
-			// EC2 query envelope still applies, RequestID casing included.
-			body, _ := io.ReadAll(resp.Body)
-			bodyStr := string(body)
-
-			if !strings.Contains(bodyStr, "<Code>"+tc.errorCode+"</Code>") {
-				t.Errorf("Response body missing error code %q: %s", tc.errorCode, bodyStr)
-			}
-			if !strings.Contains(bodyStr, "<RequestID>") {
-				t.Errorf("Response body missing RequestID: %s", bodyStr)
-			}
-			if !strings.Contains(bodyStr, "<?xml") {
-				t.Errorf("Response body missing XML declaration: %s", bodyStr)
-			}
-		})
-	}
-}
-
-func TestWriteSigV4Error_IgnoresClientRequestID(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: allowAllIAMService()})
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Amz-Request-Id", "test-request-id-123")
-
-	gw.writeSigV4Error(w, req, awserrors.ErrorIncompleteSignature, "")
-
-	body, _ := io.ReadAll(w.Result().Body)
-	if strings.Contains(string(body), "test-request-id-123") {
-		t.Errorf("Expected server-generated request ID, but client ID was used: %s", string(body))
-	}
-	if !strings.Contains(string(body), "<RequestID>") {
-		t.Errorf("Expected RequestID in response, got: %s", string(body))
-	}
-}
 
 // The gateway does not serve S3 — predastore does — so an S3-scoped request is
 // rejected on credential scope before any verb or path parsing. Every S3 verb
@@ -1368,101 +1030,6 @@ func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
 	}
 }
 
-func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
-	// A user named "root" but on a non-global account should still have
-	// policies evaluated (only root + GlobalAccountID bypasses).
-	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
-	if err != nil {
-		t.Fatalf("Failed to encrypt secret: %v", err)
-	}
-
-	mockSvc := &gwfix.PolicyIAM{
-		IAM: gwfix.IAM{
-			MasterKey: gwfix.MasterKey,
-			AccessKeys: map[string]*iamdomain.AccessKey{
-				gwfix.AccessKey: {
-					AccessKeyID:     gwfix.AccessKey,
-					SecretAccessKey: encryptedSecret,
-					UserName:        "root",
-					AccountID:       "999999999999", // not GlobalAccountID
-					Status:          "Active",
-				},
-			},
-		},
-		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-			return nil, nil // no policies → should deny
-		},
-	}
-
-	gw := withEC2Verifier(&GatewayConfig{
-		DisableLogging: true,
-		Region:         gwfix.Region,
-		IAMService:     mockSvc,
-	})
-
-	handler := setupPolicyTestHandler(gw)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
-
-	resp := doRequest(handler, req)
-
-	// root on non-global account is evaluated by the policy engine like any
-	// other user. With no policies attached, the default deny applies.
-	if resp.StatusCode != http.StatusForbidden {
-		body, _ := io.ReadAll(resp.Body)
-		t.Errorf("Expected status 403, got %d, body: %s", resp.StatusCode, string(body))
-	}
-}
-
-// TestSigV4Auth_RequireSignedHeaders verifies that omitting "host" or
-// "x-amz-date" from SignedHeaders is rejected with IncompleteSignature before
-// signature comparison. Omitting either enables Authorization header replay
-// across vhosts or outside the clock-skew window.
-func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
-	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
-
-	rewriteSignedHeaders := func(authHeader, list string) string {
-		parts := strings.Split(authHeader, ", ")
-		if len(parts) != 3 {
-			t.Fatalf("expected 3-part auth header, got %d", len(parts))
-		}
-		parts[1] = "SignedHeaders=" + list
-		return strings.Join(parts, ", ")
-	}
-
-	cases := []struct {
-		name       string
-		signedList string
-	}{
-		{"missing host", "x-amz-date"},
-		{"missing x-amz-date", "host"},
-		{"neither present", "content-type"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			req.Host = "localhost:9999"
-			gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
-			req.Header.Set("Authorization",
-				rewriteSignedHeaders(req.Header.Get("Authorization"), tc.signedList))
-
-			resp := doRequest(handler, req)
-
-			if resp.StatusCode != http.StatusBadRequest {
-				body, _ := io.ReadAll(resp.Body)
-				t.Errorf("Expected status 400, got %d, body: %s", resp.StatusCode, string(body))
-			}
-			body, _ := io.ReadAll(resp.Body)
-			if !strings.Contains(string(body), "IncompleteSignature") {
-				t.Errorf("Expected IncompleteSignature error, got: %s", string(body))
-			}
-		})
-	}
-}
-
 // TestSigV4Auth_NATSDisconnectedShortCircuit: with nil IAMService a post-lookup
 // failure would be 500; a 503 here proves the NATS short-circuit fired first.
 func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
@@ -1666,94 +1233,6 @@ func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) 
 	assert.Contains(t, bodyStr, "assumedRoleARN="+gwfix.AssumedARN)
 }
 
-func TestSigV4Auth_Session_Expired(t *testing.T) {
-	// Past expiry but within janitor grace window: must reject as ExpiredToken.
-	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(-time.Minute))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
-
-	resp := doRequest(handler, req)
-	body, _ := io.ReadAll(resp.Body)
-
-	assert.Equal(t, 400, resp.StatusCode)
-	assert.Contains(t, string(body), "ExpiredToken")
-}
-
-func TestSigV4Auth_Session_WrongSecurityToken(t *testing.T) {
-	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, "wrong-wire-token")
-
-	resp := doRequest(handler, req)
-	body, _ := io.ReadAll(resp.Body)
-
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	assert.Contains(t, string(body), "InvalidClientTokenId")
-}
-
-func TestSigV4Auth_Session_MissingSecurityToken(t *testing.T) {
-	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	// No X-Amz-Security-Token — ASIA path requires it.
-	gwfix.SignRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey)
-
-	resp := doRequest(handler, req)
-	body, _ := io.ReadAll(resp.Body)
-
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	assert.Contains(t, string(body), "InvalidClientTokenId")
-}
-
-func TestSigV4Auth_Session_AKIDNotInBucket(t *testing.T) {
-	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignSessionRequest(t, req, nil, "ASIAOTHERAKIDAAAAAAA", gwfix.SecretKey, gwfix.SessionToken)
-
-	resp := doRequest(handler, req)
-	body, _ := io.ReadAll(resp.Body)
-
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	assert.Contains(t, string(body), "InvalidClientTokenId")
-}
-
-// A session whose backing principal was deleted, or recreated under the same
-// name with a different immutable ID, must not authenticate. InvalidClientTokenId
-// rather than ExpiredToken: the credential itself has not expired.
-func TestSigV4Auth_Session_StalePrincipalRejected(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-	}{
-		{"gone", stsdomain.ErrSessionPrincipalGone},
-		{"replaced", stsdomain.ErrSessionPrincipalReplaced},
-		{"legacy", stsdomain.ErrSessionPrincipalLegacy},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
-			stsMock.PrincipalErr = tc.err
-
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			req.Host = "localhost:9999"
-			gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
-
-			resp := doRequest(handler, req)
-			body, _ := io.ReadAll(resp.Body)
-
-			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-			assert.Contains(t, string(body), awserrors.ErrorInvalidClientTokenId)
-		})
-	}
-}
-
 // A fault is not a verdict: an IAM outage must surface as InternalError so the
 // client retries rather than discarding a credential that is still good.
 func TestSigV4Auth_Session_PrincipalCheckFault_IsInternalError(t *testing.T) {
@@ -1771,25 +1250,6 @@ func TestSigV4Auth_Session_PrincipalCheckFault_IsInternalError(t *testing.T) {
 	assert.Contains(t, string(body), awserrors.ErrorInternalError)
 }
 
-// Ordering pin: the continuity check reads the IAM users and roles buckets, and
-// an AKID travels in the Authorization header in cleartext. It must stay behind
-// sig.Verify, so a bad signature is answered without the check running at all.
-func TestSigV4Auth_Session_StalePrincipal_BadSignatureWinsFirst(t *testing.T) {
-	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
-	stsMock.PrincipalErr = stsdomain.ErrSessionPrincipalReplaced
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, "wrong-secret-key", gwfix.SessionToken)
-
-	resp := doRequest(handler, req)
-	body, _ := io.ReadAll(resp.Body)
-
-	assert.Contains(t, string(body), awserrors.ErrorSignatureDoesNotMatch)
-	assert.Zero(t, stsMock.PrincipalChecks.Load(),
-		"continuity check must not run before the signature verifies")
-}
-
 // The other half of the ordering pin: a good signature does reach the check.
 func TestSigV4Auth_Session_ValidSignature_RunsPrincipalCheck(t *testing.T) {
 	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
@@ -1805,71 +1265,6 @@ func TestSigV4Auth_Session_ValidSignature_RunsPrincipalCheck(t *testing.T) {
 	assert.Equal(t, int32(1), stsMock.PrincipalChecks.Load())
 }
 
-// The check runs past sig.Verify, so everything reaching it holds a real
-// secret. Gone and Replaced still count toward the lockout: an attacker
-// working through a dump of leaked session credentials looking for one whose
-// principal survives presents a distinct AKID each time. Legacy must not, and
-// that is not symmetry for its own sake — every record predating the field
-// fails on the deploy that ships this check, so a shared egress address would
-// cross MaxFailures on distinct-attempt volume alone and be told to retry
-// later by a fleet that has nothing to retry with.
-func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
-	cases := []struct {
-		name     string
-		err      error
-		recorded bool
-	}{
-		{"gone", stsdomain.ErrSessionPrincipalGone, true},
-		{"replaced", stsdomain.ErrSessionPrincipalReplaced, true},
-		{"legacy", stsdomain.ErrSessionPrincipalLegacy, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			rl := authlimit.NewAuthRateLimiter()
-			defer rl.Stop()
-			gw := &GatewayConfig{DisableLogging: true, RateLimiter: rl}
-
-			// The real verifier decides whether a verdict counts; the gateway records it.
-			encrypted, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
-			require.NoError(t, err)
-			cred := &stsdomain.SessionCredential{
-				AccessKeyID: gwfix.SessionAKID, SecretEncrypted: encrypted, AccountID: "123456789012",
-				PrincipalType: gwfix.PrincipalTypeAssumedRole, SessionName: "test-session",
-				ExpiresAt: time.Now().UTC().Add(time.Hour),
-			}
-			sts := &gwfix.STS{
-				Sessions:     map[string]*stsdomain.SessionCredential{gwfix.SessionAKID: cred},
-				Tokens:       map[string]string{gwfix.SessionAKID: gwfix.SessionToken},
-				PrincipalErr: tc.err,
-			}
-			v := credverify.New(&gwfix.IAM{MasterKey: gwfix.MasterKey}, sts)
-			req := credential.Request{AccessKeyID: gwfix.SessionAKID, SecurityToken: gwfix.SessionToken}
-			authed, f := v.Authenticate(req, func(string) error { return nil })
-			require.Nil(t, f)
-			_, f = v.Resolve(req, authed)
-			require.NotNil(t, f)
-			require.Equal(t, awserrors.ErrorInvalidClientTokenId, f.Code)
-
-			const ip = "10.15.8.11"
-			gw.recordCredentialFailure(authSource{limitKey: ip, logIP: ip}, f)
-
-			// Read at the lockout boundary: with exactly `recorded` failures from
-			// the verdict, n more distinct ones leave the address open and one
-			// further locks it. Zero or two recorded would miss either edge.
-			recorded := 0
-			if tc.recorded {
-				recorded = 1
-			}
-			n := authlimit.MaxFailures - 1 - recorded
-			recordProbeFailures(rl, ip, "below", n)
-			assert.Empty(t, rl.CheckIP(ip), "address must stay open below the threshold")
-			recordProbeFailures(rl, ip, "edge", 1)
-			assert.Equal(t, awserrors.ErrorRequestLimitExceeded, rl.CheckIP(ip),
-				"the next distinct failure must lock the address")
-		})
-	}
-}
-
 // A long-lived credential has no session record to check, so the door skips it.
 func TestSigV4Auth_LongLived_SkipsPrincipalCheck(t *testing.T) {
 	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
@@ -1880,22 +1275,6 @@ func TestSigV4Auth_LongLived_SkipsPrincipalCheck(t *testing.T) {
 
 	doRequest(handler, req)
 	assert.Zero(t, stsMock.PrincipalChecks.Load())
-}
-
-func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
-	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	// Neither AKIA nor ASIA — must reject without any IAM/STS lookup.
-	gwfix.SignRequest(t, req, nil, "ZZIATESTAKIDXXXXXXXX", gwfix.SecretKey)
-
-	resp := doRequest(handler, req)
-	body, _ := io.ReadAll(resp.Body)
-
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	assert.Contains(t, string(body), "InvalidClientTokenId")
-	assert.Equal(t, int32(0), stsMock.Lookups.Load(), "STSService must not be consulted for unknown-prefix AKIDs")
 }
 
 func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
@@ -2429,68 +1808,6 @@ func TestSigV4Auth_UnservedServiceNoJSONTellGetsXMLEnvelope(t *testing.T) {
 	assert.Contains(t, string(body), "cloudfront")
 }
 
-// Every scope jsonErrorService already lists must keep picking the JSON
-// envelope by exactly the path it did before the fallback was added — a
-// regression guard proving the fallback widened nothing for served scopes.
-func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
-	b := dispatch.NewBuilder()
-	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
-	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
-	require.NoError(t, b.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{})))
-	require.NoError(t, b.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{})))
-	require.NoError(t, b.Register(eksawsapi.NewRegistration(eksawsapi.Deps{})))
-	require.NoError(t, b.Register(ochreawsapi.NewRegistration(ochreawsapi.Deps{})))
-	gw.Services = b.Build()
-
-	for _, svc := range []string{"eks", "ecr", "acm", "ecs", "tagging",
-		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime"} {
-		t.Run(svc, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/", nil)
-			req = req.WithContext(reqctx.WithService(req.Context(), svc))
-			w := httptest.NewRecorder()
-
-			gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch, "")
-
-			resp := w.Result()
-			assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
-			assert.Equal(t, "SignatureDoesNotMatchException", resp.Header.Get("X-Amzn-Errortype"))
-		})
-	}
-}
-
-// The most important test in this cluster: a genuine signature mismatch on a
-// SERVED scope must still return SignatureDoesNotMatch. Nothing about the
-// unserved-scope InvalidAction change may make a real signature failure
-// unrecognisable.
-func TestSigV4Auth_ServedScopeSignatureMismatchStillSignatureDoesNotMatch(t *testing.T) {
-	handler := setupTestApp(gwfix.AccessKey, gwfix.SecretKey)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	// Signed with the wrong secret: the credential scope (ec2) is served, so
-	// this must fail verification rather than the unserved-service gate.
-	gwfix.SignRequestAs(t, req, nil, gwfix.AccessKey, "wrong-secret-entirely", gwfix.Service, time.Now().UTC())
-
-	resp := doRequest(handler, req)
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
-
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-
-	// ec2 speaks the query-protocol <Response><Errors><Error> shape, not the
-	// generic <ErrorResponse><Error> envelope other services use.
-	var parsed struct {
-		Errors struct {
-			Error struct {
-				Code string `xml:"Code"`
-			} `xml:"Error"`
-		} `xml:"Errors"`
-	}
-	require.NoError(t, xml.Unmarshal(body, &parsed), "body: %s", body)
-	assert.Equal(t, awserrors.ErrorSignatureDoesNotMatch, parsed.Errors.Error.Code)
-}
-
 // --- ctxAction resolution for non-query-protocol services (C) ---
 
 // JSON-1.1 and path-routed REST-JSON requests carry no query-protocol Action,
@@ -2581,5 +1898,340 @@ func TestExpectedSigningRegion(t *testing.T) {
 		{"ec2", "us-east-1", "ap-southeast-2"},
 	} {
 		assert.Equalf(t, tc.want, gw.expectedSigningRegion(tc.service, tc.claimed), "%s signed for %s", tc.service, tc.claimed)
+	}
+}
+
+// The check runs past sig.Verify, so everything reaching it holds a real
+// secret. Gone and Replaced still count toward the lockout: an attacker
+// working through a dump of leaked session credentials looking for one whose
+// principal survives presents a distinct AKID each time. Legacy must not, and
+// that is not symmetry for its own sake — every record predating the field
+// fails on the deploy that ships this check, so a shared egress address would
+// cross MaxFailures on distinct-attempt volume alone and be told to retry
+// later by a fleet that has nothing to retry with.
+func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		recorded bool
+	}{
+		{"gone", stsdomain.ErrSessionPrincipalGone, true},
+		{"replaced", stsdomain.ErrSessionPrincipalReplaced, true},
+		{"legacy", stsdomain.ErrSessionPrincipalLegacy, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rl := authlimit.NewAuthRateLimiter()
+			defer rl.Stop()
+			gw := &GatewayConfig{DisableLogging: true, RateLimiter: rl}
+
+			// The real verifier decides whether a verdict counts; the gateway records it.
+			encrypted, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
+			require.NoError(t, err)
+			cred := &stsdomain.SessionCredential{
+				AccessKeyID: gwfix.SessionAKID, SecretEncrypted: encrypted, AccountID: "123456789012",
+				PrincipalType: gwfix.PrincipalTypeAssumedRole, SessionName: "test-session",
+				ExpiresAt: time.Now().UTC().Add(time.Hour),
+			}
+			sts := &gwfix.STS{
+				Sessions:     map[string]*stsdomain.SessionCredential{gwfix.SessionAKID: cred},
+				Tokens:       map[string]string{gwfix.SessionAKID: gwfix.SessionToken},
+				PrincipalErr: tc.err,
+			}
+			v := credverify.New(&gwfix.IAM{MasterKey: gwfix.MasterKey}, sts)
+			req := credential.Request{AccessKeyID: gwfix.SessionAKID, SecurityToken: gwfix.SessionToken}
+			authed, f := v.Authenticate(req, func(string) error { return nil })
+			require.Nil(t, f)
+			_, f = v.Resolve(req, authed)
+			require.NotNil(t, f)
+			require.Equal(t, awserrors.ErrorInvalidClientTokenId, f.Code)
+
+			const ip = "10.15.8.11"
+			gw.recordCredentialFailure(authSource{limitKey: ip, logIP: ip}, f)
+
+			// Read at the lockout boundary: with exactly `recorded` failures from
+			// the verdict, n more distinct ones leave the address open and one
+			// further locks it. Zero or two recorded would miss either edge.
+			recorded := 0
+			if tc.recorded {
+				recorded = 1
+			}
+			n := authlimit.MaxFailures - 1 - recorded
+			recordProbeFailures(rl, ip, "below", n)
+			assert.Empty(t, rl.CheckIP(ip), "address must stay open below the threshold")
+			recordProbeFailures(rl, ip, "edge", 1)
+			assert.Equal(t, awserrors.ErrorRequestLimitExceeded, rl.CheckIP(ip),
+				"the next distinct failure must lock the address")
+		})
+	}
+}
+
+// Every scope jsonErrorService already lists must keep picking the JSON
+// envelope by exactly the path it did before the fallback was added — a
+// regression guard proving the fallback widened nothing for served scopes.
+func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+	b := dispatch.NewBuilder()
+	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
+	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
+	require.NoError(t, b.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{})))
+	require.NoError(t, b.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{})))
+	require.NoError(t, b.Register(eksawsapi.NewRegistration(eksawsapi.Deps{})))
+	require.NoError(t, b.Register(ochreawsapi.NewRegistration(ochreawsapi.Deps{})))
+	gw.Services = b.Build()
+
+	for _, svc := range []string{"eks", "ecr", "acm", "ecs", "tagging",
+		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime"} {
+		t.Run(svc, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			req = req.WithContext(reqctx.WithService(req.Context(), svc))
+			w := httptest.NewRecorder()
+
+			gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch, "")
+
+			resp := w.Result()
+			assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
+			assert.Equal(t, "SignatureDoesNotMatchException", resp.Header.Get("X-Amzn-Errortype"))
+		})
+	}
+}
+
+func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
+	// A user named "root" but on a non-global account should still have
+	// policies evaluated (only root + GlobalAccountID bypasses).
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
+	if err != nil {
+		t.Fatalf("Failed to encrypt secret: %v", err)
+	}
+
+	mockSvc := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "root",
+					AccountID:       "999999999999", // not GlobalAccountID
+					Status:          "Active",
+				},
+			},
+		},
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+			return nil, nil // no policies → should deny
+		},
+	}
+
+	gw := withEC2Verifier(&GatewayConfig{
+		DisableLogging: true,
+		Region:         gwfix.Region,
+		IAMService:     mockSvc,
+	})
+
+	handler := setupPolicyTestHandler(gw)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
+
+	resp := doRequest(handler, req)
+
+	// root on non-global account is evaluated by the policy engine like any
+	// other user. With no policies attached, the default deny applies.
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("Expected status 403, got %d, body: %s", resp.StatusCode, string(body))
+	}
+}
+
+func TestSigV4Auth_Session_AKIDNotInBucket(t *testing.T) {
+	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	gwfix.SignSessionRequest(t, req, nil, "ASIAOTHERAKIDAAAAAAA", gwfix.SecretKey, gwfix.SessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "InvalidClientTokenId")
+}
+
+func TestSigV4Auth_Session_Expired(t *testing.T) {
+	// Past expiry but within janitor grace window: must reject as ExpiredToken.
+	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(-time.Minute))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, 400, resp.StatusCode)
+	assert.Contains(t, string(body), "ExpiredToken")
+}
+
+func TestSigV4Auth_Session_MissingSecurityToken(t *testing.T) {
+	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	// No X-Amz-Security-Token — ASIA path requires it.
+	gwfix.SignRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "InvalidClientTokenId")
+}
+
+// A session whose backing principal was deleted, or recreated under the same
+// name with a different immutable ID, must not authenticate. InvalidClientTokenId
+// rather than ExpiredToken: the credential itself has not expired.
+func TestSigV4Auth_Session_StalePrincipalRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"gone", stsdomain.ErrSessionPrincipalGone},
+		{"replaced", stsdomain.ErrSessionPrincipalReplaced},
+		{"legacy", stsdomain.ErrSessionPrincipalLegacy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+			stsMock.PrincipalErr = tc.err
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Host = "localhost:9999"
+			gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, gwfix.SessionToken)
+
+			resp := doRequest(handler, req)
+			body, _ := io.ReadAll(resp.Body)
+
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			assert.Contains(t, string(body), awserrors.ErrorInvalidClientTokenId)
+		})
+	}
+}
+
+// Ordering pin: the continuity check reads the IAM users and roles buckets, and
+// an AKID travels in the Authorization header in cleartext. It must stay behind
+// sig.Verify, so a bad signature is answered without the check running at all.
+func TestSigV4Auth_Session_StalePrincipal_BadSignatureWinsFirst(t *testing.T) {
+	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+	stsMock.PrincipalErr = stsdomain.ErrSessionPrincipalReplaced
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, "wrong-secret-key", gwfix.SessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Contains(t, string(body), awserrors.ErrorSignatureDoesNotMatch)
+	assert.Zero(t, stsMock.PrincipalChecks.Load(),
+		"continuity check must not run before the signature verifies")
+}
+
+func TestSigV4Auth_Session_WrongSecurityToken(t *testing.T) {
+	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	gwfix.SignSessionRequest(t, req, nil, gwfix.SessionAKID, gwfix.SecretKey, "wrong-wire-token")
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "InvalidClientTokenId")
+}
+
+func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
+	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	// Neither AKIA nor ASIA — must reject without any IAM/STS lookup.
+	gwfix.SignRequest(t, req, nil, "ZZIATESTAKIDXXXXXXXX", gwfix.SecretKey)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "InvalidClientTokenId")
+	assert.Equal(t, int32(0), stsMock.Lookups.Load(), "STSService must not be consulted for unknown-prefix AKIDs")
+}
+
+func TestWriteSigV4Error_ResponseFormat(t *testing.T) {
+	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: allowAllIAMService()})
+
+	testCases := []struct {
+		errorCode      string
+		expectedStatus int
+	}{
+		{awserrors.ErrorMissingAuthenticationToken, 403},
+		{awserrors.ErrorIncompleteSignature, 400},
+		{awserrors.ErrorInvalidClientTokenId, 403},
+		{awserrors.ErrorSignatureDoesNotMatch, 403},
+		{awserrors.ErrorInternalError, 500},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.errorCode, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+			gw.writeSigV4Error(w, req, tc.errorCode, "")
+			resp := w.Result()
+
+			// Correct HTTP status code
+			if resp.StatusCode != tc.expectedStatus {
+				t.Errorf("Expected status %d for %s, got %d", tc.expectedStatus, tc.errorCode, resp.StatusCode)
+			}
+
+			// Content-Type is application/xml
+			ct := resp.Header.Get("Content-Type")
+			if ct != "application/xml" {
+				t.Errorf("Expected Content-Type application/xml, got %q", ct)
+			}
+
+			// No ctxService is set here, so the signature never parsed and the
+			// EC2 query envelope still applies, RequestID casing included.
+			body, _ := io.ReadAll(resp.Body)
+			bodyStr := string(body)
+
+			if !strings.Contains(bodyStr, "<Code>"+tc.errorCode+"</Code>") {
+				t.Errorf("Response body missing error code %q: %s", tc.errorCode, bodyStr)
+			}
+			if !strings.Contains(bodyStr, "<RequestID>") {
+				t.Errorf("Response body missing RequestID: %s", bodyStr)
+			}
+			if !strings.Contains(bodyStr, "<?xml") {
+				t.Errorf("Response body missing XML declaration: %s", bodyStr)
+			}
+		})
+	}
+}
+
+func TestWriteSigV4Error_IgnoresClientRequestID(t *testing.T) {
+	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: allowAllIAMService()})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Amz-Request-Id", "test-request-id-123")
+
+	gw.writeSigV4Error(w, req, awserrors.ErrorIncompleteSignature, "")
+
+	body, _ := io.ReadAll(w.Result().Body)
+	if strings.Contains(string(body), "test-request-id-123") {
+		t.Errorf("Expected server-generated request ID, but client ID was used: %s", string(body))
+	}
+	if !strings.Contains(string(body), "<RequestID>") {
+		t.Errorf("Expected RequestID in response, got: %s", string(body))
 	}
 }

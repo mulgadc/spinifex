@@ -656,81 +656,6 @@ func TestParseAWSQueryArgs_CapturedClientBodies(t *testing.T) {
 	}
 }
 
-func TestGetService(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	withServices(gw, taggingRegistration(nil), iamRegistration(gw), ec2Registration(gw))
-
-	tests := []struct {
-		name      string
-		ctxVal    string // service to record, empty means none
-		path      string // request path, empty means "/"
-		wantSvc   string
-		wantError string
-	}{
-		{
-			name:      "no service in context",
-			wantError: awserrors.ErrorAuthFailure,
-		},
-		{
-			name:      "unsupported service",
-			ctxVal:    "s3",
-			wantError: awserrors.ErrorUnsupportedOperation,
-		},
-		{
-			name:    "ec2 service",
-			ctxVal:  "ec2",
-			wantSvc: "ec2",
-		},
-		{
-			name:    "iam service",
-			ctxVal:  "iam",
-			wantSvc: "iam",
-		},
-		{
-			name:    "tagging service",
-			ctxVal:  "tagging",
-			wantSvc: "tagging",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			path := tc.path
-			if path == "" {
-				path = "/"
-			}
-			req := httptest.NewRequest(http.MethodPost, path, nil)
-			if tc.ctxVal != "" {
-				ctx := reqctx.WithService(req.Context(), tc.ctxVal)
-				req = req.WithContext(ctx)
-			}
-
-			svc, err := gw.GetService(req)
-			if tc.wantError != "" {
-				require.Error(t, err)
-				assert.Equal(t, tc.wantError, err.Error())
-				assert.Empty(t, svc)
-			} else {
-				require.NoError(t, err)
-				assert.Equal(t, tc.wantSvc, svc)
-			}
-		})
-	}
-}
-
-func TestRequest_NoServiceContext(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	w := httptest.NewRecorder()
-
-	gw.Request(w, req)
-
-	resp := w.Result()
-	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, 403, resp.StatusCode)
-	assert.Contains(t, string(body), "AuthFailure")
-}
-
 func TestRequest_UnsupportedService(t *testing.T) {
 	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -1379,25 +1304,6 @@ func TestWriteThrottleError_Bedrock(t *testing.T) {
 	assert.Equal(t, "RequestLimitExceededException", resp.Header.Get("X-Amzn-Errortype"))
 }
 
-func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
-	gw := withServices(&GatewayConfig{DisableLogging: true}, ochreawsapi.NewRegistration(ochreawsapi.Deps{}))
-
-	req := httptest.NewRequest(http.MethodPost, "/model/meta.llama3-2-1b-instruct-v1%3A0/converse", nil)
-	req = req.WithContext(reqctx.WithService(req.Context(), "bedrock"))
-	w := httptest.NewRecorder()
-
-	gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch, "")
-
-	resp := w.Result()
-	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, 403, resp.StatusCode)
-	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"), "a bedrock auth failure must be SDK-parseable JSON")
-	assert.Contains(t, string(body), "SignatureDoesNotMatch")
-	assert.NotContains(t, string(body), "<?xml")
-	// SDKs resolve the modelled exception type from this header, not the body.
-	assert.Equal(t, "SignatureDoesNotMatchException", resp.Header.Get("X-Amzn-Errortype"))
-}
-
 func TestThrottleMiddleware_Integration(t *testing.T) {
 	cfg := ratelimit.Config{
 		Enabled: true,
@@ -1557,4 +1463,23 @@ func TestRequest_ClusterUnavailableClosedConn(t *testing.T) {
 	resp := w.Result()
 
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
+	gw := withServices(&GatewayConfig{DisableLogging: true}, ochreawsapi.NewRegistration(ochreawsapi.Deps{}))
+
+	req := httptest.NewRequest(http.MethodPost, "/model/meta.llama3-2-1b-instruct-v1%3A0/converse", nil)
+	req = req.WithContext(reqctx.WithService(req.Context(), "bedrock"))
+	w := httptest.NewRecorder()
+
+	gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch, "")
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, 403, resp.StatusCode)
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"), "a bedrock auth failure must be SDK-parseable JSON")
+	assert.Contains(t, string(body), "SignatureDoesNotMatch")
+	assert.NotContains(t, string(body), "<?xml")
+	// SDKs resolve the modelled exception type from this header, not the body.
+	assert.Equal(t, "SignatureDoesNotMatchException", resp.Header.Get("X-Amzn-Errortype"))
 }

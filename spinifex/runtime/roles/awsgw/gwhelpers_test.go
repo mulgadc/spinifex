@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/auth"
@@ -15,7 +15,7 @@ import (
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
-	"github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -40,6 +40,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -118,7 +119,7 @@ func setupTestApp(accessKey, secretKey string) http.Handler {
 		Region:         gwfix.Region,
 		IAMService:     mockSvc,
 	})
-	withServices(gw, awsapi.NewRegistration(awsapi.Deps{}), ec2Registration(gw))
+	withServices(gw, ecsawsapi.NewRegistration(ecsawsapi.Deps{}), ec2Registration(gw))
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -354,9 +355,9 @@ func (e *cbEnv) createAssumableRole(t *testing.T, name string) (roleARN, roleID 
 		RoleName: aws.String(name), AssumeRolePolicyDocument: aws.String(trust),
 	})
 	require.NoError(t, err)
-	roleARN = aws.StringValue(out.Role.Arn)
+	roleARN = aws.ToString(out.Role.Arn)
 	e.putUserPolicy(t, "alice", `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole","Resource":"*"}]}`)
-	return roleARN, aws.StringValue(out.Role.RoleId)
+	return roleARN, aws.ToString(out.Role.RoleId)
 }
 
 // gateway builds a router over the env's services with its own (cold) caches.
@@ -379,14 +380,14 @@ func (e *cbEnv) newKey(t *testing.T, user string) cbCreds {
 	t.Helper()
 	k, err := e.iam.CreateAccessKey(e.accountID, &iam.CreateAccessKeyInput{UserName: aws.String(user)})
 	require.NoError(t, err)
-	return cbCreds{akid: aws.StringValue(k.AccessKey.AccessKeyId), secret: aws.StringValue(k.AccessKey.SecretAccessKey)}
+	return cbCreds{akid: aws.ToString(k.AccessKey.AccessKeyId), secret: aws.ToString(k.AccessKey.SecretAccessKey)}
 }
 
 func (e *cbEnv) newUser(t *testing.T, name string) (cbCreds, string) {
 	t.Helper()
 	u, err := e.iam.CreateUser(e.accountID, &iam.CreateUserInput{UserName: aws.String(name)})
 	require.NoError(t, err)
-	return e.newKey(t, name), aws.StringValue(u.User.UserId)
+	return e.newKey(t, name), aws.ToString(u.User.UserId)
 }
 
 func (e *cbEnv) putUserPolicy(t *testing.T, user, doc string) {
@@ -565,7 +566,7 @@ func statement(effect, action, resource string) iamdomain.Statement {
 // mock IAM service it holds, as the awsgw role composes them.
 func withContainers(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
 	b := dispatch.NewBuilder()
-	if err := b.Register(awsapi.NewRegistration(awsapi.Deps{NATS: gw.NATSConn})); err != nil {
+	if err := b.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: gw.NATSConn})); err != nil {
 		panic(err)
 	}
 	roles, _ := gw.IAMService.(IAMServiceLike)
@@ -624,4 +625,128 @@ func (m mockRoleResolver) ResolveRole(accountID, roleARN string) (passrole.Role,
 		return passrole.Role{}, passrole.ErrNotFound
 	}
 	return passrole.Role{ARN: canonical, Name: name}, nil
+}
+
+func (e *cbEnv) callerIdentity(t *testing.T, c cbCreds) *httptest.ResponseRecorder {
+	t.Helper()
+	return e.request(t, e.h, c, "sts", cbForm("GetCallerIdentity"))
+}
+
+// expireSession rewrites a stored session record's expiry into the past.
+func (e *cbEnv) expireSession(t *testing.T, akid string) {
+	t.Helper()
+	kv, err := e.js.KeyValue(t.Context(), stsdomain.KVBucketSessionCredentials)
+	require.NoError(t, err)
+	entry, err := kv.Get(t.Context(), akid)
+	require.NoError(t, err)
+	var cred stsdomain.SessionCredential
+	require.NoError(t, json.Unmarshal(entry.Value(), &cred))
+	cred.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+	data, err := json.Marshal(cred)
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), akid, data)
+	require.NoError(t, err)
+}
+
+func (e *cbEnv) getSessionToken(t *testing.T, c cbCreds) cbCreds {
+	t.Helper()
+	return cbSessionFrom(t, e.request(t, e.h, c, "sts", cbForm("GetSessionToken")))
+}
+
+func (e *cbEnv) sessionStored(t *testing.T, akid string) bool {
+	t.Helper()
+	cred, err := e.sts.LookupSessionCredential(akid)
+	require.NoError(t, err)
+	return cred != nil
+}
+
+// orphanKeys rewrites a user record to list no access keys while leaving the
+// access-key records in place, the state an interrupted DeleteAccessKey leaves.
+func (e *cbEnv) orphanKeys(t *testing.T, user string) {
+	t.Helper()
+	usersKV, err := e.js.KeyValue(t.Context(), iamdomain.KVBucketUsers)
+	require.NoError(t, err)
+	entry, err := usersKV.Get(t.Context(), e.accountID+"."+user)
+	require.NoError(t, err)
+	var u iamdomain.User
+	require.NoError(t, json.Unmarshal(entry.Value(), &u))
+	u.AccessKeys = []string{}
+	data, err := json.Marshal(u)
+	require.NoError(t, err)
+	_, err = usersKV.Put(t.Context(), e.accountID+"."+user, data)
+	require.NoError(t, err)
+}
+
+// statusGateRouter builds a signed-request harness whose only job is to report
+// whether the auth middleware let the request through.
+func statusGateRouter(t *testing.T, svc iamdomain.IAMService) (chi.Router, *http.Request) {
+	t.Helper()
+
+	gw := withEC2Verifier(&gateway.GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: svc})
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	gwfix.SignRequest(t, req, nil, gwfix.AccessKey, gwfix.SecretKey)
+	return r, req
+}
+
+// statusGateService returns a mock holding one usable access key for account,
+// with that account pinned to status.
+func statusGateService(t *testing.T, accountID, status string) *gwfix.IAM {
+	t.Helper()
+
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
+	if err != nil {
+		t.Fatalf("encrypt secret: %v", err)
+	}
+	return &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
+			gwfix.AccessKey: {
+				AccessKeyID:     gwfix.AccessKey,
+				SecretAccessKey: encryptedSecret,
+				UserName:        "alice",
+				AccountID:       accountID,
+				Status:          iamdomain.AccessKeyStatusActive,
+			},
+		},
+		Accounts: map[string]*iamdomain.Account{
+			accountID: {AccountID: accountID, Status: status},
+		},
+	}
+}
+
+func tamper(s string) string {
+	b := []byte(s)
+	if b[0] == 'A' {
+		b[0] = 'B'
+	} else {
+		b[0] = 'A'
+	}
+	return string(b)
+}
+
+// captureLogs redirects the default slog logger into a buffer for the duration
+// of a test, so an assertion can read what the middleware actually emitted.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// withEC2Verifier is withVerifier for a test that signs as EC2: the service
+// must be registered for the auth gate to serve its credential scope.
+func withEC2Verifier(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
+	return withEC2(withVerifier(gw))
+}
+
+// withEC2 registers EC2 alone on gw.
+func withEC2(gw *gateway.GatewayConfig, mutate ...func(*ec2awsapi.Deps)) *gateway.GatewayConfig {
+	return withServices(gw, ec2Registration(gw, mutate...))
 }

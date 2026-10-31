@@ -36,4 +36,4 @@ A `vbm-` plan selects bare metal. It boots from local NVMe, so it has no boot vo
 ## Requirements
 
 - OpenTofu 1.5 or newer, the AWS CLI v2, `python3` and an SSH key (`--ssh-key`, default `~/.ssh/id_ed25519`).
-- A VX plan with at least 16 vCPU, of which Spinifex offers 14 to instances; an 8-vCPU plan offers 7, too few for EKS.
+- A VX plan with at least 16 vCPU, of which Spinifex offers 14 to instances; an 8-vCPU plan offers 7.

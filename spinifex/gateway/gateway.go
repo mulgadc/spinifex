@@ -85,13 +85,13 @@ type GatewayConfig struct {
 	Admission AccountAdmission
 	// Policy decides authorization for a verified principal. Nil fails every
 	// authorization closed with InternalError.
-	Policy  PolicyEvaluator
+	Policy PolicyEvaluator
 	// Readiness reports whether the message bus is reachable. Nil skips the
 	// early refusal in the auth middleware and makes the service gate answer
 	// cluster-unavailable.
 	Readiness Readiness
-	Version string // Build-time version string (set from cmd.Version)
-	Commit  string // Build-time commit hash (set from cmd.Commit)
+	Version   string // Build-time version string (set from cmd.Version)
+	Commit    string // Build-time commit hash (set from cmd.Commit)
 	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil
 	// answers them with a 500 (e.g. in unit tests of unrelated routes).
 	OIDC OIDCPublisher

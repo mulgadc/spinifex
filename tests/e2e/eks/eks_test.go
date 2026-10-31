@@ -251,6 +251,11 @@ func TestEKS(t *testing.T) {
 		runWorkerIMDSLaunchTemplate(t, c, fx)
 	})
 
+	t.Run("CPIsolation", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runCPIsolation(t, c, env, artifacts, fx)
+	})
+
 	t.Run("EBSCSIVolume", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		runEBSCSIVolume(t, c, env, artifacts, fx)

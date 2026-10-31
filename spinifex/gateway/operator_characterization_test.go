@@ -79,7 +79,7 @@ func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.Policy
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
-	r.Use(traceActionEnricher)
+	r.Use(TraceActionEnricher)
 	r.HandleFunc("/admin/{method}", gw.Admin_Request)
 	r.HandleFunc("/*", gw.Request)
 	return gw, r

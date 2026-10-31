@@ -33,7 +33,7 @@ func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) err
 	if gw.Services == nil {
 		withSTS(gw)
 	}
-	entry, ok := gw.registered(stsawsapi.ServiceName)
+	entry, ok := gw.Registered(stsawsapi.ServiceName)
 	if !ok {
 		panic("STS is not registered on this gateway")
 	}

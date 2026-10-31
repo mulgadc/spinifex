@@ -331,7 +331,7 @@ func TestELBv2Pipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T) 
 	r := chi.NewRouter()
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))
 	r.Use(gw.SigV4AuthMiddleware())
-	r.Use(traceActionEnricher)
+	r.Use(TraceActionEnricher)
 	r.HandleFunc("/*", gw.Request)
 
 	listener := pipelineListener("web", "1", "2")

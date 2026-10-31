@@ -77,7 +77,7 @@ func sqsWorkerRequest(service, body, session string) *http.Request {
 }
 
 func serveSigned(gw *GatewayConfig, w http.ResponseWriter, r *http.Request) error {
-	entry, ok := gw.registered(requestService(r))
+	entry, ok := gw.Registered(requestService(r))
 	if !ok {
 		panic("no registration serves " + requestService(r))
 	}
@@ -125,7 +125,7 @@ func TestSQSInternal_CustomerAdminDenied(t *testing.T) {
 // internal actions do not answer under RDS's name either.
 func TestSQSInternal_PublicSQSUnchanged(t *testing.T) {
 	gw, _, ids := newSQSInternalGateway(gwfix.AllowPolicy("*"))
-	_, ok := gw.registered("sqs")
+	_, ok := gw.Registered("sqs")
 	assert.False(t, ok, "the sqs signing service must stay unserved")
 	inv := gw.Services.Inventory()
 	assert.NotContains(t, inv, "sqs")

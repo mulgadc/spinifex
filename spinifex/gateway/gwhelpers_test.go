@@ -18,9 +18,3 @@ func withACM(gw *GatewayConfig, deps acmawsapi.Deps) *GatewayConfig {
 	gw.Services = b.Build()
 	return gw
 }
-
-// acmRegistrationInventory is the inventory the ACM registration declares to
-// a registry, keyed as AWSOperationInventory expects.
-func acmRegistrationInventory() map[string]dispatch.Inventory {
-	return withACM(&GatewayConfig{}, acmawsapi.Deps{}).Services.Inventory()
-}

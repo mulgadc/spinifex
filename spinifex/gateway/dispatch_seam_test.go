@@ -173,7 +173,7 @@ func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...disp
 	r := chi.NewRouter()
 	r.Use(audit.Middleware)
 	r.Use(gw.SigV4AuthMiddleware())
-	r.Use(traceActionEnricher)
+	r.Use(TraceActionEnricher)
 	r.HandleFunc("/*", gw.Request)
 	return gw, r
 }
@@ -222,7 +222,7 @@ func TestDispatchSeam_ResolvedActionReachesThrottleTraceAndAudit(t *testing.T) {
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))
 	r.Use(audit.Middleware)
 	r.Use(gw.SigV4AuthMiddleware())
-	r.Use(traceActionEnricher)
+	r.Use(TraceActionEnricher)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotCtxAction = reqctx.Action(r.Context())

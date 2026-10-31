@@ -43,7 +43,7 @@ func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) err
 	if gw.Services == nil {
 		withIAM(gw)
 	}
-	entry, ok := gw.registered(iamawsapi.ServiceName)
+	entry, ok := gw.Registered(iamawsapi.ServiceName)
 	if !ok {
 		panic("IAM is not registered on this gateway")
 	}

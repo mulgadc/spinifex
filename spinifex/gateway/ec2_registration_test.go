@@ -34,10 +34,10 @@ func withEC2(gw *GatewayConfig, mutate ...func(*ec2awsapi.Deps)) *GatewayConfig 
 // does past its NATS gate, registering it first from the fields gw holds when
 // the test has not.
 func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) error {
-	if _, ok := gw.registered(ec2awsapi.ServiceName); !ok {
+	if _, ok := gw.Registered(ec2awsapi.ServiceName); !ok {
 		withEC2(gw)
 	}
-	entry, _ := gw.registered(ec2awsapi.ServiceName)
+	entry, _ := gw.Registered(ec2awsapi.ServiceName)
 	return gw.dispatchRegistered(entry, w, r)
 }
 

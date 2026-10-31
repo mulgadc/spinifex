@@ -63,7 +63,7 @@ func (gw *GatewayConfig) serveRegistered(service string, w http.ResponseWriter, 
 	if gw.Services == nil {
 		withContainers(gw)
 	}
-	entry, ok := gw.registered(service)
+	entry, ok := gw.Registered(service)
 	if !ok {
 		panic(service + " is not registered on this gateway")
 	}

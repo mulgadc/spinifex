@@ -2,11 +2,12 @@
 // acm.go today, pinned ahead of moving dispatch out of gateway into a
 // registration seam. These assert current behaviour, not AWS parity.
 
-package gateway
+package awsgw_test
 
 import (
 	"bytes"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -33,13 +34,13 @@ import (
 // acmPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as every principal's policy. The region is
 // gwfix.Region because gwfix.SignRequestAs always signs for it.
-func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConfig, http.Handler) {
+func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*gateway.GatewayConfig, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&GatewayConfig{
+	gw := withVerifier(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		NATSConn:       nc,
@@ -156,7 +157,7 @@ func TestACMPipeline_ListCertificates_200JSONContentType(t *testing.T) {
 // --- Target parsing today --------------------------------------------------
 
 // TestACMActionFromTarget_FormsAndTelemetryAgree pins how acmActionFromTarget
-// and the legacy resolveNonQueryAction each resolve the X-Amz-Target header
+// and the legacy gateway.ResolveNonQueryAction each resolve the X-Amz-Target header
 // today. A refactor that lets them diverge breaks this.
 func TestACMActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 	cases := []struct {
@@ -169,7 +170,7 @@ func TestACMActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 		{"bare action", "ListCertificates", "ListCertificates"},
 		{"trailing dot", "CertificateManager.", ""},
 	}
-	acmEntry, ok := withACM(&GatewayConfig{}, acmawsapi.Deps{}).registered(acmawsapi.ServiceName)
+	acmEntry, ok := withACM(&gateway.GatewayConfig{}, acmawsapi.Deps{}).Registered(acmawsapi.ServiceName)
 	require.True(t, ok)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -177,7 +178,7 @@ func TestACMActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 			req.Header.Set("X-Amz-Target", tc.target)
 			assert.Equal(t, tc.wantAction, acmEntry.ResolveAction(req))
 
-			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req),
+			assert.Equal(t, tc.wantAction, gateway.ResolveNonQueryAction(req),
 				"dispatch and telemetry parsers must agree on %q", tc.target)
 		})
 	}
@@ -242,7 +243,7 @@ func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
 func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
 	for _, action := range []string{"ListCertificates", "DeleteCertificate"} {
 		t.Run(action, func(t *testing.T) {
-			gw := withACM(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}), acmawsapi.Deps{})
+			gw := withACM(withVerifier(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}), acmawsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", "CertificateManager."+action)
@@ -265,7 +266,7 @@ func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
 
 // TestACMPipeline_TraceActionEnricher_SpanNamedServiceAction pins that the
 // server span is renamed to "acm.<Action>" and carries aws.action once a real
-// ACM request runs through SigV4AuthMiddleware and traceActionEnricher.
+// ACM request runs through SigV4AuthMiddleware and gateway.TraceActionEnricher.
 func TestACMPipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T) {
 	sr := tracetest.NewSpanRecorder()
 	prev := otel.GetTracerProvider()
@@ -278,13 +279,13 @@ func TestACMPipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))
 	r.Use(gw.SigV4AuthMiddleware())
-	r.Use(traceActionEnricher)
+	r.Use(gateway.TraceActionEnricher)
 	r.HandleFunc("/*", gw.Request)
 
 	target := "CertificateManager.ListCertificates"
 	doRequest(r, signACMRequest(t, target, []byte("{}")))
 
-	// The HTTP server span is the one traceActionEnricher renames. A second,
+	// The HTTP server span is the one gateway.TraceActionEnricher renames. A second,
 	// unrelated client span covers the ListCertificates NATS hop itself.
 	spans := sr.Ended()
 	idx := slices.IndexFunc(spans, func(s sdktrace.ReadOnlySpan) bool { return s.Name() == "acm.ListCertificates" })
@@ -330,7 +331,7 @@ func TestACMPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 // that drops or adds an action, including by moving ACM onto the
 // registration seam, fails here.
 func TestACMInventory_RegisteredArePinned(t *testing.T) {
-	acm := AWSOperationInventory(acmRegistrationInventory())["acm"]
+	acm := gateway.AWSOperationInventory(acmRegistrationInventory())["acm"]
 
 	want := []string{
 		"ImportCertificate", "RequestCertificate", "DescribeCertificate", "GetCertificate",

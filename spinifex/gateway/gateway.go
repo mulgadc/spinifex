@@ -111,9 +111,9 @@ func (gw *GatewayConfig) selector() *dispatch.Selector {
 	return dispatch.NewSelector(gw.Services, nil)
 }
 
-// registered reports whether svc is served through the registration seam. A
+// Registered reports whether svc is served through the registration seam. A
 // nil registry (no registrations) always reports false.
-func (gw *GatewayConfig) registered(svc string) (*dispatch.Entry, bool) {
+func (gw *GatewayConfig) Registered(svc string) (*dispatch.Entry, bool) {
 	return gw.selector().Lookup(svc)
 }
 
@@ -184,7 +184,7 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	// Authenticated AWS API surface.
 	r.Group(func(auth chi.Router) {
 		auth.Use(gw.SigV4AuthMiddleware())
-		auth.Use(traceActionEnricher)
+		auth.Use(TraceActionEnricher)
 
 		// Post-auth, per-account+action token bucket throttle.
 		if gw.Throttler != nil {
@@ -235,7 +235,7 @@ func (gw *GatewayConfig) errorProtocol(svc string) (p envelope.Protocol, ok bool
 // writeJSONError renders a gateway-raised error in svc's JSON protocol. The
 // code gets the common-error "Exception" suffix unless verbatim.
 func (gw *GatewayConfig) writeJSONError(w http.ResponseWriter, p envelope.Protocol, svc string, e envelope.JSONError) {
-	if entry, ok := gw.registered(svc); ok {
+	if entry, ok := gw.Registered(svc); ok {
 		if internal, own := entry.InternalErrorCode(); own && e.Code == awserrors.ErrorInternalError {
 			e.Code, e.Verbatim = internal, true
 		}
@@ -287,7 +287,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	// JSON services get a body in their own protocol.
 	if p, ok := gw.errorProtocol(svc); ok {
 		je := envelope.JSONError{Code: errorCode, Message: errorMsg.Message, Status: errorMsg.HTTPCode}
-		if entry, reg := gw.registered(svc); reg {
+		if entry, reg := gw.Registered(svc); reg {
 			if spec, own := entry.ThrottleError(); own {
 				je = envelope.JSONError{
 					Code: spec.Code, Verbatim: true, Message: spec.Message,
@@ -327,7 +327,7 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry, _ := gw.registered(svc)
+	entry, _ := gw.Registered(svc)
 	err = gw.dispatchRegistered(entry, w, r)
 
 	if err != nil {
@@ -381,7 +381,7 @@ func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
 	if svc == "" {
 		return "", errors.New(awserrors.ErrorAuthFailure)
 	}
-	if _, ok := gw.registered(svc); !ok {
+	if _, ok := gw.Registered(svc); !ok {
 		slog.Debug("Unsupported service", "service", svc)
 		return "", errors.New(awserrors.ErrorUnsupportedOperation)
 	}
@@ -592,11 +592,11 @@ func recordResolvedAction(ctx context.Context, service, action string) {
 	audit.From(ctx).SetAction(service, action)
 }
 
-// traceActionEnricher renames the server span to the resolved SigV4
+// TraceActionEnricher renames the server span to the resolved SigV4
 // service.Action and tags account/region once auth populated the context.
 // A dispatcher lacking its own action source (none currently do) would get
 // the same treatment later, from checkPolicyResource.
-func traceActionEnricher(next http.Handler) http.Handler {
+func TraceActionEnricher(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		recordResolvedAction(ctx, reqctx.Service(ctx), reqctx.Action(ctx))

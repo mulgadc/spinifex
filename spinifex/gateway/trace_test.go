@@ -30,7 +30,7 @@ func TestTraceActionEnricher(t *testing.T) {
 		})
 	}
 	final := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	h := otelsetup.HTTPMiddleware("awsgw")(fakeAuth(traceActionEnricher(final)))
+	h := otelsetup.HTTPMiddleware("awsgw")(fakeAuth(TraceActionEnricher(final)))
 
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil))
 

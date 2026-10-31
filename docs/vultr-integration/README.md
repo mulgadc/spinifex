@@ -123,6 +123,7 @@ cd scripts/terraform/vultr-spx
 | Production on bare metal | 1 or 3 | `vbm-8c-64gb-amd` bare metal (8 cores, 16 threads, 64 GB, 2 × 1.9 TB NVMe) | $0.55 an hour per server |
 
 **For development and testing, use one `vx1-g-16c-64g` VM.** It is the smallest size we recommend, because the EC2 instances, load balancers, EKS and ECS clusters you create all run inside it and need headroom.
+Spinifex keeps 2 of its 16 vCPUs for the host and its own services and offers the other 14 to what you create, one vCPU each, with no overcommit.
 
 **For production, use three VMs, or bare metal.** On three nodes, an instance whose node fails is restarted on another node, and its public address follows it.
 `vbm-8c-64gb-amd` is the smallest bare-metal server we recommend for production workloads, as one server or as three.
@@ -394,7 +395,7 @@ After removing the deployment, remove the node addresses from the API key's **Ac
 ## Limits
 
 - **One or three nodes.** Other cluster sizes are not supported.
-- **At least 16 vCPU per VM.** Smaller VX plans report their vCPUs as hyperthreads, and Spinifex schedules half of them.
+- **16 vCPU per node is the recommended minimum.** Spinifex keeps 1 CPU on a node with up to 8, 2 on one with up to 16 and 4 on one with up to 63, and offers the rest to instances one to one, so a 16-vCPU node offers 14 and an 8-vCPU node 7.
 - **A deleted reserved IP keeps its quota slot for 24 hours**, by Vultr's documentation, so creating and deleting many addresses in a day can reach the account's limit.
 - **A three-node deployment survives one failed node at a time.**
   With two of the three nodes down, the cluster loses quorum, and in our test the instances on the remaining node went to `error` and stayed there after a second node returned.

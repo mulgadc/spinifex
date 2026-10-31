@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/go-chi/chi/v5"
+	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
@@ -33,6 +34,7 @@ import (
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
+	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -1238,4 +1240,224 @@ func centralTagCount(t *testing.T, svc *ec2tags.TagsServiceImpl, resourceID stri
 	}, authzAccountID)
 	require.NoError(t, err)
 	return len(out.Tags)
+}
+
+// operatorPipelineApp wires SigV4AuthMiddleware -> the two operator routes as
+// SetupRoutes does, on live test NATS, with docs as every principal's policy.
+// accountID owns the signing key; the region is gwfix.Region because
+// gwfix.SignRequestAs always signs for it.
+func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.PolicyDocument, mutate func(*GatewayConfig)) (*GatewayConfig, http.Handler) {
+	t.Helper()
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
+	require.NoError(t, err)
+	_, nc := testutil.StartTestNATS(t)
+
+	gw := withVerifier(&GatewayConfig{
+		DisableLogging: true,
+		Region:         gwfix.Region,
+		NATSConn:       nc,
+		Version:        "v9.9.9-test",
+		Commit:         "abc1234",
+		IAMService: &gwfix.PolicyIAM{
+			IAM: gwfix.IAM{
+				MasterKey: gwfix.MasterKey,
+				AccessKeys: map[string]*iamdomain.AccessKey{
+					gwfix.AccessKey: {
+						AccessKeyID:     gwfix.AccessKey,
+						SecretAccessKey: encryptedSecret,
+						UserName:        "admin",
+						AccountID:       accountID,
+						Status:          "Active",
+					},
+				},
+			},
+			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		},
+	})
+	gw.IAMService = operatorIAM{gw.IAMService.(*gwfix.PolicyIAM)}
+	if mutate != nil {
+		mutate(gw)
+	}
+	withOperator(gw)
+
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.Use(traceActionEnricher)
+	r.HandleFunc("/admin/{method}", gw.Admin_Request)
+	r.HandleFunc("/*", gw.Request)
+	return gw, r
+}
+
+func allowAllOperatorDocs() []iamdomain.PolicyDocument {
+	return []iamdomain.PolicyDocument{{
+		Version: "2012-10-17",
+		Statement: []iamdomain.Statement{
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"*"}, Resource: iamdomain.StringOrArr{"*"}},
+		},
+	}}
+}
+
+func adminCall(t *testing.T, app http.Handler, method, name, service string, body string) *http.Response {
+	t.Helper()
+	return doRequest(app, signOperatorRequest(t, method, "/admin/"+name, service, []byte(body)))
+}
+
+// operatorIAM adds the account listing /admin/ListAccounts reads to the policy
+// mock, which leaves it to a nil embedded interface.
+type operatorIAM struct {
+	*gwfix.PolicyIAM
+}
+
+func (operatorIAM) ListAccounts() ([]*iamdomain.Account, error) {
+	return []*iamdomain.Account{
+		{AccountID: "000000000001", AccountName: "spinifex", Status: "ACTIVE", CreatedAt: "2026-01-02T03:04:05Z"},
+		{AccountID: "000000000002", AccountName: "tenant", Status: "ACTIVE", CreatedAt: "2026-02-03T04:05:06Z"},
+	}, nil
+}
+
+// signOperatorRequest builds a signed request for the spinifex scope (or any
+// scope named), the shape the CLI and the operator tooling send.
+func signOperatorRequest(t *testing.T, method, path, service string, body []byte) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	req.Host = "localhost:9999"
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, service, time.Now().UTC())
+	return req
+}
+
+// adminError decodes the /admin JSON envelope and checks the request ID is on
+// both the header and the body, which is how a client ties a failure to a log line.
+func adminError(t *testing.T, resp *http.Response) operatorAdminError {
+	t.Helper()
+	require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	var body operatorAdminError
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.NotEmpty(t, body.RequestID)
+	require.Equal(t, body.RequestID, resp.Header.Get("X-Amzn-Requestid"))
+	return body
+}
+
+func opBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+// spinifexAdminActions is the set of super-admin Query actions the spinifex
+// registration serves, which the characterization tests walk.
+var spinifexAdminActions = func() map[string]bool {
+	m := map[string]bool{}
+	for _, name := range operatoradmin.AdminActionNames() {
+		m[name] = true
+	}
+	return m
+}()
+
+// withOperator registers the spinifex Query service on gw from the fields gw
+// holds, as awsgw composes it.
+func withOperator(gw *GatewayConfig) *GatewayConfig {
+	b := dispatch.NewBuilder()
+	deps := operatoradmin.Deps{
+		Version:     gw.Version,
+		Commit:      gw.Commit,
+		NATS:        gw.NATSConn,
+		RootCAs:     gw.RootCAs,
+		ActiveNodes: gw.DiscoverActiveNodes,
+
+		IAM:           gw.IAMService,
+		Quota:         quotaFor(gw),
+		ExpectedNodes: gw.ExpectedNodes,
+	}
+	reg := operatoradmin.NewRegistration(deps)
+	if err := b.Register(reg); err != nil {
+		panic(err)
+	}
+	if err := b.Register(ec2Registration(gw)); err != nil {
+		panic(err)
+	}
+	gw.Services = b.Build()
+	return gw
+}
+
+func spinifexQuery(t *testing.T, action string, args url.Values) *http.Request {
+	t.Helper()
+	if args == nil {
+		args = url.Values{}
+	}
+	if action != "" {
+		args.Set("Action", action)
+	}
+	body := []byte(args.Encode())
+	req := signOperatorRequest(t, http.MethodPost, "/", "spinifex", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return req
+}
+
+// ec2ErrorCode reads the code out of the EC2 <Response><Errors> envelope the
+// spinifex Query service renders its failures in.
+func ec2ErrorCode(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	var body struct {
+		Code      string `xml:"Errors>Error>Code"`
+		RequestID string `xml:"RequestID"`
+	}
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, xml.Unmarshal(raw, &body), string(raw))
+	require.NotEmpty(t, body.RequestID, "the EC2 envelope carries its request ID in the body")
+	return body.Code
+}
+
+const (
+	streamAccount  = "000000000002"
+	streamInstance = "i-0123456789abcdef0"
+)
+
+func instanceMetricsDocs(resource string) []iamdomain.PolicyDocument {
+	return []iamdomain.PolicyDocument{{
+		Version: "2012-10-17",
+		Statement: []iamdomain.Statement{
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"spinifex:GetInstanceMetrics"}, Resource: iamdomain.StringOrArr{resource}},
+		},
+	}}
+}
+
+// answerWatches replies to the instance's watch with one sample, as the
+// owning node's collector would.
+func answerWatches(t *testing.T, nc *nats.Conn) {
+	t.Helper()
+	ring, err := json.Marshal(telemetryv1.LiveRing{Samples: []telemetryv1.LiveSample{{TimeMillis: 1000, CPUPercent: 7}}})
+	require.NoError(t, err)
+	sub, err := nc.Subscribe(telemetryv1.LiveWatchSubject(streamAccount, streamInstance), func(msg *nats.Msg) {
+		if msg.Reply != "" {
+			_ = msg.Respond(ring)
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+}
+
+// postSignedMetrics sends a signed GetInstanceMetrics over real HTTP, so the
+// response can be read while the stream is still open.
+func postSignedMetrics(t *testing.T, srv *httptest.Server) *http.Response {
+	t.Helper()
+	body := []byte(url.Values{"Action": {"GetInstanceMetrics"}, "InstanceId": {streamInstance}}.Encode())
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Host = "localhost:9999"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "spinifex", time.Now().UTC())
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+type operatorAdminError struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+	RequestID string `json:"requestId"`
 }

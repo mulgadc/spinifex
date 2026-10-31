@@ -2,13 +2,14 @@
 // pipeline as bedrock*.go implement them today. They assert current
 // behaviour, not AWS parity.
 
-package gateway
+package awsgw_test
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -101,7 +102,7 @@ func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statemen
 	if mutate != nil {
 		mutate(env)
 	}
-	cfg := &GatewayConfig{DisableLogging: true, Region: gwfix.Region, NATSConn: nc, IAMService: svc}
+	cfg := &gateway.GatewayConfig{DisableLogging: true, Region: gwfix.Region, NATSConn: nc, IAMService: svc}
 	if env.NoNATS {
 		cfg.NATSConn = nil
 	}

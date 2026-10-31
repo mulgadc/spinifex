@@ -544,3 +544,11 @@ var cbIAMActions = map[string]bool{"ListUsers": true, "CreateUser": true, "GetUs
 func stsRegistration(gw *gateway.GatewayConfig) dispatch.Registration {
 	return stsawsapi.NewRegistration(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
 }
+
+func statement(effect, action, resource string) iamdomain.Statement {
+	return iamdomain.Statement{
+		Effect:   effect,
+		Action:   iamdomain.StringOrArr{action},
+		Resource: iamdomain.StringOrArr{resource},
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -16,28 +17,34 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "remove" {
-		fmt.Fprintln(os.Stderr, "usage: eks-etcd-member remove --peer-ip 10.0.0.12 [--self-ip 10.0.0.10]")
-		os.Exit(2)
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 || args[0] != "remove" {
+		fmt.Fprintln(stderr, "usage: eks-etcd-member remove --peer-ip 10.0.0.12 [--self-ip 10.0.0.10]")
+		return 2
 	}
-	fs := flag.NewFlagSet("remove", flag.ExitOnError)
+	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	var cfg etcdmember.Config
 	endpoint := fs.String("endpoint", etcdmember.DefaultEndpoint, "etcd client endpoint")
 	certDir := fs.String("cert-dir", etcdmember.DefaultCertDir, "directory holding the K3s etcd client.crt, client.key and server-ca.crt")
 	timeout := fs.Duration("timeout", 30*time.Second, "overall deadline")
 	fs.StringVar(&cfg.PeerIP, "peer-ip", "", "peer URL host of the member to remove")
 	fs.StringVar(&cfg.SelfIP, "self-ip", "", "this host's own address; removal of it is refused")
-	_ = fs.Parse(os.Args[2:])
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
 	cli, err := etcdmember.Dial(*endpoint, *certDir, *timeout)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "etcd member remove failed:", err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, "etcd member remove failed:", err)
+		return 1
 	}
-	code := etcdmember.Run(ctx, cli, cfg, os.Stdout)
-	_ = cli.Close()
-	os.Exit(code)
+	defer func() { _ = cli.Close() }()
+	return etcdmember.Run(ctx, cli, cfg, stdout)
 }

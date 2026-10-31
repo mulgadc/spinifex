@@ -43,6 +43,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1
+	go.etcd.io/etcd/api/v3 v3.5.35
 	go.etcd.io/etcd/client/pkg/v3 v3.5.35
 	go.etcd.io/etcd/client/v3 v3.5.35
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0
@@ -59,6 +60,7 @@ require (
 	golang.org/x/term v0.47.0
 	golang.org/x/time v0.16.0
 	golang.org/x/tools v0.52.0
+	google.golang.org/grpc v1.83.2
 	gopkg.in/ini.v1 v1.67.3
 )
 
@@ -191,7 +193,6 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	go.etcd.io/bbolt v1.5.0 // indirect
-	go.etcd.io/etcd/api/v3 v3.5.35 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/bridges/otelslog v0.21.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0 // indirect
@@ -214,7 +215,6 @@ require (
 	golang.org/x/vuln v1.6.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
-	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	tags.cncf.io/container-device-interface v1.1.1 // indirect
 	tags.cncf.io/container-device-interface/specs-go v1.1.1 // indirect

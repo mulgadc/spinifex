@@ -680,7 +680,9 @@ func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapsh
 	}
 	inUse := false
 	for _, volume := range volumes {
-		if volume.SnapshotID != snapshotID {
+		// A deleting volume's teardown removes only its own objects and never
+		// reads the snapshot again, so it no longer holds the snapshot's chunks.
+		if volume.SnapshotID != snapshotID || volume.State == string(ebsprovider.VolumeStateDeleting) {
 			continue
 		}
 		if volume.TenantID == accountID {

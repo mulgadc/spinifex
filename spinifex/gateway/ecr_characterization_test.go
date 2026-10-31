@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -437,7 +438,7 @@ func TestRequest_ClusterUnavailableNilConn_ECR(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+"."+action)
-			ctx := context.WithValue(req.Context(), ctxService, "ecr")
+			ctx := reqctx.WithService(req.Context(), "ecr")
 			req = req.WithContext(ctx)
 
 			w := httptest.NewRecorder()

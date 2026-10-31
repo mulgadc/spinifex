@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
 	"net/http"
@@ -197,7 +198,7 @@ func userIDApp(t *testing.T, svc *mockIAMService) (http.Handler, *string) {
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		*seen = callerPrincipalOf(r).userID
+		*seen = callerOf(r).UserID
 		w.Write([]byte("OK"))
 	})
 	return r, seen
@@ -866,10 +867,10 @@ func TestSigV4Auth_ContextPropagation(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		caller := callerPrincipalOf(r)
-		identity, accountId, accessKey := caller.identity, caller.accountID, caller.accessKeyID
-		service := r.Context().Value(ctxService)
-		region := r.Context().Value(ctxRegion)
+		caller := callerOf(r)
+		identity, accountId, accessKey := caller.Identity, caller.AccountID, reqctx.AccessKeyID(r.Context())
+		service := reqctx.Service(r.Context())
+		region := reqctx.Region(r.Context())
 		fmt.Fprintf(w,
 			"identity=%v|accountId=%v|service=%v|region=%v|accessKey=%v",
 			identity, accountId, service, region, accessKey,
@@ -948,8 +949,8 @@ func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		caller := callerPrincipalOf(r)
-		fmt.Fprintf(w, "%v:%v", caller.identity, caller.accountID)
+		caller := callerOf(r)
+		fmt.Fprintf(w, "%v:%v", caller.Identity, caller.AccountID)
 	})
 
 	// First request as alice
@@ -1788,13 +1789,13 @@ func mountSessionGateway(t *testing.T, cred *stsdomain.SessionCredential) (http.
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, req *http.Request) {
-		caller := callerPrincipalOf(req)
+		caller := callerOf(req)
 		fmt.Fprintf(w,
 			"identity=%v|accountId=%v|principalType=%v|assumedRoleARN=%v",
-			caller.identity,
-			caller.accountID,
-			caller.principalType,
-			caller.assumedRoleARN,
+			caller.Identity,
+			caller.AccountID,
+			caller.PrincipalType,
+			caller.AssumedRoleARN,
 		)
 	})
 	return r, stsMock
@@ -2147,8 +2148,8 @@ func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, req *http.Request) {
-		caller := callerPrincipalOf(req)
-		fmt.Fprintf(w, "principalType=%v|assumedRoleARN=%v", caller.principalType, caller.assumedRoleARN)
+		caller := callerOf(req)
+		fmt.Fprintf(w, "principalType=%v|assumedRoleARN=%v", caller.PrincipalType, caller.AssumedRoleARN)
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -2706,7 +2707,7 @@ func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
 		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime"} {
 		t.Run(svc, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
-			req = req.WithContext(context.WithValue(req.Context(), ctxService, svc))
+			req = req.WithContext(reqctx.WithService(req.Context(), svc))
 			w := httptest.NewRecorder()
 
 			gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch, "")
@@ -2784,7 +2785,7 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		gotAction, _ = r.Context().Value(ctxAction).(string)
+		gotAction = reqctx.Action(r.Context())
 		gotThrottleKey, _ = gw.throttleKeyFuncs()[1](r)
 		w.Write([]byte("OK"))
 	})

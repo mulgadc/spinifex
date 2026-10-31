@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,7 +25,7 @@ const rdsTestAccountID = "123456789012"
 
 func setupRDSRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-	ctx := context.WithValue(req.Context(), ctxService, "rds")
+	ctx := reqctx.WithService(req.Context(), "rds")
 	ctx = withPrincipalField(ctx, fieldAccountID, rdsTestAccountID)
 	return withTestIdentity(req.WithContext(ctx))
 }
@@ -329,7 +330,7 @@ func TestRDSRequest_CrossAccountARNIsRejectedNotEvaluated(t *testing.T) {
 func TestRDSRequest_NoIdentityDenied(t *testing.T) {
 	gw, probe := newRDSPolicyGateway(nil)
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=DescribeDBInstances"))
-	ctx := context.WithValue(req.Context(), ctxService, "rds")
+	ctx := reqctx.WithService(req.Context(), "rds")
 	ctx = withPrincipalField(ctx, fieldAccountID, rdsTestAccountID)
 
 	err := gw.serveRDS(httptest.NewRecorder(), req.WithContext(ctx))

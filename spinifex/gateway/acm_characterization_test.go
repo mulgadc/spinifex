@@ -6,7 +6,7 @@ package gateway
 
 import (
 	"bytes"
-	"context"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -245,7 +245,7 @@ func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", "CertificateManager."+action)
-			ctx := context.WithValue(req.Context(), ctxService, "acm")
+			ctx := reqctx.WithService(req.Context(), "acm")
 			req = req.WithContext(ctx)
 
 			w := httptest.NewRecorder()

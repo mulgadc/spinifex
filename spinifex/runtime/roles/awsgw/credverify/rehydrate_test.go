@@ -11,6 +11,7 @@ import (
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -197,6 +198,48 @@ func TestRehydrate_SessionGoneMarksOnlyExpiredAndMissingSessions(t *testing.T) {
 			_, f := tc.v.Rehydrate(akid, acct)
 			require.NotNil(t, f)
 			assert.Equal(t, tc.gone, f.SessionGone)
+		})
+	}
+}
+
+func TestCallerARN(t *testing.T) {
+	const acct = "123456789012"
+	root := "arn:aws:iam::" + acct + ":root"
+	cases := []struct {
+		name string
+		p    credential.Principal
+		want string
+	}{
+		{"pathed user takes its stored ARN",
+			credential.Principal{AccountID: acct, Identity: "alice", PrincipalType: stsdomain.PrincipalTypeUser, UserARN: "arn:aws:iam::" + acct + ":user/eng/alice"},
+			"arn:aws:iam::" + acct + ":user/eng/alice"},
+		{"user with no record formats at the root path",
+			credential.Principal{AccountID: acct, Identity: "alice", PrincipalType: stsdomain.PrincipalTypeUser},
+			"arn:aws:iam::" + acct + ":user/alice"},
+		{"global root ignores a user ARN",
+			credential.Principal{AccountID: awsidentifiers.GlobalAccountID, Identity: "root", PrincipalType: stsdomain.PrincipalTypeUser, UserARN: "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":user/root"},
+			"arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":root"},
+		{"root principal", credential.Principal{AccountID: acct, PrincipalType: stsdomain.PrincipalTypeRoot}, root},
+		{"assumed role keeps its session ARN",
+			credential.Principal{AccountID: acct, Identity: "s", PrincipalType: stsdomain.PrincipalTypeAssumedRole, AssumedRoleARN: "arn:aws:sts::" + acct + ":assumed-role/Ops/s"},
+			"arn:aws:sts::" + acct + ":assumed-role/Ops/s"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := CallerARN(tc.p)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	for name, p := range map[string]credential.Principal{
+		"assumed role without ARN": {AccountID: acct, PrincipalType: stsdomain.PrincipalTypeAssumedRole},
+		"user without identity":    {AccountID: acct, PrincipalType: stsdomain.PrincipalTypeUser},
+		"unknown principal type":   {AccountID: acct, PrincipalType: "bogus"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := CallerARN(p)
+			require.Error(t, err)
 		})
 	}
 }

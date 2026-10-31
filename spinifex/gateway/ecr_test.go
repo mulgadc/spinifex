@@ -1,8 +1,8 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,7 +24,7 @@ func setupECRRequest(target, body string) *http.Request {
 	if target != "" {
 		req.Header.Set("X-Amz-Target", target)
 	}
-	ctx := context.WithValue(req.Context(), ctxService, "ecr")
+	ctx := reqctx.WithService(req.Context(), "ecr")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 	ctx = withPrincipalField(ctx, fieldIdentity, "dev")
 	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)

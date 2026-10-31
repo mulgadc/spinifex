@@ -7,6 +7,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -131,7 +132,7 @@ func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *ht
 	rctx.URLParams.Add("method", method)
 
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
-	ctx = context.WithValue(ctx, ctxService, "spinifex")
+	ctx = reqctx.WithService(ctx, "spinifex")
 	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.DefaultAccountID())
 	ctx = withPrincipalField(ctx, fieldIdentity, "admin")
 	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)

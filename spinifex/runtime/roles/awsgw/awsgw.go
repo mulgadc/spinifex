@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/clusterready"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
@@ -538,6 +539,8 @@ func launchService(config *config.ClusterConfig) error {
 		STSService:      stsService,
 		Credentials:     credentials,
 		Admission:       admission,
+		Policy:          policyauth.New(iamService),
+		Readiness:       clusterready.New(natsConn),
 		Version:         version,
 		Commit:          commit,
 		OIDC:            ekscluster.NewOIDCPublisher(jwksJS),

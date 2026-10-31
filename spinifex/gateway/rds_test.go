@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"errors"
-	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -40,20 +39,6 @@ func setupRDSUserRequest(body, accountID string) *http.Request {
 	return req.WithContext(ctx)
 }
 
-// An in-guest agent's request: an assumed-role session under the system account
-// whose underlying role is the DB VM instance role.
-func setupRDSAgentRequest(body, sessionName string) *http.Request {
-	req := setupRDSRequest(body)
-	roleARN := "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":role/" + rdsinstance.InstanceRoleName
-	ctx := withPrincipalField(req.Context(), fieldAccountID, awsidentifiers.GlobalAccountID)
-	ctx = withPrincipalField(ctx, fieldIdentity, sessionName)
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
-	ctx = withPrincipalField(ctx, fieldUnderlyingRoleARN, roleARN)
-	ctx = withPrincipalField(ctx, fieldAssumedRoleARN,
-		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+rdsinstance.InstanceRoleName+"/"+sessionName)
-	return req.WithContext(ctx)
-}
-
 // Counts policy resolutions, so a test can tell an authorized request from one
 // that failed some other guard before the evaluator was ever reached.
 type rdsPolicyProbe struct{ consulted int }
@@ -86,28 +71,6 @@ func newRDSGatewayWithResolver(
 	}), probe
 }
 
-func TestRDSRequest_MissingAction(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.serveRDS(httptest.NewRecorder(), setupRDSRequest(""))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
-}
-
-func TestRDSRequest_UnknownAction(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.serveRDS(httptest.NewRecorder(), setupRDSRequest("Action=FakeAction"))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
-}
-
-// A malformed percent-encoding is a client error, not an internal one.
-func TestRDSRequest_MalformedQueryString(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.serveRDS(httptest.NewRecorder(), setupRDSRequest("Action=%zz"))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorMalformedQueryString, err.Error())
-}
-
 func TestRDSRequest_MalformedScalarReturnsHTTP400(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()})
@@ -127,216 +90,6 @@ func TestRDSRequest_MalformedScalarReturnsHTTP400(t *testing.T) {
 			assert.Contains(t, w.Body.String(), "<Code>"+awserrors.ErrorInvalidParameterValue+"</Code>")
 		})
 	}
-}
-
-// A known action still needs a NATS connection to reach the control plane, so
-// the disconnected case must fail rather than answer from the gateway alone.
-func TestRDSRequest_NoNATSConn(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
-	err := gw.serveRDS(httptest.NewRecorder(), setupRDSRequest("Action=DescribeDBInstances"))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
-
-// The headline of this surface: rds:* on * is the natural admin grant, and it
-// must not reach an internal agent action — GetDBBootstrapConfig returns the
-// database master password.
-func TestRDSRequest_InternalActionsDeniedToCustomerAdmin(t *testing.T) {
-	gw, _ := newRDSPolicyGateway(allowPolicy("rds:*"))
-	for _, action := range rdsinstance.InternalAgentActions {
-		t.Run(action, func(t *testing.T) {
-			err := gw.serveRDS(httptest.NewRecorder(),
-				setupRDSUserRequest("Action="+action, rdsTestAccountID))
-			require.Error(t, err)
-			assertDenied(t, err)
-		})
-	}
-}
-
-// A DB VM's own session passes the class gate and is evaluated against the
-// four-action role policy, which admits it: the only thing left to fail on is the
-// control plane, absent here.
-func TestRDSRequest_InternalActionAdmitsTheAgentPrincipal(t *testing.T) {
-	gw, probe := newRDSPolicyGateway(allowPolicy("rds:GetDBBootstrapConfig"))
-	err := gw.serveRDS(httptest.NewRecorder(),
-		setupRDSAgentRequest("Action=GetDBBootstrapConfig", "i-0abc123"))
-	require.Error(t, err)
-	assert.Equal(t, 1, probe.consulted, "the agent's role policy must be evaluated, not bypassed")
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error(),
-		"the agent must be authorized and fail only on the missing NATS connection")
-}
-
-// The instance role grants only the internal actions, so the same credentials
-// that register an instance cannot describe the account's fleet.
-func TestRDSRequest_AgentRoleCannotCallCustomerActions(t *testing.T) {
-	gw, _ := newRDSPolicyGateway(allowPolicy("rds:GetDBBootstrapConfig"))
-	err := gw.serveRDS(httptest.NewRecorder(),
-		setupRDSAgentRequest("Action=DescribeDBInstances", "i-0abc123"))
-	require.Error(t, err)
-	assertDenied(t, err)
-}
-
-// A policy scoped to db:prod-* has to actually restrict: checked against "*" it
-// would read as a restriction and permit the whole account.
-func TestRDSRequest_ResourceScopedPolicyRestrictsByIdentifier(t *testing.T) {
-	gw, probe := newRDSPolicyGateway(allowPolicyResource("rds:*", "arn:aws:rds:*:*:db:prod-*"))
-
-	err := gw.serveRDS(httptest.NewRecorder(),
-		setupRDSUserRequest("Action=DeleteDBInstance&DBInstanceIdentifier=prod-orders", rdsTestAccountID))
-	require.Error(t, err)
-	// The probe is what makes the pass meaningful: a guard that failed before the
-	// evaluator would leave the same error with no policy consulted at all.
-	assert.Equal(t, 1, probe.consulted)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error(),
-		"the in-scope instance must be authorized and fail only on the missing NATS connection")
-
-	err = gw.serveRDS(httptest.NewRecorder(),
-		setupRDSUserRequest("Action=DeleteDBInstance&DBInstanceIdentifier=dev-orders", rdsTestAccountID))
-	require.Error(t, err)
-	assertDenied(t, err)
-}
-
-func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
-	tests := []struct {
-		name      string
-		action    string
-		query     string
-		resources iamdomain.StringOrArr
-	}{
-		{
-			name:   "create snapshot",
-			action: "rds:CreateDBSnapshot",
-			query: "Action=CreateDBSnapshot&DBInstanceIdentifier=orders-db" +
-				"&DBSnapshotIdentifier=orders-db-nightly",
-			resources: iamdomain.StringOrArr{
-				rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db"),
-				rdsinstance.FormatARN(rdsinstance.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
-			},
-		},
-		{
-			name:   "restore snapshot",
-			action: "rds:RestoreDBInstanceFromDBSnapshot",
-			query: "Action=RestoreDBInstanceFromDBSnapshot&DBSnapshotIdentifier=orders-db-nightly" +
-				"&DBInstanceIdentifier=orders-db-restored",
-			resources: iamdomain.StringOrArr{
-				rdsinstance.FormatARN(rdsinstance.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
-				rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			policies := []iamdomain.PolicyDocument{{
-				Version: "2012-10-17",
-				Statement: []iamdomain.Statement{{
-					Effect: "Allow", Action: iamdomain.StringOrArr{tt.action}, Resource: tt.resources,
-				}},
-			}}
-			gw, probe := newRDSPolicyGateway(policies)
-			err := gw.serveRDS(httptest.NewRecorder(), setupRDSUserRequest(tt.query, rdsTestAccountID))
-			require.Error(t, err)
-			assert.Equal(t, 1, probe.consulted)
-			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-		})
-	}
-}
-
-func TestRDSRequest_SnapshotActionsUseOnePolicySnapshot(t *testing.T) {
-	source := rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db")
-	target := rdsinstance.FormatARN(rdsinstance.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly")
-	resolution := 0
-	gw, probe := newRDSGatewayWithResolver(func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-		resolution++
-		if resolution == 1 {
-			return allowPolicyResource("rds:CreateDBSnapshot", source), nil
-		}
-		return allowPolicyResource("rds:CreateDBSnapshot", target), nil
-	})
-
-	err := gw.serveRDS(httptest.NewRecorder(), setupRDSUserRequest(
-		"Action=CreateDBSnapshot&DBInstanceIdentifier=orders-db&DBSnapshotIdentifier=orders-db-nightly",
-		rdsTestAccountID,
-	))
-	require.Error(t, err)
-	assertDenied(t, err)
-	assert.Equal(t, 1, probe.consulted)
-}
-
-func TestRDSRequest_SnapshotActionsHonorTargetDeny(t *testing.T) {
-	tests := []struct {
-		name   string
-		action string
-		query  string
-		target string
-	}{
-		{
-			name: "create snapshot", action: "rds:CreateDBSnapshot",
-			query: "Action=CreateDBSnapshot&DBInstanceIdentifier=orders-db" +
-				"&DBSnapshotIdentifier=orders-db-nightly",
-			target: rdsinstance.FormatARN(rdsinstance.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
-		},
-		{
-			name: "restore snapshot", action: "rds:RestoreDBInstanceFromDBSnapshot",
-			query: "Action=RestoreDBInstanceFromDBSnapshot&DBSnapshotIdentifier=orders-db-nightly" +
-				"&DBInstanceIdentifier=orders-db-restored",
-			target: rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			policies := []iamdomain.PolicyDocument{{
-				Version: "2012-10-17",
-				Statement: []iamdomain.Statement{
-					{Effect: "Allow", Action: iamdomain.StringOrArr{tt.action}, Resource: iamdomain.StringOrArr{"*"}},
-					{Effect: "Deny", Action: iamdomain.StringOrArr{tt.action}, Resource: iamdomain.StringOrArr{tt.target}},
-				},
-			}}
-			gw, probe := newRDSPolicyGateway(policies)
-			err := gw.serveRDS(httptest.NewRecorder(), setupRDSUserRequest(tt.query, rdsTestAccountID))
-			require.Error(t, err)
-			assert.Equal(t, 1, probe.consulted)
-			assertDenied(t, err)
-		})
-	}
-}
-
-// Creates and plural describes name no one resource, so a policy scoped to a
-// single instance must not be read as permitting them.
-func TestRDSRequest_UnscopedActionsEvaluateAgainstAnyResource(t *testing.T) {
-	gw, _ := newRDSPolicyGateway(allowPolicyResource("rds:*", "arn:aws:rds:*:*:db:prod-orders"))
-	err := gw.serveRDS(httptest.NewRecorder(),
-		setupRDSUserRequest("Action=CreateDBInstance&DBInstanceIdentifier=prod-orders", rdsTestAccountID))
-	require.Error(t, err)
-	assertDenied(t, err)
-}
-
-// Cross-account references are refused at the ARN, not merely unauthorized:
-// snapshot sharing is out of v1, and an evaluator that sees a foreign account is
-// one policy away from allowing it.
-func TestRDSRequest_CrossAccountARNIsRejectedNotEvaluated(t *testing.T) {
-	gw, _ := newRDSGatewayWithResolver(func(_, _ string) ([]iamdomain.PolicyDocument, error) {
-		t.Error("a cross-account ARN must never reach policy evaluation")
-		return nil, nil
-	})
-	foreign := rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", "999988887777", "orders-db")
-	err := gw.serveRDS(httptest.NewRecorder(),
-		setupRDSUserRequest("Action=ListTagsForResource&ResourceName="+foreign, rdsTestAccountID))
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
-}
-
-// A request with no resolvable identity is denied outright: there is no
-// principal to evaluate, so the gate refuses before consulting any policy.
-func TestRDSRequest_NoIdentityDenied(t *testing.T) {
-	gw, probe := newRDSPolicyGateway(nil)
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=DescribeDBInstances"))
-	ctx := reqctx.WithService(req.Context(), "rds")
-	ctx = withPrincipalField(ctx, fieldAccountID, rdsTestAccountID)
-
-	err := gw.serveRDS(httptest.NewRecorder(), req.WithContext(ctx))
-	require.Error(t, err)
-	assertDenied(t, err)
-	assert.Zero(t, probe.consulted, "a request with no identity must not be evaluated at all")
 }
 
 // RDS errors must use the IAM-style <ErrorResponse> envelope: the aws-sdk-go

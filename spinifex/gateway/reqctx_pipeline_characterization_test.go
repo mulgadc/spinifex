@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,8 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
@@ -429,4 +432,19 @@ func TestReqctxPipeline_CredentialScopeRegionVersusInvocationRegion(t *testing.T
 			assert.Equal(t, region, spanRegion)
 		})
 	}
+}
+
+// iamAuthzPolicyService resolves a role or user name to a fixed ARN.
+type iamAuthzPolicyService struct {
+	policyMockIAMService
+
+	arns map[string]string
+}
+
+func (s *iamAuthzPolicyService) CanonicalResourceARN(_ string, _ arn.IAMResourceType, name string) (string, error) {
+	resource, ok := s.arns[name]
+	if !ok {
+		return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	return resource, nil
 }

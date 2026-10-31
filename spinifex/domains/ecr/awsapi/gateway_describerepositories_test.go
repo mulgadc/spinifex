@@ -1,4 +1,4 @@
-package gateway
+package awsapi_test
 
 import (
 	"context"
@@ -41,7 +41,7 @@ func serveECRMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn 
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }
 
-func newDescribeReposGateway(t *testing.T, repos ...string) *GatewayConfig {
+func newDescribeReposGateway(t *testing.T, repos ...string) *ecrGW {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
@@ -54,20 +54,16 @@ func newDescribeReposGateway(t *testing.T, repos ...string) *GatewayConfig {
 	for _, r := range repos {
 		require.NoError(t, store.PutRepo(context.Background(), ecrTestAccount, ecr.RepoMeta{Name: r, CreatedAt: time.Now()}))
 	}
-	return withECR(withVerifier(&GatewayConfig{
-		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
-		IAMService: allowAllIAMService(),
-	}), awsapi.Deps{Repository: awsapi.NewRepositoryActionService(store, awsapi.RepositoryEndpoint{
+	return newECRGW(nc, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(store, awsapi.RepositoryEndpoint{
 		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
 	})})
 }
 
-func describeReposRequest(t *testing.T, gw *GatewayConfig, body string) *httptest.ResponseRecorder {
+func describeReposRequest(t *testing.T, gw *ecrGW, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", body)
-	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
+	require.NoError(t, gw.serveECR(w, req))
 	return w
 }
 
@@ -149,8 +145,7 @@ func TestDescribeRepositories_NameFilter(t *testing.T) {
 func TestDescribeRepositories_MissingNamedRepo(t *testing.T) {
 	gw := newDescribeReposGateway(t, "team/app")
 	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", `{"repositoryNames":["team/ghost"]}`)
-	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
-	err := gw.serveECR(httptest.NewRecorder(), req.WithContext(ctx))
+	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, "RepositoryNotFoundException", awserrors.ValidErrorCodeFromError(err))
 }
@@ -158,8 +153,7 @@ func TestDescribeRepositories_MissingNamedRepo(t *testing.T) {
 func TestDescribeRepositories_CrossAccountDenied(t *testing.T) {
 	gw := newDescribeReposGateway(t, "team/app")
 	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", `{"registryId":"999999999999"}`)
-	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
-	err := gw.serveECR(httptest.NewRecorder(), req.WithContext(ctx))
+	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, "AccessDenied", err.Error())
 }
@@ -167,8 +161,7 @@ func TestDescribeRepositories_CrossAccountDenied(t *testing.T) {
 func TestECRRequest_DescribeRepositoriesDispatched(t *testing.T) {
 	gw := newDescribeReposGateway(t, "team/app")
 	req := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.DescribeRepositories", "{}")
-	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
+	require.NoError(t, gw.serveECR(w, req))
 	assert.Equal(t, http.StatusOK, w.Code)
 }

@@ -33,3 +33,11 @@ func AssertPermitted(t *testing.T, err error) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
+
+// AssertGatePassed asserts the policy gate ran and allowed the request, whatever
+// the handler then did with it. A denial cannot hide behind a later error.
+func (h *Harness) AssertGatePassed(t *testing.T) {
+	t.Helper()
+	require.True(t, h.GateCalled, "policy gate was never consulted")
+	require.NoError(t, h.LastGateErr)
+}

@@ -57,6 +57,10 @@ type Harness struct {
 	Policy    pipeline.PolicyEvaluator
 	// Caller overrides the default caller, an IAM user named alice.
 	Caller *credential.Principal
+	// LastGateErr is the verdict of the most recent Authorize call, and
+	// GateCalled whether the last Dispatch reached the gate at all.
+	LastGateErr error
+	GateCalled  bool
 }
 
 // Scoped returns a harness whose caller holds one policy of statements.
@@ -96,6 +100,7 @@ func (h *Harness) Dispatch(reg dispatch.Registration, service string, w http.Res
 	if h.Caller != nil {
 		caller = *h.Caller
 	}
+	h.LastGateErr, h.GateCalled = nil, false
 	return reg.Dispatch(w, dispatch.Invocation{
 		Request:   r,
 		AccountID: h.AccountID,
@@ -103,7 +108,9 @@ func (h *Harness) Dispatch(reg dispatch.Registration, service string, w http.Res
 		Region:    h.Region,
 		Actor:     func() (dispatch.Actor, error) { return pipeline.ActorFor(caller, "") },
 		Authorize: func(svc, action string, resources []string, actionKeys iampolicy.ConditionKeys) error {
-			return pipeline.Authorize(h.Policy, r, caller, true, svc, action, resources, actionKeys)
+			h.GateCalled = true
+			h.LastGateErr = pipeline.Authorize(h.Policy, r, caller, true, svc, action, resources, actionKeys)
+			return h.LastGateErr
 		},
 	})
 }

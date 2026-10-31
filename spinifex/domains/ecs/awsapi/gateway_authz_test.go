@@ -30,16 +30,6 @@ func dispatchECS(t *testing.T, h *gwtest.Harness, action, body string) error {
 	return h.Dispatch(ecsawsapi.NewRegistration(ecsawsapi.Deps{}), ecsawsapi.ServiceName, httptest.NewRecorder(), req)
 }
 
-// assertReachedHandler asserts the policy gate passed. The request then fails on
-// the absent NATS connection or on its 501 stub rather than on authorization, so
-// a denial cannot hide behind a not-found.
-func assertReachedHandler(t *testing.T, err error) {
-	t.Helper()
-	require.Error(t, err)
-	code, _ := awserrors.ResolveErrorCode(err)
-	assert.NotEqual(t, awserrors.ErrorAccessDenied, code)
-}
-
 func ecsResourceARN(resource string) string {
 	return "arn:aws:ecs:" + gwtest.Region + ":" + gwtest.AccountID + ":" + resource
 }
@@ -54,8 +44,10 @@ func TestECSRequest_ScopedDenyFires(t *testing.T) {
 	)
 
 	gwtest.AssertDenied(t, dispatchECS(t, h, "DeleteService", `{"cluster":"prod","service":"web"}`))
-	assertReachedHandler(t, dispatchECS(t, h, "DeleteService", `{"cluster":"prod","service":"api"}`))
-	assertReachedHandler(t, dispatchECS(t, h, "DeleteService", `{"cluster":"dev","service":"web"}`))
+	require.Error(t, dispatchECS(t, h, "DeleteService", `{"cluster":"prod","service":"api"}`))
+	h.AssertGatePassed(t)
+	require.Error(t, dispatchECS(t, h, "DeleteService", `{"cluster":"dev","service":"web"}`))
+	h.AssertGatePassed(t)
 }
 
 // TestECSRequest_ScopedAllowGrants is the other half: a least-privilege policy
@@ -81,7 +73,8 @@ func TestECSRequest_OmittedClusterIsFencedAsDefault(t *testing.T) {
 
 	gwtest.AssertDenied(t, dispatchECS(t, h, "UpdateCluster", `{}`))
 	gwtest.AssertDenied(t, dispatchECS(t, h, "UpdateCluster", `{"cluster":"default"}`))
-	assertReachedHandler(t, dispatchECS(t, h, "UpdateCluster", `{"cluster":"prod"}`))
+	require.Error(t, dispatchECS(t, h, "UpdateCluster", `{"cluster":"prod"}`))
+	h.AssertGatePassed(t)
 }
 
 // A body the gate cannot parse authorizes account-wide, and the handler still
@@ -124,7 +117,8 @@ func TestECSRequest_OmittedClusterListIsFencedAsDefault(t *testing.T) {
 
 	gwtest.AssertDenied(t, dispatchECS(t, h, "DescribeClusters", `{}`))
 	gwtest.AssertDenied(t, dispatchECS(t, h, "DescribeClusters", `{"clusters":[]}`))
-	assertReachedHandler(t, dispatchECS(t, h, "DescribeClusters", `{"clusters":["prod"]}`))
+	require.Error(t, dispatchECS(t, h, "DescribeClusters", `{"clusters":["prod"]}`))
+	h.AssertGatePassed(t)
 }
 
 // A body past the signed path's cap cannot be used to bypass the gate or to
@@ -148,7 +142,8 @@ func TestECSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 
 	for _, action := range ecsawsapi.ScopedActions() {
 		t.Run(action, func(t *testing.T) {
-			assertReachedHandler(t, dispatchECS(t, h, action, body))
+			require.Error(t, dispatchECS(t, h, action, body))
+			h.AssertGatePassed(t)
 		})
 	}
 }
@@ -207,7 +202,7 @@ func TestECSRegisterTaskDefinition_AllowedWithPassRole(t *testing.T) {
 	// disconnected) NATS dispatch; whatever fails downstream, it must not be
 	// the PassRole denial.
 	require.Error(t, err)
-	assertReachedHandler(t, err)
+	h.AssertGatePassed(t)
 }
 
 func TestECSRegisterTaskDefinition_NoRoleSkipsPassRole(t *testing.T) {
@@ -217,7 +212,7 @@ func TestECSRegisterTaskDefinition_NoRoleSkipsPassRole(t *testing.T) {
 
 	err := dispatchECS(t, h, "RegisterTaskDefinition", registerTaskDefinitionBody(t, ""))
 	require.Error(t, err) // still fails downstream (nil NATS conn), just not on PassRole
-	assertReachedHandler(t, err)
+	h.AssertGatePassed(t)
 }
 
 // Current behaviour, not a statement of what AWS does: ECS resolves nothing, so
@@ -233,7 +228,7 @@ func TestECSRegisterTaskDefinition_UnresolvedRoleARNsAreNotRejected(t *testing.T
 
 			err := dispatchECS(t, h, "RegisterTaskDefinition", registerTaskDefinitionBody(t, roleARN))
 			require.Error(t, err) // fails downstream on the nil NATS conn
-			assertReachedHandler(t, err)
+			h.AssertGatePassed(t)
 			code, _ := awserrors.ResolveErrorCode(err)
 			assert.NotEqual(t, awserrors.ErrorInvalidParameterValue, code)
 		})

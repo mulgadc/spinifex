@@ -1,4 +1,4 @@
-//test:in-package — requestConditionKeys, checkPolicyResources, principalContext
+//test:in-package — requestConditionKeys, checkPolicyResources, credential.Principal
 //and ctxAccountID are all unexported, and the file reuses the in-package
 //policyMockIAMService and withTestIdentity doubles.
 
@@ -6,6 +6,8 @@ package gateway
 
 import (
 	"crypto/tls"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,15 +24,15 @@ func TestRequestConditionKeys_PopulatesAvailableKeys(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.TLS = &tls.ConnectionState{}
 	r.RemoteAddr = "10.4.1.9:52344"
-	principal := principalContext{
-		identity:      "alice",
-		accountID:     "000000000001",
-		principalType: principalTypeUser,
-		userID:        "AIDAALICE",
+	principal := credential.Principal{
+		Identity:      "alice",
+		AccountID:     "000000000001",
+		PrincipalType: principalTypeUser,
+		UserID:        "AIDAALICE",
 	}
 
 	before := time.Now().Truncate(time.Second)
-	keys := requestConditionKeys(r, principal)
+	keys := policyauth.RequestConditionKeys(r, principal)
 	after := time.Now()
 
 	// The request time is the server clock at the call, in both spellings.
@@ -66,8 +68,8 @@ func TestRequestConditionKeys_PrincipalType(t *testing.T) {
 		{principalType: "", omitted: true},
 	}
 	for _, tt := range tests {
-		keys := requestConditionKeys(r, principalContext{
-			identity: "alice", accountID: "000000000001", principalType: tt.principalType,
+		keys := policyauth.RequestConditionKeys(r, credential.Principal{
+			Identity: "alice", AccountID: "000000000001", PrincipalType: tt.principalType,
 		})
 		if tt.omitted {
 			assert.NotContains(t, keys, iampolicy.KeyPrincipalType, "principalType %q", tt.principalType)
@@ -82,12 +84,12 @@ func TestRequestConditionKeys_PrincipalType(t *testing.T) {
 func TestRequestConditionKeys_UserIDForAssumedRole(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 
-	keys := requestConditionKeys(r, principalContext{
-		identity:      "session",
-		accountID:     "000000000001",
-		principalType: principalTypeAssumedRole,
-		assumedRoleID: "AROASHAREDOPS:session",
-		userID:        "AROASHAREDOPS:session",
+	keys := policyauth.RequestConditionKeys(r, credential.Principal{
+		Identity:      "session",
+		AccountID:     "000000000001",
+		PrincipalType: principalTypeAssumedRole,
+		AssumedRoleID: "AROASHAREDOPS:session",
+		UserID:        "AROASHAREDOPS:session",
 	})
 
 	assert.Equal(t, "AROASHAREDOPS:session", keys[iampolicy.KeyUserID])
@@ -99,8 +101,8 @@ func TestRequestConditionKeys_UserIDForAssumedRole(t *testing.T) {
 func TestRequestConditionKeys_OmitsUnresolvableUserID(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 
-	keys := requestConditionKeys(r, principalContext{
-		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
+	keys := policyauth.RequestConditionKeys(r, credential.Principal{
+		Identity: "alice", AccountID: "000000000001", PrincipalType: principalTypeUser,
 	})
 	assert.NotContains(t, keys, iampolicy.KeyUserID)
 }
@@ -110,14 +112,14 @@ func TestRequestConditionKeys_OmitsUnresolvableUserID(t *testing.T) {
 // role satisfies an aws:username condition just by naming their session.
 func TestRequestConditionKeys_OmitsUsernameForAssumedRole(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
-	principal := principalContext{
-		identity:       "alice",
-		accountID:      "000000000001",
-		principalType:  principalTypeAssumedRole,
-		assumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/alice",
+	principal := credential.Principal{
+		Identity:       "alice",
+		AccountID:      "000000000001",
+		PrincipalType:  principalTypeAssumedRole,
+		AssumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/alice",
 	}
 
-	keys := requestConditionKeys(r, principal)
+	keys := policyauth.RequestConditionKeys(r, principal)
 
 	assert.NotContains(t, keys, iampolicy.KeyUsername)
 	assert.Equal(t, "000000000001", keys[iampolicy.KeyPrincipalAccount])
@@ -127,9 +129,9 @@ func TestRequestConditionKeys_OmitsUsernameForAssumedRole(t *testing.T) {
 // must not fire here even though the same document works at predastore's door.
 func TestRequestConditionKeys_OmitsS3Prefix(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/?prefix=home/", nil)
-	keys := requestConditionKeys(r, principalContext{
-		identity:      "alice",
-		principalType: principalTypeUser,
+	keys := policyauth.RequestConditionKeys(r, credential.Principal{
+		Identity:      "alice",
+		PrincipalType: principalTypeUser,
 	})
 
 	assert.NotContains(t, keys, iampolicy.KeyS3Prefix)
@@ -141,7 +143,7 @@ func TestRequestConditionKeys_OmitsS3Prefix(t *testing.T) {
 func TestRequestConditionKeys_OmitsEmptyValues(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.RemoteAddr = ""
-	keys := requestConditionKeys(r, principalContext{principalType: principalTypeUser})
+	keys := policyauth.RequestConditionKeys(r, credential.Principal{PrincipalType: principalTypeUser})
 
 	assert.NotContains(t, keys, iampolicy.KeySourceIP)
 	assert.NotContains(t, keys, iampolicy.KeyUsername)
@@ -155,9 +157,9 @@ func TestRequestConditionKeys_SourceIPWithoutAuthMiddleware(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/v2/app/blobs/uploads/", nil)
 	r.RemoteAddr = "10.4.1.9:52344"
 
-	keys := requestConditionKeys(r, principalContext{
-		identity:      "alice",
-		principalType: principalTypeUser,
+	keys := policyauth.RequestConditionKeys(r, credential.Principal{
+		Identity:      "alice",
+		PrincipalType: principalTypeUser,
 	})
 
 	assert.Equal(t, "10.4.1.9", keys[iampolicy.KeySourceIP])

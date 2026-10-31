@@ -213,3 +213,28 @@ func TestADR0001_InterimDaemonDirectionCoversRuntimeDaemon(t *testing.T) {
 		t.Error("gateway -> runtime/host/process is rejected, but it is not the daemon")
 	}
 }
+
+// TestADR0002_S7_RequestRecordRejectsOutsiders: the request record is readable
+// by the gateway and ingress/aws only.
+func TestADR0002_S7_RequestRecordRejectsOutsiders(t *testing.T) {
+	record, ok := classify("spinifex/ingress/aws/reqctx")
+	if !ok || !record.requestRecord {
+		t.Fatalf("ingress/aws/reqctx is not classified as the request record: %+v", record)
+	}
+	r := ruleByID("S7_RequestRecordPrivateToIngress")
+	for name, wantRejected := range map[string]bool{
+		"domains/ecs/awsapi":   true,
+		"runtime/roles/awsgw":  true,
+		"operator/admin":       true,
+		"gateway":              false,
+		"ingress/aws/dispatch": false,
+	} {
+		from, ok := classify(fullPath(name))
+		if !ok {
+			t.Fatalf("%s is unclassified", name)
+		}
+		if got := r.forbids(from, record, name); got != wantRejected {
+			t.Errorf("%s -> ingress/aws/reqctx rejected=%v, want %v", name, got, wantRejected)
+		}
+	}
+}

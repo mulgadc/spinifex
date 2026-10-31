@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"context"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,7 +18,7 @@ func setupECSRequest(target, body string) *http.Request {
 	if target != "" {
 		req.Header.Set("X-Amz-Target", target)
 	}
-	ctx := context.WithValue(req.Context(), ctxService, "ecs")
+	ctx := reqctx.WithService(req.Context(), "ecs")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
 	return withTestIdentity(req.WithContext(ctx))
 }
@@ -83,7 +83,7 @@ func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
 func TestECSRequest_MissingAccountID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	req.Header.Set("X-Amz-Target", "AmazonEC2ContainerServiceV20141113.ListClusters")
-	req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxService, "ecs")))
+	req = withTestIdentity(req.WithContext(reqctx.WithService(req.Context(), "ecs")))
 
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	// Account-less requests are rejected by the policy gate, which runs ahead of

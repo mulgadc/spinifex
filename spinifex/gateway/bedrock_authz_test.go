@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,7 +27,7 @@ import (
 func dispatchBedrockFamily(t *testing.T, gw *GatewayConfig, service, method, path, body string) error {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	ctx := context.WithValue(req.Context(), ctxService, service)
+	ctx := reqctx.WithService(req.Context(), service)
 	req = withTestIdentity(req.WithContext(withPrincipalField(ctx, fieldAccountID, authzAccountID)))
 	return serveBedrock(gw, service, httptest.NewRecorder(), req)
 }
@@ -189,7 +190,7 @@ func TestBedrockFamily_MissingAccountIDReturnsInternalError(t *testing.T) {
 	for service, d := range dispatchers {
 		t.Run(service, func(t *testing.T) {
 			req := httptest.NewRequest(d.method, d.path, strings.NewReader("{}"))
-			req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxService, service)))
+			req = withTestIdentity(req.WithContext(reqctx.WithService(req.Context(), service)))
 			err := serveBedrock(gw, service, httptest.NewRecorder(), req)
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorInternalError, err.Error())

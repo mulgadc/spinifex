@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -74,7 +75,7 @@ func throttleApp(t *testing.T) aws.Config {
 	gw := &GatewayConfig{DisableLogging: true, Services: b.Build()}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		svc := credentialScopeService(r)
-		gw.writeThrottleError(w, r.WithContext(context.WithValue(r.Context(), ctxService, svc)))
+		gw.writeThrottleError(w, r.WithContext(reqctx.WithService(r.Context(), svc)))
 	}))
 	t.Cleanup(srv.Close)
 	return sdkConfig(srv.URL)

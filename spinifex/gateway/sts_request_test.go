@@ -1,9 +1,9 @@
 package gateway
 
 import (
-	"context"
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -101,7 +101,7 @@ func setupSTSRequestHandler(p stsRequestParams) http.Handler {
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		ctx = context.WithValue(ctx, ctxService, "sts")
+		ctx = reqctx.WithService(ctx, "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, p.accountID)
 		ctx = withPrincipalField(ctx, fieldIdentity, p.identity)
 		ctx = withPrincipalField(ctx, fieldPrincipalType, p.principalType)
@@ -337,7 +337,7 @@ func TestSTSRequest_AssumeRole_MissingRoleArn(t *testing.T) {
 func TestSTSRequest_NilService_InternalError(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, STSService: nil, IAMService: &flexMockIAMService{}})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), ctxService, "sts")
+		ctx := reqctx.WithService(r.Context(), "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
 		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
 		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
@@ -369,7 +369,7 @@ func TestSTSRequest_AssumeRole_NilIAMService_InternalError(t *testing.T) {
 	}
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, STSService: svc, IAMService: nil})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), ctxService, "sts")
+		ctx := reqctx.WithService(r.Context(), "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
 		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
 		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)

@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -144,7 +145,7 @@ func TestECRRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "ecr:*", "*"))
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".ListRepositories")
-	req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxService, "ecr")))
+	req = withTestIdentity(req.WithContext(reqctx.WithService(req.Context(), "ecr")))
 
 	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)

@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"context"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,7 +16,7 @@ import (
 func TestEKSRequest_UnknownActionReturnsInvalidAction(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	req := httptest.NewRequest(http.MethodGet, "/totally-unknown", nil)
-	ctx := context.WithValue(req.Context(), ctxService, "eks")
+	ctx := reqctx.WithService(req.Context(), "eks")
 	ctx = withPrincipalField(ctx, fieldAccountID, "111122223333")
 	req = withTestIdentity(req.WithContext(ctx))
 
@@ -29,7 +29,7 @@ func TestEKSRequest_UnknownActionReturnsInvalidAction(t *testing.T) {
 func TestEKSRequest_MissingNATSReturnsServerInternal(t *testing.T) {
 	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
 	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
-	ctx := context.WithValue(req.Context(), ctxService, "eks")
+	ctx := reqctx.WithService(req.Context(), "eks")
 	ctx = withPrincipalField(ctx, fieldAccountID, "111122223333")
 	req = withTestIdentity(req.WithContext(ctx))
 
@@ -42,7 +42,7 @@ func TestEKSRequest_MissingNATSReturnsServerInternal(t *testing.T) {
 func TestErrorHandler_EKSEmitsJSONNotXML(t *testing.T) {
 	gw := withContainers(withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
-	ctx := context.WithValue(req.Context(), ctxService, "eks")
+	ctx := reqctx.WithService(req.Context(), "eks")
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
 

@@ -4,8 +4,8 @@
 package gateway
 
 import (
-	"context"
 	"encoding/xml"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,7 +34,7 @@ type accountLimitsResponse struct {
 // middleware would hand it to the service.
 func elbv2Request(accountID, body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-	ctx := context.WithValue(req.Context(), ctxService, "elasticloadbalancing")
+	ctx := reqctx.WithService(req.Context(), "elasticloadbalancing")
 	ctx = withPrincipalField(ctx, fieldAccountID, accountID)
 	return withTestIdentity(req.WithContext(ctx))
 }

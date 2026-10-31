@@ -114,3 +114,13 @@ func (h *Harness) Dispatch(reg dispatch.Registration, service string, w http.Res
 		},
 	})
 }
+
+// PassRoleTo is a PassRole statement on every role, conditioned on the
+// consuming service the way AWS's documented examples scope it.
+func PassRoleTo(effect, operator, service string) iamdomain.Statement {
+	s := Statement(effect, "iam:PassRole", "*")
+	s.Condition = map[string]map[string]iamdomain.ConditionValue{
+		operator: {iampolicy.KeyPassedToService: {service}},
+	}
+	return s
+}

@@ -404,13 +404,6 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 	return gw.checkPolicyResourcesWithKeys(r, service, action, resources, nil)
 }
 
-// Service principals an iam:PassRole check reports as iam:PassedToService.
-const (
-	ec2ServicePrincipal      = "ec2.amazonaws.com"
-	ecsTasksServicePrincipal = "ecs-tasks.amazonaws.com"
-	eksServicePrincipal      = "eks.amazonaws.com"
-)
-
 // checkPolicyResourcesWithKeys is checkPolicyResources with action-scoped
 // condition keys layered over the request's own.
 func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, action string, resources []string, actionKeys iampolicy.ConditionKeys) error {

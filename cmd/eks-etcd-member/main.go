@@ -1,12 +1,6 @@
-// eks-etcd-member runs inside an EKS K3s control-plane VM and removes a dead
-// peer from the embedded etcd cluster; the implementation is in
-// agents/eks/etcdmember.
-//
-// Usage:
-//
-//	eks-etcd-member remove --peer-ip 10.0.0.12 --self-ip 10.0.0.10
-//
-// A member that is already gone exits 0; every other failure exits non-zero.
+// eks-etcd-member removes a dead peer from the embedded etcd cluster of an EKS
+// K3s control-plane VM. A member that is already gone exits 0; any other
+// failure exits non-zero.
 package main
 
 import (
@@ -23,7 +17,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "remove" {
-		fmt.Fprintln(os.Stderr, "usage: eks-etcd-member remove --peer-ip IP --self-ip IP")
+		fmt.Fprintln(os.Stderr, "usage: eks-etcd-member remove --peer-ip 10.0.0.12 [--self-ip 10.0.0.10]")
 		os.Exit(2)
 	}
 	fs := flag.NewFlagSet("remove", flag.ExitOnError)

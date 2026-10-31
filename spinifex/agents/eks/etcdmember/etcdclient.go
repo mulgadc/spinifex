@@ -19,7 +19,8 @@ const (
 
 // EtcdClient is a Client backed by a real etcd connection.
 type EtcdClient struct {
-	cli *clientv3.Client
+	cli      *clientv3.Client
+	endpoint string
 }
 
 var _ Client = (*EtcdClient)(nil)
@@ -43,7 +44,7 @@ func Dial(endpoint, certDir string, timeout time.Duration) (*EtcdClient, error) 
 	if err != nil {
 		return nil, fmt.Errorf("dial etcd %s: %w", endpoint, err)
 	}
-	return &EtcdClient{cli: cli}, nil
+	return &EtcdClient{cli: cli, endpoint: endpoint}, nil
 }
 
 // Close releases the connection.
@@ -66,4 +67,13 @@ func (e *EtcdClient) MemberList(ctx context.Context) ([]Member, error) {
 func (e *EtcdClient) MemberRemove(ctx context.Context, id uint64) error {
 	_, err := e.cli.MemberRemove(ctx, id)
 	return err
+}
+
+// SelfID implements Client using the local endpoint's own member ID.
+func (e *EtcdClient) SelfID(ctx context.Context) (uint64, error) {
+	resp, err := e.cli.Status(ctx, e.endpoint)
+	if err != nil {
+		return 0, err
+	}
+	return resp.Header.MemberId, nil
 }

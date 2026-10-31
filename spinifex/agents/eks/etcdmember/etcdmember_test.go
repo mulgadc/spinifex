@@ -15,6 +15,8 @@ type fakeClient struct {
 	listErr   error
 	removeErr error
 	removed   []uint64
+	selfID    uint64
+	selfErr   error
 }
 
 func (f *fakeClient) MemberList(context.Context) ([]Member, error) {
@@ -24,6 +26,10 @@ func (f *fakeClient) MemberList(context.Context) ([]Member, error) {
 func (f *fakeClient) MemberRemove(_ context.Context, id uint64) error {
 	f.removed = append(f.removed, id)
 	return f.removeErr
+}
+
+func (f *fakeClient) SelfID(context.Context) (uint64, error) {
+	return f.selfID, f.selfErr
 }
 
 var _ Client = (*fakeClient)(nil)
@@ -59,6 +65,21 @@ func TestRemove_AnyAdvertisedPeerURLCounts(t *testing.T) {
 	}}
 	require.NoError(t, Remove(context.Background(), c, Config{PeerIP: "10.0.0.12", SelfIP: "10.0.0.10"}))
 	assert.Equal(t, []uint64{2}, c.removed)
+}
+
+func TestRemove_RefusesTheLocalMemberByIDWithoutASelfIP(t *testing.T) {
+	c := &fakeClient{members: threeMembers(), selfID: 2}
+	err := Remove(context.Background(), c, Config{PeerIP: "10.0.0.12"})
+	require.ErrorIs(t, err, ErrSelf)
+	assert.Empty(t, c.removed)
+}
+
+func TestRemove_RemovesNothingWhenTheLocalMemberCannotBeIdentified(t *testing.T) {
+	boom := errors.New("status unavailable")
+	c := &fakeClient{members: threeMembers(), selfErr: boom}
+	err := Remove(context.Background(), c, Config{PeerIP: "10.0.0.12"})
+	require.ErrorIs(t, err, boom)
+	assert.Empty(t, c.removed)
 }
 
 func TestRemove_RefusesWhenNothingMatches(t *testing.T) {

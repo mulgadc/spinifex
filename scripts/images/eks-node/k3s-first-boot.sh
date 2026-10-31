@@ -162,13 +162,9 @@ jq -n --arg k "${KUBECONFIG_REWRITTEN}" '{adminKubeconfig: $k}'      | publish_e
 jq -n --arg j "${JWKS}"                 '{jwks: $j}'                  | publish_envelope k3s-oidc-jwks
 jq -n --arg c "${CA_B64}"               '{certificateAuthority: $c}' | publish_envelope k3s-ca
 
-# 3.5 Prune a terminated control-plane peer this VM replaces. The spinifex
-# reconciler sets EKS_ETCD_PRUNE_PEER_IP to the dead member's node IP when this
-# VM is provisioned as its replacement (member-count reconcile). A peer that
-# still has a Node (older fleets) is pruned by deleting it, which makes k3s drop
-# the etcd member. Control planes run no agent and have no Node, so the member
-# is removed from etcd directly. Best-effort: a failure leaves the member for an
-# operator, is logged, and never blocks first boot.
+# 3.5 Prune the terminated CP peer this VM replaces: delete its Node if it still
+# has one, else remove its etcd member directly (CPs run no agent). Best-effort:
+# a failure is logged and never blocks first boot.
 if [ -n "${EKS_ETCD_PRUNE_PEER_IP:-}" ]; then
     log "pruning terminated CP peer at ${EKS_ETCD_PRUNE_PEER_IP} from etcd"
     dead_node=$(kubectl --kubeconfig "${KUBECONFIG_FILE}" get nodes \

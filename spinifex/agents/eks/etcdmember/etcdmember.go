@@ -21,6 +21,8 @@ type Member struct {
 type Client interface {
 	MemberList(ctx context.Context) ([]Member, error)
 	MemberRemove(ctx context.Context, id uint64) error
+	// SelfID is the ID of the member this client is connected to.
+	SelfID(ctx context.Context) (uint64, error)
 }
 
 // Config selects the member to remove.
@@ -34,7 +36,7 @@ var (
 	ErrNoMatch = errors.New("no etcd member matches the peer IP")
 	// ErrAmbiguous means more than one member advertises the peer IP.
 	ErrAmbiguous = errors.New("more than one etcd member matches the peer IP")
-	// ErrSelf means the peer IP is this host's own address.
+	// ErrSelf means the matched member is the local one.
 	ErrSelf = errors.New("refusing to remove the local etcd member")
 )
 
@@ -62,6 +64,13 @@ func Remove(ctx context.Context, c Client, cfg Config) error {
 	case 1:
 	default:
 		return fmt.Errorf("%w: %s (%d members)", ErrAmbiguous, cfg.PeerIP, len(matches))
+	}
+	selfID, err := c.SelfID(ctx)
+	if err != nil {
+		return fmt.Errorf("identify the local etcd member: %w", err)
+	}
+	if matches[0].ID == selfID {
+		return fmt.Errorf("%w: %s", ErrSelf, matches[0].Name)
 	}
 	if err := c.MemberRemove(ctx, matches[0].ID); err != nil {
 		return fmt.Errorf("remove etcd member %s: %w", matches[0].Name, err)

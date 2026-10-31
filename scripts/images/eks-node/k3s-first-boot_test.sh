@@ -1,10 +1,6 @@
 #!/bin/sh
-# Self-contained POSIX test for the etcd peer-prune step (3.5) of k3s-first-boot.sh.
-# No root/cluster/init: kubectl, eks-gateway-publish and eks-etcd-member are
-# stubbed on PATH (jq must be installed), and the script's absolute state paths are
-# rewritten into a temp dir on a copy of the script. The stubs record what the
-# script asked of them so we can assert on the prune behaviour.
-#
+# Test for the etcd peer-prune step (3.5) of k3s-first-boot.sh: kubectl and the helpers
+# are stubbed on PATH (jq required) and state paths rewritten into a temp dir.
 # Run: sh scripts/images/eks-node/k3s-first-boot_test.sh
 set -eu
 
@@ -118,6 +114,9 @@ NODES_BODY="" MEMBER_RC=1 run_case 10.0.0.12 && rc=0 || rc=$?
 [ "${rc}" -eq 0 ] && pass "helper-fails: first boot still exits 0" || fail "helper-fails: exit ${rc}"
 [ ! -e "${WORK}/state/first-boot.pending" ] && pass "helper-fails: sentinel consumed" || fail "helper-fails: sentinel left behind"
 [ -s "${WORK}/member.log" ] && pass "helper-fails: helper was attempted" || fail "helper-fails: helper never attempted"
+grep -Eq 'prune.*fail.*10\.0\.0\.12' "${WORK}/out.log" \
+    && pass "helper-fails: prune failure logged with the peer IP" \
+    || fail "helper-fails: no prune-failure line naming 10.0.0.12 (out.log: $(cat "${WORK}/out.log"))"
 
 echo
 echo "passed=${PASS} failed=${FAIL}"

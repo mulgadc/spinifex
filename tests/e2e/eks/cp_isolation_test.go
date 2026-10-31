@@ -17,6 +17,10 @@ import (
 
 const cpIsolationNodegroup = "cpiso-e2e-ng"
 
+// nodeGroupLabelRows prints one "<node> <nodegroup>" row per Node; the second
+// column is empty for a Node that is not a nodegroup worker.
+const nodeGroupLabelRows = `jsonpath={range .items[*]}{.metadata.name} {.metadata.labels.eks\.amazonaws\.com/nodegroup}{"\n"}{end}`
+
 // runCPIsolation proves control-plane hosts never register as Nodes, as on AWS:
 // only nodegroup workers are listed, a DaemonSet tolerating every taint runs on
 // workers only, metrics-server is Ready, and logs work for every kube-system pod.
@@ -28,14 +32,14 @@ func runCPIsolation(t *testing.T, c *harness.AWSClient, env *harness.Env, artifa
 	kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
 
 	t.Run("OnlyWorkersAreNodes", func(t *testing.T) {
-		out, err := kc.Run(30*time.Second, "get", "nodes",
-			"-l", "node-role.kubernetes.io/control-plane", "-o", "name")
-		require.NoErrorf(t, err, "get control-plane nodes:\n%s", out)
-		assert.Emptyf(t, strings.TrimSpace(out), "control-plane hosts must not register as Nodes:\n%s", out)
-
-		out, err = kc.Run(30*time.Second, "get", "nodes", "-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}")
+		out, err := kc.Run(30*time.Second, "get", "nodes", "-o", nodeGroupLabelRows)
 		require.NoErrorf(t, err, "get nodes:\n%s", out)
-		assert.NotEmpty(t, strings.TrimSpace(out), "the nodegroup worker must be listed")
+		rows := strings.Split(strings.TrimSpace(out), "\n")
+		require.NotEmpty(t, strings.TrimSpace(out), "the nodegroup worker must be listed")
+		for _, row := range rows {
+			f := strings.Fields(row)
+			assert.Lenf(t, f, 2, "Node %q must carry the eks.amazonaws.com/nodegroup label: a Node without it is not a nodegroup worker", row)
+		}
 	})
 
 	t.Run("TolerateAllDaemonSetRunsOnWorkersOnly", func(t *testing.T) {
@@ -49,20 +53,32 @@ func runCPIsolation(t *testing.T, c *harness.AWSClient, env *harness.Env, artifa
 		})
 
 		harness.EventuallyErr(t, func() error {
-			want, err := kc.Run(30*time.Second, "get", "daemonset", ds, "-o", "jsonpath={.status.desiredNumberScheduled}")
+			ready, err := kc.Run(30*time.Second, "get", "pods", "-l", "app="+ds,
+				"-o", `jsonpath={range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`)
 			if err != nil {
-				return fmt.Errorf("get daemonset: %v\n%s", err, want)
+				return fmt.Errorf("get daemonset pods: %v\n%s", err, ready)
 			}
-			nodes, err := kc.Run(30*time.Second, "get", "nodes", "-o", "name")
-			if err != nil {
-				return fmt.Errorf("get nodes: %v\n%s", err, nodes)
+			states := strings.Fields(ready)
+			if len(states) == 0 {
+				return fmt.Errorf("daemonset has no pods yet")
 			}
-			got := len(strings.Fields(nodes))
-			if strings.TrimSpace(want) != fmt.Sprint(got) {
-				return fmt.Errorf("daemonset desires %q pods, cluster has %d Nodes", strings.TrimSpace(want), got)
+			for _, s := range states {
+				if s != "True" {
+					return fmt.Errorf("daemonset pods not all Ready: %v", states)
+				}
 			}
 			return nil
 		}, 3*time.Minute, 5*time.Second)
+
+		nodes, err := kc.Run(30*time.Second, "get", "pods", "-l", "app="+ds,
+			"-o", `jsonpath={range .items[*]}{.spec.nodeName}{"\n"}{end}`)
+		require.NoErrorf(t, err, "get daemonset pod nodes:\n%s", nodes)
+		for _, node := range strings.Fields(nodes) {
+			label, err := kc.Run(30*time.Second, "get", "node", node, "-o",
+				`jsonpath={.metadata.labels.eks\.amazonaws\.com/nodegroup}`)
+			require.NoErrorf(t, err, "get node %s:\n%s", node, label)
+			assert.NotEmptyf(t, strings.TrimSpace(label), "daemonset pod ran on %s, which is not a nodegroup worker", node)
+		}
 	})
 
 	t.Run("MetricsServerReady", func(t *testing.T) {

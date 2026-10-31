@@ -16,6 +16,7 @@ import {
   adminStorageStatusQueryOptions,
   adminVMsQueryOptions,
   grantModelAccess,
+  instanceTypeCapacityQueryOptions,
   revokeModelAccess,
 } from "./admin"
 
@@ -29,6 +30,29 @@ describe("adminNodesQueryOptions", () => {
     await callQueryFn(adminNodesQueryOptions)
 
     expect(mockSignedFetch).toHaveBeenCalledWith({ action: "GetNodes" })
+  })
+})
+
+describe("instanceTypeCapacityQueryOptions", () => {
+  it("calls signedFetch with GetInstanceTypeCapacity action", async () => {
+    mockSignedFetch.mockResolvedValue({
+      available: { "t3.micro": 7 },
+      nodes: 1,
+    })
+
+    const data = await callQueryFn(instanceTypeCapacityQueryOptions)
+
+    expect(mockSignedFetch).toHaveBeenCalledWith({
+      action: "GetInstanceTypeCapacity",
+    })
+    expect(data).toStrictEqual({ available: { "t3.micro": 7 }, nodes: 1 })
+  })
+
+  // The action names no resource, so a policy that does not grant it answers
+  // AccessDenied. Retrying that would hold the launch panel on a refusal that
+  // will not change.
+  it("does not retry", () => {
+    expect(instanceTypeCapacityQueryOptions).toHaveProperty("retry", false)
   })
 })
 

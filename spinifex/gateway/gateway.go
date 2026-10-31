@@ -29,6 +29,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/compress"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
@@ -185,6 +186,11 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	r.Group(func(auth chi.Router) {
 		auth.Use(gw.SigV4AuthMiddleware())
 		auth.Use(traceActionEnricher)
+
+		// Mounted inside this group, so the OCI Distribution registry above is
+		// excluded: it declares its own Content-Length and serves layers that
+		// are already compressed.
+		auth.Use(compress.Middleware)
 
 		// Post-auth, per-account+action token bucket throttle.
 		if gw.Throttler != nil {

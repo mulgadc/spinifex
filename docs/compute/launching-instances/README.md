@@ -150,12 +150,16 @@ aws ec2 describe-instance-types \
   --query "InstanceTypes[?InstanceType=='t3.small']"
 ```
 
-Show capacity (how many of each type can still be launched):
+List only the types that can still be launched:
 
 ```bash
 aws ec2 describe-instance-types \
   --filters Name=capacity,Values=true
 ```
+
+Each type appears once, whatever its free capacity.
+This filter is a Spinifex extension and AWS does not declare it, so it is ignored by a region that does not implement it.
+AWS reports exhaustion at launch instead, with `InsufficientInstanceCapacity`, and so does Spinifex.
 
 ## SSH
 

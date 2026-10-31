@@ -99,6 +99,16 @@ export function ec2(action: string, inner: string): ApiHandler {
   return () => ({ body: xml(action, inner, EC2_NAMESPACE) })
 }
 
+// GetInstanceTypeCapacity, which carries the free slots per type as a number.
+// It is a separate action from the instance-type listing, so a test can give
+// the two different answers and a test that gives neither reads no figure.
+export function instanceTypeCapacity(
+  available: Record<string, number>,
+  nodes = 1,
+): ApiHandler {
+  return () => json({ available, nodes })
+}
+
 // What the dashboard, the shell and the launch form ask for on an empty account.
 const EMPTY_EC2 = {
   DescribeAddresses: "<addressesSet/>",
@@ -174,6 +184,7 @@ async function installConsole(page: Page): Promise<ConsoleApi> {
   api.handle("GetVersion", () => json(VERSION))
   api.handle("GetNodes", () => json(NODES))
   api.handle("GetVMs", () => json({ vms: [] }))
+  api.handle("GetInstanceTypeCapacity", instanceTypeCapacity({}))
 
   api.handle("GET /proxy/s3/", () => ({
     body: `<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Owner><ID>e2e</ID></Owner><Buckets/></ListAllMyBucketsResult>`,

@@ -146,7 +146,7 @@ func TestSTSRequest_AssumeRole_Success(t *testing.T) {
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
-		principalType: principalTypeUser,
+		principalType: gwfix.PrincipalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
 		stsSvc:        svc,
 		iamSvc:        stsIdentityPolicy(stsStatement("Allow", "sts:AssumeRole", "*")),
@@ -177,7 +177,7 @@ func TestSTSRequest_GetCallerIdentity_AssumedRole(t *testing.T) {
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:      awsidentifiers.GlobalAccountID,
 		identity:       "s1",
-		principalType:  principalTypeAssumedRole,
+		principalType:  gwfix.PrincipalTypeAssumedRole,
 		accessKey:      "ASIAEXAMPLE",
 		assumedRoleARN: "arn:aws:sts::000000000000:assumed-role/app/s1",
 		assumedRoleID:  "AROAEXAMPLE:s1",
@@ -202,7 +202,7 @@ func TestSTSRequest_GetCallerIdentity_RootShortcircuitsIAMLookup(t *testing.T) {
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "root",
-		principalType: principalTypeUser,
+		principalType: gwfix.PrincipalTypeUser,
 		accessKey:     "AKIAROOT",
 		stsSvc:        &flexMockSTSService{},
 	})
@@ -246,7 +246,7 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
-		principalType: principalTypeUser,
+		principalType: gwfix.PrincipalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
 		stsSvc:        svc,
 	})
@@ -266,7 +266,7 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 	// Verify forwarded identity fields and that checkPolicy did not block (STS_Request runs no checkPolicy pass).
 	assert.Equal(t, awsidentifiers.GlobalAccountID, got.accountID)
 	assert.Equal(t, "alice", got.userName)
-	assert.Equal(t, principalTypeUser, got.principalType)
+	assert.Equal(t, gwfix.PrincipalTypeUser, got.principalType)
 	assert.Equal(t, "AKIAEXAMPLE", got.accessKeyID)
 	assert.Equal(t, int64(3600), got.duration)
 }
@@ -275,7 +275,7 @@ func TestSTSRequest_UnknownAction(t *testing.T) {
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "root",
-		principalType: principalTypeUser,
+		principalType: gwfix.PrincipalTypeUser,
 		accessKey:     "AKIAROOT",
 		stsSvc:        &flexMockSTSService{},
 	})
@@ -293,7 +293,7 @@ func TestSTSRequest_MissingAction(t *testing.T) {
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "root",
-		principalType: principalTypeUser,
+		principalType: gwfix.PrincipalTypeUser,
 		accessKey:     "AKIAROOT",
 		stsSvc:        &flexMockSTSService{},
 	})
@@ -317,7 +317,7 @@ func TestSTSRequest_AssumeRole_MissingRoleArn(t *testing.T) {
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
-		principalType: principalTypeUser,
+		principalType: gwfix.PrincipalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
 		stsSvc:        svc,
 		// An empty policy: a request missing RoleArn is malformed whatever the
@@ -341,7 +341,7 @@ func TestSTSRequest_NilService_InternalError(t *testing.T) {
 		ctx := reqctx.WithService(r.Context(), "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
 		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
-		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+		ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 		ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAEXAMPLE")
 		r = r.WithContext(ctx)
 		if err := gw.STS_Request(w, r); err != nil {
@@ -373,7 +373,7 @@ func TestSTSRequest_AssumeRole_NilIAMService_InternalError(t *testing.T) {
 		ctx := reqctx.WithService(r.Context(), "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
 		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
-		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+		ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 		ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAEXAMPLE")
 		r = r.WithContext(ctx)
 		if err := gw.STS_Request(w, r); err != nil {
@@ -401,7 +401,7 @@ func TestSTSRequest_AssumeRole_ServiceError_PropagatesAccessDenied(t *testing.T)
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
-		principalType: principalTypeUser,
+		principalType: gwfix.PrincipalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
 		stsSvc:        svc,
 		iamSvc:        stsIdentityPolicy(stsStatement("Allow", "sts:AssumeRole", "*")),
@@ -428,7 +428,7 @@ func TestSTSRequest_GetCallerIdentity_User_LookupIAM(t *testing.T) {
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
-		principalType: principalTypeUser,
+		principalType: gwfix.PrincipalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
 		stsSvc:        &flexMockSTSService{},
 		iamSvc:        iamSvc,

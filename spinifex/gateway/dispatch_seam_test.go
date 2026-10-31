@@ -173,7 +173,7 @@ func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...disp
 	r := chi.NewRouter()
 	r.Use(audit.Middleware)
 	r.Use(gw.SigV4AuthMiddleware())
-	r.Use(TraceActionEnricher)
+	r.Use(traceActionEnricher)
 	r.HandleFunc("/*", gw.Request)
 	return gw, r
 }
@@ -222,7 +222,7 @@ func TestDispatchSeam_ResolvedActionReachesThrottleTraceAndAudit(t *testing.T) {
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))
 	r.Use(audit.Middleware)
 	r.Use(gw.SigV4AuthMiddleware())
-	r.Use(TraceActionEnricher)
+	r.Use(traceActionEnricher)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotCtxAction = reqctx.Action(r.Context())
@@ -306,7 +306,7 @@ func TestDispatchSeam_ActorReturnsVerifiedCallerIgnoringBody(t *testing.T) {
 	require.NoError(t, capt.actorErr)
 	assert.Equal(t, ecrTestAccount, capt.actor.AccountID)
 	assert.Equal(t, "arn:aws:iam::"+ecrTestAccount+":user/alice", capt.actor.CallerARN)
-	assert.Equal(t, principalTypeUser, capt.actor.PrincipalType)
+	assert.Equal(t, gwfix.PrincipalTypeUser, capt.actor.PrincipalType)
 	assert.Equal(t, gwfix.AccessKey, capt.actor.AccessKeyID)
 }
 

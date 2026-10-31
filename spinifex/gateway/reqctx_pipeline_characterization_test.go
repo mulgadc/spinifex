@@ -324,7 +324,7 @@ func auditedPipeline(t *testing.T, gw *GatewayConfig) (http.Handler, func() *aud
 		})
 	})
 	r.Use(gw.SigV4AuthMiddleware())
-	r.Use(TraceActionEnricher)
+	r.Use(traceActionEnricher)
 	if gw.Throttler != nil {
 		r.Use(gw.Throttler.Middleware(gw.throttleKeyFuncs(), gw.writeThrottleError))
 	}

@@ -220,10 +220,10 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
-// ResolveNonQueryAction resolves the action for JSON-1.1 (X-Amz-Target) and
+// resolveNonQueryAction resolves the action for JSON-1.1 (X-Amz-Target) and
 // path-routed REST-JSON services (eks), which carry no
 // query-protocol Action parameter. Empty on no match.
-func ResolveNonQueryAction(r *http.Request) string {
+func resolveNonQueryAction(r *http.Request) string {
 	if target := r.Header.Get("X-Amz-Target"); target != "" {
 		if _, after, ok := strings.CutLast(target, "."); ok {
 			return after
@@ -306,7 +306,7 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 		// service in context; its claimed scope still picks a registration's
 		// envelope, and nothing else.
 		if hint := credentialScopeService(r); hint != "" {
-			if _, ok := gw.Registered(hint); ok {
+			if _, ok := gw.registered(hint); ok {
 				svc = hint
 			}
 		}

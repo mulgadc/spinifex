@@ -237,7 +237,7 @@ func TestTaggingActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 			req.Header.Set("X-Amz-Target", tc.target)
 			gw := withTagging(&GatewayConfig{}, tagging.NewAggregator())
 			assert.Equal(t, tc.wantAction, gw.selector().ResolveAction(req, "tagging"))
-			assert.Equal(t, tc.wantAction, ResolveNonQueryAction(req))
+			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req))
 		})
 	}
 }
@@ -252,7 +252,7 @@ func TestTaggingPipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T
 	r := chi.NewRouter()
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))
 	r.Use(gw.SigV4AuthMiddleware())
-	r.Use(TraceActionEnricher)
+	r.Use(traceActionEnricher)
 	r.HandleFunc("/*", gw.Request)
 
 	doRequest(r, signTaggingRequest(t, taggingTargetPrefix+"GetResources", []byte("{}")))

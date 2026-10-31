@@ -25,10 +25,10 @@ func withECR(gw *GatewayConfig, deps awsapi.Deps) *GatewayConfig {
 // serveECR dispatches r to gw's registered ECR service exactly as Request does
 // past its NATS gate, first registering one with no capabilities if needed.
 func (gw *GatewayConfig) serveECR(w http.ResponseWriter, r *http.Request) error {
-	entry, ok := gw.Registered(awsapi.ServiceName)
+	entry, ok := gw.registered(awsapi.ServiceName)
 	if !ok {
 		withECR(gw, awsapi.Deps{})
-		entry, _ = gw.Registered(awsapi.ServiceName)
+		entry, _ = gw.registered(awsapi.ServiceName)
 	}
 	return gw.dispatchRegistered(entry, w, r)
 }

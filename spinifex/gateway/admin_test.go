@@ -136,7 +136,7 @@ func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *ht
 	ctx = reqctx.WithService(ctx, "spinifex")
 	ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.DefaultAccountID())
 	ctx = withPrincipalField(ctx, fieldIdentity, "admin")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 
 	rec := httptest.NewRecorder()
 	gw.Admin_Request(rec, req.WithContext(ctx))

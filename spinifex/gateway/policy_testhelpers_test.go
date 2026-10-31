@@ -34,7 +34,7 @@ func withTestIdentity(req *http.Request) *http.Request {
 		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
 	}
 	if have.PrincipalType == "" {
-		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+		ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	}
 	return req.WithContext(ctx)
 }

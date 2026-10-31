@@ -36,7 +36,7 @@ func setupRDSUserRequest(body, accountID string) *http.Request {
 	req := setupRDSRequest(body)
 	ctx := withPrincipalField(req.Context(), fieldAccountID, accountID)
 	ctx = withPrincipalField(ctx, fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	return req.WithContext(ctx)
 }
 

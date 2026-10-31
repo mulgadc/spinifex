@@ -791,7 +791,7 @@ func TestRequest_EC2MissingAction(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
 	ctx := reqctx.WithService(req.Context(), "ec2")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
 
@@ -808,7 +808,7 @@ func TestRequest_IAMNilService(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=CreateUser&UserName=test"))
 	ctx := reqctx.WithService(req.Context(), "iam")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
 
@@ -976,7 +976,7 @@ func TestCheckPolicy_FailsClosed(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)
 		ctx := withPrincipalField(req.Context(), fieldIdentity, identity)
 		ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+		ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 		return req.WithContext(ctx)
 	}
 
@@ -1027,7 +1027,7 @@ func TestCheckPolicyResources_DenialIsOpaque(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 
 	resource := "arn:aws:iam::123456789012:role/private/target"
@@ -1060,7 +1060,7 @@ func TestCheckPolicy_RootUserGlobalAccount(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "root")
 	ctx = withPrincipalField(ctx, fieldAccountID, "000000000000") // GlobalAccountID
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1075,7 +1075,7 @@ func TestCheckPolicy_AssumedRoleSessionNamedRoot(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "root")
 	ctx = withPrincipalField(ctx, fieldAccountID, "000000000000")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeAssumedRole)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeAssumedRole)
 	ctx = withPrincipalField(ctx, fieldAssumedRoleARN, "arn:aws:sts::000000000000:assumed-role/r/root")
 	req = req.WithContext(ctx)
 
@@ -1101,7 +1101,7 @@ func TestCheckPolicy_NonRootAllowPolicy(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1125,7 +1125,7 @@ func TestCheckPolicy_NonRootDenyPolicy(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1143,7 +1143,7 @@ func TestCheckPolicy_NonRootNoPolicies(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1161,7 +1161,7 @@ func TestCheckPolicy_GetUserPoliciesError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1203,7 +1203,7 @@ func TestCheckPolicy_NATSTransientRetriesAllAttempts(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1235,7 +1235,7 @@ func TestCheckPolicy_NATSTransientRetriesThenSucceeds(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -1253,7 +1253,7 @@ func TestCheckPolicy_NonTransientErrorStillFails(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")

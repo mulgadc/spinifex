@@ -111,12 +111,12 @@ func emittedKeys(t *testing.T) map[string]string {
 		"user": {
 			Identity:      "alice",
 			AccountID:     "000000000001",
-			PrincipalType: principalTypeUser,
+			PrincipalType: gwfix.PrincipalTypeUser,
 		},
 		"assumed-role": {
 			Identity:       "session",
 			AccountID:      "000000000001",
-			PrincipalType:  principalTypeAssumedRole,
+			PrincipalType:  gwfix.PrincipalTypeAssumedRole,
 			AssumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/session",
 			AssumedRoleID:  "AROASHAREDOPS:session",
 		},

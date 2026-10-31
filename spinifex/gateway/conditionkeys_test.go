@@ -28,7 +28,7 @@ func TestRequestConditionKeys_PopulatesAvailableKeys(t *testing.T) {
 	principal := credential.Principal{
 		Identity:      "alice",
 		AccountID:     "000000000001",
-		PrincipalType: principalTypeUser,
+		PrincipalType: gwfix.PrincipalTypeUser,
 		UserID:        "AIDAALICE",
 	}
 
@@ -63,9 +63,9 @@ func TestRequestConditionKeys_PrincipalType(t *testing.T) {
 		want          string
 		omitted       bool
 	}{
-		{principalType: principalTypeUser, want: iampolicy.PrincipalTypeUser},
-		{principalType: principalTypeAssumedRole, want: iampolicy.PrincipalTypeAssumedRole},
-		{principalType: principalTypeRoot, want: iampolicy.PrincipalTypeAccount},
+		{principalType: gwfix.PrincipalTypeUser, want: iampolicy.PrincipalTypeUser},
+		{principalType: gwfix.PrincipalTypeAssumedRole, want: iampolicy.PrincipalTypeAssumedRole},
+		{principalType: gwfix.PrincipalTypeRoot, want: iampolicy.PrincipalTypeAccount},
 		{principalType: "", omitted: true},
 	}
 	for _, tt := range tests {
@@ -88,7 +88,7 @@ func TestRequestConditionKeys_UserIDForAssumedRole(t *testing.T) {
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{
 		Identity:      "session",
 		AccountID:     "000000000001",
-		PrincipalType: principalTypeAssumedRole,
+		PrincipalType: gwfix.PrincipalTypeAssumedRole,
 		AssumedRoleID: "AROASHAREDOPS:session",
 		UserID:        "AROASHAREDOPS:session",
 	})
@@ -103,7 +103,7 @@ func TestRequestConditionKeys_OmitsUnresolvableUserID(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{
-		Identity: "alice", AccountID: "000000000001", PrincipalType: principalTypeUser,
+		Identity: "alice", AccountID: "000000000001", PrincipalType: gwfix.PrincipalTypeUser,
 	})
 	assert.NotContains(t, keys, iampolicy.KeyUserID)
 }
@@ -116,7 +116,7 @@ func TestRequestConditionKeys_OmitsUsernameForAssumedRole(t *testing.T) {
 	principal := credential.Principal{
 		Identity:       "alice",
 		AccountID:      "000000000001",
-		PrincipalType:  principalTypeAssumedRole,
+		PrincipalType:  gwfix.PrincipalTypeAssumedRole,
 		AssumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/alice",
 	}
 
@@ -132,7 +132,7 @@ func TestRequestConditionKeys_OmitsS3Prefix(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/?prefix=home/", nil)
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{
 		Identity:      "alice",
-		PrincipalType: principalTypeUser,
+		PrincipalType: gwfix.PrincipalTypeUser,
 	})
 
 	assert.NotContains(t, keys, iampolicy.KeyS3Prefix)
@@ -144,7 +144,7 @@ func TestRequestConditionKeys_OmitsS3Prefix(t *testing.T) {
 func TestRequestConditionKeys_OmitsEmptyValues(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.RemoteAddr = ""
-	keys := policyauth.RequestConditionKeys(r, credential.Principal{PrincipalType: principalTypeUser})
+	keys := policyauth.RequestConditionKeys(r, credential.Principal{PrincipalType: gwfix.PrincipalTypeUser})
 
 	assert.NotContains(t, keys, iampolicy.KeySourceIP)
 	assert.NotContains(t, keys, iampolicy.KeyUsername)
@@ -160,7 +160,7 @@ func TestRequestConditionKeys_SourceIPWithoutAuthMiddleware(t *testing.T) {
 
 	keys := policyauth.RequestConditionKeys(r, credential.Principal{
 		Identity:      "alice",
-		PrincipalType: principalTypeUser,
+		PrincipalType: gwfix.PrincipalTypeUser,
 	})
 
 	assert.Equal(t, "10.4.1.9", keys[iampolicy.KeySourceIP])

@@ -140,7 +140,7 @@ func (m *ecrMockSTSService) VerifySessionPrincipal(cred *stsdomain.SessionCreden
 		return nil, m.principalErr
 	}
 	live, err := gwfix.StubSessionPrincipal(cred)
-	if err == nil && cred.PrincipalType == principalTypeUser {
+	if err == nil && cred.PrincipalType == gwfix.PrincipalTypeUser {
 		live.UserARN = m.liveUserARN
 	}
 	return live, err
@@ -179,7 +179,7 @@ func seedECRSessionUser(iamSvc *ecrMockIAMService, stsSvc *ecrMockSTSService, ac
 	stsSvc.sessions[asid] = &stsdomain.SessionCredential{
 		AccessKeyID:   asid,
 		AccountID:     accountID,
-		PrincipalType: principalTypeUser,
+		PrincipalType: gwfix.PrincipalTypeUser,
 		SessionName:   userName,
 		UserID:        "AIDA" + strings.ToUpper(userName),
 		ExpiresAt:     expiresAt,
@@ -201,7 +201,7 @@ func seedECRAssumedRole(iamSvc *ecrMockIAMService, stsSvc *ecrMockSTSService, ac
 	stsSvc.sessions[asid] = &stsdomain.SessionCredential{
 		AccessKeyID:       asid,
 		AccountID:         accountID,
-		PrincipalType:     principalTypeAssumedRole,
+		PrincipalType:     gwfix.PrincipalTypeAssumedRole,
 		SessionName:       sessionName,
 		AssumedRoleARN:    assumedRoleARN,
 		UnderlyingRoleARN: roleARN,

@@ -3,6 +3,7 @@ package gateway
 import (
 	"encoding/base64"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,7 +27,7 @@ func TestGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	ctx = withPrincipalField(ctx, fieldIdentity, "dev")
 	ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAGETAUTHTOKENTEST1")
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".GetAuthorizationToken")
@@ -80,7 +81,7 @@ func TestGetAuthorizationToken_PathedUserRoundTrips(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrPrincipalTestAccount)
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	ctx = withPrincipalField(ctx, fieldIdentity, "dev")
 	ctx = withPrincipalField(ctx, fieldUserARN, ecrPathedUserARN)
 	ctx = withPrincipalField(ctx, fieldAccessKey, ecrPrincipalTestAKID)
@@ -119,7 +120,7 @@ func TestGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	ctx = withPrincipalField(ctx, fieldIdentity, "dev")
 	ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAGETAUTHTOKENTEST1")
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".GetAuthorizationToken")

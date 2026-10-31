@@ -20,7 +20,7 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Amzn-Requestid", requestID)
 	r = r.WithContext(operatoradmin.WithRequestID(r.Context(), requestID))
 
-	entry, ok := gw.Registered(operatoradmin.ServiceName)
+	entry, ok := gw.registered(operatoradmin.ServiceName)
 	if !ok {
 		slog.Error("Admin: spinifex service is not registered", "requestId", requestID)
 		gw.writeAdminError(w, requestID, awserrors.ErrorInternalError, "")

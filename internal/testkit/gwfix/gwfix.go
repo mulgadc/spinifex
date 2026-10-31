@@ -36,7 +36,9 @@ const (
 	RoleARN      = "arn:aws:iam::123456789012:role/test-role"
 	AssumedARN   = "arn:aws:sts::123456789012:assumed-role/test-role/test-session"
 
+	PrincipalTypeUser        = "user"
 	PrincipalTypeAssumedRole = "assumed-role"
+	PrincipalTypeRoot        = "root"
 )
 
 // IAM implements iamdomain.IAMService for auth tests. It embeds the interface

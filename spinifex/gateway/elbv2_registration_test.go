@@ -26,7 +26,7 @@ func (gw *GatewayConfig) serveELBv2(w http.ResponseWriter, r *http.Request) erro
 	if gw.Services == nil {
 		withELBv2(gw)
 	}
-	entry, ok := gw.Registered(elbv2awsapi.ServiceName)
+	entry, ok := gw.registered(elbv2awsapi.ServiceName)
 	if !ok {
 		panic("ELBv2 is not registered on this gateway")
 	}

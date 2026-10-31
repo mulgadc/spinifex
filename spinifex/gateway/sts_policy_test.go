@@ -1,4 +1,4 @@
-// (stsRequestParams, principalTypeUser, the context keys) and shares the
+// (stsRequestParams, gwfix.PrincipalTypeUser, the context keys) and shares the
 // policy mocks with the other in-package authz suites.
 //
 //test:in-package — the gate is exercised through unexported request wiring
@@ -105,7 +105,7 @@ func stsPolicyRequest(t *testing.T, iamSvc iamdomain.IAMService, stsSvc *flexMoc
 	return stsPolicyRequestAs(t, stsRequestParams{
 		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
-		principalType: principalTypeUser,
+		principalType: gwfix.PrincipalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
 		stsSvc:        stsSvc,
 		iamSvc:        iamSvc,
@@ -171,7 +171,7 @@ func TestSTSRequest_AssumeRole_AssumedRoleCallerIsGated(t *testing.T) {
 		return stsRequestParams{
 			accountID:         awsidentifiers.GlobalAccountID,
 			identity:          "s1",
-			principalType:     principalTypeAssumedRole,
+			principalType:     gwfix.PrincipalTypeAssumedRole,
 			accessKey:         "ASIAEXAMPLE",
 			assumedRoleARN:    "arn:aws:sts::000000000000:assumed-role/ecsInstanceRole/s1",
 			assumedRoleID:     "AROAECS:s1",

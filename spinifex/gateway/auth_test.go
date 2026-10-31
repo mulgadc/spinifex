@@ -1522,7 +1522,7 @@ func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *gwfi
 		SecretEncrypted:   encryptedSecret,
 		SessionTokenHMAC:  "ignored-in-mock", // mock verifies by plaintext map
 		AccountID:         "123456789012",
-		PrincipalType:     principalTypeAssumedRole,
+		PrincipalType:     gwfix.PrincipalTypeAssumedRole,
 		AssumedRoleARN:    gwfix.AssumedARN,
 		UnderlyingRoleARN: gwfix.RoleARN,
 		RoleID:            "AROAEXAMPLEAAAAAA",
@@ -1609,7 +1609,7 @@ func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
 		SecretEncrypted:  encryptedSecret,
 		SessionTokenHMAC: "ignored-in-mock",
 		AccountID:        "123456789012",
-		PrincipalType:    principalTypeUser,
+		PrincipalType:    gwfix.PrincipalTypeUser,
 		SessionName:      "alice",
 		ExpiresAt:        time.Now().UTC().Add(time.Hour),
 		CreatedAt:        time.Now().UTC().Add(-time.Minute),
@@ -1834,7 +1834,7 @@ func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 			require.NoError(t, err)
 			cred := &stsdomain.SessionCredential{
 				AccessKeyID: gwfix.SessionAKID, SecretEncrypted: encrypted, AccountID: "123456789012",
-				PrincipalType: principalTypeAssumedRole, SessionName: "test-session",
+				PrincipalType: gwfix.PrincipalTypeAssumedRole, SessionName: "test-session",
 				ExpiresAt: time.Now().UTC().Add(time.Hour),
 			}
 			sts := &gwfix.STS{
@@ -2007,7 +2007,7 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 		AccessKeyID:       gwfix.SessionAKID,
 		SecretEncrypted:   encryptedSecret,
 		AccountID:         "123456789012",
-		PrincipalType:     principalTypeAssumedRole,
+		PrincipalType:     gwfix.PrincipalTypeAssumedRole,
 		AssumedRoleARN:    "arn:aws:sts::123456789012:assumed-role/some-role/alice",
 		UnderlyingRoleARN: "arn:aws:iam::123456789012:role/some-role",
 		SessionName:       "alice",

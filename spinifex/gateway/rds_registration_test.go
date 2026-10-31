@@ -28,7 +28,7 @@ func (gw *GatewayConfig) serveRDS(w http.ResponseWriter, r *http.Request) error 
 	if gw.Services == nil {
 		withRDS(gw)
 	}
-	entry, ok := gw.Registered(rdsawsapi.ServiceName)
+	entry, ok := gw.registered(rdsawsapi.ServiceName)
 	if !ok {
 		panic("RDS is not registered on this gateway")
 	}

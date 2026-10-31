@@ -155,7 +155,7 @@ func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdo
 		r.Use(mw)
 	}
 	r.Use(gw.SigV4AuthMiddleware())
-	r.Use(TraceActionEnricher)
+	r.Use(traceActionEnricher)
 	if env.Throttler != nil {
 		r.Use(env.Throttler.Middleware(gw.throttleKeyFuncs(), gw.writeThrottleError))
 	}

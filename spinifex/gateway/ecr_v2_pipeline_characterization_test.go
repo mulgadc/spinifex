@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -78,14 +79,14 @@ func (e *v2Env) mintRole(t *testing.T, roleID string) string {
 	t.Helper()
 	tok, _, err := e.issuer.Mint(ecrauth.Principal{
 		AccountID: v2Account, ARN: "arn:aws:sts::" + v2Account + ":assumed-role/deploy/s1",
-		Type: principalTypeAssumedRole, AccessKeyID: v2ASID, RoleID: roleID,
+		Type: gwfix.PrincipalTypeAssumedRole, AccessKeyID: v2ASID, RoleID: roleID,
 	})
 	require.NoError(t, err)
 	return tok
 }
 
 func (e *v2Env) userToken(t *testing.T) string {
-	return e.mint(t, v2Account, "arn:aws:iam::"+v2Account+":user/dev", principalTypeUser, v2AKID)
+	return e.mint(t, v2Account, "arn:aws:iam::"+v2Account+":user/dev", gwfix.PrincipalTypeUser, v2AKID)
 }
 
 func basic(token string) string {
@@ -154,7 +155,7 @@ func TestV2Pipeline_VersionCheckAndStub(t *testing.T) {
 func TestV2Pipeline_TokenRejections(t *testing.T) {
 	e := newV2Env(t, v2Options{})
 	good := e.userToken(t)
-	other := e.mint(t, "000000000099", "arn:aws:iam::000000000099:user/dev", principalTypeUser, v2AKID)
+	other := e.mint(t, "000000000099", "arn:aws:iam::000000000099:user/dev", gwfix.PrincipalTypeUser, v2AKID)
 
 	tests := []struct {
 		name       string
@@ -200,10 +201,10 @@ func TestV2Pipeline_NonRegistryHostPassesThrough(t *testing.T) {
 func TestV2Pipeline_PrincipalRehydration(t *testing.T) {
 	user := func(e *v2Env) string { return e.userToken(t) }
 	session := func(e *v2Env) string {
-		return e.mint(t, v2Account, "arn:aws:iam::"+v2Account+":user/dev", principalTypeUser, v2ASID)
+		return e.mint(t, v2Account, "arn:aws:iam::"+v2Account+":user/dev", gwfix.PrincipalTypeUser, v2ASID)
 	}
 	role := func(e *v2Env) string {
-		return e.mint(t, v2Account, "arn:aws:sts::"+v2Account+":assumed-role/deploy/s1", principalTypeAssumedRole, v2ASID)
+		return e.mint(t, v2Account, "arn:aws:sts::"+v2Account+":assumed-role/deploy/s1", gwfix.PrincipalTypeAssumedRole, v2ASID)
 	}
 	seedSession := func(e *v2Env) {
 		seedECRSessionUser(e.iam, e.sts, v2Account, "dev", v2ASID, time.Now().Add(time.Hour))
@@ -245,13 +246,13 @@ func TestV2Pipeline_PrincipalRehydration(t *testing.T) {
 			e.sts.principalErr = stsdomain.ErrSessionPrincipalReplaced
 		}, http.StatusUnauthorized, "UNAUTHORIZED"},
 		{"unrecognized key prefix", func(e *v2Env) string {
-			return e.mint(t, v2Account, "arn:aws:iam::"+v2Account+":user/dev", principalTypeUser, "AROAUNKNOWN0000000001")
+			return e.mint(t, v2Account, "arn:aws:iam::"+v2Account+":user/dev", gwfix.PrincipalTypeUser, "AROAUNKNOWN0000000001")
 		}, func(*v2Env) {}, http.StatusUnauthorized, "UNAUTHORIZED"},
 		{"claim subject does not match the principal", func(e *v2Env) string {
-			return e.mint(t, v2Account, "arn:aws:iam::"+v2Account+":user/someone-else", principalTypeUser, v2AKID)
+			return e.mint(t, v2Account, "arn:aws:iam::"+v2Account+":user/someone-else", gwfix.PrincipalTypeUser, v2AKID)
 		}, func(*v2Env) {}, http.StatusUnauthorized, "UNAUTHORIZED"},
 		{"claim principal type does not match", func(e *v2Env) string {
-			return e.mint(t, v2Account, "arn:aws:iam::"+v2Account+":user/dev", principalTypeAssumedRole, v2AKID)
+			return e.mint(t, v2Account, "arn:aws:iam::"+v2Account+":user/dev", gwfix.PrincipalTypeAssumedRole, v2AKID)
 		}, func(*v2Env) {}, http.StatusUnauthorized, "UNAUTHORIZED"},
 		{"IAM outage", user, func(e *v2Env) { e.iam.genericErr = errors.New("nats: timeout") }, http.StatusServiceUnavailable, "UNKNOWN"},
 		{"STS outage", session, func(e *v2Env) {
@@ -449,7 +450,7 @@ func TestV2Pipeline_TokenEndpoint(t *testing.T) {
 
 	t.Run("token for another account than the host", func(t *testing.T) {
 		e := newV2Env(t, v2Options{})
-		other := e.mint(t, "000000000099", "arn:aws:iam::000000000099:user/dev", principalTypeUser, v2AKID)
+		other := e.mint(t, "000000000099", "arn:aws:iam::000000000099:user/dev", gwfix.PrincipalTypeUser, v2AKID)
 
 		w := e.do(http.MethodGet, "/v2/token", v2Host, "Bearer "+other)
 

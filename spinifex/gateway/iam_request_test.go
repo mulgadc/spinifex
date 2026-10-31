@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"io"
@@ -199,7 +200,7 @@ func setupIAMRequestHandler(svc iamdomain.IAMService) http.Handler {
 		ctx = reqctx.WithService(ctx, "iam")
 		ctx = withPrincipalField(ctx, fieldAccountID, "000000000000")
 		ctx = withPrincipalField(ctx, fieldIdentity, "root")
-		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+		ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 		r = r.WithContext(ctx)
 		if err := gw.IAM_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)
@@ -385,7 +386,7 @@ func TestIAMRequest_NilService(t *testing.T) {
 		ctx = reqctx.WithService(ctx, "iam")
 		ctx = withPrincipalField(ctx, fieldAccountID, "000000000000")
 		ctx = withPrincipalField(ctx, fieldIdentity, "root")
-		ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+		ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 		r = r.WithContext(ctx)
 		if err := gw.IAM_Request(w, r); err != nil {
 			gw.ErrorHandler(w, r, err)

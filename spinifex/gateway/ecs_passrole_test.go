@@ -25,7 +25,7 @@ const testECSPassRoleTargetARN = "arn:aws:iam::123456789012:role/ecs-task-role"
 func setupECSUserRequest(target, body string) *http.Request {
 	req := setupECSRequest(target, body)
 	ctx := withPrincipalField(req.Context(), fieldIdentity, "alice")
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	return req.WithContext(ctx)
 }
 

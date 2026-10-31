@@ -152,7 +152,7 @@ func TestECRPipeline_UnknownAction_400InvalidActionException(t *testing.T) {
 }
 
 // TestECRPipeline_StubbedAction_501NotImplementedException pins that a
-// Registered-but-stubbed action (ListRepositories) still answers 501 through
+// registered-but-stubbed action (ListRepositories) still answers 501 through
 // the full pipeline.
 func TestECRPipeline_StubbedAction_501NotImplementedException(t *testing.T) {
 	_, app := ecrPipelineApp(t, allowAllECRDocs())
@@ -189,7 +189,7 @@ func TestECRPipeline_GetAuthorizationToken_200JSONContentType(t *testing.T) {
 
 // TestECRActionFromTarget_FormsAndTelemetryAgree pins how the ECR
 // registration's resolver (dispatch and telemetry/throttle) and the legacy
-// ResolveNonQueryAction each resolve the X-Amz-Target header today. A refactor
+// resolveNonQueryAction each resolve the X-Amz-Target header today. A refactor
 // that lets them diverge breaks this.
 func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 	cases := []struct {
@@ -202,7 +202,7 @@ func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 		{"bare action", "ListRepositories", "ListRepositories"},
 		{"trailing dot", awsapi.TargetPrefix + ".", ""},
 	}
-	ecrEntry, ok := withECR(&GatewayConfig{}, awsapi.Deps{}).Registered(awsapi.ServiceName)
+	ecrEntry, ok := withECR(&GatewayConfig{}, awsapi.Deps{}).registered(awsapi.ServiceName)
 	require.True(t, ok)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -210,7 +210,7 @@ func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 			req.Header.Set("X-Amz-Target", tc.target)
 			assert.Equal(t, tc.wantAction, ecrEntry.ResolveAction(req))
 
-			assert.Equal(t, tc.wantAction, ResolveNonQueryAction(req),
+			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req),
 				"dispatch and telemetry parsers must agree on %q", tc.target)
 		})
 	}
@@ -404,7 +404,7 @@ func TestGetAuthorizationToken_IgnoresRequestSuppliedIdentity(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"registryIds":["999999999999"]}`))
 	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
-	ctx = withPrincipalField(ctx, fieldPrincipalType, principalTypeUser)
+	ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
 	ctx = withPrincipalField(ctx, fieldIdentity, "dev")
 	ctx = withPrincipalField(ctx, fieldAccessKey, "AKIAGETAUTHTOKENTEST1")
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".GetAuthorizationToken")
@@ -469,7 +469,7 @@ func TestECRPipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))
 	r.Use(gw.SigV4AuthMiddleware())
-	r.Use(TraceActionEnricher)
+	r.Use(traceActionEnricher)
 	r.HandleFunc("/*", gw.Request)
 
 	target := awsapi.TargetPrefix + ".ListRepositories"

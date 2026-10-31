@@ -111,6 +111,8 @@ check "config listens only on the supplied address" \
 check "config admits only the supplied user NKey" 'grep -q "users = \[ { nkey: \"$NKEY\" } \]" "$T/run/nats.conf"'
 check "config syncs JetStream on the data disk" \
     'grep -q "store_dir: \"$T/data\"" "$T/run/nats.conf" && grep -q "sync_interval: always" "$T/run/nats.conf"'
+check "config admits a full SQS message (2MiB max_payload)" \
+    'grep -c "max_payload" "$T/run/nats.conf" | grep -qx 1 && grep -qx "max_payload: 2MiB" "$T/run/nats.conf"'
 check "config is tested by the server before ready" 'grep -qx "nats-server -t -c $T/run/nats.conf" "$T/calls.log"'
 check "no auth material on the console" '! grep -q "$NKEY" "$T/console"'
 check "prepare reports the disk and config, not a listener" 'grep -q "prepared: $T/dev/vdb mounted" "$T/console" && ! grep -qi "listening" "$T/console"'

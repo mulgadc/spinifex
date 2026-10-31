@@ -276,3 +276,72 @@ func TestListEIPIngress_ErrorSurfaces(t *testing.T) {
 		t.Fatal("expected an error when the inventory cannot be read")
 	}
 }
+
+// A guest's packet to an EIP on its own node leaves its VPC from the transit
+// range, which OVN exempts from EIP DNAT, so it is sent from the uplink
+// address instead, as the host's own traffic to the EIP already is.
+func TestEnsureEIPIngress_HairpinSNATToUplinkAddress(t *testing.T) {
+	r := newEIPStubRunner(wiredRouteGet)
+	r.expect("iptables -t nat -C "+EIPHairpinChain, nil, fmt.Errorf("exit 1"))
+	r.expect("iptables -t nat -S "+EIPHairpinChain, nil, nil)
+	r.expect("iptables -t nat -A "+EIPHairpinChain, nil, nil)
+	if err := EnsureEIPIngress(context.Background(), r, EIPIngress{EIP: "192.168.1.200", PoolGateway: "192.168.1.1"}); err != nil {
+		t.Fatalf("EnsureEIPIngress: %v", err)
+	}
+	want := "iptables -t nat -A " + EIPHairpinChain + " -s " + NATTransitCIDR + " -d 192.168.1.200/32" +
+		" -m comment --comment spinifex-eip-hairpin -j SNAT --to-source 192.168.1.42"
+	if !r.called(want) {
+		t.Errorf("missing hairpin SNAT:\n  want %q\n  got  %v", want, r.calls)
+	}
+}
+
+// The uplink address can change, so a rule naming an old one is replaced
+// rather than left beside the new one.
+func TestEnsureEIPIngress_HairpinReplacesAStaleAddress(t *testing.T) {
+	r := newEIPStubRunner(wiredRouteGet)
+	r.expect("iptables -t nat -C "+EIPHairpinChain, nil, fmt.Errorf("exit 1"))
+	r.expect("iptables -t nat -S "+EIPHairpinChain, []byte("-N "+EIPHairpinChain+"\n"+
+		"-A "+EIPHairpinChain+" -s "+NATTransitCIDR+" -d 192.168.1.200/32 -m comment --comment spinifex-eip-hairpin -j SNAT --to-source 10.0.0.9\n"+
+		"-A "+EIPHairpinChain+" -s "+NATTransitCIDR+" -d 192.168.1.201/32 -m comment --comment spinifex-eip-hairpin -j SNAT --to-source 10.0.0.9\n"), nil)
+	r.expect("iptables -t nat -D "+EIPHairpinChain, nil, nil)
+	r.expect("iptables -t nat -A "+EIPHairpinChain, nil, nil)
+	if err := EnsureEIPIngress(context.Background(), r, EIPIngress{EIP: "192.168.1.200", PoolGateway: "192.168.1.1"}); err != nil {
+		t.Fatalf("EnsureEIPIngress: %v", err)
+	}
+	if !r.called("iptables -t nat -D " + EIPHairpinChain + " -s " + NATTransitCIDR + " -d 192.168.1.200/32 -m comment --comment spinifex-eip-hairpin -j SNAT --to-source 10.0.0.9") {
+		t.Errorf("stale hairpin SNAT was not removed: %v", r.calls)
+	}
+	if r.called("iptables -t nat -D " + EIPHairpinChain + " -s " + NATTransitCIDR + " -d 192.168.1.201/32") {
+		t.Errorf("another EIP's hairpin SNAT was removed: %v", r.calls)
+	}
+}
+
+func TestEnsureEIPIngress_HairpinPresentIsLeftAlone(t *testing.T) {
+	r := newEIPStubRunner(wiredRouteGet)
+	r.expect("iptables -t nat -C "+EIPHairpinChain, nil, nil)
+	if err := EnsureEIPIngress(context.Background(), r, EIPIngress{EIP: "192.168.1.200", PoolGateway: "192.168.1.1"}); err != nil {
+		t.Fatalf("EnsureEIPIngress: %v", err)
+	}
+	if r.called("iptables -t nat -A") || r.called("iptables -t nat -D") {
+		t.Errorf("a current hairpin SNAT must not be rewritten on every reconcile: %v", r.calls)
+	}
+}
+
+func TestRemoveEIPIngress_RemovesHairpinSNAT(t *testing.T) {
+	r := newStubRunner()
+	r.expect("ip route get", []byte(wiredRouteGet), nil)
+	r.expect("ip route del", nil, nil)
+	r.expect("ip neigh del proxy", nil, nil)
+	r.expect("iptables -t filter -D", nil, nil)
+	r.expect("iptables -t nat -S "+EIPHairpinChain, []byte(
+		"-A "+EIPHairpinChain+" -s "+NATTransitCIDR+" -d 192.168.1.200/32 -m comment --comment spinifex-eip-hairpin -j SNAT --to-source 192.168.1.42\n"), nil)
+	r.expect("iptables -t nat -D "+EIPHairpinChain, nil, nil)
+	r.expect("ip -4 -o addr show scope global", []byte(plainAddrShow), nil)
+	r.expect("ip rule show", []byte(plainRuleShow), nil)
+	if err := RemoveEIPIngress(context.Background(), r, "192.168.1.200", "192.168.1.1", ""); err != nil {
+		t.Fatalf("RemoveEIPIngress: %v", err)
+	}
+	if !r.called("iptables -t nat -D " + EIPHairpinChain + " -s " + NATTransitCIDR + " -d 192.168.1.200/32") {
+		t.Errorf("hairpin SNAT not removed with the EIP: %v", r.calls)
+	}
+}

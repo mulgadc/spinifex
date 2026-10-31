@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 )
 
@@ -67,6 +68,50 @@ func resolveUplink(ctx context.Context, r Runner, poolGateway, uplinkHint string
 		return uplinkHint, uplinkAddr(ctx, r, uplinkHint), nil
 	}
 	return "", "", nil
+}
+
+// eipHairpinComment marks an EIP's rule in EIPHairpinChain.
+const eipHairpinComment = "spinifex-eip-hairpin"
+
+// eipHairpinRule sends guest traffic for an EIP on this node from the uplink
+// address, as host-local traffic already is, so OVN applies the EIP's DNAT.
+func eipHairpinRule(eip, srcIP string) []string {
+	return []string{"-s", NATTransitCIDR, "-d", eip + "/32",
+		"-m", "comment", "--comment", eipHairpinComment, "-j", "SNAT", "--to-source", srcIP}
+}
+
+// ensureEIPHairpin installs the EIP's hairpin SNAT, replacing one left with an
+// older uplink address. Probed first, since it runs on every reconcile.
+func ensureEIPHairpin(ctx context.Context, r Runner, eip, srcIP string) error {
+	spec := eipHairpinRule(eip, srcIP)
+	if _, err := r.Run(ctx, "iptables", natRuleArgs("-C", "nat", EIPHairpinChain, spec)...); err == nil {
+		return nil
+	}
+	removeEIPHairpin(ctx, r, eip)
+	if out, err := r.Run(ctx, "iptables", natRuleArgs("-A", "nat", EIPHairpinChain, spec)...); err != nil {
+		return fmt.Errorf("install EIP hairpin SNAT for %s: %s: %w", eip, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// removeEIPHairpin deletes every hairpin SNAT for eip, whatever address it
+// names, by reading the chain back.
+func removeEIPHairpin(ctx context.Context, r Runner, eip string) {
+	out, err := r.Run(ctx, "iptables", "-t", "nat", "-S", EIPHairpinChain)
+	if err != nil {
+		return
+	}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "-A" || !strings.Contains(line, "--comment "+eipHairpinComment) ||
+			!slices.Contains(fields, eip+"/32") {
+			continue
+		}
+		args := append([]string{"-t", "nat", "-D"}, fields[1:]...)
+		if dout, derr := r.Run(ctx, "iptables", args...); derr != nil {
+			slog.Debug("host: EIP hairpin SNAT not removed", "eip", eip, "out", string(dout), "err", derr)
+		}
+	}
 }
 
 func eipForwardRules(eip string) [][]string {
@@ -157,6 +202,14 @@ func EnsureEIPIngress(ctx context.Context, r Runner, in EIPIngress) error {
 		}
 	}
 
+	// Not fatal: the EIP works from outside without it, and the next reconcile
+	// retries. Only a guest on this node reaching the EIP depends on it.
+	if srcIP != "" {
+		if err := ensureEIPHairpin(ctx, r, eip, srcIP); err != nil {
+			slog.Warn("host: EIP hairpin SNAT not installed", "eip", eip, "err", err)
+		}
+	}
+
 	// A reply leaves with the EIP as its source, so on a host that source-routes
 	// its uplink the EIP needs the same rule. Without it the reply takes the
 	// default route, and a cloud VNIC that enforces its registered addresses
@@ -226,6 +279,8 @@ func RemoveEIPIngress(ctx context.Context, r Runner, eip, poolGateway, uplinkHin
 			slog.Debug("host: EIP FORWARD rule not present on delete", "eip", eip, "err", err)
 		}
 	}
+
+	removeEIPHairpin(ctx, r, eip)
 
 	if err := RemoveEIPSourceRoute(ctx, r, eip); err != nil {
 		slog.Debug("host: EIP source route not removed", "eip", eip, "err", err)

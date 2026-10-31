@@ -68,7 +68,7 @@ function PanelError({ error }: ErrorComponentProps) {
 
 // A failed query inside the panel stays in the panel, and the list beside it
 // keeps working.
-function PanelBoundary({
+export function PanelBoundary({
   resetKey,
   children,
 }: {
@@ -98,10 +98,17 @@ const ESCAPE_OWNERS =
 
 const MODALS = "[role=alertdialog], [role=dialog][aria-modal=true]"
 
-function escapeOwned(target: EventTarget | null): boolean {
-  const owned = target instanceof Element && target.closest(ESCAPE_OWNERS)
+// A form opened over this panel lies on top of it, so it takes Escape first.
+const FORM_PANEL = "[data-form-panel]"
 
-  return Boolean(owned) || document.querySelector(MODALS) !== null
+export function escapeOwned(
+  target: EventTarget | null,
+  { formPanel = false } = {},
+): boolean {
+  const owned = target instanceof Element && target.closest(ESCAPE_OWNERS)
+  const above = formPanel ? MODALS : `${MODALS}, ${FORM_PANEL}`
+
+  return Boolean(owned) || document.querySelector(above) !== null
 }
 
 // Faster than the slide in, so dismissing never feels like waiting.

@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import {
   Select,
   SelectContent,
@@ -729,26 +730,33 @@ function SecurityGroupField({
           ? `Applies to VPC ${effectiveVpcId}`
           : "No VPC resolved — select a subnet"}
       </FieldDescription>
-      <div className="flex gap-4 text-sm">
-        <label className="flex items-center gap-2">
-          <input
-            aria-label="Create new security group"
-            type="radio"
-            value="create"
-            {...register("securityGroupMode")}
-          />
-          Create new
-        </label>
-        <label className="flex items-center gap-2">
-          <input
-            aria-label="Select existing security group"
-            type="radio"
-            value="existing"
-            {...register("securityGroupMode")}
-          />
-          Select existing
-        </label>
-      </div>
+      <Controller
+        control={control}
+        name="securityGroupMode"
+        render={({ field }) => (
+          <RadioGroup
+            aria-label="Security group"
+            className="flex w-auto"
+            onValueChange={field.onChange}
+            value={field.value}
+          >
+            <Label>
+              <RadioGroupItem
+                aria-label="Create new security group"
+                value="create"
+              />
+              Create new
+            </Label>
+            <Label>
+              <RadioGroupItem
+                aria-label="Select existing security group"
+                value="existing"
+              />
+              Select existing
+            </Label>
+          </RadioGroup>
+        )}
+      />
 
       {sgMode === "create" ? (
         <NewSecurityGroupFields
@@ -838,26 +846,30 @@ function NewSecurityGroupFields({
 
       <Field>
         <FieldTitle>Source</FieldTitle>
-        <div className="flex gap-4 text-sm">
-          <label className="flex items-center gap-2">
-            <input
-              aria-label="Source anywhere"
-              type="radio"
-              value="anywhere"
-              {...register("ruleSource")}
-            />
-            Anywhere (0.0.0.0/0)
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              aria-label="Source custom CIDR"
-              type="radio"
-              value="custom"
-              {...register("ruleSource")}
-            />
-            Custom CIDR
-          </label>
-        </div>
+        <Controller
+          control={control}
+          name="ruleSource"
+          render={({ field }) => (
+            <RadioGroup
+              aria-label="Source"
+              className="flex w-auto"
+              onValueChange={field.onChange}
+              value={field.value}
+            >
+              <Label>
+                <RadioGroupItem aria-label="Source anywhere" value="anywhere" />
+                Anywhere (0.0.0.0/0)
+              </Label>
+              <Label>
+                <RadioGroupItem
+                  aria-label="Source custom CIDR"
+                  value="custom"
+                />
+                Custom CIDR
+              </Label>
+            </RadioGroup>
+          )}
+        />
         {ruleSource === "custom" && (
           <div className="mt-2">
             <Input

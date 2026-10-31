@@ -1,11 +1,11 @@
 import type { Snapshot } from "@aws-sdk/client-ec2"
-import { screen, waitFor } from "@testing-library/react"
+import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
-const { sdk } = vi.hoisted(() => {
+const { sdk, navigate } = vi.hoisted(() => {
   interface SdkCommand {
     readonly input: object
   }
@@ -14,6 +14,7 @@ const { sdk } = vi.hoisted(() => {
     sdk: {
       send: vi.fn<(command: SdkCommand) => Promise<unknown>>(async () => ({})),
     },
+    navigate: vi.fn(),
   }
 })
 
@@ -26,13 +27,14 @@ vi.mock("@/lib/awsClient", async () => {
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
 
-  return await mockRouter(importOriginal)
+  return await mockRouter(importOriginal, { navigate })
 })
 
 import { SnapshotDetails } from "./snapshot-details"
 
 function renderSnapshot(snapshot: Snapshot) {
   sdk.send.mockClear()
+  navigate.mockClear()
   const qc = createTestQueryClient()
   qc.setQueryData(["ec2", "regions"], {
     Regions: [{ RegionName: "ap-southeast-2" }],
@@ -82,14 +84,24 @@ describe("SnapshotDetails", () => {
   it("copies a completed snapshot within the cluster's region", async () => {
     const user = userEvent.setup()
     renderSnapshot({ SnapshotId: "snap-1", State: "completed" })
+    sdk.send.mockResolvedValueOnce({ SnapshotId: "snap-2" })
 
     await user.click(screen.getByRole("button", { name: "Copy snapshot" }))
-    await user.type(screen.getByLabelText("Description (optional)"), "backup")
+    const form = screen.getByRole("region", { name: "Copy snapshot" })
+    await user.type(
+      within(form).getByLabelText("Description (optional)"),
+      "backup",
+    )
     expect(sdk.send).not.toHaveBeenCalled()
-    await user.click(screen.getByRole("button", { name: "Copy snapshot" }))
+    await user.click(
+      within(form).getByRole("button", { name: "Copy snapshot" }),
+    )
 
     await waitFor(() => {
-      expect(sdk.send).toHaveBeenCalled()
+      expect(navigate).toHaveBeenCalledWith({
+        to: "/ec2/describe-snapshots",
+        search: { selected: "snap-2" },
+      })
     })
     expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
       input: {
@@ -98,19 +110,48 @@ describe("SnapshotDetails", () => {
         Description: "backup",
       },
     })
+    expect(screen.queryByRole("region", { name: "Copy snapshot" })).toBeNull()
   })
 
-  it("links the registered AMI instead of closing", async () => {
+  it("selects the registered AMI in the image list", async () => {
     const user = userEvent.setup()
     renderSnapshot({ SnapshotId: "snap-1", State: "completed" })
     sdk.send.mockResolvedValueOnce({ ImageId: "ami-123" })
 
     await user.click(screen.getByRole("button", { name: "Register as AMI" }))
-    await user.type(screen.getByLabelText("Name"), "my-image")
-    await user.click(screen.getByRole("button", { name: "Register AMI" }))
+    const form = screen.getByRole("region", { name: "Register as AMI" })
+    await user.type(within(form).getByLabelText("Name"), "my-image")
+    await user.click(within(form).getByRole("button", { name: "Register AMI" }))
+
+    await waitFor(() => {
+      expect(navigate).toHaveBeenCalledWith({
+        to: "/ec2/describe-images",
+        search: { selected: "ami-123" },
+      })
+    })
+    expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
+      input: {
+        Name: "my-image",
+        BlockDeviceMappings: [
+          { DeviceName: "/dev/sda1", Ebs: { SnapshotId: "snap-1" } },
+        ],
+      },
+    })
+  })
+
+  it("keeps the form open with the refusal beside the button", async () => {
+    const user = userEvent.setup()
+    renderSnapshot({ SnapshotId: "snap-1", State: "completed" })
+    sdk.send.mockRejectedValueOnce(new Error("InvalidAMIName.Duplicate"))
+
+    await user.click(screen.getByRole("button", { name: "Register as AMI" }))
+    const form = screen.getByRole("region", { name: "Register as AMI" })
+    await user.type(within(form).getByLabelText("Name"), "taken")
+    await user.click(within(form).getByRole("button", { name: "Register AMI" }))
 
     await expect(
-      screen.findByRole("link", { name: "ami-123" }),
-    ).resolves.toHaveAttribute("href", "/ec2/describe-images/ami-123")
+      within(form).findByText("InvalidAMIName.Duplicate"),
+    ).resolves.toBeInTheDocument()
+    expect(navigate).not.toHaveBeenCalled()
   })
 })

@@ -17,7 +17,7 @@ import {
   variableFlag,
   type CommandPart,
 } from "@/components/cli-command-panel"
-import { CertificateImportDialog } from "@/components/elbv2/certificate-import-dialog"
+import { CertificateImportForm } from "@/components/elbv2/certificate-import-form"
 import { listenerProtocolDefaults } from "@/components/elbv2/listener-form"
 import { subnetSwitchItems } from "@/components/elbv2/subnets-editor"
 import { FormActions } from "@/components/form-actions"
@@ -27,6 +27,8 @@ import { SwitchList } from "@/components/switch-list"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { VpcSelectField } from "@/components/vpc-select-field"
 import { WizardFailureBanner } from "@/components/wizard-failure-banner"
 import { useCreateLoadBalancerWizard } from "@/mutations/elbv2"
@@ -58,6 +60,8 @@ import { CreateLoadBalancerListenerSection } from "./create-load-balancer-listen
 // The target-group protocol the wizard creates for a given listener protocol.
 // HTTP and HTTPS both forward to an HTTP target group; secure NLB (TLS) and TCP
 // terminate at a TCP one.
+const LB_TYPES: readonly LbType[] = ["application", "network"]
+
 function targetGroupProtocolFor(
   protocol: ListenerProtocolValue,
 ): TargetGroupProtocol {
@@ -296,58 +300,63 @@ export function CreateLoadBalancerPage({
             control={control}
             name="type"
             render={({ field }) => (
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2 text-xs">
-                  <input
+              <RadioGroup
+                aria-label="Type"
+                className="flex w-auto"
+                onValueChange={(value) => {
+                  const next = LB_TYPES.find((type) => type === value)
+
+                  if (next) {
+                    handleTypeChange(next)
+                  }
+                }}
+                value={field.value}
+              >
+                <Label>
+                  <RadioGroupItem
                     aria-label="Application Load Balancer"
-                    checked={field.value === "application"}
-                    name="lb-type"
-                    onChange={() => {
-                      handleTypeChange("application")
-                    }}
-                    type="radio"
+                    value="application"
                   />
                   Application (ALB)
-                </label>
-                <label className="flex items-center gap-2 text-xs">
-                  <input
+                </Label>
+                <Label>
+                  <RadioGroupItem
                     aria-label="Network Load Balancer"
-                    checked={field.value === "network"}
-                    name="lb-type"
-                    onChange={() => {
-                      handleTypeChange("network")
-                    }}
-                    type="radio"
+                    value="network"
                   />
                   Network (NLB)
-                </label>
-              </div>
+                </Label>
+              </RadioGroup>
             )}
           />
         </Field>
 
         <Field>
           <FieldTitle>Scheme</FieldTitle>
-          <div className="flex gap-4">
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                aria-label="Internet-facing"
-                type="radio"
-                value="internet-facing"
-                {...register("scheme")}
-              />
-              Internet-facing
-            </label>
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                aria-label="Internal"
-                type="radio"
-                value="internal"
-                {...register("scheme")}
-              />
-              Internal
-            </label>
-          </div>
+          <Controller
+            control={control}
+            name="scheme"
+            render={({ field }) => (
+              <RadioGroup
+                aria-label="Scheme"
+                className="flex w-auto"
+                onValueChange={field.onChange}
+                value={field.value}
+              >
+                <Label>
+                  <RadioGroupItem
+                    aria-label="Internet-facing"
+                    value="internet-facing"
+                  />
+                  Internet-facing
+                </Label>
+                <Label>
+                  <RadioGroupItem aria-label="Internal" value="internal" />
+                  Internal
+                </Label>
+              </RadioGroup>
+            )}
+          />
         </Field>
 
         <VpcSelectField
@@ -407,13 +416,16 @@ export function CreateLoadBalancerPage({
           vpcs={vpcs}
         />
 
-        <CertificateImportDialog
-          onImported={(arn) => {
-            setValue("listener.certificateArn", arn, { shouldValidate: true })
-          }}
-          onOpenChange={setImportOpen}
-          open={importOpen}
-        />
+        {importOpen && (
+          <CertificateImportForm
+            onClose={() => {
+              setImportOpen(false)
+            }}
+            onImported={(arn) => {
+              setValue("listener.certificateArn", arn, { shouldValidate: true })
+            }}
+          />
+        )}
 
         <CliCommandPanel commands={buildCreateLbCommands(values, tgValues)} />
 

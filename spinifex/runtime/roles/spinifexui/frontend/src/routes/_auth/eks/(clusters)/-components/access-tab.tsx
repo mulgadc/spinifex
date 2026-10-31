@@ -1,8 +1,6 @@
-import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
-import { useForm } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import {
@@ -10,23 +8,17 @@ import {
   PanelFields,
   PanelSection,
 } from "@/components/detail-panel"
-import { ErrorBanner } from "@/components/error-banner"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
-import { Field, FieldError, FieldTitle } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { arnResourceId } from "@/lib/utils"
 import {
   useAssociateAccessPolicy,
-  useCreateAccessEntry,
   useDeleteAccessEntry,
   useDisassociateAccessPolicy,
 } from "@/mutations/eks"
@@ -35,11 +27,14 @@ import {
   eksAccessEntryQueryOptions,
   eksAssociatedAccessPoliciesQueryOptions,
 } from "@/queries/eks"
-import {
-  type CreateAccessEntryFormValues,
-  createAccessEntrySchema,
-  EKS_ACCESS_POLICIES,
-} from "@/types/eks"
+import { EKS_ACCESS_POLICIES } from "@/types/eks"
+
+import { AddAccessEntryForm } from "./add-access-entry-form"
+
+const ACCESS_POLICY_ITEMS = EKS_ACCESS_POLICIES.map((p) => ({
+  value: p.arn,
+  label: p.name,
+}))
 
 function AccessEntryRow({
   clusterName,
@@ -121,20 +116,26 @@ function AccessEntryRow({
         )}
       </PanelFields>
       <div className="flex items-center gap-2 pt-2">
-        <select
-          aria-label="Access policy"
-          className="h-7 min-w-0 flex-1 rounded-md border border-input bg-input/20 px-2 text-sm"
-          onChange={(e) => {
-            setPolicyArn(e.target.value)
+        <Select
+          items={ACCESS_POLICY_ITEMS}
+          onValueChange={(next: string | null) => {
+            if (next) {
+              setPolicyArn(next)
+            }
           }}
           value={policyArn}
         >
-          {EKS_ACCESS_POLICIES.map((p) => (
-            <option key={p.arn} value={p.arn}>
-              {p.name}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger aria-label="Access policy" className="min-w-0 flex-1">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ACCESS_POLICY_ITEMS.map((p) => (
+              <SelectItem key={p.value} value={p.value}>
+                {p.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Button
           disabled={associate.isPending}
           onClick={() => {
@@ -151,104 +152,6 @@ function AccessEntryRow({
         </Button>
       </div>
     </div>
-  )
-}
-
-function AddAccessEntryDialog({
-  clusterName,
-  open,
-  onOpenChange,
-}: {
-  clusterName: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}) {
-  const createEntry = useCreateAccessEntry()
-
-  const {
-    formState: { errors },
-    handleSubmit,
-    register,
-    reset,
-  } = useForm<CreateAccessEntryFormValues>({
-    resolver: zodResolver(createAccessEntrySchema),
-    defaultValues: { principalArn: "", kubernetesGroups: "" },
-  })
-
-  const onSubmit = async (data: CreateAccessEntryFormValues) => {
-    try {
-      await createEntry.mutateAsync({
-        clusterName,
-        principalArn: data.principalArn,
-        kubernetesGroups: data.kubernetesGroups
-          .split(",")
-          .map((g) => g.trim())
-          .filter(Boolean),
-      })
-    } catch {
-      // Surfaced in the dialog through the mutation's error.
-      return
-    }
-
-    reset()
-    onOpenChange(false)
-  }
-
-  return (
-    <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Add access entry</AlertDialogTitle>
-        </AlertDialogHeader>
-
-        {createEntry.error && (
-          <ErrorBanner
-            className="mb-0"
-            error={createEntry.error}
-            msg="Failed to create the access entry"
-          />
-        )}
-
-        <form className="space-y-4" id="add-access-entry-form">
-          <Field>
-            <FieldTitle>
-              <label htmlFor="ae-principal">IAM principal ARN</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.principalArn}
-              id="ae-principal"
-              placeholder="arn:aws:iam::000000000000:role/my-role"
-              {...register("principalArn")}
-            />
-            <FieldError errors={[errors.principalArn]} />
-          </Field>
-
-          <Field>
-            <FieldTitle>
-              <label htmlFor="ae-groups">Kubernetes groups</label>
-            </FieldTitle>
-            <Input
-              id="ae-groups"
-              placeholder="system:masters"
-              {...register("kubernetesGroups")}
-            />
-          </Field>
-        </form>
-
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            disabled={createEntry.isPending}
-            onClick={(e) => {
-              e.preventDefault()
-              void handleSubmit(onSubmit)()
-            }}
-          >
-            {createEntry.isPending ? "Creating…" : "Create"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
   )
 }
 
@@ -291,11 +194,14 @@ export function AccessTab({ clusterName }: { clusterName: string }) {
         </div>
       </PanelSection>
 
-      <AddAccessEntryDialog
-        clusterName={clusterName}
-        onOpenChange={setShowAdd}
-        open={showAdd}
-      />
+      {showAdd && (
+        <AddAccessEntryForm
+          clusterName={clusterName}
+          onClose={() => {
+            setShowAdd(false)
+          }}
+        />
+      )}
 
       <DeleteConfirmationDialog
         description={`Delete access entry for "${pendingDelete ?? ""}"?`}

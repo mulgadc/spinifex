@@ -3,7 +3,7 @@
 The console's tokens, primitives and the rules that hold pages to them.
 The live catalogue is the `/design` route: every token and primitive below rendered in both themes.
 It is served by the Vite dev server only and is absent from release builds; a release build answers it with "Page not found".
-The rules on it are proposed as `PROP-CONSOLEUI-001` in `docs/development/proposals/console-design-system/` in the mulga repository, and bind nobody until accepted.
+The rules are accepted as ADR-0016, `docs/adr/0016-console-design-system.md` in the mulga repository, and every console change follows them; cite a clause as `ADR-0016:S10`.
 
 Source: `spinifex/runtime/roles/spinifexui/frontend/`.
 Tokens are in `src/styles.css`, primitives in `src/components/ui/`, and the catalogue in `src/routes/_auth/-components/design/`.
@@ -118,14 +118,17 @@ The Go console serves `script-src 'self'; style-src 'self'`.
 `src/components/ui/` holds the shadcn primitives on Base UI.
 Added in Phase 1: breadcrumb, checkbox, command (`cmdk`), dialog, hover-card, popover, resizable (`react-resizable-panels`), scroll-area, slider, switch, table, toggle and toggle-group.
 `button-group` joins buttons edge to edge, as the instance power buttons are.
+`radio-group` is one of a few exclusive choices inside a form, such as a load balancer's type; a raw `<input type="radio">` is not used.
 
+A dialog only confirms (ADR-0016:S3): a destructive action, a typed phrase, or a secret shown once.
+A form never opens in one.
 Every dialog closes on Escape.
 ⌘↵ or Ctrl+Enter submits it: an `AlertDialog` clicks its action unless that is disabled, and a `Dialog` submits its form, including from a textarea where Enter alone adds a line.
 Enter in a typed confirmation confirms once the phrase matches.
 The confirm button shows the shortcut, ⌘↵ on a Mac and Ctrl ↵ elsewhere (`src/lib/shortcuts.ts`), and names it in `aria-keyshortcuts`.
 
 A disabled control stays visible and shows `cursor: not-allowed`, so it says why it does nothing rather than vanishing.
-An on/off setting is a `Switch`, orange when on; a `Checkbox` only picks items from a list, such as table rows, subnets or security groups.
+An on/off setting is a `Switch`, orange when on; a `Checkbox` only selects table rows, and a multi-select picker such as subnets, security groups or load balancer targets is a `SwitchList`.
 
 `InfoTip` (`src/components/info-tip.tsx`) is UniFi's (i): a small button beside a label that opens a short explanation on hover or click, with `InfoList` for the facts inside it.
 `PanelField` takes it through `info`, so the login user names the image's distribution and the image names its AMI details.
@@ -139,7 +142,7 @@ Charts are uPlot instead (see Charts).
 
 ## Enforcement
 
-Four lint layers keep pages on the system.
+Three lint rules and three source tests keep pages on the system.
 
 | Rule | Where | What it catches |
 |---|---|---|
@@ -151,6 +154,23 @@ Four lint layers keep pages on the system.
 
 The table test allows two files, each with its reason: the catalogue's specimen of the `ui/table` primitives, and the RDS parameter editor, an editable grid.
 Every other list is a `DataTable`, and the test also fails when an allowed file stops building a table so the list cannot go stale.
+
+`src/routes/design-rules.test.ts` reads the source of every route and shared component and holds one test per rule, named by its ADR-0016 clause, so a failure names the rule it breaks:
+
+| Clause | Fails when |
+|---|---|
+| S3 | a file that imports a dialog renders a form field or `<form>`, or a `create-*` route does not redirect to its list with the panel open |
+| S4 | a file renders `FormActions` without `FormLock` |
+| S5 | anything but `DataTable` uses a checkbox |
+| S6 | a file renders `FormActions` without `CliCommandPanel` |
+| S9 | a file renders `ResourceView` without `PageHeading` |
+| S10 | a route declares its own `selected`, `tab` or `create` search field instead of spreading `panelSearchFields` |
+| S12 | a panel's tabs do not start with Overview, or a retired `DetailCard`, `DetailRow` or `ListCard` comes back |
+| S13 | a component outside `ui/` renders a raw `<input>`, `<select>` or `<textarea>` |
+| S15 | a route imports the `ui/alert` primitive instead of using `ErrorBanner` |
+
+An exception is named in that rule's allowlist with its reason, and the test fails when an allowed file stops needing it.
+S11, S14 and S16 are held by review, since none has a shape in the source a test can read without false alarms.
 
 ## Shell
 
@@ -250,6 +270,14 @@ Modelled on UniFi's console: a click on a row opens the resource in a panel besi
 - **Actions.** State actions sit in the summary as a button group, and the rest go in an Actions menu, Unikraft style. Stop, Reboot and every destructive action confirm in a dialog.
 - **Loading.** A panel or page still loading shows `PanelSpinner`, a centred spinner on the background, not a grey skeleton block.
 - **`DetailCard`, `DetailRow` and `ListCard` are retired.** Every resource page uses the panel sections instead.
+
+### Forms from a resource's panel
+
+A form that acts on an open resource, such as attaching a volume, scaling a node group or adding a listener, opens in `FormPanel` (`src/components/form-panel.tsx`), never in a dialog.
+From `lg` it lies over the resource's panel at the same right edge and the create panel's width; below `lg` it covers the page, with a back arrow.
+It takes Escape from the panel beneath it, takes focus on open and hands it back to the button that opened it, and keeps a failure inside itself.
+Each such form is its own `*-form.tsx` file with `FormLock`, `CliCommandPanel` and `FormActions`, like a create form.
+It is held in the details component's state rather than the URL, because a form opened from one row of a tab has no list route to carry it, so Back closes the resource's panel and the form with it.
 
 ## Create flows
 

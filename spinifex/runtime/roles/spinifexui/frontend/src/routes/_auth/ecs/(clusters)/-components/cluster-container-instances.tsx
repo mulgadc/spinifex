@@ -16,7 +16,7 @@ import {
 import { ecsContainerInstancesQueryOptions } from "@/queries/ecs"
 
 import { PanelList, PanelListItem } from "./panel-list"
-import { ProvisionCapacityDialog } from "./provision-capacity-dialog"
+import { ProvisionCapacityForm } from "./provision-capacity-form"
 
 type Action = "drain" | "activate" | "deregister"
 
@@ -173,11 +173,14 @@ export function ClusterContainerInstances({
         </Button>
       </div>
 
-      <ProvisionCapacityDialog
-        clusterName={clusterName}
-        onOpenChange={setShowProvision}
-        open={showProvision}
-      />
+      {showProvision && (
+        <ProvisionCapacityForm
+          clusterName={clusterName}
+          onClose={() => {
+            setShowProvision(false)
+          }}
+        />
+      )}
 
       <DeleteConfirmationDialog
         confirmLabel={pending ? ACTION_LABELS[pending.action] : "Confirm"}

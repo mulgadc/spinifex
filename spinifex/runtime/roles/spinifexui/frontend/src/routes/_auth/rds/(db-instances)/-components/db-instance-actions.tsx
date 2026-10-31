@@ -38,7 +38,7 @@ import {
 } from "@/types/rds"
 
 import { DeleteDBInstanceDialog } from "./delete-db-instance-dialog"
-import { ModifyDBInstanceDialog } from "./modify-db-instance-dialog"
+import { ModifyDBInstanceForm } from "./modify-db-instance-form"
 
 type Dialog = "" | "stop" | "reboot" | "modify" | "delete"
 
@@ -205,12 +205,13 @@ export function DBInstanceActions({
       />
 
       {/* Mounted per open so each form re-seeds from the current record; a
-          dialog left mounted keeps the values it captured the first time. */}
+          form left mounted keeps the values it captured the first time. */}
       {dialog === "modify" && (
-        <ModifyDBInstanceDialog
+        <ModifyDBInstanceForm
           instance={instance}
-          onOpenChange={closeDialog}
-          open={true}
+          onClose={() => {
+            setDialog("")
+          }}
         />
       )}
       <DeleteDBInstanceDialog

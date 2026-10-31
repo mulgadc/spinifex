@@ -11,9 +11,9 @@ import {
   optionalFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
-import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
+import { FormLock } from "@/components/form-lock"
 import { PageHeading } from "@/components/page-heading"
 import {
   defaultSecurityGroupIdForVpc,
@@ -224,119 +224,116 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
       <BackLink to="/rds/describe-db-snapshots">Back to snapshots</BackLink>
       <PageHeading subtitle={dbSnapshotIdentifier} title="Restore Snapshot" />
 
-      {restoreInstance.error && (
-        <ErrorBanner
-          error={restoreInstance.error}
-          msg="Failed to restore the DB snapshot"
-        />
-      )}
-
       <div className="max-w-4xl space-y-6">
         <RestoringFromSection
           dbSnapshotIdentifier={dbSnapshotIdentifier}
           snapshot={snapshot}
         />
 
-        <form className="space-y-6" onSubmit={handleSubmit(onSubmit)}>
-          <TextField
-            description="A restore always creates a new instance; it never writes back over the one the snapshot came from."
-            error={errors.dbInstanceIdentifier}
-            id="restore-identifier"
-            label="New DB instance identifier"
-            {...register("dbInstanceIdentifier")}
-          />
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <FormLock className="space-y-6" locked={restoreInstance.isPending}>
+            <TextField
+              description="A restore always creates a new instance; it never writes back over the one the snapshot came from."
+              error={errors.dbInstanceIdentifier}
+              id="restore-identifier"
+              label="New DB instance identifier"
+              {...register("dbInstanceIdentifier")}
+            />
 
-          <SelectField
-            control={control}
-            id="restore-class"
-            label="DB instance class"
-            name="dbInstanceClass"
-            notice={classNotice}
-            options={selectOptions(instanceClasses)}
-            placeholder="Select an instance class"
-          />
+            <SelectField
+              control={control}
+              id="restore-class"
+              label="DB instance class"
+              name="dbInstanceClass"
+              notice={classNotice}
+              options={selectOptions(instanceClasses)}
+              placeholder="Select an instance class"
+            />
 
-          <TextField
-            description={
-              <>
-                The snapshot holds {snapshotStorage} GiB. A restore may grow the
-                volume but never shrink it.
-              </>
-            }
-            error={errors.allocatedStorage}
-            id="restore-storage"
-            label="Allocated storage (GiB)"
-            min={snapshotStorage}
-            type="number"
-            {...register("allocatedStorage", { valueAsNumber: true })}
-          />
+            <TextField
+              description={
+                <>
+                  The snapshot holds {snapshotStorage} GiB. A restore may grow
+                  the volume but never shrink it.
+                </>
+              }
+              error={errors.allocatedStorage}
+              id="restore-storage"
+              label="Allocated storage (GiB)"
+              min={snapshotStorage}
+              type="number"
+              {...register("allocatedStorage", { valueAsNumber: true })}
+            />
 
-          <TextField
-            description="Leave blank to keep the port the snapshot was taken on. The port is fixed once the instance exists."
-            error={errors.port}
-            id="restore-port"
-            label="Port"
-            placeholder="Snapshot's port"
-            {...register("port")}
-          />
+            <TextField
+              description="Leave blank to keep the port the snapshot was taken on. The port is fixed once the instance exists."
+              error={errors.port}
+              id="restore-port"
+              label="Port"
+              placeholder="Snapshot's port"
+              {...register("port")}
+            />
 
-          <SelectField
-            control={control}
-            description="Leave unset to place the restored endpoint in the group the snapshot recorded."
-            id="restore-subnet-group"
-            label="DB subnet group"
-            name="dbSubnetGroupName"
-            onValueChange={handleSubnetGroupChange}
-            options={subnetGroupOptions(subnetGroups)}
-            placeholder="The snapshot's subnet group"
-          />
+            <SelectField
+              control={control}
+              description="Leave unset to place the restored endpoint in the group the snapshot recorded."
+              id="restore-subnet-group"
+              label="DB subnet group"
+              name="dbSubnetGroupName"
+              onValueChange={handleSubnetGroupChange}
+              options={subnetGroupOptions(subnetGroups)}
+              placeholder="The snapshot's subnet group"
+            />
 
-          <RestoreSecurityGroupsField
-            error={errors.vpcSecurityGroupIds}
-            groups={securityGroups}
-            onChange={setSecurityGroups}
-            placementVpcId={placementVpcId}
-            selected={selectedSecurityGroups}
-          />
+            <RestoreSecurityGroupsField
+              error={errors.vpcSecurityGroupIds}
+              groups={securityGroups}
+              onChange={setSecurityGroups}
+              placementVpcId={placementVpcId}
+              selected={selectedSecurityGroups}
+            />
 
-          <SelectField
-            control={control}
-            id="restore-parameter-group"
-            label="DB parameter group"
-            name="dbParameterGroupName"
-            options={parameterGroupOptions(parameterGroups)}
-            placeholder="The snapshot's parameter group"
-          />
+            <SelectField
+              control={control}
+              id="restore-parameter-group"
+              label="DB parameter group"
+              name="dbParameterGroupName"
+              options={parameterGroupOptions(parameterGroups)}
+              placeholder="The snapshot's parameter group"
+            />
 
-          <DeletionProtectionField
-            control={control}
-            name="deletionProtection"
-          />
+            <DeletionProtectionField
+              control={control}
+              name="deletionProtection"
+            />
 
-          <TagsFieldArray control={control} name="tags" />
+            <TagsFieldArray control={control} name="tags" />
 
-          <FieldNotes
-            className="space-y-2 rounded-md border border-border p-4"
-            entries={INHERITED_FIELDS}
-            title="Inherited from the snapshot"
-          />
+            <FieldNotes
+              className="space-y-2 rounded-md border border-border p-4"
+              entries={INHERITED_FIELDS}
+              title="Inherited from the snapshot"
+            />
 
-          <CliCommandPanel
-            commands={buildRestoreCommands(
-              dbSnapshotIdentifier,
-              restoreCliValues(values, snapshotStorage),
-            )}
-          />
+            <CliCommandPanel
+              commands={buildRestoreCommands(
+                dbSnapshotIdentifier,
+                restoreCliValues(values, snapshotStorage),
+              )}
+            />
 
-          <FormActions
-            isPending={restoreInstance.isPending}
-            isSubmitting={isSubmitting}
-            onCancel={async () => {
-              await navigate({ to: "/rds/describe-db-snapshots" })
-            }}
-            pendingLabel="Restoring…"
-            submitLabel="Restore Snapshot"
-          />
+            <FormActions
+              error={restoreInstance.error}
+              errorMsg="Failed to restore the DB snapshot"
+              isPending={restoreInstance.isPending}
+              isSubmitting={isSubmitting}
+              onCancel={async () => {
+                await navigate({ to: "/rds/describe-db-snapshots" })
+              }}
+              pendingLabel="Restoring…"
+              submitLabel="Restore Snapshot"
+            />
+          </FormLock>
         </form>
       </div>
     </>

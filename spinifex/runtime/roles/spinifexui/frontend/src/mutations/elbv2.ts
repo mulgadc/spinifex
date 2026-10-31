@@ -609,7 +609,7 @@ export interface CreateRuleParams {
   forwardTargetGroupArn: string
 }
 
-function toSDKConditions(conds: RuleCondInput[]): RuleCondition[] {
+export function toSDKConditions(conds: RuleCondInput[]): RuleCondition[] {
   return conds.map((c): RuleCondition => {
     switch (c.field) {
       case "host-header": {

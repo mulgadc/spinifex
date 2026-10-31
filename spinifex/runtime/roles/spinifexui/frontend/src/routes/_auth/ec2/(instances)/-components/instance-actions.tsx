@@ -1,5 +1,5 @@
 import type { Instance } from "@aws-sdk/client-ec2"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import {
   ChevronDown,
@@ -16,17 +16,6 @@ import { useState } from "react"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { ErrorBanner } from "@/components/error-banner"
-import { GpuInstanceTypeSelect } from "@/components/gpu-instance-type-select"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
 import {
@@ -36,21 +25,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Field, FieldTitle } from "@/components/ui/field"
 import type { PanelTab } from "@/lib/panel-search"
 import {
-  useModifyInstanceAttribute,
   useRebootInstance,
   useStartInstance,
   useStopInstance,
   useTerminateInstance,
 } from "@/mutations/ec2"
-import {
-  ec2ConsoleOutputQueryOptions,
-  ec2InstanceTypesQueryOptions,
-} from "@/queries/ec2"
+import { ec2ConsoleOutputQueryOptions } from "@/queries/ec2"
 
-import { CreateImageDialog } from "../../-components/create-image-dialog"
+import { CreateImageForm } from "../../-components/create-image-form"
+import { ChangeInstanceTypeForm } from "./change-instance-type-form"
 
 type Dialog = "" | "stop" | "reboot" | "terminate" | "type" | "image"
 
@@ -60,76 +45,6 @@ interface InstanceActionsProps {
   tab: PanelTab
   onTabChange: (tab: PanelTab) => void
   onTerminated: () => void
-}
-
-function ChangeTypeDialog({
-  instance,
-  open,
-  onOpenChange,
-}: {
-  instance: Instance
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}) {
-  const { data } = useQuery({
-    ...ec2InstanceTypesQueryOptions,
-    enabled: open,
-  })
-
-  const modify = useModifyInstanceAttribute()
-  const [selected, setSelected] = useState(instance.InstanceType ?? "")
-
-  return (
-    <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Change instance type</AlertDialogTitle>
-          <AlertDialogDescription>
-            Pick a new type for {instance.InstanceId}. The instance must be
-            stopped.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        {modify.error && <ErrorBanner error={modify.error} />}
-        <Field>
-          <FieldTitle>
-            <label htmlFor="instanceType">Instance type</label>
-          </FieldTitle>
-          <GpuInstanceTypeSelect
-            className="w-full"
-            id="instanceType"
-            instanceTypes={data?.InstanceTypes ?? []}
-            onValueChange={setSelected}
-            value={selected}
-          />
-        </Field>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            disabled={
-              modify.isPending ||
-              !selected ||
-              selected === instance.InstanceType
-            }
-            onClick={() => {
-              modify.mutate(
-                {
-                  instanceId: instance.InstanceId ?? "",
-                  instanceType: selected,
-                },
-                {
-                  onSuccess: () => {
-                    onOpenChange(false)
-                  },
-                },
-              )
-            }}
-          >
-            {modify.isPending ? "Saving…" : "Save"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
 }
 
 // Start, Stop and Reboot stay in view and disable by state, so the user sees
@@ -298,17 +213,22 @@ export function InstanceActions({
         pendingLabel="Rebooting…"
         title="Reboot instance?"
       />
-      <ChangeTypeDialog
-        instance={instance}
-        key={String(dialog === "type")}
-        onOpenChange={closeDialog}
-        open={dialog === "type"}
-      />
-      <CreateImageDialog
-        instanceId={id}
-        onOpenChange={closeDialog}
-        open={dialog === "image"}
-      />
+      {dialog === "type" && (
+        <ChangeInstanceTypeForm
+          instance={instance}
+          onClose={() => {
+            setDialog("")
+          }}
+        />
+      )}
+      {dialog === "image" && (
+        <CreateImageForm
+          instanceId={id}
+          onClose={() => {
+            setDialog("")
+          }}
+        />
+      )}
       <DeleteConfirmationDialog
         confirmLabel="Terminate"
         description={`Terminating ${id} deletes it and any volume set to delete on termination. This cannot be undone.`}

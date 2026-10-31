@@ -8,7 +8,7 @@ import { useState } from "react"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { PanelField, PanelFields } from "@/components/detail-panel"
-import { RegisterTargetsDialog } from "@/components/elbv2/register-targets-dialog"
+import { RegisterTargetsForm } from "@/components/elbv2/register-targets-form"
 import { ErrorBanner } from "@/components/error-banner"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
@@ -69,7 +69,7 @@ export function TargetsTab({
       await registerMutation.mutateAsync({ targetGroupArn, targets })
       setRegisterOpen(false)
     } catch {
-      // error surfaced below via mutation state
+      // surfaced beside the submit button via mutation.error
     }
   }
 
@@ -95,12 +95,6 @@ export function TargetsTab({
 
   return (
     <div className="space-y-3">
-      {registerMutation.error && (
-        <ErrorBanner
-          error={registerMutation.error}
-          msg="Failed to register targets"
-        />
-      )}
       {deregisterMutation.error && (
         <ErrorBanner
           error={deregisterMutation.error}
@@ -182,12 +176,17 @@ export function TargetsTab({
       )}
 
       {registerOpen && (
-        <RegisterTargetsDialog
+        <RegisterTargetsForm
           defaultPort={defaultPort}
+          error={registerMutation.error}
           instances={vpcInstances}
           isPending={registerMutation.isPending}
-          onConfirm={handleRegister}
-          onOpenChange={setRegisterOpen}
+          onClose={() => {
+            registerMutation.reset()
+            setRegisterOpen(false)
+          }}
+          onSubmit={handleRegister}
+          targetGroupArn={targetGroupArn}
         />
       )}
 

@@ -88,7 +88,11 @@ export function SelectField<T extends FieldValues>({
             {notice ? (
               <PickerNoticeText notice={notice} />
             ) : (
-              <Select onValueChange={handleChange} value={selected}>
+              <Select
+                items={options}
+                onValueChange={handleChange}
+                value={selected}
+              >
                 <SelectTrigger
                   aria-invalid={!!fieldState.error}
                   className="w-full"

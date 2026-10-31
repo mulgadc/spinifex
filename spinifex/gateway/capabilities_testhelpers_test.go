@@ -3,8 +3,8 @@ package gateway
 import (
 	"time"
 
-	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/clusterready"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 )
 
@@ -12,7 +12,11 @@ import (
 var policyRetryBase = 200 * time.Millisecond
 
 func init() {
-	defaultCapabilities = func(iam iamdomain.IAMService) (PolicyEvaluator, AccountAdmission) {
-		return policyauth.New(iam, policyauth.WithRetryBase(policyRetryBase)), accountadmission.New(iam)
+	defaultCapabilities = func(gw *GatewayConfig) (PolicyEvaluator, AccountAdmission, Readiness) {
+		var readiness Readiness
+		if gw.NATSConn != nil {
+			readiness = clusterready.New(gw.NATSConn)
+		}
+		return policyauth.New(gw.IAMService, policyauth.WithRetryBase(policyRetryBase)), accountadmission.New(gw.IAMService), readiness
 	}
 }

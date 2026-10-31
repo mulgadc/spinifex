@@ -3,7 +3,6 @@ package gateway
 import (
 	"net/http"
 
-	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 )
@@ -23,21 +22,31 @@ type AccountAdmission interface {
 	Admit(accountID, sourceIP string) error
 }
 
+// Readiness reports whether the message bus the services depend on is
+// reachable. Nil means no readiness is configured.
+type Readiness interface {
+	Available() bool
+}
+
 // defaultCapabilities builds the capabilities a GatewayConfig left unset from
-// its IAM service. Production composition sets both and leaves this nil.
-var defaultCapabilities func(iamdomain.IAMService) (PolicyEvaluator, AccountAdmission)
+// its IAM service and bus connection. Production composition sets all of them and
+// leaves this nil.
+var defaultCapabilities func(gw *GatewayConfig) (PolicyEvaluator, AccountAdmission, Readiness)
 
 // fillDefaultCapabilities sets whichever capability is nil from
 // defaultCapabilities. With no defaults installed it changes nothing.
 func (gw *GatewayConfig) fillDefaultCapabilities() {
-	if defaultCapabilities == nil || (gw.Policy != nil && gw.Admission != nil) {
+	if defaultCapabilities == nil || (gw.Policy != nil && gw.Admission != nil && gw.Readiness != nil) {
 		return
 	}
-	policy, admission := defaultCapabilities(gw.IAMService)
+	policy, admission, readiness := defaultCapabilities(gw)
 	if gw.Policy == nil {
 		gw.Policy = policy
 	}
 	if gw.Admission == nil {
 		gw.Admission = admission
+	}
+	if gw.Readiness == nil {
+		gw.Readiness = readiness
 	}
 }

@@ -85,9 +85,13 @@ type GatewayConfig struct {
 	Admission AccountAdmission
 	// Policy decides authorization for a verified principal. Nil fails every
 	// authorization closed with InternalError.
-	Policy PolicyEvaluator
-	Version   string // Build-time version string (set from cmd.Version)
-	Commit    string // Build-time commit hash (set from cmd.Commit)
+	Policy  PolicyEvaluator
+	// Readiness reports whether the message bus is reachable. Nil skips the
+	// early refusal in the auth middleware and makes the service gate answer
+	// cluster-unavailable.
+	Readiness Readiness
+	Version string // Build-time version string (set from cmd.Version)
+	Commit  string // Build-time commit hash (set from cmd.Commit)
 	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil
 	// answers them with a 500 (e.g. in unit tests of unrelated routes).
 	OIDC OIDCPublisher
@@ -338,7 +342,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 
 	// Fail fast when NATS is down; every NATS-bound handler would otherwise hang
 	// until per-call timeout.
-	if gw.NATSConn == nil || !gw.NATSConn.IsConnected() {
+	gw.fillDefaultCapabilities()
+	if gw.Readiness == nil || !gw.Readiness.Available() {
 		gw.writeClusterUnavailable(w, r, svc)
 		return
 	}

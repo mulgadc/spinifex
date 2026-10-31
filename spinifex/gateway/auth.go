@@ -115,8 +115,8 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			}
 
 			// Fail fast when NATS is down; LookupAccessKey would hang 5 s otherwise.
-			// Nil NATSConn (test helpers) skips this check.
-			if gw.NATSConn != nil && !gw.NATSConn.IsConnected() {
+			// No configured readiness (test helpers) skips this check.
+			if gw.Readiness != nil && !gw.Readiness.Available() {
 				gw.writeClusterUnavailable(w, r, sig.Credential.Service)
 				return
 			}

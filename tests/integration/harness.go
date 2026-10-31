@@ -23,6 +23,7 @@ import (
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/clusterready"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"encoding/json"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -263,6 +264,9 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// Blob and manifest bytes are memory-backed: no predastore.
 	if cfg.Policy == nil {
 		cfg.Policy = policyauth.New(cfg.IAMService)
+	}
+	if cfg.Readiness == nil {
+		cfg.Readiness = clusterready.New(cfg.NATSConn)
 	}
 	admission := accountadmission.New(cfg.IAMService)
 	if cfg.Admission == nil {

@@ -176,12 +176,16 @@ func (v *Verifier) lookupSession(req credential.Request) (*stsdomain.SessionCred
 	}
 	if cred == nil {
 		slog.Warn("Auth failure: session credential not found", "accessKeyID", accessKeyID, "sourceIP", req.SourceIP)
-		return nil, failCounted(awserrors.ErrorInvalidClientTokenId, "session-not-found", accessKeyID)
+		f := failCounted(awserrors.ErrorInvalidClientTokenId, "session-not-found", accessKeyID)
+		f.SessionGone = true
+		return nil, f
 	}
 	if time.Now().UTC().After(cred.ExpiresAt) {
 		slog.Warn("Auth failure: session credential expired",
 			"accessKeyID", accessKeyID, "sourceIP", req.SourceIP, "expiresAt", cred.ExpiresAt)
-		return nil, failCounted(awserrors.ErrorExpiredToken, "session-expired", accessKeyID)
+		f := failCounted(awserrors.ErrorExpiredToken, "session-expired", accessKeyID)
+		f.SessionGone = true
+		return nil, f
 	}
 	return cred, nil
 }

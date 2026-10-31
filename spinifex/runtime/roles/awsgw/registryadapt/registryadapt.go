@@ -24,6 +24,10 @@ func (a registryRehydrator) Rehydrate(accessKeyID, accountID string) (ecrregistr
 	if f != nil {
 		return ecrregistry.Principal{}, registryFailure(f)
 	}
+	return projectPrincipal(p), nil
+}
+
+func projectPrincipal(p credential.Principal) ecrregistry.Principal {
 	return ecrregistry.Principal{
 		Identity:          p.Identity,
 		AccountID:         p.AccountID,
@@ -34,12 +38,32 @@ func (a registryRehydrator) Rehydrate(accessKeyID, accountID string) (ecrregistr
 		UserID:            p.UserID,
 		UserARN:           p.UserARN,
 		CallerARN:         p.CallerARN,
-	}, nil
+	}
 }
 
-// registryFailure maps a credential failure code to a registry sentinel: a dependency
-// fault is unavailable, and every other code is an identity that no longer resolves.
+// registryRoleRehydrator adapts the credential role rehydrator to the registry's types.
+type registryRoleRehydrator struct{ inner credential.RoleRehydrator }
+
+var _ ecrregistry.RoleRehydrator = registryRoleRehydrator{}
+
+func (a registryRoleRehydrator) RehydrateRole(accountID, roleID, assumedRoleARN string) (ecrregistry.Principal, error) {
+	p, f := a.inner.RehydrateRole(accountID, roleID, assumedRoleARN)
+	if f != nil {
+		if f.RoleGone {
+			return ecrregistry.Principal{}, fmt.Errorf("%w: %s", ecrregistry.ErrRoleGone, f.Code)
+		}
+		return ecrregistry.Principal{}, registryFailure(f)
+	}
+	return projectPrincipal(p), nil
+}
+
+// registryFailure maps a credential failure to a registry sentinel: a session that
+// has expired or been removed is session gone, a dependency fault is unavailable, and
+// every other failure is an identity that no longer resolves.
 func registryFailure(f *credential.Failure) error {
+	if f.SessionGone {
+		return fmt.Errorf("%w: %s", ecrregistry.ErrSessionGone, f.Code)
+	}
 	if f.Code == awserrors.ErrorInternalError {
 		return fmt.Errorf("%w: %s", ecrregistry.ErrUnavailable, f.Code)
 	}
@@ -81,10 +105,18 @@ func registryTarget(r *http.Request) (account, region string, ok bool) {
 	return account, ingresshttp.TargetRegion(r.Context()), account != ""
 }
 
+// Credentials is what the bridge needs of the credential verifier: the caller an
+// access key names, and the caller a role names once its session is gone.
+type Credentials interface {
+	credential.Rehydrator
+	credential.RoleRehydrator
+}
+
 // Config fills a BridgeConfig's identity, host and address seams from
 // the gateway's credential verifier, policy evaluator and host matching.
-func Config(cfg ecrregistry.BridgeConfig, creds credential.Rehydrator, eval *policyauth.Evaluator) ecrregistry.BridgeConfig {
+func Config(cfg ecrregistry.BridgeConfig, creds Credentials, eval *policyauth.Evaluator) ecrregistry.BridgeConfig {
 	cfg.Rehydrator = registryRehydrator{creds}
+	cfg.RoleRehydrator = registryRoleRehydrator{creds}
 	cfg.Authorizer = registryAuthorizer{eval}
 	cfg.Target = registryTarget
 	cfg.ClientIP = ingresshttp.RequestClientIP

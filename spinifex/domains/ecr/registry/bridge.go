@@ -47,6 +47,20 @@ var (
 	ErrUnavailable       = errors.New("identity dependency unavailable")
 )
 
+// ErrSessionGone marks a Rehydrate failure because the access key's session record
+// has expired or been removed. ErrRoleGone marks a RehydrateRole failure because the
+// role is deleted or was recreated under a new ID.
+var (
+	ErrSessionGone = errors.New("session expired or gone")
+	ErrRoleGone    = errors.New("role gone")
+)
+
+// RoleRehydrator rebuilds an assumed-role principal from the live role named by the
+// token's role ID, once the session record behind it is gone.
+type RoleRehydrator interface {
+	RehydrateRole(accountID, roleID, assumedRoleARN string) (Principal, error)
+}
+
 // Rehydrator rebuilds the principal behind an access key from current identity state.
 // A failure wraps ErrInvalidCredential or ErrUnavailable.
 type Rehydrator interface {
@@ -74,8 +88,10 @@ type BridgeConfig struct {
 	Issuer   TokenIssuer
 	// Rehydrator rebuilds the token's principal from current identity state.
 	Rehydrator Rehydrator
-	Authorizer Authorizer
-	Admission  Admission
+	// RoleRehydrator is optional: without it an expired session is a 401.
+	RoleRehydrator RoleRehydrator
+	Authorizer     Authorizer
+	Admission      Admission
 	// Target reports the account and region the request's registry host names.
 	Target func(r *http.Request) (account, region string, ok bool)
 	// ClientIP reports the client address, for logging.
@@ -92,11 +108,13 @@ type Bridge struct {
 	verifier   TokenVerifier
 	issuer     TokenIssuer
 	rehydrator Rehydrator
-	authorizer Authorizer
-	admission  Admission
-	target     func(r *http.Request) (account, region string, ok bool)
-	clientIP   func(r *http.Request) string
-	region     string
+	// roleRehydrator is nil when no role fallback is configured.
+	roleRehydrator RoleRehydrator
+	authorizer     Authorizer
+	admission      Admission
+	target         func(r *http.Request) (account, region string, ok bool)
+	clientIP       func(r *http.Request) string
+	region         string
 }
 
 // NewBridge returns a Bridge. A missing verifier, issuer, rehydrator, authorizer or
@@ -119,15 +137,16 @@ func NewBridge(cfg BridgeConfig) (*Bridge, error) {
 		return nil, errors.New("registry bridge: client address resolver is required")
 	}
 	return &Bridge{
-		registry:   cfg.Registry,
-		verifier:   cfg.Verifier,
-		issuer:     cfg.Issuer,
-		rehydrator: cfg.Rehydrator,
-		authorizer: cfg.Authorizer,
-		admission:  cfg.Admission,
-		target:     cfg.Target,
-		clientIP:   cfg.ClientIP,
-		region:     cfg.Region,
+		registry:       cfg.Registry,
+		verifier:       cfg.Verifier,
+		issuer:         cfg.Issuer,
+		rehydrator:     cfg.Rehydrator,
+		roleRehydrator: cfg.RoleRehydrator,
+		authorizer:     cfg.Authorizer,
+		admission:      cfg.Admission,
+		target:         cfg.Target,
+		clientIP:       cfg.ClientIP,
+		region:         cfg.Region,
 	}, nil
 }
 
@@ -232,6 +251,13 @@ func (b *Bridge) authenticate(w http.ResponseWriter, r *http.Request, challenge 
 
 	principal, err := b.rehydrate(r, claims)
 	if err != nil {
+		if errors.Is(err, ErrRoleGone) {
+			// AWS answers a token whose role is deleted with 403 and no challenge, as a
+			// retry cannot help.
+			slog.Warn("ECR registry: token's role is gone", "accountID", claims.AccountID, "roleID", claims.RoleID)
+			WriteError(w, http.StatusForbidden, "DENIED", "The security token included in the request is invalid.")
+			return nil, Principal{}, false
+		}
 		if _, ok := errors.AsType[*dependencyError](err); ok {
 			slog.Error("ECR registry: principal rehydration dependency failure", "err", err)
 			WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
@@ -256,7 +282,16 @@ func (e *dependencyError) Unwrap() error { return e.err }
 // freshly resolved record, so a forged or stale claim cannot widen access.
 func (b *Bridge) rehydrate(r *http.Request, claims *ecrauth.Claims) (Principal, error) {
 	p, err := b.rehydrator.Rehydrate(claims.AccessKeyID, claims.AccountID)
+	if err != nil && errors.Is(err, ErrSessionGone) && claims.RoleID != "" && b.roleRehydrator != nil {
+		// AWS keeps the token valid past its session and judges the role as it is now,
+		// so the principal comes from the live role and then goes through the same
+		// admission and authorization as any other.
+		p, err = b.roleRehydrator.RehydrateRole(claims.AccountID, claims.RoleID, claims.Subject)
+	}
 	if err != nil {
+		if errors.Is(err, ErrRoleGone) {
+			return Principal{}, fmt.Errorf("rehydrate role: %w", err)
+		}
 		if errors.Is(err, ErrUnavailable) {
 			return Principal{}, &dependencyError{fmt.Errorf("rehydrate: %w", err)}
 		}
@@ -307,6 +342,7 @@ func (b *Bridge) serveToken(w http.ResponseWriter, r *http.Request) {
 		ARN:         principal.CallerARN,
 		Type:        principal.PrincipalType,
 		AccessKeyID: claims.AccessKeyID,
+		RoleID:      refreshedRoleID(claims, principal),
 	})
 	if err != nil {
 		slog.Error("ECR token endpoint: mint failed", "err", err)
@@ -330,6 +366,23 @@ func (b *Bridge) serveToken(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(body); err != nil {
 		slog.Error("ECR token endpoint: write failed", "err", err)
 	}
+}
+
+// refreshedRoleID is the role ID a re-minted token carries: the presented token's, or for
+// a role session the one in the resolved principal's "<roleID>:<session>" ID, so a refresh
+// never drops the claim that lets the token outlive its session.
+func refreshedRoleID(claims *ecrauth.Claims, p Principal) string {
+	if claims.RoleID != "" {
+		return claims.RoleID
+	}
+	if p.PrincipalType != ecrauth.PrincipalTypeAssumedRole {
+		return ""
+	}
+	roleID, _, found := strings.Cut(p.AssumedRoleID, ":")
+	if !found {
+		return ""
+	}
+	return roleID
 }
 
 // extractToken pulls the JWT from a single Authorization header value, accepting

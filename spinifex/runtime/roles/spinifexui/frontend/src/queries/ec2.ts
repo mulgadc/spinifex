@@ -87,6 +87,9 @@ export const ec2IamInstanceProfileAssociationsQueryOptions = (
     refetchInterval: 5000,
   })
 
+// The admissible instance types, read once when a panel that needs them opens.
+// This is a catalogue: it changes when a node joins or leaves, not as instances
+// come and go, so it is not polled. The free-slot figure is a separate query.
 export const ec2InstanceTypesQueryOptions = queryOptions({
   queryKey: ["ec2", "instances", "types"],
   queryFn: async () => {
@@ -101,7 +104,7 @@ export const ec2InstanceTypesQueryOptions = queryOptions({
 
     return await getEc2Client().send(command)
   },
-  refetchInterval: 5000,
+  staleTime: 5 * 60 * 1000,
 })
 
 export const ec2ImagesQueryOptions = queryOptions({

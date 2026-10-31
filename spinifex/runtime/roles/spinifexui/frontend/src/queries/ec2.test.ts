@@ -162,6 +162,13 @@ describe("queryFn", () => {
     })
   })
 
+  // A catalogue changes when a node joins or leaves, not as instances come and
+  // go, so it is read when a panel opens rather than on a timer.
+  it("ec2InstanceTypesQueryOptions does not poll", () => {
+    expect(ec2InstanceTypesQueryOptions.refetchInterval).toBeUndefined()
+    expect(ec2InstanceTypesQueryOptions.staleTime).toBeGreaterThan(60_000)
+  })
+
   it("ec2PlacementGroupsQueryOptions sends DescribePlacementGroupsCommand", async () => {
     await callQueryFn(ec2PlacementGroupsQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()

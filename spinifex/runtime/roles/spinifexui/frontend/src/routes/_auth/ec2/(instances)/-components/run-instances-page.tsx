@@ -1,4 +1,4 @@
-import { useSuspenseQuery } from "@tanstack/react-query"
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { useForm, useWatch } from "react-hook-form"
 
@@ -18,6 +18,7 @@ import {
 } from "@/lib/os-images"
 import { isSystemManagedImage } from "@/lib/system-managed"
 import { useCreateInstance } from "@/mutations/ec2"
+import { instanceTypeCapacityQueryOptions } from "@/queries/admin"
 import {
   ec2ImagesQueryOptions,
   ec2InstanceTypesQueryOptions,
@@ -32,7 +33,6 @@ import type { CreateInstanceFormData, CreateInstanceParams } from "@/types/ec2"
 
 import { buildRunInstancesCommands } from "./run-instances-cli"
 import {
-  countInstanceTypes,
   defaultTypeName,
   imageRootMapping,
   initialArchitecture,
@@ -69,6 +69,10 @@ function useRunInstancesData() {
     ec2InstanceTypesQueryOptions,
   )
 
+  // Not a suspense query: the figure is a refinement of the form, so a session
+  // whose policy does not grant the action still gets a usable launch panel.
+  const { data: capacityData } = useQuery(instanceTypeCapacityQueryOptions)
+
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: pgData } = useSuspenseQuery(ec2PlacementGroupsQueryOptions)
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
@@ -89,6 +93,7 @@ function useRunInstancesData() {
   return {
     images,
     allInstanceTypes: instanceTypesData.InstanceTypes ?? [],
+    instanceTypeCapacity: capacityData?.available ?? {},
     keyPairs: keyPairsData.KeyPairs ?? [],
     subnets,
     placementGroups: pgData.PlacementGroups ?? [],
@@ -108,6 +113,7 @@ export function RunInstancesPage({
   const {
     images,
     allInstanceTypes,
+    instanceTypeCapacity,
     keyPairs,
     subnets,
     placementGroups,
@@ -119,8 +125,9 @@ export function RunInstancesPage({
   } = useRunInstancesData()
 
   const createMutation = useCreateInstance()
-  const instanceTypeCounts = countInstanceTypes(allInstanceTypes)
-  const hasCompute = Object.keys(instanceTypeCounts).length > 0
+  // The catalogue answers whether anything is launchable; the capacity figure
+  // is a separate query that may not have been granted or may not have landed.
+  const hasCompute = allInstanceTypes.length > 0
 
   // The architecture choice appears only when the catalog holds both; it
   // narrows the images and the instance types together, so a launch cannot
@@ -142,7 +149,7 @@ export function RunInstancesPage({
     resolver: runInstancesResolver(
       images,
       allInstanceTypes,
-      instanceTypeCounts,
+      instanceTypeCapacity,
     ),
     defaultValues: runInstancesDefaults({
       images,
@@ -247,7 +254,7 @@ export function RunInstancesPage({
     <CountField
       control={control}
       errors={errors}
-      instanceTypeCounts={instanceTypeCounts}
+      instanceTypeCapacity={instanceTypeCapacity}
       register={register}
     />
   )
@@ -293,7 +300,7 @@ export function RunInstancesPage({
                 countField={countField}
                 errors={errors}
                 hasCompute={hasCompute}
-                instanceTypeCounts={instanceTypeCounts}
+                instanceTypeCapacity={instanceTypeCapacity}
                 keyPairs={keyPairs}
                 placementGroups={placementGroups}
               />

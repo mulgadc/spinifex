@@ -83,21 +83,23 @@ type FormRegister = UseFormRegister<RunInstancesFormInput>
 interface CountFieldProps {
   control: FormControl
   errors: FormErrors
-  instanceTypeCounts: Record<string, number>
+  instanceTypeCapacity: Record<string, number>
   register: FormRegister
 }
 
 export function CountField({
   control,
   errors,
-  instanceTypeCounts,
+  instanceTypeCapacity,
   register,
 }: CountFieldProps) {
   const selectedInstanceType = useWatch({ control, name: "instanceType" })
 
-  const maxCount = selectedInstanceType
-    ? (instanceTypeCounts[selectedInstanceType] ?? 1)
-    : 1
+  // Undefined means the figure was not read, so nothing is claimed about it.
+  // Reporting 1 instead would refuse a launch the cluster would have taken.
+  const available = selectedInstanceType
+    ? instanceTypeCapacity[selectedInstanceType]
+    : undefined
 
   return (
     <Field>
@@ -113,7 +115,8 @@ export function CountField({
       />
       <p className="text-xs text-muted-foreground" id="count-description">
         {selectedInstanceType &&
-          `Available capacity for ${selectedInstanceType}: ${maxCount}`}
+          available !== undefined &&
+          `Available capacity for ${selectedInstanceType}: ${available}`}
       </p>
       <FieldError errors={[errors.count]} />
     </Field>
@@ -352,7 +355,7 @@ interface InstanceSectionProps {
   countField: ReactNode
   errors: FormErrors
   hasCompute: boolean
-  instanceTypeCounts: Record<string, number>
+  instanceTypeCapacity: Record<string, number>
   keyPairs: readonly KeyPairInfo[]
   placementGroups: readonly PlacementGroup[]
 }
@@ -366,7 +369,7 @@ export function InstanceSection({
   countField,
   errors,
   hasCompute,
-  instanceTypeCounts,
+  instanceTypeCapacity,
   keyPairs,
   placementGroups,
 }: InstanceSectionProps) {
@@ -381,7 +384,7 @@ export function InstanceSection({
           control={control}
           errors={errors}
           hasCompute={hasCompute}
-          instanceTypeCounts={instanceTypeCounts}
+          instanceTypeCapacity={instanceTypeCapacity}
         />
 
         {countField}
@@ -410,7 +413,7 @@ function InstanceTypeField({
   control,
   errors,
   hasCompute,
-  instanceTypeCounts,
+  instanceTypeCapacity,
 }: InstanceTypeFieldProps) {
   const selectedInstanceType = useWatch({ control, name: "instanceType" })
 
@@ -436,7 +439,7 @@ function InstanceTypeField({
         render={({ field }) => (
           <GpuInstanceTypeSelect
             aria-invalid={!!errors.instanceType}
-            availabilityByType={instanceTypeCounts}
+            availabilityByType={instanceTypeCapacity}
             className="w-full"
             id="instanceType"
             instanceTypes={archTypes}

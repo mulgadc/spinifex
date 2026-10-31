@@ -207,13 +207,7 @@ export function InstanceMonitoring({
   return (
     <PanelSection title="Instance statistics">
       <div className="flex flex-col gap-5">
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">{state}</div>
-          <p className="text-xs text-muted-foreground">
-            Up to the last five minutes, sampled only while someone is watching.
-            No history is kept.
-          </p>
-        </div>
+        <div className="flex items-center gap-2">{state}</div>
         {specs.map((chart) => (
           <MetricChart
             format={chart.format}

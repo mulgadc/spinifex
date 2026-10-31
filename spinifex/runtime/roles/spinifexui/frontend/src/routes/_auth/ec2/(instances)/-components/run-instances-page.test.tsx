@@ -29,6 +29,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal)
 })
 
+import { instanceTypeCapacityQueryOptions } from "@/queries/admin"
 import {
   ec2ImagesQueryOptions,
   ec2InstanceTypesQueryOptions,
@@ -81,7 +82,6 @@ function x86(name: string): InstanceTypeInfo {
 
 const INSTANCE_TYPES: InstanceTypeInfo[] = [
   x86("t3.nano"),
-  x86("t3.nano"),
   {
     ...x86("mig.1g.24gb"),
     GpuInfo: {
@@ -97,6 +97,8 @@ const INSTANCE_TYPES: InstanceTypeInfo[] = [
     },
   },
 ]
+
+const CAPACITY = { "mig.1g.24gb": 1, "t3.nano": 2 }
 
 const ARM_TYPE: InstanceTypeInfo = {
   InstanceType: "t4g.nano",
@@ -115,6 +117,7 @@ const DEFAULT_SUBNET: Subnet = {
 interface SetupOptions {
   images?: Image[]
   instanceTypes?: InstanceTypeInfo[]
+  capacity?: Record<string, number>
   subnets?: Subnet[]
   launchTemplates?: LaunchTemplate[]
   onClose?: (instanceId?: string) => void
@@ -123,6 +126,7 @@ interface SetupOptions {
 function setup({
   images = X86_IMAGES,
   instanceTypes = INSTANCE_TYPES,
+  capacity = CAPACITY,
   subnets = [DEFAULT_SUBNET],
   launchTemplates = [],
   onClose = vi.fn(),
@@ -140,6 +144,10 @@ function setup({
   queryClient.setQueryData(ec2InstanceTypesQueryOptions.queryKey, {
     $metadata: {},
     InstanceTypes: instanceTypes,
+  })
+  queryClient.setQueryData(instanceTypeCapacityQueryOptions.queryKey, {
+    available: capacity,
+    nodes: 1,
   })
   queryClient.setQueryData(ec2SubnetsQueryOptions.queryKey, {
     $metadata: {},
@@ -314,6 +322,69 @@ describe("run-instances instance type picker", () => {
     expect(screen.getByTestId("instance-type-size")).toHaveTextContent(
       "2 vCPU · 0.5 GiB memory",
     )
+  })
+})
+
+describe("run-instances count", () => {
+  it("reports the free capacity for the selected type", async () => {
+    setup()
+
+    await expect(
+      screen.findByText("Available capacity for t3.nano: 2"),
+    ).resolves.toBeInTheDocument()
+  })
+
+  it("refuses a count above the free capacity", async () => {
+    const user = userEvent.setup()
+    const runInstances = vi.fn(() => ({ Instances: [{ InstanceId: "i-1" }] }))
+
+    setup()
+    sdk.setHandler("CreateSecurityGroupCommand", () => ({ GroupId: "sg-new" }))
+    sdk.setHandler("AuthorizeSecurityGroupIngressCommand", () => ({}))
+    sdk.setHandler("RunInstancesCommand", runInstances)
+
+    const count = await screen.findByLabelText("Number of Instances")
+    await user.clear(count)
+    await user.type(count, "3")
+    await user.click(screen.getByRole("button", { name: "Create Instance" }))
+
+    await expect(
+      screen.findByText("Cannot exceed available capacity"),
+    ).resolves.toBeInTheDocument()
+    expect(runInstances).not.toHaveBeenCalled()
+  })
+
+  // A session whose policy does not grant the capacity action reads no figure.
+  // Capping at 1 there would refuse a launch the cluster would have taken, so
+  // the launch decides and RunInstances answers if it cannot.
+  it("neither reports nor caps when the capacity figure is unknown", async () => {
+    const user = userEvent.setup()
+
+    const runInstances = vi.fn((_input: RunInstancesCommandInput) => ({
+      Instances: [{ InstanceId: "i-1" }],
+    }))
+
+    setup({ capacity: {} })
+    sdk.setHandler("CreateSecurityGroupCommand", () => ({ GroupId: "sg-new" }))
+    sdk.setHandler("AuthorizeSecurityGroupIngressCommand", () => ({}))
+    sdk.setHandler("RunInstancesCommand", runInstances)
+
+    const count = await screen.findByLabelText("Number of Instances")
+    expect(
+      screen.queryByText(/Available capacity for/u),
+    ).not.toBeInTheDocument()
+
+    await user.clear(count)
+    await user.type(count, "3")
+    await user.click(screen.getByRole("button", { name: "Create Instance" }))
+
+    await waitFor(() => {
+      expect(runInstances).toHaveBeenCalled()
+    })
+    expect(runInstances.mock.calls[0]?.[0].MaxCount).toBe(3)
+    expect(
+      screen.queryByText("Cannot exceed available capacity"),
+    ).not.toBeInTheDocument()
   })
 })
 

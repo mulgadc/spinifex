@@ -608,8 +608,8 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		}
 	})
 
-	// Test 4: Verify "capacity" filter returns duplicates
-	t.Run("VerifyCapacityFilter_Duplicates", func(t *testing.T) {
+	// Test 4: Verify "capacity" filter names each type once, with a count
+	t.Run("VerifyCapacityFilter_CountPerType", func(t *testing.T) {
 		// Force schedulable capacity to a predictable state by zeroing the
 		// reserve and pinning host figures directly.
 		daemon.resourceMgr.mu.Lock()
@@ -650,8 +650,8 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		require.NoError(t, err)
 
 		// With 2 vCPUs and 16GB, every type whose full charge (guest -m + nbdkit,
-		// RG-6) fits 2 vCPUs / 16GB should have 1 slot. Calculate expected directly.
-		expectedSlots := 0
+		// RG-6) fits is listed once. Calculate the expected names directly.
+		expectedTypes := 0
 		for name, it := range daemon.resourceMgr.instanceTypes {
 			if instancetypes.IsSystemType(name) {
 				continue
@@ -659,13 +659,13 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 			vcpus := *it.VCpuInfo.DefaultVCpus
 			chargeGB := float64(daemon.resourceMgr.instanceMemChargeMiB(it)) / 1024.0
 			if vcpus <= 2 && chargeGB <= 16.0 {
-				expectedSlots++
+				expectedTypes++
 			}
 		}
-		assert.Len(t, output.InstanceTypes, expectedSlots,
-			"Should have %d slots for types fitting 2 vCPU / 16GB", expectedSlots)
+		assert.Len(t, output.InstanceTypes, expectedTypes,
+			"Should name %d types fitting 2 vCPU / 16GB", expectedTypes)
 
-		// Now increase capacity to test duplicate slots
+		// Now raise capacity: the listing keeps its length and the count rises
 		daemon.resourceMgr.mu.Lock()
 		daemon.resourceMgr.hostVCPU = 4
 		daemon.resourceMgr.hostMemGB = 15.0
@@ -676,8 +676,21 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		err = json.Unmarshal(reply.Data, &output)
 		require.NoError(t, err)
 
-		// Verify the count rises with capacity — find a nano type and confirm 2 slots
-		// Find any nano type in the generated types
+		// The extra capacity shows up in the count and nowhere else: the listing
+		// names each admissible type once, so its size does not follow free slots.
+		widened := 0
+		for name, it := range daemon.resourceMgr.instanceTypes {
+			if instancetypes.IsSystemType(name) {
+				continue
+			}
+			chargeGB := float64(daemon.resourceMgr.instanceMemChargeMiB(it)) / 1024.0
+			if *it.VCpuInfo.DefaultVCpus <= 4 && chargeGB <= 15.0 {
+				widened++
+			}
+		}
+		assert.Len(t, output.InstanceTypes, widened,
+			"the listing is one entry per admissible type, not per free slot")
+
 		var nanoType string
 		for name := range daemon.resourceMgr.instanceTypes {
 			if strings.HasSuffix(name, ".nano") {

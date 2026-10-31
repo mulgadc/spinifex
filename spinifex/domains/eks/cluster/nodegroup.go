@@ -743,10 +743,9 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 	return "", errors.New("run worker returned no instance id")
 }
 
-// workerMetadataOptions chooses a worker's IMDS options. A nodegroup launch
-// template version that carries MetadataOptions wins and is used as given;
-// otherwise workers get IMDSv2 required and a hop limit of 2, the managed
-// nodegroup default, so a pod one routed hop behind the node can reach IMDS.
+// workerMetadataOptions chooses a worker's IMDS options: fields a launch template
+// version sets win as given, and every unset field gets the managed nodegroup
+// default (IMDSv2 required, hop limit 2) so pods behind the node can reach IMDS.
 func (s *EKSServiceImpl) workerMetadataOptions(ctx context.Context, rec *NodegroupRecord, accountID string) (*ec2.InstanceMetadataOptionsRequest, error) {
 	managedDefault := &ec2.InstanceMetadataOptionsRequest{
 		HttpTokens:              aws.String(ec2.HttpTokensStateRequired),
@@ -782,13 +781,22 @@ func (s *EKSServiceImpl) workerMetadataOptions(ctx context.Context, rec *Nodegro
 	if opts == nil {
 		return managedDefault, nil
 	}
-	return &ec2.InstanceMetadataOptionsRequest{
+	req := &ec2.InstanceMetadataOptionsRequest{
 		HttpTokens:              opts.HttpTokens,
 		HttpPutResponseHopLimit: opts.HttpPutResponseHopLimit,
 		HttpEndpoint:            opts.HttpEndpoint,
 		HttpProtocolIpv6:        opts.HttpProtocolIpv6,
 		InstanceMetadataTags:    opts.InstanceMetadataTags,
-	}, nil
+	}
+	// EKS node AMIs launch with IMDSv2 required and hop limit 2 when a template
+	// leaves them unset, so only fields the template sets override the default.
+	if req.HttpTokens == nil {
+		req.HttpTokens = managedDefault.HttpTokens
+	}
+	if req.HttpPutResponseHopLimit == nil {
+		req.HttpPutResponseHopLimit = managedDefault.HttpPutResponseHopLimit
+	}
+	return req, nil
 }
 
 // selectWorkerHost picks the host for the next worker: the eligible host (one

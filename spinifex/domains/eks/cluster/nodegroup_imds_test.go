@@ -167,20 +167,33 @@ func TestLaunchOneWorker_TemplateRequestShape(t *testing.T) {
 	}
 }
 
-// A template that sets only the hop limit leaves the tokens unset on the
-// worker request, so EC2 RunInstances applies its own default (IMDSv2 required).
-func TestLaunchOneWorker_TemplateWithOnlyHopLimitLeavesTokensUnset(t *testing.T) {
+// A template that sets only some metadata fields keeps those as given and takes
+// the managed default (tokens required, hop limit 2) for the rest.
+func TestLaunchOneWorker_TemplateMetadataGapsTakeTheManagedDefault(t *testing.T) {
 	t.Parallel()
-	reader := &fakeLaunchTemplates{out: templateVersionWith(&ec2.LaunchTemplateInstanceMetadataOptions{
-		HttpPutResponseHopLimit: aws.Int64(4),
-	})}
-	f, err := launchWorkerWith(t, &NodegroupLaunchTemplate{ID: "lt-0123", Version: "1"}, reader)
-	require.NoError(t, err)
+	cases := []struct {
+		name       string
+		opts       *ec2.LaunchTemplateInstanceMetadataOptions
+		wantTokens string
+		wantHops   int64
+	}{
+		{"only tokens", &ec2.LaunchTemplateInstanceMetadataOptions{HttpTokens: aws.String(ec2.LaunchTemplateHttpTokensStateOptional)}, ec2.HttpTokensStateOptional, 2},
+		{"only hop limit", &ec2.LaunchTemplateInstanceMetadataOptions{HttpPutResponseHopLimit: aws.Int64(4)}, ec2.HttpTokensStateRequired, 4},
+		{"only endpoint", &ec2.LaunchTemplateInstanceMetadataOptions{HttpEndpoint: aws.String(ec2.LaunchTemplateInstanceMetadataEndpointStateEnabled)}, ec2.HttpTokensStateRequired, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reader := &fakeLaunchTemplates{out: templateVersionWith(tc.opts)}
+			f, err := launchWorkerWith(t, &NodegroupLaunchTemplate{ID: "lt-0123", Version: "1"}, reader)
+			require.NoError(t, err)
 
-	opts := launchedMetadata(t, f)
-	require.NotNil(t, opts)
-	assert.Equal(t, int64(4), aws.Int64Value(opts.HttpPutResponseHopLimit))
-	assert.Nil(t, opts.HttpTokens)
+			opts := launchedMetadata(t, f)
+			require.NotNil(t, opts)
+			assert.Equal(t, tc.wantTokens, aws.StringValue(opts.HttpTokens))
+			assert.Equal(t, tc.wantHops, aws.Int64Value(opts.HttpPutResponseHopLimit))
+		})
+	}
 }
 
 func TestLaunchOneWorker_EveryTemplateMetadataFieldIsCarriedThrough(t *testing.T) {
@@ -202,4 +215,26 @@ func TestLaunchOneWorker_EveryTemplateMetadataFieldIsCarriedThrough(t *testing.T
 		HttpProtocolIpv6:        aws.String(ec2.InstanceMetadataProtocolStateDisabled),
 		InstanceMetadataTags:    aws.String(ec2.InstanceMetadataTagsStateDisabled),
 	}, launchedMetadata(t, f))
+}
+
+// RunInstances rejects InstanceMetadataTags=enabled, and workers launch through
+// it. The template's value must reach the launcher unaltered and the launcher's
+// UnsupportedOperation must fail the launch, never be dropped silently.
+func TestLaunchOneWorker_TemplateTagsEnabledSurfacesUnsupportedOperation(t *testing.T) {
+	t.Parallel()
+	reader := &fakeLaunchTemplates{out: templateVersionWith(&ec2.LaunchTemplateInstanceMetadataOptions{
+		InstanceMetadataTags: aws.String(ec2.LaunchTemplateInstanceMetadataTagsStateEnabled),
+	})}
+	f := newEKSServiceFixture(t)
+	f.svc.deps.LaunchTemplates = reader
+	f.worker.runErr = errors.New(awserrors.ErrorUnsupportedOperation)
+	f.worker.failNextN = 1
+	rec := &NodegroupRecord{ClusterName: "c1", Name: "ng1", Subnets: []string{"subnet-aaa"}, LaunchTemplate: &NodegroupLaunchTemplate{ID: "lt-0123", Version: "1"}}
+
+	_, err := f.svc.launchOneWorker(t.Context(), rec, &ClusterMeta{Name: "c1"}, "sg-ng", "ami-eks", "tok", testAccountID)
+
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorUnsupportedOperation), "got %v", err)
+	require.Len(t, f.worker.runCalls, 1)
+	assert.Equal(t, ec2.InstanceMetadataTagsStateEnabled, aws.StringValue(f.worker.runCalls[0].MetadataOptions.InstanceMetadataTags))
 }

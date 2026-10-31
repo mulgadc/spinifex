@@ -50,6 +50,8 @@ workflows:
     '.github/workflows/image-scripts.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-go@v7.0.0'
+    '.github/workflows/mulga-design.yml':
+        - 'actions/checkout@v7.0.1'
     '.github/workflows/perf-3node.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/create-github-app-token@v3.3.0'

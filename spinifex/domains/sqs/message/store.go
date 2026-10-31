@@ -149,7 +149,8 @@ type Store interface {
 	// Append durably stores a message and returns only after the write is
 	// acknowledged as durable (ADR-0011:S3).
 	Append(ctx context.Context, ns Namespace, in AppendInput) (AppendResult, error)
-	// Get reads a message by position; ErrNotFound once deleted.
+	// Get reads a message by position authoritatively: once deleted it
+	// returns ErrNotFound or fails, never the deleted body.
 	Get(ctx context.Context, ns Namespace, pos Position) (Message, error)
 	// Delete removes one message. Deleting an absent message succeeds, so
 	// a replay after a crash is safe.

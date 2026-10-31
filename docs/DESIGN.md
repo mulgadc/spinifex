@@ -342,7 +342,7 @@ A release without a complete image removes any previously installed one, so a la
 
 At boot the guest reads three firmware config values: the data disk's serial, an IPv4 address on one of its interfaces, and one NATS user NKey public key.
 It mounts exactly one matching disk at `/data` after `e2fsck -p`, refuses a missing, duplicate, unformatted or unrepairable disk, and never formats.
-JetStream keeps its data on `/data` with `sync_interval: always` (ADR-0011:S3), and the server listens only on that address and accepts only that key.
+JetStream keeps its data on `/data` with `sync_interval: always` (ADR-0011:S3), `max_payload: 2MiB` admits a full 1 MiB SQS message with its headers (ADR-0011:S4), and the server listens only on that address and accepts only that key.
 On shutdown the store is stopped before `/data` is unmounted; a store that survives SIGKILL leaves every mount in place.
 
 A launch uses the versioned subject `system.LaunchSQSStore.v1`, which a daemon without this code does not serve, so it fails with no responder instead of booting another guest.

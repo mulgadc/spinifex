@@ -954,3 +954,27 @@ func TestNamespacesLeavesNoConsumer(t *testing.T) {
 	}
 	assert.Equal(t, 0, consumerCount(t, js, sqsjs.StreamName(1)))
 }
+
+// Get must be a leader read: a stream that allows direct get, as an earlier
+// configuration's shard might, would let any replica answer with a stale
+// body. The store refuses the read rather than serve one.
+func TestGetRefusesDirectGetStream(t *testing.T) {
+	ctx := context.Background()
+	_, js := startServer(t, t.TempDir())
+	s, err := sqsjs.New(ctx, js, testConfig)
+	require.NoError(t, err)
+	assert.False(t, testConfig.MessageStreamConfig(0, 1).AllowDirect, "the store never provisions direct get")
+
+	earlier := message.Shard(testConfig.MessageStreams)
+	cfg := testConfig.MessageStreamConfig(earlier, 1)
+	cfg.AllowDirect = true
+	_, err = js.CreateStream(ctx, cfg)
+	require.NoError(t, err)
+	n := ns(earlier, 0, "directq")
+	ack, err := js.Publish(ctx, sqsjs.Subject(n), []byte("b"))
+	require.NoError(t, err)
+
+	_, err = s.Get(ctx, n, message.Position(ack.Sequence))
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, message.ErrNotFound, "a refused read is never taken as removed")
+}

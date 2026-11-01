@@ -11,7 +11,7 @@ const EnsureSubjectPrefix = "sqs.worker.Ensure.v1."
 
 // EnsureRequest asks a node to ensure its Region's shared SQS worker.
 type EnsureRequest struct {
-	NodeID       string `json:"NodeId"`
+	NodeID        string `json:"NodeId"`
 	InstanceType  string `json:"InstanceType"`
 	VolumeSizeGiB int64  `json:"VolumeSizeGiB"`
 }

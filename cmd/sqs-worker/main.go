@@ -61,7 +61,6 @@ func newClient(region, gatewayURL string) (*sqsworkergw.Client, error) {
 	return sqsworkergw.New(gatewayURL, region, ca, gwsign.NewInstanceRole())
 }
 
-
 func main() {
 	if len(os.Args) != 2 || (os.Args[1] != "boot" && os.Args[1] != "ready") {
 		fmt.Fprintln(os.Stderr, "usage: sqs-worker boot|ready")
@@ -73,10 +72,17 @@ func main() {
 		run = ready
 	}
 	if err := run(logf); err != nil {
+		if os.Args[1] == "boot" && workerboot.Transient(err) {
+			logf("boot not settled, will retry: " + err.Error())
+			os.Exit(exitTransient)
+		}
 		logf("FATAL: " + err.Error())
 		os.Exit(1)
 	}
 }
+
+// exitTransient tells the guest's supervisor that boot may be run again.
+const exitTransient = 75
 
 func config(logf func(string)) workerboot.Config {
 	return workerboot.Config{

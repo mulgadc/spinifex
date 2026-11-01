@@ -57,17 +57,17 @@ func init() {
 
 // sqsStatusOutput is the EnableSQS and DescribeSQS response body.
 type sqsStatusOutput struct {
-	Region          string `json:"Region"`
-	Desired         string `json:"Desired"`
-	NodeID          string `json:"NodeId"`
-	Generation      uint64 `json:"Generation"`
-	Instance        string `json:"Instance"`
-	InstanceID      string `json:"InstanceId"`
-	ReceiptKey      string `json:"ReceiptKey"`
-	WorkerPolling   bool   `json:"WorkerPolling"`
-	TenantAPI       string `json:"TenantAPI"`
-	Unsupported     string `json:"Unsupported"`
-	Ready           bool   `json:"Ready"`
+	Region        string `json:"Region"`
+	Desired       string `json:"Desired"`
+	NodeID        string `json:"NodeId"`
+	Generation    uint64 `json:"Generation"`
+	Instance      string `json:"Instance"`
+	InstanceID    string `json:"InstanceId"`
+	ReceiptKey    string `json:"ReceiptKey"`
+	WorkerPolling bool   `json:"WorkerPolling"`
+	TenantAPI     string `json:"TenantAPI"`
+	Unsupported   string `json:"Unsupported"`
+	Ready         bool   `json:"Ready"`
 }
 
 func runSQSEnable(cmd *cobra.Command, _ []string) error {

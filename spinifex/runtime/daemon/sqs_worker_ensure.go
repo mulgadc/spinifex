@@ -18,7 +18,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-
 // sqsWorkerEnsureTimeout bounds one launch; the caller's own timeout does not
 // cancel it, so a retry after a lost reply observes the outcome instead.
 const sqsWorkerEnsureTimeout = 30 * time.Minute

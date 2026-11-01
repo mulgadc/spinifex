@@ -1,15 +1,9 @@
 #!/bin/sh
-# sysinit: load the disk drivers, then mount the data disk and settle the
-# receipt key on it, and only then prepare the guest's own SQS store. Any
-# refusal is logged and leaves the store unstarted; the guest never formats.
+# sysinit: load the disk drivers and clear this boot's markers. The respawned
+# store step mounts the disk, settles the receipt key and starts the store.
 . /usr/local/lib/sqs-worker/sqs-worker-lib.sh
 modprobe virtio_blk 2>/dev/null || true
 modprobe ext4 2>/dev/null || true
 mkdir -p "$SQSW_RUN"
-rm -f "$SQSW_RUN/receipt-ready" "$SQSW_RUN/store.conf"
-if "$SQSW_BIN" boot >> "$SQSW_CONSOLE" 2>&1; then
-    sqsw_prepare_store || true
-else
-    sqsw_log "boot refused; store not started"
-fi
+rm -f "$SQSW_RUN/receipt-ready" "$SQSW_RUN/store.conf" "$SQSW_RUN/boot-refused"
 exit 0

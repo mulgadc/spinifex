@@ -135,7 +135,7 @@ type ResourceManager struct {
 	instanceSubs  map[string]*nats.Subscription
 	handler       natsHandler
 	systemHandler natsHandler // handles system.LaunchInstance.* requests (ALB-VM fan-out)
-	nodeID          string // node identifier for node-specific topic subscriptions
+	nodeID        string      // node identifier for node-specific topic subscriptions
 }
 
 // Compile-time guarantee that the RouteTable service satisfies the IGW

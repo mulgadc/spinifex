@@ -49,6 +49,15 @@ if [ "$1" = -t ]; then [ -z "${NATS_BAD:-}" ]; exit; fi
 echo "$GOMEMLIMIT $*" >> "$T/servers"
 exec sleep 60
 EOF
+# The fake boot takes its exit codes in order from $T/boot-rcs, and like the
+# real one writes the receipt marker only on success.
+cat > "$TMP/bin/boot" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$T/boots"
+rc=$(head -n1 "$T/boot-rcs"); sed -i 1d "$T/boot-rcs"
+[ "$rc" != 0 ] || echo FP > "$T/run/receipt-ready"
+exit "$rc"
+EOF
 chmod +x "$TMP/bin"/*
 
 fresh() {
@@ -69,7 +78,8 @@ start_run() {
 }
 # start_store: one init respawn of the store step, in the background.
 start_store() {
-    SQSW_RUN="$T/run" SQSW_CONSOLE="$T/console" SQSW_NATS_BIN="$TMP/bin/nats" SQSW_PARK="sleep 60" \
+    SQSW_RUN="$T/run" SQSW_DATA="$T/data" SQSW_CONSOLE="$T/console" SQSW_NATS_BIN="$TMP/bin/nats" \
+        SQSW_BIN="$TMP/bin/boot" SQSW_BOOT_RETRY=0 SQSW_PARK="sleep 60" \
         sh -c '. "$1"; sqsw_store' sh "$LIB" & spid=$!
     CHILDREN="$CHILDREN $spid"
 }
@@ -115,9 +125,33 @@ start_store
 check "a prepared store starts the dedicated server with its heap bound" \
     'waitfor "[ -s \"\$T/servers\" ]" && grep -qx "512MiB -c $T/run/store.conf" "$T/servers"'
 kill -KILL "$spid" 2>/dev/null || true
-fresh store-unprepared; rm -f "$T/run/store.conf"
-start_store; waitfor "grep -q 'store: not prepared' \"\$T/console\"" || true
-check "an unprepared store parks instead of starting or respawning" '! gone "$spid" && [ ! -e "$T/servers" ]'
+fresh store-refused; : > "$T/run/boot-refused"
+start_store; waitfor "grep -q 'store: boot refused' \"\$T/console\"" || true
+check "a store whose boot was refused parks instead of starting or respawning" \
+    '! gone "$spid" && [ ! -e "$T/servers" ] && [ ! -e "$T/boots" ]'
+kill -KILL "$spid" 2>/dev/null || true
+
+# --- Boot is supervised: a transient failure is retried, a refusal is final ---
+fresh boot-transient; rm -f "$T/run/store.conf" "$T/run/receipt-ready"; printf '75\n0\n' > "$T/boot-rcs"
+start_store
+check "a transient boot failure exits so init runs the step again, starting nothing" \
+    'waitfor "gone $spid" && [ ! -e "$T/servers" ] && [ ! -e "$T/run/boot-refused" ]'
+start_store
+check "the respawn after recovery boots again and starts the store" \
+    'waitfor "[ -s \"\$T/servers\" ]" && [ "$(wc -l < "$T/boots")" -eq 2 ] && [ -s "$T/run/store.conf" ]'
+kill -KILL "$spid" 2>/dev/null || true
+fresh boot-final; rm -f "$T/run/store.conf" "$T/run/receipt-ready"; printf '1\n0\n' > "$T/boot-rcs"
+start_store; waitfor "grep -q 'boot refused (rc=1)' \"\$T/console\"" || true
+check "a final boot refusal parks the store and records the refusal" \
+    '! gone "$spid" && [ -e "$T/run/boot-refused" ] && [ ! -e "$T/servers" ]'
+kill -KILL "$spid" 2>/dev/null || true
+start_store; waitfor "grep -q 'store: boot refused, not starting' \"\$T/console\"" || true
+check "a later respawn never boots again after a final refusal" '[ "$(wc -l < "$T/boots")" -eq 1 ]'
+kill -KILL "$spid" 2>/dev/null || true
+fresh boot-settled; rm -f "$T/run/store.conf"; : > "$T/boot-rcs"
+start_store
+check "a respawn after the key settled starts the store without booting again" \
+    'waitfor "[ -s \"\$T/servers\" ]" && [ ! -e "$T/boots" ]'
 kill -KILL "$spid" 2>/dev/null || true
 
 # --- A watcher killed after readiness: its marker must not outlive it ---
@@ -155,11 +189,15 @@ shutdown_step
 check "shutdown stops the parked start" 'waitfor "gone $pid"'
 
 fresh run-unprepared; rm -f "$T/run/store.conf"
-start_run; waitfor "grep -q 'store not prepared' \"\$T/console\"" || true
-check "a guest whose store is not prepared parks its watcher and never reports ready" \
+start_run
+check "a watcher whose store is not prepared yet exits to be respawned and never reports ready" \
+    'waitfor "gone $pid" && [ ! -e "$T/watchers" ] && [ ! -e "$T/run/store-ready" ]'
+fresh run-refused; rm -f "$T/run/store.conf"; : > "$T/run/boot-refused"
+start_run; waitfor "grep -q 'ready: boot refused' \"\$T/console\"" || true
+check "a guest whose boot was refused parks its watcher and never reports ready" \
     '! gone "$pid" && [ ! -e "$T/watchers" ] && [ ! -e "$T/run/store-ready" ]'
 shutdown_step
-check "shutdown stops a watcher parked for an unprepared store" 'waitfor "gone $pid" && [ ! -e "$T/watchers" ]'
+check "shutdown stops a watcher parked after a refused boot" 'waitfor "gone $pid" && [ ! -e "$T/watchers" ]'
 
 # --- Shutdown: unmount only once the watcher and the store are gone ---
 fresh shutdown-orderly; echo "dev $T/data ext4 rw 0 0" > "$T/mounts"

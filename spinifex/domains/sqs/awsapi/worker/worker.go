@@ -34,8 +34,8 @@ import (
 // The contract lives in workerrole so the role grant can read it without
 // importing this adapter.
 const (
-	ServiceName                 = workerrole.ServiceName
-	WorkerRoleName              = workerrole.RoleName
+	ServiceName            = workerrole.ServiceName
+	WorkerRoleName         = workerrole.RoleName
 	ActionClaimReceiptKey  = workerrole.ActionClaimReceiptKey
 	ActionRecordReceiptKey = workerrole.ActionRecordReceiptKey
 	ActionPollWork         = workerrole.ActionPollWork

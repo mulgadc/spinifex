@@ -1,11 +1,10 @@
 #!/bin/sh
-# stage-sqs-store-microvm.sh <image-dir> <dist-root> [sqs-store|sqs-worker]:
-# copy a built SQS microVM image into a release tree as <dist-root>/microvm-<name>.
+# stage-sqs-store-microvm.sh <image-dir> <dist-root> [sqs-worker]: copy the
+# built SQS microVM image into a release tree as <dist-root>/microvm-sqs-worker.
 # Without a complete image it stages nothing and says so, as the LB image does.
 set -eu
-src=$1 name=${3:-sqs-store}
+src=$1 name=${3:-sqs-worker}
 case "$name" in
-    sqs-store) label="SQS store" ;;
     sqs-worker) label="SQS worker" ;;
     *) echo "[distro] unknown SQS microVM image '$name'" >&2; exit 2 ;;
 esac

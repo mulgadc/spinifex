@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
 )
 
 type nopSigner struct{ err error }

@@ -394,4 +394,3 @@ func TestRealStore_SuppliedVolumeIsNotPending(t *testing.T) {
 	_, err = invoke(JetStreamDeps(js), "Action=ClaimReceiptKey", workerActor(instance), &call{})
 	assertCode(t, err, awserrors.ErrorInvalidState)
 }
-

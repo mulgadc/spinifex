@@ -16,6 +16,7 @@ SQSW_STORE_PORT=${SQSW_STORE_PORT:-4222}
 SQSW_STOP_BUDGET_TENTHS=${SQSW_STOP_BUDGET_TENTHS:-100}
 SQSW_RESPAWN_GAP=${SQSW_RESPAWN_GAP:-5}
 SQSW_PARK=${SQSW_PARK:-sleep 2147483647}
+SQSW_BOOT_RETRY=${SQSW_BOOT_RETRY:-30}
 UMOUNT=${UMOUNT:-umount}
 
 sqsw_log() { echo "[sqs-worker] $*" >> "$SQSW_CONSOLE"; }
@@ -71,12 +72,34 @@ sqsw_park() {
 # check, so a stop that misses the record has already set stopping.
 sqsw_record() { echo "$$ $(sqsw_starttime $$)" > "$SQSW_RUN/$1.pid"; }
 
+# sqsw_boot: settle the disk and receipt key once per guest boot. A transient
+# failure (exit 75) waits and exits so init runs it again; boot never remounts
+# a disk already mounted. Any other failure is final for this guest boot.
+sqsw_boot() {
+    [ ! -e "$SQSW_RUN/boot-refused" ] || sqsw_park "store: boot refused, not starting"
+    [ -s "$SQSW_RUN/receipt-ready" ] && return 0
+    rc=0
+    "$SQSW_BIN" boot >> "$SQSW_CONSOLE" 2>&1 || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        75) sqsw_log "store: boot not settled, retrying in ${SQSW_BOOT_RETRY}s"
+            sleep "$SQSW_BOOT_RETRY"
+            exit 1 ;;
+        *) : > "$SQSW_RUN/boot-refused"
+           sqsw_park "store: boot refused (rc=$rc), not starting" ;;
+    esac
+}
+
 # sqsw_store: the respawned server body. It starts only on a prepared config.
 sqsw_store() {
     mkdir -p "$SQSW_RUN"
     sqsw_record store
     [ ! -e "$SQSW_RUN/stopping" ] || sqsw_park "store: shutdown in progress, not starting"
-    [ -s "$SQSW_RUN/store.conf" ] || sqsw_park "store: not prepared, not starting"
+    sqsw_boot
+    if [ ! -s "$SQSW_RUN/store.conf" ] && ! sqsw_prepare_store; then
+        : > "$SQSW_RUN/boot-refused"
+        sqsw_park "store: not prepared, not starting"
+    fi
     sqsw_log "store: starting pid=$$"
     # ADR-0011:S11 bounds the store's Go heap; the guest must be larger.
     GOMEMLIMIT=512MiB exec "$SQSW_NATS_BIN" -c "$SQSW_RUN/store.conf"
@@ -92,7 +115,12 @@ sqsw_run() {
         sqsw_log "ready: removed a store-ready marker left by an earlier watcher"
     fi
     [ ! -e "$SQSW_RUN/stopping" ] || sqsw_park "ready: shutdown in progress, not starting"
-    [ -s "$SQSW_RUN/store.conf" ] || sqsw_park "ready: store not prepared, readiness not started"
+    [ ! -e "$SQSW_RUN/boot-refused" ] || sqsw_park "ready: boot refused, readiness not started"
+    # Boot may still be retrying; check again after a gap rather than parking.
+    if [ ! -s "$SQSW_RUN/store.conf" ]; then
+        sleep "$SQSW_RESPAWN_GAP"
+        exit 0
+    fi
     # Init respawns at once; a watcher that keeps exiting restarts at most
     # once per gap instead of in a tight loop.
     now=$(date +%s)

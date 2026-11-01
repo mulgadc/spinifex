@@ -210,6 +210,13 @@ func acquire(ctx context.Context, cfg Config, store workerkey.Store, c workerkey
 	return nil, err
 }
 
+// Transient reports whether a failed Boot may be run again: the decision was
+// still pending or retryable when its bound ran out. Every other refusal,
+// including a missing or different key, is final.
+func Transient(err error) bool {
+	return pending(err) || retryable(err) || errors.Is(err, context.DeadlineExceeded)
+}
+
 func pending(err error) bool {
 	p, ok := errors.AsType[interface {
 		error

@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -170,23 +171,48 @@ func (s *AccountSettingsServiceImpl) getSettings(ctx context.Context, accountID 
 	return &settings, nil
 }
 
+// platformEncrypts reports whether every new volume is encrypted, which is
+// what EBS encryption by default means on AWS. The platform decides it, not
+// the account.
+func (s *AccountSettingsServiceImpl) platformEncrypts(ctx context.Context) (bool, error) {
+	encrypted, err := ebsencryption.Enabled(s.config.Viperblock.EncryptionKeyFile)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to load EBS encryption key", "err", err)
+		return false, errors.New(awserrors.ErrorInternalError)
+	}
+	return encrypted, nil
+}
+
 // EnableEbsEncryptionByDefault enables EBS encryption by default for the account.
+// It reports the platform's posture, so it answers false where no key is configured.
 func (s *AccountSettingsServiceImpl) EnableEbsEncryptionByDefault(ctx context.Context, input *ec2.EnableEbsEncryptionByDefaultInput, accountID string) (*ec2.EnableEbsEncryptionByDefaultOutput, error) {
 	slog.InfoContext(ctx, "EnableEbsEncryptionByDefault called", "accountID", accountID)
 
+	encrypted, err := s.platformEncrypts(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.mutateSettings(ctx, accountID, func(rec *AccountSettingsRecord) { rec.EbsEncryptionByDefault = true }); err != nil {
 		return nil, err
 	}
 
 	return &ec2.EnableEbsEncryptionByDefaultOutput{
-		EbsEncryptionByDefault: aws.Bool(true),
+		EbsEncryptionByDefault: aws.Bool(encrypted),
 	}, nil
 }
 
 // DisableEbsEncryptionByDefault disables EBS encryption by default for the account.
+// It is refused while the platform encrypts every volume, since it could not take effect.
 func (s *AccountSettingsServiceImpl) DisableEbsEncryptionByDefault(ctx context.Context, input *ec2.DisableEbsEncryptionByDefaultInput, accountID string) (*ec2.DisableEbsEncryptionByDefaultOutput, error) {
 	slog.InfoContext(ctx, "DisableEbsEncryptionByDefault called", "accountID", accountID)
 
+	encrypted, err := s.platformEncrypts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if encrypted {
+		return nil, awserrors.Errorf(awserrors.ErrorOperationNotPermitted, "EBS encryption by default cannot be disabled: this platform encrypts every volume")
+	}
 	if err := s.mutateSettings(ctx, accountID, func(rec *AccountSettingsRecord) { rec.EbsEncryptionByDefault = false }); err != nil {
 		return nil, err
 	}
@@ -200,13 +226,16 @@ func (s *AccountSettingsServiceImpl) DisableEbsEncryptionByDefault(ctx context.C
 func (s *AccountSettingsServiceImpl) GetEbsEncryptionByDefault(ctx context.Context, input *ec2.GetEbsEncryptionByDefaultInput, accountID string) (*ec2.GetEbsEncryptionByDefaultOutput, error) {
 	slog.InfoContext(ctx, "GetEbsEncryptionByDefault called", "accountID", accountID)
 
-	settings, err := s.getSettings(ctx, accountID)
+	if _, err := s.getSettings(ctx, accountID); err != nil {
+		return nil, err
+	}
+	encrypted, err := s.platformEncrypts(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	return &ec2.GetEbsEncryptionByDefaultOutput{
-		EbsEncryptionByDefault: aws.Bool(settings.EbsEncryptionByDefault),
+		EbsEncryptionByDefault: aws.Bool(encrypted),
 	}, nil
 }
 

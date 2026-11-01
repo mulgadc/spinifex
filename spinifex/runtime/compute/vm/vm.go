@@ -526,7 +526,7 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-display", "none")
 	}
 
-	if IsMMIO(cfg.MachineType) && cfg.ConsoleLogPath != "" {
+	if IsMicrovm(cfg.MachineType) && cfg.ConsoleLogPath != "" {
 		// microvm with isa-serial=on: the machine creates the ISA serial device.
 		// Use -chardev file so output is captured without a socket client, then
 		// -serial chardev:console0 wires it to the existing device (not a new one).

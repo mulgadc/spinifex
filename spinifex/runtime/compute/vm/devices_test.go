@@ -332,3 +332,9 @@ func TestNetDevice_Q35Unchanged(t *testing.T) {
 	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc", 1, 0)
 	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc,rx_queue_size=1024", d.Value)
 }
+
+func TestIsMicrovm(t *testing.T) {
+	assert.True(t, IsMicrovm("microvm"))
+	assert.True(t, IsMicrovm("microvm,pcie=on"))
+	assert.False(t, IsMicrovm("q35"))
+}

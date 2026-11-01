@@ -865,15 +865,14 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 		imageDir = guest.imageDir()
 	}
 
-	// Build kernel cmdline.
-	//
-	// QEMU microvm maps virtio-mmio slots at 0xfeb00000 + n*0x200 with IRQ 5+n.
-	// With acpi=on the guest also finds them through ACPI, as data disks are
-	// (they get no parameter); the NIC parameters are kept, matching that map.
+	// Build kernel cmdline. Devices sit on the PCIe bus (pcie=on), so no
+	// virtio_mmio.device= arguments.
 	//
 	// Boot-time performance flags:
-	//   quiet loglevel=3        — suppress printk to ttyS0 (115200 baud serial
-	//                             writes dominate boot time; warnings+errors only)
+	//   quiet                   — suppress info printk to ttyS0 (115200 baud serial
+	//                             writes dominate boot time)
+	//   loglevel                — 3 on SQS guests (errors only); 7 on the LB so
+	//                             kernel warnings reach the console log
 	//   mitigations=off         — skip spectre/meltdown microcode patching at
 	//                             boot. Load balancer only: KVM guest on trusted
 	//                             host CPU, single-tenant LB workload, no untrusted
@@ -885,23 +884,12 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 	//   reboot=t                — triple-fault reboot; skip ACPI/keyboard probes
 	//   i8042.no{pnp,aux,kbd}   — microvm has no PS/2; skip i8042 probe timeouts
 	var sb strings.Builder
-	sb.WriteString("console=ttyS0 quiet loglevel=3")
 	if guest == nil {
-		sb.WriteString(" mitigations=off")
+		sb.WriteString("console=ttyS0 quiet loglevel=7 mitigations=off")
+	} else {
+		sb.WriteString("console=ttyS0 quiet loglevel=3")
 	}
 	sb.WriteString(" tsc=reliable no_timer_check reboot=t i8042.nopnp i8042.noaux i8042.nokbd")
-	// Slots must stay packed in the same order QEMU actually creates
-	// -device entries (buildNICNetdevs), so an unprovisioned mgmt NIC
-	// (skipped there) must not reserve a slot here either.
-	slot := 0
-	for i, nic := range input.NICs {
-		if !nicProvisioned(i, nic) {
-			continue
-		}
-		fmt.Fprintf(&sb, " virtio_mmio.device=0x200@0x%x:%d",
-			0xfeb00000+slot*0x200, 5+slot)
-		slot++
-	}
 	cmdline := sb.String()
 
 	machineType := microvmMachineType()
@@ -938,10 +926,12 @@ type nicNetdevResult struct {
 }
 
 // microvmMachineType returns the QEMU -M string for the microvm machine.
+// pcie=on gives it a PCI bus so NICs are virtio-net-pci with MSI-X; the
+// virtio-mmio shared level-triggered lines stalled a NIC's RX path.
 // isa-serial is kept on permanently for per-VM console log access — the
 // boot-time saving from turning it off is not worth losing console output.
 func microvmMachineType() string {
-	return "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on"
+	return "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on,pcie=on"
 }
 
 // buildNICNetdevs produces QEMU -netdev and -device entries for each NIC in

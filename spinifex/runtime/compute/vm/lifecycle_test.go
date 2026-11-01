@@ -2175,3 +2175,19 @@ func deviceValues(devs []Device) []string {
 	}
 	return out
 }
+
+func TestDirectBootLaunchConfig_PCIEDataVolumesKeepSerialAndID(t *testing.T) {
+	base := directBootBase()
+	base.MachineType = "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on,pcie=on"
+	got, err := directBootLaunchConfig(base, directBootRequests(), 2)
+	require.NoError(t, err)
+
+	require.Len(t, got.Devices, 3)
+	assert.Equal(t, base.Devices[0], got.Devices[0])
+	assert.Equal(t, Device{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,werror=stop,rerror=stop"}, got.Devices[1])
+	assert.Equal(t, Device{Value: "virtio-blk-pci,id=vdisk-vol-blk,drive=nbd-vol-blk,iothread=ioth-vol-blk,serial=volblk,werror=stop,rerror=stop"}, got.Devices[2])
+	for _, d := range got.Devices[1:] {
+		assert.NotContains(t, d.Value, "bus=", "microvm has no hot-plug root port to name")
+	}
+	assert.Empty(t, got.Drives)
+}

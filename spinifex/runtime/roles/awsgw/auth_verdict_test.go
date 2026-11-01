@@ -127,11 +127,10 @@ func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&gateway.GatewayConfig{
+	gw := withEC2Verifier(gwfix.WithDeps(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		IAMService:     mockSvc,
-	})
+	}, gwfix.Deps{IAM: mockSvc}))
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -179,11 +178,10 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(&gateway.GatewayConfig{
+	gw := withEC2Verifier(gwfix.WithDeps(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		IAMService:     mockSvc,
-	})
+	}, gwfix.Deps{IAM: mockSvc}))
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())

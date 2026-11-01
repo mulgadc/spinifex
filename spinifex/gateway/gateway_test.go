@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -27,7 +26,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	awsec2 "github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
-	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -77,7 +75,7 @@ func TestXMLErrorBody_EnvelopePerService(t *testing.T) {
 		{"route53", "ErrorResponse"},
 	}
 
-	gw := withServices(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()},
+	gw := withServices(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}),
 		ec2Registration(&GatewayConfig{}), operatoradmin.NewRegistration(operatoradmin.Deps{}),
 		iamRegistration(&GatewayConfig{}), stsRegistration(&GatewayConfig{}),
 		elbv2awsapi.NewRegistration(elbv2awsapi.Deps{}), rdsawsapi.NewRegistration(rdsawsapi.Deps{}),
@@ -94,7 +92,7 @@ func TestXMLErrorBody_EnvelopePerService(t *testing.T) {
 }
 
 func TestErrorHandler_IAMService(t *testing.T) {
-	gw := withIAM(withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
+	gw := withIAM(withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "iam")
@@ -116,7 +114,7 @@ func TestErrorHandler_IAMService(t *testing.T) {
 }
 
 func TestErrorHandler_UnknownError(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "ec2")
@@ -137,7 +135,7 @@ func TestErrorHandler_UnknownError(t *testing.T) {
 }
 
 func TestErrorHandler_WrappedErrorCode(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "ec2")
@@ -161,7 +159,7 @@ func TestErrorHandler_WrappedErrorCode(t *testing.T) {
 // fidelity gap: a call site that names the blocking resource via awserrors.Errorf
 // must have that wording reach the client instead of the generic ErrorLookup text.
 func TestErrorHandler_PrefersCallSiteMessage(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "ec2")
@@ -186,7 +184,7 @@ func TestErrorHandler_PrefersCallSiteMessage(t *testing.T) {
 // ResourceInUseException collision check: ACM's DeleteCertificate must not
 // surface EKS's "cluster already exists" wording for the shared wire code.
 func TestErrorHandler_ACMResourceInUse_UsesACMWording(t *testing.T) {
-	gw := withACM(withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}), acmawsapi.Deps{})
+	gw := withACM(withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), acmawsapi.Deps{})
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), "acm")
 	req = req.WithContext(ctx)
@@ -207,7 +205,7 @@ func TestErrorHandler_ACMResourceInUse_UsesACMWording(t *testing.T) {
 // own ResourceInUseException must keep its existing wording, unaffected by the
 // ACM-specific override.
 func TestErrorHandler_EKSResourceInUse_UsesEKSWording(t *testing.T) {
-	gw := withContainers(withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
+	gw := withContainers(withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), "eks")
 	req = req.WithContext(ctx)
@@ -227,7 +225,7 @@ func TestErrorHandler_EKSResourceInUse_UsesEKSWording(t *testing.T) {
 // case: an error path that supplies no message (the vast majority of call
 // sites) must keep rendering exactly today's ErrorLookup text, unchanged.
 func TestErrorHandler_NoMessageSupplied_MatchesErrorLookup(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "ec2")
@@ -249,7 +247,7 @@ func TestErrorHandler_NoMessageSupplied_MatchesErrorLookup(t *testing.T) {
 // validation code outside EC2: the default must not be EC2's Reserved Instance
 // or resource-ID wording, whichever envelope the service uses.
 func TestErrorHandler_NonEC2ValidationDefaults_DropEC2Wording(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
 	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
@@ -276,7 +274,7 @@ func TestErrorHandler_NonEC2ValidationDefaults_DropEC2Wording(t *testing.T) {
 }
 
 func TestErrorHandler_ELBv2Service(t *testing.T) {
-	gw := withELBv2(withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
+	gw := withELBv2(withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "elasticloadbalancing")
@@ -298,7 +296,7 @@ func TestErrorHandler_ELBv2Service(t *testing.T) {
 }
 
 func TestErrorHandler_EC2Service(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "ec2")
@@ -318,7 +316,7 @@ func TestErrorHandler_EC2Service(t *testing.T) {
 }
 
 func TestErrorHandler_IgnoresClientRequestID(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "ec2")
@@ -336,7 +334,7 @@ func TestErrorHandler_IgnoresClientRequestID(t *testing.T) {
 }
 
 func TestErrorHandler_ContentTypeXML(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "ec2")
@@ -353,95 +351,6 @@ func startTestNATS(t *testing.T) *nats.Conn {
 	t.Helper()
 	_, nc := testutil.StartTestNATS(t)
 	return nc
-}
-
-func TestDiscoverActiveNodes_NilNATS(t *testing.T) {
-	gw := &GatewayConfig{
-		ExpectedNodes: 3,
-		NATSConn:      nil,
-	}
-
-	result := gw.DiscoverActiveNodes(context.Background())
-	assert.Equal(t, 3, result)
-}
-
-func TestDiscoverActiveNodes_NoResponders(t *testing.T) {
-	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
-	nc := startTestNATS(t)
-
-	gw := &GatewayConfig{
-		ExpectedNodes: 5,
-		NATSConn:      nc,
-	}
-
-	result := gw.DiscoverActiveNodes(context.Background())
-	assert.Equal(t, 5, result)
-}
-
-func TestDiscoverActiveNodes_WithResponders(t *testing.T) {
-	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
-	nc := startTestNATS(t)
-
-	for _, nodeName := range []string{"node-1", "node-2"} {
-		name := nodeName
-		_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
-			resp := clusterv1.NodeDiscoverResponse{Node: name}
-			data, _ := json.Marshal(resp)
-			msg.Respond(data)
-		})
-		require.NoError(t, err)
-	}
-	require.NoError(t, nc.Flush())
-
-	gw := &GatewayConfig{
-		ExpectedNodes: 1,
-		NATSConn:      nc,
-	}
-
-	result := gw.DiscoverActiveNodes(context.Background())
-	assert.Equal(t, 2, result)
-}
-
-func TestDiscoverActiveNodes_InvalidJSON(t *testing.T) {
-	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
-	nc := startTestNATS(t)
-
-	_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
-		msg.Respond([]byte("not json"))
-	})
-	require.NoError(t, err)
-	require.NoError(t, nc.Flush())
-
-	gw := &GatewayConfig{
-		ExpectedNodes: 4,
-		NATSConn:      nc,
-	}
-
-	result := gw.DiscoverActiveNodes(context.Background())
-	assert.Equal(t, 4, result)
-}
-
-func TestDiscoverActiveNodes_DuplicateNodes(t *testing.T) {
-	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
-	nc := startTestNATS(t)
-
-	for range 2 {
-		_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
-			resp := clusterv1.NodeDiscoverResponse{Node: "same-node"}
-			data, _ := json.Marshal(resp)
-			msg.Respond(data)
-		})
-		require.NoError(t, err)
-	}
-	require.NoError(t, nc.Flush())
-
-	gw := &GatewayConfig{
-		ExpectedNodes: 5,
-		NATSConn:      nc,
-	}
-
-	result := gw.DiscoverActiveNodes(context.Background())
-	assert.Equal(t, 1, result)
 }
 
 func TestParseAWSQueryArgs(t *testing.T) {
@@ -665,7 +574,7 @@ func TestParseAWSQueryArgs_CapturedClientBodies(t *testing.T) {
 }
 
 func TestRequest_UnsupportedService(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), "s3")
 	req = req.WithContext(ctx)
@@ -693,7 +602,7 @@ func TestRequest_MalformedQueryString_EndToEnd(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// A live NATS connection bypasses the cluster-unavailable gate.
-			gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, NATSConn: connectedNATS(t), IAMService: allowAllIAMService()})
+			gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: connectedNATS(t), IAM: allowAllIAMService()}))
 			if tc.service == "elasticloadbalancing" {
 				withELBv2(gw)
 			}
@@ -720,7 +629,7 @@ func TestRequest_MalformedQueryString_EndToEnd(t *testing.T) {
 }
 
 func TestRequest_EC2MissingAction(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, NATSConn: connectedNATS(t), IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: connectedNATS(t), IAM: allowAllIAMService()}))
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
 	ctx := reqctx.WithService(req.Context(), "ec2")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
@@ -737,7 +646,7 @@ func TestRequest_EC2MissingAction(t *testing.T) {
 }
 
 func TestRequest_IAMNilService(t *testing.T) {
-	gw := withIAM(withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: nil, NATSConn: connectedNATS(t)}))
+	gw := withIAM(withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: nil, NATS: connectedNATS(t)})))
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=CreateUser&UserName=test"))
 	ctx := reqctx.WithService(req.Context(), "iam")
 	ctx = withPrincipalField(ctx, fieldAccountID, "123456789012")
@@ -775,7 +684,7 @@ func setupEC2Request(body string, accountID string) *http.Request {
 }
 
 func TestEC2Request_MissingAction(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	req := setupEC2Request("", "123456789012")
 	w := httptest.NewRecorder()
 
@@ -785,7 +694,7 @@ func TestEC2Request_MissingAction(t *testing.T) {
 }
 
 func TestEC2Request_UnknownAction(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	req := setupEC2Request("Action=FakeAction", "123456789012")
 	w := httptest.NewRecorder()
 
@@ -795,7 +704,7 @@ func TestEC2Request_UnknownAction(t *testing.T) {
 }
 
 func TestEC2Request_NilNATSNonLocalAction(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, NATSConn: nil, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: nil, IAM: allowAllIAMService()}))
 	req := setupEC2Request("Action=DescribeInstances", "123456789012")
 	w := httptest.NewRecorder()
 
@@ -805,12 +714,10 @@ func TestEC2Request_NilNATSNonLocalAction(t *testing.T) {
 }
 
 func TestEC2Request_NilNATSLocalAction(t *testing.T) {
-	gw := withEC2(withEC2Verifier(&GatewayConfig{
+	gw := withEC2(withEC2Verifier(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		NATSConn:       nil,
 		Region:         "us-east-1",
-		IAMService:     allowAllIAMService(),
-	}), func(d *ec2awsapi.Deps) { d.AZ = "us-east-1a" })
+	}, gwfix.Deps{NATS: nil, IAM: allowAllIAMService()})), func(d *ec2awsapi.Deps) { d.AZ = "us-east-1a" })
 	req := setupEC2Request("Action=DescribeRegions", "123456789012")
 	w := httptest.NewRecorder()
 
@@ -826,7 +733,7 @@ func TestEC2Request_NilNATSLocalAction(t *testing.T) {
 }
 
 func TestEC2Request_MissingAccountID(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, NATSConn: nil, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: nil, IAM: allowAllIAMService()}))
 	// Use a local action so we don't fail on nil NATS first
 	req := setupEC2Request("Action=DescribeRegions", "")
 	w := httptest.NewRecorder()
@@ -839,7 +746,7 @@ func TestEC2Request_MissingAccountID(t *testing.T) {
 
 // Static attributes are served without NATS; only default-vpc needs a lookup.
 func TestEC2Request_DescribeAccountAttributes(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, NATSConn: nil, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: nil, IAM: allowAllIAMService()}))
 	req := setupEC2Request("Action=DescribeAccountAttributes&AttributeName.1=max-instances", "123456789012")
 	w := httptest.NewRecorder()
 
@@ -871,7 +778,7 @@ func TestEC2Request_DescribeAccountAttributes_DefaultVPC(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 	req := setupEC2Request("Action=DescribeAccountAttributes&AttributeName.1=default-vpc", "123456789012")
 	w := httptest.NewRecorder()
 
@@ -881,12 +788,10 @@ func TestEC2Request_DescribeAccountAttributes_DefaultVPC(t *testing.T) {
 }
 
 func TestEC2Request_DescribeAvailabilityZones(t *testing.T) {
-	gw := withEC2(withEC2Verifier(&GatewayConfig{
+	gw := withEC2(withEC2Verifier(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		NATSConn:       nil,
 		Region:         "us-east-1",
-		IAMService:     allowAllIAMService(),
-	}), func(d *ec2awsapi.Deps) { d.AZ = "us-east-1a" })
+	}, gwfix.Deps{NATS: nil, IAM: allowAllIAMService()})), func(d *ec2awsapi.Deps) { d.AZ = "us-east-1a" })
 	req := setupEC2Request("Action=DescribeAvailabilityZones", "123456789012")
 	w := httptest.NewRecorder()
 
@@ -913,7 +818,7 @@ func shortenPolicyResolveRetry(t *testing.T) {
 // --- Throttle middleware integration tests ---
 
 func TestThrottleKeyFuncs_ExtractsAccountAndAction(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	keyFuncs := gw.throttleKeyFuncs()
 	require.Len(t, keyFuncs, 2)
 
@@ -932,7 +837,7 @@ func TestThrottleKeyFuncs_ExtractsAccountAndAction(t *testing.T) {
 }
 
 func TestThrottleKeyFuncs_UnknownAction(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	keyFuncs := gw.throttleKeyFuncs()
 
 	// No ctxAction in context — should return "unknown".
@@ -946,7 +851,7 @@ func TestThrottleKeyFuncs_UnknownAction(t *testing.T) {
 }
 
 func TestThrottleKeyFuncs_MissingAccountID(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	keyFuncs := gw.throttleKeyFuncs()
 
 	// No ctxAccountID in context — should return an error.
@@ -958,7 +863,7 @@ func TestThrottleKeyFuncs_MissingAccountID(t *testing.T) {
 }
 
 func TestWriteThrottleError_EC2(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), "ec2")
@@ -976,7 +881,7 @@ func TestWriteThrottleError_EC2(t *testing.T) {
 }
 
 func TestWriteThrottleError_IAM(t *testing.T) {
-	gw := withIAM(withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
+	gw := withIAM(withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), "iam")
@@ -1037,11 +942,10 @@ func TestThrottleMiddleware_Integration(t *testing.T) {
 	throttler := ratelimit.New(cfg)
 	defer throttler.Stop()
 
-	gw := withEC2Verifier(&GatewayConfig{
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Throttler:      throttler,
-		IAMService:     allowAllIAMService(),
-	})
+	}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -1078,7 +982,7 @@ func TestThrottleMiddleware_Integration(t *testing.T) {
 
 func TestThrottleMiddleware_DisabledConfig(t *testing.T) {
 	// When Throttler is nil, SetupRoutes skips middleware — no panic.
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, Throttler: nil, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true, Throttler: nil}, gwfix.Deps{IAM: allowAllIAMService()}))
 	handler := gw.SetupRoutes()
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=DescribeInstances"))
@@ -1102,7 +1006,7 @@ func TestThrottleMiddleware_PerActionIsolation(t *testing.T) {
 	throttler := ratelimit.New(cfg)
 	defer throttler.Stop()
 
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -1133,7 +1037,7 @@ func TestThrottleMiddleware_PerActionIsolation(t *testing.T) {
 }
 
 func TestRequest_ClusterUnavailableNilConn_EC2(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), "ec2")
@@ -1153,7 +1057,7 @@ func TestRequest_ClusterUnavailableNilConn_EC2(t *testing.T) {
 }
 
 func TestRequest_ClusterUnavailableNilConn_IAM(t *testing.T) {
-	gw := withIAM(withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
+	gw := withIAM(withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), "iam")
@@ -1176,7 +1080,7 @@ func TestRequest_ClusterUnavailableClosedConn(t *testing.T) {
 	require.NoError(t, err)
 	nc.Close()
 
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), "ec2")

@@ -20,6 +20,9 @@
 package integration
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	"context"
@@ -86,7 +89,7 @@ const (
 	testAccessKeyID     = "AKIAINTEGRATIONTESTR"
 	testSecretAccessKey = "integration-test-root-secret"
 
-	// nodeDiscoverSubject is the fan-out GatewayConfig.DiscoverActiveNodes
+	// nodeDiscoverSubject is the fan-out NodeDiscovery.ActiveNodes
 	// publishes to (spinifex/gateway/gateway.go). StartGateway stubs it with
 	// a single-node reply so any call path that triggers node discovery
 	// resolves immediately instead of riding out the fan-out's 500ms timeout.
@@ -95,7 +98,7 @@ const (
 	// testECRAudience is the audience claim every harness-issued ECR JWT is
 	// minted for and verified against — arbitrary but stable within this tier,
 	// mirroring production's "ecr.<region>.<suffix>" shape without depending on
-	// GatewayConfig.InternalSuffix (unset here; the in-process harness talks to
+	// an empty registry host suffix (unset here; the in-process harness talks to
 	// the gateway's httptest address directly rather than a registry hostname).
 	testECRAudience = "ecr.integration-test"
 
@@ -229,15 +232,12 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	require.NoError(t, services.Register(stsawsapi.NewRegistration(stsDeps)))
 	require.NoError(t, services.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: tagging.NewAggregator()})))
 
-	cfg := &gateway.GatewayConfig{
+	cfg := gwfix.WithDeps(&gateway.GatewayConfig{
 		DisableLogging: true,
-		NATSConn:       nc,
-		ExpectedNodes:  1,
+		Admin:          gateway.AdminSurface{Service: operatoradmin.ServiceName, WithRequestID: operatoradmin.WithRequestID},
 		Region:         testRegion,
-		IAMService:     iamSvc,
-		STSService:     stsSvc,
 		PreAuth:        []awsdispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
-	}
+	}, gwfix.Deps{NATS: nc, Nodes: 1, IAM: iamSvc, STS: stsSvc})
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -247,8 +247,8 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		NATS:          nc,
 		IAM:           iamSvc,
 		Quota:         ec2quota.Adapter{Service: admissionquota.New(admissionquota.Limits{}, nil)},
-		ActiveNodes:   func(context.Context) int { return cfg.ExpectedNodes },
-		ExpectedNodes: cfg.ExpectedNodes,
+		ActiveNodes:   func(context.Context) int { return gwfix.DepsOf(cfg).Nodes },
+		ExpectedNodes: gwfix.DepsOf(cfg).Nodes,
 		AZ:            testAZ,
 		Endpoint:      "https://localhost:9999",
 	})))
@@ -256,32 +256,32 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// Built after the options so a test that swaps or drops a service sees the
 	// verifier follow it, as production wires the verifier over the same services.
 	if cfg.Credentials == nil {
-		cfg.Credentials = credverify.New(cfg.IAMService, cfg.STSService)
+		cfg.Credentials = credverify.New(gwfix.DepsOf(cfg).IAM, gwfix.DepsOf(cfg).STS)
 	}
 
 	// The OCI /v2 data plane. Its Meta store is a NATS client, so a test that
 	// pushes or pulls must call StartECRDaemonLite or every request times out.
 	// Blob and manifest bytes are memory-backed: no predastore.
 	if cfg.Policy == nil {
-		cfg.Policy = policyauth.New(cfg.IAMService)
+		cfg.Policy = policyauth.New(gwfix.DepsOf(cfg).IAM)
 	}
 	if cfg.Readiness == nil {
-		cfg.Readiness = clusterready.New(cfg.NATSConn)
+		cfg.Readiness = clusterready.New(gwfix.DepsOf(cfg).NATS)
 	}
-	admission := accountadmission.New(cfg.IAMService)
+	admission := accountadmission.New(gwfix.DepsOf(cfg).IAM)
 	if cfg.Admission == nil {
 		cfg.Admission = admission
 	}
-	if cfg.RegistryHandler == nil {
+	if cfg.PublicRoutes == nil {
 		bridge, err := ecrregistry.NewBridge(registryadapt.Config(ecrregistry.BridgeConfig{
 			Registry:  ecrRegistry,
 			Verifier:  ecrVerifier,
 			Issuer:    ecrIssuer,
 			Admission: admission,
 			Region:    cfg.Region,
-		}, credverify.New(cfg.IAMService, cfg.STSService), policyauth.New(cfg.IAMService)))
+		}, credverify.New(gwfix.DepsOf(cfg).IAM, gwfix.DepsOf(cfg).STS), policyauth.New(gwfix.DepsOf(cfg).IAM)))
 		require.NoError(t, err)
-		cfg.RegistryHandler = ingresshttp.NewHostMatcher(cfg.InternalSuffix, "dkr", "ecr").Middleware(bridge.Handler())
+		cfg.PublicRoutes = awsgw.PublicRoutes(nil, ingresshttp.NewHostMatcher("", "dkr", "ecr").Middleware(bridge.Handler()))
 	}
 
 	handler := cfg.SetupRoutes()

@@ -1,4 +1,4 @@
-package gateway
+package awsgw
 
 import (
 	"testing"

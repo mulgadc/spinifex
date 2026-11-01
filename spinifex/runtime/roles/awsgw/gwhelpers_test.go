@@ -30,6 +30,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/clusterready"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
@@ -59,13 +60,13 @@ var policyRetryBase = 200 * time.Millisecond
 // from the config's IAM service and bus, as the awsgw role composes them.
 func withCapabilities(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
 	if gw.Policy == nil {
-		gw.Policy = policyauth.New(gw.IAMService, policyauth.WithRetryBase(policyRetryBase))
+		gw.Policy = policyauth.New(gwfix.DepsOf(gw).IAM, policyauth.WithRetryBase(policyRetryBase))
 	}
 	if gw.Admission == nil {
-		gw.Admission = accountadmission.New(gw.IAMService)
+		gw.Admission = accountadmission.New(gwfix.DepsOf(gw).IAM)
 	}
-	if gw.Readiness == nil && gw.NATSConn != nil {
-		gw.Readiness = clusterready.New(gw.NATSConn)
+	if gw.Readiness == nil && gwfix.DepsOf(gw).NATS != nil {
+		gw.Readiness = clusterready.New(gwfix.DepsOf(gw).NATS)
 	}
 	return gw
 }
@@ -73,7 +74,7 @@ func withCapabilities(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
 // withVerifier authenticates through the same IAM and STS instances the config
 // holds, so a test that changes one of them changes authentication too.
 func withVerifier(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
-	gw.Credentials = credverify.New(gw.IAMService, gw.STSService)
+	gw.Credentials = credverify.New(gwfix.DepsOf(gw).IAM, gwfix.DepsOf(gw).STS)
 	return withCapabilities(gw)
 }
 
@@ -114,11 +115,10 @@ func setupTestApp(accessKey, secretKey string) http.Handler {
 		},
 	}
 
-	gw := withVerifier(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		IAMService:     mockSvc,
-	})
+	}, gwfix.Deps{IAM: mockSvc}))
 	withServices(gw, ecsawsapi.NewRegistration(ecsawsapi.Deps{}), ec2Registration(gw))
 
 	r := chi.NewRouter()
@@ -182,11 +182,11 @@ func withServices(gw *gateway.GatewayConfig, regs ...dispatch.Registration) *gat
 // rest.
 func ec2Registration(gw *gateway.GatewayConfig, mutate ...func(*ec2awsapi.Deps)) dispatch.Registration {
 	deps := ec2awsapi.Deps{
-		NATS:          gw.NATSConn,
-		IAM:           gw.IAMService,
+		NATS:          gwfix.DepsOf(gw).NATS,
+		IAM:           gwfix.DepsOf(gw).IAM,
 		Quota:         ec2quota.Adapter{Service: quotaFor(gw)},
-		ActiveNodes:   gw.DiscoverActiveNodes,
-		ExpectedNodes: gw.ExpectedNodes,
+		ActiveNodes:   (&awsgw.NodeDiscovery{NATS: gwfix.DepsOf(gw).NATS, Expected: gwfix.DepsOf(gw).Nodes}).ActiveNodes,
+		ExpectedNodes: gwfix.DepsOf(gw).Nodes,
 	}
 	for _, m := range mutate {
 		m(&deps)
@@ -362,15 +362,11 @@ func (e *cbEnv) createAssumableRole(t *testing.T, name string) (roleARN, roleID 
 
 // gateway builds a router over the env's services with its own (cold) caches.
 func (e *cbEnv) gateway() http.Handler {
-	gw := &gateway.GatewayConfig{
+	gw := gwfix.WithDeps(&gateway.GatewayConfig{
 		DisableLogging: true,
-		NATSConn:       e.nc,
 		Region:         gwfix.Region,
-		ExpectedNodes:  1,
-		IAMService:     e.counter,
 		Credentials:    credverify.New(e.counter, e.sts),
-		STSService:     e.sts,
-	}
+	}, gwfix.Deps{NATS: e.nc, Nodes: 1, IAM: e.counter, STS: e.sts})
 	withCapabilities(gw)
 	withIAMAndSTS(gw)
 	return gw.SetupRoutes()
@@ -535,7 +531,7 @@ func cbSessionFrom(t *testing.T, rec *httptest.ResponseRecorder) cbCreds {
 // withIAMAndSTS registers IAM and STS together on gw, with the unsigned
 // web-identity capability, as awsgw composes them.
 func withIAMAndSTS(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
-	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService}))
+	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gwfix.DepsOf(gw).STS, IAM: gwfix.DepsOf(gw).IAM}))
 	return withServices(gw, iamRegistration(gw), stsRegistration(gw))
 }
 
@@ -551,7 +547,7 @@ var cbIAMActions = map[string]bool{"ListUsers": true, "CreateUser": true, "GetUs
 // stsRegistration is the STS registration over the IAMService and STSService
 // gw holds, as the awsgw role composes it. Set them on gw first.
 func stsRegistration(gw *gateway.GatewayConfig) dispatch.Registration {
-	return stsawsapi.NewRegistration(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	return stsawsapi.NewRegistration(stsawsapi.Deps{STS: gwfix.DepsOf(gw).STS, IAM: gwfix.DepsOf(gw).IAM})
 }
 
 func statement(effect, action, resource string) iamdomain.Statement {
@@ -566,11 +562,11 @@ func statement(effect, action, resource string) iamdomain.Statement {
 // mock IAM service it holds, as the awsgw role composes them.
 func withContainers(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
 	b := dispatch.NewBuilder()
-	if err := b.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: gw.NATSConn})); err != nil {
+	if err := b.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: gwfix.DepsOf(gw).NATS})); err != nil {
 		panic(err)
 	}
-	roles, _ := gw.IAMService.(IAMServiceLike)
-	if err := b.Register(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: gw.NATSConn, Roles: mockRoleResolver{iam: roles}})); err != nil {
+	roles, _ := gwfix.DepsOf(gw).IAM.(IAMServiceLike)
+	if err := b.Register(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: gwfix.DepsOf(gw).NATS, Roles: mockRoleResolver{iam: roles}})); err != nil {
 		panic(err)
 	}
 	gw.Services = b.Build()
@@ -584,17 +580,17 @@ func newTestRegistryHandler(t *testing.T, gw *gateway.GatewayConfig, iss *ecraut
 	cfg := ecrregistry.BridgeConfig{
 		Verifier:  verify,
 		Issuer:    iss,
-		Admission: accountadmission.New(gw.IAMService),
+		Admission: accountadmission.New(gwfix.DepsOf(gw).IAM),
 		Region:    gw.Region,
 	}
-	cfg = registryadapt.Config(cfg, credverify.New(gw.IAMService, gw.STSService),
-		policyauth.New(gw.IAMService, policyauth.WithRetryBase(time.Millisecond)))
+	cfg = registryadapt.Config(cfg, credverify.New(gwfix.DepsOf(gw).IAM, gwfix.DepsOf(gw).STS),
+		policyauth.New(gwfix.DepsOf(gw).IAM, policyauth.WithRetryBase(time.Millisecond)))
 	if len(registry) > 0 {
 		cfg.Registry = registry[0]
 	}
 	b, err := ecrregistry.NewBridge(cfg)
 	require.NoError(t, err)
-	return ingresshttp.NewHostMatcher(gw.InternalSuffix, "dkr", "ecr").Middleware(b.Handler())
+	return ingresshttp.NewHostMatcher(ecrTestSuffix, "dkr", "ecr").Middleware(b.Handler())
 }
 
 // IAMServiceLike is the slice of the IAM service the mock resolver reads.
@@ -682,7 +678,7 @@ func (e *cbEnv) orphanKeys(t *testing.T, user string) {
 func statusGateRouter(t *testing.T, svc iamdomain.IAMService) (chi.Router, *http.Request) {
 	t.Helper()
 
-	gw := withEC2Verifier(&gateway.GatewayConfig{DisableLogging: true, Region: gwfix.Region, IAMService: svc})
+	gw := withEC2Verifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true, Region: gwfix.Region}, gwfix.Deps{IAM: svc}))
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })

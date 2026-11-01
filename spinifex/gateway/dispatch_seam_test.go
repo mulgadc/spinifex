@@ -148,27 +148,25 @@ func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...disp
 		require.NoError(t, b.Register(reg))
 	}
 
-	gw := withRealAuth(&GatewayConfig{
+	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
 		Services:       b.Build(),
-		IAMService: &gwfix.PolicyIAM{
-			IAM: gwfix.IAM{
-				MasterKey: gwfix.MasterKey,
-				AccessKeys: map[string]*iamdomain.AccessKey{
-					gwfix.AccessKey: {
-						AccessKeyID:     gwfix.AccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       ecrTestAccount,
-						Status:          "Active",
-					},
+	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       ecrTestAccount,
+					Status:          "Active",
 				},
 			},
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	})
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}}))
 
 	r := chi.NewRouter()
 	r.Use(audit.Middleware)
@@ -342,7 +340,7 @@ func TestDispatchSeam_NATSDownGetsSame503AsLegacy(t *testing.T) {
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(fakeJSONRegistration(&dispatchCapture{})))
 
-	gw := withRealAuth(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Services: b.Build()})
+	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{DisableLogging: true, Services: b.Build()}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), fakeJSONService)
@@ -369,17 +367,16 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
-	gw := withRealAuth(&GatewayConfig{
+	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		Services:       b.Build(),
-		IAMService: &gwfix.IAM{
-			MasterKey: gwfix.MasterKey,
-			AccessKeys: map[string]*iamdomain.AccessKey{
-				gwfix.AccessKey: {AccessKeyID: gwfix.AccessKey, SecretAccessKey: encryptedSecret, UserName: "root", Status: "Active"},
-			},
+	}, gwfix.Deps{IAM: &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{
+			gwfix.AccessKey: {AccessKeyID: gwfix.AccessKey, SecretAccessKey: encryptedSecret, UserName: "root", Status: "Active"},
 		},
-	})
+	}}))
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())

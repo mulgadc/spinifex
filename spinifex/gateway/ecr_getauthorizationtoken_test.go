@@ -17,11 +17,10 @@ import (
 
 func TestECRRequest_GetAuthorizationTokenDispatched(t *testing.T) {
 	iss, _ := newECRAuth(t)
-	gw := withECR(withVerifier(&GatewayConfig{
-		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+	gw := withECR(withVerifier(gwfix.WithDeps(&GatewayConfig{
+		Region:         ecrTestRegion,
 		DisableLogging: true,
-		IAMService:     allowAllIAMService(),
-	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, awsapi.RepositoryEndpoint{
+	}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, awsapi.RepositoryEndpoint{
 		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
 	})})
 	w := httptest.NewRecorder()
@@ -33,11 +32,10 @@ func TestECRRequest_GetAuthorizationTokenDispatched(t *testing.T) {
 func TestGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
-	gw := withECR(withVerifier(&GatewayConfig{
-		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+	gw := withECR(withVerifier(gwfix.WithDeps(&GatewayConfig{
+		Region:         ecrTestRegion,
 		DisableLogging: true,
-		IAMService:     allowAllIAMService(),
-	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
+	}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
@@ -78,7 +76,7 @@ func TestGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 }
 
 func TestGetAuthorizationToken_MissingComposition(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	req := setupECRRequest(awsapi.TargetPrefix+".GetAuthorizationToken", "{}")
 	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
@@ -86,10 +84,9 @@ func TestGetAuthorizationToken_MissingComposition(t *testing.T) {
 }
 
 func TestGetAuthorizationToken_NoIssuerNotImplemented(t *testing.T) {
-	gw := withECR(withVerifier(&GatewayConfig{
+	gw := withECR(withVerifier(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		IAMService:     allowAllIAMService(),
-	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(nil, awsapi.RepositoryEndpoint{})})
+	}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(nil, awsapi.RepositoryEndpoint{})})
 	req := setupECRRequest(awsapi.TargetPrefix+".GetAuthorizationToken", "{}")
 	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)
 	err := gw.serveECR(httptest.NewRecorder(), req.WithContext(ctx))
@@ -107,11 +104,10 @@ func TestGetAuthorizationToken_PathedUserRoundTrips(t *testing.T) {
 	iamSvc.userPolicies[ecrPrincipalTestAccount+"|dev"] = allow
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
-	gw := withECR(withVerifier(&GatewayConfig{
-		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+	gw := withECR(withVerifier(gwfix.WithDeps(&GatewayConfig{
+		Region:         ecrTestRegion,
 		DisableLogging: true,
-		IAMService:     iamSvc,
-	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
+	}, gwfix.Deps{IAM: iamSvc})), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrPrincipalTestAccount)
@@ -138,7 +134,7 @@ func TestGetAuthorizationToken_PathedUserRoundTrips(t *testing.T) {
 	claims, err := verify.Verify(jwtStr)
 	require.NoError(t, err)
 	assert.Equal(t, ecrPathedUserARN, claims.Subject)
-	got, failure := credverify.New(gw.IAMService, gw.STSService).Rehydrate(claims.AccessKeyID, claims.AccountID)
+	got, failure := credverify.New(gwfix.DepsOf(gw).IAM, gwfix.DepsOf(gw).STS).Rehydrate(claims.AccessKeyID, claims.AccountID)
 	require.Nil(t, failure)
 	assert.Equal(t, ecrPathedUserARN, got.CallerARN)
 }
@@ -146,11 +142,10 @@ func TestGetAuthorizationToken_PathedUserRoundTrips(t *testing.T) {
 func TestGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
 	iss, _ := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix, RegistryPort: "9999"}
-	gw := withECR(withVerifier(&GatewayConfig{
-		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+	gw := withECR(withVerifier(gwfix.WithDeps(&GatewayConfig{
+		Region:         ecrTestRegion,
 		DisableLogging: true,
-		IAMService:     allowAllIAMService(),
-	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
+	}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)

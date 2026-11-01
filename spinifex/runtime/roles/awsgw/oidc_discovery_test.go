@@ -1,19 +1,16 @@
-package gateway
+package awsgw_test
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
-)
-
-const (
-	testDiscAccount = "000000000001"
-	testDiscCluster = "h1"
-	testDiscIssuer  = "https://10.0.0.1:9999/oidc/eks/ap-southeast-2/000000000001/h1"
 )
 
 // seedDiscoveryCluster writes a ClusterMeta (with OIDCIssuer) and a JWKS doc
@@ -38,7 +35,7 @@ func seedDiscoveryCluster(t *testing.T) http.Handler {
 		t.Fatalf("put jwks: %v", err)
 	}
 
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService(), OIDC: ekscluster.NewOIDCPublisher(js)})
+	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(ekscluster.NewOIDCPublisher(js), nil)}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 	return gw.SetupRoutes()
 }
 

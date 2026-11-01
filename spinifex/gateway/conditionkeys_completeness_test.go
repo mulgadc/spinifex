@@ -122,7 +122,7 @@ func emittedKeys(t *testing.T) map[string]string {
 		},
 	}
 
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: &gwfix.IAM{}})
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: &gwfix.IAM{}}))
 	union := make(map[string]string)
 	for name, principal := range principals {
 		r := httptest.NewRequest(http.MethodPost, "/?prefix=home/&max-keys=100", nil)
@@ -131,7 +131,7 @@ func emittedKeys(t *testing.T) map[string]string {
 		// Resolved the way the middleware resolves it, so the gate cannot pass on
 		// a value only the test supplies.
 		userID, _, err := stsdomain.ResolveCallerUser(principal.AccountID, principal.PrincipalType,
-			principal.Identity, principal.AssumedRoleID, gw.IAMService)
+			principal.Identity, principal.AssumedRoleID, gwfix.DepsOf(gw).IAM)
 		require.NoError(t, err)
 		principal.UserID = userID
 		for key := range policyauth.RequestConditionKeys(r, principal) {

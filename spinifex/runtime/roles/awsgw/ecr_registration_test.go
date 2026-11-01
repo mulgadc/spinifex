@@ -1,6 +1,7 @@
 package awsgw_test
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"maps"
 
@@ -12,7 +13,7 @@ import (
 // role composes it. An unset deps.NATS takes gw.NATSConn.
 func withECR(gw *gateway.GatewayConfig, deps awsapi.Deps) *gateway.GatewayConfig {
 	if deps.NATS == nil {
-		deps.NATS = gw.NATSConn
+		deps.NATS = gwfix.DepsOf(gw).NATS
 	}
 	b := dispatch.NewBuilder()
 	if err := b.Register(awsapi.NewRegistration(deps)); err != nil {

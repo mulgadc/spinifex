@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
@@ -48,12 +49,10 @@ func TestDeleteVolumeAction_MissingConfiguredNodeIsRetryableAndDeletesNothing(t 
 	}
 	require.NoError(t, nc.Flush())
 
-	gw := &GatewayConfig{
+	gw := gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		NATSConn:       nc,
-		IAMService:     allowAllIAMService(),
 		Credentials:    credverify.New(allowAllIAMService(), nil),
-	}
+	}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()})
 	withEC2(gw, func(d *ec2awsapi.Deps) { d.NodeIDs = []string{"node-1", "node-2"} })
 	req := setupEC2Request("Action=DeleteVolume&VolumeId=vol-0123456789abcdef0", "123456789012")
 	ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)

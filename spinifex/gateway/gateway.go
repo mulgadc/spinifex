@@ -3,28 +3,20 @@ package gateway
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"log/slog"
 	"net/http"
 	"strconv"
-	"sync"
-	"time"
 	"uuid"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
-	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
@@ -33,7 +25,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
-	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -42,26 +33,9 @@ import (
 // facts, auth and throttling collaborators, and lazily built caches. Its methods are the
 // per-service request handlers.
 type GatewayConfig struct {
-	Debug          bool       `json:"debug"`
-	DisableLogging bool       `json:"disable_logging"`
-	NATSConn       *nats.Conn // Shared NATS connection for service communication
-	Config         string     // Shared AWS Gateway config for S3 auth
-	// RootCAs is the cluster CA pool, used to verify predastore meta nodes
-	// dialed directly for GetStorageStatus. Nil disables that verification,
-	// so admin storage status reports every meta node unreachable rather than
-	// dialing with no trust root.
-	RootCAs       *x509.CertPool
-	ExpectedNodes int    // Number of expected spinifex nodes for multi-node operations
-	Region        string // Region this gateway is running in
-	// The last discovered node count and when it was discovered, so the
-	// discovery fan-out runs once per activeNodesTTL rather than once per
-	// request that needs to know how many nodes to wait for.
-	activeNodesMu    sync.RWMutex
-	activeNodesCount int
-	activeNodesAt    time.Time
-	InternalSuffix   string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
-	IAMService       iamdomain.IAMService
-	STSService       stsdomain.STSService
+	Debug          bool   `json:"debug"`
+	DisableLogging bool   `json:"disable_logging"`
+	Region         string // Region this gateway is running in
 	// PreAuth serves requests that authenticate by their own payload, ahead of
 	// SigV4 and throttling, in order.
 	PreAuth []dispatch.PreAuth
@@ -80,15 +54,13 @@ type GatewayConfig struct {
 	// early refusal in the auth middleware and makes the service gate answer
 	// cluster-unavailable.
 	Readiness pipeline.Readiness
-	Version   string // Build-time version string (set from cmd.Version)
-	Commit    string // Build-time commit hash (set from cmd.Commit)
-	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil
-	// answers them with a 500 (e.g. in unit tests of unrelated routes).
-	OIDC OIDCPublisher
-	// RegistryHandler serves the registry host's /v2 subtree. It sits outside the
-	// SigV4 group and the AWS seam, which ADR-0002:S5 keeps off the registry. Nil
-	// answers 501.
-	RegistryHandler http.Handler
+	// PublicRoutes mounts the routes served ahead of SigV4 and the throttle.
+	// They authenticate themselves or need no authentication. Nil mounts none.
+	PublicRoutes func(chi.Router)
+
+	// Admin configures the private /admin surface. Without a Service, every
+	// /admin request is answered InternalError.
+	Admin AdminSurface
 
 	// Services holds the signed AWS services dispatched through the
 	// registration seam. Nil means nothing is registered, so every signed
@@ -162,15 +134,11 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	// payload token, not AWS credentials.
 	r.Use(gw.preAuthInterceptor)
 
-	// Unauthenticated OIDC discovery endpoints (IRSA) bypass auth and throttle.
-	r.Group(func(pub chi.Router) {
-		pub.Get("/oidc/eks/{region}/{accountID}/{clusterName}/.well-known/openid-configuration", gw.OIDCDiscoveryDocument)
-		pub.Get("/oidc/eks/{region}/{accountID}/{clusterName}/keys", gw.OIDCJWKS)
-	})
-
-	// OCI Distribution registry (/v2/*). Token/host-authenticated rather than
-	// SigV4-credential-scoped, so it mounts outside the SigV4 group.
-	gw.mountRegistry(r)
+	// Public routes: unauthenticated or self-authenticating, so outside the
+	// SigV4 group.
+	if gw.PublicRoutes != nil {
+		gw.PublicRoutes(r)
+	}
 
 	// Authenticated AWS API surface.
 	r.Group(func(auth chi.Router) {
@@ -516,78 +484,6 @@ func (gw *GatewayConfig) xmlErrorBody(svc, code, message, requestID, resource st
 // How long a discovered node count is reused before it is gathered again.
 // Membership does not change per request, and re-deriving it on every call put
 // the discovery fan-out's whole timeout in front of every API call it fronts.
-const activeNodesTTL = 5 * time.Second
-
-// discoverActiveNodesTimeout is how long the discovery fan-out collects replies.
-// A var only so tests can shorten it.
-var discoverActiveNodesTimeout = 500 * time.Millisecond
-
-// DiscoverActiveNodes discovers the number of active spinifex daemon nodes in the
-// cluster by publishing a discovery request and counting unique responses. It
-// carries the request context so the discovery fan-out joins the caller's trace.
-// Returns the number of active nodes (minimum 1 if fallback is needed).
-//
-// The result is cached for activeNodesTTL. The gather itself stays unbounded:
-// it counts whoever answers, which may legitimately exceed the configured node
-// count during a grow, and bounding it by that count would stop early and drop
-// a live node's resources from every fan-out that follows.
-func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
-	if gw.NATSConn == nil {
-		slog.WarnContext(ctx, "DiscoverActiveNodes: NATS connection not available, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
-		return gw.ExpectedNodes
-	}
-
-	if count, ok := gw.cachedActiveNodes(); ok {
-		return count
-	}
-
-	frames, _, err := natsmsg.Gather(ctx, gw.NATSConn, clusterv1.NodesDiscoverSubject, []byte("{}"),
-		natsmsg.GatherOpts{Timeout: discoverActiveNodesTimeout})
-	if err != nil {
-		slog.ErrorContext(ctx, "DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)
-		return gw.ExpectedNodes
-	}
-
-	nodesSeen := make(map[string]bool)
-	for _, frame := range frames {
-		var response clusterv1.NodeDiscoverResponse
-		if err := json.Unmarshal(frame.Data, &response); err != nil {
-			slog.DebugContext(ctx, "DiscoverActiveNodes: Failed to unmarshal response", "err", err)
-			continue
-		}
-		nodesSeen[response.Node] = true
-	}
-
-	activeNodes := len(nodesSeen)
-	if activeNodes == 0 {
-		slog.WarnContext(ctx, "DiscoverActiveNodes: No nodes responded, using ExpectedNodes fallback", "fallback", gw.ExpectedNodes)
-		return gw.ExpectedNodes
-	}
-
-	gw.rememberActiveNodes(activeNodes)
-	slog.DebugContext(ctx, "DiscoverActiveNodes: Discovered active nodes", "count", activeNodes)
-	return activeNodes
-}
-
-// cachedActiveNodes returns a count discovered within the TTL. Only a real
-// discovery is cached: a fallback is not evidence of anything and caching one
-// would make a momentary NATS problem outlive itself.
-func (gw *GatewayConfig) cachedActiveNodes() (int, bool) {
-	gw.activeNodesMu.RLock()
-	defer gw.activeNodesMu.RUnlock()
-	if gw.activeNodesCount == 0 || time.Since(gw.activeNodesAt) > activeNodesTTL {
-		return 0, false
-	}
-	return gw.activeNodesCount, true
-}
-
-func (gw *GatewayConfig) rememberActiveNodes(count int) {
-	gw.activeNodesMu.Lock()
-	defer gw.activeNodesMu.Unlock()
-	gw.activeNodesCount = count
-	gw.activeNodesAt = time.Now()
-}
-
 // recordResolvedAction renames the current span to service.action and tags
 // aws.service/aws.action. Called from both SigV4 auth and checkPolicyResource,
 // so it must be idempotent — the last call before the response wins.

@@ -29,13 +29,12 @@ func auditRouter(t *testing.T, keys map[string]*iamdomain.AccessKey) (http.Handl
 	rl := authlimit.NewAuthRateLimiter()
 	t.Cleanup(rl.Stop)
 
-	gw := &GatewayConfig{
+	gw := gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		IAMService:     &gwfix.IAM{MasterKey: gwfix.MasterKey, AccessKeys: keys},
 		Credentials:    credverify.New(&gwfix.IAM{MasterKey: gwfix.MasterKey, AccessKeys: keys}, nil),
 		RateLimiter:    rl,
-	}
+	}, gwfix.Deps{IAM: &gwfix.IAM{MasterKey: gwfix.MasterKey, AccessKeys: keys}})
 	withEC2(gw)
 
 	var got *audit.Record

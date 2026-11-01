@@ -11,7 +11,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/clusterready"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
@@ -93,10 +92,6 @@ var serviceName = "awsgw"
 // OIDCJWKSReader is wired into STS here, not beside its own definition in
 // domains/eks/cluster, because domains/eks/cluster must not import domains/sts.
 var _ stsdomain.ClusterJWKSResolver = (*ekscluster.OIDCJWKSReader)(nil)
-
-// OIDCPublisher is wired into the gateway here for the same reason: the EKS
-// domain cannot import gateway.
-var _ gateway.OIDCPublisher = (*ekscluster.OIDCPublisher)(nil)
 
 // AccountStatusReader also serves as the quota override seal's TERMINATING
 // precondition, wired here because domains/iam must not import
@@ -531,26 +526,8 @@ func launchService(config *config.ClusterConfig) error {
 		return fmt.Errorf("ECR registry bridge: %w", err)
 	}
 	registryHosts := ingresshttp.NewHostMatcher(config.AWS.ServicesDomain, "dkr", "ecr")
-	gw := gateway.GatewayConfig{
-		Debug:           nodeConfig.AWSGW.Debug,
-		DisableLogging:  false,
-		NATSConn:        natsConn,
-		RootCAs:         rootCAs,
-		Config:          nodeConfig.AWSGW.Config,
-		ExpectedNodes:   len(config.Nodes),
-		Region:          nodeConfig.Region,
-		InternalSuffix:  config.AWS.ServicesDomain,
-		IAMService:      iamService,
-		STSService:      stsService,
-		Credentials:     credentials,
-		Admission:       admission,
-		Policy:          policyauth.New(iamService),
-		Readiness:       clusterready.New(natsConn),
-		Version:         version,
-		Commit:          commit,
-		OIDC:            ekscluster.NewOIDCPublisher(jwksJS),
-		RegistryHandler: registryHosts.Middleware(ecrBridge.Handler()),
-	}
+	nodes := &NodeDiscovery{NATS: natsConn, Expected: len(config.Nodes)}
+	publicRoutes := PublicRoutes(ekscluster.NewOIDCPublisher(jwksJS), registryHosts.Middleware(ecrBridge.Handler()))
 
 	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{
 		Registry:           awsapi.NewRegistryActionService(ecrRegistry, ecrRegistry, ecrRegistry, ecrRegistry),
@@ -573,9 +550,10 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	go keyRotator.Run(janitorCtx)
 
+	var throttler *ratelimit.Throttler
 	if throttleCfg.Enabled {
-		gw.Throttler = ratelimit.New(throttleCfg)
-		defer gw.Throttler.Stop()
+		throttler = ratelimit.New(throttleCfg)
+		defer throttler.Stop()
 	}
 
 	// Per-account service quotas. Only the enabled path opens the gateway-owned
@@ -626,7 +604,7 @@ func launchService(config *config.ClusterConfig) error {
 		NATS:           natsConn,
 		IAM:            iamService,
 		Quota:          quotaSvc,
-		ActiveNodes:    gw.DiscoverActiveNodes,
+		ActiveNodes:    nodes.ActiveNodes,
 		ExpectedNodes:  len(config.Nodes),
 		NodeIDs:        nodeIDs,
 		AZ:             nodeConfig.AZ,
@@ -645,7 +623,7 @@ func launchService(config *config.ClusterConfig) error {
 	iamControlPlane := iamawsapi.NewRegistration(iamawsapi.Deps{
 		IAM: iamService,
 		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
-			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, nodes.ActiveNodes(ctx), accountID, profileARN)
 		},
 	})
 	ecsControlPlane := ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})
@@ -666,13 +644,12 @@ func launchService(config *config.ClusterConfig) error {
 	})
 	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
 	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
-	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsDeps))
 	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
-		Version:     gw.Version,
-		Commit:      gw.Commit,
+		Version:     version,
+		Commit:      commit,
 		NATS:        natsConn,
 		RootCAs:     rootCAs,
-		ActiveNodes: gw.DiscoverActiveNodes,
+		ActiveNodes: nodes.ActiveNodes,
 		ModelAccess: bedrockAccess,
 		Credentials: bedrockCredentials,
 		Access:      bedrockAccess,
@@ -687,9 +664,20 @@ func launchService(config *config.ClusterConfig) error {
 	// The SQS worker's internal surface binds its buckets per request and never
 	// creates them, so it refuses every caller until a worker launch has.
 	sqsWorkerControlPlane := sqsworkerapi.NewRegistration(sqsworkerapi.JetStreamDeps(js))
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane, ec2ControlPlane); err != nil {
+	gw, err := composeGateway(gatewayInputs{
+		Debug:        nodeConfig.AWSGW.Debug,
+		Region:       nodeConfig.Region,
+		NATS:         natsConn,
+		IAM:          iamService,
+		Credentials:  credentials,
+		Admission:    admission,
+		PublicRoutes: publicRoutes,
+		PreAuth:      []dispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
+	}, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane, ec2ControlPlane)
+	if err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
+	gw.Throttler = throttler
 
 	// Leader-locked vCPU reconcile: the only path that lowers the counter,
 	// recomputing it from the running-plus-stopped sweep so out-of-band

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"log/slog"
@@ -8,8 +9,15 @@ import (
 	"uuid"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 )
+
+// AdminSurface names the registration the private /admin surface dispatches
+// to and how the request ID reaches it. The composing role supplies both, so
+// the gateway names no service.
+type AdminSurface struct {
+	Service       string
+	WithRequestID func(ctx context.Context, requestID string) context.Context
+}
 
 // Admin_Request serves the private /admin/<Method> surface. The route stays
 // here so it keeps its place ahead of the service selector; the work is the
@@ -18,9 +26,11 @@ import (
 func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.NewV4().String()
 	w.Header().Set("X-Amzn-Requestid", requestID)
-	r = r.WithContext(operatoradmin.WithRequestID(r.Context(), requestID))
+	if gw.Admin.WithRequestID != nil {
+		r = r.WithContext(gw.Admin.WithRequestID(r.Context(), requestID))
+	}
 
-	entry, ok := gw.registered(operatoradmin.ServiceName)
+	entry, ok := gw.registered(gw.Admin.Service)
 	if !ok {
 		slog.Error("Admin: spinifex service is not registered", "requestId", requestID)
 		gw.writeAdminError(w, requestID, awserrors.ErrorInternalError, "")
@@ -29,12 +39,12 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 
 	action := reqctx.Action(r.Context())
 	if err := gw.dispatchRegistered(entry, w, r); err != nil {
-		slog.Log(r.Context(), serviceErrorLevel(operatoradmin.ServiceName, err), "Service request error",
-			"service", operatoradmin.ServiceName, "action", action, "requestId", requestID, "error", err)
+		slog.Log(r.Context(), serviceErrorLevel(gw.Admin.Service, err), "Service request error",
+			"service", gw.Admin.Service, "action", action, "requestId", requestID, "error", err)
 		gw.writeAdminErrorFor(w, requestID, err)
 		return
 	}
-	slog.Info("Service request completed", "service", operatoradmin.ServiceName, "action", action, "requestId", requestID)
+	slog.Info("Service request completed", "service", gw.Admin.Service, "action", action, "requestId", requestID)
 }
 
 // adminErrorBody is the JSON error envelope for /admin. This surface is not an

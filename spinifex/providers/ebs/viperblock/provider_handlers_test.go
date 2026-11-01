@@ -25,6 +25,7 @@ import (
 
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/internal/testkit/deadpid"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -776,7 +777,7 @@ func TestProviderHandlers_DeleteVolume_MountedVolumeRefused(t *testing.T) {
 		Name: volumeName, VB: vb, Socket: socketPath,
 		// A PID that (almost certainly) does not exist: KillProcess must fail
 		// gracefully (logged, not fatal) rather than block or panic.
-		PID: 999999,
+		PID: deadpid.PID,
 	})
 
 	body := marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion, "volume_id": volumeName})
@@ -976,7 +977,7 @@ func TestProviderHandlers_UnpublishVolume_RemovesMountedVolume(t *testing.T) {
 	const volumeName = "vol-unpubremoved01"
 	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
 		Name: volumeName,
-		PID:  999999, // Fake PID that doesn't exist; KillProcess must fail gracefully.
+		PID:  deadpid.PID, // Fake PID that doesn't exist; KillProcess must fail gracefully.
 	})
 
 	unpublishSubject, err := ebsprovider.UnpublishSubject(cfg.NodeName)
@@ -1124,7 +1125,7 @@ func TestProviderHandlers_OwnerSubscription_UnmountRemovesItAndFallsBack(t *test
 		Name: volumeName, VB: vb, OwnerSubs: ownerSubs,
 		// A PID that (almost certainly) does not exist: KillProcess must fail
 		// gracefully during unmountVolume rather than block or panic.
-		PID: 999999,
+		PID: deadpid.PID,
 	})
 
 	ownerSubject, err := ebsprovider.GetVolumeOwnerSubject(volumeName)

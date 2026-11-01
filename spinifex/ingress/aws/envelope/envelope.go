@@ -176,6 +176,9 @@ const (
 // an awsQueryCompatible JSON 1.0 response, as "<code>;<Sender|Receiver>".
 const QueryErrorHeader = "X-Amzn-Query-Error"
 
+// RequestIDHeader carries the request ID on every JSON-protocol response.
+const RequestIDHeader = "X-Amzn-Requestid"
+
 // CoralNamespace is the __type namespace of errors the AWS framework raises
 // ahead of a service, as opposed to errors the service model defines.
 const CoralNamespace = "com.amazon.coral.service"
@@ -222,6 +225,8 @@ type JSONError struct {
 	// QueryCode is the legacy query code for ProtocolJSON10Query; Code is used
 	// when empty.
 	QueryCode string
+	// RequestID is sent as x-amzn-RequestId, which every JSON protocol carries.
+	RequestID string
 }
 
 // senderFault reports whether the error is the caller's ("Sender"/"User") or
@@ -294,6 +299,7 @@ func JSONErrorBody(p Protocol, e JSONError) []byte {
 func WriteJSON(w http.ResponseWriter, p Protocol, e JSONError) {
 	h := w.Header()
 	h.Set("Content-Type", JSONContentTypeFor(p))
+	h.Set(RequestIDHeader, e.RequestID)
 	if p == ProtocolJSON10Query {
 		fault := "Sender"
 		if !e.senderFault() {

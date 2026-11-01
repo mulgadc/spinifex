@@ -14,8 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
@@ -299,6 +301,39 @@ func TestCredentialScopeService(t *testing.T) {
 				req.Header.Set("Authorization", tc.header)
 			}
 			assert.Equal(t, tc.want, credentialScopeService(req))
+		})
+	}
+}
+
+// A dispatcher error on every JSON protocol carries x-amzn-RequestId, and it is
+// the ID the request's access log line records.
+func TestJSONErrorRequestIDMatchesAudit(t *testing.T) {
+	for svc, env := range map[string]dispatch.ErrorEnvelope{
+		json11Service:   dispatch.ErrorEnvelopeJSON,
+		restJSONService: dispatch.ErrorEnvelopeRESTJSON,
+		json10Service:   dispatch.ErrorEnvelopeJSON10Query,
+	} {
+		t.Run(svc, func(t *testing.T) {
+			c := &dispatchCapture{dispatchErr: errors.New("boom")}
+			gw, _ := dispatchSeamApp(t, allowAllECRDocs(), envelopeRegistration(svc, env, c, nil))
+
+			var rec *audit.Record
+			r := chi.NewRouter()
+			r.Use(audit.Middleware)
+			r.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					rec = audit.From(r.Context())
+					next.ServeHTTP(w, r)
+				})
+			})
+			r.Use(gw.SigV4AuthMiddleware())
+			r.HandleFunc("/*", gw.Request)
+
+			resp := doRequest(r, signDispatchRequest(t, svc, []byte("{}")))
+			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+			id := resp.Header.Get("X-Amzn-Requestid")
+			require.NotEmpty(t, id)
+			assert.Equal(t, id, auditField(rec, "awsRequestID"))
 		})
 	}
 }

@@ -446,13 +446,14 @@ const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check 
 // format, carrying the /local/status hint in <Message>.
 func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.Request, svc string) {
 	requestID := uuid.NewV4().String()
+	audit.From(r.Context()).SetAWSRequestID(requestID)
 
 	// JSON services get a body in their own protocol.
 	if p, ok := gw.errorProtocol(svc); ok {
 		gw.writeJSONError(w, p, svc, envelope.JSONError{
 			Code:    awserrors.ErrorServiceUnavailable,
 			Message: clusterUnavailableMsg,
-			Status:  http.StatusServiceUnavailable,
+			Status:  http.StatusServiceUnavailable, RequestID: requestID,
 		})
 		return
 	}
@@ -469,6 +470,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 // writeThrottleError writes the service-appropriate throttle rejection response.
 func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.NewV4().String()
+	audit.From(r.Context()).SetAWSRequestID(requestID)
 	svc, _ := r.Context().Value(ctxService).(string)
 
 	errorCode := awserrors.ErrorRequestLimitExceeded
@@ -488,6 +490,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 				}
 			}
 		}
+		je.RequestID = requestID
 		gw.writeJSONError(w, p, svc, je)
 		return
 	}
@@ -930,6 +933,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	slog.Debug("ErrorHandler", "service", svc, "error", err.Error())
 
 	var requestId = uuid.NewV4().String()
+	audit.From(r.Context()).SetAWSRequestID(requestId)
 	code, message, exists := awserrors.ResolveErrorDetail(err)
 	if !exists {
 		slog.Warn("Unknown error code", "error", err.Error())
@@ -963,7 +967,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		gw.writeJSONError(w, p, svc, envelope.JSONError{
 			Code: code, Verbatim: p != envelope.ProtocolJSON11,
 			Message: errorMsg.Message, Status: errorMsg.HTTPCode,
-			Fields: awserrors.ResolveFields(err),
+			Fields: awserrors.ResolveFields(err), RequestID: requestId,
 		})
 		return
 	}

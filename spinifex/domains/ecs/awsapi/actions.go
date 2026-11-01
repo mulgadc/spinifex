@@ -18,9 +18,13 @@ import (
 // unmarshalIfBody decodes an SDK-shaped body into out only when non-empty.
 // jsonutil reads awsJson's epoch-second timestamps; case-insensitive keys keep
 // accepting agents that marshal SDK shapes with encoding/json's Go field names.
+// jsonutil ignores data after the first value, which the policy gate refuses.
 func unmarshalIfBody(body []byte, out any) error {
 	if len(body) == 0 {
 		return nil
+	}
+	if !json.Valid(body) {
+		return decodeError(errors.New("body is not a single JSON value"))
 	}
 	if err := jsonutil.UnmarshalJSONCaseInsensitive(out, bytes.NewReader(body)); err != nil {
 		return decodeError(err)

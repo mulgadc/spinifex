@@ -300,6 +300,7 @@ func TestUnmarshalIfBody_DecodeFailureIsInvalidParameter(t *testing.T) {
 	}{
 		{"malformed", unmarshalIfBody([]byte(`{`), new(ecs.DescribeClustersInput))},
 		{"wrong type", unmarshalIfBody([]byte(`{"clusters":5}`), new(ecs.DescribeClustersInput))},
+		{"trailing data", unmarshalIfBody([]byte(`{"cluster":"prod"} x`), new(ecs.DeleteClusterInput))},
 		{"raw malformed", unmarshalRawIfBody([]byte(`{`), new(ecsdomain.PollAssignmentsInput))},
 		{"raw wrong type", unmarshalRawIfBody([]byte(`{"cluster":5}`), new(ecsdomain.PollAssignmentsInput))},
 	}

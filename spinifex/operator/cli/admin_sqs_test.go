@@ -157,3 +157,25 @@ func TestSQSEnsure_ValidatesInputsBeforeCallingTheGateway(t *testing.T) {
 	}
 	assert.Equal(t, int32(0), calls.Load())
 }
+
+// Enable sends both instance types and the size, renders requested apart from
+// ready, and refuses a reply that does not show the service enabled on node.
+func TestSQSEnable_SendsSignedActionAndSeparatesRequestedFromReady(t *testing.T) {
+	sqsCreds(t)
+	srv, calls, form, _ := sqsGateway(t, http.StatusOK,
+		`{"Region":"ap-southeast-2","Desired":"enabled","NodeId":"node1","Generation":1,"Store":"bound-awaiting-server-key","WorkerPolling":false,"Ready":false}`)
+	var buf bytes.Buffer
+	target := cli.AdminTarget(srv.URL, "ap-southeast-2", writeServerCA(t, srv))
+	require.NoError(t, cli.EnableSQSRemote(t.Context(), target, "node1", "t3.small", "t3.medium", 8, &buf))
+	assert.Equal(t, int32(1), calls.Load())
+	assert.Equal(t, "EnableSQS", form.Get("Action"))
+	assert.Equal(t, "t3.small", form.Get("WorkerInstanceType"))
+	assert.Equal(t, "t3.medium", form.Get("StoreInstanceType"))
+	assert.Equal(t, "8", form.Get("VolumeSizeGiB"))
+	assert.Contains(t, buf.String(), "Requested:      enabled")
+	assert.Contains(t, buf.String(), "Ready:          false")
+
+	srv, _, _, _ = sqsGateway(t, http.StatusOK, `{"Region":"ap-southeast-2","Desired":"disabled","NodeId":"node1"}`)
+	target = cli.AdminTarget(srv.URL, "ap-southeast-2", writeServerCA(t, srv))
+	require.Error(t, cli.EnableSQSRemote(t.Context(), target, "node1", "t3.small", "t3.medium", 8, &buf))
+}

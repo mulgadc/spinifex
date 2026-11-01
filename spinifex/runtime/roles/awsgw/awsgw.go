@@ -48,6 +48,8 @@ import (
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	sqsworkerapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi/worker"
+	sqsrelay "github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
+	sqsservicestate "github.com/mulgadc/spinifex/spinifex/domains/sqs/servicestate"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
@@ -644,6 +646,10 @@ func launchService(config *config.ClusterConfig) error {
 	})
 	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
 	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
+	// The relay hands queued SQS work to the worker polling this gateway. No public
+	// SQS service is registered here until its capability profile is reviewed.
+	sqsGate := &sqsservicestate.Gate{JS: js, Region: nodeConfig.Region, TTL: 2 * time.Second}
+	sqsRelay := &sqsrelay.Relay{Admit: sqsGate.Open}
 	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
 		Version:     version,
 		Commit:      commit,
@@ -660,10 +666,14 @@ func launchService(config *config.ClusterConfig) error {
 		NodeIDs:           nodeIDs,
 		BucketStore:       objStore,
 		SignupMaxAccounts: signupMaxAccounts,
+		Region:            nodeConfig.Region,
+		SQSWorkerPolling:  sqsRelay.WorkerPresent,
 	})
 	// The SQS worker's internal surface binds its buckets per request and never
 	// creates them, so it refuses every caller until a worker launch has.
-	sqsWorkerControlPlane := sqsworkerapi.NewRegistration(sqsworkerapi.JetStreamDeps(js))
+	sqsWorkerDeps := sqsworkerapi.JetStreamDeps(js)
+	sqsWorkerDeps.Work = sqsRelay
+	sqsWorkerControlPlane := sqsworkerapi.NewRegistration(sqsWorkerDeps)
 	gw, err := composeGateway(gatewayInputs{
 		Debug:        nodeConfig.AWSGW.Debug,
 		Region:       nodeConfig.Region,

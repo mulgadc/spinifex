@@ -73,7 +73,7 @@ func TestRequestConformance(t *testing.T) {
 			// drop out of the sweep while the suite still passes.
 			require.NotEmpty(t, coverage.Implemented, "no implemented operations for %s", service)
 
-			gw := startGateway(t, nil)
+			gw := startGateway(t, nil, nil)
 			startRequestConformanceBackends(t, gw)
 			sender, err := newRequestSender(gw, service)
 			require.NoError(t, err)

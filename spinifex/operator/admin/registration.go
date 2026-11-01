@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ServiceName is the SigV4 credential-scope service the operator tooling signs for.
@@ -57,6 +58,9 @@ type Deps struct {
 	NodeIDs           []string
 	BucketStore       accountteardown.BucketStore
 	SignupMaxAccounts int
+	// Region and SQSWorkerPolling serve the SQS enable and status actions.
+	Region           string
+	SQSWorkerPolling func() bool
 }
 
 // adminActions are the actions only the super-admin account may call.
@@ -72,6 +76,8 @@ var adminActions = map[string]bool{
 	"ListOchreCatalog":  true,
 	"EnsureSQSWorker":   true,
 	"EnsureSQSStore":    true,
+	"EnableSQS":         true,
+	"DescribeSQS":       true,
 }
 
 // AdminActionNames lists the actions only the super-admin account may call, sorted.
@@ -261,6 +267,21 @@ func (d Deps) run(ctx context.Context, action string, args map[string]string, ac
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		return EnsureSQSStore(ctx, d.NATS, d.NodeIDs, args["NodeId"], args["InstanceType"], args["VolumeSizeGiB"], accountID, sqsWorkerEnsureWait)
+	case "EnableSQS", "DescribeSQS":
+		if d.NATS == nil || d.Region == "" {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		js, err := jetstream.New(d.NATS)
+		if err != nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if action == "DescribeSQS" {
+			return DescribeSQS(ctx, js, d.Region, d.SQSWorkerPolling)
+		}
+		return EnableSQS(ctx, d.NATS, js, d.NodeIDs, d.ExpectedNodes, SQSEnableInput{
+			Region: d.Region, NodeID: args["NodeId"], WorkerInstanceType: args["WorkerInstanceType"],
+			StoreInstanceType: args["StoreInstanceType"], VolumeSizeGiB: args["VolumeSizeGiB"], AccountID: accountID,
+		}, d.SQSWorkerPolling, sqsWorkerEnsureWait)
 	case "ListOchreCatalog":
 		entries, err := ochre.AdminCatalog(ctx, accountID, d.credentials(), d.access())
 		if err != nil {

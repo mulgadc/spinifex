@@ -63,6 +63,8 @@ var (
 	// ErrNoWorker is a call made while no worker is polling, or with the
 	// queue full; nothing was handed out.
 	ErrNoWorker = errors.New("relay: no SQS worker is accepting work")
+	// ErrNotAdmitted is a call made while the service is not enabled.
+	ErrNotAdmitted = errors.New("relay: SQS is not enabled in this Region")
 )
 
 type item struct {
@@ -84,6 +86,9 @@ type Relay struct {
 	PollerStale     time.Duration
 	MaxPending      int
 	MaxPendingBytes int
+	// Admit reports whether a tenant call may be queued; nil admits every
+	// call. A refused call is unavailable and never reaches a worker.
+	Admit func(context.Context) bool
 
 	mu    sync.Mutex
 	items map[string]*item
@@ -113,6 +118,9 @@ func (r *Relay) init() {
 // call queues one owner call and waits for its result, the caller's context
 // or the call limit. Every failure to obtain a result is unavailable.
 func (r *Relay) call(ctx context.Context, op string, in any, unavailable error) (json.RawMessage, error) {
+	if r.Admit != nil && !r.Admit(ctx) {
+		return nil, errors.Join(unavailable, ErrNotAdmitted)
+	}
 	input, err := marshal(in)
 	if err != nil {
 		return nil, unavailable
@@ -164,10 +172,7 @@ func (r *Relay) enqueue(it *item) error {
 	defer r.mu.Unlock()
 	r.init()
 	r.expire()
-	stale := r.PollerStale
-	if stale <= 0 {
-		stale = DefaultPollerStale
-	}
+	stale := r.stale()
 	limit := r.MaxPending
 	if limit <= 0 {
 		limit = DefaultMaxPending
@@ -176,8 +181,7 @@ func (r *Relay) enqueue(it *item) error {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxPendingBytes
 	}
-	present := r.polling > 0 || !r.lastPoll.IsZero() && r.now().Sub(r.lastPoll) <= stale
-	if !present || len(r.items) >= limit || r.bytes+len(it.work.Input) > maxBytes {
+	if !r.presentLocked(stale) || len(r.items) >= limit || r.bytes+len(it.work.Input) > maxBytes {
 		return ErrNoWorker
 	}
 	r.bytes += len(it.work.Input)
@@ -186,6 +190,25 @@ func (r *Relay) enqueue(it *item) error {
 	close(r.wake)
 	r.wake = make(chan struct{})
 	return nil
+}
+
+func (r *Relay) stale() time.Duration {
+	if r.PollerStale <= 0 {
+		return DefaultPollerStale
+	}
+	return r.PollerStale
+}
+
+func (r *Relay) presentLocked(stale time.Duration) bool {
+	return r.polling > 0 || !r.lastPoll.IsZero() && r.now().Sub(r.lastPoll) <= stale
+}
+
+// WorkerPresent reports whether a worker is polling this ingress now or did
+// within the poller staleness window.
+func (r *Relay) WorkerPresent() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.presentLocked(r.stale())
 }
 
 // drop forgets a held item and its bytes.

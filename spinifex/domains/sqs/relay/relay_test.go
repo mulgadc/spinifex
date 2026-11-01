@@ -102,6 +102,20 @@ func TestCall_NoWorkerFailsAtOnce(t *testing.T) {
 	}
 }
 
+// While the service is not admitted, a call fails at once even with a worker
+// polling, and nothing reaches the worker.
+func TestCall_NotAdmittedNeverReachesTheWorker(t *testing.T) {
+	r := &Relay{PollerStale: time.Minute, Admit: func(context.Context) bool { return false }}
+	present(r)
+	_, err := r.Send(context.Background(), message.SendInput{Account: "123456789012", Region: "ap-southeast-2", Queue: "orders"})
+	if !errors.Is(err, message.ErrUnavailable) || !errors.Is(err, ErrNotAdmitted) {
+		t.Fatalf("send = %v", err)
+	}
+	if len(r.items) != 0 {
+		t.Fatal("a call was queued while not admitted")
+	}
+}
+
 // ReceiveLimit messages of the largest size, every byte in values that JSON
 // escapes, still fit one post.
 func TestReceiveLimit_WorstCaseFitsOnePost(t *testing.T) {

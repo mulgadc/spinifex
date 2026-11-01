@@ -16,7 +16,7 @@ func ListAddons(ctx context.Context, natsConn *nats.Conn, accountID, cluster str
 }
 
 // DescribeAddonVersions — GET /addons/supported-versions.
-func DescribeAddonVersions(ctx context.Context, natsConn *nats.Conn, accountID string) (*eks.DescribeAddonVersionsOutput, error) {
+func DescribeAddonVersions(ctx context.Context, natsConn *nats.Conn, accountID string, _ []byte) (*eks.DescribeAddonVersionsOutput, error) {
 	return ekscluster.NewNATSEKSService(natsConn).DescribeAddonVersions(ctx, &eks.DescribeAddonVersionsInput{}, accountID)
 }
 

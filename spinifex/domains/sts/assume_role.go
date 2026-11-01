@@ -170,11 +170,7 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 		// same text as a trust-policy refusal, preventing role enumeration. IMDS
 		// has no caller ARN and keeps the bare code.
 		if errors.Is(err, ErrRoleUnresolved) {
-			if callerARN == "" {
-				return nil, errors.New(awserrors.ErrorAccessDenied)
-			}
-			return nil, awserrors.Errorf(awserrors.ErrorAccessDenied,
-				"User: %s is not authorized to perform: %s on resource: %s", callerARN, stsActionAssumeRole, roleARN)
+			return nil, assumeRoleDenied(callerARN, roleARN)
 		}
 		return nil, err
 	}
@@ -204,9 +200,8 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 	}
 
 	if err := evalTrustPolicy(aws.StringValue(role.AssumeRolePolicyDocument), callerARN, sources); err != nil {
-		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorAccessDenied && callerARN != "" {
-			return nil, awserrors.Errorf(awserrors.ErrorAccessDenied,
-				"User: %s is not authorized to perform: %s on resource: %s", callerARN, stsActionAssumeRole, roleARN)
+		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorAccessDenied {
+			return nil, assumeRoleDenied(callerARN, roleARN)
 		}
 		return nil, err
 	}
@@ -214,6 +209,9 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 	env := assumedRoleEnvelope(role, roleAccountID, sessionName, sourceIdentity)
 	cred, plainSecret, plainToken, err := s.mintSession(ctx, env, duration)
 	if err != nil {
+		if errors.Is(err, errAccountNotActive) {
+			return nil, assumeRoleDenied(callerARN, roleARN)
+		}
 		return nil, err
 	}
 
@@ -234,6 +232,17 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 		out.SourceIdentity = aws.String(cred.SourceIdentity)
 	}
 	return out, nil
+}
+
+// assumeRoleDenied is the one refusal AssumeRole returns for a missing role, a
+// trust-policy denial and a role in an account that is not ACTIVE, so a caller
+// cannot tell them apart. IMDS has no caller ARN and keeps the bare code.
+func assumeRoleDenied(callerARN, roleARN string) error {
+	if callerARN == "" {
+		return errors.New(awserrors.ErrorAccessDenied)
+	}
+	return awserrors.Errorf(awserrors.ErrorAccessDenied,
+		"User: %s is not authorized to perform: %s on resource: %s", callerARN, stsActionAssumeRole, roleARN)
 }
 
 // assumeRoleConditionKeySourceAccount is the only condition key evaluated on the
@@ -538,9 +547,33 @@ func assumedRoleEnvelope(role *iam.Role, roleAccountID, sessionName, sourceIdent
 	}
 }
 
+// errAccountNotActive is returned by mintSession for an account whose record is
+// missing or whose status is not ACTIVE. Callers map it to their own denial.
+var errAccountNotActive = errors.New("account is not active")
+
+// requireActiveAccount reads the account record and refuses unless it is ACTIVE.
+// A missing record counts as not ACTIVE; any other read failure is an internal error.
+func (s *STSServiceImpl) requireActiveAccount(accountID string) error {
+	acct, err := s.iamSvc.GetAccount(accountID)
+	if err != nil {
+		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorIAMNoSuchEntity {
+			return errAccountNotActive
+		}
+		slog.Error("STS mint: cannot read account record", "account_id", accountID, "err", err)
+		return errors.New(awserrors.ErrorInternalError)
+	}
+	if acct == nil || acct.Status != iamdomain.AccountStatusActive {
+		return errAccountNotActive
+	}
+	return nil
+}
+
 // mintSession generates a fresh ASIA AKID, encrypts the secret, HMACs the token,
 // and persists the credential. Retries up to mintMaxAttempts on AKID collision.
 func (s *STSServiceImpl) mintSession(ctx context.Context, env sessionEnvelope, duration int64) (*SessionCredential, string, string, error) {
+	if err := s.requireActiveAccount(env.AccountID); err != nil {
+		return nil, "", "", err
+	}
 	plainSecret, err := generateRandomBase64(sessionSecretBytes)
 	if err != nil {
 		return nil, "", "", err

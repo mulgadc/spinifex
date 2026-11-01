@@ -10,6 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,7 +41,25 @@ func newTestSetup(t *testing.T) (*STSServiceImpl, *nats.Conn) {
 
 	stsSvc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, newFakeJWKSResolver())
 	require.NoError(t, err)
+	for _, id := range []string{testCallerAccountID, testCrossAccountID, "123456789012", "111122223333"} {
+		putTestAccount(t, nc, id, iamdomain.AccountStatusActive)
+	}
 	return stsSvc, nc
+}
+
+// putTestAccount writes an account record with the given status straight into
+// spinifex-accounts, so a test can pick an ID and a status SetAccountStatus
+// would not produce.
+func putTestAccount(t *testing.T, nc *nats.Conn, accountID, status string) {
+	t.Helper()
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	kv, err := js.KeyValue(t.Context(), iamdomain.KVBucketAccounts)
+	require.NoError(t, err)
+	data, err := json.Marshal(iamdomain.Account{AccountID: accountID, AccountName: "t" + accountID, Status: status})
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), accountID, data)
+	require.NoError(t, err)
 }
 
 // fakeResolver returns the fakeJWKSResolver newTestSetup wired into svc, so a
@@ -196,4 +215,13 @@ func TestSessionCredential_JSONRoundTrip(t *testing.T) {
 // reach that code path.
 type nopIAMService struct {
 	iamdomain.IAMService
+}
+
+func deleteTestAccount(t *testing.T, nc *nats.Conn, accountID string) {
+	t.Helper()
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	kv, err := js.KeyValue(t.Context(), iamdomain.KVBucketAccounts)
+	require.NoError(t, err)
+	require.NoError(t, kv.Delete(t.Context(), accountID))
 }

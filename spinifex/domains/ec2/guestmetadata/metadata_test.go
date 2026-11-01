@@ -1215,6 +1215,19 @@ func TestHTTP_RoleCredentials(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"Code":"Success"`)
 }
 
+func TestHTTP_RoleCredentialsMintRefusedYieldsFailedBody(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
+	assumer := &fakeAssumer{err: errors.New(awserrors.ErrorAccessDenied)}
+	svc, _ := newTestService(res, &fakeIAM{profile: profileFixture(), roleARN: "arn:aws:iam::111122223333:role/app-role"}, assumer)
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+
+	rec := get(t, h, prefixSecurityCreds+"app-role", token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"Code":"Failed"`)
+	assert.NotContains(t, rec.Body.String(), "AccessKeyId")
+}
+
 func TestHTTP_RoleCredentialsWrongRole404(t *testing.T) {
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
 	svc, _ := newTestService(res, &fakeIAM{profile: profileFixture(), roleARN: "arn:aws:iam::111122223333:role/app-role"}, &fakeAssumer{})

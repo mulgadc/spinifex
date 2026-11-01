@@ -11,12 +11,14 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/agents/eks/konnectivitycert"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -247,3 +249,57 @@ func TestCABundle_IsSystemRootsPlusGatewayCA(t *testing.T) {
 }
 
 func base64Of(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+
+func TestEnsureCerts_AreValidForOneYear(t *testing.T) {
+	cfg, _ := certTestConfig(t)
+	out, err := EnsureCerts(cfg)
+	require.NoError(t, err)
+	for _, p := range []string{out.ServingCert, out.ClientCert} {
+		c := parseCert(t, p)
+		assert.InDelta(t, 365*24, c.NotAfter.Sub(c.NotBefore).Hours()-1, 24, p)
+		assert.Less(t, time.Until(c.NotAfter), 366*24*time.Hour, p)
+	}
+}
+
+func TestNeedsRenewal(t *testing.T) {
+	cfg, _ := certTestConfig(t)
+	out, err := EnsureCerts(cfg)
+	require.NoError(t, err)
+	now := time.Now()
+
+	assert.False(t, NeedsRenewal(out, now), "fresh certs are outside the window")
+	assert.False(t, NeedsRenewal(out, now.Add(300*24*time.Hour)))
+	assert.True(t, NeedsRenewal(out, now.Add(340*24*time.Hour)), "inside 30 days of expiry")
+	assert.True(t, NeedsRenewal(out, now.Add(400*24*time.Hour)), "already expired")
+
+	require.NoError(t, os.Remove(out.ClientCert))
+	assert.True(t, NeedsRenewal(out, now), "an unreadable certificate needs renewal")
+}
+
+func TestEnsureCerts_ReissuesACertInsideTheRenewWindow(t *testing.T) {
+	cfg, _ := certTestConfig(t)
+	out, err := EnsureCerts(cfg)
+	require.NoError(t, err)
+	// Replace the serving cert with one that expires in 10 days.
+	ca, caKey, err := konnectivitycert.LoadCA(cfg.ServerCACert, cfg.ServerCAKey)
+	require.NoError(t, err)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := x509.Certificate{
+		SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "pod-identity-webhook"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(10 * 24 * time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, ca, &key.PublicKey, caKey)
+	require.NoError(t, err)
+	kd, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(out.ServingKey, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kd}), 0o600))
+	require.NoError(t, os.WriteFile(out.ServingCert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644))
+	require.True(t, NeedsRenewal(out, time.Now()))
+
+	_, err = EnsureCerts(cfg)
+	require.NoError(t, err)
+	assert.False(t, NeedsRenewal(out, time.Now()), "the restart path must leave certs outside the window")
+}

@@ -28,6 +28,7 @@ const (
 	clientCertFile  = "client.crt"
 	clientKeyFile   = "client.key"
 	certRenewWindow = 30 * 24 * time.Hour
+	certValidity    = 365 * 24 * time.Hour
 )
 
 // CertConfig names the k3s CAs that sign the webhook's two certificates and
@@ -95,7 +96,7 @@ func ensureLeaf(certPath, keyPath, caCertPath, caKeyPath string, spec leafSpec) 
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: spec.cn},
 		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.AddDate(10, 0, 0),
+		NotAfter:              now.Add(certValidity),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{spec.usage},
 		BasicConstraintsValid: true,
@@ -127,7 +128,7 @@ func leafCurrent(certPath, keyPath string, ca *x509.Certificate, spec leafSpec) 
 	if err != nil || crt.CheckSignatureFrom(ca) != nil {
 		return false
 	}
-	if time.Until(crt.NotAfter) < certRenewWindow || crt.Subject.CommonName != spec.cn {
+	if inRenewWindow(crt, time.Now()) || crt.Subject.CommonName != spec.cn {
 		return false
 	}
 	if len(crt.ExtKeyUsage) != 1 || crt.ExtKeyUsage[0] != spec.usage {
@@ -166,4 +167,30 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 		return fmt.Errorf("rename %s: %w", path, err)
 	}
 	return nil
+}
+
+// inRenewWindow reports whether crt expires within the renew window at now.
+func inRenewWindow(crt *x509.Certificate, now time.Time) bool {
+	return crt.NotAfter.Sub(now) < certRenewWindow
+}
+
+// NeedsRenewal reports whether either cached certificate is inside its renew
+// window at now. A running process exits when this is true so the supervisor
+// restarts it and EnsureCerts reissues; an unreadable certificate also counts.
+func NeedsRenewal(c Certs, now time.Time) bool {
+	for _, path := range []string{c.ServingCert, c.ClientCert} {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return true
+		}
+		blk, _ := pem.Decode(b)
+		if blk == nil {
+			return true
+		}
+		crt, err := x509.ParseCertificate(blk.Bytes)
+		if err != nil || inRenewWindow(crt, now) {
+			return true
+		}
+	}
+	return false
 }

@@ -28,7 +28,13 @@ const (
 	defaultManifests  = "/var/lib/rancher/k3s/server/manifests"
 
 	manifestFile = "eks-pod-identity-webhook.yaml"
+
+	certCheckEvery = 24 * time.Hour
 )
+
+// ErrCertRenewal is returned by Run when a certificate entered its renew window.
+// The process exits non-zero so the supervisor restarts it and EnsureCerts reissues.
+var ErrCertRenewal = errors.New("certificate inside renew window")
 
 // ServiceConfig is everything the webhook process needs.
 type ServiceConfig struct {
@@ -142,13 +148,26 @@ func Run(ctx context.Context, c ServiceConfig, log *slog.Logger) error {
 	}()
 	log.Info("pod identity webhook listening", "addr", c.Addr)
 
-	select {
-	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutdown)
-	case err := <-errc:
-		return err
+	renew := time.NewTicker(certCheckEvery)
+	defer renew.Stop()
+	for {
+		select {
+		case <-renew.C:
+			if !NeedsRenewal(certs, time.Now()) {
+				continue
+			}
+			log.Info("certificate inside renew window; exiting so the supervisor restarts and reissues")
+			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(shutdown)
+			return ErrCertRenewal
+		case <-ctx.Done():
+			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return srv.Shutdown(shutdown)
+		case err := <-errc:
+			return err
+		}
 	}
 }
 

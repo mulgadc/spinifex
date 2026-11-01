@@ -33,6 +33,10 @@ load_mod failover || true
 load_mod net_failover || true
 load_mod virtio_net || true
 
+# The guest's SQS store listens on 127.0.0.1 and the worker dials it there;
+# the kernel leaves lo down, so bring it up before init starts either.
+ip link set lo up
+
 NETCFG=/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/netcfg/raw
 i=0
 while [ "$i" -lt 25 ]; do
@@ -87,8 +91,8 @@ for n in 0 1 2 3 4 5; do
     [ -n "$rdst" ] && [ -n "$rvia" ] && ip route add "$rdst" via "$rvia" dev "$iface"
 done
 
-# The store image takes no lb-agent environment. A CA bundle is optional here:
-# nothing in this image dials out yet.
+# The image takes no lb-agent environment. The worker reads the cluster CA
+# from fw_cfg itself; this copy only serves other tools in the guest.
 CA_CERT=/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/ca-cert/raw
 mkdir -p /etc/ssl/certs
 [ -f "$CA_CERT" ] && cp "$CA_CERT" /etc/ssl/certs/ca-certificates.crt

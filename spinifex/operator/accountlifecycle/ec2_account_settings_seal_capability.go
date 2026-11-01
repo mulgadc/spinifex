@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	admissionv1 "github.com/mulgadc/spinifex/contracts/admission/v1"
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
@@ -66,12 +67,40 @@ type sealCapabilityClient struct {
 	nodeIDs []string
 	wait    time.Duration // 3 s, shortened by the caller's deadline
 	grace   time.Duration // 150 ms ResponderGrace
+	subject func(node string) string
+	valid   func(node string) bool
+}
+
+// sealCapabilityRequest and sealCapabilityReply are the wire shape every seal
+// capability contract shares: the node asked about, the version it reports and
+// an opaque correlation reference.
+type sealCapabilityRequest struct {
+	Node           string `json:"node"`
+	CorrelationRef string `json:"correlation_ref,omitempty"`
+}
+
+type sealCapabilityReply struct {
+	Node              string `json:"node"`
+	CapabilityVersion int    `json:"capability_version"`
+	CorrelationRef    string `json:"correlation_ref,omitempty"`
 }
 
 var _ sealCapabilityChecker = (*sealCapabilityClient)(nil)
 
 func newSealCapabilityClient(nc *nats.Conn, nodeIDs []string) *sealCapabilityClient {
-	return &sealCapabilityClient{nc: nc, nodeIDs: nodeIDs, wait: sealCapabilityWait, grace: sealCapabilityGrace}
+	return &sealCapabilityClient{
+		nc: nc, nodeIDs: nodeIDs, wait: sealCapabilityWait, grace: sealCapabilityGrace,
+		subject: ec2v1.AccountSettingsSealCapabilitySubject, valid: ec2v1.ValidSealCapabilityNode,
+	}
+}
+
+// newQuotaSealCapabilityClient probes the quota override seal capability of
+// every node in nodeIDs, which are the configured nodes that run awsgw.
+func newQuotaSealCapabilityClient(nc *nats.Conn, nodeIDs []string) *sealCapabilityClient {
+	return &sealCapabilityClient{
+		nc: nc, nodeIDs: nodeIDs, wait: sealCapabilityWait, grace: sealCapabilityGrace,
+		subject: admissionv1.AccountQuotaOverrideSealCapabilitySubject, valid: admissionv1.ValidSealCapabilityNode,
+	}
 }
 
 // CheckSealCapability probes every configured node in parallel, bounded by
@@ -122,16 +151,16 @@ func (c *sealCapabilityClient) CheckSealCapability(ctx context.Context, correlat
 // only when exactly one identified, decodable, matching, version >= 1 frame
 // arrived, with no duplicate, conflict or cap hit.
 func (c *sealCapabilityClient) checkNode(ctx context.Context, node, correlationRef string, wait time.Duration) nodeSealCapability {
-	if !ec2v1.ValidSealCapabilityNode(node) {
+	if !c.valid(node) {
 		return nodeSealCapability{Node: node, Reason: sealCapabilityReasonInvalidNodeID}
 	}
 
-	data, err := json.Marshal(ec2v1.AccountSettingsSealCapabilityRequest{Node: node, CorrelationRef: correlationRef})
+	data, err := json.Marshal(sealCapabilityRequest{Node: node, CorrelationRef: correlationRef})
 	if err != nil {
 		return nodeSealCapability{Node: node, Reason: sealCapabilityReasonMalformed}
 	}
 
-	frames, sum, err := natsmsg.Gather(ctx, c.nc, ec2v1.AccountSettingsSealCapabilitySubject(node), data, natsmsg.GatherOpts{
+	frames, sum, err := natsmsg.Gather(ctx, c.nc, c.subject(node), data, natsmsg.GatherOpts{
 		Timeout:            wait,
 		ExpectedResponders: 1,
 		Mode:               natsmsg.CollectUntilDeadline,
@@ -157,7 +186,7 @@ func (c *sealCapabilityClient) checkNode(ctx context.Context, node, correlationR
 		return nodeSealCapability{Node: node, Reason: sealCapabilityReasonWrongIdentity}
 	}
 
-	var reply ec2v1.AccountSettingsSealCapabilityReply
+	var reply sealCapabilityReply
 	if json.Unmarshal(frame.Data, &reply) != nil {
 		return nodeSealCapability{Node: node, Reason: sealCapabilityReasonMalformed}
 	}
@@ -173,6 +202,15 @@ func (c *sealCapabilityClient) checkNode(ctx context.Context, node, correlationR
 // errSealCapabilityIncomplete builds the retryable refusal from report. It
 // names node IDs and reason categories only, never wire error text.
 func errSealCapabilityIncomplete(report sealCapabilityReport) error {
+	return errCapabilityIncomplete("EC2 account-settings seal capability", report)
+}
+
+// errQuotaSealCapabilityIncomplete is the quota override seal's refusal.
+func errQuotaSealCapabilityIncomplete(report sealCapabilityReport) error {
+	return errCapabilityIncomplete("quota override seal capability", report)
+}
+
+func errCapabilityIncomplete(what string, report sealCapabilityReport) error {
 	detail := sealCapabilityReasonSetUnknown
 	var parts []string
 	for _, n := range report.Nodes {
@@ -184,7 +222,7 @@ func errSealCapabilityIncomplete(report sealCapabilityReport) error {
 		detail = strings.Join(parts, ", ")
 	}
 	return awserrors.WithRetryAfter(
-		awserrors.Errorf(awserrors.ErrorServiceUnavailable, "EC2 account-settings seal capability incomplete: %s", detail),
+		awserrors.Errorf(awserrors.ErrorServiceUnavailable, "%s incomplete: %s", what, detail),
 		5*time.Second,
 	)
 }

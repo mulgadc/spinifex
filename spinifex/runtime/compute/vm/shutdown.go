@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -36,30 +34,8 @@ const (
 var powerdownPollInterval = 500 * time.Millisecond
 
 // errPowerdownTimedOut reports a guest still running at the end of its budget.
-// Callers escalate: Stop to SIGKILL, Reboot to a hard reset.
+// Callers escalate: Stop to SIGKILL, Reboot to ending QEMU without asking.
 var errPowerdownTimedOut = errors.New("guest did not power down within its budget")
-
-// qemuPausesOnShutdown reports whether this guest's QEMU was launched with the
-// shutdown action that leaves it paused. A guest started before that flag
-// exits on powerdown instead, and a reboot would have nothing left to reset.
-// Indirected so a test can describe a guest without one running behind it.
-var qemuPausesOnShutdown = func(instance *VM) bool {
-	pid, err := hostprocess.ReadPidFile(instance.ID)
-	if err != nil || pid <= 0 {
-		return false
-	}
-	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if err != nil {
-		return false
-	}
-	return cmdlineHasPauseAction(cmdline)
-}
-
-// cmdlineHasPauseAction looks for the shutdown action in a NUL-separated
-// /proc cmdline. Split out from the /proc read so the matching is testable.
-func cmdlineHasPauseAction(cmdline []byte) bool {
-	return slices.Contains(strings.Split(string(cmdline), "\x00"), "shutdown=pause")
-}
 
 // gracefulPowerdown presses the guest's power button until it shuts itself
 // down, so it syncs and unmounts rather than losing its dirty pages. QEMU is
@@ -704,11 +680,16 @@ func (m *Manager) ForgetSuperseded(instance *VM) {
 // unmounting: a fenced node's volumes belong to another node now, and an
 // unmount would seal this node's stale copy over theirs.
 func (m *Manager) shutdownQEMU(instance *VM) {
+	// Wait out a reboot swapping the process, then stop whichever QEMU is
+	// current. Without this a stop could seal volumes under a fresh process.
+	instance.relaunchMu.Lock()
+	defer instance.relaunchMu.Unlock()
+
 	if instance.QMPClient != nil {
 		ctx := context.Background()
 		// The whole graceful budget is the pid-file wait it replaces, so a stop
-		// takes no longer than it used to. quit closes the paused-on-shutdown
-		// window a reboot needs and a stop does not.
+		// takes no longer than it used to. quit ends the QEMU the guest left
+		// paused when it powered off.
 		if err := m.gracefulPowerdown(ctx, instance, pidFileRemovalTimeout); err != nil {
 			slog.Warn("Guest did not power down gracefully", "id", instance.ID, "err", err)
 		} else if _, err := sendQMPCommand(ctx, instance.QMPClient,

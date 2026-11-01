@@ -1462,6 +1462,10 @@ func (d *Daemon) startLocal() error {
 		}
 	}
 
+	// The kernel, QEMU and firmware a guest boots on are what a boot hang
+	// depends on, so record them before any guest is started.
+	vm.LogHostVirtStack()
+
 	// Recover local instance state from disk. Fatal on corruption — orphaned VMs.
 	if err := d.LoadState(); err != nil {
 		return fmt.Errorf("load local instance state: %w", err)

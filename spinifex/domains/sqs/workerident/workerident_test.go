@@ -1009,14 +1009,14 @@ func TestReadRecord_RefusesAVolumeOutsideItsIntent(t *testing.T) {
 }
 
 // A replacement reuses its predecessor's data volume, so it keeps that
-// predecessor's contract: a pre-API worker is never upgraded by replacement.
-func TestReplacement_KeepsAPreAPIContract(t *testing.T) {
+// predecessor's contract: replacement never makes a contract supported.
+func TestReplacement_KeepsAnUnsupportedContract(t *testing.T) {
 	ctx := context.Background()
 	s, kv := newStore(t)
 	old := mustBound(t, s, claim(1), inst(1), 0)
 	mustStop(t, s, old, inst(1))
 	r := record(t, kv)
-	if r.PreAPI() {
+	if r.UnsupportedContract() {
 		t.Fatalf("first launch by this release = %+v; want the authenticated contract", r)
 	}
 	r.Contract = 0
@@ -1027,7 +1027,7 @@ func TestReplacement_KeepsAPreAPIContract(t *testing.T) {
 	if _, err := s.BeginLaunch(ctx, region, launch(claim(2), 1)); err != nil {
 		t.Fatal(err)
 	}
-	if got := record(t, kv); got.Generation != 2 || !got.PreAPI() {
-		t.Fatalf("replacement = %+v; want generation 2, still pre-API", got)
+	if got := record(t, kv); got.Generation != 2 || !got.UnsupportedContract() {
+		t.Fatalf("replacement = %+v; want generation 2, still unsupported", got)
 	}
 }

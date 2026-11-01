@@ -72,9 +72,9 @@ type Record struct {
 // ContractAuthenticated marks a worker first launched with a receipt key.
 const ContractAuthenticated = 1
 
-// PreAPI reports a record this release did not create. It is refused, and
-// its data volume is kept and never treated as empty.
-func (r Record) PreAPI() bool { return r.Contract != ContractAuthenticated }
+// UnsupportedContract reports a missing or unknown launch contract. Such a
+// record is refused; its data volume is kept and never treated as empty.
+func (r Record) UnsupportedContract() bool { return r.Contract != ContractAuthenticated }
 
 // IndexEntry finds an instance's regional record. It is a lookup, never proof
 // that the instance is current.

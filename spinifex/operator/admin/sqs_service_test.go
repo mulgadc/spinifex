@@ -116,8 +116,8 @@ func TestDescribeSQS_ReadyNeedsTheTenantAPIAndAPollingWorker(t *testing.T) {
 	}
 }
 
-// stripContract rewrites a record as the release before authenticated
-// bootstrap wrote it: the same fields, with no contract.
+// stripContract rewrites a record without its contract, as an older writer
+// would leave it.
 func stripContract(t *testing.T, kv jetstream.KeyValue, key string) uint64 {
 	t.Helper()
 	ctx := context.Background()
@@ -141,10 +141,10 @@ func stripContract(t *testing.T, kv jetstream.KeyValue, key string) uint64 {
 	return rev
 }
 
-// A store or worker record this release did not create blocks enable before
+// A store or worker record with no launch contract blocks enable before
 // it writes desired state or launches anything, leaves the record untouched,
 // and status names it. nc is nil: any launch attempt would panic.
-func TestEnableSQS_RefusesAPreAPIRecordBeforeAnyWrite(t *testing.T) {
+func TestEnableSQS_RefusesAnUnsupportedContractBeforeAnyWrite(t *testing.T) {
 	clustersize.DeclareForTest(t, 1)
 	const region = "ap-southeast-2"
 	for _, kind := range []string{"store", "worker"} {
@@ -175,18 +175,18 @@ func TestEnableSQS_RefusesAPreAPIRecordBeforeAnyWrite(t *testing.T) {
 			rev := stripContract(t, kv, "region."+region)
 
 			_, err := EnableSQS(ctx, nil, js, []string{"node1"}, 1, enableInput(), SQSObservers{}, time.Second)
-			if err == nil || !strings.Contains(err.Error(), "pre-API SQS "+kind) || !strings.Contains(err.Error(), "volume kept") {
-				t.Fatalf("enable = %v; want a pre-API %s refusal", err, kind)
+			if err == nil || !strings.Contains(err.Error(), "SQS "+kind) || !strings.Contains(err.Error(), "missing or unsupported launch contract") {
+				t.Fatalf("enable = %v; want an unsupported-contract %s refusal", err, kind)
 			}
 			if _, err := js.KeyValue(ctx, servicestate.Bucket); !errors.Is(err, jetstream.ErrBucketNotFound) {
 				t.Fatalf("service state bucket = %v; want none created", err)
 			}
 			if e, err := kv.Get(ctx, "region."+region); err != nil || e.Revision() != rev {
-				t.Fatalf("pre-API record changed: %v", err)
+				t.Fatalf("refused record changed: %v", err)
 			}
 			got, err := DescribeSQS(ctx, js, region, SQSObservers{WorkerPolling: func() bool { return true }, TenantAPIRegistered: func() bool { return true }})
-			if err != nil || !strings.Contains(got.Unsupported, "pre-API SQS "+kind) || got.Ready {
-				t.Fatalf("status = %+v, %v; want the pre-API %s named and not Ready", got, err, kind)
+			if err != nil || !strings.Contains(got.Unsupported, "SQS "+kind+" ") || got.Ready {
+				t.Fatalf("status = %+v, %v; want the %s named and not Ready", got, err, kind)
 			}
 		})
 	}

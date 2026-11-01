@@ -24,7 +24,7 @@ type SQSStatus struct {
 	StoreInstanceID string `json:"StoreInstanceId,omitempty"`
 	WorkerPolling   bool   `json:"WorkerPolling"`
 	TenantAPI       string `json:"TenantAPI"`
-	// Unsupported names a pre-API store or worker that blocks enable.
+	// Unsupported names a store or worker whose launch contract blocks enable.
 	Unsupported string `json:"Unsupported,omitempty"`
 	Ready       bool   `json:"Ready"`
 }
@@ -90,7 +90,7 @@ func DescribeSQS(ctx context.Context, js jetstream.JetStream, region string, obs
 			out.Store, out.StoreInstanceID = sqsStoreReady, cur.InstanceID
 		}
 	}
-	if reason, err := sqsPreAPI(ctx, js, region); err != nil {
+	if reason, err := sqsUnsupported(ctx, js, region); err != nil {
 		out.Unsupported = "unknown: SQS records unreadable"
 	} else {
 		out.Unsupported = reason
@@ -100,9 +100,9 @@ func DescribeSQS(ctx context.Context, js jetstream.JetStream, region string, obs
 	return out, nil
 }
 
-// sqsPreAPI names a store or worker record this release did not create. It
-// binds without creating, so it allocates nothing; unreadable is an error.
-func sqsPreAPI(ctx context.Context, js jetstream.JetStream, region string) (string, error) {
+// sqsUnsupported names a store or worker record with a missing or unknown
+// launch contract. It binds without creating; unreadable is an error.
+func sqsUnsupported(ctx context.Context, js jetstream.JetStream, region string) (string, error) {
 	stores, err := storelaunch.Bind(ctx, js)
 	switch {
 	case errors.Is(err, jetstream.ErrBucketNotFound):
@@ -114,8 +114,8 @@ func sqsPreAPI(ctx context.Context, js jetstream.JetStream, region string) (stri
 		case errors.Is(err, jetstream.ErrKeyNotFound):
 		case err != nil:
 			return "", err
-		case cur.PreAPI():
-			return sqsPreAPIReason("store", cur.InstanceID), nil
+		case cur.UnsupportedContract():
+			return sqsUnsupportedReason("store", cur.InstanceID), nil
 		}
 	}
 	workers, err := workerident.Bind(ctx, js)
@@ -129,18 +129,18 @@ func sqsPreAPI(ctx context.Context, js jetstream.JetStream, region string) (stri
 		case errors.Is(err, jetstream.ErrKeyNotFound):
 		case err != nil:
 			return "", err
-		case cur.PreAPI():
-			return sqsPreAPIReason("worker", cur.InstanceID), nil
+		case cur.UnsupportedContract():
+			return sqsUnsupportedReason("worker", cur.InstanceID), nil
 		}
 	}
 	return "", nil
 }
 
-func sqsPreAPIReason(kind, instanceID string) string {
+func sqsUnsupportedReason(kind, instanceID string) string {
 	if instanceID == "" {
 		instanceID = "(not launched)"
 	}
-	return "pre-API SQS " + kind + " " + instanceID + " present; upgrade not supported; volume kept"
+	return "SQS " + kind + " " + instanceID + " has a missing or unsupported launch contract; enable refused; any existing volume is kept"
 }
 
 // SQSEnableInput is EnableSQS's request.
@@ -167,7 +167,7 @@ func EnableSQS(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, nodeI
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 	// Refused before any write or allocation; nothing is deleted or replaced.
-	reason, err := sqsPreAPI(ctx, js, in.Region)
+	reason, err := sqsUnsupported(ctx, js, in.Region)
 	if err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorServiceUnavailable, "SQS records unavailable")
 	}

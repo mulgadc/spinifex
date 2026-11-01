@@ -687,15 +687,20 @@ func (cfg *Config) LoadEncryptionKey() error {
 	return nil
 }
 
-// InitLeases binds the cluster-wide volume lease store over nc, bound before
-// recovery: without the store every engine open refuses, and the adapter
-// would come up unable to adopt the exports that outlived it.
+// InitLeases binds the volume lease store and dirty markers over nc before
+// recovery or any subject: every engine open refuses without both, and an
+// export adopted before the markers exist would run with no unsealed record.
 func (cfg *Config) InitLeases(ctx context.Context, nc *nats.Conn) error {
 	leases, err := newVolumeLeasesWaiting(ctx, nc, cfg.leaseOwner())
 	if err != nil {
 		return fmt.Errorf("volume leases: %w", err)
 	}
+	dirty, err := newVolumeDirtyWaiting(ctx, nc, cfg.leaseOwner())
+	if err != nil {
+		return fmt.Errorf("volume dirty markers: %w", err)
+	}
 	cfg.leases = cfg.bindLeaseFence(leases)
+	cfg.dirty = dirty
 	cfg.nc = nc
 	return nil
 }

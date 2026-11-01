@@ -138,7 +138,8 @@ func TestVolumeLease_UnmountedSnapshotIsRefusedByTheHolder(t *testing.T) {
 	require.NoError(t, err)
 
 	// node-b has nothing mounted, so this is the unmounted branch.
-	cfg := &Config{NodeName: "node-b", BaseDir: t.TempDir(), leases: newTestLeases(t, natsURL, "node-b")}
+	cfg := &Config{NodeName: "node-b", BaseDir: t.TempDir(), leases: newTestLeases(t, natsURL, "node-b"),
+		dirty: newTestDirty(t, natsURL, "node-b")}
 	snapshot, err := snapshotVolumeEngine(t.Context(), cfg, volumeName, "snap-excl0000000001")
 
 	require.ErrorIs(t, err, errVolumeLeaseHeld, "a snapshot must not open an engine on a volume another node holds")

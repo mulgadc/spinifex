@@ -60,6 +60,14 @@ var routes = []route{
 			return GetRecoveryDirective(ctx, nc, p[0], p[1], p[2])
 		}},
 
+	// Internal control-plane route: the on-VM node-gc agent pulls the cluster's
+	// live nodegroup workers to delete the Nodes of terminated ones. Same
+	// system-cred carve-out as internal-addons.
+	{Method: "GET", Pattern: "/clusters/{clusterName}/internal-workers/{accountId}", Action: "ListInternalWorkers",
+		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
+			return ListInternalWorkers(ctx, nc, p[0], p[1])
+		}},
+
 	// Nodegroup
 	{Method: "POST", Pattern: "/clusters/{clusterName}/node-groups", Action: "CreateNodegroup",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {

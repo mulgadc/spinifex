@@ -431,7 +431,7 @@ func eksUncased() map[string]string {
 	// These name the cluster's account in the path or body. AuthorizeInternal
 	// refuses every tenant principal outright and binds a control-plane VM to
 	// the cluster it serves, so no tenant ARN reaches the evaluator.
-	for _, action := range []string{"GetRecoveryDirective", "ListInternalAddons", "PublishInternal", "WebhookTokenReview"} {
+	for _, action := range []string{"GetRecoveryDirective", "ListInternalAddons", "ListInternalWorkers", "PublishInternal", "WebhookTokenReview"} {
 		uncased[action] = "internal control-plane route: refused to tenants, bound to the caller's own cluster"
 	}
 	for _, action := range []string{

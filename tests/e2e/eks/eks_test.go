@@ -536,12 +536,7 @@ func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts 
 		},
 	})
 	require.NoError(t, err, "create-nodegroup")
-	t.Cleanup(func() {
-		_, _ = c.EKS.DeleteNodegroup(&eks.DeleteNodegroupInput{
-			ClusterName:   aws.String(fx.ClusterName),
-			NodegroupName: aws.String(nodegroup),
-		})
-	})
+	t.Cleanup(func() { harness.DeleteEKSNodegroupAndWait(t, c, fx.ClusterName, nodegroup) })
 	harness.EventuallyErr(t, func() error {
 		out, derr := c.EKS.DescribeNodegroup(&eks.DescribeNodegroupInput{
 			ClusterName:   aws.String(fx.ClusterName),
@@ -789,12 +784,7 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 		},
 	})
 	require.NoError(t, err, "create-nodegroup")
-	t.Cleanup(func() {
-		_, _ = c.EKS.DeleteNodegroup(&eks.DeleteNodegroupInput{
-			ClusterName:   aws.String(fx.ClusterName),
-			NodegroupName: aws.String(nodegroup),
-		})
-	})
+	t.Cleanup(func() { harness.DeleteEKSNodegroupAndWait(t, c, fx.ClusterName, nodegroup) })
 	harness.EventuallyErr(t, func() error {
 		out, derr := c.EKS.DescribeNodegroup(&eks.DescribeNodegroupInput{
 			ClusterName:   aws.String(fx.ClusterName),

@@ -293,18 +293,20 @@ fi
 # file behind it is unreachable after the next reboot and unexplainable to
 # whoever inherits it.
 #
-# Only our own table and our own marked rules, never a global flush: setup.sh
-# creates exactly `table inet spinifex_filter`, and vpcd writes iptables rules
-# carrying the comments below. Anything else on this host belongs to someone
-# else.
+# Only our own tables and our own marked rules, never a global flush: setup.sh
+# creates exactly `table inet spinifex_filter` and `table inet
+# spinifex_conntrack`, and vpcd writes iptables rules carrying the comments
+# below. Anything else on this host belongs to someone else.
 # ---------------------------------------------------------------------------
 log "unloading the host firewall policy"
 if command -v nft >/dev/null 2>&1; then
-    if sudo nft list table inet spinifex_filter >/dev/null 2>&1; then
-        run sudo nft delete table inet spinifex_filter
-    else
-        log "  no inet spinifex_filter table loaded"
-    fi
+    for nft_table in spinifex_filter spinifex_conntrack; do
+        if sudo nft list table inet "$nft_table" >/dev/null 2>&1; then
+            run sudo nft delete table inet "$nft_table"
+        else
+            log "  no inet $nft_table table loaded"
+        fi
+    done
 fi
 if command -v iptables-save >/dev/null 2>&1 && ! $DRY_RUN; then
     for marker in spinifex-nat-egress spinifex-eip-ingress spinifex-imds spinifex-imds-remap; do
@@ -641,9 +643,11 @@ if ! $DRY_RUN; then
     for svc in nats gw daemon storage northstar viperblock vpcd ui; do
         id -u "spinifex-${svc}" >/dev/null 2>&1 && LEFT+=("user spinifex-${svc}")
     done
-    if command -v nft >/dev/null 2>&1 && sudo nft list table inet spinifex_filter >/dev/null 2>&1; then
-        LEFT+=("nft table inet spinifex_filter")
-    fi
+    for nft_table in spinifex_filter spinifex_conntrack; do
+        if command -v nft >/dev/null 2>&1 && sudo nft list table inet "$nft_table" >/dev/null 2>&1; then
+            LEFT+=("nft table inet $nft_table")
+        fi
+    done
     $PURGE_DATA && [ -e "$DATA_DIR" ] && ! mountpoint -q "$DATA_DIR" 2>/dev/null && LEFT+=("$DATA_DIR")
 
     if [ "${#LEFT[@]}" -gt 0 ]; then

@@ -8,7 +8,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,33 +27,30 @@ import (
 
 // rdsPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as the caller's policy.
-func rdsPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*gateway.GatewayConfig, http.Handler) {
+func rdsPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*pipeline.Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
-		ExpectedNodes:  1,
-		IAMService: &gwfix.PolicyIAM{
-			IAM: gwfix.IAM{
-				MasterKey: gwfix.MasterKey,
-				AccessKeys: map[string]*iamdomain.AccessKey{
-					gwfix.AccessKey: {
-						AccessKeyID:     gwfix.AccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       authzAccountID,
-						Status:          "Active",
-					},
+	}, gwfix.Deps{NATS: nc, Nodes: 1, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       authzAccountID,
+					Status:          "Active",
 				},
 			},
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	})
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}}))
 	withRDS(gw)
 
 	r := chi.NewRouter()
@@ -168,7 +165,7 @@ func TestRDSPipeline_DescribeDBEngineVersions_Golden(t *testing.T) {
 
 func TestRDSPipeline_DescribeDBInstances_Golden(t *testing.T) {
 	gw, app := rdsPipelineApp(t, allowAllTaggingDocs())
-	calls := respondRDS(t, gw.NATSConn, "rds.DescribeDBInstances", `{"DBInstances":[]}`)
+	calls := respondRDS(t, gwfix.DepsOf(gw).NATS, "rds.DescribeDBInstances", `{"DBInstances":[]}`)
 	resp := doRequest(app, signRDSRequest(t, "Action=DescribeDBInstances"))
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -180,7 +177,7 @@ func TestRDSPipeline_DescribeDBInstances_Golden(t *testing.T) {
 func TestRDSPipeline_Authz_DeniedStopsBeforeHandler(t *testing.T) {
 	docs := scopedTaggingDocs("Allow", "rds:DeleteDBInstance", rdsInstanceARN("other"))
 	gw, app := rdsPipelineApp(t, docs)
-	calls := respondRDS(t, gw.NATSConn, "rds.DeleteDBInstance", `{}`)
+	calls := respondRDS(t, gwfix.DepsOf(gw).NATS, "rds.DeleteDBInstance", `{}`)
 
 	resp := doRequest(app, signRDSRequest(t, "Action=DeleteDBInstance&DBInstanceIdentifier=prod"))
 
@@ -194,7 +191,7 @@ func TestRDSPipeline_Authz_InternalActionDeniedToAdmin(t *testing.T) {
 	gw, app := rdsPipelineApp(t, allowAllTaggingDocs())
 	for _, action := range rdsinstance.InternalAgentActions {
 		t.Run(action, func(t *testing.T) {
-			calls := respondRDS(t, gw.NATSConn, "rds."+action, `{}`)
+			calls := respondRDS(t, gwfix.DepsOf(gw).NATS, "rds."+action, `{}`)
 			resp := doRequest(app, signRDSRequest(t, "Action="+action))
 
 			require.Equal(t, http.StatusForbidden, resp.StatusCode)
@@ -216,7 +213,7 @@ func TestRDSPipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) {
 }
 
 func TestRDSPipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
-	gw := withVerifier(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	withRDS(gw)
 
 	w := httptest.NewRecorder()

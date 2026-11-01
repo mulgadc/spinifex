@@ -1,7 +1,8 @@
 package awsgw_test
 
 import (
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -9,8 +10,8 @@ import (
 
 // withRDS registers RDS on gw with the NATS connection and node count it holds,
 // as the awsgw role composes it. Set both on gw before calling.
-func withRDS(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
-	deps := rdsawsapi.Deps{NATS: gw.NATSConn, ExpectedNodes: gw.ExpectedNodes}
+func withRDS(gw *pipeline.Config) *pipeline.Config {
+	deps := rdsawsapi.Deps{NATS: gwfix.DepsOf(gw).NATS, ExpectedNodes: gwfix.DepsOf(gw).Nodes}
 	if quotaFor(gw) != nil {
 		deps.Quota = quotaFor(gw)
 	}

@@ -1,7 +1,8 @@
 package awsgw_test
 
 import (
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"maps"
 
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -10,9 +11,9 @@ import (
 
 // withECR registers the ECR control plane on gw backed by deps, as the awsgw
 // role composes it. An unset deps.NATS takes gw.NATSConn.
-func withECR(gw *gateway.GatewayConfig, deps awsapi.Deps) *gateway.GatewayConfig {
+func withECR(gw *pipeline.Config, deps awsapi.Deps) *pipeline.Config {
 	if deps.NATS == nil {
-		deps.NATS = gw.NATSConn
+		deps.NATS = gwfix.DepsOf(gw).NATS
 	}
 	b := dispatch.NewBuilder()
 	if err := b.Register(awsapi.NewRegistration(deps)); err != nil {
@@ -25,7 +26,7 @@ func withECR(gw *gateway.GatewayConfig, deps awsapi.Deps) *gateway.GatewayConfig
 // ecrRegistrationInventory is the inventory the ECR registration declares to
 // a registry, keyed as AWSOperationInventory expects.
 func ecrRegistrationInventory() map[string]dispatch.Inventory {
-	inventory := withECR(&gateway.GatewayConfig{}, awsapi.Deps{}).Services.Inventory()
-	maps.Copy(inventory, withContainers(&gateway.GatewayConfig{}).Services.Inventory())
+	inventory := withECR(&pipeline.Config{}, awsapi.Deps{}).Services.Inventory()
+	maps.Copy(inventory, withContainers(&pipeline.Config{}).Services.Inventory())
 	return inventory
 }

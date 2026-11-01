@@ -26,7 +26,6 @@ import (
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
 	awsdispatch "github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +42,7 @@ const slowRequest = 500 * time.Millisecond
 // request for each implemented operation through the real gateway, with every
 // daemon-lite wired, and records each verdict for the suite report.
 func TestRequestConformance(t *testing.T) {
-	inventory := gateway.AWSOperationInventory(map[string]awsdispatch.Inventory{
+	inventory := awsdispatch.AWSOperationInventory(map[string]awsdispatch.Inventory{
 		awsapi.ServiceName:    awsapi.OperationInventory(),
 		acmawsapi.ServiceName:     acmawsapi.OperationInventory(),
 		route53awsapi.ServiceName: route53awsapi.OperationInventory(),

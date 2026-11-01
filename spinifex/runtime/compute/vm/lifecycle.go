@@ -20,7 +20,6 @@ import (
 
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
@@ -103,142 +102,6 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	return m.launch(ctx, instance)
 }
 
-const rebootRunningTimeout = 4 * time.Second
-
-// rebootStatusPollInterval is how often Reboot samples the run state after
-// system_reset. A var so tests need not wait out the real interval.
-var rebootStatusPollInterval = 100 * time.Millisecond
-
-// rebootPowerdownTimeout is how long the guest gets to shut itself down before
-// it is reset under. Nova's shutdown_timeout, and the same shape as the hard
-// reboot AWS documents once a guest will not go quietly.
-var rebootPowerdownTimeout = 60 * time.Second
-
-// Reboot admits a reboot and runs it in the background, the way EC2 does: the
-// answer says the request was accepted, not that the guest is back. Asking a
-// guest to shut down takes as long as the guest takes, which is far longer than
-// any caller waits, so only the two admission failures can be reported at all.
-func (m *Manager) Reboot(ctx context.Context, id string) error {
-	instance, ok := m.Get(id)
-	if !ok {
-		return ErrInstanceNotFound
-	}
-	if status := m.Status(instance); status != StateRunning {
-		return fmt.Errorf("%w: cannot reboot instance %s in state %s",
-			ErrInvalidTransition, id, status)
-	}
-
-	// Tell the heartbeat this guest is meant to be stopped for a moment: it
-	// quits a guest it finds in the shutdown run state, which is the state a
-	// reboot passes through. Claiming the flag also serialises reboots, so a
-	// repeated request joins the one in flight instead of racing it.
-	if !instance.rebooting.CompareAndSwap(false, true) {
-		slog.InfoContext(ctx, "Reboot already in flight, ignoring the repeat", "instanceId", id)
-		return nil
-	}
-
-	// Detached rather than derived: the caller is answered immediately, so its
-	// context is cancelled long before the guest has finished shutting down.
-	rebootCtx := context.WithoutCancel(ctx)
-	m.goroutineWg.Go(func() {
-		defer instance.rebooting.Store(false)
-		if err := m.rebootNow(rebootCtx, instance); err != nil {
-			// Nobody is left to return this to. The guest is either back or it
-			// is not, and the heartbeat is what notices the second case.
-			slog.ErrorContext(rebootCtx, "Reboot failed", "instanceId", id, "err", err)
-		}
-	})
-	return nil
-}
-
-// rebootNow asks the guest to shut itself down, then resets and resumes it in
-// the same QEMU process. The VM remains in StateRunning throughout. A guest
-// that will not power down inside its budget is hard-reset, and that is logged.
-func (m *Manager) rebootNow(ctx context.Context, instance *VM) error {
-	// A reset alone never reaches the guest kernel, so it syncs nothing and
-	// every dirty page is lost. Ask first; reset only once asking has failed.
-	// A guest whose QEMU would exit rather than pause is reset without asking,
-	// because a powerdown there leaves nothing to reset and the guest down.
-	switch {
-	case !qemuPausesOnShutdown(instance):
-		slog.InfoContext(ctx, "Guest predates the paused-shutdown flag, hard-resetting",
-			"instanceId", instance.ID)
-	default:
-		if err := m.gracefulPowerdown(ctx, instance, rebootPowerdownTimeout); err != nil {
-			slog.WarnContext(ctx, "Guest did not power down for reboot, hard-resetting",
-				"instanceId", instance.ID, "budget_ms", otelsetup.Millis(rebootPowerdownTimeout), "err", err)
-		}
-	}
-
-	rebootCtx, cancel := context.WithTimeout(ctx, rebootRunningTimeout)
-	defer cancel()
-
-	if _, err := sendQMPCommandWithTimeout(rebootCtx, instance.QMPClient,
-		qmp.QMPCommand{Execute: "system_reset"}, instance.ID, contextTimeRemaining(rebootCtx)); err != nil {
-		return fmt.Errorf("QMP system_reset: %w", err)
-	}
-	return m.waitForQMPRunning(rebootCtx, instance, rebootStatusPollInterval)
-}
-
-// waitForQMPRunning polls until QEMU reports running or ctx expires. Paused,
-// prelaunch and shutdown guests receive cont so a reset cannot leave their
-// vCPUs parked — a reset from a powered-down guest lands in one of the three.
-func (m *Manager) waitForQMPRunning(ctx context.Context, instance *VM, pollInterval time.Duration) error {
-	var lastStatus qmp.Status
-	for {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("wait for QMP running (last status %q): %w", lastStatus.Status, err)
-		}
-		if status := m.Status(instance); status != StateRunning {
-			return fmt.Errorf("%w: reboot interrupted for instance %s in state %s",
-				ErrInvalidTransition, instance.ID, status)
-		}
-
-		qmpStatus, err := queryQMPStatus(ctx, instance, contextTimeRemaining(ctx))
-		if err != nil {
-			return fmt.Errorf("verify QMP running: %w", err)
-		}
-		lastStatus = qmpStatus
-		if qmpStatus.Running {
-			return nil
-		}
-
-		if qmpStatus.Status == "paused" || qmpStatus.Status == "prelaunch" ||
-			qmpStatus.Status == qmpStatusShutdown {
-			if status := m.Status(instance); status != StateRunning {
-				return fmt.Errorf("%w: cannot resume instance %s in state %s",
-					ErrInvalidTransition, instance.ID, status)
-			}
-			if _, err := sendQMPCommandWithTimeout(ctx, instance.QMPClient,
-				qmp.QMPCommand{Execute: "cont"}, instance.ID, contextTimeRemaining(ctx)); err != nil {
-				return fmt.Errorf("QMP cont from status %q: %w", qmpStatus.Status, err)
-			}
-		}
-
-		timer := time.NewTimer(pollInterval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return fmt.Errorf("wait for QMP running (last status %q): %w", lastStatus.Status, ctx.Err())
-		case <-timer.C:
-		}
-	}
-}
-
-// contextTimeRemaining returns the active context deadline budget. Reboot
-// always installs a deadline before issuing QMP commands.
-func contextTimeRemaining(ctx context.Context) time.Duration {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return qmpCommandTimeout
-	}
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return time.Nanosecond
-	}
-	return remaining
-}
-
 // launchStillValid returns true when status is still pending/stopped/provisioning.
 // Returns false if a concurrent terminate took ownership; launch must bail.
 func (m *Manager) launchStillValid(instance *VM) bool {
@@ -313,7 +176,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	}
 
 	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
-	qemuErr := m.startQEMU(instance)
+	qemuErr := m.startQEMU(instance, false)
 	endSpanWithError(qemuSpan, qemuErr)
 	if qemuErr != nil {
 		slog.ErrorContext(ctx, "Failed to launch instance", "err", qemuErr)
@@ -408,8 +271,6 @@ const (
 // waitForNBDReady is a test seam over nbd.WaitForNBDReady.
 var waitForNBDReady = nbd.WaitForNBDReady
 
-// startQEMU launches the QEMU process for instance and waits for startup to
-// confirm.
 // qemuStderrLevel reports the level a QEMU stderr line belongs at. QEMU
 // announces its own exit on stderr, so the notice for the signal a stop sends
 // it is the shutdown working rather than a fault.
@@ -420,7 +281,10 @@ func qemuStderrLevel(line string) slog.Level {
 	return slog.LevelError
 }
 
-func (m *Manager) startQEMU(instance *VM) error {
+// startQEMU launches the QEMU process for instance and waits for startup to
+// confirm. appendConsole keeps the console log of the process it replaces, so a
+// reboot does not erase what the guest printed before it.
+func (m *Manager) startQEMU(instance *VM, appendConsole bool) error {
 	pidFile, err := hostprocess.GeneratePidFile(instance.ID)
 	if err != nil {
 		slog.Error("Failed to generate PID file", "err", err)
@@ -640,6 +504,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 		}
 		launchCfg = &composed
 	}
+	launchCfg.ConsoleLogAppend = appendConsole
 
 	// An NBD export is waited on until it accepts connections; a block export
 	// is local to the host and only has to exist. An invalid request has no
@@ -697,6 +562,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 		}
 
 		slog.Info("VM started successfully", "pid", cmd.Process.Pid)
+		instance.qemuPID.Store(int64(cmd.Process.Pid))
 
 		oomScore := guestOOMScore(instance.ManagedBy)
 		if err := hostprocess.SetOOMScore(cmd.Process.Pid, oomScore); err != nil {
@@ -735,6 +601,12 @@ func (m *Manager) startQEMU(instance *VM) error {
 			return
 		}
 
+		// A reboot ends this process on purpose and starts its replacement, so
+		// the exit belongs to the reboot rather than to crash recovery.
+		if instance.qemuPID.Load() != int64(cmd.Process.Pid) {
+			slog.Info("Replaced VM process exited", "instance", instance.ID, "pid", cmd.Process.Pid, "err", waitErr)
+			return
+		}
 		if waitErr != nil {
 			if m.deps.CrashHandler != nil {
 				m.deps.CrashHandler(instance, waitErr)
@@ -1072,6 +944,12 @@ func (m *Manager) qmpHeartbeat(instance *VM) {
 // qmpHeartbeatPoll performs one status check and returns false after crash
 // recovery takes ownership.
 func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
+	// A reboot ends and replaces this QEMU, so the socket going away and the
+	// guest sitting powered off are both expected. Reboot bounds its own window.
+	if instance.rebooting.Load() {
+		return true
+	}
+
 	slog.Debug("QMP heartbeat", "instance", instance.ID)
 	ctx := context.WithValue(context.Background(), noTraceKey{}, true)
 	qmpStatus, err := queryQMPStatus(ctx, instance, qmpCommandTimeout)
@@ -1084,11 +962,11 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 		return true
 	}
 
-	// A guest that powered itself off leaves QEMU paused rather than gone,
-	// because that window is what a reboot needs. Nobody is rebooting this one,
-	// so close it: quit lets the process exit and recovery proceed as before.
+	// A guest that powered itself off leaves QEMU paused rather than gone.
+	// Nobody is rebooting this one, so close it: quit lets the process exit and
+	// recovery proceed as before.
 	if err == nil && qmpStatus.Status == qmpStatusShutdown &&
-		m.Status(instance) == StateRunning && !instance.rebooting.Load() {
+		m.Status(instance) == StateRunning {
 		slog.InfoContext(ctx, "Guest powered itself off, ending QEMU", "instance", instance.ID)
 		if _, quitErr := sendQMPCommand(ctx, instance.QMPClient,
 			qmp.QMPCommand{Execute: "quit"}, instance.ID); quitErr != nil {
@@ -1098,11 +976,7 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 		return true
 	}
 
-	// A reboot in flight is meant to be stopped for a moment, so counting it as
-	// unresponsive would mark a healthy guest impaired for doing what it was
-	// asked. Reboot bounds its own window; this only declines to judge it.
-	if err == nil && !qmpStatus.Running && m.Status(instance) == StateRunning &&
-		!instance.rebooting.Load() {
+	if err == nil && !qmpStatus.Running && m.Status(instance) == StateRunning {
 		err = fmt.Errorf("QMP reported non-running status %q", qmpStatus.Status)
 	}
 	if err != nil {
@@ -1138,6 +1012,15 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 // retrying a backend that is still down is nearly free, while a guest still
 // paused minutes after its backend returned is an outage of our own making.
 func (m *Manager) resumeAfterIOError(ctx context.Context, instance *VM) {
+	// A fenced guest's disk belongs to another node, and the heartbeat may have
+	// read Running just before the fence landed. Resuming it serves nobody.
+	var stopped bool
+	m.Inspect(instance, func(v *VM) { stopped = v.Status != StateRunning || VolumeFenced(v.Instance) })
+	if stopped {
+		slog.InfoContext(ctx, "Not resuming a guest that is fenced or no longer running", "instance", instance.ID)
+		return
+	}
+
 	var attempt int
 	m.UpdateState(instance.ID, func(v *VM) {
 		v.Health.IOErrorResumes++
@@ -1493,7 +1376,7 @@ type driveConfig struct {
 // with the mounted data volumes appended after its devices. Neither input is
 // modified, so composing again from the same base never accumulates entries.
 func directBootLaunchConfig(base Config, requests []EBSRequest, cpuCount int) (Config, error) {
-	if !IsMMIO(base.MachineType) {
+	if !IsMicrovm(base.MachineType) {
 		return Config{}, fmt.Errorf("direct-boot launch config needs a microvm base, got machine type %q", base.MachineType)
 	}
 	for _, r := range requests {
@@ -1595,13 +1478,13 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 
 		default:
 			// microvm has no PCIe root ports, so its data volumes take none.
-			mmio := IsMMIO(machineType)
+			microvm := IsMicrovm(machineType)
 			// A data (non-boot, non-EFI) volume. Allocate a stable hot-plug
 			// port when the persisted state predates port accounting, or the
 			// volume was attached at RunInstances time without one;
 			// freeHotplugEBSPort re-scans requests as mutated so far in this
 			// loop, so two unset data volumes in one call cannot collide.
-			if v.HotplugPort == 0 && !mmio {
+			if v.HotplugPort == 0 && !microvm {
 				port := freeHotplugEBSPort(requests)
 				if port == 0 {
 					return driveConfig{}, fmt.Errorf("no free EBS hot-plug port for volume %s", v.Name)
@@ -1630,9 +1513,12 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 
 			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})
 			cfg.Blockdevs = append(cfg.Blockdevs, blockdev)
-			if mmio {
+			switch {
+			case IsMMIO(machineType):
 				cfg.Devices = append(cfg.Devices, volumeMMIOBlkDevice(v.Name, nodeName, iothreadID))
-			} else {
+			case microvm:
+				cfg.Devices = append(cfg.Devices, volumeMicrovmPCIBlkDevice(v.Name, nodeName, iothreadID))
+			default:
 				cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, HotplugEBSBus(v.HotplugPort)))
 			}
 			// Deliberately no entry in cfg.Drives: the bare anonymous -drive

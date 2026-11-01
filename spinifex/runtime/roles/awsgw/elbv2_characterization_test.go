@@ -8,7 +8,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -30,32 +30,30 @@ import (
 
 // elbv2PipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as every principal's policy.
-func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admissionquota.Service) (*gateway.GatewayConfig, http.Handler) {
+func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admissionquota.Service) (*pipeline.Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
-		IAMService: &gwfix.PolicyIAM{
-			IAM: gwfix.IAM{
-				MasterKey: gwfix.MasterKey,
-				AccessKeys: map[string]*iamdomain.AccessKey{
-					gwfix.AccessKey: {
-						AccessKeyID:     gwfix.AccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       authzAccountID,
-						Status:          "Active",
-					},
+	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       authzAccountID,
+					Status:          "Active",
 				},
 			},
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	})
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}}))
 	withELBv2(withQuota(gw, quota))
 
 	r := chi.NewRouter()
@@ -149,7 +147,7 @@ func TestELBv2Pipeline_DescribeListenerAttributes_GoldenXML(t *testing.T) {
 
 func TestELBv2Pipeline_DescribeLoadBalancers_GoldenXML(t *testing.T) {
 	gw, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
-	calls := respondELBv2(t, gw.NATSConn, "elbv2.DescribeLoadBalancers",
+	calls := respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.DescribeLoadBalancers",
 		`{"LoadBalancers":[{"LoadBalancerName":"web","LoadBalancerArn":"`+pipelineLB("web", "abc")+`","Type":"application"}]}`)
 	resp := doRequest(app, signELBv2Request(t, "Action=DescribeLoadBalancers"))
 
@@ -206,9 +204,9 @@ func TestELBv2Pipeline_DescribeAccountLimits_GoldenXML(t *testing.T) {
 func TestELBv2Pipeline_CreateLoadBalancer_QuotaExceededStopsBeforeCreate(t *testing.T) {
 	quota := admissionquota.New(admissionquota.Limits{Enabled: true, LoadBalancers: 1}, nil)
 	gw, app := elbv2PipelineApp(t, allowAllTaggingDocs(), quota)
-	respondELBv2(t, gw.NATSConn, "elbv2.DescribeLoadBalancers",
+	respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.DescribeLoadBalancers",
 		`{"LoadBalancers":[{"LoadBalancerName":"web","LoadBalancerArn":"`+pipelineLB("web", "abc")+`"}]}`)
-	creates := respondELBv2(t, gw.NATSConn, "elbv2.CreateLoadBalancer", `{}`)
+	creates := respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.CreateLoadBalancer", `{}`)
 
 	resp := doRequest(app, signELBv2Request(t, "Action=CreateLoadBalancer&Name=second"))
 
@@ -219,8 +217,8 @@ func TestELBv2Pipeline_CreateLoadBalancer_QuotaExceededStopsBeforeCreate(t *test
 
 func TestELBv2Pipeline_CreateLoadBalancer_QuotaDisabledReachesCreate(t *testing.T) {
 	gw, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
-	respondELBv2(t, gw.NATSConn, "elbv2.DescribeLoadBalancers", `{"LoadBalancers":[]}`)
-	creates := respondELBv2(t, gw.NATSConn, "elbv2.CreateLoadBalancer", `{}`)
+	respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.DescribeLoadBalancers", `{"LoadBalancers":[]}`)
+	creates := respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.CreateLoadBalancer", `{}`)
 
 	resp := doRequest(app, signELBv2Request(t, "Action=CreateLoadBalancer&Name=second"))
 
@@ -234,7 +232,7 @@ func TestELBv2Pipeline_CreateLoadBalancer_QuotaDisabledReachesCreate(t *testing.
 func TestELBv2Pipeline_Authz_DeniedStopsBeforeHandler(t *testing.T) {
 	docs := scopedTaggingDocs("Allow", "elasticloadbalancing:DeleteLoadBalancer", pipelineLB("other", "zzz"))
 	gw, app := elbv2PipelineApp(t, docs, nil)
-	calls := respondELBv2(t, gw.NATSConn, "elbv2.DeleteLoadBalancer", `{}`)
+	calls := respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.DeleteLoadBalancer", `{}`)
 
 	resp := doRequest(app, signELBv2Request(t, "Action=DeleteLoadBalancer&LoadBalancerArn="+pipelineLB("prod", "abc")))
 
@@ -278,7 +276,7 @@ func TestELBv2Pipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) 
 
 // A nil NATS connection fails at the request-level gate, before dispatch.
 func TestELBv2Pipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
-	gw := withELBv2(withVerifier(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
+	gw := withELBv2(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 
 	req := elbv2Request(authzAccountID, "Action=DescribeLoadBalancers")
 	w := httptest.NewRecorder()

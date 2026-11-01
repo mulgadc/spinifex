@@ -1139,6 +1139,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"eks.UpdateAddon", handleNATSRequest(d.node, d.eksService.UpdateAddon), "spinifex-workers"},
 			natsSub{"eks.ListStagedAddonManifests", handleNATSRequest(d.node, d.eksService.ListStagedAddonManifests), "spinifex-workers"},
 			natsSub{"eks.GetRecoveryDirective", handleNATSRequest(d.node, d.eksService.GetRecoveryDirective), "spinifex-workers"},
+			natsSub{"eks.ListManagedWorkers", handleNATSRequest(d.node, d.eksService.ListManagedWorkers), "spinifex-workers"},
 			natsSub{"eks.SetRecoveryDirective", handleNATSRequest(d.node, d.eksService.SetRecoveryDirective), "spinifex-workers"},
 			natsSub{"eks.RestoreSnapshot", handleNATSRequest(d.node, d.eksService.RestoreSnapshot), "spinifex-workers"},
 			natsSub{"eks.TagResource", handleNATSRequest(d.node, d.eksService.TagResource), "spinifex-workers"},
@@ -1461,6 +1462,10 @@ func (d *Daemon) startLocal() error {
 				"remediation", "run scripts/update-nodes.sh or make reinstall")
 		}
 	}
+
+	// The kernel, QEMU and firmware a guest boots on are what a boot hang
+	// depends on, so record them before any guest is started.
+	vm.LogHostVirtStack()
 
 	// Recover local instance state from disk. Fatal on corruption — orphaned VMs.
 	if err := d.LoadState(); err != nil {

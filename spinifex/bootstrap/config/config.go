@@ -624,6 +624,20 @@ func (c Config) HasService(name string) bool {
 	return slices.Contains(services, name)
 }
 
+// NodesRunning returns, sorted, the name of every configured node that runs
+// service. It is the single definition of "which nodes run X" for callers that
+// must reach every process of one kind.
+func (cc *ClusterConfig) NodesRunning(service string) []string {
+	var nodes []string
+	for name, node := range cc.Nodes {
+		if node.HasService(service) {
+			nodes = append(nodes, name)
+		}
+	}
+	slices.Sort(nodes)
+	return nodes
+}
+
 // GetServices returns the configured service list, defaulting to AllServices.
 func (c Config) GetServices() []string {
 	if len(c.Services) == 0 {

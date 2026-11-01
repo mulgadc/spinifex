@@ -128,10 +128,18 @@ type VM struct {
 	// Manager hands out a stable *VM, so the lock is shared across calls.
 	attachMu sync.Mutex `json:"-"`
 
-	// rebooting marks the window in which this guest is expected to power
-	// itself off and be reset again. The heartbeat quits a guest it finds
-	// stopped in the shutdown run state, and a reboot passes through it.
+	// rebooting marks the window in which this guest is powered off and its
+	// QEMU replaced. The heartbeat leaves the guest alone for that window, and
+	// claiming the flag serialises reboots of one instance.
 	rebooting atomic.Bool `json:"-"`
+
+	// relaunchMu is held while a reboot swaps this guest's QEMU process, so a
+	// stop or terminate never unmounts volumes under a process being started.
+	relaunchMu sync.Mutex `json:"-"`
+
+	// qemuPID is the QEMU process this manager started and still owns. Its
+	// waiter reports a crash only while it is current; a reboot clears it.
+	qemuPID atomic.Int64 `json:"-"`
 
 	// DesiredState is the state this instance has been asked to be in, as
 	// opposed to Status, which is the state it is observed to be in.
@@ -415,10 +423,13 @@ type Config struct {
 	NoGraphic          bool   `json:"no_graphic"`
 	MachineType        string `json:"machine_type"`
 	ConsoleLogPath     string `json:"console_log_path,omitempty"`
-	SerialSocket       string `json:"serial_socket,omitempty"`
-	CPUType            string `json:"cpu_type"`
-	CPUCount           int    `json:"cpu_count"`
-	Memory             int    `json:"memory"`
+	// ConsoleLogAppend keeps the existing console log rather than truncating
+	// it, for a reboot that replaces the process.
+	ConsoleLogAppend bool   `json:"-"`
+	SerialSocket     string `json:"serial_socket,omitempty"`
+	CPUType          string `json:"cpu_type"`
+	CPUCount         int    `json:"cpu_count"`
+	Memory           int    `json:"memory"`
 
 	Drives    []Drive    `json:"drives"`
 	IOThreads []IOThread `json:"io_threads,omitempty"`
@@ -475,9 +486,9 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-name", fmt.Sprintf("guest=%s,debug-threads=on", cfg.Name))
 	}
 
-	// A guest that powers itself off pauses QEMU instead of ending it. That
-	// window is what a graceful reboot needs — process, taps and drives all
-	// survive the guest's clean shutdown. Every other path closes it with quit.
+	// A guest that powers itself off pauses QEMU instead of ending it, so the
+	// manager sees the clean shutdown as a run state before the process goes.
+	// Every path then closes it with quit.
 	args = append(args, "-action", "shutdown=pause")
 
 	if cfg.PIDFile != "" {
@@ -526,17 +537,17 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-display", "none")
 	}
 
-	if IsMMIO(cfg.MachineType) && cfg.ConsoleLogPath != "" {
+	if IsMicrovm(cfg.MachineType) && cfg.ConsoleLogPath != "" {
 		// microvm with isa-serial=on: the machine creates the ISA serial device.
 		// Use -chardev file so output is captured without a socket client, then
 		// -serial chardev:console0 wires it to the existing device (not a new one).
 		// Do NOT use -device isa-serial here — that adds a second device (ttyS1)
 		// while the kernel talks to ttyS0.
-		args = append(args, "-chardev", fmt.Sprintf("file,id=console0,path=%s", cfg.ConsoleLogPath))
+		args = append(args, "-chardev", fmt.Sprintf("file,id=console0,path=%s%s", cfg.ConsoleLogPath, appendOpt(",append", cfg.ConsoleLogAppend)))
 		args = append(args, "-serial", "chardev:console0")
 	} else if cfg.SerialSocket != "" && cfg.ConsoleLogPath != "" {
-		chardevOpts := fmt.Sprintf("socket,id=console0,path=%s,server=on,wait=off,logfile=%s",
-			cfg.SerialSocket, cfg.ConsoleLogPath)
+		chardevOpts := fmt.Sprintf("socket,id=console0,path=%s,server=on,wait=off,logfile=%s%s",
+			cfg.SerialSocket, cfg.ConsoleLogPath, appendOpt(",logappend", cfg.ConsoleLogAppend))
 		args = append(args, "-chardev", chardevOpts)
 		args = append(args, "-serial", "chardev:console0")
 	}
@@ -684,4 +695,13 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 	//cmd.Stderr = os.Stderr
 
 	return cmd, nil
+}
+
+// appendOpt renders a chardev append option, or nothing when off, so a
+// fresh launch keeps the command line it always had.
+func appendOpt(key string, on bool) string {
+	if !on {
+		return ""
+	}
+	return key + "=on"
 }

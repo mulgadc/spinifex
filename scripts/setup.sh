@@ -39,6 +39,7 @@ FIREWALL_PEERS="${FIREWALL_DIR}/peers.nft"
 FIREWALL_LOCAL="${FIREWALL_DIR}/local.nft"
 FIREWALL_OPEN="${FIREWALL_DIR}/open-ports.nft"
 FIREWALL_CUSTOM="${FIREWALL_DIR}/custom.nft"
+FIREWALL_TRACK="${FIREWALL_DIR}/conntrack.nft"
 FIREWALL_MODE_FILE="${SPINIFEX_FIREWALL_MODE_FILE:-${FIREWALL_DIR}/mode}"
 FIREWALL_APPLY="/usr/local/lib/spinifex/spinifex-firewall-apply"
 
@@ -749,6 +750,28 @@ RULES
     $SUDO chmod 0644 "$FIREWALL_RULES"
     info "  $FIREWALL_RULES"
 
+    # The kernel only tracks connections while some rule uses conntrack. Without
+    # this table a disarmed node tracks nothing, and a flow opened then (OVN's
+    # RAFT links) is first seen mid-stream at arm time, from whichever end speaks
+    # first. Seen from the server, that is a new flow to an ephemeral port, and
+    # the policy drops it. Kept loaded whether or not the policy is armed.
+    $SUDO tee "$FIREWALL_TRACK" > /dev/null << 'TRACK'
+# Spinifex connection tracking. Managed by scripts/setup.sh — edits are overwritten.
+# Accepts everything and filters nothing; it exists so conntrack keeps running
+# while inet spinifex_filter is not loaded. Never delete it on a running node.
+table inet spinifex_conntrack
+delete table inet spinifex_conntrack
+
+table inet spinifex_conntrack {
+    chain input {
+        type filter hook input priority filter; policy accept;
+        ct state invalid counter
+    }
+}
+TRACK
+    $SUDO chmod 0644 "$FIREWALL_TRACK"
+    info "  $FIREWALL_TRACK"
+
     # Host-local facts the policy needs that the daemon has no view of. Separate
     # from peers.nft because the daemon rewrites that file and would drop this.
     # Refreshed on every setup.sh run, so an sshd port change is picked up by an
@@ -816,6 +839,7 @@ set -eu
 RULES="/etc/spinifex/firewall/spinifex.nft"
 PEERS="/etc/spinifex/firewall/peers.nft"
 OPEN="/etc/spinifex/firewall/open-ports.nft"
+TRACK="/etc/spinifex/firewall/conntrack.nft"
 
 # 0 is a sentinel that keeps the set non-empty, because nft rejects an empty
 # one. No packet can match it: the kernel has no destination port 0.
@@ -837,11 +861,31 @@ write_open_ports() {
 # Deliberately ahead of the policy-file check below: turning the firewall off is
 # the recovery path, and refusing to run it because the policy is missing leaves
 # an operator with a node they can neither arm nor disarm.
+#
+# The tracking table goes in in the same transaction as the delete, so conntrack
+# never stops: a flow that opens while disarmed is then tracked from its SYN,
+# and re-arming does not drop it. The boot unit stays enabled to reload it.
 if [ "${1:-}" = "disable" ]; then
-    nft delete table inet spinifex_filter 2>/dev/null || true
+    if [ -r "$TRACK" ]; then
+        printf 'include "%s"\ntable inet spinifex_filter\ndelete table inet spinifex_filter\n' "$TRACK" | nft -f - \
+            || nft delete table inet spinifex_filter 2>/dev/null || true
+    else
+        nft delete table inet spinifex_filter 2>/dev/null || true
+    fi
     rm -f "$PEERS"
-    systemctl disable --now spinifex-firewall.service >/dev/null 2>&1 || true
     exit 0
+fi
+
+# track loads only the tracking table. boot is the unit's start: tracking on
+# every node, and the policy on top only where the daemon has written peers.
+if [ "${1:-}" = "track" ] || [ "${1:-}" = "boot" ]; then
+    if [ -r "$TRACK" ]; then
+        nft -f "$TRACK"
+    elif [ "$1" = "track" ]; then
+        echo "no tracking table at $TRACK" >&2
+        exit 1
+    fi
+    if [ "$1" = "track" ] || [ ! -r "$PEERS" ]; then exit 0; fi
 fi
 
 # Every remaining verb writes the policy, so it has to exist. Failing here
@@ -917,10 +961,9 @@ if [ "${1:-}" = "set-peers" ]; then
     fi
     rm -f "$tmp" "$bak"
 
-    # The policy is loaded, so make it survive a reboot too. `disable` turns this
-    # unit off, and forming a cluster means disabling the firewall on every node
-    # first; without this, re-arming would look complete while silently leaving
-    # the node bare after its next boot. Idempotent and quiet in the normal case.
+    # The policy is loaded, so make it survive a reboot too. An older helper's
+    # `disable` turned this unit off; without this, re-arming such a node would
+    # look complete while leaving it bare after its next boot. Idempotent.
     systemctl enable spinifex-firewall.service >/dev/null 2>&1 || true
     exit 0
 fi
@@ -936,6 +979,13 @@ APPLY
     $SUDO chown root:root "$FIREWALL_APPLY"
     $SUDO chmod 0755 "$FIREWALL_APPLY"
     info "  $FIREWALL_APPLY"
+
+    # Now, not at the next boot: a fresh install forms its cluster before then,
+    # and an upgrade must start tracking before the daemon next arms. A chroot
+    # would load it into the build host's kernel.
+    if [ "${ISO_BUILD:-0}" != "1" ]; then
+        $SUDO "$FIREWALL_APPLY" track || warn "  Could not load $FIREWALL_TRACK: arming later may drop live cluster connections"
+    fi
 
     # Say which state ssh is in either way. A node whose allowlist was never
     # narrowed reads as configured otherwise, and that is the whole risk here.
@@ -964,6 +1014,9 @@ RESOLV_CONF="${SPINIFEX_RESOLV_CONF:-/etc/resolv.conf}"
 RESOLVED_STUB=/run/systemd/resolve/stub-resolv.conf
 # node-reset.sh keeps /var/lib/spinifex-reset, so the copy survives until uninstall.
 RESOLV_CONF_SAVED="${SPINIFEX_RESOLV_CONF_SAVED:-/var/lib/spinifex-reset/resolv.conf.orig}"
+# NetworkManager started while resolv.conf is a plain file rewrites it on its
+# next DNS update, replacing the stub link; this drop-in stops that.
+NM_DNS_DROPIN="${SPINIFEX_NM_DNS_DROPIN:-/etc/NetworkManager/conf.d/90-spinifex-dns.conf}"
 
 # systemd-resolved ships resolvconf as a link to resolvectl, which only works
 # while resolved runs, so that one is not a resolvconf backend.
@@ -1016,8 +1069,50 @@ dns_handover_failed() {
     fatal "Host DNS through systemd-resolved does not work: $1.
     To put host DNS back as it was before this installer:
       sudo systemctl disable --now systemd-resolved
+      sudo rm -f $NM_DNS_DROPIN
       sudo cp -a --remove-destination $RESOLV_CONF_SAVED $RESOLV_CONF
       sudo systemctl restart NetworkManager"
+}
+
+# Prints the rc-manager NetworkManager would use if it is not unmanaged, which
+# means a file read after the Spinifex drop-in overrides it.
+nm_rc_manager_override() {
+    local config
+    config=$($SUDO NetworkManager --print-config) || return 1
+    printf '%s\n' "$config" | awk -F= '
+        /^\[/ { main = ($0 == "[main]"); next }
+        main && $1 == "rc-manager" { rc = $2 }
+        END { if (rc != "unmanaged") print "rc-manager=" (rc == "" ? "symlink" : rc) }'
+}
+
+# Writes the NetworkManager drop-in and checks nothing overrides it. Returns 1
+# when it was already in place.
+install_nm_dns_dropin() {
+    local want override changed=1
+    want=$(printf '[main]\ndns=systemd-resolved\nrc-manager=unmanaged')
+    if [ "$(cat "$NM_DNS_DROPIN" 2>/dev/null)" != "$want" ]; then
+        $SUDO mkdir -p "$(dirname "$NM_DNS_DROPIN")"
+        printf '%s\n' "$want" | $SUDO tee "$NM_DNS_DROPIN" > /dev/null || dns_handover_failed "cannot write $NM_DNS_DROPIN"
+        info "  $NM_DNS_DROPIN: NetworkManager leaves $RESOLV_CONF alone"
+        changed=0
+    fi
+    override=$(nm_rc_manager_override) || dns_handover_failed "cannot read NetworkManager's configuration with 'NetworkManager --print-config'"
+    if [ -n "$override" ]; then
+        dns_handover_failed "NetworkManager reads $override from a file after $NM_DNS_DROPIN, so it would replace the $RESOLV_CONF link. Remove that setting ('NetworkManager --print-config' shows the files it reads) and re-run this installer"
+    fi
+    return "$changed"
+}
+
+# Links the stub and checks the link is still there a second later, relinking a
+# bounded number of times in case a write NetworkManager had queued lands first.
+link_resolved_stub() {
+    local i
+    for i in 1 2 3 4 5; do
+        $SUDO ln -sfn "$RESOLVED_STUB" "$RESOLV_CONF"
+        sleep 1
+        [ "$(readlink "$RESOLV_CONF")" = "$RESOLVED_STUB" ] && return 0
+    done
+    dns_handover_failed "$RESOLV_CONF is not a link to $RESOLVED_STUB 5 seconds after linking it, so something keeps rewriting it"
 }
 
 # Checks resolved has upstream servers and still resolves the package
@@ -1053,8 +1148,13 @@ hand_dns_to_resolved() {
     [ "${ISO_BUILD:-0}" = "1" ] && return 0
 
     if systemctl is-active --quiet systemd-resolved.service; then
-        # A handover made by an earlier run is checked again on every run.
+        # A handover made by an earlier run is checked again, and repaired, on
+        # every run: installs before the drop-in could lose the link.
         if [ -e "$RESOLV_CONF_SAVED" ] || [ -L "$RESOLV_CONF_SAVED" ]; then
+            if install_nm_dns_dropin && systemctl is-active --quiet NetworkManager.service; then
+                $SUDO systemctl reload NetworkManager.service || dns_handover_failed "NetworkManager did not reload"
+            fi
+            [ "$(readlink "$RESOLV_CONF")" = "$RESOLVED_STUB" ] || link_resolved_stub
             check_resolved_dns
         fi
         return 0
@@ -1081,10 +1181,15 @@ hand_dns_to_resolved() {
         $SUDO cp -a "$RESOLV_CONF" "$RESOLV_CONF_SAVED" || fatal "Cannot save $RESOLV_CONF to $RESOLV_CONF_SAVED"
         info "  saved $RESOLV_CONF to $RESOLV_CONF_SAVED"
     fi
+    install_nm_dns_dropin || true
     $SUDO systemctl enable --now systemd-resolved.service > /dev/null 2>&1 \
         || dns_handover_failed "systemd-resolved did not start"
     $SUDO systemctl restart NetworkManager.service || dns_handover_failed "NetworkManager did not restart"
-    $SUDO ln -sfn "$RESOLVED_STUB" "$RESOLV_CONF"
+    # Best effort: a link with no DHCP server can hold startup past the timeout.
+    if command -v nm-online > /dev/null; then
+        nm-online -s -q --timeout=15 || true
+    fi
+    link_resolved_stub
     check_resolved_dns
     info "  $RESOLV_CONF -> $RESOLVED_STUB"
 }
@@ -1926,9 +2031,9 @@ EOF
     # takes effect once enabled) — without this the JetStream ENOSPC-latch
     # watchdog is inert and a full disk requires a manual restart forever.
     $SUDO systemctl enable --now spinifex-nats-watchdog.timer
-    # Enabled, not started: its ConditionPathExists holds it inert until the
-    # daemon writes a peer file, so this only decides that a node which has one
-    # gets the policy back at boot, before any service opens a socket.
+    # Enabled on every node: at boot it loads connection tracking everywhere,
+    # and the policy only on a node whose daemon has written a peer file, so it
+    # is back before any service opens a socket.
     $SUDO systemctl enable spinifex-firewall.service
     info "Systemd units installed and enabled (per-service users)"
 }

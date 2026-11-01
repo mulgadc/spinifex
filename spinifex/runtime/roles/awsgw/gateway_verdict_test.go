@@ -1,7 +1,8 @@
 package awsgw_test
 
 import (
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
 	"net/http"
@@ -14,7 +15,7 @@ import (
 )
 
 func TestGetService(t *testing.T) {
-	gw := withEC2Verifier(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	withServices(gw, taggingRegistration(nil), iamRegistration(gw), ec2Registration(gw))
 
 	tests := []struct {
@@ -76,7 +77,7 @@ func TestGetService(t *testing.T) {
 }
 
 func TestRequest_NoServiceContext(t *testing.T) {
-	gw := withEC2Verifier(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	w := httptest.NewRecorder()
 

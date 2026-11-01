@@ -26,6 +26,7 @@ type FakePuller struct {
 	Waited   []string
 	Removed  []string
 	OnRun    func(string, RunSpec) (string, error)
+	OnWait   func(containerID string) // called, unlocked, before Wait returns
 
 	// Stop bookkeeping: StopTimeouts pairs the container ID with the timeout it
 	// was stopped with, in call order, so a test can assert both the target and
@@ -105,7 +106,11 @@ func (f *FakePuller) Run(_ context.Context, id string, spec RunSpec) (string, er
 func (f *FakePuller) Wait(_ context.Context, containerID string) (RunStatus, error) {
 	f.mu.Lock()
 	f.Waited = append(f.Waited, containerID)
+	onWait := f.OnWait
 	f.mu.Unlock()
+	if onWait != nil {
+		onWait(containerID)
+	}
 	return RunStatus{ExitCode: f.WaitCode}, f.WaitErr
 }
 

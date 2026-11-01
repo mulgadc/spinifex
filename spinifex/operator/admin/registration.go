@@ -55,6 +55,7 @@ type Deps struct {
 	Quota             *quota.Service
 	ExpectedNodes     int
 	NodeIDs           []string
+	GatewayNodeIDs    []string
 	BucketStore       accountteardown.BucketStore
 	SignupMaxAccounts int
 }
@@ -93,6 +94,7 @@ func NewRegistration(deps Deps) dispatch.Registration {
 		ResolveAction: resolveAction,
 		Dispatch:      deps.dispatch,
 		Errors:        dispatch.ErrorEnvelopeXML,
+		Traits:        dispatch.ServiceTraits{XMLErrorShape: dispatch.XMLErrorShapeEC2},
 		Inventory:     dispatch.Inventory{Registered: ActionNames()},
 	}
 }

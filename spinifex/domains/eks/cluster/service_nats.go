@@ -129,6 +129,10 @@ func (s *NATSEKSService) ListStagedAddonManifests(ctx context.Context, input *Li
 	return natsmsg.NATSRequest[ListStagedAddonManifestsOutput](ctx, s.natsConn, "eks.ListStagedAddonManifests", input, defaultTimeout, accountID)
 }
 
+func (s *NATSEKSService) ListManagedWorkers(ctx context.Context, input *ListManagedWorkersInput, accountID string) (*ListManagedWorkersOutput, error) {
+	return natsmsg.NATSRequest[ListManagedWorkersOutput](ctx, s.natsConn, "eks.ListManagedWorkers", input, defaultTimeout, accountID)
+}
+
 func (s *NATSEKSService) UpdateAddon(ctx context.Context, input *eks.UpdateAddonInput, accountID string) (*eks.UpdateAddonOutput, error) {
 	return natsmsg.NATSRequest[eks.UpdateAddonOutput](ctx, s.natsConn, "eks.UpdateAddon", input, defaultTimeout, accountID)
 }

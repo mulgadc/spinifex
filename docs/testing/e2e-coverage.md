@@ -29,6 +29,7 @@ The largest suite, 27 top-level tests. Notable entry points:
 - `TestInstanceMetadata` — IMDS from inside a guest.
 - **`TestIMDSDatapathSurvivesVswitchdRestart`** restarts `ovs-vswitchd` under a guest with an Elastic IP, once through systemd and once with SIGKILL. After each, the guest must answer over its EIP and fetch its instance ID through IMDSv2 within 60 seconds, and `br-imds` must hold all 7 of the guest's own flows. It is sequential because it takes the whole node's datapath down.
 - `TestStopStart`, `TestEarlyRebootLiveness`, `TestGuestChurnDurability`, `TestSnapshotLifecycle`, `TestSnapshotBackedLaunch`, `TestCreateImage`, `TestVolumeLifecycle`, `TestSpotInstanceLifecycle`, `TestLaunchTemplateBoot`.
+- **`TestRebootLoop`** is opt-in and skipped in a whole-suite run. Name it in `-test.run`, or set `SPINIFEX_REBOOT_LOOP_ROUNDS` (default 10), and it reboots one fresh guest through the API that many times and then once from inside, requiring a new boot ID every time.
 - `TestNegativeErrorPaths` — the `8a`–`8t` AWS error-shape cases (malformed AMI ID, invalid instance type, volume in use, detach-root forbidden, unknown or malformed instance IDs on the lifecycle verbs, and so on).
 - **`TestKVReplication`** — the single-node half of the KV replication policy, and it is not the multi-node assertion with a smaller number in it. On one node one replica per bucket is the correct answer rather than the defect, so what it proves is the opposite: that nothing declared a replica count this deployment cannot place, that `spx admin kv replicas` exits 0 and reports `WANT 1`, and that `--repair` run twice against a cluster with nothing to repair changes no bucket's replica count and leaves every bucket serving. The multi-node suites cannot cover any of that, because on three nodes the unplaceable count is the right one. It lives here rather than in its own suite so it runs in every single-node nightly cell, across every host and network permutation.
 
@@ -122,6 +123,10 @@ Internal and internet-facing ALB and NLB, HTTPS listeners, listener rules, `Modi
 Unhealthy-target routing: an NLB with an HTTP health check on a TCP target group stops sending traffic to a target that fails it while still accepting TCP, sends traffic again once it recovers, and fails open when every target is unhealthy.
 An ALB whose targets all fail their health check keeps serving from them instead of answering 503.
 
+`TestInternalALBPrivateSubnet` launches an internal ALB in a private subnet of a non-default VPC with no internet gateway and no public route.
+The load balancer must reach active with a healthy target, which needs the owner stamp on its ENI to resolve, and a client inside the VPC must be served by it on every request.
+The client reports on its serial console because the runner has no route into the VPC.
+
 ### `eks`, `ecs`, `ecr` — container services
 
 `eks`: cluster create/delete, access entries, addon delivery, `GetToken`, kubeconfig artifacts, the EBS CSI volume path, an IRSA web-identity exchange under the stock AWS trust policy (`StringEquals` on the issuer host-path `:sub`/`:aud`, a mismatched `:sub` denied with `AccessDenied`, a `StringLike` `:sub` granted), and an IRSA pod wired with a projected SA token. Worker IMDS is covered too: a managed nodegroup worker reports IMDSv2 required with hop limit 2, a pod with no IRSA resolves to the node role through IMDS, and a nodegroup built from a launch template takes the template's metadata options. Control-plane isolation is covered as well: no control-plane host registers as a Node, a DaemonSet tolerating every taint runs on workers only, metrics-server is Ready, and logs work for every kube-system pod. `ecs`: clusters, container instances, the three network modes (`awsvpc`, `bridge`, `host`), task-role credentials fetched from the container credentials endpoint, a service behind an ELB, and ENI release on terminate. `ecr`: control-plane CRUD plus a real OCI data plane — docker login/build/push/pull round trips, multi-layer images, and raw blob HTTP.
@@ -135,7 +140,7 @@ The create/describe/connect path against a live cluster: a DB VM that actually b
 - **`storagefault`** — what a guest does when its storage backend stops answering, and what stop/start does when the seal failed. **The claim is about corruption, not availability.** SIGSTOPs a cluster-wide service, so it always runs last and in its own cell. Three-node, because the RS(2,1) shard floor and cross-node takeover after a failed seal do not exist on one node.
 - **`partialblock`** — concurrent sub-block writes to the same block surviving a cold reread through NBD from a real guest.
 - **`storagegrowth`** — volume growth and image pull. Requires `external_mode=pool`; skips on a nat env, which has no EIP and therefore no guest SSH.
-- **`reboot`** — a slow guest waited for and keeping what it wrote, and a wedged guest reset once its budget expires. Proves a real reboot by requiring a *new* boot ID.
+- **`reboot`** — a slow guest waited for and keeping what it wrote, and a wedged guest forced off and relaunched once its budget expires. Proves a real reboot by requiring a *new* boot ID.
 - **`diskperf`** — guest disk performance gate, pinned fio profile on a dedicated blank volume. Also requires `external_mode=pool` for guest SSH.
 
 ### Other

@@ -99,7 +99,7 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 	authorizeOK := t.Run("Authorize", func(t *testing.T) {
 		harness.Step(t, "authorizing tcp/22 ingress, expecting reachability")
 		harness.AuthorizeSSHIngress(t, fix.AWS, sgID)
-		require.Truef(t, sshHealth.TryReady(pubIP, 22, keyPath, harness.SSHReadyBudget),
+		require.Truef(t, sshHealth.TryReady(t, pubIP, 22, keyPath, harness.SSHReadyBudget),
 			"tcp/22 to %s never became reachable after authorizing ingress — "+
 				"default subnet egress/IGW datapath is broken", pubIP)
 

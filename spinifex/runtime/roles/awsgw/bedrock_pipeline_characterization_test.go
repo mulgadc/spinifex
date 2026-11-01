@@ -9,7 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -102,9 +102,9 @@ func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statemen
 	if mutate != nil {
 		mutate(env)
 	}
-	cfg := &gateway.GatewayConfig{DisableLogging: true, Region: gwfix.Region, NATSConn: nc, IAMService: svc}
+	cfg := gwfix.WithDeps(&pipeline.Config{DisableLogging: true, Region: gwfix.Region}, gwfix.Deps{NATS: nc, IAM: svc})
 	if env.NoNATS {
-		cfg.NATSConn = nil
+		gwfix.DepsOf(cfg).NATS = nil
 	}
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(ochreawsapi.NewRegistration(env.Deps)))

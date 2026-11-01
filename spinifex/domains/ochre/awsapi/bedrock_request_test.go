@@ -71,14 +71,14 @@ type grantAllModels struct{}
 
 func (grantAllModels) Granted(_ context.Context, _, _ string) (bool, error) { return true, nil }
 
-// newBedrockRequestGateway builds a GatewayConfig with a real NATS connection
+// newBedrockRequestGateway builds a pipeline.Config with a real NATS connection
 // (satisfying Bedrock_Request/BedrockRuntime_Request's nil-check only — no
 // NATS subject handling is required for these routes), an allow-everything
 // IAMService so the policy gate passes, BedrockEndpoints pinned at the given
 // vLLM stub, and every model granted — access is deny-by-default, so without a
 // resolver these routes would all return before reaching the code under test.
 // ListFoundationModels/GetFoundationModel read the weights resolver through a
-// package-level setter rather than a GatewayConfig field, so it is installed
+// package-level setter rather than a pipeline.Config field, so it is installed
 // here and reset on cleanup.
 func newBedrockRequestGateway(t *testing.T, vllmURL string) *testGateway {
 	t.Helper()

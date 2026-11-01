@@ -1550,3 +1550,16 @@ func TestLoadConfig_NorthstarNameservers(t *testing.T) {
 		})
 	}
 }
+
+func TestNodesRunning(t *testing.T) {
+	c := ClusterConfig{Nodes: map[string]Config{
+		"b": {Services: []string{"nats", "awsgw"}},
+		"a": {Services: []string{"daemon"}},
+		"c": {},
+		"d": {Services: []string{"awsgw", "daemon"}},
+	}}
+	// An empty service list means every service, so c runs awsgw too.
+	assert.Equal(t, []string{"b", "c", "d"}, c.NodesRunning("awsgw"))
+	assert.Equal(t, []string{"a", "c", "d"}, c.NodesRunning("daemon"))
+	assert.Empty(t, c.NodesRunning("nonesuch"))
+}

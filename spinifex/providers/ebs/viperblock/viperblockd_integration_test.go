@@ -19,6 +19,7 @@ import (
 
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/internal/testkit/deadpid"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -273,7 +274,7 @@ func TestIntegration_EBSUnmountRequest(t *testing.T) {
 			Name:   "vol-test-unmount",
 			Port:   10809,
 			Socket: "/tmp/vol-test-unmount.sock",
-			PID:    99999, // Fake PID that doesn't exist
+			PID:    deadpid.PID, // Fake PID that doesn't exist
 		},
 	}
 
@@ -383,7 +384,7 @@ func TestIntegration_EBSUnmountRetryAfterCompletedSealReportsNotFound(t *testing
 
 	cfg := setupTestConfig(t, natsURL)
 	cfg.MountedVolumes = []MountedVolume{
-		{Name: "vol-retry-unmount", PID: 99999},
+		{Name: "vol-retry-unmount", PID: deadpid.PID},
 	}
 
 	startTestService(t, cfg)
@@ -441,7 +442,7 @@ func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
 		return fmt.Errorf("seal %s: injected backend failure", volumeName)
 	}
 	cfg.MountedVolumes = []MountedVolume{
-		{Name: "vol-seal-fail", PID: 99999},
+		{Name: "vol-seal-fail", PID: deadpid.PID},
 	}
 
 	startTestService(t, cfg)
@@ -493,7 +494,7 @@ func TestIntegration_EBSUnmountReceiptSkipsFallbackSeal(t *testing.T) {
 		return nil
 	}
 	cfg.MountedVolumes = []MountedVolume{
-		{Name: "vol-clean-receipt", PID: 99999},
+		{Name: "vol-clean-receipt", PID: deadpid.PID},
 	}
 
 	startTestService(t, cfg)
@@ -544,7 +545,7 @@ func TestIntegration_EBSUnmountStateDirSealsRegardlessOfReceipt(t *testing.T) {
 		return nil
 	}
 	cfg.MountedVolumes = []MountedVolume{
-		{Name: "vol-state-and-receipt", PID: 99999},
+		{Name: "vol-state-and-receipt", PID: deadpid.PID},
 	}
 
 	startTestService(t, cfg)
@@ -586,7 +587,7 @@ func TestIntegration_EBSUnmountAuxVolumeNeverSeals(t *testing.T) {
 		return nil
 	}
 	cfg.MountedVolumes = []MountedVolume{
-		{Name: "vol-aux-efi", PID: 99999},
+		{Name: "vol-aux-efi", PID: deadpid.PID},
 	}
 
 	startTestService(t, cfg)
@@ -628,7 +629,7 @@ func TestIntegration_EBSUnmountNoStateNoReceiptWarns(t *testing.T) {
 		return nil
 	}
 	cfg.MountedVolumes = []MountedVolume{
-		{Name: "vol-no-state-no-receipt", PID: 99999},
+		{Name: "vol-no-state-no-receipt", PID: deadpid.PID},
 	}
 
 	startTestService(t, cfg)
@@ -812,7 +813,7 @@ func TestIntegration_ServiceGracefulShutdown(t *testing.T) {
 		{
 			Name: "vol-shutdown-test",
 			Port: 10809,
-			PID:  99999, // Fake PID
+			PID:  deadpid.PID, // Fake PID
 		},
 	}
 
@@ -851,7 +852,7 @@ func TestIntegration_GenericTopicRouting(t *testing.T) {
 	cfg := setupTestConfig(t, natsURL)
 	cfg.NodeName = "" // Single-node / generic mode
 	cfg.MountedVolumes = []MountedVolume{
-		{Name: "vol-generic", PID: 99999},
+		{Name: "vol-generic", PID: deadpid.PID},
 	}
 
 	startTestService(t, cfg)

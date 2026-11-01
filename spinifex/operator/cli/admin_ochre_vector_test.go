@@ -289,7 +289,7 @@ func TestRunOchreVectorIndexCreate_PrintsRecord(t *testing.T) {
 		Index: ochrevector.Record{ID: testIndexID, State: ochrevector.StateReady},
 	}}, nil)
 
-	cmd := *ochreVectorIndexCreateCmd
+	cmd := copyCmd(t, ochreVectorIndexCreateCmd)
 	require.NoError(t, cmd.Flags().Set("name", "kb1"))
 	require.NoError(t, cmd.Flags().Set("dimension", "768"))
 
@@ -304,7 +304,7 @@ func TestRunOchreVectorIndexCreate_PrintsRecord(t *testing.T) {
 func TestRunOchreVectorIndexCreate_ConnectFailureExits1(t *testing.T) {
 	withVectorService(t, nil, errors.New("dial nats: connection refused"))
 
-	cmd := *ochreVectorIndexCreateCmd
+	cmd := copyCmd(t, ochreVectorIndexCreateCmd)
 	require.NoError(t, cmd.Flags().Set("name", "kb1"))
 	require.NoError(t, cmd.Flags().Set("dimension", "768"))
 
@@ -343,7 +343,7 @@ func TestRunOchreVectorIngest_PrintsJobID(t *testing.T) {
 		Job: ochrevector.JobRecord{ID: "job-abc", IndexID: testIndexID, State: ochrevector.JobStatePending},
 	}}, nil)
 
-	cmd := *ochreVectorIngestCmd
+	cmd := copyCmd(t, ochreVectorIngestCmd)
 	require.NoError(t, cmd.Flags().Set("index", testIndexID))
 	require.NoError(t, cmd.Flags().Set("bucket", "docs"))
 
@@ -373,7 +373,7 @@ func TestRunOchreVectorQuery_PrintsTable(t *testing.T) {
 		{Chunk: "hello world", SourceKey: "docs/a.txt", Score: 0.9},
 	}}, nil)
 
-	cmd := *ochreVectorQueryCmd
+	cmd := copyCmd(t, ochreVectorQueryCmd)
 	require.NoError(t, cmd.Flags().Set("index", testIndexID))
 	require.NoError(t, cmd.Flags().Set("text", "hello"))
 
@@ -388,7 +388,7 @@ func TestRunOchreVectorQuery_PrintsTable(t *testing.T) {
 func TestRunOchreVectorQuery_ConnectFailureExits1(t *testing.T) {
 	withVectorService(t, nil, errors.New("dial nats: connection refused"))
 
-	cmd := *ochreVectorQueryCmd
+	cmd := copyCmd(t, ochreVectorQueryCmd)
 	require.NoError(t, cmd.Flags().Set("index", testIndexID))
 	require.NoError(t, cmd.Flags().Set("text", "hello"))
 
@@ -465,7 +465,7 @@ func TestRunOchreVectorBackup_PrintsSuccess(t *testing.T) {
 		return &ochrevector.BackupAccountResponse{ObjectKey: testBackupAccountID + "/backup.sql.gz", SizeBytes: 1024}, nil
 	})
 
-	cmd := *ochreVectorBackupCmd
+	cmd := copyCmd(t, ochreVectorBackupCmd)
 	require.NoError(t, cmd.Flags().Set("account", testBackupAccountID))
 
 	var out string
@@ -481,7 +481,7 @@ func TestRunOchreVectorBackup_ErrorExits1(t *testing.T) {
 		return nil, errors.New("ochrevector: appliance not available")
 	})
 
-	cmd := *ochreVectorBackupCmd
+	cmd := copyCmd(t, ochreVectorBackupCmd)
 	require.NoError(t, cmd.Flags().Set("account", testBackupAccountID))
 
 	code := withOchreExitCapture(t, func() { runOchreVectorBackup(&cmd, nil) })
@@ -491,7 +491,7 @@ func TestRunOchreVectorBackup_ErrorExits1(t *testing.T) {
 func TestRunOchreVectorRestore_PrintsSuccess(t *testing.T) {
 	withRestoreAccount(t, func(context.Context, string, string) error { return nil })
 
-	cmd := *ochreVectorRestoreCmd
+	cmd := copyCmd(t, ochreVectorRestoreCmd)
 	require.NoError(t, cmd.Flags().Set("account", testBackupAccountID))
 	require.NoError(t, cmd.Flags().Set("from", testBackupAccountID+"/backup.sql.gz"))
 
@@ -508,7 +508,7 @@ func TestRunOchreVectorRestore_ErrorExits1(t *testing.T) {
 		return errors.New("ochrevector: restore requires an object key")
 	})
 
-	cmd := *ochreVectorRestoreCmd
+	cmd := copyCmd(t, ochreVectorRestoreCmd)
 	require.NoError(t, cmd.Flags().Set("account", testBackupAccountID))
 	require.NoError(t, cmd.Flags().Set("from", testBackupAccountID+"/backup.sql.gz"))
 

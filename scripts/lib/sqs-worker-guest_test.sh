@@ -13,6 +13,7 @@ set -eu
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 LIB=${SQSW_GUEST_LIB:-"$ROOT/build/microvm/sqs-worker/sqs-worker-lib.sh"}
 INITTAB="$ROOT/build/microvm/sqs-worker/inittab"
+GUEST_INIT="$ROOT/build/microvm/sqs-worker/init.sh"
 TMP=$(mktemp -d)
 CHILDREN=""
 cleanup() {
@@ -108,6 +109,11 @@ shutdown_step() {
 check "init respawns the store and readiness steps rather than running them once" \
     'grep -qx "::respawn:/usr/local/lib/sqs-worker/sqs-worker-store" "$INITTAB" &&
      grep -qx "::respawn:/usr/local/lib/sqs-worker/sqs-worker-ready" "$INITTAB" && ! grep -q "::once:" "$INITTAB"'
+# The store binds 127.0.0.1, which a fresh guest kernel leaves down.
+lo_at=$(grep -n -x "ip link set lo up" "$GUEST_INIT" | cut -d: -f1 | head -n 1)
+init_at=$(grep -n -x "exec /sbin/init" "$GUEST_INIT" | cut -d: -f1 | head -n 1)
+check "guest init brings loopback up before init starts the store" \
+    '[ -n "$lo_at" ] && [ -n "$init_at" ] && [ "$lo_at" -lt "$init_at" ]'
 
 # --- The store is prepared only after boot settled the receipt key ---
 fresh prepare-ok; rm -f "$T/run/store.conf"

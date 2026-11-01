@@ -147,8 +147,6 @@ func containerDefsFromAWS(in []*ecs.ContainerDefinition) []taskdefinition.Contai
 				Value:     aws.StringValue(sc.Value),
 			})
 		}
-		def.MountPointsSet = c.MountPoints != nil
-		def.VolumesFromSet = c.VolumesFrom != nil
 		if lp := c.LinuxParameters; lp != nil {
 			def.InitProcessEnabled = lp.InitProcessEnabled
 			if lp.Capabilities != nil {
@@ -175,14 +173,18 @@ func runtimePlatformFromAWS(in *ecs.RuntimePlatform) *taskdefinition.RuntimePlat
 	}
 }
 
-func containerToAWS(c taskdefinition.Container) *ecs.ContainerDefinition {
+// containerToAWS fills the defaults AWS returns for omitted fields: cpu 0,
+// empty mountPoints/volumesFrom/systemControls, protocol tcp, and under awsvpc
+// a hostPort equal to the containerPort.
+func containerToAWS(c taskdefinition.Container, networkMode string) *ecs.ContainerDefinition {
 	cd := &ecs.ContainerDefinition{
-		Name:      aws.String(c.Name),
-		Image:     aws.String(c.Image),
-		Essential: aws.Bool(c.Essential),
-	}
-	if c.CPU > 0 {
-		cd.Cpu = aws.Int64(int64(c.CPU))
+		Name:           aws.String(c.Name),
+		Image:          aws.String(c.Image),
+		Essential:      aws.Bool(c.Essential),
+		Cpu:            aws.Int64(int64(c.CPU)),
+		MountPoints:    []*ecs.MountPoint{},
+		VolumesFrom:    []*ecs.VolumeFrom{},
+		SystemControls: []*ecs.SystemControl{},
 	}
 	if c.MemoryMiB > 0 {
 		cd.Memory = aws.Int64(int64(c.MemoryMiB))
@@ -203,9 +205,14 @@ func containerToAWS(c taskdefinition.Container) *ecs.ContainerDefinition {
 		cd.Environment = append(cd.Environment, &ecs.KeyValuePair{Name: aws.String(k), Value: aws.String(v)})
 	}
 	for _, p := range c.PortMappings {
-		pm := &ecs.PortMapping{ContainerPort: aws.Int64(int64(p.ContainerPort))}
+		pm := &ecs.PortMapping{
+			ContainerPort: aws.Int64(int64(p.ContainerPort)),
+			Protocol:      aws.String(ecs.TransportProtocolTcp),
+		}
 		if p.HostPort > 0 {
 			pm.HostPort = aws.Int64(int64(p.HostPort))
+		} else if networkMode == ecs.NetworkModeAwsvpc {
+			pm.HostPort = aws.Int64(int64(p.ContainerPort))
 		}
 		if p.Protocol != "" {
 			pm.Protocol = aws.String(p.Protocol)
@@ -232,20 +239,11 @@ func containerToAWS(c taskdefinition.Container) *ecs.ContainerDefinition {
 	cd.Privileged = c.Privileged
 	cd.PseudoTerminal = c.PseudoTerminal
 	cd.Interactive = c.Interactive
-	if c.SystemControls != nil {
-		cd.SystemControls = []*ecs.SystemControl{}
-	}
 	for _, sc := range c.SystemControls {
 		cd.SystemControls = append(cd.SystemControls, &ecs.SystemControl{
 			Namespace: aws.String(sc.Namespace),
 			Value:     aws.String(sc.Value),
 		})
-	}
-	if c.MountPointsSet {
-		cd.MountPoints = []*ecs.MountPoint{}
-	}
-	if c.VolumesFromSet {
-		cd.VolumesFrom = []*ecs.VolumeFrom{}
 	}
 	if len(c.CapAdd) > 0 || len(c.CapDrop) > 0 || c.InitProcessEnabled != nil {
 		lp := &ecs.LinuxParameters{InitProcessEnabled: c.InitProcessEnabled}

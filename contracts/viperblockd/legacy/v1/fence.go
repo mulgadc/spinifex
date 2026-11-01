@@ -19,3 +19,11 @@ type VolumeFencedEvent struct {
 	Winner string `json:"winner"`
 	Reason string `json:"reason"`
 }
+
+// VolumeFencedAck is the daemon's answer to a VolumeFencedEvent. Any answer
+// ends the sender's retries; Instance names the guest stopped, if one was, and
+// Error says why the daemon could not act on the event.
+type VolumeFencedAck struct {
+	Instance string `json:"instance,omitempty"`
+	Error    string `json:"error,omitempty"`
+}

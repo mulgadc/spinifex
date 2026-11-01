@@ -225,7 +225,7 @@ func TestSetClusterCertificateAuthority_EmptyInputsRejected(t *testing.T) {
 	require.Error(t, SetClusterCertificateAuthority(t.Context(), kv, "alpha", ""))
 }
 
-func TestDeleteClusterPrefix_SweepsEveryKey(t *testing.T) {
+func TestDeleteClusterChildren_SweepsEveryKey(t *testing.T) {
 	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
@@ -241,10 +241,11 @@ func TestDeleteClusterPrefix_SweepsEveryKey(t *testing.T) {
 	// Sibling cluster must survive the sweep.
 	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("beta")))
 
-	require.NoError(t, DeleteClusterPrefix(t.Context(), kv, "alpha"))
+	require.NoError(t, DeleteClusterChildren(t.Context(), kv, "alpha"))
 
+	_, err = GetClusterMeta(t.Context(), kv, "alpha")
+	require.NoError(t, err, "the meta is not a child: the teardown removes it last, on its own")
 	for _, k := range []string{
-		ClusterMetaKey("alpha"),
 		NodegroupKey("alpha", "ng-1"),
 		OIDCSigningKeyKey("alpha"),
 		OIDCJWKSKey("alpha"),
@@ -259,16 +260,16 @@ func TestDeleteClusterPrefix_SweepsEveryKey(t *testing.T) {
 	assert.Equal(t, "beta", got.Name)
 }
 
-func TestDeleteClusterPrefix_EmptyBucketIsNoop(t *testing.T) {
+func TestDeleteClusterChildren_EmptyBucketIsNoop(t *testing.T) {
 	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
-	require.NoError(t, DeleteClusterPrefix(t.Context(), kv, "ghost"))
+	require.NoError(t, DeleteClusterChildren(t.Context(), kv, "ghost"))
 }
 
-func TestDeleteClusterPrefix_EmptyNameRejected(t *testing.T) {
+func TestDeleteClusterChildren_EmptyNameRejected(t *testing.T) {
 	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
-	require.Error(t, DeleteClusterPrefix(t.Context(), kv, ""))
+	require.Error(t, DeleteClusterChildren(t.Context(), kv, ""))
 }

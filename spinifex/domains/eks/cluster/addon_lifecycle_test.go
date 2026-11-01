@@ -311,7 +311,7 @@ func TestCreateAddonRefusesOnlyADeletingCluster(t *testing.T) {
 
 // Cluster delete erases add-ons only through the prefix purge, record and
 // manifest alike, with no per-add-on delete; a sibling cluster's add-on stays.
-func TestDeleteClusterPrefix_SweepsAddonRecordsAndManifestsScopedToCluster(t *testing.T) {
+func TestDeleteClusterChildren_SweepsAddonRecordsAndManifestsScopedToCluster(t *testing.T) {
 	t.Parallel()
 	svc, kv := setupStagingAddonService(t)
 	seedTestCluster(t, svc, "c2")
@@ -322,7 +322,7 @@ func TestDeleteClusterPrefix_SweepsAddonRecordsAndManifestsScopedToCluster(t *te
 		require.NoError(t, err)
 	}
 
-	require.NoError(t, DeleteClusterPrefix(t.Context(), kv, "c1"))
+	require.NoError(t, DeleteClusterChildren(t.Context(), kv, "c1"))
 
 	for _, key := range []string{albRecordKey, albManifestKey} {
 		_, err := kv.Get(t.Context(), key)

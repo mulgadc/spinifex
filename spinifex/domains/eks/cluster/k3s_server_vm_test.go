@@ -110,6 +110,8 @@ type fakeK3sInst struct {
 	// test can hold a launch or a teardown at that step.
 	launchHook    func()
 	terminateHook func(instanceID string)
+	// uniqueIDs makes each launch return a fresh instance ID.
+	uniqueIDs bool
 }
 
 // terminated returns a copy of the terminate calls so far.
@@ -138,6 +140,9 @@ func (f *fakeK3sInst) LaunchSystemInstanceOnNode(nodeID string, input *systemins
 	}
 	if f.launchOut != nil {
 		return f.launchOut, nil
+	}
+	if f.uniqueIDs {
+		return &systeminstance.SystemInstanceOutput{InstanceID: fmt.Sprintf("i-launch-%d", len(f.launchCalls))}, nil
 	}
 	return &systeminstance.SystemInstanceOutput{InstanceID: "i-aaa111"}, nil
 }

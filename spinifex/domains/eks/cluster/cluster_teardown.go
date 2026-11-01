@@ -75,11 +75,15 @@ func (s *EKSServiceImpl) acquireTeardownLease(ctx context.Context, accountID, cl
 	return teardownLease{release: func() { lease.Release(ctx) }, lost: lease.Lost()}, true
 }
 
-// startTeardown hands one DELETING cluster to a background converger and
-// reports whether it did. It refuses when this process already runs that
-// cluster's teardown, when the node is at teardownConcurrency, or when another
-// node holds the lease; the record stays DELETING for the reaper either way.
-func (s *EKSServiceImpl) startTeardown(accountID, name string) bool {
+// teardownPassTimeout bounds one converger run, so a step that hangs cannot
+// hold the gate and the lease for ever; the reaper retries it. Var for tests.
+var teardownPassTimeout = 15 * time.Minute
+
+// holdTeardown claims the right to tear a cluster down on this node: the
+// in-process gate, which the lease cannot provide because it re-adopts a key
+// its own node holds, then the cross-node lease. It refuses, without waiting,
+// when either is held or the node is at teardownConcurrency.
+func (s *EKSServiceImpl) holdTeardown(accountID, name string) (release func(), lost <-chan struct{}, ok bool) {
 	key := teardownLeaderKey(accountID, name)
 	s.teardownMu.Lock()
 	if s.teardownRunning == nil {
@@ -88,7 +92,7 @@ func (s *EKSServiceImpl) startTeardown(accountID, name string) bool {
 	_, busy := s.teardownRunning[key]
 	if busy || len(s.teardownRunning) >= teardownConcurrency {
 		s.teardownMu.Unlock()
-		return false
+		return nil, nil, false
 	}
 	s.teardownRunning[key] = struct{}{}
 	s.teardownMu.Unlock()
@@ -98,18 +102,30 @@ func (s *EKSServiceImpl) startTeardown(accountID, name string) bool {
 		s.teardownMu.Unlock()
 	}
 
-	// The lease renews on the service's context so it outlives the request and
+	// The lease renews on the service's context so it outlives any request and
 	// stops with the daemon.
-	lease, ok := s.acquireTeardownLease(s.bgCtx, accountID, name)
-	if !ok {
+	lease, held := s.acquireTeardownLease(s.bgCtx, accountID, name)
+	if !held {
 		leave()
+		return nil, nil, false
+	}
+	return func() { lease.release(); leave() }, lease.lost, true
+}
+
+// startTeardown hands one DELETING cluster to a background converger and
+// reports whether it did. When holdTeardown refuses, the record stays DELETING
+// for the reaper.
+func (s *EKSServiceImpl) startTeardown(accountID, name string) bool {
+	release, lost, ok := s.holdTeardown(accountID, name)
+	if !ok {
 		return false
 	}
 	s.teardownWG.Go(func() {
-		defer leave()
-		defer lease.release()
+		defer release()
+		ctx, cancel := context.WithTimeout(s.bgCtx, teardownPassTimeout)
+		defer cancel()
 		started := time.Now()
-		if err := s.convergeClusterDeletion(s.bgCtx, accountID, name, lease.lost); err != nil {
+		if err := s.convergeClusterDeletion(ctx, accountID, name, lost); err != nil {
 			slog.Warn("eks: cluster teardown incomplete, the record stays DELETING for retry",
 				"cluster", name, "account", accountID, "err", err)
 			return
@@ -129,13 +145,9 @@ func (s *EKSServiceImpl) WaitTeardowns() { s.teardownWG.Wait() }
 // on a record that is DELETING when re-read under the lease, keeps the record
 // with its refs on any failure, and stops at a step boundary if lost closes.
 func (s *EKSServiceImpl) convergeClusterDeletion(ctx context.Context, accountID, name string, lost <-chan struct{}) error {
-	js, err := jetstream.New(s.deps.NATSConn)
+	acctKV, err := s.teardownBucket(ctx, accountID)
 	if err != nil {
-		return fmt.Errorf("jetstream: %w", err)
-	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return fmt.Errorf("get account bucket: %w", err)
+		return err
 	}
 	checkpoint := func() error {
 		select {
@@ -150,6 +162,11 @@ func (s *EKSServiceImpl) convergeClusterDeletion(ctx context.Context, accountID,
 
 	for range maxTeardownPasses {
 		if err := checkpoint(); err != nil {
+			return err
+		}
+		// Waiting on node groups is not a failed pass, so it is checked before
+		// the attempt is counted and never grows the backoff.
+		if err := s.refuseWhileNodegroups(ctx, acctKV, name); err != nil {
 			return err
 		}
 		if _, err := RecordDeleteReapAttempt(ctx, acctKV, name); err != nil {
@@ -168,16 +185,15 @@ func (s *EKSServiceImpl) convergeClusterDeletion(ctx context.Context, accountID,
 		if meta.Status != ClusterStatusDeleting {
 			return errTeardownNotRecorded
 		}
-		if err := s.refuseWhileNodegroups(ctx, acctKV, name); err != nil {
-			return err
-		}
 
 		steps, terr := s.teardownClusterInfra(ctx, accountID, name, meta, acctKV, checkpoint)
 		if terr != nil {
-			if errors.Is(terr, errTeardownLeaseLost) || ctx.Err() != nil {
+			if errors.Is(terr, errTeardownLeaseLost) || errors.Is(ctx.Err(), context.Canceled) {
 				return terr
 			}
-			s.recordTeardownFailure(ctx, acctKV, name, steps, terr)
+			// A pass that ran out of time is a failed pass: record it so the
+			// reaper backs off, on a context the deadline has not ended.
+			s.recordTeardownFailure(context.WithoutCancel(ctx), acctKV, name, steps, terr)
 			return terr
 		}
 
@@ -207,8 +223,27 @@ func (s *EKSServiceImpl) refuseWhileNodegroups(ctx context.Context, acctKV jetst
 	if len(groups) == 0 {
 		return nil
 	}
-	s.recordTeardownFailure(ctx, acctKV, name, []string{stepNodegroups}, errNodegroupsAttached)
+	if meta, err := GetClusterMeta(ctx, acctKV, name); err == nil && meta.DeleteFailedStep != stepNodegroups {
+		s.recordTeardownFailure(ctx, acctKV, name, []string{stepNodegroups}, errNodegroupsAttached)
+	}
 	return errNodegroupsAttached
+}
+
+// teardownBucket opens the account bucket the converger works in;
+// s.teardownKV replaces it in tests that inject KV faults.
+func (s *EKSServiceImpl) teardownBucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
+	if s.teardownKV != nil {
+		return s.teardownKV(ctx, accountID)
+	}
+	js, err := jetstream.New(s.deps.NATSConn)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
+	}
+	kv, err := GetOrCreateAccountBucket(ctx, js, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("get account bucket: %w", err)
+	}
+	return kv, nil
 }
 
 // removeClusterRecord deletes the cluster's KV state once a pass has torn down

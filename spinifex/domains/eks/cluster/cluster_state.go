@@ -316,43 +316,64 @@ func SetClusterStatus(ctx context.Context, kv jetstream.KeyValue, name string, s
 	return err
 }
 
-// errLaunchSuperseded is returned by persistLaunchMeta when a delete has been
-// recorded against the cluster the launch is building, so the launch must stop.
-var errLaunchSuperseded = errors.New("eks: cluster launch superseded by a recorded delete")
+// errLaunchSuperseded is returned by persistLaunchMeta when the launch no
+// longer owns the record it is building: a delete was recorded against it,
+// the record is gone, or the name now belongs to a newer cluster.
+var errLaunchSuperseded = errors.New("eks: cluster launch superseded")
 
-// persistLaunchMeta is the create path's meta write. While the record is
-// CREATING it writes meta whole, as PutClusterMeta did. Once a delete is
-// recorded it only adds the launch's resource refs to the DELETING record, so
-// the teardown reaches them, and returns errLaunchSuperseded. A record already
-// removed is never recreated: the caller gets errLaunchSuperseded wrapping
-// ErrClusterNotFound and must release what it holds itself.
+// errLaunchNewGeneration is errLaunchSuperseded for a record that belongs to a
+// different cluster of the same name, created after this launch's was removed.
+var errLaunchNewGeneration = fmt.Errorf("%w: the name belongs to a newer cluster", errLaunchSuperseded)
+
+// errLaunchMarkedFailed is returned when the launch's record was marked FAILED
+// under it. The refs are merged in and the launch releases what it built.
+var errLaunchMarkedFailed = errors.New("eks: cluster marked FAILED during launch")
+
+// sameGeneration reports whether two records describe the same cluster, not
+// merely the same name: CreatedAt and the ARN are stamped once, at the claim.
+func sameGeneration(a, b *ClusterMeta) bool {
+	return a.CreatedAt.Equal(b.CreatedAt) && a.Arn == b.Arn
+}
+
+// persistLaunchMeta is the create path's meta write, fenced on the record's
+// generation. While its own record is CREATING it writes meta whole. Once a
+// delete is recorded it only adds the launch's resource refs, so the teardown
+// reaches them, and returns errLaunchSuperseded; a FAILED record also takes
+// the refs, with errLaunchMarkedFailed. It never writes a newer cluster's
+// record and never recreates a removed one.
 func persistLaunchMeta(ctx context.Context, kv jetstream.KeyValue, meta *ClusterMeta) error {
 	if meta == nil || meta.Name == "" {
 		return errors.New("eks: persistLaunchMeta missing meta")
 	}
-	superseded := false
+	var outcome error
 	err := casUpdateMeta(ctx, kv, meta.Name, func(m *ClusterMeta) bool {
-		superseded = false
+		outcome = nil
+		if !sameGeneration(m, meta) {
+			outcome = errLaunchNewGeneration
+			return false
+		}
 		switch m.Status {
 		case ClusterStatusCreating:
 			*m = *meta
 			m.Status = ClusterStatusCreating
 			return true
 		case ClusterStatusDeleting:
-			superseded = true
+			outcome = errLaunchSuperseded
+			return mergeOwnershipRefs(m, meta)
+		case ClusterStatusFailed:
+			outcome = errLaunchMarkedFailed
 			return mergeOwnershipRefs(m, meta)
 		default:
-			superseded = true
-			return false
+			return mergeOwnershipRefs(m, meta)
 		}
 	})
 	if errors.Is(err, ErrClusterNotFound) {
 		return fmt.Errorf("%w: %w", errLaunchSuperseded, ErrClusterNotFound)
 	}
-	if err == nil && superseded {
-		return errLaunchSuperseded
+	if err != nil {
+		return err
 	}
-	return err
+	return outcome
 }
 
 // clusterOwnershipRefs lists every resource ID the teardown reads from meta to
@@ -678,16 +699,4 @@ func SwapControlPlaneMember(ctx context.Context, kv jetstream.KeyValue, name, de
 		m.ControlPlaneMgmtIP = primary.MgmtIP
 		return true
 	})
-}
-
-// DeleteClusterPrefix removes every KV key under clusters/{name}/, the meta
-// last and only once every other key is gone.
-func DeleteClusterPrefix(ctx context.Context, kv jetstream.KeyValue, name string) error {
-	if err := DeleteClusterChildren(ctx, kv, name); err != nil {
-		return err
-	}
-	if err := kv.Delete(ctx, ClusterMetaKey(name)); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return fmt.Errorf("kv delete %s: %w", ClusterMetaKey(name), err)
-	}
-	return nil
 }

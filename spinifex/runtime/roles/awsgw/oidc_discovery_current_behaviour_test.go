@@ -128,7 +128,8 @@ func TestCurrentBehaviour_OIDCDiscoveryAfterClusterPrefixDeleted(t *testing.T) {
 	e := newDiscoveryEnv(t)
 	e.putMeta(t, ekscluster.ClusterStatusDeleting, testDiscIssuer)
 	e.putJWKS(t, `{"keys":[{"kty":"EC","kid":"abc"}]}`)
-	require.NoError(t, ekscluster.DeleteClusterPrefix(t.Context(), e.kv, testDiscCluster))
+	require.NoError(t, ekscluster.DeleteClusterChildren(t.Context(), e.kv, testDiscCluster))
+	require.NoError(t, e.kv.Delete(t.Context(), ekscluster.ClusterMetaKey(testDiscCluster)))
 
 	for _, p := range []string{cbDiscPath, cbKeysPath} {
 		rec := getOIDC(t, e.h, p)

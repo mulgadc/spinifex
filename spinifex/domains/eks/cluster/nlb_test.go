@@ -42,7 +42,10 @@ type fakeNLBProvisioner struct {
 	tagsByArn      map[string][]*elbv2.Tag              // lb arn → tags (LBC ownership reap)
 
 	describeTagsCalls []*elbv2.DescribeTagsInput
-	describeTagsErr   error
+
+	// describeLBHook, when set, runs at the start of DescribeLoadBalancers.
+	describeLBHook  func(ctx context.Context)
+	describeTagsErr error
 
 	createLBOut       *elbv2.CreateLoadBalancerOutput
 	createTGOut       *elbv2.CreateTargetGroupOutput
@@ -128,7 +131,10 @@ func (f *fakeNLBProvisioner) CreateLoadBalancer(_ context.Context, input *elbv2.
 	return out, nil
 }
 
-func (f *fakeNLBProvisioner) DescribeLoadBalancers(_ context.Context, input *elbv2.DescribeLoadBalancersInput, _ string) (*elbv2.DescribeLoadBalancersOutput, error) {
+func (f *fakeNLBProvisioner) DescribeLoadBalancers(ctx context.Context, input *elbv2.DescribeLoadBalancersInput, _ string) (*elbv2.DescribeLoadBalancersOutput, error) {
+	if f.describeLBHook != nil {
+		f.describeLBHook(ctx)
+	}
 	f.describeLBCalls = append(f.describeLBCalls, input)
 	out := &elbv2.DescribeLoadBalancersOutput{}
 	// No name/arn filter: list every LB (account-scoped in the real impl), as the

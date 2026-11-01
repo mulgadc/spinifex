@@ -271,6 +271,12 @@ type EKSServiceImpl struct {
 	teardownMu      sync.Mutex
 	teardownRunning map[string]struct{}
 	teardownWG      sync.WaitGroup
+	// teardownKV, when set by a test, replaces the converger's account bucket.
+	teardownKV func(ctx context.Context, accountID string) (jetstream.KeyValue, error)
+
+	// bootstraps cancels the bootstrap subscribers this process runs, by cluster.
+	bootstrapMu sync.Mutex
+	bootstraps  map[string]context.CancelFunc
 
 	// baseDomain is the northstar default_domain; "" disables endpoint DNS naming
 	// (the cluster then publishes its bare IP:port endpoint as before).
@@ -738,9 +744,12 @@ func (s *EKSServiceImpl) failClusterLaunch(ctx context.Context, kv jetstream.Key
 	}
 }
 
-// launchSuperseded stops a launch that a recorded delete overtook. While the
-// DELETING record exists the teardown owns every ref the launch handed it; once
-// the record is gone nothing else will release what the launch still holds.
+// launchSuperseded stops a launch that no longer owns its record, and makes
+// sure what it built is still owned by something. A DELETING record has the
+// launch's refs and the teardown owns them. A removed record is recreated as
+// DELETING with those refs, so the teardown and its reaper own them too. A
+// record that now belongs to a newer cluster gets nothing: the launch releases
+// only the instances it launched itself, by ID, never anything found by name.
 func (s *EKSServiceImpl) launchSuperseded(ctx context.Context, kv jetstream.KeyValue, name, accountID string, meta *ClusterMeta, err error) bool {
 	if meta == nil {
 		return false
@@ -751,21 +760,66 @@ func (s *EKSServiceImpl) launchSuperseded(ctx context.Context, kv jetstream.KeyV
 			return false
 		}
 	}
-	slog.InfoContext(ctx, "launchClusterInfra: stopping, the cluster is being deleted",
-		"cluster", name, "accountID", accountID)
-	if errors.Is(err, ErrClusterNotFound) {
-		if perr := s.purgeClusterInfra(ctx, accountID, name, meta, kv); perr != nil {
-			slog.WarnContext(ctx, "launchClusterInfra: release after delete incomplete", "cluster", name, "err", perr)
+	slog.InfoContext(ctx, "launchClusterInfra: stopping, the cluster no longer owns its record",
+		"cluster", name, "accountID", accountID, "reason", err)
+	switch {
+	case errors.Is(err, ErrClusterNotFound):
+		if s.adoptLaunchForTeardown(ctx, kv, accountID, meta) {
+			return true
 		}
-		// Keys the launch wrote after the teardown swept the record have no
-		// owner left; remove them unless a new cluster has claimed the name.
-		if _, gerr := GetClusterMeta(ctx, kv, name); errors.Is(gerr, ErrClusterNotFound) {
-			if derr := DeleteClusterChildren(ctx, kv, name); derr != nil {
-				slog.WarnContext(ctx, "launchClusterInfra: remove child records after delete", "cluster", name, "err", derr)
-			}
-		}
+		s.releaseLaunchInstances(ctx, kv, accountID, meta)
+	case errors.Is(err, errLaunchNewGeneration):
+		s.releaseLaunchInstances(ctx, kv, accountID, meta)
 	}
 	return true
+}
+
+// adoptLaunchForTeardown recreates a removed record as DELETING with the
+// launch's refs and hands it to the teardown. It reports false if the name was
+// claimed again first.
+func (s *EKSServiceImpl) adoptLaunchForTeardown(ctx context.Context, kv jetstream.KeyValue, accountID string, meta *ClusterMeta) bool {
+	rec := *meta
+	rec.Status = ClusterStatusDeleting
+	rec.StatusReason = ""
+	rec.DeletingSince = time.Now().UTC()
+	rec.DeleteReapAttempts = 0
+	rec.LastDeleteReapAttempt = time.Time{}
+	rec.DeleteReapExhausted = false
+	rec.LastDeleteReapError = ""
+	rec.DeleteFailedStep = ""
+	data, err := json.Marshal(&rec)
+	if err != nil {
+		return false
+	}
+	if _, err := kv.Create(ctx, ClusterMetaKey(meta.Name), data); err != nil {
+		if !errors.Is(err, jetstream.ErrKeyExists) {
+			slog.WarnContext(ctx, "launchClusterInfra: record the overtaken launch for teardown", "cluster", meta.Name, "err", err)
+		}
+		return false
+	}
+	s.startTeardown(accountID, meta.Name)
+	return true
+}
+
+// releaseLaunchInstances terminates the control-plane instances this launch
+// started that the record now under its name does not own. Instances are the
+// only refs unique to one launch; name-keyed resources (load balancer, CP VPC,
+// security groups) belong to whoever holds the name and are left to it.
+func (s *EKSServiceImpl) releaseLaunchInstances(ctx context.Context, kv jetstream.KeyValue, accountID string, meta *ClusterMeta) {
+	current, _ := GetClusterMeta(ctx, kv, meta.Name)
+	infraAcct := accountID
+	if meta.ManagedCPVPC != nil {
+		infraAcct = awsidentifiers.GlobalAccountID
+	}
+	for _, cp := range controlPlaneTeardownNodes(meta) {
+		if current != nil && current.IsControlPlaneMember(cp.InstanceID) {
+			continue
+		}
+		if err := TerminateK3sServerVM(ctx, s.deps.VPCK3s, s.deps.Instance, infraAcct, cp.InstanceID, cp.ENIID); err != nil {
+			slog.WarnContext(ctx, "launchClusterInfra: release overtaken control-plane instance", "cluster", meta.Name,
+				"instanceId", cp.InstanceID, "err", err)
+		}
+	}
 }
 
 // launchClusterInfra is CreateCluster's slow phase (SGs, NLB, OIDC, CP VMs, egress, bootstrap).
@@ -1052,6 +1106,10 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		s.launchStepHook("seed-creator-admin")
 	}
 	if bootstrapCreatorAdmin(input) && callerPrincipalARN != "" {
+		if err := persistLaunchMeta(ctx, acctKV, meta); err != nil {
+			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "confirm cluster before seeding access entry", err)
+			return
+		}
 		if err := s.owner.SeedCreatorAdmin(ctx, acctKV, accountID, name, callerPrincipalARN); err != nil {
 			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "seed cluster-creator admin access entry", err)
 			return
@@ -1217,12 +1275,26 @@ func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string,
 	}
 
 	if _, cerr := acctKV.Create(ctx, ClusterMetaKey(name), data); cerr == nil {
-		return nil // won a fresh claim
+		// Keys an earlier cluster of this name left under its prefix (a late
+		// bootstrap or launch write) must not be inherited by this one.
+		if derr := DeleteClusterChildren(ctx, acctKV, name); derr != nil {
+			slog.WarnContext(ctx, "CreateCluster: clear stale child records", "cluster", name, "err", derr)
+		}
+		return nil
 	} else if !errors.Is(cerr, jetstream.ErrKeyExists) {
 		return logCreateErr(name, accountID, "claim cluster name", cerr)
 	}
 
-	// Key already present: reclaim a FAILED attempt via CAS; old refs survive for teardown.
+	// Key already present: reclaim a FAILED attempt via CAS; old refs survive for
+	// teardown. The purge below is a teardown, so it runs under the same gate
+	// and lease as one, and a cluster whose teardown is running is in use.
+	if existing, gerr := GetClusterMeta(ctx, acctKV, name); gerr == nil && existing.Status == ClusterStatusFailed {
+		release, _, held := s.holdTeardown(accountID, name)
+		if !held {
+			return errors.New(awserrors.ErrorEKSResourceInUse)
+		}
+		defer release()
+	}
 	var oldRefs *ClusterMeta
 	reclaimed := false
 	if err := casUpdateMeta(ctx, acctKV, name, func(m *ClusterMeta) bool {
@@ -1237,6 +1309,8 @@ func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string,
 		snapshot := *m
 		oldRefs = &snapshot
 		m.Status = ClusterStatusCreating
+		m.CreatedAt = meta.CreatedAt
+		m.Arn = meta.Arn
 		reclaimed = true
 		return true
 	}); err != nil {
@@ -1303,6 +1377,7 @@ const (
 // IDs. checkpoint, when set, runs between steps and stops the teardown early.
 func (s *EKSServiceImpl) teardownClusterInfra(ctx context.Context, accountID, name string, meta *ClusterMeta, acctKV jetstream.KeyValue, checkpoint func() error) ([]string, error) {
 	s.registry.Stop(accountID, name)
+	s.stopBootstrap(accountID, name)
 	if checkpoint == nil {
 		checkpoint = func() error { return nil }
 	}
@@ -2196,8 +2271,20 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv jetstr
 		slog.Error("spawnBootstrap: NewNATSBootstrap failed", "cluster", clusterName, "err", err)
 		return
 	}
+	ctx, cancel := context.WithCancel(s.bgCtx)
+	key := reconcilerLeaderKey(accountID, clusterName)
+	s.bootstrapMu.Lock()
+	if s.bootstraps == nil {
+		s.bootstraps = map[string]context.CancelFunc{}
+	}
+	if prev := s.bootstraps[key]; prev != nil {
+		prev()
+	}
+	s.bootstraps[key] = cancel
+	s.bootstrapMu.Unlock()
 	go func() {
-		err := boot.RunForKinds(s.bgCtx, kinds)
+		defer cancel()
+		err := boot.RunForKinds(ctx, kinds)
 		if err == nil || errors.Is(err, context.Canceled) {
 			return
 		}
@@ -2211,6 +2298,19 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv jetstr
 			slog.Error("spawnBootstrap: MarkClusterFailed", "cluster", clusterName, "err", markErr)
 		}
 	}()
+}
+
+// stopBootstrap cancels this process's bootstrap subscriber for a cluster, so
+// a cluster being torn down stops collecting artifacts into its prefix.
+func (s *EKSServiceImpl) stopBootstrap(accountID, clusterName string) {
+	key := reconcilerLeaderKey(accountID, clusterName)
+	s.bootstrapMu.Lock()
+	cancel := s.bootstraps[key]
+	delete(s.bootstraps, key)
+	s.bootstrapMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *ClusterMeta) {

@@ -233,21 +233,21 @@ func TestS2_EKSTeardownDoesNotSweepARecordChangedDuringTeardown(t *testing.T) {
 }
 
 // TestS2_EKSTeardownRemovesTheMetaLast: the meta owns the cluster's other
-// records, so it is deleted only after every sibling key is gone.
+// records, so the teardown deletes it only after every child key is gone. A
+// child that cannot be removed keeps the record DELETING for the next pass.
 func TestS2_EKSTeardownRemovesTheMetaLast(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
-	kv, err := GetOrCreateAccountBucket(t.Context(), testutil.NewJetStream(t, nc), testAccountID)
+	f := newDeleteClusterFixture(t, "alpha")
+	_, err := f.kv.Put(t.Context(), "clusters/alpha/addons/vpc-cni", []byte(`{}`))
 	require.NoError(t, err)
-	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("alpha")))
-	_, err = kv.Put(t.Context(), "clusters/alpha/addons/vpc-cni", []byte(`{}`))
-	require.NoError(t, err)
+	f.svc.teardownKV = func(context.Context, string) (jetstream.KeyValue, error) {
+		return &failDeleteKV{KeyValue: f.kv, fail: "clusters/alpha/addons/vpc-cni"}, nil
+	}
 
-	faulty := &failDeleteKV{KeyValue: kv, fail: "clusters/alpha/addons/vpc-cni"}
-	require.Error(t, DeleteClusterPrefix(t.Context(), faulty, "alpha"))
+	deleteAndSettle(t, f.svc, "alpha")
 
-	_, err = GetClusterMeta(t.Context(), kv, "alpha")
-	require.NoError(t, err, "ADR-0003:S2: the meta must survive a sweep that could not remove its children")
+	meta := requireTeardownRetained(t, f.kv, "alpha")
+	assert.Equal(t, stepRecord, meta.DeleteFailedStep)
 }
 
 type failDeleteKV struct {
@@ -374,6 +374,7 @@ func TestS2_EKSLaunchWriteAfterDeleteNeitherRevertsNorRecreates(t *testing.T) {
 	})
 
 	t.Run("record already removed", func(t *testing.T) {
+		// The launch records what it built as DELETING, so the teardown owns it.
 		t.Parallel()
 		f := newEKSServiceFixture(t)
 		held := make(chan struct{})
@@ -390,10 +391,11 @@ func TestS2_EKSLaunchWriteAfterDeleteNeitherRevertsNorRecreates(t *testing.T) {
 		require.ErrorIs(t, err, ErrClusterNotFound)
 		close(gate)
 		f.svc.WaitLaunches()
+		f.svc.WaitTeardowns()
 
 		_, err = GetClusterMeta(t.Context(), f.kv, "alpha")
-		assert.ErrorIs(t, err, ErrClusterNotFound, "a launch must never recreate a swept record")
-		assert.Contains(t, f.inst.terminated(), "i-aaa111", "the launch releases the VM it started after the record went")
+		assert.ErrorIs(t, err, ErrClusterNotFound, "a launch never brings a swept cluster back")
+		assert.Contains(t, f.inst.terminated(), "i-aaa111", "the VM started after the record went is handed to the teardown and released")
 	})
 }
 
@@ -504,6 +506,7 @@ func TestS2_EKSLaunchOvertakenByDeleteLeavesNoChildRecords(t *testing.T) {
 	require.ErrorIs(t, err, ErrClusterNotFound, "the teardown swept the record before the launch resumed")
 	close(gate)
 	f.svc.WaitLaunches()
+	f.svc.WaitTeardowns()
 
 	keys, err := f.kv.Keys(t.Context())
 	if !errors.Is(err, jetstream.ErrNoKeysFound) {

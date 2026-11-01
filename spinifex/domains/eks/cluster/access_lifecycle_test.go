@@ -240,10 +240,10 @@ func TestAccessEntry_UpdateWithNoFieldsKeepsUsernameAndGroups(t *testing.T) {
 	assert.True(t, after.ModifiedAt.After(before.ModifiedAt))
 }
 
-// DeleteClusterPrefix_SweepsEveryKey (cluster_state_test.go) covers the
+// DeleteClusterChildren_SweepsEveryKey (cluster_state_test.go) covers the
 // nodegroup/OIDC/event keys; this covers the access-entries key specifically,
 // scoped correctly so a sibling cluster's entry survives.
-func TestDeleteClusterPrefix_SweepsAccessEntriesScopedToCluster(t *testing.T) {
+func TestDeleteClusterChildren_SweepsAccessEntriesScopedToCluster(t *testing.T) {
 	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
@@ -257,7 +257,7 @@ func TestDeleteClusterPrefix_SweepsAccessEntriesScopedToCluster(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, DeleteClusterPrefix(t.Context(), kv, "cluster-a"))
+	require.NoError(t, DeleteClusterChildren(t.Context(), kv, "cluster-a"))
 
 	_, err = access.Get(t.Context(), kv, "cluster-a", testPrincipalARN)
 	require.ErrorIs(t, err, access.ErrNotFound)

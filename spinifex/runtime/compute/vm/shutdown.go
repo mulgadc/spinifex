@@ -146,7 +146,8 @@ func (m *Manager) Stop(id string) error {
 }
 
 // stopOne runs the stop sequence shared by Stop and StopAll:
-// Stopping → stopCleanup → Stopped → migrate to "stopped" KV → OnInstanceDown.
+// Stopping → stopCleanup → release auto-assigned IP → Stopped → migrate to
+// "stopped" KV → OnInstanceDown.
 // The bool reports whether migration removed the instance (caller must persist).
 //
 // A failed volume seal (ErrVolumeSealFailed) does not abort the sequence —
@@ -161,6 +162,12 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 	sealErr := m.stopCleanup(instance)
 
 	m.UpdateState(instance.ID, func(v *VM) { v.LastNode = m.deps.NodeID })
+
+	// Released before the stopped state is published: DescribeInstances reads
+	// the record from that moment, and must never show a borrowed address on it.
+	if instance.DesiredState == DesiredStopped {
+		m.releaseAutoAssignedPublicIP(instance)
+	}
 
 	if err := m.transitionWithPrecheck(instance, StateStopped); err != nil {
 		slog.Error("Failed to transition to stopped", "instanceId", instance.ID, "err", err)
@@ -177,8 +184,6 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 		// than changing it under a guest nobody asked to move.
 		return false, sealErr
 	}
-
-	m.releaseAutoAssignedPublicIP(instance)
 
 	if !m.MigrateStoppedToSharedKV(instance) {
 		// Either StateStore unavailable / write failed (instance stays in

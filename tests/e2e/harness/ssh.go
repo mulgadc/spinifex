@@ -134,7 +134,7 @@ func (h *SSHHealth) WaitReady(t *testing.T, host string, port int, keyPath strin
 	h.Require(t)
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	Step(t, "waiting for SSH handshake %s", addr)
-	if h.TryReady(host, port, keyPath, SSHReadyBudget) {
+	if h.handshakeWithin(host, port, keyPath, SSHReadyBudget) {
 		return
 	}
 	// OVN emits no GARP on a same-chassis EIP rebind, so a decayed host neigh
@@ -142,7 +142,7 @@ func (h *SSHHealth) WaitReady(t *testing.T, host string, port int, keyPath strin
 	// once before declaring the datapath broken.
 	Step(t, "SSH handshake %s missed %s budget; re-priming ARP + retrying", addr, SSHReadyBudget)
 	reprimeSSHReachability(t, host)
-	if h.TryReady(host, port, keyPath, sshReprimeBudget) {
+	if h.handshakeWithin(host, port, keyPath, sshReprimeBudget) {
 		return
 	}
 	h.broken.Store(true)
@@ -152,11 +152,17 @@ func (h *SSHHealth) WaitReady(t *testing.T, host string, port int, keyPath strin
 }
 
 // TryReady is WaitReady without the re-prime or t.Fatal: it reports whether
-// the handshake completed within budget and never marks the suite broken.
-func (h *SSHHealth) TryReady(host string, port int, keyPath string, budget time.Duration) bool {
-	if h.broken.Load() {
-		return false
-	}
+// the handshake completed within budget and never marks the suite broken. It
+// skips t once the suite is broken, as Require does, so no caller reports a
+// timeout for a wait that never happened.
+func (h *SSHHealth) TryReady(t *testing.T, host string, port int, keyPath string, budget time.Duration) bool {
+	t.Helper()
+	h.Require(t)
+	return h.handshakeWithin(host, port, keyPath, budget)
+}
+
+// handshakeWithin polls for a full SSH handshake until budget runs out.
+func (h *SSHHealth) handshakeWithin(host string, port int, keyPath string, budget time.Duration) bool {
 	tgt := SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 	deadline := time.Now().Add(budget)
 	for {

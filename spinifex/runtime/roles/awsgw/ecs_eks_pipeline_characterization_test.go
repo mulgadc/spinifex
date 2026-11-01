@@ -7,7 +7,7 @@ package awsgw_test
 import (
 	"bytes"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -51,7 +51,7 @@ func containerPipelineApp(t *testing.T, statements ...iamdomain.Statement) http.
 		},
 	}
 	_, nc := testutil.StartTestNATS(t)
-	gw := withVerifier(withContainers(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true, Region: gwfix.Region}, gwfix.Deps{NATS: nc, IAM: svc})))
+	gw := withVerifier(withContainers(gwfix.WithDeps(&pipeline.Config{DisableLogging: true, Region: gwfix.Region}, gwfix.Deps{NATS: nc, IAM: svc})))
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", gw.Request)

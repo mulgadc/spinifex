@@ -106,5 +106,5 @@ func (noopCredentialResolver) Resolve(_ context.Context, _, _ string) (string, b
 }
 
 // NoopCredentialResolver resolves no vendors. Used as the fallback wherever
-// no CredentialStore is configured (nil GatewayConfig.BedrockCredentials).
+// no CredentialStore is configured (nil pipeline.Config.BedrockCredentials).
 var NoopCredentialResolver CredentialResolver = noopCredentialResolver{}

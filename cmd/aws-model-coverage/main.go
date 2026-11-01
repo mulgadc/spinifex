@@ -18,7 +18,6 @@ import (
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 
 	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
@@ -57,7 +56,7 @@ func fail(err error) {
 func compareAll() ([]awsmodel.OperationCoverage, error) {
 	// Registered services contribute their declared inventory, which needs no
 	// live dependencies; nothing here serves a request.
-	inventories := gateway.AWSOperationInventory(map[string]dispatch.Inventory{
+	inventories := dispatch.AWSOperationInventory(map[string]dispatch.Inventory{
 		awsapi.ServiceName:        awsapi.OperationInventory(),
 		acmawsapi.ServiceName:     acmawsapi.OperationInventory(),
 		route53awsapi.ServiceName: route53awsapi.OperationInventory(),

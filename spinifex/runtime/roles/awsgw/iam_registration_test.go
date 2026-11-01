@@ -3,7 +3,7 @@ package awsgw_test
 import (
 	"context"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
@@ -13,7 +13,7 @@ import (
 
 // iamRegistration is the IAM registration over the IAMService, NATS connection
 // and node count gw holds, as the awsgw role composes it. Set them on gw first.
-func iamRegistration(gw *gateway.GatewayConfig) dispatch.Registration {
+func iamRegistration(gw *pipeline.Config) dispatch.Registration {
 	return iamawsapi.NewRegistration(iamawsapi.Deps{
 		IAM: gwfix.DepsOf(gw).IAM,
 		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {

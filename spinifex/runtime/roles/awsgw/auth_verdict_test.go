@@ -3,7 +3,7 @@ package awsgw_test
 import (
 	"encoding/xml"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -127,7 +127,7 @@ func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(gwfix.WithDeps(&gateway.GatewayConfig{
+	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{IAM: mockSvc}))
@@ -178,7 +178,7 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(gwfix.WithDeps(&gateway.GatewayConfig{
+	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{IAM: mockSvc}))

@@ -8,7 +8,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -30,13 +30,13 @@ import (
 
 // elbv2PipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as every principal's policy.
-func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admissionquota.Service) (*gateway.GatewayConfig, http.Handler) {
+func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admissionquota.Service) (*pipeline.Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
@@ -276,7 +276,7 @@ func TestELBv2Pipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) 
 
 // A nil NATS connection fails at the request-level gate, before dispatch.
 func TestELBv2Pipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
-	gw := withELBv2(withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
+	gw := withELBv2(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 
 	req := elbv2Request(authzAccountID, "Action=DescribeLoadBalancers")
 	w := httptest.NewRecorder()

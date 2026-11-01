@@ -9,7 +9,7 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	sqsworkerapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi/worker"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +21,7 @@ import (
 // role refuses to start.
 func TestWireServiceRegistry(t *testing.T) {
 	t.Run("ECR registration wires and passes the overlap guard", func(t *testing.T) {
-		gw := &gateway.GatewayConfig{}
+		gw := &pipeline.Config{}
 		require.NoError(t, wireServiceRegistry(gw, awsapi.NewRegistration(awsapi.Deps{})))
 		require.NotNil(t, gw.Services)
 		_, ok := gw.Services.Lookup("ecr")
@@ -29,13 +29,13 @@ func TestWireServiceRegistry(t *testing.T) {
 	})
 
 	t.Run("a duplicate ECR registration fails startup", func(t *testing.T) {
-		gw := &gateway.GatewayConfig{}
+		gw := &pipeline.Config{}
 		reg := awsapi.NewRegistration(awsapi.Deps{})
 		require.Error(t, wireServiceRegistry(gw, reg, reg))
 	})
 
 	t.Run("ACM registration wires and passes the overlap guard", func(t *testing.T) {
-		gw := &gateway.GatewayConfig{}
+		gw := &pipeline.Config{}
 		require.NoError(t, wireServiceRegistry(gw, acmawsapi.NewRegistration(acmawsapi.Deps{})))
 		require.NotNil(t, gw.Services)
 		_, ok := gw.Services.Lookup("acm")
@@ -43,13 +43,13 @@ func TestWireServiceRegistry(t *testing.T) {
 	})
 
 	t.Run("a duplicate ACM registration fails startup", func(t *testing.T) {
-		gw := &gateway.GatewayConfig{}
+		gw := &pipeline.Config{}
 		reg := acmawsapi.NewRegistration(acmawsapi.Deps{})
 		require.Error(t, wireServiceRegistry(gw, reg, reg))
 	})
 
 	t.Run("ECR, ACM and Route 53 registrations wire together, as production does", func(t *testing.T) {
-		gw := &gateway.GatewayConfig{}
+		gw := &pipeline.Config{}
 		require.NoError(t, wireServiceRegistry(gw,
 			awsapi.NewRegistration(awsapi.Deps{}), acmawsapi.NewRegistration(acmawsapi.Deps{}),
 			route53awsapi.NewRegistration(route53awsapi.Deps{})))
@@ -61,7 +61,7 @@ func TestWireServiceRegistry(t *testing.T) {
 	})
 
 	t.Run("the internal SQS worker surface wires beside the public services", func(t *testing.T) {
-		gw := &gateway.GatewayConfig{}
+		gw := &pipeline.Config{}
 		require.NoError(t, wireServiceRegistry(gw,
 			awsapi.NewRegistration(awsapi.Deps{}), acmawsapi.NewRegistration(acmawsapi.Deps{}),
 			sqsworkerapi.NewRegistration(sqsworkerapi.JetStreamDeps(nil))))

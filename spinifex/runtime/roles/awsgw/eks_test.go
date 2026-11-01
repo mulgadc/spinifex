@@ -2,7 +2,7 @@ package awsgw_test
 
 import (
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +15,7 @@ import (
 )
 
 func TestErrorHandler_EKSEmitsJSONNotXML(t *testing.T) {
-	gw := withContainers(withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
+	gw := withContainers(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 	req := httptest.NewRequest(http.MethodGet, "/clusters", nil)
 	ctx := reqctx.WithService(req.Context(), "eks")
 	req = req.WithContext(ctx)

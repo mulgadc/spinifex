@@ -185,7 +185,7 @@ func TestReplaceInstanceVM_GrowsTheVolumeWhileNoVMHoldsIt(t *testing.T) {
 
 	var terminatedAtGrow int
 	var launchedAtGrow bool
-	h.storage.onModify = func() {
+	h.storage.onModify = func(context.Context) {
 		terminatedAtGrow = len(h.launch.launcher.terminated)
 		launchedAtGrow = h.launch.launcher.input != nil
 	}

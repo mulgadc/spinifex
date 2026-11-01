@@ -33,7 +33,7 @@ func TestModifyDBInstance_HoldsTheLeaseSoAReconcilePassCannotReEnterTheChange(t 
 	// change as outstanding. Once, or a re-entered pass would recurse here.
 	var sweep sync.Once
 	var swept error
-	h.storage.onModify = func() {
+	h.storage.onModify = func(context.Context) {
 		sweep.Do(func() { swept = onePass(t, h.rec) })
 	}
 
@@ -185,11 +185,17 @@ func TestModifyDBInstance_LeaseTakeoverLeavesTheTransitionRetryable(t *testing.T
 	seedInstance(t, h.svc, modifiableRecord())
 	kv := h.kv(t)
 
-	h.storage.onModify = func() {
+	// The takeover lands mid-grow; the step after it must not run until the
+	// renewer has seen the takeover and cancelled the apply.
+	h.storage.onModify = func(ctx context.Context) {
 		require.NoError(t, h.svc.updateInstance(t.Context(), kv, testDBID, func(stored *DBInstanceRecord) {
 			stored.ModifyLease = heldLease(time.Second)
 		}))
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+		case <-time.After(5 * time.Second):
+			t.Error("the apply context was not cancelled after the lease takeover")
+		}
 	}
 	in := modifyInput()
 	in.AllocatedStorage, in.ApplyImmediately = aws.Int64(50), aws.Bool(true)

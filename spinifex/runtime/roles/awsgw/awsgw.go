@@ -592,6 +592,20 @@ func launchService(config *config.ClusterConfig) error {
 		}
 	}()
 
+	// Served whatever the gateway's [quota] setting: the claim is about this
+	// binary's override writers, not about whether quotas are enabled.
+	quotaSealCapSub, err := registerQuotaOverrideSealCapability(natsConn, config.Node)
+	if err != nil {
+		return fmt.Errorf("subscribe quota override seal capability: %w", err)
+	}
+	if quotaSealCapSub != nil {
+		defer func() {
+			if err := quotaSealCapSub.Unsubscribe(); err != nil {
+				slog.Warn("Quota override seal capability: unsubscribe failed", "err", err)
+			}
+		}()
+	}
+
 	// Bedrock token quota reads the stream-fed usage counters built above,
 	// independent of whether the standing-infra dimensions are enabled.
 	quotaSvc.SetBedrockUsage(bedrockUsage)

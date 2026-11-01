@@ -2,13 +2,16 @@ package awsgw
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	admissionv1 "github.com/mulgadc/spinifex/contracts/admission/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,4 +84,91 @@ func TestQuotaOverrideSeal_NoResponderWithoutGateway(t *testing.T) {
 	_, err := natsmsg.NATSRequest[admissionv1.SealAccountQuotaOverrideReply](context.Background(),
 		nc, admissionv1.SealAccountQuotaOverrideSubject, req, 500*time.Millisecond, "")
 	require.Error(t, err, "no subscriber must surface as a no-responders error")
+}
+
+func newQuotaSealCapabilityConns(t *testing.T) (*nats.Conn, *nats.Conn) {
+	t.Helper()
+	ns, nc := testutil.StartTestNATS(t)
+	caller, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(caller.Close)
+	return nc, caller
+}
+
+func quotaSealCapabilityRequest(t *testing.T, caller *nats.Conn, subjectNode, bodyNode string) *nats.Msg {
+	t.Helper()
+	data, err := json.Marshal(admissionv1.AccountQuotaOverrideSealCapabilityRequest{Node: bodyNode, CorrelationRef: "req-1"})
+	require.NoError(t, err)
+	reply, err := caller.Request(admissionv1.AccountQuotaOverrideSealCapabilitySubject(subjectNode), data, 2*time.Second)
+	require.NoError(t, err)
+	return reply
+}
+
+func TestQuotaOverrideSealCapability_AnswersOwnNode(t *testing.T) {
+	nc, caller := newQuotaSealCapabilityConns(t)
+	sub, err := registerQuotaOverrideSealCapability(nc, "node-1")
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+	require.NoError(t, nc.Flush())
+
+	raw := quotaSealCapabilityRequest(t, caller, "node-1", "node-1")
+	assert.Equal(t, "node-1", raw.Header.Get(natsmsg.NodeIDHeader))
+
+	var reply admissionv1.AccountQuotaOverrideSealCapabilityReply
+	require.NoError(t, json.Unmarshal(raw.Data, &reply))
+	assert.Equal(t, "node-1", reply.Node)
+	assert.Equal(t, admissionv1.AccountQuotaOverrideSealCapabilityVersion, reply.CapabilityVersion)
+	assert.Equal(t, "req-1", reply.CorrelationRef)
+}
+
+func TestQuotaOverrideSealCapability_RefusesOtherNode(t *testing.T) {
+	nc, caller := newQuotaSealCapabilityConns(t)
+	sub, err := registerQuotaOverrideSealCapability(nc, "node-1")
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+	require.NoError(t, nc.Flush())
+
+	raw := quotaSealCapabilityRequest(t, caller, "node-1", "node-2")
+	var re struct {
+		Code string `json:"Code"`
+	}
+	require.NoError(t, json.Unmarshal(raw.Data, &re))
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, re.Code)
+}
+
+// Two gateways configured with one node ID both answer: the subject has no
+// queue group, which is how the probe catches a duplicate.
+func TestQuotaOverrideSealCapability_HasNoQueueGroup(t *testing.T) {
+	nc, caller := newQuotaSealCapabilityConns(t)
+	for range 2 {
+		sub, err := registerQuotaOverrideSealCapability(nc, "node-1")
+		require.NoError(t, err)
+		defer func() { _ = sub.Unsubscribe() }()
+	}
+	require.NoError(t, nc.Flush())
+
+	inbox := caller.NewRespInbox()
+	replies, err := caller.SubscribeSync(inbox)
+	require.NoError(t, err)
+	data, err := json.Marshal(admissionv1.AccountQuotaOverrideSealCapabilityRequest{Node: "node-1"})
+	require.NoError(t, err)
+	require.NoError(t, caller.PublishRequest(admissionv1.AccountQuotaOverrideSealCapabilitySubject("node-1"), inbox, data))
+
+	for range 2 {
+		_, err := replies.NextMsg(2 * time.Second)
+		require.NoError(t, err)
+	}
+}
+
+func TestQuotaOverrideSealCapability_InvalidNodeServesNothing(t *testing.T) {
+	nc, caller := newQuotaSealCapabilityConns(t)
+	for _, node := range []string{"", "a.b", "node >"} {
+		sub, err := registerQuotaOverrideSealCapability(nc, node)
+		require.NoError(t, err)
+		assert.Nil(t, sub, "%q", node)
+	}
+	require.NoError(t, nc.Flush())
+
+	_, err := caller.Request(admissionv1.AccountQuotaOverrideSealCapabilitySubject("a"), []byte(`{"node":"a"}`), 200*time.Millisecond)
+	assert.ErrorIs(t, err, nats.ErrNoResponders)
 }

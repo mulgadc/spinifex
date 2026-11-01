@@ -238,12 +238,14 @@ Viperblock responds with an NBD URI that QEMU uses to access the block device.
 
 A direct-boot microVM keeps the launcher's saved `vm.Config` as a clean base, and `startQEMU` adds data volumes only to a launch-only copy of it (`runtime/compute/vm/lifecycle.go`).
 At each start the daemon takes one snapshot of the instance's already-mounted data requests, probes each NBD or host block export from that snapshot, and builds the command from the same snapshot, so the launched endpoint is the one that was checked and is never written back into the saved base.
-Each data volume becomes a `virtio-blk-device` on the MMIO bus with the same id, node name, I/O thread, serial and `werror=stop,rerror=stop` policy as the PCI device, and takes no PCIe hot-plug port.
+The microVM boots with `pcie=on`, so its NICs are `virtio-net-pci` devices with MSI-X interrupts instead of `virtio-net-device` MMIO devices.
+Each data volume becomes a `virtio-blk-pci` device on the default PCIe bus with the same id, node name, I/O thread, serial and `werror=stop,rerror=stop` policy as the q35 device, and takes no PCIe hot-plug port.
+A microVM started without `pcie=on` keeps the `virtio-*-device` MMIO transports.
 
 Boot and EFI requests are rejected on this path, and a direct-boot instance with no data requests launches its base unchanged.
 Disk-boot (q35) instances keep the existing PCI hot-plug path.
 
-Hot-attaching a volume to a running direct-boot microVM is not supported, because the MMIO bus has no PCIe root port to plug into.
+Hot-attaching a volume to a running direct-boot microVM is not supported, because the microVM has no PCIe hot-plug root port to plug into.
 `AttachVolume` refuses it before mounting the volume or changing any instance or volume state, and the EC2 API returns `UnsupportedOperation`.
 
 This covers only requests that are already mounted when the instance starts; nothing yet supplies data volumes to a system instance, and the path is verified with fake-QEMU unit tests, not with a real EBS volume in a guest.

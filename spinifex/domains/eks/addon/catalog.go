@@ -27,6 +27,8 @@ type Spec struct {
 	// Builds maps each upstream version to its EKS build number, the n in
 	// v<upstream>-eksbuild.<n>.
 	Builds map[string]int
+	// Type is the AWS add-on type reported by DescribeAddonVersions.
+	Type string
 	// RequiresIRSA indicates the add-on needs an IAM role for service-account binding.
 	RequiresIRSA bool
 	Description  string
@@ -37,32 +39,38 @@ type Spec struct {
 
 // catalog is the bundled add-on registry. Keep newest version first per slice.
 var catalog = buildCatalog(
-	newSpec("aws-load-balancer-controller", true,
+	typed("networking", newSpec("aws-load-balancer-controller", true,
 		"Provisions ELBv2 load balancers for Kubernetes Service/Ingress resources.",
-		"2.11.0"),
-	newSpec("argocd", false,
+		"2.11.0")),
+	typed("gitops", newSpec("argocd", false,
 		"Declarative GitOps continuous delivery for Kubernetes.",
-		"3.0.23"),
-	newSpec("aws-ebs-csi-driver", true,
+		"3.0.23")),
+	typed("storage", newSpec("aws-ebs-csi-driver", true,
 		"Container Storage Interface driver for Amazon EBS (Viperblock) volumes.",
-		"1.40.1"),
+		"1.40.1")),
 	// Staged automatically for GPU node groups, so hidden from the public
 	// catalogue like spinifex-noop but still creatable by name.
-	hidden(newSpec(NvidiaDevicePlugin, false,
+	hidden(typed("accelerator", newSpec(NvidiaDevicePlugin, false,
 		"NVIDIA device plugin exposing nvidia.com/gpu allocatable via CDI on GPU-tainted nodes.",
-		"0.17.4")),
+		"0.17.4"))),
 	// spinifex-noop is the delivery-transport fixture: a trivial bundle
 	// (Namespace + ConfigMap) the add-on e2e uses to prove stage, render,
 	// auto-deploy, ACTIVE and delete round-trip without a real workload.
-	hidden(newSpec("spinifex-noop", false,
+	hidden(typed("fixture", newSpec("spinifex-noop", false,
 		"No-op delivery-transport fixture (Namespace + ConfigMap).",
-		"0.1.0")),
+		"0.1.0"))),
 )
 
 // hidden marks a spec as internal: still creatable, but absent from the
 // unfiltered catalogue listing.
 func hidden(s Spec) Spec {
 	s.Hidden = true
+	return s
+}
+
+// typed sets the AWS add-on type reported by DescribeAddonVersions.
+func typed(addonType string, s Spec) Spec {
+	s.Type = addonType
 	return s
 }
 

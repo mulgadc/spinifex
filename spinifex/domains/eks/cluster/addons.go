@@ -2,9 +2,11 @@ package cluster
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -37,15 +39,20 @@ func (s *EKSServiceImpl) ListAddons(ctx context.Context, input *eks.ListAddonsIn
 	return &eks.ListAddonsOutput{Addons: aws.StringSlice(names)}, nil
 }
 
-// DescribeAddonVersions returns the static add-on catalog, optionally filtered by name.
-func (s *EKSServiceImpl) DescribeAddonVersions(ctx context.Context, input *eks.DescribeAddonVersionsInput, _ string) (*eks.DescribeAddonVersionsOutput, error) {
-	filter := ""
-	if input != nil {
-		filter = aws.StringValue(input.AddonName)
+// DescribeAddonVersions returns the add-on catalogue filtered by name, owner,
+// publisher, type and the Kubernetes version its versions support, one page
+// of add-ons at a time.
+func (s *EKSServiceImpl) DescribeAddonVersions(_ context.Context, input *eks.DescribeAddonVersionsInput, _ string) (*eks.DescribeAddonVersionsOutput, error) {
+	if input == nil {
+		input = &eks.DescribeAddonVersionsInput{}
 	}
-	specs := addon.Specs()
-	out := make([]*eks.AddonInfo, 0, len(specs))
-	for _, spec := range specs {
+	// Every catalogue version supports only the K3s line the node image ships.
+	if v := aws.StringValue(input.KubernetesVersion); v != "" && v != defaultK8sVersion {
+		return &eks.DescribeAddonVersionsOutput{Addons: []*eks.AddonInfo{}}, nil
+	}
+	filter := aws.StringValue(input.AddonName)
+	var matched []addon.Spec
+	for _, spec := range addon.Specs() {
 		if filter != "" && spec.Name != filter {
 			continue
 		}
@@ -54,9 +61,51 @@ func (s *EKSServiceImpl) DescribeAddonVersions(ctx context.Context, input *eks.D
 		if spec.Hidden && filter == "" {
 			continue
 		}
+		if !matchesAny(input.Types, spec.Type) || !matchesAny(input.Owners, addonOwner) ||
+			!matchesAny(input.Publishers, addonPublisher) {
+			continue
+		}
+		matched = append(matched, spec)
+	}
+	page, next, err := pageAddons(matched, input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*eks.AddonInfo, 0, len(page))
+	for _, spec := range page {
 		out = append(out, addonSpecToAWS(spec))
 	}
-	return &eks.DescribeAddonVersionsOutput{Addons: out}, nil
+	return &eks.DescribeAddonVersionsOutput{Addons: out, NextToken: next}, nil
+}
+
+// matchesAny reports whether the filter is empty or lists value.
+func matchesAny(filter []*string, value string) bool {
+	return len(filter) == 0 || slices.Contains(aws.StringValueSlice(filter), value)
+}
+
+// maxAddonPage bounds maxResults, the model's range being 1 to 100.
+const maxAddonPage = 100
+
+// pageAddons returns the add-ons after the token, at most maxResults of them.
+// The token is the base64 name of the last add-on returned, opaque to clients.
+func pageAddons(specs []addon.Spec, maxResults *int64, token *string) ([]addon.Spec, *string, error) {
+	if t := aws.StringValue(token); t != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(t)
+		if err != nil {
+			return nil, nil, awserrors.Errorf(awserrors.ErrorEKSInvalidParameter, "nextToken is not valid")
+		}
+		after := string(raw)
+		specs = slices.DeleteFunc(slices.Clone(specs), func(sp addon.Spec) bool { return sp.Name <= after })
+	}
+	limit := len(specs)
+	if maxResults != nil {
+		limit = min(max(int(*maxResults), 1), maxAddonPage)
+	}
+	if limit >= len(specs) {
+		return specs, nil, nil
+	}
+	next := base64.RawURLEncoding.EncodeToString([]byte(specs[limit-1].Name))
+	return specs[:limit], &next, nil
 }
 
 // validateAddonServiceAccountRoleArn rejects a non-empty value that is not
@@ -94,7 +143,7 @@ func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddon
 	version := spec.DefaultVersion
 	if requested := aws.StringValue(input.AddonVersion); requested != "" {
 		var err error
-		if version, err = resolveAddonVersion(spec, requested, cluster); err != nil {
+		if version, err = resolveAddonVersion(ctx, spec, requested, cluster); err != nil {
 			return nil, err
 		}
 	}
@@ -204,7 +253,7 @@ func (s *EKSServiceImpl) UpdateAddon(ctx context.Context, input *eks.UpdateAddon
 			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
 		var err error
-		if version, err = resolveAddonVersion(spec, version, cluster); err != nil {
+		if version, err = resolveAddonVersion(ctx, spec, version, cluster); err != nil {
 			return nil, err
 		}
 	}
@@ -276,17 +325,36 @@ func addonRecordToAWS(cluster string, rec *addon.Record) *eks.Addon {
 	return out
 }
 
-// addonSpecToAWS converts a catalog spec to the SDK AddonInfo shape.
+// The owner and publisher Spinifex reports for every catalogue add-on, as AWS
+// does for the add-ons it publishes.
+const (
+	addonOwner     = "aws"
+	addonPublisher = "eks"
+)
+
+// addonSpecToAWS converts a catalog spec to the SDK AddonInfo shape. Every
+// version supports the one cluster version the node image ships, and exactly
+// one of them is that cluster version's default.
 func addonSpecToAWS(spec addon.Spec) *eks.AddonInfo {
 	versions := make([]*eks.AddonVersionInfo, 0, len(spec.Versions))
 	for _, v := range spec.AWSVersions() {
 		versions = append(versions, &eks.AddonVersionInfo{
 			AddonVersion:           aws.String(v),
+			Architecture:           aws.StringSlice([]string{"amd64"}),
+			RequiresConfiguration:  aws.Bool(false),
 			RequiresIamPermissions: aws.Bool(spec.RequiresIRSA),
+			Compatibilities: []*eks.Compatibility{{
+				ClusterVersion:   aws.String(defaultK8sVersion),
+				PlatformVersions: aws.StringSlice([]string{"*"}),
+				DefaultVersion:   aws.Bool(v == spec.AWSVersion(spec.DefaultVersion)),
+			}},
 		})
 	}
 	return &eks.AddonInfo{
 		AddonName:     aws.String(spec.Name),
+		Type:          aws.String(spec.Type),
+		Owner:         aws.String(addonOwner),
+		Publisher:     aws.String(addonPublisher),
 		AddonVersions: versions,
 	}
 }
@@ -319,7 +387,7 @@ func (s *EKSServiceImpl) addonBucket(ctx context.Context, accountID string) (jet
 // resolveAddonVersion maps a client version, in AWS form or bare upstream form,
 // to the upstream form the record and the bundle lookup use. The bare form is
 // more lenient than AWS, so each use is logged.
-func resolveAddonVersion(spec addon.Spec, requested, cluster string) (string, error) {
+func resolveAddonVersion(ctx context.Context, spec addon.Spec, requested, cluster string) (string, error) {
 	upstream, ok := spec.ParseVersion(requested)
 	if !ok {
 		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
@@ -327,7 +395,7 @@ func resolveAddonVersion(spec addon.Spec, requested, cluster string) (string, er
 			requested, spec.Name, strings.Join(spec.AWSVersions(), ", "))
 	}
 	if requested == upstream {
-		slog.Info("EKS add-on version given in bare upstream form",
+		slog.InfoContext(ctx, "EKS add-on version given in bare upstream form",
 			"addon", spec.Name, "cluster", cluster, "version", requested)
 	}
 	return upstream, nil

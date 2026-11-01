@@ -16,8 +16,23 @@ func ListAddons(ctx context.Context, natsConn *nats.Conn, accountID, cluster str
 }
 
 // DescribeAddonVersions — GET /addons/supported-versions.
-func DescribeAddonVersions(ctx context.Context, natsConn *nats.Conn, accountID string, _ []byte) (*eks.DescribeAddonVersionsOutput, error) {
-	return ekscluster.NewNATSEKSService(natsConn).DescribeAddonVersions(ctx, &eks.DescribeAddonVersionsInput{}, accountID)
+func DescribeAddonVersions(ctx context.Context, natsConn *nats.Conn, accountID string, query []byte) (*eks.DescribeAddonVersionsOutput, error) {
+	q, err := parseListQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	input := &eks.DescribeAddonVersionsInput{
+		AddonName:         q.str("addonName"),
+		KubernetesVersion: q.str("kubernetesVersion"),
+		NextToken:         q.str("nextToken"),
+		Types:             q.strs("types"),
+		Publishers:        q.strs("publishers"),
+		Owners:            q.strs("owners"),
+	}
+	if input.MaxResults, err = q.int64("maxResults"); err != nil {
+		return nil, err
+	}
+	return ekscluster.NewNATSEKSService(natsConn).DescribeAddonVersions(ctx, input, accountID)
 }
 
 // CreateAddon — POST /clusters/{name}/addons.

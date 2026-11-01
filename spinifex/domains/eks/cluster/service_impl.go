@@ -265,6 +265,11 @@ type EKSServiceImpl struct {
 	launchWG sync.WaitGroup
 	// launchStepHook, when set by a test, runs at named points in the launch.
 	launchStepHook func(step string)
+	// launchHeartbeatEvery is how often a running launch refreshes its record's
+	// LaunchHeartbeat; launchStaleAfter is how old a heartbeat may be before the
+	// teardown stops waiting for the launch. Tests inject small values.
+	launchHeartbeatEvery time.Duration
+	launchStaleAfter     time.Duration
 
 	// teardownRunning holds the clusters this process is tearing down, the
 	// in-process gate the teardown lease cannot provide; teardownWG tracks them.
@@ -276,7 +281,7 @@ type EKSServiceImpl struct {
 
 	// bootstraps cancels the bootstrap subscribers this process runs, by cluster.
 	bootstrapMu sync.Mutex
-	bootstraps  map[string]context.CancelFunc
+	bootstraps  map[string]*bootstrapRun
 
 	// baseDomain is the northstar default_domain; "" disables endpoint DNS naming
 	// (the cluster then publishes its bare IP:port endpoint as before).
@@ -313,6 +318,13 @@ func (s *EKSServiceImpl) WaitLaunches() { s.launchWG.Wait() }
 
 const defaultK8sVersion = "1.32"
 
+// A running launch heartbeats every 20 s; one silent for 90 s is taken as
+// crashed, so the teardown waits for a live launch and not for a dead one.
+const (
+	defaultLaunchHeartbeatEvery = 20 * time.Second
+	defaultLaunchStaleAfter     = 90 * time.Second
+)
+
 // NewEKSServiceImpl initialises EKSServiceImpl, wiring the leader KV and reconciler registry.
 func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	if err := addon.ValidateCatalog(); err != nil {
@@ -346,6 +358,8 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 		workerLaunchRetryTimeout: defaultWorkerLaunchRetryTimeout,
 		workerLaunchRetryBackoff: defaultWorkerLaunchRetryBackoff,
 		spawnScanRetryBackoff:    defaultSpawnScanRetryBackoff,
+		launchHeartbeatEvery:     defaultLaunchHeartbeatEvery,
+		launchStaleAfter:         defaultLaunchStaleAfter,
 	}, nil
 }
 
@@ -626,6 +640,8 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 		Logging:                                 clusterLoggingFromInput(input.Logging),
 		Tags:                                    aws.StringValueMap(input.Tags),
 		CreatedAt:                               time.Now().UTC(),
+		LaunchOwner:                             s.launchOwnerID(),
+		LaunchHeartbeat:                         time.Now().UTC(),
 	}
 	// Claim the cluster name before any launching; duplicate/retry handlers lose the claim.
 	if err := s.claimClusterName(ctx, accountID, acctKV, meta); err != nil {
@@ -774,6 +790,83 @@ func (s *EKSServiceImpl) launchSuperseded(ctx context.Context, kv jetstream.KeyV
 	return true
 }
 
+// launchOwnerID names this process as a launch owner in the record.
+func (s *EKSServiceImpl) launchOwnerID() string {
+	if s.deps.HolderID != "" {
+		return s.deps.HolderID
+	}
+	return "local"
+}
+
+// heartbeatLaunch refreshes the record's LaunchHeartbeat while the launch runs,
+// so the teardown of a cluster deleted mid-launch waits for the launch to hand
+// its refs over. A record that is DELETING, gone or a newer cluster's cancels
+// the launch, which then stops at its next step. The returned func stops it.
+func (s *EKSServiceImpl) heartbeatLaunch(ctx context.Context, cancel context.CancelFunc, kv jetstream.KeyValue, meta *ClusterMeta) func() {
+	name, owner, createdAt, arn := meta.Name, meta.LaunchOwner, meta.CreatedAt, meta.Arn
+	every := s.launchHeartbeatEvery
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		if every <= 0 {
+			<-done
+			return
+		}
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			stop := false
+			err := casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+				stop = false
+				if !m.CreatedAt.Equal(createdAt) || m.Arn != arn || m.LaunchOwner != owner || m.Status != ClusterStatusCreating {
+					stop = true
+					return false
+				}
+				m.LaunchHeartbeat = time.Now().UTC()
+				return true
+			})
+			if stop || errors.Is(err, ErrClusterNotFound) {
+				cancel()
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
+}
+
+// endLaunch clears the record's launch owner when the launch returns, by
+// whatever path. A record that is DELETING by then was waiting for this
+// launch, so its teardown is started now rather than at the next sweep.
+func (s *EKSServiceImpl) endLaunch(kv jetstream.KeyValue, accountID string, meta *ClusterMeta) {
+	ctx := context.WithoutCancel(s.bgCtx)
+	deleting := false
+	err := casUpdateMeta(ctx, kv, meta.Name, func(m *ClusterMeta) bool {
+		deleting = m.Status == ClusterStatusDeleting
+		if !sameGeneration(m, meta) {
+			deleting = false
+			return false
+		}
+		return clearLaunchOwner(m)
+	})
+	if err != nil && !errors.Is(err, ErrClusterNotFound) {
+		slog.WarnContext(ctx, "launchClusterInfra: clear launch owner", "cluster", meta.Name, "err", err)
+	}
+	if deleting {
+		s.startTeardown(accountID, meta.Name)
+	}
+}
+
 // adoptLaunchForTeardown recreates a removed record as DELETING with the
 // launch's refs and hands it to the teardown. It reports false if the name was
 // claimed again first.
@@ -787,6 +880,7 @@ func (s *EKSServiceImpl) adoptLaunchForTeardown(ctx context.Context, kv jetstrea
 	rec.DeleteReapExhausted = false
 	rec.LastDeleteReapError = ""
 	rec.DeleteFailedStep = ""
+	rec.LaunchOwner = ""
 	data, err := json.Marshal(&rec)
 	if err != nil {
 		return false
@@ -835,6 +929,11 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	input := lc.input
 	meta := lc.meta
 	acctKV := lc.acctKV
+
+	ctx, cancel := context.WithCancel(ctx)
+	stopHeartbeat := s.heartbeatLaunch(ctx, cancel, acctKV, meta)
+	defer s.endLaunch(acctKV, accountID, meta)
+	defer stopHeartbeat()
 
 	// Build the managed control-plane VPC ("Set B") under the system account: the
 	// AWS-managed-account analogue the customer never provisions. The
@@ -974,7 +1073,10 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	}
 	meta.OIDCIssuer = oidcIssuer
 
-	privPEM, _, err := GenerateClusterOIDCKeypair(ctx, acctKV, name, s.deps.MasterKey)
+	if s.launchStepHook != nil {
+		s.launchStepHook("oidc-keypair")
+	}
+	privPEM, _, err := GenerateClusterOIDCKeypairFor(ctx, acctKV, meta, s.deps.MasterKey)
 	if err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "generate OIDC keypair", err)
 		return
@@ -1289,7 +1391,7 @@ func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string,
 	// teardown. The purge below is a teardown, so it runs under the same gate
 	// and lease as one, and a cluster whose teardown is running is in use.
 	if existing, gerr := GetClusterMeta(ctx, acctKV, name); gerr == nil && existing.Status == ClusterStatusFailed {
-		release, _, held := s.holdTeardown(accountID, name)
+		release, _, held := s.holdTeardown(accountID, name, false)
 		if !held {
 			return errors.New(awserrors.ErrorEKSResourceInUse)
 		}
@@ -1311,6 +1413,8 @@ func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string,
 		m.Status = ClusterStatusCreating
 		m.CreatedAt = meta.CreatedAt
 		m.Arn = meta.Arn
+		m.LaunchOwner = meta.LaunchOwner
+		m.LaunchHeartbeat = time.Now().UTC()
 		reclaimed = true
 		return true
 	}); err != nil {
@@ -1368,6 +1472,7 @@ const (
 	stepInternetGateway = "deleting the cluster internet gateway"
 	stepRecord          = "removing the cluster record"
 	stepNodegroups      = "waiting for the cluster's node groups to be deleted"
+	stepLaunch          = "waiting for the cluster's creation to stop"
 )
 
 // teardownClusterInfra removes every dependant the meta records and returns
@@ -2273,17 +2378,25 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv jetstr
 	}
 	ctx, cancel := context.WithCancel(s.bgCtx)
 	key := reconcilerLeaderKey(accountID, clusterName)
+	entry := &bootstrapRun{cancel: cancel}
 	s.bootstrapMu.Lock()
 	if s.bootstraps == nil {
-		s.bootstraps = map[string]context.CancelFunc{}
+		s.bootstraps = map[string]*bootstrapRun{}
 	}
 	if prev := s.bootstraps[key]; prev != nil {
-		prev()
+		prev.cancel()
 	}
-	s.bootstraps[key] = cancel
+	s.bootstraps[key] = entry
 	s.bootstrapMu.Unlock()
 	go func() {
-		defer cancel()
+		defer func() {
+			cancel()
+			s.bootstrapMu.Lock()
+			if s.bootstraps[key] == entry {
+				delete(s.bootstraps, key)
+			}
+			s.bootstrapMu.Unlock()
+		}()
 		err := boot.RunForKinds(ctx, kinds)
 		if err == nil || errors.Is(err, context.Canceled) {
 			return
@@ -2300,16 +2413,22 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv jetstr
 	}()
 }
 
+// bootstrapRun is one running bootstrap subscriber; its pointer identifies the
+// map entry so an exiting run removes only its own.
+type bootstrapRun struct {
+	cancel context.CancelFunc
+}
+
 // stopBootstrap cancels this process's bootstrap subscriber for a cluster, so
 // a cluster being torn down stops collecting artifacts into its prefix.
 func (s *EKSServiceImpl) stopBootstrap(accountID, clusterName string) {
 	key := reconcilerLeaderKey(accountID, clusterName)
 	s.bootstrapMu.Lock()
-	cancel := s.bootstraps[key]
+	run := s.bootstraps[key]
 	delete(s.bootstraps, key)
 	s.bootstrapMu.Unlock()
-	if cancel != nil {
-		cancel()
+	if run != nil {
+		run.cancel()
 	}
 }
 

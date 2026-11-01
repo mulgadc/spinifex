@@ -159,6 +159,13 @@ type ClusterMeta struct {
 	// last failed pass could not complete. DescribeCluster surfaces it; the raw
 	// error above carries system-account IDs and is never shown to the tenant.
 	DeleteFailedStep string `json:"deleteFailedStep,omitempty"`
+	// LaunchOwner names the node whose create launch is still building this
+	// record, and LaunchHeartbeat is when that launch last confirmed it was
+	// alive. The teardown leaves the record alone while the heartbeat is fresh,
+	// so an overtaken launch hands its refs over before the record goes.
+	LaunchOwner string `json:"launchOwner,omitempty"`
+	// No omitempty: encoding/json never treats a time.Time as empty.
+	LaunchHeartbeat time.Time `json:"launchHeartbeat"`
 	// HealthIssue is the last health failure reason ("" = healthy).
 	// DescribeCluster surfaces it as a ClusterHealth issue.
 	HealthIssue string `json:"healthIssue,omitempty"`
@@ -356,13 +363,17 @@ func persistLaunchMeta(ctx context.Context, kv jetstream.KeyValue, meta *Cluster
 		case ClusterStatusCreating:
 			*m = *meta
 			m.Status = ClusterStatusCreating
+			m.LaunchHeartbeat = time.Now().UTC()
 			return true
 		case ClusterStatusDeleting:
+			// Handing the refs over acknowledges the delete: the launch stops.
 			outcome = errLaunchSuperseded
-			return mergeOwnershipRefs(m, meta)
+			merged := mergeOwnershipRefs(m, meta)
+			return clearLaunchOwner(m) || merged
 		case ClusterStatusFailed:
 			outcome = errLaunchMarkedFailed
-			return mergeOwnershipRefs(m, meta)
+			merged := mergeOwnershipRefs(m, meta)
+			return clearLaunchOwner(m) || merged
 		default:
 			return mergeOwnershipRefs(m, meta)
 		}
@@ -374,6 +385,73 @@ func persistLaunchMeta(ctx context.Context, kv jetstream.KeyValue, meta *Cluster
 		return err
 	}
 	return outcome
+}
+
+func clearLaunchOwner(m *ClusterMeta) bool {
+	if m.LaunchOwner == "" {
+		return false
+	}
+	m.LaunchOwner = ""
+	return true
+}
+
+// launchInFlight reports whether a create launch is still building the record:
+// it has an owner whose heartbeat is younger than staleAfter. A launch that
+// crashed stops heartbeating and stops counting once staleAfter passes.
+func launchInFlight(m *ClusterMeta, staleAfter time.Duration) bool {
+	return m.LaunchOwner != "" && time.Since(m.LaunchHeartbeat) < staleAfter
+}
+
+// putIfGeneration writes key only while the cluster record under meta's name
+// is meta's generation. The key's revision is read before the record is
+// checked, so a newer cluster's write in between fails the update and the
+// retry sees the newer record.
+func putIfGeneration(ctx context.Context, kv jetstream.KeyValue, meta *ClusterMeta, key string, value []byte) error {
+	for range maxClusterStateCASRetries {
+		var rev uint64
+		entry, err := kv.Get(ctx, key)
+		switch {
+		case err == nil:
+			rev = entry.Revision()
+		case errors.Is(err, jetstream.ErrKeyNotFound):
+		default:
+			return fmt.Errorf("kv get %s: %w", key, err)
+		}
+		cur, err := GetClusterMeta(ctx, kv, meta.Name)
+		if err != nil {
+			if errors.Is(err, ErrClusterNotFound) {
+				return fmt.Errorf("%w: %w", errLaunchSuperseded, ErrClusterNotFound)
+			}
+			return err
+		}
+		if !sameGeneration(cur, meta) {
+			return errLaunchNewGeneration
+		}
+		if rev == 0 {
+			_, err = kv.Create(ctx, key, value)
+		} else {
+			_, err = kv.Update(ctx, key, value, rev)
+		}
+		if err == nil {
+			return nil
+		}
+		if !isRevisionConflict(err) {
+			return fmt.Errorf("kv write %s: %w", key, err)
+		}
+	}
+	return fmt.Errorf("eks: write %s kept conflicting", key)
+}
+
+// isRevisionConflict reports a revision-conditional write losing its race.
+func isRevisionConflict(err error) bool {
+	if errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		return true
+	}
+	if apiErr, ok := errors.AsType[*jetstream.APIError](err); ok {
+		return apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence ||
+			apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequenceConstant
+	}
+	return false
 }
 
 // clusterOwnershipRefs lists every resource ID the teardown reads from meta to

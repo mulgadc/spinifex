@@ -32,6 +32,7 @@ var (
 	errTeardownNotRecorded = errors.New("eks: cluster is not DELETING, teardown refused")
 	errTeardownLeaseLost   = errors.New("eks: teardown lease lost")
 	errNodegroupsAttached  = errors.New("eks: cluster still has node groups")
+	errLaunchInFlight      = errors.New("eks: cluster create launch still running")
 )
 
 // teardownLeaderKey is the per-cluster cross-node gate for a DELETING
@@ -82,15 +83,15 @@ var teardownPassTimeout = 15 * time.Minute
 // holdTeardown claims the right to tear a cluster down on this node: the
 // in-process gate, which the lease cannot provide because it re-adopts a key
 // its own node holds, then the cross-node lease. It refuses, without waiting,
-// when either is held or the node is at teardownConcurrency.
-func (s *EKSServiceImpl) holdTeardown(accountID, name string) (release func(), lost <-chan struct{}, ok bool) {
+// when either is held, or, if capped, when the node is at teardownConcurrency.
+func (s *EKSServiceImpl) holdTeardown(accountID, name string, capped bool) (release func(), lost <-chan struct{}, ok bool) {
 	key := teardownLeaderKey(accountID, name)
 	s.teardownMu.Lock()
 	if s.teardownRunning == nil {
 		s.teardownRunning = map[string]struct{}{}
 	}
 	_, busy := s.teardownRunning[key]
-	if busy || len(s.teardownRunning) >= teardownConcurrency {
+	if busy || (capped && len(s.teardownRunning) >= teardownConcurrency) {
 		s.teardownMu.Unlock()
 		return nil, nil, false
 	}
@@ -116,7 +117,7 @@ func (s *EKSServiceImpl) holdTeardown(accountID, name string) (release func(), l
 // reports whether it did. When holdTeardown refuses, the record stays DELETING
 // for the reaper.
 func (s *EKSServiceImpl) startTeardown(accountID, name string) bool {
-	release, lost, ok := s.holdTeardown(accountID, name)
+	release, lost, ok := s.holdTeardown(accountID, name, true)
 	if !ok {
 		return false
 	}
@@ -164,9 +165,22 @@ func (s *EKSServiceImpl) convergeClusterDeletion(ctx context.Context, accountID,
 		if err := checkpoint(); err != nil {
 			return err
 		}
-		// Waiting on node groups is not a failed pass, so it is checked before
-		// the attempt is counted and never grows the backoff.
+		// Waiting on node groups or on a running launch is not a failed pass, so
+		// both are checked before the attempt is counted.
+		pre, err := GetClusterMeta(ctx, acctKV, name)
+		if err != nil {
+			if errors.Is(err, ErrClusterNotFound) {
+				return nil
+			}
+			return err
+		}
+		if pre.Status != ClusterStatusDeleting {
+			return errTeardownNotRecorded
+		}
 		if err := s.refuseWhileNodegroups(ctx, acctKV, name); err != nil {
+			return err
+		}
+		if err := s.waitForLaunch(ctx, acctKV, pre); err != nil {
 			return err
 		}
 		if _, err := RecordDeleteReapAttempt(ctx, acctKV, name); err != nil {
@@ -200,7 +214,7 @@ func (s *EKSServiceImpl) convergeClusterDeletion(ctx context.Context, accountID,
 		done, err := s.removeClusterRecord(ctx, acctKV, name, meta)
 		if err != nil {
 			if !errors.Is(err, errNodegroupsAttached) && !errors.Is(err, errTeardownNotRecorded) {
-				s.recordTeardownFailure(ctx, acctKV, name, []string{stepRecord}, err)
+				s.recordTeardownFailure(context.WithoutCancel(ctx), acctKV, name, []string{stepRecord}, err)
 			}
 			return err
 		}
@@ -210,6 +224,20 @@ func (s *EKSServiceImpl) convergeClusterDeletion(ctx context.Context, accountID,
 		slog.Info("eks: cluster record gained refs during teardown, running another pass", "cluster", name)
 	}
 	return fmt.Errorf("eks: cluster %s record kept changing across %d teardown passes", name, maxTeardownPasses)
+}
+
+// waitForLaunch keeps the record while a create launch for it is still running:
+// removing it would let the launch find it gone and recreate it, so a caller
+// would read the cluster as missing and then DELETING again. The launch hands
+// its refs over at its next write and starts the teardown when it returns.
+func (s *EKSServiceImpl) waitForLaunch(ctx context.Context, acctKV jetstream.KeyValue, meta *ClusterMeta) error {
+	if !launchInFlight(meta, s.launchStaleAfter) {
+		return nil
+	}
+	if meta.DeleteFailedStep != stepLaunch {
+		s.recordTeardownFailure(ctx, acctKV, meta.Name, []string{stepLaunch}, errLaunchInFlight)
+	}
+	return errLaunchInFlight
 }
 
 // refuseWhileNodegroups keeps the record when a node group is still recorded
@@ -279,7 +307,7 @@ func (s *EKSServiceImpl) removeClusterRecord(ctx context.Context, acctKV jetstre
 		if m.Status != ClusterStatusDeleting {
 			return errTeardownNotRecorded
 		}
-		if refsAddedSince(tornDown, m) {
+		if refsAddedSince(tornDown, m) || launchInFlight(m, s.launchStaleAfter) {
 			return errRefsAdded
 		}
 		return nil

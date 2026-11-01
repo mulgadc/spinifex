@@ -377,6 +377,7 @@ func TestS2_EKSLaunchWriteAfterDeleteNeitherRevertsNorRecreates(t *testing.T) {
 		// The launch records what it built as DELETING, so the teardown owns it.
 		t.Parallel()
 		f := newEKSServiceFixture(t)
+		silenceLaunches(f.svc)
 		held := make(chan struct{})
 		gate := make(chan struct{})
 		var once sync.Once
@@ -487,6 +488,7 @@ func TestS2_EKSDeletingClusterAdmitsNoNewDependants(t *testing.T) {
 func TestS2_EKSLaunchOvertakenByDeleteLeavesNoChildRecords(t *testing.T) {
 	t.Parallel()
 	f := newEKSServiceFixture(t)
+	silenceLaunches(f.svc)
 	held := make(chan struct{})
 	gate := make(chan struct{})
 	var once sync.Once

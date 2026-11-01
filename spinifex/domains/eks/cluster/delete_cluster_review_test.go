@@ -35,6 +35,13 @@ func holdLaunch(t *testing.T, inst *fakeK3sInst) (held <-chan struct{}, release 
 	return h, release
 }
 
+// silenceLaunches models a launch whose node stopped heartbeating, so the
+// teardown no longer waits for it and can sweep the record under it.
+func silenceLaunches(svc *EKSServiceImpl) {
+	svc.launchHeartbeatEvery = 0
+	svc.launchStaleAfter = time.Nanosecond
+}
+
 func eventually(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
 	require.Eventually(t, cond, 10*time.Second, 10*time.Millisecond, msg)
@@ -47,6 +54,7 @@ func eventually(t *testing.T, cond func() bool, msg string) {
 func TestS2_EKSOvertakenLaunchNeverWritesANewerClusterOfTheSameName(t *testing.T) {
 	t.Parallel()
 	f := newEKSServiceFixture(t)
+	silenceLaunches(f.svc)
 	f.inst.uniqueIDs = true
 	held, release := holdLaunch(t, f.inst)
 
@@ -88,6 +96,7 @@ func TestS2_EKSOvertakenLaunchNeverWritesANewerClusterOfTheSameName(t *testing.T
 func TestS2_EKSOvertakenLaunchHandsItsInfraToTheTeardown(t *testing.T) {
 	t.Parallel()
 	f := newEKSServiceFixture(t)
+	silenceLaunches(f.svc)
 	held, release := holdLaunch(t, f.inst)
 
 	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")

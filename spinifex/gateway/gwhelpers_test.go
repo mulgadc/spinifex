@@ -400,7 +400,7 @@ func iamRegistration(gw *GatewayConfig) dispatch.Registration {
 	return iamawsapi.NewRegistration(iamawsapi.Deps{
 		IAM: gw.IAMService,
 		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
-			return ec2instanceapi.CountInstanceProfileAssociations(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, gw.NATSConn, activeNodes(gw)(ctx), accountID, profileARN)
 		},
 	})
 }
@@ -1382,7 +1382,7 @@ func withOperator(gw *GatewayConfig) *GatewayConfig {
 		Commit:      gw.Commit,
 		NATS:        gw.NATSConn,
 		RootCAs:     gw.RootCAs,
-		ActiveNodes: gw.DiscoverActiveNodes,
+		ActiveNodes: activeNodes(gw),
 
 		IAM:           gw.IAMService,
 		Quota:         quotaFor(gw),
@@ -1867,7 +1867,7 @@ func ec2Registration(gw *GatewayConfig, mutate ...func(*ec2awsapi.Deps)) dispatc
 		NATS:          gw.NATSConn,
 		IAM:           gw.IAMService,
 		Quota:         ec2quota.Adapter{Service: quotaFor(gw)},
-		ActiveNodes:   gw.DiscoverActiveNodes,
+		ActiveNodes:   activeNodes(gw),
 		ExpectedNodes: gw.ExpectedNodes,
 	}
 	for _, m := range mutate {
@@ -2162,4 +2162,10 @@ func (d *ec2Daemon) reply(subject, body string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.replies[subject] = body
+}
+
+// activeNodes answers the configured node count, which is what discovery falls
+// back to when no daemon answers; no gateway test runs a responder.
+func activeNodes(gw *GatewayConfig) func(context.Context) int {
+	return func(context.Context) int { return gw.ExpectedNodes }
 }

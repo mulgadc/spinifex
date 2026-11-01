@@ -88,7 +88,7 @@ const (
 	testAccessKeyID     = "AKIAINTEGRATIONTESTR"
 	testSecretAccessKey = "integration-test-root-secret"
 
-	// nodeDiscoverSubject is the fan-out GatewayConfig.DiscoverActiveNodes
+	// nodeDiscoverSubject is the fan-out NodeDiscovery.ActiveNodes
 	// publishes to (spinifex/gateway/gateway.go). StartGateway stubs it with
 	// a single-node reply so any call path that triggers node discovery
 	// resolves immediately instead of riding out the fan-out's 500ms timeout.

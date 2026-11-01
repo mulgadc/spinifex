@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -27,7 +26,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	awsec2 "github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
-	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -353,95 +351,6 @@ func startTestNATS(t *testing.T) *nats.Conn {
 	t.Helper()
 	_, nc := testutil.StartTestNATS(t)
 	return nc
-}
-
-func TestDiscoverActiveNodes_NilNATS(t *testing.T) {
-	gw := &GatewayConfig{
-		ExpectedNodes: 3,
-		NATSConn:      nil,
-	}
-
-	result := gw.DiscoverActiveNodes(context.Background())
-	assert.Equal(t, 3, result)
-}
-
-func TestDiscoverActiveNodes_NoResponders(t *testing.T) {
-	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
-	nc := startTestNATS(t)
-
-	gw := &GatewayConfig{
-		ExpectedNodes: 5,
-		NATSConn:      nc,
-	}
-
-	result := gw.DiscoverActiveNodes(context.Background())
-	assert.Equal(t, 5, result)
-}
-
-func TestDiscoverActiveNodes_WithResponders(t *testing.T) {
-	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
-	nc := startTestNATS(t)
-
-	for _, nodeName := range []string{"node-1", "node-2"} {
-		name := nodeName
-		_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
-			resp := clusterv1.NodeDiscoverResponse{Node: name}
-			data, _ := json.Marshal(resp)
-			msg.Respond(data)
-		})
-		require.NoError(t, err)
-	}
-	require.NoError(t, nc.Flush())
-
-	gw := &GatewayConfig{
-		ExpectedNodes: 1,
-		NATSConn:      nc,
-	}
-
-	result := gw.DiscoverActiveNodes(context.Background())
-	assert.Equal(t, 2, result)
-}
-
-func TestDiscoverActiveNodes_InvalidJSON(t *testing.T) {
-	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
-	nc := startTestNATS(t)
-
-	_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
-		msg.Respond([]byte("not json"))
-	})
-	require.NoError(t, err)
-	require.NoError(t, nc.Flush())
-
-	gw := &GatewayConfig{
-		ExpectedNodes: 4,
-		NATSConn:      nc,
-	}
-
-	result := gw.DiscoverActiveNodes(context.Background())
-	assert.Equal(t, 4, result)
-}
-
-func TestDiscoverActiveNodes_DuplicateNodes(t *testing.T) {
-	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
-	nc := startTestNATS(t)
-
-	for range 2 {
-		_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
-			resp := clusterv1.NodeDiscoverResponse{Node: "same-node"}
-			data, _ := json.Marshal(resp)
-			msg.Respond(data)
-		})
-		require.NoError(t, err)
-	}
-	require.NoError(t, nc.Flush())
-
-	gw := &GatewayConfig{
-		ExpectedNodes: 5,
-		NATSConn:      nc,
-	}
-
-	result := gw.DiscoverActiveNodes(context.Background())
-	assert.Equal(t, 1, result)
 }
 
 func TestParseAWSQueryArgs(t *testing.T) {

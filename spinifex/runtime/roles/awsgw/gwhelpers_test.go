@@ -30,6 +30,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/clusterready"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
@@ -185,7 +186,7 @@ func ec2Registration(gw *gateway.GatewayConfig, mutate ...func(*ec2awsapi.Deps))
 		NATS:          gw.NATSConn,
 		IAM:           gw.IAMService,
 		Quota:         ec2quota.Adapter{Service: quotaFor(gw)},
-		ActiveNodes:   gw.DiscoverActiveNodes,
+		ActiveNodes:   (&awsgw.NodeDiscovery{NATS: gw.NATSConn, Expected: gw.ExpectedNodes}).ActiveNodes,
 		ExpectedNodes: gw.ExpectedNodes,
 	}
 	for _, m := range mutate {

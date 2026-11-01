@@ -527,6 +527,7 @@ func launchService(config *config.ClusterConfig) error {
 		return fmt.Errorf("ECR registry bridge: %w", err)
 	}
 	registryHosts := ingresshttp.NewHostMatcher(config.AWS.ServicesDomain, "dkr", "ecr")
+	nodes := &NodeDiscovery{NATS: natsConn, Expected: len(config.Nodes)}
 	gw := gateway.GatewayConfig{
 		Debug:          nodeConfig.AWSGW.Debug,
 		DisableLogging: false,
@@ -622,7 +623,7 @@ func launchService(config *config.ClusterConfig) error {
 		NATS:           natsConn,
 		IAM:            iamService,
 		Quota:          quotaSvc,
-		ActiveNodes:    gw.DiscoverActiveNodes,
+		ActiveNodes:    nodes.ActiveNodes,
 		ExpectedNodes:  len(config.Nodes),
 		NodeIDs:        nodeIDs,
 		AZ:             nodeConfig.AZ,
@@ -641,7 +642,7 @@ func launchService(config *config.ClusterConfig) error {
 	iamControlPlane := iamawsapi.NewRegistration(iamawsapi.Deps{
 		IAM: iamService,
 		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
-			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, nodes.ActiveNodes(ctx), accountID, profileARN)
 		},
 	})
 	ecsControlPlane := ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})
@@ -668,7 +669,7 @@ func launchService(config *config.ClusterConfig) error {
 		Commit:      gw.Commit,
 		NATS:        natsConn,
 		RootCAs:     rootCAs,
-		ActiveNodes: gw.DiscoverActiveNodes,
+		ActiveNodes: nodes.ActiveNodes,
 		ModelAccess: bedrockAccess,
 		Credentials: bedrockCredentials,
 		Access:      bedrockAccess,

@@ -26,7 +26,10 @@ store VMs on --node. The desired state is recorded first, so rerunning the
 command resumes an interrupted enable. Only a single-node cluster is supported.
 
 Enabled is not ready: run "spx admin sqs status" to see whether the store holds
-its server key and a worker is polling.`,
+its server key and a worker is polling.
+
+Do not put tenant production data in SQS: SQS-managed message encryption is not
+implemented, queues cannot be deleted or purged, and nothing removes SQS data yet.`,
 	Args:          cobra.NoArgs,
 	RunE:          runSQSEnable,
 	SilenceUsage:  true,

@@ -61,7 +61,7 @@ type Deps struct {
 	// Region and the SQS observations serve the SQS enable and status actions.
 	Region                 string
 	SQSWorkerPolling       func() bool
-	SQSTenantAPIRegistered bool
+	SQSTenantAPIRegistered func() bool
 }
 
 // adminActions are the actions only the super-admin account may call.

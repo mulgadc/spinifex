@@ -651,6 +651,8 @@ func launchService(config *config.ClusterConfig) error {
 	sqsGate := &sqsservicestate.Gate{JS: js, Region: nodeConfig.Region, TTL: 2 * time.Second}
 	sqsRelay := &sqsrelay.Relay{Admit: sqsGate.Open}
 	sqsControlPlane := sqsRegistrations(sqsRelay, registryHost, registryPort)
+	// Set once the gateway is composed, so status reports the registry it serves.
+	var composedServices *dispatch.Registry
 	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
 		Version:     version,
 		Commit:      commit,
@@ -661,14 +663,15 @@ func launchService(config *config.ClusterConfig) error {
 		Credentials: bedrockCredentials,
 		Access:      bedrockAccess,
 
-		IAM:               iamService,
-		Quota:             quotaSvc,
-		ExpectedNodes:     len(config.Nodes),
-		NodeIDs:           nodeIDs,
-		BucketStore:       objStore,
-		SignupMaxAccounts: signupMaxAccounts,
-		Region:            nodeConfig.Region,
-		SQSWorkerPolling:  sqsRelay.WorkerPresent,
+		IAM:                    iamService,
+		Quota:                  quotaSvc,
+		ExpectedNodes:          len(config.Nodes),
+		NodeIDs:                nodeIDs,
+		BucketStore:            objStore,
+		SignupMaxAccounts:      signupMaxAccounts,
+		Region:                 nodeConfig.Region,
+		SQSWorkerPolling:       sqsRelay.WorkerPresent,
+		SQSTenantAPIRegistered: func() bool { return sqsServed(composedServices) },
 	})
 	// The SQS worker's internal surface binds its buckets per request and never
 	// creates them, so it refuses every caller until a worker launch has.
@@ -688,6 +691,7 @@ func launchService(config *config.ClusterConfig) error {
 	if err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
+	composedServices = gw.Services
 	gw.Throttler = throttler
 
 	// Leader-locked vCPU reconcile: the only path that lowers the counter,

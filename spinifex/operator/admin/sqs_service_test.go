@@ -104,7 +104,7 @@ func TestDescribeSQS_ReadyNeedsTheTenantAPIAndAPollingWorker(t *testing.T) {
 	if err != nil || got.Store != sqsStoreReady || !got.WorkerPolling || got.TenantAPI != sqsTenantAPINotRegistered || got.Ready {
 		t.Fatalf("unregistered tenant API = %+v, %v; want bound, polling, not-registered, not Ready", got, err)
 	}
-	obs.TenantAPIRegistered = true
+	obs.TenantAPIRegistered = func() bool { return true }
 	if got, err = DescribeSQS(ctx, js, region, obs); err != nil || !got.Ready {
 		t.Fatalf("registered = %+v, %v; want Ready", got, err)
 	}

@@ -27,10 +27,11 @@ type SQSStatus struct {
 }
 
 // SQSObservers are this gateway's own observations. WorkerPolling is true
-// only while a worker with a connected store has polled recently.
+// only while a worker with a connected store has polled recently, and
+// TenantAPIRegistered only when the composed gateway serves the SQS API.
 type SQSObservers struct {
 	WorkerPolling       func() bool
-	TenantAPIRegistered bool
+	TenantAPIRegistered func() bool
 }
 
 // Store progress names in SQSStatus.
@@ -64,8 +65,9 @@ func DescribeSQS(ctx context.Context, js jetstream.JetStream, region string, obs
 	if obs.WorkerPolling != nil {
 		out.WorkerPolling = obs.WorkerPolling()
 	}
+	registered := obs.TenantAPIRegistered != nil && obs.TenantAPIRegistered()
 	out.TenantAPI = sqsTenantAPINotRegistered
-	if obs.TenantAPIRegistered {
+	if registered {
 		out.TenantAPI = sqsTenantAPIRegistered
 	}
 	records, err := storelaunch.Bind(ctx, js)
@@ -85,7 +87,7 @@ func DescribeSQS(ctx context.Context, js jetstream.JetStream, region string, obs
 			out.Store, out.StoreInstanceID = sqsStoreReady, cur.InstanceID
 		}
 	}
-	out.Ready = obs.TenantAPIRegistered && rec.Desired == servicestate.Enabled && out.Store == sqsStoreReady && out.WorkerPolling
+	out.Ready = registered && rec.Desired == servicestate.Enabled && out.Store == sqsStoreReady && out.WorkerPolling
 	return out, nil
 }
 

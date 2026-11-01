@@ -3,9 +3,12 @@ package vm
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 // fenceStateReasonCode is the StateReason a fenced instance carries. Distinct
@@ -78,7 +81,7 @@ func (m *Manager) FenceVolume(ctx context.Context, volumeID, reason string) stri
 		"instanceId", instance.ID, "volumeId", volumeID, "reason", reason)
 
 	m.goroutineWg.Go(func() {
-		m.shutdownQEMU(instance)
+		m.killFencedQEMU(ctx, instance)
 		m.cleanupTapDevices(instance)
 		m.Inspect(instance, func(v *VM) { v.LastNode = m.deps.NodeID })
 		if err := m.writeRunningState(); err != nil {
@@ -87,6 +90,37 @@ func (m *Manager) FenceVolume(ctx context.Context, volumeID, reason string) stri
 		}
 	})
 	return instance.ID
+}
+
+// fencedQEMUKillTimeout bounds the wait for a SIGKILLed fenced guest to exit.
+const fencedQEMUKillTimeout = 10 * time.Second
+
+// killFencedQEMU ends a fenced guest without a powerdown. Its disk is gone, so a
+// graceful shutdown has nothing to flush to, and while it waits the guest's taps
+// and process outlive its ownership as a survivor starts it again.
+func (m *Manager) killFencedQEMU(ctx context.Context, instance *VM) {
+	pid, err := hostprocess.ReadPidFile(instance.ID)
+	if err != nil || pid <= 0 {
+		// No PID to kill, so ask QEMU itself; quit skips the guest's shutdown.
+		if instance.QMPClient != nil {
+			if _, qerr := sendQMPCommandWithTimeout(ctx, instance.QMPClient,
+				qmp.QMPCommand{Execute: "quit"}, instance.ID, qmpCommandTimeout); qerr != nil {
+				slog.WarnContext(ctx, "FenceVolume: QMP quit failed (VM may already be stopped)",
+					"instanceId", instance.ID, "err", qerr)
+			}
+		}
+		return
+	}
+	if !hostprocess.ProcessAlive(pid) {
+		_ = hostprocess.RemovePidFile(instance.ID)
+		return
+	}
+	if err := hostprocess.ForceKillProcess(pid, fencedQEMUKillTimeout); err != nil {
+		slog.ErrorContext(ctx, "FenceVolume: failed to kill the fenced guest",
+			"instanceId", instance.ID, "pid", pid, "err", err)
+		return
+	}
+	_ = hostprocess.RemovePidFile(instance.ID)
 }
 
 // instanceUsingVolume returns the local instance holding volumeID, or nil. The

@@ -80,7 +80,7 @@ start_run() {
 # start_store: one init respawn of the store step, in the background.
 start_store() {
     SQSW_RUN="$T/run" SQSW_DATA="$T/data" SQSW_CONSOLE="$T/console" SQSW_NATS_BIN="$TMP/bin/nats" \
-        SQSW_BIN="$TMP/bin/boot" SQSW_BOOT_RETRY=0 SQSW_PARK="sleep 60" \
+        SQSW_BIN="$TMP/bin/boot" SQSW_BOOT_RETRY=0 SQSW_PARK="sleep 60" SQSW_LIB="$LIB" \
         sh -c '. "$1"; sqsw_store' sh "$LIB" & spid=$!
     CHILDREN="$CHILDREN $spid"
 }
@@ -169,6 +169,17 @@ bchild=$(cat "$T/boot-child" 2>/dev/null); CHILDREN="$CHILDREN $bchild"
 check "a boot that survives SIGKILL fails shutdown and keeps the disk mounted" \
     '! shutdown_step "$bchild" && ! grep -q umount "$T/calls.log" && grep -q "boot pid=$bchild STILL ALIVE" "$T/console"'
 kill -KILL "$spid" "$bchild" 2>/dev/null || true
+# Shutdown sets stopping after the store's own check but before the boot child
+# runs: the child must still record itself and never start sqs-worker boot.
+fresh boot-window; rm -f "$T/run/store.conf" "$T/run/receipt-ready"; echo 0 > "$T/boot-rcs"
+: > "$T/run/stopping"
+SQSW_RUN="$T/run" SQSW_CONSOLE="$T/console" SQSW_BIN="$TMP/bin/boot" SQSW_BOOT_RETRY=0 SQSW_PARK="sleep 60" SQSW_LIB="$LIB" \
+    sh -c '. "$1"; sqsw_boot' sh "$LIB" & wpid=$!
+CHILDREN="$CHILDREN $wpid"
+waitfor "grep -q 'shutdown during boot' \"\$T/console\"" || true
+check "a boot child started after shutdown began never runs boot" \
+    'grep -q "shutdown during boot" "$T/console" && [ ! -e "$T/boots" ] && [ ! -e "$T/run/boot-refused" ]'
+kill -KILL "$wpid" 2>/dev/null || true
 
 # --- A watcher killed after readiness: its marker must not outlive it ---
 fresh killed-after-ready

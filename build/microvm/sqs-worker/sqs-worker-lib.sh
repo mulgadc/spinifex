@@ -11,6 +11,7 @@ SQSW_DATA=${SQSW_DATA:-/data}
 SQSW_CONSOLE=${SQSW_CONSOLE:-/dev/console}
 SQSW_MOUNTS=${SQSW_MOUNTS:-/proc/mounts}
 SQSW_BIN=${SQSW_BIN:-/usr/local/bin/sqs-worker}
+SQSW_LIB=${SQSW_LIB:-/usr/local/lib/sqs-worker/sqs-worker-lib.sh}
 SQSW_NATS_BIN=${SQSW_NATS_BIN:-/usr/local/bin/nats-server}
 SQSW_STORE_PORT=${SQSW_STORE_PORT:-4222}
 SQSW_STOP_BUDGET_TENTHS=${SQSW_STOP_BUDGET_TENTHS:-100}
@@ -78,11 +79,11 @@ sqsw_record() { echo "$$ $(sqsw_starttime $$)" > "$SQSW_RUN/$1.pid"; }
 sqsw_boot() {
     [ ! -e "$SQSW_RUN/boot-refused" ] || sqsw_park "store: boot refused, not starting"
     [ -s "$SQSW_RUN/receipt-ready" ] && return 0
-    # Boot is recorded on its own so shutdown stops it before unmounting.
-    "$SQSW_BIN" boot >> "$SQSW_CONSOLE" 2>&1 &
+    # The boot child records itself before its stopping check, as the other
+    # steps do, so shutdown either sees its record or it never starts.
+    SQSW_RUN="$SQSW_RUN" SQSW_BIN="$SQSW_BIN" sh -c '. "$1"; sqsw_record boot; [ ! -e "$SQSW_RUN/stopping" ] || exit 75; exec "$SQSW_BIN" boot' \
+        sh "$SQSW_LIB" >> "$SQSW_CONSOLE" 2>&1 &
     child=$!
-    echo "$child $(sqsw_starttime "$child")" > "$SQSW_RUN/boot.pid"
-    [ ! -e "$SQSW_RUN/stopping" ] || kill -TERM "$child" 2>/dev/null || true
     rc=0
     wait "$child" || rc=$?
     rm -f "$SQSW_RUN/boot.pid"

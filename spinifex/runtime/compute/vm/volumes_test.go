@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/internal/testkit/deadpid"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
@@ -1398,7 +1399,7 @@ func TestDetachVolume_ConfirmedDeadQEMU_SkipsQMPAndSeals(t *testing.T) {
 	defer cancel()
 
 	const id = "i-1"
-	require.NoError(t, hostprocess.WritePidFile(id, 999999)) // PID file present but process dead
+	require.NoError(t, hostprocess.WritePidFile(id, deadpid.PID)) // PID file present but process dead
 
 	mounter := &fakeVolumeMounter{}
 	updater := &fakeVolumeStateUpdater{}

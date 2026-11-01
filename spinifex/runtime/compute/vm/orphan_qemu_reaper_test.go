@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/testkit/deadpid"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,7 +60,7 @@ func TestOrphanQEMUReaper(t *testing.T) {
 	t.Run("stale PID file (dead process) is cleaned without counting as a reap", func(t *testing.T) {
 		reaper, store := newOrphanReaperManager(t)
 		const id = "i-term-stale"
-		require.NoError(t, hostprocess.WritePidFile(id, 999999)) // dead pid
+		require.NoError(t, hostprocess.WritePidFile(id, deadpid.PID))
 		store.terminated[id] = &VM{ID: id, Status: StateTerminated}
 
 		reaped, err := reaper.Sweep(context.Background())

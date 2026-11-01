@@ -83,10 +83,10 @@ func (a *Agent) reconcile(ctx context.Context) map[string]bool {
 		statuses := make([]ecsv1.ContainerStatus, 0, len(t.running))
 		for _, c := range t.running {
 			name := c.Labels[labelContainerName]
-			go a.waitContainer(ctx, t.as, name, c.ID)
 			statuses = append(statuses, ecsv1.ContainerStatus{Name: name, Status: ecsv1.TaskStatusRunning, ContainerID: c.ID})
 		}
 		a.reportTaskState(t.as, ecsv1.TaskStatusRunning, "", statuses)
+		a.waitContainers(ctx, t.as, statuses)
 		adopted[taskID] = true
 		slog.Info("ecs-agent: re-adopted running task", "task", taskID, "containers", len(t.running))
 	}

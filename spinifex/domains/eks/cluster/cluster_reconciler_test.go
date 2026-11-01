@@ -411,9 +411,17 @@ func TestClusterReconciler_ActiveProbesAndWarnsOnHealthzFail(t *testing.T) {
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	stub.setResponse(http.StatusServiceUnavailable, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	_ = r.Run(ctx)
+	// Stopped once a pass has recorded the probe, not after a fixed window a
+	// loaded runner can spend before the first pass lands.
+	ctx, cancel := context.WithCancel(context.Background())
+	ran := make(chan error, 1)
+	go func() { ran <- r.Run(ctx) }()
+	require.Eventually(t, func() bool {
+		meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
+		return err == nil && meta.HealthIssue != ""
+	}, 10*time.Second, 5*time.Millisecond, "the run loop never recorded the failing probe")
+	cancel()
+	<-ran
 
 	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
 	require.NoError(t, err)

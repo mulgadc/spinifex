@@ -60,7 +60,7 @@ intact; ADR-0001 explicitly defers that design.
 
 | Current path | Standing | Target ownership | Rule |
 |---|---|---|---|
-| `cmd/aws-model-coverage` | Qualification generator | Thin main; reusable code in `internal/tooling` | Produces the dispatch-versus-model inventory; never imported by product packages. |
+| `cmd/aws-model-coverage` | Qualification generator | Thin main; reusable code in `internal/tooling` | Produces the dispatch-versus-model inventory; never imported by product packages. Debt: it reads each domain's declared `OperationInventory` from `domains/<service>/awsapi` (ACM, EC2, ECR, ECS, EKS, ELBv2, IAM, RDS, Route 53, SQS, STS) and never constructs a registration. |
 | `cmd/dhcptest` | Development diagnostic | Thin main; reusable code in `internal/tooling` if extraction is useful | It is a DHCP probe, not a supported `spx admin` command. |
 | `cmd/spx-loadgen` | Qualification/load tool | Thin main; reusable code in `internal/testkit` | It drives test load and is not shipped to nodes. |
 | `tests/e2e/*/cmd/*`, `tests/bench/*/cmd/*` | Test and benchmark-private tools | Remain test-private | They are invoked by a test or benchmark harness, not a product process. |

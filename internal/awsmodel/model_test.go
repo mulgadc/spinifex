@@ -8,7 +8,7 @@ import (
 )
 
 func TestServices(t *testing.T) {
-	want := []Service{ACM, EC2, ECR, ECS, EKS, ElasticLoadBalancingV2, IAM, RDS, Route53, S3, STS}
+	want := []Service{ACM, EC2, ECR, ECS, EKS, ElasticLoadBalancingV2, IAM, RDS, Route53, S3, SQS, STS}
 	if got := Services(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Services() = %v, want %v", got, want)
 	}

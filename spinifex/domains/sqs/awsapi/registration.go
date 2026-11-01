@@ -141,6 +141,11 @@ func OperationNames() []string {
 	return names
 }
 
+// OperationInventory lists the AWS model actions the registration serves.
+func OperationInventory() dispatch.Inventory {
+	return dispatch.Inventory{Registered: OperationNames()}
+}
+
 // queryErrorCodes are the legacy query codes the SQS model gives error shapes
 // whose name differs, as aws-sdk-go v1 records them, and the Coral framework
 // errors' query codes as captured from AWS.

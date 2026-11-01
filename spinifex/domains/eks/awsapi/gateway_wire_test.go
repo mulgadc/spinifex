@@ -93,6 +93,46 @@ func TestEKSRequest_InternalAddonsWireBody(t *testing.T) {
 		rec.Body.String())
 }
 
+// The node-gc agent reads the same REST-JSON shape: the Go field name, sorted
+// IDs drawn from every nodegroup record of the cluster.
+func TestEKSRequest_InternalWorkersWireBody(t *testing.T) {
+	const cpInstanceID = "i-cp0000000000001"
+	_, nc, js := testutil.StartTestJetStream(t)
+	kv, err := ekscluster.GetOrCreateAccountBucket(t.Context(), js, authzAccountID)
+	require.NoError(t, err)
+	require.NoError(t, ekscluster.PutClusterMeta(t.Context(), kv, &ekscluster.ClusterMeta{
+		Name:              "prod",
+		Status:            ekscluster.ClusterStatusActive,
+		ControlPlaneNodes: []ekscluster.ControlPlaneNode{{InstanceID: cpInstanceID}},
+	}))
+	for _, rec := range []*ekscluster.NodegroupRecord{
+		{ClusterName: "prod", Name: "ng-b", InstanceIDs: []string{"i-0ccc", "i-0aaa"}},
+		{ClusterName: "prod", Name: "ng-a", InstanceIDs: []string{"i-0bbb"}},
+	} {
+		require.NoError(t, ekscluster.PutNodegroupRecord(t.Context(), kv, rec))
+	}
+
+	svc, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Region: authzRegion})
+	require.NoError(t, err)
+	sub, err := nc.Subscribe("eks.ListManagedWorkers", func(m *nats.Msg) {
+		acct := natsmsg.AccountIDFromMsg(m)
+		natsmsg.ServeNATSRequestCtx(m, func(ctx context.Context, in *ekscluster.ListManagedWorkersInput) (*ekscluster.ListManagedWorkersOutput, error) {
+			return svc.ListManagedWorkers(ctx, in, acct)
+		})
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	gw := scopedEKS(gwtest.Statement("Allow", "eks:*", "*"))
+	gw.nc = nc
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/clusters/prod/internal-workers/"+authzAccountID, nil)
+	require.NoError(t, gw.as(cpAgentContext(cpInstanceID)).serve(rec, req))
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, `{"InstanceIDs":["i-0aaa","i-0bbb","i-0ccc"]}`, rec.Body.String())
+}
+
 // CreateAddon and UpdateAddon hand their service-account role to iam:PassRole,
 // same as CreateCluster's roleArn and CreateNodegroup's nodeRole; an absent
 // role passes nothing.

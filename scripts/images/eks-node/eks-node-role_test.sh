@@ -141,6 +141,8 @@ for INIT in openrc systemd; do
             END { print (rn > 0 && kn > 0 && rn < kn) ? "yes" : "no" }
         ' "${CALLS}"
     )"
+    check "server(${INIT}): enables node-gc" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-node-gc)")"
+    check "server(${INIT}): starts node-gc" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-node-gc)")"
     check "server(${INIT}): no k3s-agent" "no" "$(present "${CALLS}" "$(enable_cmd "${INIT}" k3s-agent)")"
     check "server(${INIT}): self-disables" "yes" "$(present "${CALLS}" "$(disable_cmd "${INIT}" eks-node-role)")"
 
@@ -153,6 +155,8 @@ for INIT in openrc systemd; do
     check "server-join(${INIT}): enables webhook" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" eks-token-webhook)")"
     check "server-join(${INIT}): enables k3s" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" k3s)")"
     check "server-join(${INIT}): enables state-report" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-state-report)")"
+    check "server-join(${INIT}): enables node-gc" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-node-gc)")"
+    check "server-join(${INIT}): starts node-gc" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-node-gc)")"
     check "server-join(${INIT}): enables konnectivity-server" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" konnectivity-server)")"
     check "server-join(${INIT}): enables k3s-recovery" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-k3s-recovery)")"
     check "server-join(${INIT}): starts k3s-recovery" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-k3s-recovery)")"
@@ -170,7 +174,7 @@ for INIT in openrc systemd; do
     check "agent(${INIT}): exit 0" 0 "${rc}"
     check "agent(${INIT}): role file" "agent" "$(cat "${ROLE_FILE}")"
     check "agent(${INIT}): enables k3s-agent" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" k3s-agent)")"
-    check "agent(${INIT}): no server services" "yes" "$(absent_all "${CALLS}" "eks-token-webhook" "k3s-first-boot" "$(enable_cmd "${INIT}" k3s)")"
+    check "agent(${INIT}): no server services" "yes" "$(absent_all "${CALLS}" "eks-token-webhook" "k3s-first-boot" "mulga-eks-node-gc" "$(enable_cmd "${INIT}" k3s)")"
 
     # --- agent (inferred from agent.env, no explicit role) ---
     run_case "${INIT}" agent_inferred

@@ -52,7 +52,7 @@ func main() {
 	path, err := run(os.Args[1], os.Args[2], logf)
 	if err != nil {
 		logf("FATAL: " + err.Error())
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 	fmt.Println(path)
 }
@@ -85,7 +85,7 @@ func run(dir, certPath string, logf func(string)) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	return storekey.Ensure(ctx, storekey.Config{
 		Dir:      dir,
@@ -93,10 +93,22 @@ func run(dir, certPath string, logf func(string)) (string, error) {
 		Address:  addr,
 		CertPath: certPath,
 		Gateway:  gateway{c},
-		Attempts: 120,
+		Attempts: 12,
 		Wait:     5 * time.Second,
 		Log:      logf,
 	})
+}
+
+// exitCode is 3 for a key that must never be used, which the store treats as
+// final, and 1 for anything a later boot step may get past.
+func exitCode(err error) int {
+	for _, final := range []error{storekey.ErrWrongStore, storekey.ErrKeyMissing, storekey.ErrKeyChanged,
+		storekey.ErrUnsafe, storekey.ErrCorrupt} {
+		if errors.Is(err, final) {
+			return 3
+		}
+	}
+	return 1
 }
 
 // value reads one fw_cfg value, refusing a missing, empty or oversized file.

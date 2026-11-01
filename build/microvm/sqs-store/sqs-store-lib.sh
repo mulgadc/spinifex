@@ -20,6 +20,7 @@ SQS_CONSOLE=${SQS_CONSOLE:-/dev/console}
 SQS_MOUNTS=${SQS_MOUNTS:-/proc/mounts}
 SQS_PORT=${SQS_PORT:-4222}
 SQS_STOP_BUDGET_TENTHS=${SQS_STOP_BUDGET_TENTHS:-120}
+SQS_RETRY_SECS=${SQS_RETRY_SECS:-30}
 NATS_BIN=${NATS_BIN:-/usr/local/bin/nats-server}
 STORE_KEY_BIN=${STORE_KEY_BIN:-/usr/local/bin/sqs-store-key}
 E2FSCK=${E2FSCK:-e2fsck}
@@ -144,7 +145,7 @@ sqs_config_test() {
 # sqs_prepare: validate the contract, check and mount the data disk, write the
 # server config and mark the store ready. Returns non-zero, unready, on any refusal.
 sqs_prepare() {
-    rm -f "$SQS_RUN/ready"
+    rm -f "$SQS_RUN/ready" "$SQS_RUN/prepared" "$SQS_RUN/refused"
     mkdir -p "$SQS_RUN"
     serial=$(sqs_fwcfg data-serial) || return 1
     sqs_valid_serial "$serial" || { sqs_fatal "data-serial is not a volume serial"; return 1; }
@@ -169,13 +170,34 @@ sqs_prepare() {
     [ "$rc" -le 1 ] || { sqs_fatal "e2fsck refused $dev: $(tr '\n' ' ' < "$SQS_RUN/fsck.out")"; return 1; }
     mkdir -p "$SQS_DATA"
     "$MOUNT" -t ext4 -o nodev,nosuid,noexec "$dev" "$SQS_DATA" || { sqs_fatal "mount $dev failed"; return 1; }
-    # The server key stays on the data disk; only its pin leaves the guest.
-    key=$("$STORE_KEY_BIN" "$SQS_DATA/tls" "$SQS_RUN/server-cert.pem" 2>> "$SQS_CONSOLE") \
-        || { sqs_fatal "store server key refused"; return 1; }
-    sqs_write_tls "$SQS_RUN/server-cert.pem" "$key" "$SQS_RUN/nats.conf" || return 1
-    sqs_config_test "$SQS_RUN/nats.conf" || return 1
+    : > "$SQS_RUN/prepared"
+    sqs_log "prepared: $dev mounted at $SQS_DATA, config written for $addr:$SQS_PORT; server key not checked yet"
+}
+
+# sqs_secure: load or create the server key on the mounted disk, record its
+# pin and write the TLS config. Returns 3 when the key must never be used,
+# any other non-zero while the gateway or IMDS may still become available.
+sqs_secure() {
+    umask 077
+    # The child records its own identity, then checks stopping, before it
+    # execs the helper: a stop either reads that record or the helper never
+    # starts. sqs_stop then confirms it gone before unmounting.
+    child=""
+    trap '[ -z "$child" ] || { kill -TERM "$child" 2>/dev/null; wait "$child"; }; exit 143' TERM
+    sh -c 'echo "$$ $(sed "s/.*) //" /proc/$$/stat | cut -d" " -f20)" > "$1/helper"
+        [ -e "$1/stopping" ] && exit 2
+        exec "$2" "$3/tls" "$1/server-cert.pem"' sh "$SQS_RUN" "$STORE_KEY_BIN" "$SQS_DATA" \
+        > "$SQS_RUN/key-path" 2>> "$SQS_CONSOLE" &
+    child=$!
+    rc=0
+    wait "$child" || rc=$?
+    trap - TERM
+    rm -f "$SQS_RUN/helper"
+    [ "$rc" -eq 0 ] || return "$rc"
+    cp "$SQS_RUN/nats.conf" "$SQS_RUN/nats-tls.conf" || return 3
+    sqs_write_tls "$SQS_RUN/server-cert.pem" "$(cat "$SQS_RUN/key-path")" "$SQS_RUN/nats-tls.conf" || return 3
+    sqs_config_test "$SQS_RUN/nats-tls.conf" || return 3
     : > "$SQS_RUN/ready"
-    sqs_log "prepared: $dev mounted at $SQS_DATA, config written for $addr:$SQS_PORT; server not started yet"
 }
 
 # sqs_run: the respawned supervisor body. Its identity is recorded before the
@@ -188,44 +210,67 @@ sqs_run() {
         sqs_log "run: shutdown in progress, not starting"
         return 2
     fi
-    if [ ! -e "$SQS_RUN/ready" ]; then
-        sqs_log "run: store not prepared, not starting"
+    if [ -e "$SQS_RUN/refused" ] || [ ! -e "$SQS_RUN/prepared" ]; then
+        sqs_log "run: store not prepared or refused, not starting"
         return 2
+    fi
+    if [ ! -e "$SQS_RUN/ready" ]; then
+        rc=0
+        sqs_secure || rc=$?
+        if [ "$rc" -eq 3 ]; then
+            : > "$SQS_RUN/refused"
+            sqs_fatal "store server key refused; it will not start"
+            return 2
+        fi
+        if [ "$rc" -ne 0 ]; then
+            # Exit after a pause so init respawns the step; nothing is remounted.
+            sqs_log "run: store server key not available yet; retrying in ${SQS_RETRY_SECS}s"
+            sleep "$SQS_RETRY_SECS"
+            return 1
+        fi
     fi
     sqs_log "run: starting pid=$$"
     # ADR-0011:S11 bounds the store's Go heap; the guest must be larger.
-    GOMEMLIMIT=512MiB exec "$NATS_BIN" -c "$SQS_RUN/nats.conf"
+    GOMEMLIMIT=512MiB exec "$NATS_BIN" -c "$SQS_RUN/nats-tls.conf"
 }
 
-# sqs_stop: first shutdown action. Block any respawn, SIGTERM the recorded run
-# process (a server, or a start not yet exec'd), SIGKILL only after the budget,
-# then sync and unmount. Each signal rechecks the identity; a survivor keeps the disk mounted.
+# sqs_end <name> <record>: SIGTERM the process recorded as "pid starttime",
+# SIGKILL after the budget. Returns non-zero only while it is still alive.
+sqs_end() {
+    rec=$(cat "$2" 2>/dev/null || true)
+    pid=${rec%% *} st=${rec#* }
+    [ "$st" != "$rec" ] || st=""
+    if [ -z "$pid" ] || ! sqs_same "$pid" "$st"; then
+        sqs_log "stop: no running $1"
+        return 0
+    fi
+    kill -TERM "$pid" 2>/dev/null || true
+    sqs_log "stop: SIGTERM sent to $1 pid=$pid"
+    i=0
+    while sqs_same "$pid" "$st" && [ "$i" -lt "$SQS_STOP_BUDGET_TENTHS" ]; do sleep 0.1; i=$((i + 1)); done
+    if sqs_same "$pid" "$st"; then
+        sqs_log "stop: $1 pid=$pid still running after $((SQS_STOP_BUDGET_TENTHS / 10))s, SIGKILL"
+        kill -KILL "$pid" 2>/dev/null || true
+        j=0
+        while sqs_same "$pid" "$st" && [ "$j" -lt 30 ]; do sleep 0.1; j=$((j + 1)); done
+    fi
+    if sqs_same "$pid" "$st"; then
+        sqs_log "stop: $1 pid=$pid STILL ALIVE, leaving $SQS_DATA mounted"
+        return 1
+    fi
+    sqs_log "stop: $1 exited after $((i / 10)).$((i % 10))s"
+}
+
+# sqs_stop: first shutdown action. Block any respawn, end the recorded run
+# process and then any key helper, and only then sync and unmount. A survivor
+# keeps the disk mounted.
 sqs_stop() {
     mkdir -p "$SQS_RUN"
     : > "$SQS_RUN/stopping"
     sqs_log "stop: begin"
-    rec=$(cat "$SQS_RUN/pid" 2>/dev/null || true)
-    pid=${rec%% *} st=${rec#* }
-    [ "$st" != "$rec" ] || st=""
-    if [ -n "$pid" ] && sqs_same "$pid" "$st"; then
-        kill -TERM "$pid" 2>/dev/null || true
-        sqs_log "stop: SIGTERM sent to run pid=$pid"
-        i=0
-        while sqs_same "$pid" "$st" && [ "$i" -lt "$SQS_STOP_BUDGET_TENTHS" ]; do sleep 0.1; i=$((i + 1)); done
-        if sqs_same "$pid" "$st"; then
-            sqs_log "stop: run pid=$pid still running after $((SQS_STOP_BUDGET_TENTHS / 10))s, SIGKILL"
-            kill -KILL "$pid" 2>/dev/null || true
-            j=0
-            while sqs_same "$pid" "$st" && [ "$j" -lt 30 ]; do sleep 0.1; j=$((j + 1)); done
-        fi
-        if sqs_same "$pid" "$st"; then
-            sqs_log "stop: run pid=$pid STILL ALIVE, leaving $SQS_DATA mounted"
-            return 1
-        fi
-        sqs_log "stop: store exited after $((i / 10)).$((i % 10))s"
-    else
-        sqs_log "stop: no running store"
-    fi
+    sqs_end store "$SQS_RUN/pid" || return 1
+    # The run step is gone, so the helper record can no longer change.
+    sqs_end "key helper" "$SQS_RUN/helper" || return 1
     sync
     if grep -q " $SQS_DATA " "$SQS_MOUNTS" 2>/dev/null; then
         rc=0

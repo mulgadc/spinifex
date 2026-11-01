@@ -63,7 +63,10 @@ EOF
 cat > "$TMP/bin/sqs-store-key" <<'EOF'
 #!/bin/sh
 echo "sqs-store-key $*" >> "$T/calls.log"
-[ "$(cat "$T/storekey.rc")" = 0 ] || exit 1
+rc=$(cat "$T/storekey.rc")
+if [ "$rc" = hang ]; then echo $$ > "$T/helper.pid"; exec sleep 60; fi
+if [ "$rc" = deaf ]; then echo $$ > "$T/helper.pid"; trap '' TERM; exec sleep 60; fi
+[ "$rc" = 0 ] || exit "$rc"
 echo "cert" > "$2"
 echo "$1/server-key.pem"
 EOF
@@ -105,14 +108,14 @@ prepare() {
         sqs_prepare
     ) > /dev/null 2>&1
 }
-refused() { [ ! -e "$T/run/ready" ] && grep -q FATAL "$T/console"; }
+refused() { [ ! -e "$T/run/prepared" ] && [ ! -e "$T/run/ready" ] && grep -q FATAL "$T/console"; }
 never_mounted() { ! grep -q '^mount ' "$T/calls.log"; }
 never_formatted() { ! grep -q '^mkfs ' "$T/calls.log"; }
 never_checked() { ! grep -q '^e2fsck ' "$T/calls.log"; }
 
 # --- A valid contract prepares the store ---
 fresh valid
-check "valid contract is prepared" 'prepare && [ -e "$T/run/ready" ]'
+check "valid contract is prepared, not yet ready" 'prepare && [ -e "$T/run/prepared" ] && [ ! -e "$T/run/ready" ]'
 check "the matching disk is checked, then mounted at the data dir" \
     'grep -qx "e2fsck -p $T/dev/vdb" "$T/calls.log" && grep -qx "mount -t ext4 -o nodev,nosuid,noexec $T/dev/vdb $T/data" "$T/calls.log"'
 check "config listens only on the supplied address" \
@@ -123,20 +126,12 @@ check "config syncs JetStream on the data disk" \
 check "config admits a full SQS message (2MiB max_payload)" \
     'grep -c "max_payload" "$T/run/nats.conf" | grep -qx 1 && grep -qx "max_payload: 2MiB" "$T/run/nats.conf"'
 check "config is tested by the server before ready" 'grep -qx "nats-server -t -c $T/run/nats.conf" "$T/calls.log"'
-check "server key is kept on the data disk after mount" \
-    'grep -A1 "^mount " "$T/calls.log" | grep -qx "sqs-store-key $T/data/tls $T/run/server-cert.pem"'
-check "config requires TLS 1.3 with the disk key" \
-    'grep -q "key_file: \"$T/data/tls/server-key.pem\"" "$T/run/nats.conf" && grep -q "min_version: \"1.3\"" "$T/run/nats.conf"'
-check "the TLS config is tested by the server before ready" \
-    '[ "$(grep -c "^nats-server -t -c $T/run/nats.conf" "$T/calls.log")" -eq 2 ]'
+check "prepare does not touch the server key" '! grep -q "^sqs-store-key" "$T/calls.log"'
 check "no auth material on the console" '! grep -q "$NKEY" "$T/console"'
 check "prepare reports the disk and config, not a listener" 'grep -q "prepared: $T/dev/vdb mounted" "$T/console" && ! grep -qi "listening" "$T/console"'
 
-fresh key-refused; echo 1 > "$T/storekey.rc"
-check "a refused server key leaves the store unready" '! prepare && refused && ! grep -q "^tls" "$T/run/nats.conf"'
-
 fresh fsck-corrected; echo 1 > "$T/fsck.rc"
-check "e2fsck exit 1 (corrected) proceeds" 'prepare && [ -e "$T/run/ready" ]'
+check "e2fsck exit 1 (corrected) proceeds" 'prepare && [ -e "$T/run/prepared" ]'
 
 # --- Disk refusals: nothing mounted, nothing formatted ---
 fresh no-disk; rm -rf "$T/sys/vdb"
@@ -201,14 +196,34 @@ done
 # --- Run: the store starts only when prepared and not stopping ---
 run_step() {
     (
-        SQS_RUN="$T/run" SQS_CONSOLE="$T/console" NATS_BIN="$TMP/bin/nats-server"
+        SQS_RUN="$T/run" SQS_DATA="$T/data" SQS_CONSOLE="$T/console" NATS_BIN="$TMP/bin/nats-server"
+        STORE_KEY_BIN="$TMP/bin/sqs-store-key" SQS_RETRY_SECS=0
         # shellcheck source=../../build/microvm/sqs-store/sqs-store-lib.sh
         . "$LIB"
         sqs_run
     ) > /dev/null 2>&1
 }
+mounts() { grep -c "^mount " "$T/calls.log"; }
 fresh run-ready; prepare; : > "$T/calls.log"
-check "a prepared store starts the server" 'run_step && grep -qx "nats-server -c $T/run/nats.conf" "$T/calls.log"'
+check "a prepared store keeps its server key on the data disk" \
+    'run_step && grep -qx "sqs-store-key $T/data/tls $T/run/server-cert.pem" "$T/calls.log"'
+check "the server starts with TLS 1.3 and the disk key" \
+    'grep -qx "nats-server -c $T/run/nats-tls.conf" "$T/calls.log" && grep -q "key_file: \"$T/data/tls/server-key.pem\"" "$T/run/nats-tls.conf" && grep -q "min_version: \"1.3\"" "$T/run/nats-tls.conf"'
+check "the TLS config is tested by the server before it starts" \
+    'grep -n "" "$T/calls.log" | grep -q "nats-server -t -c $T/run/nats-tls.conf" && [ -e "$T/run/ready" ]'
+
+fresh run-key-unavailable; prepare; echo 1 > "$T/storekey.rc"; rc=0; run_step || rc=$?
+check "an unavailable key service exits for respawn, not ready or refused" \
+    '[ "$rc" -eq 1 ] && [ ! -e "$T/run/ready" ] && [ ! -e "$T/run/refused" ] && ! grep -q "^nats-server -c" "$T/calls.log"'
+echo 0 > "$T/storekey.rc"
+check "the respawned step recovers without remounting" \
+    'run_step && [ "$(grep -c "^sqs-store-key" "$T/calls.log")" -eq 2 ] && [ "$(mounts)" -eq 1 ] && grep -q "^nats-server -c" "$T/calls.log"'
+
+fresh run-key-refused; prepare; echo 3 > "$T/storekey.rc"; rc=0; run_step || rc=$?
+check "a key that must not be used refuses the store" '[ "$rc" -eq 2 ] && [ -e "$T/run/refused" ] && grep -q FATAL "$T/console"'
+echo 0 > "$T/storekey.rc"
+check "a refused store stays refused and never retries the key" \
+    '! run_step && [ "$(grep -c "^sqs-store-key" "$T/calls.log")" -eq 1 ] && ! grep -q "^nats-server -c" "$T/calls.log"'
 fresh run-memlimit; prepare; : > "$T/env.log"
 check "the server runs under the ADR-0011:S11 heap limit" 'run_step && grep -qx "GOMEMLIMIT=512MiB" "$T/env.log"'
 fresh run-unready
@@ -255,7 +270,7 @@ kill -KILL "$pid"
 # A start held after its stopping check and before its exec: the run step
 # blocks writing "run: starting" to a FIFO console until the test reads it.
 fresh stop-pending-start; echo "dev $T/data ext4 rw 0 0" > "$T/mounts"
-: > "$T/run/ready"
+: > "$T/run/prepared"; : > "$T/run/ready"
 mkfifo "$T/run-console"
 printf '#!/bin/sh\n: > "%s/started"\nexec "%s" 60\n' "$T" "$STORE" > "$TMP/bin/pending-nats"
 chmod +x "$TMP/bin/pending-nats"
@@ -274,6 +289,71 @@ check "stop ends a pending start before it can exec the server" 'gone "$pid" && 
 check "stop unmounts only after the pending start is gone" \
     'grep -q "store exited" "$T/console" && grep -qx "umount $T/data" "$T/calls.log"'
 kill -KILL "$reader" 2>/dev/null || true
+
+# A stop while the key helper still runs ends the helper before the unmount,
+# so nothing holds files on the data disk.
+fresh stop-during-key; echo "dev $T/data ext4 rw 0 0" > "$T/mounts"
+: > "$T/run/prepared"; echo hang > "$T/storekey.rc"
+SQS_RUN="$T/run" SQS_DATA="$T/data" SQS_CONSOLE="$T/console" STORE_KEY_BIN="$TMP/bin/sqs-store-key" \
+    NATS_BIN="$TMP/bin/nats-server" sh -c '. "$1"; sqs_run' sh "$LIB" > /dev/null 2>&1 & pid=$!
+CHILDREN="$CHILDREN $pid"
+i=0
+while [ "$i" -lt 100 ] && [ ! -s "$T/helper.pid" ]; do i=$((i + 1)); sleep 0.05; done
+hp=$(cat "$T/helper.pid"); CHILDREN="$CHILDREN $hp"
+stop_step
+i=0
+while [ "$i" -lt 40 ] && ! gone "$hp"; do i=$((i + 1)); sleep 0.05; done
+check "stop ends a running key helper, then unmounts" \
+    'gone "$hp" && gone "$pid" && grep -qx "umount $T/data" "$T/calls.log" && [ ! -e "$T/run/ready" ]'
+
+# start_key_step <mode>: a prepared store whose key helper runs as mode;
+# sets pid (run step) and hp (helper) once the helper is up.
+start_key_step() {
+    echo "dev $T/data ext4 rw 0 0" > "$T/mounts"
+    : > "$T/run/prepared"; echo "$1" > "$T/storekey.rc"
+    SQS_RUN="$T/run" SQS_DATA="$T/data" SQS_CONSOLE="$T/console" STORE_KEY_BIN="$TMP/bin/sqs-store-key" \
+        NATS_BIN="$TMP/bin/nats-server" sh -c '. "$1"; sqs_run' sh "$LIB" > /dev/null 2>&1 & pid=$!
+    CHILDREN="$CHILDREN $pid"
+    i=0
+    while [ "$i" -lt 100 ] && [ ! -s "$T/run/helper" ]; do i=$((i + 1)); sleep 0.05; done
+    hp=$(cut -d' ' -f1 "$T/run/helper"); CHILDREN="$CHILDREN $hp"
+}
+
+# A helper that ignores SIGTERM outlives its run step's SIGKILL; stop must
+# end it too before unmounting.
+fresh stop-deaf-key; start_key_step deaf
+stop_step
+check "stop kills a helper that ignores SIGTERM before unmounting" \
+    'gone "$hp" && gone "$pid" && grep -q "key helper pid=$hp still running" "$T/console" && grep -q "key helper exited" "$T/console" && grep -qx "umount $T/data" "$T/calls.log"'
+
+# A helper reported alive past SIGKILL keeps the data disk mounted.
+fresh stop-key-survivor; start_key_step deaf
+(
+    SQS_RUN="$T/run" SQS_DATA="$T/data" SQS_CONSOLE="$T/console" SQS_MOUNTS="$T/mounts"
+    UMOUNT="$TMP/bin/umount" SQS_STOP_BUDGET_TENTHS=5
+    # shellcheck source=../../build/microvm/sqs-store/sqs-store-lib.sh
+    . "$LIB"
+    sqs_same() { [ "$1" = "$hp" ] || { sqs_alive "$1" && [ "$(sqs_starttime "$1")" = "$2" ]; }; }
+    sqs_stop
+) > /dev/null 2>&1 && rc=0 || rc=$?
+check "a surviving key helper keeps the data disk mounted" \
+    '[ "$rc" -ne 0 ] && grep -q "key helper pid=$hp STILL ALIVE" "$T/console" && ! grep -q "^umount" "$T/calls.log"'
+kill -KILL "$hp" 2>/dev/null || true
+
+# A helper started after stop set its flag records itself and never execs.
+fresh stop-before-exec; : > "$T/run/prepared"; : > "$T/run/stopping"
+check "a key helper started during a stop never runs" \
+    '! run_step && ! grep -q "^sqs-store-key" "$T/calls.log"'
+: > "$T/console"; rm -f "$T/run/stopping"
+(
+    SQS_RUN="$T/run" SQS_DATA="$T/data" SQS_CONSOLE="$T/console" STORE_KEY_BIN="$TMP/bin/sqs-store-key"
+    # shellcheck source=../../build/microvm/sqs-store/sqs-store-lib.sh
+    . "$LIB"
+    : > "$SQS_RUN/stopping"
+    sqs_secure
+) > /dev/null 2>&1 && rc=0 || rc=$?
+check "a stop flag set before the child execs keeps the helper from running" \
+    '[ "$rc" -eq 2 ] && ! grep -q "^sqs-store-key" "$T/calls.log"'
 
 # --- Shutdown: the generic remount runs only once the store is gone ---
 # shutdown_step [survivor-pid]: with a pid, that process is reported alive

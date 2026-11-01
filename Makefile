@@ -168,8 +168,14 @@ bin/nats-server: go.mod go.sum
 	@mkdir -p bin
 	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ github.com/nats-io/nats-server/v2
 
+# go_local_srcs lists the main module package dirs and files guest package $(1)
+# links, scanned with the guest build settings; a dir's mtime catches a deleted
+# or renamed file. A failed scan names a missing prerequisite, so make stops.
+go_local_srcs = $(shell GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go list -deps -f '{{if and .Module .Module.Main}}{{.Dir}} {{range .GoFiles}}{{$$.Dir}}/{{.}} {{end}}{{range .EmbedFiles}}{{$$.Dir}}/{{.}} {{end}}{{end}}' $(1) || echo go-list-failed-for-$(1))
+.SECONDEXPANSION:
+
 # The store guest's TLS server key helper, static for the musl guest.
-bin/sqs-store-key: go.mod go.sum $(shell find cmd/sqs-store-key spinifex/agents/sqs/storekey internal/sqsworkergw internal/gwsign -name '*.go' ! -name '*_test.go')
+bin/sqs-store-key: go.mod go.sum $$(call go_local_srcs,./cmd/sqs-store-key)
 	@mkdir -p bin
 	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/sqs-store-key
 
@@ -184,7 +190,7 @@ SQS_WORKER_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/li
 $(SQS_WORKER_MICROVM_ARTIFACTS) &: $(SQS_WORKER_MICROVM_INPUTS)
 	SQS_MICROVM_PROFILE=worker ./scripts/build-sqs-store-microvm-image.sh
 
-bin/sqs-worker: go.mod go.sum $(shell find cmd/sqs-worker spinifex/agents/sqs -name '*.go' ! -name '*_test.go')
+bin/sqs-worker: go.mod go.sum $$(call go_local_srcs,./cmd/sqs-worker)
 	@mkdir -p bin
 	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/sqs-worker
 

@@ -4,7 +4,13 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
+	"strings"
 )
+
+// firstBuild is the EKS build number of every bundled version; it moves per
+// version when Spinifex rebuilds a bundle.
+const firstBuild = 1
 
 // NvidiaDevicePlugin is staged by a GPU node group's launch (EnsureGPUDevicePlugin),
 // never user-requested directly.
@@ -71,6 +77,10 @@ func newSpec(name string, requiresIRSA bool, description string, versions ...str
 	if len(versions) > 0 {
 		spec.DefaultVersion = versions[0]
 	}
+	spec.Builds = make(map[string]int, len(versions))
+	for _, v := range versions {
+		spec.Builds[v] = firstBuild
+	}
 	return spec
 }
 
@@ -114,15 +124,49 @@ func (s Spec) SupportsVersion(version string) bool {
 	return slices.Contains(s.Versions, version)
 }
 
-// AWSVersion returns the AWS form of a stored version.
-func (s Spec) AWSVersion(_ string) string { return "" }
+// awsForm renders a catalog version as v<upstream>-eksbuild.<build>.
+func (s Spec) awsForm(upstream string) string {
+	build, ok := s.Builds[upstream]
+	if !ok {
+		build = firstBuild
+	}
+	return "v" + upstream + "-eksbuild." + strconv.Itoa(build)
+}
+
+// AWSVersion returns the AWS form of a stored version. A version the catalogue
+// does not list, or one already in AWS form, is returned unchanged.
+func (s Spec) AWSVersion(stored string) string {
+	if !slices.Contains(s.Versions, stored) {
+		return stored
+	}
+	return s.awsForm(stored)
+}
 
 // AWSVersions returns every supported version in AWS form, newest first.
-func (s Spec) AWSVersions() []string { return nil }
+func (s Spec) AWSVersions() []string {
+	out := make([]string, len(s.Versions))
+	for i, v := range s.Versions {
+		out[i] = s.awsForm(v)
+	}
+	return out
+}
 
 // ParseVersion maps a client-supplied version, in AWS form or bare upstream
-// form, to the upstream version stored on the record.
-func (s Spec) ParseVersion(_ string) (string, bool) { return "", false }
+// form, to the upstream version stored on the record. Nothing else is accepted.
+func (s Spec) ParseVersion(input string) (string, bool) {
+	if slices.Contains(s.Versions, input) {
+		return input, true
+	}
+	if !strings.HasPrefix(input, "v") {
+		return "", false
+	}
+	for _, v := range s.Versions {
+		if input == s.awsForm(v) {
+			return v, true
+		}
+	}
+	return "", false
+}
 
 // Specs returns every catalogue entry, hidden ones included, sorted by name.
 func Specs() []Spec {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
@@ -89,11 +91,12 @@ func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddon
 	if !ok {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	version := aws.StringValue(input.AddonVersion)
-	if version == "" {
-		version = spec.DefaultVersion
-	} else if !spec.SupportsVersion(version) {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	version := spec.DefaultVersion
+	if requested := aws.StringValue(input.AddonVersion); requested != "" {
+		var err error
+		if version, err = resolveAddonVersion(spec, requested, cluster); err != nil {
+			return nil, err
+		}
 	}
 	acctKV, err := s.acctKVForNewDependant(ctx, accountID, cluster)
 	if err != nil {
@@ -197,8 +200,12 @@ func (s *EKSServiceImpl) UpdateAddon(ctx context.Context, input *eks.UpdateAddon
 	version := aws.StringValue(input.AddonVersion)
 	if version != "" {
 		spec, ok := addon.Lookup(addonName)
-		if !ok || !spec.SupportsVersion(version) {
+		if !ok {
 			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		var err error
+		if version, err = resolveAddonVersion(spec, version, cluster); err != nil {
+			return nil, err
 		}
 	}
 	rec, err := s.addons().Update(ctx, acctKV, accountID, cluster, addonName, addon.Change{
@@ -246,7 +253,7 @@ func addonRecordToAWS(cluster string, rec *addon.Record) *eks.Addon {
 	out := &eks.Addon{
 		AddonArn:     aws.String(rec.Arn),
 		AddonName:    aws.String(rec.AddonName),
-		AddonVersion: aws.String(rec.AddonVersion),
+		AddonVersion: aws.String(awsAddonVersion(rec)),
 		ClusterName:  aws.String(cluster),
 		Status:       aws.String(string(rec.Status)),
 		CreatedAt:    aws.Time(rec.CreatedAt),
@@ -272,7 +279,7 @@ func addonRecordToAWS(cluster string, rec *addon.Record) *eks.Addon {
 // addonSpecToAWS converts a catalog spec to the SDK AddonInfo shape.
 func addonSpecToAWS(spec addon.Spec) *eks.AddonInfo {
 	versions := make([]*eks.AddonVersionInfo, 0, len(spec.Versions))
-	for _, v := range spec.Versions {
+	for _, v := range spec.AWSVersions() {
 		versions = append(versions, &eks.AddonVersionInfo{
 			AddonVersion:           aws.String(v),
 			RequiresIamPermissions: aws.Bool(spec.RequiresIRSA),
@@ -307,4 +314,31 @@ func (s *EKSServiceImpl) addonBucket(ctx context.Context, accountID string) (jet
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
 	return GetOrCreateAccountBucket(ctx, js, accountID)
+}
+
+// resolveAddonVersion maps a client version, in AWS form or bare upstream form,
+// to the upstream form the record and the bundle lookup use. The bare form is
+// more lenient than AWS, so each use is logged.
+func resolveAddonVersion(spec addon.Spec, requested, cluster string) (string, error) {
+	upstream, ok := spec.ParseVersion(requested)
+	if !ok {
+		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"addonVersion %q is not supported for add-on %s; supported versions: %s",
+			requested, spec.Name, strings.Join(spec.AWSVersions(), ", "))
+	}
+	if requested == upstream {
+		slog.Info("EKS add-on version given in bare upstream form",
+			"addon", spec.Name, "cluster", cluster, "version", requested)
+	}
+	return upstream, nil
+}
+
+// awsAddonVersion returns a stored record's version in AWS form; an add-on the
+// catalogue no longer lists keeps its stored string.
+func awsAddonVersion(rec *addon.Record) string {
+	spec, ok := addon.Lookup(rec.AddonName)
+	if !ok {
+		return rec.AddonVersion
+	}
+	return spec.AWSVersion(rec.AddonVersion)
 }

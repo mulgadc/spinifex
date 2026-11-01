@@ -162,12 +162,9 @@ jq -n --arg k "${KUBECONFIG_REWRITTEN}" '{adminKubeconfig: $k}'      | publish_e
 jq -n --arg j "${JWKS}"                 '{jwks: $j}'                  | publish_envelope k3s-oidc-jwks
 jq -n --arg c "${CA_B64}"               '{certificateAuthority: $c}' | publish_envelope k3s-ca
 
-# 3.5 Prune a terminated control-plane peer this VM replaces. The spinifex
-# reconciler sets EKS_ETCD_PRUNE_PEER_IP to the dead member's node IP when this
-# VM is provisioned as its replacement (member-count reconcile). Deleting the
-# dead Node makes k3s embedded-etcd remove the stale member, so quorum width
-# returns to N rather than N+1-with-a-dead-peer. Best-effort: a failure leaves
-# the member for an operator and never blocks first boot.
+# 3.5 Prune the terminated CP peer this VM replaces: delete its Node if it still
+# has one, else remove its etcd member directly (CPs run no agent). Best-effort:
+# a failure is logged and never blocks first boot.
 if [ -n "${EKS_ETCD_PRUNE_PEER_IP:-}" ]; then
     log "pruning terminated CP peer at ${EKS_ETCD_PRUNE_PEER_IP} from etcd"
     dead_node=$(kubectl --kubeconfig "${KUBECONFIG_FILE}" get nodes \
@@ -181,7 +178,15 @@ if [ -n "${EKS_ETCD_PRUNE_PEER_IP:-}" ]; then
             log "WARN: delete of dead node ${dead_node} failed; etcd member left for operator"
         fi
     else
-        log "no node has internal IP ${EKS_ETCD_PRUNE_PEER_IP}; nothing to prune"
+        # The default-route source address is the address k3s advertises to etcd peers.
+        self_ip=$(ip -4 route get 1.1.1.1 2>/dev/null \
+            | awk '{for (i = 1; i < NF; i++) if ($i == "src") {print $(i + 1); exit}}') || self_ip=""
+        if member_out=$(eks-etcd-member remove --peer-ip "${EKS_ETCD_PRUNE_PEER_IP}" \
+            ${self_ip:+--self-ip "${self_ip}"} 2>&1); then
+            log "${member_out}"
+        else
+            log "WARN: etcd prune failed for peer ${EKS_ETCD_PRUNE_PEER_IP}: ${member_out}; member left for operator"
+        fi
     fi
 fi
 

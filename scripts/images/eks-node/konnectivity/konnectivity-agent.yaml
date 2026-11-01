@@ -7,14 +7,9 @@
 # the K3s auto-deploy dir by k3s.initd, which fills the __KONN_HOST__ /
 # __KONN_AGENT_IMAGE__ tokens at boot.
 #
-# Also tolerates the control-plane CriticalAddonsOnly=true:NoExecute taint and
-# the GPU nvidia.com/gpu=present:NoSchedule taint, matching every other
-# CP-critical addon in this repo (aws-load-balancer-controller, ebs-csi-driver,
-# argocd): a zero-worker or GPU-only cluster has no untainted node, and other
-# addons already schedule onto the CP, so it needs its own tunnel too — without
-# an agent there, kubectl logs/exec against CP-hosted pods and apiserver
-# aggregated-API egress (metrics-server discovery) both fail. Real EKS never
-# needs this: its control plane isn't a schedulable node.
+# Also tolerates CriticalAddonsOnly, for clusters created before control-plane
+# hosts stopped registering as Nodes, and the GPU nvidia.com/gpu taint so a
+# GPU-only nodegroup still gets a tunnel agent.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -44,11 +39,9 @@ spec:
     spec:
       serviceAccountName: konnectivity-agent
       priorityClassName: system-node-critical
-      # Without these, a zero-worker or GPU-only cluster (CP tainted
-      # CriticalAddonsOnly, workers tainted nvidia.com/gpu) shows DESIRED=0 for
-      # this DaemonSet: no tunnel exists, so kubectl logs/exec against any pod
-      # fails "No agent available" and apiserver aggregated-API egress
-      # (e.g. metrics-server discovery) fails, which stalls namespace GC.
+      # CriticalAddonsOnly is kept for clusters created before control-plane hosts
+      # stopped registering as Nodes. nvidia.com/gpu keeps the agent on GPU-only
+      # nodegroups, where logs/exec and aggregated-API egress need a tunnel.
       tolerations:
         - key: CriticalAddonsOnly
           operator: Exists

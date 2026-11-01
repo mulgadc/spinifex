@@ -3,6 +3,7 @@ package awsapi
 import (
 	"context"
 	"encoding/json"
+	"slices"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -18,6 +19,15 @@ type tagStatusFilter struct {
 	TagStatus string `json:"tagStatus"`
 }
 
+// validate refuses a tagStatus outside the TagStatus enum; an omitted filter
+// or tagStatus is valid.
+func (f *tagStatusFilter) validate() error {
+	if f == nil || f.TagStatus == "" || slices.Contains(TagStatusValues, f.TagStatus) {
+		return nil
+	}
+	return EnumValueError("filter.tagStatus", TagStatusValues...)
+}
+
 // ListImages returns every image identifier in the caller's repository,
 // optionally filtering tagged or untagged manifests. Each tag is an AWS image
 // identifier; an untagged manifest is represented by its digest only.
@@ -27,6 +37,9 @@ func ListImages(ctx context.Context, catalog ImageCatalog, accountID string, bod
 		return nil, MalformedBodyError()
 	}
 	if err := ValidateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
+		return nil, err
+	}
+	if err := req.Filter.validate(); err != nil {
 		return nil, err
 	}
 

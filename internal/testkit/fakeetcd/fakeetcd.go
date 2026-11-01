@@ -11,7 +11,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"errors"
 	"math/big"
 	"net"
 	"os"
@@ -70,7 +69,7 @@ func Start(t *testing.T, selfID uint64, members []Member) *Server {
 	})
 	s := &Server{Endpoint: "https://" + lis.Addr().String(), CertDir: dir, members: members, selfID: selfID}
 	gs := grpc.NewServer(grpc.Creds(creds))
-	pb.RegisterClusterServer(gs, &cluster{s})
+	pb.RegisterClusterServer(gs, &cluster{s: s})
 	pb.RegisterMaintenanceServer(gs, &maintenance{s: s})
 	go func() { _ = gs.Serve(lis) }()
 	t.Cleanup(gs.Stop)
@@ -91,7 +90,11 @@ func (s *Server) FailWith(err error) {
 	s.failAll = err
 }
 
-type cluster struct{ s *Server }
+type cluster struct {
+	pb.UnimplementedClusterServer
+
+	s *Server
+}
 
 func (c *cluster) MemberList(context.Context, *pb.MemberListRequest) (*pb.MemberListResponse, error) {
 	c.s.mu.Lock()
@@ -114,18 +117,6 @@ func (c *cluster) MemberRemove(_ context.Context, req *pb.MemberRemoveRequest) (
 	}
 	c.s.removed = append(c.s.removed, req.ID)
 	return &pb.MemberRemoveResponse{Header: &pb.ResponseHeader{MemberId: c.s.selfID}}, nil
-}
-
-func (c *cluster) MemberAdd(context.Context, *pb.MemberAddRequest) (*pb.MemberAddResponse, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (c *cluster) MemberUpdate(context.Context, *pb.MemberUpdateRequest) (*pb.MemberUpdateResponse, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (c *cluster) MemberPromote(context.Context, *pb.MemberPromoteRequest) (*pb.MemberPromoteResponse, error) {
-	return nil, errors.New("not implemented")
 }
 
 type maintenance struct {

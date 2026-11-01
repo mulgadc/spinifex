@@ -6,6 +6,7 @@
 //
 //	eks-gateway-fetch -resource addons   # GET /clusters/{cluster}/internal-addons/{accountId}
 //	eks-gateway-fetch -resource recovery -instance-id i-… # GET /clusters/{cluster}/internal-recovery/{accountId}/{instanceId}
+//	eks-gateway-fetch -resource workers  # GET /clusters/{cluster}/internal-workers/{accountId}
 //
 // Flags default to environment variables seeded by cloud-init:
 // EKS_GATEWAY_URL, EKS_GATEWAY_CA, EKS_ACCESS_KEY, EKS_SECRET_KEY, EKS_REGION,
@@ -33,7 +34,7 @@ func main() {
 	flag.StringVar(&cfg.AccountID, "account-id", os.Getenv("EKS_ACCOUNT_ID"), "Cluster account ID")
 	flag.StringVar(&cfg.ClusterName, "cluster", os.Getenv("EKS_CLUSTER_NAME"), "Cluster name")
 	flag.StringVar(&cfg.InstanceID, "instance-id", os.Getenv("EKS_INSTANCE_ID"), "This member's EC2 instance ID (recovery resource)")
-	flag.StringVar(&cfg.Resource, "resource", "addons", "Resource to fetch: addons | recovery")
+	flag.StringVar(&cfg.Resource, "resource", "addons", "Resource to fetch: addons | recovery | workers")
 	flag.Parse()
 
 	if err := gatewayfetch.Run(context.Background(), cfg); err != nil {

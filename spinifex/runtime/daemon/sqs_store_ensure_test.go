@@ -133,6 +133,7 @@ func newStoreFixture(t *testing.T, vms *storeVMs) *storeFixture {
 		FirstStore:     f.first,
 		Volumes:        f.vols,
 		Network:        sqsStoreNetwork{n: newSQSStoreNetwork(vpc, cfg)},
+		Roles:          ensureRoles{},
 		Host:           sqsStoreHost{check: func() error { return f.hostErr }},
 		VMs:            vms,
 		NodeID:         ensureNode,

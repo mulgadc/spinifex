@@ -35,6 +35,7 @@ func SQSStoreLaunchSubject(instanceType, nodeID string) string {
 type SQSStoreInput struct {
 	DataVolumeID string `json:"data_volume_id"`
 	ClientNKey   string `json:"client_nkey"`
+	Region       string `json:"region"`
 }
 
 // ErrInvalidSQSStoreInput is returned for a malformed SQS store launch.
@@ -45,7 +46,7 @@ var ErrInvalidSQSStoreInput = errors.New("sysinstance: invalid SQS store launch"
 var volumeIDPattern = regexp.MustCompile(`^vol-[0-9a-f]{17}$`)
 
 // ValidateSQSStore checks an SQS store launch's shape. It reads nothing, so a
-// valid result says only that the volume and key are well formed.
+// valid result says only that the launch is well formed.
 func (in *SystemInstanceInput) ValidateSQSStore() error {
 	switch {
 	case in.Kind != KindSQSStore:
@@ -56,14 +57,29 @@ func (in *SystemInstanceInput) ValidateSQSStore() error {
 		return fmt.Errorf("%w: no data volume or client key", ErrInvalidSQSStoreInput)
 	case in.SQSWorker != nil:
 		return fmt.Errorf("%w: SQS worker settings on an SQS store launch", ErrInvalidSQSStoreInput)
-	case !volumeIDPattern.MatchString(in.SQSStore.DataVolumeID):
-		return fmt.Errorf("%w: data volume ID %q is malformed", ErrInvalidSQSStoreInput, in.SQSStore.DataVolumeID)
-	case !nkeys.IsValidPublicUserKey(in.SQSStore.ClientNKey):
+	case in.LBAgentEnv != "" || in.CACert != "" || in.Scheme != "":
+		// The daemon supplies the CA from its own trust store, never the caller.
+		return fmt.Errorf("%w: load balancer settings on an SQS store launch", ErrInvalidSQSStoreInput)
+	case in.IamInstanceProfileArn == "":
+		// The store records its server key pin with this role's credentials.
+		return fmt.Errorf("%w: no instance profile", ErrInvalidSQSStoreInput)
+	case len(in.NICs) != 2 || !in.NICs[0].IsDefault || in.NICs[1].IsDefault || in.NICs[1].MAC != "" || in.NICs[1].CIDR != "":
+		return fmt.Errorf("%w: want a default VPC NIC and an unallocated mgmt NIC", ErrInvalidSQSStoreInput)
+	}
+	return in.SQSStore.Validate()
+}
+
+// Validate checks the store's volume, client key and Region. It reads nothing.
+func (s *SQSStoreInput) Validate() error {
+	switch {
+	case !volumeIDPattern.MatchString(s.DataVolumeID):
+		return fmt.Errorf("%w: data volume ID %q is malformed", ErrInvalidSQSStoreInput, s.DataVolumeID)
+	case !nkeys.IsValidPublicUserKey(s.ClientNKey):
 		// The value is not echoed: a caller that sent a seed here must not
 		// have it written to a log.
 		return fmt.Errorf("%w: client key is not a NATS user public key", ErrInvalidSQSStoreInput)
-	case in.LBAgentEnv != "" || in.CACert != "" || in.Scheme != "":
-		return fmt.Errorf("%w: load balancer settings on an SQS store launch", ErrInvalidSQSStoreInput)
+	case !regionPattern.MatchString(s.Region):
+		return fmt.Errorf("%w: Region is malformed", ErrInvalidSQSStoreInput)
 	}
 	return nil
 }

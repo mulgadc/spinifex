@@ -19,9 +19,11 @@ func validSQSStoreInput(t *testing.T) (*SystemInstanceInput, []byte) {
 	seed, err := kp.Seed()
 	require.NoError(t, err)
 	return &SystemInstanceInput{
-		InstanceType: "sys.micro",
-		Kind:         KindSQSStore,
-		SQSStore:     &SQSStoreInput{DataVolumeID: "vol-0123456789abcdef0", ClientNKey: pub},
+		InstanceType:          "sys.micro",
+		Kind:                  KindSQSStore,
+		IamInstanceProfileArn: "arn:aws:iam::000000000000:instance-profile/sqsStoreRole",
+		NICs:                  []NICConfig{{MAC: "02:00:00:00:00:01", CIDR: "10.81.1.5/24", IsDefault: true}, {}},
+		SQSStore:              &SQSStoreInput{DataVolumeID: "vol-0123456789abcdef0", ClientNKey: pub, Region: "ap-southeast-2"},
 	}, seed
 }
 
@@ -48,6 +50,11 @@ func TestValidateSQSStore(t *testing.T) {
 		"lb agent env":     func(in *SystemInstanceInput) { in.LBAgentEnv = "LB_ID=x" },
 		"lb ca cert":       func(in *SystemInstanceInput) { in.CACert = "cert" },
 		"lb scheme":        func(in *SystemInstanceInput) { in.Scheme = "internal" },
+		"no region":        func(in *SystemInstanceInput) { in.SQSStore.Region = "" },
+		"bad region":       func(in *SystemInstanceInput) { in.SQSStore.Region = "../x" },
+		"no profile":       func(in *SystemInstanceInput) { in.IamInstanceProfileArn = "" },
+		"no mgmt NIC":      func(in *SystemInstanceInput) { in.NICs = in.NICs[:1] },
+		"allocated mgmt":   func(in *SystemInstanceInput) { in.NICs[1].MAC = "02:00:00:00:00:02" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

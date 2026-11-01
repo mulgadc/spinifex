@@ -108,6 +108,11 @@ func TestSQSStoreRelaunch_RefusesWithoutEverythingItNeeds(t *testing.T) {
 		{"no listen address", func(_ *testing.T, v *vm.VM) { v.SQSStoreGuest.ListenAddr = "" }, "listen address"},
 		{"loopback listen address", func(_ *testing.T, v *vm.VM) { v.SQSStoreGuest.ListenAddr = "127.0.0.1" }, "listen address"},
 		{"no network config", func(_ *testing.T, v *vm.VM) { v.SQSStoreGuest.Netcfg = "" }, "no network config"},
+		{"launched before gateway authentication", func(_ *testing.T, v *vm.VM) {
+			v.SQSStoreGuest.Region, v.SQSStoreGuest.GatewayURL, v.SQSStoreGuest.CACert = "", "", ""
+		}, "malformed"},
+		{"no gateway URL or CA", func(_ *testing.T, v *vm.VM) { v.SQSStoreGuest.GatewayURL, v.SQSStoreGuest.CACert = "", "" },
+			"lacks the gateway URL or CA"},
 		{"data volume not recorded", func(_ *testing.T, v *vm.VM) { v.EBSRequests.Requests = nil }, "not among its kept volumes"},
 		{"data volume deleted on terminate", func(_ *testing.T, v *vm.VM) { v.EBSRequests.Requests[0].DeleteOnTermination = true }, "not among its kept volumes"},
 		{"fw_cfg files moved", func(_ *testing.T, v *vm.VM) { v.Config.FwCfg[1].File += ".other" }, "not the store's"},

@@ -98,11 +98,11 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 	if guest != nil {
 		managedBy = tags.ManagedBySQS
 	}
-	// The SQS worker reaches the gateway only over its mgmt NIC.
+	// The SQS guests reach the gateway only over their mgmt NIC.
 	mgmtRequired := input.Scheme == elbv2domain.SchemeInternal || (guest != nil && guest.needsMgmtNIC())
 	mgmtFor := "internal-scheme ALB"
 	if guest != nil && guest.needsMgmtNIC() {
-		mgmtFor = "SQS worker"
+		mgmtFor = guest.label()
 	}
 	accountID := awsidentifiers.GlobalAccountID
 	// ENI account may differ from system account — the ENI is created under
@@ -407,7 +407,7 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 
 	if guest != nil && guest.needsMgmtNIC() && instance.MgmtIP == "" {
 		d.cleanupFailedSystemInstance(instance, instanceType)
-		return nil, errors.New("sqs worker: no mgmt NIC on this node")
+		return nil, fmt.Errorf("%s: no mgmt NIC on this node", guest.label())
 	}
 
 	// The requested guest ports. The host ports they land on are observed by

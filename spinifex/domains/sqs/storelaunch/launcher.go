@@ -34,9 +34,17 @@ type NetworkAllocator interface {
 // key; nothing here is private.
 type Spec struct {
 	InstanceType string
+	Region       string
+	ProfileARN   string
 	Network      workerlaunch.Network
 	DataVolumeID string
 	ClientNKey   string
+}
+
+// Roles ensures the store's instance role and profile, granted only the
+// store's own internal actions, and returns the profile ARN.
+type Roles interface {
+	EnsureStoreProfile(ctx context.Context) (string, error)
 }
 
 // Host reports whether this node can boot the store now. It allocates and
@@ -93,6 +101,7 @@ type Launcher struct {
 	FirstStore firststore.Store
 	Volumes    Volumes
 	Network    NetworkAllocator
+	Roles      Roles
 	Host       Host
 	VMs        VMLauncher
 	NodeID     string
@@ -114,7 +123,7 @@ type Result struct {
 // or fails closed and never creates a second volume, ENI or VM.
 func (l *Launcher) Ensure(ctx context.Context, region, instanceType string, sizeGiB int64) (Result, error) {
 	if l.Records.KV == nil || l.Workers.KV == nil || l.FirstStore.KV == nil || l.Volumes == nil ||
-		l.Network == nil || l.Host == nil || l.VMs == nil || l.NodeID == "" || instanceType == "" ||
+		l.Network == nil || l.Roles == nil || l.Host == nil || l.VMs == nil || l.NodeID == "" || instanceType == "" ||
 		sizeGiB < 1 || sizeGiB > MaxSizeGiB {
 		return Result{}, ErrIncomplete
 	}
@@ -162,14 +171,18 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string, size
 	if err != nil {
 		return Result{}, err
 	}
+	profile, err := l.Roles.EnsureStoreProfile(ctx)
+	if err != nil {
+		return Result{}, fmt.Errorf("sqs store: instance profile: %w", err)
+	}
 	if err := l.Records.MarkDispatched(ctx, region, claim); err != nil {
 		if errors.Is(err, ErrMarked) {
 			return Result{}, ErrOutcomeUnknown
 		}
 		return Result{}, err
 	}
-	instanceID, err := l.VMs.LaunchStore(ctx, Spec{InstanceType: instanceType, Network: *network,
-		DataVolumeID: volumeID, ClientNKey: pub})
+	instanceID, err := l.VMs.LaunchStore(ctx, Spec{InstanceType: instanceType, Region: region,
+		ProfileARN: profile, Network: *network, DataVolumeID: volumeID, ClientNKey: pub})
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %w", ErrOutcomeUnknown, err)
 	}

@@ -85,13 +85,16 @@ const (
 )
 
 // SQSStoreGuest is what an SQS store guest's fw_cfg files are rebuilt from.
-// None of it is secret: the client key is a NATS public key. NodeID is the node
-// that launched it, the only node allowed to relaunch it from this record.
+// None of it is secret: the client key is a NATS public key and the CA a public
+// certificate. NodeID is the only node allowed to relaunch it from this record.
 type SQSStoreGuest struct {
 	NodeID       string `json:"node_id"`
 	DataVolumeID string `json:"data_volume_id"`
 	ListenAddr   string `json:"listen_addr"`
 	ClientNKey   string `json:"client_nkey"`
+	Region       string `json:"region,omitempty"`
+	GatewayURL   string `json:"gateway_url,omitempty"`
+	CACert       string `json:"ca_cert,omitempty"`
 	Netcfg       string `json:"netcfg"`
 }
 

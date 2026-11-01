@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -30,6 +31,8 @@ type sqsGuest interface {
 	imageDir() string
 	dataVolume() string
 	needsMgmtNIC() bool
+	// label names the guest in launch errors.
+	label() string
 	writeFwCfg(instanceID string) ([]vm.FwCfgEntry, error)
 	// record stores what a same-node relaunch rebuilds the fw_cfg files from.
 	record(inst *vm.VM, nodeID, netcfg string)
@@ -41,13 +44,17 @@ type sqsStoreLaunch struct {
 	volumeID   string
 	listenAddr string
 	clientNKey string
+	region     string
+	gatewayURL string
+	caCert     string
 }
 
 var _ sqsGuest = (*sqsStoreLaunch)(nil)
 
 func (s *sqsStoreLaunch) imageDir() string   { return sqsStoreImageDir() }
 func (s *sqsStoreLaunch) dataVolume() string { return s.volumeID }
-func (s *sqsStoreLaunch) needsMgmtNIC() bool { return false }
+func (s *sqsStoreLaunch) needsMgmtNIC() bool { return true }
+func (s *sqsStoreLaunch) label() string      { return "SQS store" }
 
 func (s *sqsStoreLaunch) writeFwCfg(instanceID string) ([]vm.FwCfgEntry, error) {
 	return writeSQSStoreFwCfg(instanceID, s)
@@ -59,6 +66,9 @@ func (s *sqsStoreLaunch) record(inst *vm.VM, nodeID, netcfg string) {
 		DataVolumeID: s.volumeID,
 		ListenAddr:   s.listenAddr,
 		ClientNKey:   s.clientNKey,
+		Region:       s.region,
+		GatewayURL:   s.gatewayURL,
+		CACert:       s.caCert,
 		Netcfg:       netcfg,
 	}
 }
@@ -128,6 +138,10 @@ func (d *Daemon) prepareSQSStoreLaunch(ctx context.Context, input *elbv2domain.S
 			return nil, fmt.Errorf("sqs store image is not installed (%s): %w", name, err)
 		}
 	}
+	ca, err := d.sqsGuestGatewayCA("sqs store")
+	if err != nil {
+		return nil, err
+	}
 	if err := d.checkSQSStoreVolume(ctx, input.SQSStore.DataVolumeID); err != nil {
 		return nil, err
 	}
@@ -135,6 +149,9 @@ func (d *Daemon) prepareSQSStoreLaunch(ctx context.Context, input *elbv2domain.S
 		volumeID:   input.SQSStore.DataVolumeID,
 		listenAddr: listenAddr,
 		clientNKey: input.SQSStore.ClientNKey,
+		region:     input.SQSStore.Region,
+		gatewayURL: d.resolveSystemGatewayBaseURL(),
+		caCert:     ca,
 	}, nil
 }
 
@@ -218,29 +235,48 @@ func sqsStoreNetcfgOnly(entries []vm.FwCfgEntry) []vm.FwCfgEntry {
 	return kept
 }
 
-// writeSQSStoreFwCfg writes the guest's three store values as fw_cfg files.
-// The key is a public key; nothing secret is written or logged.
+// writeSQSStoreFwCfg writes the guest's store values and CA as fw_cfg files.
+// The key is a public key and the CA a public certificate; nothing secret is
+// written or logged.
 func writeSQSStoreFwCfg(instanceID string, store *sqsStoreLaunch) ([]vm.FwCfgEntry, error) {
-	values := []struct{ name, value string }{
-		{"data-serial", vm.VolumeSerial(store.volumeID)},
-		{"listen-addr", store.listenAddr},
-		{"client-nkey", store.clientNKey},
+	values := map[string]string{
+		"data-serial": vm.VolumeSerial(store.volumeID),
+		"listen-addr": store.listenAddr,
+		"client-nkey": store.clientNKey,
+		"region":      store.region,
+		"gateway-url": store.gatewayURL,
 	}
-	entries := make([]vm.FwCfgEntry, 0, len(values))
-	for _, v := range values {
-		e := sqsStoreFwCfgEntry(instanceID, v.name)
-		if err := os.WriteFile(e.File, []byte(v.value), 0600); err != nil {
+	entries := make([]vm.FwCfgEntry, 0, len(sqsStoreFwCfgNames)+1)
+	write := func(e vm.FwCfgEntry, value string) error {
+		if err := os.WriteFile(e.File, []byte(value), 0600); err != nil {
 			for _, e := range entries {
 				_ = os.Remove(e.File)
 			}
-			return nil, fmt.Errorf("write %s: %w", v.name, err)
+			return fmt.Errorf("write %s: %w", e.Name, err)
 		}
 		entries = append(entries, e)
+		return nil
+	}
+	for _, name := range sqsStoreFwCfgNames {
+		if err := write(sqsStoreFwCfgEntry(instanceID, name), values[name]); err != nil {
+			return nil, err
+		}
+	}
+	if err := write(sqsStoreCAEntry(instanceID), store.caCert); err != nil {
+		return nil, err
 	}
 	return entries, nil
 }
 
-var sqsStoreFwCfgNames = []string{"data-serial", "listen-addr", "client-nkey"}
+var sqsStoreFwCfgNames = []string{"data-serial", "listen-addr", "client-nkey", "region", "gateway-url"}
+
+// sqsStoreCAEntry is the CA bundle the store's /init installs.
+func sqsStoreCAEntry(instanceID string) vm.FwCfgEntry {
+	return vm.FwCfgEntry{
+		Name: "opt/spinifex/ca-cert",
+		File: filepath.Join(hostprocess.RuntimeDir(), fmt.Sprintf("fwcfg-%s-sqs-cacert.tmp", instanceID)),
+	}
+}
 
 func sqsStoreFwCfgEntry(instanceID, name string) vm.FwCfgEntry {
 	return vm.FwCfgEntry{
@@ -260,11 +296,8 @@ func (d *Daemon) refreshSQSStoreState(inst *vm.VM) error {
 	if g.NodeID == "" || g.NodeID != d.node {
 		return fmt.Errorf("sqs store instance %s cannot be relaunched on node %s: it was launched on node %q and is only restarted there", inst.ID, d.node, g.NodeID)
 	}
-	in := &elbv2domain.SystemInstanceInput{
-		Kind:     systeminstance.KindSQSStore,
-		SQSStore: &systeminstance.SQSStoreInput{DataVolumeID: g.DataVolumeID, ClientNKey: g.ClientNKey},
-	}
-	if err := in.ValidateSQSStore(); err != nil {
+	in := &systeminstance.SQSStoreInput{DataVolumeID: g.DataVolumeID, ClientNKey: g.ClientNKey, Region: g.Region}
+	if err := in.Validate(); err != nil {
 		return fmt.Errorf("sqs store instance %s cannot be relaunched: %w", inst.ID, err)
 	}
 	if ip := net.ParseIP(g.ListenAddr); ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsUnspecified() {
@@ -272,6 +305,11 @@ func (d *Daemon) refreshSQSStoreState(inst *vm.VM) error {
 	}
 	if g.Netcfg == "" {
 		return fmt.Errorf("sqs store instance %s cannot be relaunched: its record has no network config", inst.ID)
+	}
+	// A store launched before it authenticated to the gateway has no Region,
+	// gateway URL or CA; it is refused, and its volume is kept untouched.
+	if !strings.HasPrefix(g.GatewayURL, "https://") || strings.TrimSpace(g.CACert) == "" {
+		return fmt.Errorf("sqs store instance %s cannot be relaunched: its record lacks the gateway URL or CA", inst.ID)
 	}
 	if !sqsStoreKeepsDataVolume(inst, g.DataVolumeID) {
 		return fmt.Errorf("sqs store instance %s cannot be relaunched: data volume %s is not among its kept volumes", inst.ID, g.DataVolumeID)
@@ -282,13 +320,15 @@ func (d *Daemon) refreshSQSStoreState(inst *vm.VM) error {
 	for _, name := range sqsStoreFwCfgNames {
 		want = append(want, sqsStoreFwCfgEntry(inst.ID, name))
 	}
+	want = append(want, sqsStoreCAEntry(inst.ID))
 	if !slices.Equal(inst.Config.FwCfg, want) {
 		return fmt.Errorf("sqs store instance %s cannot be relaunched: its recorded fw_cfg files are not the store's", inst.ID)
 	}
 	if err := os.WriteFile(want[0].File, []byte(g.Netcfg), 0600); err != nil {
 		return fmt.Errorf("sqs store instance %s: write netcfg: %w", inst.ID, err)
 	}
-	if _, err := writeSQSStoreFwCfg(inst.ID, &sqsStoreLaunch{volumeID: g.DataVolumeID, listenAddr: g.ListenAddr, clientNKey: g.ClientNKey}); err != nil {
+	if _, err := writeSQSStoreFwCfg(inst.ID, &sqsStoreLaunch{volumeID: g.DataVolumeID, listenAddr: g.ListenAddr,
+		clientNKey: g.ClientNKey, region: g.Region, gatewayURL: g.GatewayURL, caCert: g.CACert}); err != nil {
 		_ = os.Remove(want[0].File)
 		return fmt.Errorf("sqs store instance %s: %w", inst.ID, err)
 	}

@@ -79,6 +79,10 @@ func (ensureRoles) EnsureWorkerProfile(context.Context) (string, error) {
 	return "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":instance-profile/sqsWorkerRole", nil
 }
 
+func (ensureRoles) EnsureStoreProfile(context.Context) (string, error) {
+	return "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":instance-profile/sqsStoreRole", nil
+}
+
 // ensureVMs counts launches; release, when set, holds each launch until closed.
 type ensureVMs struct {
 	mu       sync.Mutex

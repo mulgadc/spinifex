@@ -108,6 +108,7 @@ func (d *Daemon) buildSQSStoreLauncher(ctx context.Context) (*storelaunch.Launch
 		Volumes: sqsStoreVolumes{inner: sqsWorkerVolumes{prep: prep, volumes: d.volumeService,
 			availabilityZone: d.config.AZ, encryptionKeyFile: d.config.Viperblock.EncryptionKeyFile}},
 		Network:        sqsStoreNetwork{n: newSQSStoreNetwork(d.vpcService, &d.config.SQS)},
+		Roles:          sqsStoreRoles{provider: d.systemRoleEnsurer},
 		Host:           sqsStoreHost{check: d.sqsStoreHostReady},
 		VMs:            sqsStoreVMs{launch: d.LaunchSQSStoreInstance},
 		NodeID:         d.node,
@@ -116,9 +117,12 @@ func (d *Daemon) buildSQSStoreLauncher(ctx context.Context) (*storelaunch.Launch
 }
 
 // sqsStoreHostReady reports whether this node can boot the store now: a
-// complete store image and a cluster storage key, so no volume is created
-// that would then be refused as unencrypted.
+// complete store image, a cluster storage key, so no volume is created that
+// would then be refused as unencrypted, and the mgmt bridge and CA.
 func (d *Daemon) sqsStoreHostReady() error {
+	if _, err := d.sqsGuestGatewayCA("sqs store"); err != nil {
+		return err
+	}
 	for _, name := range []string{"vmlinuz", "initramfs.cpio.gz"} {
 		info, err := os.Stat(filepath.Join(sqsStoreImageDir(), name))
 		if err != nil {
@@ -200,23 +204,26 @@ func (m sqsStoreVMs) LaunchStore(_ context.Context, spec storelaunch.Spec) (stri
 	return out.InstanceID, nil
 }
 
-// sqsStoreInput maps a store spec onto the system-instance launch, with its
-// VPC ENI as the only, default NIC.
+// sqsStoreInput maps a store spec onto the system-instance launch: its VPC
+// ENI as the default NIC and an unallocated mgmt NIC the daemon fills in.
 func sqsStoreInput(spec storelaunch.Spec) *elbv2domain.SystemInstanceInput {
 	return &elbv2domain.SystemInstanceInput{
-		BootMode:     systeminstance.BootDirect,
-		ManagedBy:    tags.ManagedBySQS,
-		InstanceType: spec.InstanceType,
-		SubnetID:     spec.Network.SubnetID,
-		ENIID:        spec.Network.ENIID,
-		ENIMac:       spec.Network.ENIMac,
-		ENIIP:        spec.Network.ENIIP,
-		AccountID:    awsidentifiers.GlobalAccountID,
+		BootMode:              systeminstance.BootDirect,
+		ManagedBy:             tags.ManagedBySQS,
+		InstanceType:          spec.InstanceType,
+		SubnetID:              spec.Network.SubnetID,
+		ENIID:                 spec.Network.ENIID,
+		ENIMac:                spec.Network.ENIMac,
+		ENIIP:                 spec.Network.ENIIP,
+		AccountID:             awsidentifiers.GlobalAccountID,
+		IamInstanceProfileArn: spec.ProfileARN,
 		NICs: []systeminstance.NICConfig{
 			{MAC: spec.Network.ENIMac, CIDR: spec.Network.CIDR, Gateway: spec.Network.Gateway, IsDefault: true},
+			{},
 		},
-		Kind:     systeminstance.KindSQSStore,
-		SQSStore: &systeminstance.SQSStoreInput{DataVolumeID: spec.DataVolumeID, ClientNKey: spec.ClientNKey},
+		Kind: systeminstance.KindSQSStore,
+		SQSStore: &systeminstance.SQSStoreInput{DataVolumeID: spec.DataVolumeID, ClientNKey: spec.ClientNKey,
+			Region: spec.Region},
 	}
 }
 

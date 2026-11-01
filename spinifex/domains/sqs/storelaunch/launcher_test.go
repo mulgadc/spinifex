@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	region     = "ap-southeast-2"
-	node       = "node-a"
-	itype      = "sys.store"
-	sizeGiB    = 8
-	workerInst = "i-0000000000000000a"
+	storeProfile = "arn:aws:iam::000000000000:instance-profile/sqsStoreRole"
+	region       = "ap-southeast-2"
+	node         = "node-a"
+	itype        = "sys.store"
+	sizeGiB      = 8
+	workerInst   = "i-0000000000000000a"
 )
 
 type fakeVolumes struct {
@@ -126,6 +127,13 @@ func (f *fakeVMs) count() int {
 	return len(f.specs)
 }
 
+type fakeRoles struct {
+	arn string
+	err error
+}
+
+func (f *fakeRoles) EnsureStoreProfile(context.Context) (string, error) { return f.arn, f.err }
+
 type fakeHost struct{ err error }
 
 func (f *fakeHost) Ready(context.Context) error { return f.err }
@@ -136,6 +144,7 @@ type rig struct {
 	net  *fakeNetwork
 	vms  *fakeVMs
 	host *fakeHost
+	role *fakeRoles
 	pub  string
 	seed string
 }
@@ -157,9 +166,10 @@ func newRig(t *testing.T) rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := rig{vol: &fakeVolumes{encrypted: true}, net: &fakeNetwork{}, vms: &fakeVMs{}, host: &fakeHost{}}
+	r := rig{vol: &fakeVolumes{encrypted: true}, net: &fakeNetwork{}, vms: &fakeVMs{}, host: &fakeHost{},
+		role: &fakeRoles{arn: storeProfile}}
 	r.l = &Launcher{Records: recs, Workers: ids, FirstStore: fs, Volumes: r.vol, Network: r.net,
-		Host: r.host, VMs: r.vms, NodeID: node, RetainedVolume: func(err error) string {
+		Roles: r.role, Host: r.host, VMs: r.vms, NodeID: node, RetainedVolume: func(err error) string {
 			if v, ok := errors.AsType[*retained](err); ok {
 				return v.id
 			}
@@ -236,7 +246,8 @@ func TestEnsure_LaunchesWithTheRecordedPublicKeyAndIsIdempotent(t *testing.T) {
 	}
 	spec := r.vms.specs[0]
 	if spec.ClientNKey != r.pub || !nkeys.IsValidPublicUserKey(spec.ClientNKey) || spec.InstanceType != itype ||
-		spec.Network.ENIID != storeNet().ENIID || spec.DataVolumeID != "vol-00000000000000001" {
+		spec.Network.ENIID != storeNet().ENIID || spec.DataVolumeID != "vol-00000000000000001" ||
+		spec.Region != region || spec.ProfileARN != storeProfile {
 		t.Fatalf("spec = %+v", spec)
 	}
 	if r.vol.sizes[0] != sizeGiB {
@@ -509,5 +520,23 @@ func TestEnsure_WaitsForAReplacedWorkersSuccessorToClaim(t *testing.T) {
 	}
 	if _, err := r.l.Ensure(ctx, region, itype, sizeGiB); err != nil || r.vms.specs[0].ClientNKey != r.pub {
 		t.Fatalf("ensure after the successor claims = %v", err)
+	}
+}
+
+// A store whose instance profile cannot be ensured is never dispatched, so
+// no VM launches without the role its bootstrap signs with.
+func TestEnsure_NoProfileLaunchesNothing(t *testing.T) {
+	r := newRig(t)
+	r.bindWorker(t, node, true)
+	r.role.err = errors.New("iam unavailable")
+	if _, err := r.l.Ensure(context.Background(), region, itype, sizeGiB); err == nil {
+		t.Fatal("ensure succeeded without a profile")
+	}
+	if r.vms.count() != 0 || r.record(t).Dispatched {
+		t.Fatalf("launched %d, dispatched %v", r.vms.count(), r.record(t).Dispatched)
+	}
+	r.role.err = nil
+	if _, err := r.l.Ensure(context.Background(), region, itype, sizeGiB); err != nil || r.vms.count() != 1 {
+		t.Fatalf("retry = %v, launched %d", err, r.vms.count())
 	}
 }

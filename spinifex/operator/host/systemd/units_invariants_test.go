@@ -426,8 +426,11 @@ var unitBodyHashes = map[string]map[int]string{
 		4: "f66e1240cc5655f6a13f3b56ca282c73e2fe289f2e51d0ce624d14b90f12f838",
 		5: "d3d25d7eb0051ccf97f70838ddff763bade38bef934b8f85733e048151ac9319",
 	},
-	"spinifex-firewall.service": {1: "01d0a7a79f47eedca02aaab3ff97a0b6462d61b7834e16c7336a7b96034dc392"},
-	"spinifex-guests.slice":     {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},
+	"spinifex-firewall.service": {
+		1: "01d0a7a79f47eedca02aaab3ff97a0b6462d61b7834e16c7336a7b96034dc392",
+		2: "0786c7312ccf8099910a8545416e859b40116e574a740c0d561b6527e4b38f84",
+	},
+	"spinifex-guests.slice": {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},
 	"spinifex-hostnet.service": {
 		1: "4a110daac63b652aef49e358f22ac8a27a7797261b231d5b1184e171cccb8f87",
 		2: "13fd4231bb850198616ba31f25dfc2ec0aa9edb2c3f170320aa6f7cc6142ba77",

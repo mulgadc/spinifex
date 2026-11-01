@@ -26,7 +26,7 @@ Every service is `PartOf=spinifex.target` and ordered by its own `After=`/`Wants
 | `spinifex-qmp-collector.service` | `spx service qmp-collector start` | Reads the `contracts/telemetry/v1` per-VM sidecar, polls telemetry QMP sockets and tap counters, publishes to NATS `metrics.ec2.*` |
 | `spinifex-shutdown.service` | `/bin/true`; the work is its `ExecStop` | Runs `spx admin node drain --local --unless-restarting`. `After=` every service, so it stops first and drains guests while the stack is still up |
 | `spinifex-nats-watchdog.service` / `.timer` | `nats-js-watchdog.sh` | JetStream liveness probe every 30s. `try-restart`s NATS when JetStream stops accepting writes while the process stays alive — what `Restart=on-failure` cannot catch |
-| `spinifex-firewall.service` | `spinifex-firewall-apply` | Oneshot nftables input policy, `WantedBy=sysinit.target` rather than the target. No `ExecStop`: remove it with `nft delete table inet spinifex_filter` |
+| `spinifex-firewall.service` | `spinifex-firewall-apply boot` | Oneshot nftables input policy, `WantedBy=sysinit.target` rather than the target. Loads the `inet spinifex_conntrack` tracking table on every node, and the policy only once the daemon has written a peer file. No `ExecStop`: remove the policy with `spinifex-firewall-apply disable` |
 | `regenerate-ssh-host-keys.service` | `ssh-keygen -A` | Oneshot for AMI-built nodes, conditional on the host key being absent |
 
 #### Operations

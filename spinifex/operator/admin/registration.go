@@ -63,22 +63,28 @@ type Deps struct {
 	Region                 string
 	SQSWorkerPolling       func() bool
 	SQSTenantAPIRegistered func() bool
+
+	// NetworkTests holds node-to-node throughput tests; nil refuses them.
+	NetworkTests NetworkTestStore
 }
 
 // adminActions are the actions only the super-admin account may call.
 var adminActions = map[string]bool{
-	"GetVersion":        true,
-	"GetNodes":          true,
-	"GetVMs":            true,
-	"GetStorageStatus":  true,
-	"PromoteImage":      true,
-	"GrantModelAccess":  true,
-	"RevokeModelAccess": true,
-	"ListModelAccess":   true,
-	"ListOchreCatalog":  true,
-	"EnsureSQSWorker":   true,
-	"EnableSQS":         true,
-	"DescribeSQS":       true,
+	"GetVersion":           true,
+	"GetNodes":             true,
+	"GetNodeFacts":         true,
+	"StartNetworkTest":     true,
+	"DescribeNetworkTests": true,
+	"GetVMs":               true,
+	"GetStorageStatus":     true,
+	"PromoteImage":         true,
+	"GrantModelAccess":     true,
+	"RevokeModelAccess":    true,
+	"ListModelAccess":      true,
+	"ListOchreCatalog":     true,
+	"EnsureSQSWorker":      true,
+	"EnableSQS":            true,
+	"DescribeSQS":          true,
 }
 
 // AdminActionNames lists the actions only the super-admin account may call, sorted.
@@ -88,7 +94,7 @@ func AdminActionNames() []string {
 
 // ActionNames lists every action the registration dispatches, sorted.
 func ActionNames() []string {
-	names := append(AdminActionNames(), GetInstanceMetricsAction, GetInstanceTypeCapacityAction)
+	names := append(AdminActionNames(), GetInstanceMetricsAction, GetInstanceTypeCapacityAction, GetNodeMetricsAction)
 	slices.Sort(names)
 	return names
 }
@@ -167,9 +173,14 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if adminActions[action] && accountID != awsidentifiers.DefaultAccountID() {
+	if (adminActions[action] || action == GetNodeMetricsAction) && accountID != awsidentifiers.DefaultAccountID() {
 		slog.InfoContext(r.Context(), "Spinifex dispatch: non-admin access denied", "action", action, "accountID", accountID)
 		return errors.New(awserrors.ErrorAccessDenied)
+	}
+
+	// Streams rather than returning one document, and only after both gates.
+	if action == GetNodeMetricsAction {
+		return d.getNodeMetrics(w, inv, args)
 	}
 
 	output, err := d.run(r.Context(), action, args, accountID)
@@ -201,6 +212,15 @@ func (d Deps) run(ctx context.Context, action string, args map[string]string, ac
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		return GetNodes(ctx, d.NATS, d.activeNodes(ctx))
+	case "GetNodeFacts":
+		if d.NATS == nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		return GetNodeFacts(ctx, d.NATS, d.activeNodes(ctx))
+	case "StartNetworkTest":
+		return d.StartNetworkTest(ctx, args)
+	case "DescribeNetworkTests":
+		return d.DescribeNetworkTests(ctx, args)
 	case GetInstanceTypeCapacityAction:
 		if d.NATS == nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)

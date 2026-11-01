@@ -14,7 +14,8 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthIndexRouteImport } from './routes/_auth/index'
 import { Route as AuthBedrockRouteRouteImport } from './routes/_auth/bedrock/route'
 import { Route as AuthDesignRouteImport } from './routes/_auth/design'
-import { Route as AuthNodesRouteImport } from './routes/_auth/nodes'
+import { Route as AuthNodesIndexRouteImport } from './routes/_auth/nodes/index'
+import { Route as AuthNodesTopologyRouteImport } from './routes/_auth/nodes/topology'
 import { Route as AuthS3ServiceMetricsRouteImport } from './routes/_auth/s3/service-metrics'
 import { Route as AuthEc2elasticIpsAllocateAddressRouteImport } from './routes/_auth/ec2/(elastic-ips)/allocate-address'
 import { Route as AuthEc2instancesRunInstancesRouteImport } from './routes/_auth/ec2/(instances)/run-instances'
@@ -148,9 +149,14 @@ const AuthDesignRoute = AuthDesignRouteImport.update({
   path: '/design',
   getParentRoute: () => AuthRouteRoute,
 } as any)
-const AuthNodesRoute = AuthNodesRouteImport.update({
-  id: '/nodes',
-  path: '/nodes',
+const AuthNodesIndexRoute = AuthNodesIndexRouteImport.update({
+  id: '/nodes/',
+  path: '/nodes/',
+  getParentRoute: () => AuthRouteRoute,
+} as any)
+const AuthNodesTopologyRoute = AuthNodesTopologyRouteImport.update({
+  id: '/nodes/topology',
+  path: '/nodes/topology',
   getParentRoute: () => AuthRouteRoute,
 } as any)
 const AuthS3ServiceMetricsRoute = AuthS3ServiceMetricsRouteImport.update({
@@ -798,8 +804,9 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/bedrock': typeof AuthBedrockRouteRouteWithChildren
   '/design': typeof AuthDesignRoute
-  '/nodes': typeof AuthNodesRoute
+  '/nodes/topology': typeof AuthNodesTopologyRoute
   '/s3/service-metrics': typeof AuthS3ServiceMetricsRoute
+  '/nodes/': typeof AuthNodesIndexRoute
   '/s3/ls/$bucket': typeof AuthS3LsBucketRouteRouteWithChildren
   '/ec2/allocate-address': typeof AuthEc2elasticIpsAllocateAddressRoute
   '/ec2/run-instances': typeof AuthEc2instancesRunInstancesRoute
@@ -912,9 +919,10 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/bedrock': typeof AuthBedrockRouteRouteWithChildren
   '/design': typeof AuthDesignRoute
-  '/nodes': typeof AuthNodesRoute
   '/': typeof AuthIndexRoute
+  '/nodes/topology': typeof AuthNodesTopologyRoute
   '/s3/service-metrics': typeof AuthS3ServiceMetricsRoute
+  '/nodes': typeof AuthNodesIndexRoute
   '/ec2/allocate-address': typeof AuthEc2elasticIpsAllocateAddressRoute
   '/ec2/run-instances': typeof AuthEc2instancesRunInstancesRoute
   '/ec2/create-internet-gateway': typeof AuthEc2internetGatewaysCreateInternetGatewayRoute
@@ -1028,9 +1036,10 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/_auth/bedrock': typeof AuthBedrockRouteRouteWithChildren
   '/_auth/design': typeof AuthDesignRoute
-  '/_auth/nodes': typeof AuthNodesRoute
   '/_auth/': typeof AuthIndexRoute
+  '/_auth/nodes/topology': typeof AuthNodesTopologyRoute
   '/_auth/s3/service-metrics': typeof AuthS3ServiceMetricsRoute
+  '/_auth/nodes/': typeof AuthNodesIndexRoute
   '/_auth/s3/ls/$bucket': typeof AuthS3LsBucketRouteRouteWithChildren
   '/_auth/ec2/(elastic-ips)/allocate-address': typeof AuthEc2elasticIpsAllocateAddressRoute
   '/_auth/ec2/(instances)/run-instances': typeof AuthEc2instancesRunInstancesRoute
@@ -1146,8 +1155,9 @@ export interface FileRouteTypes {
     | '/login'
     | '/bedrock'
     | '/design'
-    | '/nodes'
+    | '/nodes/topology'
     | '/s3/service-metrics'
+    | '/nodes/'
     | '/s3/ls/$bucket'
     | '/ec2/allocate-address'
     | '/ec2/run-instances'
@@ -1260,9 +1270,10 @@ export interface FileRouteTypes {
     | '/login'
     | '/bedrock'
     | '/design'
-    | '/nodes'
     | '/'
+    | '/nodes/topology'
     | '/s3/service-metrics'
+    | '/nodes'
     | '/ec2/allocate-address'
     | '/ec2/run-instances'
     | '/ec2/create-internet-gateway'
@@ -1375,9 +1386,10 @@ export interface FileRouteTypes {
     | '/login'
     | '/_auth/bedrock'
     | '/_auth/design'
-    | '/_auth/nodes'
     | '/_auth/'
+    | '/_auth/nodes/topology'
     | '/_auth/s3/service-metrics'
+    | '/_auth/nodes/'
     | '/_auth/s3/ls/$bucket'
     | '/_auth/ec2/(elastic-ips)/allocate-address'
     | '/_auth/ec2/(instances)/run-instances'
@@ -1529,11 +1541,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthDesignRouteImport
       parentRoute: typeof AuthRouteRoute
     }
-    '/_auth/nodes': {
-      id: '/_auth/nodes'
+    '/_auth/nodes/': {
+      id: '/_auth/nodes/'
       path: '/nodes'
-      fullPath: '/nodes'
-      preLoaderRoute: typeof AuthNodesRouteImport
+      fullPath: '/nodes/'
+      preLoaderRoute: typeof AuthNodesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/nodes/topology': {
+      id: '/_auth/nodes/topology'
+      path: '/nodes/topology'
+      fullPath: '/nodes/topology'
+      preLoaderRoute: typeof AuthNodesTopologyRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/s3/service-metrics': {
@@ -2350,9 +2369,10 @@ const AuthS3LsBucketRouteRouteWithChildren =
 interface AuthRouteRouteChildren {
   AuthBedrockRouteRoute: typeof AuthBedrockRouteRouteWithChildren
   AuthDesignRoute: typeof AuthDesignRoute
-  AuthNodesRoute: typeof AuthNodesRoute
   AuthIndexRoute: typeof AuthIndexRoute
+  AuthNodesTopologyRoute: typeof AuthNodesTopologyRoute
   AuthS3ServiceMetricsRoute: typeof AuthS3ServiceMetricsRoute
+  AuthNodesIndexRoute: typeof AuthNodesIndexRoute
   AuthS3LsBucketRouteRoute: typeof AuthS3LsBucketRouteRouteWithChildren
   AuthEc2elasticIpsAllocateAddressRoute: typeof AuthEc2elasticIpsAllocateAddressRoute
   AuthEc2instancesRunInstancesRoute: typeof AuthEc2instancesRunInstancesRoute
@@ -2453,9 +2473,10 @@ interface AuthRouteRouteChildren {
 const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthBedrockRouteRoute: AuthBedrockRouteRouteWithChildren,
   AuthDesignRoute: AuthDesignRoute,
-  AuthNodesRoute: AuthNodesRoute,
   AuthIndexRoute: AuthIndexRoute,
+  AuthNodesTopologyRoute: AuthNodesTopologyRoute,
   AuthS3ServiceMetricsRoute: AuthS3ServiceMetricsRoute,
+  AuthNodesIndexRoute: AuthNodesIndexRoute,
   AuthS3LsBucketRouteRoute: AuthS3LsBucketRouteRouteWithChildren,
   AuthEc2elasticIpsAllocateAddressRoute: AuthEc2elasticIpsAllocateAddressRoute,
   AuthEc2instancesRunInstancesRoute: AuthEc2instancesRunInstancesRoute,

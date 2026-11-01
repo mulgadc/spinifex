@@ -1,5 +1,7 @@
 import { useState } from "react"
 
+import { DeviceArt } from "@/components/device-art"
+import { SpeedDial } from "@/components/speed-dial"
 import { StateBadge } from "@/components/state-badge"
 import { RelativeTime, TagPills, TruncatedText } from "@/components/table-cells"
 import {
@@ -256,6 +258,39 @@ export function DataSection() {
               <div className="p-3 text-muted-foreground">Detail</div>
             </ResizablePanel>
           </ResizablePanelGroup>
+        </div>
+      </Specimen>
+      <Specimen label="Device art">
+        <div className="flex flex-wrap items-end gap-4 text-muted-foreground">
+          <DeviceArt className="h-12 w-16" kind="internet" />
+          <DeviceArt className="h-12 w-16" kind="switch" />
+          <DeviceArt className="h-12 w-16" kind="segment" />
+          <DeviceArt
+            className="h-12 w-16"
+            formFactor="rack-server"
+            kind="node"
+          />
+          <DeviceArt className="h-12 w-16" formFactor="tower" kind="node" />
+          <DeviceArt
+            className="h-12 w-16"
+            formFactor="virtual-machine"
+            kind="node"
+          />
+          <DeviceArt className="h-12 w-16" formFactor="sbc" kind="node" />
+        </div>
+      </Specimen>
+      <Specimen label="Speed dial">
+        <div className="grid w-full max-w-xl grid-cols-2 gap-4">
+          <SpeedDial
+            bitsPerSecond={23.1e9}
+            label="node1 → node2"
+            linkMbps={25_000}
+          />
+          <SpeedDial
+            bitsPerSecond={410e6}
+            label="node2 → node1"
+            linkMbps={1000}
+          />
         </div>
       </Specimen>
     </CatalogueSection>

@@ -732,7 +732,8 @@ table inet spinifex_filter {
         # inventory and running instances to anyone who asks. 8660 is
         # predastore's unauthenticated /healthz and /readyz, which name the
         # peers a gate cannot reach, so it belongs here for the same reason.
-        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
+        # 5001 is the admin network test, listening only while one runs.
+        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5001, 5300, 6641, 6642, 6643, 6644, 8660 } accept
         ip saddr $spinifex_peers udp dport { 5300, 6660, 7660 } accept
 
         # Encap plane, peer-scoped: Geneve, IKE, NAT-T and ESP. Geneve is a
@@ -1309,6 +1310,7 @@ qemu-utils gdisk ovmf qemu-efi-aarch64 less
 libvirt-daemon-system libvirt-clients
 pciutils
 jq curl iproute2 iputils-arping ethtool netcat-openbsd wget unzip xz-utils file
+dmidecode iperf
 ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon dhcpcd-base
 chrony nftables"
 
@@ -1318,7 +1320,7 @@ chrony nftables"
 OL_RUNTIME_PACKAGES="nbdkit nbdkit-basic-filters
 qemu-kvm qemu-img edk2-ovmf seabios-bin less
 pciutils
-jq curl iproute iputils ethtool nmap-ncat wget unzip xz file
+jq curl iproute iputils ethtool nmap-ncat wget unzip xz file dmidecode
 ovn25.03-central ovn25.03-host openvswitch3.5 openvswitch3.5-ipsec libreswan dhcpcd
 chrony nftables iptables-nft systemd-resolved"
 

@@ -677,6 +677,7 @@ func launchService(config *config.ClusterConfig) error {
 		Credentials: bedrockCredentials,
 		Access:      bedrockAccess,
 
+		NetworkTests:           operatoradmin.NewKVNetworkTests(js),
 		IAM:                    iamService,
 		Quota:                  quotaSvc,
 		BucketStore:            objStore,

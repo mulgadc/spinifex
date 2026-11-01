@@ -2,6 +2,7 @@ import {
   type LiveSample,
   EventStreamParser,
   LIVE_DELAY_MS,
+  liveSampleSchema,
 } from "./live-sample"
 import { SignedFetchError, signedStream } from "./signed-fetch"
 
@@ -18,12 +19,12 @@ export type LiveStatus =
 
 // What a failed request means for the view. A gateway without the action will
 // not grow one by retrying, so that one stops the loop.
-function statusOf(code: string | undefined): LiveStatus {
+function statusOf(code: string | undefined, absent: string): LiveStatus {
   if (code === "InvalidAction") {
     return "unsupported"
   }
 
-  return code === "InvalidInstanceID.NotFound" ? "unavailable" : "error"
+  return code === absent ? "unavailable" : "error"
 }
 
 // Maps the browser's clock onto the host's. The smallest arrival-minus-sample
@@ -45,8 +46,8 @@ export class LiveClock {
   }
 }
 
-export interface LiveWatchHandlers {
-  onSamples: (samples: LiveSample[]) => void
+export interface LiveWatchHandlers<T = LiveSample> {
+  onSamples: (samples: T[]) => void
   onStatus: (status: LiveStatus) => void
 }
 
@@ -71,15 +72,15 @@ async function pause(ms: number, signal: AbortSignal) {
 }
 
 // Reads one stream segment to its end, handing on samples as they arrive.
-async function readSegment(
+async function readSegment<T>(
   response: Response,
-  onSamples: (samples: LiveSample[]) => void,
+  parser: EventStreamParser<T>,
+  onSamples: (samples: T[]) => void,
 ) {
   if (!response.body) {
     return
   }
 
-  const parser = new EventStreamParser()
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
 
   for (;;) {
@@ -106,11 +107,38 @@ export async function watchInstanceMetrics(
   handlers: LiveWatchHandlers,
   signal: AbortSignal,
 ) {
+  await watchLive(
+    {
+      action: "GetInstanceMetrics",
+      params: { InstanceId: instanceId },
+      absent: "InvalidInstanceID.NotFound",
+      parser: () => new EventStreamParser(liveSampleSchema),
+    },
+    since,
+    handlers,
+    signal,
+  )
+}
+
+export interface LiveSource<T> {
+  action: string
+  params: Record<string, string>
+  // The error code for a source nobody is sampling, which is worth retrying.
+  absent: string
+  parser: () => EventStreamParser<T>
+}
+
+export async function watchLive<T extends { t: number }>(
+  source: LiveSource<T>,
+  since: number,
+  handlers: LiveWatchHandlers<T>,
+  signal: AbortSignal,
+) {
   let newest = since
   let failures = 0
   let delivered = false
 
-  const onSamples = (samples: LiveSample[]) => {
+  const onSamples = (samples: T[]) => {
     delivered = true
     newest = samples.at(-1)?.t ?? newest
     handlers.onSamples(samples)
@@ -120,9 +148,9 @@ export async function watchInstanceMetrics(
     try {
       // oxlint-disable-next-line no-await-in-loop -- one segment at a time
       const response = await signedStream({
-        action: "GetInstanceMetrics",
+        action: source.action,
         params: {
-          InstanceId: instanceId,
+          ...source.params,
           ...(newest > 0 && { Since: String(newest) }),
         },
         signal,
@@ -131,7 +159,7 @@ export async function watchInstanceMetrics(
       handlers.onStatus("live")
       delivered = false
       // oxlint-disable-next-line no-await-in-loop
-      await readSegment(response, onSamples)
+      await readSegment(response, source.parser(), onSamples)
       failures = delivered ? 0 : failures + 1
     } catch (error) {
       if (signal.aborted) {
@@ -140,6 +168,7 @@ export async function watchInstanceMetrics(
 
       const status = statusOf(
         error instanceof SignedFetchError ? error.name : undefined,
+        source.absent,
       )
 
       handlers.onStatus(status)

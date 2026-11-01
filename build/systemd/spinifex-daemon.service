@@ -1,4 +1,4 @@
-# spinifex-unit-version: 5
+# spinifex-unit-version: 6
 [Unit]
 Description=Spinifex Daemon (VM Orchestration)
 PartOf=spinifex.target
@@ -15,6 +15,7 @@ Slice=spinifex-system.slice
 User=spinifex-daemon
 Group=spinifex
 ExecStartPre=/usr/local/bin/spx admin hostnet check
+ExecStartPre=-+/usr/local/bin/spx admin node-facts collect
 ExecStart=/usr/local/bin/spx service spinifex start
 Restart=on-failure
 RestartSec=5

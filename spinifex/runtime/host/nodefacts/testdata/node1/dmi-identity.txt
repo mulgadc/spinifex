@@ -1,0 +1,189 @@
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 3.3.0 present.
+
+Handle 0x0000, DMI type 0, 26 bytes
+BIOS Information
+	Vendor: GIGABYTE
+	Version: M30
+	Release Date: 06/23/2026
+	Address: 0xF0000
+	Runtime Size: 64 kB
+	ROM Size: 16 MB
+	Characteristics:
+		PCI is supported
+		BIOS is upgradeable
+		BIOS shadowing is allowed
+		Boot from CD is supported
+		Selectable boot is supported
+		BIOS ROM is socketed
+		EDD is supported
+		Japanese floppy for NEC 9800 1.2 MB is supported (int 13h)
+		Japanese floppy for Toshiba 1.2 MB is supported (int 13h)
+		5.25"/360 kB floppy services are supported (int 13h)
+		5.25"/1.2 MB floppy services are supported (int 13h)
+		3.5"/720 kB floppy services are supported (int 13h)
+		3.5"/2.88 MB floppy services are supported (int 13h)
+		Print screen service is supported (int 5h)
+		Serial services are supported (int 14h)
+		Printer services are supported (int 17h)
+		CGA/mono video services are supported (int 10h)
+		USB legacy is supported
+		BIOS boot specification is supported
+		Targeted content distribution is supported
+		UEFI is supported
+	BIOS Revision: 5.22
+
+Handle 0x0001, DMI type 1, 27 bytes
+System Information
+	Manufacturer: GIGABYTE
+	Product Name: H262-Z62-ZB
+	Version: 0100
+	Serial Number: TEST-0001
+	UUID: TEST-0002
+	Wake-up Type: Power Switch
+	SKU Number: 01234567890123456789AB
+	Family: Server
+
+Handle 0x0002, DMI type 2, 15 bytes
+Base Board Information
+	Manufacturer: GIGABYTE
+	Product Name: MZ62-HD0-ZB
+	Version: 02000200
+	Serial Number: TEST-0003
+	Asset Tag: TEST-0004
+	Features:
+		Board is a hosting board
+		Board is removable
+		Board is replaceable
+	Location In Chassis: 01234567890123456789AB
+	Chassis Handle: 0x0003
+	Type: Motherboard
+	Contained Object Handles: 0
+
+Handle 0x0003, DMI type 3, 22 bytes
+Chassis Information
+	Manufacturer: GIGABYTE
+	Type: Rack Mount Chassis
+	Lock: Not Present
+	Version: 01234567
+	Serial Number: TEST-0005
+	Asset Tag: TEST-0006
+	Boot-up State: Safe
+	Power Supply State: Safe
+	Thermal State: Safe
+	Security Status: None
+	OEM Information: 0x00000000
+	Height: Unspecified
+	Number Of Power Cords: 1
+	Contained Elements: 0
+	SKU Number: 01234567890123456789AB
+
+Handle 0x0023, DMI type 10, 10 bytes
+On Board Device 1 Information
+	Type: Video
+	Status: Enabled
+	Description: AST2500
+On Board Device 2 Information
+	Type: Ethernet
+	Status: Enabled
+	Description: Intel i350 Lan1
+On Board Device 3 Information
+	Type: Ethernet
+	Status: Enabled
+	Description: Intel i350 Lan2
+
+Handle 0x0024, DMI type 41, 11 bytes
+Onboard Device
+	Reference Designation:  Onboard VGA
+	Type: Video
+	Status: Enabled
+	Type Instance: 1
+	Bus Address: 0000:63:00.0
+
+Handle 0x0025, DMI type 41, 11 bytes
+Onboard Device
+	Reference Designation:  Onboard LAN1
+	Type: Ethernet
+	Status: Enabled
+	Type Instance: 1
+	Bus Address: 0000:61:00.0
+
+Handle 0x0026, DMI type 41, 11 bytes
+Onboard Device
+	Reference Designation:  Onboard LAN2
+	Type: Ethernet
+	Status: Enabled
+	Type Instance: 2
+	Bus Address: 0000:61:00.1
+
+Handle 0x0037, DMI type 15, 73 bytes
+System Event Log
+	Area Length: 0 bytes
+	Header Start Offset: 0x0000
+	Header Length: 16 bytes
+	Data Start Offset: 0x0010
+	Access Method: Memory-mapped physical 32-bit address
+	Access Address: 0xFF536000
+	Status: Valid, Not Full
+	Change Token: 0x00000015
+	Header Format: Type 1
+	Supported Log Type Descriptors: 25
+	Descriptor 1: Single-bit ECC memory error
+	Data Format 1: Multiple-event handle
+	Descriptor 2: Multi-bit ECC memory error
+	Data Format 2: Multiple-event handle
+	Descriptor 3: Parity memory error
+	Data Format 3: None
+	Descriptor 4: Bus timeout
+	Data Format 4: None
+	Descriptor 5: I/O channel block
+	Data Format 5: None
+	Descriptor 6: Software NMI
+	Data Format 6: None
+	Descriptor 7: POST memory resize
+	Data Format 7: None
+	Descriptor 8: POST error
+	Data Format 8: POST results bitmap
+	Descriptor 9: PCI parity error
+	Data Format 9: Multiple-event handle
+	Descriptor 10: PCI system error
+	Data Format 10: Multiple-event handle
+	Descriptor 11: CPU failure
+	Data Format 11: None
+	Descriptor 12: EISA failsafe timer timeout
+	Data Format 12: None
+	Descriptor 13: Correctable memory log disabled
+	Data Format 13: None
+	Descriptor 14: Logging disabled
+	Data Format 14: None
+	Descriptor 15: System limit exceeded
+	Data Format 15: None
+	Descriptor 16: Asynchronous hardware timer expired
+	Data Format 16: None
+	Descriptor 17: System configuration information
+	Data Format 17: None
+	Descriptor 18: Hard disk information
+	Data Format 18: None
+	Descriptor 19: System reconfigured
+	Data Format 19: None
+	Descriptor 20: Uncorrectable CPU-complex error
+	Data Format 20: None
+	Descriptor 21: Log area reset/cleared
+	Data Format 21: None
+	Descriptor 22: System boot
+	Data Format 22: None
+	Descriptor 23: End of log
+	Data Format 23: None
+	Descriptor 24: OEM-specific
+	Data Format 24: OEM-specific
+	Descriptor 25: OEM-specific
+	Data Format 25: OEM-specific
+
+Handle 0x0085, DMI type 13, 22 bytes
+BIOS Language Information
+	Language Description Format: Long
+	Installable Languages: 1
+		en|US|iso8859-1
+	Currently Installed Language: en|US|iso8859-1
+

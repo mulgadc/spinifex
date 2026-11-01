@@ -40,6 +40,7 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
@@ -169,6 +170,7 @@ type Daemon struct {
 	spotInstanceService   *ec2spotinstance.SpotInstanceServiceImpl
 	vpcService            *ec2vpc.VPCServiceImpl
 	sqsWorker             *sqsWorkerEnsurer
+	insight               *nodeInsight
 	eipService            ec2eip.EIPService
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
 	eksService            *ekscluster.EKSServiceImpl
@@ -905,6 +907,10 @@ func (d *Daemon) subscribeAll() error {
 	if d.sqsWorker == nil {
 		d.sqsWorker = newSQSWorkerEnsurer(d.buildSQSWorkerLauncher)
 	}
+	if d.insight == nil {
+		d.insight = newNodeInsight(d.node)
+		d.insight.live = &nodeLiveSampler{insight: d.insight, nc: d.natsConn, subject: telemetryv1.NodeLiveSampleSubject(d.node)}
+	}
 	subs := []natsSub{
 		// ec2.RunInstances is handled by dynamic per-instance-type subscriptions
 		// managed by ResourceManager.initSubscriptions()
@@ -1044,6 +1050,7 @@ func (d *Daemon) subscribeAll() error {
 		{clusterv1.NodeHealthSubject(d.node), d.handleHealthCheck, ""},
 		{clusterv1.NodesDiscoverSubject, d.handleNodeDiscover, ""},
 		{clusterv1.NodeStatusSubject, d.handleNodeStatus, ""},
+		{clusterv1.NodeFactsSubject, d.handleNodeFacts, ""},
 		{clusterv1.NodeVMsSubject, d.handleNodeVMs, ""},
 		{operatorv1.StorageConfigSubject, d.handleStorageConfig, ""},
 		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
@@ -1056,6 +1063,13 @@ func (d *Daemon) subscribeAll() error {
 		{"spinifex.cluster.shutdown.storage", d.handleShutdownStorage, ""},
 		{"spinifex.cluster.shutdown.persist", d.handleShutdownPersist, ""},
 		{"spinifex.cluster.shutdown.infra", d.handleShutdownInfra, ""},
+	}
+	if clusterv1.ValidNodeID(d.node) {
+		subs = append(subs,
+			natsSub{clusterv1.NetTestServeSubject(d.node), d.handleNetTestServe, ""},
+			natsSub{clusterv1.NetTestRunSubject(d.node), d.handleNetTestRun, ""},
+			natsSub{telemetryv1.NodeLiveWatchSubject(d.node), d.handleNodeLiveWatch, ""},
+		)
 	}
 
 	// ELBv2 operations require a resolved gateway URL.

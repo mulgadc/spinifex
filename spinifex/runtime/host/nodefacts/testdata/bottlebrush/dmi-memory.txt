@@ -1,0 +1,797 @@
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 3.2.0 present.
+
+Handle 0x0045, DMI type 16, 23 bytes
+Physical Memory Array
+	Location: System Board Or Motherboard
+	Use: System Memory
+	Error Correction Type: Multi-bit ECC
+	Maximum Capacity: 8 TB
+	Error Information Handle: 0x0044
+	Number Of Devices: 32
+
+Handle 0x004D, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x004C
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P0_A0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x004F, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x004E
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P0_A1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0001
+	Asset Tag: TEST-0002
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0052, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0051
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P0_B0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0054, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0053
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P0_B1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0003
+	Asset Tag: TEST-0004
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0057, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0056
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P0_C0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0059, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0058
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P0_C1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0005
+	Asset Tag: TEST-0006
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x005C, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x005B
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P0_D0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x005E, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x005D
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P0_D1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0007
+	Asset Tag: TEST-0008
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0061, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0060
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P0_E0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0063, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0062
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P0_E1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0009
+	Asset Tag: TEST-0010
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0066, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0065
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P0_F0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0068, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0067
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P0_F1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0011
+	Asset Tag: TEST-0012
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x006B, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x006A
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P0_G0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x006D, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x006C
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P0_G1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0013
+	Asset Tag: TEST-0014
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0070, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x006F
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P0_H0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0072, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0071
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P0_H1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0015
+	Asset Tag: TEST-0016
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0079, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0078
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P1_I0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x007B, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x007A
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P1_I1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0017
+	Asset Tag: TEST-0018
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x007E, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x007D
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P1_J0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0080, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x007F
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P1_J1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0019
+	Asset Tag: TEST-0020
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0083, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0082
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P1_K0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0085, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0084
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P1_K1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0021
+	Asset Tag: TEST-0022
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0088, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0087
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P1_L0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x008A, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0089
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P1_L1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0023
+	Asset Tag: TEST-0024
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x008D, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x008C
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P1_M0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x008F, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x008E
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P1_M1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0025
+	Asset Tag: TEST-0026
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0092, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0091
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P1_N0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0094, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0093
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P1_N1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0027
+	Asset Tag: TEST-0028
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x0097, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0096
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P1_O0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x0099, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x0098
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P1_O1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0029
+	Asset Tag: TEST-0030
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+
+Handle 0x009C, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x009B
+	Total Width: Unknown
+	Data Width: Unknown
+	Size: No Module Installed
+	Form Factor: Unknown
+	Set: None
+	Locator: DIMM_P1_P0
+	Bank Locator: BANK 0
+	Type: Unknown
+	Type Detail: Unknown
+
+Handle 0x009E, DMI type 17, 84 bytes
+Memory Device
+	Array Handle: 0x0045
+	Error Information Handle: 0x009D
+	Total Width: 72 bits
+	Data Width: 64 bits
+	Size: 16 GB
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_P1_P1
+	Bank Locator: BANK 1
+	Type: DDR4
+	Type Detail: Synchronous Registered (Buffered)
+	Speed: 2400 MT/s
+	Manufacturer: SK Hynix
+	Serial Number: TEST-0031
+	Asset Tag: TEST-0032
+	Part Number: HMA82GR7AFR8N-UH    
+	Rank: 2
+	Configured Memory Speed: 2400 MT/s
+	Minimum Voltage: 1.2 V
+	Maximum Voltage: 1.2 V
+	Configured Voltage: 1.2 V
+	Memory Technology: DRAM
+	Memory Operating Mode Capability: Volatile memory
+	Firmware Version: Unknown
+	Module Manufacturer ID: Bank 1, Hex 0xAD
+	Module Product ID: Unknown
+	Memory Subsystem Controller Manufacturer ID: Unknown
+	Memory Subsystem Controller Product ID: Unknown
+	Non-Volatile Size: None
+	Volatile Size: 16 GB
+	Cache Size: None
+	Logical Size: None
+

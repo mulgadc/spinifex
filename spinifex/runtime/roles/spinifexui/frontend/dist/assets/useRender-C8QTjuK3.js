@@ -1,0 +1,1 @@
+import{ft as e}from"./reason-parts-C6dH3Q7E.js";function t(t){return e(t.defaultTagName??`div`,t,t)}export{t};

@@ -5,6 +5,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,18 @@ func TestSetRepositoryPolicy_MissingPolicyTextMessage(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, awserrors.ErrorECRInvalidParameter, code)
 	assert.Equal(t, "Invalid parameter at 'PolicyText' failed to satisfy constraint: 'Cannot be null'", message)
+}
+
+// A valid policy longer than the model's 10240 characters is refused on length.
+func TestSetRepositoryPolicy_PolicyTextTooLong(t *testing.T) {
+	nc := newPolicyTestConn(t)
+	seedRepo(t, nc, "team/app")
+	body := `{"repositoryName":"team/app","policyText":` + strconvQuote("{}"+strings.Repeat(" ", 10240)) + `}`
+	_, err := SetRepositoryPolicy(context.Background(), nc, policyTestAccount, []byte(body))
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorECRInvalidParameter, code)
+	assert.Equal(t, "Invalid parameter at 'policyText' failed to satisfy constraint: 'Member must have length less than or equal to 10240'", message)
 }
 
 // strconvQuote JSON-quotes a string for inline test bodies.

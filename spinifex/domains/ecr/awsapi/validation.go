@@ -3,6 +3,7 @@ package awsapi
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -13,6 +14,10 @@ import (
 const (
 	minRepositoryNameLength = 2
 	maxRepositoryNameLength = 256
+
+	minLifecyclePolicyTextLength  = 100
+	maxLifecyclePolicyTextLength  = 30720
+	maxRepositoryPolicyTextLength = 10240
 )
 
 // ValidateRepositoryName returns InvalidParameterException naming the first
@@ -45,6 +50,18 @@ func EnumValueError(field string, allowed ...string) error {
 // MaxItemsError refuses a list field carrying more than limit members.
 func MaxItemsError(field string, limit int) error {
 	return ConstraintError(field, fmt.Sprintf("Member must have length less than or equal to %d", limit))
+}
+
+// ValidateTextLength refuses text whose length in characters falls outside
+// [minLen, maxLen], the bounds of field's model shape.
+func ValidateTextLength(field, text string, minLen, maxLen int) error {
+	switch n := utf8.RuneCountInString(text); {
+	case n < minLen:
+		return ConstraintError(field, fmt.Sprintf("Member must have length greater than or equal to %d", minLen))
+	case n > maxLen:
+		return ConstraintError(field, fmt.Sprintf("Member must have length less than or equal to %d", maxLen))
+	}
+	return nil
 }
 
 // ConstraintError refuses field for failing constraint.

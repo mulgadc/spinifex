@@ -61,6 +61,9 @@ func SetRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string, b
 	if req.PolicyText == "" {
 		return nil, ConstraintError("PolicyText", "Cannot be null")
 	}
+	if err := ValidateTextLength("policyText", req.PolicyText, 0, maxRepositoryPolicyTextLength); err != nil {
+		return nil, err
+	}
 	if !json.Valid([]byte(req.PolicyText)) {
 		return nil, ConstraintError("policyText", "Invalid repository policy provided")
 	}

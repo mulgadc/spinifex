@@ -557,12 +557,18 @@ func (s *STSServiceImpl) requireActiveAccount(accountID string) error {
 	acct, err := s.iamSvc.GetAccount(accountID)
 	if err != nil {
 		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorIAMNoSuchEntity {
+			slog.Warn("STS mint refused: account is not active", "account_id", accountID, "missing", true)
 			return errAccountNotActive
 		}
 		slog.Error("STS mint: cannot read account record", "account_id", accountID, "err", err)
 		return errors.New(awserrors.ErrorInternalError)
 	}
 	if acct == nil || acct.Status != iamdomain.AccountStatusActive {
+		status := ""
+		if acct != nil {
+			status = acct.Status
+		}
+		slog.Warn("STS mint refused: account is not active", "account_id", accountID, "status", status)
 		return errAccountNotActive
 	}
 	return nil

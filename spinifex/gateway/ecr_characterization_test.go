@@ -59,7 +59,7 @@ func TestECRInventory_ReachableStubsAnswer501(t *testing.T) {
 	}
 	assert.ElementsMatch(t, want, reachableStubs)
 
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	for _, action := range reachableStubs {
 		t.Run(action, func(t *testing.T) {
 			err := gw.serveECR(httptest.NewRecorder(),
@@ -74,7 +74,7 @@ func TestECRInventory_ReachableStubsAnswer501(t *testing.T) {
 // unsupported scanning action answers OperationNotSupportedException (400),
 // not NotImplemented (501).
 func TestECRInventory_ScanningActionsReturnOperationNotSupported(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	for _, action := range awsapi.UnsupportedActionNames() {
 		t.Run(action, func(t *testing.T) {
 			err := gw.serveECR(httptest.NewRecorder(),
@@ -122,7 +122,7 @@ func TestECRPipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T) {
 // carrying another service's prefix but naming an action outside awsapi.Actions
 // fails as an unrecognised ECR action, not as a cross-service error.
 func TestECRRequest_ECSPrefixedNonECRActionIsInvalidAction(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECR(httptest.NewRecorder(),
 		setupECRRequest("AmazonEC2ContainerServiceV20141113.ListClusters", "{}"))
 	require.Error(t, err)
@@ -132,7 +132,7 @@ func TestECRRequest_ECSPrefixedNonECRActionIsInvalidAction(t *testing.T) {
 // TestECRRequest_TrailingDotIsMissingAction pins that a target ending in "."
 // resolves to an empty action, the same as an absent target.
 func TestECRRequest_TrailingDotIsMissingAction(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECR(httptest.NewRecorder(),
 		setupECRRequest(awsapi.TargetPrefix+".", "{}"))
 	require.Error(t, err)
@@ -143,7 +143,7 @@ func TestECRRequest_TrailingDotIsMissingAction(t *testing.T) {
 // any "<prefix>.<Action>" shape (not just the ECR prefix) dispatches on the
 // bare action name today.
 func TestECRRequest_UnrelatedPrefixDispatchesByBareAction(t *testing.T) {
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECR(httptest.NewRecorder(), setupECRRequest("a.b.ListRepositories", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
@@ -154,11 +154,10 @@ func TestECRRequest_UnrelatedPrefixDispatchesByBareAction(t *testing.T) {
 func TestGetAuthorizationToken_IgnoresRequestSuppliedIdentity(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
-	gw := withECR(withVerifier(&GatewayConfig{
+	gw := withECR(withVerifier(gwfix.WithDeps(&GatewayConfig{
 		Region:         ecrTestRegion,
 		DisableLogging: true,
-		IAMService:     allowAllIAMService(),
-	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
+	}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"registryIds":["999999999999"]}`))
 	ctx := withPrincipalField(req.Context(), fieldAccountID, ecrTestAccount)

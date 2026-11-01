@@ -665,16 +665,14 @@ func launchService(config *config.ClusterConfig) error {
 	// creates them, so it refuses every caller until a worker launch has.
 	sqsWorkerControlPlane := sqsworkerapi.NewRegistration(sqsworkerapi.JetStreamDeps(js))
 	gw, err := composeGateway(gatewayInputs{
-		Debug:         nodeConfig.AWSGW.Debug,
-		Region:        nodeConfig.Region,
-		NATS:          natsConn,
-		ExpectedNodes: len(config.Nodes),
-		IAM:           iamService,
-		STS:           stsService,
-		Credentials:   credentials,
-		Admission:     admission,
-		PublicRoutes:  publicRoutes,
-		PreAuth:       []dispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
+		Debug:        nodeConfig.AWSGW.Debug,
+		Region:       nodeConfig.Region,
+		NATS:         natsConn,
+		IAM:          iamService,
+		Credentials:  credentials,
+		Admission:    admission,
+		PublicRoutes: publicRoutes,
+		PreAuth:      []dispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
 	}, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane, ec2ControlPlane)
 	if err != nil {
 		return fmt.Errorf("awsgw: %w", err)

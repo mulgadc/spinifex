@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"net/http"
 	"time"
@@ -30,7 +31,9 @@ func (allowAdmission) Admit(string, string) error { return nil }
 
 type natsReadiness struct{ gw *GatewayConfig }
 
-func (n natsReadiness) Available() bool { return n.gw.NATSConn != nil && n.gw.NATSConn.IsConnected() }
+func (n natsReadiness) Available() bool {
+	return gwfix.DepsOf(n.gw).NATS != nil && gwfix.DepsOf(n.gw).NATS.IsConnected()
+}
 
 // withFakeCapabilities fills whichever capability a test left unset.
 func withFakeCapabilities(gw *GatewayConfig) *GatewayConfig {
@@ -41,7 +44,7 @@ func withFakeCapabilities(gw *GatewayConfig) *GatewayConfig {
 	if gw.Admission == nil {
 		gw.Admission = allowAdmission{}
 	}
-	if gw.Readiness == nil && gw.NATSConn != nil {
+	if gw.Readiness == nil && gwfix.DepsOf(gw).NATS != nil {
 		gw.Readiness = natsReadiness{gw}
 	}
 	return gw

@@ -37,26 +37,24 @@ func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*gateway.Gat
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
-		IAMService: &gwfix.PolicyIAM{
-			IAM: gwfix.IAM{
-				MasterKey: gwfix.MasterKey,
-				AccessKeys: map[string]*iamdomain.AccessKey{
-					gwfix.AccessKey: {
-						AccessKeyID:     gwfix.AccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       ecrTestAccount,
-						Status:          "Active",
-					},
+	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       ecrTestAccount,
+					Status:          "Active",
 				},
 			},
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	})
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}}))
 
 	withECR(gw, awsapi.Deps{})
 
@@ -267,7 +265,7 @@ func TestECRPipeline_AuthzGateBlocksComposedAction(t *testing.T) {
 func TestRequest_ClusterUnavailableNilConn_ECR(t *testing.T) {
 	for _, action := range []string{"ListRepositories", "CreateRepository"} {
 		t.Run(action, func(t *testing.T) {
-			gw := withECR(withVerifier(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}), awsapi.Deps{})
+			gw := withECR(withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+"."+action)

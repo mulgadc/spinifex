@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/assert"
@@ -14,17 +15,16 @@ import (
 // TestAnonymousSTS_SignedRequestFallsThrough confirms a request with an Authorization
 // header is not intercepted — it passes through to the signed surface.
 func TestAnonymousSTS_SignedRequestFallsThrough(t *testing.T) {
-	gw := &GatewayConfig{
+	gw := gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		STSService: &flexMockSTSService{
-			assumeWebIdentityFn: func(*sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
-				t.Fatal("signed request must not reach the anonymous STS dispatcher")
-				return nil, nil
-			},
+	}, gwfix.Deps{STS: &flexMockSTSService{
+		assumeWebIdentityFn: func(*sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
+			t.Fatal("signed request must not reach the anonymous STS dispatcher")
+			return nil, nil
 		},
-	}
+	}})
 
-	gw.PreAuth = []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gw.STSService})}
+	gw.PreAuth = []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gwfix.DepsOf(gw).STS})}
 	nextCalled := false
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalled = true })
 

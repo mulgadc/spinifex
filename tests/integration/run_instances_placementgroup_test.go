@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -39,7 +40,7 @@ func stubNodeCapacity(t *testing.T, gw *Gateway, node, instanceType string, avai
 // which natsmsg.Gather uses to stop fanning out once that many nodes reply
 // rather than always waiting the full 3s timeout.
 func withExpectedNodes(n int) Option {
-	return func(cfg *gateway.GatewayConfig) { cfg.ExpectedNodes = n }
+	return func(cfg *gateway.GatewayConfig) { gwfix.DepsOf(cfg).Nodes = n }
 }
 
 // TestRunInstances_PlacementGroupSpreadRouting proves a spread-strategy group

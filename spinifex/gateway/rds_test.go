@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
@@ -30,7 +31,7 @@ func TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400(t *testin
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()})
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 	req := setupRDSRequest("Action=CreateDBInstance&DBInstanceIdentifier=orders-db&Engine=postgres&" +
 		"DBInstanceClass=db.t3.medium&AllocatedStorage=20&MasterUsername=appuser&DBName=orders")
 
@@ -45,7 +46,7 @@ func TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400(t *testin
 
 func TestRDSRequest_MalformedScalarReturnsHTTP400(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()})
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 	for _, body := range []string{
 		"Action=CreateDBInstance&AllocatedStorage=abc",
 		"Action=CreateDBInstance&MultiAZ=yes",

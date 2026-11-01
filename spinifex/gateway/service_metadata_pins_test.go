@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -129,9 +130,8 @@ func TestAnonymousSTS_NilCapabilityIsAnInternalError(t *testing.T) {
 // throttle, so an exhausted bucket never reaches it.
 func TestPreAuth_RunsAheadOfSigV4AndThrottle(t *testing.T) {
 	served := 0
-	gw := withIAM(withVerifier(&GatewayConfig{
+	gw := withIAM(withVerifier(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		IAMService:     allowAllIAMService(),
 		Throttler:      newThrottler(t),
 		PreAuth: []dispatch.PreAuth{{
 			Service: "svc",
@@ -141,7 +141,7 @@ func TestPreAuth_RunsAheadOfSigV4AndThrottle(t *testing.T) {
 				return true, nil
 			},
 		}},
-	}))
+	}, gwfix.Deps{IAM: allowAllIAMService()})))
 	app := gw.SetupRoutes()
 
 	for range 5 {

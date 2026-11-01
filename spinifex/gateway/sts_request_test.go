@@ -58,7 +58,7 @@ func TestSTSRequest_AssumeRole_NilIAMService_InternalError(t *testing.T) {
 			return nil, nil
 		},
 	}
-	gw := withRealAuth(&GatewayConfig{DisableLogging: true, STSService: svc, IAMService: nil})
+	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{STS: svc, IAM: nil}))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)
@@ -186,23 +186,21 @@ func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) 
 	const pathed = "arn:aws:iam::123456789012:user/eng/alice"
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
-	gw := withRealAuth(&GatewayConfig{
+	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		STSService:     &flexMockSTSService{},
-		IAMService: &gwfix.IAM{
-			MasterKey: gwfix.MasterKey,
-			AccessKeys: map[string]*iamdomain.AccessKey{gwfix.AccessKey: {
-				AccessKeyID: gwfix.AccessKey, SecretAccessKey: encryptedSecret,
-				UserName: "alice", AccountID: "123456789012", Status: "Active",
-			}},
-			GetUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
-				return &iam.GetUserOutput{User: &iam.User{
-					UserName: aws.String("alice"), UserId: aws.String("AIDAALICE"), Arn: aws.String(pathed),
-				}}, nil
-			},
+	}, gwfix.Deps{STS: &flexMockSTSService{}, IAM: &gwfix.IAM{
+		MasterKey: gwfix.MasterKey,
+		AccessKeys: map[string]*iamdomain.AccessKey{gwfix.AccessKey: {
+			AccessKeyID: gwfix.AccessKey, SecretAccessKey: encryptedSecret,
+			UserName: "alice", AccountID: "123456789012", Status: "Active",
+		}},
+		GetUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
+			return &iam.GetUserOutput{User: &iam.User{
+				UserName: aws.String("alice"), UserId: aws.String("AIDAALICE"), Arn: aws.String(pathed),
+			}}, nil
 		},
-	})
+	}}))
 	withServices(gw, stsRegistration(gw), ec2Registration(gw))
 	handler := gw.SigV4AuthMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := gw.STS_Request(w, r); err != nil {
@@ -343,7 +341,7 @@ func TestSTSRequest_MissingAction(t *testing.T) {
 }
 
 func TestSTSRequest_NilService_InternalError(t *testing.T) {
-	gw := withRealAuth(&GatewayConfig{DisableLogging: true, STSService: nil, IAMService: &flexMockIAMService{}})
+	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{STS: nil, IAM: &flexMockIAMService{}}))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "sts")
 		ctx = withPrincipalField(ctx, fieldAccountID, awsidentifiers.GlobalAccountID)

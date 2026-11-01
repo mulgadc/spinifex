@@ -95,16 +95,12 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 			return nil
 		},
 	}))
-	gw := &GatewayConfig{
+	gw := gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		NATSConn:       e.nc,
 		Region:         gwfix.Region,
-		ExpectedNodes:  1,
-		IAMService:     e.counter,
-		STSService:     e.sts,
-	}
+	}, gwfix.Deps{NATS: e.nc, Nodes: 1, IAM: e.counter, STS: e.sts})
 	withRealAuth(gw)
-	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService}))
+	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gwfix.DepsOf(gw).STS, IAM: gwfix.DepsOf(gw).IAM}))
 	require.NoError(t, b.Register(stsRegistration(gw)))
 	gw.Services = b.Build()
 	return gw.SetupRoutes(), &seen

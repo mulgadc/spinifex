@@ -57,12 +57,10 @@ func newV2Env(t *testing.T, opts v2Options) *v2Env {
 	}
 	iamSvc.userPolicies[v2Account+"|dev"] = policies
 
-	gw := withVerifier(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         ecrTestRegion,
-		IAMService:     iamSvc,
-		STSService:     stsSvc,
-	})
+	}, gwfix.Deps{IAM: iamSvc, STS: stsSvc}))
 	gw.PublicRoutes = awsgw.PublicRoutes(nil, newTestRegistryHandler(t, gw, iss, verify))
 	return &v2Env{handler: gw.SetupRoutes(), iam: iamSvc, sts: stsSvc, issuer: iss}
 }

@@ -68,7 +68,7 @@ import (
 // role composes it. An unset deps.NATS takes gw.NATSConn.
 func withACM(gw *GatewayConfig, deps acmawsapi.Deps) *GatewayConfig {
 	if deps.NATS == nil {
-		deps.NATS = gw.NATSConn
+		deps.NATS = gwfix.DepsOf(gw).NATS
 	}
 	b := dispatch.NewBuilder()
 	if err := b.Register(acmawsapi.NewRegistration(deps)); err != nil {
@@ -87,26 +87,24 @@ func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConf
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
-		IAMService: &gwfix.PolicyIAM{
-			IAM: gwfix.IAM{
-				MasterKey: gwfix.MasterKey,
-				AccessKeys: map[string]*iamdomain.AccessKey{
-					gwfix.AccessKey: {
-						AccessKeyID:     gwfix.AccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       authzAccountID,
-						Status:          "Active",
-					},
+	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       authzAccountID,
+					Status:          "Active",
 				},
 			},
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	})
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}}))
 
 	withACM(gw, acmawsapi.Deps{})
 
@@ -215,20 +213,19 @@ func newRDSGatewayWithResolver(
 	}
 	// Both branches are wired: an assumed-role principal resolves by role, and a
 	// test that only stubbed users would miss it entirely.
-	return withRealAuth(&GatewayConfig{
+	return withRealAuth(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         "ap-southeast-2",
-		IAMService: &gwfix.PolicyIAM{
-			GetUserPoliciesFn: counted,
-			GetRolePoliciesFn: counted,
-		},
-	}), probe
+	}, gwfix.Deps{IAM: &gwfix.PolicyIAM{
+		GetUserPoliciesFn: counted,
+		GetRolePoliciesFn: counted,
+	}})), probe
 }
 
 // withRDS registers RDS on gw with the NATS connection and node count it holds,
 // as the awsgw role composes it. Set both on gw before calling.
 func withRDS(gw *GatewayConfig) *GatewayConfig {
-	deps := rdsawsapi.Deps{NATS: gw.NATSConn, ExpectedNodes: gw.ExpectedNodes}
+	deps := rdsawsapi.Deps{NATS: gwfix.DepsOf(gw).NATS, ExpectedNodes: gwfix.DepsOf(gw).Nodes}
 	if quotaFor(gw) != nil {
 		deps.Quota = quotaFor(gw)
 	}
@@ -244,7 +241,7 @@ func withRDS(gw *GatewayConfig) *GatewayConfig {
 // as the awsgw role composes it. Set both on gw before calling.
 func withELBv2(gw *GatewayConfig) *GatewayConfig {
 	b := dispatch.NewBuilder()
-	reg := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: gw.NATSConn, Quota: quotaFor(gw)})
+	reg := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: gwfix.DepsOf(gw).NATS, Quota: quotaFor(gw)})
 	if err := b.Register(reg); err != nil {
 		panic(err)
 	}
@@ -257,8 +254,8 @@ func withELBv2(gw *GatewayConfig) *GatewayConfig {
 func serveAccountLimits(t *testing.T, gw *GatewayConfig, accountID, body string) ([]byte, error) {
 	t.Helper()
 	_, nc := testutil.StartTestNATS(t)
-	gw.NATSConn = nc
-	gw.IAMService = allowAllIAMService()
+	gwfix.DepsOf(gw).NATS = nc
+	gwfix.DepsOf(gw).IAM = allowAllIAMService()
 	withELBv2(gw)
 
 	w := httptest.NewRecorder()
@@ -305,26 +302,24 @@ func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admi
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
-		IAMService: &gwfix.PolicyIAM{
-			IAM: gwfix.IAM{
-				MasterKey: gwfix.MasterKey,
-				AccessKeys: map[string]*iamdomain.AccessKey{
-					gwfix.AccessKey: {
-						AccessKeyID:     gwfix.AccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       authzAccountID,
-						Status:          "Active",
-					},
+	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       authzAccountID,
+					Status:          "Active",
 				},
 			},
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	})
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}}))
 	withELBv2(withQuota(gw, quota))
 
 	r := chi.NewRouter()
@@ -398,9 +393,9 @@ func withIAM(gw *GatewayConfig) *GatewayConfig {
 // and node count gw holds, as the awsgw role composes it. Set them on gw first.
 func iamRegistration(gw *GatewayConfig) dispatch.Registration {
 	return iamawsapi.NewRegistration(iamawsapi.Deps{
-		IAM: gw.IAMService,
+		IAM: gwfix.DepsOf(gw).IAM,
 		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
-			return ec2instanceapi.CountInstanceProfileAssociations(ctx, gw.NATSConn, activeNodes(gw)(ctx), accountID, profileARN)
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, gwfix.DepsOf(gw).NATS, activeNodes(gw)(ctx), accountID, profileARN)
 		},
 	})
 }
@@ -792,11 +787,10 @@ func (svc *echoIAMService) UpdateAssumeRolePolicy(accountID string, input *iam.U
 
 // setupIAMRequestHandler wires an http.Handler for IAM_Request with injected SigV4 context values.
 func setupIAMRequestHandler(svc iamdomain.IAMService) http.Handler {
-	gw := &GatewayConfig{
+	gw := gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		IAMService:     svc,
 		Credentials:    credverify.New(svc, nil),
-	}
+	}, gwfix.Deps{IAM: svc})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		ctx = reqctx.WithService(ctx, "iam")
@@ -889,20 +883,20 @@ type iamExample struct {
 // stsRegistration is the STS registration over the IAMService and STSService
 // gw holds, as the awsgw role composes it. Set them on gw first.
 func stsRegistration(gw *GatewayConfig) dispatch.Registration {
-	return stsawsapi.NewRegistration(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	return stsawsapi.NewRegistration(stsawsapi.Deps{STS: gwfix.DepsOf(gw).STS, IAM: gwfix.DepsOf(gw).IAM})
 }
 
 // withIAMAndSTS registers IAM and STS together on gw, with the unsigned
 // web-identity capability, as awsgw composes them.
 func withIAMAndSTS(gw *GatewayConfig) *GatewayConfig {
-	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService}))
+	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gwfix.DepsOf(gw).STS, IAM: gwfix.DepsOf(gw).IAM}))
 	return withServices(gw, iamRegistration(gw), stsRegistration(gw))
 }
 
 // withSTS registers STS alone on gw and composes its unsigned web-identity
 // capability, as awsgw does.
 func withSTS(gw *GatewayConfig) *GatewayConfig {
-	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService}))
+	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gwfix.DepsOf(gw).STS, IAM: gwfix.DepsOf(gw).IAM}))
 	return withServices(gw, stsRegistration(gw))
 }
 
@@ -1075,11 +1069,9 @@ func setupSTSRequestHandler(p stsRequestParams) http.Handler {
 	if p.iamSvc == nil {
 		p.iamSvc = &flexMockIAMService{}
 	}
-	gw := withRealAuth(&GatewayConfig{
+	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		STSService:     p.stsSvc,
-		IAMService:     p.iamSvc,
-	})
+	}, gwfix.Deps{STS: p.stsSvc, IAM: p.iamSvc}))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		ctx = reqctx.WithService(ctx, "sts")
@@ -1166,26 +1158,24 @@ func taggingPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, agg *tagg
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
-		IAMService: &gwfix.PolicyIAM{
-			IAM: gwfix.IAM{
-				MasterKey: gwfix.MasterKey,
-				AccessKeys: map[string]*iamdomain.AccessKey{
-					gwfix.AccessKey: {
-						AccessKeyID:     gwfix.AccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       authzAccountID,
-						Status:          "Active",
-					},
+	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       authzAccountID,
+					Status:          "Active",
 				},
 			},
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	})
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}}))
 	withTagging(gw, agg)
 
 	r := chi.NewRouter()
@@ -1227,7 +1217,7 @@ func newTaggingCBGateway(t *testing.T) (*GatewayConfig, *ec2tags.TagsServiceImpl
 		})
 	})
 
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, Region: authzRegion, IAMService: allowAllIAMService(), NATSConn: nc})
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService(), NATS: nc}))
 	return gw, svc
 }
 
@@ -1271,27 +1261,25 @@ func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.Policy
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := &GatewayConfig{
+	gw := gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
-		IAMService: &gwfix.PolicyIAM{
-			IAM: gwfix.IAM{
-				MasterKey: gwfix.MasterKey,
-				AccessKeys: map[string]*iamdomain.AccessKey{
-					gwfix.AccessKey: {
-						AccessKeyID:     gwfix.AccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "admin",
-						AccountID:       accountID,
-						Status:          "Active",
-					},
+	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "admin",
+					AccountID:       accountID,
+					Status:          "Active",
 				},
 			},
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	}
-	gw.IAMService = operatorIAM{gw.IAMService.(*gwfix.PolicyIAM)}
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}})
+	gwfix.DepsOf(gw).IAM = operatorIAM{gwfix.DepsOf(gw).IAM.(*gwfix.PolicyIAM)}
 	if mutate != nil {
 		mutate(gw)
 	}
@@ -1378,12 +1366,12 @@ func withOperator(gw *GatewayConfig) *GatewayConfig {
 	deps := operatoradmin.Deps{
 		Version:     "v9.9.9-test",
 		Commit:      "abc1234",
-		NATS:        gw.NATSConn,
+		NATS:        gwfix.DepsOf(gw).NATS,
 		ActiveNodes: activeNodes(gw),
 
-		IAM:           gw.IAMService,
+		IAM:           gwfix.DepsOf(gw).IAM,
 		Quota:         quotaFor(gw),
-		ExpectedNodes: gw.ExpectedNodes,
+		ExpectedNodes: gwfix.DepsOf(gw).Nodes,
 	}
 	reg := operatoradmin.NewRegistration(deps)
 	if err := b.Register(reg); err != nil {
@@ -1532,7 +1520,7 @@ type jsonErrorEnvelope struct {
 // role composes it. An unset deps.NATS takes gw.NATSConn.
 func withECR(gw *GatewayConfig, deps awsapi.Deps) *GatewayConfig {
 	if deps.NATS == nil {
-		deps.NATS = gw.NATSConn
+		deps.NATS = gwfix.DepsOf(gw).NATS
 	}
 	b := dispatch.NewBuilder()
 	if err := b.Register(awsapi.NewRegistration(deps)); err != nil {
@@ -1551,26 +1539,24 @@ func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConf
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
-		IAMService: &gwfix.PolicyIAM{
-			IAM: gwfix.IAM{
-				MasterKey: gwfix.MasterKey,
-				AccessKeys: map[string]*iamdomain.AccessKey{
-					gwfix.AccessKey: {
-						AccessKeyID:     gwfix.AccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       ecrTestAccount,
-						Status:          "Active",
-					},
+	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       ecrTestAccount,
+					Status:          "Active",
 				},
 			},
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	})
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}}))
 
 	withECR(gw, awsapi.Deps{})
 
@@ -1749,11 +1735,11 @@ func (gw *GatewayConfig) serveECS(w http.ResponseWriter, r *http.Request) error 
 // mock IAM service it holds, as the awsgw role composes them.
 func withContainers(gw *GatewayConfig) *GatewayConfig {
 	b := dispatch.NewBuilder()
-	if err := b.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: gw.NATSConn})); err != nil {
+	if err := b.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: gwfix.DepsOf(gw).NATS})); err != nil {
 		panic(err)
 	}
-	roles, _ := gw.IAMService.(IAMServiceLike)
-	if err := b.Register(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: gw.NATSConn, Roles: mockRoleResolver{iam: roles}})); err != nil {
+	roles, _ := gwfix.DepsOf(gw).IAM.(IAMServiceLike)
+	if err := b.Register(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: gwfix.DepsOf(gw).NATS, Roles: mockRoleResolver{iam: roles}})); err != nil {
 		panic(err)
 	}
 	gw.Services = b.Build()
@@ -1860,11 +1846,11 @@ func serveEC2(gw *GatewayConfig, body string) *httptest.ResponseRecorder {
 // rest.
 func ec2Registration(gw *GatewayConfig, mutate ...func(*ec2awsapi.Deps)) dispatch.Registration {
 	deps := ec2awsapi.Deps{
-		NATS:          gw.NATSConn,
-		IAM:           gw.IAMService,
+		NATS:          gwfix.DepsOf(gw).NATS,
+		IAM:           gwfix.DepsOf(gw).IAM,
 		Quota:         ec2quota.Adapter{Service: quotaFor(gw)},
 		ActiveNodes:   activeNodes(gw),
-		ExpectedNodes: gw.ExpectedNodes,
+		ExpectedNodes: gwfix.DepsOf(gw).Nodes,
 	}
 	for _, m := range mutate {
 		m(&deps)
@@ -1992,15 +1978,12 @@ func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdo
 	_, nc, _ := testutil.StartTestJetStream(t)
 	daemon := newEC2Daemon(t, nc)
 
-	cfg := &GatewayConfig{
+	cfg := gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
-		IAMService:     svc,
-		ExpectedNodes:  1,
-	}
+	}, gwfix.Deps{NATS: nc, IAM: svc, Nodes: 1})
 	if env.NoNATS {
-		cfg.NATSConn = nil
+		gwfix.DepsOf(cfg).NATS = nil
 	}
 	gw := withEC2(withRealAuth(cfg), func(d *ec2awsapi.Deps) {
 		d.AZ = gwfix.Region + "a"
@@ -2163,5 +2146,5 @@ func (d *ec2Daemon) reply(subject, body string) {
 // activeNodes answers the configured node count, which is what discovery falls
 // back to when no daemon answers; no gateway test runs a responder.
 func activeNodes(gw *GatewayConfig) func(context.Context) int {
-	return func(context.Context) int { return gw.ExpectedNodes }
+	return func(context.Context) int { return gwfix.DepsOf(gw).Nodes }
 }

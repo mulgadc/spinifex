@@ -35,26 +35,24 @@ func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*gateway.Gat
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
-		IAMService: &gwfix.PolicyIAM{
-			IAM: gwfix.IAM{
-				MasterKey: gwfix.MasterKey,
-				AccessKeys: map[string]*iamdomain.AccessKey{
-					gwfix.AccessKey: {
-						AccessKeyID:     gwfix.AccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       authzAccountID,
-						Status:          "Active",
-					},
+	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       authzAccountID,
+					Status:          "Active",
 				},
 			},
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	})
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}}))
 
 	withACM(gw, acmawsapi.Deps{})
 
@@ -140,7 +138,7 @@ func TestACMPipeline_UnknownAction_400InvalidActionException(t *testing.T) {
 // pipeline, once the daemon-side NATS responder answers.
 func TestACMPipeline_ListCertificates_200JSONContentType(t *testing.T) {
 	gw, app := acmPipelineApp(t, allowAllACMDocs())
-	subscribeACMCounter(t, gw.NATSConn, "acm.ListCertificates", []byte(`{}`))
+	subscribeACMCounter(t, gwfix.DepsOf(gw).NATS, "acm.ListCertificates", []byte(`{}`))
 
 	target := "CertificateManager.ListCertificates"
 	resp := doRequest(app, signACMRequest(t, target, []byte("{}")))
@@ -190,7 +188,7 @@ func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
 		},
 	}}
 	gw, app := acmPipelineApp(t, scopedDocs)
-	calls := subscribeACMCounter(t, gw.NATSConn, "acm.DeleteCertificate", []byte(`{}`))
+	calls := subscribeACMCounter(t, gwfix.DepsOf(gw).NATS, "acm.DeleteCertificate", []byte(`{}`))
 
 	target := "CertificateManager.DeleteCertificate"
 	body := []byte(`{"CertificateArn":"arn:aws:acm:` + gwfix.Region + `:` + authzAccountID + `:certificate/prod-1111"}`)
@@ -210,7 +208,7 @@ func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
 func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
 	for _, action := range []string{"ListCertificates", "DeleteCertificate"} {
 		t.Run(action, func(t *testing.T) {
-			gw := withACM(withVerifier(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}), acmawsapi.Deps{})
+			gw := withACM(withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), acmawsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", "CertificateManager."+action)
@@ -236,7 +234,7 @@ func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
 // runs through audit.Middleware, SigV4AuthMiddleware and Request.
 func TestACMPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 	gw, _ := acmPipelineApp(t, allowAllACMDocs())
-	subscribeACMCounter(t, gw.NATSConn, "acm.ListCertificates", []byte(`{}`))
+	subscribeACMCounter(t, gwfix.DepsOf(gw).NATS, "acm.ListCertificates", []byte(`{}`))
 
 	var got *audit.Record
 	r := chi.NewRouter()

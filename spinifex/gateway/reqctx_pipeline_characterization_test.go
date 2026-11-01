@@ -97,13 +97,11 @@ func reqctxGateway(t *testing.T, env reqctxGatewayEnv, statements ...iamdomain.S
 			nc.Close()
 		}
 	}
-	gw := withRealAuth(&GatewayConfig{
+	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         reqctxRegion,
-		NATSConn:       nc,
-		IAMService:     svc,
 		Throttler:      env.Throttler,
-	})
+	}, gwfix.Deps{NATS: nc, IAM: svc}))
 	regs := []dispatch.Registration{
 		ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: nc}),
 		iamRegistration(gw),

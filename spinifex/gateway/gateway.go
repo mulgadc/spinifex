@@ -17,8 +17,6 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
-	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
@@ -27,7 +25,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
-	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -36,13 +33,9 @@ import (
 // facts, auth and throttling collaborators, and lazily built caches. Its methods are the
 // per-service request handlers.
 type GatewayConfig struct {
-	Debug          bool       `json:"debug"`
-	DisableLogging bool       `json:"disable_logging"`
-	NATSConn       *nats.Conn // Shared NATS connection for service communication
-	ExpectedNodes  int        // Number of expected spinifex nodes for multi-node operations
-	Region         string     // Region this gateway is running in
-	IAMService     iamdomain.IAMService
-	STSService     stsdomain.STSService
+	Debug          bool   `json:"debug"`
+	DisableLogging bool   `json:"disable_logging"`
+	Region         string // Region this gateway is running in
 	// PreAuth serves requests that authenticate by their own payload, ahead of
 	// SigV4 and throttling, in order.
 	PreAuth []dispatch.PreAuth

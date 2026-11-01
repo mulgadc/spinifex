@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/clusterready"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
@@ -13,10 +14,10 @@ import (
 // use it; every other gateway test runs on the fake verifier.
 func withRealAuth(gw *GatewayConfig) *GatewayConfig {
 	withTestAdmin(gw)
-	gw.Credentials = credverify.New(gw.IAMService, gw.STSService)
-	gw.Policy = policyauth.New(gw.IAMService, policyauth.WithRetryBase(policyRetryBase))
-	gw.Admission = accountadmission.New(gw.IAMService)
-	if gw.NATSConn != nil {
+	gw.Credentials = credverify.New(gwfix.DepsOf(gw).IAM, gwfix.DepsOf(gw).STS)
+	gw.Policy = policyauth.New(gwfix.DepsOf(gw).IAM, policyauth.WithRetryBase(policyRetryBase))
+	gw.Admission = accountadmission.New(gwfix.DepsOf(gw).IAM)
+	if gwfix.DepsOf(gw).NATS != nil {
 		gw.Readiness = realReadiness{gw}
 	}
 	return gw
@@ -32,5 +33,5 @@ func withEC2RealAuth(gw *GatewayConfig) *GatewayConfig {
 type realReadiness struct{ gw *GatewayConfig }
 
 func (r realReadiness) Available() bool {
-	return r.gw.NATSConn != nil && clusterready.New(r.gw.NATSConn).Available()
+	return gwfix.DepsOf(r.gw).NATS != nil && clusterready.New(gwfix.DepsOf(r.gw).NATS).Available()
 }

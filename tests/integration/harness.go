@@ -20,6 +20,7 @@
 package integration
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
@@ -231,16 +232,12 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	require.NoError(t, services.Register(stsawsapi.NewRegistration(stsDeps)))
 	require.NoError(t, services.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: tagging.NewAggregator()})))
 
-	cfg := &gateway.GatewayConfig{
+	cfg := gwfix.WithDeps(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Admin:          gateway.AdminSurface{Service: operatoradmin.ServiceName, WithRequestID: operatoradmin.WithRequestID},
-		NATSConn:       nc,
-		ExpectedNodes:  1,
 		Region:         testRegion,
-		IAMService:     iamSvc,
-		STSService:     stsSvc,
 		PreAuth:        []awsdispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
-	}
+	}, gwfix.Deps{NATS: nc, Nodes: 1, IAM: iamSvc, STS: stsSvc})
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -250,8 +247,8 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		NATS:          nc,
 		IAM:           iamSvc,
 		Quota:         ec2quota.Adapter{Service: admissionquota.New(admissionquota.Limits{}, nil)},
-		ActiveNodes:   func(context.Context) int { return cfg.ExpectedNodes },
-		ExpectedNodes: cfg.ExpectedNodes,
+		ActiveNodes:   func(context.Context) int { return gwfix.DepsOf(cfg).Nodes },
+		ExpectedNodes: gwfix.DepsOf(cfg).Nodes,
 		AZ:            testAZ,
 		Endpoint:      "https://localhost:9999",
 	})))
@@ -259,19 +256,19 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// Built after the options so a test that swaps or drops a service sees the
 	// verifier follow it, as production wires the verifier over the same services.
 	if cfg.Credentials == nil {
-		cfg.Credentials = credverify.New(cfg.IAMService, cfg.STSService)
+		cfg.Credentials = credverify.New(gwfix.DepsOf(cfg).IAM, gwfix.DepsOf(cfg).STS)
 	}
 
 	// The OCI /v2 data plane. Its Meta store is a NATS client, so a test that
 	// pushes or pulls must call StartECRDaemonLite or every request times out.
 	// Blob and manifest bytes are memory-backed: no predastore.
 	if cfg.Policy == nil {
-		cfg.Policy = policyauth.New(cfg.IAMService)
+		cfg.Policy = policyauth.New(gwfix.DepsOf(cfg).IAM)
 	}
 	if cfg.Readiness == nil {
-		cfg.Readiness = clusterready.New(cfg.NATSConn)
+		cfg.Readiness = clusterready.New(gwfix.DepsOf(cfg).NATS)
 	}
-	admission := accountadmission.New(cfg.IAMService)
+	admission := accountadmission.New(gwfix.DepsOf(cfg).IAM)
 	if cfg.Admission == nil {
 		cfg.Admission = admission
 	}
@@ -282,7 +279,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 			Issuer:    ecrIssuer,
 			Admission: admission,
 			Region:    cfg.Region,
-		}, credverify.New(cfg.IAMService, cfg.STSService), policyauth.New(cfg.IAMService)))
+		}, credverify.New(gwfix.DepsOf(cfg).IAM, gwfix.DepsOf(cfg).STS), policyauth.New(gwfix.DepsOf(cfg).IAM)))
 		require.NoError(t, err)
 		cfg.PublicRoutes = awsgw.PublicRoutes(nil, ingresshttp.NewHostMatcher("", "dkr", "ecr").Middleware(bridge.Handler()))
 	}

@@ -2,6 +2,7 @@ package awsgw_test
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
@@ -25,7 +26,7 @@ func setupRDSRequest(body string) *http.Request {
 // RDS errors must use the IAM-style <ErrorResponse> envelope: the aws-sdk-go
 // query unmarshaler rejects the EC2 <Response><Errors> shape for this service.
 func TestRDSErrorHandler_UsesIAMEnvelope(t *testing.T) {
-	gw := withVerifier(withRDS(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
+	gw := withVerifier(withRDS(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 	w := httptest.NewRecorder()
 	gw.ErrorHandler(w, setupRDSRequest("Action=CreateDBInstance"), errNotImplementedForTest)
 
@@ -35,7 +36,7 @@ func TestRDSErrorHandler_UsesIAMEnvelope(t *testing.T) {
 }
 
 func TestRDSErrorHandler_UsesRDSUnsupportedActionWording(t *testing.T) {
-	gw := withVerifier(withRDS(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
+	gw := withVerifier(withRDS(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 	w := httptest.NewRecorder()
 	gw.ErrorHandler(w, setupRDSRequest("Action=CreateDBCluster"),
 		errors.New(awserrors.ErrorOperationNotSupported))

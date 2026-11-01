@@ -60,6 +60,13 @@ echo "nats-server $*" >> "$T/calls.log"
 [ "$1" = -t ] && exit "$(cat "$T/configtest.rc")"
 exit 0
 EOF
+cat > "$TMP/bin/sqs-store-key" <<'EOF'
+#!/bin/sh
+echo "sqs-store-key $*" >> "$T/calls.log"
+[ "$(cat "$T/storekey.rc")" = 0 ] || exit 1
+echo "cert" > "$2"
+echo "$1/server-key.pem"
+EOF
 chmod +x "$TMP/bin"/*
 
 # fresh <name>: a case directory with a valid contract and one matching disk
@@ -77,6 +84,7 @@ fresh() {
     echo 0 > "$T/fsck.rc"
     echo 0 > "$T/mount.rc"
     echo 0 > "$T/configtest.rc"
+    echo 0 > "$T/storekey.rc"
     : > "$T/calls.log"
     : > "$T/console"
     printf '1: lo    inet 127.0.0.1/8 scope host lo\n2: eth0    inet %s/24 brd 10.11.12.255 scope global eth0\n' "$ADDR" > "$T/ip.out"
@@ -89,6 +97,7 @@ prepare() {
         SQS_FWCFG="$T/fwcfg" SQS_SYSBLOCK="$T/sys" SQS_DEVDIR="$T/dev" SQS_NODE_TEST=-e
         SQS_RUN="$T/run" SQS_DATA="$T/data" SQS_CONSOLE="$T/console"
         E2FSCK="$TMP/bin/e2fsck" MOUNT="$TMP/bin/mount" IP="$TMP/bin/ip" NATS_BIN="$TMP/bin/nats-server"
+        STORE_KEY_BIN="$TMP/bin/sqs-store-key"
         PATH="$TMP/bin:$PATH"
         export PATH
         # shellcheck source=../../build/microvm/sqs-store/sqs-store-lib.sh
@@ -114,8 +123,17 @@ check "config syncs JetStream on the data disk" \
 check "config admits a full SQS message (2MiB max_payload)" \
     'grep -c "max_payload" "$T/run/nats.conf" | grep -qx 1 && grep -qx "max_payload: 2MiB" "$T/run/nats.conf"'
 check "config is tested by the server before ready" 'grep -qx "nats-server -t -c $T/run/nats.conf" "$T/calls.log"'
+check "server key is kept on the data disk after mount" \
+    'grep -A1 "^mount " "$T/calls.log" | grep -qx "sqs-store-key $T/data/tls $T/run/server-cert.pem"'
+check "config requires TLS 1.3 with the disk key" \
+    'grep -q "key_file: \"$T/data/tls/server-key.pem\"" "$T/run/nats.conf" && grep -q "min_version: \"1.3\"" "$T/run/nats.conf"'
+check "the TLS config is tested by the server before ready" \
+    '[ "$(grep -c "^nats-server -t -c $T/run/nats.conf" "$T/calls.log")" -eq 2 ]'
 check "no auth material on the console" '! grep -q "$NKEY" "$T/console"'
 check "prepare reports the disk and config, not a listener" 'grep -q "prepared: $T/dev/vdb mounted" "$T/console" && ! grep -qi "listening" "$T/console"'
+
+fresh key-refused; echo 1 > "$T/storekey.rc"
+check "a refused server key leaves the store unready" '! prepare && refused && ! grep -q "^tls" "$T/run/nats.conf"'
 
 fresh fsck-corrected; echo 1 > "$T/fsck.rc"
 check "e2fsck exit 1 (corrected) proceeds" 'prepare && [ -e "$T/run/ready" ]'

@@ -157,7 +157,7 @@ bin/lb-agent:
 # installed or released by any target yet.
 SQS_STORE_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/sqs-store
 SQS_STORE_MICROVM_ARTIFACTS := $(SQS_STORE_MICROVM_OUT_DIR)/vmlinuz $(SQS_STORE_MICROVM_OUT_DIR)/initramfs.cpio.gz
-SQS_STORE_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_STORE_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_STORE_MICROVM_OUT_DIR)/,sqs-store-lib.sh sqs-store-prepare sqs-store-run sqs-store-stop) bin/nats-server
+SQS_STORE_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_STORE_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_STORE_MICROVM_OUT_DIR)/,sqs-store-lib.sh sqs-store-prepare sqs-store-run sqs-store-stop) bin/nats-server bin/sqs-store-key
 
 $(SQS_STORE_MICROVM_ARTIFACTS) &: $(SQS_STORE_MICROVM_INPUTS)
 	./scripts/build-sqs-store-microvm-image.sh
@@ -167,6 +167,11 @@ $(SQS_STORE_MICROVM_ARTIFACTS) &: $(SQS_STORE_MICROVM_INPUTS)
 bin/nats-server: go.mod go.sum
 	@mkdir -p bin
 	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ github.com/nats-io/nats-server/v2
+
+# The store guest's TLS server key helper, static for the musl guest.
+bin/sqs-store-key: go.mod go.sum $(shell find cmd/sqs-store-key spinifex/agents/sqs/storekey internal/sqsworkergw internal/gwsign -name '*.go' ! -name '*_test.go')
+	@mkdir -p bin
+	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/sqs-store-key
 
 build-sqs-store-microvm-image: $(SQS_STORE_MICROVM_ARTIFACTS) ## Build the SQS store microVM kernel and initramfs
 

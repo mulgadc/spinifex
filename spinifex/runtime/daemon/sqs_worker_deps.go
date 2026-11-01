@@ -12,12 +12,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awsiam "github.com/aws/aws-sdk-go/service/iam"
+	sqsv1 "github.com/mulgadc/spinifex/contracts/sqs/v1"
 	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storerole"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
@@ -36,8 +36,8 @@ type sqsRole struct {
 var (
 	sqsWorkerRole = sqsRole{name: workerrole.RoleName, policyName: "spinifex-sqs-worker-internal",
 		description: "Spinifex-managed SQS worker instance role", label: "sqs worker", actions: workerrole.Actions()}
-	sqsStoreRole = sqsRole{name: storerole.RoleName, policyName: "spinifex-sqs-store-internal",
-		description: "Spinifex-managed SQS store instance role", label: "sqs store", actions: storerole.Actions()}
+	sqsStoreRole = sqsRole{name: sqsv1.RoleName, policyName: "spinifex-sqs-store-internal",
+		description: "Spinifex-managed SQS store instance role", label: "sqs store", actions: sqsv1.Actions()}
 )
 
 // policy grants exactly the role's internal actions, built from the contract

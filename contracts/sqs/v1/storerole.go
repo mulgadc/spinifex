@@ -1,8 +1,8 @@
-// Package storerole names the SQS store guest's identity contract: the
-// instance role it runs under, the one internal action that role is granted,
+// Package sqsv1 names the SQS store guest's identity contract: the
+// instance role it runs under, the two internal actions that role is granted,
 // and the pin that names the store's TLS server key. The gateway gate, the
 // role grant, the store guest and the worker all read it.
-package storerole
+package sqsv1
 
 import (
 	"crypto/sha256"

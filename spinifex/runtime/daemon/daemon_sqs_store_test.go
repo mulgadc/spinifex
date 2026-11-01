@@ -12,12 +12,12 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	sqsv1 "github.com/mulgadc/spinifex/contracts/sqs/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storerole"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
@@ -493,7 +493,7 @@ func TestSQSStoreRoles_EC2OnlyTrustAndOnlyTheStoreActions(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ec2OnlyTrust(fake.trust))
 	require.Len(t, fake.profile.Roles, 1)
-	assert.Equal(t, storerole.RoleName, aws.StringValue(fake.profile.Roles[0].RoleName))
+	assert.Equal(t, sqsv1.RoleName, aws.StringValue(fake.profile.Roles[0].RoleName))
 
 	var doc iamdomain.PolicyDocument
 	require.NoError(t, json.Unmarshal([]byte(fake.policy), &doc))

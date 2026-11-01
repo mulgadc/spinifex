@@ -6,6 +6,7 @@
 #   data-serial  virtio-blk serial of the already-formatted ext4 data disk
 #   listen-addr  IPv4 address on a configured guest NIC; the only listener
 #   client-nkey  NATS user NKey public key allowed to connect; never a seed
+#   region, gateway-url  read by sqs-store-key with opt/spinifex/ca-cert
 # Anything absent, malformed or ambiguous refuses the store. Nothing formats.
 
 SQS_FWCFG=${SQS_FWCFG:-/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/sqs-store}
@@ -20,6 +21,7 @@ SQS_MOUNTS=${SQS_MOUNTS:-/proc/mounts}
 SQS_PORT=${SQS_PORT:-4222}
 SQS_STOP_BUDGET_TENTHS=${SQS_STOP_BUDGET_TENTHS:-120}
 NATS_BIN=${NATS_BIN:-/usr/local/bin/nats-server}
+STORE_KEY_BIN=${STORE_KEY_BIN:-/usr/local/bin/sqs-store-key}
 E2FSCK=${E2FSCK:-e2fsck}
 MOUNT=${MOUNT:-mount}
 UMOUNT=${UMOUNT:-umount}
@@ -119,6 +121,26 @@ authorization {
 EOF
 }
 
+# sqs_write_tls <cert> <key> <file>: require TLS 1.3 with the store's own
+# server key. The worker trusts only that key's pin, recorded with the gateway.
+sqs_write_tls() {
+    cat >> "$3" <<EOF
+tls {
+  cert_file: "$1"
+  key_file: "$2"
+  min_version: "1.3"
+}
+EOF
+}
+
+# sqs_config_test <file>: the pinned server's own check, NKeys redacted.
+sqs_config_test() {
+    if ! "$NATS_BIN" -t -c "$1" > "$SQS_RUN/config-test.out" 2>&1; then
+        sqs_fatal "server config test failed: $(sed 's/U[A-Z2-7]\{55\}/<nkey>/g' "$SQS_RUN/config-test.out" | tr '\n' ' ')"
+        return 1
+    fi
+}
+
 # sqs_prepare: validate the contract, check and mount the data disk, write the
 # server config and mark the store ready. Returns non-zero, unready, on any refusal.
 sqs_prepare() {
@@ -136,10 +158,7 @@ sqs_prepare() {
     # disk is touched.
     umask 077
     sqs_write_config "$addr" "$nkey" "$SQS_RUN/nats.conf" || return 1
-    if ! "$NATS_BIN" -t -c "$SQS_RUN/nats.conf" > "$SQS_RUN/config-test.out" 2>&1; then
-        sqs_fatal "server config test failed: $(sed 's/U[A-Z2-7]\{55\}/<nkey>/g' "$SQS_RUN/config-test.out" | tr '\n' ' ')"
-        return 1
-    fi
+    sqs_config_test "$SQS_RUN/nats.conf" || return 1
 
     dev=$(sqs_find_disk "$serial") || return 1
     rc=0
@@ -150,6 +169,11 @@ sqs_prepare() {
     [ "$rc" -le 1 ] || { sqs_fatal "e2fsck refused $dev: $(tr '\n' ' ' < "$SQS_RUN/fsck.out")"; return 1; }
     mkdir -p "$SQS_DATA"
     "$MOUNT" -t ext4 -o nodev,nosuid,noexec "$dev" "$SQS_DATA" || { sqs_fatal "mount $dev failed"; return 1; }
+    # The server key stays on the data disk; only its pin leaves the guest.
+    key=$("$STORE_KEY_BIN" "$SQS_DATA/tls" "$SQS_RUN/server-cert.pem" 2>> "$SQS_CONSOLE") \
+        || { sqs_fatal "store server key refused"; return 1; }
+    sqs_write_tls "$SQS_RUN/server-cert.pem" "$key" "$SQS_RUN/nats.conf" || return 1
+    sqs_config_test "$SQS_RUN/nats.conf" || return 1
     : > "$SQS_RUN/ready"
     sqs_log "prepared: $dev mounted at $SQS_DATA, config written for $addr:$SQS_PORT; server not started yet"
 }

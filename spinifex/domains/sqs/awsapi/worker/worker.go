@@ -20,10 +20,10 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	sqsv1 "github.com/mulgadc/spinifex/contracts/sqs/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storerole"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -46,9 +46,9 @@ const (
 	ActionPollWork              = workerrole.ActionPollWork
 	ActionCompleteWork          = workerrole.ActionCompleteWork
 
-	StoreRoleName                = storerole.RoleName
-	ActionDescribeStoreServerKey = storerole.ActionDescribeStoreServerKey
-	ActionRecordStoreServerKey   = storerole.ActionRecordStoreServerKey
+	StoreRoleName                = sqsv1.RoleName
+	ActionDescribeStoreServerKey = sqsv1.ActionDescribeStoreServerKey
+	ActionRecordStoreServerKey   = sqsv1.ActionRecordStoreServerKey
 )
 
 // pollWait bounds one PollWork long poll; pollBatch and pollBytes bound the

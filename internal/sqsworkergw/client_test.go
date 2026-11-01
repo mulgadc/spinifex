@@ -237,3 +237,48 @@ func TestDescribeStore_AcceptsOnlyAValidState(t *testing.T) {
 		})
 	}
 }
+
+func TestServerKey_SendsOnlyAPinAndValidatesTheRecord(t *testing.T) {
+	pin := strings.Repeat("ab", 32)
+	wrap := func(inner string) string {
+		return `<DescribeStoreServerKeyResponse><DescribeStoreServerKeyResult>` + inner +
+			`</DescribeStoreServerKeyResult></DescribeStoreServerKeyResponse>`
+	}
+	c, _, _ := server(t, 200, wrap(`<ClaimId>c-1</ClaimId><VolumeId>vol-1</VolumeId><Pin>`+pin+`</Pin>`))
+	k, err := c.DescribeServerKey(context.Background())
+	if err != nil || k != (ServerKey{ClaimID: "c-1", VolumeID: "vol-1", Pin: pin}) {
+		t.Fatalf("record = %+v %v", k, err)
+	}
+	for name, inner := range map[string]string{
+		"no claim":  `<VolumeId>vol-1</VolumeId>`,
+		"no volume": `<ClaimId>c-1</ClaimId>`,
+		"bad pin":   `<ClaimId>c-1</ClaimId><VolumeId>vol-1</VolumeId><Pin>AB</Pin>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _, _ := server(t, 200, wrap(inner))
+			if _, err := c.DescribeServerKey(context.Background()); err == nil {
+				t.Fatal("accepted an invalid store record")
+			}
+		})
+	}
+
+	c, n, seen := server(t, 200, `<RecordStoreServerKeyResponse/>`)
+	if err := c.RecordServerKey(context.Background(), "c-1", "vol-1", "not-a-pin"); err == nil || n.Load() != 0 {
+		t.Fatal("a value that is not a pin was sent")
+	}
+	if err := c.RecordServerKey(context.Background(), "c-1", "vol-1", pin); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains((*seen)[0], "Pin="+pin) || !strings.Contains((*seen)[0], "Action=RecordStoreServerKey") {
+		t.Fatalf("request = %q", (*seen)[0])
+	}
+}
+
+func TestServerKey_PreBindRefusalIsNotBound(t *testing.T) {
+	c, _, _ := server(t, 400, `<ErrorResponse><Error><Code>InvalidState</Code></Error></ErrorResponse>`)
+	_, err := c.DescribeServerKey(context.Background())
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !apiErr.NotBound() || apiErr.Retryable() {
+		t.Fatalf("err = %v", err)
+	}
+}

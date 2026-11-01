@@ -25,8 +25,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
+	sqsv1 "github.com/mulgadc/spinifex/contracts/sqs/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storerole"
 	"github.com/nats-io/nkeys"
 )
 
@@ -176,7 +176,7 @@ func (c *Client) DescribeStore(ctx context.Context) (Store, error) {
 	case res.State == "pending" && res.Address == "" && res.PublicKey == "" && res.ServerKeyPin == "":
 		return Store{}, nil
 	case res.State == "bound" && isIPv4(res.Address) && nkeys.IsValidPublicUserKey(res.PublicKey) &&
-		storerole.ValidPin(res.ServerKeyPin):
+		sqsv1.ValidPin(res.ServerKeyPin):
 		return Store{Bound: true, Address: res.Address, PublicKey: res.PublicKey, ServerKeyPin: res.ServerKeyPin,
 			HostNodes: res.HostNodes}, nil
 	}
@@ -305,3 +305,44 @@ func parseError(action string, status int, body []byte) error {
 	}
 	return &APIError{Action: action, StatusCode: status, Code: code}
 }
+
+// ServerKey is the store's own record as the gateway reports it to the bound
+// store instance: its claim, its data volume and any pin already recorded.
+type ServerKey struct {
+	ClaimID  string
+	VolumeID string
+	Pin      string
+}
+
+type serverKeyResult struct {
+	ClaimID  string `xml:"ClaimId"`
+	VolumeID string `xml:"VolumeId"`
+	Pin      string `xml:"Pin"`
+}
+
+// DescribeServerKey reports the calling store's record. A reply without a
+// claim and volume, or with a malformed pin, is refused here.
+func (c *Client) DescribeServerKey(ctx context.Context) (ServerKey, error) {
+	var res serverKeyResult
+	if err := c.call(ctx, sqsv1.ActionDescribeStoreServerKey, nil, &res); err != nil {
+		return ServerKey{}, err
+	}
+	if res.ClaimID == "" || res.VolumeID == "" || (res.Pin != "" && !sqsv1.ValidPin(res.Pin)) {
+		return ServerKey{}, errors.New("spinifex-sqs DescribeStoreServerKey: response is not a valid store record")
+	}
+	return ServerKey(res), nil
+}
+
+// RecordServerKey records pin for the store's claim and volume. Recording
+// the same pin again succeeds, so a lost reply is safe to repeat.
+func (c *Client) RecordServerKey(ctx context.Context, claimID, volumeID, pin string) error {
+	if !sqsv1.ValidPin(pin) {
+		return errors.New("spinifex-sqs RecordStoreServerKey: refusing to send a value that is not a pin")
+	}
+	return c.call(ctx, sqsv1.ActionRecordStoreServerKey,
+		url.Values{"ClaimId": {claimID}, "VolumeId": {volumeID}, "Pin": {pin}}, nil)
+}
+
+// NotBound reports the gateway's InvalidState: the store's launch is not yet
+// bound to this instance, so the store asks again later.
+func (e *APIError) NotBound() bool { return e.Code == "InvalidState" }

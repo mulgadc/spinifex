@@ -15,7 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storerole"
+	sqsv1 "github.com/mulgadc/spinifex/contracts/sqs/v1"
 )
 
 // Bucket is the SQS domain's KV bucket for store launches.
@@ -278,7 +278,7 @@ func (r Records) Bind(ctx context.Context, region, claimID, instanceID, address 
 // refused and the record is unchanged.
 func (r Records) RecordServerKey(ctx context.Context, region, instanceID, claimID, volumeID, pin string) error {
 	if !instancePattern.MatchString(instanceID) || !claimPattern.MatchString(claimID) ||
-		!volumePattern.MatchString(volumeID) || !storerole.ValidPin(pin) {
+		!volumePattern.MatchString(volumeID) || !sqsv1.ValidPin(pin) {
 		return ErrInvalidRecording
 	}
 	for range maxAttempts {
@@ -385,7 +385,7 @@ func wellFormed(r *Record, region string) bool {
 		return r.InstanceID == "" && r.Address == ""
 	case StateBound:
 		return r.Dispatched && instancePattern.MatchString(r.InstanceID) && r.Address != "" &&
-			(r.ServerKeyPin == "" || storerole.ValidPin(r.ServerKeyPin))
+			(r.ServerKeyPin == "" || sqsv1.ValidPin(r.ServerKeyPin))
 	default:
 		return false
 	}

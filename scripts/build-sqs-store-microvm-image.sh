@@ -29,6 +29,7 @@ BUILD_DIR="$REPO_ROOT/build/microvm/sqs-store"
 INIT_SH="$BUILD_DIR/init.sh"
 INITTAB="$BUILD_DIR/inittab"
 NATS_SERVER_BIN="$REPO_ROOT/bin/nats-server"
+SQS_STORE_KEY_BIN="$REPO_ROOT/bin/sqs-store-key"
 
 PROFILE="${SQS_MICROVM_PROFILE:-store}"
 case "$PROFILE" in
@@ -96,6 +97,10 @@ fi
 nats_server_version=$("$NATS_SERVER_BIN" --version 2>&1 | awk '{ print $NF; exit }')
 if [ "$nats_server_version" != "$NATS_SERVER_PIN" ]; then
     echo "ERROR: $NATS_SERVER_BIN reports $nats_server_version, go.mod pins $NATS_SERVER_PIN" >&2
+    exit 1
+fi
+if [ ! -x "$SQS_STORE_KEY_BIN" ] || ! file -b "$SQS_STORE_KEY_BIN" | grep -q "statically linked"; then
+    echo "ERROR: $SQS_STORE_KEY_BIN missing or not static — run 'make bin/sqs-store-key'" >&2
     exit 1
 fi
 echo "$TAG nats-server: $nats_server_version (matches go.mod)"
@@ -245,6 +250,7 @@ install -m 0755 "$BUILD_DIR/sqs-store-prepare" "$BUILD_DIR/sqs-store-run" "$BUIL
 echo "$TAG copying nats-server binary..."
 mkdir -p "$CHROOT_DIR/usr/local/bin"
 install -m 0755 "$NATS_SERVER_BIN" "$CHROOT_DIR/usr/local/bin/nats-server"
+install -m 0755 "$SQS_STORE_KEY_BIN" "$CHROOT_DIR/usr/local/bin/sqs-store-key"
 fi
 
 # --- Create required directories for init ---

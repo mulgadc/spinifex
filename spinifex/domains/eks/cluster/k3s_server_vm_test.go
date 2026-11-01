@@ -97,6 +97,7 @@ func (f *fakeK3sVPC) DescribeNetworkInterfaces(_ context.Context, input *ec2.Des
 }
 
 type fakeK3sInst struct {
+	mu             sync.Mutex
 	launchCalls    []*systeminstance.SystemInstanceInput
 	launchNodes    []string // TargetNodeID per launch (parallel to launchCalls)
 	terminateCalls []string
@@ -104,6 +105,18 @@ type fakeK3sInst struct {
 	launchOut    *systeminstance.SystemInstanceOutput
 	launchErr    error
 	terminateErr error
+
+	// launchHook / terminateHook run before the call records, unlocked, so a
+	// test can hold a launch or a teardown at that step.
+	launchHook    func()
+	terminateHook func(instanceID string)
+}
+
+// terminated returns a copy of the terminate calls so far.
+func (f *fakeK3sInst) terminated() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.terminateCalls...)
 }
 
 var _ k3sInstanceLauncher = (*fakeK3sInst)(nil)
@@ -113,6 +126,11 @@ func (f *fakeK3sInst) LaunchSystemInstance(input *systeminstance.SystemInstanceI
 }
 
 func (f *fakeK3sInst) LaunchSystemInstanceOnNode(nodeID string, input *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error) {
+	if f.launchHook != nil {
+		f.launchHook()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.launchCalls = append(f.launchCalls, input)
 	f.launchNodes = append(f.launchNodes, nodeID)
 	if f.launchErr != nil {
@@ -125,6 +143,11 @@ func (f *fakeK3sInst) LaunchSystemInstanceOnNode(nodeID string, input *systemins
 }
 
 func (f *fakeK3sInst) TerminateSystemInstance(instanceID string) error {
+	if f.terminateHook != nil {
+		f.terminateHook(instanceID)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.terminateCalls = append(f.terminateCalls, instanceID)
 	return f.terminateErr
 }

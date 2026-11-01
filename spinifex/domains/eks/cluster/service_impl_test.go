@@ -202,15 +202,12 @@ func TestDeleteCluster_ZeroizesOIDCKeyBeforeTeardown(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 	f.inst.terminateErr = errors.New("hypervisor unreachable")
 
-	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.Error(t, err, "teardown failure must surface")
+	deleteAndSettle(t, f.svc, "alpha")
 
 	_, getErr := f.kv.Get(t.Context(), OIDCSigningKeyKey("alpha"))
 	assert.ErrorIs(t, getErr, jetstream.ErrKeyNotFound, "OIDC key must be zeroized before teardown, even when teardown fails")
 
-	meta, metaErr := GetClusterMeta(t.Context(), f.kv, "alpha")
-	require.NoError(t, metaErr, "meta must survive a failed teardown for retry")
-	assert.Equal(t, ClusterStatusDeleting, meta.Status)
+	requireTeardownRetained(t, f.kv, "alpha")
 }
 
 // In shim mode (orchestration deps absent) the mutating nodegroup methods

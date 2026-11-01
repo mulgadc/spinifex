@@ -143,6 +143,25 @@ No user-facing operation replaces a control plane, and automatic replacement doe
 Recreate the cluster to adopt it.
 User-workload injection through a cluster created with an older image is not measured.
 
+### Add-on versions
+
+Add-on versions use the AWS form `v<x.y.z>-eksbuild.<n>`, for example `v1.40.1-eksbuild.1`.
+`DescribeAddonVersions` returns versions in this form, newest first, and every other add-on response reports the version the same way.
+Spinifex ships one EKS build of each upstream version, so `<n>` is `1` today.
+
+`DescribeAddonVersions` honours `addonName`, `kubernetesVersion`, `types`, `publishers`, `owners`, `maxResults` and `nextToken`.
+Each version carries `compatibilities` with the `clusterVersion`, the `platformVersions`, and a `defaultVersion` flag that is true for exactly one version per add-on and cluster version.
+A `kubernetesVersion` that Spinifex does not run returns no add-ons.
+
+`CreateAddon` and `UpdateAddon` accept the AWS form of a version in the catalogue.
+They also accept the bare upstream form, such as `1.40.1`, and Spinifex logs each use at Info.
+This is a Spinifex leniency that AWS does not offer, and it exists so that older scripts keep working.
+Any other value is refused with a message that names `addonVersion` and lists the supported versions, for example `v1.40.1-eksbuild.2`, `1.40` or `v1.40.1`.
+
+In Terraform, pass the AWS form to `aws_eks_addon.addon_version`, either as a literal or from `data.aws_eks_addon_version`.
+The AWS provider validates the format before it calls the API, so it rejects the bare form.
+Leaving `addon_version` unset still installs the catalogue default.
+
 ## Prerequisites
 
 > [!IMPORTANT]
@@ -359,7 +378,7 @@ Control plane readiness and kubectl authentication above lists which clusters re
 
 **`create-cluster` rejected with an authentication-mode error.** `CONFIG_MAP` is the one mode Spinifex rejects, because it has no `aws-auth` ConfigMap path. Set `authentication_mode` to `API` or `API_AND_CONFIG_MAP`, or leave it unset, and grant access with access entries.
 
-**Addon install fails.** Only addons bundled into the registered `eks-node` image install successfully. If you pin an addon version in Terraform, leave `addon_version` unset so Spinifex selects the catalog default.
+**Addon install fails.** Only addons bundled into the registered `eks-node` image install successfully. If you pin an addon version in Terraform, use the AWS form from `DescribeAddonVersions` (see Add-on versions above), or leave `addon_version` unset so Spinifex selects the catalog default.
 
 ## Reference Architectures
 

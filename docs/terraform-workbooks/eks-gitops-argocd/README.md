@@ -79,7 +79,8 @@ Terraform manages the cluster, the addons, the ACM cert, and the HTTPS Ingress; 
 - The `argocd` and `aws-ebs-csi-driver` bundles must be baked into the `eks-node` AMI — `describe-addon` returns `no baked bundle` otherwise.
 - The EBS-CSI default StorageClass uses `provisioner: ebs.csi.aws.com`; a PVC against it provisions a **Viperblock-backed EBS volume**.
 - If the PVC stays `Pending`, the app still serves (the counter falls back to in-memory) — see [Troubleshooting](#troubleshooting).
-- Leave addon versions unset (the AWS provider and the catalog disagree on the version-string format).
+- Addon versions are unset, so Spinifex installs each catalog default.
+  To pin one, use the AWS form that `DescribeAddonVersions` returns, such as `v3.0.23-eksbuild.1`.
 - The Argo CD `Application` is a `kubernetes_manifest`, so the `argoproj.io` CRDs must exist before `apply` — apply the parent and let the addon reach `ACTIVE` first.
 
 **Prerequisites:**

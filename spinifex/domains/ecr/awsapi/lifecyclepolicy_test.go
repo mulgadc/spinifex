@@ -158,6 +158,7 @@ func TestPutLifecyclePolicy_PolicyTextRequiredAndLength(t *testing.T) {
 		message string
 	}{
 		{"omitted", `{"repositoryName":"team/app"}`, "Invalid parameter at 'lifecyclePolicyText' failed to satisfy constraint: 'Member must not be null'"},
+		{"too short", `{"repositoryName":"team/app","lifecyclePolicyText":"{\"rules\":[]}"}`, "Invalid parameter at 'lifecyclePolicyText' failed to satisfy constraint: 'Member must have length greater than or equal to 100'"},
 		{"too long", `{"repositoryName":"team/app","lifecyclePolicyText":` + strconvQuote(validLifecyclePolicy+strings.Repeat(" ", 30720)) + `}`, "Invalid parameter at 'lifecyclePolicyText' failed to satisfy constraint: 'Member must have length less than or equal to 30720'"},
 	}
 	for _, tc := range cases {

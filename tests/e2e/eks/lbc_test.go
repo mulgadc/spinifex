@@ -34,10 +34,11 @@ const (
 // chart with the values an AWS user passes (cluster name, region, VPC, the
 // ServiceAccount role annotation) and reconciles an Ingress into an active ALB.
 // Beyond those it needs three Spinifex-specific values:
-//   - awsApiEndpoints: the gateway serves EC2, ELBv2, ACM and STS on one address
-//     instead of per-service regional endpoints.
-//   - enableShield, enableWaf, enableWafv2 = false: the gateway has no Shield or
-//     WAF APIs, and the controller defaults to calling them.
+//   - awsApiEndpoints: the gateway serves EC2, ELBv2, ACM, STS and the Resource
+//     Groups Tagging API on one address instead of per-service regional endpoints.
+//   - enableShield, enableWaf, enableWafv2 = false: Spinifex only. An AWS user
+//     does not set them; the gateway has no Shield or WAF APIs and the
+//     controller defaults to calling them.
 //   - the ALBSingleSubnet feature gate: the e2e VPC has one subnet, where AWS
 //     requires two availability zones.
 //
@@ -131,7 +132,7 @@ func runLBCChart(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts
 		"--set", "serviceAccount.name="+lbcRelease,
 		"--set-string", `serviceAccount.annotations.eks\.amazonaws\.com/role-arn=`+roleArn,
 		// What Spinifex adds.
-		"--set", "awsApiEndpoints=EC2="+gatewayURL+"\\,Elastic Load Balancing v2="+gatewayURL+"\\,ACM="+gatewayURL+"\\,STS="+gatewayURL,
+		"--set", "awsApiEndpoints=EC2="+gatewayURL+"\\,Elastic Load Balancing v2="+gatewayURL+"\\,ACM="+gatewayURL+"\\,STS="+gatewayURL+"\\,Resource Groups Tagging API="+gatewayURL,
 		"--set", "enableShield=false",
 		"--set", "enableWaf=false",
 		"--set", "enableWafv2=false",

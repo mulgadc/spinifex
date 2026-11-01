@@ -27,6 +27,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/nats-io/nats.go/jetstream"
@@ -110,6 +111,9 @@ type Deps struct {
 	FirstStore FirstStore
 	Stores     Stores
 	Work       Work
+	// HostNodes reports this gateway's declared cluster node count; nil is
+	// clustersize.Nodes.
+	HostNodes func() int
 }
 
 // NewRegistration returns the internal SQS worker Query registration.
@@ -284,8 +288,15 @@ func (d Deps) describeStore(ctx context.Context, w http.ResponseWriter, region s
 		return writeXML(ctx, w, describeResponse{Result: describeResult{State: StorePending}})
 	}
 	return writeXML(ctx, w, describeResponse{Result: describeResult{
-		State: StoreBound, Address: rec.Address, PublicKey: rec.PublicKey,
+		State: StoreBound, Address: rec.Address, PublicKey: rec.PublicKey, HostNodes: d.hostNodes(),
 	}})
+}
+
+func (d Deps) hostNodes() int {
+	if d.HostNodes != nil {
+		return d.HostNodes()
+	}
+	return clustersize.Nodes()
 }
 
 // pollWork hands this worker queued owner calls, waiting up to pollWait.
@@ -380,6 +391,9 @@ type describeResult struct {
 	State     string `xml:"State"`
 	Address   string `xml:"Address,omitempty"`
 	PublicKey string `xml:"PublicKey,omitempty"`
+	// HostNodes is this gateway's declared cluster node count, zero when
+	// undeclared; the worker serves only when it is exactly one.
+	HostNodes int `xml:"HostNodes"`
 }
 
 type describeResponse struct {

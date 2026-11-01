@@ -252,6 +252,12 @@ func newGWCluster(t *testing.T) gwCluster {
 // newGWClusterWith also hands the gateway's work actions to work.
 func newGWClusterWith(t *testing.T, work sqsworkerapi.Work) gwCluster {
 	t.Helper()
+	return newGWClusterHosts(t, work, nil)
+}
+
+// newGWClusterHosts also has the gateway report hostNodes as its cluster size.
+func newGWClusterHosts(t *testing.T, work sqsworkerapi.Work, hostNodes func() int) gwCluster {
+	t.Helper()
 	clustersize.DeclareForTest(t, 1)
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
@@ -269,6 +275,7 @@ func newGWClusterWith(t *testing.T, work sqsworkerapi.Work) gwCluster {
 	}
 	deps := sqsworkerapi.JetStreamDeps(js)
 	deps.Work = work
+	deps.HostNodes = hostNodes
 	return gwCluster{ids: ids, fence: fence, stores: stores, gw: newLocalGateway(t, deps)}
 }
 

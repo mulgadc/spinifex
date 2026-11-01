@@ -13,6 +13,10 @@
 // while the check passes; it proves the store accepted the worker key, not
 // the store server's identity. ready also serves SQS owner calls against
 // that store, pulling them from the gateway with the same credentials.
+//
+// Serving is refused unless the gateway reports a single-node host cluster.
+// A disk with no receipt key refuses to serve; recovering it needs a safe
+// procedure not yet designed, and nothing deletes or replaces the store.
 package main
 
 import (

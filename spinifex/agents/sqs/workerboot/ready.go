@@ -18,6 +18,7 @@ type Store struct {
 	Bound     bool
 	Address   string
 	PublicKey string
+	HostNodes int
 }
 
 // StoreDescriber asks the gateway for this worker's store.

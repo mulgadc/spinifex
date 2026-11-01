@@ -37,6 +37,10 @@ type NATSConnector struct {
 
 var _ Connector = NATSConnector{}
 
+// ErrUnsupportedTopology refuses serving, and so creating any store state,
+// unless the gateway reports a single-node host cluster.
+var ErrUnsupportedTopology = errors.New("SQS serving supports only a single-node host cluster")
+
 func (c NATSConnector) Connect(_ context.Context, address string, kp nkeys.KeyPair) (jetstream.JetStream, func(), error) {
 	if ip := net.ParseIP(address); ip == nil || ip.To4() == nil {
 		return nil, nil, errors.New("store address is not an IPv4 address")
@@ -99,6 +103,9 @@ func serveOnce(ctx context.Context, cfg ReadyConfig, c contract, d StoreDescribe
 	}
 	if !st.Bound {
 		return errStorePending
+	}
+	if st.HostNodes != 1 {
+		return fmt.Errorf("%w: the gateway reports %d host nodes", ErrUnsupportedTopology, st.HostNodes)
 	}
 	kp, err := keys.ForExistingStore(st.PublicKey)
 	if err != nil {

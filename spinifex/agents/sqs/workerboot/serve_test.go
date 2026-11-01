@@ -323,3 +323,47 @@ func TestServe_StoppedWorkerTakesNoWork(t *testing.T) {
 		t.Fatal("the worker's polls were not refused")
 	}
 }
+
+// A gateway that reports a multi-node host cluster is refused before the
+// worker connects to its store, so no queue or marker state is created.
+func TestServe_MultiNodeHostCreatesNoStoreState(t *testing.T) {
+	r := &relay.Relay{}
+	c := newGWClusterHosts(t, r, func() int { return 3 })
+	c.launch(t, "claim-0001", 0, gwInstance)
+	g := newGuest(t)
+	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
+	pub, err := g.boot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := storeServer(t, pub)
+	c.bindStore(t, pub, "127.0.0.1")
+
+	w := c.startServing(t, g, "ASIAWORKER1", gwInstance, port)
+	eventually(t, func() error {
+		if !w.logged(ErrUnsupportedTopology.Error()) {
+			return errors.New("not yet refused")
+		}
+		return nil
+	})
+	w.stop()
+
+	kp, err := workerkey.Store{Dir: g.keyDir()}.ForExistingStore(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer kp.Wipe()
+	js, closeConn, err := NATSConnector{Port: port}.Connect(context.Background(), "127.0.0.1", kp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeConn()
+	names := js.StreamNames(context.Background())
+	var got []string
+	for n := range names.Name() {
+		got = append(got, n)
+	}
+	if names.Err() != nil || len(got) != 0 {
+		t.Fatalf("store streams = %v, %v; want none", got, names.Err())
+	}
+}

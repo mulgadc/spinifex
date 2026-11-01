@@ -148,12 +148,16 @@ type Store struct {
 	Bound     bool
 	Address   string
 	PublicKey string
+	// HostNodes is the gateway's declared cluster node count; a gateway
+	// that does not report one reads as zero.
+	HostNodes int
 }
 
 type describeResult struct {
 	State     string `xml:"State"`
 	Address   string `xml:"Address"`
 	PublicKey string `xml:"PublicKey"`
+	HostNodes int    `xml:"HostNodes"`
 }
 
 // DescribeStore reports this worker's store. A bound reply must carry an
@@ -167,7 +171,7 @@ func (c *Client) DescribeStore(ctx context.Context) (Store, error) {
 	case res.State == "pending" && res.Address == "" && res.PublicKey == "":
 		return Store{}, nil
 	case res.State == "bound" && isIPv4(res.Address) && nkeys.IsValidPublicUserKey(res.PublicKey):
-		return Store{Bound: true, Address: res.Address, PublicKey: res.PublicKey}, nil
+		return Store{Bound: true, Address: res.Address, PublicKey: res.PublicKey, HostNodes: res.HostNodes}, nil
 	}
 	return Store{}, errors.New("spinifex-sqs DescribeStore: response is not a valid store state")
 }

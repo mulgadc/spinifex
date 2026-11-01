@@ -230,3 +230,21 @@ func TestBuildFallsBackToTheCollectedLLDP(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteFile_ReplacesAtomicallyGroupReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, writeFile(dir, fileIdentity, []byte("first"), -1))
+	require.NoError(t, writeFile(dir, fileIdentity, []byte("second"), -1))
+
+	data, err := readFacts(dir, fileIdentity)
+	require.NoError(t, err)
+	assert.Equal(t, "second", string(data))
+
+	info, err := os.Stat(filepath.Join(dir, fileIdentity))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm(), "the facts carry serial numbers")
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "no temporary file is left behind")
+}

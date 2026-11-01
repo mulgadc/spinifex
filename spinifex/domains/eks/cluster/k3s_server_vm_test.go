@@ -461,6 +461,44 @@ func TestBuildK3sUserData_EgressSelectorDisabledWithKonnConfig(t *testing.T) {
 		"the EgressSelectorConfiguration file routes the cluster egress to the konn socket")
 }
 
+func TestBuildK3sUserData_DisablesAgentOnClusterInit(t *testing.T) {
+	t.Parallel()
+	in := validK3sInput()
+	in.ServerURL = ""
+
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "cluster-init: true")
+	assert.Contains(t, ud, "disable-agent: true",
+		"a control-plane host must not register as a Node (EKS parity)")
+}
+
+func TestBuildK3sUserData_DisablesAgentOnJoin(t *testing.T) {
+	t.Parallel()
+	in := validK3sInput()
+	in.ServerURL = k3sServerJoinURL("10.0.0.10")
+	in.JoinToken = "tok"
+
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "server: "+in.ServerURL)
+	assert.Contains(t, ud, "disable-agent: true",
+		"join servers run without an agent too")
+}
+
+func TestBuildK3sUserData_DisableAgentKeepsControlPlaneConfig(t *testing.T) {
+	t.Parallel()
+	in := validK3sInput()
+	in.PrivateEndpointIP = "10.20.0.5"
+
+	ud := buildK3sUserData(in)
+	require.Contains(t, ud, "disable-agent: true")
+	assert.Contains(t, ud, "egress-selector-mode: disabled")
+	assert.Contains(t, ud, "egress-selector-config-file="+k3sEgressSelectorConfigPath)
+	assert.Contains(t, ud, "advertise-address: 10.20.0.5")
+	for _, addon := range []string{"traefik", "servicelb", "local-storage"} {
+		assert.Contains(t, ud, "  - "+addon, "packaged addon %s stays disabled", addon)
+	}
+}
+
 func TestEgressSelectorConfigYAML_TunnelsClusterOnly(t *testing.T) {
 	t.Parallel()
 	cfg := egressSelectorConfigYAML()
@@ -587,10 +625,9 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "FAKEPUB")
 
 	assert.Contains(t, udata, "path: "+k3sConfigPath)
-	// The control plane is tainted so user workloads never schedule on it (EKS
-	// parity, and it keeps image pulls off the etcd disk).
-	assert.Contains(t, udata, "node-taint:")
-	assert.Contains(t, udata, "  - CriticalAddonsOnly=true:NoExecute")
+	// The control plane runs no agent, so it is never a Node and needs no taint.
+	assert.Contains(t, udata, "disable-agent: true")
+	assert.NotContains(t, udata, "node-taint:")
 	// AWS parity: K3s' bundled traefik + servicelb are always disabled; Service
 	// type=LoadBalancer / Ingress are the AWS LB Controller's job. local-storage is
 	// disabled too so its local-path provisioner does not add a second default

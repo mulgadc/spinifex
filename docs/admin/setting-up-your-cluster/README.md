@@ -106,7 +106,7 @@ done
 | `spinifex-rds-postgres` | RDS, `--engine postgres`         | Alpine 3.24.1 + PostgreSQL 18 + `rds-init`      |
 | `spinifex-rds-mariadb`  | RDS, `--engine mariadb`          | Alpine 3.24.1 + MariaDB 11.8 + `rds-init`       |
 | `spinifex-ecs-node`     | ECS container instances          | Alpine 3.21.7 + containerd + ecs-agent          |
-| `spinifex-eks-node`     | EKS control plane and nodegroups | Alpine 3.21.7 + K3s v1.32.5 + eks-token-webhook |
+| `spinifex-eks-node`     | EKS control plane and nodegroups | Alpine 3.21.7 + K3s v1.32.5 + eks-token-webhook + eks-etcd-member |
 
 All four boot **BIOS**, unlike the distro images, which boot UEFI. That is a property of how they are built and nothing you need to pass.
 

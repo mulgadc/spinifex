@@ -35,6 +35,8 @@ resources:
 
 An EKS cluster on Spinifex has two parts: a **control plane** (the managed Kubernetes API server, provisioned on a Spinifex-managed VM and fronted by a network load balancer) and one or more **managed node groups** of worker VMs that run your pods. You provide the VPC, subnets, and IAM roles; Spinifex creates and reconciles the cluster, its load balancer, and its security groups.
 
+Control-plane hosts are not Kubernetes Nodes, as on AWS: `kubectl get nodes` lists only your node group workers, so a cluster with no node group lists none, and no pod runs on a control-plane host. Add-ons that used to tolerate the control-plane `CriticalAddonsOnly` taint, such as CoreDNS, metrics-server and konnectivity-agent, run on workers, so a Ready worker is required before they become available.
+
 Authentication uses **EKS access entries** (the API authentication mode) — IAM principals are mapped to Kubernetes RBAC groups, and `kubectl` authenticates with `aws eks get-token` exactly as it does on AWS.
 
 <p align="center">
@@ -172,6 +174,8 @@ aws eks update-kubeconfig --name demo
 kubectl get nodes
 ```
 
+The list shows the node group workers only. The control-plane VMs never appear as Nodes.
+
 ### 4. Expose a workload
 
 Workers join an auto-managed security group that only allows intra-cluster traffic. To reach a NodePort service, add one ingress rule to that SG (look it up by its deterministic name):
@@ -283,6 +287,12 @@ kubectl get nodes
 The workbooks form a ladder. **eks-quickstart** is a NodePort demo; **eks-https-ingress** adds private subnets, a NAT gateway, and HTTPS via the AWS Load Balancer Controller + ACM; **eks-gitops-argocd** delivers the app from a git repo with the Argo CD addon and persists state on an EBS-CSI (Viperblock-backed) volume. See the full templates linked in Resources.
 
 :::
+
+### Upgrade notes
+
+**Control-plane hosts no longer register as Nodes.** `kubectl get nodes` shows workers only, so node counts drop by the number of control planes, for example 6 to 3 on a three-control-plane cluster with three workers. Add-ons that tolerated `CriticalAddonsOnly` now run on workers.
+
+**Existing clusters keep the old behaviour.** A cluster created before this change keeps registering its control planes as tainted Nodes until it is recreated. Recreate the cluster to adopt the new behaviour: automatic control-plane replacement does not currently work when the replacement reuses the failed member's IP, so it is not a supported way to upgrade.
 
 ## Troubleshooting
 

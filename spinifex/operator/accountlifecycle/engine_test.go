@@ -296,6 +296,26 @@ func TestStuckResourceIsReportedAndTheAccountSurvives(t *testing.T) {
 	}
 }
 
+// A pass that runs past the stage deadline can still delete everything it
+// listed. Those resources are gone, so they must not be reported stuck.
+func TestResourceDeletedOnThePassThatCrossesTheDeadlineIsNotStuck(t *testing.T) {
+	accounts := newFakeAccounts()
+	volumes := &fakeReaper{
+		kind: "volume", stage: StageStorage,
+		resources: []Resource{{Kind: "volume", ID: "vol-1"}},
+	}
+	engine := quietEngine(accounts, volumes)
+	engine.Timeouts.StageDrain = time.Nanosecond
+
+	result, err := engine.Teardown(context.Background(), request())
+	if err != nil {
+		t.Fatalf("teardown: %v (stuck %d)", err, result.StuckCount())
+	}
+	if !accounts.deleted || volumes.deletesAttempted != 1 {
+		t.Fatalf("want one delete and the account gone, got deletes=%d deleted=%v", volumes.deletesAttempted, accounts.deleted)
+	}
+}
+
 // The reason a resource would not go is the useful half of the report.
 func TestStuckResourceCarriesTheDeleteFailureReason(t *testing.T) {
 	volumes := &fakeReaper{

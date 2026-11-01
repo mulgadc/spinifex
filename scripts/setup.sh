@@ -1014,6 +1014,9 @@ RESOLV_CONF="${SPINIFEX_RESOLV_CONF:-/etc/resolv.conf}"
 RESOLVED_STUB=/run/systemd/resolve/stub-resolv.conf
 # node-reset.sh keeps /var/lib/spinifex-reset, so the copy survives until uninstall.
 RESOLV_CONF_SAVED="${SPINIFEX_RESOLV_CONF_SAVED:-/var/lib/spinifex-reset/resolv.conf.orig}"
+# NetworkManager started while resolv.conf is a plain file rewrites it on its
+# next DNS update, replacing the stub link; this drop-in stops that.
+NM_DNS_DROPIN="${SPINIFEX_NM_DNS_DROPIN:-/etc/NetworkManager/conf.d/90-spinifex-dns.conf}"
 
 # systemd-resolved ships resolvconf as a link to resolvectl, which only works
 # while resolved runs, so that one is not a resolvconf backend.
@@ -1066,8 +1069,50 @@ dns_handover_failed() {
     fatal "Host DNS through systemd-resolved does not work: $1.
     To put host DNS back as it was before this installer:
       sudo systemctl disable --now systemd-resolved
+      sudo rm -f $NM_DNS_DROPIN
       sudo cp -a --remove-destination $RESOLV_CONF_SAVED $RESOLV_CONF
       sudo systemctl restart NetworkManager"
+}
+
+# Prints the rc-manager NetworkManager would use if it is not unmanaged, which
+# means a file read after the Spinifex drop-in overrides it.
+nm_rc_manager_override() {
+    local config
+    config=$($SUDO NetworkManager --print-config) || return 1
+    printf '%s\n' "$config" | awk -F= '
+        /^\[/ { main = ($0 == "[main]"); next }
+        main && $1 == "rc-manager" { rc = $2 }
+        END { if (rc != "unmanaged") print "rc-manager=" (rc == "" ? "symlink" : rc) }'
+}
+
+# Writes the NetworkManager drop-in and checks nothing overrides it. Returns 1
+# when it was already in place.
+install_nm_dns_dropin() {
+    local want override changed=1
+    want=$(printf '[main]\ndns=systemd-resolved\nrc-manager=unmanaged')
+    if [ "$(cat "$NM_DNS_DROPIN" 2>/dev/null)" != "$want" ]; then
+        $SUDO mkdir -p "$(dirname "$NM_DNS_DROPIN")"
+        printf '%s\n' "$want" | $SUDO tee "$NM_DNS_DROPIN" > /dev/null || dns_handover_failed "cannot write $NM_DNS_DROPIN"
+        info "  $NM_DNS_DROPIN: NetworkManager leaves $RESOLV_CONF alone"
+        changed=0
+    fi
+    override=$(nm_rc_manager_override) || dns_handover_failed "cannot read NetworkManager's configuration with 'NetworkManager --print-config'"
+    if [ -n "$override" ]; then
+        dns_handover_failed "NetworkManager reads $override from a file after $NM_DNS_DROPIN, so it would replace the $RESOLV_CONF link. Remove that setting ('NetworkManager --print-config' shows the files it reads) and re-run this installer"
+    fi
+    return "$changed"
+}
+
+# Links the stub and checks the link is still there a second later, relinking a
+# bounded number of times in case a write NetworkManager had queued lands first.
+link_resolved_stub() {
+    local i
+    for i in 1 2 3 4 5; do
+        $SUDO ln -sfn "$RESOLVED_STUB" "$RESOLV_CONF"
+        sleep 1
+        [ "$(readlink "$RESOLV_CONF")" = "$RESOLVED_STUB" ] && return 0
+    done
+    dns_handover_failed "$RESOLV_CONF is not a link to $RESOLVED_STUB 5 seconds after linking it, so something keeps rewriting it"
 }
 
 # Checks resolved has upstream servers and still resolves the package
@@ -1103,8 +1148,13 @@ hand_dns_to_resolved() {
     [ "${ISO_BUILD:-0}" = "1" ] && return 0
 
     if systemctl is-active --quiet systemd-resolved.service; then
-        # A handover made by an earlier run is checked again on every run.
+        # A handover made by an earlier run is checked again, and repaired, on
+        # every run: installs before the drop-in could lose the link.
         if [ -e "$RESOLV_CONF_SAVED" ] || [ -L "$RESOLV_CONF_SAVED" ]; then
+            if install_nm_dns_dropin && systemctl is-active --quiet NetworkManager.service; then
+                $SUDO systemctl reload NetworkManager.service || dns_handover_failed "NetworkManager did not reload"
+            fi
+            [ "$(readlink "$RESOLV_CONF")" = "$RESOLVED_STUB" ] || link_resolved_stub
             check_resolved_dns
         fi
         return 0
@@ -1131,10 +1181,15 @@ hand_dns_to_resolved() {
         $SUDO cp -a "$RESOLV_CONF" "$RESOLV_CONF_SAVED" || fatal "Cannot save $RESOLV_CONF to $RESOLV_CONF_SAVED"
         info "  saved $RESOLV_CONF to $RESOLV_CONF_SAVED"
     fi
+    install_nm_dns_dropin || true
     $SUDO systemctl enable --now systemd-resolved.service > /dev/null 2>&1 \
         || dns_handover_failed "systemd-resolved did not start"
     $SUDO systemctl restart NetworkManager.service || dns_handover_failed "NetworkManager did not restart"
-    $SUDO ln -sfn "$RESOLVED_STUB" "$RESOLV_CONF"
+    # Best effort: a link with no DHCP server can hold startup past the timeout.
+    if command -v nm-online > /dev/null; then
+        nm-online -s -q --timeout=15 || true
+    fi
+    link_resolved_stub
     check_resolved_dns
     info "  $RESOLV_CONF -> $RESOLVED_STUB"
 }

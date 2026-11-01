@@ -104,7 +104,7 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 		STSService:     e.sts,
 	}
 	withRealAuth(gw)
-	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService}))
 	require.NoError(t, b.Register(stsRegistration(gw)))
 	gw.Services = b.Build()
 	return gw.SetupRoutes(), &seen

@@ -25,7 +25,6 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
-	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
@@ -63,9 +62,9 @@ type GatewayConfig struct {
 	InternalSuffix   string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
 	IAMService       iamdomain.IAMService
 	STSService       stsdomain.STSService
-	// AnonymousSTS serves the unsigned STS actions that authenticate by a token
-	// in the body. Nil answers them with InternalError.
-	AnonymousSTS stsawsapi.AnonymousFunc
+	// PreAuth serves requests that authenticate by their own payload, ahead of
+	// SigV4 and throttling, in order.
+	PreAuth []dispatch.PreAuth
 
 	// Credentials verifies SigV4 credentials. Nil fails every request closed.
 	Credentials credential.Verifier
@@ -159,9 +158,9 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 		r.Use(audit.RequestLogger)
 	}
 
-	// Anonymous STS (AssumeRoleWithWebIdentity) is dispatched ahead of SigV4 —
-	// these calls carry a web-identity JWT, not AWS credentials.
-	r.Use(gw.anonymousSTSInterceptor)
+	// Pre-authentication handlers run ahead of SigV4: their requests carry a
+	// payload token, not AWS credentials.
+	r.Use(gw.preAuthInterceptor)
 
 	// Unauthenticated OIDC discovery endpoints (IRSA) bypass auth and throttle.
 	r.Group(func(pub chi.Router) {
@@ -200,6 +199,25 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	})
 
 	return r
+}
+
+// preAuthInterceptor offers each request to the pre-authentication handlers in
+// order; one that takes it ends the chain, and its errors render under the
+// service it declares.
+func (gw *GatewayConfig) preAuthInterceptor(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, pre := range gw.PreAuth {
+			handled, err := pre.Serve(w, r)
+			if !handled {
+				continue
+			}
+			if err != nil {
+				gw.ErrorHandler(w, r.WithContext(reqctx.WithService(r.Context(), pre.Service)), err)
+			}
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // throttleKeyFuncs returns the KeyFunc slice for the API throttle middleware,

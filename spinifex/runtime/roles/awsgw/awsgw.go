@@ -666,7 +666,7 @@ func launchService(config *config.ClusterConfig) error {
 	})
 	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
 	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
-	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsDeps)
+	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsDeps))
 	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
 		Version:     gw.Version,
 		Commit:      gw.Commit,

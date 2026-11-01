@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
@@ -97,7 +98,7 @@ func TestReqctxPipeline_GlobalSigningRegionRejectsOthers(t *testing.T) {
 // The anonymous exchange runs ahead of authentication, so an oversize body is
 // handed back unread to the signed chain instead of being dispatched.
 func TestAnonymousSTS_OversizeBodyPassesThroughUnread(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, PreAuth: []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{})}}
 	big := "Action=AssumeRoleWithWebIdentity&WebIdentityToken=" + strings.Repeat("a", int(sigv4.MaxPayloadLen)+1)
 
 	var seen []byte
@@ -105,21 +106,47 @@ func TestAnonymousSTS_OversizeBodyPassesThroughUnread(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(big))
 	rec := httptest.NewRecorder()
 
-	gw.anonymousSTSInterceptor(next).ServeHTTP(rec, req)
+	gw.preAuthInterceptor(next).ServeHTTP(rec, req)
 
 	assert.Equal(t, big, string(seen), "the whole body must reach the next handler")
 }
 
 // With no anonymous capability composed, the action fails closed.
 func TestAnonymousSTS_NilCapabilityIsAnInternalError(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, PreAuth: []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{})}}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=AssumeRoleWithWebIdentity&WebIdentityToken=x"))
 	rec := httptest.NewRecorder()
 
-	gw.anonymousSTSInterceptor(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	gw.preAuthInterceptor(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("must not fall through to the signed chain")
 	})).ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.Contains(t, rec.Body.String(), "<Code>"+awserrors.ErrorInternalError+"</Code>")
+}
+
+// A pre-authentication request is served before SigV4 and before the
+// throttle, so an exhausted bucket never reaches it.
+func TestPreAuth_RunsAheadOfSigV4AndThrottle(t *testing.T) {
+	served := 0
+	gw := withIAM(withVerifier(&GatewayConfig{
+		DisableLogging: true,
+		IAMService:     allowAllIAMService(),
+		Throttler:      newThrottler(t),
+		PreAuth: []dispatch.PreAuth{{
+			Service: "svc",
+			Serve: func(w http.ResponseWriter, _ *http.Request) (bool, error) {
+				served++
+				w.WriteHeader(http.StatusOK)
+				return true, nil
+			},
+		}},
+	}))
+	app := gw.SetupRoutes()
+
+	for range 5 {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=Anything"))
+		assert.Equal(t, http.StatusOK, doRequest(app, req).StatusCode)
+	}
+	assert.Equal(t, 5, served)
 }

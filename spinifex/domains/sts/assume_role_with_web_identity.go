@@ -128,6 +128,9 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 	env := assumedRoleEnvelope(role, roleAccountID, sessionName, claims.Subject)
 	cred, plainSecret, plainToken, err := s.mintSession(ctx, env, duration)
 	if err != nil {
+		if errors.Is(err, errAccountNotActive) {
+			return nil, errors.New(awserrors.ErrorAccessDenied)
+		}
 		return nil, err
 	}
 

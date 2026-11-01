@@ -11,6 +11,7 @@ import (
 	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
+	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
@@ -1673,7 +1674,8 @@ func TestMismatchAction_RecoversActionAndRewindsBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	assert.Equal(t, "ImportKeyPair", mismatchAction(req, "ec2"))
+	gw := withServices(&GatewayConfig{})
+	assert.Equal(t, "ImportKeyPair", gw.mismatchAction(req, "ec2"))
 
 	// The error path still writes a response, so the body must survive the peek.
 	rest, err := io.ReadAll(req.Body)
@@ -1684,10 +1686,11 @@ func TestMismatchAction_RecoversActionAndRewindsBody(t *testing.T) {
 func TestMismatchAction_SkipsS3AndPrefersQueryString(t *testing.T) {
 	// An S3 body is object data, so it must never be parsed as query args.
 	s3req := httptest.NewRequest(http.MethodPut, "/bucket/key", bytes.NewReader([]byte("Action=NotReally")))
-	assert.Empty(t, mismatchAction(s3req, "s3"))
+	gw := withServices(&GatewayConfig{})
+	assert.Empty(t, gw.mismatchAction(s3req, "s3"))
 
 	qreq := httptest.NewRequest(http.MethodGet, "/?Action=DescribeInstances", nil)
-	assert.Equal(t, "DescribeInstances", mismatchAction(qreq, "ec2"))
+	assert.Equal(t, "DescribeInstances", gw.mismatchAction(qreq, "ec2"))
 }
 
 func TestRedactedCanonicalRequest_MasksSessionToken(t *testing.T) {
@@ -1888,7 +1891,7 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 // default endpoint and for the configured region against an override. Every
 // other service stays pinned to the gateway's region.
 func TestExpectedSigningRegion(t *testing.T) {
-	gw := &GatewayConfig{Region: "ap-southeast-2"}
+	gw := withServices(&GatewayConfig{Region: "ap-southeast-2"}, route53awsapi.NewRegistration(route53awsapi.Deps{}))
 	for _, tc := range []struct {
 		service, claimed, want string
 	}{

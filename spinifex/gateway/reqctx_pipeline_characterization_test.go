@@ -115,6 +115,7 @@ func reqctxGateway(t *testing.T, env reqctxGatewayEnv, statements ...iamdomain.S
 			ResolveAction: func(*http.Request) string { return "ProbeAction" },
 			Dispatch:      env.Probe,
 			Errors:        dispatch.ErrorEnvelopeXML,
+			Traits:        dispatch.ServiceTraits{GlobalSigningRegion: "us-east-1"},
 			Inventory:     dispatch.Inventory{Registered: []string{"ProbeAction"}},
 		})
 	}

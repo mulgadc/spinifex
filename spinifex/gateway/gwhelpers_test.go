@@ -380,6 +380,10 @@ func withServices(gw *GatewayConfig, regs ...dispatch.Registration) *GatewayConf
 			panic(err)
 		}
 	}
+	// The composition declares the scopes it knows but does not serve.
+	if err := b.DeclareScope("s3", dispatch.ServiceTraits{XMLErrorShape: dispatch.XMLErrorShapeS3, PayloadBody: true}); err != nil {
+		panic(err)
+	}
 	gw.Services = b.Build()
 	withFakeCapabilities(gw)
 	return gw
@@ -891,14 +895,14 @@ func stsRegistration(gw *GatewayConfig) dispatch.Registration {
 // withIAMAndSTS registers IAM and STS together on gw, with the unsigned
 // web-identity capability, as awsgw composes them.
 func withIAMAndSTS(gw *GatewayConfig) *GatewayConfig {
-	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService}))
 	return withServices(gw, iamRegistration(gw), stsRegistration(gw))
 }
 
 // withSTS registers STS alone on gw and composes its unsigned web-identity
 // capability, as awsgw does.
 func withSTS(gw *GatewayConfig) *GatewayConfig {
-	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService}))
 	return withServices(gw, stsRegistration(gw))
 }
 

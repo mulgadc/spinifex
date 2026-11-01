@@ -535,7 +535,7 @@ func cbSessionFrom(t *testing.T, rec *httptest.ResponseRecorder) cbCreds {
 // withIAMAndSTS registers IAM and STS together on gw, with the unsigned
 // web-identity capability, as awsgw composes them.
 func withIAMAndSTS(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
-	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService}))
 	return withServices(gw, iamRegistration(gw), stsRegistration(gw))
 }
 

@@ -7,14 +7,14 @@ import (
 )
 
 // NewRegistration returns the EC2 AWS Query control-plane registration. Errors
-// render in the EC2 <Response><Errors> body, which the gateway keys on the
-// service name.
+// render in the EC2 <Response><Errors> body.
 func NewRegistration(deps Deps) dispatch.Registration {
 	return dispatch.Registration{
 		Service:       ServiceName,
 		ResolveAction: resolveAction,
 		Dispatch:      NewHandler(deps).Dispatch,
 		Errors:        dispatch.ErrorEnvelopeXML,
+		Traits:        dispatch.ServiceTraits{XMLErrorShape: dispatch.XMLErrorShapeEC2},
 		Inventory:     OperationInventory(),
 	}
 }

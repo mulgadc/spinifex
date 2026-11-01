@@ -10,10 +10,13 @@ import (
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
+	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -74,9 +77,15 @@ func TestXMLErrorBody_EnvelopePerService(t *testing.T) {
 		{"route53", "ErrorResponse"},
 	}
 
+	gw := withServices(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()},
+		ec2Registration(&GatewayConfig{}), operatoradmin.NewRegistration(operatoradmin.Deps{}),
+		iamRegistration(&GatewayConfig{}), stsRegistration(&GatewayConfig{}),
+		elbv2awsapi.NewRegistration(elbv2awsapi.Deps{}), rdsawsapi.NewRegistration(rdsawsapi.Deps{}),
+		route53awsapi.NewRegistration(route53awsapi.Deps{}))
+
 	for _, tc := range tests {
 		t.Run(tc.svc, func(t *testing.T) {
-			body := xmlErrorBody(tc.svc, "AccessDenied", "denied", "req-1", "/path")
+			body := gw.xmlErrorBody(tc.svc, "AccessDenied", "denied", "req-1", "/path")
 
 			assert.Equal(t, tc.root, xmlRootName(t, body))
 			assert.Contains(t, string(body), "<Code>AccessDenied</Code>")
@@ -967,7 +976,7 @@ func TestWriteThrottleError_EC2(t *testing.T) {
 }
 
 func TestWriteThrottleError_IAM(t *testing.T) {
-	gw := withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})
+	gw := withIAM(withEC2Verifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), "iam")
@@ -987,7 +996,7 @@ func TestWriteThrottleError_IAM(t *testing.T) {
 // Route 53 throttles with a 400 carrying the Throttling code, which SDK
 // retryers classify by code rather than status.
 func TestWriteThrottleError_Route53(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := withServices(&GatewayConfig{DisableLogging: true}, route53awsapi.NewRegistration(route53awsapi.Deps{}))
 	req := httptest.NewRequest(http.MethodGet, "/2013-04-01/hostedzone", nil)
 	req = req.WithContext(reqctx.WithService(req.Context(), "route53"))
 	w := httptest.NewRecorder()

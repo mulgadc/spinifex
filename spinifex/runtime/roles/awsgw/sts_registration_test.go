@@ -9,6 +9,6 @@ import (
 // withSTS registers STS alone on gw and composes its unsigned web-identity
 // capability, as awsgw does.
 func withSTS(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
-	gw.AnonymousSTS = stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService})
+	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gw.STSService, IAM: gw.IAMService}))
 	return withServices(gw, stsRegistration(gw))
 }

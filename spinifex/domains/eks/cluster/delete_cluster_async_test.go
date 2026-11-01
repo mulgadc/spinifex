@@ -451,3 +451,19 @@ func TestS8_EKSDeleteClusterRefusesWhileNodegroupsExist(t *testing.T) {
 	_, ngErr := GetNodegroupRecord(t.Context(), f.kv, "alpha", "ng1")
 	require.NoError(t, ngErr, "the node group and its workers are untouched")
 }
+
+// TestS2_EKSDeletingClusterAdmitsNoNewDependants: once a delete is recorded,
+// access entries are refused, since the teardown would sweep them with the
+// record; TestCreateAddonRefusesOnlyADeletingCluster covers add-ons.
+func TestS2_EKSDeletingClusterAdmitsNoNewDependants(t *testing.T) {
+	t.Parallel()
+	f := newDeleteClusterFixture(t, "alpha")
+	_, _, err := MarkClusterDeleting(t.Context(), f.kv, "alpha")
+	require.NoError(t, err)
+
+	_, err = f.svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
+		ClusterName: aws.String("alpha"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	code, _, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorEKSResourceInUse, code, "CreateAccessEntry on a DELETING cluster")
+}

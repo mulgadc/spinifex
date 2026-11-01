@@ -1568,6 +1568,27 @@ func (s *EKSServiceImpl) acctKVForCluster(ctx context.Context, accountID, cluste
 	return acctKV, nil
 }
 
+// acctKVForNewDependant is acctKVForCluster for a call that adds a dependant
+// to the cluster. A recorded delete admits no new dependant (ADR-0003:S2): the
+// teardown would sweep it with the record, so it is refused with ResourceInUse.
+func (s *EKSServiceImpl) acctKVForNewDependant(ctx context.Context, accountID, cluster string) (jetstream.KeyValue, error) {
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := GetClusterMeta(ctx, acctKV, cluster)
+	if err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return nil, err
+	}
+	if meta.Status == ClusterStatusDeleting {
+		return nil, awserrors.Errorf(awserrors.ErrorEKSResourceInUse, "Cluster %s is being deleted", cluster)
+	}
+	return acctKV, nil
+}
+
 func (s *EKSServiceImpl) CreateAccessEntry(ctx context.Context, input *eks.CreateAccessEntryInput, accountID string) (*eks.CreateAccessEntryOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -1585,7 +1606,7 @@ func (s *EKSServiceImpl) CreateAccessEntry(ctx context.Context, input *eks.Creat
 		// Non-standard types (EC2_LINUX etc.) are not yet implemented.
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
+	acctKV, err := s.acctKVForNewDependant(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err
 	}

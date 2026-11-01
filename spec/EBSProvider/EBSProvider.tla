@@ -33,7 +33,6 @@ ASSUME NodeIDs /= {} => NBDURIs /= {} \/ DevicePaths /= {}
 ASSUME SnapshotIDs /= {} => SnapshotHandles /= {} /\ Timestamps /= {}
 ASSUME ListTokens /= {}
 ASSUME MaxListResults \in Nat \ {0}
-ASSUME ListTokens /= {}
 ASSUME None \notin UNION {VolumeIDs, VolumeHandles, NodeIDs, SnapshotIDs, SnapshotHandles,
                           AvailabilityZones, Timestamps, Parameters, ProviderData, ListTokens}
 ASSUME Capabilities \in [online_expansion          : BOOLEAN,

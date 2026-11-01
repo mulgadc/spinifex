@@ -5,7 +5,7 @@
 EXTENDS EBSProvider
 
 -----------------------------------------------------------------------------------------------------------------------
-\* Control plane operations
+\* Interface methods
 
 CreateVolumeRequests == [volume_id                 : Optional(VolumeIDs),
                          capacity_range            : CapacityRanges,

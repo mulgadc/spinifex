@@ -12,10 +12,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awsiam "github.com/aws/aws-sdk-go/service/iam"
+	sqsv1 "github.com/mulgadc/spinifex/contracts/sqs/v1"
 	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
@@ -24,13 +26,25 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 )
 
-const sqsWorkerRolePolicyName = "spinifex-sqs-worker-internal"
+// sqsRole is one SQS system instance role: its name, the inline policy that
+// grants exactly its internal actions, and the prefix its errors carry.
+type sqsRole struct {
+	name, policyName, description, label string
+	actions                              []string
+}
 
-// sqsWorkerRolePolicy grants exactly the worker's internal actions, built from
-// the worker contract the gateway gate also reads, so they cannot disagree.
-func sqsWorkerRolePolicy() (string, error) {
-	actions := make(iamdomain.StringOrArr, 0, len(workerrole.Actions()))
-	for _, a := range workerrole.Actions() {
+var (
+	sqsWorkerRole = sqsRole{name: workerrole.RoleName, policyName: "spinifex-sqs-worker-internal",
+		description: "Spinifex-managed SQS worker instance role", label: "sqs worker", actions: workerrole.Actions()}
+	sqsStoreRole = sqsRole{name: sqsv1.RoleName, policyName: "spinifex-sqs-store-internal",
+		description: "Spinifex-managed SQS store instance role", label: "sqs store", actions: sqsv1.Actions()}
+)
+
+// policy grants exactly the role's internal actions, built from the contract
+// the gateway gate also reads, so they cannot disagree.
+func (r sqsRole) policy() (string, error) {
+	actions := make(iamdomain.StringOrArr, 0, len(r.actions))
+	for _, a := range r.actions {
 		actions = append(actions, workerrole.ServiceName+":"+a)
 	}
 	doc, err := json.Marshal(iamdomain.PolicyDocument{
@@ -38,7 +52,7 @@ func sqsWorkerRolePolicy() (string, error) {
 		Statement: []iamdomain.Statement{{Effect: iamdomain.PolicyEffectAllow, Action: actions, Resource: iamdomain.StringOrArr{"*"}}},
 	})
 	if err != nil {
-		return "", fmt.Errorf("marshal sqs worker role policy: %w", err)
+		return "", fmt.Errorf("marshal %s role policy: %w", r.label, err)
 	}
 	return string(doc), nil
 }
@@ -53,59 +67,75 @@ type sqsWorkerRoles struct {
 var _ workerlaunch.Roles = sqsWorkerRoles{}
 
 func (r sqsWorkerRoles) EnsureWorkerProfile(context.Context) (string, error) {
-	if r.provider == nil {
-		return "", errors.New("sqs worker: IAM provider is not configured")
+	return ensureSQSRoleProfile(r.provider, sqsWorkerRole)
+}
+
+// sqsStoreRoles ensures the store's instance role and profile, under the same
+// trust and profile checks as the worker's.
+type sqsStoreRoles struct {
+	provider func() iamdomain.SystemInstanceRoleEnsurer
+}
+
+var _ storelaunch.Roles = sqsStoreRoles{}
+
+func (r sqsStoreRoles) EnsureStoreProfile(context.Context) (string, error) {
+	return ensureSQSRoleProfile(r.provider, sqsStoreRole)
+}
+
+func ensureSQSRoleProfile(provider func() iamdomain.SystemInstanceRoleEnsurer, role sqsRole) (string, error) {
+	if provider == nil {
+		return "", fmt.Errorf("%s: IAM provider is not configured", role.label)
 	}
-	svc := r.provider()
+	svc := provider()
 	if svc == nil {
-		return "", errors.New("sqs worker: IAM service is unavailable")
+		return "", fmt.Errorf("%s: IAM service is unavailable", role.label)
 	}
-	policy, err := sqsWorkerRolePolicy()
+	policy, err := role.policy()
 	if err != nil {
 		return "", err
 	}
-	if err := ensureSQSWorkerRoleTrust(svc); err != nil {
+	if err := ensureSQSRoleTrust(svc, role); err != nil {
 		return "", err
 	}
-	acct, name := awsidentifiers.GlobalAccountID, aws.String(workerrole.RoleName)
+	acct, name := awsidentifiers.GlobalAccountID, aws.String(role.name)
 	if _, err := svc.PutRolePolicy(acct, &awsiam.PutRolePolicyInput{RoleName: name,
-		PolicyName: aws.String(sqsWorkerRolePolicyName), PolicyDocument: aws.String(policy)}); err != nil {
-		return "", fmt.Errorf("sqs worker: put role policy: %w", err)
+		PolicyName: aws.String(role.policyName), PolicyDocument: aws.String(policy)}); err != nil {
+		return "", fmt.Errorf("%s: put role policy: %w", role.label, err)
 	}
-	return ensureSQSWorkerProfile(svc)
+	return ensureSQSRoleInstanceProfile(svc, role)
 }
 
-// ensureSQSWorkerRoleTrust creates the role with EC2-only trust when absent and
+// ensureSQSRoleTrust creates the role with EC2-only trust when absent and
 // verifies the trust of whatever role exists, including one a racing create
 // made, before any policy is granted to it.
-func ensureSQSWorkerRoleTrust(svc iamdomain.SystemInstanceRoleEnsurer) error {
-	acct, name := awsidentifiers.GlobalAccountID, aws.String(workerrole.RoleName)
+func ensureSQSRoleTrust(svc iamdomain.SystemInstanceRoleEnsurer, r sqsRole) error {
+	acct, name := awsidentifiers.GlobalAccountID, aws.String(r.name)
 	role, err := svc.GetRole(acct, &awsiam.GetRoleInput{RoleName: name})
 	if err != nil {
 		if err.Error() != awserrors.ErrorIAMNoSuchEntity {
-			return fmt.Errorf("sqs worker: read role: %w", err)
+			return fmt.Errorf("%s: read role: %w", r.label, err)
 		}
 		_, cerr := svc.CreateRole(acct, &awsiam.CreateRoleInput{RoleName: name,
 			AssumeRolePolicyDocument: aws.String(iamdomain.EC2InstanceTrustPolicy),
-			Description:              aws.String("Spinifex-managed SQS worker instance role")})
+			Description:              aws.String(r.description)})
 		if cerr != nil && cerr.Error() != awserrors.ErrorIAMEntityAlreadyExists {
-			return fmt.Errorf("sqs worker: create role: %w", cerr)
+			return fmt.Errorf("%s: create role: %w", r.label, cerr)
 		}
 		if role, err = svc.GetRole(acct, &awsiam.GetRoleInput{RoleName: name}); err != nil {
-			return fmt.Errorf("sqs worker: re-read role: %w", err)
+			return fmt.Errorf("%s: re-read role: %w", r.label, err)
 		}
 	}
 	if role == nil || role.Role == nil || !ec2OnlyTrust(aws.StringValue(role.Role.AssumeRolePolicyDocument)) {
-		return fmt.Errorf("sqs worker: role %s trusts more than the EC2 service", workerrole.RoleName)
+		return fmt.Errorf("%s: role %s trusts more than the EC2 service", r.label, r.name)
 	}
 	return nil
 }
 
-// ensureSQSWorkerProfile find-or-creates the profile, attaches the role to an
-// empty one, and returns its ARN only once a re-read shows it carries exactly
-// the worker role; a profile holding any other role is refused, never changed.
-func ensureSQSWorkerProfile(svc iamdomain.SystemInstanceRoleEnsurer) (string, error) {
-	acct, name := awsidentifiers.GlobalAccountID, aws.String(workerrole.RoleName)
+// ensureSQSRoleInstanceProfile find-or-creates the profile, attaches the role
+// to an empty one, and returns its ARN only once a re-read shows it carries
+// exactly that role; a profile holding any other role is refused, never changed.
+func ensureSQSRoleInstanceProfile(svc iamdomain.SystemInstanceRoleEnsurer, r sqsRole) (string, error) {
+	acct, name := awsidentifiers.GlobalAccountID, aws.String(r.name)
 	get := func() (*awsiam.InstanceProfile, error) {
 		out, err := svc.GetInstanceProfile(acct, &awsiam.GetInstanceProfileInput{InstanceProfileName: name})
 		if err != nil {
@@ -119,44 +149,44 @@ func ensureSQSWorkerProfile(svc iamdomain.SystemInstanceRoleEnsurer) (string, er
 	prof, err := get()
 	if err != nil {
 		if err.Error() != awserrors.ErrorIAMNoSuchEntity {
-			return "", fmt.Errorf("sqs worker: read instance profile: %w", err)
+			return "", fmt.Errorf("%s: read instance profile: %w", r.label, err)
 		}
 		if _, cerr := svc.CreateInstanceProfile(acct, &awsiam.CreateInstanceProfileInput{InstanceProfileName: name}); cerr != nil &&
 			cerr.Error() != awserrors.ErrorIAMEntityAlreadyExists {
-			return "", fmt.Errorf("sqs worker: create instance profile: %w", cerr)
+			return "", fmt.Errorf("%s: create instance profile: %w", r.label, cerr)
 		}
 		if prof, err = get(); err != nil {
-			return "", fmt.Errorf("sqs worker: re-read instance profile: %w", err)
+			return "", fmt.Errorf("%s: re-read instance profile: %w", r.label, err)
 		}
 	}
-	if !sqsWorkerProfileRoles(prof, true) {
-		return "", fmt.Errorf("sqs worker: instance profile %s carries a role other than %s", workerrole.RoleName, workerrole.RoleName)
+	if !sqsProfileRoles(prof, r.name, true) {
+		return "", fmt.Errorf("%s: instance profile %s carries a role other than %s", r.label, r.name, r.name)
 	}
 	if len(prof.Roles) == 0 {
 		if _, aerr := svc.AddRoleToInstanceProfile(acct, &awsiam.AddRoleToInstanceProfileInput{
 			InstanceProfileName: name, RoleName: name}); aerr != nil && aerr.Error() != awserrors.ErrorIAMLimitExceeded {
-			return "", fmt.Errorf("sqs worker: add role to instance profile: %w", aerr)
+			return "", fmt.Errorf("%s: add role to instance profile: %w", r.label, aerr)
 		}
 		if prof, err = get(); err != nil {
-			return "", fmt.Errorf("sqs worker: re-read instance profile: %w", err)
+			return "", fmt.Errorf("%s: re-read instance profile: %w", r.label, err)
 		}
 	}
-	if !sqsWorkerProfileRoles(prof, false) {
-		return "", fmt.Errorf("sqs worker: instance profile %s does not carry exactly %s", workerrole.RoleName, workerrole.RoleName)
+	if !sqsProfileRoles(prof, r.name, false) {
+		return "", fmt.Errorf("%s: instance profile %s does not carry exactly %s", r.label, r.name, r.name)
 	}
 	if strings.TrimSpace(aws.StringValue(prof.Arn)) == "" {
-		return "", errors.New("sqs worker: instance profile has no ARN")
+		return "", fmt.Errorf("%s: instance profile has no ARN", r.label)
 	}
 	return aws.StringValue(prof.Arn), nil
 }
 
-// sqsWorkerProfileRoles reports whether p carries only the worker role; an
-// empty profile qualifies only when allowEmpty is set.
-func sqsWorkerProfileRoles(p *awsiam.InstanceProfile, allowEmpty bool) bool {
+// sqsProfileRoles reports whether p carries only the named role; an empty
+// profile qualifies only when allowEmpty is set.
+func sqsProfileRoles(p *awsiam.InstanceProfile, role string, allowEmpty bool) bool {
 	if len(p.Roles) == 0 {
 		return allowEmpty
 	}
-	return len(p.Roles) == 1 && p.Roles[0] != nil && aws.StringValue(p.Roles[0].RoleName) == workerrole.RoleName
+	return len(p.Roles) == 1 && p.Roles[0] != nil && aws.StringValue(p.Roles[0].RoleName) == role
 }
 
 // ec2OnlyTrust reports whether doc is, as JSON, exactly the EC2 instance trust

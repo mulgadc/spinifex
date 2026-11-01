@@ -10,7 +10,9 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -23,6 +25,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
+	sqsv1 "github.com/mulgadc/spinifex/contracts/sqs/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
 	"github.com/nats-io/nkeys"
 )
 
@@ -36,6 +40,10 @@ const (
 	actionClaim    = "ClaimFirstStore"
 	actionDescribe = "DescribeStore"
 	actionRecord   = "RecordWorkerPublicKey"
+	actionPoll     = "PollWork"
+	actionComplete = "CompleteWork"
+	// maxPollResponse fits the gateway's 16 MiB poll batch as base64 XML.
+	maxPollResponse = 32 << 20
 )
 
 // Signer signs a request in place for service and region.
@@ -141,12 +149,20 @@ type Store struct {
 	Bound     bool
 	Address   string
 	PublicKey string
+	// ServerKeyPin names the store's TLS server key; the worker sends it
+	// nothing until the server proves that key.
+	ServerKeyPin string
+	// HostNodes is the gateway's declared cluster node count; a gateway
+	// that does not report one reads as zero.
+	HostNodes int
 }
 
 type describeResult struct {
-	State     string `xml:"State"`
-	Address   string `xml:"Address"`
-	PublicKey string `xml:"PublicKey"`
+	State        string `xml:"State"`
+	Address      string `xml:"Address"`
+	PublicKey    string `xml:"PublicKey"`
+	ServerKeyPin string `xml:"ServerKeyPin"`
+	HostNodes    int    `xml:"HostNodes"`
 }
 
 // DescribeStore reports this worker's store. A bound reply must carry an
@@ -157,10 +173,12 @@ func (c *Client) DescribeStore(ctx context.Context) (Store, error) {
 		return Store{}, err
 	}
 	switch {
-	case res.State == "pending" && res.Address == "" && res.PublicKey == "":
+	case res.State == "pending" && res.Address == "" && res.PublicKey == "" && res.ServerKeyPin == "":
 		return Store{}, nil
-	case res.State == "bound" && isIPv4(res.Address) && nkeys.IsValidPublicUserKey(res.PublicKey):
-		return Store{Bound: true, Address: res.Address, PublicKey: res.PublicKey}, nil
+	case res.State == "bound" && isIPv4(res.Address) && nkeys.IsValidPublicUserKey(res.PublicKey) &&
+		sqsv1.ValidPin(res.ServerKeyPin):
+		return Store{Bound: true, Address: res.Address, PublicKey: res.PublicKey, ServerKeyPin: res.ServerKeyPin,
+			HostNodes: res.HostNodes}, nil
 	}
 	return Store{}, errors.New("spinifex-sqs DescribeStore: response is not a valid store state")
 }
@@ -182,12 +200,21 @@ func (c *Client) RecordPublicKey(ctx context.Context, publicKey string) error {
 func (c *Client) call(ctx context.Context, action string, params url.Values, out any) error {
 	form := url.Values{"Action": {action}, "Version": {apiVersion}}
 	maps.Copy(form, params)
-	body := []byte(form.Encode())
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/", bytes.NewReader(body))
+	return c.do(ctx, action, "", []byte(form.Encode()), "application/x-www-form-urlencoded; charset=utf-8", maxResponse, out)
+}
+
+// do signs and sends one request. rawQuery, when set, carries the action and
+// its arguments; the body hash is signed either way.
+func (c *Client) do(ctx context.Context, action, rawQuery string, body []byte, contentType string, limit int64, out any) error {
+	target := c.baseURL + "/"
+	if rawQuery != "" {
+		target += "?" + rawQuery
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("spinifex-sqs %s: build request: %w", action, err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+	req.Header.Set("Content-Type", contentType)
 	sum := sha256.Sum256(body)
 	if err := c.signer.Sign(req, hex.EncodeToString(sum[:]), signingService, c.region); err != nil {
 		return &TransientError{Err: fmt.Errorf("spinifex-sqs %s: sign: %w", action, err)}
@@ -197,7 +224,7 @@ func (c *Client) call(ctx context.Context, action string, params url.Values, out
 		return &TransientError{Err: fmt.Errorf("spinifex-sqs %s: send: %w", action, err)}
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		return &TransientError{Err: fmt.Errorf("spinifex-sqs %s: read response: %w", action, err)}
 	}
@@ -208,6 +235,44 @@ func (c *Client) call(ctx context.Context, action string, params url.Values, out
 		return nil
 	}
 	return decodeResult(action, respBody, out)
+}
+
+// PollWork long-polls the gateway for owner calls queued for this worker.
+// An empty list is a poll that found nothing.
+func (c *Client) PollWork(ctx context.Context) ([]relay.Work, error) {
+	var res struct {
+		Items []string `xml:"Items>member"`
+	}
+	if err := c.do(ctx, actionPoll, "", []byte(url.Values{"Action": {actionPoll}, "Version": {apiVersion}}.Encode()),
+		"application/x-www-form-urlencoded; charset=utf-8", maxPollResponse, &res); err != nil {
+		return nil, err
+	}
+	out := make([]relay.Work, 0, len(res.Items))
+	for _, item := range res.Items {
+		raw, err := base64.StdEncoding.DecodeString(item)
+		if err != nil {
+			return nil, errors.New("spinifex-sqs PollWork: item is not base64")
+		}
+		var w relay.Work
+		if err := json.Unmarshal(raw, &w); err != nil || w.ID == "" || w.Op == "" {
+			return nil, errors.New("spinifex-sqs PollWork: item is not a work item")
+		}
+		out = append(out, w)
+	}
+	return out, nil
+}
+
+// CompleteWork posts an encoded result for work item id and returns the
+// gateway's outcome name. Any error leaves delivery unknown.
+func (c *Client) CompleteWork(ctx context.Context, id string, result []byte) (string, error) {
+	q := url.Values{"Action": {actionComplete}, "Version": {apiVersion}, "WorkId": {id}}
+	var res struct {
+		Outcome string `xml:"Outcome"`
+	}
+	if err := c.do(ctx, actionComplete, q.Encode(), result, "application/json", maxResponse, &res); err != nil {
+		return "", err
+	}
+	return res.Outcome, nil
 }
 
 func decodeResult(action string, body []byte, out any) error {
@@ -240,3 +305,44 @@ func parseError(action string, status int, body []byte) error {
 	}
 	return &APIError{Action: action, StatusCode: status, Code: code}
 }
+
+// ServerKey is the store's own record as the gateway reports it to the bound
+// store instance: its claim, its data volume and any pin already recorded.
+type ServerKey struct {
+	ClaimID  string
+	VolumeID string
+	Pin      string
+}
+
+type serverKeyResult struct {
+	ClaimID  string `xml:"ClaimId"`
+	VolumeID string `xml:"VolumeId"`
+	Pin      string `xml:"Pin"`
+}
+
+// DescribeServerKey reports the calling store's record. A reply without a
+// claim and volume, or with a malformed pin, is refused here.
+func (c *Client) DescribeServerKey(ctx context.Context) (ServerKey, error) {
+	var res serverKeyResult
+	if err := c.call(ctx, sqsv1.ActionDescribeStoreServerKey, nil, &res); err != nil {
+		return ServerKey{}, err
+	}
+	if res.ClaimID == "" || res.VolumeID == "" || (res.Pin != "" && !sqsv1.ValidPin(res.Pin)) {
+		return ServerKey{}, errors.New("spinifex-sqs DescribeStoreServerKey: response is not a valid store record")
+	}
+	return ServerKey(res), nil
+}
+
+// RecordServerKey records pin for the store's claim and volume. Recording
+// the same pin again succeeds, so a lost reply is safe to repeat.
+func (c *Client) RecordServerKey(ctx context.Context, claimID, volumeID, pin string) error {
+	if !sqsv1.ValidPin(pin) {
+		return errors.New("spinifex-sqs RecordStoreServerKey: refusing to send a value that is not a pin")
+	}
+	return c.call(ctx, sqsv1.ActionRecordStoreServerKey,
+		url.Values{"ClaimId": {claimID}, "VolumeId": {volumeID}, "Pin": {pin}}, nil)
+}
+
+// NotBound reports the gateway's InvalidState: the store's launch is not yet
+// bound to this instance, so the store asks again later.
+func (e *APIError) NotBound() bool { return e.Code == "InvalidState" }

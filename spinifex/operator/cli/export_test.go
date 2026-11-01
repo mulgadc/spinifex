@@ -230,3 +230,13 @@ func EnsureSQSStoreRemote(ctx context.Context, target adminTarget, node, instanc
 	renderSQSStoreEnsure(w, out)
 	return nil
 }
+
+// EnableSQSRemote exposes enableSQSRemote for testing, rendering the reply to w.
+func EnableSQSRemote(ctx context.Context, target adminTarget, node, worker, store string, sizeGiB int, w io.Writer) error {
+	out, err := enableSQSRemote(ctx, target, node, worker, store, sizeGiB)
+	if err != nil {
+		return err
+	}
+	renderSQSStatus(w, out)
+	return nil
+}

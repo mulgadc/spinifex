@@ -33,7 +33,13 @@ func (s Store) Acquire(ctx context.Context, c Claimer) (nkeys.KeyPair, error) {
 	if err != nil {
 		return nil, err
 	}
-	pub, err := kp.PublicKey()
+	// The receipt key is made under the same decision, before the record
+	// that ends this branch, so a recorded store always has one on disk.
+	err = s.ensureReceipt()
+	var pub string
+	if err == nil {
+		pub, err = kp.PublicKey()
+	}
 	if err == nil {
 		err = c.RecordPublicKey(ctx, pub)
 	}

@@ -48,6 +48,8 @@ import (
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
 	sqsworkerapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi/worker"
+	sqsrelay "github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
+	sqsservicestate "github.com/mulgadc/spinifex/spinifex/domains/sqs/servicestate"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
@@ -644,6 +646,13 @@ func launchService(config *config.ClusterConfig) error {
 	})
 	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
 	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
+	// The relay hands queued SQS work to the worker polling this gateway; the
+	// gate answers ServiceUnavailable until an operator enables SQS.
+	sqsGate := &sqsservicestate.Gate{JS: js, Region: nodeConfig.Region, TTL: 2 * time.Second}
+	sqsRelay := &sqsrelay.Relay{Admit: sqsGate.Open}
+	sqsControlPlane := sqsRegistrations(sqsRelay, registryHost, registryPort)
+	// Set once the gateway is composed, so status reports the registry it serves.
+	var composedServices *dispatch.Registry
 	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
 		Version:     version,
 		Commit:      commit,
@@ -654,16 +663,21 @@ func launchService(config *config.ClusterConfig) error {
 		Credentials: bedrockCredentials,
 		Access:      bedrockAccess,
 
-		IAM:               iamService,
-		Quota:             quotaSvc,
-		ExpectedNodes:     len(config.Nodes),
-		NodeIDs:           nodeIDs,
-		BucketStore:       objStore,
-		SignupMaxAccounts: signupMaxAccounts,
+		IAM:                    iamService,
+		Quota:                  quotaSvc,
+		ExpectedNodes:          len(config.Nodes),
+		NodeIDs:                nodeIDs,
+		BucketStore:            objStore,
+		SignupMaxAccounts:      signupMaxAccounts,
+		Region:                 nodeConfig.Region,
+		SQSWorkerPolling:       sqsRelay.WorkerPresent,
+		SQSTenantAPIRegistered: func() bool { return sqsServed(composedServices) },
 	})
 	// The SQS worker's internal surface binds its buckets per request and never
 	// creates them, so it refuses every caller until a worker launch has.
-	sqsWorkerControlPlane := sqsworkerapi.NewRegistration(sqsworkerapi.JetStreamDeps(js))
+	sqsWorkerDeps := sqsworkerapi.JetStreamDeps(js)
+	sqsWorkerDeps.Work = sqsRelay
+	sqsWorkerControlPlane := sqsworkerapi.NewRegistration(sqsWorkerDeps)
 	gw, err := composeGateway(gatewayInputs{
 		Debug:        nodeConfig.AWSGW.Debug,
 		Region:       nodeConfig.Region,
@@ -673,10 +687,11 @@ func launchService(config *config.ClusterConfig) error {
 		Admission:    admission,
 		PublicRoutes: publicRoutes,
 		PreAuth:      []dispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
-	}, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane, ec2ControlPlane)
+	}, append([]dispatch.Registration{ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane, ec2ControlPlane}, sqsControlPlane...)...)
 	if err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
+	composedServices = gw.Services
 	gw.Throttler = throttler
 
 	// Leader-locked vCPU reconcile: the only path that lowers the counter,

@@ -15,9 +15,11 @@ import (
 // Store is the Region's store launch as the gateway reports it. Bound means a
 // VM was launched for the store, not that it serves.
 type Store struct {
-	Bound     bool
-	Address   string
-	PublicKey string
+	Bound        bool
+	Address      string
+	PublicKey    string
+	ServerKeyPin string
+	HostNodes    int
 }
 
 // StoreDescriber asks the gateway for this worker's store.
@@ -31,7 +33,7 @@ type NewDescriber func(region, gatewayURL string) (StoreDescriber, error)
 // Checker proves the store's JetStream answers this worker's key at address.
 // Only an error with Retryable() true is asked again.
 type Checker interface {
-	Check(ctx context.Context, address string, kp nkeys.KeyPair) error
+	Check(ctx context.Context, address, pin string, kp nkeys.KeyPair) error
 }
 
 // ReadyConfig is Config plus the readiness capabilities and cadence.
@@ -47,6 +49,8 @@ type ReadyConfig struct {
 	// Refused is the wait after a failure that cannot clear by itself, such
 	// as a refused or mismatched key; zero is five minutes.
 	Refused time.Duration
+	// Serve, when set, also serves SQS owner calls while Watch runs.
+	Serve *ServeConfig
 }
 
 // ErrStoreKeyMismatch is a bound store launched for a key other than the one
@@ -80,6 +84,15 @@ func Watch(ctx context.Context, cfg ReadyConfig) error {
 		return fmt.Errorf("build gateway client: %w", err)
 	}
 	keys := workerkey.Store{Dir: filepath.Join(cfg.DataDir, keyDirName)}
+	if cfg.Serve != nil {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			serve(ctx, cfg, c, d, keys)
+		}()
+		// Calls in flight finish before the marker is removed and Watch returns.
+		defer func() { <-done }()
+	}
 	callTimeout := orDefault(cfg.CallTimeout, 30*time.Second)
 	refresh := orDefault(cfg.Refresh, 30*time.Second)
 	refused := orDefault(cfg.Refused, 5*time.Minute)
@@ -97,7 +110,7 @@ func Watch(ctx context.Context, cfg ReadyConfig) error {
 		case ctx.Err() != nil:
 			return ctx.Err()
 		case err == nil:
-			state = fmt.Sprintf("store at %s answered the worker key (client-authenticated only; the store server is not authenticated)", st.Address)
+			state = fmt.Sprintf("store at %s proved its pinned server key and admitted the worker key", st.Address)
 		default:
 			_ = os.Remove(marker)
 			delay = cfg.Wait
@@ -144,7 +157,7 @@ func readyOnce(ctx context.Context, cfg ReadyConfig, d StoreDescriber, keys work
 		return Store{}, err
 	}
 	defer kp.Wipe()
-	if err := cfg.Checker.Check(ctx, st.Address, kp); err != nil {
+	if err := cfg.Checker.Check(ctx, st.Address, st.ServerKeyPin, kp); err != nil {
 		return Store{}, err
 	}
 	return st, nil

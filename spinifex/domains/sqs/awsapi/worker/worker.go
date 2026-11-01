@@ -6,6 +6,8 @@ package worker
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -13,15 +15,20 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"regexp"
 	"slices"
+	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	sqsv1 "github.com/mulgadc/spinifex/contracts/sqs/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/nats-io/nats.go/jetstream"
@@ -36,7 +43,23 @@ const (
 	ActionClaimFirstStore       = workerrole.ActionClaimFirstStore
 	ActionDescribeStore         = workerrole.ActionDescribeStore
 	ActionRecordWorkerPublicKey = workerrole.ActionRecordWorkerPublicKey
+	ActionPollWork              = workerrole.ActionPollWork
+	ActionCompleteWork          = workerrole.ActionCompleteWork
+
+	StoreRoleName                = sqsv1.RoleName
+	ActionDescribeStoreServerKey = sqsv1.ActionDescribeStoreServerKey
+	ActionRecordStoreServerKey   = sqsv1.ActionRecordStoreServerKey
 )
+
+// pollWait bounds one PollWork long poll; pollBatch and pollBytes bound the
+// items one poll hands out.
+const (
+	pollWait  = 20 * time.Second
+	pollBatch = 16
+	pollBytes = 16 << 20
+)
+
+var workIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 const principalTypeAssumedRole = "assumed-role"
 
@@ -46,7 +69,16 @@ var params = map[string][]string{
 	ActionClaimFirstStore:       {},
 	ActionDescribeStore:         {},
 	ActionRecordWorkerPublicKey: {"PublicKey"},
+	ActionPollWork:              {},
+	ActionCompleteWork:          {"WorkId"},
+
+	ActionDescribeStoreServerKey: {},
+	ActionRecordStoreServerKey:   {"ClaimId", "VolumeId", "Pin"},
 }
+
+// storeActions are called by the store guest under the store role; every
+// other action is the worker's, and neither role reaches the other's.
+var storeActions = map[string]bool{ActionDescribeStoreServerKey: true, ActionRecordStoreServerKey: true}
 
 // ActionNames lists every action the registration dispatches, sorted.
 func ActionNames() []string {
@@ -69,18 +101,42 @@ type Stores interface {
 	Current(ctx context.Context, region string) (storelaunch.Record, error)
 }
 
+// ServerKeys reads and records the bound store's server key pin for the
+// store guest's own actions.
+type ServerKeys interface {
+	ServerKeyOf(ctx context.Context, region, instanceID string) (storelaunch.Record, error)
+	RecordServerKey(ctx context.Context, region, instanceID, claimID, volumeID, pin string) error
+}
+
 var (
 	_ Stores     = storelaunch.Records{}
+	_ ServerKeys = storelaunch.Records{}
 	_ Identities = workerident.Store{}
 	_ FirstStore = firststore.Store{}
 )
 
-// Deps are the capabilities the actions run against. Either one nil answers
-// every authorized request with ServiceUnavailable, never a decision.
+// Work is the relay the worker pulls owner calls from and posts results to.
+type Work interface {
+	Take(ctx context.Context, taker relay.Taker, limit, maxBytes int) []relay.Work
+	Complete(taker relay.Taker, id string, res relay.Result) (relay.Outcome, error)
+}
+
+var _ Work = (*relay.Relay)(nil)
+
+// Deps are the capabilities the actions run against. Any one nil answers
+// every authorized request with ServiceUnavailable, never a decision; a nil
+// Work does so for the work actions only.
 type Deps struct {
 	Identities Identities
 	FirstStore FirstStore
 	Stores     Stores
+	// ServerKeys serves the store guest's actions only; nil answers them
+	// with ServiceUnavailable.
+	ServerKeys ServerKeys
+	Work       Work
+	// HostNodes reports this gateway's declared cluster node count; nil is
+	// clustersize.Nodes.
+	HostNodes func() int
 }
 
 // NewRegistration returns the internal SQS worker Query registration.
@@ -103,7 +159,12 @@ func resolveAction(r *http.Request) string {
 }
 
 // readQueryArgs parses the Query body and rewinds it for a second read.
+// CompleteWork carries its arguments in the signed query string instead,
+// because its body is the result.
 func readQueryArgs(r *http.Request) (map[string]string, error) {
+	if r.URL.Query().Get("Action") == ActionCompleteWork {
+		return query.ParseArgs(r.URL.RawQuery)
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
 	if err != nil {
 		return nil, err
@@ -135,7 +196,11 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	}
 
 	actor, _ := inv.Actor()
-	session, err := requireWorkerPrincipal(ctx, inv.AccountID, actor)
+	role := WorkerRoleName
+	if storeActions[action] {
+		role = StoreRoleName
+	}
+	session, err := requirePrincipal(ctx, inv.AccountID, actor, role)
 	if err != nil {
 		return err
 	}
@@ -148,6 +213,9 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 			slog.DebugContext(ctx, "SQS internal: unexpected parameter refused", "action", action)
 			return errors.New(awserrors.ErrorInvalidParameterValue)
 		}
+	}
+	if storeActions[action] {
+		return d.dispatchStore(ctx, w, inv.Region, session, action, args)
 	}
 
 	if d.Identities == nil || d.FirstStore == nil || d.Stores == nil {
@@ -166,6 +234,15 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	id := firststore.Identity{InstanceID: ident.InstanceID, ClaimID: ident.ClaimID, Generation: ident.Generation}
 
 	switch action {
+	case ActionPollWork, ActionCompleteWork:
+		if d.Work == nil {
+			return errors.New(awserrors.ErrorServiceUnavailable)
+		}
+		taker := relay.Taker{InstanceID: ident.InstanceID, Generation: ident.Generation, ClaimID: ident.ClaimID}
+		if action == ActionPollWork {
+			return d.pollWork(ctx, w, taker)
+		}
+		return d.completeWork(ctx, w, r, taker, args["WorkId"])
 	case ActionDescribeStore:
 		return d.describeStore(ctx, w, ident.Region)
 	case ActionClaimFirstStore:
@@ -190,13 +267,13 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	}
 }
 
-// requireWorkerPrincipal admits only a session of the worker instance role in
-// the system account, and returns its session name: the instance ID STS set.
-// It says the caller is an SQS worker VM, not that it is the current one.
-func requireWorkerPrincipal(ctx context.Context, accountID string, actor dispatch.Actor) (string, error) {
+// requirePrincipal admits only a session of role, a system-account instance
+// role, and returns its session name: the instance ID STS set. It says the
+// caller is a VM under that role, not that it is the current one.
+func requirePrincipal(ctx context.Context, accountID string, actor dispatch.Actor, role string) (string, error) {
 	if actor.PrincipalType != principalTypeAssumedRole ||
 		accountID != awsidentifiers.GlobalAccountID || actor.AccountID != awsidentifiers.GlobalAccountID ||
-		actor.RoleName() != WorkerRoleName || actor.SessionName == "" {
+		actor.RoleName() != role || actor.SessionName == "" {
 		slog.DebugContext(ctx, "SQS internal: rejected non-worker caller",
 			"principalType", actor.PrincipalType, "accountID", accountID)
 		return "", errors.New(awserrors.ErrorAccessDenied)
@@ -209,13 +286,16 @@ func requireWorkerPrincipal(ctx context.Context, accountID string, actor dispatc
 func mapError(ctx context.Context, action string, err error) error {
 	switch {
 	case errors.Is(err, workerident.ErrUnknownInstance), errors.Is(err, workerident.ErrNotCurrent),
+		errors.Is(err, storelaunch.ErrNotStore),
 		errors.Is(err, firststore.ErrClaimHeld), errors.Is(err, firststore.ErrStaleGeneration):
 		return errors.New(awserrors.ErrorAccessDenied)
-	case errors.Is(err, firststore.ErrKeyMismatch):
+	case errors.Is(err, firststore.ErrKeyMismatch), errors.Is(err, storelaunch.ErrPinChanged),
+		errors.Is(err, storelaunch.ErrInvalidRecording):
 		return errors.New(awserrors.ErrorInvalidParameterValue)
-	case errors.Is(err, firststore.ErrNotClaimed):
+	case errors.Is(err, firststore.ErrNotClaimed), errors.Is(err, storelaunch.ErrNotBound):
 		return errors.New(awserrors.ErrorInvalidState)
-	case errors.Is(err, workerident.ErrContended), errors.Is(err, firststore.ErrContended):
+	case errors.Is(err, workerident.ErrContended), errors.Is(err, firststore.ErrContended),
+		errors.Is(err, storelaunch.ErrContended):
 		return errors.New(awserrors.ErrorServiceUnavailable)
 	case errors.Is(err, errUnavailable):
 		slog.WarnContext(ctx, "SQS internal: worker stores unavailable", "action", action, "err", err)
@@ -237,12 +317,129 @@ func (d Deps) describeStore(ctx context.Context, w http.ResponseWriter, region s
 		return mapError(ctx, ActionDescribeStore, err)
 	case err != nil:
 		return mapError(ctx, ActionDescribeStore, fmt.Errorf("%w: %w", errUnavailable, err))
-	case rec.State != storelaunch.StateBound:
+	case rec.State != storelaunch.StateBound, rec.ServerKeyPin == "":
+		// A store with no recorded server key cannot be verified, so it is
+		// not yet usable.
 		return writeXML(ctx, w, describeResponse{Result: describeResult{State: StorePending}})
 	}
 	return writeXML(ctx, w, describeResponse{Result: describeResult{
-		State: StoreBound, Address: rec.Address, PublicKey: rec.PublicKey,
+		State: StoreBound, Address: rec.Address, PublicKey: rec.PublicKey, ServerKeyPin: rec.ServerKeyPin,
+		HostNodes: d.hostNodes(),
 	}})
+}
+
+// dispatchStore serves the store guest's own actions. The caller is the
+// Region's store only if the bound record names its instance.
+func (d Deps) dispatchStore(ctx context.Context, w http.ResponseWriter, region, instanceID, action string, args map[string]string) error {
+	if d.ServerKeys == nil {
+		return errors.New(awserrors.ErrorServiceUnavailable)
+	}
+	if action == ActionDescribeStoreServerKey {
+		rec, err := d.ServerKeys.ServerKeyOf(ctx, region, instanceID)
+		if err != nil {
+			return mapError(ctx, action, err)
+		}
+		return writeXML(ctx, w, describeServerKeyResponse{Result: serverKeyResult{
+			ClaimID: rec.ClaimID, VolumeID: rec.DataVolumeID, Pin: rec.ServerKeyPin,
+		}})
+	}
+	claim, vol, pin := args["ClaimId"], args["VolumeId"], args["Pin"]
+	if claim == "" || vol == "" || pin == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if err := d.ServerKeys.RecordServerKey(ctx, region, instanceID, claim, vol, pin); err != nil {
+		return mapError(ctx, action, err)
+	}
+	return writeXML(ctx, w, recordServerKeyResponse{})
+}
+
+func (d Deps) hostNodes() int {
+	if d.HostNodes != nil {
+		return d.HostNodes()
+	}
+	return clustersize.Nodes()
+}
+
+// pollWork hands this worker queued owner calls, waiting up to pollWait.
+// Each item is the Work JSON, base64 encoded.
+func (d Deps) pollWork(ctx context.Context, w http.ResponseWriter, taker relay.Taker) error {
+	pollCtx, cancel := context.WithTimeout(ctx, pollWait)
+	defer cancel()
+	works := d.Work.Take(pollCtx, taker, pollBatch, pollBytes)
+	res := pollResult{Items: make([]string, 0, len(works))}
+	for _, wk := range works {
+		b, err := json.Marshal(wk)
+		if err != nil {
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		res.Items = append(res.Items, base64.StdEncoding.EncodeToString(b))
+	}
+	return writeXML(ctx, w, pollResponse{Result: res})
+}
+
+// completeWork posts the result in the body for the item the same worker
+// identity took. The outcome tells the worker whether delivery is disproved.
+func (d Deps) completeWork(ctx context.Context, w http.ResponseWriter, r *http.Request, taker relay.Taker, id string) error {
+	if !workIDPattern.MatchString(id) {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
+	if err != nil {
+		return errors.New(awserrors.ErrorMalformedQueryString)
+	}
+	if int64(len(body)) > sigv4.MaxPayloadLen {
+		return errors.New(awserrors.ErrorRequestEntityTooLarge)
+	}
+	var res relay.Result
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&res); err != nil || (res.Error == nil) == (res.Output == nil) {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	outcome, err := d.Work.Complete(taker, id, res)
+	if errors.Is(err, relay.ErrNotTaker) {
+		return errors.New(awserrors.ErrorAccessDenied)
+	}
+	if err != nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	return writeXML(ctx, w, completeResponse{Result: completeResult{Outcome: OutcomeName(outcome)}})
+}
+
+// CompleteWork outcomes on the wire.
+const (
+	OutcomeDelivered  = "delivered"
+	OutcomeCallerGone = "caller-gone"
+	OutcomeUnknown    = "unknown"
+)
+
+// OutcomeName is the wire name of o.
+func OutcomeName(o relay.Outcome) string {
+	switch o {
+	case relay.Delivered:
+		return OutcomeDelivered
+	case relay.CallerGone:
+		return OutcomeCallerGone
+	}
+	return OutcomeUnknown
+}
+
+type pollResult struct {
+	Items []string `xml:"Items>member"`
+}
+
+type pollResponse struct {
+	XMLName xml.Name   `xml:"PollWorkResponse"`
+	Result  pollResult `xml:"PollWorkResult"`
+}
+
+type completeResult struct {
+	Outcome string `xml:"Outcome"`
+}
+
+type completeResponse struct {
+	XMLName xml.Name       `xml:"CompleteWorkResponse"`
+	Result  completeResult `xml:"CompleteWorkResult"`
 }
 
 // DescribeStore states.
@@ -252,9 +449,13 @@ const (
 )
 
 type describeResult struct {
-	State     string `xml:"State"`
-	Address   string `xml:"Address,omitempty"`
-	PublicKey string `xml:"PublicKey,omitempty"`
+	State        string `xml:"State"`
+	Address      string `xml:"Address,omitempty"`
+	PublicKey    string `xml:"PublicKey,omitempty"`
+	ServerKeyPin string `xml:"ServerKeyPin,omitempty"`
+	// HostNodes is this gateway's declared cluster node count, zero when
+	// undeclared; the worker serves only when it is exactly one.
+	HostNodes int `xml:"HostNodes"`
 }
 
 type describeResponse struct {
@@ -274,6 +475,21 @@ type claimResponse struct {
 
 type recordResponse struct {
 	XMLName xml.Name `xml:"RecordWorkerPublicKeyResponse"`
+}
+
+type serverKeyResult struct {
+	ClaimID  string `xml:"ClaimId"`
+	VolumeID string `xml:"VolumeId"`
+	Pin      string `xml:"Pin,omitempty"`
+}
+
+type describeServerKeyResponse struct {
+	XMLName xml.Name        `xml:"DescribeStoreServerKeyResponse"`
+	Result  serverKeyResult `xml:"DescribeStoreServerKeyResult"`
+}
+
+type recordServerKeyResponse struct {
+	XMLName xml.Name `xml:"RecordStoreServerKeyResponse"`
 }
 
 func writeXML(ctx context.Context, w http.ResponseWriter, v any) error {
@@ -296,7 +512,7 @@ func JetStreamDeps(js jetstream.JetStream) Deps {
 	if js == nil {
 		return Deps{}
 	}
-	return Deps{Identities: boundIdentities{js}, FirstStore: boundFirstStore{js}, Stores: boundStores{js}}
+	return Deps{Identities: boundIdentities{js}, FirstStore: boundFirstStore{js}, Stores: boundStores{js}, ServerKeys: boundStores{js}}
 }
 
 // errUnavailable marks a bucket that could not be bound: absent, unreachable
@@ -341,8 +557,25 @@ func (b boundStores) Current(ctx context.Context, region string) (storelaunch.Re
 	return r.Current(ctx, region)
 }
 
+func (b boundStores) ServerKeyOf(ctx context.Context, region, instanceID string) (storelaunch.Record, error) {
+	r, err := storelaunch.Bind(ctx, b.js)
+	if err != nil {
+		return storelaunch.Record{}, fmt.Errorf("%w: %w", errUnavailable, err)
+	}
+	return r.ServerKeyOf(ctx, region, instanceID)
+}
+
+func (b boundStores) RecordServerKey(ctx context.Context, region, instanceID, claimID, volumeID, pin string) error {
+	r, err := storelaunch.Bind(ctx, b.js)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errUnavailable, err)
+	}
+	return r.RecordServerKey(ctx, region, instanceID, claimID, volumeID, pin)
+}
+
 var (
 	_ Identities = boundIdentities{}
 	_ FirstStore = boundFirstStore{}
 	_ Stores     = boundStores{}
+	_ ServerKeys = boundStores{}
 )

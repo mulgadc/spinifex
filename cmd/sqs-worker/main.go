@@ -10,8 +10,16 @@
 // credentials, then loads or creates the store key on that disk and
 // publishes only the public key. ready then keeps checking the bound store's
 // JetStream with that key until it is stopped, keeping a readiness marker only
-// while the check passes; it proves the store accepted the worker key, not
-// the store server's identity.
+// while the check passes. Every store connection is TLS 1.3 pinned to the
+// server key pin the store recorded with the gateway; nothing is sent to a
+// store that does not prove that key. ready also serves SQS owner calls
+// against that store, pulling them from the gateway with the same credentials.
+//
+// Serving is refused unless the gateway reports a single-node host cluster.
+// A disk with no receipt key refuses to serve; recovering it needs a safe
+// procedure not yet designed, and nothing deletes or replaces the store.
+// The host holds the store's data disk key, so the pin does not protect the
+// store from a privileged host.
 package main
 
 import (
@@ -23,10 +31,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/sqsworkergw"
 	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerboot"
 	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerkey"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerserve"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 )
 
 // The cluster CA the daemon supplies; the only root the client trusts.
@@ -99,6 +111,10 @@ func boot(logf func(string)) error {
 func ready(logf func(string)) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+	// The store is one guest, so its streams and buckets are R1.
+	if err := clustersize.Declare(1); err != nil {
+		return err
+	}
 	err := workerboot.Watch(ctx, workerboot.ReadyConfig{
 		Config: config(logf),
 		NewDescriber: func(region, gatewayURL string) (workerboot.StoreDescriber, error) {
@@ -112,6 +128,16 @@ func ready(logf func(string)) error {
 		CallTimeout: 30 * time.Second,
 		Refresh:     30 * time.Second,
 		Refused:     5 * time.Minute,
+		Serve: &workerboot.ServeConfig{
+			Connector: workerboot.NATSConnector{},
+			Run: func(ctx context.Context, region, gatewayURL string, js jetstream.JetStream, receiptKey []byte) error {
+				c, err := newClient(region, gatewayURL)
+				if err != nil {
+					return err
+				}
+				return workerserve.Run(ctx, c, js, receiptKey, logf)
+			},
+		},
 	})
 	if errors.Is(err, context.Canceled) {
 		return nil

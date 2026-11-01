@@ -153,10 +153,16 @@ type Option func(*pipeline.Config)
 // every other control-plane path (auth, routing, XML/JSON marshaling, IAM
 // policy evaluation) runs for real.
 func StartGateway(t *testing.T, opts ...Option) *Gateway {
-	return startGateway(t, suiteConformance, opts...)
+	return startGateway(t, suiteConformance, nil, opts...)
 }
 
-func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option) *Gateway {
+// StartGatewayWithServices is StartGateway with extra service registrations,
+// for a service production does not register yet.
+func StartGatewayWithServices(t *testing.T, extra []awsdispatch.Registration, opts ...Option) *Gateway {
+	return startGateway(t, suiteConformance, extra, opts...)
+}
+
+func startGateway(t *testing.T, collector *conformanceCollector, extra []awsdispatch.Registration, opts ...Option) *Gateway {
 	t.Helper()
 
 	// Every test connects into its own dynamically provisioned NATS account
@@ -252,6 +258,9 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		AZ:            testAZ,
 		Endpoint:      "https://localhost:9999",
 	})))
+	for _, reg := range extra {
+		require.NoError(t, services.Register(reg))
+	}
 	cfg.Services = services.Build()
 	// Built after the options so a test that swaps or drops a service sees the
 	// verifier follow it, as production wires the verifier over the same services.

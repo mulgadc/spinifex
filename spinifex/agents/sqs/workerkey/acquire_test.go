@@ -264,3 +264,37 @@ func TestAcquire_StaleClaimedReadAfterRecordingCreatesNoKey(t *testing.T) {
 		t.Fatal("a stale claimed read created a replacement key")
 	}
 }
+
+// The receipt key is made only on the new-store branch, before the public
+// key is recorded; once recorded, a lost receipt key is never remade.
+func TestAcquire_ReceiptKeyOnlyUnderTheNewStoreDecision(t *testing.T) {
+	ctx := context.Background()
+	fs, _ := domain(t)
+	disk := workerDisk(t)
+	c := &domainClaimer{s: fs, id: worker(1, 1), failRecord: true}
+	if _, err := disk.Acquire(ctx, c); err == nil {
+		t.Fatal("the failed record succeeded")
+	}
+	first, err := disk.ReceiptKey()
+	if err != nil {
+		t.Fatalf("receipt key before the record: %v", err)
+	}
+	kp, err := disk.Acquire(ctx, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp.Wipe()
+	if again, err := disk.ReceiptKey(); err != nil || string(again) != string(first) {
+		t.Fatalf("the retried new-store branch changed the receipt key: %v", err)
+	}
+
+	os.Remove(filepath.Join(disk.Dir, receiptFile))
+	kp, err = disk.Acquire(ctx, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp.Wipe()
+	if _, err := disk.ReceiptKey(); !errors.Is(err, ErrReceiptKeyMissing) {
+		t.Fatalf("receipt key after loss = %v, want ErrReceiptKeyMissing", err)
+	}
+}

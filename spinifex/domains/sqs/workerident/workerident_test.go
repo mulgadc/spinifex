@@ -1007,3 +1007,27 @@ func TestReadRecord_RefusesAVolumeOutsideItsIntent(t *testing.T) {
 		}
 	}
 }
+
+// A replacement reuses its predecessor's data volume, so it keeps that
+// predecessor's contract: replacement never makes a contract supported.
+func TestReplacement_KeepsAnUnsupportedContract(t *testing.T) {
+	ctx := context.Background()
+	s, kv := newStore(t)
+	old := mustBound(t, s, claim(1), inst(1), 0)
+	mustStop(t, s, old, inst(1))
+	r := record(t, kv)
+	if r.UnsupportedContract() {
+		t.Fatalf("first launch by this release = %+v; want the authenticated contract", r)
+	}
+	r.Contract = 0
+	b, _ := json.Marshal(r)
+	if _, err := kv.Put(ctx, regionKey(region), b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BeginLaunch(ctx, region, launch(claim(2), 1)); err != nil {
+		t.Fatal(err)
+	}
+	if got := record(t, kv); got.Generation != 2 || !got.UnsupportedContract() {
+		t.Fatalf("replacement = %+v; want generation 2, still unsupported", got)
+	}
+}

@@ -17,6 +17,7 @@ import (
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
+	sqsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 
@@ -66,6 +67,7 @@ func compareAll() ([]awsmodel.OperationCoverage, error) {
 		ecsawsapi.ServiceName:     ecsawsapi.OperationInventory(),
 		eksawsapi.ServiceName:     eksawsapi.OperationInventory(),
 		iamawsapi.ServiceName:     iamawsapi.OperationInventory(),
+		sqsawsapi.ServiceName:     sqsawsapi.OperationInventory(),
 		stsawsapi.ServiceName:     stsawsapi.OperationInventory(),
 	})
 	// The loop below walks the embedded models, so a served service with no

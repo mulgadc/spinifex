@@ -246,6 +246,18 @@ type gwCluster struct {
 
 func newGWCluster(t *testing.T) gwCluster {
 	t.Helper()
+	return newGWClusterWith(t, nil)
+}
+
+// newGWClusterWith also hands the gateway's work actions to work.
+func newGWClusterWith(t *testing.T, work sqsworkerapi.Work) gwCluster {
+	t.Helper()
+	return newGWClusterHosts(t, work, nil)
+}
+
+// newGWClusterHosts also has the gateway report hostNodes as its cluster size.
+func newGWClusterHosts(t *testing.T, work sqsworkerapi.Work, hostNodes func() int) gwCluster {
+	t.Helper()
 	clustersize.DeclareForTest(t, 1)
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
@@ -261,7 +273,10 @@ func newGWCluster(t *testing.T) gwCluster {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return gwCluster{ids: ids, fence: fence, stores: stores, gw: newLocalGateway(t, sqsworkerapi.JetStreamDeps(js))}
+	deps := sqsworkerapi.JetStreamDeps(js)
+	deps.Work = work
+	deps.HostNodes = hostNodes
+	return gwCluster{ids: ids, fence: fence, stores: stores, gw: newLocalGateway(t, deps)}
 }
 
 func (c gwCluster) launch(t *testing.T, claim string, supersedes uint64, inst string) workerident.Intent {
@@ -557,6 +572,7 @@ func TestGateway_StaleWorkerGivesUpWithinTheBound(t *testing.T) {
 
 // bindStore runs the store launch record through to bound for pub at address,
 // as the operator's EnsureSQSStore would.
+
 func (c gwCluster) bindStore(t *testing.T, pub, address string) {
 	t.Helper()
 	ctx := context.Background()
@@ -568,6 +584,9 @@ func (c gwCluster) bindStore(t *testing.T, pub, address string) {
 		func() error { return c.stores.MarkNetworkAttempted(ctx, testRegion, claim) },
 		func() error { return c.stores.MarkDispatched(ctx, testRegion, claim) },
 		func() error { return c.stores.Bind(ctx, testRegion, claim, "i-0123456789abcdef0", address) },
+		func() error {
+			return c.stores.RecordServerKey(ctx, testRegion, "i-0123456789abcdef0", claim, "vol-0b1c2d3e4f5a60718", testStorePin)
+		},
 	}
 	for i, step := range steps {
 		if err := step(); err != nil {

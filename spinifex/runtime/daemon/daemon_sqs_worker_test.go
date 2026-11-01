@@ -323,7 +323,8 @@ func TestSQSWorkerRoles_EC2OnlyTrustAndMinimalPolicy(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(fake.policy), &doc))
 	require.Len(t, doc.Statement, 1)
 	got := slices.Sorted(slices.Values(doc.Statement[0].Action))
-	assert.Equal(t, []string{"spinifex-sqs:ClaimFirstStore", "spinifex-sqs:DescribeStore", "spinifex-sqs:RecordWorkerPublicKey"}, got)
+	assert.Equal(t, []string{"spinifex-sqs:ClaimFirstStore", "spinifex-sqs:CompleteWork", "spinifex-sqs:DescribeStore",
+		"spinifex-sqs:PollWork", "spinifex-sqs:RecordWorkerPublicKey"}, got)
 
 	fake.trust = url.QueryEscape(iamdomain.EC2InstanceTrustPolicy)
 	fake.writes = nil

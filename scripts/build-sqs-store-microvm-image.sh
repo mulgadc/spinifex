@@ -1,22 +1,18 @@
 #!/bin/bash
-# build-sqs-store-microvm-image.sh — build the SQS store microVM kernel +
-# initramfs: the dedicated nats-server, ext4 support, the store's guest steps
-# and a clean power-down. The guest never formats a disk; build/microvm/
-# sqs-store/sqs-store-lib.sh states its fw_cfg contract. The LB image
-# (build-microvm-image.sh) is separate and unchanged.
-#
-# SQS_MICROVM_PROFILE=worker builds the shared SQS worker guest instead: the
-# same network /init and kernel, build/microvm/sqs-worker's steps and
-# $REPO_ROOT/bin/sqs-worker, with no nats-server.
+# build-sqs-store-microvm-image.sh — build the SQS microVM kernel + initramfs:
+# one guest running the dedicated SQS nats-server and the SQS worker as separate
+# processes, ext4 support, its guest steps and a clean power-down. The guest
+# never formats a disk. The LB image (build-microvm-image.sh) is separate.
 #
 # Inputs:
-#   $REPO_ROOT/build/microvm/sqs-store/init.sh, inittab
-#   $REPO_ROOT/build/microvm/sqs-store/sqs-store-{lib.sh,prepare,run,stop}
+#   $REPO_ROOT/build/microvm/sqs-worker/init.sh, inittab
+#   $REPO_ROOT/build/microvm/sqs-worker/sqs-worker-{lib.sh,prepare,ready,stop}
 #   $REPO_ROOT/bin/nats-server  (make bin/nats-server, the go.mod-pinned version)
+#   $REPO_ROOT/bin/sqs-worker
 #
 # Outputs:
-#   $REPO_ROOT/build/microvm/sqs-store/vmlinuz
-#   $REPO_ROOT/build/microvm/sqs-store/initramfs.cpio.gz
+#   $REPO_ROOT/build/microvm/sqs-worker/vmlinuz
+#   $REPO_ROOT/build/microvm/sqs-worker/initramfs.cpio.gz
 #
 # Rootfs strategy (first match wins):
 #   1. apk available on host → install directly into a temp chroot (Alpine CI/CD)
@@ -25,20 +21,16 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="$REPO_ROOT/build/microvm/sqs-store"
+BUILD_DIR="$REPO_ROOT/build/microvm/sqs-worker"
 INIT_SH="$BUILD_DIR/init.sh"
 INITTAB="$BUILD_DIR/inittab"
 NATS_SERVER_BIN="$REPO_ROOT/bin/nats-server"
+SQS_WORKER_BIN="$REPO_ROOT/bin/sqs-worker"
 
-PROFILE="${SQS_MICROVM_PROFILE:-store}"
+PROFILE="${SQS_MICROVM_PROFILE:-worker}"
 case "$PROFILE" in
-    store) ;;
-    worker)
-        BUILD_DIR="$REPO_ROOT/build/microvm/sqs-worker"
-        INITTAB="$BUILD_DIR/inittab"
-        SQS_WORKER_BIN="$REPO_ROOT/bin/sqs-worker"
-        ;;
-    *) echo "ERROR: SQS_MICROVM_PROFILE must be store or worker, not $PROFILE" >&2; exit 1 ;;
+    worker) ;;
+    *) echo "ERROR: SQS_MICROVM_PROFILE must be worker, not $PROFILE" >&2; exit 1 ;;
 esac
 TAG="[build-sqs-$PROFILE-microvm-image]"
 
@@ -68,16 +60,14 @@ for tool in cpio gzip find fakeroot; do
     fi
 done
 
-if [ "$PROFILE" = worker ]; then
-    if [ ! -x "$SQS_WORKER_BIN" ]; then
-        echo "ERROR: $SQS_WORKER_BIN not found — run 'make bin/sqs-worker'" >&2
-        exit 1
-    fi
-    if ! file -b "$SQS_WORKER_BIN" | grep -q "statically linked"; then
-        echo "ERROR: $SQS_WORKER_BIN is not statically linked — it cannot run on the musl guest" >&2
-        exit 1
-    fi
-else
+if [ ! -x "$SQS_WORKER_BIN" ]; then
+    echo "ERROR: $SQS_WORKER_BIN not found — run 'make bin/sqs-worker'" >&2
+    exit 1
+fi
+if ! file -b "$SQS_WORKER_BIN" | grep -q "statically linked"; then
+    echo "ERROR: $SQS_WORKER_BIN is not statically linked — it cannot run on the musl guest" >&2
+    exit 1
+fi
 # --- Verify the dedicated nats-server is the go.mod-pinned build ---
 # A stale or host-installed binary would ship an unreviewed server version.
 NATS_SERVER_PIN=$(awk '$1 == "github.com/nats-io/nats-server/v2" { print $2; exit }' "$REPO_ROOT/go.mod")
@@ -99,7 +89,6 @@ if [ "$nats_server_version" != "$NATS_SERVER_PIN" ]; then
     exit 1
 fi
 echo "$TAG nats-server: $nats_server_version (matches go.mod)"
-fi
 
 # --- Create chroot ---
 CHROOT_DIR=$(mktemp -d)
@@ -213,39 +202,23 @@ fi
 echo "$TAG installing inittab..."
 install -m 0644 "$INITTAB" "$CHROOT_DIR/etc/inittab"
 
-if [ "$PROFILE" = worker ]; then
-    echo "$TAG installing worker guest steps..."
-    for step in sqs-worker-lib.sh sqs-worker-prepare sqs-worker-ready sqs-worker-stop; do
-        if [ ! -f "$BUILD_DIR/$step" ]; then
-            echo "ERROR: $BUILD_DIR/$step not found — cannot build initramfs" >&2
-            exit 1
-        fi
-    done
-    mkdir -p "$CHROOT_DIR/usr/local/lib/sqs-worker" "$CHROOT_DIR/usr/local/bin"
-    install -m 0755 "$BUILD_DIR/sqs-worker-lib.sh" "$BUILD_DIR/sqs-worker-prepare" "$BUILD_DIR/sqs-worker-ready" "$BUILD_DIR/sqs-worker-stop" \
-        "$CHROOT_DIR/usr/local/lib/sqs-worker/"
-    install -m 0755 "$SQS_WORKER_BIN" "$CHROOT_DIR/usr/local/bin/sqs-worker"
-    # The mountpoint ships empty; the worker proves its disk is mounted here.
-    mkdir -p "$CHROOT_DIR/data"
-else
-# --- Place the store's guest steps ---
-echo "$TAG installing store guest steps..."
-mkdir -p "$CHROOT_DIR/usr/local/lib/sqs-store"
-for step in sqs-store-lib.sh sqs-store-prepare sqs-store-run sqs-store-stop; do
+echo "$TAG installing worker guest steps..."
+for step in sqs-worker-lib.sh sqs-worker-prepare sqs-worker-store sqs-worker-ready sqs-worker-stop; do
     if [ ! -f "$BUILD_DIR/$step" ]; then
         echo "ERROR: $BUILD_DIR/$step not found — cannot build initramfs" >&2
         exit 1
     fi
 done
-install -m 0644 "$BUILD_DIR/sqs-store-lib.sh" "$CHROOT_DIR/usr/local/lib/sqs-store/"
-install -m 0755 "$BUILD_DIR/sqs-store-prepare" "$BUILD_DIR/sqs-store-run" "$BUILD_DIR/sqs-store-stop" \
-    "$CHROOT_DIR/usr/local/lib/sqs-store/"
-
+mkdir -p "$CHROOT_DIR/usr/local/lib/sqs-worker" "$CHROOT_DIR/usr/local/bin"
+install -m 0755 "$BUILD_DIR/sqs-worker-lib.sh" "$BUILD_DIR/sqs-worker-prepare" "$BUILD_DIR/sqs-worker-store" "$BUILD_DIR/sqs-worker-ready" "$BUILD_DIR/sqs-worker-stop" \
+    "$CHROOT_DIR/usr/local/lib/sqs-worker/"
+install -m 0755 "$SQS_WORKER_BIN" "$CHROOT_DIR/usr/local/bin/sqs-worker"
+# The mountpoint ships empty; the worker proves its disk is mounted here.
+mkdir -p "$CHROOT_DIR/data"
 # --- Copy nats-server binary ---
 echo "$TAG copying nats-server binary..."
 mkdir -p "$CHROOT_DIR/usr/local/bin"
 install -m 0755 "$NATS_SERVER_BIN" "$CHROOT_DIR/usr/local/bin/nats-server"
-fi
 
 # --- Create required directories for init ---
 mkdir -p \

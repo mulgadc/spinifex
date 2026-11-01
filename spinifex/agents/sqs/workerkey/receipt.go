@@ -2,6 +2,8 @@ package workerkey
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -15,9 +17,9 @@ const (
 	ReceiptKeyLen = 32
 )
 
-// ErrReceiptKeyMissing is a worker disk without the receipt-signing key. It
-// is created only with the store key for a new store, so it is never
-// regenerated: a new key would invalidate every handle already issued.
+// ErrReceiptKeyMissing is a worker disk without the receipt-signing key once
+// its fingerprint is recorded. It is never regenerated: a new key would
+// invalidate every handle already issued.
 var ErrReceiptKeyMissing = errors.New("worker receipt-signing key is missing")
 
 func (s Store) receiptPath() string { return filepath.Join(s.Dir, receiptFile) }
@@ -37,27 +39,41 @@ func (s Store) ReceiptKey() ([]byte, error) {
 	return key, err
 }
 
-// ensureReceipt creates the receipt-signing key if absent. Only the
-// new-store path calls it, under the same decision that creates the store key.
-func (s Store) ensureReceipt() error {
+// ensureReceipt loads the receipt-signing key, creating it only if absent.
+// Only a pending initialization calls it, so a crash before the fingerprint
+// is recorded resumes with the key already written.
+func (s Store) ensureReceipt() ([]byte, error) {
 	unlock, err := s.prepareDir()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer unlock()
 	key, err := s.loadReceipt()
 	if err == nil {
-		clear(key)
-		return s.syncNames()
+		if err := s.syncNames(); err != nil {
+			clear(key)
+			return nil, err
+		}
+		return key, nil
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
-		return err
+		return nil, err
 	}
 	key = make([]byte, ReceiptKeyLen)
-	defer clear(key)
 	if _, err := rand.Read(key); err != nil {
-		return fmt.Errorf("generate worker receipt key: %w", err)
+		clear(key)
+		return nil, fmt.Errorf("generate worker receipt key: %w", err)
 	}
+	if err := s.install(key); err != nil {
+		clear(key)
+		return nil, err
+	}
+	return key, nil
+}
+
+// install links a synced temporary file into place, so the key appears whole
+// or not at all, then makes both directory entries durable.
+func (s Store) install(key []byte) error {
 	tmp, err := os.CreateTemp(s.Dir, tempPrefix+"*"+tempSuffix)
 	if err != nil {
 		return fmt.Errorf("create worker receipt key file: %w", err)
@@ -67,10 +83,17 @@ func (s Store) ensureReceipt() error {
 	if err := writeSynced(tmp, key); err != nil {
 		return err
 	}
-	if err := os.Link(tmpName, s.receiptPath()); err != nil && !errors.Is(err, fs.ErrExist) {
+	if err := os.Link(tmpName, s.receiptPath()); err != nil {
 		return fmt.Errorf("install worker receipt key file: %w", err)
 	}
 	return s.syncNames()
+}
+
+// Fingerprint is the SHA-256 of a receipt key, hex encoded. It identifies the
+// key without revealing it.
+func Fingerprint(key []byte) string {
+	sum := sha256.Sum256(key)
+	return hex.EncodeToString(sum[:])
 }
 
 // loadReceipt refuses a file that is present but unusable rather than

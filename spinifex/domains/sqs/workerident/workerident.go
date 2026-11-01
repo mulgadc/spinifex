@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	sqsjs "github.com/mulgadc/spinifex/spinifex/domains/sqs/message/jetstream"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -54,7 +53,9 @@ type Record struct {
 	NodeID       string `json:"nodeID"`
 	DataVolumeID string `json:"dataVolumeID,omitempty"`
 	InstanceType string `json:"instanceType"`
-	InstanceID   string `json:"instanceID,omitempty"`
+	// SizeGiB is the data volume's size, fixed for the volume's life.
+	SizeGiB    int64  `json:"sizeGiB"`
+	InstanceID string `json:"instanceID,omitempty"`
 	// Dispatched is set once, before the launch is sent. A dispatched launch
 	// is never sent again: its outcome is reconciled, not retried.
 	Dispatched bool `json:"dispatched,omitempty"`
@@ -67,7 +68,23 @@ type Record struct {
 	// Contract is set only on a first launch by this release; a replacement
 	// keeps its predecessor's, since it reuses the same data volume.
 	Contract int `json:"contract,omitempty"`
+	// ReceiptInit is set to pending only when a fresh volume this launch
+	// created is first recorded, and moves once to recorded with the guest's
+	// receipt key fingerprint. Absent, it proves nothing about the volume.
+	ReceiptInit        ReceiptInit `json:"receiptInit,omitempty"`
+	ReceiptFingerprint string      `json:"receiptFingerprint,omitempty"`
 }
+
+// ReceiptInit is the receipt-signing key's initialization state.
+type ReceiptInit string
+
+const (
+	ReceiptPending  ReceiptInit = "pending"
+	ReceiptRecorded ReceiptInit = "recorded"
+)
+
+// MaxSizeGiB bounds the worker data volume, which holds every queue's data.
+const MaxSizeGiB = 16384
 
 // ContractAuthenticated marks a worker first launched with a receipt key.
 const ContractAuthenticated = 1
@@ -104,6 +121,8 @@ type LaunchRequest struct {
 	DataVolumeEncrypted bool
 	// InstanceType is fixed for a generation; only a replacement may change it.
 	InstanceType string
+	// SizeGiB never changes once recorded: the volume holds the queue data.
+	SizeGiB int64
 }
 
 // Intent is a recorded launch the caller may realize.
@@ -111,6 +130,7 @@ type Intent struct {
 	Region     string
 	Generation uint64
 	ClaimID    string
+	SizeGiB    int64
 }
 
 // Identity is an instance's authorized worker identity, taken from the
@@ -122,6 +142,10 @@ type Identity struct {
 	ClaimID      string
 	NodeID       string
 	DataVolumeID string
+	// ReceiptInit and ReceiptFingerprint are the record's receipt key state
+	// when it was read; RecordReceiptKey re-checks them under compare-and-swap.
+	ReceiptInit        ReceiptInit
+	ReceiptFingerprint string
 }
 
 var (
@@ -136,7 +160,9 @@ var (
 	ErrUnencryptedVolume = errors.New("SQS worker data volume must be encrypted")
 	ErrUnreadable        = errors.New("worker identity record is unreadable")
 	ErrContended         = errors.New("worker identity changed concurrently; retry")
-	ErrNotFenced         = errors.New("first-store fence does not yet exclude the replaced generation")
+	ErrSizeChanged       = errors.New("the worker data volume size cannot change")
+	ErrReceiptRecorded   = errors.New("a different receipt key fingerprint is already recorded")
+	ErrReceiptUnknown    = errors.New("worker record has no receipt key initialization; its volume is not proven new")
 	ErrDispatched        = errors.New("SQS worker launch was already dispatched; its outcome must be reconciled")
 	ErrNetworkAttempted  = errors.New("SQS worker network create was already sent; its outcome must be reconciled")
 	ErrVolumeAttempted   = errors.New("SQS worker volume create was already sent; its outcome must be reconciled")
@@ -151,6 +177,8 @@ var (
 	volumePattern   = regexp.MustCompile(`^vol-[0-9a-f]{17}$`)
 	nodePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 	typePattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
+	// fingerprintPattern is a hex SHA-256.
+	fingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // Store is the worker identity authority. Reads go to the stream leader and
@@ -159,18 +187,7 @@ var (
 type Store struct {
 	JS jetstream.JetStream
 	KV jetstream.KeyValue
-	// Fences reads the first-store fence a replacement launch requires. A nil
-	// reader refuses every replacement.
-	Fences FenceReader
 }
-
-// FenceReader reports the lowest worker generation the first-store decision
-// still accepts in a Region.
-type FenceReader interface {
-	FencedAt(ctx context.Context, region string) (uint64, error)
-}
-
-var _ FenceReader = firststore.Store{}
 
 // Open opens or creates the bucket and refuses one that could lose records.
 func Open(ctx context.Context, js jetstream.JetStream) (Store, error) {
@@ -178,11 +195,7 @@ func Open(ctx context.Context, js jetstream.JetStream) (Store, error) {
 	if err != nil {
 		return Store{}, err
 	}
-	fences, err := firststore.Open(ctx, js)
-	if err != nil {
-		return Store{}, err
-	}
-	return Store{JS: js, KV: kv, Fences: fences}, nil
+	return Store{JS: js, KV: kv}, nil
 }
 
 // Bind binds the existing bucket without creating it, refusing one that could
@@ -203,8 +216,7 @@ func indexKey(instanceID string) string { return "instance." + instanceID }
 // BeginLaunch records a launch intent. A retry of the same attempt returns the
 // same intent. A new attempt is refused while the previous one is launching or
 // bound, including one whose outcome is unknown; it takes the next generation
-// only after FailLaunch or RecordStopped confirmed nothing holds the volume,
-// and only once the first-store fence admits no older generation.
+// only after FailLaunch or RecordStopped confirmed nothing holds the volume.
 func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest) (Intent, error) {
 	switch {
 	case !regionPattern.MatchString(region):
@@ -219,6 +231,8 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 		return Intent{}, ErrUnencryptedVolume
 	case !typePattern.MatchString(req.InstanceType):
 		return Intent{}, errors.New("invalid instance type")
+	case req.SizeGiB < 1 || req.SizeGiB > MaxSizeGiB:
+		return Intent{}, errors.New("invalid data volume size")
 	}
 	for range maxAttempts {
 		rec, rev, err := s.readRecord(ctx, region)
@@ -228,7 +242,7 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 			}
 			next := Record{Region: region, State: StateLaunching, Generation: 1,
 				ClaimID: req.ClaimID, NodeID: req.NodeID, DataVolumeID: req.DataVolumeID, InstanceType: req.InstanceType,
-				VolumeAttempted: req.DataVolumeID != "", Contract: ContractAuthenticated}
+				SizeGiB: req.SizeGiB, VolumeAttempted: req.DataVolumeID != "", Contract: ContractAuthenticated}
 			// A failed create may still have applied; the re-read decides.
 			if s.put(ctx, regionKey(region), next, 0) == nil {
 				return intentOf(next), nil
@@ -243,6 +257,8 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 			return Intent{}, ErrWrongNode
 		case rec.DataVolumeID != req.DataVolumeID:
 			return Intent{}, ErrVolumeMismatch
+		case rec.SizeGiB != req.SizeGiB:
+			return Intent{}, ErrSizeChanged
 		}
 		next := *rec
 		switch {
@@ -262,9 +278,6 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 		case rec.State == StateLaunching || rec.State == StateBound:
 			return Intent{}, ErrInFlight
 		default:
-			if err := s.requireFence(ctx, region, rec.Generation+1); err != nil {
-				return Intent{}, err
-			}
 			next.State, next.Generation, next.ClaimID, next.InstanceID, next.Dispatched, next.NetworkAttempted =
 				StateLaunching, rec.Generation+1, req.ClaimID, "", false, false
 			next.InstanceType = req.InstanceType
@@ -277,22 +290,6 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 	return Intent{}, ErrContended
 }
 
-// requireFence refuses a replacement until the first-store fence is at least
-// gen. The fence never falls, so one leader read that satisfies it stays true.
-func (s Store) requireFence(ctx context.Context, region string, gen uint64) error {
-	if s.Fences == nil {
-		return ErrNotFenced
-	}
-	fence, err := s.Fences.FencedAt(ctx, region)
-	if err != nil {
-		return err
-	}
-	if fence < gen {
-		return ErrNotFenced
-	}
-	return nil
-}
-
 // BindInstance makes instanceID the worker for intent. The index entry is
 // written first, so the record never names an instance the index cannot
 // find; a lost reply is retried with the same arguments.
@@ -303,7 +300,7 @@ func (s Store) BindInstance(ctx context.Context, intent Intent, instanceID strin
 	if !instancePattern.MatchString(instanceID) {
 		return errors.New("invalid instance ID")
 	}
-	entry := IndexEntry(intent)
+	entry := IndexEntry{Region: intent.Region, Generation: intent.Generation, ClaimID: intent.ClaimID}
 	if err := s.ensureIndex(ctx, instanceID, entry); err != nil {
 		return err
 	}
@@ -473,6 +470,8 @@ func (s Store) RecordVolume(ctx context.Context, intent Intent, volumeID string)
 		case rec.DataVolumeID == volumeID:
 		case rec.DataVolumeID != "":
 			return ErrVolumeMismatch
+		default:
+			rec.ReceiptInit = ReceiptPending
 		}
 		rec.DataVolumeID = volumeID
 		return nil
@@ -559,6 +558,45 @@ func (s Store) RecordStopped(ctx context.Context, intent Intent, instanceID stri
 	return ErrContended
 }
 
+// RecordReceiptKey records the guest's receipt key fingerprint, moving a
+// pending initialization to recorded. The write is a compare-and-swap on the
+// record still bound to id's instance, generation, claim and volume; a
+// retry with the same fingerprint succeeds and any other is refused.
+func (s Store) RecordReceiptKey(ctx context.Context, id Identity, fingerprint string) error {
+	if !fingerprintPattern.MatchString(fingerprint) {
+		return errors.New("invalid receipt key fingerprint")
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, id.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrNotCurrent
+		}
+		if err != nil {
+			return err
+		}
+		if rec.State != StateBound || rec.InstanceID != id.InstanceID || rec.Generation != id.Generation ||
+			rec.ClaimID != id.ClaimID || rec.DataVolumeID != id.DataVolumeID {
+			return ErrNotCurrent
+		}
+		switch rec.ReceiptInit {
+		case ReceiptRecorded:
+			if rec.ReceiptFingerprint == fingerprint {
+				return nil
+			}
+			return ErrReceiptRecorded
+		case ReceiptPending:
+		default:
+			return ErrReceiptUnknown
+		}
+		next := *rec
+		next.ReceiptInit, next.ReceiptFingerprint = ReceiptRecorded, fingerprint
+		if s.put(ctx, regionKey(id.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
 // Authorize returns instanceID's worker identity only if the Region's current
 // record is bound to exactly that instance, generation and claim. A missing,
 // stale or partially written index entry authorizes nothing.
@@ -592,7 +630,8 @@ func (s Store) Authorize(ctx context.Context, instanceID string) (Identity, erro
 		// replica cannot keep a replaced worker authorized.
 		if s.put(ctx, regionKey(entry.Region), *rec, rev) == nil {
 			return Identity{Region: rec.Region, InstanceID: instanceID, Generation: rec.Generation,
-				ClaimID: rec.ClaimID, NodeID: rec.NodeID, DataVolumeID: rec.DataVolumeID}, nil
+				ClaimID: rec.ClaimID, NodeID: rec.NodeID, DataVolumeID: rec.DataVolumeID,
+				ReceiptInit: rec.ReceiptInit, ReceiptFingerprint: rec.ReceiptFingerprint}, nil
 		}
 	}
 	return Identity{}, ErrContended
@@ -629,7 +668,7 @@ func validIntent(in Intent) error {
 }
 
 func intentOf(r Record) Intent {
-	return Intent{Region: r.Region, Generation: r.Generation, ClaimID: r.ClaimID}
+	return Intent{Region: r.Region, Generation: r.Generation, ClaimID: r.ClaimID, SizeGiB: r.SizeGiB}
 }
 
 func (s Store) readRecord(ctx context.Context, region string) (*Record, uint64, error) {
@@ -655,6 +694,22 @@ func wellFormed(r *Record, region string) bool {
 			return false
 		}
 	} else if !r.VolumeAttempted || !volumePattern.MatchString(r.DataVolumeID) {
+		return false
+	}
+	switch r.ReceiptInit {
+	case "":
+		if r.ReceiptFingerprint != "" {
+			return false
+		}
+	case ReceiptPending:
+		if r.DataVolumeID == "" || r.ReceiptFingerprint != "" {
+			return false
+		}
+	case ReceiptRecorded:
+		if r.DataVolumeID == "" || !fingerprintPattern.MatchString(r.ReceiptFingerprint) {
+			return false
+		}
+	default:
 		return false
 	}
 	switch r.State {

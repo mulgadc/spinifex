@@ -76,7 +76,6 @@ var adminActions = map[string]bool{
 	"ListModelAccess":   true,
 	"ListOchreCatalog":  true,
 	"EnsureSQSWorker":   true,
-	"EnsureSQSStore":    true,
 	"EnableSQS":         true,
 	"DescribeSQS":       true,
 }
@@ -262,12 +261,11 @@ func (d Deps) run(ctx context.Context, action string, args map[string]string, ac
 		if d.NATS == nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		return EnsureSQSWorker(ctx, d.NATS, d.NodeIDs, args["NodeId"], args["InstanceType"], accountID, sqsWorkerEnsureWait)
-	case "EnsureSQSStore":
-		if d.NATS == nil {
-			return nil, errors.New(awserrors.ErrorServerInternal)
+		size, err := sqsVolumeSize(args["VolumeSizeGiB"])
+		if err != nil {
+			return nil, err
 		}
-		return EnsureSQSStore(ctx, d.NATS, d.NodeIDs, args["NodeId"], args["InstanceType"], args["VolumeSizeGiB"], accountID, sqsWorkerEnsureWait)
+		return EnsureSQSWorker(ctx, d.NATS, d.NodeIDs, args["NodeId"], args["InstanceType"], size, accountID, sqsWorkerEnsureWait)
 	case "EnableSQS", "DescribeSQS":
 		if d.NATS == nil || d.Region == "" {
 			return nil, errors.New(awserrors.ErrorServerInternal)
@@ -280,9 +278,13 @@ func (d Deps) run(ctx context.Context, action string, args map[string]string, ac
 		if action == "DescribeSQS" {
 			return DescribeSQS(ctx, js, d.Region, obs)
 		}
+		size, err := sqsVolumeSize(args["VolumeSizeGiB"])
+		if err != nil {
+			return nil, err
+		}
 		return EnableSQS(ctx, d.NATS, js, d.NodeIDs, d.ExpectedNodes, SQSEnableInput{
-			Region: d.Region, NodeID: args["NodeId"], WorkerInstanceType: args["WorkerInstanceType"],
-			StoreInstanceType: args["StoreInstanceType"], VolumeSizeGiB: args["VolumeSizeGiB"], AccountID: accountID,
+			Region: d.Region, NodeID: args["NodeId"], InstanceType: args["InstanceType"],
+			VolumeSizeGiB: size, AccountID: accountID,
 		}, obs, sqsWorkerEnsureWait)
 	case "ListOchreCatalog":
 		entries, err := ochre.AdminCatalog(ctx, accountID, d.credentials(), d.access())

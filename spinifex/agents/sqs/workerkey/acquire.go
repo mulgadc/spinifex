@@ -3,49 +3,73 @@ package workerkey
 import (
 	"context"
 	"errors"
-
-	"github.com/nats-io/nkeys"
+	"fmt"
 )
 
-// Claimer is the SQS domain's first-store decision for this worker identity.
-type Claimer interface {
-	// Claim returns createKey, or the one public key the store authorizes.
-	Claim(ctx context.Context) (createKey bool, publicKey string, err error)
-	RecordPublicKey(ctx context.Context, publicKey string) error
+// Decision is the platform's receipt-key initialization state for this worker
+// volume: Pending authorizes creating or resuming the key, otherwise exactly
+// the recorded fingerprint is accepted.
+type Decision struct {
+	Pending     bool
+	Fingerprint string
+	// HostNodes is the gateway's declared cluster node count, zero if unknown.
+	HostNodes int
 }
 
-// Acquire returns the worker's store key under a current domain decision. A
-// new key is usable only once its public key is recorded; a recorded key is
-// never replaced, so a missing or different key on disk fails closed.
-func (s Store) Acquire(ctx context.Context, c Claimer) (nkeys.KeyPair, error) {
-	create, authorized, err := c.Claim(ctx)
+// Claimer reads and completes the platform's receipt-key initialization.
+type Claimer interface {
+	Claim(ctx context.Context) (Decision, error)
+	RecordFingerprint(ctx context.Context, fingerprint string) error
+}
+
+// ErrDiskHasData refuses a pending initialization on a disk that already holds
+// SQS data: the platform and the disk disagree about whether it is new.
+var ErrDiskHasData = errors.New("receipt key initialization is pending but the disk already holds SQS data")
+
+// Acquire returns the receipt key under the current platform decision. A
+// pending decision creates or resumes the key only while hasData reports no
+// SQS data, then records its fingerprint; the caller must clear the key.
+func (s Store) Acquire(ctx context.Context, c Claimer, hasData func() (bool, error)) ([]byte, error) {
+	d, err := c.Claim(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !create {
-		return s.ForExistingStore(authorized)
+	if !d.Pending {
+		return s.ForRecorded(d.Fingerprint)
 	}
-	if authorized != "" {
-		return nil, errors.New("first-store decision is contradictory")
+	if d.Fingerprint != "" {
+		return nil, errors.New("receipt key decision is contradictory")
 	}
-	// After a crash before recording, this loads the key already on disk.
-	kp, err := s.ForNewStore()
+	data, err := hasData()
+	if err != nil {
+		return nil, fmt.Errorf("check the disk for SQS data: %w", err)
+	}
+	if data {
+		return nil, ErrDiskHasData
+	}
+	key, err := s.ensureReceipt()
 	if err != nil {
 		return nil, err
 	}
-	// The receipt key is made under the same decision, before the record
-	// that ends this branch, so a recorded store always has one on disk.
-	err = s.ensureReceipt()
-	var pub string
-	if err == nil {
-		pub, err = kp.PublicKey()
-	}
-	if err == nil {
-		err = c.RecordPublicKey(ctx, pub)
-	}
-	if err != nil {
-		kp.Wipe()
+	if err := c.RecordFingerprint(ctx, Fingerprint(key)); err != nil {
+		clear(key)
 		return nil, err
 	}
-	return kp, nil
+	return key, nil
+}
+
+// ForRecorded returns the disk's receipt key only if it matches fingerprint.
+func (s Store) ForRecorded(fingerprint string) ([]byte, error) {
+	if len(fingerprint) != 64 {
+		return nil, errors.New("recorded receipt key fingerprint is malformed")
+	}
+	key, err := s.ReceiptKey()
+	if err != nil {
+		return nil, err
+	}
+	if Fingerprint(key) != fingerprint {
+		clear(key)
+		return nil, ErrKeyMismatch
+	}
+	return key, nil
 }

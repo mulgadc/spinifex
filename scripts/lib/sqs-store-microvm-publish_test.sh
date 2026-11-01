@@ -1,5 +1,5 @@
 #!/bin/sh
-# sqs-store-microvm-publish_test.sh — a staged SQS store microVM pair reaches
+# sqs-store-microvm-publish_test.sh — a staged SQS microVM pair reaches
 # the output directory only when every gate passes, and a failed build cannot
 # leave a pair that make then takes as up to date.
 #
@@ -28,9 +28,10 @@ done
 stage() {
     dir=$1 omit=${2:-}
     root="$TMP/root.$$.$(date +%s%N)"
-    for p in init etc/inittab usr/local/bin/nats-server sbin/mkfs.ext4 sbin/e2fsck \
-        usr/local/lib/sqs-store/sqs-store-lib.sh usr/local/lib/sqs-store/sqs-store-prepare \
-        usr/local/lib/sqs-store/sqs-store-run usr/local/lib/sqs-store/sqs-store-stop \
+    for p in init etc/inittab usr/local/bin/nats-server usr/local/bin/sqs-worker data sbin/mkfs.ext4 sbin/e2fsck \
+        usr/local/lib/sqs-worker/sqs-worker-lib.sh usr/local/lib/sqs-worker/sqs-worker-prepare \
+        usr/local/lib/sqs-worker/sqs-worker-store usr/local/lib/sqs-worker/sqs-worker-ready \
+        usr/local/lib/sqs-worker/sqs-worker-stop \
         dev/console dev/null lib/modules/6.12-virt/kernel/fs/ext4/ext4.ko \
         lib/modules/6.12-virt/kernel/drivers/acpi/tiny-power-button.ko; do
         [ "$p" = "$omit" ] && continue
@@ -78,7 +79,7 @@ else
 fi
 
 # --- Each failing gate keeps the previous valid pair exactly ---
-for case in nats-server store-stop ext4 size; do
+for case in nats-server worker-store ext4 size; do
     d="$TMP/keep-$case"
     stage "$d/prev"
     bash "$PUBLISH" "$d/prev" "$d/out" >/dev/null 2>&1
@@ -86,7 +87,7 @@ for case in nats-server store-stop ext4 size; do
     max=50
     case $case in
         nats-server) stage "$d/stage" usr/local/bin/nats-server ;;
-        store-stop) stage "$d/stage" usr/local/lib/sqs-store/sqs-store-stop ;;
+        worker-store) stage "$d/stage" usr/local/lib/sqs-worker/sqs-worker-store ;;
         ext4) stage "$d/stage" lib/modules/6.12-virt/kernel/fs/ext4/ext4.ko ;;
         size) stage "$d/stage"; max=0 ;;
     esac

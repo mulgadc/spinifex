@@ -211,8 +211,8 @@ func ExecuteRoot(args []string, stderr io.Writer) error {
 
 // EnsureSQSWorkerRemote exposes ensureSQSWorkerRemote for testing, rendering
 // the result as spx admin sqs ensure-worker prints it.
-func EnsureSQSWorkerRemote(ctx context.Context, target adminTarget, node, instanceType string, w io.Writer) error {
-	out, err := ensureSQSWorkerRemote(ctx, target, node, instanceType)
+func EnsureSQSWorkerRemote(ctx context.Context, target adminTarget, node, instanceType string, sizeGiB int, w io.Writer) error {
+	out, err := ensureSQSWorkerRemote(ctx, target, node, instanceType, sizeGiB)
 	if err != nil {
 		return err
 	}
@@ -220,20 +220,9 @@ func EnsureSQSWorkerRemote(ctx context.Context, target adminTarget, node, instan
 	return nil
 }
 
-// EnsureSQSStoreRemote exposes ensureSQSStoreRemote for testing, rendering
-// the result as spx admin sqs ensure-store prints it.
-func EnsureSQSStoreRemote(ctx context.Context, target adminTarget, node, instanceType string, sizeGiB int, w io.Writer) error {
-	out, err := ensureSQSStoreRemote(ctx, target, node, instanceType, sizeGiB)
-	if err != nil {
-		return err
-	}
-	renderSQSStoreEnsure(w, out)
-	return nil
-}
-
 // EnableSQSRemote exposes enableSQSRemote for testing, rendering the reply to w.
-func EnableSQSRemote(ctx context.Context, target adminTarget, node, worker, store string, sizeGiB int, w io.Writer) error {
-	out, err := enableSQSRemote(ctx, target, node, worker, store, sizeGiB)
+func EnableSQSRemote(ctx context.Context, target adminTarget, node, instanceType string, sizeGiB int, w io.Writer) error {
+	out, err := enableSQSRemote(ctx, target, node, instanceType, sizeGiB)
 	if err != nil {
 		return err
 	}

@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -36,7 +36,7 @@ func newStore(t *testing.T) (Store, jetstream.KeyValue) {
 }
 
 func launch(claim string, supersedes uint64) LaunchRequest {
-	return LaunchRequest{ClaimID: claim, Supersedes: supersedes, NodeID: node, DataVolumeID: volume, DataVolumeEncrypted: true, InstanceType: testType}
+	return LaunchRequest{ClaimID: claim, Supersedes: supersedes, NodeID: node, DataVolumeID: volume, DataVolumeEncrypted: true, InstanceType: testType, SizeGiB: 8}
 }
 
 func inst(n int) string { return fmt.Sprintf("i-%017x", n) }
@@ -78,16 +78,6 @@ func mustStop(t *testing.T, s Store, in Intent, instanceID string) {
 	t.Helper()
 	if err := s.RecordStopped(context.Background(), in, instanceID); err != nil {
 		t.Fatalf("record stopped: %v", err)
-	}
-	fence(t, s, in.Generation+1)
-}
-
-// fence raises the first-store fence, as the launch path does once a stop or
-// failure is confirmed and before it begins the replacement.
-func fence(t *testing.T, s Store, gen uint64) {
-	t.Helper()
-	if err := s.Fences.(firststore.Store).Fence(context.Background(), region, gen); err != nil {
-		t.Fatalf("fence: %v", err)
 	}
 }
 
@@ -251,7 +241,6 @@ func TestAmbiguousPriorLaunch_BlocksOthers(t *testing.T) {
 	if err := s.FailLaunch(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	fence(t, s, 2)
 	if _, ok := l.start(t, s, launch(claim(2), 1)); !ok || l.count() != 2 {
 		t.Fatalf("launch after confirmed failure refused; launched %d", l.count())
 	}
@@ -265,7 +254,6 @@ func TestReplay_ABA(t *testing.T) {
 	if err := s.FailLaunch(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	fence(t, s, 2)
 	b, err := s.BeginLaunch(ctx, region, launch(claim(2), 1))
 	if err != nil || b.Generation != 2 {
 		t.Fatalf("B = %+v, %v", b, err)
@@ -317,7 +305,6 @@ func TestFailedLaunch(t *testing.T) {
 	if _, err := s.BeginLaunch(ctx, region, launch(claim(1), 0)); !errors.Is(err, ErrSuperseded) {
 		t.Fatalf("restarting a failed attempt = %v, want ErrSuperseded", err)
 	}
-	fence(t, s, 2)
 	next, err := s.BeginLaunch(ctx, region, launch(claim(2), 1))
 	if err != nil || next.Generation != 2 {
 		t.Fatalf("next launch = %+v, %v; want generation 2", next, err)
@@ -384,7 +371,7 @@ func TestAuthorize_IndexIsNotProof(t *testing.T) {
 	t.Run("entry for a launching record", func(t *testing.T) {
 		s, kv := newStore(t)
 		in, _ := s.BeginLaunch(ctx, region, launch(claim(1), 0))
-		put(t, kv, indexKey(inst(1)), IndexEntry(in))
+		put(t, kv, indexKey(inst(1)), IndexEntry{Region: in.Region, Generation: in.Generation, ClaimID: in.ClaimID})
 		if _, err := s.Authorize(ctx, inst(1)); !errors.Is(err, ErrNotCurrent) {
 			t.Fatalf("index without bind = %v, want ErrNotCurrent", err)
 		}
@@ -678,17 +665,6 @@ func TestOpen_RefusesNonDurableBuckets(t *testing.T) {
 			}
 		})
 	}
-	t.Run("first-store bucket", func(t *testing.T) {
-		_, _, js := testutil.StartTestJetStream(t)
-		cfg := firststore.BucketConfig(1)
-		cfg.TTL = time.Hour
-		if _, err := js.CreateKeyValue(ctx, cfg); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := firststore.Open(ctx, js); err == nil {
-			t.Fatal("opened an expiring first-store bucket")
-		}
-	})
 	t.Run("absent bucket is created durable and reopens", func(t *testing.T) {
 		_, _, js := testutil.StartTestJetStream(t)
 		for range 2 {
@@ -713,13 +689,8 @@ func TestBind_NeverCreatesAndRefusesNonDurable(t *testing.T) {
 		if _, err := Bind(ctx, js); err == nil {
 			t.Fatal("bound a bucket that does not exist")
 		}
-		if _, err := firststore.Bind(ctx, js); err == nil {
-			t.Fatal("bound a first-store bucket that does not exist")
-		}
-		for _, name := range []string{Bucket, firststore.Bucket} {
-			if _, err := js.KeyValue(ctx, name); !errors.Is(err, jetstream.ErrBucketNotFound) {
-				t.Fatalf("bind provisioned %s: %v", name, err)
-			}
+		if _, err := js.KeyValue(ctx, Bucket); !errors.Is(err, jetstream.ErrBucketNotFound) {
+			t.Fatalf("bind provisioned %s: %v", Bucket, err)
 		}
 	})
 	t.Run("existing durable bucket", func(t *testing.T) {
@@ -742,32 +713,6 @@ func TestBind_NeverCreatesAndRefusesNonDurable(t *testing.T) {
 			t.Fatal("bound an expiring bucket")
 		}
 	})
-}
-
-// A confirmed stop is not enough to replace a worker: the first-store fence
-// must already exclude its generation, and a store with no fence reader
-// refuses every replacement.
-func TestReplacement_NeedsTheFirstStoreFence(t *testing.T) {
-	s, kv := newStore(t)
-	ctx := context.Background()
-	first := mustBound(t, s, claim(1), inst(1), 0)
-	if err := s.RecordStopped(ctx, first, inst(1)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.BeginLaunch(ctx, region, launch(claim(2), 1)); !errors.Is(err, ErrNotFenced) {
-		t.Fatalf("replacement before the fence = %v, want ErrNotFenced", err)
-	}
-	if r := record(t, kv); r.Generation != 1 || r.State != StateStopped {
-		t.Fatalf("refused replacement changed the record: %+v", r)
-	}
-	unfenced := Store{JS: s.JS, KV: s.KV}
-	fence(t, s, 2)
-	if _, err := unfenced.BeginLaunch(ctx, region, launch(claim(2), 1)); !errors.Is(err, ErrNotFenced) {
-		t.Fatalf("replacement with no fence reader = %v, want ErrNotFenced", err)
-	}
-	if in, err := s.BeginLaunch(ctx, region, launch(claim(2), 1)); err != nil || in.Generation != 2 {
-		t.Fatalf("replacement after the fence = %+v, %v", in, err)
-	}
 }
 
 // A launch is marked dispatched exactly once, and only for the current
@@ -970,7 +915,6 @@ func TestVolumeIntent_ReplacementKeepsAnUnsettledMark(t *testing.T) {
 	if err := s.FailLaunch(ctx, in); err != nil {
 		t.Fatal(err)
 	}
-	fence(t, s, 2)
 	next := launch(claim(2), 1)
 	next.DataVolumeID, next.DataVolumeEncrypted = "", false
 	in2, err := s.BeginLaunch(ctx, region, next)
@@ -1029,5 +973,55 @@ func TestReplacement_KeepsAnUnsupportedContract(t *testing.T) {
 	}
 	if got := record(t, kv); got.Generation != 2 || !got.UnsupportedContract() {
 		t.Fatalf("replacement = %+v; want generation 2, still unsupported", got)
+	}
+}
+
+// A receipt key write from an identity read before a replacement loses: the
+// compare-and-swap re-checks instance, generation and claim at the write.
+func TestRecordReceiptKey_StaleIdentityLosesToTheSuccessor(t *testing.T) {
+	s, kv := newStore(t)
+	ctx := context.Background()
+	in, err := s.BeginLaunch(ctx, region, LaunchRequest{ClaimID: claim(1), NodeID: node, InstanceType: testType, SizeGiB: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkVolumeAttempted(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordVolume(ctx, in, volume); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BindInstance(ctx, in, inst(1)); err != nil {
+		t.Fatal(err)
+	}
+	old, err := s.Authorize(ctx, inst(1))
+	if err != nil || old.ReceiptInit != ReceiptPending {
+		t.Fatalf("authorize = %+v, %v; want pending", old, err)
+	}
+	mustStop(t, s, in, inst(1))
+	if _, err := s.BeginLaunch(ctx, region, launch(claim(2), 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordReceiptKey(ctx, old, strings.Repeat("a", 64)); !errors.Is(err, ErrNotCurrent) {
+		t.Fatalf("stale record = %v, want ErrNotCurrent", err)
+	}
+	if r := record(t, kv); r.ReceiptInit != ReceiptPending || r.ReceiptFingerprint != "" {
+		t.Fatalf("stale write changed the record: %+v", r)
+	}
+}
+
+// The volume holds the queue data, so a replacement cannot resize it.
+func TestBeginLaunch_SizeIsFixedForTheVolume(t *testing.T) {
+	s, kv := newStore(t)
+	ctx := context.Background()
+	first := mustBound(t, s, claim(1), inst(1), 0)
+	mustStop(t, s, first, inst(1))
+	req := launch(claim(2), 1)
+	req.SizeGiB = 16
+	if _, err := s.BeginLaunch(ctx, region, req); !errors.Is(err, ErrSizeChanged) {
+		t.Fatalf("resized replacement = %v, want ErrSizeChanged", err)
+	}
+	if r := record(t, kv); r.Generation != 1 || r.SizeGiB != 8 {
+		t.Fatalf("refused replacement changed the record: %+v", r)
 	}
 }

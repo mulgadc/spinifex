@@ -76,8 +76,12 @@ func (d *Daemon) prepareSQSWorkerLaunch(ctx context.Context, input *elbv2domain.
 	if err := input.ValidateSQSWorker(); err != nil {
 		return nil, err
 	}
-	if _, ok := d.resourceMgr.instanceTypes[input.InstanceType]; !ok {
+	it, ok := d.resourceMgr.instanceTypes[input.InstanceType]
+	if !ok {
 		return nil, fmt.Errorf("unknown instance type: %s", input.InstanceType)
+	}
+	if err := sqsMemoryFits(input.InstanceType, it); err != nil {
+		return nil, err
 	}
 	ca, err := d.sqsWorkerHostReady()
 	if err != nil {
@@ -227,7 +231,7 @@ func (d *Daemon) refreshSQSWorkerState(inst *vm.VM) error {
 	if !strings.HasPrefix(g.GatewayURL, "https://") || strings.TrimSpace(g.CACert) == "" || g.Netcfg == "" {
 		return fmt.Errorf("sqs worker instance %s cannot be relaunched: its record lacks the gateway URL, CA or network config", inst.ID)
 	}
-	if !sqsStoreKeepsDataVolume(inst, g.DataVolumeID) {
+	if !sqsKeepsDataVolume(inst, g.DataVolumeID) {
 		return fmt.Errorf("sqs worker instance %s cannot be relaunched: data volume %s is not among its kept volumes", inst.ID, g.DataVolumeID)
 	}
 	want := []vm.FwCfgEntry{{Name: "opt/spinifex/netcfg", File: netcfgFwCfgPath(inst.ID)}}

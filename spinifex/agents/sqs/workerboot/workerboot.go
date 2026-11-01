@@ -1,7 +1,7 @@
-// Package workerboot prepares the shared SQS worker guest: it selects exactly
-// the expected data disk by serial, checks and mounts it, proves that disk is
-// what is mounted, and only then loads or creates the worker's store key on it
-// under the current first-store decision the gateway returns.
+// Package workerboot prepares the SQS guest: it selects exactly the expected
+// data disk by serial, checks and mounts it, proves that disk is what is
+// mounted, and only then settles the receipt key under the gateway's decision,
+// before the guest's own SQS store first starts on that disk.
 package workerboot
 
 import (
@@ -18,11 +18,10 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerkey"
-	"github.com/nats-io/nkeys"
 )
 
 // Guest contract, read from fw_cfg under opt/spinifex/sqs-worker/. None of it
-// is a decision: whether a store key may be created is asked of the gateway.
+// is a decision: whether a receipt key may be created is asked of the gateway.
 //
 //	data-serial   virtio-blk serial of the worker's own ext4 data disk
 //	region        the Region the worker signs its gateway calls for
@@ -30,11 +29,15 @@ import (
 const (
 	keyDirName = "sqs-worker-key"
 	maxFwCfg   = 128
+	// StoreDirName is the store's JetStream directory on the data disk. Its
+	// presence is SQS data, so a pending decision never creates a key there.
+	StoreDirName = "jetstream"
+	receiptReady = "receipt-ready"
 )
 
 var regionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]+$`)
 
-// NewClaimer builds the gateway client the first-store decision comes from.
+// NewClaimer builds the gateway client the receipt key decision comes from.
 type NewClaimer func(region, gatewayURL string) (workerkey.Claimer, error)
 
 // Disk checks and mounts the worker data disk. The guest never formats.
@@ -67,9 +70,9 @@ type contract struct {
 	serial, region, gatewayURL string
 }
 
-// Boot runs the boot step and returns the worker's public key. The key is
-// loaded or created only under the gateway's current decision; any missing,
-// malformed or ambiguous input or answer refuses.
+// Boot runs the boot step and returns the receipt key's fingerprint. The key
+// is loaded, or created on a new volume, only under the gateway's current
+// decision; any missing, malformed or ambiguous input or answer refuses.
 func Boot(ctx context.Context, cfg Config) (string, error) {
 	c, err := readContract(cfg.FwCfgDir)
 	if err != nil {
@@ -86,20 +89,26 @@ func Boot(ctx context.Context, cfg Config) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("build gateway client: %w", err)
 	}
-	kp, err := acquire(ctx, cfg, workerkey.Store{Dir: filepath.Join(cfg.DataDir, keyDirName)}, claimer)
+	key, err := acquire(ctx, cfg, workerkey.Store{Dir: filepath.Join(cfg.DataDir, keyDirName)}, claimer)
 	if err != nil {
 		return "", err
 	}
-	defer kp.Wipe()
-	pub, err := kp.PublicKey()
-	if err != nil {
-		return "", fmt.Errorf("derive worker public key: %w", err)
-	}
-	if err := writePublicKey(cfg.RunDir, pub); err != nil {
+	fp := workerkey.Fingerprint(key)
+	clear(key)
+	if err := writeMarker(cfg.RunDir, receiptReady, fp); err != nil {
 		return "", err
 	}
-	cfg.Log("store key ready: public=" + pub)
-	return pub, nil
+	cfg.Log("receipt key ready: fingerprint=" + fp)
+	return fp, nil
+}
+
+// hasStoreData reports whether the disk already holds the store's directory.
+func hasStoreData(dataDir string) (bool, error) {
+	_, err := os.Lstat(filepath.Join(dataDir, StoreDirName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // mountWorkerDisk selects the disk with serial, checks and mounts it at
@@ -176,20 +185,21 @@ func readContract(dir string) (contract, error) {
 // acquire runs the decision and key step, repeating it only on an error that
 // says it is safe to repeat, including a denial a not-yet-bound worker gets.
 // A denial creates nothing, and each repeat re-asks the gateway.
-func acquire(ctx context.Context, cfg Config, store workerkey.Store, c workerkey.Claimer) (kp nkeys.KeyPair, err error) {
+func acquire(ctx context.Context, cfg Config, store workerkey.Store, c workerkey.Claimer) (key []byte, err error) {
 	attempts := max(cfg.Attempts, 1)
+	hasData := func() (bool, error) { return hasStoreData(cfg.DataDir) }
 	for i := range attempts {
-		kp, err = store.Acquire(ctx, c)
+		key, err = store.Acquire(ctx, c, hasData)
 		if err == nil || i == attempts-1 {
-			return kp, err
+			return key, err
 		}
 		switch {
 		case pending(err):
 			cfg.Log(fmt.Sprintf("worker not yet authorized, asking again: %v", err))
 		case retryable(err):
-			cfg.Log(fmt.Sprintf("first-store decision not settled, retrying: %v", err))
+			cfg.Log(fmt.Sprintf("receipt key decision not settled, retrying: %v", err))
 		default:
-			return kp, err
+			return key, err
 		}
 		select {
 		case <-ctx.Done():
@@ -333,29 +343,25 @@ func readTrimmed(path string) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
-// writePublicKey publishes the public key for later reporting; it is not secret.
-func writePublicKey(runDir, pub string) error {
+// writeMarker publishes a non-secret value under runDir atomically.
+func writeMarker(runDir, name, value string) error {
 	if err := os.MkdirAll(runDir, 0o750); err != nil {
 		return fmt.Errorf("create %s: %w", runDir, err)
 	}
-	tmp, err := os.CreateTemp(runDir, ".public-key-*")
+	tmp, err := os.CreateTemp(runDir, "."+name+"-*")
 	if err != nil {
-		return fmt.Errorf("write public key: %w", err)
+		return fmt.Errorf("write %s: %w", name, err)
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(pub + "\n"); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write public key: %w", err)
+	_, werr := tmp.WriteString(value + "\n")
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
 	}
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write public key: %w", err)
+	if werr != nil {
+		return fmt.Errorf("write %s: %w", name, werr)
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write public key: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), filepath.Join(runDir, "public-key")); err != nil {
-		return fmt.Errorf("write public key: %w", err)
+	if err := os.Rename(tmp.Name(), filepath.Join(runDir, name)); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
 	}
 	return nil
 }

@@ -1,6 +1,5 @@
 #!/bin/sh
-# Respawned by init. A watcher that must not run parks here instead of exiting,
-# so init does not respawn it in a tight loop.
+# Respawned by init: the worker, reporting ready only while the local store
+# answers. A watcher that must not run parks instead of exiting.
 . /usr/local/lib/sqs-worker/sqs-worker-lib.sh
 sqsw_run
-exec sleep 2147483647

@@ -11,13 +11,11 @@ STAGE_DIR="${1:?usage: sqs-store-microvm-publish.sh STAGE_DIR OUT_DIR}"
 OUT_DIR="${2:?usage: sqs-store-microvm-publish.sh STAGE_DIR OUT_DIR}"
 VMLINUZ="$STAGE_DIR/vmlinuz"
 INITRAMFS="$STAGE_DIR/initramfs.cpio.gz"
-PROFILE="${3:-store}"
+PROFILE="${3:-worker}"
 case "$PROFILE" in
-    store)
-        payload="usr/local/bin/nats-server usr/local/lib/sqs-store/sqs-store-lib.sh usr/local/lib/sqs-store/sqs-store-prepare usr/local/lib/sqs-store/sqs-store-run usr/local/lib/sqs-store/sqs-store-stop" ;;
     worker)
-        payload="usr/local/bin/sqs-worker usr/local/lib/sqs-worker/sqs-worker-lib.sh usr/local/lib/sqs-worker/sqs-worker-prepare usr/local/lib/sqs-worker/sqs-worker-ready usr/local/lib/sqs-worker/sqs-worker-stop data" ;;
-    *) echo "ERROR: profile must be store or worker, not $PROFILE" >&2; exit 1 ;;
+        payload="usr/local/bin/nats-server usr/local/bin/sqs-worker usr/local/lib/sqs-worker/sqs-worker-lib.sh usr/local/lib/sqs-worker/sqs-worker-prepare usr/local/lib/sqs-worker/sqs-worker-store usr/local/lib/sqs-worker/sqs-worker-ready usr/local/lib/sqs-worker/sqs-worker-stop data" ;;
+    *) echo "ERROR: profile must be worker, not $PROFILE" >&2; exit 1 ;;
 esac
 tag="[build-sqs-$PROFILE-microvm-image]"
 
@@ -56,12 +54,7 @@ for want_ko in ext4 tiny_power_button; do
     fi
 done
 if grep -qE '(^|/)(lb-agent|haproxy|nginx)$' <<< "$archive_list"; then
-    echo "ERROR: LB data-plane binaries found in the SQS store image" >&2
-    exit 1
-fi
-# The worker holds the store client key; it must never carry the store server.
-if [ "$PROFILE" = worker ] && grep -qE '(^|/)nats-server$' <<< "$archive_list"; then
-    echo "ERROR: nats-server found in the SQS worker image" >&2
+    echo "ERROR: LB data-plane binaries found in the SQS image" >&2
     exit 1
 fi
 echo "$tag content gate: PASS"

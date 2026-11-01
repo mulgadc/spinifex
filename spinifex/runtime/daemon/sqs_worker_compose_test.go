@@ -41,7 +41,7 @@ func TestBuildSQSWorkerLauncher_WiresTheRealHostCheck(t *testing.T) {
 
 	l, err := d.buildSQSWorkerLauncher(t.Context())
 	require.NoError(t, err)
-	_, err = l.Ensure(t.Context(), sqsTestRegion, ensureType)
+	_, err = l.Ensure(t.Context(), sqsTestRegion, ensureType, 8)
 	require.ErrorIs(t, err, workerlaunch.ErrHostNotReady)
 
 	ids, err := workerident.Open(t.Context(), js)

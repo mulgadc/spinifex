@@ -1,25 +1,22 @@
-// sqs-worker runs inside the shared SQS worker microVM.
+// sqs-worker runs inside the SQS microVM, next to its own SQS NATS server.
 //
 // Usage:
 //
 //	sqs-worker boot
 //	sqs-worker ready
 //
-// boot selects and mounts the worker's data disk named by fw_cfg, asks the
-// gateway for its current first-store decision with its instance-role
-// credentials, then loads or creates the store key on that disk and
-// publishes only the public key. ready then keeps checking the bound store's
-// JetStream with that key until it is stopped, keeping a readiness marker only
-// while the check passes. Every store connection is TLS 1.3 pinned to the
-// server key pin the store recorded with the gateway; nothing is sent to a
-// store that does not prove that key. ready also serves SQS owner calls
-// against that store, pulling them from the gateway with the same credentials.
+// boot selects and mounts the guest's data disk named by fw_cfg, asks the
+// gateway for its receipt key decision with its instance-role credentials,
+// then loads the recorded key, or creates one on a new volume and records its
+// fingerprint, before the guest's SQS store first starts on that disk. ready
+// then keeps checking the guest's own loopback JetStream, keeping a readiness
+// marker only while it answers, and serves SQS owner calls against it, pulling
+// them from the gateway with the same credentials.
 //
 // Serving is refused unless the gateway reports a single-node host cluster.
-// A disk with no receipt key refuses to serve; recovering it needs a safe
-// procedure not yet designed, and nothing deletes or replaces the store.
-// The host holds the store's data disk key, so the pin does not protect the
-// store from a privileged host.
+// A disk whose receipt key is missing or does not match the recorded one
+// refuses to serve; recovering it needs a procedure not yet designed, and
+// nothing deletes or replaces the volume.
 package main
 
 import (
@@ -48,7 +45,11 @@ const caPath = "/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/ca-cert/raw"
 // no static-key fallback.
 func newClaimer() workerboot.NewClaimer {
 	return func(region, gatewayURL string) (workerkey.Claimer, error) {
-		return newClient(region, gatewayURL)
+		c, err := newClient(region, gatewayURL)
+		if err != nil {
+			return nil, err
+		}
+		return workerboot.GatewayClaimer{Client: c}, nil
 	}
 }
 
@@ -60,12 +61,6 @@ func newClient(region, gatewayURL string) (*sqsworkergw.Client, error) {
 	return sqsworkergw.New(gatewayURL, region, ca, gwsign.NewInstanceRole())
 }
 
-type describer struct{ c *sqsworkergw.Client }
-
-func (d describer) DescribeStore(ctx context.Context) (workerboot.Store, error) {
-	st, err := d.c.DescribeStore(ctx)
-	return workerboot.Store(st), err
-}
 
 func main() {
 	if len(os.Args) != 2 || (os.Args[1] != "boot" && os.Args[1] != "ready") {
@@ -117,13 +112,6 @@ func ready(logf func(string)) error {
 	}
 	err := workerboot.Watch(ctx, workerboot.ReadyConfig{
 		Config: config(logf),
-		NewDescriber: func(region, gatewayURL string) (workerboot.StoreDescriber, error) {
-			c, err := newClient(region, gatewayURL)
-			if err != nil {
-				return nil, err
-			}
-			return describer{c}, nil
-		},
 		Checker:     workerboot.NATSChecker{},
 		CallTimeout: 30 * time.Second,
 		Refresh:     30 * time.Second,

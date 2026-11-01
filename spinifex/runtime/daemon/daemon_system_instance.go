@@ -429,7 +429,7 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 		instance.EBSRequests.Mu.Lock()
 		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{
 			Name:                guest.dataVolume(),
-			DeviceName:          sqsStoreDataDevice,
+			DeviceName:          sqsDataDevice,
 			DeleteOnTermination: false,
 		})
 		instance.EBSRequests.Mu.Unlock()
@@ -715,7 +715,7 @@ func (d *Daemon) refreshSystemInstanceState(inst *vm.VM) error {
 		if inst.SQSWorkerGuest != nil {
 			return d.refreshSQSWorkerState(inst)
 		}
-		return d.refreshSQSStoreState(inst)
+		return refuseSQSStoreRelaunch(inst)
 	}
 	if inst.ManagedBy != tags.ManagedByELBv2 {
 		return nil
@@ -855,7 +855,7 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 		if err != nil {
 			return vm.Config{}, fmt.Errorf("write sqs guest fw_cfg blobs: %w", err)
 		}
-		fwCfg = append(sqsStoreNetcfgOnly(fwCfg), guestCfg...)
+		fwCfg = append(sqsNetcfgOnly(fwCfg), guestCfg...)
 		imageDir = guest.imageDir()
 	}
 

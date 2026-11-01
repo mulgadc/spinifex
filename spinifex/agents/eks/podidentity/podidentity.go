@@ -1,9 +1,6 @@
-// Package podidentity implements the pod identity webhook that injects IRSA
-// credentials into pods of annotated ServiceAccounts, the way the AWS
-// amazon-eks-pod-identity-webhook does, plus the Spinifex STS endpoint and
-// gateway CA trust. It depends on no Kubernetes client library: the API server
-// speaks to it over AdmissionReview JSON and the cluster is reached through the
-// small interfaces below.
+// Package podidentity injects IRSA credentials into pods of annotated
+// ServiceAccounts like the AWS pod identity webhook, plus the Spinifex STS
+// endpoint and gateway CA. It uses no Kubernetes client; the cluster is reached through interfaces.
 package podidentity
 
 import (
@@ -11,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net/http"
-	"time"
 )
 
 const (
@@ -115,16 +110,6 @@ func NewMutator(cfg Config, sas ServiceAccountGetter, log *slog.Logger) *Mutator
 	return &Mutator{cfg: cfg, sas: sas, log: log}
 }
 
-// Mutate returns the patch for one pod creation request.
-func (m *Mutator) Mutate(_ context.Context, req AdmissionRequest) AdmissionResponse {
-	return AdmissionResponse{UID: req.UID, Allowed: true}
-}
-
-// ServeHTTP serves an AdmissionReview v1 request.
-func (m *Mutator) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
-}
-
 // ConfigMap is the part of a ConfigMap the publisher manages.
 type ConfigMap struct {
 	Namespace string
@@ -171,13 +156,6 @@ func NewPublisher(cfg PublisherConfig, ns NamespaceSource, cms ConfigMapStore, l
 	return &Publisher{cfg: cfg, ns: ns, cms: cms, log: log}
 }
 
-// Reconcile makes the CA bundle ConfigMap in one namespace match the bundle.
-func (p *Publisher) Reconcile(_ context.Context, _ string) error { return nil }
-
-// Run publishes to every existing namespace, then to each new one, and
-// re-checks every namespace each resync interval until ctx ends.
-func (p *Publisher) Run(_ context.Context, _ time.Duration) error { return nil }
-
 // WebhookConfig describes the MutatingWebhookConfiguration to render.
 type WebhookConfig struct {
 	Name string
@@ -186,10 +164,3 @@ type WebhookConfig struct {
 	// CA is the PEM the API server trusts for URL.
 	CA []byte
 }
-
-// RenderWebhookConfiguration returns the MutatingWebhookConfiguration as JSON.
-func RenderWebhookConfiguration(_ WebhookConfig) ([]byte, error) { return []byte("{}"), nil }
-
-// BuildCABundle returns the system roots plus the gateway CA as one PEM bundle,
-// without duplicate certificates.
-func BuildCABundle(_, _ []byte) []byte { return nil }

@@ -170,7 +170,11 @@ func TestS8_EKSKickAndSameNodeSweepRunOneTeardown(t *testing.T) {
 	seedHAControlPlane(t, f, "alpha")
 	entered, release := blockTerminate(t, f.inst)
 
-	go func() { _, _ = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID) }()
+	deleteDone := make(chan struct{})
+	go func() {
+		defer close(deleteDone)
+		_, _ = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
+	}()
 	waitEntered(t, entered)
 
 	sweepDone := make(chan struct{})
@@ -184,6 +188,7 @@ func TestS8_EKSKickAndSameNodeSweepRunOneTeardown(t *testing.T) {
 	}
 	release()
 	<-sweepDone
+	<-deleteDone
 	f.svc.WaitTeardowns()
 
 	got := f.inst.terminated()
@@ -204,7 +209,11 @@ func TestS2_EKSTeardownDoesNotSweepARecordChangedDuringTeardown(t *testing.T) {
 	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 	entered, release := blockTerminate(t, f.inst)
 
-	go func() { _, _ = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID) }()
+	deleteDone := make(chan struct{})
+	go func() {
+		defer close(deleteDone)
+		_, _ = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
+	}()
 	waitEntered(t, entered)
 	require.NoError(t, casUpdateMeta(t.Context(), f.kv, "alpha", func(m *ClusterMeta) bool {
 		m.ControlPlaneNodes = []ControlPlaneNode{
@@ -214,6 +223,7 @@ func TestS2_EKSTeardownDoesNotSweepARecordChangedDuringTeardown(t *testing.T) {
 		return true
 	}))
 	release()
+	<-deleteDone
 	f.svc.WaitTeardowns()
 
 	assert.Contains(t, f.inst.terminated(), "i-late", "a member recorded mid-teardown must be torn down, not orphaned")

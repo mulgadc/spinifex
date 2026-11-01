@@ -86,6 +86,10 @@ type GatewayConfig struct {
 	// They authenticate themselves or need no authentication. Nil mounts none.
 	PublicRoutes func(chi.Router)
 
+	// Admin configures the private /admin surface. Without a Service, every
+	// /admin request is answered InternalError.
+	Admin AdminSurface
+
 	// Services holds the signed AWS services dispatched through the
 	// registration seam. Nil means nothing is registered, so every signed
 	// request is refused as an unserved service.

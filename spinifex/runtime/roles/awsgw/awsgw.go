@@ -544,6 +544,7 @@ func launchService(config *config.ClusterConfig) error {
 		Readiness:      clusterready.New(natsConn),
 		Version:        version,
 		Commit:         commit,
+		Admin:          gateway.AdminSurface{Service: operatoradmin.ServiceName, WithRequestID: operatoradmin.WithRequestID},
 		PublicRoutes:   PublicRoutes(ekscluster.NewOIDCPublisher(jwksJS), registryHosts.Middleware(ecrBridge.Handler())),
 	}
 

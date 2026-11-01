@@ -12,6 +12,7 @@ import (
 // internals (the middleware stash, the admin method gate, the account gate)
 // use it; every other gateway test runs on the fake verifier.
 func withRealAuth(gw *GatewayConfig) *GatewayConfig {
+	withTestAdmin(gw)
 	gw.Credentials = credverify.New(gw.IAMService, gw.STSService)
 	gw.Policy = policyauth.New(gw.IAMService, policyauth.WithRetryBase(policyRetryBase))
 	gw.Admission = accountadmission.New(gw.IAMService)

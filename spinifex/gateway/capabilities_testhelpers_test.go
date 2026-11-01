@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"net/http"
 	"time"
 
@@ -33,6 +34,7 @@ func (n natsReadiness) Available() bool { return n.gw.NATSConn != nil && n.gw.NA
 
 // withFakeCapabilities fills whichever capability a test left unset.
 func withFakeCapabilities(gw *GatewayConfig) *GatewayConfig {
+	withTestAdmin(gw)
 	if gw.Policy == nil {
 		gw.Policy = allowPolicy{}
 	}
@@ -43,4 +45,12 @@ func withFakeCapabilities(gw *GatewayConfig) *GatewayConfig {
 		gw.Readiness = natsReadiness{gw}
 	}
 	return gw
+}
+
+// withTestAdmin points the /admin surface at the spinifex registration, as the
+// composing role does.
+func withTestAdmin(gw *GatewayConfig) {
+	if gw.Admin.Service == "" {
+		gw.Admin = AdminSurface{Service: operatoradmin.ServiceName, WithRequestID: operatoradmin.WithRequestID}
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -57,4 +58,13 @@ func TestMounts_RegistryPrefixIsExact(t *testing.T) {
 func TestMounts_AdminSitsBehindSigV4(t *testing.T) {
 	resp := doRequest(mountsApp(t), httptest.NewRequest(http.MethodPost, "/admin/CreateAccount", nil))
 	assert.GreaterOrEqual(t, resp.StatusCode, http.StatusBadRequest)
+}
+
+// Without an admin registration name the surface refuses, rather than
+// dispatching to whatever service the empty name selects.
+func TestAdmin_UnconfiguredSurfaceAnswersInternalError(t *testing.T) {
+	gw := withServices(&GatewayConfig{DisableLogging: true})
+	rec := adminRequest(gw, "CreateAccount", `{}`)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Equal(t, awserrors.ErrorInternalError, decodeAdminError(t, rec).Error.Code)
 }

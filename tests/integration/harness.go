@@ -20,6 +20,7 @@
 package integration
 
 import (
+	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
@@ -232,6 +233,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 
 	cfg := &gateway.GatewayConfig{
 		DisableLogging: true,
+		Admin:          gateway.AdminSurface{Service: operatoradmin.ServiceName, WithRequestID: operatoradmin.WithRequestID},
 		NATSConn:       nc,
 		ExpectedNodes:  1,
 		Region:         testRegion,

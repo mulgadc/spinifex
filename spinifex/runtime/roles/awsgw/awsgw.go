@@ -646,10 +646,11 @@ func launchService(config *config.ClusterConfig) error {
 	})
 	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
 	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
-	// The relay hands queued SQS work to the worker polling this gateway. No public
-	// SQS service is registered here until its capability profile is reviewed.
+	// The relay hands queued SQS work to the worker polling this gateway; the
+	// gate answers ServiceUnavailable until an operator enables SQS.
 	sqsGate := &sqsservicestate.Gate{JS: js, Region: nodeConfig.Region, TTL: 2 * time.Second}
 	sqsRelay := &sqsrelay.Relay{Admit: sqsGate.Open}
+	sqsControlPlane := sqsRegistrations(sqsRelay, registryHost, registryPort)
 	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
 		Version:     version,
 		Commit:      commit,
@@ -683,7 +684,7 @@ func launchService(config *config.ClusterConfig) error {
 		Admission:    admission,
 		PublicRoutes: publicRoutes,
 		PreAuth:      []dispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
-	}, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane, ec2ControlPlane)
+	}, append([]dispatch.Registration{ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane, ec2ControlPlane}, sqsControlPlane...)...)
 	if err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}

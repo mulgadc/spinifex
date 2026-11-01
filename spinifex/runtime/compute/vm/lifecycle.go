@@ -1376,7 +1376,7 @@ type driveConfig struct {
 // with the mounted data volumes appended after its devices. Neither input is
 // modified, so composing again from the same base never accumulates entries.
 func directBootLaunchConfig(base Config, requests []EBSRequest, cpuCount int) (Config, error) {
-	if !IsMMIO(base.MachineType) {
+	if !IsMicrovm(base.MachineType) {
 		return Config{}, fmt.Errorf("direct-boot launch config needs a microvm base, got machine type %q", base.MachineType)
 	}
 	for _, r := range requests {
@@ -1478,13 +1478,13 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 
 		default:
 			// microvm has no PCIe root ports, so its data volumes take none.
-			mmio := IsMMIO(machineType)
+			microvm := IsMicrovm(machineType)
 			// A data (non-boot, non-EFI) volume. Allocate a stable hot-plug
 			// port when the persisted state predates port accounting, or the
 			// volume was attached at RunInstances time without one;
 			// freeHotplugEBSPort re-scans requests as mutated so far in this
 			// loop, so two unset data volumes in one call cannot collide.
-			if v.HotplugPort == 0 && !mmio {
+			if v.HotplugPort == 0 && !microvm {
 				port := freeHotplugEBSPort(requests)
 				if port == 0 {
 					return driveConfig{}, fmt.Errorf("no free EBS hot-plug port for volume %s", v.Name)
@@ -1513,9 +1513,12 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 
 			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})
 			cfg.Blockdevs = append(cfg.Blockdevs, blockdev)
-			if mmio {
+			switch {
+			case IsMMIO(machineType):
 				cfg.Devices = append(cfg.Devices, volumeMMIOBlkDevice(v.Name, nodeName, iothreadID))
-			} else {
+			case microvm:
+				cfg.Devices = append(cfg.Devices, volumeMicrovmPCIBlkDevice(v.Name, nodeName, iothreadID))
+			default:
 				cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, HotplugEBSBus(v.HotplugPort)))
 			}
 			// Deliberately no entry in cfg.Drives: the bare anonymous -drive

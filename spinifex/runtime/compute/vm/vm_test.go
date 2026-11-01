@@ -675,3 +675,22 @@ func TestExecute_NoNameEmitsNoNameArg(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, argExists(cmd.Args[1:], "-name"))
 }
+
+func TestExecute_MicrovmWithPCIEFileChardev(t *testing.T) {
+	cfg := Config{
+		CPUCount:       1,
+		Memory:         512,
+		Architecture:   "x86_64",
+		MachineType:    "microvm,isa-serial=on,pcie=on",
+		ConsoleLogPath: "/var/log/console.log",
+		SerialSocket:   "/run/console.sock",
+		KernelImage:    "/boot/vmlinuz",
+	}
+
+	cmd, err := cfg.Execute()
+	require.NoError(t, err)
+
+	args := cmd.Args[1:]
+	assert.Equal(t, "file,id=console0,path=/var/log/console.log", argValue(args, "-chardev"))
+	assert.Equal(t, "chardev:console0", argValue(args, "-serial"))
+}

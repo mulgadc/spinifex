@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
@@ -271,4 +272,40 @@ func TestUpdateService_NoTaskDefinitionSkipsPassRole(t *testing.T) {
 		&ecs.UpdateServiceInput{DesiredCount: aws.Int64(3)}, mustNotBeCalledCheck(t))
 	require.NoError(t, err)
 	assert.True(t, svc.updateCalled)
+}
+
+// awsJson clients send timestamps as epoch seconds, which encoding/json cannot
+// decode into time.Time.
+func TestUnmarshalIfBody_EpochSecondTimestamp(t *testing.T) {
+	input := new(ecs.SubmitTaskStateChangeInput)
+	require.NoError(t, unmarshalIfBody([]byte(`{"task":"t1","pullStartedAt":1700000000.5}`), input))
+	assert.Equal(t, "t1", aws.StringValue(input.Task))
+	assert.Equal(t, time.Unix(1700000000, 500_000_000).UTC(), aws.TimeValue(input.PullStartedAt))
+}
+
+// The ECS agent marshals SDK shapes with encoding/json, whose keys are the Go
+// field names rather than the wire names.
+func TestUnmarshalIfBody_GoFieldNameKeys(t *testing.T) {
+	body, err := json.Marshal(&ecs.RegisterContainerInstanceInput{Cluster: aws.String("c1")})
+	require.NoError(t, err)
+	input := new(ecs.RegisterContainerInstanceInput)
+	require.NoError(t, unmarshalIfBody(body, input))
+	assert.Equal(t, "c1", aws.StringValue(input.Cluster))
+}
+
+func TestUnmarshalIfBody_DecodeFailureIsInvalidParameter(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"malformed", unmarshalIfBody([]byte(`{`), new(ecs.DescribeClustersInput))},
+		{"wrong type", unmarshalIfBody([]byte(`{"clusters":5}`), new(ecs.DescribeClustersInput))},
+		{"raw malformed", unmarshalRawIfBody([]byte(`{`), new(ecsdomain.PollAssignmentsInput))},
+		{"raw wrong type", unmarshalRawIfBody([]byte(`{"cluster":5}`), new(ecsdomain.PollAssignmentsInput))},
+	}
+	for _, tc := range cases {
+		code, _, ok := awserrors.ResolveErrorDetail(tc.err)
+		require.True(t, ok, tc.name)
+		assert.Equal(t, awserrors.ErrorECSInvalidParameter, code, tc.name)
+	}
 }

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -97,5 +99,22 @@ func TestECSRequest_MissingAccountID(t *testing.T) {
 	// the handler's own account guard.
 	err := gw.ECS_Request(httptest.NewRecorder(), req)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
+	assert.Equal(t, awserrors.ErrorECSServerException, err.Error())
+}
+
+// An error that resolves to no awserrors code is a server fault, answered with
+// the ServerException every ECS operation declares.
+func TestECSRequest_UnresolvedErrorIsServerException(t *testing.T) {
+	const action = "ListClusters"
+	original := ecsawsapi.Actions[action]
+	ecsawsapi.Actions[action] = func(context.Context, *nats.Conn, string, []byte, ecsawsapi.PassRoleChecker) (any, error) {
+		return nil, errors.New("nats: connection closed")
+	}
+	t.Cleanup(func() { ecsawsapi.Actions[action] = original })
+
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	err := gw.ECS_Request(httptest.NewRecorder(),
+		setupECSRequest("AmazonEC2ContainerServiceV20141113."+action, "{}"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorECSServerException, err.Error())
 }

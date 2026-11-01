@@ -1,24 +1,49 @@
 package awsapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
 
-// unmarshalIfBody decodes body into out only when non-empty.
+// unmarshalIfBody decodes an SDK-shaped body into out only when non-empty.
+// jsonutil reads awsJson's epoch-second timestamps; case-insensitive keys keep
+// accepting agents that marshal SDK shapes with encoding/json's Go field names.
 func unmarshalIfBody(body []byte, out any) error {
 	if len(body) == 0 {
 		return nil
 	}
-	return json.Unmarshal(body, out)
+	if err := jsonutil.UnmarshalJSONCaseInsensitive(out, bytes.NewReader(body)); err != nil {
+		return decodeError(err)
+	}
+	return nil
+}
+
+// unmarshalRawIfBody decodes the internal agent↔gateway shapes, which carry
+// json tags rather than SDK shapes, only when body is non-empty.
+func unmarshalRawIfBody(body []byte, out any) error {
+	if len(body) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return decodeError(err)
+	}
+	return nil
+}
+
+// decodeError reports a body that does not decode as a client fault.
+func decodeError(err error) error {
+	slog.Debug("ECS: request body does not decode", "err", err)
+	return awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "The request body could not be parsed.")
 }
 
 // checkTaskDefinitionRoles enforces iam:PassRole on every role ARN a task
@@ -162,7 +187,7 @@ func RegisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID str
 // Input/output are the custom domains/ecs types, not aws-sdk-go ecs shapes.
 func ProvisionCapacity(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecsdomain.ProvisionCapacityInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := unmarshalRawIfBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).ProvisionCapacity(ctx, input, accountID)
@@ -424,7 +449,7 @@ func SubmitTaskStateChange(ctx context.Context, nc *nats.Conn, accountID string,
 // encodes it with encoding/json (RawJSONActions), not the jsonutil marshaler.
 func PollAssignments(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecsdomain.PollAssignmentsInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := unmarshalRawIfBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).PollAssignments(ctx, input, accountID)
@@ -435,7 +460,7 @@ func PollAssignments(ctx context.Context, nc *nats.Conn, accountID string, body 
 // AWS's SubmitTaskStateChange has no gpuIds field.
 func ReportTaskGPU(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecsdomain.ReportTaskGPUInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := unmarshalRawIfBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).ReportTaskGPU(ctx, input, accountID)

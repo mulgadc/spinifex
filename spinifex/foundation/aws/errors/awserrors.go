@@ -431,6 +431,7 @@ var (
 	ErrorECSClientException                             = "ClientException"
 	ErrorECSClusterNotFound                             = "ClusterNotFoundException"
 	ErrorECSInvalidParameter                            = "InvalidParameterException"
+	ErrorECSServerException                             = "ServerException"
 	ErrorECSServiceNotFound                             = "ServiceNotFoundException"
 	ErrorRetryableError                                 = "RetryableError"
 	ErrorRouteAlreadyExists                             = "RouteAlreadyExists"
@@ -1249,6 +1250,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorECSClientException:                                    {HTTPCode: 400, Message: "Unable to describe task definition."},
 	ErrorECSClusterNotFound:                                    {HTTPCode: 400, Message: "The specified cluster was not found. You can view your available clusters with ListClusters. Amazon ECS clusters are Region specific."},
 	ErrorECSInvalidParameter:                                   {HTTPCode: 400, Message: "The specified parameter is not valid. Review the available parameters for the API request."},
+	ErrorECSServerException:                                    {HTTPCode: 500, Message: "These errors are usually caused by a server issue."},
 	ErrorECSServiceNotFound:                                    {HTTPCode: 400, Message: "The specified service was not found. You can view your available services with ListServices. Amazon ECS services are cluster specific and Region specific."},
 	ErrorRetryableError:                                        {HTTPCode: 400, Message: "A request submitted by an AWS service on your behalf could not be completed. The requesting service might automatically retry the request."},
 	ErrorRouteAlreadyExists:                                    {HTTPCode: 409, Message: "A route for the specified CIDR block already exists in this route table."},

@@ -153,8 +153,8 @@ func TestECSRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 }
 
 // The account-ID read moved above the gate, which used to reject a missing
-// account itself. InternalError is the code the caller has always seen.
-func TestECSRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
+// account itself. It is a server fault, so ECS answers ServerException.
+func TestECSRequest_MissingAccountIDReturnsServerException(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "ecs:*", "*"))
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	req.Header.Set("X-Amz-Target", ecsawsapi.TargetPrefix+".ListClusters")
@@ -162,5 +162,5 @@ func TestECSRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 
 	err := gw.ECS_Request(httptest.NewRecorder(), req)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
+	assert.Equal(t, awserrors.ErrorECSServerException, err.Error())
 }

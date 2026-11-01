@@ -24,6 +24,17 @@ func ecsActionFromTarget(target string) string {
 // by the shared ErrorHandler. Every action is a NotImplemented (501) stub until
 // its real handler is added when the service supports the operation.
 func (gw *GatewayConfig) ECS_Request(w http.ResponseWriter, r *http.Request) error {
+	err := gw.ecsRequest(w, r)
+	// Every ECS operation declares ServerException as its server fault, so an
+	// unresolved error or InternalError answers with it, not InternalErrorException.
+	if code, _, ok := awserrors.ResolveErrorDetail(err); err != nil && (!ok || code == awserrors.ErrorInternalError) {
+		slog.ErrorContext(r.Context(), "ECS_Request: server fault", "err", err)
+		return errors.New(awserrors.ErrorECSServerException)
+	}
+	return err
+}
+
+func (gw *GatewayConfig) ecsRequest(w http.ResponseWriter, r *http.Request) error {
 	action := ecsActionFromTarget(r.Header.Get("X-Amz-Target"))
 	if action == "" {
 		return errors.New(awserrors.ErrorMissingAction)
@@ -40,8 +51,6 @@ func (gw *GatewayConfig) ECS_Request(w http.ResponseWriter, r *http.Request) err
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.ErrorContext(r.Context(), "ECS_Request: no account ID in auth context")
-		// InternalError, not ServerInternal: the policy gate used to reach this
-		// case first and that is the code the caller has always seen.
 		return errors.New(awserrors.ErrorInternalError)
 	}
 

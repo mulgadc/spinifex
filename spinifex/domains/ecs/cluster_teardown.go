@@ -3,6 +3,7 @@ package ecs
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
@@ -22,6 +23,11 @@ func clusterKeyPrefix(cluster string) string {
 // is marked INACTIVE, then the whole clusters/{name}/ prefix is deleted. Returns
 // the cluster with Status INACTIVE.
 func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInput, accountID string) (*ecs.DeleteClusterOutput, error) {
+	// cluster is required here; ClusterShortName would resolve an omitted one
+	// to the default cluster and delete it.
+	if strings.TrimSpace(aws.StringValue(input.Cluster)) == "" {
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "cluster is required")
+	}
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {

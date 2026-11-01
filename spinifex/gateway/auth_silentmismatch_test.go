@@ -99,14 +99,12 @@ func TestSigV4Auth_FailureLogsLoopbackGatedClientIP(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rl := authlimit.NewAuthRateLimiter()
 			defer rl.Stop()
-			gw := &GatewayConfig{
+			gw := gwfix.WithDeps(&GatewayConfig{
 				DisableLogging: true,
 				Region:         gwfix.Region,
-				IAMService:     &gwfix.IAM{MasterKey: gwfix.MasterKey},
 				Credentials:    credverify.New(&gwfix.IAM{MasterKey: gwfix.MasterKey}, &gwfix.STS{}),
-				STSService:     &gwfix.STS{},
 				RateLimiter:    rl,
-			}
+			}, gwfix.Deps{IAM: &gwfix.IAM{MasterKey: gwfix.MasterKey}, STS: &gwfix.STS{}})
 			withEC2(gw)
 			handler := gw.SigV4AuthMiddleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Fatal("an unknown session credential must not reach the handler")

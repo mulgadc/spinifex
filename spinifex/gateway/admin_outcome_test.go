@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -54,7 +55,7 @@ func TestAdminOutcome_LogFollowsTheRealResult(t *testing.T) {
 	}{
 		{"success", awsidentifiers.DefaultAccountID(), nil, http.StatusOK, ""},
 		{"denied caller", authzAccountID, nil, http.StatusForbidden, "INFO"},
-		{"cluster fault", awsidentifiers.DefaultAccountID(), func(gw *GatewayConfig) { gw.NATSConn = nil }, http.StatusServiceUnavailable, "ERROR"},
+		{"cluster fault", awsidentifiers.DefaultAccountID(), func(gw *GatewayConfig) { gwfix.DepsOf(gw).NATS = nil }, http.StatusServiceUnavailable, "ERROR"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

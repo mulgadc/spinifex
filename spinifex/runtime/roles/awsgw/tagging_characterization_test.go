@@ -52,26 +52,24 @@ func taggingPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, agg *tagg
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		NATSConn:       nc,
-		IAMService: &gwfix.PolicyIAM{
-			IAM: gwfix.IAM{
-				MasterKey: gwfix.MasterKey,
-				AccessKeys: map[string]*iamdomain.AccessKey{
-					gwfix.AccessKey: {
-						AccessKeyID:     gwfix.AccessKey,
-						SecretAccessKey: encryptedSecret,
-						UserName:        "alice",
-						AccountID:       authzAccountID,
-						Status:          "Active",
-					},
+	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       authzAccountID,
+					Status:          "Active",
 				},
 			},
-			GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
-	})
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+	}}))
 	withTagging(gw, agg)
 
 	r := chi.NewRouter()
@@ -235,7 +233,7 @@ func TestTaggingPipeline_OversizedBody_413OverHTTP(t *testing.T) {
 
 // A nil NATS connection fails at the request-level gate, before dispatch.
 func TestRequest_ClusterUnavailableNilConn_Tagging(t *testing.T) {
-	gw := withTagging(withVerifier(&gateway.GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}), tagging.NewAggregator())
+	gw := withTagging(withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), tagging.NewAggregator())
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-Amz-Target", taggingTargetPrefix+"GetResources")

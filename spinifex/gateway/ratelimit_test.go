@@ -49,14 +49,12 @@ func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	gw := &GatewayConfig{
+	gw := gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		IAMService:     mockSvc,
 		Credentials:    credverify.New(mockSvc, nil),
 		RateLimiter:    rl,
-		NATSConn:       nc,
-	}
+	}, gwfix.Deps{IAM: mockSvc, NATS: nc})
 	withEC2(gw)
 
 	r := chi.NewRouter()

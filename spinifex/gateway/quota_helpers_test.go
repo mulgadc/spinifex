@@ -65,10 +65,9 @@ func quotaTestGateway(t *testing.T) (*GatewayConfig, string) {
 	quota.SetOverrides(kv)
 
 	svc := &quotaIAMService{known: account}
-	return withQuota(withVerifier(&GatewayConfig{
+	return withQuota(withVerifier(gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		IAMService:     svc,
-	}), quota), account
+	}, gwfix.Deps{IAM: svc})), quota), account
 }
 
 // quotaStubChecker answers AccountTerminating from a fixed set, so a test can

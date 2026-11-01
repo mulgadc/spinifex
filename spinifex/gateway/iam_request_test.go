@@ -164,11 +164,10 @@ func TestIAMRequest_ListUsers_Success(t *testing.T) {
 }
 
 func TestIAMRequest_MissingAccountID(t *testing.T) {
-	gw := &GatewayConfig{
+	gw := gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		IAMService:     &flexMockIAMService{},
 		Credentials:    credverify.New(&flexMockIAMService{}, nil),
-	}
+	}, gwfix.Deps{IAM: &flexMockIAMService{}})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := reqctx.WithService(r.Context(), "iam")
 		r = withTestIdentity(r.WithContext(ctx))
@@ -188,11 +187,10 @@ func TestIAMRequest_MissingAccountID(t *testing.T) {
 }
 
 func TestIAMRequest_NilService(t *testing.T) {
-	gw := &GatewayConfig{
+	gw := gwfix.WithDeps(&GatewayConfig{
 		DisableLogging: true,
-		IAMService:     nil,
 		Credentials:    credverify.New(nil, nil),
-	}
+	}, gwfix.Deps{IAM: nil})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		ctx = reqctx.WithService(ctx, "iam")

@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -65,26 +66,26 @@ const adminAccessPolicyDocument = `{"Version":"2012-10-17","Statement":[{"Effect
 func createTenantAccount(t *testing.T, gw *Gateway, name string) *PrincipalClients {
 	t.Helper()
 
-	acct, err := gw.Config.IAMService.CreateAccount(name)
+	acct, err := gwfix.DepsOf(gw.Config).IAM.CreateAccount(name)
 	require.NoError(t, err, "create account %s", name)
 
-	_, err = gw.Config.IAMService.CreateUser(acct.AccountID, &iam.CreateUserInput{
+	_, err = gwfix.DepsOf(gw.Config).IAM.CreateUser(acct.AccountID, &iam.CreateUserInput{
 		UserName: aws.String("root"),
 	})
 	require.NoError(t, err, "create user for account %s", name)
 
-	key, err := gw.Config.IAMService.CreateAccessKey(acct.AccountID, &iam.CreateAccessKeyInput{
+	key, err := gwfix.DepsOf(gw.Config).IAM.CreateAccessKey(acct.AccountID, &iam.CreateAccessKeyInput{
 		UserName: aws.String("root"),
 	})
 	require.NoError(t, err, "create access key for account %s", name)
 
-	policyOut, err := gw.Config.IAMService.CreatePolicy(acct.AccountID, &iam.CreatePolicyInput{
+	policyOut, err := gwfix.DepsOf(gw.Config).IAM.CreatePolicy(acct.AccountID, &iam.CreatePolicyInput{
 		PolicyName:     aws.String("AdministratorAccess"),
 		PolicyDocument: aws.String(adminAccessPolicyDocument),
 	})
 	require.NoError(t, err, "create policy for account %s", name)
 
-	_, err = gw.Config.IAMService.AttachUserPolicy(acct.AccountID, &iam.AttachUserPolicyInput{
+	_, err = gwfix.DepsOf(gw.Config).IAM.AttachUserPolicy(acct.AccountID, &iam.AttachUserPolicyInput{
 		UserName:  aws.String("root"),
 		PolicyArn: policyOut.Policy.Arn,
 	})

@@ -1,9 +1,12 @@
-package gateway
+package awsgw_test
 
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -47,7 +50,7 @@ func newDiscoveryEnv(t *testing.T) *discoveryEnv {
 	js := testutil.NewJetStream(t, nc)
 	kv, err := js.CreateOrUpdateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "eks-account-" + testDiscAccount})
 	require.NoError(t, err)
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService(), OIDC: ekscluster.NewOIDCPublisher(js)})
+	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(ekscluster.NewOIDCPublisher(js), nil)}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 	return &discoveryEnv{nc: nc, kv: kv, h: gw.SetupRoutes()}
 }
 
@@ -149,7 +152,7 @@ func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 		}
 	})
 	t.Run("no_connection", func(t *testing.T) {
-		h := (withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()})).SetupRoutes()
+		h := (withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(nil, nil)}, gwfix.Deps{IAM: allowAllIAMService()}))).SetupRoutes()
 		for _, p := range []string{cbDiscPath, cbKeysPath} {
 			rec := getOIDC(t, h, p)
 			assert.Equal(t, http.StatusInternalServerError, rec.Code, p)
@@ -206,7 +209,7 @@ func TestCurrentBehaviour_WebIdentityJWKSMissingWireResponse(t *testing.T) {
 	signed, err := tok.SignedString(priv)
 	require.NoError(t, err)
 
-	gw := withSTS(withVerifier(&GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: iamSvc, STSService: stsSvc}))
+	gw := withSTS(withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: nc, IAM: iamSvc, STS: stsSvc})))
 	form := url.Values{
 		"Action": {"AssumeRoleWithWebIdentity"}, "Version": {"2011-06-15"},
 		"RoleArn": {aws.StringValue(role.Role.Arn)}, "RoleSessionName": {"s1"}, "WebIdentityToken": {signed},

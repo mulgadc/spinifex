@@ -1,6 +1,7 @@
 package awsgw_test
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
@@ -11,7 +12,7 @@ import (
 // as the awsgw role composes it. Set both on gw before calling.
 func withELBv2(gw *gateway.GatewayConfig) *gateway.GatewayConfig {
 	b := dispatch.NewBuilder()
-	reg := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: gw.NATSConn, Quota: quotaFor(gw)})
+	reg := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: gwfix.DepsOf(gw).NATS, Quota: quotaFor(gw)})
 	if err := b.Register(reg); err != nil {
 		panic(err)
 	}

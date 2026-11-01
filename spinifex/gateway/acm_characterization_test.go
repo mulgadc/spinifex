@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"github.com/go-chi/chi/v5"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/stretchr/testify/assert"
@@ -53,7 +54,7 @@ func TestACMPipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T) {
 	defer otel.SetTracerProvider(prev)
 
 	gw, _ := acmPipelineApp(t, allowAllACMDocs())
-	subscribeACMCounter(t, gw.NATSConn, "acm.ListCertificates", []byte(`{}`))
+	subscribeACMCounter(t, gwfix.DepsOf(gw).NATS, "acm.ListCertificates", []byte(`{}`))
 
 	r := chi.NewRouter()
 	r.Use(otelsetup.HTTPMiddleware("awsgw"))

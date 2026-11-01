@@ -237,7 +237,7 @@ func TestErrorEnvelope_ClusterUnavailable(t *testing.T) {
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(envelopeRegistration(restJSONService, dispatch.ErrorEnvelopeRESTJSON, c, nil)))
 	require.NoError(t, b.Register(envelopeRegistration(json10Service, dispatch.ErrorEnvelopeJSON10Query, c, nil)))
-	gw := withVerifier(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), Services: b.Build()})
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true, Services: b.Build()}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	call := func(svc string) *http.Response {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)

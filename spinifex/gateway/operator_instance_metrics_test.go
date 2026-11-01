@@ -18,7 +18,7 @@ import (
 func TestOperatorQuery_GetInstanceMetrics_PolicyOnAnotherInstanceIsDenied(t *testing.T) {
 	otherARN := "arn:aws:ec2:" + gwfix.Region + ":" + streamAccount + ":instance/i-0fffffffffffffff0"
 	gw, app := operatorPipelineApp(t, streamAccount, instanceMetricsDocs(otherARN), nil)
-	answerWatches(t, gw.NATSConn)
+	answerWatches(t, gwfix.DepsOf(gw).NATS)
 	srv := httptest.NewServer(app)
 	t.Cleanup(srv.Close)
 
@@ -32,7 +32,7 @@ func TestOperatorQuery_GetInstanceMetrics_PolicyOnAnotherInstanceIsDenied(t *tes
 func TestOperatorQuery_GetInstanceMetrics_StreamsThroughThePipeline(t *testing.T) {
 	instanceARN := "arn:aws:ec2:" + gwfix.Region + ":" + streamAccount + ":instance/" + streamInstance
 	gw, app := operatorPipelineApp(t, streamAccount, instanceMetricsDocs(instanceARN), nil)
-	answerWatches(t, gw.NATSConn)
+	answerWatches(t, gwfix.DepsOf(gw).NATS)
 	srv := httptest.NewServer(app)
 	t.Cleanup(srv.Close)
 

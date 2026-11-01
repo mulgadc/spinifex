@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -423,4 +424,30 @@ func TestDescribeCluster_StuckDeleteShowsTheStepNotTheError(t *testing.T) {
 
 	meta.Status = ClusterStatusActive
 	assert.Nil(t, clusterMetaToAWS(meta).Health, "only a DELETING cluster reports a stuck delete")
+}
+
+// TestS8_EKSDeleteClusterRefusesWhileNodegroupsExist: the request decides the
+// error AWS returns for a cluster that still has managed node groups, and
+// leaves the cluster as it was.
+func TestS8_EKSDeleteClusterRefusesWhileNodegroupsExist(t *testing.T) {
+	t.Parallel()
+	f := newDeleteClusterFixture(t, "alpha")
+	require.NoError(t, PutNodegroupRecord(t.Context(), f.kv, &NodegroupRecord{
+		ClusterName: "alpha", Name: "ng1", Status: eks.NodegroupStatusActive,
+		InstanceIDs: []string{"i-worker1"},
+	}))
+
+	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
+	require.Error(t, err)
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorEKSResourceInUse, code)
+	assert.Contains(t, message, "nodegroups attached")
+	f.svc.WaitTeardowns()
+
+	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
+	require.NoError(t, getErr)
+	assert.Equal(t, ClusterStatusCreating, meta.Status, "a refused delete records nothing")
+	assert.Empty(t, f.inst.terminated())
+	_, ngErr := GetNodegroupRecord(t.Context(), f.kv, "alpha", "ng1")
+	require.NoError(t, ngErr, "the node group and its workers are untouched")
 }

@@ -1166,6 +1166,16 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 		return &eks.DeleteClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
 	}
 
+	// AWS refuses while managed node groups remain: deleting the control plane
+	// under them would orphan their running workers.
+	groups, err := ListNodegroupRecords(ctx, acctKV, name)
+	if err != nil {
+		return nil, fmt.Errorf("list node groups: %w", err)
+	}
+	if len(groups) > 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorEKSResourceInUse, "Cluster has nodegroups attached")
+	}
+
 	recorded, transitioned, err := MarkClusterDeleting(ctx, acctKV, name)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {

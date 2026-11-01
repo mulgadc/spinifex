@@ -111,6 +111,7 @@ type IAMServiceImpl struct {
 	groupsBucket           jetstream.KeyValue
 	key                    *masterkey.Key
 	sessionRevoker         SessionRevoker
+	recordLocks            recordLocks
 }
 
 var _ IAMService = (*IAMServiceImpl)(nil)
@@ -2180,6 +2181,7 @@ func (s *IAMServiceImpl) getUser(ctx context.Context, accountID, userName string
 // updateRoleCAS. Every writer of a user record must use it: one blind Put can
 // restore a policy or group membership that a concurrent writer removed.
 func (s *IAMServiceImpl) updateUserCAS(ctx context.Context, accountID, userName string, mutate func(*User) (bool, error)) error {
+	defer s.recordLocks.lock("user/" + accountID + "." + userName)()
 	_, err := kvutil.Update(ctx, s.usersBucket, accountID+"."+userName, iamRecordCASConfig("user", accountID, userName), mutate)
 	return err
 }

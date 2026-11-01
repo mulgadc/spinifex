@@ -103,7 +103,7 @@ func TestRunOchreApplianceTeardown_MissingConfirmExits1(t *testing.T) {
 		return nil
 	})
 
-	cmd := *ochreApplianceTeardownCmd
+	cmd := copyCmd(t, ochreApplianceTeardownCmd)
 	code := withOchreExitCapture(t, func() { runOchreApplianceTeardown(&cmd, nil) })
 	require.Equal(t, 1, code)
 }
@@ -111,7 +111,7 @@ func TestRunOchreApplianceTeardown_MissingConfirmExits1(t *testing.T) {
 func TestRunOchreApplianceTeardown_ConfirmedPrintsSuccess(t *testing.T) {
 	withApplianceTeardown(t, func(context.Context, bool) error { return nil })
 
-	cmd := *ochreApplianceTeardownCmd
+	cmd := copyCmd(t, ochreApplianceTeardownCmd)
 	require.NoError(t, cmd.Flags().Set("confirm", "true"))
 
 	var out string
@@ -127,7 +127,7 @@ func TestRunOchreApplianceTeardown_TeardownErrorExits1(t *testing.T) {
 		return errors.New("ochrevector: platform appliance is not enabled or not up on this node")
 	})
 
-	cmd := *ochreApplianceTeardownCmd
+	cmd := copyCmd(t, ochreApplianceTeardownCmd)
 	require.NoError(t, cmd.Flags().Set("confirm", "true"))
 
 	code := withOchreExitCapture(t, func() { runOchreApplianceTeardown(&cmd, nil) })
@@ -143,7 +143,7 @@ func TestRunOchreApplianceTeardown_PurgeMetadataFlagReachesTeardownFn(t *testing
 		return nil
 	})
 
-	cmd := *ochreApplianceTeardownCmd
+	cmd := copyCmd(t, ochreApplianceTeardownCmd)
 	require.NoError(t, cmd.Flags().Set("confirm", "true"))
 	require.NoError(t, cmd.Flags().Set("purge-metadata", "true"))
 

@@ -73,6 +73,35 @@ func requestOutcomesFor(t *testing.T, action string) []string {
 	return outcomes
 }
 
+// requestCountFor sums the mulga.requests points recorded under action with
+// outcome. Points are cumulative for the life of the binary, so a test that
+// can repeat (-count) must compare counts, not whether a point exists.
+func requestCountFor(t *testing.T, action, outcome string) int64 {
+	t.Helper()
+	installOutcomeReader(t)
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, outcomeReader.Collect(context.Background(), &rm))
+
+	var n int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if m.Name != "mulga.requests" || !ok {
+				continue
+			}
+			for _, dp := range sum.DataPoints {
+				a, _ := dp.Attributes.Value(attribute.Key("rpc.method"))
+				o, _ := dp.Attributes.Value(attribute.Key("outcome"))
+				if a.AsString() == action && o.AsString() == outcome {
+					n += dp.Value
+				}
+			}
+		}
+	}
+	return n
+}
+
 // The wrapper must record whatever the handler reports. Before the handler
 // type carried an outcome there was nothing to record and every daemon NATS
 // point arrived with the attribute unset.

@@ -7,7 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,25 +169,15 @@ func TestKVDigestStreamFilterAndDeletedSeq(t *testing.T) {
 	assert.Equal(t, 1, d[0].Replicas)
 }
 
-func freePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
-}
-
 // A replicated stream's meta.inf carries num_replicas > 1, which a standalone
 // server refuses to load; this is the case every production node presents.
 func TestKVDigestClusteredReplicas(t *testing.T) {
 	ctx := context.Background()
 	const n = 3
-	ports := make([]int, n)
-	routes := make([]string, n)
-	for i := range ports {
-		ports[i] = freePort(t)
-		routes[i] = fmt.Sprintf("nats://127.0.0.1:%d", ports[i])
-	}
+	// Servers bind their own route ports, so none is ever free to be taken.
+	// JetStream needs a configured route, so the first, which cannot name the
+	// others yet, gets port 1, where nothing listens; the rest route to it.
+	seed := []*url.URL{{Scheme: "nats", Host: "127.0.0.1:1"}}
 	stores := make([]string, n)
 	servers := make([]*server.Server, n)
 	for i := range servers {
@@ -195,19 +185,19 @@ func TestKVDigestClusteredReplicas(t *testing.T) {
 		ns, err := server.NewServer(&server.Options{
 			ServerName: fmt.Sprintf("s%d", i+1), JetStream: true, StoreDir: stores[i],
 			Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true,
-			Cluster: server.ClusterOpts{Name: "digest", Host: "127.0.0.1", Port: ports[i]},
-			Routes:  server.RoutesFromStr(strings.Join(routes, ",")),
+			Cluster: server.ClusterOpts{Name: "digest", Host: "127.0.0.1", Port: -1},
+			Routes:  seed,
 		})
 		require.NoError(t, err)
 		ns.Start()
 		servers[i] = ns
-	}
-	t.Cleanup(func() {
-		for _, ns := range servers {
-			ns.Shutdown()
-			ns.WaitForShutdown()
+		// Registered after its TempDir, so the server stops before that is removed.
+		t.Cleanup(func() { ns.Shutdown(); ns.WaitForShutdown() })
+		require.True(t, ns.ReadyForConnections(10*time.Second), "server %d not ready", i+1)
+		if i == 0 {
+			seed = []*url.URL{{Scheme: "nats", Host: ns.ClusterAddr().String()}}
 		}
-	})
+	}
 
 	nc, err := nats.Connect("", nats.InProcessServer(servers[0]))
 	require.NoError(t, err)
@@ -228,22 +218,18 @@ func TestKVDigestClusteredReplicas(t *testing.T) {
 		_, err := kv.PutString(ctx, fmt.Sprintf("k%d", i%2), fmt.Sprintf("v%d", i))
 		require.NoError(t, err)
 	}
-	s, err := js.Stream(ctx, "KV_rep")
-	require.NoError(t, err)
+	// A replica the leader reports current holds the writes in its Raft log,
+	// not yet in its store, so ask each server for its own store's state.
 	require.Eventually(t, func() bool {
-		info, err := s.Info(ctx)
-		if err != nil || info.Cluster == nil || len(info.Cluster.Replicas) != n-1 {
-			return false
-		}
-		for _, r := range info.Cluster.Replicas {
-			if !r.Current || r.Lag != 0 {
+		for _, ns := range servers {
+			if localLastSeq(ns, "KV_rep") != 5 {
 				return false
 			}
 		}
 		return true
-	}, 30*time.Second, 250*time.Millisecond)
+	}, 30*time.Second, 50*time.Millisecond)
 
-	// Current means applied, not flushed; shutdown flushes every block to disk.
+	// Applied is not flushed; shutdown flushes every block to disk.
 	nc.Close()
 	for _, ns := range servers {
 		ns.Shutdown()
@@ -268,6 +254,22 @@ func TestKVDigestClusteredReplicas(t *testing.T) {
 	res, err := compareNodeDigests(nodes)
 	require.NoError(t, err)
 	assert.False(t, res.divergent(), "%+v", res)
+}
+
+// localLastSeq is the last sequence stream holds in srv's own replica.
+func localLastSeq(srv *server.Server, stream string) uint64 {
+	info, err := srv.Jsz(&server.JSzOptions{Accounts: true, Streams: true})
+	if err != nil {
+		return 0
+	}
+	for _, a := range info.AccountDetails {
+		for _, sd := range a.Streams {
+			if sd.Name == stream {
+				return sd.State.LastSeq
+			}
+		}
+	}
+	return 0
 }
 
 // Recovery applies MaxAge, so without the rewrite an expired bucket copy

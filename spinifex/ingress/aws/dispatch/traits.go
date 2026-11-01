@@ -26,4 +26,7 @@ type ServiceTraits struct {
 	// service sign with on its default endpoint. Unset, only the gateway's own
 	// region is accepted.
 	GlobalSigningRegion string
+	// PayloadBody marks a scope whose request body is object data, never
+	// query arguments, so nothing reads an Action out of it.
+	PayloadBody bool
 }

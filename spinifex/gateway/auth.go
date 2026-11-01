@@ -148,7 +148,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 					slog.Warn("Auth failure: verification failed",
 						"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", src.logIP,
 						"service", sig.Credential.Service,
-						"action", mismatchAction(r, sig.Credential.Service),
+						"action", gw.mismatchAction(r, sig.Credential.Service),
 						"canonicalRequest", sig.RedactedCanonicalRequest(),
 						"err", sigErr)
 					// Fingerprinted by the signature as well as the key id: each guess at a
@@ -248,9 +248,9 @@ func signingTime(r *http.Request) string {
 
 // mismatchAction recovers the Action for a rejected query-protocol request so the log names
 // the operation. Auth fails before the dispatcher parses it, which otherwise leaves the
-// trace as a bare "POST /". S3 is skipped: its body is object data, not query args.
-func mismatchAction(r *http.Request, service string) string {
-	if service == "s3" {
+// trace as a bare "POST /". A scope whose body is object data is skipped.
+func (gw *GatewayConfig) mismatchAction(r *http.Request, service string) string {
+	if traits, ok := gw.selector().Traits(service); ok && traits.PayloadBody {
 		return ""
 	}
 

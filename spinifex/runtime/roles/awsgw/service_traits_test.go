@@ -65,6 +65,7 @@ func TestWireServiceRegistry_DeclaresTheS3Scope(t *testing.T) {
 	traits, ok := gw.Services.Traits("s3")
 	require.True(t, ok)
 	assert.Equal(t, dispatch.XMLErrorShapeS3, traits.XMLErrorShape)
+	assert.True(t, traits.PayloadBody)
 	_, served := gw.Services.Lookup("s3")
 	assert.False(t, served, "a declared scope is not a served service")
 }
@@ -75,5 +76,11 @@ func TestProductionServiceTraits_GlobalSigningRegion(t *testing.T) {
 	assert.Equal(t, "us-east-1", got["route53"].GlobalSigningRegion)
 	for _, svc := range []string{"iam", "sts", "eks", "ec2", "spinifex"} {
 		assert.Empty(t, got[svc].GlobalSigningRegion, svc)
+	}
+}
+
+func TestProductionServiceTraits_OnlyS3ScopeIsPayloadBody(t *testing.T) {
+	for svc, traits := range productionTraits(t) {
+		assert.False(t, traits.PayloadBody, svc)
 	}
 }

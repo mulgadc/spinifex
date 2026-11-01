@@ -381,7 +381,7 @@ func withServices(gw *GatewayConfig, regs ...dispatch.Registration) *GatewayConf
 		}
 	}
 	// The composition declares the scopes it knows but does not serve.
-	if err := b.DeclareScope("s3", dispatch.ServiceTraits{XMLErrorShape: dispatch.XMLErrorShapeS3}); err != nil {
+	if err := b.DeclareScope("s3", dispatch.ServiceTraits{XMLErrorShape: dispatch.XMLErrorShapeS3, PayloadBody: true}); err != nil {
 		panic(err)
 	}
 	gw.Services = b.Build()

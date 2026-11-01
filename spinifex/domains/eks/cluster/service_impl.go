@@ -263,6 +263,8 @@ type EKSServiceImpl struct {
 
 	// launchWG tracks in-flight async create launches for test determinism (WaitLaunches).
 	launchWG sync.WaitGroup
+	// launchStepHook, when set by a test, runs at named points in the launch.
+	launchStepHook func(step string)
 
 	// teardownRunning holds the clusters this process is tearing down, the
 	// in-process gate the teardown lease cannot provide; teardownWG tracks them.
@@ -755,6 +757,13 @@ func (s *EKSServiceImpl) launchSuperseded(ctx context.Context, kv jetstream.KeyV
 		if perr := s.purgeClusterInfra(ctx, accountID, name, meta, kv); perr != nil {
 			slog.WarnContext(ctx, "launchClusterInfra: release after delete incomplete", "cluster", name, "err", perr)
 		}
+		// Keys the launch wrote after the teardown swept the record have no
+		// owner left; remove them unless a new cluster has claimed the name.
+		if _, gerr := GetClusterMeta(ctx, kv, name); errors.Is(gerr, ErrClusterNotFound) {
+			if derr := DeleteClusterChildren(ctx, kv, name); derr != nil {
+				slog.WarnContext(ctx, "launchClusterInfra: remove child records after delete", "cluster", name, "err", derr)
+			}
+		}
 	}
 	return true
 }
@@ -1039,9 +1048,18 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	}
 
 	// Seed creator system:masters AccessEntry so the token webhook can authenticate the creator immediately.
+	if s.launchStepHook != nil {
+		s.launchStepHook("seed-creator-admin")
+	}
 	if bootstrapCreatorAdmin(input) && callerPrincipalARN != "" {
 		if err := s.owner.SeedCreatorAdmin(ctx, acctKV, accountID, name, callerPrincipalARN); err != nil {
 			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "seed cluster-creator admin access entry", err)
+			return
+		}
+		// The entry is a child of the record: if a delete removed the record
+		// while it was being written, it must not outlive it.
+		if err := persistLaunchMeta(ctx, acctKV, meta); err != nil {
+			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "confirm cluster after seeding access entry", err)
 			return
 		}
 	} else if bootstrapCreatorAdmin(input) {

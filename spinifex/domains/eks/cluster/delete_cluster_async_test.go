@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -476,4 +477,43 @@ func TestS2_EKSDeletingClusterAdmitsNoNewDependants(t *testing.T) {
 	}, testAccountID)
 	code, _, _ := awserrors.ResolveErrorDetail(err)
 	assert.Equal(t, awserrors.ErrorEKSResourceInUse, code, "CreateAccessEntry on a DELETING cluster")
+}
+
+// TestS2_EKSLaunchOvertakenByDeleteLeavesNoChildRecords: a create launch whose
+// cluster is deleted and swept just before it seeds the creator's access entry
+// must not leave that entry, or any other key under the cluster, behind.
+func TestS2_EKSLaunchOvertakenByDeleteLeavesNoChildRecords(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	held := make(chan struct{})
+	gate := make(chan struct{})
+	var once sync.Once
+	f.svc.launchStepHook = func(step string) {
+		if step == "seed-creator-admin" {
+			once.Do(func() { close(held); <-gate })
+		}
+	}
+
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, testPrincipalARN)
+	require.NoError(t, err)
+	<-held
+	_, err = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
+	require.NoError(t, err)
+	f.svc.WaitTeardowns()
+	_, err = GetClusterMeta(t.Context(), f.kv, "alpha")
+	require.ErrorIs(t, err, ErrClusterNotFound, "the teardown swept the record before the launch resumed")
+	close(gate)
+	f.svc.WaitLaunches()
+
+	keys, err := f.kv.Keys(t.Context())
+	if !errors.Is(err, jetstream.ErrNoKeysFound) {
+		require.NoError(t, err)
+	}
+	var left []string
+	for _, k := range keys {
+		if strings.HasPrefix(k, "clusters/alpha/") {
+			left = append(left, k)
+		}
+	}
+	assert.Empty(t, left, "ADR-0003:S2: no child record may outlive the swept cluster record")
 }

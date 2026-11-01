@@ -251,11 +251,24 @@ func (s *EKSServiceImpl) removeClusterRecord(ctx context.Context, acctKV jetstre
 	})
 	switch {
 	case err == nil, errors.Is(err, ErrClusterNotFound):
+		s.sweepLateChildren(ctx, acctKV, name)
 		return true, nil
 	case errors.Is(err, errRefsAdded):
 		return false, nil
 	default:
 		return false, err
+	}
+}
+
+// sweepLateChildren removes child keys written between the children sweep and
+// the meta delete, by a launch or bootstrap still running for the cluster. A
+// writer that lands after this finds the record gone and removes its own.
+func (s *EKSServiceImpl) sweepLateChildren(ctx context.Context, acctKV jetstream.KeyValue, name string) {
+	if _, err := GetClusterMeta(ctx, acctKV, name); !errors.Is(err, ErrClusterNotFound) {
+		return
+	}
+	if err := DeleteClusterChildren(ctx, acctKV, name); err != nil {
+		slog.WarnContext(ctx, "eks: remove late child records", "cluster", name, "err", err)
 	}
 }
 

@@ -926,10 +926,8 @@ type nicNetdevResult struct {
 }
 
 // microvmMachineType returns the QEMU -M string for the microvm machine.
-// pcie=on gives it a PCI bus so NICs are virtio-net-pci with MSI-X; the
-// virtio-mmio shared level-triggered lines stalled a NIC's RX path.
-// isa-serial is kept on permanently for per-VM console log access — the
-// boot-time saving from turning it off is not worth losing console output.
+// pcie=on gives NICs a PCI bus with MSI-X; virtio-mmio's shared level-triggered
+// lines stalled a NIC's RX path. isa-serial stays on for per-VM console logs.
 func microvmMachineType() string {
 	return "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on,pcie=on"
 }

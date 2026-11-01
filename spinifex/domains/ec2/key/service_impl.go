@@ -482,7 +482,9 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 		return "", fmt.Errorf("failed to list objects: %w", err)
 	}
 
-	// Check each .json metadata file
+	// An unreadable record may be this name's key pair, so it makes absence
+	// unproven, but it cannot hide a match found elsewhere in the listing.
+	var unreadable error
 	for _, obj := range objects {
 		if obj == nil || obj.Key == nil {
 			continue
@@ -503,9 +505,11 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 			if objectstore.IsNoSuchKeyError(err) {
 				continue
 			}
-			// Unread metadata may be the key pair asked for, so absence is unproven.
 			slog.ErrorContext(ctx, "Failed to get metadata file", "key", *obj.Key, "err", err)
-			return "", fmt.Errorf("read metadata %s: %w", *obj.Key, err)
+			if unreadable == nil {
+				unreadable = fmt.Errorf("read metadata %s: %w", *obj.Key, err)
+			}
+			continue
 		}
 
 		body, err := io.ReadAll(getResult.Body)
@@ -514,14 +518,19 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 		}
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to read metadata body", "key", *obj.Key, "err", err)
-			return "", fmt.Errorf("read metadata %s: %w", *obj.Key, err)
+			if unreadable == nil {
+				unreadable = fmt.Errorf("read metadata %s: %w", *obj.Key, err)
+			}
+			continue
 		}
 
 		metadata, err := decodeKeyPairMetadata(body)
 		if err != nil {
-			// Undecodable metadata may be this name's key pair, so absence is unproven.
 			slog.ErrorContext(ctx, "Undecodable key-pair metadata", "key", *obj.Key, "err", err)
-			return "", fmt.Errorf("decode metadata %s: %w", *obj.Key, err)
+			if unreadable == nil {
+				unreadable = fmt.Errorf("decode metadata %s: %w", *obj.Key, err)
+			}
+			continue
 		}
 
 		// Check if this metadata matches the keyName
@@ -530,6 +539,9 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 				return *metadata.KeyPairId, nil
 			}
 		}
+	}
+	if unreadable != nil {
+		return "", unreadable
 	}
 
 	// Key pair not found

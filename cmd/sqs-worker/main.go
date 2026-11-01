@@ -117,7 +117,7 @@ func ready(logf func(string)) error {
 		return err
 	}
 	err := workerboot.Watch(ctx, workerboot.ReadyConfig{
-		Config: config(logf),
+		Config:      config(logf),
 		Checker:     workerboot.NATSChecker{},
 		CallTimeout: 30 * time.Second,
 		Refresh:     30 * time.Second,

@@ -121,14 +121,6 @@ func (f *fakeStores) Current(_ context.Context, region string) (storelaunch.Reco
 	return f.rec, f.err
 }
 
-func (f *fakeStores) ServerKeyOf(context.Context, string, string) (storelaunch.Record, error) {
-	return f.rec, f.err
-}
-
-func (f *fakeStores) RecordServerKey(context.Context, string, string, string, string, string) error {
-	return f.err
-}
-
 // The first-store identity is the authoritative record's, keyed by the session
 // STS set, never anything the request carried.
 func TestClaim_UsesTheCurrentRecordIdentity(t *testing.T) {
@@ -709,7 +701,7 @@ func TestStoreServerKey_GatedToTheBoundStoreSession(t *testing.T) {
 		}
 	}
 	_, _, deps := fakes()
-	deps.Stores = recs
+	deps.Stores, deps.ServerKeys = recs, recs
 	pin := strings.Repeat("ab", 32)
 	record := "Action=RecordStoreServerKey&ClaimId=" + claim + "&VolumeId=" + vol + "&Pin="
 

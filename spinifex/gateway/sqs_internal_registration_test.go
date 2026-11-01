@@ -47,14 +47,6 @@ func (sqsWorkerStores) Current(context.Context, string) (storelaunch.Record, err
 	return storelaunch.Record{}, jetstream.ErrKeyNotFound
 }
 
-func (sqsWorkerStores) ServerKeyOf(context.Context, string, string) (storelaunch.Record, error) {
-	return storelaunch.Record{}, jetstream.ErrKeyNotFound
-}
-
-func (sqsWorkerStores) RecordServerKey(context.Context, string, string, string, string, string) error {
-	return jetstream.ErrKeyNotFound
-}
-
 // withSQSInternal registers the internal SQS surface beside RDS, as awsgw
 // composes them, so routing is selected by signing service.
 func withSQSInternal(gw *GatewayConfig, deps sqsworkerapi.Deps) *GatewayConfig {

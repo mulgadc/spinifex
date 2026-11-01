@@ -96,16 +96,21 @@ type FirstStore interface {
 	RecordPublicKey(ctx context.Context, region string, id firststore.Identity, pub string) error
 }
 
-// Stores reads the Region's store launch record from the stream leader and
-// records the bound store's server key pin.
+// Stores reads the Region's store launch record from the stream leader.
 type Stores interface {
 	Current(ctx context.Context, region string) (storelaunch.Record, error)
+}
+
+// ServerKeys reads and records the bound store's server key pin for the
+// store guest's own actions.
+type ServerKeys interface {
 	ServerKeyOf(ctx context.Context, region, instanceID string) (storelaunch.Record, error)
 	RecordServerKey(ctx context.Context, region, instanceID, claimID, volumeID, pin string) error
 }
 
 var (
 	_ Stores     = storelaunch.Records{}
+	_ ServerKeys = storelaunch.Records{}
 	_ Identities = workerident.Store{}
 	_ FirstStore = firststore.Store{}
 )
@@ -125,6 +130,9 @@ type Deps struct {
 	Identities Identities
 	FirstStore FirstStore
 	Stores     Stores
+	// ServerKeys serves the store guest's actions only; nil answers them
+	// with ServiceUnavailable.
+	ServerKeys ServerKeys
 	Work       Work
 	// HostNodes reports this gateway's declared cluster node count; nil is
 	// clustersize.Nodes.
@@ -323,11 +331,11 @@ func (d Deps) describeStore(ctx context.Context, w http.ResponseWriter, region s
 // dispatchStore serves the store guest's own actions. The caller is the
 // Region's store only if the bound record names its instance.
 func (d Deps) dispatchStore(ctx context.Context, w http.ResponseWriter, region, instanceID, action string, args map[string]string) error {
-	if d.Stores == nil {
+	if d.ServerKeys == nil {
 		return errors.New(awserrors.ErrorServiceUnavailable)
 	}
 	if action == ActionDescribeStoreServerKey {
-		rec, err := d.Stores.ServerKeyOf(ctx, region, instanceID)
+		rec, err := d.ServerKeys.ServerKeyOf(ctx, region, instanceID)
 		if err != nil {
 			return mapError(ctx, action, err)
 		}
@@ -339,7 +347,7 @@ func (d Deps) dispatchStore(ctx context.Context, w http.ResponseWriter, region, 
 	if claim == "" || vol == "" || pin == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	if err := d.Stores.RecordServerKey(ctx, region, instanceID, claim, vol, pin); err != nil {
+	if err := d.ServerKeys.RecordServerKey(ctx, region, instanceID, claim, vol, pin); err != nil {
 		return mapError(ctx, action, err)
 	}
 	return writeXML(ctx, w, recordServerKeyResponse{})
@@ -504,7 +512,7 @@ func JetStreamDeps(js jetstream.JetStream) Deps {
 	if js == nil {
 		return Deps{}
 	}
-	return Deps{Identities: boundIdentities{js}, FirstStore: boundFirstStore{js}, Stores: boundStores{js}}
+	return Deps{Identities: boundIdentities{js}, FirstStore: boundFirstStore{js}, Stores: boundStores{js}, ServerKeys: boundStores{js}}
 }
 
 // errUnavailable marks a bucket that could not be bound: absent, unreachable
@@ -569,4 +577,5 @@ var (
 	_ Identities = boundIdentities{}
 	_ FirstStore = boundFirstStore{}
 	_ Stores     = boundStores{}
+	_ ServerKeys = boundStores{}
 )

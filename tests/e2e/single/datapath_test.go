@@ -257,7 +257,7 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 		// Non-fatal probe so a timeout dumps the guest console + OVN/datapath
 		// state before Fatal. A full 2min unreachable window on a fresh public-IP
 		// VM is the flake signature; capture it from CI artifacts alone.
-		if !sshHealth.TryReady(clientHost, clientPort, keyPath, 2*time.Minute) {
+		if !sshHealth.TryReady(t, clientHost, clientPort, keyPath, 2*time.Minute) {
 			harness.DumpVPCFlowDiagnostics(t, fix.AWS, clientID,
 				fmt.Sprintf("8e-3 client-vm SSH timeout — vpc=%s sg=%s pub=%s", def.VPCID, clientSG, clientHost),
 				harness.VPCDiagnosticsOpts{

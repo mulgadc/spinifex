@@ -62,10 +62,17 @@ const (
 	// that decide whether the fault could reach the root filesystem.
 	rootDevice = "vda"
 
-	// rootWriteSample is the gap between the two sectors_written readings that
-	// prove the root load is live. Long enough to clear a quiet moment between
-	// fio's own fsyncs, short enough not to eat into the pre-fault settle.
-	rootWriteSample = 3 * time.Second
+	// rootWriteWait bounds how long the root load gets to land its first write
+	// on vda, polled every rootWritePoll. Completions on vda share a backend
+	// with the volume load, so one fsync can take several seconds to report.
+	rootWriteWait = 30 * time.Second
+	rootWritePoll = 2 * time.Second
+
+	// guestAnswerBound is how long an assertion after recovery keeps asking a
+	// guest that does not answer, polled every guestAnswerPoll. A guest that
+	// has just resumed can miss a probe and still be perfectly usable.
+	guestAnswerBound = 2 * time.Minute
+	guestAnswerPoll  = 10 * time.Second
 
 	// freezeHold is how long predastore stays frozen. It is derived, not tuned:
 	// viperblock tolerates maxDrainFailures=10 consecutive drain failures, and a
@@ -133,7 +140,9 @@ func TestGuestSurvivesBackendOutage(t *testing.T) {
 	harness.Step(t, "writing the %d MiB verifiable region and flushing it", verifyMiB)
 	digest := writeVerifiableRegion(t, tgt)
 
-	loadRuntime := loadSettle + freezeHold + recoverySettle
+	// rootWriteWait is included so a slow first root write cannot end the load
+	// before the thaw it is meant to span.
+	loadRuntime := loadSettle + rootWriteWait + freezeHold + recoverySettle
 	harness.Step(t, "starting sustained load for %s, on the volume and the root filesystem", loadRuntime)
 	startLoad(t, tgt, loadRuntime)
 	startRootLoad(t, tgt, loadRuntime)
@@ -222,7 +231,7 @@ func startRootLoad(t *testing.T, tgt harness.SSHTarget, runtime time.Duration) {
 		_, _ = harness.GuestExecTimeout(tgt, "sudo rm -rf "+rootLoadDir, 60*time.Second)
 	})
 
-	cmd := fmt.Sprintf("mkdir -p %s && rm -f %s; "+
+	cmd := fmt.Sprintf("mkdir -p %s && sudo rm -f %s; "+
 		"sudo setsid bash -c 'echo $$ > %s; %s' >%s 2>&1 </dev/null &",
 		rootLoadDir, rootLoadPID, rootLoadPID, rootLoadLoop(runtime), rootLoadLog)
 	if out, err := harness.GuestExec(tgt, cmd); err != nil {
@@ -257,7 +266,7 @@ func writeVerifiableRegion(t *testing.T, tgt harness.SSHTarget) string {
 // loop records its own pid because the dd processes it spawns come and go.
 func startLoad(t *testing.T, tgt harness.SSHTarget, runtime time.Duration) {
 	t.Helper()
-	cmd := fmt.Sprintf("rm -f %s; sudo setsid bash -c 'echo $$ > %s; %s' >%s 2>&1 </dev/null &",
+	cmd := fmt.Sprintf("sudo rm -f %s; sudo setsid bash -c 'echo $$ > %s; %s' >%s 2>&1 </dev/null &",
 		loadPID, loadPID, loadLoop(runtime), loadLog)
 	if out, err := harness.GuestExec(tgt, cmd); err != nil {
 		t.Fatalf("start load: %v\n%s", err, out)
@@ -296,8 +305,15 @@ func quiesceWorkload(t *testing.T, tgt harness.SSHTarget) {
 // rather than dd, which exits and restarts on every pass.
 func loadRunning(t *testing.T, tgt harness.SSHTarget) bool {
 	t.Helper()
+	return pidAlive(tgt, loadPID)
+}
+
+// pidAlive reports whether the process named by a pid file is still running.
+// An empty or missing pid file is a dead process, never a match for anything.
+func pidAlive(tgt harness.SSHTarget, pidFile string) bool {
 	out := bestEffort(tgt, fmt.Sprintf(
-		"sudo kill -0 $(cat %s 2>/dev/null) 2>/dev/null && echo RUNNING || echo GONE", loadPID))
+		"p=$(sudo cat %s 2>/dev/null); [ -n \"$p\" ] && sudo kill -0 \"$p\" 2>/dev/null && echo RUNNING || echo GONE",
+		pidFile))
 	return strings.Contains(out, "RUNNING")
 }
 
@@ -350,9 +366,10 @@ func assertNoCorruption(t *testing.T, evidence, instanceID string, fix *Fixture)
 // that survived the outage correctly needs no remount to keep working.
 func assertStillWritable(t *testing.T, tgt harness.SSHTarget, dev string) {
 	t.Helper()
-	mounts, err := harness.GuestExecTimeout(tgt, "cat /proc/mounts", 30*time.Second)
+	mounts, err := harness.GuestExecRetrying(tgt, "cat /proc/mounts", 30*time.Second, guestAnswerBound, guestAnswerPoll)
 	if err != nil {
-		t.Errorf("cannot read /proc/mounts, so the guest did not come back usable: %v", err)
+		t.Errorf("cannot read /proc/mounts within %s, so the guest did not come back usable: %v\n%s",
+			guestAnswerBound, err, mounts)
 		return
 	}
 	for _, line := range strings.Split(mounts, "\n") {
@@ -382,7 +399,7 @@ func assertWorkloadIntegrity(t *testing.T, tgt harness.SSHTarget, want string) {
 	check := fmt.Sprintf(
 		"sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null; "+
 			"sudo sha256sum %s | cut -d' ' -f1", verifyFile)
-	out, err := harness.GuestExecTimeout(tgt, check, 10*time.Minute)
+	out, err := harness.GuestExecRetrying(tgt, check, 10*time.Minute, guestAnswerBound, guestAnswerPoll)
 	if err != nil {
 		t.Errorf("could not re-read the verifiable region after recovery: %v\n%s", err, out)
 		return
@@ -395,15 +412,19 @@ func assertWorkloadIntegrity(t *testing.T, tgt harness.SSHTarget, want string) {
 	harness.Step(t, "sha256 verification passed: every acknowledged write survived")
 }
 
-// bestEffort runs a guest command and returns its output, or a marker when the
-// guest cannot answer. Used for evidence gathering, where an unreachable guest
+// bestEffort runs a guest command and returns its output, or a marker saying
+// why there is none. Used for evidence gathering, where an unreachable guest
 // is itself information and must not abort the run.
 func bestEffort(tgt harness.SSHTarget, cmd string) string {
 	out, err := harness.GuestExecTimeout(tgt, cmd, 30*time.Second)
-	if err != nil {
+	switch {
+	case err == nil:
+		return out
+	case harness.GuestUnreachable(err):
 		return fmt.Sprintf("<guest unreachable: %v>", err)
+	default:
+		return fmt.Sprintf("<command failed in the guest: %v>\n%s", err, out)
 	}
-	return out
 }
 
 // awaitGuestRecovered waits for a guest that the fault paused to answer again.
@@ -529,29 +550,42 @@ func rootSectorsWritten(tgt harness.SSHTarget) (int64, error) {
 // assertRootLoadIsWriting confirms the root load is both running and actually
 // moving bytes on the root device. A load that produced no writes would make a
 // clean run mean nothing, since the fault could never have reached the root
-// filesystem at all. Two samples, because a non-zero total is only the boot's
-// own writes; an increase is what proves the load is live right now.
+// filesystem at all. A non-zero total is only the boot's own writes, so the
+// counter has to rise; it is polled because one quiet sample proves nothing.
 func assertRootLoadIsWriting(t *testing.T, tgt harness.SSHTarget) {
 	t.Helper()
-	out, err := harness.GuestExecTimeout(tgt, "pgrep -f 'name=rootload' >/dev/null && echo RUNNING", 30*time.Second)
-	if err != nil || !strings.Contains(out, "RUNNING") {
+	if !pidAlive(tgt, rootLoadPID) {
 		t.Fatalf("the root-filesystem load is not running, so %s is idle and the fault cannot reach it:\n%s",
-			rootDevice, bestEffort(tgt, "tail -n 30 ~/rootfio.log"))
+			rootDevice, rootLoadLogTail(tgt))
 	}
 
 	before, err := rootSectorsWritten(tgt)
 	if err != nil {
 		t.Fatalf("cannot confirm the root load is writing: %v", err)
 	}
-	time.Sleep(rootWriteSample)
-	after, err := rootSectorsWritten(tgt)
-	if err != nil {
-		t.Fatalf("cannot confirm the root load is writing: %v", err)
+	start := time.Now()
+	for {
+		time.Sleep(rootWritePoll)
+		after, err := rootSectorsWritten(tgt)
+		if err != nil {
+			t.Fatalf("cannot confirm the root load is writing: %v", err)
+		}
+		if after > before {
+			harness.Step(t, "root load is writing: %s gained %d sectors (%d KiB) in %s",
+				rootDevice, after-before, (after-before)/2, time.Since(start).Round(time.Second))
+			return
+		}
+		if !pidAlive(tgt, rootLoadPID) {
+			t.Fatalf("the root-filesystem load exited without a single write reaching %s, so a clean run would prove nothing:\n%s",
+				rootDevice, rootLoadLogTail(tgt))
+		}
+		if time.Since(start) >= rootWriteWait {
+			t.Fatalf("%s took no writes over %s although the root load is running (sectors_written stayed at %d), so a clean run would prove nothing:\n%s",
+				rootDevice, rootWriteWait, after, rootLoadLogTail(tgt))
+		}
 	}
-	if after <= before {
-		t.Fatalf("%s took no writes over %s (sectors_written stayed at %d), so a clean run would prove nothing:\n%s",
-			rootDevice, rootWriteSample, after, bestEffort(tgt, "tail -n 30 ~/rootfio.log"))
-	}
-	harness.Step(t, "root load is writing: %s gained %d sectors (%d KiB) in %s",
-		rootDevice, after-before, (after-before)/2, rootWriteSample)
+}
+
+func rootLoadLogTail(tgt harness.SSHTarget) string {
+	return bestEffort(tgt, "sudo tail -n 30 "+rootLoadLog)
 }

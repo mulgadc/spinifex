@@ -8,7 +8,8 @@
     "arch": "x86_64",
     "runner": "ci-single",
     "extra": "",
-    "suite": ""
+    "suite": "",
+    "timeout_minutes": 60
   },
   {
     "cell": 2,
@@ -19,7 +20,8 @@
     "arch": "x86_64",
     "runner": "ci-single",
     "extra": "",
-    "suite": ""
+    "suite": "",
+    "timeout_minutes": 60
   },
   {
     "cell": 3,
@@ -30,7 +32,8 @@
     "arch": "x86_64",
     "runner": "ci-single",
     "extra": "",
-    "suite": ""
+    "suite": "",
+    "timeout_minutes": 60
   },
   {
     "cell": 8,
@@ -200,7 +203,8 @@
     "arch": "x86_64",
     "runner": "ci-single",
     "extra": "",
-    "suite": ""
+    "suite": "",
+    "timeout_minutes": 60
   },
   {
     "cell": 35,

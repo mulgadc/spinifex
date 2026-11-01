@@ -16,7 +16,6 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
@@ -46,7 +45,7 @@ type ensureVolumes struct {
 	fail     error
 }
 
-func (v *ensureVolumes) Prepare(context.Context) (string, error) {
+func (v *ensureVolumes) Prepare(context.Context, int64) (string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.refuse != nil {
@@ -125,7 +124,7 @@ type ensureFixture struct {
 }
 
 // newEnsureFixture serves node-1's real handler over embedded NATS, with the
-// real launcher, identity and first-store records and VPC network.
+// real launcher, identity record and VPC network.
 func newEnsureFixture(t *testing.T, vms *ensureVMs) *ensureFixture {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
@@ -134,13 +133,10 @@ func newEnsureFixture(t *testing.T, vms *ensureVMs) *ensureFixture {
 	testutil.StubVpcdSGResponder(t, nc)
 	ids, err := workerident.Open(t.Context(), js)
 	require.NoError(t, err)
-	first, err := firststore.Open(t.Context(), js)
-	require.NoError(t, err)
 
 	f := &ensureFixture{nc: nc, ids: ids, vols: &ensureVolumes{}, vms: vms, vpc: vpc}
 	l := &workerlaunch.Launcher{
 		Identities: ids,
-		FirstStore: first,
 		Volumes:    f.vols,
 		Roles:      ensureRoles{},
 		Network:    newSQSWorkerNetwork(vpc, &config.SQSConfig{}),
@@ -193,7 +189,7 @@ func installWorkerImage(t *testing.T) {
 
 func (f *ensureFixture) call(t *testing.T, node string, wait time.Duration) (*workerlaunch.EnsureResponse, error) {
 	t.Helper()
-	return admin.EnsureSQSWorker(t.Context(), f.nc, ensureNodes, node, ensureType, awsidentifiers.DefaultAccountID(), wait)
+	return admin.EnsureSQSWorker(t.Context(), f.nc, ensureNodes, node, ensureType, 8, awsidentifiers.DefaultAccountID(), wait)
 }
 
 func (f *ensureFixture) workerENIs(t *testing.T) int {
@@ -370,7 +366,7 @@ func TestEnsureSQSWorker_HandlerRefusesAnotherNodesRequest(t *testing.T) {
 func TestEnsureSQSWorker_UnknownInstanceTypeAllocatesNothing(t *testing.T) {
 	f := newEnsureFixture(t, &ensureVMs{})
 
-	_, err := admin.EnsureSQSWorker(t.Context(), f.nc, ensureNodes, ensureNode, "x9.huge",
+	_, err := admin.EnsureSQSWorker(t.Context(), f.nc, ensureNodes, ensureNode, "x9.huge", 8,
 		awsidentifiers.DefaultAccountID(), 5*time.Second)
 	requireAWSCode(t, err, awserrors.ErrorInvalidInstanceType)
 	assert.Zero(t, f.vols.prepared)
@@ -382,7 +378,7 @@ func TestEnsureSQSWorker_PinnedElsewhereIsRefused(t *testing.T) {
 	f := newEnsureFixture(t, &ensureVMs{})
 	_, err := f.ids.BeginLaunch(t.Context(), sqsTestRegion, workerident.LaunchRequest{InstanceType: ensureType,
 		ClaimID: "claim-0123456789abcdef01234567", NodeID: "node-2",
-		DataVolumeID: ensureVolume, DataVolumeEncrypted: true,
+		DataVolumeID: ensureVolume, DataVolumeEncrypted: true, SizeGiB: 8,
 	})
 	require.NoError(t, err)
 
@@ -407,13 +403,13 @@ func TestSQSWorkerEnsurer_CancelledWaiterGivesUp(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = f.d.sqsWorker.ensure(t.Context(), sqsTestRegion, ensureType)
+		_, _ = f.d.sqsWorker.ensure(t.Context(), sqsTestRegion, ensureType, 8)
 	}()
 	require.Eventually(t, func() bool { return vms.count() == 1 }, 5*time.Second, 10*time.Millisecond)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
-	_, err := f.d.sqsWorker.ensure(ctx, sqsTestRegion, ensureType)
+	_, err := f.d.sqsWorker.ensure(ctx, sqsTestRegion, ensureType, 8)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	close(vms.release)
 	<-done
@@ -516,8 +512,21 @@ func TestEnsureSQSWorker_BoundWorkerRefusesAnotherType(t *testing.T) {
 	require.NoError(t, err)
 
 	f.d.resourceMgr.instanceTypes["t3.large"] = &ec2.InstanceTypeInfo{InstanceType: aws.String("t3.large")}
-	_, err = admin.EnsureSQSWorker(t.Context(), f.nc, ensureNodes, ensureNode, "t3.large",
+	_, err = admin.EnsureSQSWorker(t.Context(), f.nc, ensureNodes, ensureNode, "t3.large", 8,
 		awsidentifiers.DefaultAccountID(), 5*time.Second)
 	assert.Contains(t, requireAWSCode(t, err, awserrors.ErrorIncorrectState), ensureType)
+	assert.Equal(t, 1, f.vms.count())
+}
+
+// A different volume size for a bound worker is refused as IncorrectState:
+// the volume holds the queue data and is never resized or replaced.
+func TestEnsureSQSWorker_BoundWorkerRefusesAnotherSize(t *testing.T) {
+	f := newEnsureFixture(t, &ensureVMs{})
+	_, err := f.call(t, ensureNode, 30*time.Second)
+	require.NoError(t, err)
+
+	_, err = admin.EnsureSQSWorker(t.Context(), f.nc, ensureNodes, ensureNode, ensureType, 9,
+		awsidentifiers.DefaultAccountID(), 5*time.Second)
+	assert.Contains(t, requireAWSCode(t, err, awserrors.ErrorIncorrectState), "8 GiB")
 	assert.Equal(t, 1, f.vms.count())
 }

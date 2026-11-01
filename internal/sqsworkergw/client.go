@@ -1,6 +1,6 @@
 // Package sqsworkergw is the shared SQS worker guest's SigV4 client for the
 // gateway's internal spinifex-sqs service. It sends only public values: the
-// worker's identity is the signing session, and the store seed never leaves
+// worker's identity is the signing session, and the receipt key never leaves
 // the guest.
 package sqsworkergw
 
@@ -18,16 +18,13 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
-	sqsv1 "github.com/mulgadc/spinifex/contracts/sqs/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
-	"github.com/nats-io/nkeys"
 )
 
 const (
@@ -37,9 +34,8 @@ const (
 	callTimeout    = 30 * time.Second
 	maxResponse    = 64 << 10
 
-	actionClaim    = "ClaimFirstStore"
-	actionDescribe = "DescribeStore"
-	actionRecord   = "RecordWorkerPublicKey"
+	actionClaim    = "ClaimReceiptKey"
+	actionRecord   = "RecordReceiptKey"
 	actionPoll     = "PollWork"
 	actionComplete = "CompleteWork"
 	// maxPollResponse fits the gateway's 16 MiB poll batch as base64 XML.
@@ -51,7 +47,7 @@ type Signer interface {
 	Sign(r *http.Request, payloadHash, service, region string) error
 }
 
-// Client calls the internal first-store actions for this worker.
+// Client calls the internal SQS worker actions for this worker.
 type Client struct {
 	baseURL    string
 	region     string
@@ -122,79 +118,52 @@ func (e *TransientError) Error() string   { return e.Err.Error() }
 func (e *TransientError) Unwrap() error   { return e.Err }
 func (e *TransientError) Retryable() bool { return true }
 
-type claimResult struct {
-	CreateKey bool   `xml:"CreateKey"`
-	PublicKey string `xml:"PublicKey"`
-}
-
-// Claim asks for this worker's current first-store decision. A decision
-// that is neither "create" nor one valid public key is refused here.
-func (c *Client) Claim(ctx context.Context) (bool, string, error) {
-	var res claimResult
-	if err := c.call(ctx, actionClaim, nil, &res); err != nil {
-		return false, "", err
-	}
-	switch {
-	case res.CreateKey && res.PublicKey == "":
-		return true, "", nil
-	case !res.CreateKey && nkeys.IsValidPublicUserKey(res.PublicKey):
-		return false, res.PublicKey, nil
-	}
-	return false, "", errors.New("spinifex-sqs ClaimFirstStore: response is not a valid decision")
-}
-
-// Store is the Region's store launch as the gateway reports it. Bound means
-// a VM was launched for it, not that it is ready.
-type Store struct {
-	Bound     bool
-	Address   string
-	PublicKey string
-	// ServerKeyPin names the store's TLS server key; the worker sends it
-	// nothing until the server proves that key.
-	ServerKeyPin string
+// ReceiptKey is the worker volume's receipt key initialization as the
+// gateway reports it: pending authorizes creating or resuming one, otherwise
+// Fingerprint names the key the disk must already hold.
+type ReceiptKey struct {
+	Pending     bool
+	Fingerprint string
 	// HostNodes is the gateway's declared cluster node count; a gateway
 	// that does not report one reads as zero.
 	HostNodes int
 }
 
-type describeResult struct {
-	State        string `xml:"State"`
-	Address      string `xml:"Address"`
-	PublicKey    string `xml:"PublicKey"`
-	ServerKeyPin string `xml:"ServerKeyPin"`
-	HostNodes    int    `xml:"HostNodes"`
+type claimResult struct {
+	Pending     bool   `xml:"Pending"`
+	Fingerprint string `xml:"Fingerprint"`
+	HostNodes   int    `xml:"HostNodes"`
 }
 
-// DescribeStore reports this worker's store. A bound reply must carry an
-// IPv4 address and a valid public key; a pending one must carry neither.
-func (c *Client) DescribeStore(ctx context.Context) (Store, error) {
-	var res describeResult
-	if err := c.call(ctx, actionDescribe, nil, &res); err != nil {
-		return Store{}, err
+// ClaimReceiptKey asks for the receipt key decision. A reply that is neither
+// pending nor one valid fingerprint is refused here.
+func (c *Client) ClaimReceiptKey(ctx context.Context) (ReceiptKey, error) {
+	var res claimResult
+	if err := c.call(ctx, actionClaim, nil, &res); err != nil {
+		return ReceiptKey{}, err
 	}
-	switch {
-	case res.State == "pending" && res.Address == "" && res.PublicKey == "" && res.ServerKeyPin == "":
-		return Store{}, nil
-	case res.State == "bound" && isIPv4(res.Address) && nkeys.IsValidPublicUserKey(res.PublicKey) &&
-		sqsv1.ValidPin(res.ServerKeyPin):
-		return Store{Bound: true, Address: res.Address, PublicKey: res.PublicKey, ServerKeyPin: res.ServerKeyPin,
-			HostNodes: res.HostNodes}, nil
+	if res.Pending == (res.Fingerprint != "") || (res.Fingerprint != "" && !ValidFingerprint(res.Fingerprint)) {
+		return ReceiptKey{}, errors.New("spinifex-sqs ClaimReceiptKey: response is not a valid decision")
 	}
-	return Store{}, errors.New("spinifex-sqs DescribeStore: response is not a valid store state")
+	return ReceiptKey(res), nil
 }
 
-func isIPv4(s string) bool {
-	ip := net.ParseIP(s)
-	return ip != nil && ip.To4() != nil && !strings.Contains(s, ":")
+// RecordReceiptKey records the key's fingerprint. Recording the same one
+// again succeeds, so a lost reply is safe to repeat.
+func (c *Client) RecordReceiptKey(ctx context.Context, fingerprint string) error {
+	if !ValidFingerprint(fingerprint) {
+		return errors.New("spinifex-sqs RecordReceiptKey: refusing to send a value that is not a fingerprint")
+	}
+	return c.call(ctx, actionRecord, url.Values{"Fingerprint": {fingerprint}}, nil)
 }
 
-// RecordPublicKey records the worker's public key. Anything other than a
-// user public key is refused before it is sent.
-func (c *Client) RecordPublicKey(ctx context.Context, publicKey string) error {
-	if !nkeys.IsValidPublicUserKey(publicKey) {
-		return errors.New("spinifex-sqs RecordWorkerPublicKey: refusing to send a value that is not a user public key")
+// ValidFingerprint reports a lowercase hex SHA-256 fingerprint.
+func ValidFingerprint(s string) bool {
+	if len(s) != 2*sha256.Size || strings.ToLower(s) != s {
+		return false
 	}
-	return c.call(ctx, actionRecord, url.Values{"PublicKey": {publicKey}}, nil)
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 
 func (c *Client) call(ctx context.Context, action string, params url.Values, out any) error {
@@ -305,44 +274,3 @@ func parseError(action string, status int, body []byte) error {
 	}
 	return &APIError{Action: action, StatusCode: status, Code: code}
 }
-
-// ServerKey is the store's own record as the gateway reports it to the bound
-// store instance: its claim, its data volume and any pin already recorded.
-type ServerKey struct {
-	ClaimID  string
-	VolumeID string
-	Pin      string
-}
-
-type serverKeyResult struct {
-	ClaimID  string `xml:"ClaimId"`
-	VolumeID string `xml:"VolumeId"`
-	Pin      string `xml:"Pin"`
-}
-
-// DescribeServerKey reports the calling store's record. A reply without a
-// claim and volume, or with a malformed pin, is refused here.
-func (c *Client) DescribeServerKey(ctx context.Context) (ServerKey, error) {
-	var res serverKeyResult
-	if err := c.call(ctx, sqsv1.ActionDescribeStoreServerKey, nil, &res); err != nil {
-		return ServerKey{}, err
-	}
-	if res.ClaimID == "" || res.VolumeID == "" || (res.Pin != "" && !sqsv1.ValidPin(res.Pin)) {
-		return ServerKey{}, errors.New("spinifex-sqs DescribeStoreServerKey: response is not a valid store record")
-	}
-	return ServerKey(res), nil
-}
-
-// RecordServerKey records pin for the store's claim and volume. Recording
-// the same pin again succeeds, so a lost reply is safe to repeat.
-func (c *Client) RecordServerKey(ctx context.Context, claimID, volumeID, pin string) error {
-	if !sqsv1.ValidPin(pin) {
-		return errors.New("spinifex-sqs RecordStoreServerKey: refusing to send a value that is not a pin")
-	}
-	return c.call(ctx, sqsv1.ActionRecordStoreServerKey,
-		url.Values{"ClaimId": {claimID}, "VolumeId": {volumeID}, "Pin": {pin}}, nil)
-}
-
-// NotBound reports the gateway's InvalidState: the store's launch is not yet
-// bound to this instance, so the store asks again later.
-func (e *APIError) NotBound() bool { return e.Code == "InvalidState" }

@@ -26,7 +26,8 @@ import (
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	sqsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
 	awsdispatch "github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +44,7 @@ const slowRequest = 500 * time.Millisecond
 // request for each implemented operation through the real gateway, with every
 // daemon-lite wired, and records each verdict for the suite report.
 func TestRequestConformance(t *testing.T) {
-	inventory := gateway.AWSOperationInventory(map[string]awsdispatch.Inventory{
+	inventory := awsdispatch.AWSOperationInventory(map[string]awsdispatch.Inventory{
 		awsapi.ServiceName:    awsapi.OperationInventory(),
 		acmawsapi.ServiceName:     acmawsapi.OperationInventory(),
 		route53awsapi.ServiceName: route53awsapi.OperationInventory(),
@@ -54,6 +55,7 @@ func TestRequestConformance(t *testing.T) {
 		eksawsapi.ServiceName:     eksawsapi.OperationInventory(),
 		iamawsapi.ServiceName:     iamawsapi.OperationInventory(),
 		stsawsapi.ServiceName:     stsawsapi.OperationInventory(),
+		sqsawsapi.ServiceName:     sqsawsapi.OperationInventory(),
 	})
 	for _, service := range awsmodel.Services() {
 		// Predastore serves S3, not the gateway.
@@ -73,7 +75,7 @@ func TestRequestConformance(t *testing.T) {
 			// drop out of the sweep while the suite still passes.
 			require.NotEmpty(t, coverage.Implemented, "no implemented operations for %s", service)
 
-			gw := startGateway(t, nil, nil)
+			gw := startGateway(t, nil, conformanceExtraServices(t, service))
 			startRequestConformanceBackends(t, gw)
 			sender, err := newRequestSender(gw, service)
 			require.NoError(t, err)
@@ -96,6 +98,20 @@ func TestRequestConformance(t *testing.T) {
 			}
 		})
 	}
+}
+
+// conformanceExtraServices registers services the default gateway omits.
+// SQS is served through its relay to the real worker loop and owners.
+func conformanceExtraServices(t *testing.T, service awsmodel.Service) []awsdispatch.Registration {
+	t.Helper()
+	if string(service) != sqsawsapi.ServiceName {
+		return nil
+	}
+	r := &relay.Relay{CallLimit: 5 * time.Second}
+	startSQSWorker(t, r)
+	return []awsdispatch.Registration{sqsawsapi.NewRegistration(sqsawsapi.Deps{
+		Queues: r, Messages: r, Receives: r, Deletes: r, Visibility: r, Endpoint: "https://localhost:9999",
+	})}
 }
 
 // startRequestConformanceBackends wires every daemon-lite, so validation that

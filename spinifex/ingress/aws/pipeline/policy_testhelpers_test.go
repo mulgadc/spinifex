@@ -1,0 +1,40 @@
+package pipeline
+
+import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
+	"net/http"
+
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+)
+
+// allowAllIAMService resolves an allow-everything policy for every principal.
+// Tests that exercise handler behaviour rather than authorization use it so the
+// policy gate passes on a real evaluation instead of a bypass.
+func allowAllIAMService() *gwfix.PolicyIAM {
+	allow := []iamdomain.PolicyDocument{{
+		Version: "2012-10-17",
+		Statement: []iamdomain.Statement{
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"*"}, Resource: iamdomain.StringOrArr{"*"}},
+		},
+	}}
+	return &gwfix.PolicyIAM{
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
+		GetRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
+	}
+}
+
+// withTestIdentity attaches the identity half of the auth context the SigV4
+// middleware sets, so a hand-built request reaches the handler instead of being
+// denied. Existing values are preserved for tests that set their own principal.
+func withTestIdentity(req *http.Request) *http.Request {
+	ctx := req.Context()
+	have, _ := reqctx.Principal(ctx)
+	if have.Identity == "" {
+		ctx = withPrincipalField(ctx, fieldIdentity, "alice")
+	}
+	if have.PrincipalType == "" {
+		ctx = withPrincipalField(ctx, fieldPrincipalType, gwfix.PrincipalTypeUser)
+	}
+	return req.WithContext(ctx)
+}

@@ -1,9 +1,0 @@
-#!/bin/sh
-# Respawned by init. A store that must not run parks here instead of exiting,
-# so init does not respawn it in a tight loop; a store waiting on its server
-# key exits after a pause so init retries it.
-. /usr/local/lib/sqs-store/sqs-store-lib.sh
-rc=0
-sqs_run || rc=$?
-[ "$rc" -eq 1 ] && exit 1
-exec sleep 2147483647

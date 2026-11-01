@@ -12,12 +12,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awsiam "github.com/aws/aws-sdk-go/service/iam"
-	sqsv1 "github.com/mulgadc/spinifex/contracts/sqs/v1"
 	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
@@ -36,8 +34,6 @@ type sqsRole struct {
 var (
 	sqsWorkerRole = sqsRole{name: workerrole.RoleName, policyName: "spinifex-sqs-worker-internal",
 		description: "Spinifex-managed SQS worker instance role", label: "sqs worker", actions: workerrole.Actions()}
-	sqsStoreRole = sqsRole{name: sqsv1.RoleName, policyName: "spinifex-sqs-store-internal",
-		description: "Spinifex-managed SQS store instance role", label: "sqs store", actions: sqsv1.Actions()}
 )
 
 // policy grants exactly the role's internal actions, built from the contract
@@ -68,18 +64,6 @@ var _ workerlaunch.Roles = sqsWorkerRoles{}
 
 func (r sqsWorkerRoles) EnsureWorkerProfile(context.Context) (string, error) {
 	return ensureSQSRoleProfile(r.provider, sqsWorkerRole)
-}
-
-// sqsStoreRoles ensures the store's instance role and profile, under the same
-// trust and profile checks as the worker's.
-type sqsStoreRoles struct {
-	provider func() iamdomain.SystemInstanceRoleEnsurer
-}
-
-var _ storelaunch.Roles = sqsStoreRoles{}
-
-func (r sqsStoreRoles) EnsureStoreProfile(context.Context) (string, error) {
-	return ensureSQSRoleProfile(r.provider, sqsStoreRole)
 }
 
 func ensureSQSRoleProfile(provider func() iamdomain.SystemInstanceRoleEnsurer, role sqsRole) (string, error) {
@@ -208,21 +192,20 @@ type sqsWorkerVolumeService interface {
 	DescribeVolumes(ctx context.Context, input *ec2.DescribeVolumesInput, accountID string) (*ec2.DescribeVolumesOutput, error)
 }
 
-// sqsWorkerVolumes prepares the worker's key disk with the normal fresh-volume
+// sqsWorkerVolumes prepares the worker's data disk with the normal fresh-volume
 // preparer and reads encryption from the volume's own record.
 type sqsWorkerVolumes struct {
 	prep             *storevolume.Preparer
 	volumes          sqsWorkerVolumeService
 	availabilityZone string
-	sizeGiB          int64
 
 	encryptionKeyFile string
 }
 
 var _ workerlaunch.Volumes = sqsWorkerVolumes{}
 
-func (v sqsWorkerVolumes) Prepare(ctx context.Context) (string, error) {
-	if v.prep == nil || v.availabilityZone == "" || v.sizeGiB <= 0 {
+func (v sqsWorkerVolumes) Prepare(ctx context.Context, sizeGiB int64) (string, error) {
+	if v.prep == nil || v.availabilityZone == "" || sizeGiB <= 0 {
 		return "", fmt.Errorf("%w: sqs worker: volume preparer is not configured", storevolume.ErrNotCreated)
 	}
 	// Refuse before allocating: on a cluster without a storage key every
@@ -235,7 +218,7 @@ func (v sqsWorkerVolumes) Prepare(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("%w: %w: the cluster storage key is not configured", storevolume.ErrNotCreated, workerlaunch.ErrUnencrypted)
 	}
 	return v.prep.Prepare(ctx, storevolume.Request{
-		AccountID: awsidentifiers.GlobalAccountID, AvailabilityZone: v.availabilityZone, SizeGiB: v.sizeGiB,
+		AccountID: awsidentifiers.GlobalAccountID, AvailabilityZone: v.availabilityZone, SizeGiB: sizeGiB,
 	})
 }
 

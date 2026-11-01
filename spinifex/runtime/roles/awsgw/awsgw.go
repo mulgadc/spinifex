@@ -56,8 +56,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -177,7 +177,7 @@ func resolveSignupMaxAccounts(cfg signupConfig) int {
 
 // wireServiceRegistry builds gw.Services from regs and validates it against
 // the legacy dispatch table before the gateway ever serves a request.
-func wireServiceRegistry(gw *gateway.GatewayConfig, regs ...dispatch.Registration) error {
+func wireServiceRegistry(gw *pipeline.Config, regs ...dispatch.Registration) error {
 	b := dispatch.NewBuilder()
 	for _, reg := range regs {
 		if err := b.Register(reg); err != nil {

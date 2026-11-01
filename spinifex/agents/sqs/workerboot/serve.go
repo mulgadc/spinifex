@@ -4,13 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"strconv"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
 
 	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerkey"
 )
@@ -23,13 +20,12 @@ type ServeConfig struct {
 	Run func(ctx context.Context, region, gatewayURL string, js jetstream.JetStream, receiptKey []byte) error
 }
 
-// Connector opens the store's JetStream with the worker key.
+// Connector opens the guest's local JetStream.
 type Connector interface {
-	Connect(ctx context.Context, address, pin string, kp nkeys.KeyPair) (jetstream.JetStream, func(), error)
+	Connect(ctx context.Context) (jetstream.JetStream, func(), error)
 }
 
-// NATSConnector connects to the store guest's NATS over TLS pinned to its
-// recorded server key, as NATSChecker does; every reconnect is pinned too.
+// NATSConnector connects to the guest's loopback SQS NATS server.
 type NATSConnector struct {
 	// Port overrides StorePort, for tests against a local server.
 	Port int
@@ -41,33 +37,14 @@ var _ Connector = NATSConnector{}
 // unless the gateway reports a single-node host cluster.
 var ErrUnsupportedTopology = errors.New("SQS serving supports only a single-node host cluster")
 
-func (c NATSConnector) Connect(_ context.Context, address, pin string, kp nkeys.KeyPair) (jetstream.JetStream, func(), error) {
-	if ip := net.ParseIP(address); ip == nil || ip.To4() == nil {
-		return nil, nil, errors.New("store address is not an IPv4 address")
-	}
-	tlsCfg, err := pinnedTLS(pin)
+// ErrReceiptPending refuses serving while the platform has not recorded the
+// receipt key; the boot step records it before the store first starts.
+var ErrReceiptPending = errors.New("the receipt key is not yet recorded")
+
+func (c NATSConnector) Connect(_ context.Context) (jetstream.JetStream, func(), error) {
+	nc, err := nats.Connect(localURL(c.Port), nats.Timeout(5*time.Second), nats.MaxReconnects(-1),
+		nats.Name("spinifex-sqs-worker"))
 	if err != nil {
-		return nil, nil, err
-	}
-	pub, err := kp.PublicKey()
-	if err != nil {
-		return nil, nil, fmt.Errorf("derive worker public key: %w", err)
-	}
-	port := c.Port
-	if port == 0 {
-		port = StorePort
-	}
-	nc, err := nats.Connect("nats://"+net.JoinHostPort(address, strconv.Itoa(port)),
-		nats.Secure(tlsCfg),
-		nats.Nkey(pub, kp.Sign),
-		nats.Timeout(5*time.Second),
-		nats.MaxReconnects(-1),
-		nats.Name("spinifex-sqs-worker"),
-	)
-	if err != nil {
-		if errors.Is(err, ErrStoreIdentity) {
-			return nil, nil, err
-		}
 		return nil, nil, &StoreUnreachableError{Err: err}
 	}
 	js, err := jetstream.New(nc)
@@ -79,11 +56,11 @@ func (c NATSConnector) Connect(_ context.Context, address, pin string, kp nkeys.
 }
 
 // serve runs the owners until ctx ends, starting again after any failure to
-// open them. It never creates a key: both keys must already be on the disk.
-func serve(ctx context.Context, cfg ReadyConfig, c contract, d StoreDescriber, keys workerkey.Store) {
+// open them. It never creates a key: the receipt key must be on the disk.
+func serve(ctx context.Context, cfg ReadyConfig, c contract, keys workerkey.Store) {
 	last := ""
 	for ctx.Err() == nil {
-		err := serveOnce(ctx, cfg, c, d, keys)
+		err := serveOnce(ctx, cfg, c, keys)
 		if ctx.Err() != nil {
 			return
 		}
@@ -92,7 +69,7 @@ func serve(ctx context.Context, cfg ReadyConfig, c contract, d StoreDescriber, k
 			last = state
 		}
 		delay := cfg.Wait
-		if !pending(err) && !retryable(err) && !errors.Is(err, errStorePending) {
+		if !pending(err) && !retryable(err) && !errors.Is(err, ErrReceiptPending) {
 			delay = orDefault(cfg.Refused, 5*time.Minute)
 		}
 		select {
@@ -102,34 +79,36 @@ func serve(ctx context.Context, cfg ReadyConfig, c contract, d StoreDescriber, k
 	}
 }
 
-func serveOnce(ctx context.Context, cfg ReadyConfig, c contract, d StoreDescriber, keys workerkey.Store) error {
+func serveOnce(ctx context.Context, cfg ReadyConfig, c contract, keys workerkey.Store) error {
 	callCtx, cancel := context.WithTimeout(ctx, orDefault(cfg.CallTimeout, 30*time.Second))
 	defer cancel()
-	st, err := d.DescribeStore(callCtx)
+	if cfg.NewClaimer == nil {
+		return errors.New("no gateway client is configured")
+	}
+	claimer, err := cfg.NewClaimer(c.region, c.gatewayURL)
+	if err != nil {
+		return fmt.Errorf("build gateway client: %w", err)
+	}
+	d, err := claimer.Claim(callCtx)
 	if err != nil {
 		return err
 	}
-	if !st.Bound {
-		return errStorePending
+	if d.HostNodes != 1 {
+		return fmt.Errorf("%w: the gateway reports %d host nodes", ErrUnsupportedTopology, d.HostNodes)
 	}
-	if st.HostNodes != 1 {
-		return fmt.Errorf("%w: the gateway reports %d host nodes", ErrUnsupportedTopology, st.HostNodes)
+	if d.Pending {
+		return ErrReceiptPending
 	}
-	kp, err := keys.ForExistingStore(st.PublicKey)
-	if err != nil {
-		return err
-	}
-	defer kp.Wipe()
-	receipt, err := keys.ReceiptKey()
+	receipt, err := keys.ForRecorded(d.Fingerprint)
 	if err != nil {
 		return err
 	}
 	defer clear(receipt)
-	js, closeConn, err := cfg.Serve.Connector.Connect(callCtx, st.Address, st.ServerKeyPin, kp)
+	js, closeConn, err := cfg.Serve.Connector.Connect(callCtx)
 	if err != nil {
 		return err
 	}
 	defer closeConn()
-	cfg.Log("serving SQS owner calls from the store at " + st.Address)
+	cfg.Log("serving SQS owner calls from the local store")
 	return cfg.Serve.Run(ctx, c.region, c.gatewayURL, js, receipt)
 }

@@ -6,51 +6,49 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/servicestate"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// SQSStatus separates what the operator asked for from what each component
-// was last observed doing. Ready also needs the tenant API registered here.
+// SQSStatus separates what the operator asked for from what the SQS VM was
+// last observed doing. Ready also needs the tenant API registered here.
 type SQSStatus struct {
-	Region          string `json:"Region"`
-	Desired         string `json:"Desired"`
-	NodeID          string `json:"NodeId,omitempty"`
-	Generation      uint64 `json:"Generation"`
-	Store           string `json:"Store"`
-	StoreInstanceID string `json:"StoreInstanceId,omitempty"`
-	WorkerPolling   bool   `json:"WorkerPolling"`
-	TenantAPI       string `json:"TenantAPI"`
-	// Unsupported names a store or worker whose launch contract blocks enable.
+	Region     string `json:"Region"`
+	Desired    string `json:"Desired"`
+	NodeID     string `json:"NodeId,omitempty"`
+	Generation uint64 `json:"Generation"`
+	// Instance is the SQS VM's launch progress; ReceiptKey its receipt key
+	// initialization, which is recorded only by the booted guest.
+	Instance      string `json:"Instance"`
+	InstanceID    string `json:"InstanceId,omitempty"`
+	ReceiptKey    string `json:"ReceiptKey,omitempty"`
+	WorkerPolling bool   `json:"WorkerPolling"`
+	TenantAPI     string `json:"TenantAPI"`
+	// Unsupported names an SQS VM whose launch contract blocks enable.
 	Unsupported string `json:"Unsupported,omitempty"`
 	Ready       bool   `json:"Ready"`
 }
 
 // SQSObservers are this gateway's own observations. WorkerPolling is true
-// only while a worker with a connected store has polled recently, and
+// only while a worker whose local store is up has polled recently, and
 // TenantAPIRegistered only when the composed gateway serves the SQS API.
 type SQSObservers struct {
 	WorkerPolling       func() bool
 	TenantAPIRegistered func() bool
 }
 
-// Store progress names in SQSStatus.
 const (
-	sqsStoreAbsent    = "absent"
-	sqsStoreLaunching = "launching"
-	sqsStoreUnpinned  = "bound-awaiting-server-key"
-	sqsStoreReady     = "bound"
-	sqsStoreUnknown   = "unknown"
+	sqsInstanceAbsent  = "absent"
+	sqsInstanceUnknown = "unknown"
 
 	sqsTenantAPIRegistered    = "registered"
 	sqsTenantAPINotRegistered = "not-registered"
 )
 
-// DescribeSQS reads the desired state and the store and worker evidence.
-// A store record that cannot be read is reported unknown, never absent.
+// DescribeSQS reads the desired state and the SQS VM's evidence. A record
+// that cannot be read is reported unknown, never absent.
 func DescribeSQS(ctx context.Context, js jetstream.JetStream, region string, obs SQSObservers) (*SQSStatus, error) {
 	st, err := servicestate.Bind(ctx, js)
 	var rec servicestate.Record
@@ -64,7 +62,8 @@ func DescribeSQS(ctx context.Context, js jetstream.JetStream, region string, obs
 			return nil, awserrors.Errorf(awserrors.ErrorServiceUnavailable, "SQS service state unavailable")
 		}
 	}
-	out := &SQSStatus{Region: region, Desired: string(rec.Desired), NodeID: rec.Node, Generation: rec.Generation, Store: sqsStoreUnknown}
+	out := &SQSStatus{Region: region, Desired: string(rec.Desired), NodeID: rec.Node, Generation: rec.Generation,
+		Instance: sqsInstanceUnknown}
 	if obs.WorkerPolling != nil {
 		out.WorkerPolling = obs.WorkerPolling()
 	}
@@ -73,87 +72,83 @@ func DescribeSQS(ctx context.Context, js jetstream.JetStream, region string, obs
 	if registered {
 		out.TenantAPI = sqsTenantAPIRegistered
 	}
-	records, err := storelaunch.Bind(ctx, js)
-	if errors.Is(err, jetstream.ErrBucketNotFound) {
-		out.Store = sqsStoreAbsent
-	} else if err == nil {
-		cur, err := records.Current(ctx, region)
-		switch {
-		case errors.Is(err, jetstream.ErrKeyNotFound):
-			out.Store = sqsStoreAbsent
-		case err != nil:
-		case cur.State == storelaunch.StateLaunching:
-			out.Store, out.StoreInstanceID = sqsStoreLaunching, cur.InstanceID
-		case cur.State == storelaunch.StateBound && cur.ServerKeyPin == "":
-			out.Store, out.StoreInstanceID = sqsStoreUnpinned, cur.InstanceID
-		case cur.State == storelaunch.StateBound:
-			out.Store, out.StoreInstanceID = sqsStoreReady, cur.InstanceID
+	cur, found, err := currentWorker(ctx, js, region)
+	legacy, lerr := legacyStorePresent(ctx, js, region)
+	switch {
+	case err != nil || lerr != nil:
+		out.Unsupported = "unknown: SQS records unreadable"
+	case !found:
+		out.Instance = sqsInstanceAbsent
+	default:
+		out.Instance, out.InstanceID, out.ReceiptKey = string(cur.State), cur.InstanceID, string(cur.ReceiptInit)
+		if cur.UnsupportedContract() {
+			out.Unsupported = sqsUnsupportedReason(cur.InstanceID)
 		}
 	}
-	if reason, err := sqsUnsupported(ctx, js, region); err != nil {
-		out.Unsupported = "unknown: SQS records unreadable"
-	} else {
-		out.Unsupported = reason
+	if legacy && out.Unsupported == "" {
+		out.Unsupported = sqsLegacyStoreReason
 	}
-	out.Ready = registered && rec.Desired == servicestate.Enabled && out.Store == sqsStoreReady && out.WorkerPolling &&
-		out.Unsupported == ""
+	out.Ready = registered && rec.Desired == servicestate.Enabled && out.Instance == string(workerident.StateBound) &&
+		out.ReceiptKey == string(workerident.ReceiptRecorded) && out.WorkerPolling && out.Unsupported == ""
 	return out, nil
 }
 
-// sqsUnsupported names a store or worker record with a missing or unknown
-// launch contract. It binds without creating; unreadable is an error.
-func sqsUnsupported(ctx context.Context, js jetstream.JetStream, region string) (string, error) {
-	stores, err := storelaunch.Bind(ctx, js)
-	switch {
-	case errors.Is(err, jetstream.ErrBucketNotFound):
-	case err != nil:
-		return "", err
-	default:
-		cur, err := stores.Current(ctx, region)
-		switch {
-		case errors.Is(err, jetstream.ErrKeyNotFound):
-		case err != nil:
-			return "", err
-		case cur.UnsupportedContract():
-			return sqsUnsupportedReason("store", cur.InstanceID), nil
-		}
-	}
+// currentWorker reads the Region's SQS VM record without creating anything.
+func currentWorker(ctx context.Context, js jetstream.JetStream, region string) (workerident.Record, bool, error) {
 	workers, err := workerident.Bind(ctx, js)
-	switch {
-	case errors.Is(err, jetstream.ErrBucketNotFound):
-	case err != nil:
-		return "", err
-	default:
-		cur, err := workers.Current(ctx, region)
-		switch {
-		case errors.Is(err, jetstream.ErrKeyNotFound):
-		case err != nil:
-			return "", err
-		case cur.UnsupportedContract():
-			return sqsUnsupportedReason("worker", cur.InstanceID), nil
-		}
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		return workerident.Record{}, false, nil
 	}
-	return "", nil
+	if err != nil {
+		return workerident.Record{}, false, err
+	}
+	cur, err := workers.Current(ctx, region)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return workerident.Record{}, false, nil
+	}
+	return cur, err == nil, err
 }
 
-func sqsUnsupportedReason(kind, instanceID string) string {
+// legacyStoreBucket held the separate SQS store VM's launch records, which this
+// release does not run. It is only ever bound, never created or changed.
+const legacyStoreBucket = "spinifex-sqs-store-launch"
+
+// legacyStorePresent reports whether the Region has a separate store record.
+func legacyStorePresent(ctx context.Context, js jetstream.JetStream, region string) (bool, error) {
+	kv, err := js.KeyValue(ctx, legacyStoreBucket)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_, err = kv.Get(ctx, "region."+region)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+const sqsLegacyStoreReason = "a separate SQS store VM record exists, which this release does not run; enable refused; any existing volume is kept"
+
+func sqsUnsupportedReason(instanceID string) string {
 	if instanceID == "" {
 		instanceID = "(not launched)"
 	}
-	return "SQS " + kind + " " + instanceID + " has a missing or unsupported launch contract; enable refused; any existing volume is kept"
+	return "SQS instance " + instanceID + " has a missing or unsupported launch contract; enable refused; any existing volume is kept"
 }
 
 // SQSEnableInput is EnableSQS's request.
 type SQSEnableInput struct {
-	Region, NodeID                        string
-	WorkerInstanceType, StoreInstanceType string
-	VolumeSizeGiB                         string
-	AccountID                             string
+	Region, NodeID string
+	InstanceType   string
+	VolumeSizeGiB  int64
+	AccountID      string
 }
 
 // EnableSQS records enabled for the Region first, so a retry resumes an
-// interrupted enable, then ensures the worker and the store on the one node.
-// It refuses any cluster that is not exactly one node.
+// interrupted enable, then ensures the one SQS VM on the one node. It
+// refuses any cluster that is not exactly one node.
 func EnableSQS(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, nodeIDs []string, expectedNodes int,
 	in SQSEnableInput, obs SQSObservers, wait time.Duration,
 ) (*SQSStatus, error) {
@@ -163,16 +158,22 @@ func EnableSQS(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, nodeI
 	if in.NodeID != nodeIDs[0] {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "NodeId must be this cluster's node")
 	}
-	if in.WorkerInstanceType == "" || in.StoreInstanceType == "" || in.VolumeSizeGiB == "" {
+	if in.InstanceType == "" || in.VolumeSizeGiB == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 	// Refused before any write or allocation; nothing is deleted or replaced.
-	reason, err := sqsUnsupported(ctx, js, in.Region)
+	cur, found, err := currentWorker(ctx, js, in.Region)
 	if err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorServiceUnavailable, "SQS records unavailable")
 	}
-	if reason != "" {
-		return nil, awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", reason)
+	if found && cur.UnsupportedContract() {
+		return nil, awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", sqsUnsupportedReason(cur.InstanceID))
+	}
+	switch legacy, err := legacyStorePresent(ctx, js, in.Region); {
+	case err != nil:
+		return nil, awserrors.Errorf(awserrors.ErrorServiceUnavailable, "SQS records unavailable")
+	case legacy:
+		return nil, awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", sqsLegacyStoreReason)
 	}
 	st, err := servicestate.Open(ctx, js)
 	if err != nil {
@@ -184,10 +185,7 @@ func EnableSQS(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, nodeI
 		}
 		return nil, awserrors.Errorf(awserrors.ErrorServiceUnavailable, "SQS service state unavailable")
 	}
-	if _, err := EnsureSQSWorker(ctx, nc, nodeIDs, in.NodeID, in.WorkerInstanceType, in.AccountID, wait); err != nil {
-		return nil, err
-	}
-	if _, err := EnsureSQSStore(ctx, nc, nodeIDs, in.NodeID, in.StoreInstanceType, in.VolumeSizeGiB, in.AccountID, wait); err != nil {
+	if _, err := EnsureSQSWorker(ctx, nc, nodeIDs, in.NodeID, in.InstanceType, in.VolumeSizeGiB, in.AccountID, wait); err != nil {
 		return nil, err
 	}
 	return DescribeSQS(ctx, js, in.Region, obs)

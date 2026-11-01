@@ -2,6 +2,9 @@ package workerboot
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -11,7 +14,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerkey"
-	"github.com/nats-io/nkeys"
 )
 
 const (
@@ -32,12 +34,12 @@ type guest struct {
 	logs []string
 }
 
-// authority stands for the domain's first-store record behind the gateway:
-// it authorizes creation until a key is recorded, then only that key.
+// authority stands for the worker record behind the gateway: pending until a
+// receipt key fingerprint is recorded, then exactly that fingerprint.
 type authority struct {
 	recorded  string
 	claimErrs []error
-	// recordErrs fail RecordPublicKey; landed ones record before failing,
+	// recordErrs fail RecordFingerprint; landed ones record before failing,
 	// as a reply lost after the write.
 	recordErrs []recordErr
 	claims     int
@@ -63,30 +65,30 @@ type notBoundError struct{}
 func (notBoundError) Error() string { return "AccessDenied" }
 func (notBoundError) Pending() bool { return true }
 
-func (a *authority) Claim(context.Context) (bool, string, error) {
+func (a *authority) Claim(context.Context) (workerkey.Decision, error) {
 	a.claims++
 	if len(a.claimErrs) > 0 {
 		err := a.claimErrs[0]
 		a.claimErrs = a.claimErrs[1:]
-		return false, "", err
+		return workerkey.Decision{}, err
 	}
-	return a.recorded == "", a.recorded, nil
+	return workerkey.Decision{Pending: a.recorded == "", Fingerprint: a.recorded, HostNodes: 1}, nil
 }
 
-func (a *authority) RecordPublicKey(_ context.Context, pub string) error {
-	a.sent = append(a.sent, pub)
-	if a.recorded != "" && a.recorded != pub {
+func (a *authority) RecordFingerprint(_ context.Context, fp string) error {
+	a.sent = append(a.sent, fp)
+	if a.recorded != "" && a.recorded != fp {
 		return errors.New("InvalidParameterValue")
 	}
 	if len(a.recordErrs) > 0 {
 		e := a.recordErrs[0]
 		a.recordErrs = a.recordErrs[1:]
 		if e.landed {
-			a.recorded = pub
+			a.recorded = fp
 		}
 		return e.err
 	}
-	a.recorded = pub
+	a.recorded = fp
 	return nil
 }
 
@@ -188,34 +190,26 @@ func (g *guest) boot() (string, error) {
 	return Boot(context.Background(), g.cfg)
 }
 
-// assertSentOnlyPublicKeys checks nothing but valid public keys left the guest.
-func (g *guest) assertSentOnlyPublicKeys(seed string) {
+// recordKey stands for a receipt key created on this volume earlier and
+// recorded by the platform; it returns that key.
+func (g *guest) recordKey() []byte {
 	g.t.Helper()
-	for _, v := range g.auth.sent {
-		if !nkeys.IsValidPublicUserKey(v) || (seed != "" && strings.Contains(v, seed)) {
-			g.t.Fatal("the guest sent something other than a public key")
-		}
-	}
-}
-
-// seedKey stands for a worker key created when the store was first made and
-// recorded by the domain; it returns that key's public half.
-func (g *guest) seedKey() string {
-	g.t.Helper()
-	kp, err := workerkey.Store{Dir: g.keyDir()}.ForNewStore()
-	if err != nil {
-		g.t.Fatalf("seed worker key: %v", err)
-	}
-	defer kp.Wipe()
-	pub, err := kp.PublicKey()
-	if err != nil {
+	key := make([]byte, workerkey.ReceiptKeyLen)
+	if _, err := rand.Read(key); err != nil {
 		g.t.Fatal(err)
 	}
-	g.auth.recorded = pub
-	return pub
+	mustMkdir(g.t, g.keyDir())
+	if err := os.Chmod(g.keyDir(), 0o700); err != nil {
+		g.t.Fatal(err)
+	}
+	if err := os.WriteFile(g.keyFile(), key, 0o600); err != nil {
+		g.t.Fatal(err)
+	}
+	g.auth.recorded = workerkey.Fingerprint(key)
+	return key
 }
 
-func (g *guest) keyFile() string { return filepath.Join(g.keyDir(), "store-client.nk") }
+func (g *guest) keyFile() string { return filepath.Join(g.keyDir(), "receipt.key") }
 
 // resetMounts is a reboot: only the initramfs root is mounted.
 func (g *guest) resetMounts() {
@@ -235,12 +229,12 @@ func (g *guest) appendMount(majMin, root, dir, fstype, source string) {
 
 func (g *guest) keyDir() string { return filepath.Join(g.cfg.DataDir, keyDirName) }
 
-func (g *guest) seed() string {
-	b, err := os.ReadFile(filepath.Join(g.keyDir(), "store-client.nk"))
+func (g *guest) key() []byte {
+	b, err := os.ReadFile(g.keyFile())
 	if err != nil {
 		g.t.Fatalf("read key: %v", err)
 	}
-	return string(b)
+	return b
 }
 
 func (g *guest) assertNoKey() {
@@ -248,145 +242,130 @@ func (g *guest) assertNoKey() {
 	if _, err := os.Lstat(g.keyDir()); !errors.Is(err, os.ErrNotExist) {
 		g.t.Fatalf("a key directory exists although boot refused: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(g.cfg.RunDir, "public-key")); !errors.Is(err, os.ErrNotExist) {
-		g.t.Fatal("a public key was published although boot refused")
+	if _, err := os.Lstat(filepath.Join(g.cfg.RunDir, receiptReady)); !errors.Is(err, os.ErrNotExist) {
+		g.t.Fatal("receipt readiness was published although boot refused")
 	}
 }
 
-func (g *guest) assertNoSeedLeak(err error, seed string) {
+// assertNoKeyLeak checks no error or log line carries the key's bytes.
+func (g *guest) assertNoKeyLeak(err error) {
 	g.t.Helper()
-	if seed == "" {
+	b, rerr := os.ReadFile(g.keyFile())
+	if rerr != nil || len(b) == 0 {
 		return
 	}
-	if err != nil && strings.Contains(err.Error(), seed) {
-		g.t.Fatal("an error exposes the seed")
-	}
-	for _, l := range g.logs {
-		if strings.Contains(l, seed) {
-			g.t.Fatal("a log line exposes the seed")
+	for _, enc := range []string{string(b), hex.EncodeToString(b), base64.StdEncoding.EncodeToString(b)} {
+		if err != nil && strings.Contains(err.Error(), enc) {
+			g.t.Fatal("an error exposes the receipt key")
+		}
+		for _, l := range g.logs {
+			if strings.Contains(l, enc) {
+				g.t.Fatal("a log line exposes the receipt key")
+			}
 		}
 	}
 }
 
-// otherPub is a valid store key the worker does not hold.
-func otherPub(t *testing.T) string {
-	t.Helper()
-	pub, _ := userKey(t)
-	return pub
-}
-
-func userKey(t *testing.T) (pub, seed string) {
-	t.Helper()
-	kp, err := nkeys.CreateUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := kp.PublicKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := kp.Seed()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p, string(s)
-}
-
-func TestBoot_FirstStoreCreatesKeyThenReusesItAcrossReboots(t *testing.T) {
+func TestBoot_NewVolumeCreatesKeyThenReusesItAcrossReboots(t *testing.T) {
 	g := newGuest(t)
 	g.contract()
-	pub, err := g.boot()
+	fp, err := g.boot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	seed := g.seed()
-	if g.auth.recorded != pub || len(g.auth.sent) != 1 {
-		t.Fatalf("recorded %q after %d sends, want %s once", g.auth.recorded, len(g.auth.sent), pub)
+	key := g.key()
+	if fp != workerkey.Fingerprint(key) || g.auth.recorded != fp || len(g.auth.sent) != 1 {
+		t.Fatalf("recorded %q after %d sends, want %s once", g.auth.recorded, len(g.auth.sent), fp)
 	}
+	// The store has since written data; a recorded key still reloads.
+	mustMkdir(t, filepath.Join(g.cfg.DataDir, StoreDirName))
 	for boot := 2; boot <= 3; boot++ {
 		g.resetMounts()
 		got, err := g.boot()
-		if err != nil || got != pub || g.seed() != seed {
-			t.Fatalf("boot %d = %q, %v; the worker key must not change", boot, got, err)
+		if err != nil || got != fp || string(g.key()) != string(key) {
+			t.Fatalf("boot %d = %q, %v; the receipt key must not change", boot, got, err)
 		}
 	}
 	if len(g.auth.sent) != 1 {
-		t.Fatalf("a recorded key was sent again: %d sends", len(g.auth.sent))
+		t.Fatalf("a recorded fingerprint was sent again: %d sends", len(g.auth.sent))
 	}
 	if g.disk.mounts != 3 {
 		t.Fatalf("mounts = %d, want one per boot", g.disk.mounts)
 	}
-	published, err := os.ReadFile(filepath.Join(g.cfg.RunDir, "public-key"))
-	if err != nil || strings.TrimSpace(string(published)) != pub {
-		t.Fatalf("published key = %q, %v", published, err)
+	published, err := os.ReadFile(filepath.Join(g.cfg.RunDir, receiptReady))
+	if err != nil || strings.TrimSpace(string(published)) != fp {
+		t.Fatalf("published fingerprint = %q, %v", published, err)
 	}
-	g.assertSentOnlyPublicKeys(seed)
-	g.assertNoSeedLeak(nil, seed)
+	g.assertNoKeyLeak(nil)
 }
 
-// Once the domain holds a key, losing the guest's copy never yields a new
-// one, whatever a replayed first-start fw_cfg says.
+// Once the platform holds a fingerprint, losing the disk's key never yields a
+// new one; the boot refuses without asking again.
 func TestBoot_KeyLostAfterRecordingIsNeverReplaced(t *testing.T) {
 	g := newGuest(t)
 	g.contract()
-	g.seedKey()
-	if err := os.Remove(g.keyFile()); err != nil {
-		t.Fatal(err)
-	}
-	g.fw("store-status", "new\n")
-	g.resetMounts()
+	g.recordKey()
+	mustRemove(t, g.keyFile())
 	_, err := g.boot()
-	if !errors.Is(err, workerkey.ErrKeyMissing) {
-		t.Fatalf("err = %v, want ErrKeyMissing", err)
+	if !errors.Is(err, workerkey.ErrReceiptKeyMissing) {
+		t.Fatalf("err = %v, want ErrReceiptKeyMissing", err)
 	}
 	if _, err := os.Lstat(g.keyFile()); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("a replacement key was created for an existing store")
+		t.Fatal("a replacement key was created for a recorded volume")
 	}
 	if len(g.auth.sent) != 0 || g.auth.claims != 1 {
 		t.Fatalf("sends=%d claims=%d; a final refusal must not be retried or answered", len(g.auth.sent), g.auth.claims)
-	}
-	if _, err := os.Lstat(filepath.Join(g.cfg.RunDir, "public-key")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("a public key was published")
 	}
 }
 
 func TestBoot_RecordedKeyMismatchRefuses(t *testing.T) {
 	g := newGuest(t)
 	g.contract()
-	g.seedKey()
-	seed := g.seed()
-	g.auth.recorded = otherPub(t)
+	key := g.recordKey()
+	g.auth.recorded = workerkey.Fingerprint(append([]byte("x"), key[1:]...))
 	_, err := g.boot()
 	if !errors.Is(err, workerkey.ErrKeyMismatch) {
 		t.Fatalf("err = %v, want ErrKeyMismatch", err)
 	}
-	if g.seed() != seed || len(g.auth.sent) != 0 {
-		t.Fatal("a mismatch changed or sent the worker key")
+	if string(g.key()) != string(key) || len(g.auth.sent) != 0 {
+		t.Fatal("a mismatch changed or sent the receipt key")
 	}
-	g.assertNoSeedLeak(err, seed)
+	g.assertNoKeyLeak(err)
 }
 
-// A reply lost after the key was recorded is retried, and the retry is
-// answered with that same key: one key, recorded once.
+// A pending decision on a disk that already holds the store's directory
+// creates no key: the platform and the disk disagree about a new volume.
+func TestBoot_PendingWithExistingStoreDataCreatesNoKey(t *testing.T) {
+	g := newGuest(t)
+	g.contract()
+	g.appendMount(testMajMin, "/", g.cfg.DataDir, "ext4", "/dev/vda")
+	mustMkdir(t, filepath.Join(g.cfg.DataDir, StoreDirName))
+	if _, err := g.boot(); !errors.Is(err, workerkey.ErrDiskHasData) {
+		t.Fatalf("err = %v, want ErrDiskHasData", err)
+	}
+	g.assertNoKey()
+}
+
+// A reply lost after recording is retried with the same key: one key,
+// recorded once.
 func TestBoot_LostRecordReplyKeepsTheSameKey(t *testing.T) {
 	for _, landed := range []bool{true, false} {
 		t.Run(fmt.Sprintf("landed=%v", landed), func(t *testing.T) {
 			g := newGuest(t)
 			g.contract()
 			g.auth.recordErrs = []recordErr{{err: transient{}, landed: landed}}
-			pub, err := g.boot()
+			fp, err := g.boot()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if g.auth.recorded != pub || g.auth.claims != 2 {
+			if g.auth.recorded != fp || g.auth.claims != 2 {
 				t.Fatalf("recorded=%q claims=%d", g.auth.recorded, g.auth.claims)
 			}
 			for _, sent := range g.auth.sent {
-				if sent != pub {
-					t.Fatal("a second key was sent")
+				if sent != fp {
+					t.Fatal("a second key was recorded")
 				}
 			}
-			g.assertSentOnlyPublicKeys(g.seed())
 		})
 	}
 }
@@ -512,7 +491,7 @@ func TestBoot_DiskRefusalsNeverAskTheGateway(t *testing.T) {
 func TestBoot_AlreadyMountedWorkerDiskIsReused(t *testing.T) {
 	g := newGuest(t)
 	g.contract()
-	g.seedKey()
+	g.recordKey()
 	g.appendMount(testMajMin, "/", g.cfg.DataDir, "ext4", "/dev/vda")
 	if _, err := g.boot(); err != nil {
 		t.Fatal(err)

@@ -281,7 +281,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "public_ip", pubIP, "private_ip", pubPrivIP)
 
 	pubOK := t.Run("PublicSubnetEgress", func(t *testing.T) {
-		if !sshHealth.TryReady(pubIP, 22, keyPath, harness.SSHReadyBudget) {
+		if !sshHealth.TryReady(t, pubIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 				fmt.Sprintf("PublicSubnetEgress SSH timeout — vpc=%s igw=%s pub=%s", vpcID, igwID, pubIP),
 				harness.VPCDiagnosticsOpts{
@@ -405,7 +405,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		harness.Detail(t, "instance", instanceID, "public_ip", rbPubIP)
 
 		harness.Step(t, "expecting external SSH to instance in fresh-VPC public subnet")
-		if !sshHealth.TryReady(rbPubIP, 22, keyPath, harness.SSHReadyBudget) {
+		if !sshHealth.TryReady(t, rbPubIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, instanceID,
 				fmt.Sprintf("RouteBeforeSubnet SSH timeout — vpc=%s igw=%s pub=%s", vID, iID, rbPubIP),
 				harness.VPCDiagnosticsOpts{
@@ -727,7 +727,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		}
 
 		harness.Step(t, "ssh to guest via %s after restart", newIP)
-		if !sshHealth.TryReady(newIP, 22, keyPath, harness.SSHReadyBudget) {
+		if !sshHealth.TryReady(t, newIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 				fmt.Sprintf("StopStartAddress SSH timeout — was=%s now=%s instance=%s", pubIP, newIP, pubInstanceID),
 				harness.VPCDiagnosticsOpts{
@@ -789,7 +789,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		// association publishes; poll the SSH handshake rather than
 		// asserting immediately.
 		harness.Step(t, "ssh to guest via EIP %s", eipIP)
-		if !sshHealth.TryReady(eipIP, 22, keyPath, harness.SSHReadyBudget) {
+		if !sshHealth.TryReady(t, eipIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 				fmt.Sprintf("EIP SSH timeout — eip=%s instance=%s", eipIP, pubInstanceID),
 				harness.VPCDiagnosticsOpts{
@@ -851,7 +851,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 				"instance came back on a different address than the Elastic IP associated to it")
 
 			harness.Step(t, "ssh to guest via EIP %s after restart", eipIP)
-			if !sshHealth.TryReady(eipIP, 22, keyPath, harness.SSHReadyBudget) {
+			if !sshHealth.TryReady(t, eipIP, 22, keyPath, harness.SSHReadyBudget) {
 				harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 					fmt.Sprintf("EIP SSH timeout after restart — eip=%s instance=%s", eipIP, pubInstanceID),
 					harness.VPCDiagnosticsOpts{

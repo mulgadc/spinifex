@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
@@ -18,9 +17,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
-
-// sqsWorkerVolumeGiB sizes the worker's key disk, which holds one key file.
-const sqsWorkerVolumeGiB = 1
 
 // sqsWorkerEnsureTimeout bounds one launch; the caller's own timeout does not
 // cancel it, so a retry after a lost reply observes the outcome instead.
@@ -54,7 +50,7 @@ func (e *sqsWorkerEnsurer) launcher(ctx context.Context) (*workerlaunch.Launcher
 }
 
 // ensure runs one launch at a time; a waiter whose context ends gives up.
-func (e *sqsWorkerEnsurer) ensure(ctx context.Context, region, instanceType string) (workerlaunch.Result, error) {
+func (e *sqsWorkerEnsurer) ensure(ctx context.Context, region, instanceType string, sizeGiB int64) (workerlaunch.Result, error) {
 	select {
 	case e.sem <- struct{}{}:
 	case <-ctx.Done():
@@ -68,7 +64,7 @@ func (e *sqsWorkerEnsurer) ensure(ctx context.Context, region, instanceType stri
 	if err != nil {
 		return workerlaunch.Result{}, err
 	}
-	return l.Ensure(ctx, region, instanceType)
+	return l.Ensure(ctx, region, instanceType, sizeGiB)
 }
 
 // buildSQSWorkerLauncher composes the launcher from this daemon's real volume,
@@ -85,17 +81,12 @@ func (d *Daemon) buildSQSWorkerLauncher(ctx context.Context) (*workerlaunch.Laun
 	if err != nil {
 		return nil, err
 	}
-	first, err := firststore.Open(ctx, js)
-	if err != nil {
-		return nil, err
-	}
 	prep := &storevolume.Preparer{Volumes: d.volumeService, Provider: d.ebsProvider, NodeID: d.node,
 		ScratchDir: d.config.DataDir, WriteImage: nbd.WriteRawImage}
 	vols := sqsWorkerVolumes{prep: prep, volumes: d.volumeService, availabilityZone: d.config.AZ,
-		sizeGiB: sqsWorkerVolumeGiB, encryptionKeyFile: d.config.Viperblock.EncryptionKeyFile}
+		encryptionKeyFile: d.config.Viperblock.EncryptionKeyFile}
 	return &workerlaunch.Launcher{
 		Identities: ids,
-		FirstStore: first,
 		Volumes:    vols,
 		Roles:      sqsWorkerRoles{provider: d.systemRoleEnsurer},
 		Network:    newSQSWorkerNetwork(d.vpcService, &d.config.SQS),
@@ -128,7 +119,7 @@ func (d *Daemon) handleSQSWorkerEnsure(msg *nats.Msg) string {
 	}
 	ctx, cancel := context.WithTimeout(base, sqsWorkerEnsureTimeout)
 	defer cancel()
-	res, err := d.sqsWorker.ensure(ctx, d.config.Region, req.InstanceType)
+	res, err := d.sqsWorker.ensure(ctx, d.config.Region, req.InstanceType, req.VolumeSizeGiB)
 	if err != nil {
 		code, message := sqsWorkerEnsureError(err)
 		slog.WarnContext(ctx, "SQS worker ensure failed", "node", d.node, "code", code, "err", err)
@@ -168,7 +159,7 @@ func sqsWorkerEnsureError(err error) (code, message string) {
 		return awserrors.ErrorServerInternal, vol.Error()
 	}
 	switch {
-	case errors.Is(err, workerident.ErrTypeChanged):
+	case errors.Is(err, workerident.ErrTypeChanged), errors.Is(err, workerident.ErrSizeChanged):
 		return awserrors.ErrorIncorrectState, err.Error()
 	case errors.Is(err, workerident.ErrWrongNode):
 		return awserrors.ErrorInvalidParameterValue, "the Region's SQS worker is pinned to another node"
@@ -179,4 +170,13 @@ func sqsWorkerEnsureError(err error) (code, message string) {
 	default:
 		return awserrors.ErrorServerInternal, err.Error()
 	}
+}
+
+// retainedVolume names a volume a failed prepare kept, so the record can
+// still find it.
+func retainedVolume(err error) string {
+	if r, ok := errors.AsType[*storevolume.RetainedVolumeError](err); ok {
+		return r.VolumeID
+	}
+	return ""
 }

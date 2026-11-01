@@ -42,20 +42,28 @@ const fenceKillTimeout = 30 * time.Second
 // nodes writing one volume. Reclaiming correctly needs a state transition that
 // atomically replaces the lost in-memory lease and starts a new renewal loop,
 // and that is an optimisation, not a safety property.
-//
-// The holder is read only to say who won, which is what the operator needs and
-// not something the decision turns on.
 func (cfg *Config) onVolumeLeaseLost(ctx context.Context, volumeName string, kind leaseLossKind) {
 	if cfg.leases == nil {
 		return
 	}
+	cfg.fenceVolume(ctx, volumeName, kind)
+}
 
-	// Read only to name the winner for the operator. No holder, or one this node
-	// cannot read, still fences: it cannot show it is the only writer, and
-	// continuing to write is the one option that can corrupt.
+// fenceHolderReadTimeout bounds the read that names the winner. It runs after
+// the kill, so it cannot delay the fence, but the daemon's notice waits on it.
+const fenceHolderReadTimeout = 2 * time.Second
+
+// fenceWinner names who holds volumeName now, for the operator. The decision to
+// fence never turns on it: no holder, or one this node cannot read, still
+// fences, because this node cannot show it is the only writer.
+func (cfg *Config) fenceWinner(ctx context.Context, volumeName string, kind leaseLossKind) (string, otelsetup.FenceOutcome) {
 	winner := "unknown"
-	if owner, held := cfg.leases.currentOwner(ctx, volumeName); held && owner != cfg.leases.owner {
-		winner = owner
+	if cfg.leases != nil {
+		readCtx, cancel := context.WithTimeout(ctx, fenceHolderReadTimeout)
+		if owner, held := cfg.leases.currentOwner(readCtx, volumeName); held && owner != cfg.leases.owner {
+			winner = owner
+		}
+		cancel()
 	}
 
 	outcome := otelsetup.FenceOutcomeExpired
@@ -65,17 +73,21 @@ func (cfg *Config) onVolumeLeaseLost(ctx context.Context, volumeName string, kin
 	case winner != "unknown":
 		outcome = otelsetup.FenceOutcomeTaken
 	}
-	cfg.fenceVolume(ctx, volumeName, winner, outcome)
+	return winner, outcome
 }
 
 // fenceVolume tears this node's export down because the volume belongs to
 // somebody else now. The guest loses its disk immediately, which is the point:
 // an export left up is a second writer.
 //
+// The kill precedes anything that waits on JetStream: validity lapses only
+// volumeLeaseAcquireMargin before the server can re-grant the entry, and a read
+// of the store this node just failed to reach would spend it with nbdkit alive.
+//
 // Deliberately does not seal. This node's copy is the stale one, and sealing it
 // would publish an older state over the winner's. For the same reason the dirty
 // marker is left alone — the winner has taken it over and it now names them.
-func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string, outcome otelsetup.FenceOutcome) {
+func (cfg *Config) fenceVolume(ctx context.Context, volumeName string, kind leaseLossKind) {
 	matched, found := cfg.lookupMountedVolume(volumeName)
 	if !found {
 		// The export went away on its own between losing the lease and getting
@@ -85,12 +97,14 @@ func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string, o
 	}
 
 	slog.ErrorContext(ctx, "fencing volume: the lease moved while this node had it open, so the guest is losing its disk",
-		"volume", volumeName, "previous_owner", cfg.leases.owner, "winner", winner,
-		"pid", matched.PID)
+		"volume", volumeName, "previous_owner", cfg.leaseOwner(), "pid", matched.PID)
 
-	if err := cfg.tearDownExport(ctx, matched, "fence"); err != nil {
+	killErr := cfg.tearDownExport(ctx, matched, "fence")
+	winner, outcome := cfg.fenceWinner(ctx, volumeName, kind)
+
+	if killErr != nil {
 		slog.ErrorContext(ctx, "fence FAILED: nbdkit did not exit, so this node is still a writer on a volume it does not own",
-			"volume", volumeName, "pid", matched.PID, "winner", winner, "err", err)
+			"volume", volumeName, "pid", matched.PID, "winner", winner, "err", killErr)
 		otelsetup.RecordVolumeFence(ctx, otelsetup.FenceOutcomeKillFailed)
 		if !cfg.writerAlive(matched.PID) {
 			// The kill was refused rather than ignored, so nothing here says what
@@ -104,6 +118,8 @@ func (cfg *Config) fenceVolume(ctx context.Context, volumeName, winner string, o
 		return
 	}
 
+	slog.WarnContext(ctx, "volume fenced: the export is gone and this node is no longer writing it",
+		"volume", volumeName, "pid", matched.PID, "winner", winner)
 	otelsetup.RecordVolumeFence(ctx, outcome)
 	cfg.publishVolumeFenced(ctx, volumeName, winner)
 }
@@ -285,9 +301,26 @@ func (cfg *Config) finishTeardown(ctx context.Context, matched MountedVolume, wh
 	cfg.releaseVolumeLease(ctx, matched.Lease)
 }
 
-// publishVolumeFenced tells the local daemon a guest is now running against a
-// disk that is gone. Best effort: the fence has already happened, and a guest
-// left running with dead I/O is a worse outcome to report than to cause.
+// Fence notice delivery. The notice is the only way the daemon learns its guest
+// lost its disk, and the fence often runs while this node's NATS is restarting,
+// so it is retried until the daemon answers rather than published once.
+const (
+	fenceNoticeTimeout       = 2 * time.Second
+	defaultFenceNoticeRetry  = 2 * time.Second
+	fenceNoticeLogEveryTries = 15
+)
+
+// fenceNoticeRetry is how long a failed notice waits before the next attempt.
+func (cfg *Config) fenceNoticeRetry() time.Duration {
+	if cfg.fenceNoticeEvery > 0 {
+		return cfg.fenceNoticeEvery
+	}
+	return defaultFenceNoticeRetry
+}
+
+// publishVolumeFenced tells the local daemon a guest is running against a disk
+// that is gone, until the daemon acknowledges. It gives up on a closed
+// connection, or once the volume is exported here again by a newer mount.
 func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner string) {
 	if cfg.nc == nil {
 		return
@@ -304,9 +337,46 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 		return
 	}
 	subject := viperblocklegacyv1.VolumeFencedSubject(cfg.NodeName)
-	if err := cfg.nc.Publish(subject, payload); err != nil {
-		slog.ErrorContext(ctx, "fence: could not announce the fenced volume, the guest will be left with dead I/O",
-			"volume", volumeName, "subject", subject, "err", err)
+	began := time.Now()
+
+	for attempt := 1; ; attempt++ {
+		reqCtx, cancel := context.WithTimeout(ctx, fenceNoticeTimeout)
+		reply, err := cfg.nc.RequestWithContext(reqCtx, subject, payload)
+		cancel()
+		if err == nil {
+			var ack viperblocklegacyv1.VolumeFencedAck
+			if jerr := json.Unmarshal(reply.Data, &ack); jerr == nil && ack.Error != "" {
+				slog.ErrorContext(ctx, "fence: the daemon could not act on the fenced volume",
+					"volume", volumeName, "subject", subject, "err", ack.Error)
+			} else if attempt > 1 {
+				slog.WarnContext(ctx, "fence: the daemon acknowledged the fenced volume after retrying",
+					"volume", volumeName, "instance", ack.Instance, "attempts", attempt,
+					"unacknowledged_ms", otelsetup.Millis(time.Since(began)))
+			}
+			return
+		}
+
+		if cfg.nc.IsClosed() {
+			slog.ErrorContext(ctx, "fence: connection closed before the daemon acknowledged the fenced volume, the guest may be left with dead I/O",
+				"volume", volumeName, "subject", subject, "attempts", attempt)
+			return
+		}
+		if _, again := cfg.lookupMountedVolume(volumeName); again {
+			slog.WarnContext(ctx, "fence: volume exported here again before the daemon acknowledged the fence, dropping the stale notice",
+				"volume", volumeName, "attempts", attempt)
+			return
+		}
+		if attempt == 1 || attempt%fenceNoticeLogEveryTries == 0 {
+			slog.ErrorContext(ctx, "fence: the daemon has not acknowledged the fenced volume, retrying; until it does the guest keeps running with dead I/O",
+				"volume", volumeName, "subject", subject, "attempts", attempt,
+				"unacknowledged_ms", otelsetup.Millis(time.Since(began)), "err", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(cfg.fenceNoticeRetry()):
+		}
 	}
 }
 

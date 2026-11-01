@@ -104,7 +104,7 @@ jobs:
 
       - name: Build microVM artifacts (lb-agent + kernel + initramfs + qboot + SQS store and worker images)
         if: steps.version.outputs.exists != 'true'
-        run: cd spinifex && make build-microvm-image build-sqs-store-microvm-image build-sqs-worker-microvm-image
+        run: cd spinifex && make build-microvm-image build-sqs-worker-microvm-image
 
       - name: Build amd64 Tarball
         if: steps.version.outputs.exists != 'true'

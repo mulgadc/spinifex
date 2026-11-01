@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newBedrockAgentRuntimeRequestGateway builds a GatewayConfig wired the same
+// newBedrockAgentRuntimeRequestGateway builds a pipeline.Config wired the same
 // way as newBedrockAgentRequestGateway (real JetStream-backed KB/DataSource
 // stores, allow-everything IAMService) plus newBedrockRequestGateway's vLLM
 // routing (BedrockEndpoints/BedrockAccess), since RetrieveAndGenerate's

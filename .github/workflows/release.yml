@@ -58,7 +58,7 @@ jobs:
           cache: false
 
       - name: Build microVM artifacts (lb-agent + kernel + initramfs + qboot + SQS store and worker images)
-        run: cd spinifex && make build-microvm-image build-sqs-store-microvm-image build-sqs-worker-microvm-image
+        run: cd spinifex && make build-microvm-image build-sqs-worker-microvm-image
 
       - name: Build amd64 Tarball
         env:

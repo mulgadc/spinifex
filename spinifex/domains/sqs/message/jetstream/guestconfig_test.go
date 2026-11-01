@@ -15,35 +15,29 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// guestLib is the store guest's shell library, from the repository root.
+// guestLib is the SQS guest's shell library, from the repository root.
 func guestLib(t *testing.T) string {
 	t.Helper()
 	_, here, _, ok := runtime.Caller(0)
 	require.True(t, ok)
-	p := filepath.Join(filepath.Dir(here), "..", "..", "..", "..", "..", "build", "microvm", "sqs-store", "sqs-store-lib.sh")
+	p := filepath.Join(filepath.Dir(here), "..", "..", "..", "..", "..", "build", "microvm", "sqs-worker", "sqs-worker-lib.sh")
 	_, err := os.Stat(p)
 	require.NoError(t, err)
 	return p
 }
 
-// guestStore starts a server from the config the store guest itself writes,
-// changing only the port, and connects with the client NKey it admits.
+// guestStore starts a server from the config the SQS guest itself writes,
+// changing only the port, and connects as the co-located worker does.
 func guestStore(t *testing.T) (message.Store, *server.Options) {
 	t.Helper()
-	kp, err := nkeys.CreateUser()
-	require.NoError(t, err)
-	pub, err := kp.PublicKey()
-	require.NoError(t, err)
-
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "nats.conf")
-	cmd := exec.Command("bash", "-c", `. "$0" && sqs_write_config 127.0.0.1 "$1" "$2"`, guestLib(t), pub, conf)
-	cmd.Env = append(os.Environ(), "SQS_DATA="+filepath.Join(dir, "data"), "SQS_PORT=4222")
+	cmd := exec.Command("bash", "-c", `. "$0" && sqsw_write_config "$1"`, guestLib(t), conf)
+	cmd.Env = append(os.Environ(), "SQSW_DATA="+filepath.Join(dir, "data"))
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "%s", out)
 
@@ -57,7 +51,7 @@ func guestStore(t *testing.T) (message.Store, *server.Options) {
 	require.True(t, ns.ReadyForConnections(10*time.Second))
 	t.Cleanup(ns.Shutdown)
 
-	nc, err := nats.Connect(ns.ClientURL(), nats.Nkey(pub, kp.Sign))
+	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 	js, err := jetstream.New(nc)

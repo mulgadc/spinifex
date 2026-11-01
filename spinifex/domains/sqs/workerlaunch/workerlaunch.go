@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/nats-io/nats.go/jetstream"
@@ -21,7 +20,7 @@ import (
 type Volumes interface {
 	// Prepare creates a new, empty, formatted volume and returns its ID. An
 	// error wrapping storevolume.ErrNotCreated proves no create was sent.
-	Prepare(ctx context.Context) (string, error)
+	Prepare(ctx context.Context, sizeGiB int64) (string, error)
 	// Encrypted reports the volume record's own encryption flag.
 	Encrypted(ctx context.Context, volumeID string) (bool, error)
 }
@@ -95,7 +94,6 @@ var (
 // node the worker is pinned to.
 type Launcher struct {
 	Identities workerident.Store
-	FirstStore firststore.Store
 	Volumes    Volumes
 	Roles      Roles
 	Network    NetworkAllocator
@@ -119,10 +117,13 @@ type Result struct {
 // bound is returned as is; one launching and already dispatched is refused
 // with ErrOutcomeUnknown; a stopped or failed one is replaced only after the
 // first-store fence excludes its generation.
-func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Result, error) {
-	if l.Identities.KV == nil || l.FirstStore.KV == nil || l.Volumes == nil || l.Roles == nil ||
+func (l *Launcher) Ensure(ctx context.Context, region, instanceType string, sizeGiB int64) (Result, error) {
+	if l.Identities.KV == nil || l.Volumes == nil || l.Roles == nil ||
 		l.Network == nil || l.Host == nil || l.VMs == nil || l.NodeID == "" || instanceType == "" {
 		return Result{}, ErrIncomplete
+	}
+	if sizeGiB < 1 || sizeGiB > workerident.MaxSizeGiB {
+		return Result{}, fmt.Errorf("%w: data volume size %d GiB", ErrIncomplete, sizeGiB)
 	}
 	cur, err := l.Identities.Current(ctx, region)
 	var req workerident.LaunchRequest
@@ -141,6 +142,8 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 		return Result{}, err
 	case cur.NodeID != l.NodeID:
 		return Result{}, workerident.ErrWrongNode
+	case cur.SizeGiB != sizeGiB:
+		return Result{}, fmt.Errorf("%w: %d GiB", workerident.ErrSizeChanged, cur.SizeGiB)
 	case cur.InstanceType != instanceType &&
 		(cur.State == workerident.StateBound || (cur.State == workerident.StateLaunching && cur.Allocated())):
 		// Changing the type needs a replacement, never a silent answer for the old VM.
@@ -157,13 +160,10 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 		req = workerident.LaunchRequest{ClaimID: cur.ClaimID, Supersedes: cur.Generation - 1,
 			NodeID: l.NodeID, DataVolumeID: cur.DataVolumeID}
 	default:
-		// Stopped or failed: confirmed to hold nothing. Fence the replaced
-		// generation out of the first-store decision before the next begins.
+		// Stopped or failed: confirmed to hold nothing. The replaced
+		// generation fails Authorize, so it can record nothing for this one.
 		if err := l.hostReady(ctx); err != nil {
 			return Result{}, err
-		}
-		if err := l.FirstStore.Fence(ctx, region, cur.Generation+1); err != nil {
-			return Result{}, fmt.Errorf("fence replaced worker generation: %w", err)
 		}
 		claim, err := l.claimID()
 		if err != nil {
@@ -173,7 +173,7 @@ func (l *Launcher) Ensure(ctx context.Context, region, instanceType string) (Res
 			NodeID: l.NodeID, DataVolumeID: cur.DataVolumeID}
 	}
 
-	req.InstanceType = instanceType
+	req.InstanceType, req.SizeGiB = instanceType, sizeGiB
 	intent, err := l.begin(ctx, region, req)
 	if err != nil {
 		return Result{}, err
@@ -255,7 +255,7 @@ func (l *Launcher) volume(ctx context.Context, intent workerident.Intent, record
 		}
 		return "", fmt.Errorf("worker data volume: %w", err)
 	}
-	id, err := l.Volumes.Prepare(ctx)
+	id, err := l.Volumes.Prepare(ctx, intent.SizeGiB)
 	if errors.Is(err, storevolume.ErrNotCreated) {
 		if cerr := l.Identities.ClearVolumeAttempt(ctx, intent); cerr != nil {
 			return "", fmt.Errorf("%w: no volume was created, but its mark was not cleared: %w", ErrVolumeOutcomeUnknown, cerr)

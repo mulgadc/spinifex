@@ -10,16 +10,16 @@ import (
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/servicestate"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
 )
 
+const testRegion = "ap-southeast-2"
+
 func enableInput() SQSEnableInput {
-	return SQSEnableInput{Region: "ap-southeast-2", NodeID: "node1", WorkerInstanceType: "t3.small",
-		StoreInstanceType: "t3.small", VolumeSizeGiB: "8", AccountID: "000000000000"}
+	return SQSEnableInput{Region: testRegion, NodeID: "node1", InstanceType: "t3.small", VolumeSizeGiB: 8,
+		AccountID: "000000000000"}
 }
 
 // Outside a single-node cluster, enable is refused before any state exists.
@@ -39,20 +39,20 @@ func TestEnableSQS_RefusesAMultiNodeClusterWritingNothing(t *testing.T) {
 	}
 }
 
-// An enable whose launches fail stays recorded as desired, and status shows
+// An enable whose launch fails stays recorded as desired, and status shows
 // it as requested but not ready rather than as disabled or done.
 func TestEnableSQS_InterruptedEnableStaysRequestedAndNotReady(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
-	before, err := DescribeSQS(ctx, js, "ap-southeast-2", SQSObservers{})
-	if err != nil || before.Desired != "disabled" || before.Store != sqsStoreAbsent || before.Ready {
+	before, err := DescribeSQS(ctx, js, testRegion, SQSObservers{})
+	if err != nil || before.Desired != "disabled" || before.Instance != sqsInstanceAbsent || before.Ready {
 		t.Fatalf("status before enable = %+v, %v", before, err)
 	}
 	if _, err := EnableSQS(ctx, nc, js, []string{"node1"}, 1, enableInput(), SQSObservers{}, time.Second); err == nil {
 		t.Fatal("enable with no node daemon answering succeeded")
 	}
-	after, err := DescribeSQS(ctx, js, "ap-southeast-2", SQSObservers{WorkerPolling: func() bool { return true }})
-	if err != nil || after.Desired != "enabled" || after.NodeID != "node1" || after.Store != sqsStoreAbsent || after.Ready {
+	after, err := DescribeSQS(ctx, js, testRegion, SQSObservers{WorkerPolling: func() bool { return true }})
+	if err != nil || after.Desired != "enabled" || after.NodeID != "node1" || after.Instance != sqsInstanceAbsent || after.Ready {
 		t.Fatalf("status after interrupted enable = %+v, %v", after, err)
 	}
 	in := enableInput()
@@ -62,56 +62,77 @@ func TestEnableSQS_InterruptedEnableStaysRequestedAndNotReady(t *testing.T) {
 	}
 }
 
-// With the store bound and pinned and a worker polling, status still is not
-// Ready while no tenant API is registered here, and stops being Ready as soon
-// as the worker drops out of the poller window.
-func TestDescribeSQS_ReadyNeedsTheTenantAPIAndAPollingWorker(t *testing.T) {
-	clustersize.DeclareForTest(t, 1)
-	_, _, js := testutil.StartTestJetStream(t)
+// boundVM records the Region's SQS VM launched, bound and, if fingerprint is
+// set, with its receipt key recorded by the guest.
+func boundVM(t *testing.T, js jetstream.JetStream, fingerprint string) workerident.Store {
+	t.Helper()
 	ctx := context.Background()
-	const region, claim, vol, inst = "ap-southeast-2", "store-aaaa", "vol-00000000000000001", "i-00000000000000001"
-	st, err := servicestate.Open(ctx, js)
+	ws, err := workerident.Open(ctx, js)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Set(ctx, region, servicestate.Enabled, "node1", time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	recs, err := storelaunch.Open(ctx, js)
+	in, err := ws.BeginLaunch(ctx, testRegion, workerident.LaunchRequest{ClaimID: "worker-aaaa", NodeID: "node1",
+		InstanceType: "t3.small", SizeGiB: 8})
 	if err != nil {
 		t.Fatal(err)
 	}
-	kp, err := nkeys.CreateUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pub, _ := kp.PublicKey()
 	for _, step := range []func() error{
-		func() error { return recs.Begin(ctx, region, claim, "node1", pub, "t3.small", 8) },
-		func() error { return recs.MarkVolumeAttempted(ctx, region, claim) },
-		func() error { return recs.RecordVolume(ctx, region, claim, vol) },
-		func() error { return recs.MarkNetworkAttempted(ctx, region, claim) },
-		func() error { return recs.MarkDispatched(ctx, region, claim) },
-		func() error { return recs.Bind(ctx, region, claim, inst, "10.0.0.2:4222") },
-		func() error { return recs.RecordServerKey(ctx, region, inst, claim, vol, strings.Repeat("ab", 32)) },
+		func() error { return ws.MarkVolumeAttempted(ctx, in) },
+		func() error { return ws.RecordVolume(ctx, in, "vol-00000000000000001") },
+		func() error { return ws.BindInstance(ctx, in, "i-00000000000000001") },
 	} {
 		if err := step(); err != nil {
 			t.Fatal(err)
 		}
 	}
-	polling := true
-	obs := SQSObservers{WorkerPolling: func() bool { return polling }}
+	if fingerprint != "" {
+		id, err := ws.Authorize(ctx, "i-00000000000000001")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ws.RecordReceiptKey(ctx, id, fingerprint); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return ws
+}
 
-	got, err := DescribeSQS(ctx, js, region, obs)
-	if err != nil || got.Store != sqsStoreReady || !got.WorkerPolling || got.TenantAPI != sqsTenantAPINotRegistered || got.Ready {
-		t.Fatalf("unregistered tenant API = %+v, %v; want bound, polling, not-registered, not Ready", got, err)
+// Ready needs the VM bound with its receipt key recorded, a polling worker
+// whose local store is up, and the tenant API registered here.
+func TestDescribeSQS_ReadyNeedsTheReceiptKeyTenantAPIAndAPollingWorker(t *testing.T) {
+	clustersize.DeclareForTest(t, 1)
+	_, _, js := testutil.StartTestJetStream(t)
+	ctx := context.Background()
+	st, err := servicestate.Open(ctx, js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Set(ctx, testRegion, servicestate.Enabled, "node1", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	ws := boundVM(t, js, "")
+	polling := true
+	obs := SQSObservers{WorkerPolling: func() bool { return polling }, TenantAPIRegistered: func() bool { return true }}
+	if got, err := DescribeSQS(ctx, js, testRegion, obs); err != nil || got.ReceiptKey != string(workerident.ReceiptPending) || got.Ready {
+		t.Fatalf("pending receipt key = %+v, %v; want not Ready", got, err)
+	}
+	id, err := ws.Authorize(ctx, "i-00000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RecordReceiptKey(ctx, id, strings.Repeat("ab", 32)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := DescribeSQS(ctx, js, testRegion, obs); err != nil || !got.Ready {
+		t.Fatalf("recorded = %+v, %v; want Ready", got, err)
+	}
+	obs.TenantAPIRegistered = nil
+	if got, err := DescribeSQS(ctx, js, testRegion, obs); err != nil || got.TenantAPI != sqsTenantAPINotRegistered || got.Ready {
+		t.Fatalf("unregistered tenant API = %+v, %v; want not Ready", got, err)
 	}
 	obs.TenantAPIRegistered = func() bool { return true }
-	if got, err = DescribeSQS(ctx, js, region, obs); err != nil || !got.Ready {
-		t.Fatalf("registered = %+v, %v; want Ready", got, err)
-	}
 	polling = false
-	if got, err = DescribeSQS(ctx, js, region, obs); err != nil || got.WorkerPolling || got.Ready {
+	if got, err := DescribeSQS(ctx, js, testRegion, obs); err != nil || got.WorkerPolling || got.Ready {
 		t.Fatalf("worker gone = %+v, %v; want not polling, not Ready", got, err)
 	}
 }
@@ -141,63 +162,54 @@ func stripContract(t *testing.T, kv jetstream.KeyValue, key string) uint64 {
 	return rev
 }
 
-// A store or worker record with no launch contract blocks enable before
-// it writes desired state or launches anything, leaves the record untouched,
-// and status names it. nc is nil: any launch attempt would panic.
-func TestEnableSQS_RefusesAnUnsupportedContractBeforeAnyWrite(t *testing.T) {
+// A worker record with no launch contract, or a separate store record from
+// the two-VM layout, blocks enable before it writes desired state or launches
+// anything, is left untouched, and is named by status. nc is nil: any launch
+// attempt would panic.
+func TestEnableSQS_RefusesUnsupportedRecordsBeforeAnyWrite(t *testing.T) {
 	clustersize.DeclareForTest(t, 1)
-	const region = "ap-southeast-2"
-	for _, kind := range []string{"store", "worker"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		seed         func(t *testing.T, js jetstream.JetStream) (jetstream.KeyValue, uint64)
+	}{
+		{"worker without contract", "missing or unsupported launch contract",
+			func(t *testing.T, js jetstream.JetStream) (jetstream.KeyValue, uint64) {
+				ws := boundVM(t, js, "")
+				return ws.KV, stripContract(t, ws.KV, "region."+testRegion)
+			}},
+		{"separate store record", "separate SQS store VM record",
+			func(t *testing.T, js jetstream.JetStream) (jetstream.KeyValue, uint64) {
+				kv, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: legacyStoreBucket})
+				if err != nil {
+					t.Fatal(err)
+				}
+				rev, err := kv.Put(context.Background(), "region."+testRegion, []byte(`{"state":"bound"}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return kv, rev
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			_, _, js := testutil.StartTestJetStream(t)
 			ctx := context.Background()
-			var kv jetstream.KeyValue
-			switch kind {
-			case "store":
-				recs, err := storelaunch.Open(ctx, js)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := recs.Begin(ctx, region, "store-aaaa", "node1", storePublicKey(t), "t3.small", 8); err != nil {
-					t.Fatal(err)
-				}
-				kv = recs.KV
-			case "worker":
-				ws, err := workerident.Open(ctx, js)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := ws.BeginLaunch(ctx, region, workerident.LaunchRequest{ClaimID: "worker-aaaa", NodeID: "node1", InstanceType: "t3.small"}); err != nil {
-					t.Fatal(err)
-				}
-				kv = ws.KV
-			}
-			rev := stripContract(t, kv, "region."+region)
+			kv, rev := tc.seed(t, js)
 
 			_, err := EnableSQS(ctx, nil, js, []string{"node1"}, 1, enableInput(), SQSObservers{}, time.Second)
-			if err == nil || !strings.Contains(err.Error(), "SQS "+kind) || !strings.Contains(err.Error(), "missing or unsupported launch contract") {
-				t.Fatalf("enable = %v; want an unsupported-contract %s refusal", err, kind)
+			if err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("enable = %v; want a %q refusal", err, tc.reason)
 			}
 			if _, err := js.KeyValue(ctx, servicestate.Bucket); !errors.Is(err, jetstream.ErrBucketNotFound) {
 				t.Fatalf("service state bucket = %v; want none created", err)
 			}
-			if e, err := kv.Get(ctx, "region."+region); err != nil || e.Revision() != rev {
+			if e, err := kv.Get(ctx, "region."+testRegion); err != nil || e.Revision() != rev {
 				t.Fatalf("refused record changed: %v", err)
 			}
-			got, err := DescribeSQS(ctx, js, region, SQSObservers{WorkerPolling: func() bool { return true }, TenantAPIRegistered: func() bool { return true }})
-			if err != nil || !strings.Contains(got.Unsupported, "SQS "+kind+" ") || got.Ready {
-				t.Fatalf("status = %+v, %v; want the %s named and not Ready", got, err, kind)
+			got, err := DescribeSQS(ctx, js, testRegion, SQSObservers{WorkerPolling: func() bool { return true },
+				TenantAPIRegistered: func() bool { return true }})
+			if err != nil || !strings.Contains(got.Unsupported, tc.reason) || got.Ready {
+				t.Fatalf("status = %+v, %v; want it named and not Ready", got, err)
 			}
 		})
 	}
-}
-
-func storePublicKey(t *testing.T) string {
-	t.Helper()
-	kp, err := nkeys.CreateUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pub, _ := kp.PublicKey()
-	return pub
 }

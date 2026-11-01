@@ -67,7 +67,7 @@ func runIMDSDatapathSurvivesVswitchdRestart(t *testing.T, fix *Fixture) {
 	t.Cleanup(func() {
 		_, _ = c.EC2.DisassociateAddress(&ec2.DisassociateAddressInput{AssociationId: assocOut.AssociationId})
 	})
-	if !sshHealth.TryReady(eipIP, 22, keyPath, harness.SSHReadyBudget) {
+	if !sshHealth.TryReady(t, eipIP, 22, keyPath, harness.SSHReadyBudget) {
 		t.Fatalf("guest unreachable via EIP %s within %s", eipIP, harness.SSHReadyBudget)
 	}
 	tgt := harness.SSHTarget{User: "ubuntu", Host: eipIP, Port: 22, KeyPath: keyPath}

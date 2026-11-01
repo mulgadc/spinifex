@@ -153,17 +153,8 @@ $(MICROVM_ARTIFACTS) &: $(MICROVM_INPUTS)
 bin/lb-agent:
 	$(MAKE) build-lb-agent
 
-# The SQS store microVM image: a separate artifact from the LB image above, not
-# installed or released by any target yet.
-SQS_STORE_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/sqs-store
-SQS_STORE_MICROVM_ARTIFACTS := $(SQS_STORE_MICROVM_OUT_DIR)/vmlinuz $(SQS_STORE_MICROVM_OUT_DIR)/initramfs.cpio.gz
-SQS_STORE_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_STORE_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_STORE_MICROVM_OUT_DIR)/,sqs-store-lib.sh sqs-store-prepare sqs-store-run sqs-store-stop) bin/nats-server bin/sqs-store-key
-
-$(SQS_STORE_MICROVM_ARTIFACTS) &: $(SQS_STORE_MICROVM_INPUTS)
-	./scripts/build-sqs-store-microvm-image.sh
-
-# The dedicated SQS store server, built from the go.mod-pinned module so the
-# image ships exactly the reviewed version. Static for the musl guest.
+# The dedicated SQS server, built from the go.mod-pinned module so the image
+# ships exactly the reviewed version. Static for the musl guest.
 bin/nats-server: go.mod go.sum
 	@mkdir -p bin
 	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ github.com/nats-io/nats-server/v2
@@ -174,27 +165,20 @@ bin/nats-server: go.mod go.sum
 go_local_srcs = $(shell GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go list -deps -f '{{if and .Module .Module.Main}}{{.Dir}} {{range .GoFiles}}{{$$.Dir}}/{{.}} {{end}}{{range .EmbedFiles}}{{$$.Dir}}/{{.}} {{end}}{{end}}' $(1) || echo go-list-failed-for-$(1))
 .SECONDEXPANSION:
 
-# The store guest's TLS server key helper, static for the musl guest.
-bin/sqs-store-key: go.mod go.sum $$(call go_local_srcs,./cmd/sqs-store-key)
-	@mkdir -p bin
-	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/sqs-store-key
-
-build-sqs-store-microvm-image: $(SQS_STORE_MICROVM_ARTIFACTS) ## Build the SQS store microVM kernel and initramfs
-
-# The shared SQS worker microVM image: the store image's /init and kernel with
-# the worker binary instead of nats-server. Not installed or released yet.
+# The SQS microVM image: one guest running its own SQS nats-server and the SQS
+# worker as separate processes. A separate artifact from the LB image above.
 SQS_WORKER_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/sqs-worker
 SQS_WORKER_MICROVM_ARTIFACTS := $(SQS_WORKER_MICROVM_OUT_DIR)/vmlinuz $(SQS_WORKER_MICROVM_OUT_DIR)/initramfs.cpio.gz
-SQS_WORKER_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_STORE_MICROVM_OUT_DIR)/init.sh $(SQS_WORKER_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_WORKER_MICROVM_OUT_DIR)/,sqs-worker-lib.sh sqs-worker-prepare sqs-worker-ready sqs-worker-stop) bin/sqs-worker
+SQS_WORKER_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_WORKER_MICROVM_OUT_DIR)/init.sh $(SQS_WORKER_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_WORKER_MICROVM_OUT_DIR)/,sqs-worker-lib.sh sqs-worker-prepare sqs-worker-store sqs-worker-ready sqs-worker-stop) bin/nats-server bin/sqs-worker
 
 $(SQS_WORKER_MICROVM_ARTIFACTS) &: $(SQS_WORKER_MICROVM_INPUTS)
-	SQS_MICROVM_PROFILE=worker ./scripts/build-sqs-store-microvm-image.sh
+	./scripts/build-sqs-store-microvm-image.sh
 
 bin/sqs-worker: go.mod go.sum $$(call go_local_srcs,./cmd/sqs-worker)
 	@mkdir -p bin
 	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/sqs-worker
 
-build-sqs-worker-microvm-image: $(SQS_WORKER_MICROVM_ARTIFACTS) ## Build the shared SQS worker microVM kernel and initramfs
+build-sqs-worker-microvm-image: $(SQS_WORKER_MICROVM_ARTIFACTS) ## Build the SQS microVM kernel and initramfs
 
 # qboot is the microvm firmware. The source tarball ships with each release
 # because qboot is GPL-2.0.
@@ -207,13 +191,7 @@ $(QBOOT_ARTIFACTS) &: scripts/build-qboot.sh
 
 build-microvm-image: $(MICROVM_ARTIFACTS) $(QBOOT_ARTIFACTS) ## Build microVM kernel, initramfs and qboot firmware (incremental — skips when up to date)
 
-install-sqs-store-microvm: $(SQS_STORE_MICROVM_ARTIFACTS) ## Install the SQS store microVM image to /usr/share/spinifex/microvm/sqs-store/
-	sudo install -d /usr/share/spinifex/microvm/sqs-store
-	sudo rm -f /usr/share/spinifex/microvm/sqs-store/initramfs.cpio.gz
-	sudo install -m 0644 $(SQS_STORE_MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/sqs-store/vmlinuz
-	sudo install -m 0644 $(SQS_STORE_MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/sqs-store/initramfs.cpio.gz
-
-install-sqs-worker-microvm: $(SQS_WORKER_MICROVM_ARTIFACTS) ## Install the SQS worker microVM image to /usr/share/spinifex/microvm/sqs-worker/
+install-sqs-worker-microvm: $(SQS_WORKER_MICROVM_ARTIFACTS) ## Install the SQS microVM image to /usr/share/spinifex/microvm/sqs-worker/
 	sudo install -d /usr/share/spinifex/microvm/sqs-worker
 	sudo rm -f /usr/share/spinifex/microvm/sqs-worker/initramfs.cpio.gz
 	sudo install -m 0644 $(SQS_WORKER_MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/sqs-worker/vmlinuz
@@ -258,6 +236,12 @@ test-build-scripts:
 		echo "-- $$t"; \
 		sh "$$t" || exit 1; \
 	done
+	@echo -e "\n....Running .github/scripts/*_test.sh...."
+	@for t in $$(find .github/scripts -maxdepth 1 -name '*_test.sh' | sort); do \
+		echo "-- $$t"; \
+		sh "$$t" || exit 1; \
+	done
+	shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh .github/scripts/hypervisor-disk-preflight_test.sh
 	@echo -e "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
 	shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
 	shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)
@@ -519,7 +503,6 @@ distro-amd64:
 		echo "[distro-amd64] WARNING: microvm artifacts missing — tarball will not include them"; \
 		echo "[distro-amd64]          run 'make build-microvm-image' before 'make distro-amd64'"; \
 	fi
-	./scripts/lib/stage-sqs-store-microvm.sh $(SQS_STORE_MICROVM_OUT_DIR) dist/amd64
 	./scripts/lib/stage-sqs-store-microvm.sh $(SQS_WORKER_MICROVM_OUT_DIR) dist/amd64 sqs-worker
 	tar -czf dist/spinifex-$(VERSION)-linux-amd64.tar.gz -C dist/amd64 .
 	sha256sum dist/spinifex-$(VERSION)-linux-amd64.tar.gz > dist/spinifex-$(VERSION)-linux-amd64.tar.gz.sha256
@@ -539,7 +522,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-store-microvm-image build-sqs-worker-microvm-image install-microvm install-sqs-store-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

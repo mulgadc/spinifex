@@ -56,10 +56,9 @@ type IGWManager interface {
 	RebindGatewayIP(ctx context.Context, vpcID, newIP string, prefixLen int) error
 }
 
-// RoutedIngressHooks deliver host-side ingress plumbing in routed-NAT mode:
-// Ensure installs the host route sending VPC-CIDR traffic into OVN via the
-// gateway LRP transit IP; Remove tears it down on detach. Both idempotent.
-// Nil hooks (all other modes) are never called.
+// RoutedIngressHooks report routed-NAT ingress changes to the host: Ensure when
+// a VPC's gateway transit IP is set or re-asserted, Remove on detach. Both must
+// be idempotent. Nil hooks (all other modes) are never called.
 type RoutedIngressHooks struct {
 	Ensure func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error
 	Remove func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error
@@ -295,7 +294,7 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 // ensureRoutedLeg installs the routed-mode datapath legs for a VPC: the OVN
 // SNAT (VPC CIDR → gateway LRP transit IP) and the host ingress route into
 // it. No-op outside routed mode or without a gateway IP. Idempotent — the
-// reconcile loop replays AttachIGW, re-ensuring host state lost on reboot.
+// reconcile loop replays AttachIGW to re-ensure the SNAT.
 func (m *igwManager) ensureRoutedLeg(ctx context.Context, vpcID, gwLrpIP string) error {
 	if m.natMode != policy.NATModeRouted || gwLrpIP == "" {
 		return nil

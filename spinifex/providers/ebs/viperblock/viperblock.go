@@ -214,6 +214,10 @@ type Config struct {
 	fenceWatchEvery time.Duration
 	processAlive    func(pid int) bool
 
+	// fenceNoticeEvery overrides the wait between fence notice attempts. Zero
+	// means defaultFenceNoticeRetry.
+	fenceNoticeEvery time.Duration
+
 	// leases excludes a second viperblock engine on a volume this node has
 	// open. Nil means exclusion cannot be established, and every engine open
 	// refuses rather than proceeding blind.

@@ -70,12 +70,6 @@ func newSQSWorkerNetwork(vpc sqsWorkerNetworkVPC, cfg *config.SQSConfig) *sqsWor
 	return &sqsWorkerNetwork{vpc: vpc, cfg: cfg, sem: make(chan struct{}, 1), desc: "SQS worker interface for "}
 }
 
-// newSQSStoreNetwork places the store's ENI in the same private subnet as the
-// worker, found by its own claim.
-func newSQSStoreNetwork(vpc sqsWorkerNetworkVPC, cfg *config.SQSConfig) *sqsWorkerNetwork {
-	return &sqsWorkerNetwork{vpc: vpc, cfg: cfg, sem: make(chan struct{}, 1), desc: "SQS store interface for "}
-}
-
 // FindWorkerNetwork returns the claim's visible ENI, or nil when there is none.
 func (n *sqsWorkerNetwork) FindWorkerNetwork(ctx context.Context, region, claimID string) (*workerlaunch.Network, error) {
 	return n.allocate(ctx, region, claimID, false)

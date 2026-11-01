@@ -10,15 +10,14 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
 )
 
-// StorePort is the port the store guest's NATS listens on.
+// StorePort is the port the guest's own SQS NATS server listens on, bound
+// to loopback only; nothing outside the guest can reach it.
 const StorePort = 4222
 
-// NATSChecker connects over TLS pinned to the store's recorded server key,
-// then with the worker key asks JetStream for its account info. A pass says
-// the pinned store answered and admitted the worker key.
+// NATSChecker asks the guest's loopback JetStream for its account info. A
+// pass says the local store is up and serving JetStream.
 type NATSChecker struct {
 	// Port overrides StorePort, for tests against a local server.
 	Port int
@@ -35,44 +34,22 @@ func (e *StoreUnreachableError) Error() string   { return "store not answering: 
 func (e *StoreUnreachableError) Unwrap() error   { return e.Err }
 func (e *StoreUnreachableError) Retryable() bool { return true }
 
-// ErrStoreRefusedKey is a store that answered but refused the worker key.
-var ErrStoreRefusedKey = errors.New("the store refused the worker key")
-
-// Check passes once JetStream answers for the worker key.
-func (c NATSChecker) Check(ctx context.Context, address, pin string, kp nkeys.KeyPair) error {
-	if ip := net.ParseIP(address); ip == nil || ip.To4() == nil {
-		return errors.New("store address is not an IPv4 address")
-	}
-	tlsCfg, err := pinnedTLS(pin)
-	if err != nil {
-		return err
-	}
-	pub, err := kp.PublicKey()
-	if err != nil {
-		return fmt.Errorf("derive worker public key: %w", err)
-	}
-	port := c.Port
+func localURL(port int) string {
 	if port == 0 {
 		port = StorePort
 	}
+	return "nats://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+}
+
+// Check passes once the local JetStream answers.
+func (c NATSChecker) Check(ctx context.Context) error {
 	dial := c.Dial
 	if dial == 0 {
 		dial = 5 * time.Second
 	}
-	nc, err := nats.Connect("nats://"+net.JoinHostPort(address, strconv.Itoa(port)),
-		nats.Secure(tlsCfg),
-		nats.Nkey(pub, kp.Sign),
-		nats.Timeout(dial),
-		nats.NoReconnect(),
-		nats.Name("spinifex-sqs-worker-readiness"),
-	)
+	nc, err := nats.Connect(localURL(c.Port), nats.Timeout(dial), nats.NoReconnect(),
+		nats.Name("spinifex-sqs-worker-readiness"))
 	if err != nil {
-		if errors.Is(err, ErrStoreIdentity) {
-			return err
-		}
-		if errors.Is(err, nats.ErrAuthorization) || errors.Is(err, nats.ErrAuthExpired) {
-			return fmt.Errorf("%w: %w", ErrStoreRefusedKey, err)
-		}
 		return &StoreUnreachableError{Err: err}
 	}
 	defer nc.Close()
@@ -87,3 +64,5 @@ func (c NATSChecker) Check(ctx context.Context, address, pin string, kp nkeys.Ke
 	}
 	return nil
 }
+
+var errNoChecker = errors.New("no store checker is configured")

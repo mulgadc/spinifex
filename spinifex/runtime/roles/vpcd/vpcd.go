@@ -644,42 +644,20 @@ func launchService(cfg *Config) error {
 	}()
 
 	// Host ingress plumbing only exists in routed-NAT mode; other modes keep
-	// nil hooks so the IGW manager never touches host routes.
+	// nil hooks so the IGW manager never touches host routes. The hooks only
+	// nudge this node's host ingress loop, which owns the routes on every node.
 	var routedIngress *external.RoutedIngressHooks
+	var ingressNudge chan struct{}
 	if bridgeMode == BridgeModeNAT {
-		ingressRunner := host.NewExecRunner()
-		// Duplicate VPC CIDRs (every account's default VPC is 172.31.0.0/16)
-		// collide on the single host route table: the bootstrap VPC always
-		// wins; other VPCs only install when the CIDR is free and only remove
-		// a route their own gateway IP holds.
-		preferredVPC := ""
-		if cfg.Bootstrap != nil {
-			preferredVPC = cfg.Bootstrap.VpcId
+		ingressNudge = make(chan struct{}, 1)
+		nudge := func(context.Context, string, string, string) error {
+			select {
+			case ingressNudge <- struct{}{}:
+			default:
+			}
+			return nil
 		}
-		routedIngress = &external.RoutedIngressHooks{
-			Ensure: func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error {
-				if vpcID != preferredVPC {
-					holder, err := host.VPCIngressRouteVia(ctx, ingressRunner, vpcCIDR)
-					if err == nil && holder != "" && holder != gwLrpIP {
-						slog.Warn("vpcd: host ingress route conflict, keeping existing holder",
-							"vpc_id", vpcID, "vpc_cidr", vpcCIDR, "holder_gw", holder, "skipped_gw", gwLrpIP)
-						return nil
-					}
-				}
-				return host.EnsureVPCIngressRoute(ctx, ingressRunner, vpcCIDR, gwLrpIP)
-			},
-			Remove: func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error {
-				if gwLrpIP != "" {
-					holder, err := host.VPCIngressRouteVia(ctx, ingressRunner, vpcCIDR)
-					if err == nil && holder != "" && holder != gwLrpIP {
-						slog.Info("vpcd: leaving host ingress route held by another VPC",
-							"vpc_id", vpcID, "vpc_cidr", vpcCIDR, "holder_gw", holder)
-						return nil
-					}
-				}
-				return host.RemoveVPCIngressRoute(ctx, ingressRunner, vpcCIDR)
-			},
-		}
+		routedIngress = &external.RoutedIngressHooks{Ensure: nudge, Remove: nudge}
 	}
 
 	gwAllocator := pickGatewayAllocator(igwPool, liveClient, dhcpMgr)
@@ -828,6 +806,24 @@ func launchService(cfg *Config) error {
 	// own, and a node that never wins the lease would otherwise have no path to
 	// the guests it is running.
 	go runHostEIPLoop(loopCtx, rec)
+
+	// Host VPC ingress routes, on every node and outside the drift lease for the
+	// same reason. Duplicate VPC CIDRs (every account's default VPC is
+	// 172.31.0.0/16) share one host route: the bootstrap VPC holds it.
+	if ingressNudge != nil {
+		preferredVPC := ""
+		if cfg.Bootstrap != nil {
+			preferredVPC = cfg.Bootstrap.VpcId
+		}
+		go reconcile.RunHostIngress(loopCtx, js, &reconcile.HostIngress{
+			OVN:    liveClient,
+			Routes: host.VPCIngressRoutes{Runner: host.NewExecRunner()},
+			LoadIntent: func(ctx context.Context) (reconcile.IntentState, error) {
+				return reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
+			},
+			PreferredVPC: preferredVPC,
+		}, ingressNudge)
+	}
 
 	// Host MSS clamp for peers behind NAT that never receive gateway_mtu's ICMP;
 	// physical uplinks have no host hop, so the loop only clears a stale table.

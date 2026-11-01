@@ -1,4 +1,4 @@
-package workerkey
+package workerkey_test
 
 import (
 	"context"
@@ -7,294 +7,126 @@ import (
 	"path/filepath"
 	"testing"
 
-	testutil "github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
-	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
+	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerkey"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-const region = "ap-southeast-2"
-
-// domainClaimer drives the real first-store state machine for one worker
-// identity. A failing record either drops the write or applies it and loses
-// the reply.
-type domainClaimer struct {
-	s          firststore.Store
-	id         firststore.Identity
-	failRecord bool
-	applied    bool
+// platform stands for the worker record behind the gateway: pending until a
+// fingerprint is recorded, then exactly that fingerprint.
+type platform struct {
+	recorded  string
+	recordErr error
+	landed    bool
+	records   int
 }
 
-func (c *domainClaimer) Claim(ctx context.Context) (bool, string, error) {
-	d, err := c.s.Claim(ctx, region, c.id)
-	return d.CreateKey, d.PublicKey, err
+func (p *platform) Claim(context.Context) (workerkey.Decision, error) {
+	return workerkey.Decision{Pending: p.recorded == "", Fingerprint: p.recorded, HostNodes: 1}, nil
 }
 
-func (c *domainClaimer) RecordPublicKey(ctx context.Context, pub string) error {
-	if c.failRecord {
-		c.failRecord = false
-		if c.applied {
-			c.s.RecordPublicKey(ctx, region, c.id, pub)
+func (p *platform) RecordFingerprint(_ context.Context, fp string) error {
+	p.records++
+	if p.recordErr != nil {
+		if p.landed {
+			p.recorded = fp
 		}
-		return errors.New("nats: timeout")
+		return p.recordErr
 	}
-	return c.s.RecordPublicKey(ctx, region, c.id, pub)
+	p.recorded = fp
+	return nil
 }
 
-func domain(t *testing.T) (firststore.Store, jetstream.KeyValue) {
+func newStore(t *testing.T) workerkey.Store {
 	t.Helper()
-	_, _, js := testutil.StartTestJetStream(t)
-	kv, err := js.CreateKeyValue(context.Background(), firststore.BucketConfig(1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return firststore.Store{JS: js, KV: kv}, kv
+	return workerkey.Store{Dir: filepath.Join(t.TempDir(), "key")}
 }
 
-func worker(gen uint64, n byte) firststore.Identity {
-	return firststore.Identity{InstanceID: "i-0000000000000000" + string('0'+n), ClaimID: "claim-" + string('a'+n) + "-0001", Generation: gen}
+func noData() (bool, error) { return false, nil }
+
+func TestAcquire_NewVolumeCreatesAndRecordsThenReloads(t *testing.T) {
+	s, p := newStore(t), &platform{}
+	key, err := s.Acquire(t.Context(), p, noData)
+	require.NoError(t, err)
+	assert.Len(t, key, workerkey.ReceiptKeyLen)
+	assert.Equal(t, workerkey.Fingerprint(key), p.recorded)
+
+	again, err := s.Acquire(t.Context(), p, func() (bool, error) { return true, nil })
+	require.NoError(t, err)
+	assert.Equal(t, key, again, "a recorded key is reloaded, store data or not")
+	assert.Equal(t, 1, p.records)
 }
 
-func workerDisk(t *testing.T) Store {
-	return Store{Dir: filepath.Join(t.TempDir(), "sqs-worker-key")}
-}
+// A reply lost after the write, or a crash before recording, resumes with the
+// key already on disk rather than a new one.
+func TestAcquire_LostRecordReplyResumesTheSameKey(t *testing.T) {
+	for _, landed := range []bool{false, true} {
+		s := newStore(t)
+		p := &platform{recordErr: errors.New("connection reset"), landed: landed}
+		_, err := s.Acquire(t.Context(), p, noData)
+		require.Error(t, err)
+		first, err := s.ReceiptKey()
+		require.NoError(t, err)
 
-func keyPath(s Store) string { return filepath.Join(s.Dir, keyFile) }
-
-func pubOf(t *testing.T, kp nkeys.KeyPair) string {
-	t.Helper()
-	p, err := kp.PublicKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-func recorded(t *testing.T, s firststore.Store, id firststore.Identity) string {
-	t.Helper()
-	d, err := s.Claim(context.Background(), region, id)
-	if err != nil || d.CreateKey {
-		t.Fatalf("domain decision = %+v, %v; want a recorded key", d, err)
-	}
-	return d.PublicKey
-}
-
-func TestAcquire_CrashBeforeRecordingReusesTheKeyOnDisk(t *testing.T) {
-	ctx := context.Background()
-	fs, _ := domain(t)
-	disk := workerDisk(t)
-	c := &domainClaimer{s: fs, id: worker(1, 1), failRecord: true}
-	if _, err := disk.Acquire(ctx, c); err == nil {
-		t.Fatal("a key was returned before its public key was recorded")
-	}
-	before, err := os.ReadFile(keyPath(disk))
-	if err != nil {
-		t.Fatalf("key not synced to disk before recording: %v", err)
-	}
-	kp, err := disk.Acquire(ctx, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer kp.Wipe()
-	after, _ := os.ReadFile(keyPath(disk))
-	if string(before) != string(after) {
-		t.Fatal("the retry replaced the key")
-	}
-	if recorded(t, fs, c.id) != pubOf(t, kp) {
-		t.Fatal("the recorded key is not the key on disk")
+		p.recordErr = nil
+		key, err := s.Acquire(t.Context(), p, noData)
+		require.NoError(t, err)
+		assert.Equal(t, first, key)
+		assert.Equal(t, workerkey.Fingerprint(first), p.recorded)
 	}
 }
 
-func TestAcquire_LostRecordReplyIsRecoveredOnReboot(t *testing.T) {
-	ctx := context.Background()
-	fs, _ := domain(t)
-	disk := workerDisk(t)
-	c := &domainClaimer{s: fs, id: worker(1, 1), failRecord: true, applied: true}
-	if _, err := disk.Acquire(ctx, c); err == nil {
-		t.Fatal("expected the lost reply to surface")
-	}
-	kp, err := disk.Acquire(ctx, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer kp.Wipe()
-	if recorded(t, fs, c.id) != pubOf(t, kp) {
-		t.Fatal("reboot did not use the recorded key")
-	}
+// A pending decision on a disk that already holds store data creates nothing:
+// the platform and the disk disagree about whether the volume is new.
+func TestAcquire_PendingWithStoreDataCreatesNothing(t *testing.T) {
+	s, p := newStore(t), &platform{}
+	_, err := s.Acquire(t.Context(), p, func() (bool, error) { return true, nil })
+	require.ErrorIs(t, err, workerkey.ErrDiskHasData)
+	_, err = os.Stat(s.Dir)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	assert.Zero(t, p.records)
 }
 
-func TestAcquire_AfterRecordingKeyLossOrMismatchFailsClosed(t *testing.T) {
-	ctx := context.Background()
-	setup := func(t *testing.T, launch bool) (firststore.Store, Store, *domainClaimer, string) {
-		fs, _ := domain(t)
-		disk := workerDisk(t)
-		c := &domainClaimer{s: fs, id: worker(1, 1)}
-		kp, err := disk.Acquire(ctx, c)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pub := pubOf(t, kp)
-		kp.Wipe()
-		if launch {
-			if err := fs.RecordLaunchIntent(ctx, region, c.id, pub); err != nil {
-				t.Fatal(err)
-			}
-		}
-		return fs, disk, c, pub
-	}
-	for _, launch := range []bool{false, true} {
-		name := map[bool]string{false: "key recorded", true: "launch intent"}[launch]
-		t.Run(name+"/key lost then reboot", func(t *testing.T) {
-			fs, disk, c, pub := setup(t, launch)
-			os.Remove(keyPath(disk))
-			// A relaunched worker generation gets the same answer.
-			for _, id := range []firststore.Identity{c.id, worker(2, 2)} {
-				c.id = id
-				if _, err := disk.Acquire(ctx, c); !errors.Is(err, ErrKeyMissing) {
-					t.Fatalf("acquire = %v, want ErrKeyMissing", err)
-				}
-				if _, err := os.Lstat(keyPath(disk)); !errors.Is(err, os.ErrNotExist) {
-					t.Fatal("a replacement key was created")
-				}
-			}
-			if recorded(t, fs, c.id) != pub {
-				t.Fatal("the recorded key changed")
-			}
-		})
-		t.Run(name+"/different key on disk", func(t *testing.T) {
-			_, _, c, _ := setup(t, launch)
-			other := workerDisk(t)
-			kp, err := other.ForNewStore()
-			if err != nil {
-				t.Fatal(err)
-			}
-			kp.Wipe()
-			before, _ := os.ReadFile(keyPath(other))
-			if _, err := other.Acquire(ctx, c); !errors.Is(err, ErrKeyMismatch) {
-				t.Fatalf("acquire = %v, want ErrKeyMismatch", err)
-			}
-			after, _ := os.ReadFile(keyPath(other))
-			if string(before) != string(after) {
-				t.Fatal("the mismatched key was replaced")
-			}
-		})
-	}
+// Once recorded, a missing, changed or damaged key refuses and is never
+// regenerated: a new key would invalidate every handle already issued.
+func TestAcquire_RecordedKeyIsNeverRegenerated(t *testing.T) {
+	s, p := newStore(t), &platform{}
+	key, err := s.Acquire(t.Context(), p, noData)
+	require.NoError(t, err)
+	path := filepath.Join(s.Dir, "receipt.key")
+
+	require.NoError(t, os.Remove(path))
+	_, err = s.Acquire(t.Context(), p, noData)
+	require.ErrorIs(t, err, workerkey.ErrReceiptKeyMissing)
+	_, err = os.Stat(path)
+	assert.ErrorIs(t, err, os.ErrNotExist, "no replacement key is written")
+
+	other := append([]byte(nil), key...)
+	other[0] ^= 0xff
+	require.NoError(t, os.WriteFile(path, other, 0o600))
+	_, err = s.Acquire(t.Context(), p, noData)
+	require.ErrorIs(t, err, workerkey.ErrKeyMismatch)
+
+	require.NoError(t, os.WriteFile(path, key[:8], 0o600))
+	_, err = s.Acquire(t.Context(), p, noData)
+	require.Error(t, err)
+	got, rerr := os.ReadFile(path)
+	require.NoError(t, rerr)
+	assert.Equal(t, key[:8], got, "a damaged key is refused, not replaced")
+	assert.Equal(t, 1, p.records)
 }
 
-func TestAcquire_RefusedClaimCreatesNoKey(t *testing.T) {
-	ctx := context.Background()
-	cases := map[string]func(t *testing.T, fs firststore.Store, kv jetstream.KeyValue) firststore.Identity{
-		"rival holds the claim": func(t *testing.T, fs firststore.Store, _ jetstream.KeyValue) firststore.Identity {
-			fs.Claim(ctx, region, worker(1, 1))
-			return worker(1, 2)
-		},
-		"stale replayed generation": func(t *testing.T, fs firststore.Store, _ jetstream.KeyValue) firststore.Identity {
-			fs.Claim(ctx, region, worker(1, 1))
-			fs.Claim(ctx, region, worker(2, 2))
-			return worker(1, 1)
-		},
-		"unreadable record": func(t *testing.T, _ firststore.Store, kv jetstream.KeyValue) firststore.Identity {
-			kv.Put(ctx, "region."+region, []byte("{"))
-			return worker(1, 1)
-		},
-	}
-	for name, setup := range cases {
-		t.Run(name, func(t *testing.T) {
-			fs, kv := domain(t)
-			id := setup(t, fs, kv)
-			disk := workerDisk(t)
-			if _, err := disk.Acquire(ctx, &domainClaimer{s: fs, id: id}); err == nil {
-				t.Fatal("a refused claim returned a key")
-			}
-			if _, err := os.Lstat(keyPath(disk)); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("a refused claim created a key")
-			}
-		})
-	}
+func TestAcquire_ContradictoryDecisionRefuses(t *testing.T) {
+	s := newStore(t)
+	_, err := s.Acquire(t.Context(), contradictory{}, noData)
+	require.Error(t, err)
+	_, err = os.Stat(s.Dir)
+	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
-type contradictoryClaimer struct{ pub string }
+type contradictory struct{}
 
-func (c contradictoryClaimer) Claim(context.Context) (bool, string, error) { return true, c.pub, nil }
-func (contradictoryClaimer) RecordPublicKey(context.Context, string) error {
-	return errors.New("unexpected")
+func (contradictory) Claim(context.Context) (workerkey.Decision, error) {
+	return workerkey.Decision{Pending: true, Fingerprint: "ab"}, nil
 }
-
-func TestAcquire_ContradictoryDecisionCreatesNoKey(t *testing.T) {
-	kp, _ := nkeys.CreateUser()
-	disk := workerDisk(t)
-	if _, err := disk.Acquire(context.Background(), contradictoryClaimer{pub: pubOf(t, kp)}); err == nil {
-		t.Fatal("a contradictory decision returned a key")
-	}
-	if _, err := os.Lstat(keyPath(disk)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("a contradictory decision created a key")
-	}
-}
-
-// A replica that has applied the claim but not the key record must not lead a
-// worker whose key is lost to create a replacement.
-func TestAcquire_StaleClaimedReadAfterRecordingCreatesNoKey(t *testing.T) {
-	ctx := context.Background()
-	fs, kv := domain(t)
-	disk := workerDisk(t)
-	id := worker(1, 1)
-	fs.Claim(ctx, region, id)
-	claimed, err := kv.Get(ctx, "region."+region)
-	if err != nil {
-		t.Fatal(err)
-	}
-	kp, err := disk.Acquire(ctx, &domainClaimer{s: fs, id: id})
-	if err != nil {
-		t.Fatal(err)
-	}
-	kp.Wipe()
-	os.Remove(keyPath(disk))
-
-	_, _, replicaJS := testutil.StartTestJetStream(t)
-	replica, err := replicaJS.CreateKeyValue(ctx, firststore.BucketConfig(1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	replica.Put(ctx, "region."+region, claimed.Value())
-	stale := firststore.Store{JS: replicaJS, KV: fs.KV}
-	if _, err := disk.Acquire(ctx, &domainClaimer{s: stale, id: id}); err == nil {
-		t.Fatal("a stale claimed read returned a key")
-	}
-	if _, err := os.Lstat(keyPath(disk)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("a stale claimed read created a replacement key")
-	}
-}
-
-// The receipt key is made only on the new-store branch, before the public
-// key is recorded; once recorded, a lost receipt key is never remade.
-func TestAcquire_ReceiptKeyOnlyUnderTheNewStoreDecision(t *testing.T) {
-	ctx := context.Background()
-	fs, _ := domain(t)
-	disk := workerDisk(t)
-	c := &domainClaimer{s: fs, id: worker(1, 1), failRecord: true}
-	if _, err := disk.Acquire(ctx, c); err == nil {
-		t.Fatal("the failed record succeeded")
-	}
-	first, err := disk.ReceiptKey()
-	if err != nil {
-		t.Fatalf("receipt key before the record: %v", err)
-	}
-	kp, err := disk.Acquire(ctx, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	kp.Wipe()
-	if again, err := disk.ReceiptKey(); err != nil || string(again) != string(first) {
-		t.Fatalf("the retried new-store branch changed the receipt key: %v", err)
-	}
-
-	os.Remove(filepath.Join(disk.Dir, receiptFile))
-	kp, err = disk.Acquire(ctx, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	kp.Wipe()
-	if _, err := disk.ReceiptKey(); !errors.Is(err, ErrReceiptKeyMissing) {
-		t.Fatalf("receipt key after loss = %v, want ErrReceiptKeyMissing", err)
-	}
-}
+func (contradictory) RecordFingerprint(context.Context, string) error { return nil }

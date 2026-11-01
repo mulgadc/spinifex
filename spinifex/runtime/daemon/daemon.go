@@ -59,7 +59,6 @@ import (
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
@@ -79,7 +78,6 @@ import (
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	route53domain "github.com/mulgadc/spinifex/spinifex/domains/route53"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
@@ -137,10 +135,7 @@ type ResourceManager struct {
 	instanceSubs  map[string]*nats.Subscription
 	handler       natsHandler
 	systemHandler natsHandler // handles system.LaunchInstance.* requests (ALB-VM fan-out)
-	// sqsStoreHandler serves the versioned SQS store launch subjects; nil
-	// leaves them unsubscribed, so a launch there finds no responder.
-	sqsStoreHandler natsHandler
-	nodeID          string // node identifier for node-specific topic subscriptions
+	nodeID        string      // node identifier for node-specific topic subscriptions
 }
 
 // Compile-time guarantee that the RouteTable service satisfies the IGW
@@ -174,7 +169,6 @@ type Daemon struct {
 	spotInstanceService   *ec2spotinstance.SpotInstanceServiceImpl
 	vpcService            *ec2vpc.VPCServiceImpl
 	sqsWorker             *sqsWorkerEnsurer
-	sqsStore              *sqsStoreEnsurer
 	eipService            ec2eip.EIPService
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
 	eksService            *ekscluster.EKSServiceImpl
@@ -911,9 +905,6 @@ func (d *Daemon) subscribeAll() error {
 	if d.sqsWorker == nil {
 		d.sqsWorker = newSQSWorkerEnsurer(d.buildSQSWorkerLauncher)
 	}
-	if d.sqsStore == nil {
-		d.sqsStore = newSQSStoreEnsurer(d.buildSQSStoreLauncher)
-	}
 	subs := []natsSub{
 		// ec2.RunInstances is handled by dynamic per-instance-type subscriptions
 		// managed by ResourceManager.initSubscriptions()
@@ -980,7 +971,6 @@ func (d *Daemon) subscribeAll() error {
 		// The shared SQS worker is launched only on an operator's request to the
 		// node it is pinned to; nothing starts it automatically.
 		{workerlaunch.EnsureSubjectPrefix + d.node, d.handleSQSWorkerEnsure, ""},
-		{storelaunch.EnsureSubjectPrefix + d.node, d.handleSQSStoreEnsure, ""},
 		{"ec2.DescribeCapacityReservations", d.handleEC2DescribeCapacityReservations, ""},
 		{"ec2.CancelCapacityReservation", d.handleEC2CancelCapacityReservation, ""},
 		{"ec2.CreateNatGateway", handleNATSRequest(d.node, d.natGatewayService.CreateNatGateway), "spinifex-workers"},
@@ -1461,6 +1451,10 @@ func (d *Daemon) startLocal() error {
 				"remediation", "run scripts/update-nodes.sh or make reinstall")
 		}
 	}
+
+	// The kernel, QEMU and firmware a guest boots on are what a boot hang
+	// depends on, so record them before any guest is started.
+	vm.LogHostVirtStack()
 
 	// Recover local instance state from disk. Fatal on corruption — orphaned VMs.
 	if err := d.LoadState(); err != nil {
@@ -2517,7 +2511,6 @@ func (d *Daemon) startCluster() error {
 	}
 
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.
-	d.resourceMgr.sqsStoreHandler = d.handleSQSStoreLaunch
 	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.handleSystemLaunchInstance, d.node)
 
 	d.startHeartbeat()
@@ -3550,9 +3543,6 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 			}
 			subjectRoot = "system.LaunchInstance"
 			handler = rm.systemHandler
-			if rm.sqsStoreHandler != nil {
-				rm.syncTypeSubscriptions(systeminstance.SQSStoreLaunchSubjectRoot, typeName, queueGroup, rm.sqsStoreHandler, canFit, gate)
-			}
 		}
 		rm.syncTypeSubscriptions(subjectRoot, typeName, queueGroup, handler, canFit, gate)
 	}

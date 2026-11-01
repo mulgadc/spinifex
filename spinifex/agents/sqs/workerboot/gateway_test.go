@@ -3,22 +3,14 @@ package workerboot
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -33,20 +25,16 @@ import (
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerkey"
 	sqsworkerapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi/worker"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
-	"github.com/nats-io/nkeys"
 )
 
 const (
-	gwInstance  = "i-0abc12345def67890"
-	gwSuccessor = "i-0fedcba9876543210"
-	gwVolume    = "vol-0a1b2c3d4e5f60718"
+	gwInstance = "i-0abc12345def67890"
+	gwVolume   = "vol-0a1b2c3d4e5f60718"
 )
 
 // session is one instance-role credential: its secret and the instance ID
@@ -230,73 +218,55 @@ func (g *localGateway) reply(code string) {
 	}
 }
 
-func (g *localGateway) sentBodies() []string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return slices.Clone(g.bodies)
-}
-
-// gwCluster is the domain's real worker-identity and first-store records.
+// gwCluster is the domain's real worker-identity record behind the gateway.
 type gwCluster struct {
-	ids    workerident.Store
-	fence  firststore.Store
-	stores storelaunch.Records
-	gw     *localGateway
+	ids workerident.Store
+	gw  *localGateway
 }
 
-func newGWCluster(t *testing.T) gwCluster {
-	t.Helper()
-	return newGWClusterWith(t, nil)
-}
-
-// newGWClusterWith also hands the gateway's work actions to work.
-func newGWClusterWith(t *testing.T, work sqsworkerapi.Work) gwCluster {
-	t.Helper()
-	return newGWClusterHosts(t, work, nil)
-}
-
-// newGWClusterHosts also has the gateway report hostNodes as its cluster size.
-func newGWClusterHosts(t *testing.T, work sqsworkerapi.Work, hostNodes func() int) gwCluster {
+// newGWCluster hands the gateway's work actions to work and has it report
+// hostNodes as its cluster size; nil hostNodes is the declared size.
+func newGWCluster(t *testing.T, work sqsworkerapi.Work, hostNodes func() int) gwCluster {
 	t.Helper()
 	clustersize.DeclareForTest(t, 1)
 	_, _, js := testutil.StartTestJetStream(t)
-	ctx := context.Background()
-	ids, err := workerident.Open(ctx, js)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fence, err := firststore.Open(ctx, js)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stores, err := storelaunch.Open(ctx, js)
+	ids, err := workerident.Open(context.Background(), js)
 	if err != nil {
 		t.Fatal(err)
 	}
 	deps := sqsworkerapi.JetStreamDeps(js)
 	deps.Work = work
 	deps.HostNodes = hostNodes
-	return gwCluster{ids: ids, fence: fence, stores: stores, gw: newLocalGateway(t, deps)}
+	return gwCluster{ids: ids, gw: newLocalGateway(t, deps)}
 }
 
-func (c gwCluster) launch(t *testing.T, claim string, supersedes uint64, inst string) workerident.Intent {
+// launch records a worker on a newly created volume, so its receipt key is
+// pending, and binds it to inst.
+func (c gwCluster) launch(t *testing.T, inst string) workerident.Intent {
 	t.Helper()
 	ctx := context.Background()
-	in, err := c.ids.BeginLaunch(ctx, testRegion, workerident.LaunchRequest{InstanceType: "t3.small",
-		ClaimID: claim, Supersedes: supersedes, NodeID: "node-a", DataVolumeID: gwVolume, DataVolumeEncrypted: true,
+	in, err := c.ids.BeginLaunch(ctx, testRegion, workerident.LaunchRequest{
+		InstanceType: "t3.small", ClaimID: "claim-0001", NodeID: "node-a", DataVolumeEncrypted: true, SizeGiB: 8,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.ids.BindInstance(ctx, in, inst); err != nil {
-		t.Fatal(err)
+	for _, step := range []func() error{
+		func() error { return c.ids.MarkVolumeAttempted(ctx, in) },
+		func() error { return c.ids.RecordVolume(ctx, in, gwVolume) },
+		func() error { return c.ids.MarkDispatched(ctx, in) },
+		func() error { return c.ids.BindInstance(ctx, in, inst) },
+	} {
+		if err := step(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return in
 }
 
 // guestFor points the fake guest's boot at the local gateway, signing with
 // the instance's own credential through the real client.
-func (c gwCluster) guestFor(t *testing.T, g *guest, accessKey, inst string) {
+func (c gwCluster) guestFor(t *testing.T, g *guest, accessKey, inst string) *gwsign.Signer {
 	t.Helper()
 	signer := c.gw.issue(accessKey, "secret-"+accessKey, inst)
 	g.fw("data-serial", testSerial)
@@ -304,392 +274,14 @@ func (c gwCluster) guestFor(t *testing.T, g *guest, accessKey, inst string) {
 	g.fw("gateway-url", c.gw.srv.URL)
 	g.cfg.Wait = 10 * time.Millisecond
 	g.cfg.NewClaimer = func(region, url string) (workerkey.Claimer, error) {
-		return sqsworkergw.New(url, region, c.gw.caPEM(), signer)
+		cl, err := sqsworkergw.New(url, region, c.gw.caPEM(), signer)
+		return GatewayClaimer{Client: cl}, err
 	}
+	return signer
 }
 
-func (c gwCluster) assertNoSeedSent(t *testing.T, seed string) {
-	t.Helper()
-	seed = strings.TrimSpace(seed)
-	for _, b := range c.gw.sentBodies() {
-		if strings.Contains(b, seed) {
-			t.Fatal("a request carried seed material")
-		}
-	}
-}
-
-// A bound worker boots: the gateway authorizes creation, the guest creates
-// its key on the mounted disk and records only the public key; reboots get
-// that same key back from the domain.
-func TestGateway_FirstBootCreatesKeyAndRebootsReuseIt(t *testing.T) {
-	c := newGWCluster(t)
-	c.launch(t, "claim-0001", 0, gwInstance)
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-
-	pub, err := g.boot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	seed := g.seed()
-	for boot := 2; boot <= 3; boot++ {
-		g.resetMounts()
-		got, err := g.boot()
-		if err != nil || got != pub || g.seed() != seed {
-			t.Fatalf("reboot %d = %q, %v", boot, got, err)
-		}
-	}
-	records := 0
-	for _, b := range c.gw.sentBodies() {
-		if strings.Contains(b, "Action=RecordWorkerPublicKey") {
-			records++
-			if !strings.Contains(b, "PublicKey="+pub) {
-				t.Fatal("a record carried a different key")
-			}
-		}
-	}
-	if records != 1 {
-		t.Fatalf("records = %d, want 1", records)
-	}
-	c.assertNoSeedSent(t, seed)
-	g.assertNoSeedLeak(nil, seed)
-}
-
-// The record's reply is lost after it landed: the boot retries, the domain
-// answers with the recorded key, and the same key is used.
-func TestGateway_LostRecordReplyKeepsTheKey(t *testing.T) {
-	c := newGWCluster(t)
-	c.launch(t, "claim-0001", 0, gwInstance)
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-	var dropped bool
-	c.gw.dropReply = func(action string) bool {
-		if action == "RecordWorkerPublicKey" && !dropped {
-			dropped = true
-			return true
-		}
-		return false
-	}
-	pub, err := g.boot()
-	if err != nil || !dropped {
-		t.Fatalf("boot = %q, %v (dropped=%v)", pub, err, dropped)
-	}
-	g.resetMounts()
-	if again, err := g.boot(); err != nil || again != pub {
-		t.Fatalf("reboot = %q, %v", again, err)
-	}
-	c.assertNoSeedSent(t, g.seed())
-}
-
-// After the key is recorded, a lost guest copy fails closed: the domain
-// answers with the recorded key and no replacement is created or sent.
-func TestGateway_KeyLostAfterRecordingFailsClosed(t *testing.T) {
-	c := newGWCluster(t)
-	c.launch(t, "claim-0001", 0, gwInstance)
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-	if _, err := g.boot(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(g.keyFile()); err != nil {
-		t.Fatal(err)
-	}
-	before := len(c.gw.sentBodies())
-	g.resetMounts()
-	if _, err := g.boot(); !errors.Is(err, workerkey.ErrKeyMissing) {
-		t.Fatalf("err = %v, want ErrKeyMissing", err)
-	}
-	if _, err := os.Lstat(g.keyFile()); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("a replacement key was created")
-	}
-	for _, b := range c.gw.sentBodies()[before:] {
-		if strings.Contains(b, "RecordWorkerPublicKey") {
-			t.Fatal("a replacement key was offered")
-		}
-	}
-}
-
-// An instance the domain never bound, or one already replaced, is refused
-// at the first call and creates no key; AccessDenied is not retried.
-func TestGateway_UnboundOrReplacedInstanceIsRefused(t *testing.T) {
-	t.Run("unbound", func(t *testing.T) {
-		c := newGWCluster(t)
-		c.launch(t, "claim-0001", 0, gwInstance)
-		g := newGuest(t)
-		c.guestFor(t, g, "ASIAOTHER", gwSuccessor)
-		_, err := g.boot()
-		api, ok := errors.AsType[*sqsworkergw.APIError](err)
-		if !ok || api.Code != "AccessDenied" {
-			t.Fatalf("err = %v, want AccessDenied", err)
-		}
-		if n := len(c.gw.sentBodies()); n != g.cfg.Attempts {
-			t.Fatalf("calls = %d, want the %d attempts and no more", n, g.cfg.Attempts)
-		}
-		g.assertNoKey()
-	})
-	t.Run("replaced", func(t *testing.T) {
-		c := newGWCluster(t)
-		first := c.launch(t, "claim-0001", 0, gwInstance)
-		ctx := context.Background()
-		if err := c.ids.RecordStopped(ctx, first, gwInstance); err != nil {
-			t.Fatal(err)
-		}
-		if err := c.fence.Fence(ctx, testRegion, first.Generation+1); err != nil {
-			t.Fatal(err)
-		}
-		c.launch(t, "claim-0002", first.Generation, gwSuccessor)
-		g := newGuest(t)
-		c.guestFor(t, g, "ASIAOLD", gwInstance)
-		if _, err := g.boot(); err == nil {
-			t.Fatal("the replaced instance booted")
-		}
-		g.assertNoKey()
-	})
-}
-
-// A bad signature is refused before any decision, and creates no key.
-func TestGateway_BadSignatureCreatesNoKey(t *testing.T) {
-	c := newGWCluster(t)
-	c.launch(t, "claim-0001", 0, gwInstance)
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-	forged := gwsign.NewStatic("ASIAWORKER1", "not-the-secret")
-	g.cfg.NewClaimer = func(region, url string) (workerkey.Claimer, error) {
-		return sqsworkergw.New(url, region, c.gw.caPEM(), forged)
-	}
-	if _, err := g.boot(); err == nil {
-		t.Fatal("a forged signature booted")
-	}
-	g.assertNoKey()
-}
-
-// The client trusts only the cluster CA it was given: a gateway whose
-// certificate another CA signed is never sent a request.
-func TestGateway_UntrustedServerIsNotContacted(t *testing.T) {
-	c := newGWCluster(t)
-	c.launch(t, "claim-0001", 0, gwInstance)
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-	g.cfg.Attempts = 1
-	signer := c.gw.issue("ASIAWORKER1", "secret-ASIAWORKER1", gwInstance)
-	g.cfg.NewClaimer = func(region, url string) (workerkey.Claimer, error) {
-		return sqsworkergw.New(url, region, otherCA(t), signer)
-	}
-	if _, err := g.boot(); err == nil || !strings.Contains(err.Error(), "certificate") {
-		t.Fatalf("err = %v, want a TLS refusal", err)
-	}
-	if len(c.gw.sentBodies()) != 0 {
-		t.Fatal("a request reached a server outside the trusted CA")
-	}
-	g.assertNoKey()
-}
-
-// otherCA is a fresh self-signed CA unrelated to the test server's.
-func otherCA(t *testing.T) []byte {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "other"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-}
-
-// The worker VM starts before its launch binds the instance, so its first
-// calls are denied. It creates nothing while denied, and boots once bound.
-func TestGateway_BootBeforeBindSucceedsAfterBinding(t *testing.T) {
-	c := newGWCluster(t)
-	ctx := context.Background()
-	intent, err := c.ids.BeginLaunch(ctx, testRegion, workerident.LaunchRequest{InstanceType: "t3.small",
-		ClaimID: "claim-0001", NodeID: "node-a", DataVolumeID: gwVolume, DataVolumeEncrypted: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-	g.cfg.Attempts = 1000
-	c.gw.replied = make(chan string, 2000)
-
-	type result struct {
-		pub string
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
-		pub, err := g.boot()
-		done <- result{pub, err}
-	}()
-	if code := <-c.gw.replied; code != "AccessDenied" {
-		t.Fatalf("first reply = %q, want AccessDenied before binding", code)
-	}
-	g.assertNoKey()
-	if err := c.ids.BindInstance(ctx, intent, gwInstance); err != nil {
-		t.Fatal(err)
-	}
-	r := <-done
-	if r.err != nil || r.pub == "" {
-		t.Fatalf("boot after binding = %q, %v", r.pub, r.err)
-	}
-	if g.seed() == "" {
-		t.Fatal("booted without a key on the worker disk")
-	}
-}
-
-// A replaced worker is never bound again: it keeps being denied, creates
-// nothing and gives up within its attempts.
-func TestGateway_StaleWorkerGivesUpWithinTheBound(t *testing.T) {
-	c := newGWCluster(t)
-	ctx := context.Background()
-	first := c.launch(t, "claim-0001", 0, gwInstance)
-	if err := c.ids.RecordStopped(ctx, first, gwInstance); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.fence.Fence(ctx, testRegion, first.Generation+1); err != nil {
-		t.Fatal(err)
-	}
-	c.launch(t, "claim-0002", first.Generation, gwSuccessor)
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAOLD", gwInstance)
-	g.cfg.Attempts = 5
-	_, err := g.boot()
-	if api, ok := errors.AsType[*sqsworkergw.APIError](err); !ok || !api.Pending() {
-		t.Fatalf("err = %v, want the denial", err)
-	}
-	if n := len(c.gw.sentBodies()); n != 5 {
-		t.Fatalf("calls = %d, want exactly the 5 attempts", n)
-	}
-	g.assertNoKey()
-}
-
-// bindStore runs the store launch record through to bound for pub at address,
-// as the operator's EnsureSQSStore would.
-
-func (c gwCluster) bindStore(t *testing.T, pub, address string) {
-	t.Helper()
-	ctx := context.Background()
-	const claim = "store-claim-0001"
-	steps := []func() error{
-		func() error { return c.stores.Begin(ctx, testRegion, claim, "node-a", pub, "t3.medium", 8) },
-		func() error { return c.stores.MarkVolumeAttempted(ctx, testRegion, claim) },
-		func() error { return c.stores.RecordVolume(ctx, testRegion, claim, "vol-0b1c2d3e4f5a60718") },
-		func() error { return c.stores.MarkNetworkAttempted(ctx, testRegion, claim) },
-		func() error { return c.stores.MarkDispatched(ctx, testRegion, claim) },
-		func() error { return c.stores.Bind(ctx, testRegion, claim, "i-0123456789abcdef0", address) },
-		func() error {
-			return c.stores.RecordServerKey(ctx, testRegion, "i-0123456789abcdef0", claim, "vol-0b1c2d3e4f5a60718", testStorePin)
-		},
-	}
-	for i, step := range steps {
-		if err := step(); err != nil {
-			t.Fatalf("store launch step %d: %v", i, err)
-		}
-	}
-}
-
-// readyFor points the guest's readiness at the local gateway and a store on port.
-func (c gwCluster) readyFor(g *guest, accessKey, inst string, port int) ReadyConfig {
-	signer := c.gw.issue(accessKey, "secret-"+accessKey, inst)
-	return ReadyConfig{
-		Config: g.cfg,
-		NewDescriber: func(region, url string) (StoreDescriber, error) {
-			cl, err := sqsworkergw.New(url, region, c.gw.caPEM(), signer)
-			if err != nil {
-				return nil, err
-			}
-			return gwDescriber{cl}, nil
-		},
-		Checker: NATSChecker{Port: port, Dial: time.Second},
-	}
-}
-
-type gwDescriber struct{ c *sqsworkergw.Client }
-
-func (d gwDescriber) DescribeStore(ctx context.Context) (Store, error) {
-	st, err := d.c.DescribeStore(ctx)
-	return Store(st), err
-}
-
-// The whole path with real components: the worker boots and records its key,
-// waits while the operator has not launched the store, then reaches the real
-// store's JetStream with its own key once the store is bound; after a reboot
-// it is ready again with the same key. No request carries the seed.
-func TestGateway_ReadyAfterADelayedStoreLaunch(t *testing.T) {
-	c := newGWCluster(t)
-	c.launch(t, "claim-0001", 0, gwInstance)
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-	pub, err := g.boot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := storeServer(t, pub)
-	err = g.watch(c.readyFor(g, "ASIAWORKER1", gwInstance, port), func(call int, ready bool) bool {
-		if ready {
-			if call < 4 {
-				t.Fatalf("ready at call %d, before the store launch", call)
-			}
-			return true
-		}
-		if call == 3 {
-			c.bindStore(t, pub, "127.0.0.1")
-		}
-		return false
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("watch = %v", err)
-	}
-	for boot := 1; boot <= 2; boot++ {
-		g.resetMounts()
-		if again, err := g.boot(); err != nil || again != pub {
-			t.Fatalf("reboot %d = %q %v", boot, again, err)
-		}
-		if err := g.watch(c.readyFor(g, "ASIAWORKER1", gwInstance, port), func(_ int, ready bool) bool { return ready }); !errors.Is(err, context.Canceled) {
-			t.Fatalf("ready after reboot %d: %v", boot, err)
-		}
-	}
-	c.assertNoSeedSent(t, g.seed())
-	g.assertNoSeedLeak(nil, g.seed())
-}
-
-// A store bound to a key other than this worker's is never checked, and a
-// replaced worker cannot read the store at all; neither is ever ready.
-func TestGateway_ReadyRefusesWrongKeyAndReplacedWorker(t *testing.T) {
-	c := newGWCluster(t)
-	first := c.launch(t, "claim-0001", 0, gwInstance)
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-	if _, err := g.boot(); err != nil {
-		t.Fatal(err)
-	}
-	other, _ := nkeys.CreateUser()
-	otherPub, _ := other.PublicKey()
-	c.bindStore(t, otherPub, "127.0.0.1")
-	port := storeServer(t, otherPub)
-	never := func(call int, ready bool) bool {
-		if ready {
-			t.Fatal("ready against a store for another key")
-		}
-		return call == 3
-	}
-	_ = g.watch(c.readyFor(g, "ASIAWORKER1", gwInstance, port), never)
-	if !slices.ContainsFunc(g.logs, func(l string) bool { return strings.Contains(l, ErrStoreKeyMismatch.Error()) }) {
-		t.Fatalf("no mismatch reported: %v", g.logs)
-	}
-
-	if err := c.ids.RecordStopped(context.Background(), first, gwInstance); err != nil {
-		t.Fatal(err)
-	}
-	_ = g.watch(c.readyFor(g, "ASIAWORKER1", gwInstance, port), never)
-	if !strings.Contains(g.logs[len(g.logs)-1], "AccessDenied") {
-		t.Fatalf("stopped worker: %v", g.logs[len(g.logs)-1])
-	}
+func (g *localGateway) sentBodies() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.bodies)
 }

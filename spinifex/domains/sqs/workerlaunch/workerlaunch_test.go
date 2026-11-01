@@ -10,18 +10,17 @@ import (
 	"testing"
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storevolume"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
 )
 
 const (
 	region = "ap-southeast-2"
 	node   = "node-a"
 	itype  = "sys.test"
+	size   = int64(8)
 )
 
 // fakeVolumes creates one volume per Prepare. prepareErr refuses before any
@@ -31,10 +30,14 @@ type fakeVolumes struct {
 	prepared   []string
 	encrypted  bool
 	prepareErr error
+	sizes      []int64
 	appliedErr error
 }
 
-func (f *fakeVolumes) Prepare(context.Context) (string, error) {
+func (f *fakeVolumes) Prepare(_ context.Context, sizeGiB int64) (string, error) {
+	f.mu.Lock()
+	f.sizes = append(f.sizes, sizeGiB)
+	f.mu.Unlock()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.prepareErr != nil {
@@ -168,12 +171,8 @@ func newRig(t *testing.T) rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fs, err := firststore.Open(context.Background(), js)
-	if err != nil {
-		t.Fatal(err)
-	}
 	r := rig{vol: &fakeVolumes{encrypted: true}, iam: &fakeRoles{}, net: &fakeNetwork{}, vms: &fakeVMs{}, host: &fakeHost{}}
-	r.l = &Launcher{Identities: ids, FirstStore: fs, Volumes: r.vol, Roles: r.iam, Network: r.net, Host: r.host, VMs: r.vms, NodeID: node}
+	r.l = &Launcher{Identities: ids, Volumes: r.vol, Roles: r.iam, Network: r.net, Host: r.host, VMs: r.vms, NodeID: node}
 	return r
 }
 
@@ -192,7 +191,7 @@ func (r rig) current(t *testing.T) workerident.Record {
 func TestEnsure_FirstLaunchBindsAndIsIdempotent(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
-	res, err := r.l.Ensure(ctx, region, itype)
+	res, err := r.l.Ensure(ctx, region, itype, size)
 	if err != nil || res.Generation != 1 {
 		t.Fatalf("ensure = %+v, %v", res, err)
 	}
@@ -205,7 +204,7 @@ func TestEnsure_FirstLaunchBindsAndIsIdempotent(t *testing.T) {
 	if err != nil || id.Generation != 1 || id.NodeID != node || id.DataVolumeID != spec.DataVolumeID {
 		t.Fatalf("authorize = %+v, %v", id, err)
 	}
-	again, err := r.l.Ensure(ctx, region, itype)
+	again, err := r.l.Ensure(ctx, region, itype, size)
 	if err != nil || again != res || r.vms.count() != 1 || len(r.vol.prepared) != 1 {
 		t.Fatalf("second ensure = %+v, %v; launched %d, prepared %d", again, err, r.vms.count(), len(r.vol.prepared))
 	}
@@ -217,7 +216,7 @@ func TestEnsure_RefusesAnUnencryptedVolume(t *testing.T) {
 	r := newRig(t)
 	r.vol.encrypted = false
 	for range 3 {
-		_, err := r.l.Ensure(context.Background(), region, itype)
+		_, err := r.l.Ensure(context.Background(), region, itype, size)
 		if !errors.Is(err, ErrUnencrypted) || !strings.Contains(err.Error(), r.vol.prepared[0]) {
 			t.Fatalf("ensure = %v, want ErrUnencrypted naming %s", err, r.vol.prepared[0])
 		}
@@ -237,7 +236,7 @@ func TestEnsure_ProvenPreCreateFailureIsRetried(t *testing.T) {
 	ctx := context.Background()
 	r.vol.prepareErr = fmt.Errorf("%w: %w: no storage key", storevolume.ErrNotCreated, ErrUnencrypted)
 	for range 2 {
-		_, err := r.l.Ensure(ctx, region, itype)
+		_, err := r.l.Ensure(ctx, region, itype, size)
 		if !errors.Is(err, ErrVolumeNotCreated) || !errors.Is(err, ErrUnencrypted) {
 			t.Fatalf("ensure = %v, want ErrVolumeNotCreated", err)
 		}
@@ -249,7 +248,7 @@ func TestEnsure_ProvenPreCreateFailureIsRetried(t *testing.T) {
 		t.Fatalf("record after a proven pre-create failure = %+v", rec)
 	}
 	r.vol.prepareErr = nil
-	if _, err := r.l.Ensure(ctx, region, itype); err != nil {
+	if _, err := r.l.Ensure(ctx, region, itype, size); err != nil {
 		t.Fatal(err)
 	}
 	if r.vol.count() != 1 || r.vms.count() != 1 {
@@ -261,7 +260,7 @@ func TestEnsure_ProvenPreCreateFailureIsRetried(t *testing.T) {
 func TestEnsure_NoClaimRecordsNothing(t *testing.T) {
 	r := newRig(t)
 	r.l.newClaimID = func() (string, error) { return "", errors.New("no entropy") }
-	if _, err := r.l.Ensure(context.Background(), region, itype); err == nil {
+	if _, err := r.l.Ensure(context.Background(), region, itype, size); err == nil {
 		t.Fatal("ensure succeeded without a claim ID")
 	}
 	if r.vol.count() != 0 {
@@ -279,12 +278,12 @@ func TestEnsure_AmbiguousVolumeCreateIsNeverResent(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
 	r.vol.appliedErr = errors.New("nats: timeout")
-	if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrVolumeOutcomeUnknown) {
+	if _, err := r.l.Ensure(ctx, region, itype, size); !errors.Is(err, ErrVolumeOutcomeUnknown) {
 		t.Fatalf("ensure = %v, want ErrVolumeOutcomeUnknown", err)
 	}
 	r.vol.appliedErr = nil
 	for range 3 {
-		if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrVolumeOutcomeUnknown) {
+		if _, err := r.l.Ensure(ctx, region, itype, size); !errors.Is(err, ErrVolumeOutcomeUnknown) {
 			t.Fatalf("retry = %v, want ErrVolumeOutcomeUnknown", err)
 		}
 	}
@@ -292,7 +291,7 @@ func TestEnsure_AmbiguousVolumeCreateIsNeverResent(t *testing.T) {
 	if r.vol.count() != 1 || !rec.VolumeAttempted || rec.DataVolumeID != "" || r.vms.count() != 0 || len(r.net.claims) != 0 {
 		t.Fatalf("volumes=%d record=%+v launches=%d network=%d", r.vol.count(), rec, r.vms.count(), len(r.net.claims))
 	}
-	if _, err := r.l.Ensure(ctx, region, "sys.other"); !errors.Is(err, workerident.ErrTypeChanged) {
+	if _, err := r.l.Ensure(ctx, region, "sys.other", size); !errors.Is(err, workerident.ErrTypeChanged) {
 		t.Fatalf("re-type after a sent create = %v, want ErrTypeChanged", err)
 	}
 }
@@ -309,13 +308,13 @@ func TestEnsure_RetainedVolumeIDStaysVisible(t *testing.T) {
 		return ""
 	}
 	r.vol.appliedErr = keptVolumeError{id: "vol-00000000000000001"}
-	_, err := r.l.Ensure(ctx, region, itype)
+	_, err := r.l.Ensure(ctx, region, itype, size)
 	kept, ok := errors.AsType[*VolumeError](err)
 	if !ok || kept.VolumeID != "vol-00000000000000001" || !errors.Is(err, ErrVolumeOutcomeUnknown) {
 		t.Fatalf("ensure = %v, want the kept volume reported", err)
 	}
 	r.vol.appliedErr = nil
-	if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrVolumeOutcomeUnknown) {
+	if _, err := r.l.Ensure(ctx, region, itype, size); !errors.Is(err, ErrVolumeOutcomeUnknown) {
 		t.Fatalf("retry = %v, want ErrVolumeOutcomeUnknown", err)
 	}
 	if r.vol.count() != 1 || r.vms.count() != 0 {
@@ -328,11 +327,11 @@ func TestEnsure_UnallocatedIntentMayBeRetyped(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
 	r.vol.prepareErr = fmt.Errorf("%w: image writer missing", storevolume.ErrNotCreated)
-	if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrVolumeNotCreated) {
+	if _, err := r.l.Ensure(ctx, region, itype, size); !errors.Is(err, ErrVolumeNotCreated) {
 		t.Fatalf("ensure = %v, want ErrVolumeNotCreated", err)
 	}
 	r.vol.prepareErr = nil
-	res, err := r.l.Ensure(ctx, region, "sys.other")
+	res, err := r.l.Ensure(ctx, region, "sys.other", size)
 	if err != nil || res.InstanceType != "sys.other" || res.Generation != 1 || r.vms.specs[0].InstanceType != "sys.other" {
 		t.Fatalf("re-typed ensure = %+v, %v", res, err)
 	}
@@ -344,12 +343,12 @@ func TestEnsure_AmbiguousLaunchIsNeverResent(t *testing.T) {
 	r := newRig(t)
 	r.vms.fail = errors.New("nats: timeout")
 	ctx := context.Background()
-	if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrOutcomeUnknown) {
+	if _, err := r.l.Ensure(ctx, region, itype, size); !errors.Is(err, ErrOutcomeUnknown) {
 		t.Fatalf("ensure = %v, want ErrOutcomeUnknown", err)
 	}
 	r.vms.fail = nil
 	for range 3 {
-		if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrOutcomeUnknown) {
+		if _, err := r.l.Ensure(ctx, region, itype, size); !errors.Is(err, ErrOutcomeUnknown) {
 			t.Fatalf("retry = %v, want ErrOutcomeUnknown", err)
 		}
 	}
@@ -365,7 +364,7 @@ func TestEnsure_ConcurrentCallsLaunchOnce(t *testing.T) {
 	var ok atomic.Int32
 	for range 8 {
 		wg.Go(func() {
-			if _, err := r.l.Ensure(context.Background(), region, itype); err == nil {
+			if _, err := r.l.Ensure(context.Background(), region, itype, size); err == nil {
 				ok.Add(1)
 			}
 		})
@@ -385,13 +384,13 @@ func TestEnsure_ResumesAnUndispatchedIntent(t *testing.T) {
 	r := newRig(t)
 	r.iam.fail.Store(1)
 	ctx := context.Background()
-	if _, err := r.l.Ensure(ctx, region, itype); err == nil {
+	if _, err := r.l.Ensure(ctx, region, itype, size); err == nil {
 		t.Fatal("ensure succeeded with IAM failing")
 	}
 	if rec := r.current(t); rec.State != workerident.StateLaunching || rec.Dispatched {
 		t.Fatalf("record = %+v, want an undispatched intent", rec)
 	}
-	res, err := r.l.Ensure(ctx, region, itype)
+	res, err := r.l.Ensure(ctx, region, itype, size)
 	if err != nil || res.Generation != 1 || r.vms.count() != 1 || len(r.vol.prepared) != 1 {
 		t.Fatalf("resume = %+v, %v; launched %d, prepared %d", res, err, r.vms.count(), len(r.vol.prepared))
 	}
@@ -400,31 +399,33 @@ func TestEnsure_ResumesAnUndispatchedIntent(t *testing.T) {
 	}
 }
 
-// After a confirmed stop the replacement fences the old generation out of
-// first-store and reuses the pinned volume; the guest asks for its key.
-func TestEnsure_ReplacementFencesAndReusesTheVolume(t *testing.T) {
+// A new volume is recorded pending its receipt key at the requested size;
+// after a confirmed stop the replacement reuses the pinned volume and its
+// receipt key state, and the replaced instance is no longer authorized.
+func TestEnsure_ReplacementReusesTheVolumeAndItsReceiptKey(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
-	first, err := r.l.Ensure(ctx, region, itype)
+	first, err := r.l.Ensure(ctx, region, itype, size)
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := workerident.Identity{InstanceID: first.InstanceID, Generation: 1, ClaimID: r.current(t).ClaimID}
-	oldFS := firststore.Identity{InstanceID: old.InstanceID, ClaimID: old.ClaimID, Generation: 1}
-	kp, _ := nkeys.CreateUser()
-	pub, _ := kp.PublicKey()
-	if _, err := r.l.FirstStore.Claim(ctx, region, oldFS); err != nil {
+	if cur := r.current(t); cur.ReceiptInit != workerident.ReceiptPending || cur.SizeGiB != size || r.vol.sizes[0] != size {
+		t.Fatalf("new volume record = %+v, sizes %v", cur, r.vol.sizes)
+	}
+	old, err := r.l.Identities.Authorize(ctx, first.InstanceID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.l.FirstStore.RecordPublicKey(ctx, region, oldFS, pub); err != nil {
+	fp := strings.Repeat("c", 64)
+	if err := r.l.Identities.RecordReceiptKey(ctx, old, fp); err != nil {
 		t.Fatal(err)
 	}
-	intent := workerident.Intent{Region: region, Generation: 1, ClaimID: old.ClaimID}
+	intent := workerident.Intent{Region: region, Generation: 1, ClaimID: old.ClaimID, SizeGiB: size}
 	if err := r.l.Identities.RecordStopped(ctx, intent, first.InstanceID); err != nil {
 		t.Fatal(err)
 	}
 
-	next, err := r.l.Ensure(ctx, region, itype)
+	next, err := r.l.Ensure(ctx, region, itype, size)
 	if err != nil || next.Generation != 2 || next.InstanceID == first.InstanceID {
 		t.Fatalf("replacement = %+v, %v", next, err)
 	}
@@ -432,11 +433,8 @@ func TestEnsure_ReplacementFencesAndReusesTheVolume(t *testing.T) {
 	if spec.DataVolumeID != r.vol.prepared[0] || len(r.vol.prepared) != 1 || spec.Region != region {
 		t.Fatalf("replacement spec = %+v", spec)
 	}
-	if f, _ := r.l.FirstStore.FencedAt(ctx, region); f != 2 {
-		t.Fatalf("fence = %d, want 2", f)
-	}
-	if _, err := r.l.FirstStore.Claim(ctx, region, oldFS); !errors.Is(err, firststore.ErrStaleGeneration) {
-		t.Fatalf("old generation claim = %v, want ErrStaleGeneration", err)
+	if cur := r.current(t); cur.ReceiptInit != workerident.ReceiptRecorded || cur.ReceiptFingerprint != fp {
+		t.Fatalf("replacement lost the receipt key state: %+v", cur)
 	}
 	if _, err := r.l.Identities.Authorize(ctx, first.InstanceID); err == nil {
 		t.Fatal("the replaced instance is still authorized")
@@ -446,12 +444,12 @@ func TestEnsure_ReplacementFencesAndReusesTheVolume(t *testing.T) {
 // The worker is pinned: a launcher on another node launches nothing.
 func TestEnsure_RefusesAnotherNode(t *testing.T) {
 	r := newRig(t)
-	if _, err := r.l.Ensure(context.Background(), region, itype); err != nil {
+	if _, err := r.l.Ensure(context.Background(), region, itype, size); err != nil {
 		t.Fatal(err)
 	}
 	other := *r.l
 	other.NodeID = "node-b"
-	if _, err := other.Ensure(context.Background(), region, itype); !errors.Is(err, workerident.ErrWrongNode) {
+	if _, err := other.Ensure(context.Background(), region, itype, size); !errors.Is(err, workerident.ErrWrongNode) {
 		t.Fatalf("other node = %v, want ErrWrongNode", err)
 	}
 	if r.vms.count() != 1 {
@@ -471,7 +469,7 @@ func TestEnsure_RefusesWithoutEveryCapability(t *testing.T) {
 	} {
 		l := *r.l
 		mutate(&l)
-		if _, err := l.Ensure(context.Background(), region, itype); !errors.Is(err, ErrIncomplete) {
+		if _, err := l.Ensure(context.Background(), region, itype, size); !errors.Is(err, ErrIncomplete) {
 			t.Errorf("%s: %v, want ErrIncomplete", name, err)
 		}
 	}
@@ -485,7 +483,7 @@ func TestEnsure_RefusesWithoutEveryCapability(t *testing.T) {
 func TestEnsure_HostNotReadyRefusesBeforeAllocating(t *testing.T) {
 	r := newRig(t)
 	r.host.err = errors.New("image missing")
-	if _, err := r.l.Ensure(context.Background(), region, itype); !errors.Is(err, ErrHostNotReady) {
+	if _, err := r.l.Ensure(context.Background(), region, itype, size); !errors.Is(err, ErrHostNotReady) {
 		t.Fatalf("Ensure = %v, want ErrHostNotReady", err)
 	}
 	if len(r.vol.prepared) != 0 || len(r.net.claims) != 0 || r.vms.count() != 0 {
@@ -495,7 +493,7 @@ func TestEnsure_HostNotReadyRefusesBeforeAllocating(t *testing.T) {
 		t.Fatalf("record after refusal: %v", err)
 	}
 	r.host.err = nil
-	if _, err := r.l.Ensure(context.Background(), region, itype); err != nil {
+	if _, err := r.l.Ensure(context.Background(), region, itype, size); err != nil {
 		t.Fatal(err)
 	}
 	if r.vms.count() != 1 || len(r.vol.prepared) != 1 {
@@ -504,16 +502,16 @@ func TestEnsure_HostNotReadyRefusesBeforeAllocating(t *testing.T) {
 }
 
 // An undispatched intent is not dispatched while the host is not ready, and
-// a stopped worker is neither fenced nor replaced.
+// a stopped worker is not replaced.
 func TestEnsure_HostNotReadyLeavesRecordsUntouched(t *testing.T) {
 	r := newRig(t)
 	r.iam.fail.Store(1)
-	if _, err := r.l.Ensure(context.Background(), region, itype); err == nil {
+	if _, err := r.l.Ensure(context.Background(), region, itype, size); err == nil {
 		t.Fatal("want IAM failure")
 	}
 	before := r.current(t)
 	r.host.err = errors.New("image missing")
-	if _, err := r.l.Ensure(context.Background(), region, itype); !errors.Is(err, ErrHostNotReady) {
+	if _, err := r.l.Ensure(context.Background(), region, itype, size); !errors.Is(err, ErrHostNotReady) {
 		t.Fatalf("resume = %v, want ErrHostNotReady", err)
 	}
 	if after := r.current(t); after != before || r.vms.count() != 0 {
@@ -521,26 +519,22 @@ func TestEnsure_HostNotReadyLeavesRecordsUntouched(t *testing.T) {
 	}
 
 	r.host.err = nil
-	first, err := r.l.Ensure(context.Background(), region, itype)
+	first, err := r.l.Ensure(context.Background(), region, itype, size)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cur := r.current(t)
-	intent := workerident.Intent{Region: region, Generation: cur.Generation, ClaimID: cur.ClaimID}
+	intent := workerident.Intent{Region: region, Generation: cur.Generation, ClaimID: cur.ClaimID, SizeGiB: cur.SizeGiB}
 	if err := r.l.Identities.RecordStopped(context.Background(), intent, first.InstanceID); err != nil {
 		t.Fatal(err)
 	}
 	stopped := r.current(t)
 	r.host.err = errors.New("image missing")
-	if _, err := r.l.Ensure(context.Background(), region, itype); !errors.Is(err, ErrHostNotReady) {
+	if _, err := r.l.Ensure(context.Background(), region, itype, size); !errors.Is(err, ErrHostNotReady) {
 		t.Fatalf("replace = %v, want ErrHostNotReady", err)
 	}
 	if after := r.current(t); after != stopped || r.vms.count() != 1 {
 		t.Fatalf("replacement changed the record or launched: %+v", after)
-	}
-	fence, err := r.l.FirstStore.FencedAt(context.Background(), region)
-	if err != nil || fence > stopped.Generation {
-		t.Fatalf("fence = %d, %v while the host was not ready", fence, err)
 	}
 }
 
@@ -552,12 +546,12 @@ func TestEnsure_UncertainNetworkCreateIsNotRepeated(t *testing.T) {
 	ctx := context.Background()
 	r.net.fail = errors.New("nats: timeout")
 	r.net.hidden = true
-	if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrNetworkOutcomeUnknown) {
+	if _, err := r.l.Ensure(ctx, region, itype, size); !errors.Is(err, ErrNetworkOutcomeUnknown) {
 		t.Fatalf("first = %v, want ErrNetworkOutcomeUnknown", err)
 	}
 	r.net.fail = nil
 	for range 3 {
-		if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrNetworkOutcomeUnknown) {
+		if _, err := r.l.Ensure(ctx, region, itype, size); !errors.Is(err, ErrNetworkOutcomeUnknown) {
 			t.Fatalf("retry = %v, want ErrNetworkOutcomeUnknown", err)
 		}
 	}
@@ -566,7 +560,7 @@ func TestEnsure_UncertainNetworkCreateIsNotRepeated(t *testing.T) {
 		t.Fatalf("creates=%d record=%+v launches=%d", len(r.net.claims), rec, r.vms.count())
 	}
 	r.net.show(rec.ClaimID)
-	if _, err := r.l.Ensure(ctx, region, itype); err != nil {
+	if _, err := r.l.Ensure(ctx, region, itype, size); err != nil {
 		t.Fatal(err)
 	}
 	if len(r.net.claims) != 1 || r.vms.count() != 1 {
@@ -579,11 +573,11 @@ func TestEnsure_VisibleNetworkIsReusedOnResume(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
 	r.net.fail = errors.New("nats: timeout")
-	if _, err := r.l.Ensure(ctx, region, itype); !errors.Is(err, ErrNetworkOutcomeUnknown) {
+	if _, err := r.l.Ensure(ctx, region, itype, size); !errors.Is(err, ErrNetworkOutcomeUnknown) {
 		t.Fatalf("first = %v", err)
 	}
 	r.net.fail = nil
-	if _, err := r.l.Ensure(ctx, region, itype); err != nil {
+	if _, err := r.l.Ensure(ctx, region, itype, size); err != nil {
 		t.Fatal(err)
 	}
 	if len(r.net.claims) != 1 || r.vms.count() != 1 {
@@ -597,17 +591,17 @@ func TestEnsure_InstanceTypeIsFixedUntilReplacement(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
 	r.iam.fail.Store(1)
-	if _, err := r.l.Ensure(ctx, region, itype); err == nil {
+	if _, err := r.l.Ensure(ctx, region, itype, size); err == nil {
 		t.Fatal("ensure succeeded with IAM failing")
 	}
-	if _, err := r.l.Ensure(ctx, region, "sys.other"); !errors.Is(err, workerident.ErrTypeChanged) {
+	if _, err := r.l.Ensure(ctx, region, "sys.other", size); !errors.Is(err, workerident.ErrTypeChanged) {
 		t.Fatalf("resume with another type = %v, want ErrTypeChanged", err)
 	}
-	first, err := r.l.Ensure(ctx, region, itype)
+	first, err := r.l.Ensure(ctx, region, itype, size)
 	if err != nil || first.InstanceType != itype || r.vms.count() != 1 {
 		t.Fatalf("resume = %+v, %v; launched %d", first, err, r.vms.count())
 	}
-	if _, err := r.l.Ensure(ctx, region, "sys.other"); !errors.Is(err, workerident.ErrTypeChanged) {
+	if _, err := r.l.Ensure(ctx, region, "sys.other", size); !errors.Is(err, workerident.ErrTypeChanged) {
 		t.Fatalf("bound with another type = %v, want ErrTypeChanged", err)
 	}
 	if r.vms.count() != 1 {
@@ -618,7 +612,7 @@ func TestEnsure_InstanceTypeIsFixedUntilReplacement(t *testing.T) {
 	if err := r.l.Identities.RecordStopped(ctx, intent, first.InstanceID); err != nil {
 		t.Fatal(err)
 	}
-	next, err := r.l.Ensure(ctx, region, "sys.other")
+	next, err := r.l.Ensure(ctx, region, "sys.other", size)
 	if err != nil || next.Generation != 2 || next.InstanceType != "sys.other" || r.vms.specs[1].InstanceType != "sys.other" {
 		t.Fatalf("replacement = %+v, %v", next, err)
 	}

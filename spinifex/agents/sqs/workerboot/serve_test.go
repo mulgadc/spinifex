@@ -3,6 +3,7 @@ package workerboot
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,12 +18,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/sqsworkergw"
 	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerkey"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerserve"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -73,14 +77,48 @@ func publicSQS(t *testing.T, r *relay.Relay) *sqs.Client {
 	})
 }
 
-// servingWorker is the worker's ready step serving through the local
-// gateway's signed work actions against a real store on port.
+// localStore is the guest's own SQS NATS server: loopback only, no auth,
+// JetStream kept under the worker disk so a restart finds its data.
+func localStore(t *testing.T, g *guest, port int) *server.Server {
+	t.Helper()
+	if port == 0 {
+		port = -1
+	}
+	ns, err := server.NewServer(&server.Options{
+		Host: "127.0.0.1", Port: port, JetStream: true, StoreDir: g.cfg.DataDir, NoLog: true, NoSigs: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go ns.Start()
+	if !ns.ReadyForConnections(10 * time.Second) {
+		t.Fatal("store server did not start")
+	}
+	t.Cleanup(func() { ns.Shutdown(); ns.WaitForShutdown() })
+	return ns
+}
+
+func storePort(ns *server.Server) int { return ns.Addr().(*net.TCPAddr).Port }
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// servingWorker is the guest's ready step serving through the local
+// gateway's signed work actions against the local store on port.
 type servingWorker struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	once   sync.Once
 	mu     sync.Mutex
 	logs   []string
+	g      *guest
 }
 
 func (w *servingWorker) log(msg string) {
@@ -95,10 +133,14 @@ func (w *servingWorker) logged(substr string) bool {
 	return slices.ContainsFunc(w.logs, func(l string) bool { return strings.Contains(l, substr) })
 }
 
-func (c gwCluster) startServing(t *testing.T, g *guest, accessKey, inst string, port int) *servingWorker {
+func (w *servingWorker) ready() bool {
+	_, err := os.Stat(filepath.Join(w.g.cfg.RunDir, readyFile))
+	return err == nil
+}
+
+func (c gwCluster) startServing(t *testing.T, g *guest, signer *gwsign.Signer, port int) *servingWorker {
 	t.Helper()
-	cfg := c.readyFor(g, accessKey, inst, port)
-	signer := c.gw.issue(accessKey, "secret-"+accessKey, inst)
+	cfg := ReadyConfig{Config: g.cfg, Checker: NATSChecker{Port: port, Dial: time.Second}}
 	cfg.Serve = &ServeConfig{
 		Connector: NATSConnector{Port: port},
 		Run: func(ctx context.Context, region, url string, js jetstream.JetStream, receiptKey []byte) error {
@@ -109,9 +151,9 @@ func (c gwCluster) startServing(t *testing.T, g *guest, accessKey, inst string, 
 			return workerserve.Run(ctx, gw, js, receiptKey, cfg.Log)
 		},
 	}
-	cfg.Wait, cfg.Refresh, cfg.Refused = 20*time.Millisecond, time.Second, 50*time.Millisecond
+	cfg.Wait, cfg.Refresh, cfg.Refused, cfg.CallTimeout = 20*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond, 5*time.Second
 	ctx, cancel := context.WithCancel(context.Background())
-	w := &servingWorker{cancel: cancel, done: make(chan struct{})}
+	w := &servingWorker{cancel: cancel, done: make(chan struct{}), g: g}
 	cfg.Log = w.log
 	go func() {
 		defer close(w.done)
@@ -126,7 +168,7 @@ func (w *servingWorker) stop() {
 	<-w.done
 }
 
-// eventually repeats call until it succeeds, for the worker's first poll.
+// eventually repeats call until it succeeds.
 func eventually(t *testing.T, call func() error) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
@@ -142,30 +184,29 @@ func eventually(t *testing.T, call func() error) {
 	}
 }
 
-// bootServingWorker boots a bound worker, starts a store admitting only its
-// key, binds the store and returns the store's port.
-func (c gwCluster) bootServingWorker(t *testing.T, g *guest) int {
+// bootedWorker launches a worker on a new volume and boots its guest, which
+// creates and records the receipt key; it returns the guest and its signer.
+func (c gwCluster) bootedWorker(t *testing.T) (*guest, *gwsign.Signer, workerident.Intent) {
 	t.Helper()
-	pub, err := g.boot()
-	if err != nil {
+	in := c.launch(t, gwInstance)
+	g := newGuest(t)
+	signer := c.guestFor(t, g, "ASIAWORKER1", gwInstance)
+	if _, err := g.boot(); err != nil {
 		t.Fatal(err)
 	}
-	port := storeServer(t, pub)
-	c.bindStore(t, pub, "127.0.0.1")
-	return port
+	return g, signer, in
 }
 
-// The SDK path through a real worker: create, send, receive and delete run
-// in the worker against the dedicated store; after a worker restart the
-// queue is still there and a handle issued before the restart still works.
+// The SDK path through one SQS VM: the worker serves create, send, receive
+// and delete from its local store; after the store and worker restart on the
+// same disk the queue is still there and an earlier handle still works.
 func TestServe_SDKPathThroughTheWorkerSurvivesRestart(t *testing.T) {
 	r := &relay.Relay{}
-	c := newGWClusterWith(t, r)
-	c.launch(t, "claim-0001", 0, gwInstance)
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-	port := c.bootServingWorker(t, g)
-	w := c.startServing(t, g, "ASIAWORKER1", gwInstance, port)
+	c := newGWCluster(t, r, nil)
+	g, signer, _ := c.bootedWorker(t)
+	ns := localStore(t, g, 0)
+	port := storePort(ns)
+	w := c.startServing(t, g, signer, port)
 	cl := publicSQS(t, r)
 	ctx := context.Background()
 
@@ -204,7 +245,6 @@ func TestServe_SDKPathThroughTheWorkerSurvivesRestart(t *testing.T) {
 	if _, err := cl.DeleteMessage(ctx, &sqs.DeleteMessageInput{QueueUrl: aws.String(url), ReceiptHandle: m.ReceiptHandle}); err != nil {
 		t.Fatal(err)
 	}
-
 	if _, err := cl.SendMessage(ctx, &sqs.SendMessageInput{QueueUrl: aws.String(url), MessageBody: aws.String("second")}); err != nil {
 		t.Fatal(err)
 	}
@@ -214,11 +254,14 @@ func TestServe_SDKPathThroughTheWorkerSurvivesRestart(t *testing.T) {
 	}
 
 	w.stop()
+	ns.Shutdown()
+	ns.WaitForShutdown()
 	g.resetMounts()
 	if _, err := g.boot(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("reboot: %v", err)
 	}
-	c.startServing(t, g, "ASIAWORKER1", gwInstance, port)
+	localStore(t, g, port)
+	c.startServing(t, g, signer, port)
 	eventually(t, func() error {
 		_, err := cl.GetQueueUrl(ctx, &sqs.GetQueueUrlInput{QueueName: aws.String("orders")})
 		return err
@@ -236,35 +279,73 @@ func TestServe_SDKPathThroughTheWorkerSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, b := range c.gw.sentBodies() {
-		if strings.Contains(b, string(key)) || strings.Contains(b, strings.TrimSpace(g.seed())) {
+		if strings.Contains(b, string(key)) {
 			t.Fatal("a request carried key material")
 		}
 	}
 }
 
-// A worker whose receipt key is gone, or replaced, never serves: it does not
-// make a new key, so handles issued earlier are not silently invalidated.
+// The store comes up before the worker serves: while the local store is not
+// answering the guest is not ready and no call is served; once it starts,
+// readiness and serving follow.
+func TestServe_UnavailableStoreIsNeverReady(t *testing.T) {
+	r := &relay.Relay{CallLimit: time.Second, PollerStale: 200 * time.Millisecond}
+	c := newGWCluster(t, r, nil)
+	g, signer, _ := c.bootedWorker(t)
+	port := freePort(t)
+	w := c.startServing(t, g, signer, port)
+	cl := publicSQS(t, r)
+	ctx := context.Background()
+	eventually(t, func() error {
+		if !w.logged("store not ready") {
+			return errors.New("no failed check yet")
+		}
+		return nil
+	})
+	if w.ready() {
+		t.Fatal("ready without a store")
+	}
+	if _, err := cl.ListQueues(ctx, &sqs.ListQueuesInput{}); err == nil {
+		t.Fatal("a call was served without a store")
+	}
+	localStore(t, g, port)
+	eventually(t, func() error {
+		_, err := cl.ListQueues(ctx, &sqs.ListQueuesInput{})
+		return err
+	})
+	eventually(t, func() error {
+		if !w.ready() {
+			return errors.New("not ready")
+		}
+		return nil
+	})
+}
+
+// A worker whose recorded receipt key is gone, or replaced, never serves and
+// never makes a new key, so handles issued earlier are not invalidated.
 func TestServe_ReceiptKeyLossOrChangeNeverServes(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(t *testing.T, path string)
 		want   error
 	}{
-		{"missing", func(t *testing.T, path string) { mustRemove(t, path) }, workerkey.ErrReceiptKeyMissing},
+		{"missing", func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}, workerkey.ErrReceiptKeyMissing},
 		{"changed", func(t *testing.T, path string) {
 			if err := os.WriteFile(path, []byte(strings.Repeat("k", workerkey.ReceiptKeyLen)), 0o600); err != nil {
 				t.Fatal(err)
 			}
-		}, workerserve.ErrReceiptKeyChanged},
+		}, workerkey.ErrKeyMismatch},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &relay.Relay{CallLimit: time.Second, PollerStale: 200 * time.Millisecond}
-			c := newGWClusterWith(t, r)
-			c.launch(t, "claim-0001", 0, gwInstance)
-			g := newGuest(t)
-			c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-			port := c.bootServingWorker(t, g)
-			w := c.startServing(t, g, "ASIAWORKER1", gwInstance, port)
+			c := newGWCluster(t, r, nil)
+			g, signer, _ := c.bootedWorker(t)
+			port := storePort(localStore(t, g, 0))
+			w := c.startServing(t, g, signer, port)
 			cl := publicSQS(t, r)
 			eventually(t, func() error {
 				_, err := cl.ListQueues(context.Background(), &sqs.ListQueuesInput{})
@@ -272,9 +353,8 @@ func TestServe_ReceiptKeyLossOrChangeNeverServes(t *testing.T) {
 			})
 			w.stop()
 
-			path := filepath.Join(g.keyDir(), "receipt.key")
-			tc.mutate(t, path)
-			again := c.startServing(t, g, "ASIAWORKER1", gwInstance, port)
+			tc.mutate(t, g.keyFile())
+			again := c.startServing(t, g, signer, port)
 			eventually(t, func() error {
 				if again.logged(tc.want.Error()) {
 					return nil
@@ -282,10 +362,14 @@ func TestServe_ReceiptKeyLossOrChangeNeverServes(t *testing.T) {
 				return errors.New("refusal not logged yet")
 			})
 			if _, err := cl.ListQueues(context.Background(), &sqs.ListQueuesInput{}); err == nil {
-				t.Fatal("a call was served without the original receipt key")
+				t.Fatal("a call was served without the recorded receipt key")
+			}
+			g.resetMounts()
+			if _, err := g.boot(); !errors.Is(err, tc.want) {
+				t.Fatalf("reboot = %v, want %v", err, tc.want)
 			}
 			if tc.name == "missing" {
-				if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				if _, err := os.Lstat(g.keyFile()); !errors.Is(err, os.ErrNotExist) {
 					t.Fatal("a replacement receipt key was created")
 				}
 			}
@@ -293,28 +377,23 @@ func TestServe_ReceiptKeyLossOrChangeNeverServes(t *testing.T) {
 	}
 }
 
-// A worker the domain has recorded as stopped cannot take work, so calls
-// fail as unavailable rather than reaching it.
+// A worker the domain has recorded as stopped cannot take work.
 func TestServe_StoppedWorkerTakesNoWork(t *testing.T) {
 	r := &relay.Relay{CallLimit: time.Second, PollerStale: 200 * time.Millisecond}
-	c := newGWClusterWith(t, r)
-	first := c.launch(t, "claim-0001", 0, gwInstance)
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-	port := c.bootServingWorker(t, g)
-	w := c.startServing(t, g, "ASIAWORKER1", gwInstance, port)
+	c := newGWCluster(t, r, nil)
+	g, signer, in := c.bootedWorker(t)
+	w := c.startServing(t, g, signer, storePort(localStore(t, g, 0)))
 	cl := publicSQS(t, r)
 	ctx := context.Background()
 	eventually(t, func() error {
 		_, err := cl.CreateQueue(ctx, &sqs.CreateQueueInput{QueueName: aws.String("orders")})
 		return err
 	})
-	if err := c.ids.RecordStopped(ctx, first, gwInstance); err != nil {
+	if err := c.ids.RecordStopped(ctx, in, gwInstance); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, func() error {
-		_, err := cl.ListQueues(ctx, &sqs.ListQueuesInput{})
-		if err == nil {
+		if _, err := cl.ListQueues(ctx, &sqs.ListQueuesInput{}); err == nil {
 			return errors.New("still served")
 		}
 		return nil
@@ -324,22 +403,13 @@ func TestServe_StoppedWorkerTakesNoWork(t *testing.T) {
 	}
 }
 
-// A gateway that reports a multi-node host cluster is refused before the
-// worker connects to its store, so no queue or marker state is created.
+// A gateway reporting a multi-node host cluster is refused before the worker
+// opens its store, so no queue or marker state is created.
 func TestServe_MultiNodeHostCreatesNoStoreState(t *testing.T) {
-	r := &relay.Relay{}
-	c := newGWClusterHosts(t, r, func() int { return 3 })
-	c.launch(t, "claim-0001", 0, gwInstance)
-	g := newGuest(t)
-	c.guestFor(t, g, "ASIAWORKER1", gwInstance)
-	pub, err := g.boot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := storeServer(t, pub)
-	c.bindStore(t, pub, "127.0.0.1")
-
-	w := c.startServing(t, g, "ASIAWORKER1", gwInstance, port)
+	c := newGWCluster(t, &relay.Relay{}, func() int { return 3 })
+	g, signer, _ := c.bootedWorker(t)
+	port := storePort(localStore(t, g, 0))
+	w := c.startServing(t, g, signer, port)
 	eventually(t, func() error {
 		if !w.logged(ErrUnsupportedTopology.Error()) {
 			return errors.New("not yet refused")
@@ -348,12 +418,7 @@ func TestServe_MultiNodeHostCreatesNoStoreState(t *testing.T) {
 	})
 	w.stop()
 
-	kp, err := workerkey.Store{Dir: g.keyDir()}.ForExistingStore(pub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer kp.Wipe()
-	js, closeConn, err := NATSConnector{Port: port}.Connect(context.Background(), "127.0.0.1", testStorePin, kp)
+	js, closeConn, err := NATSConnector{Port: port}.Connect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

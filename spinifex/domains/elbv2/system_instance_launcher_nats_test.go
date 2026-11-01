@@ -294,8 +294,8 @@ func TestNATSSystemInstanceLauncher_RefusesNonLoadBalancerKindBeforeSending(t *t
 
 	launcher := NewNATSSystemInstanceLauncher(nc, 2*time.Second)
 	for name, input := range map[string]*SystemInstanceInput{
-		"kind":            {InstanceType: "sys.micro", Kind: systeminstance.KindSQSStore},
-		"sqs store input": {InstanceType: "sys.micro", SQSStore: &systeminstance.SQSStoreInput{DataVolumeID: "vol-0123456789abcdef0"}},
+		"kind":             {InstanceType: "sys.micro", Kind: systeminstance.KindSQSWorker},
+		"sqs worker input": {InstanceType: "sys.micro", SQSWorker: &systeminstance.SQSWorkerInput{}},
 	} {
 		out, err := launcher.LaunchSystemInstance(input)
 		require.Error(t, err, name)

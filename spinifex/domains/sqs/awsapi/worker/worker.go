@@ -20,10 +20,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
-	sqsv1 "github.com/mulgadc/spinifex/contracts/sqs/v1"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -32,23 +29,17 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
 )
 
 // The contract lives in workerrole so the role grant can read it without
 // importing this adapter.
 const (
-	ServiceName                 = workerrole.ServiceName
-	WorkerRoleName              = workerrole.RoleName
-	ActionClaimFirstStore       = workerrole.ActionClaimFirstStore
-	ActionDescribeStore         = workerrole.ActionDescribeStore
-	ActionRecordWorkerPublicKey = workerrole.ActionRecordWorkerPublicKey
-	ActionPollWork              = workerrole.ActionPollWork
-	ActionCompleteWork          = workerrole.ActionCompleteWork
-
-	StoreRoleName                = sqsv1.RoleName
-	ActionDescribeStoreServerKey = sqsv1.ActionDescribeStoreServerKey
-	ActionRecordStoreServerKey   = sqsv1.ActionRecordStoreServerKey
+	ServiceName            = workerrole.ServiceName
+	WorkerRoleName         = workerrole.RoleName
+	ActionClaimReceiptKey  = workerrole.ActionClaimReceiptKey
+	ActionRecordReceiptKey = workerrole.ActionRecordReceiptKey
+	ActionPollWork         = workerrole.ActionPollWork
+	ActionCompleteWork     = workerrole.ActionCompleteWork
 )
 
 // pollWait bounds one PollWork long poll; pollBatch and pollBytes bound the
@@ -59,61 +50,35 @@ const (
 	pollBytes = 16 << 20
 )
 
-var workIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+var (
+	workIDPattern      = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	fingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
 
 const principalTypeAssumedRole = "assumed-role"
 
 // params lists the only parameters each action accepts. Identity is never a
 // parameter: it is derived from the session and the current worker record.
 var params = map[string][]string{
-	ActionClaimFirstStore:       {},
-	ActionDescribeStore:         {},
-	ActionRecordWorkerPublicKey: {"PublicKey"},
-	ActionPollWork:              {},
-	ActionCompleteWork:          {"WorkId"},
-
-	ActionDescribeStoreServerKey: {},
-	ActionRecordStoreServerKey:   {"ClaimId", "VolumeId", "Pin"},
+	ActionClaimReceiptKey:  {},
+	ActionRecordReceiptKey: {"Fingerprint"},
+	ActionPollWork:         {},
+	ActionCompleteWork:     {"WorkId"},
 }
-
-// storeActions are called by the store guest under the store role; every
-// other action is the worker's, and neither role reaches the other's.
-var storeActions = map[string]bool{ActionDescribeStoreServerKey: true, ActionRecordStoreServerKey: true}
 
 // ActionNames lists every action the registration dispatches, sorted.
 func ActionNames() []string {
 	return slices.Sorted(maps.Keys(params))
 }
 
-// Identities resolves a worker session to its current authoritative identity.
+// Identities resolves a worker session to its current authoritative identity
+// and records its receipt key fingerprint.
 type Identities interface {
 	Authorize(ctx context.Context, instanceID string) (workerident.Identity, error)
+	RecordReceiptKey(ctx context.Context, id workerident.Identity, fingerprint string) error
 }
 
-// FirstStore is the first-store decision the worker's key handling consults.
-type FirstStore interface {
-	Claim(ctx context.Context, region string, id firststore.Identity) (firststore.Decision, error)
-	RecordPublicKey(ctx context.Context, region string, id firststore.Identity, pub string) error
-}
-
-// Stores reads the Region's store launch record from the stream leader.
-type Stores interface {
-	Current(ctx context.Context, region string) (storelaunch.Record, error)
-}
-
-// ServerKeys reads and records the bound store's server key pin for the
-// store guest's own actions.
-type ServerKeys interface {
-	ServerKeyOf(ctx context.Context, region, instanceID string) (storelaunch.Record, error)
-	RecordServerKey(ctx context.Context, region, instanceID, claimID, volumeID, pin string) error
-}
-
-var (
-	_ Stores     = storelaunch.Records{}
-	_ ServerKeys = storelaunch.Records{}
-	_ Identities = workerident.Store{}
-	_ FirstStore = firststore.Store{}
-)
+var _ Identities = workerident.Store{}
 
 // Work is the relay the worker pulls owner calls from and posts results to.
 type Work interface {
@@ -128,11 +93,6 @@ var _ Work = (*relay.Relay)(nil)
 // Work does so for the work actions only.
 type Deps struct {
 	Identities Identities
-	FirstStore FirstStore
-	Stores     Stores
-	// ServerKeys serves the store guest's actions only; nil answers them
-	// with ServiceUnavailable.
-	ServerKeys ServerKeys
 	Work       Work
 	// HostNodes reports this gateway's declared cluster node count; nil is
 	// clustersize.Nodes.
@@ -196,11 +156,7 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	}
 
 	actor, _ := inv.Actor()
-	role := WorkerRoleName
-	if storeActions[action] {
-		role = StoreRoleName
-	}
-	session, err := requirePrincipal(ctx, inv.AccountID, actor, role)
+	session, err := requirePrincipal(ctx, inv.AccountID, actor, WorkerRoleName)
 	if err != nil {
 		return err
 	}
@@ -214,11 +170,7 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 			return errors.New(awserrors.ErrorInvalidParameterValue)
 		}
 	}
-	if storeActions[action] {
-		return d.dispatchStore(ctx, w, inv.Region, session, action, args)
-	}
-
-	if d.Identities == nil || d.FirstStore == nil || d.Stores == nil {
+	if d.Identities == nil {
 		return errors.New(awserrors.ErrorServiceUnavailable)
 	}
 	ident, err := d.Identities.Authorize(ctx, session)
@@ -231,7 +183,6 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		slog.DebugContext(ctx, "SQS internal: worker bound to another Region", "instanceID", session)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
-	id := firststore.Identity{InstanceID: ident.InstanceID, ClaimID: ident.ClaimID, Generation: ident.Generation}
 
 	switch action {
 	case ActionPollWork, ActionCompleteWork:
@@ -243,28 +194,37 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 			return d.pollWork(ctx, w, taker)
 		}
 		return d.completeWork(ctx, w, r, taker, args["WorkId"])
-	case ActionDescribeStore:
-		return d.describeStore(ctx, w, ident.Region)
-	case ActionClaimFirstStore:
-		dec, err := d.FirstStore.Claim(ctx, ident.Region, id)
-		if err != nil {
-			return mapError(ctx, action, err)
-		}
-		return writeXML(ctx, w, claimResponse{Result: claimResult{CreateKey: dec.CreateKey, PublicKey: dec.PublicKey}})
+	case ActionClaimReceiptKey:
+		return d.claimReceiptKey(ctx, w, ident)
 	default:
-		pub := args["PublicKey"]
-		if pub == "" {
+		fp := args["Fingerprint"]
+		if fp == "" {
 			return errors.New(awserrors.ErrorMissingParameter)
 		}
-		// A seed or any other value is refused without echoing it anywhere.
-		if !nkeys.IsValidPublicUserKey(pub) {
+		if !fingerprintPattern.MatchString(fp) {
 			return errors.New(awserrors.ErrorInvalidParameterValue)
 		}
-		if err := d.FirstStore.RecordPublicKey(ctx, ident.Region, id, pub); err != nil {
+		if err := d.Identities.RecordReceiptKey(ctx, ident, fp); err != nil {
 			return mapError(ctx, action, err)
 		}
-		return writeXML(ctx, w, recordResponse{})
+		return writeXML(ctx, w, recordReceiptResponse{})
 	}
+}
+
+// claimReceiptKey reports the worker volume's receipt key initialization. A
+// record with none never authorizes creating a key: its volume is not proven
+// new. HostNodes lets the guest refuse anything but a single-node cluster.
+func (d Deps) claimReceiptKey(ctx context.Context, w http.ResponseWriter, ident workerident.Identity) error {
+	res := claimReceiptResult{HostNodes: d.hostNodes()}
+	switch ident.ReceiptInit {
+	case workerident.ReceiptPending:
+		res.Pending = true
+	case workerident.ReceiptRecorded:
+		res.Fingerprint = ident.ReceiptFingerprint
+	default:
+		return mapError(ctx, ActionClaimReceiptKey, workerident.ErrReceiptUnknown)
+	}
+	return writeXML(ctx, w, claimReceiptResponse{Result: res})
 }
 
 // requirePrincipal admits only a session of role, a system-account instance
@@ -285,17 +245,13 @@ func requirePrincipal(ctx context.Context, accountID string, actor dispatch.Acto
 // refusals are AccessDenied, contention is retryable, the rest are faults.
 func mapError(ctx context.Context, action string, err error) error {
 	switch {
-	case errors.Is(err, workerident.ErrUnknownInstance), errors.Is(err, workerident.ErrNotCurrent),
-		errors.Is(err, storelaunch.ErrNotStore),
-		errors.Is(err, firststore.ErrClaimHeld), errors.Is(err, firststore.ErrStaleGeneration):
+	case errors.Is(err, workerident.ErrUnknownInstance), errors.Is(err, workerident.ErrNotCurrent):
 		return errors.New(awserrors.ErrorAccessDenied)
-	case errors.Is(err, firststore.ErrKeyMismatch), errors.Is(err, storelaunch.ErrPinChanged),
-		errors.Is(err, storelaunch.ErrInvalidRecording):
+	case errors.Is(err, workerident.ErrReceiptRecorded):
 		return errors.New(awserrors.ErrorInvalidParameterValue)
-	case errors.Is(err, firststore.ErrNotClaimed), errors.Is(err, storelaunch.ErrNotBound):
+	case errors.Is(err, workerident.ErrReceiptUnknown):
 		return errors.New(awserrors.ErrorInvalidState)
-	case errors.Is(err, workerident.ErrContended), errors.Is(err, firststore.ErrContended),
-		errors.Is(err, storelaunch.ErrContended):
+	case errors.Is(err, workerident.ErrContended):
 		return errors.New(awserrors.ErrorServiceUnavailable)
 	case errors.Is(err, errUnavailable):
 		slog.WarnContext(ctx, "SQS internal: worker stores unavailable", "action", action, "err", err)
@@ -303,54 +259,6 @@ func mapError(ctx context.Context, action string, err error) error {
 	}
 	slog.ErrorContext(ctx, "SQS internal: store failure", "action", action, "err", err)
 	return errors.New(awserrors.ErrorServerInternal)
-}
-
-// describeStore reports the Region's store launch: pending until it is bound,
-// then the address and the public key it was launched for. Bound is not
-// ready; the worker checks the store itself with its own key.
-func (d Deps) describeStore(ctx context.Context, w http.ResponseWriter, region string) error {
-	rec, err := d.Stores.Current(ctx, region)
-	switch {
-	case errors.Is(err, jetstream.ErrKeyNotFound):
-		return writeXML(ctx, w, describeResponse{Result: describeResult{State: StorePending}})
-	case errors.Is(err, storelaunch.ErrUnreadable), errors.Is(err, storelaunch.ErrInvalidRecording):
-		return mapError(ctx, ActionDescribeStore, err)
-	case err != nil:
-		return mapError(ctx, ActionDescribeStore, fmt.Errorf("%w: %w", errUnavailable, err))
-	case rec.State != storelaunch.StateBound, rec.ServerKeyPin == "":
-		// A store with no recorded server key cannot be verified, so it is
-		// not yet usable.
-		return writeXML(ctx, w, describeResponse{Result: describeResult{State: StorePending}})
-	}
-	return writeXML(ctx, w, describeResponse{Result: describeResult{
-		State: StoreBound, Address: rec.Address, PublicKey: rec.PublicKey, ServerKeyPin: rec.ServerKeyPin,
-		HostNodes: d.hostNodes(),
-	}})
-}
-
-// dispatchStore serves the store guest's own actions. The caller is the
-// Region's store only if the bound record names its instance.
-func (d Deps) dispatchStore(ctx context.Context, w http.ResponseWriter, region, instanceID, action string, args map[string]string) error {
-	if d.ServerKeys == nil {
-		return errors.New(awserrors.ErrorServiceUnavailable)
-	}
-	if action == ActionDescribeStoreServerKey {
-		rec, err := d.ServerKeys.ServerKeyOf(ctx, region, instanceID)
-		if err != nil {
-			return mapError(ctx, action, err)
-		}
-		return writeXML(ctx, w, describeServerKeyResponse{Result: serverKeyResult{
-			ClaimID: rec.ClaimID, VolumeID: rec.DataVolumeID, Pin: rec.ServerKeyPin,
-		}})
-	}
-	claim, vol, pin := args["ClaimId"], args["VolumeId"], args["Pin"]
-	if claim == "" || vol == "" || pin == "" {
-		return errors.New(awserrors.ErrorMissingParameter)
-	}
-	if err := d.ServerKeys.RecordServerKey(ctx, region, instanceID, claim, vol, pin); err != nil {
-		return mapError(ctx, action, err)
-	}
-	return writeXML(ctx, w, recordServerKeyResponse{})
 }
 
 func (d Deps) hostNodes() int {
@@ -442,54 +350,21 @@ type completeResponse struct {
 	Result  completeResult `xml:"CompleteWorkResult"`
 }
 
-// DescribeStore states.
-const (
-	StorePending = "pending"
-	StoreBound   = "bound"
-)
-
-type describeResult struct {
-	State        string `xml:"State"`
-	Address      string `xml:"Address,omitempty"`
-	PublicKey    string `xml:"PublicKey,omitempty"`
-	ServerKeyPin string `xml:"ServerKeyPin,omitempty"`
+type claimReceiptResult struct {
+	Pending     bool   `xml:"Pending"`
+	Fingerprint string `xml:"Fingerprint,omitempty"`
 	// HostNodes is this gateway's declared cluster node count, zero when
-	// undeclared; the worker serves only when it is exactly one.
+	// undeclared; the guest serves only when it is exactly one.
 	HostNodes int `xml:"HostNodes"`
 }
 
-type describeResponse struct {
-	XMLName xml.Name       `xml:"DescribeStoreResponse"`
-	Result  describeResult `xml:"DescribeStoreResult"`
+type claimReceiptResponse struct {
+	XMLName xml.Name           `xml:"ClaimReceiptKeyResponse"`
+	Result  claimReceiptResult `xml:"ClaimReceiptKeyResult"`
 }
 
-type claimResult struct {
-	CreateKey bool   `xml:"CreateKey"`
-	PublicKey string `xml:"PublicKey,omitempty"`
-}
-
-type claimResponse struct {
-	XMLName xml.Name    `xml:"ClaimFirstStoreResponse"`
-	Result  claimResult `xml:"ClaimFirstStoreResult"`
-}
-
-type recordResponse struct {
-	XMLName xml.Name `xml:"RecordWorkerPublicKeyResponse"`
-}
-
-type serverKeyResult struct {
-	ClaimID  string `xml:"ClaimId"`
-	VolumeID string `xml:"VolumeId"`
-	Pin      string `xml:"Pin,omitempty"`
-}
-
-type describeServerKeyResponse struct {
-	XMLName xml.Name        `xml:"DescribeStoreServerKeyResponse"`
-	Result  serverKeyResult `xml:"DescribeStoreServerKeyResult"`
-}
-
-type recordServerKeyResponse struct {
-	XMLName xml.Name `xml:"RecordStoreServerKeyResponse"`
+type recordReceiptResponse struct {
+	XMLName xml.Name `xml:"RecordReceiptKeyResponse"`
 }
 
 func writeXML(ctx context.Context, w http.ResponseWriter, v any) error {
@@ -505,14 +380,14 @@ func writeXML(ctx context.Context, w http.ResponseWriter, v any) error {
 	return nil
 }
 
-// JetStreamDeps binds the existing worker-identity and first-store buckets per
-// request and never creates them, so a gateway provisions nothing and refuses
-// every request until the worker launch path has created them durably.
+// JetStreamDeps binds the existing worker-identity bucket per request and
+// never creates it, so a gateway provisions nothing and refuses every request
+// until the worker launch path has created it durably.
 func JetStreamDeps(js jetstream.JetStream) Deps {
 	if js == nil {
 		return Deps{}
 	}
-	return Deps{Identities: boundIdentities{js}, FirstStore: boundFirstStore{js}, Stores: boundStores{js}, ServerKeys: boundStores{js}}
+	return Deps{Identities: boundIdentities{js}}
 }
 
 // errUnavailable marks a bucket that could not be bound: absent, unreachable
@@ -529,53 +404,12 @@ func (b boundIdentities) Authorize(ctx context.Context, instanceID string) (work
 	return s.Authorize(ctx, instanceID)
 }
 
-type boundFirstStore struct{ js jetstream.JetStream }
-
-func (b boundFirstStore) Claim(ctx context.Context, region string, id firststore.Identity) (firststore.Decision, error) {
-	s, err := firststore.Bind(ctx, b.js)
-	if err != nil {
-		return firststore.Decision{}, fmt.Errorf("%w: %w", errUnavailable, err)
-	}
-	return s.Claim(ctx, region, id)
-}
-
-func (b boundFirstStore) RecordPublicKey(ctx context.Context, region string, id firststore.Identity, pub string) error {
-	s, err := firststore.Bind(ctx, b.js)
+func (b boundIdentities) RecordReceiptKey(ctx context.Context, id workerident.Identity, fingerprint string) error {
+	s, err := workerident.Bind(ctx, b.js)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errUnavailable, err)
 	}
-	return s.RecordPublicKey(ctx, region, id, pub)
+	return s.RecordReceiptKey(ctx, id, fingerprint)
 }
 
-type boundStores struct{ js jetstream.JetStream }
-
-func (b boundStores) Current(ctx context.Context, region string) (storelaunch.Record, error) {
-	r, err := storelaunch.Bind(ctx, b.js)
-	if err != nil {
-		return storelaunch.Record{}, fmt.Errorf("%w: %w", errUnavailable, err)
-	}
-	return r.Current(ctx, region)
-}
-
-func (b boundStores) ServerKeyOf(ctx context.Context, region, instanceID string) (storelaunch.Record, error) {
-	r, err := storelaunch.Bind(ctx, b.js)
-	if err != nil {
-		return storelaunch.Record{}, fmt.Errorf("%w: %w", errUnavailable, err)
-	}
-	return r.ServerKeyOf(ctx, region, instanceID)
-}
-
-func (b boundStores) RecordServerKey(ctx context.Context, region, instanceID, claimID, volumeID, pin string) error {
-	r, err := storelaunch.Bind(ctx, b.js)
-	if err != nil {
-		return fmt.Errorf("%w: %w", errUnavailable, err)
-	}
-	return r.RecordServerKey(ctx, region, instanceID, claimID, volumeID, pin)
-}
-
-var (
-	_ Identities = boundIdentities{}
-	_ FirstStore = boundFirstStore{}
-	_ Stores     = boundStores{}
-	_ ServerKeys = boundStores{}
-)
+var _ Identities = boundIdentities{}

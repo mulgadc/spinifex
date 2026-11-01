@@ -105,6 +105,6 @@ func TestRun_FailsWhenTheServerCAIsMissing(t *testing.T) {
 }
 
 func TestRun_RejectsANonLoopbackAddress(t *testing.T) {
-	err := Run(context.Background(), ServiceConfig{Addr: "0.0.0.0:8444", Region: "r", STSEndpoint: "s"}, slog.New(slog.DiscardHandler))
+	err := Run(context.Background(), ServiceConfig{Addr: "0.0.0.0:8445", Region: "r", STSEndpoint: "s"}, slog.New(slog.DiscardHandler))
 	assert.Error(t, err)
 }

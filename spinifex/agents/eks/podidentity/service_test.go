@@ -137,7 +137,7 @@ func TestEnsureCerts_MissingCAFails(t *testing.T) {
 }
 
 func TestRenderManifests_GrantsLeastPrivilegeAndEmbedsTheWebhook(t *testing.T) {
-	out, err := RenderManifests(WebhookConfig{Name: "n", URL: "https://127.0.0.1:8444/mutate", CA: []byte("ca")})
+	out, err := RenderManifests(WebhookConfig{Name: "n", URL: "https://127.0.0.1:8445/mutate", CA: []byte("ca")})
 	require.NoError(t, err)
 	docs := strings.Split(string(out), "---\n")
 	require.Len(t, docs, 3)
@@ -181,7 +181,7 @@ func TestRenderManifests_GrantsLeastPrivilegeAndEmbedsTheWebhook(t *testing.T) {
 }
 
 func TestRenderManifests_IsDeterministic(t *testing.T) {
-	w := WebhookConfig{Name: "n", URL: "https://127.0.0.1:8444/mutate", CA: []byte("ca")}
+	w := WebhookConfig{Name: "n", URL: "https://127.0.0.1:8445/mutate", CA: []byte("ca")}
 	a, err := RenderManifests(w)
 	require.NoError(t, err)
 	b, err := RenderManifests(w)
@@ -202,7 +202,7 @@ func TestParseServiceConfig_DefaultsFromTheNodeEnvironment(t *testing.T) {
 func TestParseServiceConfig_RejectsANonLoopbackListener(t *testing.T) {
 	vars := map[string]string{"EKS_REGION": "r", "EKS_ADDON_GATEWAY_URL": "https://gw"}
 	env := func(k string) string { return vars[k] }
-	for _, addr := range []string{"0.0.0.0:8444", ":8444", "10.0.0.5:8444", "somehost:8444"} {
+	for _, addr := range []string{"0.0.0.0:8445", ":8445", "10.0.0.5:8445", "somehost:8445"} {
 		_, err := ParseServiceConfig([]string{"--addr=" + addr}, env, &bytes.Buffer{})
 		assert.Error(t, err, addr)
 	}
@@ -226,7 +226,7 @@ func TestStageManifests_WritesTheServerCAAndIsIdempotent(t *testing.T) {
 	ca, err := os.ReadFile(cfg.ServerCACert)
 	require.NoError(t, err)
 	assert.Contains(t, string(first), base64Of(ca), "caBundle must be the k3s server CA")
-	assert.Contains(t, string(first), "https://127.0.0.1:8444/mutate")
+	assert.Contains(t, string(first), "https://127.0.0.1:8445/mutate")
 
 	st1, err := os.Stat(path)
 	require.NoError(t, err)

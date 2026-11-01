@@ -258,7 +258,7 @@ func TestRenderWebhookConfiguration(t *testing.T) {
 	ca := certPEM(t, "k3s-server-ca")
 	raw, err := RenderWebhookConfiguration(WebhookConfig{
 		Name: "spinifex-pod-identity",
-		URL:  "https://127.0.0.1:8444/mutate",
+		URL:  "https://127.0.0.1:8445/mutate",
 		CA:   ca,
 	})
 	require.NoError(t, err)
@@ -308,14 +308,14 @@ func TestRenderWebhookConfiguration(t *testing.T) {
 func TestRenderWebhookConfiguration_RejectsAURLThatIsNotLoopbackHTTPS(t *testing.T) {
 	ca := certPEM(t, "k3s-server-ca")
 	for _, url := range []string{
-		"http://127.0.0.1:8444/mutate",
-		"https://10.0.0.5:8444/mutate",
+		"http://127.0.0.1:8445/mutate",
+		"https://10.0.0.5:8445/mutate",
 		"https://webhook.kube-system.svc/mutate",
 		"",
 	} {
 		_, err := RenderWebhookConfiguration(WebhookConfig{Name: "n", URL: url, CA: ca})
 		assert.Error(t, err, "url %q", url)
 	}
-	_, err := RenderWebhookConfiguration(WebhookConfig{Name: "n", URL: "https://127.0.0.1:8444/mutate"})
+	_, err := RenderWebhookConfiguration(WebhookConfig{Name: "n", URL: "https://127.0.0.1:8445/mutate"})
 	assert.Error(t, err, "a missing CA must not render a webhook the API server cannot verify")
 }

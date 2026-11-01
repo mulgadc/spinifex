@@ -20,9 +20,10 @@ fail() { echo "  FAIL - $1"; fails=$((fails + 1)); }
 echo "-- setup.sh host DNS, chrony, needrestart and nbdkit"
 
 mkdir -p "$TMP/sys"
-for tool in bash awk sed grep readlink basename dirname cp ln mkdir cat head tail wc tee rm chmod install; do
+for tool in bash awk sed grep readlink basename dirname cp ln mkdir cat head tail wc tee rm chmod install mv; do
     ln -s "$(command -v "$tool")" "$TMP/sys/$tool"
 done
+ln -s "$(command -v sleep)" "$TMP/sys/realsleep"
 
 # stub <name> <body> — a stub command; $S is the fixture's state directory.
 stub() {
@@ -30,10 +31,17 @@ stub() {
     chmod +x "$TMP/bin/$1"
 }
 
+# nm_settle — waits for the fixture's NetworkManager to finish writing.
+nm_settle() {
+    n=0
+    while [ -e "$TMP/state/nm-pending" ] && [ $n -lt 500 ]; do "$TMP/sys/realsleep" 0.01; n=$((n + 1)); done
+}
+
 # host — a fresh fixture: resolved installed and inactive, resolvconf the
 # resolvectl link, NetworkManager running with no DNS settings, a dnf host
 # whose first enabled repository is yum.oracle.com.
 host() {
+    nm_settle
     rm -rf "${TMP:?}/state" "${TMP:?}/root" "${TMP:?}/bin"
     mkdir -p "$TMP/state/active" "$TMP/root/etc" "$TMP/root/usr/lib/systemd/system" "$TMP/bin"
     : > "$TMP/root/usr/lib/systemd/system/systemd-resolved.service"
@@ -42,11 +50,28 @@ host() {
     printf '[main]\n# dns=default\nconfigure-and-quit=no\n' > "$TMP/state/nm-config"
     printf 'Global:\nLink 2 (br-wan): 192.168.1.1\n' > "$TMP/state/resolvectl-dns"
     printf '[ol10_UEKR8]\nbaseurl = https://mirror.example/uek/\nenabled = 0\n[ol10_baseos_latest]\nbaseurl = https://yum.oracle.com/repo/OracleLinux/OL10/baseos/latest/x86_64/\nenabled = 1\n' > "$TMP/state/dnf-dump"
+    # A (re)started NetworkManager whose rc-manager is not unmanaged writes
+    # resolv.conf as a plain file on its first DNS update, which can land just
+    # after the installer links the stub.
     stub systemctl '[ "$1" = is-active ] && { [ -e "$S/active/$3" ]; exit; }
 echo "$*" >> "$S/calls"
 [ "$1 $2" = "enable --now" ] && : > "$S/active/$3"
+case "$1 $2" in
+    "restart NetworkManager.service" | "reload NetworkManager.service")
+        NetworkManager --print-config | grep -qx rc-manager=unmanaged && exit 0
+        : > "$S/nm-pending"
+        (
+            n=0
+            while [ ! -L "$S/../root/etc/resolv.conf" ] && [ $n -lt 300 ]; do realsleep 0.01; n=$((n + 1)); done
+            printf "nameserver 192.168.1.1\n" > "$S/nm-resolv.conf"
+            mv -f "$S/nm-resolv.conf" "$S/../root/etc/resolv.conf"
+            rm -f "$S/nm-pending"
+        ) > /dev/null 2>&1 &
+        ;;
+esac
 exit 0'
-    stub NetworkManager 'cat "$S/nm-config"'
+    stub NetworkManager 'cat "$S/nm-config"; cat "$S/../root/nm/90-spinifex-dns.conf" "$S/nm-config-late" 2>/dev/null; :'
+    stub nm-online ':'
     stub resolvectl '[ "$1" = dns ] && cat "$S/resolvectl-dns"'
     stub resolvectl-real ':'
     ln -s resolvectl "$TMP/bin/resolvconf"
@@ -60,10 +85,17 @@ run() {
     RC=0
     OUT=$(PATH="$TMP/bin:$TMP/sys" DISTRO_ROOT="$TMP/root" \
         SPINIFEX_RESOLV_CONF="$TMP/root/etc/resolv.conf" SPINIFEX_RESOLV_CONF_SAVED="$TMP/root/saved/resolv.conf.orig" \
+        SPINIFEX_NM_DNS_DROPIN="$TMP/root/nm/90-spinifex-dns.conf" \
         INSTALL_SPINIFEX_LIB_ONLY=1 bash -c '. "$1"; shift; for f in "$@"; do $f; done' _ "$SETUP" "$@" 2>&1) || RC=$?
 }
 
 calls() { cat "$TMP/state/calls" 2>/dev/null || true; }
+# linked — whether resolv.conf is still the stub link once NetworkManager settles.
+linked() {
+    nm_settle
+    [ "$(readlink "$TMP/root/etc/resolv.conf")" = /run/systemd/resolve/stub-resolv.conf ]
+}
+dropin() { cat "$TMP/root/nm/90-spinifex-dns.conf" 2>/dev/null || echo "<none>"; }
 saved() { cat "$TMP/root/saved/resolv.conf.orig" 2>/dev/null || echo "<none>"; }
 expect_untouched() {
     if [ "$RC" = 0 ] && [ -z "$(calls)" ] && [ ! -L "$TMP/root/etc/resolv.conf" ] && [ "$(saved)" = "<none>" ]; then
@@ -86,7 +118,7 @@ expect_fatal() { # expect_fatal <desc> <text>...
 # --------------------------------------------------------------------------
 host
 run hand_dns_to_resolved
-if [ "$RC" = 0 ] && [ "$(readlink "$TMP/root/etc/resolv.conf")" = /run/systemd/resolve/stub-resolv.conf ] \
+if [ "$RC" = 0 ] && linked \
     && [ "$(saved)" = "$(printf 'nameserver 192.168.1.1\nsearch example.lan')" ] \
     && [ "$(calls)" = "$(printf 'enable --now systemd-resolved.service\nrestart NetworkManager.service')" ] \
     && [ "$(cat "$TMP/state/looked-up")" = yum.oracle.com ]; then
@@ -98,11 +130,43 @@ fi
 : > "$TMP/state/calls"
 rm -f "$TMP/state/looked-up"
 run hand_dns_to_resolved
-if [ "$RC" = 0 ] && [ -z "$(calls)" ] && [ "$(cat "$TMP/state/looked-up")" = yum.oracle.com ]; then
+if [ "$RC" = 0 ] && [ -z "$(calls)" ] && linked && [ "$(cat "$TMP/state/looked-up")" = yum.oracle.com ]; then
     pass "a rerun after a handover checks DNS again and changes nothing"
 else
     fail "rerun after handover: rc=$RC calls='$(calls)': $OUT"
 fi
+
+if [ "$(dropin)" = "$(printf '[main]\ndns=systemd-resolved\nrc-manager=unmanaged')" ]; then
+    pass "the handover tells NetworkManager to send DNS to resolved and leave resolv.conf alone"
+else
+    fail "NetworkManager drop-in: '$(dropin)'"
+fi
+
+# An install made before the drop-in, whose NetworkManager replaced the link.
+host
+mkdir -p "$TMP/root/saved"
+echo "the original" > "$TMP/root/saved/resolv.conf.orig"
+: > "$TMP/state/active/systemd-resolved.service"
+run hand_dns_to_resolved
+if [ "$RC" = 0 ] && linked && [ "$(calls)" = "reload NetworkManager.service" ] \
+    && [ "$(dropin)" = "$(printf '[main]\ndns=systemd-resolved\nrc-manager=unmanaged')" ]; then
+    pass "a rerun after a handover whose link NetworkManager replaced adds the drop-in, reloads NM and relinks the stub"
+else
+    fail "rerun repair: rc=$RC calls='$(calls)' link='$(readlink "$TMP/root/etc/resolv.conf")' dropin='$(dropin)': $OUT"
+fi
+
+host
+printf '[main]\nrc-manager=symlink\n' > "$TMP/state/nm-config-late"
+run hand_dns_to_resolved
+expect_fatal "a NetworkManager file read after the drop-in that sets rc-manager stops the install, naming it" \
+    "rc-manager=symlink" "rm -f $TMP/root/nm/90-spinifex-dns.conf"
+case "$(calls)" in *"restart NetworkManager"*) fail "rc-manager override: restarted NetworkManager first: $(calls)" ;; esac
+
+host
+stub ln ':'
+run hand_dns_to_resolved
+expect_fatal "a resolv.conf that will not stay linked to the stub stops the install" \
+    "is not a link to /run/systemd/resolve/stub-resolv.conf"
 
 host
 mkdir -p "$TMP/root/saved"
@@ -155,7 +219,8 @@ host
 printf 'Global:\nLink 2 (br-wan):\n' > "$TMP/state/resolvectl-dns"
 run hand_dns_to_resolved
 expect_fatal "no upstream servers stops the install, naming the check and printing the restore" \
-    "'resolvectl dns' lists no DNS servers" "systemctl disable --now systemd-resolved" "cp -a --remove-destination $TMP/root/saved/resolv.conf.orig"
+    "'resolvectl dns' lists no DNS servers" "systemctl disable --now systemd-resolved" "cp -a --remove-destination $TMP/root/saved/resolv.conf.orig" \
+    "rm -f $TMP/root/nm/90-spinifex-dns.conf"
 
 host
 : > "$TMP/state/getent-fail"

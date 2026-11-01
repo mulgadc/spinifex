@@ -841,6 +841,9 @@ func (s *VPCServiceImpl) casENI(ctx context.Context, key, eniId string, mutate f
 			return fmt.Errorf("marshal ENI record: %w", err)
 		}
 		if _, err = s.eniKV.Update(ctx, key, data, entry.Revision()); err == nil {
+			if attempt > 0 {
+				slog.InfoContext(ctx, "ENI write succeeded after revision conflict", "eniId", eniId, "attempt", attempt+1)
+			}
 			return nil
 		}
 		lastErr = err
@@ -848,6 +851,7 @@ func (s *VPCServiceImpl) casENI(ctx context.Context, key, eniId string, mutate f
 			break
 		}
 	}
+	slog.ErrorContext(ctx, "ENI write failed", "eniId", eniId, "attempts", eniCASAttempts, "err", lastErr)
 	return &storeError{lastErr}
 }
 

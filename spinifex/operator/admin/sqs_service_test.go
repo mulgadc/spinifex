@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/servicestate"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
@@ -112,4 +114,90 @@ func TestDescribeSQS_ReadyNeedsTheTenantAPIAndAPollingWorker(t *testing.T) {
 	if got, err = DescribeSQS(ctx, js, region, obs); err != nil || got.WorkerPolling || got.Ready {
 		t.Fatalf("worker gone = %+v, %v; want not polling, not Ready", got, err)
 	}
+}
+
+// stripContract rewrites a record as the release before authenticated
+// bootstrap wrote it: the same fields, with no contract.
+func stripContract(t *testing.T, kv jetstream.KeyValue, key string) uint64 {
+	t.Helper()
+	ctx := context.Background()
+	e, err := kv.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(e.Value(), &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["contract"]; !ok {
+		t.Fatal("record written by this release has no contract")
+	}
+	delete(m, "contract")
+	b, _ := json.Marshal(m)
+	rev, err := kv.Update(ctx, key, b, e.Revision())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rev
+}
+
+// A store or worker record this release did not create blocks enable before
+// it writes desired state or launches anything, leaves the record untouched,
+// and status names it. nc is nil: any launch attempt would panic.
+func TestEnableSQS_RefusesAPreAPIRecordBeforeAnyWrite(t *testing.T) {
+	clustersize.DeclareForTest(t, 1)
+	const region = "ap-southeast-2"
+	for _, kind := range []string{"store", "worker"} {
+		t.Run(kind, func(t *testing.T) {
+			_, _, js := testutil.StartTestJetStream(t)
+			ctx := context.Background()
+			var kv jetstream.KeyValue
+			switch kind {
+			case "store":
+				recs, err := storelaunch.Open(ctx, js)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := recs.Begin(ctx, region, "store-aaaa", "node1", storePublicKey(t), "t3.small", 8); err != nil {
+					t.Fatal(err)
+				}
+				kv = recs.KV
+			case "worker":
+				ws, err := workerident.Open(ctx, js)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := ws.BeginLaunch(ctx, region, workerident.LaunchRequest{ClaimID: "worker-aaaa", NodeID: "node1", InstanceType: "t3.small"}); err != nil {
+					t.Fatal(err)
+				}
+				kv = ws.KV
+			}
+			rev := stripContract(t, kv, "region."+region)
+
+			_, err := EnableSQS(ctx, nil, js, []string{"node1"}, 1, enableInput(), SQSObservers{}, time.Second)
+			if err == nil || !strings.Contains(err.Error(), "pre-API SQS "+kind) || !strings.Contains(err.Error(), "volume kept") {
+				t.Fatalf("enable = %v; want a pre-API %s refusal", err, kind)
+			}
+			if _, err := js.KeyValue(ctx, servicestate.Bucket); !errors.Is(err, jetstream.ErrBucketNotFound) {
+				t.Fatalf("service state bucket = %v; want none created", err)
+			}
+			if e, err := kv.Get(ctx, "region."+region); err != nil || e.Revision() != rev {
+				t.Fatalf("pre-API record changed: %v", err)
+			}
+			got, err := DescribeSQS(ctx, js, region, SQSObservers{WorkerPolling: func() bool { return true }, TenantAPIRegistered: func() bool { return true }})
+			if err != nil || !strings.Contains(got.Unsupported, "pre-API SQS "+kind) || got.Ready {
+				t.Fatalf("status = %+v, %v; want the pre-API %s named and not Ready", got, err, kind)
+			}
+		})
+	}
+}
+
+func storePublicKey(t *testing.T) string {
+	t.Helper()
+	kp, err := nkeys.CreateUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, _ := kp.PublicKey()
+	return pub
 }

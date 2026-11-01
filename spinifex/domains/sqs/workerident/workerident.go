@@ -64,7 +64,17 @@ type Record struct {
 	// VolumeAttempted is set once, before the first volume create is sent;
 	// DataVolumeID is recorded only after it. A replacement keeps both.
 	VolumeAttempted bool `json:"volumeAttempted,omitempty"`
+	// Contract is set only on a first launch by this release; a replacement
+	// keeps its predecessor's, since it reuses the same data volume.
+	Contract int `json:"contract,omitempty"`
 }
+
+// ContractAuthenticated marks a worker first launched with a receipt key.
+const ContractAuthenticated = 1
+
+// PreAPI reports a record this release did not create. It is refused, and
+// its data volume is kept and never treated as empty.
+func (r Record) PreAPI() bool { return r.Contract != ContractAuthenticated }
 
 // IndexEntry finds an instance's regional record. It is a lookup, never proof
 // that the instance is current.
@@ -218,7 +228,7 @@ func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest
 			}
 			next := Record{Region: region, State: StateLaunching, Generation: 1,
 				ClaimID: req.ClaimID, NodeID: req.NodeID, DataVolumeID: req.DataVolumeID, InstanceType: req.InstanceType,
-				VolumeAttempted: req.DataVolumeID != ""}
+				VolumeAttempted: req.DataVolumeID != "", Contract: ContractAuthenticated}
 			// A failed create may still have applied; the re-read decides.
 			if s.put(ctx, regionKey(region), next, 0) == nil {
 				return intentOf(next), nil

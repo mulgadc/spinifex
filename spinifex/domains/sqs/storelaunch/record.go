@@ -61,7 +61,17 @@ type Record struct {
 	// ServerKeyPin names the bound store's TLS server key. It is set once,
 	// by the bound instance itself, and never changed.
 	ServerKeyPin string `json:"serverKeyPin,omitempty"`
+	// Contract is set only when this release creates the record. A record
+	// without it predates authenticated bootstrap and is never upgraded.
+	Contract int `json:"contract,omitempty"`
 }
+
+// ContractAuthenticated marks a launch made under authenticated bootstrap.
+const ContractAuthenticated = 1
+
+// PreAPI reports a record this release did not create. Its volume is kept;
+// it is refused, never inferred empty, prepared or safe to replace.
+func (r Record) PreAPI() bool { return r.Contract != ContractAuthenticated }
 
 var (
 	ErrUnreadable       = errors.New("SQS store launch record is unreadable")
@@ -133,7 +143,7 @@ func (r Records) Current(ctx context.Context, region string) (Record, error) {
 // key and size returns nil; any other existing record is refused.
 func (r Records) Begin(ctx context.Context, region, claimID, nodeID, publicKey, instanceType string, sizeGiB int64) error {
 	next := Record{Region: region, State: StateLaunching, ClaimID: claimID, NodeID: nodeID, PublicKey: publicKey,
-		SizeGiB: sizeGiB, InstanceType: instanceType}
+		SizeGiB: sizeGiB, InstanceType: instanceType, Contract: ContractAuthenticated}
 	if !wellFormed(&next, region) {
 		return ErrInvalidRecording
 	}

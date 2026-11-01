@@ -3,6 +3,7 @@ package storelaunch
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
@@ -162,5 +163,60 @@ func TestRead_RefusesMalformedRecords(t *testing.T) {
 		if _, err := r.Current(ctx, region); !errors.Is(err, ErrUnreadable) {
 			t.Fatalf("read %q = %v", raw[:1], err)
 		}
+	}
+}
+
+// Only the bound instance records a pin, only for its own claim and volume,
+// and only once: the same pin again succeeds and a different one is refused
+// without changing the record.
+func TestRecordServerKey_IsCreateOnceForTheBoundStore(t *testing.T) {
+	ctx := context.Background()
+	r, pub := newRecords(t)
+	const claim, vol, inst = "store-aaaa", "vol-00000000000000001", "i-00000000000000001"
+	pin, other := strings.Repeat("ab", 32), strings.Repeat("cd", 32)
+	if err := r.RecordServerKey(ctx, region, inst, claim, vol, pin); !errors.Is(err, ErrNotBound) {
+		t.Fatalf("before any record = %v", err)
+	}
+	steps := []func() error{
+		func() error { return r.Begin(ctx, region, claim, node, pub, "m5.large", 8) },
+		func() error { return r.MarkVolumeAttempted(ctx, region, claim) },
+		func() error { return r.RecordVolume(ctx, region, claim, vol) },
+		func() error { return r.MarkNetworkAttempted(ctx, region, claim) },
+		func() error { return r.MarkDispatched(ctx, region, claim) },
+	}
+	for _, step := range steps {
+		if err := step(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.RecordServerKey(ctx, region, inst, claim, vol, pin); !errors.Is(err, ErrNotBound) {
+		t.Fatalf("before bind = %v", err)
+	}
+	if err := r.Bind(ctx, region, claim, inst, "10.0.0.5"); err != nil {
+		t.Fatal(err)
+	}
+	for name, call := range map[string]func() error{
+		"another instance": func() error { return r.RecordServerKey(ctx, region, "i-00000000000000002", claim, vol, pin) },
+		"another claim":    func() error { return r.RecordServerKey(ctx, region, inst, "store-bbbb", vol, pin) },
+		"another volume":   func() error { return r.RecordServerKey(ctx, region, inst, claim, "vol-00000000000000002", pin) },
+	} {
+		if err := call(); !errors.Is(err, ErrNotStore) {
+			t.Fatalf("%s = %v", name, err)
+		}
+	}
+	if _, err := r.ServerKeyOf(ctx, region, "i-00000000000000002"); !errors.Is(err, ErrNotStore) {
+		t.Fatalf("describe by another instance = %v", err)
+	}
+	for range 2 {
+		if err := r.RecordServerKey(ctx, region, inst, claim, vol, pin); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.RecordServerKey(ctx, region, inst, claim, vol, other); !errors.Is(err, ErrPinChanged) {
+		t.Fatalf("a different pin = %v", err)
+	}
+	rec, err := r.ServerKeyOf(ctx, region, inst)
+	if err != nil || rec.ServerKeyPin != pin || rec.ClaimID != claim || rec.DataVolumeID != vol {
+		t.Fatalf("record = %+v, %v", rec, err)
 	}
 }

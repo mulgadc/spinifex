@@ -15,10 +15,11 @@ import (
 // Store is the Region's store launch as the gateway reports it. Bound means a
 // VM was launched for the store, not that it serves.
 type Store struct {
-	Bound     bool
-	Address   string
-	PublicKey string
-	HostNodes int
+	Bound        bool
+	Address      string
+	PublicKey    string
+	ServerKeyPin string
+	HostNodes    int
 }
 
 // StoreDescriber asks the gateway for this worker's store.

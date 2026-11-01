@@ -23,6 +23,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storerole"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerrole"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -44,6 +45,10 @@ const (
 	ActionRecordWorkerPublicKey = workerrole.ActionRecordWorkerPublicKey
 	ActionPollWork              = workerrole.ActionPollWork
 	ActionCompleteWork          = workerrole.ActionCompleteWork
+
+	StoreRoleName                = storerole.RoleName
+	ActionDescribeStoreServerKey = storerole.ActionDescribeStoreServerKey
+	ActionRecordStoreServerKey   = storerole.ActionRecordStoreServerKey
 )
 
 // pollWait bounds one PollWork long poll; pollBatch and pollBytes bound the
@@ -66,7 +71,14 @@ var params = map[string][]string{
 	ActionRecordWorkerPublicKey: {"PublicKey"},
 	ActionPollWork:              {},
 	ActionCompleteWork:          {"WorkId"},
+
+	ActionDescribeStoreServerKey: {},
+	ActionRecordStoreServerKey:   {"ClaimId", "VolumeId", "Pin"},
 }
+
+// storeActions are called by the store guest under the store role; every
+// other action is the worker's, and neither role reaches the other's.
+var storeActions = map[string]bool{ActionDescribeStoreServerKey: true, ActionRecordStoreServerKey: true}
 
 // ActionNames lists every action the registration dispatches, sorted.
 func ActionNames() []string {
@@ -84,9 +96,12 @@ type FirstStore interface {
 	RecordPublicKey(ctx context.Context, region string, id firststore.Identity, pub string) error
 }
 
-// Stores reads the Region's store launch record from the stream leader.
+// Stores reads the Region's store launch record from the stream leader and
+// records the bound store's server key pin.
 type Stores interface {
 	Current(ctx context.Context, region string) (storelaunch.Record, error)
+	ServerKeyOf(ctx context.Context, region, instanceID string) (storelaunch.Record, error)
+	RecordServerKey(ctx context.Context, region, instanceID, claimID, volumeID, pin string) error
 }
 
 var (
@@ -173,7 +188,11 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	}
 
 	actor, _ := inv.Actor()
-	session, err := requireWorkerPrincipal(ctx, inv.AccountID, actor)
+	role := WorkerRoleName
+	if storeActions[action] {
+		role = StoreRoleName
+	}
+	session, err := requirePrincipal(ctx, inv.AccountID, actor, role)
 	if err != nil {
 		return err
 	}
@@ -186,6 +205,9 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 			slog.DebugContext(ctx, "SQS internal: unexpected parameter refused", "action", action)
 			return errors.New(awserrors.ErrorInvalidParameterValue)
 		}
+	}
+	if storeActions[action] {
+		return d.dispatchStore(ctx, w, inv.Region, session, action, args)
 	}
 
 	if d.Identities == nil || d.FirstStore == nil || d.Stores == nil {
@@ -237,13 +259,13 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	}
 }
 
-// requireWorkerPrincipal admits only a session of the worker instance role in
-// the system account, and returns its session name: the instance ID STS set.
-// It says the caller is an SQS worker VM, not that it is the current one.
-func requireWorkerPrincipal(ctx context.Context, accountID string, actor dispatch.Actor) (string, error) {
+// requirePrincipal admits only a session of role, a system-account instance
+// role, and returns its session name: the instance ID STS set. It says the
+// caller is a VM under that role, not that it is the current one.
+func requirePrincipal(ctx context.Context, accountID string, actor dispatch.Actor, role string) (string, error) {
 	if actor.PrincipalType != principalTypeAssumedRole ||
 		accountID != awsidentifiers.GlobalAccountID || actor.AccountID != awsidentifiers.GlobalAccountID ||
-		actor.RoleName() != WorkerRoleName || actor.SessionName == "" {
+		actor.RoleName() != role || actor.SessionName == "" {
 		slog.DebugContext(ctx, "SQS internal: rejected non-worker caller",
 			"principalType", actor.PrincipalType, "accountID", accountID)
 		return "", errors.New(awserrors.ErrorAccessDenied)
@@ -256,13 +278,16 @@ func requireWorkerPrincipal(ctx context.Context, accountID string, actor dispatc
 func mapError(ctx context.Context, action string, err error) error {
 	switch {
 	case errors.Is(err, workerident.ErrUnknownInstance), errors.Is(err, workerident.ErrNotCurrent),
+		errors.Is(err, storelaunch.ErrNotStore),
 		errors.Is(err, firststore.ErrClaimHeld), errors.Is(err, firststore.ErrStaleGeneration):
 		return errors.New(awserrors.ErrorAccessDenied)
-	case errors.Is(err, firststore.ErrKeyMismatch):
+	case errors.Is(err, firststore.ErrKeyMismatch), errors.Is(err, storelaunch.ErrPinChanged),
+		errors.Is(err, storelaunch.ErrInvalidRecording):
 		return errors.New(awserrors.ErrorInvalidParameterValue)
-	case errors.Is(err, firststore.ErrNotClaimed):
+	case errors.Is(err, firststore.ErrNotClaimed), errors.Is(err, storelaunch.ErrNotBound):
 		return errors.New(awserrors.ErrorInvalidState)
-	case errors.Is(err, workerident.ErrContended), errors.Is(err, firststore.ErrContended):
+	case errors.Is(err, workerident.ErrContended), errors.Is(err, firststore.ErrContended),
+		errors.Is(err, storelaunch.ErrContended):
 		return errors.New(awserrors.ErrorServiceUnavailable)
 	case errors.Is(err, errUnavailable):
 		slog.WarnContext(ctx, "SQS internal: worker stores unavailable", "action", action, "err", err)
@@ -284,12 +309,40 @@ func (d Deps) describeStore(ctx context.Context, w http.ResponseWriter, region s
 		return mapError(ctx, ActionDescribeStore, err)
 	case err != nil:
 		return mapError(ctx, ActionDescribeStore, fmt.Errorf("%w: %w", errUnavailable, err))
-	case rec.State != storelaunch.StateBound:
+	case rec.State != storelaunch.StateBound, rec.ServerKeyPin == "":
+		// A store with no recorded server key cannot be verified, so it is
+		// not yet usable.
 		return writeXML(ctx, w, describeResponse{Result: describeResult{State: StorePending}})
 	}
 	return writeXML(ctx, w, describeResponse{Result: describeResult{
-		State: StoreBound, Address: rec.Address, PublicKey: rec.PublicKey, HostNodes: d.hostNodes(),
+		State: StoreBound, Address: rec.Address, PublicKey: rec.PublicKey, ServerKeyPin: rec.ServerKeyPin,
+		HostNodes: d.hostNodes(),
 	}})
+}
+
+// dispatchStore serves the store guest's own actions. The caller is the
+// Region's store only if the bound record names its instance.
+func (d Deps) dispatchStore(ctx context.Context, w http.ResponseWriter, region, instanceID, action string, args map[string]string) error {
+	if d.Stores == nil {
+		return errors.New(awserrors.ErrorServiceUnavailable)
+	}
+	if action == ActionDescribeStoreServerKey {
+		rec, err := d.Stores.ServerKeyOf(ctx, region, instanceID)
+		if err != nil {
+			return mapError(ctx, action, err)
+		}
+		return writeXML(ctx, w, describeServerKeyResponse{Result: serverKeyResult{
+			ClaimID: rec.ClaimID, VolumeID: rec.DataVolumeID, Pin: rec.ServerKeyPin,
+		}})
+	}
+	claim, vol, pin := args["ClaimId"], args["VolumeId"], args["Pin"]
+	if claim == "" || vol == "" || pin == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if err := d.Stores.RecordServerKey(ctx, region, instanceID, claim, vol, pin); err != nil {
+		return mapError(ctx, action, err)
+	}
+	return writeXML(ctx, w, recordServerKeyResponse{})
 }
 
 func (d Deps) hostNodes() int {
@@ -388,9 +441,10 @@ const (
 )
 
 type describeResult struct {
-	State     string `xml:"State"`
-	Address   string `xml:"Address,omitempty"`
-	PublicKey string `xml:"PublicKey,omitempty"`
+	State        string `xml:"State"`
+	Address      string `xml:"Address,omitempty"`
+	PublicKey    string `xml:"PublicKey,omitempty"`
+	ServerKeyPin string `xml:"ServerKeyPin,omitempty"`
 	// HostNodes is this gateway's declared cluster node count, zero when
 	// undeclared; the worker serves only when it is exactly one.
 	HostNodes int `xml:"HostNodes"`
@@ -413,6 +467,21 @@ type claimResponse struct {
 
 type recordResponse struct {
 	XMLName xml.Name `xml:"RecordWorkerPublicKeyResponse"`
+}
+
+type serverKeyResult struct {
+	ClaimID  string `xml:"ClaimId"`
+	VolumeID string `xml:"VolumeId"`
+	Pin      string `xml:"Pin,omitempty"`
+}
+
+type describeServerKeyResponse struct {
+	XMLName xml.Name        `xml:"DescribeStoreServerKeyResponse"`
+	Result  serverKeyResult `xml:"DescribeStoreServerKeyResult"`
+}
+
+type recordServerKeyResponse struct {
+	XMLName xml.Name `xml:"RecordStoreServerKeyResponse"`
 }
 
 func writeXML(ctx context.Context, w http.ResponseWriter, v any) error {
@@ -478,6 +547,22 @@ func (b boundStores) Current(ctx context.Context, region string) (storelaunch.Re
 		return storelaunch.Record{}, fmt.Errorf("%w: %w", errUnavailable, err)
 	}
 	return r.Current(ctx, region)
+}
+
+func (b boundStores) ServerKeyOf(ctx context.Context, region, instanceID string) (storelaunch.Record, error) {
+	r, err := storelaunch.Bind(ctx, b.js)
+	if err != nil {
+		return storelaunch.Record{}, fmt.Errorf("%w: %w", errUnavailable, err)
+	}
+	return r.ServerKeyOf(ctx, region, instanceID)
+}
+
+func (b boundStores) RecordServerKey(ctx context.Context, region, instanceID, claimID, volumeID, pin string) error {
+	r, err := storelaunch.Bind(ctx, b.js)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errUnavailable, err)
+	}
+	return r.RecordServerKey(ctx, region, instanceID, claimID, volumeID, pin)
 }
 
 var (

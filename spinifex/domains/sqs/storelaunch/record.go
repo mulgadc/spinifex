@@ -14,6 +14,8 @@ import (
 	sqsjs "github.com/mulgadc/spinifex/spinifex/domains/sqs/message/jetstream"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
+
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storerole"
 )
 
 // Bucket is the SQS domain's KV bucket for store launches.
@@ -56,6 +58,9 @@ type Record struct {
 	Dispatched       bool   `json:"dispatched,omitempty"`
 	InstanceID       string `json:"instanceID,omitempty"`
 	Address          string `json:"address,omitempty"`
+	// ServerKeyPin names the bound store's TLS server key. It is set once,
+	// by the bound instance itself, and never changed.
+	ServerKeyPin string `json:"serverKeyPin,omitempty"`
 }
 
 var (
@@ -68,6 +73,9 @@ var (
 	ErrSizeChanged      = errors.New("SQS store launch record holds a different volume size")
 	ErrTypeChanged      = errors.New("SQS store launch record holds a different instance type")
 	ErrInvalidRecording = errors.New("invalid SQS store launch value")
+	ErrNotBound         = errors.New("SQS store launch record is not yet bound to an instance")
+	ErrNotStore         = errors.New("caller is not the Region's bound SQS store instance")
+	ErrPinChanged       = errors.New("SQS store launch record holds a different server key pin")
 )
 
 const maxAttempts = 8
@@ -263,6 +271,62 @@ func (r Records) Bind(ctx context.Context, region, claimID, instanceID, address 
 	return ErrContended
 }
 
+// RecordServerKey records the bound store's server key pin. Only the bound
+// instance may record it, and only for the claim and volume it was told of,
+// so a replaced store cannot pin its key on its successor's record. The same
+// pin again succeeds, so a lost reply can be retried; a different pin is
+// refused and the record is unchanged.
+func (r Records) RecordServerKey(ctx context.Context, region, instanceID, claimID, volumeID, pin string) error {
+	if !instancePattern.MatchString(instanceID) || !claimPattern.MatchString(claimID) ||
+		!volumePattern.MatchString(volumeID) || !storerole.ValidPin(pin) {
+		return ErrInvalidRecording
+	}
+	for range maxAttempts {
+		rec, rev, err := r.boundTo(ctx, region, instanceID)
+		if err != nil {
+			return err
+		}
+		switch {
+		case rec.ClaimID != claimID || rec.DataVolumeID != volumeID:
+			return ErrNotStore
+		case rec.ServerKeyPin == pin:
+			return nil
+		case rec.ServerKeyPin != "":
+			return ErrPinChanged
+		}
+		rec.ServerKeyPin = pin
+		if r.put(ctx, region, *rec, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// ServerKeyOf is the Region's record as its bound instance may see it: the
+// claim, volume and any recorded pin. It refuses every other caller.
+func (r Records) ServerKeyOf(ctx context.Context, region, instanceID string) (Record, error) {
+	rec, _, err := r.boundTo(ctx, region, instanceID)
+	if err != nil {
+		return Record{}, err
+	}
+	return *rec, nil
+}
+
+func (r Records) boundTo(ctx context.Context, region, instanceID string) (*Record, uint64, error) {
+	rec, rev, err := r.read(ctx, region)
+	switch {
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		return nil, 0, ErrNotBound
+	case err != nil:
+		return nil, 0, err
+	case rec.State != StateBound:
+		return nil, 0, ErrNotBound
+	case rec.InstanceID != instanceID:
+		return nil, 0, ErrNotStore
+	}
+	return rec, rev, nil
+}
+
 // advance applies step to the claim's launching record under compare-and-swap.
 func (r Records) advance(ctx context.Context, region, claimID string, step func(*Record) error) error {
 	for range maxAttempts {
@@ -320,7 +384,8 @@ func wellFormed(r *Record, region string) bool {
 	case StateLaunching:
 		return r.InstanceID == "" && r.Address == ""
 	case StateBound:
-		return r.Dispatched && instancePattern.MatchString(r.InstanceID) && r.Address != ""
+		return r.Dispatched && instancePattern.MatchString(r.InstanceID) && r.Address != "" &&
+			(r.ServerKeyPin == "" || storerole.ValidPin(r.ServerKeyPin))
 	default:
 		return false
 	}

@@ -189,10 +189,11 @@ func TestCall_DoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
-// Only "pending" with nothing else, or "bound" with an IPv4 address and one
-// valid public key, is a store state.
+// Only "pending" with nothing else, or "bound" with an IPv4 address, one
+// valid public key and a server key pin, is a store state.
 func TestDescribeStore_AcceptsOnlyAValidState(t *testing.T) {
 	pub, seed := userKey(t)
+	pin := strings.Repeat("ab", 32)
 	wrap := func(inner string) string {
 		return `<DescribeStoreResponse><DescribeStoreResult>` + inner + `</DescribeStoreResult></DescribeStoreResponse>`
 	}
@@ -207,9 +208,9 @@ func TestDescribeStore_AcceptsOnlyAValidState(t *testing.T) {
 		}
 	})
 	t.Run("bound", func(t *testing.T) {
-		c, _, _ := server(t, 200, wrap(`<State>bound</State><Address>10.240.0.9</Address><PublicKey>`+pub+`</PublicKey>`))
+		c, _, _ := server(t, 200, wrap(`<State>bound</State><Address>10.240.0.9</Address><PublicKey>`+pub+`</PublicKey><ServerKeyPin>`+pin+`</ServerKeyPin>`))
 		st, err := c.DescribeStore(context.Background())
-		if err != nil || !st.Bound || st.Address != "10.240.0.9" || st.PublicKey != pub {
+		if err != nil || !st.Bound || st.Address != "10.240.0.9" || st.PublicKey != pub || st.ServerKeyPin != pin {
 			t.Fatalf("store = %+v %v", st, err)
 		}
 	})
@@ -220,6 +221,9 @@ func TestDescribeStore_AcceptsOnlyAValidState(t *testing.T) {
 		"bound with hostname":  `<State>bound</State><Address>store.example</Address><PublicKey>` + pub + `</PublicKey>`,
 		"bound with IPv6":      `<State>bound</State><Address>::ffff:10.240.0.9</Address><PublicKey>` + pub + `</PublicKey>`,
 		"unknown state":        `<State>ready</State>`,
+		"bound without pin":    `<State>bound</State><Address>10.240.0.9</Address><PublicKey>` + pub + `</PublicKey>`,
+		"bound with bad pin":   `<State>bound</State><Address>10.240.0.9</Address><PublicKey>` + pub + `</PublicKey><ServerKeyPin>AB</ServerKeyPin>`,
+		"pending with pin":     `<State>pending</State><ServerKeyPin>` + pin + `</ServerKeyPin>`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, _, _ := server(t, 200, wrap(inner))

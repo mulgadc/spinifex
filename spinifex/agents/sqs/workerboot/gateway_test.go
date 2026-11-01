@@ -572,6 +572,9 @@ func TestGateway_StaleWorkerGivesUpWithinTheBound(t *testing.T) {
 
 // bindStore runs the store launch record through to bound for pub at address,
 // as the operator's EnsureSQSStore would.
+// testStorePin is a well-formed server key pin for a store bound in a test.
+var testStorePin = strings.Repeat("ab", 32)
+
 func (c gwCluster) bindStore(t *testing.T, pub, address string) {
 	t.Helper()
 	ctx := context.Background()
@@ -583,6 +586,9 @@ func (c gwCluster) bindStore(t *testing.T, pub, address string) {
 		func() error { return c.stores.MarkNetworkAttempted(ctx, testRegion, claim) },
 		func() error { return c.stores.MarkDispatched(ctx, testRegion, claim) },
 		func() error { return c.stores.Bind(ctx, testRegion, claim, "i-0123456789abcdef0", address) },
+		func() error {
+			return c.stores.RecordServerKey(ctx, testRegion, "i-0123456789abcdef0", claim, "vol-0b1c2d3e4f5a60718", testStorePin)
+		},
 	}
 	for i, step := range steps {
 		if err := step(); err != nil {

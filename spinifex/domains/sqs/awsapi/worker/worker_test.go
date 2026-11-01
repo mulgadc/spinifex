@@ -121,6 +121,14 @@ func (f *fakeStores) Current(_ context.Context, region string) (storelaunch.Reco
 	return f.rec, f.err
 }
 
+func (f *fakeStores) ServerKeyOf(context.Context, string, string) (storelaunch.Record, error) {
+	return f.rec, f.err
+}
+
+func (f *fakeStores) RecordServerKey(context.Context, string, string, string, string, string) error {
+	return f.err
+}
+
 // The first-store identity is the authoritative record's, keyed by the session
 // STS set, never anything the request carried.
 func TestClaim_UsesTheCurrentRecordIdentity(t *testing.T) {
@@ -608,7 +616,9 @@ func TestUnexpectedParameterNameIsNotLogged(t *testing.T) {
 func TestDescribeStore(t *testing.T) {
 	k := newUserKey(t)
 	bound := storelaunch.Record{Region: region, State: storelaunch.StateBound, PublicKey: k.pub,
-		InstanceID: successor, Address: "10.240.0.9"}
+		InstanceID: successor, Address: "10.240.0.9", ServerKeyPin: strings.Repeat("ab", 32)}
+	unpinned := bound
+	unpinned.ServerKeyPin = ""
 	for _, tc := range []struct {
 		name    string
 		stores  *fakeStores
@@ -619,7 +629,9 @@ func TestDescribeStore(t *testing.T) {
 		{"launching", &fakeStores{rec: storelaunch.Record{Region: region, State: storelaunch.StateLaunching}},
 			[]string{"<State>pending</State>"}, ""},
 		{"bound", &fakeStores{rec: bound},
-			[]string{"<State>bound</State>", "<Address>10.240.0.9</Address>", "<PublicKey>" + k.pub + "</PublicKey>"}, ""},
+			[]string{"<State>bound</State>", "<Address>10.240.0.9</Address>", "<PublicKey>" + k.pub + "</PublicKey>",
+				"<ServerKeyPin>" + bound.ServerKeyPin + "</ServerKeyPin>"}, ""},
+		{"bound without a server key", &fakeStores{rec: unpinned}, []string{"<State>pending</State>"}, ""},
 		{"leader unavailable", &fakeStores{err: errors.New("leader lost")}, nil, awserrors.ErrorServiceUnavailable},
 		{"corrupt record", &fakeStores{err: storelaunch.ErrUnreadable}, nil, awserrors.ErrorServerInternal},
 	} {
@@ -663,5 +675,67 @@ func TestDescribeStore_RefusesNonCurrentWorkers(t *testing.T) {
 	}
 	if len(stores.regions) != 0 {
 		t.Fatalf("store record read for a refused caller: %v", stores.regions)
+	}
+}
+
+func storeActor(session string) dispatch.Actor {
+	a := workerActor(session)
+	a.PrincipalARN = "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":role/" + StoreRoleName
+	return a
+}
+
+// The store's actions admit only the store role, the worker's only the worker
+// role, and the store's own record is reached through its session alone.
+func TestStoreServerKey_GatedToTheBoundStoreSession(t *testing.T) {
+	clustersize.DeclareForTest(t, 1)
+	_, _, js := testutil.StartTestJetStream(t)
+	ctx := context.Background()
+	recs, err := storelaunch.Open(ctx, js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := newUserKey(t)
+	const claim, vol, store = "store-claim-0001", "vol-0b1c2d3e4f5a60718", "i-0123456789abcdef0"
+	for _, step := range []func() error{
+		func() error { return recs.Begin(ctx, region, claim, "node-a", k.pub, "t3.medium", 8) },
+		func() error { return recs.MarkVolumeAttempted(ctx, region, claim) },
+		func() error { return recs.RecordVolume(ctx, region, claim, vol) },
+		func() error { return recs.MarkNetworkAttempted(ctx, region, claim) },
+		func() error { return recs.MarkDispatched(ctx, region, claim) },
+		func() error { return recs.Bind(ctx, region, claim, store, "10.240.0.9") },
+	} {
+		if err := step(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _, deps := fakes()
+	deps.Stores = recs
+	pin := strings.Repeat("ab", 32)
+	record := "Action=RecordStoreServerKey&ClaimId=" + claim + "&VolumeId=" + vol + "&Pin="
+
+	_, err = invoke(deps, record+pin, workerActor(store), &call{})
+	assertCode(t, err, awserrors.ErrorAccessDenied)
+	_, err = invoke(deps, "Action=DescribeStore", storeActor(store), &call{})
+	assertCode(t, err, awserrors.ErrorAccessDenied)
+	_, err = invoke(deps, "Action=DescribeStoreServerKey", storeActor("i-0fedcba9876543210"), &call{})
+	assertCode(t, err, awserrors.ErrorAccessDenied)
+	_, err = invoke(deps, "Action=RecordStoreServerKey&Pin="+pin, storeActor(store), &call{})
+	assertCode(t, err, awserrors.ErrorMissingParameter)
+
+	rec, err := invoke(deps, "Action=DescribeStoreServerKey", storeActor(store), &call{})
+	if err != nil || !strings.Contains(rec.Body.String(), "<ClaimId>"+claim+"</ClaimId>") ||
+		!strings.Contains(rec.Body.String(), "<VolumeId>"+vol+"</VolumeId>") || strings.Contains(rec.Body.String(), "<Pin>") {
+		t.Fatalf("describe before recording = %v %q", err, rec.Body.String())
+	}
+	for range 2 {
+		if _, err := invoke(deps, record+pin, storeActor(store), &call{}); err != nil {
+			t.Fatalf("record = %v", err)
+		}
+	}
+	_, err = invoke(deps, record+strings.Repeat("cd", 32), storeActor(store), &call{})
+	assertCode(t, err, awserrors.ErrorInvalidParameterValue)
+	rec, err = invoke(deps, "Action=DescribeStoreServerKey", storeActor(store), &call{})
+	if err != nil || !strings.Contains(rec.Body.String(), "<Pin>"+pin+"</Pin>") {
+		t.Fatalf("describe after recording = %v %q", err, rec.Body.String())
 	}
 }

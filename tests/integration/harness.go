@@ -63,7 +63,7 @@ import (
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
@@ -85,12 +85,12 @@ const (
 	// testAccessKeyID/testSecretAccessKey are the root credentials seeded
 	// into the real IAM service for every harness-started gateway. AKIA
 	// prefix routes SigV4 auth through the long-lived-key path (see
-	// spinifex/gateway/auth.go resolveLongLivedAKID).
+	// spinifex/ingress/aws/pipeline/auth.go resolveLongLivedAKID).
 	testAccessKeyID     = "AKIAINTEGRATIONTESTR"
 	testSecretAccessKey = "integration-test-root-secret"
 
 	// nodeDiscoverSubject is the fan-out NodeDiscovery.ActiveNodes
-	// publishes to (spinifex/gateway/gateway.go). StartGateway stubs it with
+	// publishes to (spinifex/ingress/aws/pipeline/gateway.go). StartGateway stubs it with
 	// a single-node reply so any call path that triggers node discovery
 	// resolves immediately instead of riding out the fan-out's 500ms timeout.
 	nodeDiscoverSubject = "spinifex.nodes.discover"
@@ -127,14 +127,14 @@ type Gateway struct {
 	AccountID string
 	// Config is the GatewayConfig SetupRoutes was built from, exposed so
 	// tests can inspect or further wire fields StartGateway did not set.
-	Config *gateway.GatewayConfig
+	Config *pipeline.GatewayConfig
 }
 
 // Option customises a Gateway's GatewayConfig before SetupRoutes builds the
 // router. Applied after StartGateway's own defaults, so an Option can
 // override any of them (e.g. a different Region/AZ, or a nil IAMService to
 // exercise the pre-IAM-compatibility bypass paths).
-type Option func(*gateway.GatewayConfig)
+type Option func(*pipeline.GatewayConfig)
 
 // StartGateway boots the real gateway router over the package's shared,
 // embedded NATS JetStream server — connected via a fresh, isolated NATS
@@ -232,9 +232,9 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	require.NoError(t, services.Register(stsawsapi.NewRegistration(stsDeps)))
 	require.NoError(t, services.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: tagging.NewAggregator()})))
 
-	cfg := gwfix.WithDeps(&gateway.GatewayConfig{
+	cfg := gwfix.WithDeps(&pipeline.GatewayConfig{
 		DisableLogging: true,
-		Admin:          gateway.AdminSurface{Service: operatoradmin.ServiceName, WithRequestID: operatoradmin.WithRequestID},
+		Admin:          pipeline.AdminSurface{Service: operatoradmin.ServiceName, WithRequestID: operatoradmin.WithRequestID},
 		Region:         testRegion,
 		PreAuth:        []awsdispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
 	}, gwfix.Deps{NATS: nc, Nodes: 1, IAM: iamSvc, STS: stsSvc})

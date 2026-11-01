@@ -29,12 +29,11 @@ const (
 type domainKind int
 
 const (
-	notDomain     domainKind = iota
-	domainImpl               // domains/<d>/... resource implementation
-	domainAWSAPI             // domains/<d>/awsapi/... AWS action adapters
-	domainProj               // domains/<d>/projection/... authorised view
-	legacyImpl               // handlers/<d>/... legacy domain implementation
-	legacyAdapter            // gateway/<d>/... legacy AWS action adapters
+	notDomain    domainKind = iota
+	domainImpl              // domains/<d>/... resource implementation
+	domainAWSAPI            // domains/<d>/awsapi/... AWS action adapters
+	domainProj              // domains/<d>/projection/... authorised view
+	legacyImpl              // handlers/<d>/... legacy domain implementation
 )
 
 type class struct {
@@ -60,17 +59,8 @@ func (c class) isLegacy(roots ...string) bool {
 	return slices.Contains(roots, c.legacy)
 }
 
-// legacyRoots are pre-ADR-0001 application roots still standing.
-var legacyRoots = map[string]bool{
-	"gateway": true,
-}
-
-// gatewayDomains names the domain each gateway/<service> adapter belongs to;
-// Bedrock is the AWS surface of the Ochre domain.
-var gatewayDomains = map[string]string{
-	"bedrock": "ochre", "ecs": "ecs", "eks": "eks", "elbv2": "elbv2", "iam": "iam",
-	"rds": "rds", "sts": "sts",
-}
+// legacyRoots are pre-ADR-0001 application roots still standing. None remain.
+var legacyRoots = map[string]bool{}
 
 // classify maps a module-relative package directory to its layer. ok is false
 // for a package that has no deliberate classification.
@@ -142,8 +132,6 @@ func classifyApp(app []string) (class, bool) {
 	switch {
 	case app[0] == "handlers" && len(app) >= 2:
 		c.domain, c.kind = app[1], legacyImpl
-	case app[0] == "gateway" && len(app) >= 2 && gatewayDomains[app[1]] != "":
-		c.domain, c.kind = gatewayDomains[app[1]], legacyAdapter
 	}
 	return c, true
 }

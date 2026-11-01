@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"net/http"
 	"net/http/httptest"
@@ -57,7 +57,7 @@ func newV2Env(t *testing.T, opts v2Options) *v2Env {
 	}
 	iamSvc.userPolicies[v2Account+"|dev"] = policies
 
-	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{
 		DisableLogging: true,
 		Region:         ecrTestRegion,
 	}, gwfix.Deps{IAM: iamSvc, STS: stsSvc}))

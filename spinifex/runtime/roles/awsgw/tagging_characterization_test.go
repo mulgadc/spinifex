@@ -9,7 +9,7 @@ import (
 	"context"
 	"errors"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -46,13 +46,13 @@ func (f *fakeTaggedLister) ListTagged(_ context.Context, _ string, _ map[string]
 
 // taggingPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does,
 // on live test NATS, with docs as every principal's policy.
-func taggingPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, agg *tagging.Aggregator) (*gateway.GatewayConfig, http.Handler) {
+func taggingPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, agg *tagging.Aggregator) (*pipeline.GatewayConfig, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
@@ -233,7 +233,7 @@ func TestTaggingPipeline_OversizedBody_413OverHTTP(t *testing.T) {
 
 // A nil NATS connection fails at the request-level gate, before dispatch.
 func TestRequest_ClusterUnavailableNilConn_Tagging(t *testing.T) {
-	gw := withTagging(withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), tagging.NewAggregator())
+	gw := withTagging(withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), tagging.NewAggregator())
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-Amz-Target", taggingTargetPrefix+"GetResources")

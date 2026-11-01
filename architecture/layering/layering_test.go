@@ -192,30 +192,29 @@ func TestADR0001_LayeringCheckerDetectsFaults(t *testing.T) {
 	}
 }
 
-// TestADR0001_InterimDaemonDirectionCoversRuntimeDaemon: the daemon left its
-// legacy root, so gateway importing runtime/daemon must still be rejected, and
-// the former handlers packages are held to it by R5 at their domain homes.
-func TestADR0001_InterimDaemonDirectionCoversRuntimeDaemon(t *testing.T) {
-	daemon, _ := classify("spinifex/runtime/daemon")
-	checks := []struct{ rule, from string }{
-		{"Interim_DaemonGatewayHandlersDirection", "spinifex/gateway"},
-		{"R5_DomainImportsNoRuntimeOrOperator", "spinifex/domains/ecs"},
+// TestADR0001_R2_IngressRejectsRuntimeOperatorAndDomains: the request pipeline
+// lives under ingress/aws, so it must not import the daemon, any runtime or
+// operator package, or a domain implementation.
+func TestADR0001_R2_IngressRejectsRuntimeOperatorAndDomains(t *testing.T) {
+	r := ruleByID("R2_IngressImportsNoImplementation")
+	from := "spinifex/ingress/aws/pipeline"
+	f, ok := classify(from)
+	if !ok || !r.subject(f, from) {
+		t.Fatalf("%s is not governed by R2", from)
 	}
-	for _, c := range checks {
-		r := ruleByID(c.rule)
-		f, _ := classify(c.from)
-		if !r.subject(f, c.from) || !r.forbids(f, daemon, c.from) {
-			t.Errorf("%s -> runtime/daemon is not rejected by %s", c.from, c.rule)
+	for _, to := range []string{
+		"spinifex/runtime/daemon", "spinifex/runtime/host/process", "spinifex/runtime/roles/awsgw",
+		"spinifex/operator/admin", "spinifex/domains/ecs", "spinifex/domains/iam/awsapi",
+	} {
+		target, _ := classify(to)
+		if !r.forbids(f, target, from) {
+			t.Errorf("%s -> %s is not rejected by R2", from, to)
 		}
-	}
-	other, _ := classify("spinifex/runtime/host/process")
-	if gw, _ := classify("spinifex/gateway"); ruleByID("Interim_DaemonGatewayHandlersDirection").forbids(gw, other, "spinifex/gateway") {
-		t.Error("gateway -> runtime/host/process is rejected, but it is not the daemon")
 	}
 }
 
 // TestADR0002_S7_RequestRecordRejectsOutsiders: the request record is readable
-// by the gateway and ingress/aws only.
+// by packages under ingress/aws only.
 func TestADR0002_S7_RequestRecordRejectsOutsiders(t *testing.T) {
 	record, ok := classify("spinifex/ingress/aws/reqctx")
 	if !ok || !record.requestRecord {
@@ -226,7 +225,6 @@ func TestADR0002_S7_RequestRecordRejectsOutsiders(t *testing.T) {
 		"domains/ecs/awsapi":   true,
 		"runtime/roles/awsgw":  true,
 		"operator/admin":       true,
-		"gateway":              false,
 		"ingress/aws/dispatch": false,
 	} {
 		from, ok := classify(fullPath(name))

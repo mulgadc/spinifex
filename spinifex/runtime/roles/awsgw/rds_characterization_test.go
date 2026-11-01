@@ -8,7 +8,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,13 +27,13 @@ import (
 
 // rdsPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as the caller's policy.
-func rdsPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*gateway.GatewayConfig, http.Handler) {
+func rdsPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*pipeline.GatewayConfig, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, Nodes: 1, IAM: &gwfix.PolicyIAM{
@@ -213,7 +213,7 @@ func TestRDSPipeline_Authz_UnrelatedGrantDeniedUnknownActionNot(t *testing.T) {
 }
 
 func TestRDSPipeline_NilNATS_503ServiceUnavailable(t *testing.T) {
-	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
+	gw := withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	withRDS(gw)
 
 	w := httptest.NewRecorder()

@@ -1,0 +1,262 @@
+//test:in-package — requestConditionKeys, credential.Principal and the principal type
+// constants are unexported, and the gate exists to compare what they emit with
+// the evaluator's registries.
+
+package pipeline
+
+import (
+	"crypto/tls"
+	"encoding/json"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"testing"
+
+	"github.com/mulgadc/bluebottle/pkg/iampolicy"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// The keys this door resolves. predastore's mirror of this list adds s3:prefix
+// and nothing else; a key added at one door and not the other fails there.
+var gatewayDoorKeys = []string{
+	iampolicy.KeySecureTransport,
+	iampolicy.KeyUsername,
+	iampolicy.KeyUserID,
+	iampolicy.KeyPrincipalAccount,
+	iampolicy.KeySourceIP,
+	iampolicy.KeyPrincipalType,
+	iampolicy.KeyCurrentTime,
+	iampolicy.KeyEpochTime,
+}
+
+// Every condition key the evaluator names, so the write-path gate below covers
+// the whole namespace rather than the subset this door happens to supply.
+var allConditionKeys = []string{
+	iampolicy.KeySourceIP,
+	iampolicy.KeyS3Prefix,
+	iampolicy.KeyS3MaxKeys,
+	iampolicy.KeySecureTransport,
+	iampolicy.KeyUsername,
+	iampolicy.KeyPrincipalAccount,
+	iampolicy.KeyUserID,
+	iampolicy.KeyPrincipalType,
+	iampolicy.KeyPassedToService,
+	iampolicy.KeyCurrentTime,
+	iampolicy.KeyEpochTime,
+	// Deliberately outside the allowlist: there is no MFA in the stack, so neither
+	// key could ever be supplied. They are here to prove the validator says no.
+	"aws:MultiFactorAuthPresent",
+	"aws:MultiFactorAuthAge",
+}
+
+// One value per operator that the leaf validator accepts, so a rejection can
+// only come from the operator/key allowlist and not from the value.
+var operatorValues = map[string]string{
+	iampolicy.OpStringEquals:              "alice",
+	iampolicy.OpStringNotEquals:           "alice",
+	iampolicy.OpStringEqualsIgnoreCase:    "alice",
+	iampolicy.OpStringNotEqualsIgnoreCase: "alice",
+	iampolicy.OpStringLike:                "ali*",
+	iampolicy.OpStringNotLike:             "ali*",
+	iampolicy.OpIPAddress:                 "10.0.0.0/8",
+	iampolicy.OpNotIPAddress:              "10.0.0.0/8",
+	iampolicy.OpBool:                      "true",
+	iampolicy.OpNull:                      "true",
+	iampolicy.OpDateEquals:                "2026-01-01T00:00:00Z",
+	iampolicy.OpDateNotEquals:             "2026-01-01T00:00:00Z",
+	iampolicy.OpDateLessThan:              "2026-01-01T00:00:00Z",
+	iampolicy.OpDateLessThanEquals:        "2026-01-01T00:00:00Z",
+	iampolicy.OpDateGreaterThan:           "1767225600",
+	iampolicy.OpDateGreaterThanEquals:     "1767225600",
+	iampolicy.OpNumericEquals:             "100",
+	iampolicy.OpNumericNotEquals:          "100",
+	iampolicy.OpNumericLessThan:           "100",
+	iampolicy.OpNumericLessThanEquals:     "1767225600",
+	iampolicy.OpNumericGreaterThan:        "10.5",
+	iampolicy.OpNumericGreaterThanEquals:  "1e3",
+	// Implemented, but no supported key is ARN-valued, so every pair below is
+	// rejected until one is.
+	iampolicy.OpArnEquals:    "arn:aws:iam::000000000001:user/alice",
+	iampolicy.OpArnLike:      "arn:aws:iam::000000000001:user/*",
+	iampolicy.OpArnNotEquals: "arn:aws:iam::000000000001:user/alice",
+	iampolicy.OpArnNotLike:   "arn:aws:iam::000000000001:user/*",
+	// Operators the evaluator does not implement. Accepting one would store a
+	// restriction that compares false forever.
+	"BinaryEquals": "QmluYXJ5",
+}
+
+// withIfExists adds the IfExists form of every operator, so the gate below covers
+// the suffixed operators too, NullIfExists among the ones it must reject.
+func withIfExists(values map[string]string) map[string]string {
+	all := maps.Clone(values)
+	for op, value := range values {
+		all[op+iampolicy.IfExistsSuffix] = value
+	}
+	return all
+}
+
+// emittedKeys drives requestConditionKeys with everything a request can carry,
+// for both principal types, and returns the union.
+func emittedKeys(t *testing.T) map[string]string {
+	t.Helper()
+
+	principals := map[string]credential.Principal{
+		"user": {
+			Identity:      "alice",
+			AccountID:     "000000000001",
+			PrincipalType: gwfix.PrincipalTypeUser,
+		},
+		"assumed-role": {
+			Identity:       "session",
+			AccountID:      "000000000001",
+			PrincipalType:  gwfix.PrincipalTypeAssumedRole,
+			AssumedRoleARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/session",
+			AssumedRoleID:  "AROASHAREDOPS:session",
+		},
+	}
+
+	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: &gwfix.IAM{}}))
+	union := make(map[string]string)
+	for name, principal := range principals {
+		r := httptest.NewRequest(http.MethodPost, "/?prefix=home/&max-keys=100", nil)
+		r.TLS = &tls.ConnectionState{}
+		r.RemoteAddr = "10.4.1.9:52344"
+		// Resolved the way the middleware resolves it, so the gate cannot pass on
+		// a value only the test supplies.
+		userID, _, err := stsdomain.ResolveCallerUser(principal.AccountID, principal.PrincipalType,
+			principal.Identity, principal.AssumedRoleID, gwfix.DepsOf(gw).IAM)
+		require.NoError(t, err)
+		principal.UserID = userID
+		for key := range policyauth.RequestConditionKeys(r, principal) {
+			union[key] = name
+		}
+	}
+	return union
+}
+
+// A key this door supplies that no policy can name is carried to the evaluator
+// and dropped there — the silent half of the write-path/evaluator disagreement.
+func TestRequestConditionKeys_EveryEmittedKeyIsUsableInAPolicy(t *testing.T) {
+	for key, principal := range emittedKeys(t) {
+		supported := false
+		for op := range operatorValues {
+			if iampolicy.SupportedCondition(op, key) {
+				supported = true
+				break
+			}
+		}
+		_, unresolvable := iampolicy.UnsupportedVariable("${" + key + "}")
+		assert.True(t, supported || !unresolvable,
+			"requestConditionKeys emits %q for a %s principal, but the evaluator neither enforces a "+
+				"condition on it nor substitutes it: a policy naming it can never fire", key, principal)
+	}
+}
+
+// The door's key set as a whole, so a key gained or lost here is a deliberate
+// change made at both doors rather than a drift between them.
+func TestRequestConditionKeys_MatchesTheDoorKeySet(t *testing.T) {
+	emitted := slices.Collect(maps.Keys(emittedKeys(t)))
+	assert.ElementsMatch(t, gatewayDoorKeys, emitted,
+		"the AWS gateway door key set changed: update predastore's mirror in "+
+			"internal/gate/conditionkeys_completeness_test.go and the door table in bluebottle's door_test.go")
+
+	// s3:prefix and s3:max-keys are the keys the S3 gate adds over this set, and
+	// they are absent here even when the request carries the parameters.
+	assert.NotContains(t, emitted, iampolicy.KeyS3Prefix)
+	assert.NotContains(t, emitted, iampolicy.KeyS3MaxKeys)
+}
+
+// The write path and the evaluator are the same allowlist or they are a bug:
+// a pair the validator accepts but the evaluator cannot enforce is stored as an
+// inert restriction, and one it rejects that the evaluator does enforce is a
+// policy an operator cannot write.
+func TestValidatePolicyDocument_AcceptsExactlyTheSupportedConditions(t *testing.T) {
+	for _, key := range allConditionKeys {
+		for op, value := range withIfExists(operatorValues) {
+			doc := conditionDocument(t, op, key, value)
+			_, err := iamdomain.ValidatePolicyDocument(doc)
+
+			if iampolicy.SupportedCondition(op, key) {
+				assert.NoError(t, err,
+					"the evaluator enforces %s on %q but the write path rejects it, so the policy "+
+						"cannot be written", op, key)
+				continue
+			}
+			assert.Error(t, err,
+				"the write path accepts %s on %q, which the evaluator does not enforce: the condition "+
+					"would be stored and then compare false forever", op, key)
+		}
+	}
+}
+
+// The variable half of the same question. A reference the write path accepts and
+// the evaluator cannot resolve is stored as a pattern that selects nothing on an
+// Allow and everything it names on a Deny; one it rejects that the evaluator does
+// resolve is a policy an operator cannot write.
+func TestValidatePolicyDocument_AcceptsExactlyTheSubstitutableVariables(t *testing.T) {
+	for _, key := range append(allConditionKeys, "aws:bogus") {
+		reference := iampolicy.VariablePrefix + key + "}"
+		_, unresolvable := iampolicy.UnsupportedVariable(reference)
+
+		for _, doc := range []string{
+			resourceDocument(t, "arn:aws:s3:::reports/"+reference+"/*"),
+			conditionDocument(t, iampolicy.OpStringLike, iampolicy.KeyS3Prefix, reference+"/*"),
+		} {
+			_, err := iamdomain.ValidatePolicyDocument(doc)
+			if unresolvable {
+				assert.Error(t, err,
+					"the write path accepts %s, which the evaluator cannot resolve: the policy would "+
+						"be stored selecting nothing on an Allow and everything on a Deny", reference)
+				continue
+			}
+			assert.NoError(t, err,
+				"the evaluator resolves %s but the write path rejects it, so the policy cannot be "+
+					"written", reference)
+		}
+	}
+}
+
+// A malformed reference resolves nowhere and is rejected on every path.
+func TestValidatePolicyDocument_RejectsUnterminatedVariable(t *testing.T) {
+	_, err := iamdomain.ValidatePolicyDocument(
+		resourceDocument(t, "arn:aws:s3:::reports/"+iampolicy.VariablePrefix+iampolicy.KeyUsername))
+	assert.ErrorContains(t, err, "unterminated policy variable reference")
+}
+
+func resourceDocument(t *testing.T, resource string) string {
+	t.Helper()
+
+	doc, err := json.Marshal(map[string]any{
+		"Version": "2012-10-17",
+		"Statement": []map[string]any{{
+			"Effect":   "Allow",
+			"Action":   []string{"s3:GetObject"},
+			"Resource": []string{resource},
+		}},
+	})
+	require.NoError(t, err, "marshalling the %q document", resource)
+	return string(doc)
+}
+
+func conditionDocument(t *testing.T, op, key, value string) string {
+	t.Helper()
+
+	doc, err := json.Marshal(map[string]any{
+		"Version": "2012-10-17",
+		"Statement": []map[string]any{{
+			"Effect":    "Allow",
+			"Action":    []string{"s3:GetObject"},
+			"Resource":  []string{"arn:aws:s3:::reports/*"},
+			"Condition": map[string]any{op: map[string]any{key: []string{value}}},
+		}},
+	})
+	require.NoError(t, err, "marshalling the %s/%s document", op, key)
+	return string(doc)
+}

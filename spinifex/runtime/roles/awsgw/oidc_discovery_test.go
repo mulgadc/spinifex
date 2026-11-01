@@ -3,7 +3,7 @@ package awsgw_test
 import (
 	"encoding/json"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"net/http"
 	"net/http/httptest"
@@ -35,7 +35,7 @@ func seedDiscoveryCluster(t *testing.T) http.Handler {
 		t.Fatalf("put jwks: %v", err)
 	}
 
-	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(ekscluster.NewOIDCPublisher(js), nil)}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
+	gw := withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(ekscluster.NewOIDCPublisher(js), nil)}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 	return gw.SetupRoutes()
 }
 

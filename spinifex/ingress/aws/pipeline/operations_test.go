@@ -55,6 +55,7 @@ func TestAWSOperationInventoryMeasuresEKSAgainstTheModel(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"GetRecoveryDirective",
 		"ListInternalAddons",
+		"ListInternalWorkers",
 		"PublishInternal",
 		"WebhookTokenReview",
 	}, eks.Extra)

@@ -108,6 +108,7 @@ func TestLookupEKSAction_CoversAllActions(t *testing.T) {
 		"WebhookTokenReview":           false,
 		"ListInternalAddons":           false,
 		"GetRecoveryDirective":         false,
+		"ListInternalWorkers":          false,
 		"DescribeCluster":              false,
 		"ListClusters":                 false,
 		"DeleteCluster":                false,

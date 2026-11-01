@@ -217,6 +217,11 @@ func TestEKS(t *testing.T) {
 		runIRSAPod(t, c, env, artifacts, fx)
 	})
 
+	t.Run("LBCChart", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runLBCChart(t, c, env, artifacts, fx)
+	})
+
 	t.Run("WorkerIMDS", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		runWorkerIMDS(t, c, env, artifacts, fx)
@@ -471,14 +476,12 @@ func ensureNodeRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture) (rol
 	return roleArn, roleName
 }
 
-// runIRSAPod exercises the in-cluster IRSA path a real workload depends on:
-// spinifex ships no pod-identity webhook, so a pod must wire the projected SA
-// token + AWS_* env explicitly (mirroring
-// scripts/images/eks-node/mulga-eks-addon-sync.sh's {{IRSA_ENV}}/{{IRSA_VOLUME}}
-// blocks). The pod runs `aws sts get-caller-identity` against the awsgw STS
-// endpoint from inside the cluster; the returned ARN must resolve to the
-// assumed IRSA role, proving token mount + env wiring + in-cluster egress all
-// work together (unlike IRSAWebIdentity, which only proves the API exchange).
+// runIRSAPod exercises the in-cluster IRSA path a real workload depends on. The
+// pod spec names only a ServiceAccount carrying the role-arn annotation, as on
+// AWS; the pod-identity webhook must inject the token volume, AWS_* env, STS
+// endpoint and CA bundle. The pod runs `aws sts get-caller-identity` against the
+// awsgw STS endpoint and the ARN must resolve to the assumed IRSA role. A pod of
+// an unannotated ServiceAccount must be left untouched.
 func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string, fx *clusterFixture) {
 	require.NotNil(t, fx.Cluster.Identity, "ACTIVE cluster must expose Identity")
 	require.NotNil(t, fx.Cluster.Identity.Oidc, "ACTIVE cluster must expose Identity.Oidc")
@@ -551,30 +554,12 @@ func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts 
 		return nil
 	}, 8*time.Minute, 10*time.Second)
 
-	// Deliver the awsgw CA into the pod via a ConfigMap — the same CA the host
-	// already trusts for awsgw (harness.ResolveCACert), mounted read-only.
-	caPath, err := harness.ResolveCACert(env)
-	require.NoError(t, err, "resolve gateway CA cert")
-	const caConfigMap = "irsa-pod-gateway-ca"
-	out, err := kc.Run(30*time.Second, "create", "configmap", caConfigMap,
-		"-n", "default", "--from-file=ca.pem="+caPath)
-	if err != nil {
-		// This is the first kubectl of the subtest, so it lands before the pod
-		// dumps below are registered and would otherwise fail with no evidence.
-		harness.DumpFile(t, artifacts, "gateway-ca-configmap-auth.txt",
-			[]byte(kc.AuthDiagnostics(30*time.Second)))
-	}
-	require.NoErrorf(t, err, "create gateway-ca configmap:\n%s", out)
-	t.Cleanup(func() {
-		_, _ = kc.Run(30*time.Second, "delete", "configmap", caConfigMap, "-n", "default", "--ignore-not-found")
-	})
-
 	const sa = "irsa-pod-e2e"
 	const podName = "irsa-pod-e2e"
 	nodeSelector := fmt.Sprintf("  nodeSelector:\n    eks.amazonaws.com/nodegroup: %s\n", nodegroup)
 	manifestPath := filepath.Join(artifacts, "irsa-pod.yaml")
 	require.NoError(t, os.WriteFile(manifestPath,
-		[]byte(irsaPodManifest(sa, podName, roleArn, gatewayBaseURL, region, caConfigMap, nodeSelector)), 0o600))
+		[]byte(irsaPodManifest(sa, podName, roleArn, nodeSelector)), 0o600))
 	t.Cleanup(func() {
 		_, _ = kc.Run(60*time.Second, "delete", "-f", manifestPath, "--ignore-not-found", "--wait=false")
 	})
@@ -594,7 +579,7 @@ func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts 
 	})
 
 	harness.Phase(t, "Applying IRSA pod")
-	out, err = kc.Run(60*time.Second, "apply", "-f", manifestPath)
+	out, err := kc.Run(60*time.Second, "apply", "-f", manifestPath)
 	require.NoErrorf(t, err, "apply irsa pod:\n%s", out)
 
 	waitPodReady(t, kc, podName)
@@ -622,16 +607,80 @@ func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts 
 	assert.Equal(t, fx.AccountID, ident.Account, "caller account must match")
 	assert.Contains(t, ident.Arn, "assumed-role/"+roleName,
 		"caller ARN must reflect the assumed IRSA role")
+
+	// The webhook, not the manifest, supplied the wiring.
+	envOut, err := kc.Run(30*time.Second, "-n", "default", "get", "pod", podName, "-o",
+		`jsonpath={range .spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}`)
+	require.NoErrorf(t, err, "read injected env:\n%s", envOut)
+	injected := map[string]string{}
+	for line := range strings.SplitSeq(envOut, "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			injected[k] = v
+		}
+	}
+	assert.Equal(t, roleArn, injected["AWS_ROLE_ARN"])
+	assert.Equal(t, "/var/run/secrets/eks.amazonaws.com/serviceaccount/token", injected["AWS_WEB_IDENTITY_TOKEN_FILE"])
+	assert.Equal(t, region, injected["AWS_REGION"])
+	assert.Equal(t, gatewayBaseURL, injected["AWS_ENDPOINT_URL_STS"])
+	assert.NotEmpty(t, injected["AWS_CA_BUNDLE"], "CA bundle path is injected")
+	assert.NotEmpty(t, injected["SSL_CERT_FILE"], "SSL_CERT_FILE is injected")
+	volOut, err := kc.Run(30*time.Second, "-n", "default", "get", "pod", podName, "-o",
+		`jsonpath={range .spec.volumes[*]}{.name}{"\n"}{end}`)
+	require.NoErrorf(t, err, "read injected volumes:\n%s", volOut)
+	assert.Contains(t, strings.Fields(volOut), "aws-iam-token", "projected token volume is injected")
+	assert.Contains(t, strings.Fields(volOut), "spinifex-ca-bundle", "CA bundle volume is injected")
+
+	t.Run("UnannotatedServiceAccountUntouched", func(t *testing.T) {
+		runUnannotatedPod(t, kc, artifacts, nodegroup)
+	})
 }
 
-// irsaPodManifest renders a ServiceAccount (carrying the decorative
-// eks.amazonaws.com/role-arn annotation) plus a pod wired for IRSA exactly as
-// mulga-eks-addon-sync.sh's {{IRSA_ENV}}/{{IRSA_VOLUME}}/{{IRSA_VOLUME_MOUNT}}
-// blocks would: a projected SA token (audience sts.amazonaws.com) mounted at
-// the well-known eks.amazonaws.com path, the AWS_* env pointing the SDK at the
-// awsgw STS endpoint, and the gateway CA trusted via ConfigMap. extraSpec is
-// injected verbatim into the Pod spec (e.g. a nodeSelector), or "" for none.
-func irsaPodManifest(sa, pod, roleArn, gatewayBaseURL, region, caConfigMap, extraSpec string) string {
+// runUnannotatedPod proves a pod whose ServiceAccount has no role annotation
+// gets no AWS environment and no token or CA volumes, as on AWS.
+func runUnannotatedPod(t *testing.T, kc *harness.Kubectl, artifacts, nodegroup string) {
+	const name = "irsa-plain-e2e"
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: %[1]s
+  namespace: default
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: %[1]s
+  namespace: default
+spec:
+  serviceAccountName: %[1]s
+  restartPolicy: Never
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: %[2]s
+  containers:
+  - name: sleep
+    image: public.ecr.aws/docker/library/busybox:latest
+    command: ["sleep", "3600"]
+`, name, nodegroup)
+	path := filepath.Join(artifacts, "irsa-plain.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(manifest), 0o600))
+	t.Cleanup(func() {
+		_, _ = kc.Run(60*time.Second, "delete", "-f", path, "--ignore-not-found", "--wait=false")
+	})
+	out, err := kc.Run(60*time.Second, "apply", "-f", path)
+	require.NoErrorf(t, err, "apply plain pod:\n%s", out)
+
+	got, err := kc.Run(30*time.Second, "-n", "default", "get", "pod", name, "-o",
+		`jsonpath={range .spec.containers[0].env[*]}{.name}{"\n"}{end}{"--\n"}{range .spec.volumes[*]}{.name}{"\n"}{end}`)
+	require.NoErrorf(t, err, "read plain pod:\n%s", got)
+	assert.NotContains(t, got, "AWS_", "an unannotated pod gets no AWS environment")
+	assert.NotContains(t, got, "aws-iam-token", "an unannotated pod gets no token volume")
+	assert.NotContains(t, got, "spinifex-ca-bundle", "an unannotated pod gets no CA bundle volume")
+}
+
+// irsaPodManifest renders a ServiceAccount carrying the role-arn annotation and a
+// pod that names only that ServiceAccount: the webhook supplies the token volume,
+// environment and CA bundle. extraSpec is injected verbatim into the Pod spec
+// (e.g. a nodeSelector), or "" for none.
+func irsaPodManifest(sa, pod, roleArn, extraSpec string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -648,47 +697,11 @@ metadata:
 spec:
   serviceAccountName: %[1]s
   restartPolicy: Never
-%[7]s  containers:
+%[4]s  containers:
   - name: aws-cli
     image: public.ecr.aws/aws-cli/aws-cli:latest
     command: ["sh", "-c", "aws sts get-caller-identity --output json >/tmp/out.json 2>/tmp/err.txt; sleep 3600"]
-    env:
-    - name: AWS_ROLE_ARN
-      value: %[3]q
-    - name: AWS_WEB_IDENTITY_TOKEN_FILE
-      value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
-    - name: AWS_STS_REGIONAL_ENDPOINTS
-      value: regional
-    - name: AWS_REGION
-      value: %[5]q
-    - name: AWS_DEFAULT_REGION
-      value: %[5]q
-    - name: AWS_ENDPOINT_URL_STS
-      value: %[4]q
-    - name: AWS_CA_BUNDLE
-      value: /etc/spinifex/gateway-ca/ca.pem
-    - name: SSL_CERT_FILE
-      value: /etc/spinifex/gateway-ca/ca.pem
-    volumeMounts:
-    - name: aws-iam-token
-      mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
-      readOnly: true
-    - name: gateway-ca
-      mountPath: /etc/spinifex/gateway-ca
-      readOnly: true
-  volumes:
-  - name: aws-iam-token
-    projected:
-      defaultMode: 420
-      sources:
-      - serviceAccountToken:
-          audience: sts.amazonaws.com
-          expirationSeconds: 86400
-          path: token
-  - name: gateway-ca
-    configMap:
-      name: %[6]s
-`, sa, pod, roleArn, gatewayBaseURL, region, caConfigMap, extraSpec)
+`, sa, pod, roleArn, extraSpec)
 }
 
 // runEBSCSIVolume exercises the full EBS CSI data path on the live cluster:

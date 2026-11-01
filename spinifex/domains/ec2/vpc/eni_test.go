@@ -501,33 +501,6 @@ func TestAttachENI(t *testing.T) {
 	assert.Equal(t, int64(0), *eni.Attachment.DeviceIndex)
 }
 
-func TestDescribeNetworkInterfaces_ReportsAttachmentInstanceOwner(t *testing.T) {
-	t.Parallel()
-	svc := setupTestVPCService(t)
-	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
-	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
-	owned := createTestENI(t, svc, subnetId)
-	plain := createTestENI(t, svc, subnetId)
-
-	_, err := svc.AttachENIWithOwner(testAccountID, owned, "i-sys", 0, "000000000000")
-	require.NoError(t, err)
-	_, err = svc.AttachENI(testAccountID, plain, "i-cust", 0)
-	require.NoError(t, err)
-
-	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
-		NetworkInterfaceIds: []*string{aws.String(owned), aws.String(plain)},
-	}, testAccountID)
-	require.NoError(t, err)
-	got := map[string]*ec2.NetworkInterfaceAttachment{}
-	for _, e := range out.NetworkInterfaces {
-		got[aws.StringValue(e.NetworkInterfaceId)] = e.Attachment
-	}
-	require.NotNil(t, got[owned])
-	assert.Equal(t, "000000000000", aws.StringValue(got[owned].InstanceOwnerId))
-	require.NotNil(t, got[plain])
-	assert.Nil(t, got[plain].InstanceOwnerId)
-}
-
 func TestAttachENI_AlreadyAttached(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)

@@ -19,15 +19,12 @@ const (
 	privVPCCIDR    = "10.201.0.0/16"
 	privSubnetCIDR = "10.201.1.0/24"
 	privProbes     = 10
-
-	// systemAccountID owns every platform-managed LB VM.
-	systemAccountID = "000000000000"
 )
 
 // TestInternalALBPrivateSubnet launches an internal ALB in a private subnet of a
 // non-default VPC that has no internet gateway and no public route. The LB must reach
-// active, its ENI must record the platform account as the attached instance's owner, and
-// an instance inside the VPC must be served by it. The runner cannot reach the VPC, so the
+// active with a healthy target, which needs the LB VM's owner stamp to resolve, and an
+// instance inside the VPC must be served by it. The runner cannot reach the VPC, so the
 // in-VPC client reports its results on its serial console.
 func TestInternalALBPrivateSubnet(t *testing.T) {
 	env := harness.LoadEnv(t)
@@ -93,9 +90,6 @@ func TestInternalALBPrivateSubnet(t *testing.T) {
 	harness.WaitForTargetsHealthy(t, c, tgArn, 1, label, 2*time.Minute)
 
 	eni := lbENI(t, c, "app", lb)
-	require.NotNil(t, eni.Attachment, "%s: LB ENI must be attached", label)
-	assert.Equal(t, systemAccountID, aws.StringValue(eni.Attachment.InstanceOwnerId),
-		"%s: the LB ENI must record the platform account as the owner of its VM", label)
 	assert.Empty(t, publicIP(eni), "%s must not have a public IP", label)
 	lbIP := privateIP(eni)
 	require.NotEmpty(t, lbIP, "%s needs a private IP", label)

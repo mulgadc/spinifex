@@ -124,7 +124,7 @@ Unhealthy-target routing: an NLB with an HTTP health check on a TCP target group
 An ALB whose targets all fail their health check keeps serving from them instead of answering 503.
 
 `TestInternalALBPrivateSubnet` launches an internal ALB in a private subnet of a non-default VPC with no internet gateway and no public route.
-The load balancer must reach active, its ENI must record the platform account as the owner of the attached VM, and a client inside the VPC must be served by it on every request.
+The load balancer must reach active with a healthy target, which needs the owner stamp on its ENI to resolve, and a client inside the VPC must be served by it on every request.
 The client reports on its serial console because the runner has no route into the VPC.
 
 ### `eks`, `ecs`, `ecr` — container services

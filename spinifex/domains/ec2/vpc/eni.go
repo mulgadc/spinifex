@@ -1137,9 +1137,6 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, gro
 			Status:              aws.String("attached"),
 			DeleteOnTermination: aws.Bool(record.DeleteOnTermination == nil || *record.DeleteOnTermination),
 		}
-		if record.InstanceOwnerId != "" {
-			eni.Attachment.InstanceOwnerId = aws.String(record.InstanceOwnerId)
-		}
 	}
 
 	eni.TagSet = tags.MapToEC2(record.Tags)

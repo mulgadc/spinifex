@@ -22,9 +22,10 @@ const (
 	// WebhookTokenReview (the eks-token-webhook relays `aws eks get-token` bearer
 	// tokens to the token-review broker for host-side STS verification), and
 	// GetRecoveryDirective (the k3s-recovery agent pulls its per-member etcd
-	// recovery directive at boot). The gateway evaluates these per request against
-	// the role's policies.
-	eksServerInlinePolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["eks:PublishInternal","eks:ListInternalAddons","eks:WebhookTokenReview","eks:GetRecoveryDirective"],"Resource":"*"}]}`
+	// recovery directive at boot), and ListInternalWorkers (the node-gc agent
+	// pulls the live nodegroup workers). The gateway evaluates these per request
+	// against the role's policies.
+	eksServerInlinePolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["eks:PublishInternal","eks:ListInternalAddons","eks:WebhookTokenReview","eks:GetRecoveryDirective","eks:ListInternalWorkers"],"Resource":"*"}]}`
 )
 
 // ensureCPInstanceProfile returns the CP instance-profile ARN, or "" to signal
@@ -35,7 +36,7 @@ func (s *EKSServiceImpl) ensureCPInstanceProfile(accountID string) string {
 	iam := s.iamEnsurer()
 	if iam == nil {
 		slog.Warn("EKS: IAM service unwired; CP VM falls back to baked static gateway creds and "+
-			"will be denied eks:PublishInternal, eks:WebhookTokenReview, eks:ListInternalAddons and eks:GetRecoveryDirective (no instance identity to bind)",
+			"will be denied eks:PublishInternal, eks:WebhookTokenReview, eks:ListInternalAddons, eks:GetRecoveryDirective and eks:ListInternalWorkers (no instance identity to bind)",
 			"accountID", accountID)
 		return ""
 	}
@@ -43,7 +44,7 @@ func (s *EKSServiceImpl) ensureCPInstanceProfile(accountID string) string {
 		CPInstanceRoleName, eksServerInlinePolicyName, eksServerInlinePolicy)
 	if err != nil {
 		slog.Error("EKS: ensure CP instance profile failed; CP VM falls back to baked static gateway creds and "+
-			"will be denied eks:PublishInternal, eks:WebhookTokenReview, eks:ListInternalAddons and eks:GetRecoveryDirective (no instance identity to bind)",
+			"will be denied eks:PublishInternal, eks:WebhookTokenReview, eks:ListInternalAddons, eks:GetRecoveryDirective and eks:ListInternalWorkers (no instance identity to bind)",
 			"accountID", accountID, "role", CPInstanceRoleName, "err", err)
 		return ""
 	}

@@ -179,6 +179,10 @@ func TestResourceARNsInternalRoutesUsePathAccount(t *testing.T) {
 	assert.Equal(t,
 		[]string{"arn:aws:eks:ap-southeast-2:999999999999:cluster/prod"},
 		resolveARNs(t, "GetRecoveryDirective", []string{"prod", "999999999999", "i-abc"}, ""))
+
+	assert.Equal(t,
+		[]string{"arn:aws:eks:ap-southeast-2:999999999999:cluster/prod"},
+		resolveARNs(t, "ListInternalWorkers", []string{"prod", "999999999999"}, ""))
 }
 
 // An identifier the gate cannot read authorizes account-wide, leaving the

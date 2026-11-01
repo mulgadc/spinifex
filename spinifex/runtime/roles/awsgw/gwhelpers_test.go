@@ -595,7 +595,7 @@ func newTestRegistryHandler(t *testing.T, gw *gateway.GatewayConfig, iss *ecraut
 	}
 	b, err := ecrregistry.NewBridge(cfg)
 	require.NoError(t, err)
-	return ingresshttp.NewHostMatcher(gw.InternalSuffix, "dkr", "ecr").Middleware(b.Handler())
+	return ingresshttp.NewHostMatcher(ecrTestSuffix, "dkr", "ecr").Middleware(b.Handler())
 }
 
 // IAMServiceLike is the slice of the IAM service the mock resolver reads.

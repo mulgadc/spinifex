@@ -3,7 +3,6 @@ package gateway
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
@@ -40,15 +39,8 @@ type GatewayConfig struct {
 	Debug          bool       `json:"debug"`
 	DisableLogging bool       `json:"disable_logging"`
 	NATSConn       *nats.Conn // Shared NATS connection for service communication
-	Config         string     // Shared AWS Gateway config for S3 auth
-	// RootCAs is the cluster CA pool, used to verify predastore meta nodes
-	// dialed directly for GetStorageStatus. Nil disables that verification,
-	// so admin storage status reports every meta node unreachable rather than
-	// dialing with no trust root.
-	RootCAs        *x509.CertPool
-	ExpectedNodes  int    // Number of expected spinifex nodes for multi-node operations
-	Region         string // Region this gateway is running in
-	InternalSuffix string // Internal DNS suffix for AWS-parity endpoints (e.g. spinifex.internal)
+	ExpectedNodes  int        // Number of expected spinifex nodes for multi-node operations
+	Region         string     // Region this gateway is running in
 	IAMService     iamdomain.IAMService
 	STSService     stsdomain.STSService
 	// PreAuth serves requests that authenticate by their own payload, ahead of

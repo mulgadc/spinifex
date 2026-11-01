@@ -18,7 +18,7 @@ import (
 func TestECRRequest_GetAuthorizationTokenDispatched(t *testing.T) {
 	iss, _ := newECRAuth(t)
 	gw := withECR(withVerifier(&GatewayConfig{
-		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+		Region:         ecrTestRegion,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
 	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, awsapi.RepositoryEndpoint{
@@ -34,7 +34,7 @@ func TestGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
 	gw := withECR(withVerifier(&GatewayConfig{
-		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+		Region:         ecrTestRegion,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
 	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
@@ -108,7 +108,7 @@ func TestGetAuthorizationToken_PathedUserRoundTrips(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
 	gw := withECR(withVerifier(&GatewayConfig{
-		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+		Region:         ecrTestRegion,
 		DisableLogging: true,
 		IAMService:     iamSvc,
 	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
@@ -147,7 +147,7 @@ func TestGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
 	iss, _ := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix, RegistryPort: "9999"}
 	gw := withECR(withVerifier(&GatewayConfig{
-		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+		Region:         ecrTestRegion,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
 	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})

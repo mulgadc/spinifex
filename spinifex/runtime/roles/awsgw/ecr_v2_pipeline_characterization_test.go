@@ -60,7 +60,6 @@ func newV2Env(t *testing.T, opts v2Options) *v2Env {
 	gw := withVerifier(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         ecrTestRegion,
-		InternalSuffix: ecrTestSuffix,
 		IAMService:     iamSvc,
 		STSService:     stsSvc,
 	})

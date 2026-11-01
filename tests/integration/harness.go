@@ -97,7 +97,7 @@ const (
 	// testECRAudience is the audience claim every harness-issued ECR JWT is
 	// minted for and verified against — arbitrary but stable within this tier,
 	// mirroring production's "ecr.<region>.<suffix>" shape without depending on
-	// GatewayConfig.InternalSuffix (unset here; the in-process harness talks to
+	// an empty registry host suffix (unset here; the in-process harness talks to
 	// the gateway's httptest address directly rather than a registry hostname).
 	testECRAudience = "ecr.integration-test"
 
@@ -284,7 +284,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 			Region:    cfg.Region,
 		}, credverify.New(cfg.IAMService, cfg.STSService), policyauth.New(cfg.IAMService)))
 		require.NoError(t, err)
-		cfg.PublicRoutes = awsgw.PublicRoutes(nil, ingresshttp.NewHostMatcher(cfg.InternalSuffix, "dkr", "ecr").Middleware(bridge.Handler()))
+		cfg.PublicRoutes = awsgw.PublicRoutes(nil, ingresshttp.NewHostMatcher("", "dkr", "ecr").Middleware(bridge.Handler()))
 	}
 
 	handler := cfg.SetupRoutes()

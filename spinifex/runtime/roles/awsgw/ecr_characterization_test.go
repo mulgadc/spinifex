@@ -40,7 +40,6 @@ func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*gateway.Gat
 	gw := withVerifier(&gateway.GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		InternalSuffix: ecrTestSuffix,
 		NATSConn:       nc,
 		IAMService: &gwfix.PolicyIAM{
 			IAM: gwfix.IAM{

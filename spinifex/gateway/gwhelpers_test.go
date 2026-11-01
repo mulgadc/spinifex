@@ -1381,7 +1381,6 @@ func withOperator(gw *GatewayConfig) *GatewayConfig {
 		Version:     gw.Version,
 		Commit:      gw.Commit,
 		NATS:        gw.NATSConn,
-		RootCAs:     gw.RootCAs,
 		ActiveNodes: activeNodes(gw),
 
 		IAM:           gw.IAMService,
@@ -1557,7 +1556,6 @@ func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConf
 	gw := withVerifier(&GatewayConfig{
 		DisableLogging: true,
 		Region:         gwfix.Region,
-		InternalSuffix: ecrTestSuffix,
 		NATSConn:       nc,
 		IAMService: &gwfix.PolicyIAM{
 			IAM: gwfix.IAM{

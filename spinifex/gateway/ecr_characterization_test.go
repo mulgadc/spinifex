@@ -155,7 +155,7 @@ func TestGetAuthorizationToken_IgnoresRequestSuppliedIdentity(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
 	gw := withECR(withVerifier(&GatewayConfig{
-		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+		Region:         ecrTestRegion,
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
 	}), awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})

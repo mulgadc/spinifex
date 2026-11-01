@@ -393,6 +393,9 @@ var (
 	// real ECS both use the restJson1 wire code "InvalidParameterException",
 	// so this gives EKS call sites their own name for the same registered code.
 	ErrorEKSInvalidParameter = ErrorECSInvalidParameter
+	// ErrorEKSInvalidRequest is the code the EKS access-entry operations declare
+	// in place of a parameter code.
+	ErrorEKSInvalidRequest = "InvalidRequestException"
 	// ErrorECRInvalidParameter aliases ErrorECSInvalidParameter: every ECR
 	// operation declares the AWS JSON 1.1 wire code "InvalidParameterException".
 	ErrorECRInvalidParameter = ErrorECSInvalidParameter

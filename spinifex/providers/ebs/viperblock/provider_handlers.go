@@ -1149,7 +1149,7 @@ func snapshotErrorCode(err error) ebsprovider.ErrorCode {
 		return ebsprovider.ErrorCodeNotFound
 	case errors.Is(err, errSnapshotExistsElsewhere):
 		return ebsprovider.ErrorCodeAlreadyExists
-	case errors.Is(err, errVolumeLeaseHeld), errors.Is(err, errNoVolumeLeaseStore):
+	case errors.Is(err, errVolumeLeaseHeld), errors.Is(err, errNoVolumeLeaseStore), errors.Is(err, errNoVolumeDirtyStore):
 		// Exclusive access could not be established. The holder gives the
 		// volume up on detach, so this is worth repeating rather than the
 		// permanent failure an internal error reads as.

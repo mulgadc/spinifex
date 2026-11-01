@@ -234,18 +234,20 @@ func TestVolumeDirty_OpenFailsWhenTheMarkerCannotBeWritten(t *testing.T) {
 		"the lease has to be released, or the volume is locked to a node that is not writing it")
 }
 
-// TestVolumeDirty_NoStoreDoesNotBlockMounts pins the degraded case. A daemon
-// with no marker store still has the lease for live exclusion, and refusing
-// every mount because the bucket is missing is a worse failure than the one
-// being described.
-func TestVolumeDirty_NoStoreDoesNotBlockMounts(t *testing.T) {
+// TestVolumeDirty_NoStoreRefusesTheOpen pins that an open this node cannot
+// record is refused: a later takeover could not warn about its writes, and a
+// crash would leave nothing to tell them from a clean seal.
+func TestVolumeDirty_NoStoreRefusesTheOpen(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 
 	cfg := &Config{leases: newTestLeases(t, natsURL, "node-b")}
 
 	lease, err := cfg.acquireVolumeLease(t.Context(), "vol-dirtynostore")
-	require.NoError(t, err)
-	require.NotNil(t, lease)
+	require.ErrorIs(t, err, errNoVolumeDirtyStore)
+	require.Nil(t, lease)
+
+	_, err = newTestLeases(t, natsURL, "node-c").acquire(t.Context(), "vol-dirtynostore")
+	require.NoError(t, err, "a refused open must not leave the volume leased")
 }
 
 // TestVolumeDirty_ListReportsTheHolder covers the operator surface behind

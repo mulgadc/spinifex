@@ -817,7 +817,9 @@ func (e *storeError) Unwrap() error { return e.cause }
 // depend on the record it is given.
 func (s *VPCServiceImpl) casENI(ctx context.Context, key, eniId string, mutate func(*ENIRecord) error) error {
 	var lastErr error
+	attempts := 0
 	for attempt := range eniCASAttempts {
+		attempts = attempt + 1
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -851,7 +853,7 @@ func (s *VPCServiceImpl) casENI(ctx context.Context, key, eniId string, mutate f
 			break
 		}
 	}
-	slog.ErrorContext(ctx, "ENI write failed", "eniId", eniId, "attempts", eniCASAttempts, "err", lastErr)
+	slog.ErrorContext(ctx, "ENI write failed", "eniId", eniId, "attempts", attempts, "err", lastErr)
 	return &storeError{lastErr}
 }
 
@@ -1134,6 +1136,9 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, gro
 			DeviceIndex:         aws.Int64(record.DeviceIndex),
 			Status:              aws.String("attached"),
 			DeleteOnTermination: aws.Bool(record.DeleteOnTermination == nil || *record.DeleteOnTermination),
+		}
+		if record.InstanceOwnerId != "" {
+			eni.Attachment.InstanceOwnerId = aws.String(record.InstanceOwnerId)
 		}
 	}
 

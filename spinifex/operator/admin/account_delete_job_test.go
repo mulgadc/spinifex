@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/s3"
+	admissionv1 "github.com/mulgadc/spinifex/contracts/admission/v1"
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -98,14 +99,39 @@ func newDeleteAccountGateway(t *testing.T) Deps {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = capSub.Unsubscribe() })
 	}
+
+	quotaSealSub, err := nc.Subscribe(admissionv1.SealAccountQuotaOverrideSubject, func(msg *nats.Msg) {
+		var req admissionv1.SealAccountQuotaOverrideRequest
+		if json.Unmarshal(msg.Data, &req) != nil {
+			return
+		}
+		data, _ := json.Marshal(admissionv1.SealAccountQuotaOverrideReply{
+			AccountID: req.AccountID, CorrelationRef: req.CorrelationRef,
+			Disposition: admissionv1.AccountQuotaOverrideDispositionSealed, Revision: 1,
+		})
+		_ = msg.Respond(data)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = quotaSealSub.Unsubscribe() })
+
+	quotaCapSub, err := nc.Subscribe(admissionv1.AccountQuotaOverrideSealCapabilitySubject("node-1"), func(msg *nats.Msg) {
+		data, _ := json.Marshal(admissionv1.AccountQuotaOverrideSealCapabilityReply{Node: "node-1", CapabilityVersion: admissionv1.AccountQuotaOverrideSealCapabilityVersion})
+		reply := nats.NewMsg(msg.Reply)
+		reply.Data = data
+		reply.Header.Set(natsmsg.NodeIDHeader, "node-1")
+		_ = msg.RespondMsg(reply)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = quotaCapSub.Unsubscribe() })
 	require.NoError(t, nc.Flush())
 
 	return Deps{
-		IAM:           svc,
-		NATS:          nc,
-		ExpectedNodes: 1,
-		NodeIDs:       []string{"node-1"},
-		BucketStore:   emptyBucketStore{},
+		IAM:            svc,
+		NATS:           nc,
+		ExpectedNodes:  1,
+		NodeIDs:        []string{"node-1"},
+		GatewayNodeIDs: []string{"node-1"},
+		BucketStore:    emptyBucketStore{},
 	}
 }
 

@@ -55,6 +55,10 @@ func TestRegistration_ParameterRefusalCodeIsDeclaredByOperation(t *testing.T) {
 		if IsInternalAction(route.Action) {
 			continue
 		}
+		// The handler takes no input and the model declares no client error.
+		if route.Action == "ListAccessPolicies" {
+			continue
+		}
 		t.Run(route.Action, func(t *testing.T) {
 			operation, ok := model.Operation(route.Action)
 			require.True(t, ok, "%s is not an operation in the EKS model", route.Action)
@@ -89,4 +93,6 @@ func TestRegistration_ParameterRefusalCodeIsDeclaredByOperation(t *testing.T) {
 func TestEKSInvalidRequestCodeIsRegistered(t *testing.T) {
 	assert.Equal(t, "InvalidRequestException", awserrors.ErrorEKSInvalidRequest)
 	assert.Equal(t, http.StatusBadRequest, awserrors.HTTPStatusForError(awserrors.Errorf(awserrors.ErrorEKSInvalidRequest, "x")))
+	assert.Equal(t, "BadRequestException", awserrors.ErrorEKSBadRequest)
+	assert.Equal(t, http.StatusBadRequest, awserrors.HTTPStatusForError(awserrors.Errorf(awserrors.ErrorEKSBadRequest, "x")))
 }

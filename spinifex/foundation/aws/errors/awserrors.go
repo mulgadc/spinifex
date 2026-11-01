@@ -396,6 +396,12 @@ var (
 	// ErrorEKSInvalidRequest is the code the EKS access-entry operations declare
 	// in place of a parameter code.
 	ErrorEKSInvalidRequest = "InvalidRequestException"
+	// ErrorEKSBadRequest is the code the EKS tagging operations declare for a
+	// malformed request.
+	ErrorEKSBadRequest = "BadRequestException"
+	// ErrorEKSClient aliases ErrorECSClientException: DescribeCluster and
+	// DeleteCluster declare the same wire code "ClientException".
+	ErrorEKSClient = ErrorECSClientException
 	// ErrorECRInvalidParameter aliases ErrorECSInvalidParameter: every ECR
 	// operation declares the AWS JSON 1.1 wire code "InvalidParameterException".
 	ErrorECRInvalidParameter = ErrorECSInvalidParameter
@@ -1270,6 +1276,8 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorResourceNotFound:                                      {HTTPCode: 404, Message: "The specified resource was not found."},
 	ErrorEKSResourceInUse:                                      {HTTPCode: 409, Message: "A cluster with this name already exists in this account and Region. Delete the existing cluster, or choose a different name."},
 	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified cluster could not be found. You can view your available clusters with ListClusters. Amazon EKS clusters are Region specific."},
+	ErrorEKSInvalidRequest:                                     {HTTPCode: 400, Message: "The request is invalid given the state of the cluster or access entry."},
+	ErrorEKSBadRequest:                                         {HTTPCode: 400, Message: "A parameter of the request is not valid."},
 	ErrorECSClientException:                                    {HTTPCode: 400, Message: "Unable to describe task definition."},
 	ErrorECSClusterNotFound:                                    {HTTPCode: 400, Message: "Cluster not found."},
 	ErrorECSInvalidParameter:                                   {HTTPCode: 400, Message: "The specified parameter is not valid. Review the available parameters for the API request."},

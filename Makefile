@@ -247,6 +247,12 @@ test-build-scripts:
 		echo "-- $$t"; \
 		sh "$$t" || exit 1; \
 	done
+	@echo -e "\n....Running .github/scripts/*_test.sh...."
+	@for t in $$(find .github/scripts -maxdepth 1 -name '*_test.sh' | sort); do \
+		echo "-- $$t"; \
+		sh "$$t" || exit 1; \
+	done
+	shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh .github/scripts/hypervisor-disk-preflight_test.sh
 	@echo -e "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
 	shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
 	shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)

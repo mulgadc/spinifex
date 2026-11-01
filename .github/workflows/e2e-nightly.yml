@@ -184,6 +184,14 @@ jobs:
             echo "running qemu: $(pgrep -c qemu-system-x86 || echo 0)"
           } >> "${ARTIFACT_DIR}/hypervisor-load.txt"
 
+      # A hypervisor out of disk fails the apply minutes in, as "Domain Creation
+      # Failed" from libvirt writing the domain XML. Say so before starting.
+      - name: Preflight hypervisor disk
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hypervisor-disk-preflight.sh" \
+            "envs/${SPINIFEX_CI_ENV}.tfvars"
+
       - name: Provision VMs
         working-directory: mulga/scripts/tofu-cluster
         env:

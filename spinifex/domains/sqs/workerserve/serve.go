@@ -123,7 +123,8 @@ func Run(ctx context.Context, gw Gateway, js jetstream.JetStream, receiptKey []b
 	if err != nil {
 		return err
 	}
-	return Serve(ctx, Config{Gateway: gw, Executor: owners, Log: logf})
+	nc := js.Conn()
+	return Serve(ctx, Config{Gateway: gw, Executor: owners, Log: logf, StoreReady: nc.IsConnected})
 }
 
 // Config sizes the serve loop.
@@ -136,7 +137,10 @@ type Config struct {
 	PostLimit time.Duration
 	// Backoff is the wait after a failed poll; zero is one second.
 	Backoff time.Duration
-	Log     func(string)
+	// StoreReady gates each poll, so a worker that lost its store stops taking
+	// work and drops out of the gateway's poller window. Nil polls always.
+	StoreReady func() bool
+	Log        func(string)
 }
 
 // Serve polls and runs owner calls until ctx ends.
@@ -161,6 +165,17 @@ func Serve(ctx context.Context, cfg Config) error {
 	defer wg.Wait()
 	last := ""
 	for ctx.Err() == nil {
+		if cfg.StoreReady != nil && !cfg.StoreReady() {
+			if state := "store connection down; not polling"; state != last {
+				logf(state)
+				last = state
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(backoff):
+			}
+			continue
+		}
 		works, err := cfg.Gateway.PollWork(ctx)
 		if err != nil {
 			if ctx.Err() != nil {

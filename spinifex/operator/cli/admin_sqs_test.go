@@ -163,7 +163,7 @@ func TestSQSEnsure_ValidatesInputsBeforeCallingTheGateway(t *testing.T) {
 func TestSQSEnable_SendsSignedActionAndSeparatesRequestedFromReady(t *testing.T) {
 	sqsCreds(t)
 	srv, calls, form, _ := sqsGateway(t, http.StatusOK,
-		`{"Region":"ap-southeast-2","Desired":"enabled","NodeId":"node1","Generation":1,"Store":"bound-awaiting-server-key","WorkerPolling":false,"Ready":false}`)
+		`{"Region":"ap-southeast-2","Desired":"enabled","NodeId":"node1","Generation":1,"Store":"bound-awaiting-server-key","WorkerPolling":false,"TenantAPI":"not-registered","Ready":false}`)
 	var buf bytes.Buffer
 	target := cli.AdminTarget(srv.URL, "ap-southeast-2", writeServerCA(t, srv))
 	require.NoError(t, cli.EnableSQSRemote(t.Context(), target, "node1", "t3.small", "t3.medium", 8, &buf))
@@ -173,6 +173,7 @@ func TestSQSEnable_SendsSignedActionAndSeparatesRequestedFromReady(t *testing.T)
 	assert.Equal(t, "t3.medium", form.Get("StoreInstanceType"))
 	assert.Equal(t, "8", form.Get("VolumeSizeGiB"))
 	assert.Contains(t, buf.String(), "Requested:      enabled")
+	assert.Contains(t, buf.String(), "Tenant API:     not-registered")
 	assert.Contains(t, buf.String(), "Ready:          false")
 
 	srv, _, _, _ = sqsGateway(t, http.StatusOK, `{"Region":"ap-southeast-2","Desired":"disabled","NodeId":"node1"}`)

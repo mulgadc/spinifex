@@ -64,6 +64,7 @@ type sqsStatusOutput struct {
 	Store           string `json:"Store"`
 	StoreInstanceID string `json:"StoreInstanceId"`
 	WorkerPolling   bool   `json:"WorkerPolling"`
+	TenantAPI       string `json:"TenantAPI"`
 	Ready           bool   `json:"Ready"`
 }
 
@@ -133,5 +134,5 @@ func renderSQSStatus(w io.Writer, out *sqsStatusOutput) {
 	if out.StoreInstanceID != "" {
 		fmt.Fprintf(w, " (%s)", out.StoreInstanceID)
 	}
-	fmt.Fprintf(w, "\nWorker polling: %t\nReady:          %t\n", out.WorkerPolling, out.Ready)
+	fmt.Fprintf(w, "\nWorker polling: %t\nTenant API:     %s\nReady:          %t\n", out.WorkerPolling, out.TenantAPI, out.Ready)
 }

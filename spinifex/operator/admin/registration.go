@@ -58,9 +58,10 @@ type Deps struct {
 	NodeIDs           []string
 	BucketStore       accountteardown.BucketStore
 	SignupMaxAccounts int
-	// Region and SQSWorkerPolling serve the SQS enable and status actions.
-	Region           string
-	SQSWorkerPolling func() bool
+	// Region and the SQS observations serve the SQS enable and status actions.
+	Region                 string
+	SQSWorkerPolling       func() bool
+	SQSTenantAPIRegistered bool
 }
 
 // adminActions are the actions only the super-admin account may call.
@@ -275,13 +276,14 @@ func (d Deps) run(ctx context.Context, action string, args map[string]string, ac
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
+		obs := SQSObservers{WorkerPolling: d.SQSWorkerPolling, TenantAPIRegistered: d.SQSTenantAPIRegistered}
 		if action == "DescribeSQS" {
-			return DescribeSQS(ctx, js, d.Region, d.SQSWorkerPolling)
+			return DescribeSQS(ctx, js, d.Region, obs)
 		}
 		return EnableSQS(ctx, d.NATS, js, d.NodeIDs, d.ExpectedNodes, SQSEnableInput{
 			Region: d.Region, NodeID: args["NodeId"], WorkerInstanceType: args["WorkerInstanceType"],
 			StoreInstanceType: args["StoreInstanceType"], VolumeSizeGiB: args["VolumeSizeGiB"], AccountID: accountID,
-		}, d.SQSWorkerPolling, sqsWorkerEnsureWait)
+		}, obs, sqsWorkerEnsureWait)
 	case "ListOchreCatalog":
 		entries, err := ochre.AdminCatalog(ctx, accountID, d.credentials(), d.access())
 		if err != nil {

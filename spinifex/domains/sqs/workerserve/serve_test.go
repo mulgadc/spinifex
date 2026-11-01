@@ -161,3 +161,54 @@ func TestServe_KeepsPollingThroughGatewayFailures(t *testing.T) {
 		t.Fatalf("logs = %q; want one failure line and one recovery line", logs)
 	}
 }
+
+// relayGateway hands a real relay's work to the serve loop in process.
+type relayGateway struct{ r *relay.Relay }
+
+func (g relayGateway) PollWork(ctx context.Context) ([]relay.Work, error) {
+	pollCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	return g.r.Take(pollCtx, relay.Taker{InstanceID: "i-00000000000000001", Generation: 1, ClaimID: "c"}, 1, 1<<20), nil
+}
+
+func (relayGateway) CompleteWork(context.Context, string, []byte) (string, error) {
+	return OutcomeDelivered, nil
+}
+
+// A worker that loses its store after polling stops polling, so the gateway
+// stops counting it present once the poller window passes.
+func TestRun_StopsPollingWhenTheStoreConnectionIsLost(t *testing.T) {
+	srv, _, js := testutil.StartTestJetStream(t)
+	r := &relay.Relay{PollerStale: 100 * time.Millisecond}
+	var mu sync.Mutex
+	var logs []string
+	logf := func(s string) { mu.Lock(); logs = append(logs, s); mu.Unlock() }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, relayGateway{r: r}, js, bytes.Repeat([]byte{7}, 32), logf) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	waitFor(t, r.WorkerPresent, "worker polling")
+	srv.Shutdown()
+	waitFor(t, func() bool { return !r.WorkerPresent() }, "worker out of the poller window")
+	time.Sleep(300 * time.Millisecond)
+	if r.WorkerPresent() {
+		t.Fatal("worker polled again with its store down")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(strings.Join(logs, "\n"), "store connection down") {
+		t.Fatalf("logs = %q; want the store outage reported", logs)
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("no %s within 5s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

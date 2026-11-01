@@ -12,8 +12,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// SQSStatus separates what the operator asked for from what is running.
-// Ready needs a bound store with a recorded server key and a polling worker.
+// SQSStatus separates what the operator asked for from what each component
+// was last observed doing. Ready also needs the tenant API registered here.
 type SQSStatus struct {
 	Region          string `json:"Region"`
 	Desired         string `json:"Desired"`
@@ -22,7 +22,15 @@ type SQSStatus struct {
 	Store           string `json:"Store"`
 	StoreInstanceID string `json:"StoreInstanceId,omitempty"`
 	WorkerPolling   bool   `json:"WorkerPolling"`
+	TenantAPI       string `json:"TenantAPI"`
 	Ready           bool   `json:"Ready"`
+}
+
+// SQSObservers are this gateway's own observations. WorkerPolling is true
+// only while a worker with a connected store has polled recently.
+type SQSObservers struct {
+	WorkerPolling       func() bool
+	TenantAPIRegistered bool
 }
 
 // Store progress names in SQSStatus.
@@ -32,11 +40,14 @@ const (
 	sqsStoreUnpinned  = "bound-awaiting-server-key"
 	sqsStoreReady     = "bound"
 	sqsStoreUnknown   = "unknown"
+
+	sqsTenantAPIRegistered    = "registered"
+	sqsTenantAPINotRegistered = "not-registered"
 )
 
 // DescribeSQS reads the desired state and the store and worker evidence.
 // A store record that cannot be read is reported unknown, never absent.
-func DescribeSQS(ctx context.Context, js jetstream.JetStream, region string, polling func() bool) (*SQSStatus, error) {
+func DescribeSQS(ctx context.Context, js jetstream.JetStream, region string, obs SQSObservers) (*SQSStatus, error) {
 	st, err := servicestate.Bind(ctx, js)
 	var rec servicestate.Record
 	switch {
@@ -50,8 +61,12 @@ func DescribeSQS(ctx context.Context, js jetstream.JetStream, region string, pol
 		}
 	}
 	out := &SQSStatus{Region: region, Desired: string(rec.Desired), NodeID: rec.Node, Generation: rec.Generation, Store: sqsStoreUnknown}
-	if polling != nil {
-		out.WorkerPolling = polling()
+	if obs.WorkerPolling != nil {
+		out.WorkerPolling = obs.WorkerPolling()
+	}
+	out.TenantAPI = sqsTenantAPINotRegistered
+	if obs.TenantAPIRegistered {
+		out.TenantAPI = sqsTenantAPIRegistered
 	}
 	records, err := storelaunch.Bind(ctx, js)
 	if errors.Is(err, jetstream.ErrBucketNotFound) {
@@ -70,7 +85,7 @@ func DescribeSQS(ctx context.Context, js jetstream.JetStream, region string, pol
 			out.Store, out.StoreInstanceID = sqsStoreReady, cur.InstanceID
 		}
 	}
-	out.Ready = rec.Desired == servicestate.Enabled && out.Store == sqsStoreReady && out.WorkerPolling
+	out.Ready = obs.TenantAPIRegistered && rec.Desired == servicestate.Enabled && out.Store == sqsStoreReady && out.WorkerPolling
 	return out, nil
 }
 
@@ -86,7 +101,7 @@ type SQSEnableInput struct {
 // interrupted enable, then ensures the worker and the store on the one node.
 // It refuses any cluster that is not exactly one node.
 func EnableSQS(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, nodeIDs []string, expectedNodes int,
-	in SQSEnableInput, polling func() bool, wait time.Duration,
+	in SQSEnableInput, obs SQSObservers, wait time.Duration,
 ) (*SQSStatus, error) {
 	if expectedNodes != 1 || len(nodeIDs) != 1 {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "SQS can be enabled only on a single-node cluster")
@@ -113,5 +128,5 @@ func EnableSQS(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, nodeI
 	if _, err := EnsureSQSStore(ctx, nc, nodeIDs, in.NodeID, in.StoreInstanceType, in.VolumeSizeGiB, in.AccountID, wait); err != nil {
 		return nil, err
 	}
-	return DescribeSQS(ctx, js, in.Region, polling)
+	return DescribeSQS(ctx, js, in.Region, obs)
 }

@@ -100,3 +100,78 @@ func TestValidateCatalog_ChecksTheBundledCatalog(t *testing.T) {
 	t.Cleanup(func() { catalog = previous })
 	require.EqualError(t, ValidateCatalog(), `add-on "broken" has no versions`)
 }
+
+// buildSpec is a two-version spec whose newest version is on EKS build 2, so
+// a test cannot pass by hardcoding build 1.
+func buildSpec() Spec {
+	return Spec{
+		Name:     "fixture",
+		Versions: []string{"2.0.0", "1.0.0"},
+		Builds:   map[string]int{"2.0.0": 2, "1.0.0": 1},
+	}
+}
+
+func TestSpec_AWSVersionUsesTheCatalogBuildNumber(t *testing.T) {
+	t.Parallel()
+	spec := buildSpec()
+	assert.Equal(t, "v2.0.0-eksbuild.2", spec.AWSVersion("2.0.0"))
+	assert.Equal(t, "v1.0.0-eksbuild.1", spec.AWSVersion("1.0.0"))
+}
+
+func TestSpec_AWSVersionIsIdempotent(t *testing.T) {
+	t.Parallel()
+	spec := buildSpec()
+	assert.Equal(t, "v2.0.0-eksbuild.2", spec.AWSVersion("v2.0.0-eksbuild.2"),
+		"a record already holding the AWS form must not be wrapped twice")
+}
+
+func TestSpec_AWSVersionsAreNewestFirst(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, []string{"v2.0.0-eksbuild.2", "v1.0.0-eksbuild.1"}, buildSpec().AWSVersions())
+}
+
+func TestSpec_ParseVersionAcceptsOnlyTheExactForms(t *testing.T) {
+	t.Parallel()
+	spec := buildSpec()
+	for input, want := range map[string]string{
+		"v2.0.0-eksbuild.2": "2.0.0",
+		"2.0.0":             "2.0.0",
+		"v1.0.0-eksbuild.1": "1.0.0",
+		"1.0.0":             "1.0.0",
+	} {
+		got, ok := spec.ParseVersion(input)
+		assert.True(t, ok, "%q must be accepted", input)
+		assert.Equal(t, want, got, "%q", input)
+	}
+}
+
+func TestSpec_ParseVersionRefusesEverythingElse(t *testing.T) {
+	t.Parallel()
+	spec := buildSpec()
+	for _, input := range []string{
+		"v2.0.0-eksbuild.1", // wrong build for 2.0.0
+		"v2.0.0-eksbuild.3",
+		"v1.0.0-eksbuild.2", // wrong build for 1.0.0
+		"v2.0.0",            // missing build
+		"2.0",               // partial
+		"v2.0.0-eksbuild.",
+		"2.0.0-eksbuild.2", // missing v
+		"V2.0.0-eksbuild.2",
+		" 2.0.0",
+		"9.9.9",
+		"",
+	} {
+		_, ok := spec.ParseVersion(input)
+		assert.False(t, ok, "%q must be refused", input)
+	}
+}
+
+func TestCatalog_EveryVersionHasAnExplicitBuild(t *testing.T) {
+	t.Parallel()
+	for _, spec := range Specs() {
+		for _, v := range spec.Versions {
+			assert.Equal(t, 1, spec.Builds[v], "%s %s needs an explicit build number", spec.Name, v)
+			assert.Equal(t, "v"+v+"-eksbuild.1", spec.AWSVersion(v), "%s %s", spec.Name, v)
+		}
+	}
+}

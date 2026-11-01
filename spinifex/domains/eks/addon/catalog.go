@@ -18,6 +18,9 @@ type Spec struct {
 	// Versions lists supported versions newest-first; [0] is the default.
 	Versions       []string
 	DefaultVersion string
+	// Builds maps each upstream version to its EKS build number, the n in
+	// v<upstream>-eksbuild.<n>.
+	Builds map[string]int
 	// RequiresIRSA indicates the add-on needs an IAM role for service-account binding.
 	RequiresIRSA bool
 	Description  string
@@ -110,6 +113,16 @@ func Lookup(name string) (Spec, bool) {
 func (s Spec) SupportsVersion(version string) bool {
 	return slices.Contains(s.Versions, version)
 }
+
+// AWSVersion returns the AWS form of a stored version.
+func (s Spec) AWSVersion(_ string) string { return "" }
+
+// AWSVersions returns every supported version in AWS form, newest first.
+func (s Spec) AWSVersions() []string { return nil }
+
+// ParseVersion maps a client-supplied version, in AWS form or bare upstream
+// form, to the upstream version stored on the record.
+func (s Spec) ParseVersion(_ string) (string, bool) { return "", false }
 
 // Specs returns every catalogue entry, hidden ones included, sorted by name.
 func Specs() []Spec {

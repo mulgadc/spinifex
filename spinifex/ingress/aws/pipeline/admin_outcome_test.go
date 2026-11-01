@@ -49,13 +49,13 @@ func TestAdminOutcome_LogFollowsTheRealResult(t *testing.T) {
 	cases := []struct {
 		name       string
 		accountID  string
-		mutate     func(*GatewayConfig)
+		mutate     func(*Config)
 		wantStatus int
 		wantLevel  string
 	}{
 		{"success", awsidentifiers.DefaultAccountID(), nil, http.StatusOK, ""},
 		{"denied caller", authzAccountID, nil, http.StatusForbidden, "INFO"},
-		{"cluster fault", awsidentifiers.DefaultAccountID(), func(gw *GatewayConfig) { gwfix.DepsOf(gw).NATS = nil }, http.StatusServiceUnavailable, "ERROR"},
+		{"cluster fault", awsidentifiers.DefaultAccountID(), func(gw *Config) { gwfix.DepsOf(gw).NATS = nil }, http.StatusServiceUnavailable, "ERROR"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

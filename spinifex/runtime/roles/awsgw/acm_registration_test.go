@@ -9,7 +9,7 @@ import (
 
 // withACM registers the ACM control plane on gw backed by deps, as the awsgw
 // role composes it. An unset deps.NATS takes gw.NATSConn.
-func withACM(gw *pipeline.GatewayConfig, deps acmawsapi.Deps) *pipeline.GatewayConfig {
+func withACM(gw *pipeline.Config, deps acmawsapi.Deps) *pipeline.Config {
 	if deps.NATS == nil {
 		deps.NATS = gwfix.DepsOf(gw).NATS
 	}
@@ -24,5 +24,5 @@ func withACM(gw *pipeline.GatewayConfig, deps acmawsapi.Deps) *pipeline.GatewayC
 // acmRegistrationInventory is the inventory the ACM registration declares to
 // a registry, keyed as AWSOperationInventory expects.
 func acmRegistrationInventory() map[string]dispatch.Inventory {
-	return withACM(&pipeline.GatewayConfig{}, acmawsapi.Deps{}).Services.Inventory()
+	return withACM(&pipeline.Config{}, acmawsapi.Deps{}).Services.Inventory()
 }

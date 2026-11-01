@@ -9,7 +9,7 @@ import (
 
 // withTagging registers the Resource Groups Tagging API on gw backed by agg, as
 // the awsgw role composes it.
-func withTagging(gw *pipeline.GatewayConfig, agg *tagging.Aggregator) *pipeline.GatewayConfig {
+func withTagging(gw *pipeline.Config, agg *tagging.Aggregator) *pipeline.Config {
 	return withServices(gw, taggingRegistration(agg))
 }
 

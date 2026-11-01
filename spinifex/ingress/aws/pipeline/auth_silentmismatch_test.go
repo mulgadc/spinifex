@@ -99,7 +99,7 @@ func TestSigV4Auth_FailureLogsLoopbackGatedClientIP(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rl := authlimit.NewAuthRateLimiter()
 			defer rl.Stop()
-			gw := gwfix.WithDeps(&GatewayConfig{
+			gw := gwfix.WithDeps(&Config{
 				DisableLogging: true,
 				Region:         gwfix.Region,
 				Credentials:    credverify.New(&gwfix.IAM{MasterKey: gwfix.MasterKey}, &gwfix.STS{}),

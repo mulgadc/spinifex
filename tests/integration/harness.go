@@ -125,16 +125,16 @@ type Gateway struct {
 	// AccountID is the account the seeded root credentials belong to
 	// (awsidentifiers.GlobalAccountID).
 	AccountID string
-	// Config is the GatewayConfig SetupRoutes was built from, exposed so
+	// Config is the pipeline.Config SetupRoutes was built from, exposed so
 	// tests can inspect or further wire fields StartGateway did not set.
-	Config *pipeline.GatewayConfig
+	Config *pipeline.Config
 }
 
-// Option customises a Gateway's GatewayConfig before SetupRoutes builds the
+// Option customises a Gateway's pipeline.Config before SetupRoutes builds the
 // router. Applied after StartGateway's own defaults, so an Option can
 // override any of them (e.g. a different Region/AZ, or a nil IAMService to
 // exercise the pre-IAM-compatibility bypass paths).
-type Option func(*pipeline.GatewayConfig)
+type Option func(*pipeline.Config)
 
 // StartGateway boots the real gateway router over the package's shared,
 // embedded NATS JetStream server — connected via a fresh, isolated NATS
@@ -232,7 +232,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	require.NoError(t, services.Register(stsawsapi.NewRegistration(stsDeps)))
 	require.NoError(t, services.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: tagging.NewAggregator()})))
 
-	cfg := gwfix.WithDeps(&pipeline.GatewayConfig{
+	cfg := gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Admin:          pipeline.AdminSurface{Service: operatoradmin.ServiceName, WithRequestID: operatoradmin.WithRequestID},
 		Region:         testRegion,

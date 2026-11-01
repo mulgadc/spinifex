@@ -95,7 +95,7 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 			return nil
 		},
 	}))
-	gw := gwfix.WithDeps(&GatewayConfig{
+	gw := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: e.nc, Nodes: 1, IAM: e.counter, STS: e.sts})

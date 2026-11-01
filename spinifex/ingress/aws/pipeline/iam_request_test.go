@@ -164,7 +164,7 @@ func TestIAMRequest_ListUsers_Success(t *testing.T) {
 }
 
 func TestIAMRequest_MissingAccountID(t *testing.T) {
-	gw := gwfix.WithDeps(&GatewayConfig{
+	gw := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Credentials:    credverify.New(&flexMockIAMService{}, nil),
 	}, gwfix.Deps{IAM: &flexMockIAMService{}})
@@ -187,7 +187,7 @@ func TestIAMRequest_MissingAccountID(t *testing.T) {
 }
 
 func TestIAMRequest_NilService(t *testing.T) {
-	gw := gwfix.WithDeps(&GatewayConfig{
+	gw := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Credentials:    credverify.New(nil, nil),
 	}, gwfix.Deps{IAM: nil})

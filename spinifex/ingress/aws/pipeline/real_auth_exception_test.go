@@ -12,7 +12,7 @@ import (
 // admission. Only tests that assert a verdict which depends on gateway
 // internals (the middleware stash, the admin method gate, the account gate)
 // use it; every other gateway test runs on the fake verifier.
-func withRealAuth(gw *GatewayConfig) *GatewayConfig {
+func withRealAuth(gw *Config) *Config {
 	withTestAdmin(gw)
 	gw.Credentials = credverify.New(gwfix.DepsOf(gw).IAM, gwfix.DepsOf(gw).STS)
 	gw.Policy = policyauth.New(gwfix.DepsOf(gw).IAM, policyauth.WithRetryBase(policyRetryBase))
@@ -24,13 +24,13 @@ func withRealAuth(gw *GatewayConfig) *GatewayConfig {
 }
 
 // withEC2RealAuth is withEC2Verifier on the production capabilities.
-func withEC2RealAuth(gw *GatewayConfig) *GatewayConfig {
+func withEC2RealAuth(gw *Config) *Config {
 	return withEC2(withRealAuth(gw))
 }
 
 // realReadiness reads the bus connection when asked, so a test that drops it
 // after wiring sees the cluster as unavailable.
-type realReadiness struct{ gw *GatewayConfig }
+type realReadiness struct{ gw *Config }
 
 func (r realReadiness) Available() bool {
 	return gwfix.DepsOf(r.gw).NATS != nil && clusterready.New(gwfix.DepsOf(r.gw).NATS).Available()

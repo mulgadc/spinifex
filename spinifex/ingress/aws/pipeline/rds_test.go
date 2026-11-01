@@ -31,7 +31,7 @@ func TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400(t *testin
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
+	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 	req := setupRDSRequest("Action=CreateDBInstance&DBInstanceIdentifier=orders-db&Engine=postgres&" +
 		"DBInstanceClass=db.t3.medium&AllocatedStorage=20&MasterUsername=appuser&DBName=orders")
 
@@ -46,7 +46,7 @@ func TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400(t *testin
 
 func TestRDSRequest_MalformedScalarReturnsHTTP400(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
+	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 	for _, body := range []string{
 		"Action=CreateDBInstance&AllocatedStorage=abc",
 		"Action=CreateDBInstance&MultiAZ=yes",

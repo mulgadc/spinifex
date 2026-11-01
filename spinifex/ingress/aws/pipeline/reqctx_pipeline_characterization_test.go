@@ -65,7 +65,7 @@ type reqctxGatewayEnv struct {
 
 // reqctxGateway builds a gateway with ECS, IAM, the operator surface and an
 // optional route53 probe over a caller who holds only the given statements.
-func reqctxGateway(t *testing.T, env reqctxGatewayEnv, statements ...iamdomain.Statement) *GatewayConfig {
+func reqctxGateway(t *testing.T, env reqctxGatewayEnv, statements ...iamdomain.Statement) *Config {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
@@ -97,7 +97,7 @@ func reqctxGateway(t *testing.T, env reqctxGatewayEnv, statements ...iamdomain.S
 			nc.Close()
 		}
 	}
-	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{
+	gw := withRealAuth(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         reqctxRegion,
 		Throttler:      env.Throttler,
@@ -311,7 +311,7 @@ const edgeRequestID = "4f1c2b7e9a0d4e6f8b3c5a7d9e1f2a3b"
 // audit record the gateway wrote for the request. SetupRoutes installs its own
 // audit.Middleware, so the probe reads the record from the dispatch path's
 // context through a tap installed on the same chain.
-func auditedPipeline(t *testing.T, gw *GatewayConfig) (http.Handler, func() *audit.Record) {
+func auditedPipeline(t *testing.T, gw *Config) (http.Handler, func() *audit.Record) {
 	t.Helper()
 	var got *audit.Record
 	r := chi.NewRouter()

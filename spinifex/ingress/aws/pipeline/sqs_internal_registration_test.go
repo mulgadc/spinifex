@@ -49,7 +49,7 @@ func (sqsWorkerStores) Current(context.Context, string) (storelaunch.Record, err
 
 // withSQSInternal registers the internal SQS surface beside RDS, as awsgw
 // composes them, so routing is selected by signing service.
-func withSQSInternal(gw *GatewayConfig, deps sqsworkerapi.Deps) *GatewayConfig {
+func withSQSInternal(gw *Config, deps sqsworkerapi.Deps) *Config {
 	b := dispatch.NewBuilder()
 	for _, reg := range []dispatch.Registration{rdsawsapi.NewRegistration(rdsawsapi.Deps{}), sqsworkerapi.NewRegistration(deps)} {
 		if err := b.Register(reg); err != nil {
@@ -76,7 +76,7 @@ func sqsWorkerRequest(service, body, session string) *http.Request {
 	return req.WithContext(ctx)
 }
 
-func serveSigned(gw *GatewayConfig, w http.ResponseWriter, r *http.Request) error {
+func serveSigned(gw *Config, w http.ResponseWriter, r *http.Request) error {
 	entry, ok := gw.registered(requestService(r))
 	if !ok {
 		panic("no registration serves " + requestService(r))
@@ -84,7 +84,7 @@ func serveSigned(gw *GatewayConfig, w http.ResponseWriter, r *http.Request) erro
 	return gw.dispatchRegistered(entry, w, r)
 }
 
-func newSQSInternalGateway(policies []iamdomain.PolicyDocument) (*GatewayConfig, *rdsPolicyProbe, *sqsWorkerIdentities) {
+func newSQSInternalGateway(policies []iamdomain.PolicyDocument) (*Config, *rdsPolicyProbe, *sqsWorkerIdentities) {
 	gw, probe := newRDSPolicyGateway(policies)
 	ids := &sqsWorkerIdentities{}
 	return withSQSInternal(gw, sqsworkerapi.Deps{Identities: ids, FirstStore: sqsWorkerFirstStore{}, Stores: sqsWorkerStores{}}), probe, ids

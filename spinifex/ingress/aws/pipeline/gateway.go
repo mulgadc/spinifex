@@ -27,10 +27,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// GatewayConfig is the AWS API gateway's shared state: its NATS connection, region and cluster
+// Config is the AWS API gateway's shared state: its NATS connection, region and cluster
 // facts, auth and throttling collaborators, and lazily built caches. Its methods are the
 // per-service request handlers.
-type GatewayConfig struct {
+type Config struct {
 	Debug          bool   `json:"debug"`
 	DisableLogging bool   `json:"disable_logging"`
 	Region         string // Region this gateway is running in
@@ -68,25 +68,25 @@ type GatewayConfig struct {
 
 // selector answers service selection over Services. It holds only the one
 // pointer, so it is built per call and needs no cache.
-func (gw *GatewayConfig) selector() *dispatch.Selector {
+func (gw *Config) selector() *dispatch.Selector {
 	return dispatch.NewSelector(gw.Services, nil)
 }
 
 // registered reports whether svc is served through the registration seam. A
 // nil registry (no registrations) always reports false.
-func (gw *GatewayConfig) registered(svc string) (*dispatch.Entry, bool) {
+func (gw *Config) registered(svc string) (*dispatch.Entry, bool) {
 	return gw.selector().Lookup(svc)
 }
 
 // ValidateServices fails if the registry's service names are inconsistent.
-func (gw *GatewayConfig) ValidateServices() error {
+func (gw *Config) ValidateServices() error {
 	return gw.selector().Validate()
 }
 
 // registeredActorFunc returns the lazy Actor resolver a registered
 // dispatcher's Invocation carries. It reads the SigV4 identity context through
 // the caller ARN the verifier built, so nothing is computed until called.
-func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
+func (gw *Config) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
 	return func() (dispatch.Actor, error) {
 		return callerActor(r.Context())
 	}
@@ -100,7 +100,7 @@ func callerActor(ctx context.Context) (dispatch.Actor, error) {
 	return ActorFor(p, reqctx.AccessKeyID(ctx))
 }
 
-func (gw *GatewayConfig) SetupRoutes() http.Handler {
+func (gw *Config) SetupRoutes() http.Handler {
 	var logLevel slog.Level
 
 	if gw.Debug {
@@ -170,7 +170,7 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 // preAuthInterceptor offers each request to the pre-authentication handlers in
 // order; one that takes it ends the chain, and its errors render under the
 // service it declares.
-func (gw *GatewayConfig) preAuthInterceptor(next http.Handler) http.Handler {
+func (gw *Config) preAuthInterceptor(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for _, pre := range gw.PreAuth {
 			handled, err := pre.Serve(w, r)
@@ -188,7 +188,7 @@ func (gw *GatewayConfig) preAuthInterceptor(next http.Handler) http.Handler {
 
 // throttleKeyFuncs returns the KeyFunc slice for the API throttle middleware,
 // keyed by account-id and action from the SigV4 auth context.
-func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
+func (gw *Config) throttleKeyFuncs() []ratelimit.KeyFunc {
 	return []ratelimit.KeyFunc{
 		func(r *http.Request) (string, error) {
 			acct := callerOf(r).AccountID
@@ -209,13 +209,13 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 
 // errorProtocol reports the JSON wire format svc's errors use; ok is false when
 // they render as XML. A registered service's declared envelope wins.
-func (gw *GatewayConfig) errorProtocol(svc string) (p envelope.Protocol, ok bool) {
+func (gw *Config) errorProtocol(svc string) (p envelope.Protocol, ok bool) {
 	return gw.selector().ErrorProtocol(svc)
 }
 
 // writeJSONError renders a gateway-raised error in svc's JSON protocol. The
 // code gets the common-error "Exception" suffix unless verbatim.
-func (gw *GatewayConfig) writeJSONError(w http.ResponseWriter, p envelope.Protocol, svc string, e envelope.JSONError) {
+func (gw *Config) writeJSONError(w http.ResponseWriter, p envelope.Protocol, svc string, e envelope.JSONError) {
 	if entry, ok := gw.registered(svc); ok {
 		if internal, own := entry.InternalErrorCode(); own && e.Code == awserrors.ErrorInternalError {
 			e.Code, e.Verbatim = internal, true
@@ -232,7 +232,7 @@ const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check 
 
 // writeClusterUnavailable writes a 503 ServiceUnavailable in the service-appropriate
 // format, carrying the /local/status hint in <Message>.
-func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.Request, svc string) {
+func (gw *Config) writeClusterUnavailable(w http.ResponseWriter, r *http.Request, svc string) {
 	requestID := uuid.NewV4().String()
 
 	// JSON services get a body in their own protocol.
@@ -255,7 +255,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 }
 
 // writeThrottleError writes the service-appropriate throttle rejection response.
-func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Request) {
+func (gw *Config) writeThrottleError(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.NewV4().String()
 	svc := reqctx.Service(r.Context())
 
@@ -289,7 +289,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
+func (gw *Config) Request(w http.ResponseWriter, r *http.Request) {
 	svc, err := gw.GetService(r)
 	action := reqctx.Action(r.Context())
 	slog.Info("Request", "service", svc, "action", action, "method", r.Method, "path", r.URL.Path)
@@ -338,7 +338,7 @@ func serviceErrorLevel(svc string, err error) slog.Level {
 // dispatchRegistered hands the authenticated request to a registered service
 // with the caller's account, the gateway Region and ingress-owned
 // authorization and actor capabilities.
-func (gw *GatewayConfig) dispatchRegistered(entry *dispatch.Entry, w http.ResponseWriter, r *http.Request) error {
+func (gw *Config) dispatchRegistered(entry *dispatch.Entry, w http.ResponseWriter, r *http.Request) error {
 	return entry.Dispatch(w, dispatch.Invocation{
 		Request:   r,
 		AccountID: callerOf(r).AccountID,
@@ -356,7 +356,7 @@ func requestService(r *http.Request) string {
 	return reqctx.Service(r.Context())
 }
 
-func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
+func (gw *Config) GetService(r *http.Request) (string, error) {
 	svc := reqctx.Service(r.Context())
 	if svc == "" {
 		return "", errors.New(awserrors.ErrorAuthFailure)
@@ -374,19 +374,19 @@ func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
 // Prefer checkPolicyResources with the request's real ARNs: where the
 // identifier arrives in a JSON body, read the body ahead of the gate and
 // resolve it there rather than settling for "*".
-func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) error {
+func (gw *Config) checkPolicy(r *http.Request, service, action string) error {
 	return gw.checkPolicyResources(r, service, action, []string{"*"})
 }
 
 // checkPolicyResources evaluates every resource against one resolved policy
 // snapshot. Used when one API request authorizes multiple resource ARNs.
-func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action string, resources []string) error {
+func (gw *Config) checkPolicyResources(r *http.Request, service, action string, resources []string) error {
 	return gw.checkPolicyResourcesWithKeys(r, service, action, resources, nil)
 }
 
 // checkPolicyResourcesWithKeys is checkPolicyResources with action-scoped
 // condition keys layered over the request's own.
-func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, action string, resources []string, actionKeys iampolicy.ConditionKeys) error {
+func (gw *Config) checkPolicyResourcesWithKeys(r *http.Request, service, action string, resources []string, actionKeys iampolicy.ConditionKeys) error {
 	// Every dispatcher — query-protocol and REST-JSON alike — reaches this
 	// point with its resolved action, so telemetry enrichment lives here.
 	recordResolvedAction(r.Context(), service, action)
@@ -395,7 +395,7 @@ func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, 
 	return Authorize(gw.Policy, r, caller, authenticated, service, action, resources, actionKeys)
 }
 
-func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
+func (gw *Config) ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	svc, _ := gw.GetService(r)
 	slog.Debug("ErrorHandler", "service", svc, "error", err.Error())
 
@@ -460,7 +460,7 @@ func ParseAWSQueryArgs(body string) (map[string]string, error) {
 // serve) declares. JSON services never reach here — every caller checks
 // errorProtocol first. No scope yet means the signature never parsed; that
 // keeps EC2's shape rather than changing a path this is not about.
-func (gw *GatewayConfig) xmlErrorBody(svc, code, message, requestID, resource string) []byte {
+func (gw *Config) xmlErrorBody(svc, code, message, requestID, resource string) []byte {
 	if svc == "" {
 		return envelope.EC2Body(code, message, requestID)
 	}

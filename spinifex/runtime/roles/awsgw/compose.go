@@ -27,8 +27,8 @@ type gatewayInputs struct {
 
 // composeGateway is the single place the gateway's hooks are set for
 // production; a hook left unset fails requests closed or drops a route.
-func composeGateway(in gatewayInputs, regs ...dispatch.Registration) (pipeline.GatewayConfig, error) {
-	gw := pipeline.GatewayConfig{
+func composeGateway(in gatewayInputs, regs ...dispatch.Registration) (pipeline.Config, error) {
+	gw := pipeline.Config{
 		Debug:          in.Debug,
 		DisableLogging: false,
 		Region:         in.Region,
@@ -41,7 +41,7 @@ func composeGateway(in gatewayInputs, regs ...dispatch.Registration) (pipeline.G
 		PreAuth:        in.PreAuth,
 	}
 	if err := wireServiceRegistry(&gw, regs...); err != nil {
-		return pipeline.GatewayConfig{}, err
+		return pipeline.Config{}, err
 	}
 	return gw, nil
 }

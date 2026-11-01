@@ -23,7 +23,7 @@ type AdminSurface struct {
 // here so it keeps its place ahead of the service selector; the work is the
 // spinifex registration's, dispatched exactly as a Query request is. Only the
 // error rendering differs: this surface answers in JSON with a request ID.
-func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
+func (gw *Config) Admin_Request(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.NewV4().String()
 	w.Header().Set("X-Amzn-Requestid", requestID)
 	if gw.Admin.WithRequestID != nil {
@@ -62,7 +62,7 @@ type adminErrorDetail struct {
 // writeAdminErrorFor resolves an error to its code and any message its call
 // site attached, so a wrapped error renders as its own code instead of falling
 // through to InternalError.
-func (gw *GatewayConfig) writeAdminErrorFor(w http.ResponseWriter, requestID string, err error) {
+func (gw *Config) writeAdminErrorFor(w http.ResponseWriter, requestID string, err error) {
 	code, message, ok := awserrors.ResolveErrorDetail(err)
 	if !ok {
 		// The cause reaches neither the wire nor the envelope's own unmapped-code
@@ -76,7 +76,7 @@ func (gw *GatewayConfig) writeAdminErrorFor(w http.ResponseWriter, requestID str
 // writeAdminError writes the JSON error envelope. message overrides the
 // registry text when a specific cause is safe to disclose; a policy denial
 // names principal, action and resource, all of them caller-derivable.
-func (gw *GatewayConfig) writeAdminError(w http.ResponseWriter, requestID, code, message string) {
+func (gw *Config) writeAdminError(w http.ResponseWriter, requestID, code, message string) {
 	detail, ok := awserrors.ErrorLookup[code]
 	if !ok {
 		slog.Error("Admin: unmapped error code", "code", code)

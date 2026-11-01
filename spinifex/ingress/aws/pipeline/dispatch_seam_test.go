@@ -137,7 +137,7 @@ func fakeNoResolverRegistration(c *dispatchCapture) dispatch.Registration {
 // dispatchSeamApp wires SigV4AuthMiddleware -> traceActionEnricher -> Request
 // on live test NATS, with regs registered through dispatch.NewBuilder, so a
 // fake service's full pipeline mirrors ecrPipelineApp for a real one.
-func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...dispatch.Registration) (*GatewayConfig, http.Handler) {
+func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...dispatch.Registration) (*Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...disp
 		require.NoError(t, b.Register(reg))
 	}
 
-	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{
+	gw := withRealAuth(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		Services:       b.Build(),
@@ -340,7 +340,7 @@ func TestDispatchSeam_NATSDownGetsSame503AsLegacy(t *testing.T) {
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(fakeJSONRegistration(&dispatchCapture{})))
 
-	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{DisableLogging: true, Services: b.Build()}, gwfix.Deps{IAM: allowAllIAMService()}))
+	gw := withRealAuth(gwfix.WithDeps(&Config{DisableLogging: true, Services: b.Build()}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := reqctx.WithService(req.Context(), fakeJSONService)
@@ -367,7 +367,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
-	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{
+	gw := withRealAuth(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		Services:       b.Build(),
@@ -406,12 +406,12 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 
 func TestValidateServices(t *testing.T) {
 	t.Run("nil registry passes", func(t *testing.T) {
-		gw := &GatewayConfig{}
+		gw := &Config{}
 		assert.NoError(t, gw.ValidateServices())
 	})
 
 	t.Run("empty registry passes", func(t *testing.T) {
-		gw := &GatewayConfig{Services: dispatch.NewBuilder().Build()}
+		gw := &Config{Services: dispatch.NewBuilder().Build()}
 		assert.NoError(t, gw.ValidateServices())
 	})
 }

@@ -10,7 +10,7 @@ import (
 
 // withRDS registers RDS on gw with the NATS connection and node count it holds,
 // as the awsgw role composes it. Set both on gw before calling.
-func withRDS(gw *pipeline.GatewayConfig) *pipeline.GatewayConfig {
+func withRDS(gw *pipeline.Config) *pipeline.Config {
 	deps := rdsawsapi.Deps{NATS: gwfix.DepsOf(gw).NATS, ExpectedNodes: gwfix.DepsOf(gw).Nodes}
 	if quotaFor(gw) != nil {
 		deps.Quota = quotaFor(gw)

@@ -31,7 +31,7 @@ type authSource struct {
 }
 
 // SigV4AuthMiddleware returns stdlib middleware that validates AWS Signature V4 authentication.
-func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
+func (gw *Config) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = authlimit.NewAuthRateLimiter()
 	}
@@ -249,7 +249,7 @@ func signingTime(r *http.Request) string {
 // mismatchAction recovers the Action for a rejected query-protocol request so the log names
 // the operation. Auth fails before the dispatcher parses it, which otherwise leaves the
 // trace as a bare "POST /". A scope whose body is object data is skipped.
-func (gw *GatewayConfig) mismatchAction(r *http.Request, service string) string {
+func (gw *Config) mismatchAction(r *http.Request, service string) string {
 	if traits, ok := gw.selector().Traits(service); ok && traits.PayloadBody {
 		return ""
 	}
@@ -274,7 +274,7 @@ func (gw *GatewayConfig) mismatchAction(r *http.Request, service string) string 
 }
 
 // recordCredentialFailure counts a verifier rejection toward the source's lockout.
-func (gw *GatewayConfig) recordCredentialFailure(src authSource, f *credential.Failure) {
+func (gw *Config) recordCredentialFailure(src authSource, f *credential.Failure) {
 	if f.FingerprintKind == "" {
 		return
 	}
@@ -287,7 +287,7 @@ func (gw *GatewayConfig) recordCredentialFailure(src authSource, f *credential.F
 // request. message overrides the registry text from ErrorLookup when the
 // call site knows a more truthful reason to give; pass "" to use the
 // registry text unchanged.
-func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request, errorCode, message string) {
+func (gw *Config) writeSigV4Error(w http.ResponseWriter, r *http.Request, errorCode, message string) {
 	requestID := uuid.NewV4().String()
 	audit.From(r.Context()).SetAuthError(errorCode)
 
@@ -361,7 +361,7 @@ func signedService(r *http.Request) string {
 // service must carry: the global service's signing region when the client
 // claimed it, else the gateway's own region. A client given an endpoint
 // override signs with its own configured region, so both are accepted.
-func (gw *GatewayConfig) expectedSigningRegion(service, claimed string) string {
+func (gw *Config) expectedSigningRegion(service, claimed string) string {
 	if traits, ok := gw.selector().Traits(service); ok && traits.GlobalSigningRegion != "" && claimed == traits.GlobalSigningRegion {
 		return traits.GlobalSigningRegion
 	}

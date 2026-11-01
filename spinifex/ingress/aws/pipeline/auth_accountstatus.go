@@ -12,7 +12,7 @@ import (
 //
 // This is the only enforcement point for account status on the AWS surface:
 // until it existed, suspending an account blocked ECR and nothing else.
-func (gw *GatewayConfig) checkAccountActive(accountID string, src authSource) string {
+func (gw *Config) checkAccountActive(accountID string, src authSource) string {
 	if gw.Admission == nil {
 		return awserrors.ErrorInternalError
 	}

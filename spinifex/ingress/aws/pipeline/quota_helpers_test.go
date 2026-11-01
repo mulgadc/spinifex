@@ -21,12 +21,12 @@ func quotaPtr(v int) *int { return &v }
 // longer holds one: the registration helpers read it back to compose Deps.
 var quotaByGateway sync.Map
 
-func withQuota(gw *GatewayConfig, q *admissionquota.Service) *GatewayConfig {
+func withQuota(gw *Config, q *admissionquota.Service) *Config {
 	quotaByGateway.Store(gw, q)
 	return gw
 }
 
-func quotaFor(gw *GatewayConfig) *admissionquota.Service {
+func quotaFor(gw *Config) *admissionquota.Service {
 	q, _ := quotaByGateway.Load(gw)
 	svc, _ := q.(*admissionquota.Service)
 	return svc
@@ -47,7 +47,7 @@ func (m *quotaIAMService) GetAccount(accountID string) (*iamdomain.Account, erro
 }
 
 // quotaTestGateway wires a real quota Service over a real JetStream KV bucket.
-func quotaTestGateway(t *testing.T) (*GatewayConfig, string) {
+func quotaTestGateway(t *testing.T) (*Config, string) {
 	t.Helper()
 	const account = "000000000042"
 
@@ -65,7 +65,7 @@ func quotaTestGateway(t *testing.T) (*GatewayConfig, string) {
 	quota.SetOverrides(kv)
 
 	svc := &quotaIAMService{known: account}
-	return withQuota(withVerifier(gwfix.WithDeps(&GatewayConfig{
+	return withQuota(withVerifier(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 	}, gwfix.Deps{IAM: svc})), quota), account
 }

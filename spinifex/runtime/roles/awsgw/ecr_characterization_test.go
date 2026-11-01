@@ -32,13 +32,13 @@ import (
 // ecrPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS so Request dispatches. docs is every principal's policy; the
 // region is gwfix.Region because gwfix.SignRequestAs always signs for it.
-func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*pipeline.GatewayConfig, http.Handler) {
+func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*pipeline.Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
@@ -266,7 +266,7 @@ func TestECRPipeline_AuthzGateBlocksComposedAction(t *testing.T) {
 func TestRequest_ClusterUnavailableNilConn_ECR(t *testing.T) {
 	for _, action := range []string{"ListRepositories", "CreateRepository"} {
 		t.Run(action, func(t *testing.T) {
-			gw := withECR(withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{})
+			gw := withECR(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+"."+action)

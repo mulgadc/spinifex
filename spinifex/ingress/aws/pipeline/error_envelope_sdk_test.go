@@ -73,7 +73,7 @@ func throttleApp(t *testing.T) aws.Config {
 	require.NoError(t, b.Register(envelopeRegistration("sqs", dispatch.ErrorEnvelopeJSON10Query, c,
 		func(r *dispatch.Registration) { r.ErrorNamespace = "com.amazonaws.sqs" })))
 	require.NoError(t, b.Register(envelopeRegistration("lambda", dispatch.ErrorEnvelopeRESTJSON, c, nil)))
-	gw := &GatewayConfig{DisableLogging: true, Services: b.Build()}
+	gw := &Config{DisableLogging: true, Services: b.Build()}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		svc := credentialScopeService(r)
 		gw.writeThrottleError(w, r.WithContext(reqctx.WithService(r.Context(), svc)))

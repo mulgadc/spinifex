@@ -30,13 +30,13 @@ import (
 // acmPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as every principal's policy. The region is
 // gwfix.Region because gwfix.SignRequestAs always signs for it.
-func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*pipeline.GatewayConfig, http.Handler) {
+func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*pipeline.Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
@@ -209,7 +209,7 @@ func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
 func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
 	for _, action := range []string{"ListCertificates", "DeleteCertificate"} {
 		t.Run(action, func(t *testing.T) {
-			gw := withACM(withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), acmawsapi.Deps{})
+			gw := withACM(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), acmawsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", "CertificateManager."+action)

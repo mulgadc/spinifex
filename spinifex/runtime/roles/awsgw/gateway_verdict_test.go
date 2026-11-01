@@ -15,7 +15,7 @@ import (
 )
 
 func TestGetService(t *testing.T) {
-	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
+	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	withServices(gw, taggingRegistration(nil), iamRegistration(gw), ec2Registration(gw))
 
 	tests := []struct {
@@ -77,7 +77,7 @@ func TestGetService(t *testing.T) {
 }
 
 func TestRequest_NoServiceContext(t *testing.T) {
-	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
+	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	w := httptest.NewRecorder()
 

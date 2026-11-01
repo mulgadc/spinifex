@@ -63,7 +63,7 @@ func TestMounts_AdminSitsBehindSigV4(t *testing.T) {
 // Without an admin registration name the surface refuses, rather than
 // dispatching to whatever service the empty name selects.
 func TestAdmin_UnconfiguredSurfaceAnswersInternalError(t *testing.T) {
-	gw := withServices(&GatewayConfig{DisableLogging: true})
+	gw := withServices(&Config{DisableLogging: true})
 	rec := adminRequest(gw, "CreateAccount", `{}`)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.Equal(t, awserrors.ErrorInternalError, decodeAdminError(t, rec).Error.Code)

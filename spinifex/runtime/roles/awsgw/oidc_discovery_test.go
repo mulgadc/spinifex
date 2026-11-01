@@ -35,7 +35,7 @@ func seedDiscoveryCluster(t *testing.T) http.Handler {
 		t.Fatalf("put jwks: %v", err)
 	}
 
-	gw := withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(ekscluster.NewOIDCPublisher(js), nil)}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
+	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true, PublicRoutes: awsgw.PublicRoutes(ekscluster.NewOIDCPublisher(js), nil)}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()}))
 	return gw.SetupRoutes()
 }
 

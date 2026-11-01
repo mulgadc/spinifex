@@ -49,7 +49,7 @@ func TestDeleteVolumeAction_MissingConfiguredNodeIsRetryableAndDeletesNothing(t 
 	}
 	require.NoError(t, nc.Flush())
 
-	gw := gwfix.WithDeps(&GatewayConfig{
+	gw := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Credentials:    credverify.New(allowAllIAMService(), nil),
 	}, gwfix.Deps{NATS: nc, IAM: allowAllIAMService()})

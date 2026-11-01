@@ -13,7 +13,7 @@ import (
 
 // iamRegistration is the IAM registration over the IAMService, NATS connection
 // and node count gw holds, as the awsgw role composes it. Set them on gw first.
-func iamRegistration(gw *pipeline.GatewayConfig) dispatch.Registration {
+func iamRegistration(gw *pipeline.Config) dispatch.Registration {
 	return iamawsapi.NewRegistration(iamawsapi.Deps{
 		IAM: gwfix.DepsOf(gw).IAM,
 		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {

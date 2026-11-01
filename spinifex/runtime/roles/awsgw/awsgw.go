@@ -175,7 +175,7 @@ func resolveSignupMaxAccounts(cfg signupConfig) int {
 
 // wireServiceRegistry builds gw.Services from regs and validates it against
 // the legacy dispatch table before the gateway ever serves a request.
-func wireServiceRegistry(gw *pipeline.GatewayConfig, regs ...dispatch.Registration) error {
+func wireServiceRegistry(gw *pipeline.Config, regs ...dispatch.Registration) error {
 	b := dispatch.NewBuilder()
 	for _, reg := range regs {
 		if err := b.Register(reg); err != nil {

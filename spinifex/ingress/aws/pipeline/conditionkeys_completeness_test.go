@@ -122,7 +122,7 @@ func emittedKeys(t *testing.T) map[string]string {
 		},
 	}
 
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: &gwfix.IAM{}}))
+	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: &gwfix.IAM{}}))
 	union := make(map[string]string)
 	for name, principal := range principals {
 		r := httptest.NewRequest(http.MethodPost, "/?prefix=home/&max-keys=100", nil)

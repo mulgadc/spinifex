@@ -15,7 +15,7 @@ import (
 // TestAnonymousSTS_SignedRequestFallsThrough confirms a request with an Authorization
 // header is not intercepted — it passes through to the signed surface.
 func TestAnonymousSTS_SignedRequestFallsThrough(t *testing.T) {
-	gw := gwfix.WithDeps(&GatewayConfig{
+	gw := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 	}, gwfix.Deps{STS: &flexMockSTSService{
 		assumeWebIdentityFn: func(*sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {

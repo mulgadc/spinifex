@@ -28,7 +28,7 @@ func TestTaggingActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", tc.target)
-			gw := withTagging(&GatewayConfig{}, tagging.NewAggregator())
+			gw := withTagging(&Config{}, tagging.NewAggregator())
 			assert.Equal(t, tc.wantAction, gw.selector().ResolveAction(req, "tagging"))
 			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req))
 		})

@@ -127,7 +127,7 @@ func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.GatewayConfig{
+	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{IAM: mockSvc}))
@@ -178,7 +178,7 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 		},
 	}
 
-	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.GatewayConfig{
+	gw := withEC2Verifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{IAM: mockSvc}))

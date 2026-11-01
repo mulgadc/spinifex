@@ -41,7 +41,7 @@ func createAccountPolicy() *gwfix.PolicyIAM {
 }
 
 // adminRequest drives Admin_Request with the chi route param the router sets.
-func adminRequest(gw *GatewayConfig, method string, body string) *httptest.ResponseRecorder {
+func adminRequest(gw *Config, method string, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/admin/"+method, strings.NewReader(body))
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("method", method)
@@ -62,7 +62,7 @@ func decodeAdminError(t *testing.T, rec *httptest.ResponseRecorder) adminErrorBo
 // An unknown method is rejected before authorization, so it never discloses
 // whether the caller would have been permitted.
 func TestAdminRequestUnknownMethod(t *testing.T) {
-	gw := withOperator(withRealAuth(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
+	gw := withOperator(withRealAuth(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 
 	rec := adminRequest(gw, "PurgeEverything", `{}`)
 
@@ -71,7 +71,7 @@ func TestAdminRequestUnknownMethod(t *testing.T) {
 }
 
 func TestAdminRequestDeniesUnauthorizedCaller(t *testing.T) {
-	gw := withOperator(withRealAuth(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
+	gw := withOperator(withRealAuth(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 
 	rec := adminRequest(gw, "CreateAccount", `{}`)
 
@@ -83,7 +83,7 @@ func TestAdminRequestDeniesUnauthorizedCaller(t *testing.T) {
 // The request ID ties a client failure to the gateway log line, so it must be
 // present on the header and in the body even for a denial.
 func TestAdminRequestAlwaysCarriesRequestID(t *testing.T) {
-	gw := withOperator(withRealAuth(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
+	gw := withOperator(withRealAuth(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 
 	rec := adminRequest(gw, "CreateAccount", `{}`)
 
@@ -94,7 +94,7 @@ func TestAdminRequestAlwaysCarriesRequestID(t *testing.T) {
 
 // An unmapped code must not escape as a 200 or an empty body.
 func TestWriteAdminErrorFallsBackOnUnknownCode(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &Config{DisableLogging: true}
 	rec := httptest.NewRecorder()
 
 	gw.writeAdminError(rec, "req-1", "NotARegisteredCode", "")
@@ -106,7 +106,7 @@ func TestWriteAdminErrorFallsBackOnUnknownCode(t *testing.T) {
 // The router serves every verb from one pattern, so the handler is what
 // refuses a GET — a second route would shadow the POST one.
 func TestAdminRequestRejectsNonPost(t *testing.T) {
-	gw := withOperator(withRealAuth(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
+	gw := withOperator(withRealAuth(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})))
 	req := httptest.NewRequest(http.MethodGet, "/admin/CreateAccount", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("method", "CreateAccount")
@@ -121,13 +121,13 @@ func TestAdminRequestRejectsNonPost(t *testing.T) {
 
 // authorizedAdminRequest builds a request that clears every authorization gate,
 // so the guards behind them can be tested on their own.
-func authorizedAdminRequest(gw *GatewayConfig, body string) *httptest.ResponseRecorder {
+func authorizedAdminRequest(gw *Config, body string) *httptest.ResponseRecorder {
 	return authorizedAdminRequestForMethod(gw, "CreateAccount", body)
 }
 
 // authorizedAdminRequestForMethod is the same for a named method, so a grant
 // that covers one method can be shown not to cover another.
-func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *httptest.ResponseRecorder {
+func authorizedAdminRequestForMethod(gw *Config, method, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/admin/"+method, strings.NewReader(body))
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("method", method)
@@ -146,7 +146,7 @@ func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *ht
 // An authorized caller must still get a clear answer when the cluster is not
 // reachable, rather than a panic or a silent success.
 func TestAdminRequestReportsClusterUnavailable(t *testing.T) {
-	gw := withOperator(withRealAuth(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: createAccountPolicy()})))
+	gw := withOperator(withRealAuth(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: createAccountPolicy()})))
 
 	rec := authorizedAdminRequest(gw, `{}`)
 
@@ -156,7 +156,7 @@ func TestAdminRequestReportsClusterUnavailable(t *testing.T) {
 // Each admin method is a separate grant. The signup Worker holds
 // spinifex:CreateAccount and must not reach deletion with it.
 func TestCreateAccountGrantDoesNotAllowDeleteAccount(t *testing.T) {
-	gw := withOperator(withRealAuth(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: createAccountPolicy()})))
+	gw := withOperator(withRealAuth(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: createAccountPolicy()})))
 
 	for _, method := range []string{"DeleteAccount", "DescribeAccountDeletion", "ListAccounts"} {
 		t.Run(method, func(t *testing.T) {

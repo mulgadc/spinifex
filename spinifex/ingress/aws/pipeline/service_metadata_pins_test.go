@@ -28,17 +28,17 @@ func TestWriteThrottleError_ByService(t *testing.T) {
 		svc, code, contains string
 		status              int
 		contentType         string
-		with                func(*GatewayConfig) *GatewayConfig
+		with                func(*Config) *Config
 	}{
 		{"iam", awserrors.ErrorThrottling, "<ErrorResponse>", http.StatusServiceUnavailable, "application/xml", withIAM},
 		{"sts", awserrors.ErrorThrottling, "<ErrorResponse>", http.StatusServiceUnavailable, "application/xml", withSTS},
 		{"eks", "", `"__type"`, 0, envelope.JSONContentType, withContainers},
-		{"s3", awserrors.ErrorRequestLimitExceeded, "<Error>", http.StatusServiceUnavailable, "application/xml", func(gw *GatewayConfig) *GatewayConfig { return withServices(gw) }},
+		{"s3", awserrors.ErrorRequestLimitExceeded, "<Error>", http.StatusServiceUnavailable, "application/xml", func(gw *Config) *Config { return withServices(gw) }},
 		{"unserved-service", awserrors.ErrorRequestLimitExceeded, "<ErrorResponse>", http.StatusServiceUnavailable, "application/xml", nil},
 		{"", awserrors.ErrorRequestLimitExceeded, "<Response>", http.StatusServiceUnavailable, "application/xml", nil},
 	} {
 		t.Run(tc.svc, func(t *testing.T) {
-			gw := &GatewayConfig{DisableLogging: true}
+			gw := &Config{DisableLogging: true}
 			if tc.with != nil {
 				gw = tc.with(gw)
 			}
@@ -63,7 +63,7 @@ func TestWriteThrottleError_ByService(t *testing.T) {
 
 // An unparsed signature leaves no service, and the rejection keeps EC2's shape.
 func TestXMLErrorBody_EmptyServiceKeepsEC2Shape(t *testing.T) {
-	body := (&GatewayConfig{}).xmlErrorBody("", "AccessDenied", "denied", "req-1", "/")
+	body := (&Config{}).xmlErrorBody("", "AccessDenied", "denied", "req-1", "/")
 
 	assert.Equal(t, "Response", xmlRootName(t, body))
 	assert.Contains(t, string(body), "<Errors>")
@@ -99,7 +99,7 @@ func TestReqctxPipeline_GlobalSigningRegionRejectsOthers(t *testing.T) {
 // The anonymous exchange runs ahead of authentication, so an oversize body is
 // handed back unread to the signed chain instead of being dispatched.
 func TestAnonymousSTS_OversizeBodyPassesThroughUnread(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, PreAuth: []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{})}}
+	gw := &Config{DisableLogging: true, PreAuth: []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{})}}
 	big := "Action=AssumeRoleWithWebIdentity&WebIdentityToken=" + strings.Repeat("a", int(sigv4.MaxPayloadLen)+1)
 
 	var seen []byte
@@ -114,7 +114,7 @@ func TestAnonymousSTS_OversizeBodyPassesThroughUnread(t *testing.T) {
 
 // With no anonymous capability composed, the action fails closed.
 func TestAnonymousSTS_NilCapabilityIsAnInternalError(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, PreAuth: []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{})}}
+	gw := &Config{DisableLogging: true, PreAuth: []dispatch.PreAuth{stsawsapi.NewPreAuth(stsawsapi.Deps{})}}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=AssumeRoleWithWebIdentity&WebIdentityToken=x"))
 	rec := httptest.NewRecorder()
 
@@ -130,7 +130,7 @@ func TestAnonymousSTS_NilCapabilityIsAnInternalError(t *testing.T) {
 // throttle, so an exhausted bucket never reaches it.
 func TestPreAuth_RunsAheadOfSigV4AndThrottle(t *testing.T) {
 	served := 0
-	gw := withIAM(withVerifier(gwfix.WithDeps(&GatewayConfig{
+	gw := withIAM(withVerifier(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Throttler:      newThrottler(t),
 		PreAuth: []dispatch.PreAuth{{

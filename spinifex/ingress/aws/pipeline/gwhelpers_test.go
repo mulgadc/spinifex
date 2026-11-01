@@ -66,7 +66,7 @@ import (
 
 // withACM registers the ACM control plane on gw backed by deps, as the awsgw
 // role composes it. An unset deps.NATS takes gw.NATSConn.
-func withACM(gw *GatewayConfig, deps acmawsapi.Deps) *GatewayConfig {
+func withACM(gw *Config, deps acmawsapi.Deps) *Config {
 	if deps.NATS == nil {
 		deps.NATS = gwfix.DepsOf(gw).NATS
 	}
@@ -81,13 +81,13 @@ func withACM(gw *GatewayConfig, deps acmawsapi.Deps) *GatewayConfig {
 // acmPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as every principal's policy. The region is
 // gwfix.Region because gwfix.SignRequestAs always signs for it.
-func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConfig, http.Handler) {
+func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
@@ -166,7 +166,7 @@ type rdsPolicyProbe struct{ consulted int }
 
 // A gateway whose IAM service answers with policies, so the RDS dispatch path
 // runs a real evaluation for either principal branch.
-func newRDSPolicyGateway(policies []iamdomain.PolicyDocument) (*GatewayConfig, *rdsPolicyProbe) {
+func newRDSPolicyGateway(policies []iamdomain.PolicyDocument) (*Config, *rdsPolicyProbe) {
 	return newRDSGatewayWithResolver(func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return policies, nil
 	})
@@ -187,12 +187,12 @@ const rdsTestAccountID = "123456789012"
 // rdsRegistrationInventory is the inventory the RDS registration declares to a
 // registry, keyed as AWSOperationInventory expects.
 func rdsRegistrationInventory() map[string]dispatch.Inventory {
-	return withRDS(&GatewayConfig{}).Services.Inventory()
+	return withRDS(&Config{}).Services.Inventory()
 }
 
 // serveRDS dispatches r to the registered RDS service exactly as Request does,
 // registering it first from the fields gw holds when the test has not.
-func (gw *GatewayConfig) serveRDS(w http.ResponseWriter, r *http.Request) error {
+func (gw *Config) serveRDS(w http.ResponseWriter, r *http.Request) error {
 	if gw.Services == nil {
 		withRDS(gw)
 	}
@@ -205,7 +205,7 @@ func (gw *GatewayConfig) serveRDS(w http.ResponseWriter, r *http.Request) error 
 
 func newRDSGatewayWithResolver(
 	resolve func(accountID, name string) ([]iamdomain.PolicyDocument, error),
-) (*GatewayConfig, *rdsPolicyProbe) {
+) (*Config, *rdsPolicyProbe) {
 	probe := &rdsPolicyProbe{}
 	counted := func(accountID, name string) ([]iamdomain.PolicyDocument, error) {
 		probe.consulted++
@@ -213,7 +213,7 @@ func newRDSGatewayWithResolver(
 	}
 	// Both branches are wired: an assumed-role principal resolves by role, and a
 	// test that only stubbed users would miss it entirely.
-	return withRealAuth(gwfix.WithDeps(&GatewayConfig{
+	return withRealAuth(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         "ap-southeast-2",
 	}, gwfix.Deps{IAM: &gwfix.PolicyIAM{
@@ -224,7 +224,7 @@ func newRDSGatewayWithResolver(
 
 // withRDS registers RDS on gw with the NATS connection and node count it holds,
 // as the awsgw role composes it. Set both on gw before calling.
-func withRDS(gw *GatewayConfig) *GatewayConfig {
+func withRDS(gw *Config) *Config {
 	deps := rdsawsapi.Deps{NATS: gwfix.DepsOf(gw).NATS, ExpectedNodes: gwfix.DepsOf(gw).Nodes}
 	if quotaFor(gw) != nil {
 		deps.Quota = quotaFor(gw)
@@ -239,7 +239,7 @@ func withRDS(gw *GatewayConfig) *GatewayConfig {
 
 // withELBv2 registers ELBv2 on gw with the NATS connection and quota it holds,
 // as the awsgw role composes it. Set both on gw before calling.
-func withELBv2(gw *GatewayConfig) *GatewayConfig {
+func withELBv2(gw *Config) *Config {
 	b := dispatch.NewBuilder()
 	reg := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: gwfix.DepsOf(gw).NATS, Quota: quotaFor(gw)})
 	if err := b.Register(reg); err != nil {
@@ -251,7 +251,7 @@ func withELBv2(gw *GatewayConfig) *GatewayConfig {
 
 // serveAccountLimits runs DescribeAccountLimits through the service with live
 // NATS, so the request is dispatched rather than stopped at the NATS guard.
-func serveAccountLimits(t *testing.T, gw *GatewayConfig, accountID, body string) ([]byte, error) {
+func serveAccountLimits(t *testing.T, gw *Config, accountID, body string) ([]byte, error) {
 	t.Helper()
 	_, nc := testutil.StartTestNATS(t)
 	gwfix.DepsOf(gw).NATS = nc
@@ -277,7 +277,7 @@ type accountLimitsResponse struct {
 
 // describeAccountLimits decodes the XML DescribeAccountLimits writes, keyed by
 // limit name.
-func describeAccountLimits(t *testing.T, gw *GatewayConfig, accountID string) map[string]string {
+func describeAccountLimits(t *testing.T, gw *Config, accountID string) map[string]string {
 	t.Helper()
 
 	body, err := serveAccountLimits(t, gw, accountID, "Action=DescribeAccountLimits")
@@ -296,13 +296,13 @@ func describeAccountLimits(t *testing.T, gw *GatewayConfig, accountID string) ma
 
 // elbv2PipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as every principal's policy.
-func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admissionquota.Service) (*GatewayConfig, http.Handler) {
+func elbv2PipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, quota *admissionquota.Service) (*Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
@@ -347,7 +347,7 @@ func signELBv2Request(t *testing.T, body string) *http.Request {
 // serveELBv2 dispatches r to the registered ELBv2 service exactly as Request
 // does past its NATS gate, registering it first from the fields gw holds when
 // the test has not.
-func (gw *GatewayConfig) serveELBv2(w http.ResponseWriter, r *http.Request) error {
+func (gw *Config) serveELBv2(w http.ResponseWriter, r *http.Request) error {
 	if gw.Services == nil {
 		withELBv2(gw)
 	}
@@ -368,7 +368,7 @@ func elbv2Request(accountID, body string) *http.Request {
 }
 
 // withServices makes regs the gateway's registered services.
-func withServices(gw *GatewayConfig, regs ...dispatch.Registration) *GatewayConfig {
+func withServices(gw *Config, regs ...dispatch.Registration) *Config {
 	b := dispatch.NewBuilder()
 	for _, reg := range regs {
 		if err := b.Register(reg); err != nil {
@@ -385,13 +385,13 @@ func withServices(gw *GatewayConfig, regs ...dispatch.Registration) *GatewayConf
 }
 
 // withIAM registers IAM alone on gw.
-func withIAM(gw *GatewayConfig) *GatewayConfig {
+func withIAM(gw *Config) *Config {
 	return withServices(gw, iamRegistration(gw))
 }
 
 // iamRegistration is the IAM registration over the IAMService, NATS connection
 // and node count gw holds, as the awsgw role composes it. Set them on gw first.
-func iamRegistration(gw *GatewayConfig) dispatch.Registration {
+func iamRegistration(gw *Config) dispatch.Registration {
 	return iamawsapi.NewRegistration(iamawsapi.Deps{
 		IAM: gwfix.DepsOf(gw).IAM,
 		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
@@ -587,7 +587,7 @@ func (m *flexMockIAMService) UpdateAccessKey(accountID string, input *iam.Update
 
 // IAM_Request dispatches r to the registered IAM service exactly as Request
 // does, registering it first from the fields gw holds when the test has not.
-func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) error {
+func (gw *Config) IAM_Request(w http.ResponseWriter, r *http.Request) error {
 	if gw.Services == nil {
 		withIAM(gw)
 	}
@@ -787,7 +787,7 @@ func (svc *echoIAMService) UpdateAssumeRolePolicy(accountID string, input *iam.U
 
 // setupIAMRequestHandler wires an http.Handler for IAM_Request with injected SigV4 context values.
 func setupIAMRequestHandler(svc iamdomain.IAMService) http.Handler {
-	gw := gwfix.WithDeps(&GatewayConfig{
+	gw := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Credentials:    credverify.New(svc, nil),
 	}, gwfix.Deps{IAM: svc})
@@ -882,27 +882,27 @@ type iamExample struct {
 
 // stsRegistration is the STS registration over the IAMService and STSService
 // gw holds, as the awsgw role composes it. Set them on gw first.
-func stsRegistration(gw *GatewayConfig) dispatch.Registration {
+func stsRegistration(gw *Config) dispatch.Registration {
 	return stsawsapi.NewRegistration(stsawsapi.Deps{STS: gwfix.DepsOf(gw).STS, IAM: gwfix.DepsOf(gw).IAM})
 }
 
 // withIAMAndSTS registers IAM and STS together on gw, with the unsigned
 // web-identity capability, as awsgw composes them.
-func withIAMAndSTS(gw *GatewayConfig) *GatewayConfig {
+func withIAMAndSTS(gw *Config) *Config {
 	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gwfix.DepsOf(gw).STS, IAM: gwfix.DepsOf(gw).IAM}))
 	return withServices(gw, iamRegistration(gw), stsRegistration(gw))
 }
 
 // withSTS registers STS alone on gw and composes its unsigned web-identity
 // capability, as awsgw does.
-func withSTS(gw *GatewayConfig) *GatewayConfig {
+func withSTS(gw *Config) *Config {
 	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsawsapi.Deps{STS: gwfix.DepsOf(gw).STS, IAM: gwfix.DepsOf(gw).IAM}))
 	return withServices(gw, stsRegistration(gw))
 }
 
 // STS_Request dispatches r to the registered STS service exactly as Request
 // does, registering it first from the fields gw holds when the test has not.
-func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) error {
+func (gw *Config) STS_Request(w http.ResponseWriter, r *http.Request) error {
 	if gw.Services == nil {
 		withSTS(gw)
 	}
@@ -1069,7 +1069,7 @@ func setupSTSRequestHandler(p stsRequestParams) http.Handler {
 	if p.iamSvc == nil {
 		p.iamSvc = &flexMockIAMService{}
 	}
-	gw := withRealAuth(gwfix.WithDeps(&GatewayConfig{
+	gw := withRealAuth(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 	}, gwfix.Deps{STS: p.stsSvc, IAM: p.iamSvc}))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1146,19 +1146,19 @@ const taggingTargetPrefix = "ResourceGroupsTaggingAPI_20170126."
 
 // withTagging registers the Resource Groups Tagging API on gw backed by agg, as
 // the awsgw role composes it.
-func withTagging(gw *GatewayConfig, agg *tagging.Aggregator) *GatewayConfig {
+func withTagging(gw *Config, agg *tagging.Aggregator) *Config {
 	return withServices(gw, taggingRegistration(agg))
 }
 
 // taggingPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does,
 // on live test NATS, with docs as every principal's policy.
-func taggingPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, agg *tagging.Aggregator) (*GatewayConfig, http.Handler) {
+func taggingPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument, agg *tagging.Aggregator) (*Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
@@ -1199,7 +1199,7 @@ func signTaggingRequest(t *testing.T, target string, body []byte) *http.Request 
 
 // newTaggingCBGateway serves ec2.CreateTags from a real TagsServiceImpl
 // over a fresh JetStream bucket, with no legacy object store.
-func newTaggingCBGateway(t *testing.T) (*GatewayConfig, *ec2tags.TagsServiceImpl) {
+func newTaggingCBGateway(t *testing.T) (*Config, *ec2tags.TagsServiceImpl) {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
 	kv, err := ec2tags.GetOrCreateTagsBucket(t.Context(), js)
@@ -1217,11 +1217,11 @@ func newTaggingCBGateway(t *testing.T) (*GatewayConfig, *ec2tags.TagsServiceImpl
 		})
 	})
 
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService(), NATS: nc}))
+	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService(), NATS: nc}))
 	return gw, svc
 }
 
-func requireEC2OK(t *testing.T, gw *GatewayConfig, body string) {
+func requireEC2OK(t *testing.T, gw *Config, body string) {
 	t.Helper()
 	w := serveEC2(gw, body)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -1255,13 +1255,13 @@ func centralTagCount(t *testing.T, svc *ec2tags.TagsServiceImpl, resourceID stri
 // SetupRoutes does, on live test NATS, with docs as every principal's policy.
 // accountID owns the signing key; the region is gwfix.Region because
 // gwfix.SignRequestAs always signs for it.
-func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.PolicyDocument, mutate func(*GatewayConfig)) (*GatewayConfig, http.Handler) {
+func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.PolicyDocument, mutate func(*Config)) (*Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := gwfix.WithDeps(&GatewayConfig{
+	gw := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
@@ -1361,7 +1361,7 @@ var spinifexAdminActions = func() map[string]bool {
 
 // withOperator registers the spinifex Query service on gw from the fields gw
 // holds, as awsgw composes it.
-func withOperator(gw *GatewayConfig) *GatewayConfig {
+func withOperator(gw *Config) *Config {
 	b := dispatch.NewBuilder()
 	deps := operatoradmin.Deps{
 		Version:     "v9.9.9-test",
@@ -1494,14 +1494,14 @@ func decodeJSONError(t *testing.T, resp *http.Response) jsonErrorEnvelope {
 // ecrRegistrationInventory is the inventory the ECR registration declares to
 // a registry, keyed as AWSOperationInventory expects.
 func ecrRegistrationInventory() map[string]dispatch.Inventory {
-	inventory := withECR(&GatewayConfig{}, awsapi.Deps{}).Services.Inventory()
-	maps.Copy(inventory, withContainers(&GatewayConfig{}).Services.Inventory())
+	inventory := withECR(&Config{}, awsapi.Deps{}).Services.Inventory()
+	maps.Copy(inventory, withContainers(&Config{}).Services.Inventory())
 	return inventory
 }
 
 // serveECR dispatches r to gw's registered ECR service exactly as Request does
 // past its NATS gate, first registering one with no capabilities if needed.
-func (gw *GatewayConfig) serveECR(w http.ResponseWriter, r *http.Request) error {
+func (gw *Config) serveECR(w http.ResponseWriter, r *http.Request) error {
 	entry, ok := gw.registered(awsapi.ServiceName)
 	if !ok {
 		withECR(gw, awsapi.Deps{})
@@ -1518,7 +1518,7 @@ type jsonErrorEnvelope struct {
 
 // withECR registers the ECR control plane on gw backed by deps, as the awsgw
 // role composes it. An unset deps.NATS takes gw.NATSConn.
-func withECR(gw *GatewayConfig, deps awsapi.Deps) *GatewayConfig {
+func withECR(gw *Config, deps awsapi.Deps) *Config {
 	if deps.NATS == nil {
 		deps.NATS = gwfix.DepsOf(gw).NATS
 	}
@@ -1533,13 +1533,13 @@ func withECR(gw *GatewayConfig, deps awsapi.Deps) *GatewayConfig {
 // ecrPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS so Request dispatches. docs is every principal's policy; the
 // region is gwfix.Region because gwfix.SignRequestAs always signs for it.
-func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConfig, http.Handler) {
+func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
@@ -1727,13 +1727,13 @@ func (m *ecrMockIAMService) LookupAccessKey(accessKeyID string) (*iamdomain.Acce
 	return ak, nil
 }
 
-func (gw *GatewayConfig) serveECS(w http.ResponseWriter, r *http.Request) error {
+func (gw *Config) serveECS(w http.ResponseWriter, r *http.Request) error {
 	return gw.serveRegistered(ecsawsapi.ServiceName, w, r)
 }
 
 // withContainers registers ECS and EKS on gw with the NATS connection and
 // mock IAM service it holds, as the awsgw role composes them.
-func withContainers(gw *GatewayConfig) *GatewayConfig {
+func withContainers(gw *Config) *Config {
 	b := dispatch.NewBuilder()
 	if err := b.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: gwfix.DepsOf(gw).NATS})); err != nil {
 		panic(err)
@@ -1774,7 +1774,7 @@ const testECSPassRoleTargetARN = "arn:aws:iam::123456789012:role/ecs-task-role"
 
 const ecsPipelineTarget = "AmazonEC2ContainerServiceV20141113."
 
-func (gw *GatewayConfig) serveRegistered(service string, w http.ResponseWriter, r *http.Request) error {
+func (gw *Config) serveRegistered(service string, w http.ResponseWriter, r *http.Request) error {
 	if gw.Services == nil {
 		withContainers(gw)
 	}
@@ -1832,7 +1832,7 @@ const (
 
 // serveEC2 runs a request through EC2_Request and, on error, ErrorHandler, so
 // the assertion sees the status and body a client would.
-func serveEC2(gw *GatewayConfig, body string) *httptest.ResponseRecorder {
+func serveEC2(gw *Config, body string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	r := setupEC2Request(body, authzAccountID)
 	if err := gw.EC2_Request(w, r); err != nil {
@@ -1844,7 +1844,7 @@ func serveEC2(gw *GatewayConfig, body string) *httptest.ResponseRecorder {
 // ec2Registration composes the EC2 registration from the NATS connection, IAM
 // service and node count gw holds, as the awsgw role does. mutate adjusts the
 // rest.
-func ec2Registration(gw *GatewayConfig, mutate ...func(*ec2awsapi.Deps)) dispatch.Registration {
+func ec2Registration(gw *Config, mutate ...func(*ec2awsapi.Deps)) dispatch.Registration {
 	deps := ec2awsapi.Deps{
 		NATS:          gwfix.DepsOf(gw).NATS,
 		IAM:           gwfix.DepsOf(gw).IAM,
@@ -1860,12 +1860,12 @@ func ec2Registration(gw *GatewayConfig, mutate ...func(*ec2awsapi.Deps)) dispatc
 
 // withEC2Verifier is withVerifier for a test that signs as EC2: the service
 // must be registered for the auth gate to serve its credential scope.
-func withEC2Verifier(gw *GatewayConfig) *GatewayConfig {
+func withEC2Verifier(gw *Config) *Config {
 	return withEC2(withVerifier(gw))
 }
 
 // withEC2 registers EC2 alone on gw.
-func withEC2(gw *GatewayConfig, mutate ...func(*ec2awsapi.Deps)) *GatewayConfig {
+func withEC2(gw *Config, mutate ...func(*ec2awsapi.Deps)) *Config {
 	return withServices(gw, ec2Registration(gw, mutate...))
 }
 
@@ -1899,13 +1899,13 @@ func assertDenied(t *testing.T, err error) {
 // dispatchEC2 drives the gateway with no NATS connection. A permitted request
 // therefore reaches the handler and fails there, which is what proves the policy
 // check ran ahead of the resource existing at all.
-func dispatchEC2(t *testing.T, gw *GatewayConfig, body string) error {
+func dispatchEC2(t *testing.T, gw *Config, body string) error {
 	t.Helper()
 	return gw.EC2_Request(httptest.NewRecorder(), setupEC2Request(body, authzAccountID))
 }
 
 func ec2RegistrationInventory() map[string]dispatch.Inventory {
-	return withEC2(&GatewayConfig{}).Services.Inventory()
+	return withEC2(&Config{}).Services.Inventory()
 }
 
 // profileIAMService resolves every instance profile to one holding role app, or
@@ -1930,7 +1930,7 @@ func (s *profileIAMService) ResolveInstanceProfile(accountID, _ string) (*iamdom
 // EC2_Request dispatches r to the registered EC2 service exactly as Request
 // does past its NATS gate, registering it first from the fields gw holds when
 // the test has not.
-func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) error {
+func (gw *Config) EC2_Request(w http.ResponseWriter, r *http.Request) error {
 	if _, ok := gw.registered(ec2awsapi.ServiceName); !ok {
 		withEC2(gw)
 	}
@@ -1978,7 +1978,7 @@ func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdo
 	_, nc, _ := testutil.StartTestJetStream(t)
 	daemon := newEC2Daemon(t, nc)
 
-	cfg := gwfix.WithDeps(&GatewayConfig{
+	cfg := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: svc, Nodes: 1})
@@ -2145,6 +2145,6 @@ func (d *ec2Daemon) reply(subject, body string) {
 
 // activeNodes answers the configured node count, which is what discovery falls
 // back to when no daemon answers; no gateway test runs a responder.
-func activeNodes(gw *GatewayConfig) func(context.Context) int {
+func activeNodes(gw *Config) func(context.Context) int {
 	return func(context.Context) int { return gwfix.DepsOf(gw).Nodes }
 }

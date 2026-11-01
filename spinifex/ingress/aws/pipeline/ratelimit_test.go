@@ -49,7 +49,7 @@ func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	gw := gwfix.WithDeps(&GatewayConfig{
+	gw := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		Credentials:    credverify.New(mockSvc, nil),

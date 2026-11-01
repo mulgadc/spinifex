@@ -37,7 +37,7 @@ func (f fakeAdmission) Admit(string, string) error { return f.err }
 
 func TestCheckPolicy_UsesTheSuppliedEvaluator(t *testing.T) {
 	policy := &fakePolicy{}
-	gw := &GatewayConfig{Policy: policy}
+	gw := &Config{Policy: policy}
 	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/", nil))
 	req = req.WithContext(withPrincipalField(req.Context(), fieldAccountID, "123456789012"))
 
@@ -51,7 +51,7 @@ func TestCheckPolicy_UsesTheSuppliedEvaluator(t *testing.T) {
 
 func TestCheckPolicy_ReturnsTheEvaluatorVerdict(t *testing.T) {
 	verdict := errors.New(awserrors.ErrorAccessDenied)
-	gw := &GatewayConfig{Policy: &fakePolicy{err: verdict}}
+	gw := &Config{Policy: &fakePolicy{err: verdict}}
 	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/", nil))
 	req = req.WithContext(withPrincipalField(req.Context(), fieldAccountID, "123456789012"))
 
@@ -59,7 +59,7 @@ func TestCheckPolicy_ReturnsTheEvaluatorVerdict(t *testing.T) {
 }
 
 func TestCheckPolicy_NoEvaluatorFailsClosed(t *testing.T) {
-	gw := &GatewayConfig{}
+	gw := &Config{}
 	req := withTestIdentity(httptest.NewRequest(http.MethodPost, "/", nil))
 
 	err := gw.checkPolicyResources(req, "ec2", "DescribeVpcs", []string{"*"})
@@ -71,13 +71,13 @@ func TestCheckAccountActive_MapsAdmissionVerdicts(t *testing.T) {
 	src := authSource{}
 	cases := []struct {
 		name string
-		gw   *GatewayConfig
+		gw   *Config
 		want string
 	}{
-		{"active proceeds", &GatewayConfig{Admission: fakeAdmission{}}, ""},
-		{"not active is denied", &GatewayConfig{Admission: fakeAdmission{err: credential.ErrAccountNotActive}}, awserrors.ErrorAccessDenied},
-		{"an outage is an internal error", &GatewayConfig{Admission: fakeAdmission{err: errors.New("iam down")}}, awserrors.ErrorInternalError},
-		{"no admission fails closed", &GatewayConfig{}, awserrors.ErrorInternalError},
+		{"active proceeds", &Config{Admission: fakeAdmission{}}, ""},
+		{"not active is denied", &Config{Admission: fakeAdmission{err: credential.ErrAccountNotActive}}, awserrors.ErrorAccessDenied},
+		{"an outage is an internal error", &Config{Admission: fakeAdmission{err: errors.New("iam down")}}, awserrors.ErrorInternalError},
+		{"no admission fails closed", &Config{}, awserrors.ErrorInternalError},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

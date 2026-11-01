@@ -17,7 +17,7 @@ import (
 // An empty or non-JSON body is InvalidRequest on every body-reading method
 // that parses one, and MissingParameter where a required field is absent.
 func TestOperatorAdmin_BodyErrors(t *testing.T) {
-	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), func(gw *GatewayConfig) {
+	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), func(gw *Config) {
 		withQuota(gw, admissionquota.New(admissionquota.Limits{Enabled: true}, nil))
 	})
 
@@ -71,7 +71,7 @@ func TestOperatorAdmin_EveryGateDeniesWithTheSameAnswer(t *testing.T) {
 }
 
 func TestOperatorAdmin_GetAccountQuota_DefaultsComeFromConfig(t *testing.T) {
-	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), func(gw *GatewayConfig) {
+	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), func(gw *Config) {
 		withQuota(gw, admissionquota.New(admissionquota.Limits{Enabled: true}, nil))
 	})
 	resp := adminCall(t, app, http.MethodPost, "GetAccountQuota", "spinifex", `{"accountId":"000000000002"}`)
@@ -102,7 +102,7 @@ func TestOperatorAdmin_ListAccounts_JSONSuccess(t *testing.T) {
 // Unlike the Query surface, /admin authorizes first and only then checks the
 // cluster, so NATS down is visible only to an authorized caller.
 func TestOperatorAdmin_NATSDownAnswers503OnlyAfterAuthorization(t *testing.T) {
-	down := func(gw *GatewayConfig) { gwfix.DepsOf(gw).NATS = nil }
+	down := func(gw *Config) { gwfix.DepsOf(gw).NATS = nil }
 
 	_, app := operatorPipelineApp(t, awsidentifiers.DefaultAccountID(), allowAllOperatorDocs(), down)
 	resp := adminCall(t, app, http.MethodPost, "ListAccounts", "spinifex", `{}`)
@@ -228,7 +228,7 @@ func TestOperatorQuery_ModelAccessWithoutStoreIsServerInternal(t *testing.T) {
 // The cluster-unavailable check is in the shared Request path, ahead of
 // authorization, so even a caller with no grant sees 503 when NATS is down.
 func TestOperatorQuery_NATSDownAnswers503BeforeAuthorization(t *testing.T) {
-	_, app := operatorPipelineApp(t, authzAccountID, nil, func(gw *GatewayConfig) { gwfix.DepsOf(gw).NATS = nil })
+	_, app := operatorPipelineApp(t, authzAccountID, nil, func(gw *Config) { gwfix.DepsOf(gw).NATS = nil })
 	resp := doRequest(app, spinifexQuery(t, "GetVersion", nil))
 
 	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)

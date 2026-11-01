@@ -57,7 +57,7 @@ func throttleResponse(t *testing.T, regs ...dispatch.Registration) func(svc stri
 	for _, reg := range regs {
 		require.NoError(t, b.Register(reg))
 	}
-	gw := &GatewayConfig{DisableLogging: true, Services: b.Build()}
+	gw := &Config{DisableLogging: true, Services: b.Build()}
 	return func(svc string) *http.Response {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)
 		req = req.WithContext(reqctx.WithService(req.Context(), svc))
@@ -237,7 +237,7 @@ func TestErrorEnvelope_ClusterUnavailable(t *testing.T) {
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(envelopeRegistration(restJSONService, dispatch.ErrorEnvelopeRESTJSON, c, nil)))
 	require.NoError(t, b.Register(envelopeRegistration(json10Service, dispatch.ErrorEnvelopeJSON10Query, c, nil)))
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true, Services: b.Build()}, gwfix.Deps{IAM: allowAllIAMService()}))
+	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Services: b.Build()}, gwfix.Deps{IAM: allowAllIAMService()}))
 
 	call := func(svc string) *http.Response {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)

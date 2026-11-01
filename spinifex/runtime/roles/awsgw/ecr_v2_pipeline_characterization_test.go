@@ -57,7 +57,7 @@ func newV2Env(t *testing.T, opts v2Options) *v2Env {
 	}
 	iamSvc.userPolicies[v2Account+"|dev"] = policies
 
-	gw := withVerifier(gwfix.WithDeps(&pipeline.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         ecrTestRegion,
 	}, gwfix.Deps{IAM: iamSvc, STS: stsSvc}))

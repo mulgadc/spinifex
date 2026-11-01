@@ -11,7 +11,7 @@ import (
 
 // withECR registers the ECR control plane on gw backed by deps, as the awsgw
 // role composes it. An unset deps.NATS takes gw.NATSConn.
-func withECR(gw *pipeline.GatewayConfig, deps awsapi.Deps) *pipeline.GatewayConfig {
+func withECR(gw *pipeline.Config, deps awsapi.Deps) *pipeline.Config {
 	if deps.NATS == nil {
 		deps.NATS = gwfix.DepsOf(gw).NATS
 	}
@@ -26,7 +26,7 @@ func withECR(gw *pipeline.GatewayConfig, deps awsapi.Deps) *pipeline.GatewayConf
 // ecrRegistrationInventory is the inventory the ECR registration declares to
 // a registry, keyed as AWSOperationInventory expects.
 func ecrRegistrationInventory() map[string]dispatch.Inventory {
-	inventory := withECR(&pipeline.GatewayConfig{}, awsapi.Deps{}).Services.Inventory()
-	maps.Copy(inventory, withContainers(&pipeline.GatewayConfig{}).Services.Inventory())
+	inventory := withECR(&pipeline.Config{}, awsapi.Deps{}).Services.Inventory()
+	maps.Copy(inventory, withContainers(&pipeline.Config{}).Services.Inventory())
 	return inventory
 }

@@ -29,14 +29,14 @@ type allowAdmission struct{}
 
 func (allowAdmission) Admit(string, string) error { return nil }
 
-type natsReadiness struct{ gw *GatewayConfig }
+type natsReadiness struct{ gw *Config }
 
 func (n natsReadiness) Available() bool {
 	return gwfix.DepsOf(n.gw).NATS != nil && gwfix.DepsOf(n.gw).NATS.IsConnected()
 }
 
 // withFakeCapabilities fills whichever capability a test left unset.
-func withFakeCapabilities(gw *GatewayConfig) *GatewayConfig {
+func withFakeCapabilities(gw *Config) *Config {
 	withTestAdmin(gw)
 	if gw.Policy == nil {
 		gw.Policy = allowPolicy{}
@@ -52,7 +52,7 @@ func withFakeCapabilities(gw *GatewayConfig) *GatewayConfig {
 
 // withTestAdmin points the /admin surface at the spinifex registration, as the
 // composing role does.
-func withTestAdmin(gw *GatewayConfig) {
+func withTestAdmin(gw *Config) {
 	if gw.Admin.Service == "" {
 		gw.Admin = AdminSurface{Service: operatoradmin.ServiceName, WithRequestID: operatoradmin.WithRequestID}
 	}

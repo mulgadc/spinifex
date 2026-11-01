@@ -102,7 +102,7 @@ func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statemen
 	if mutate != nil {
 		mutate(env)
 	}
-	cfg := gwfix.WithDeps(&pipeline.GatewayConfig{DisableLogging: true, Region: gwfix.Region}, gwfix.Deps{NATS: nc, IAM: svc})
+	cfg := gwfix.WithDeps(&pipeline.Config{DisableLogging: true, Region: gwfix.Region}, gwfix.Deps{NATS: nc, IAM: svc})
 	if env.NoNATS {
 		gwfix.DepsOf(cfg).NATS = nil
 	}

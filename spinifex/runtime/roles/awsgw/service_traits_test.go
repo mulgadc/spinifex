@@ -20,7 +20,7 @@ import (
 // productionTraits is the traits each production registration declares.
 func productionTraits(t *testing.T) map[string]dispatch.ServiceTraits {
 	t.Helper()
-	gw := &pipeline.GatewayConfig{}
+	gw := &pipeline.Config{}
 	require.NoError(t, wireServiceRegistry(gw,
 		iamawsapi.NewRegistration(iamawsapi.Deps{}),
 		stsawsapi.NewRegistration(stsawsapi.Deps{}),
@@ -59,7 +59,7 @@ func TestProductionServiceTraits_XMLErrorShape(t *testing.T) {
 
 // S3 is not served here, but its rejections keep S3's body.
 func TestWireServiceRegistry_DeclaresTheS3Scope(t *testing.T) {
-	gw := &pipeline.GatewayConfig{}
+	gw := &pipeline.Config{}
 	require.NoError(t, wireServiceRegistry(gw, iamawsapi.NewRegistration(iamawsapi.Deps{})))
 
 	traits, ok := gw.Services.Traits("s3")

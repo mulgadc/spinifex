@@ -30,7 +30,7 @@ func TestACMActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 		{"bare action", "ListCertificates", "ListCertificates"},
 		{"trailing dot", "CertificateManager.", ""},
 	}
-	acmEntry, ok := withACM(&GatewayConfig{}, acmawsapi.Deps{}).registered(acmawsapi.ServiceName)
+	acmEntry, ok := withACM(&Config{}, acmawsapi.Deps{}).registered(acmawsapi.ServiceName)
 	require.True(t, ok)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

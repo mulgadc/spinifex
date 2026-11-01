@@ -14,7 +14,7 @@ import (
 
 // An action whose real handler has not yet landed still resolves to the 501 stub.
 func TestECSRequest_KnownActionNotImplemented(t *testing.T) {
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
+	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECS(httptest.NewRecorder(),
 		setupECSRequest("AmazonEC2ContainerServiceV20141113.UpdateCluster", "{}"))
 	require.Error(t, err)
@@ -28,7 +28,7 @@ func TestECSRequest_MissingAccountID(t *testing.T) {
 	req.Header.Set("X-Amz-Target", "AmazonEC2ContainerServiceV20141113.ListClusters")
 	req = withTestIdentity(req.WithContext(reqctx.WithService(req.Context(), "ecs")))
 
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
+	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	// Account-less requests are rejected by the policy gate, which runs ahead of
 	// the handler's own account guard.
 	err := gw.serveECS(httptest.NewRecorder(), req)
@@ -37,14 +37,14 @@ func TestECSRequest_MissingAccountID(t *testing.T) {
 }
 
 func TestECSRequest_MissingTarget(t *testing.T) {
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
+	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECS(httptest.NewRecorder(), setupECSRequest("", ""))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
 }
 
 func TestECSRequest_UnknownAction(t *testing.T) {
-	gw := withVerifier(gwfix.WithDeps(&GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
+	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
 	err := gw.serveECS(httptest.NewRecorder(),
 		setupECSRequest("AmazonEC2ContainerServiceV20141113.MadeUpAction", "{}"))
 	require.Error(t, err)

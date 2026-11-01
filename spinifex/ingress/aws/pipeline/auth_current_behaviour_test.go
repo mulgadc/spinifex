@@ -125,7 +125,7 @@ func newCBEnv(t *testing.T, opts cbEnvOpts) *cbEnv {
 
 // gateway builds a router over the env's services with its own (cold) caches.
 func (e *cbEnv) gateway() http.Handler {
-	gw := gwfix.WithDeps(&GatewayConfig{
+	gw := gwfix.WithDeps(&Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: e.nc, Nodes: 1, IAM: e.counter, STS: e.sts})

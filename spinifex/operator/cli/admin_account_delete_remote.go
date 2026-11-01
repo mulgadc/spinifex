@@ -86,6 +86,10 @@ func followAccountDeletion(ctx context.Context, target adminTarget, accountID st
 	for {
 		job, err := describeAccountDeletionRemote(ctx, target, accountID)
 		if err != nil {
+			// The deadline often lands mid-poll; the caller still needs the account.
+			if ctx.Err() != nil {
+				return stoppedFollowing(accountID, ctx.Err())
+			}
 			return err
 		}
 
@@ -104,10 +108,14 @@ func followAccountDeletion(ctx context.Context, target adminTarget, accountID st
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("stopped following teardown of %s: %w", accountID, ctx.Err())
+			return stoppedFollowing(accountID, ctx.Err())
 		case <-time.After(accountDeletePollInterval):
 		}
 	}
+}
+
+func stoppedFollowing(accountID string, cause error) error {
+	return fmt.Errorf("stopped following teardown of %s: %w", accountID, cause)
 }
 
 func deleteAccountRemote(

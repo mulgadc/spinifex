@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,7 @@ func TestErrorEnvelope_Throttle(t *testing.T) {
 		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 		assert.Equal(t, "TooManyRequestsException", resp.Header.Get("X-Amzn-Errortype"))
 		assert.Empty(t, resp.Header.Get("Retry-After"))
+		assert.NotEmpty(t, resp.Header.Get("X-Amzn-Requestid"))
 		assert.JSONEq(t, `{"Reason":"CallerRateLimitExceeded","Type":"User","message":"Rate Exceeded."}`, bodyString(t, resp))
 	})
 
@@ -252,6 +254,7 @@ func TestErrorEnvelope_ClusterUnavailable(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 	assert.Equal(t, "ServiceUnavailableException", resp.Header.Get("X-Amzn-Errortype"))
+	assert.NotEmpty(t, resp.Header.Get("X-Amzn-Requestid"))
 	assert.JSONEq(t, `{"Type":"Service","message":"`+clusterUnavailableMsg+`"}`, bodyString(t, resp))
 
 	resp = call(json10Service)
@@ -329,11 +332,16 @@ func TestJSONErrorRequestIDMatchesAudit(t *testing.T) {
 			r.Use(gw.SigV4AuthMiddleware())
 			r.HandleFunc("/*", gw.Request)
 
-			resp := doRequest(r, signDispatchRequest(t, svc, []byte("{}")))
-			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-			id := resp.Header.Get("X-Amzn-Requestid")
-			require.NotEmpty(t, id)
-			assert.Equal(t, id, auditField(rec, "awsRequestID"))
+			badSig := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
+			badSig.Host = "localhost:9999"
+			signTestRequestAs(t, badSig, []byte("{}"), testAccessKey, "wrong-secret", svc, time.Now().UTC())
+
+			for _, req := range []*http.Request{signDispatchRequest(t, svc, []byte("{}")), badSig} {
+				resp := doRequest(r, req)
+				id := resp.Header.Get("X-Amzn-Requestid")
+				require.NotEmpty(t, id)
+				assert.Equal(t, id, auditField(rec, "awsRequestID"))
+			}
 		})
 	}
 }

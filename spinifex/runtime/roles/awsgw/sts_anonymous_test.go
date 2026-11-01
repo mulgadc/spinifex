@@ -2,7 +2,7 @@ package awsgw_test
 
 import (
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +19,7 @@ import (
 // AssumeRoleWithWebIdentity is routed to the STS dispatcher before SigV4, not rejected.
 func TestAnonymousSTS_WebIdentityNoAuthReachesHandler(t *testing.T) {
 	var seenToken string
-	gw := withSTS(withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
+	gw := withSTS(withVerifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 	}, gwfix.Deps{IAM: &flexMockIAMService{}, STS: &flexMockSTSService{
 		assumeWebIdentityFn: func(in *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {

@@ -7,7 +7,8 @@ package awsgw_test
 import (
 	"bytes"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -29,13 +30,13 @@ import (
 // acmPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as every principal's policy. The region is
 // gwfix.Region because gwfix.SignRequestAs always signs for it.
-func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*gateway.GatewayConfig, http.Handler) {
+func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*pipeline.Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
@@ -208,7 +209,7 @@ func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
 func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
 	for _, action := range []string{"ListCertificates", "DeleteCertificate"} {
 		t.Run(action, func(t *testing.T) {
-			gw := withACM(withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), acmawsapi.Deps{})
+			gw := withACM(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), acmawsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", "CertificateManager."+action)
@@ -261,7 +262,7 @@ func TestACMPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 // that drops or adds an action, including by moving ACM onto the
 // registration seam, fails here.
 func TestACMInventory_RegisteredArePinned(t *testing.T) {
-	acm := gateway.AWSOperationInventory(acmRegistrationInventory())["acm"]
+	acm := dispatch.AWSOperationInventory(acmRegistrationInventory())["acm"]
 
 	want := []string{
 		"ImportCertificate", "RequestCertificate", "DescribeCertificate", "GetCertificate",

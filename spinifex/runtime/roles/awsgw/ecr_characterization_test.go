@@ -9,7 +9,8 @@ import (
 	"context"
 	"errors"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"net/http"
 	"net/http/httptest"
@@ -31,13 +32,13 @@ import (
 // ecrPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS so Request dispatches. docs is every principal's policy; the
 // region is gwfix.Region because gwfix.SignRequestAs always signs for it.
-func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*gateway.GatewayConfig, http.Handler) {
+func ecrPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*pipeline.Config, http.Handler) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
-	gw := withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{
+	gw := withVerifier(gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
 		Region:         gwfix.Region,
 	}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
@@ -265,7 +266,7 @@ func TestECRPipeline_AuthzGateBlocksComposedAction(t *testing.T) {
 func TestRequest_ClusterUnavailableNilConn_ECR(t *testing.T) {
 	for _, action := range []string{"ListRepositories", "CreateRepository"} {
 		t.Run(action, func(t *testing.T) {
-			gw := withECR(withVerifier(gwfix.WithDeps(&gateway.GatewayConfig{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{})
+			gw := withECR(withVerifier(gwfix.WithDeps(&pipeline.Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), awsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+"."+action)
@@ -316,7 +317,7 @@ func TestECRPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 // Pins the ECR inventory so a refactor that drops or adds an action, including
 // by changing which capability intercepts it, fails here.
 func TestECRInventory_RegisteredStubbedUnsupportedArePinned(t *testing.T) {
-	ecr := gateway.AWSOperationInventory(ecrRegistrationInventory())["ecr"]
+	ecr := dispatch.AWSOperationInventory(ecrRegistrationInventory())["ecr"]
 
 	wantRegistered := []string{
 		"GetAuthorizationToken", "CreateRepository", "DeleteRepository", "DescribeRepositories",

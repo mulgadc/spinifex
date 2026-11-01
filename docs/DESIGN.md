@@ -33,67 +33,32 @@ The gateway (`spinifex/runtime/roles/awsgw/awsgw.go`) is the entry point:
 // Connect to NATS (retries while the local broker comes up)
 natsConn, err := natsmsg.ConnectNATSWithRetry(...)
 
-// Load IAM (master key + JetStream KV) and create the gateway
-gw := gateway.GatewayConfig{
-    NATSConn:   natsConn,
-    Config:     nodeConfig.AWSGW.Config,
-    IAMService: iamService,
+// Load IAM (master key + JetStream KV), then compose the gateway: composeGateway
+// sets every production hook and wires the service registry from each domain's
+// awsapi registration.
+gw, err := composeGateway(gatewayInputs{
+    NATS:        natsConn,
+    IAM:         iamService,
+    Credentials: credentials,
+    Admission:   admission,
     // ...
-}
+}, ecrControlPlane, acmControlPlane, ec2ControlPlane /* ... */)
 
 // Serve over TLS
 server.ListenAndServeTLS("", "")
 ```
 
-Request routing (`spinifex/gateway/gateway.go`):
+Request routing (`spinifex/ingress/aws/pipeline/gateway.go`):
 
-1. **Authentication**: SigV4 middleware validates AWS credentials and resolves the account ID
-2. **Throttling**: Per-account+action token bucket rejects bursts post-auth
-3. **Service Detection**: Extracts service name from the Authorization header
-4. **Action Dispatch**: Routes to service-specific handler. A service registered through the ingress dispatch registry (`ingress/aws/dispatch`, wired by `runtime/roles/awsgw`) is dispatched by its registration; currently those are the ECR and ACM control planes, registered from `domains/ecr/awsapi` and `domains/acm/awsapi`. Every other service uses the legacy switch:
-
-```go
-switch svc {
-case "ec2":
-    err = gw.EC2_Request(w, r)
-case "iam":
-    err = gw.IAM_Request(w, r)
-case "sts":
-    err = gw.STS_Request(w, r)
-case "elasticloadbalancing":
-    err = gw.ELBv2_Request(w, r)
-case "eks":
-    err = gw.EKS_Request(w, r)
-case "bedrock":
-    err = gw.Bedrock_Request(w, r)
-// ... bedrock-runtime, bedrock-agent, bedrock-agent-runtime
-case "ecs":
-    err = gw.ECS_Request(w, r)
-case "rds":
-    err = gw.RDS_Request(w, r)
-case "tagging":
-    err = gw.Tagging_Request(w, r)
-case "spinifex":
-    err = gw.Spinifex_Request(w, r)
-}
-```
+1. **Public routes**: `/oidc/eks/...` and `/v2` (the ECR registry) are mounted ahead of SigV4 by `runtime/roles/awsgw`
+2. **Authentication**: SigV4 middleware validates AWS credentials and resolves the account ID
+3. **Throttling**: Per-account+action token bucket rejects bursts post-auth
+4. **Service Detection**: Extracts service name from the Authorization header
+5. **Action Dispatch**: Every service is a registration (`ingress/aws/dispatch`) built by its domain's `awsapi.NewRegistration` and wired by `runtime/roles/awsgw`. The pipeline dispatches by registered service name and holds no per-service code. The private `/admin/<Method>` surface dispatches to the registration `awsgw` names as `Admin.Service`.
 
 ### 3. EC2 Handler
 
-The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and delegates to specific handlers via the generic `ec2Handler` and `ec2HandlerWithReq` wrappers. The account ID resolved by SigV4 auth is threaded into every handler so requests are scoped per IAM principal:
-
-```go
-"RunInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
-    // ... PassRole and launch-quota checks, then the vCPU quota charge
-    return ec2instanceapi.RunInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, launchQuotaCheck, gw.ExpectedNodes)
-}),
-"DescribeInstances": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-    return ec2instanceapi.DescribeInstancesChecked(ctx, input, gw.NATSConn, 0, gw.NodeIDs, accountID)
-}),
-// ... + volumes, snapshots, VPCs, subnets, route tables, IGWs, NAT gateways,
-// security groups, network interfaces, elastic IPs, placement groups, key pairs,
-// images, tags, capacity reservations, spot instances
-```
+The EC2 registration (`spinifex/domains/ec2/awsapi`, `NewRegistration`) parses the `Action` parameter and looks the handler up in its action table. The account ID resolved by SigV4 auth is threaded into every handler so requests are scoped per IAM principal. Each action's handler is built from the owning EC2 resource package (`domains/ec2/instance`, `volume`, `vpc` and so on), with PassRole, quota and client-token idempotency wrapped on at the action table rather than inside the resource.
 
 ### 4. NATS Messaging
 

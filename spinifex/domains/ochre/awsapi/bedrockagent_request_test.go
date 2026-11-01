@@ -22,7 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newBedrockAgentRequestGateway builds a GatewayConfig with fresh
+// newBedrockAgentRequestGateway builds a pipeline.Config with fresh
 // gateway-owned KB/DataSource stores over a real (embedded) JetStream and an
 // allow-everything IAMService, so the policy gate passes on a real evaluation
 // rather than a bypass, mirroring newBedrockRequestGateway.

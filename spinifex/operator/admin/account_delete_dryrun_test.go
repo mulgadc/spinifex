@@ -59,7 +59,7 @@ func TestAdminDeleteAccountDryRunLogsTheShadowUnderTheRequestID(t *testing.T) {
 	gotJSON, err := json.Marshal(got)
 	require.NoError(t, err)
 
-	engine, err := accountteardown.NewClusterEngine(t.Context(), gw.NATS, gw.ExpectedNodes, gw.NodeIDs, gw.IAM, gw.BucketStore)
+	engine, err := accountteardown.NewClusterEngine(t.Context(), gw.NATS, accountteardown.ClusterNodes{Expected: gw.ExpectedNodes, DaemonIDs: gw.NodeIDs, GatewayIDs: gw.GatewayNodeIDs}, gw.IAM, gw.BucketStore)
 	require.NoError(t, err)
 	inventory, err := engine.Inventory(t.Context(), account.AccountID)
 	require.NoError(t, err)

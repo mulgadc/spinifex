@@ -55,6 +55,7 @@ type Deps struct {
 	Quota             *quota.Service
 	ExpectedNodes     int
 	NodeIDs           []string
+	GatewayNodeIDs    []string
 	BucketStore       accountteardown.BucketStore
 	SignupMaxAccounts int
 }

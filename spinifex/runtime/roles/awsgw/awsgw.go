@@ -658,7 +658,7 @@ func launchService(config *config.ClusterConfig) error {
 	})
 	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
 	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
-	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
+	operatorControlPlane := operatoradmin.NewRegistration(withClusterNodes(operatoradmin.Deps{
 		Version:     version,
 		Commit:      commit,
 		NATS:        natsConn,
@@ -670,11 +670,9 @@ func launchService(config *config.ClusterConfig) error {
 
 		IAM:               iamService,
 		Quota:             quotaSvc,
-		ExpectedNodes:     len(config.Nodes),
-		NodeIDs:           nodeIDs,
 		BucketStore:       objStore,
 		SignupMaxAccounts: signupMaxAccounts,
-	})
+	}, config))
 	// The SQS worker's internal surface binds its buckets per request and never
 	// creates them, so it refuses every caller until a worker launch has.
 	sqsWorkerControlPlane := sqsworkerapi.NewRegistration(sqsworkerapi.JetStreamDeps(js))
@@ -875,4 +873,14 @@ func parseBedrockEndpoints(raw string) map[string]string {
 		return nil
 	}
 	return endpoints
+}
+
+// withClusterNodes sets the configured node sets teardown reaches: the
+// daemon on every node, and the gateway only on nodes that run awsgw. An
+// empty gateway set would fail every account termination closed.
+func withClusterNodes(d operatoradmin.Deps, config *config.ClusterConfig) operatoradmin.Deps {
+	d.ExpectedNodes = len(config.Nodes)
+	d.NodeIDs = slices.Sorted(maps.Keys(config.Nodes))
+	d.GatewayNodeIDs = config.NodesRunning("awsgw")
+	return d
 }

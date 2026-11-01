@@ -61,8 +61,6 @@ type GatewayConfig struct {
 	// early refusal in the auth middleware and makes the service gate answer
 	// cluster-unavailable.
 	Readiness pipeline.Readiness
-	Version   string // Build-time version string (set from cmd.Version)
-	Commit    string // Build-time commit hash (set from cmd.Commit)
 	// PublicRoutes mounts the routes served ahead of SigV4 and the throttle.
 	// They authenticate themselves or need no authentication. Nil mounts none.
 	PublicRoutes func(chi.Router)

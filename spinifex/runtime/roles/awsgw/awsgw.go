@@ -540,8 +540,6 @@ func launchService(config *config.ClusterConfig) error {
 		Admission:      admission,
 		Policy:         policyauth.New(iamService),
 		Readiness:      clusterready.New(natsConn),
-		Version:        version,
-		Commit:         commit,
 		Admin:          gateway.AdminSurface{Service: operatoradmin.ServiceName, WithRequestID: operatoradmin.WithRequestID},
 		PublicRoutes:   PublicRoutes(ekscluster.NewOIDCPublisher(jwksJS), registryHosts.Middleware(ecrBridge.Handler())),
 	}
@@ -662,8 +660,8 @@ func launchService(config *config.ClusterConfig) error {
 	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
 	gw.PreAuth = append(gw.PreAuth, stsawsapi.NewPreAuth(stsDeps))
 	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
-		Version:     gw.Version,
-		Commit:      gw.Commit,
+		Version:     version,
+		Commit:      commit,
 		NATS:        natsConn,
 		RootCAs:     rootCAs,
 		ActiveNodes: nodes.ActiveNodes,

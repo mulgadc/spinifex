@@ -1275,8 +1275,6 @@ func operatorPipelineApp(t *testing.T, accountID string, docs []iamdomain.Policy
 		DisableLogging: true,
 		Region:         gwfix.Region,
 		NATSConn:       nc,
-		Version:        "v9.9.9-test",
-		Commit:         "abc1234",
 		IAMService: &gwfix.PolicyIAM{
 			IAM: gwfix.IAM{
 				MasterKey: gwfix.MasterKey,
@@ -1378,8 +1376,8 @@ var spinifexAdminActions = func() map[string]bool {
 func withOperator(gw *GatewayConfig) *GatewayConfig {
 	b := dispatch.NewBuilder()
 	deps := operatoradmin.Deps{
-		Version:     gw.Version,
-		Commit:      gw.Commit,
+		Version:     "v9.9.9-test",
+		Commit:      "abc1234",
 		NATS:        gw.NATSConn,
 		ActiveNodes: activeNodes(gw),
 

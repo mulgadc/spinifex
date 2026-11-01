@@ -296,23 +296,31 @@ func TestAccountScoping_Settings(t *testing.T) {
 	alpha := createTenantAccount(t, gw, "scoping-alpha")
 	beta := createTenantAccount(t, gw, "scoping-beta")
 
-	_, err := alpha.EC2.EnableEbsEncryptionByDefault(&ec2.EnableEbsEncryptionByDefaultInput{})
-	require.NoError(t, err, "alpha enable-ebs-encryption")
+	_, err := alpha.EC2.EnableSerialConsoleAccess(&ec2.EnableSerialConsoleAccessInput{})
+	require.NoError(t, err, "alpha enable-serial-console-access")
 
-	betaEnc, err := beta.EC2.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{})
-	require.NoError(t, err, "beta get-ebs-encryption")
-	assert.False(t, aws.BoolValue(betaEnc.EbsEncryptionByDefault), "alpha's encryption setting leaked to beta")
+	betaSerial, err := beta.EC2.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{})
+	require.NoError(t, err, "beta get-serial-console-access-status")
+	assert.False(t, aws.BoolValue(betaSerial.SerialConsoleAccessEnabled), "alpha's serial console setting leaked to beta")
 
 	// Independent toggle: enable beta, disable alpha.
-	_, err = beta.EC2.EnableEbsEncryptionByDefault(&ec2.EnableEbsEncryptionByDefaultInput{})
-	require.NoError(t, err, "beta enable-ebs-encryption")
-	_, err = alpha.EC2.DisableEbsEncryptionByDefault(&ec2.DisableEbsEncryptionByDefaultInput{})
-	require.NoError(t, err, "alpha disable-ebs-encryption")
+	_, err = beta.EC2.EnableSerialConsoleAccess(&ec2.EnableSerialConsoleAccessInput{})
+	require.NoError(t, err, "beta enable-serial-console-access")
+	_, err = alpha.EC2.DisableSerialConsoleAccess(&ec2.DisableSerialConsoleAccessInput{})
+	require.NoError(t, err, "alpha disable-serial-console-access")
 
-	alphaEnc, err := alpha.EC2.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{})
-	require.NoError(t, err, "alpha get-ebs-encryption")
-	betaEnc, err = beta.EC2.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{})
+	alphaSerial, err := alpha.EC2.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{})
+	require.NoError(t, err, "alpha get-serial-console-access-status")
+	betaSerial, err = beta.EC2.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{})
+	require.NoError(t, err, "beta get-serial-console-access-status")
+	assert.False(t, aws.BoolValue(alphaSerial.SerialConsoleAccessEnabled), "alpha serial console should be off")
+	assert.True(t, aws.BoolValue(betaSerial.SerialConsoleAccessEnabled), "beta serial console should be on")
+
+	// EBS encryption by default is the platform's posture, not an account
+	// setting: with no master key configured it reads false whatever alpha enabled.
+	_, err = alpha.EC2.EnableEbsEncryptionByDefault(&ec2.EnableEbsEncryptionByDefaultInput{})
+	require.NoError(t, err, "alpha enable-ebs-encryption")
+	betaEnc, err := beta.EC2.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{})
 	require.NoError(t, err, "beta get-ebs-encryption")
-	assert.False(t, aws.BoolValue(alphaEnc.EbsEncryptionByDefault), "alpha encryption should be off")
-	assert.True(t, aws.BoolValue(betaEnc.EbsEncryptionByDefault), "beta encryption should be on")
+	assert.False(t, aws.BoolValue(betaEnc.EbsEncryptionByDefault), "no key configured, so no volume is encrypted")
 }

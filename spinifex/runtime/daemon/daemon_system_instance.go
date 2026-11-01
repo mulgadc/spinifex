@@ -93,11 +93,11 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 	if guest != nil {
 		managedBy = tags.ManagedBySQS
 	}
-	// The SQS worker reaches the gateway only over its mgmt NIC.
+	// The SQS guests reach the gateway only over their mgmt NIC.
 	mgmtRequired := input.Scheme == elbv2domain.SchemeInternal || (guest != nil && guest.needsMgmtNIC())
 	mgmtFor := "internal-scheme ALB"
 	if guest != nil && guest.needsMgmtNIC() {
-		mgmtFor = "SQS worker"
+		mgmtFor = guest.label()
 	}
 	accountID := awsidentifiers.GlobalAccountID
 	// ENI account may differ from system account — the ENI is created under
@@ -401,7 +401,7 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 
 	if guest != nil && guest.needsMgmtNIC() && instance.MgmtIP == "" {
 		d.cleanupFailedSystemInstance(instance, instanceType)
-		return nil, errors.New("sqs worker: no mgmt NIC on this node")
+		return nil, fmt.Errorf("%s: no mgmt NIC on this node", guest.label())
 	}
 
 	// The requested guest ports. The host ports they land on are observed by
@@ -429,7 +429,7 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 		instance.EBSRequests.Mu.Lock()
 		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{
 			Name:                guest.dataVolume(),
-			DeviceName:          sqsStoreDataDevice,
+			DeviceName:          sqsDataDevice,
 			DeleteOnTermination: false,
 		})
 		instance.EBSRequests.Mu.Unlock()
@@ -715,7 +715,7 @@ func (d *Daemon) refreshSystemInstanceState(inst *vm.VM) error {
 		if inst.SQSWorkerGuest != nil {
 			return d.refreshSQSWorkerState(inst)
 		}
-		return d.refreshSQSStoreState(inst)
+		return refuseSQSStoreRelaunch(inst)
 	}
 	if inst.ManagedBy != tags.ManagedByELBv2 {
 		return nil
@@ -855,7 +855,7 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 		if err != nil {
 			return vm.Config{}, fmt.Errorf("write sqs guest fw_cfg blobs: %w", err)
 		}
-		fwCfg = append(sqsStoreNetcfgOnly(fwCfg), guestCfg...)
+		fwCfg = append(sqsNetcfgOnly(fwCfg), guestCfg...)
 		imageDir = guest.imageDir()
 	}
 

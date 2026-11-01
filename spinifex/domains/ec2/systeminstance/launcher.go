@@ -88,10 +88,8 @@ type SystemInstanceInput struct {
 	IamInstanceProfileArn string `json:"iam_instance_profile_arn,omitempty"`
 
 	// Kind selects a non-load-balancer direct-boot guest; empty is the load
-	// balancer. SQSStore carries the KindSQSStore guest's volume and key, and
-	// SQSWorker the KindSQSWorker guest's volume and store decision.
+	// balancer. SQSWorker carries the KindSQSWorker guest's volume and Region.
 	Kind      Kind            `json:"kind,omitempty"`
-	SQSStore  *SQSStoreInput  `json:"sqs_store,omitempty"`
 	SQSWorker *SQSWorkerInput `json:"sqs_worker,omitempty"`
 }
 

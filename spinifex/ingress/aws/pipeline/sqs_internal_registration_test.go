@@ -11,13 +11,10 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	sqsworkerapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi/worker"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/firststore"
-	"github.com/mulgadc/spinifex/spinifex/domains/sqs/storelaunch"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,23 +25,12 @@ type sqsWorkerIdentities struct{ asked int }
 
 func (s *sqsWorkerIdentities) Authorize(_ context.Context, instanceID string) (workerident.Identity, error) {
 	s.asked++
-	return workerident.Identity{Region: "ap-southeast-2", InstanceID: instanceID, Generation: 1, ClaimID: "claim-0001"}, nil
+	return workerident.Identity{Region: "ap-southeast-2", InstanceID: instanceID, Generation: 1, ClaimID: "claim-0001",
+		ReceiptInit: workerident.ReceiptPending}, nil
 }
 
-type sqsWorkerFirstStore struct{}
-
-func (sqsWorkerFirstStore) Claim(context.Context, string, firststore.Identity) (firststore.Decision, error) {
-	return firststore.Decision{CreateKey: true}, nil
-}
-
-func (sqsWorkerFirstStore) RecordPublicKey(context.Context, string, firststore.Identity, string) error {
+func (s *sqsWorkerIdentities) RecordReceiptKey(context.Context, workerident.Identity, string) error {
 	return nil
-}
-
-type sqsWorkerStores struct{}
-
-func (sqsWorkerStores) Current(context.Context, string) (storelaunch.Record, error) {
-	return storelaunch.Record{}, jetstream.ErrKeyNotFound
 }
 
 // withSQSInternal registers the internal SQS surface beside RDS, as awsgw
@@ -87,25 +73,25 @@ func serveSigned(gw *Config, w http.ResponseWriter, r *http.Request) error {
 func newSQSInternalGateway(policies []iamdomain.PolicyDocument) (*Config, *rdsPolicyProbe, *sqsWorkerIdentities) {
 	gw, probe := newRDSPolicyGateway(policies)
 	ids := &sqsWorkerIdentities{}
-	return withSQSInternal(gw, sqsworkerapi.Deps{Identities: ids, FirstStore: sqsWorkerFirstStore{}, Stores: sqsWorkerStores{}}), probe, ids
+	return withSQSInternal(gw, sqsworkerapi.Deps{Identities: ids, HostNodes: func() int { return 1 }}), probe, ids
 }
 
 // The worker's session, signed for spinifex-sqs, reaches the internal surface
 // and is evaluated against its role policy under the spinifex-sqs prefix.
 func TestSQSInternal_RoutedBySigningServiceAndRolePolicy(t *testing.T) {
-	gw, probe, ids := newSQSInternalGateway(gwfix.AllowPolicy("spinifex-sqs:ClaimFirstStore"))
+	gw, probe, ids := newSQSInternalGateway(gwfix.AllowPolicy("spinifex-sqs:ClaimReceiptKey"))
 	rec := httptest.NewRecorder()
-	require.NoError(t, serveSigned(gw, rec, sqsWorkerRequest(sqsworkerapi.ServiceName, "Action=ClaimFirstStore", sqsWorkerInstance)))
+	require.NoError(t, serveSigned(gw, rec, sqsWorkerRequest(sqsworkerapi.ServiceName, "Action=ClaimReceiptKey", sqsWorkerInstance)))
 	assert.Equal(t, 1, probe.consulted)
 	assert.Equal(t, 1, ids.asked)
-	assert.Contains(t, rec.Body.String(), "<CreateKey>true</CreateKey>")
+	assert.Contains(t, rec.Body.String(), "<Pending>true</Pending>")
 }
 
 // The role policy is real: a worker session whose policy grants another
-// service's action is denied before any store is consulted.
+// service's action is denied before any identity is consulted.
 func TestSQSInternal_PolicyForAnotherServiceDenies(t *testing.T) {
-	gw, probe, ids := newSQSInternalGateway(gwfix.AllowPolicy("sqs:ClaimFirstStore"))
-	err := serveSigned(gw, httptest.NewRecorder(), sqsWorkerRequest(sqsworkerapi.ServiceName, "Action=ClaimFirstStore", sqsWorkerInstance))
+	gw, probe, ids := newSQSInternalGateway(gwfix.AllowPolicy("sqs:ClaimReceiptKey"))
+	err := serveSigned(gw, httptest.NewRecorder(), sqsWorkerRequest(sqsworkerapi.ServiceName, "Action=ClaimReceiptKey", sqsWorkerInstance))
 	assertDenied(t, err)
 	assert.Equal(t, 1, probe.consulted)
 	assert.Zero(t, ids.asked)
@@ -114,7 +100,7 @@ func TestSQSInternal_PolicyForAnotherServiceDenies(t *testing.T) {
 // A customer administrator holding every action is refused by the class gate.
 func TestSQSInternal_CustomerAdminDenied(t *testing.T) {
 	gw, probe, ids := newSQSInternalGateway(gwfix.AllowPolicy("*"))
-	req := setupRDSUserRequest("Action=ClaimFirstStore", rdsTestAccountID)
+	req := setupRDSUserRequest("Action=ClaimReceiptKey", rdsTestAccountID)
 	req = req.WithContext(reqctx.WithService(req.Context(), sqsworkerapi.ServiceName))
 	assertDenied(t, serveSigned(gw, httptest.NewRecorder(), req))
 	assert.Zero(t, probe.consulted)
@@ -131,7 +117,7 @@ func TestSQSInternal_PublicSQSUnchanged(t *testing.T) {
 	assert.NotContains(t, inv, "sqs")
 	assert.ElementsMatch(t, sqsworkerapi.ActionNames(), inv[sqsworkerapi.ServiceName].Registered)
 
-	err := serveSigned(gw, httptest.NewRecorder(), sqsWorkerRequest(rdsawsapi.ServiceName, "Action=ClaimFirstStore", sqsWorkerInstance))
+	err := serveSigned(gw, httptest.NewRecorder(), sqsWorkerRequest(rdsawsapi.ServiceName, "Action=ClaimReceiptKey", sqsWorkerInstance))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 	assert.Zero(t, ids.asked)

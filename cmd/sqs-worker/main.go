@@ -1,17 +1,22 @@
-// sqs-worker runs inside the shared SQS worker microVM.
+// sqs-worker runs inside the SQS microVM, next to its own SQS NATS server.
 //
 // Usage:
 //
 //	sqs-worker boot
 //	sqs-worker ready
 //
-// boot selects and mounts the worker's data disk named by fw_cfg, asks the
-// gateway for its current first-store decision with its instance-role
-// credentials, then loads or creates the store key on that disk and
-// publishes only the public key. ready then keeps checking the bound store's
-// JetStream with that key until it is stopped, keeping a readiness marker only
-// while the check passes; it proves the store accepted the worker key, not
-// the store server's identity.
+// boot selects and mounts the guest's data disk named by fw_cfg, asks the
+// gateway for its receipt key decision with its instance-role credentials,
+// then loads the recorded key, or creates one on a new volume and records its
+// fingerprint, before the guest's SQS store first starts on that disk. ready
+// then keeps checking the guest's own loopback JetStream, keeping a readiness
+// marker only while it answers, and serves SQS owner calls against it, pulling
+// them from the gateway with the same credentials.
+//
+// Serving is refused unless the gateway reports a single-node host cluster.
+// A disk whose receipt key is missing or does not match the recorded one
+// refuses to serve; recovering it needs a procedure not yet designed, and
+// nothing deletes or replaces the volume.
 package main
 
 import (
@@ -23,10 +28,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/sqsworkergw"
 	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerboot"
 	"github.com/mulgadc/spinifex/spinifex/agents/sqs/workerkey"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerserve"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 )
 
 // The cluster CA the daemon supplies; the only root the client trusts.
@@ -36,7 +45,11 @@ const caPath = "/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/ca-cert/raw"
 // no static-key fallback.
 func newClaimer() workerboot.NewClaimer {
 	return func(region, gatewayURL string) (workerkey.Claimer, error) {
-		return newClient(region, gatewayURL)
+		c, err := newClient(region, gatewayURL)
+		if err != nil {
+			return nil, err
+		}
+		return workerboot.GatewayClaimer{Client: c}, nil
 	}
 }
 
@@ -46,13 +59,6 @@ func newClient(region, gatewayURL string) (*sqsworkergw.Client, error) {
 		return nil, fmt.Errorf("read cluster CA: %w", err)
 	}
 	return sqsworkergw.New(gatewayURL, region, ca, gwsign.NewInstanceRole())
-}
-
-type describer struct{ c *sqsworkergw.Client }
-
-func (d describer) DescribeStore(ctx context.Context) (workerboot.Store, error) {
-	st, err := d.c.DescribeStore(ctx)
-	return workerboot.Store(st), err
 }
 
 func main() {
@@ -66,10 +72,17 @@ func main() {
 		run = ready
 	}
 	if err := run(logf); err != nil {
+		if os.Args[1] == "boot" && workerboot.Transient(err) {
+			logf("boot not settled, will retry: " + err.Error())
+			os.Exit(exitTransient)
+		}
 		logf("FATAL: " + err.Error())
 		os.Exit(1)
 	}
 }
+
+// exitTransient tells the guest's supervisor that boot may be run again.
+const exitTransient = 75
 
 func config(logf func(string)) workerboot.Config {
 	return workerboot.Config{
@@ -99,19 +112,26 @@ func boot(logf func(string)) error {
 func ready(logf func(string)) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+	// The store is one guest, so its streams and buckets are R1.
+	if err := clustersize.Declare(1); err != nil {
+		return err
+	}
 	err := workerboot.Watch(ctx, workerboot.ReadyConfig{
-		Config: config(logf),
-		NewDescriber: func(region, gatewayURL string) (workerboot.StoreDescriber, error) {
-			c, err := newClient(region, gatewayURL)
-			if err != nil {
-				return nil, err
-			}
-			return describer{c}, nil
-		},
+		Config:      config(logf),
 		Checker:     workerboot.NATSChecker{},
 		CallTimeout: 30 * time.Second,
 		Refresh:     30 * time.Second,
 		Refused:     5 * time.Minute,
+		Serve: &workerboot.ServeConfig{
+			Connector: workerboot.NATSConnector{},
+			Run: func(ctx context.Context, region, gatewayURL string, js jetstream.JetStream, receiptKey []byte) error {
+				c, err := newClient(region, gatewayURL)
+				if err != nil {
+					return err
+				}
+				return workerserve.Run(ctx, c, js, receiptKey, logf)
+			},
+		},
 	})
 	if errors.Is(err, context.Canceled) {
 		return nil

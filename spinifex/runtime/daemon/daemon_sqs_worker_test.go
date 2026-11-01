@@ -41,6 +41,7 @@ func sqsWorkerFixture(t *testing.T, encrypted bool) *sysInstFixture {
 	t.Helper()
 	f := newSysInstFixture(t)
 	f.d.config.AZ = "ap-southeast-2a"
+	f.itype = sqsTestInstanceType(t, f.d)
 	if encrypted {
 		raw := make([]byte, 32)
 		_, err := rand.Read(raw)
@@ -51,7 +52,7 @@ func sqsWorkerFixture(t *testing.T, encrypted bool) *sysInstFixture {
 	}
 	f.d.volumeService = ec2volume.NewVolumeServiceImplWithStore(f.d.config, objectstore.NewMemoryObjectStore(), f.d.natsConn)
 	f.d.volumeService.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
-	sqsStoreImage(t)
+	sharedMicroVMImage(t)
 	require.NoError(t, os.MkdirAll(sqsWorkerImageDir(), 0o755))
 	for _, n := range []string{"vmlinuz", "initramfs.cpio.gz"} {
 		require.NoError(t, os.WriteFile(filepath.Join(sqsWorkerImageDir(), n), []byte("x"), 0o644))
@@ -109,7 +110,7 @@ func TestLaunchSQSWorkerInstance_BootsWithMgmtNICProfileAndPublicConfig(t *testi
 	assert.Equal(t, tags.ManagedBySQS, inst.ManagedBy)
 	assert.NotEmpty(t, inst.MgmtIP, "the worker reaches the gateway only over its mgmt NIC")
 	assert.Equal(t, testWorkerProfile, aws.StringValue(inst.Instance.IamInstanceProfile.Arn))
-	assert.Equal(t, []vm.EBSRequest{{Name: vol, DeviceName: sqsStoreDataDevice, DeleteOnTermination: false}}, inst.EBSRequests.Requests)
+	assert.Equal(t, []vm.EBSRequest{{Name: vol, DeviceName: sqsDataDevice, DeleteOnTermination: false}}, inst.EBSRequests.Requests)
 	assert.Equal(t, filepath.Join(sqsWorkerImageDir(), "vmlinuz"), inst.Config.KernelImage)
 	require.NotNil(t, inst.SQSWorkerGuest)
 	assert.Nil(t, inst.SQSStoreGuest)
@@ -163,9 +164,6 @@ func TestLaunchSQSWorkerInstance_RefusesBeforeAnySideEffect(t *testing.T) {
 		}},
 		{"no Region", func(_ *sysInstFixture, in *elbv2domain.SystemInstanceInput) {
 			in.SQSWorker.Region = ""
-		}},
-		{"store settings too", func(_ *sysInstFixture, in *elbv2domain.SystemInstanceInput) {
-			in.SQSStore = &systeminstance.SQSStoreInput{}
 		}},
 		{"no mgmt bridge", func(f *sysInstFixture, _ *elbv2domain.SystemInstanceInput) {
 			f.d.mgmtBridgeIP = ""
@@ -323,7 +321,8 @@ func TestSQSWorkerRoles_EC2OnlyTrustAndMinimalPolicy(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(fake.policy), &doc))
 	require.Len(t, doc.Statement, 1)
 	got := slices.Sorted(slices.Values(doc.Statement[0].Action))
-	assert.Equal(t, []string{"spinifex-sqs:ClaimFirstStore", "spinifex-sqs:DescribeStore", "spinifex-sqs:RecordWorkerPublicKey"}, got)
+	assert.Equal(t, []string{"spinifex-sqs:ClaimReceiptKey", "spinifex-sqs:CompleteWork",
+		"spinifex-sqs:PollWork", "spinifex-sqs:RecordReceiptKey"}, got)
 
 	fake.trust = url.QueryEscape(iamdomain.EC2InstanceTrustPolicy)
 	fake.writes = nil
@@ -373,8 +372,8 @@ func TestSQSWorkerRoles_RefusesAMismatchedProfile(t *testing.T) {
 // Without a cluster storage key the volume adapter refuses before the
 // preparer runs, so no unencrypted volume is allocated.
 func TestSQSWorkerVolumes_RefusesBeforeAllocatingWithoutAStorageKey(t *testing.T) {
-	v := sqsWorkerVolumes{prep: &storevolume.Preparer{}, availabilityZone: "az-1", sizeGiB: 1}
-	_, err := v.Prepare(t.Context())
+	v := sqsWorkerVolumes{prep: &storevolume.Preparer{}, availabilityZone: "az-1"}
+	_, err := v.Prepare(t.Context(), 1)
 	require.ErrorIs(t, err, workerlaunch.ErrUnencrypted)
 }
 

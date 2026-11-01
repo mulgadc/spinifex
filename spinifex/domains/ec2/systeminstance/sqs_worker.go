@@ -34,8 +34,6 @@ func (in *SystemInstanceInput) ValidateSQSWorker() error {
 		return fmt.Errorf("%w: boot mode %q, the worker boots direct only", ErrInvalidSQSWorkerInput, in.BootMode)
 	case in.SQSWorker == nil:
 		return fmt.Errorf("%w: no data volume or Region", ErrInvalidSQSWorkerInput)
-	case in.SQSStore != nil:
-		return fmt.Errorf("%w: SQS store settings on an SQS worker launch", ErrInvalidSQSWorkerInput)
 	case in.IamInstanceProfileArn == "":
 		return fmt.Errorf("%w: no instance profile", ErrInvalidSQSWorkerInput)
 	case in.LBAgentEnv != "" || in.CACert != "" || in.Scheme != "":

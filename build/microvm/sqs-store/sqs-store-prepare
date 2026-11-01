@@ -1,9 +1,0 @@
-#!/bin/sh
-# sysinit: load the disk drivers, then validate the guest contract, check and
-# mount the data disk and write the server config. A refusal leaves the store
-# unprepared, so the run step never starts it.
-. /usr/local/lib/sqs-store/sqs-store-lib.sh
-modprobe virtio_blk 2>/dev/null || true
-modprobe ext4 2>/dev/null || true
-sqs_prepare || sqs_log "store refused; it will not start"
-exit 0

@@ -14,12 +14,13 @@ const ServiceName = "spinifex-sqs"
 const RoleName = "sqsWorkerRole"
 
 const (
-	ActionClaimFirstStore       = "ClaimFirstStore"
-	ActionDescribeStore         = "DescribeStore"
-	ActionRecordWorkerPublicKey = "RecordWorkerPublicKey"
+	ActionClaimReceiptKey  = "ClaimReceiptKey"
+	ActionRecordReceiptKey = "RecordReceiptKey"
+	ActionPollWork         = "PollWork"
+	ActionCompleteWork     = "CompleteWork"
 )
 
 // Actions lists every internal worker action, sorted.
 func Actions() []string {
-	return []string{ActionClaimFirstStore, ActionDescribeStore, ActionRecordWorkerPublicKey}
+	return []string{ActionClaimReceiptKey, ActionCompleteWork, ActionPollWork, ActionRecordReceiptKey}
 }

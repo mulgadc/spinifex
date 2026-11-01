@@ -46,12 +46,6 @@ func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) string {
 	return d.dispatchSystemLaunch(msg, systemLaunchAction, d.LaunchSystemInstance)
 }
 
-// handleSQSStoreLaunch is the NATS subscriber for the SQS store launch
-// subjects, run the same way as a system.LaunchInstance request.
-func (d *Daemon) handleSQSStoreLaunch(msg *nats.Msg) string {
-	return d.dispatchSystemLaunch(msg, systeminstance.SQSStoreLaunchSubjectRoot, d.LaunchSQSStoreInstance)
-}
-
 // systemLaunchFunc launches one system instance from a decoded request.
 type systemLaunchFunc func(*elbv2domain.SystemInstanceInput) (*elbv2domain.SystemInstanceOutput, error)
 

@@ -1,8 +1,9 @@
 #!/bin/sh
-# sysinit: load the disk drivers, then select, check and mount the worker disk
-# and load or create the worker's store key on it. Any refusal is logged; the
-# key is never read or created on a disk that is not proven mounted.
+# sysinit: load the disk drivers and clear this boot's markers. The respawned
+# store step mounts the disk, settles the receipt key and starts the store.
+. /usr/local/lib/sqs-worker/sqs-worker-lib.sh
 modprobe virtio_blk 2>/dev/null || true
 modprobe ext4 2>/dev/null || true
-/usr/local/bin/sqs-worker boot >> /dev/console 2>&1 || echo "[sqs-worker] boot refused" >> /dev/console
+mkdir -p "$SQSW_RUN"
+rm -f "$SQSW_RUN/receipt-ready" "$SQSW_RUN/store.conf" "$SQSW_RUN/boot-refused"
 exit 0

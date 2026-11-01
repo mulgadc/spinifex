@@ -1,6 +1,6 @@
 // Package sqsworkergw is the shared SQS worker guest's SigV4 client for the
 // gateway's internal spinifex-sqs service. It sends only public values: the
-// worker's identity is the signing session, and the store seed never leaves
+// worker's identity is the signing session, and the receipt key never leaves
 // the guest.
 package sqsworkergw
 
@@ -10,20 +10,21 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
-	"github.com/nats-io/nkeys"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
 )
 
 const (
@@ -33,9 +34,12 @@ const (
 	callTimeout    = 30 * time.Second
 	maxResponse    = 64 << 10
 
-	actionClaim    = "ClaimFirstStore"
-	actionDescribe = "DescribeStore"
-	actionRecord   = "RecordWorkerPublicKey"
+	actionClaim    = "ClaimReceiptKey"
+	actionRecord   = "RecordReceiptKey"
+	actionPoll     = "PollWork"
+	actionComplete = "CompleteWork"
+	// maxPollResponse fits the gateway's 16 MiB poll batch as base64 XML.
+	maxPollResponse = 32 << 20
 )
 
 // Signer signs a request in place for service and region.
@@ -43,7 +47,7 @@ type Signer interface {
 	Sign(r *http.Request, payloadHash, service, region string) error
 }
 
-// Client calls the internal first-store actions for this worker.
+// Client calls the internal SQS worker actions for this worker.
 type Client struct {
 	baseURL    string
 	region     string
@@ -114,80 +118,72 @@ func (e *TransientError) Error() string   { return e.Err.Error() }
 func (e *TransientError) Unwrap() error   { return e.Err }
 func (e *TransientError) Retryable() bool { return true }
 
-type claimResult struct {
-	CreateKey bool   `xml:"CreateKey"`
-	PublicKey string `xml:"PublicKey"`
+// ReceiptKey is the worker volume's receipt key initialization as the
+// gateway reports it: pending authorizes creating or resuming one, otherwise
+// Fingerprint names the key the disk must already hold.
+type ReceiptKey struct {
+	Pending     bool
+	Fingerprint string
+	// HostNodes is the gateway's declared cluster node count; a gateway
+	// that does not report one reads as zero.
+	HostNodes int
 }
 
-// Claim asks for this worker's current first-store decision. A decision
-// that is neither "create" nor one valid public key is refused here.
-func (c *Client) Claim(ctx context.Context) (bool, string, error) {
+type claimResult struct {
+	Pending     bool   `xml:"Pending"`
+	Fingerprint string `xml:"Fingerprint"`
+	HostNodes   int    `xml:"HostNodes"`
+}
+
+// ClaimReceiptKey asks for the receipt key decision. A reply that is neither
+// pending nor one valid fingerprint is refused here.
+func (c *Client) ClaimReceiptKey(ctx context.Context) (ReceiptKey, error) {
 	var res claimResult
 	if err := c.call(ctx, actionClaim, nil, &res); err != nil {
-		return false, "", err
+		return ReceiptKey{}, err
 	}
-	switch {
-	case res.CreateKey && res.PublicKey == "":
-		return true, "", nil
-	case !res.CreateKey && nkeys.IsValidPublicUserKey(res.PublicKey):
-		return false, res.PublicKey, nil
+	if res.Pending == (res.Fingerprint != "") || (res.Fingerprint != "" && !ValidFingerprint(res.Fingerprint)) {
+		return ReceiptKey{}, errors.New("spinifex-sqs ClaimReceiptKey: response is not a valid decision")
 	}
-	return false, "", errors.New("spinifex-sqs ClaimFirstStore: response is not a valid decision")
+	return ReceiptKey(res), nil
 }
 
-// Store is the Region's store launch as the gateway reports it. Bound means
-// a VM was launched for it, not that it is ready.
-type Store struct {
-	Bound     bool
-	Address   string
-	PublicKey string
-}
-
-type describeResult struct {
-	State     string `xml:"State"`
-	Address   string `xml:"Address"`
-	PublicKey string `xml:"PublicKey"`
-}
-
-// DescribeStore reports this worker's store. A bound reply must carry an
-// IPv4 address and a valid public key; a pending one must carry neither.
-func (c *Client) DescribeStore(ctx context.Context) (Store, error) {
-	var res describeResult
-	if err := c.call(ctx, actionDescribe, nil, &res); err != nil {
-		return Store{}, err
+// RecordReceiptKey records the key's fingerprint. Recording the same one
+// again succeeds, so a lost reply is safe to repeat.
+func (c *Client) RecordReceiptKey(ctx context.Context, fingerprint string) error {
+	if !ValidFingerprint(fingerprint) {
+		return errors.New("spinifex-sqs RecordReceiptKey: refusing to send a value that is not a fingerprint")
 	}
-	switch {
-	case res.State == "pending" && res.Address == "" && res.PublicKey == "":
-		return Store{}, nil
-	case res.State == "bound" && isIPv4(res.Address) && nkeys.IsValidPublicUserKey(res.PublicKey):
-		return Store{Bound: true, Address: res.Address, PublicKey: res.PublicKey}, nil
-	}
-	return Store{}, errors.New("spinifex-sqs DescribeStore: response is not a valid store state")
+	return c.call(ctx, actionRecord, url.Values{"Fingerprint": {fingerprint}}, nil)
 }
 
-func isIPv4(s string) bool {
-	ip := net.ParseIP(s)
-	return ip != nil && ip.To4() != nil && !strings.Contains(s, ":")
-}
-
-// RecordPublicKey records the worker's public key. Anything other than a
-// user public key is refused before it is sent.
-func (c *Client) RecordPublicKey(ctx context.Context, publicKey string) error {
-	if !nkeys.IsValidPublicUserKey(publicKey) {
-		return errors.New("spinifex-sqs RecordWorkerPublicKey: refusing to send a value that is not a user public key")
+// ValidFingerprint reports a lowercase hex SHA-256 fingerprint.
+func ValidFingerprint(s string) bool {
+	if len(s) != 2*sha256.Size || strings.ToLower(s) != s {
+		return false
 	}
-	return c.call(ctx, actionRecord, url.Values{"PublicKey": {publicKey}}, nil)
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 
 func (c *Client) call(ctx context.Context, action string, params url.Values, out any) error {
 	form := url.Values{"Action": {action}, "Version": {apiVersion}}
 	maps.Copy(form, params)
-	body := []byte(form.Encode())
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/", bytes.NewReader(body))
+	return c.do(ctx, action, "", []byte(form.Encode()), "application/x-www-form-urlencoded; charset=utf-8", maxResponse, out)
+}
+
+// do signs and sends one request. rawQuery, when set, carries the action and
+// its arguments; the body hash is signed either way.
+func (c *Client) do(ctx context.Context, action, rawQuery string, body []byte, contentType string, limit int64, out any) error {
+	target := c.baseURL + "/"
+	if rawQuery != "" {
+		target += "?" + rawQuery
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("spinifex-sqs %s: build request: %w", action, err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+	req.Header.Set("Content-Type", contentType)
 	sum := sha256.Sum256(body)
 	if err := c.signer.Sign(req, hex.EncodeToString(sum[:]), signingService, c.region); err != nil {
 		return &TransientError{Err: fmt.Errorf("spinifex-sqs %s: sign: %w", action, err)}
@@ -197,7 +193,7 @@ func (c *Client) call(ctx context.Context, action string, params url.Values, out
 		return &TransientError{Err: fmt.Errorf("spinifex-sqs %s: send: %w", action, err)}
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		return &TransientError{Err: fmt.Errorf("spinifex-sqs %s: read response: %w", action, err)}
 	}
@@ -208,6 +204,44 @@ func (c *Client) call(ctx context.Context, action string, params url.Values, out
 		return nil
 	}
 	return decodeResult(action, respBody, out)
+}
+
+// PollWork long-polls the gateway for owner calls queued for this worker.
+// An empty list is a poll that found nothing.
+func (c *Client) PollWork(ctx context.Context) ([]relay.Work, error) {
+	var res struct {
+		Items []string `xml:"Items>member"`
+	}
+	if err := c.do(ctx, actionPoll, "", []byte(url.Values{"Action": {actionPoll}, "Version": {apiVersion}}.Encode()),
+		"application/x-www-form-urlencoded; charset=utf-8", maxPollResponse, &res); err != nil {
+		return nil, err
+	}
+	out := make([]relay.Work, 0, len(res.Items))
+	for _, item := range res.Items {
+		raw, err := base64.StdEncoding.DecodeString(item)
+		if err != nil {
+			return nil, errors.New("spinifex-sqs PollWork: item is not base64")
+		}
+		var w relay.Work
+		if err := json.Unmarshal(raw, &w); err != nil || w.ID == "" || w.Op == "" {
+			return nil, errors.New("spinifex-sqs PollWork: item is not a work item")
+		}
+		out = append(out, w)
+	}
+	return out, nil
+}
+
+// CompleteWork posts an encoded result for work item id and returns the
+// gateway's outcome name. Any error leaves delivery unknown.
+func (c *Client) CompleteWork(ctx context.Context, id string, result []byte) (string, error) {
+	q := url.Values{"Action": {actionComplete}, "Version": {apiVersion}, "WorkId": {id}}
+	var res struct {
+		Outcome string `xml:"Outcome"`
+	}
+	if err := c.do(ctx, actionComplete, q.Encode(), result, "application/json", maxResponse, &res); err != nil {
+		return "", err
+	}
+	return res.Outcome, nil
 }
 
 func decodeResult(action string, body []byte, out any) error {

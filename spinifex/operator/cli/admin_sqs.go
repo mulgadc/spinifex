@@ -27,51 +27,36 @@ const sqsBoundState = "bound"
 
 var sqsCmd = &cobra.Command{
 	Use:   "sqs",
-	Short: "Launch the SQS system worker and store on a chosen node",
+	Short: "Enable SQS and manage its system VM on this single-node cluster",
 }
 
 var sqsEnsureWorkerCmd = &cobra.Command{
 	Use:   "ensure-worker",
-	Short: "Launch or report the Region's SQS worker VM on a node",
-	Long: `Launch the Region's shared SQS worker VM on --node, or report the VM already
-bound there. The request goes to the AWS gateway as the signed spinifex
+	Short: "Launch or report the Region's SQS VM on a node",
+	Long: `Launch the Region's SQS VM, which runs the SQS worker and its local store on
+one encrypted data volume, on --node, or report the VM already bound there. The request goes to the AWS gateway as the signed spinifex
 EnsureSQSWorker action, using the standard AWS credential chain
 (e.g. AWS_PROFILE=spinifex); only a super-admin may call it.
 
-A bound VM is not a ready worker: this command does not check SQS or the store.`,
+A bound VM is not ready SQS: run "spx admin sqs status" for readiness.`,
 	Args:          cobra.NoArgs,
 	RunE:          runSQSEnsureWorker,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
 
-var sqsEnsureStoreCmd = &cobra.Command{
-	Use:   "ensure-store",
-	Short: "Launch or report the Region's SQS store VM on the worker's node",
-	Long: `Launch the Region's SQS store VM on --node, which must be the node the worker
-is bound to, or report the VM already bound there. The request goes to the AWS
-gateway as the signed spinifex EnsureSQSStore action, using the standard AWS
-credential chain; only a super-admin may call it.
-
-A bound VM is not a ready store: the worker checks readiness itself.`,
-	Args:          cobra.NoArgs,
-	RunE:          runSQSEnsureStore,
-	SilenceUsage:  true,
-	SilenceErrors: true,
-}
-
 func init() {
 	adminCmd.AddCommand(sqsCmd)
-	sqsCmd.AddCommand(sqsEnsureWorkerCmd, sqsEnsureStoreCmd)
+	sqsCmd.AddCommand(sqsEnsureWorkerCmd)
 
-	for _, c := range []*cobra.Command{sqsEnsureWorkerCmd, sqsEnsureStoreCmd} {
+	for _, c := range []*cobra.Command{sqsEnsureWorkerCmd} {
 		c.Flags().String("node", "", "Node to launch on (required)")
 		c.Flags().String("instance-type", "", "Instance type for the VM (required)")
 		c.Flags().String("endpoint", "", "Gateway endpoint (default: this node's AWS gateway)")
 		c.Flags().String("region", "", "SigV4 region (default: this node's region)")
 		c.Flags().String("ca-bundle", "", "CA certificate (default: this node's CA)")
 	}
-	sqsEnsureStoreCmd.Flags().Int("volume-size-gib", 0, "Store data volume size in GiB (required)")
+	sqsEnsureWorkerCmd.Flags().Int("volume-size-gib", 0, "SQS data volume size in GiB (required)")
 }
 
 // sqsWorkerEnsureOutput is the EnsureSQSWorker response body.
@@ -84,33 +69,26 @@ type sqsWorkerEnsureOutput struct {
 	State        string `json:"State"`
 }
 
-// sqsStoreEnsureOutput is the EnsureSQSStore response body.
-type sqsStoreEnsureOutput struct {
-	NodeID       string `json:"NodeId"`
-	Region       string `json:"Region"`
-	InstanceID   string `json:"InstanceId"`
-	Address      string `json:"Address"`
-	InstanceType string `json:"InstanceType"`
-	State        string `json:"State"`
-}
-
-// sqsEnsureParams reads the flags both commands share. Empty values are
-// refused here so a typo never reaches the gateway as a launch request.
-func sqsEnsureParams(cmd *cobra.Command) (node, instanceType string, err error) {
+// sqsEnsureParams reads and checks the launch flags. Empty values are refused
+// here so a typo never reaches the gateway as a launch request.
+func sqsEnsureParams(cmd *cobra.Command) (node, instanceType string, sizeGiB int, err error) {
 	node, _ = cmd.Flags().GetString("node")
 	instanceType, _ = cmd.Flags().GetString("instance-type")
 	node, instanceType = strings.TrimSpace(node), strings.TrimSpace(instanceType)
-	if node == "" {
-		return "", "", errors.New("--node is required")
+	sizeGiB, _ = cmd.Flags().GetInt("volume-size-gib")
+	switch {
+	case node == "":
+		return "", "", 0, errors.New("--node is required")
+	case instanceType == "":
+		return "", "", 0, errors.New("--instance-type is required")
+	case sizeGiB <= 0:
+		return "", "", 0, errors.New("--volume-size-gib is required and must be a positive number of GiB")
 	}
-	if instanceType == "" {
-		return "", "", errors.New("--instance-type is required")
-	}
-	return node, instanceType, nil
+	return node, instanceType, sizeGiB, nil
 }
 
 func runSQSEnsureWorker(cmd *cobra.Command, _ []string) error {
-	node, instanceType, err := sqsEnsureParams(cmd)
+	node, instanceType, size, err := sqsEnsureParams(cmd)
 	if err != nil {
 		return err
 	}
@@ -121,7 +99,7 @@ func runSQSEnsureWorker(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), sqsEnsureTimeout)
 	defer cancel()
 
-	out, err := ensureSQSWorkerRemote(ctx, target, node, instanceType)
+	out, err := ensureSQSWorkerRemote(ctx, target, node, instanceType, size)
 	if err != nil {
 		return err
 	}
@@ -129,59 +107,17 @@ func runSQSEnsureWorker(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runSQSEnsureStore(cmd *cobra.Command, _ []string) error {
-	node, instanceType, err := sqsEnsureParams(cmd)
-	if err != nil {
-		return err
-	}
-	size, _ := cmd.Flags().GetInt("volume-size-gib")
-	if size <= 0 {
-		return errors.New("--volume-size-gib is required and must be a positive number of GiB")
-	}
-	target, err := resolveAdminTarget(cmd)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(cmd.Context(), sqsEnsureTimeout)
-	defer cancel()
-
-	out, err := ensureSQSStoreRemote(ctx, target, node, instanceType, size)
-	if err != nil {
-		return err
-	}
-	renderSQSStoreEnsure(os.Stdout, out)
-	return nil
-}
-
 // ensureSQSWorkerRemote sends EnsureSQSWorker and accepts only a bound VM on
 // the requested node.
-func ensureSQSWorkerRemote(ctx context.Context, target adminTarget, node, instanceType string) (*sqsWorkerEnsureOutput, error) {
-	form := url.Values{"Action": {"EnsureSQSWorker"}, "NodeId": {node}, "InstanceType": {instanceType}}
+func ensureSQSWorkerRemote(ctx context.Context, target adminTarget, node, instanceType string, sizeGiB int) (*sqsWorkerEnsureOutput, error) {
+	form := url.Values{"Action": {"EnsureSQSWorker"}, "NodeId": {node}, "InstanceType": {instanceType},
+		"VolumeSizeGiB": {strconv.Itoa(sizeGiB)}}
 	var out sqsWorkerEnsureOutput
 	if err := callSpinifexAction(ctx, target, form, &out); err != nil {
 		return nil, err
 	}
 	if out.State != sqsBoundState || out.NodeID != node || out.InstanceID == "" || out.InstanceType != instanceType {
 		return nil, fmt.Errorf("gateway returned an unexpected worker reply (state %q, node %q, type %q)", out.State, out.NodeID, out.InstanceType)
-	}
-	return &out, nil
-}
-
-// ensureSQSStoreRemote sends EnsureSQSStore and accepts only a bound VM on the
-// requested node with the requested instance type.
-func ensureSQSStoreRemote(ctx context.Context, target adminTarget, node, instanceType string, sizeGiB int) (*sqsStoreEnsureOutput, error) {
-	form := url.Values{
-		"Action":        {"EnsureSQSStore"},
-		"NodeId":        {node},
-		"InstanceType":  {instanceType},
-		"VolumeSizeGiB": {strconv.Itoa(sizeGiB)},
-	}
-	var out sqsStoreEnsureOutput
-	if err := callSpinifexAction(ctx, target, form, &out); err != nil {
-		return nil, err
-	}
-	if out.State != sqsBoundState || out.NodeID != node || out.InstanceID == "" || out.InstanceType != instanceType {
-		return nil, fmt.Errorf("gateway returned an unexpected store reply (state %q, node %q, type %q)", out.State, out.NodeID, out.InstanceType)
 	}
 	return &out, nil
 }
@@ -230,13 +166,7 @@ func callSpinifexAction(ctx context.Context, target adminTarget, form url.Values
 }
 
 func renderSQSWorkerEnsure(w io.Writer, out *sqsWorkerEnsureOutput) {
-	_, _ = fmt.Fprintf(w, "SQS worker VM bound\n  Node:           %s\n  Region:         %s\n  Instance:       %s\n  Instance type:  %s\n  Generation:     %d\n",
+	_, _ = fmt.Fprintf(w, "SQS VM bound\n  Node:           %s\n  Region:         %s\n  Instance:       %s\n  Instance type:  %s\n  Generation:     %d\n",
 		out.NodeID, out.Region, out.InstanceID, out.InstanceType, out.Generation)
-	_, _ = fmt.Fprintln(w, "A bound VM is not a ready worker; this does not check SQS or the store.")
-}
-
-func renderSQSStoreEnsure(w io.Writer, out *sqsStoreEnsureOutput) {
-	_, _ = fmt.Fprintf(w, "SQS store VM bound\n  Node:           %s\n  Region:         %s\n  Instance:       %s\n  Instance type:  %s\n  Address:        %s\n",
-		out.NodeID, out.Region, out.InstanceID, out.InstanceType, out.Address)
-	_, _ = fmt.Fprintln(w, "A bound VM is not a ready store; the worker checks store readiness itself.")
+	_, _ = fmt.Fprintln(w, "A bound VM is not ready SQS; run \"spx admin sqs status\" for readiness.")
 }

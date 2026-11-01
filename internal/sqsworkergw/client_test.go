@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/nats-io/nkeys"
 )
 
 type nopSigner struct{ err error }
@@ -24,15 +22,10 @@ func (s nopSigner) Sign(r *http.Request, _, service, region string) error {
 	return nil
 }
 
-func userKey(t *testing.T) (pub, seed string) {
-	t.Helper()
-	kp, err := nkeys.CreateUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, _ := kp.PublicKey()
-	s, _ := kp.Seed()
-	return p, string(s)
+var fp = strings.Repeat("ab", 32)
+
+func claimBody(inner string) string {
+	return `<ClaimReceiptKeyResponse><ClaimReceiptKeyResult>` + inner + `</ClaimReceiptKeyResult></ClaimReceiptKeyResponse>`
 }
 
 // server answers with body and status, counting and keeping requests.
@@ -73,63 +66,56 @@ func TestNew_RefusesWithoutHTTPSRegionCAOrSigner(t *testing.T) {
 }
 
 func TestClaim_SignsForTheInternalServiceAndRegion(t *testing.T) {
-	c, _, seen := server(t, 200, `<ClaimFirstStoreResponse><ClaimFirstStoreResult><CreateKey>true</CreateKey></ClaimFirstStoreResult></ClaimFirstStoreResponse>`)
-	create, pub, err := c.Claim(context.Background())
-	if err != nil || !create || pub != "" {
-		t.Fatalf("claim = %v %q %v", create, pub, err)
+	c, _, seen := server(t, 200, claimBody(`<Pending>true</Pending><HostNodes>1</HostNodes>`))
+	got, err := c.ClaimReceiptKey(context.Background())
+	if err != nil || !got.Pending || got.Fingerprint != "" || got.HostNodes != 1 {
+		t.Fatalf("claim = %+v %v", got, err)
 	}
-	if got := (*seen)[0]; !strings.HasPrefix(got, "test spinifex-sqs/ap-southeast-2|") || !strings.Contains(got, "Action=ClaimFirstStore") {
-		t.Fatalf("request = %q", got)
+	if req := (*seen)[0]; !strings.HasPrefix(req, "test spinifex-sqs/ap-southeast-2|") || !strings.Contains(req, "Action=ClaimReceiptKey") {
+		t.Fatalf("request = %q", req)
 	}
 }
 
-// Only "create" or exactly one valid public key is a decision.
+// Only pending alone, or exactly one valid fingerprint, is a decision.
 func TestClaim_RefusesAnythingButOneDecision(t *testing.T) {
-	pub, seed := userKey(t)
-	cases := map[string]string{
-		"create with a key": `<CreateKey>true</CreateKey><PublicKey>` + pub + `</PublicKey>`,
-		"neither":           `<CreateKey>false</CreateKey>`,
-		"seed as key":       `<CreateKey>false</CreateKey><PublicKey>` + seed + `</PublicKey>`,
-		"no result":         ``,
-	}
-	for name, inner := range cases {
+	for name, inner := range map[string]string{
+		"pending with a key":  `<Pending>true</Pending><Fingerprint>` + fp + `</Fingerprint>`,
+		"neither":             `<Pending>false</Pending>`,
+		"uppercase key":       `<Pending>false</Pending><Fingerprint>` + strings.ToUpper(fp) + `</Fingerprint>`,
+		"short key":           `<Pending>false</Pending><Fingerprint>` + fp[:62] + `</Fingerprint>`,
+		"not the claim reply": "",
+	} {
 		t.Run(name, func(t *testing.T) {
-			body := `<ClaimFirstStoreResponse><ClaimFirstStoreResult>` + inner + `</ClaimFirstStoreResult></ClaimFirstStoreResponse>`
+			body := claimBody(inner)
 			if inner == "" {
 				body = `<Other/>`
 			}
 			c, _, _ := server(t, 200, body)
-			_, _, err := c.Claim(context.Background())
-			if err == nil {
+			if _, err := c.ClaimReceiptKey(context.Background()); err == nil {
 				t.Fatal("accepted a non-decision")
-			}
-			if strings.Contains(err.Error(), seed) {
-				t.Fatal("the error echoes a seed")
 			}
 		})
 	}
-	t.Run("existing", func(t *testing.T) {
-		c, _, _ := server(t, 200, `<ClaimFirstStoreResponse><ClaimFirstStoreResult><CreateKey>false</CreateKey><PublicKey>`+pub+`</PublicKey></ClaimFirstStoreResult></ClaimFirstStoreResponse>`)
-		create, got, err := c.Claim(context.Background())
-		if err != nil || create || got != pub {
-			t.Fatalf("claim = %v %q %v", create, got, err)
-		}
-	})
+	c, _, _ := server(t, 200, claimBody(`<Pending>false</Pending><Fingerprint>`+fp+`</Fingerprint>`))
+	got, err := c.ClaimReceiptKey(context.Background())
+	if err != nil || got.Pending || got.Fingerprint != fp {
+		t.Fatalf("recorded claim = %+v %v", got, err)
+	}
 }
 
-func TestRecordPublicKey_SendsOnlyAPublicKey(t *testing.T) {
-	pub, seed := userKey(t)
-	c, n, seen := server(t, 200, `<RecordWorkerPublicKeyResponse/>`)
-	if err := c.RecordPublicKey(context.Background(), seed); err == nil || strings.Contains(err.Error(), seed) {
-		t.Fatalf("seed err = %v", err)
+func TestRecordReceiptKey_SendsOnlyAFingerprint(t *testing.T) {
+	c, n, seen := server(t, 200, `<RecordReceiptKeyResponse/>`)
+	const raw = "not-a-fingerprint-and-maybe-key-material"
+	if err := c.RecordReceiptKey(context.Background(), raw); err == nil || strings.Contains(err.Error(), raw) {
+		t.Fatalf("invalid err = %v", err)
 	}
 	if n.Load() != 0 {
-		t.Fatal("a seed was sent")
+		t.Fatal("a non-fingerprint was sent")
 	}
-	if err := c.RecordPublicKey(context.Background(), pub); err != nil {
+	if err := c.RecordReceiptKey(context.Background(), fp); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains((*seen)[0], "PublicKey="+pub) {
+	if !strings.Contains((*seen)[0], "Fingerprint="+fp) {
 		t.Fatalf("request = %q", (*seen)[0])
 	}
 }
@@ -151,7 +137,7 @@ func TestErrors_ClassifiedWithoutEchoingTheBody(t *testing.T) {
 	}
 	for _, tc := range cases {
 		c, _, _ := server(t, tc.status, `<ErrorResponse><Error><Code>`+tc.code+`</Code><Message>secret-ish detail</Message></Error></ErrorResponse>`)
-		_, _, err := c.Claim(context.Background())
+		_, err := c.ClaimReceiptKey(context.Background())
 		api, ok := errors.AsType[*APIError](err)
 		if !ok || api.Code != tc.code || api.Retryable() != tc.retryable || api.Pending() != (tc.code == "AccessDenied") {
 			t.Fatalf("%s: err = %v", tc.code, err)
@@ -163,7 +149,7 @@ func TestErrors_ClassifiedWithoutEchoingTheBody(t *testing.T) {
 
 	c, _, _ := server(t, 200, "")
 	c.baseURL = "https://127.0.0.1:1"
-	_, _, err := c.Claim(context.Background())
+	_, err := c.ClaimReceiptKey(context.Background())
 	tr, ok := errors.AsType[*TransientError](err)
 	if !ok || !tr.Retryable() {
 		t.Fatalf("unreachable err = %v, want TransientError", err)
@@ -181,55 +167,10 @@ func TestCall_DoesNotFollowRedirects(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	c.baseURL = srv.URL
-	if _, _, err := c.Claim(context.Background()); err == nil {
+	if _, err := c.ClaimReceiptKey(context.Background()); err == nil {
 		t.Fatal("a redirect was accepted as a decision")
 	}
 	if followed.Load() {
 		t.Fatal("the signed request followed a redirect")
-	}
-}
-
-// Only "pending" with nothing else, or "bound" with an IPv4 address and one
-// valid public key, is a store state.
-func TestDescribeStore_AcceptsOnlyAValidState(t *testing.T) {
-	pub, seed := userKey(t)
-	wrap := func(inner string) string {
-		return `<DescribeStoreResponse><DescribeStoreResult>` + inner + `</DescribeStoreResult></DescribeStoreResponse>`
-	}
-	t.Run("pending", func(t *testing.T) {
-		c, _, seen := server(t, 200, wrap(`<State>pending</State>`))
-		st, err := c.DescribeStore(context.Background())
-		if err != nil || st.Bound {
-			t.Fatalf("store = %+v %v", st, err)
-		}
-		if !strings.Contains((*seen)[0], "Action=DescribeStore") {
-			t.Fatalf("request = %q", (*seen)[0])
-		}
-	})
-	t.Run("bound", func(t *testing.T) {
-		c, _, _ := server(t, 200, wrap(`<State>bound</State><Address>10.240.0.9</Address><PublicKey>`+pub+`</PublicKey>`))
-		st, err := c.DescribeStore(context.Background())
-		if err != nil || !st.Bound || st.Address != "10.240.0.9" || st.PublicKey != pub {
-			t.Fatalf("store = %+v %v", st, err)
-		}
-	})
-	for name, inner := range map[string]string{
-		"pending with address": `<State>pending</State><Address>10.240.0.9</Address>`,
-		"bound without key":    `<State>bound</State><Address>10.240.0.9</Address>`,
-		"bound with seed":      `<State>bound</State><Address>10.240.0.9</Address><PublicKey>` + seed + `</PublicKey>`,
-		"bound with hostname":  `<State>bound</State><Address>store.example</Address><PublicKey>` + pub + `</PublicKey>`,
-		"bound with IPv6":      `<State>bound</State><Address>::ffff:10.240.0.9</Address><PublicKey>` + pub + `</PublicKey>`,
-		"unknown state":        `<State>ready</State>`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			c, _, _ := server(t, 200, wrap(inner))
-			_, err := c.DescribeStore(context.Background())
-			if err == nil {
-				t.Fatal("accepted an invalid store state")
-			}
-			if strings.Contains(err.Error(), seed) {
-				t.Fatal("the error echoes a seed")
-			}
-		})
 	}
 }

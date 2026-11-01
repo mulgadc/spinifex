@@ -39,6 +39,7 @@ var _ sqsGuest = (*sqsWorkerLaunch)(nil)
 func (w *sqsWorkerLaunch) imageDir() string   { return sqsWorkerImageDir() }
 func (w *sqsWorkerLaunch) dataVolume() string { return w.volumeID }
 func (w *sqsWorkerLaunch) needsMgmtNIC() bool { return true }
+func (w *sqsWorkerLaunch) label() string      { return "SQS worker" }
 
 func (w *sqsWorkerLaunch) writeFwCfg(instanceID string) ([]vm.FwCfgEntry, error) {
 	return writeSQSWorkerFwCfg(instanceID, w)
@@ -75,8 +76,12 @@ func (d *Daemon) prepareSQSWorkerLaunch(ctx context.Context, input *elbv2domain.
 	if err := input.ValidateSQSWorker(); err != nil {
 		return nil, err
 	}
-	if _, ok := d.resourceMgr.instanceTypes[input.InstanceType]; !ok {
+	it, ok := d.resourceMgr.instanceTypes[input.InstanceType]
+	if !ok {
 		return nil, fmt.Errorf("unknown instance type: %s", input.InstanceType)
+	}
+	if err := sqsMemoryFits(input.InstanceType, it); err != nil {
+		return nil, err
 	}
 	ca, err := d.sqsWorkerHostReady()
 	if err != nil {
@@ -109,12 +114,21 @@ func (d *Daemon) sqsWorkerHostReady() (string, error) {
 			return "", fmt.Errorf("sqs worker image is incomplete: %s is empty or not a file", name)
 		}
 	}
+	return d.sqsGuestGatewayCA("sqs worker")
+}
+
+// sqsGuestGatewayCA checks that an SQS guest can reach this node's gateway:
+// a mgmt bridge and a readable cluster CA, which it returns.
+func (d *Daemon) sqsGuestGatewayCA(label string) (string, error) {
+	if d.mgmtIPAllocator == nil || d.mgmtBridgeIP == "" {
+		return "", fmt.Errorf("%s: this node has no mgmt bridge", label)
+	}
 	if d.config == nil || d.config.NATS.CACert == "" {
-		return "", errors.New("sqs worker: no cluster CA is configured")
+		return "", fmt.Errorf("%s: no cluster CA is configured", label)
 	}
 	ca, err := os.ReadFile(d.config.NATS.CACert)
 	if err != nil || len(strings.TrimSpace(string(ca))) == 0 {
-		return "", fmt.Errorf("sqs worker: cluster CA %s is unreadable or empty", d.config.NATS.CACert)
+		return "", fmt.Errorf("%s: cluster CA %s is unreadable or empty", label, d.config.NATS.CACert)
 	}
 	return string(ca), nil
 }
@@ -217,7 +231,7 @@ func (d *Daemon) refreshSQSWorkerState(inst *vm.VM) error {
 	if !strings.HasPrefix(g.GatewayURL, "https://") || strings.TrimSpace(g.CACert) == "" || g.Netcfg == "" {
 		return fmt.Errorf("sqs worker instance %s cannot be relaunched: its record lacks the gateway URL, CA or network config", inst.ID)
 	}
-	if !sqsStoreKeepsDataVolume(inst, g.DataVolumeID) {
+	if !sqsKeepsDataVolume(inst, g.DataVolumeID) {
 		return fmt.Errorf("sqs worker instance %s cannot be relaunched: data volume %s is not among its kept volumes", inst.ID, g.DataVolumeID)
 	}
 	want := []vm.FwCfgEntry{{Name: "opt/spinifex/netcfg", File: netcfgFwCfgPath(inst.ID)}}

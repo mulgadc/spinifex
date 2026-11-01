@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ServiceName is the SigV4 credential-scope service the operator tooling signs for.
@@ -58,6 +59,10 @@ type Deps struct {
 	GatewayNodeIDs    []string
 	BucketStore       accountteardown.BucketStore
 	SignupMaxAccounts int
+	// Region and the SQS observations serve the SQS enable and status actions.
+	Region                 string
+	SQSWorkerPolling       func() bool
+	SQSTenantAPIRegistered func() bool
 }
 
 // adminActions are the actions only the super-admin account may call.
@@ -72,7 +77,8 @@ var adminActions = map[string]bool{
 	"ListModelAccess":   true,
 	"ListOchreCatalog":  true,
 	"EnsureSQSWorker":   true,
-	"EnsureSQSStore":    true,
+	"EnableSQS":         true,
+	"DescribeSQS":       true,
 }
 
 // AdminActionNames lists the actions only the super-admin account may call, sorted.
@@ -256,12 +262,31 @@ func (d Deps) run(ctx context.Context, action string, args map[string]string, ac
 		if d.NATS == nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		return EnsureSQSWorker(ctx, d.NATS, d.NodeIDs, args["NodeId"], args["InstanceType"], accountID, sqsWorkerEnsureWait)
-	case "EnsureSQSStore":
-		if d.NATS == nil {
+		size, err := sqsVolumeSize(args["VolumeSizeGiB"])
+		if err != nil {
+			return nil, err
+		}
+		return EnsureSQSWorker(ctx, d.NATS, d.NodeIDs, args["NodeId"], args["InstanceType"], size, accountID, sqsWorkerEnsureWait)
+	case "EnableSQS", "DescribeSQS":
+		if d.NATS == nil || d.Region == "" {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		return EnsureSQSStore(ctx, d.NATS, d.NodeIDs, args["NodeId"], args["InstanceType"], args["VolumeSizeGiB"], accountID, sqsWorkerEnsureWait)
+		js, err := jetstream.New(d.NATS)
+		if err != nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		obs := SQSObservers{WorkerPolling: d.SQSWorkerPolling, TenantAPIRegistered: d.SQSTenantAPIRegistered}
+		if action == "DescribeSQS" {
+			return DescribeSQS(ctx, js, d.Region, obs)
+		}
+		size, err := sqsVolumeSize(args["VolumeSizeGiB"])
+		if err != nil {
+			return nil, err
+		}
+		return EnableSQS(ctx, d.NATS, js, d.NodeIDs, d.ExpectedNodes, SQSEnableInput{
+			Region: d.Region, NodeID: args["NodeId"], InstanceType: args["InstanceType"],
+			VolumeSizeGiB: size, AccountID: accountID,
+		}, obs, sqsWorkerEnsureWait)
 	case "ListOchreCatalog":
 		entries, err := ochre.AdminCatalog(ctx, accountID, d.credentials(), d.access())
 		if err != nil {

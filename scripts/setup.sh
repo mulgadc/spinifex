@@ -1679,13 +1679,12 @@ install_files() {
         $SUDO cp "$EXTRACT_DIR/microvm/"* /usr/share/spinifex/microvm/
         info "  /usr/share/spinifex/microvm/*"
     fi
-    install_sqs_store_image
     install_sqs_worker_image
 }
 
-# The SQS images ship beside the load balancer's, not inside it: an older
-# installer copies microvm/* without -r and would stop at a subdirectory.
-install_sqs_store_image() { install_sqs_microvm_image sqs-store "SQS store"; }
+# The SQS image ships beside the load balancer's, not inside it: an older
+# installer copies microvm/* without -r and would stop at a subdirectory. A
+# store image left by an earlier install is not touched: nothing boots it.
 install_sqs_worker_image() { install_sqs_microvm_image sqs-worker "SQS worker"; }
 
 # install_sqs_microvm_image <name> <label>

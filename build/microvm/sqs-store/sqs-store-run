@@ -1,6 +1,0 @@
-#!/bin/sh
-# Respawned by init. A store that must not run parks here instead of exiting,
-# so init does not respawn it in a tight loop.
-. /usr/local/lib/sqs-store/sqs-store-lib.sh
-sqs_run
-exec sleep 2147483647

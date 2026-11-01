@@ -36,6 +36,7 @@ const (
 	RDS                    Service = "rds"
 	Route53                Service = "route53"
 	S3                     Service = "s3"
+	SQS                    Service = "sqs"
 	STS                    Service = "sts"
 )
 

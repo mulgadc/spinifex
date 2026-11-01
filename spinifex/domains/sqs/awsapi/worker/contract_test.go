@@ -9,7 +9,8 @@ import (
 
 // The registration dispatches exactly the actions the worker role is granted.
 func TestActionNames_MatchTheRoleGrant(t *testing.T) {
-	if got, want := ActionNames(), workerrole.Actions(); !slices.Equal(got, want) {
+	want := slices.Sorted(slices.Values(workerrole.Actions()))
+	if got := ActionNames(); !slices.Equal(got, want) {
 		t.Fatalf("dispatched actions %v, role grants %v", got, want)
 	}
 }

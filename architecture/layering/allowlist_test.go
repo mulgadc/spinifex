@@ -38,6 +38,7 @@ var allowlist = []allowance{
 	{From: "cmd/aws-model-coverage", To: "domains/ecs/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/eks/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/iam/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
+	{From: "cmd/aws-model-coverage", To: "domains/sqs/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/sts/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared service inventories; named exception, must not construct a registration"},
 
 	{From: "runtime/daemon", To: "domains/ec2/awsapi/instance", Debt: "Instance adapter consumers outside EC2", Reason: "runtime/daemon/eks_cp_control.go and rds_deps.go call the instance adapter; needs an EC2 capability"},

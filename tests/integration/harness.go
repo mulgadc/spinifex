@@ -236,7 +236,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		Region:         testRegion,
 		IAMService:     iamSvc,
 		STSService:     stsSvc,
-		AnonymousSTS:   stsawsapi.NewAnonymousAssumeRoleWithWebIdentity(stsDeps),
+		PreAuth:        []awsdispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
 	}
 	for _, opt := range opts {
 		opt(cfg)

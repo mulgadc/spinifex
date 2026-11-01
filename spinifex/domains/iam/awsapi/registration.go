@@ -376,6 +376,7 @@ func NewRegistration(deps Deps) dispatch.Registration {
 		ResolveAction: resolveAction,
 		Dispatch:      deps.dispatch,
 		Errors:        dispatch.ErrorEnvelopeXML,
+		Traits:        dispatch.ServiceTraits{XMLThrottleCode: awserrors.ErrorThrottling},
 		Inventory:     OperationInventory(),
 	}
 }

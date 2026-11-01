@@ -148,7 +148,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 					slog.Warn("Auth failure: verification failed",
 						"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", src.logIP,
 						"service", sig.Credential.Service,
-						"action", mismatchAction(r, sig.Credential.Service),
+						"action", gw.mismatchAction(r, sig.Credential.Service),
 						"canonicalRequest", sig.RedactedCanonicalRequest(),
 						"err", sigErr)
 					// Fingerprinted by the signature as well as the key id: each guess at a
@@ -248,9 +248,9 @@ func signingTime(r *http.Request) string {
 
 // mismatchAction recovers the Action for a rejected query-protocol request so the log names
 // the operation. Auth fails before the dispatcher parses it, which otherwise leaves the
-// trace as a bare "POST /". S3 is skipped: its body is object data, not query args.
-func mismatchAction(r *http.Request, service string) string {
-	if service == "s3" {
+// trace as a bare "POST /". A scope whose body is object data is skipped.
+func (gw *GatewayConfig) mismatchAction(r *http.Request, service string) string {
+	if traits, ok := gw.selector().Traits(service); ok && traits.PayloadBody {
 		return ""
 	}
 
@@ -328,7 +328,7 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	xmlError := xmlErrorBody(svc, errorCode, errorMsg.Message, requestID, r.URL.Path)
+	xmlError := gw.xmlErrorBody(svc, errorCode, errorMsg.Message, requestID, r.URL.Path)
 
 	w.Header().Set("Content-Type", envelope.XMLContentType)
 	w.WriteHeader(errorMsg.HTTPCode)
@@ -357,19 +357,13 @@ func signedService(r *http.Request) string {
 	return reqctx.Service(r.Context())
 }
 
-// globalSigningRegions maps a global AWS service to the region its clients sign
-// with when they use the default endpoint. A client given an endpoint override
-// signs with its own configured region instead, so both are accepted.
-var globalSigningRegions = map[string]string{
-	"route53": "us-east-1",
-}
-
 // expectedSigningRegion returns the credential-scope region a request for
 // service must carry: the global service's signing region when the client
-// claimed it, else the gateway's own region.
+// claimed it, else the gateway's own region. A client given an endpoint
+// override signs with its own configured region, so both are accepted.
 func (gw *GatewayConfig) expectedSigningRegion(service, claimed string) string {
-	if global, ok := globalSigningRegions[service]; ok && claimed == global {
-		return global
+	if traits, ok := gw.selector().Traits(service); ok && traits.GlobalSigningRegion != "" && claimed == traits.GlobalSigningRegion {
+		return traits.GlobalSigningRegion
 	}
 	return gw.Region
 }

@@ -160,6 +160,8 @@ type Registration struct {
 	// Unset, a REST-JSON or JSON 1.0 registration gets the protocol's own
 	// throttle error and any other keeps the gateway default. JSON only.
 	Throttle *ErrorSpec
+	// Traits are the per-service behaviours the pipeline reads by scope.
+	Traits ServiceTraits
 	// QueryErrorCodes maps an error code to the legacy query code sent in
 	// x-amzn-query-error; a code absent from it is sent as itself. JSON 1.0
 	// only.
@@ -194,6 +196,7 @@ var serviceNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 // concurrent use; Build returns the immutable registry the server reads.
 type Builder struct {
 	entries   map[string]*Entry
+	scopes    map[string]ServiceTraits
 	inventory map[string]Inventory
 	sealed    bool
 }
@@ -202,6 +205,7 @@ type Builder struct {
 func NewBuilder() *Builder {
 	return &Builder{
 		entries:   make(map[string]*Entry),
+		scopes:    make(map[string]ServiceTraits),
 		inventory: make(map[string]Inventory),
 	}
 }
@@ -235,6 +239,7 @@ func (b *Builder) Register(reg Registration) error {
 		handle:     reg.Dispatch,
 		errors:     reg.Errors,
 		throttle:   reg.Throttle,
+		traits:     reg.Traits,
 		queryCodes: maps.Clone(reg.QueryErrorCodes),
 		internal:   reg.InternalErrorCode,
 		namespace:  reg.ErrorNamespace,
@@ -247,11 +252,32 @@ func (b *Builder) Register(reg Registration) error {
 	return nil
 }
 
+// DeclareScope declares the traits of a credential scope this gateway knows
+// but does not serve, so a rejection for it still renders as its clients
+// expect. It fails on an invalid name or a scope a registration serves.
+func (b *Builder) DeclareScope(scope string, traits ServiceTraits) error {
+	if b.sealed {
+		return ErrSealed
+	}
+	if !serviceNamePattern.MatchString(scope) {
+		return fmt.Errorf("dispatch: invalid scope name %q", scope)
+	}
+	if _, ok := b.entries[scope]; ok {
+		return fmt.Errorf("dispatch: scope %q is served by a registration", scope)
+	}
+	if _, ok := b.scopes[scope]; ok {
+		return fmt.Errorf("dispatch: scope %q is already declared", scope)
+	}
+	b.scopes[scope] = traits
+	return nil
+}
+
 // Build seals the builder and returns the registry. Further Register calls fail.
 func (b *Builder) Build() *Registry {
 	b.sealed = true
 	return &Registry{
 		entries:   maps.Clone(b.entries),
+		scopes:    maps.Clone(b.scopes),
 		inventory: maps.Clone(b.inventory),
 	}
 }
@@ -289,6 +315,9 @@ func validate(reg Registration) ([]string, error) {
 }
 
 func validateErrorSpecs(reg Registration) error {
+	if reg.Traits.XMLThrottleCode != "" && reg.Errors != ErrorEnvelopeXML {
+		return errors.New("XML throttle code needs the XML error envelope")
+	}
 	if t := reg.Throttle; t != nil {
 		if !reg.Errors.IsJSON() {
 			return errors.New("throttle error needs a JSON error envelope")
@@ -363,6 +392,7 @@ func sortedClone(s []string) []string {
 // for concurrent use because nothing mutates it after Build.
 type Registry struct {
 	entries   map[string]*Entry
+	scopes    map[string]ServiceTraits
 	inventory map[string]Inventory
 }
 
@@ -370,6 +400,16 @@ type Registry struct {
 func (r *Registry) Lookup(service string) (*Entry, bool) {
 	e, ok := r.entries[service]
 	return e, ok
+}
+
+// Traits returns the traits of a scope: a registration's own, else those
+// declared for a scope the gateway does not serve.
+func (r *Registry) Traits(scope string) (ServiceTraits, bool) {
+	if e, ok := r.entries[scope]; ok {
+		return e.traits, true
+	}
+	t, ok := r.scopes[scope]
+	return t, ok
 }
 
 // Inventory returns a fresh copy of every registration's operation inventory,
@@ -394,11 +434,15 @@ type Entry struct {
 	errors  ErrorEnvelope
 
 	throttle   *ErrorSpec
+	traits     ServiceTraits
 	queryCodes map[string]string
 	internal   string
 	namespace  string
 	namespaces map[string]string
 }
+
+// Traits returns the registration's declared service traits.
+func (e *Entry) Traits() ServiceTraits { return e.traits }
 
 // Service returns the registration's primary credential-scope name.
 func (e *Entry) Service() string { return e.service }

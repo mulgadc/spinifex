@@ -107,6 +107,7 @@ func NewRegistration(deps Deps) dispatch.Registration {
 		ResolveAction: resolveAction,
 		Dispatch:      deps.dispatch,
 		Errors:        dispatch.ErrorEnvelopeXML,
+		Traits:        dispatch.ServiceTraits{XMLThrottleCode: awserrors.ErrorThrottling},
 		Inventory:     OperationInventory(),
 	}
 }
@@ -136,6 +137,63 @@ func NewAnonymousAssumeRoleWithWebIdentity(deps Deps) AnonymousFunc {
 		}
 		return actions["AssumeRoleWithWebIdentity"].run("AssumeRoleWithWebIdentity", q, caller{}, deps)
 	}
+}
+
+// anonymousActions lists the STS actions that carry no SigV4; a web-identity
+// token in the body authenticates them.
+var anonymousActions = map[string]bool{
+	"AssumeRoleWithWebIdentity": true,
+}
+
+// NewPreAuth serves the unsigned web-identity exchange ahead of SigV4. A
+// request with an Authorization header, a body over the payload cap or any
+// other action is left to the signed chain.
+func NewPreAuth(deps Deps) dispatch.PreAuth {
+	run := NewAnonymousAssumeRoleWithWebIdentity(deps)
+	return dispatch.PreAuth{
+		Service: ServiceName,
+		Serve: func(w http.ResponseWriter, r *http.Request) (bool, error) {
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "" {
+				return false, nil
+			}
+			args, ok := anonymousArgs(r)
+			if !ok {
+				return false, nil
+			}
+			xmlOutput, err := run(args)
+			if err != nil {
+				return true, err
+			}
+			w.Header().Set("Content-Type", "text/xml")
+			w.WriteHeader(http.StatusOK)
+			if _, err := w.Write(xmlOutput); err != nil {
+				slog.Error("Failed to write STS response", "err", err)
+			}
+			return true, nil
+		},
+	}
+}
+
+// anonymousArgs peeks the request body and reports whether its Action is one
+// served without SigV4. This runs ahead of authentication, so an unauthenticated
+// client controls the allocation: one byte past the cap detects an oversize body,
+// which is handed back unread rather than dispatched.
+func anonymousArgs(r *http.Request) (map[string]string, bool) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
+	if err != nil {
+		return nil, false
+	}
+	if int64(len(body)) > sigv4.MaxPayloadLen {
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
+		return nil, false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	args, err := query.ParseArgs(string(body))
+	if err != nil || !anonymousActions[args["Action"]] {
+		return nil, false
+	}
+	return args, true
 }
 
 // resolveAction is the one Query Action parser telemetry and dispatch share.

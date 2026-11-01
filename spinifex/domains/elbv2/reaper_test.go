@@ -2,9 +2,12 @@ package elbv2
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -119,4 +122,41 @@ func TestReapStuckProvisioningLBsTerminatesOnlyTheFailedLBsVM(t *testing.T) {
 		"the reaper must terminate the failed LB's VM")
 	assert.Equal(t, []string{"i-stuck"}, terminated(),
 		"only the failed LB's own VM is terminated, never another LB's")
+}
+
+func TestReapStuckProvisioningLBsDetachesTheFailedLBsENIs(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		terminateErr error
+		wantStatus   string
+	}{
+		{"terminated VM releases its ENI", nil, "available"},
+		{"a VM that cannot be stopped keeps its ENI attached", errors.New("nats timeout"), "in-use"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, vpcSvc, subnetID := setupMicrovmTestService(t)
+			svc.InstanceLauncher = &mockSystemInstanceLauncher{terminateErr: tc.terminateErr}
+
+			eniOut, err := vpcSvc.CreateNetworkInterface(t.Context(), &ec2.CreateNetworkInterfaceInput{SubnetId: aws.String(subnetID)}, testAccountID)
+			require.NoError(t, err)
+			eniID := aws.StringValue(eniOut.NetworkInterface.NetworkInterfaceId)
+			_, err = vpcSvc.AttachENI(testAccountID, eniID, "i-stuck", 0)
+			require.NoError(t, err)
+
+			now := time.Now().UTC()
+			lb := testLBRecord("enirel0000000000", StateProvisioning, now.Add(-10*time.Minute), time.Time{})
+			lb.AccountID = testAccountID
+			lb.InstanceID = "i-stuck"
+			lb.ENIs = []string{eniID}
+			require.NoError(t, svc.store.PutLoadBalancer(t.Context(), lb))
+
+			svc.reapStuckProvisioningLBs(t.Context(), now)
+
+			rec, err := vpcSvc.GetENIRecord(testAccountID, eniID)
+			require.NoError(t, err, "the ENI stays for DeleteLoadBalancer to remove")
+			assert.Equal(t, tc.wantStatus, rec.Status)
+		})
+	}
 }

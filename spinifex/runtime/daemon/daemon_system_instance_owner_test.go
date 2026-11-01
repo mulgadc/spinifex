@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,14 +22,23 @@ import (
 // role credentials and its load balancer is reaped as failed.
 func TestLaunchSystemInstance_OwnerStampSurvivesStaleReplicaRead(t *testing.T) {
 	f := newSysInstFixture(t)
-	f.d.vpcService.WrapENIKVForTest(func(kv jetstream.KeyValue) jetstream.KeyValue { return testutil.NewStaleReadKV(kv) })
+	var inner jetstream.KeyValue
+	f.d.vpcService.WrapENIKVForTest(func(kv jetstream.KeyValue) jetstream.KeyValue {
+		inner = kv
+		return testutil.NewStaleReadKV(kv)
+	})
 	sysInstLaunchRuns(f.d)
 
 	eni := f.newENI(t)
 	out, err := f.d.LaunchSystemInstance(f.input(eni))
 	require.NoError(t, err)
 
-	rec := f.eniRecord(t, testAccountID, aws.StringValue(eni.NetworkInterfaceId))
+	// Read the stored record directly: the wrapped bucket would serve the
+	// check itself from a lagging replica.
+	entry, err := inner.Get(context.Background(), kvutil.AccountKey(testAccountID, aws.StringValue(eni.NetworkInterfaceId)))
+	require.NoError(t, err)
+	var rec ec2vpc.ENIRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &rec))
 	assert.Equal(t, out.InstanceID, rec.InstanceId)
 	assert.Equal(t, awsidentifiers.GlobalAccountID, rec.InstanceOwnerId,
 		"the owner stamp must land even when the read behind it was served by a lagging replica")

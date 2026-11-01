@@ -39,29 +39,24 @@ func resolveENIAccount(owner, fallback string) string {
 	return fallback
 }
 
-// recordENIInstanceOwner stamps the attached instance's owning account onto the
-// ENI record. System VMs run in the system account but plug into a customer ENI,
-// so without this IMDS would resolve the instance and its IAM role under the ENI
-// account and serve no credentials. Best-effort: a miss leaves IMDS falling back
-// to the ENI account, which only matters for the cross-account system path.
-func (d *Daemon) recordENIInstanceOwner(eniAccountID, eniID, instanceOwnerID string) {
-	if d.vpcService == nil || eniID == "" || instanceOwnerID == eniAccountID {
-		return
+// eniInstanceOwner is the owner to stamp on an ENI record when a system VM
+// attaches it. System VMs run in the system account but plug into a customer
+// ENI, so without the stamp IMDS resolves the instance under the ENI account
+// and serves no credentials. It is empty when both accounts are the same.
+func eniInstanceOwner(eniAccountID, instanceOwnerID string) string {
+	if instanceOwnerID == eniAccountID {
+		return ""
 	}
-	if err := d.vpcService.UpdateENI(eniAccountID, eniID, func(r *ec2vpc.ENIRecord) {
-		r.InstanceOwnerId = instanceOwnerID
-	}); err != nil {
-		slog.Warn("LaunchSystemInstance: failed to record ENI instance owner",
-			"eniId", eniID, "instanceOwner", instanceOwnerID, "err", err)
-	}
+	return instanceOwnerID
 }
 
-// attachExtraENI attaches one pre-created extra ENI and, when the caller asked
-// for an explicit DeleteOnTermination, persists it onto the record. An ENI that
-// has to outlive its VM is only safe once that flag is stored, so a failed stamp
-// fails the attach rather than leaving a disposable NIC behind.
-func (d *Daemon) attachExtraENI(eniAccountID string, extra systeminstance.ExtraENIInput, instanceID string, deviceIndex int64) error {
-	if _, err := d.vpcService.AttachENI(eniAccountID, extra.ENIID, instanceID, deviceIndex); err != nil {
+// attachExtraENI attaches one pre-created extra ENI, stamping the instance
+// owner in the attach write, and, when the caller asked for an explicit
+// DeleteOnTermination, persists it onto the record. An ENI that has to outlive
+// its VM is only safe once that flag is stored, so a failed stamp fails the
+// attach rather than leaving a disposable NIC behind.
+func (d *Daemon) attachExtraENI(eniAccountID string, extra systeminstance.ExtraENIInput, instanceID string, deviceIndex int64, instanceOwnerID string) error {
+	if _, err := d.vpcService.AttachENIWithOwner(eniAccountID, extra.ENIID, instanceID, deviceIndex, eniInstanceOwner(eniAccountID, instanceOwnerID)); err != nil {
 		return err
 	}
 	if extra.DeleteOnTermination == nil {
@@ -188,10 +183,11 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 		}
 		// Mark ENI as attached to this instance
 		if d.vpcService != nil {
-			if _, attachErr := d.vpcService.AttachENI(eniAccountID, instance.ENIId, instance.ID, 0); attachErr != nil {
-				slog.Warn("LaunchSystemInstance: failed to attach ENI", "eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
+			if _, attachErr := d.vpcService.AttachENIWithOwner(eniAccountID, instance.ENIId, instance.ID, 0, eniInstanceOwner(eniAccountID, accountID)); attachErr != nil {
+				slog.Error("LaunchSystemInstance: failed to attach ENI", "eniId", instance.ENIId, "instanceId", instance.ID, "instanceOwner", accountID, "err", attachErr)
+				d.cleanupFailedSystemInstance(instance, instanceType)
+				return nil, fmt.Errorf("attach ENI %s: %w", instance.ENIId, attachErr)
 			}
-			d.recordENIInstanceOwner(eniAccountID, instance.ENIId, accountID)
 		}
 		// Attach any additional pre-created ENIs (multi-subnet ALB VMs).
 		// Use the launcher input slice as the source of truth so the VM
@@ -203,12 +199,11 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 				// customer-VPC ENI) lives in its own account; the ENI record is
 				// account-keyed, so attach under extra.AccountID when set.
 				extraAccount := resolveENIAccount(extra.AccountID, eniAccountID)
-				if attachErr := d.attachExtraENI(extraAccount, extra, instance.ID, int64(idx+1)); attachErr != nil {
+				if attachErr := d.attachExtraENI(extraAccount, extra, instance.ID, int64(idx+1), accountID); attachErr != nil {
 					slog.Error("LaunchSystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", instance.ID, "err", attachErr)
 					d.cleanupFailedSystemInstance(instance, instanceType)
 					return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)
 				}
-				d.recordENIInstanceOwner(extraAccount, extra.ENIID, accountID)
 			}
 			instance.ExtraENIs = append(instance.ExtraENIs, vm.ExtraENI{
 				ENIID:         extra.ENIID,
@@ -240,7 +235,6 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 		if _, attachErr := d.vpcService.AttachENI(accountID, instance.ENIId, instance.ID, 0); attachErr != nil {
 			slog.Warn("LaunchSystemInstance: failed to attach auto-created ENI", "eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
 		}
-		d.recordENIInstanceOwner(accountID, instance.ENIId, accountID)
 	}
 
 	// Allocate public IP for internet-facing ALBs. Route through the EIP
@@ -549,7 +543,7 @@ func (d *Daemon) launchAMISystemInstance(input *systeminstance.SystemInstanceInp
 	for idx, extra := range input.ExtraENIs {
 		if d.vpcService != nil {
 			extraAccount := resolveENIAccount(extra.AccountID, input.AccountID)
-			if attachErr := d.attachExtraENI(extraAccount, extra, inst.ID, int64(idx+1)); attachErr != nil {
+			if attachErr := d.attachExtraENI(extraAccount, extra, inst.ID, int64(idx+1), ""); attachErr != nil {
 				slog.Error("launchAMISystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", inst.ID, "err", attachErr)
 				d.vmMgr.MarkFailed(context.Background(), inst, "extra_eni_attach_failed")
 				return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)

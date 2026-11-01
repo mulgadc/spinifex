@@ -123,6 +123,10 @@ Internal and internet-facing ALB and NLB, HTTPS listeners, listener rules, `Modi
 Unhealthy-target routing: an NLB with an HTTP health check on a TCP target group stops sending traffic to a target that fails it while still accepting TCP, sends traffic again once it recovers, and fails open when every target is unhealthy.
 An ALB whose targets all fail their health check keeps serving from them instead of answering 503.
 
+`TestInternalALBPrivateSubnet` launches an internal ALB in a private subnet of a non-default VPC with no internet gateway and no public route.
+The load balancer must reach active with a healthy target, which needs the owner stamp on its ENI to resolve, and a client inside the VPC must be served by it on every request.
+The client reports on its serial console because the runner has no route into the VPC.
+
 ### `eks`, `ecs`, `ecr` — container services
 
 `eks`: cluster create/delete, access entries, addon delivery, `GetToken`, kubeconfig artifacts, the EBS CSI volume path, an IRSA web-identity exchange under the stock AWS trust policy (`StringEquals` on the issuer host-path `:sub`/`:aud`, a mismatched `:sub` denied with `AccessDenied`, a `StringLike` `:sub` granted), and an IRSA pod wired with a projected SA token. Worker IMDS is covered too: a managed nodegroup worker reports IMDSv2 required with hop limit 2, a pod with no IRSA resolves to the node role through IMDS, and a nodegroup built from a launch template takes the template's metadata options. Control-plane isolation is covered as well: no control-plane host registers as a Node, a DaemonSet tolerating every taint runs on workers only, metrics-server is Ready, and logs work for every kube-system pod. `ecs`: clusters, container instances, the three network modes (`awsvpc`, `bridge`, `host`), task-role credentials fetched from the container credentials endpoint, a service behind an ELB, and ENI release on terminate. `ecr`: control-plane CRUD plus a real OCI data plane — docker login/build/push/pull round trips, multi-layer images, and raw blob HTTP.

@@ -229,16 +229,17 @@ func TestLaunchSystemInstance_PreCreatedENI(t *testing.T) {
 	f := newSysInstFixture(t)
 	d := f.d
 
-	t.Run("made-up ENI still reaches launch", func(t *testing.T) {
+	t.Run("made-up ENI fails the launch at the attach", func(t *testing.T) {
 		sysInstLaunchFails(d)
 		in := f.input(f.newENI(t))
 		in.ENIID = "eni-madeup"
 		in.IamInstanceProfileArn = "arn:aws:iam::123456789012:instance-profile/lb"
 
-		// The attach and owner stamp are best-effort, so only the launch fails.
+		// A VM whose ENI cannot be attached, and so cannot be stamped with
+		// its owner, can never authenticate and must not be launched.
 		_, err := d.LaunchSystemInstance(in)
-		require.ErrorIs(t, err, errSysInstLaunchRefused)
-		assert.Contains(t, err.Error(), "launch instance")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "attach ENI eni-madeup")
 	})
 
 	t.Run("cross-account ENI and extras are attached and stamped", func(t *testing.T) {

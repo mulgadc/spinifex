@@ -923,7 +923,7 @@ func TestAttachExtraENI_DeleteOnTerminationFalseSurvivesTerminate(t *testing.T) 
 	require.NoError(t, f.daemon.attachExtraENI(testAccountID, systeminstance.ExtraENIInput{
 		ENIID:               f.eniID,
 		DeleteOnTermination: aws.Bool(false),
-	}, f.vmInst.ID, 1))
+	}, f.vmInst.ID, 1, ""))
 
 	rec, err := f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
 	require.NoError(t, err)
@@ -947,7 +947,7 @@ func TestAttachExtraENI_NilDeleteOnTerminationStaysDisposable(t *testing.T) {
 
 	require.NoError(t, f.daemon.attachExtraENI(testAccountID, systeminstance.ExtraENIInput{
 		ENIID: f.eniID,
-	}, f.vmInst.ID, 1))
+	}, f.vmInst.ID, 1, ""))
 
 	require.NoError(t, newInstanceCleanerAdapter(f.daemon).DetachAndDeleteENI(f.vmInst))
 

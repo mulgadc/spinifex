@@ -158,9 +158,10 @@ fi
 
 # The nft teardown must name our own table. A global flush would take the
 # host's other rules with it.
-grep -q 'nft delete table inet spinifex_filter' "$UNINSTALL" \
-    && pass "nft teardown deletes only inet spinifex_filter" \
-    || fail "nft teardown does not delete inet spinifex_filter by name"
+grep -q 'nft delete table inet "$nft_table"' "$UNINSTALL" \
+    && grep -q 'for nft_table in spinifex_filter spinifex_conntrack; do' "$UNINSTALL" \
+    && pass "nft teardown deletes only inet spinifex_filter and spinifex_conntrack" \
+    || fail "nft teardown does not delete inet spinifex_filter and spinifex_conntrack by name"
 grep -qE 'nft[[:space:]]+(-[a-z][[:space:]]+)*flush ruleset' "$UNINSTALL" \
     && fail "nft teardown flushes the whole ruleset" \
     || pass "nft teardown never flushes the whole ruleset"

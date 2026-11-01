@@ -8,26 +8,21 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 )
-
-type stubOIDC struct{}
-
-func (stubOIDC) ServeDiscoveryDocument(w http.ResponseWriter, _ *http.Request, _, _ string) {
-	w.WriteHeader(http.StatusOK)
-}
-
-func (stubOIDC) ServeJWKS(w http.ResponseWriter, _ *http.Request, _, _ string) {
-	w.WriteHeader(http.StatusOK)
-}
 
 func mountsApp(t *testing.T) http.Handler {
 	t.Helper()
 	gw := reqctxGateway(t, reqctxGatewayEnv{NATS: natsUp, Throttler: newThrottler(t)})
-	gw.OIDC = stubOIDC{}
-	gw.RegistryHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusTeapot)
-	})
+	gw.PublicRoutes = func(r chi.Router) {
+		ok := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }
+		r.Get("/oidc/eks/{region}/{accountID}/{clusterName}/.well-known/openid-configuration", ok)
+		r.Get("/oidc/eks/{region}/{accountID}/{clusterName}/keys", ok)
+		r.Mount("/v2", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusTeapot)
+		}))
+	}
 	return gw.SetupRoutes()
 }
 

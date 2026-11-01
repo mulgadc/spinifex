@@ -82,13 +82,9 @@ type GatewayConfig struct {
 	Readiness pipeline.Readiness
 	Version   string // Build-time version string (set from cmd.Version)
 	Commit    string // Build-time commit hash (set from cmd.Commit)
-	// OIDC serves the unauthenticated EKS OIDC discovery and JWKS endpoints. Nil
-	// answers them with a 500 (e.g. in unit tests of unrelated routes).
-	OIDC OIDCPublisher
-	// RegistryHandler serves the registry host's /v2 subtree. It sits outside the
-	// SigV4 group and the AWS seam, which ADR-0002:S5 keeps off the registry. Nil
-	// answers 501.
-	RegistryHandler http.Handler
+	// PublicRoutes mounts the routes served ahead of SigV4 and the throttle.
+	// They authenticate themselves or need no authentication. Nil mounts none.
+	PublicRoutes func(chi.Router)
 
 	// Services holds the signed AWS services dispatched through the
 	// registration seam. Nil means nothing is registered, so every signed
@@ -162,15 +158,11 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	// payload token, not AWS credentials.
 	r.Use(gw.preAuthInterceptor)
 
-	// Unauthenticated OIDC discovery endpoints (IRSA) bypass auth and throttle.
-	r.Group(func(pub chi.Router) {
-		pub.Get("/oidc/eks/{region}/{accountID}/{clusterName}/.well-known/openid-configuration", gw.OIDCDiscoveryDocument)
-		pub.Get("/oidc/eks/{region}/{accountID}/{clusterName}/keys", gw.OIDCJWKS)
-	})
-
-	// OCI Distribution registry (/v2/*). Token/host-authenticated rather than
-	// SigV4-credential-scoped, so it mounts outside the SigV4 group.
-	gw.mountRegistry(r)
+	// Public routes: unauthenticated or self-authenticating, so outside the
+	// SigV4 group.
+	if gw.PublicRoutes != nil {
+		gw.PublicRoutes(r)
+	}
 
 	// Authenticated AWS API surface.
 	r.Group(func(auth chi.Router) {

@@ -20,6 +20,7 @@
 package integration
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	"context"
@@ -272,7 +273,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	if cfg.Admission == nil {
 		cfg.Admission = admission
 	}
-	if cfg.RegistryHandler == nil {
+	if cfg.PublicRoutes == nil {
 		bridge, err := ecrregistry.NewBridge(registryadapt.Config(ecrregistry.BridgeConfig{
 			Registry:  ecrRegistry,
 			Verifier:  ecrVerifier,
@@ -281,7 +282,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 			Region:    cfg.Region,
 		}, credverify.New(cfg.IAMService, cfg.STSService), policyauth.New(cfg.IAMService)))
 		require.NoError(t, err)
-		cfg.RegistryHandler = ingresshttp.NewHostMatcher(cfg.InternalSuffix, "dkr", "ecr").Middleware(bridge.Handler())
+		cfg.PublicRoutes = awsgw.PublicRoutes(nil, ingresshttp.NewHostMatcher(cfg.InternalSuffix, "dkr", "ecr").Middleware(bridge.Handler()))
 	}
 
 	handler := cfg.SetupRoutes()

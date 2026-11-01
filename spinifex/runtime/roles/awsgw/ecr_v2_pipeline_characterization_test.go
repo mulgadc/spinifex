@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -63,7 +64,7 @@ func newV2Env(t *testing.T, opts v2Options) *v2Env {
 		IAMService:     iamSvc,
 		STSService:     stsSvc,
 	})
-	gw.RegistryHandler = newTestRegistryHandler(t, gw, iss, verify)
+	gw.PublicRoutes = awsgw.PublicRoutes(nil, newTestRegistryHandler(t, gw, iss, verify))
 	return &v2Env{handler: gw.SetupRoutes(), iam: iamSvc, sts: stsSvc, issuer: iss}
 }
 

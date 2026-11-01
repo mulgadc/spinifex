@@ -362,3 +362,9 @@ func TestActorProjection_AgentRolesNotAssumableOverHTTPS(t *testing.T) {
 	assert.Equal(t, e.accountID, o.RDSAccountID)
 	assert.NotEqual(t, global, o.RDSAccountID)
 }
+
+const (
+	testDiscAccount = "000000000001"
+	testDiscCluster = "h1"
+	testDiscIssuer  = "https://10.0.0.1:9999/oidc/eks/ap-southeast-2/000000000001/h1"
+)

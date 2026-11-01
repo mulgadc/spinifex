@@ -94,10 +94,6 @@ var serviceName = "awsgw"
 // domains/eks/cluster, because domains/eks/cluster must not import domains/sts.
 var _ stsdomain.ClusterJWKSResolver = (*ekscluster.OIDCJWKSReader)(nil)
 
-// OIDCPublisher is wired into the gateway here for the same reason: the EKS
-// domain cannot import gateway.
-var _ gateway.OIDCPublisher = (*ekscluster.OIDCPublisher)(nil)
-
 // AccountStatusReader also serves as the quota override seal's TERMINATING
 // precondition, wired here because domains/iam must not import
 // domains/admission/quota.
@@ -532,24 +528,23 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	registryHosts := ingresshttp.NewHostMatcher(config.AWS.ServicesDomain, "dkr", "ecr")
 	gw := gateway.GatewayConfig{
-		Debug:           nodeConfig.AWSGW.Debug,
-		DisableLogging:  false,
-		NATSConn:        natsConn,
-		RootCAs:         rootCAs,
-		Config:          nodeConfig.AWSGW.Config,
-		ExpectedNodes:   len(config.Nodes),
-		Region:          nodeConfig.Region,
-		InternalSuffix:  config.AWS.ServicesDomain,
-		IAMService:      iamService,
-		STSService:      stsService,
-		Credentials:     credentials,
-		Admission:       admission,
-		Policy:          policyauth.New(iamService),
-		Readiness:       clusterready.New(natsConn),
-		Version:         version,
-		Commit:          commit,
-		OIDC:            ekscluster.NewOIDCPublisher(jwksJS),
-		RegistryHandler: registryHosts.Middleware(ecrBridge.Handler()),
+		Debug:          nodeConfig.AWSGW.Debug,
+		DisableLogging: false,
+		NATSConn:       natsConn,
+		RootCAs:        rootCAs,
+		Config:         nodeConfig.AWSGW.Config,
+		ExpectedNodes:  len(config.Nodes),
+		Region:         nodeConfig.Region,
+		InternalSuffix: config.AWS.ServicesDomain,
+		IAMService:     iamService,
+		STSService:     stsService,
+		Credentials:    credentials,
+		Admission:      admission,
+		Policy:         policyauth.New(iamService),
+		Readiness:      clusterready.New(natsConn),
+		Version:        version,
+		Commit:         commit,
+		PublicRoutes:   PublicRoutes(ekscluster.NewOIDCPublisher(jwksJS), registryHosts.Middleware(ecrBridge.Handler())),
 	}
 
 	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{

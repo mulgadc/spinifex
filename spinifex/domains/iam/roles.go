@@ -619,6 +619,7 @@ func (s *IAMServiceImpl) getRole(ctx context.Context, accountID, roleName string
 // to one role at once) write the same record concurrently. mutate reports
 // whether it changed the record; a false return commits nothing.
 func (s *IAMServiceImpl) updateRoleCAS(ctx context.Context, accountID, roleName string, mutate func(*Role) (bool, error)) error {
+	defer s.recordLocks.lock("role/" + accountID + "." + roleName)()
 	_, err := kvutil.Update(ctx, s.rolesBucket, accountID+"."+roleName, kvutil.CASConfig{
 		Attempts: roleCASMaxRetries,
 		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),

@@ -40,6 +40,21 @@ export default defineConfig({
     "eslint/no-use-before-define": ["error", { functions: false }],
     "eslint/require-unicode-regexp": "off",
     "eslint/sort-keys": "off",
+    "jsx-a11y/label-has-associated-control": [
+      "error",
+      {
+        controlComponents: [
+          "Input",
+          "Select",
+          "Textarea",
+          "Checkbox",
+          "Radio",
+          "RadioGroupItem",
+        ],
+        depth: 3,
+        labelComponents: ["Label"],
+      },
+    ],
     "import/consistent-type-specifier-style": "off",
     "react/function-component-definition": [
       "error",

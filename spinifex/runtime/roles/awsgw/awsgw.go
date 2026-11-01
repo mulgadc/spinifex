@@ -594,6 +594,20 @@ func launchService(config *config.ClusterConfig) error {
 		}
 	}()
 
+	// Served whatever the gateway's [quota] setting: the claim is about this
+	// binary's override writers, not about whether quotas are enabled.
+	quotaSealCapSub, err := registerQuotaOverrideSealCapability(natsConn, config.Node)
+	if err != nil {
+		return fmt.Errorf("subscribe quota override seal capability: %w", err)
+	}
+	if quotaSealCapSub != nil {
+		defer func() {
+			if err := quotaSealCapSub.Unsubscribe(); err != nil {
+				slog.Warn("Quota override seal capability: unsubscribe failed", "err", err)
+			}
+		}()
+	}
+
 	// Bedrock token quota reads the stream-fed usage counters built above,
 	// independent of whether the standing-infra dimensions are enabled.
 	quotaSvc.SetBedrockUsage(bedrockUsage)
@@ -653,7 +667,7 @@ func launchService(config *config.ClusterConfig) error {
 	sqsControlPlane := sqsRegistrations(sqsRelay, registryHost, registryPort)
 	// Set once the gateway is composed, so status reports the registry it serves.
 	var composedServices *dispatch.Registry
-	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
+	operatorControlPlane := operatoradmin.NewRegistration(withClusterNodes(operatoradmin.Deps{
 		Version:     version,
 		Commit:      commit,
 		NATS:        natsConn,
@@ -665,14 +679,12 @@ func launchService(config *config.ClusterConfig) error {
 
 		IAM:                    iamService,
 		Quota:                  quotaSvc,
-		ExpectedNodes:          len(config.Nodes),
-		NodeIDs:                nodeIDs,
 		BucketStore:            objStore,
 		SignupMaxAccounts:      signupMaxAccounts,
 		Region:                 nodeConfig.Region,
 		SQSWorkerPolling:       sqsRelay.WorkerPresent,
 		SQSTenantAPIRegistered: func() bool { return sqsServed(composedServices) },
-	})
+	}, config))
 	// The SQS worker's internal surface binds its buckets per request and never
 	// creates them, so it refuses every caller until a worker launch has.
 	sqsWorkerDeps := sqsworkerapi.JetStreamDeps(js)
@@ -876,4 +888,14 @@ func parseBedrockEndpoints(raw string) map[string]string {
 		return nil
 	}
 	return endpoints
+}
+
+// withClusterNodes sets the configured node sets teardown reaches: the
+// daemon on every node, and the gateway only on nodes that run awsgw. An
+// empty gateway set would fail every account termination closed.
+func withClusterNodes(d operatoradmin.Deps, config *config.ClusterConfig) operatoradmin.Deps {
+	d.ExpectedNodes = len(config.Nodes)
+	d.NodeIDs = slices.Sorted(maps.Keys(config.Nodes))
+	d.GatewayNodeIDs = config.NodesRunning("awsgw")
+	return d
 }

@@ -1203,6 +1203,16 @@ jobs:
           sleep 2
           rm -f "$TMPDIR"/tmp.*.qcow2 "$TMPDIR"/tmp.*.log "$TMPDIR"/tmp.*-node.log
 
+      # The ISO build runs as root inside the workspace, and the next job on
+      # this runner, from any workflow, cannot remove what it leaves there.
+      - name: Release the workspace
+        if: always()
+        run: |
+          sudo umount -R -l "$GITHUB_WORKSPACE"/mulga/scripts/iso-builder/.cache/rootfs 2>/dev/null || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/mulga/scripts/iso-builder/.cache \
+              "$GITHUB_WORKSPACE"/mulga/scripts/iso-builder/dist
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+
   iso-multi:
     name: cell-22 (iso/dhcp/three-node)
     # After cell-21 rather than beside it: same concurrency group, and running
@@ -1353,6 +1363,16 @@ jobs:
           sudo pkill -f spinifex-cluster-test || true
           rm -rf /tmp/cell22-artifacts-$GITHUB_RUN_ID /tmp/cell22-$GITHUB_RUN_ID.log \
                  "$WORK_DIR"
+
+      # The ISO build runs as root inside the workspace, and the next job on
+      # this runner, from any workflow, cannot remove what it leaves there.
+      - name: Release the workspace
+        if: always()
+        run: |
+          sudo umount -R -l "$GITHUB_WORKSPACE"/mulga/scripts/iso-builder/.cache/rootfs 2>/dev/null || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/mulga/scripts/iso-builder/.cache \
+              "$GITHUB_WORKSPACE"/mulga/scripts/iso-builder/dist
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
 
   # Predastore throughput ("cell 23"). Predastore has no runners of its own and
   # spinifex depends on it, so the benchmark lives here and checks predastore

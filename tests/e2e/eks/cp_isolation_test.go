@@ -27,9 +27,9 @@ const nodeGroupLabelRows = `jsonpath={range .items[*]}{.metadata.name} {.metadat
 const nodeReadyRows = `jsonpath={range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`
 
 // runCPIsolation proves control-plane hosts never register as Nodes, as on AWS:
-// only nodegroup workers are listed and one becomes Ready, a DaemonSet tolerating
-// every taint runs on workers only, metrics-server and its APIService become
-// available, and logs work for every kube-system pod on a Ready node.
+// only nodegroup workers are listed, one becomes Ready, deleted nodegroups leave
+// no Node behind, a DaemonSet tolerating every taint runs on workers only,
+// metrics-server and its APIService become available, and kube-system logs work.
 func runCPIsolation(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string, fx *clusterFixture) {
 	nodeRoleArn, _ := ensureNodeRole(t, c, fx)
 	createWorkerNodegroup(t, c, fx, cpIsolationNodegroup, nodeRoleArn, nil)
@@ -37,17 +37,37 @@ func runCPIsolation(t *testing.T, c *harness.AWSClient, env *harness.Env, artifa
 	kcPath := writeKubeconfig(t, artifacts, fx.Cluster)
 	kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
 
+	// Earlier subtests' nodegroups are deleted by now, so a Ready Node from one
+	// of them cannot stand in for this nodegroup's worker.
 	t.Run("WorkerNodeReady", func(t *testing.T) {
 		harness.EventuallyErr(t, func() error {
-			out, err := kc.Run(30*time.Second, "get", "nodes", "-o", nodeReadyRows)
+			out, err := kc.Run(30*time.Second, "get", "nodes",
+				"-l", "eks.amazonaws.com/nodegroup="+cpIsolationNodegroup, "-o", nodeReadyRows)
 			if err != nil {
 				return fmt.Errorf("kubectl get nodes: %v\n%s", err, out)
 			}
 			if !strings.Contains(out, "=True") {
-				return fmt.Errorf("no Ready node yet:\n%s", out)
+				return fmt.Errorf("no Ready %s Node yet:\n%s", cpIsolationNodegroup, out)
 			}
 			return nil
 		}, 6*time.Minute, 5*time.Second)
+	})
+
+	// As on AWS, a terminated worker's Node is deleted: once every other
+	// nodegroup is gone, the only Nodes left are this nodegroup's.
+	t.Run("TerminatedWorkersLeaveNoNodes", func(t *testing.T) {
+		harness.EventuallyErr(t, func() error {
+			out, err := kc.Run(30*time.Second, "get", "nodes", "-o", nodeGroupLabelRows)
+			if err != nil {
+				return fmt.Errorf("kubectl get nodes: %v\n%s", err, out)
+			}
+			for _, row := range strings.Split(strings.TrimSpace(out), "\n") {
+				if f := strings.Fields(row); len(f) == 2 && f[1] != cpIsolationNodegroup {
+					return fmt.Errorf("node %s of deleted nodegroup %s is still registered:\n%s", f[0], f[1], out)
+				}
+			}
+			return nil
+		}, 4*time.Minute, 10*time.Second)
 	})
 
 	t.Run("OnlyWorkersAreNodes", func(t *testing.T) {
@@ -71,19 +91,21 @@ func runCPIsolation(t *testing.T, c *harness.AWSClient, env *harness.Env, artifa
 			_, _ = kc.Run(60*time.Second, "delete", "daemonset", ds, "-n", "default", "--ignore-not-found")
 		})
 
+		// One "<pod>=<Ready status>" row per pod: a pod bound to a Node that never
+		// reported has no Ready condition, and its row must count as not Ready.
 		harness.EventuallyErr(t, func() error {
 			ready, err := kc.Run(30*time.Second, "get", "pods", "-l", "app="+ds,
-				"-o", `jsonpath={range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`)
+				"-o", `jsonpath={range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`)
 			if err != nil {
 				return fmt.Errorf("get daemonset pods: %v\n%s", err, ready)
 			}
-			states := strings.Fields(ready)
-			if len(states) == 0 {
+			rows := strings.Fields(ready)
+			if len(rows) == 0 {
 				return fmt.Errorf("daemonset has no pods yet")
 			}
-			for _, s := range states {
-				if s != "True" {
-					return fmt.Errorf("daemonset pods not all Ready: %v", states)
+			for _, row := range rows {
+				if _, status, _ := strings.Cut(row, "="); status != "True" {
+					return fmt.Errorf("daemonset pods not all Ready: %v", rows)
 				}
 			}
 			return nil

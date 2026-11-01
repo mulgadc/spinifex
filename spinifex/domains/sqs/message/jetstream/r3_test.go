@@ -2,12 +2,13 @@ package jetstream_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,29 +24,14 @@ import (
 )
 
 // cluster is a real three-node JetStream cluster in this process: separate
-// stores, routes and Raft groups, restartable over the same data and ports.
+// stores, routes and Raft groups, restartable over the same data.
 type cluster struct {
 	t       *testing.T
 	dirs    [3]string
-	client  [3]int
-	route   [3]int
 	logDir  string
+	mu      sync.Mutex // guards servers against a reconnecting client
 	servers [3]*server.Server
 	js      jsapi.JetStream
-}
-
-// routePorts reserves three distinct ports at once. Route ports must stay
-// fixed across restarts; client ports are chosen by each server's first start.
-func routePorts(t *testing.T) [3]int {
-	t.Helper()
-	var ports [3]int
-	for i := range ports {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		defer l.Close()
-		ports[i] = l.Addr().(*net.TCPAddr).Port
-	}
-	return ports
 }
 
 func startCluster(t *testing.T) *cluster {
@@ -60,29 +46,26 @@ func startClusterLogged(t *testing.T, logDir string) *cluster {
 	for i := range 3 {
 		c.dirs[i] = t.TempDir()
 	}
-	c.route = routePorts(t)
 	clustersize.RedeclareForTest(t, 3)
 	c.start()
 	t.Cleanup(c.stop)
 	return c
 }
 
+// start binds every listener on a port the server picks itself, so no port
+// is ever free to be taken. Nodes 1 and 2 route to node 0 and learn each
+// other from it.
 func (c *cluster) start() {
 	t := c.t
-	routes := make([]*url.URL, 3)
+	// JetStream needs a configured route, so node 0, which cannot name the
+	// others yet, gets port 1, where nothing listens.
+	seed := []*url.URL{{Scheme: "nats", Host: "127.0.0.1:1"}}
 	for i := range 3 {
-		routes[i] = &url.URL{Scheme: "nats", Host: fmt.Sprintf("127.0.0.1:%d", c.route[i])}
-	}
-	for i := range 3 {
-		port := c.client[i]
-		if port == 0 {
-			port = server.RANDOM_PORT
-		}
 		opts := &server.Options{
-			ServerName: fmt.Sprintf("sqs-%d", i), Host: "127.0.0.1", Port: port,
+			ServerName: fmt.Sprintf("sqs-%d", i), Host: "127.0.0.1", Port: server.RANDOM_PORT,
 			JetStream: true, StoreDir: c.dirs[i], NoLog: true, NoSigs: true,
-			Cluster: server.ClusterOpts{Name: "sqs-r3", Host: "127.0.0.1", Port: c.route[i]},
-			Routes:  routes,
+			Cluster: server.ClusterOpts{Name: "sqs-r3", Host: "127.0.0.1", Port: server.RANDOM_PORT},
+			Routes:  seed,
 		}
 		if c.logDir != "" {
 			opts.NoLog, opts.LogFile = false, filepath.Join(c.logDir, fmt.Sprintf("sqs-%d.log", i))
@@ -94,16 +77,15 @@ func (c *cluster) start() {
 			srv.ConfigureLogger()
 		}
 		go srv.Start()
-		c.servers[i] = srv
-	}
-	urls := make([]string, 3)
-	for i, srv := range c.servers {
 		require.True(t, srv.ReadyForConnections(10*time.Second), "node %d not ready", i)
-		// Keep the client port across restarts so open connections reconnect.
-		c.client[i] = srv.Addr().(*net.TCPAddr).Port
-		urls[i] = srv.ClientURL()
+		if i == 0 {
+			seed = []*url.URL{{Scheme: "nats", Host: srv.ClusterAddr().String()}}
+		}
+		c.mu.Lock()
+		c.servers[i] = srv
+		c.mu.Unlock()
 	}
-	nc, err := nats.Connect(strings.Join(urls, ","), nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond))
+	nc, err := nats.Connect("", nats.InProcessServer(c), nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond))
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 	js, err := jsapi.New(nc)
@@ -118,6 +100,19 @@ func (c *cluster) start() {
 	// group has elected its own leader, which every stream call needs.
 	require.Eventually(t, func() bool { return allStreamsLed(js) }, 60*time.Second, 200*time.Millisecond, "stream leaders not elected")
 	c.js = js
+}
+
+// InProcessConn connects a client to a running node. A client opened before
+// a restart reconnects through it to the restarted nodes.
+func (c *cluster) InProcessConn() (net.Conn, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, srv := range c.servers {
+		if srv != nil && srv.Running() {
+			return srv.InProcessConn()
+		}
+	}
+	return nil, errors.New("no cluster node is running")
 }
 
 func allStreamsLed(js jsapi.JetStream) bool {

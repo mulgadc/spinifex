@@ -56,6 +56,7 @@ type Deps struct {
 	Quota             *quota.Service
 	ExpectedNodes     int
 	NodeIDs           []string
+	GatewayNodeIDs    []string
 	BucketStore       accountteardown.BucketStore
 	SignupMaxAccounts int
 	// Region and the SQS observations serve the SQS enable and status actions.

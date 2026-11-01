@@ -32,6 +32,18 @@ func (g *gatedKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry,
 	return entry, err
 }
 
+// peerIAMService is another node's IAM service over the same JetStream. It
+// shares the records but not this service's record locks, so a writer parked
+// by gatedKV still races it the way a second gateway would.
+func peerIAMService(t *testing.T, svc *IAMServiceImpl) *IAMServiceImpl {
+	t.Helper()
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+	peer, err := NewIAMServiceImpl(t.Context(), svc.natsConn, masterKey)
+	require.NoError(t, err)
+	return peer
+}
+
 // A role update that read the record before a DetachRolePolicy and writes after
 // it must not put the detached policy back.
 func TestRoleUpdates_DoNotUndoConcurrentDetach(t *testing.T) {
@@ -92,7 +104,7 @@ func TestRoleUpdates_DoNotUndoConcurrentDetach(t *testing.T) {
 			go func() { done <- tc.update(svc, *role.RoleName) }()
 			<-gate.reached
 
-			_, err = svc.DetachRolePolicy(testAccountID, &iam.DetachRolePolicyInput{
+			_, err = peerIAMService(t, svc).DetachRolePolicy(testAccountID, &iam.DetachRolePolicyInput{
 				RoleName:  role.RoleName,
 				PolicyArn: policy.Arn,
 			})

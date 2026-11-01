@@ -29,6 +29,7 @@ func TestWarmupProbe_NotReadyUntilHealthPasses(t *testing.T) {
 	defer ts.Close()
 
 	p := newWarmupProbeWithInterval(ts.Client(), ts.URL, 10*time.Millisecond)
+	t.Cleanup(p.stop)
 
 	// The immediate first probe run issues before the ticker starts lands
 	// against the not-yet-healthy server; give it a moment to complete.
@@ -55,6 +56,7 @@ func TestWarmupProbe_ReProbesAfterInterval(t *testing.T) {
 	defer ts.Close()
 
 	p := newWarmupProbeWithInterval(ts.Client(), ts.URL, 10*time.Millisecond)
+	t.Cleanup(p.stop)
 	require.Eventually(t, p.Ready, time.Second, 5*time.Millisecond,
 		"must become ready once the endpoint is healthy")
 
@@ -91,7 +93,7 @@ func TestEmbeddingsProvider_Embed_WarmupGateFailsFastUntilHealthy(t *testing.T) 
 	p := newEmbeddingsProvider(NewStaticEndpointResolver(map[string]string{modelID: ts.URL}))
 	p.httpClient = ts.Client()
 	p.warmupPollInterval = 10 * time.Millisecond
-	p.warmupFor(ts.URL) // mirrors NewEmbedder(resolver, ts.URL)
+	t.Cleanup(p.warmupFor(ts.URL).stop) // mirrors NewEmbedder(resolver, ts.URL)
 
 	time.Sleep(30 * time.Millisecond)
 	_, err := p.Embed(t.Context(), modelID, []string{"hello"})
@@ -104,4 +106,22 @@ func TestEmbeddingsProvider_Embed_WarmupGateFailsFastUntilHealthy(t *testing.T) 
 		_, err := p.Embed(t.Context(), modelID, []string{"hello"})
 		return err == nil
 	}, time.Second, 10*time.Millisecond, "must succeed once the warm-up probe catches up to the endpoint being healthy")
+}
+
+// A probe left polling after its test outlives that test's server, and a later
+// test's server bound to the recycled port then counts the stray /health hits.
+func TestWarmupProbe_StopEndsThePollLoop(t *testing.T) {
+	p := &warmupProbe{client: http.DefaultClient, baseURL: "http://127.0.0.1:1", done: make(chan struct{})}
+	exited := make(chan struct{})
+	go func() {
+		p.run(time.Millisecond)
+		close(exited)
+	}()
+	p.stop()
+	p.stop()
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run kept polling after stop")
+	}
 }

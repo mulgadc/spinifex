@@ -485,6 +485,7 @@ func (s *IAMServiceImpl) getGroup(ctx context.Context, accountID, groupName stri
 // updateGroupCAS applies mutate to a group under optimistic concurrency, like
 // updateUserCAS.
 func (s *IAMServiceImpl) updateGroupCAS(ctx context.Context, accountID, groupName string, mutate func(*Group) (bool, error)) error {
+	defer s.recordLocks.lock("group/" + accountID + "." + groupName)()
 	_, err := kvutil.Update(ctx, s.groupsBucket, accountID+"."+groupName, iamRecordCASConfig("group", accountID, groupName), mutate)
 	return err
 }

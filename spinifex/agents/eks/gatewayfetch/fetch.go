@@ -16,6 +16,9 @@
 //
 // The recovery resource returns a single epoch\taction\tsnapshot line the on-VM
 // k3s-recovery agent applies before k3s starts (etcd cluster-reset / wipe-rejoin).
+//
+// The workers resource returns one instance ID per line: every worker the
+// cluster's nodegroups still own, which the on-VM node-gc agent keeps Nodes for.
 package gatewayfetch
 
 import (
@@ -46,7 +49,7 @@ type Config struct {
 	Region      string
 	AccountID   string
 	ClusterName string
-	// Resource is "addons" or "recovery".
+	// Resource is "addons", "recovery" or "workers".
 	Resource   string
 	InstanceID string
 	// Out receives the rendered TSV.
@@ -61,8 +64,8 @@ func Run(ctx context.Context, cfg Config) error {
 		return errors.New("--account-id is required (or set EKS_ACCOUNT_ID)")
 	case cfg.ClusterName == "":
 		return errors.New("--cluster is required (or set EKS_CLUSTER_NAME)")
-	case cfg.Resource != "addons" && cfg.Resource != "recovery":
-		return errors.New("--resource must be addons or recovery")
+	case cfg.Resource != "addons" && cfg.Resource != "recovery" && cfg.Resource != "workers":
+		return errors.New("--resource must be addons, recovery or workers")
 	case cfg.Resource == "recovery" && cfg.InstanceID == "":
 		return errors.New("--instance-id is required for --resource recovery (or set EKS_INSTANCE_ID)")
 	}
@@ -80,6 +83,9 @@ func Run(ctx context.Context, cfg Config) error {
 	case "recovery":
 		path = "/clusters/" + cfg.ClusterName + "/internal-recovery/" + cfg.AccountID + "/" + cfg.InstanceID
 		emit = emitRecoveryTSV
+	case "workers":
+		path = "/clusters/" + cfg.ClusterName + "/internal-workers/" + cfg.AccountID
+		emit = emitWorkers
 	default:
 		path = "/clusters/" + cfg.ClusterName + "/internal-addons/" + cfg.AccountID
 		emit = emitAddonsTSV
@@ -162,4 +168,25 @@ func emitRecoveryTSV(out io.Writer, body []byte) error {
 		return err
 	}
 	return nil
+}
+
+type internalWorkersResponse struct {
+	InstanceIDs []string `json:"instanceIds"`
+}
+
+// emitWorkers writes one managed-worker instance ID per line. An empty set
+// writes nothing, which the node-gc agent tells apart from a failed fetch by
+// this command's exit status, never by the output being empty.
+func emitWorkers(out io.Writer, body []byte) error {
+	var resp internalWorkersResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return fmt.Errorf("unmarshal internal-workers response: %w", err)
+	}
+	w := bufio.NewWriter(out)
+	for _, id := range resp.InstanceIDs {
+		if _, err := fmt.Fprintln(w, id); err != nil {
+			return err
+		}
+	}
+	return w.Flush()
 }

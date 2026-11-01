@@ -50,11 +50,12 @@ echo "$GOMEMLIMIT $*" >> "$T/servers"
 exec sleep 60
 EOF
 # The fake boot takes its exit codes in order from $T/boot-rcs, and like the
-# real one writes the receipt marker only on success.
+# real one writes the receipt marker only on success; "hold" blocks like a slow call.
 cat > "$TMP/bin/boot" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$T/boots"
 rc=$(head -n1 "$T/boot-rcs"); sed -i 1d "$T/boot-rcs"
+if [ "$rc" = hold ]; then echo "$$" > "$T/boot-child"; exec sleep 60; fi
 [ "$rc" != 0 ] || echo FP > "$T/run/receipt-ready"
 exit "$rc"
 EOF
@@ -153,6 +154,21 @@ start_store
 check "a respawn after the key settled starts the store without booting again" \
     'waitfor "[ -s \"\$T/servers\" ]" && [ ! -e "$T/boots" ]'
 kill -KILL "$spid" 2>/dev/null || true
+fresh boot-held; rm -f "$T/run/store.conf" "$T/run/receipt-ready"; echo hold > "$T/boot-rcs"
+echo "/dev/vdb $T/data ext4 rw 0 0" > "$T/mounts"
+start_store; waitfor '[ -s "$T/boot-child" ]' || true
+bchild=$(cat "$T/boot-child" 2>/dev/null); CHILDREN="$CHILDREN $bchild"
+shutdown_step
+check "shutdown stops a boot still in progress before it unmounts the disk" \
+    'waitfor "gone $bchild" && grep -q "umount $T/data" "$T/calls.log"'
+kill -KILL "$spid" "$bchild" 2>/dev/null || true
+fresh boot-held-survivor; rm -f "$T/run/store.conf" "$T/run/receipt-ready"; echo hold > "$T/boot-rcs"
+echo "/dev/vdb $T/data ext4 rw 0 0" > "$T/mounts"
+start_store; waitfor '[ -s "$T/boot-child" ]' || true
+bchild=$(cat "$T/boot-child" 2>/dev/null); CHILDREN="$CHILDREN $bchild"
+check "a boot that survives SIGKILL fails shutdown and keeps the disk mounted" \
+    '! shutdown_step "$bchild" && ! grep -q umount "$T/calls.log" && grep -q "boot pid=$bchild STILL ALIVE" "$T/console"'
+kill -KILL "$spid" "$bchild" 2>/dev/null || true
 
 # --- A watcher killed after readiness: its marker must not outlive it ---
 fresh killed-after-ready

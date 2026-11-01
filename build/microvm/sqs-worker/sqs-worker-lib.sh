@@ -78,8 +78,15 @@ sqsw_record() { echo "$$ $(sqsw_starttime $$)" > "$SQSW_RUN/$1.pid"; }
 sqsw_boot() {
     [ ! -e "$SQSW_RUN/boot-refused" ] || sqsw_park "store: boot refused, not starting"
     [ -s "$SQSW_RUN/receipt-ready" ] && return 0
+    # Boot is recorded on its own so shutdown stops it before unmounting.
+    "$SQSW_BIN" boot >> "$SQSW_CONSOLE" 2>&1 &
+    child=$!
+    echo "$child $(sqsw_starttime "$child")" > "$SQSW_RUN/boot.pid"
+    [ ! -e "$SQSW_RUN/stopping" ] || kill -TERM "$child" 2>/dev/null || true
     rc=0
-    "$SQSW_BIN" boot >> "$SQSW_CONSOLE" 2>&1 || rc=$?
+    wait "$child" || rc=$?
+    rm -f "$SQSW_RUN/boot.pid"
+    [ ! -e "$SQSW_RUN/stopping" ] || sqsw_park "store: shutdown during boot, not starting"
     case "$rc" in
         0) return 0 ;;
         75) sqsw_log "store: boot not settled, retrying in ${SQSW_BOOT_RETRY}s"
@@ -160,14 +167,14 @@ sqsw_end() {
     rm -f "$SQSW_RUN/$1.pid"
 }
 
-# sqsw_stop: block any respawn, drop the marker, stop the watcher, then the
-# server, and unmount the disk only once both are confirmed gone. A survivor
-# keeps the disk mounted.
+# sqsw_stop: block any respawn, drop the marker, stop the watcher, the server
+# and any boot in progress, and unmount the disk only once all are confirmed
+# gone. A survivor keeps the disk mounted.
 sqsw_stop() {
     mkdir -p "$SQSW_RUN"
     : > "$SQSW_RUN/stopping"
     rm -f "$SQSW_RUN/store-ready"
-    if ! sqsw_end ready || ! sqsw_end store; then
+    if ! sqsw_end ready || ! sqsw_end store || ! sqsw_end boot; then
         rm -f "$SQSW_RUN/store-ready"
         sqsw_log "stop: leaving $SQSW_DATA mounted"
         return 1

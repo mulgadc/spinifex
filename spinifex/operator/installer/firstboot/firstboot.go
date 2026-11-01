@@ -140,6 +140,12 @@ fi
 # Set hostname
 hostnamectl set-hostname %s
 
+# Connection tracking before OVN opens its RAFT links: a link the kernel first
+# sees mid-stream is dropped when the firewall arms. Non-fatal, as the policy
+# that needs it is optional; the unit enabled below reloads it on later boots.
+/usr/local/lib/spinifex/spinifex-firewall-apply track \
+    || echo "[firstboot] WARNING: connection tracking not loaded; arming the firewall may drop OVN links"
+
 %s
 
 # Create default nameservers if DHCP server returns blank
@@ -225,8 +231,8 @@ systemctl enable spinifex.target spinifex-banner.service
 # setup.sh enables this on the package install path, but the ISO chroot returns
 # before that line (no systemd to talk to), so the ISO needs it here. An nft
 # ruleset is runtime state and does not survive a reboot; without this the unit
-# never reapplies the policy and the node comes back up open. Enabled, not
-# started: ConditionPathExists holds it inert until the daemon writes a peer file.
+# never reapplies the policy and the node comes back up open. It loads the
+# policy only once the daemon has written a peer file; until then it only tracks.
 systemctl enable spinifex-firewall.service
 # WantedBy=timers.target only self-activates once enabled — without this the
 # JetStream ENOSPC-latch watchdog never runs and a full disk needs a manual restart.

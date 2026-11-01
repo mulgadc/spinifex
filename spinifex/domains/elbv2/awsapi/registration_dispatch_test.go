@@ -248,6 +248,30 @@ func TestRegistrationDispatch_RequestShapeErrors(t *testing.T) {
 	}
 }
 
+// Members the SDK structs predate are refused by name before authorization,
+// rather than dropped by the parser.
+func TestRegistrationDispatch_RefusesUnsupportedMembers(t *testing.T) {
+	cases := []struct {
+		action, extra, param string
+	}{
+		{"CreateLoadBalancer", "Name=my-alb&IpamPools.Ipv4IpamPoolId=ipam-pool-1", "IpamPools"},
+		{"CreateLoadBalancer", "Name=my-nlb&EnablePrefixForIpv6SourceNat=on", "EnablePrefixForIpv6SourceNat"},
+		{"SetSubnets", "LoadBalancerArn=" + url.QueryEscape(testLBArn) + "&EnablePrefixForIpv6SourceNat=off", "EnablePrefixForIpv6SourceNat"},
+		{"CreateTargetGroup", "Name=my-tg&TargetControlPort=8080", "TargetControlPort"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.action+"/"+tc.param, func(t *testing.T) {
+			body := "Action=" + tc.action + "&Version=2015-12-01&" + tc.extra
+			_, auths, err := invoke(t, elbv2awsapi.Deps{}, body, nil)
+			code, msg, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok, "err = %v", err)
+			assert.Equal(t, awserrors.ErrorValidationError, code)
+			assert.Equal(t, tc.param+" is not supported", msg)
+			assert.Empty(t, auths)
+		})
+	}
+}
+
 // The listener attribute actions are served in process, with no daemon.
 func TestRegistrationDispatch_ListenerAttributesNeedNoDaemon(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)

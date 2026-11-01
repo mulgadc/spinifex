@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
@@ -212,6 +213,27 @@ var actions = map[string]action{
 	}),
 }
 
+// unsupportedParams are members the AWS model has that this platform does not
+// implement. The SDK structs predate them, so the parser would drop them.
+var unsupportedParams = map[string][]string{
+	"CreateLoadBalancer": {"IpamPools", "EnablePrefixForIpv6SourceNat"},
+	"CreateTargetGroup":  {"TargetControlPort"},
+	"SetSubnets":         {"EnablePrefixForIpv6SourceNat"},
+}
+
+// refuseUnsupported refuses the first unsupported member present in the query,
+// whether a scalar (Name) or a structure or list (Name.Member).
+func refuseUnsupported(name string, queryArgs map[string]string) error {
+	for _, param := range unsupportedParams[name] {
+		for key := range queryArgs {
+			if key == param || strings.HasPrefix(key, param+".") {
+				return awserrors.Errorf(awserrors.ErrorValidationError, "%s is not supported", param)
+			}
+		}
+	}
+	return nil
+}
+
 // NewRegistration returns the ELBv2 AWS Query control-plane registration.
 func NewRegistration(deps Deps) dispatch.Registration {
 	return dispatch.Registration{
@@ -287,6 +309,10 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		// InternalError, not ServerInternal: the policy gate used to reach this
 		// case first and that is the code the caller has always seen.
 		return errors.New(awserrors.ErrorInternalError)
+	}
+
+	if err := refuseUnsupported(name, queryArgs); err != nil {
+		return err
 	}
 
 	input, err := h.parse(queryArgs)

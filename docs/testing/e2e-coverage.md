@@ -29,6 +29,7 @@ The largest suite, 27 top-level tests. Notable entry points:
 - `TestInstanceMetadata` — IMDS from inside a guest.
 - **`TestIMDSDatapathSurvivesVswitchdRestart`** restarts `ovs-vswitchd` under a guest with an Elastic IP, once through systemd and once with SIGKILL. After each, the guest must answer over its EIP and fetch its instance ID through IMDSv2 within 60 seconds, and `br-imds` must hold all 7 of the guest's own flows. It is sequential because it takes the whole node's datapath down.
 - `TestStopStart`, `TestEarlyRebootLiveness`, `TestGuestChurnDurability`, `TestSnapshotLifecycle`, `TestSnapshotBackedLaunch`, `TestCreateImage`, `TestVolumeLifecycle`, `TestSpotInstanceLifecycle`, `TestLaunchTemplateBoot`.
+- **`TestRebootLoop`** is opt-in and skipped in a whole-suite run. Name it in `-test.run`, or set `SPINIFEX_REBOOT_LOOP_ROUNDS` (default 10), and it reboots one fresh guest through the API that many times and then once from inside, requiring a new boot ID every time.
 - `TestNegativeErrorPaths` — the `8a`–`8t` AWS error-shape cases (malformed AMI ID, invalid instance type, volume in use, detach-root forbidden, unknown or malformed instance IDs on the lifecycle verbs, and so on).
 - **`TestKVReplication`** — the single-node half of the KV replication policy, and it is not the multi-node assertion with a smaller number in it. On one node one replica per bucket is the correct answer rather than the defect, so what it proves is the opposite: that nothing declared a replica count this deployment cannot place, that `spx admin kv replicas` exits 0 and reports `WANT 1`, and that `--repair` run twice against a cluster with nothing to repair changes no bucket's replica count and leaves every bucket serving. The multi-node suites cannot cover any of that, because on three nodes the unplaceable count is the right one. It lives here rather than in its own suite so it runs in every single-node nightly cell, across every host and network permutation.
 
@@ -135,7 +136,7 @@ The create/describe/connect path against a live cluster: a DB VM that actually b
 - **`storagefault`** — what a guest does when its storage backend stops answering, and what stop/start does when the seal failed. **The claim is about corruption, not availability.** SIGSTOPs a cluster-wide service, so it always runs last and in its own cell. Three-node, because the RS(2,1) shard floor and cross-node takeover after a failed seal do not exist on one node.
 - **`partialblock`** — concurrent sub-block writes to the same block surviving a cold reread through NBD from a real guest.
 - **`storagegrowth`** — volume growth and image pull. Requires `external_mode=pool`; skips on a nat env, which has no EIP and therefore no guest SSH.
-- **`reboot`** — a slow guest waited for and keeping what it wrote, and a wedged guest reset once its budget expires. Proves a real reboot by requiring a *new* boot ID.
+- **`reboot`** — a slow guest waited for and keeping what it wrote, and a wedged guest forced off and relaunched once its budget expires. Proves a real reboot by requiring a *new* boot ID.
 - **`diskperf`** — guest disk performance gate, pinned fio profile on a dedicated blank volume. Also requires `external_mode=pool` for guest SSH.
 
 ### Other

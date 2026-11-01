@@ -82,6 +82,14 @@ svc_start() {
     esac
 }
 
+# IRSA injector: every server runs one, called by its own apiserver. It is
+# optional (failurePolicy Ignore), so it goes last and a fault only costs
+# injection, never the control plane.
+svc_optional() {
+    svc_enable "$1" && svc_start "$1" ||
+        log "WARN: optional service $1 failed to enable or start; continuing without it"
+}
+
 svc_disable() {
     case "${INIT_SYSTEM}" in
         openrc) rc-update del "$1" default 2>/dev/null || true ;;
@@ -135,9 +143,6 @@ case "${ROLE}" in
         # konnectivity-server fronts apiserver egress; every server replica runs
         # one so the agent's per-replica tunnel always lands a live server.
         svc_enable konnectivity-server
-        # IRSA injector: every server runs one, called by its own apiserver.
-        # Supervised, so it never delays k3s or eks-token-webhook.
-        svc_enable eks-pod-identity-webhook
         svc_enable k3s-first-boot
         svc_enable mulga-eks-state-report
         # Managed-addon delivery runs only on the primary server: it renders
@@ -150,11 +155,11 @@ case "${ROLE}" in
         svc_start mulga-eks-k3s-recovery
         svc_start k3s
         svc_start konnectivity-server
-        svc_start eks-pod-identity-webhook
         svc_start k3s-first-boot
         svc_start mulga-eks-state-report
         svc_start mulga-eks-addon-sync
         svc_start mulga-eks-node-gc
+        svc_optional eks-pod-identity-webhook
         ;;
     server-join)
         log "configuring server-join role"
@@ -165,16 +170,15 @@ case "${ROLE}" in
         svc_enable mulga-eks-k3s-recovery
         svc_enable k3s
         svc_enable konnectivity-server
-        svc_enable eks-pod-identity-webhook
         svc_enable mulga-eks-state-report
         svc_enable mulga-eks-node-gc
         svc_start eks-token-webhook
         svc_start mulga-eks-k3s-recovery
         svc_start k3s
         svc_start konnectivity-server
-        svc_start eks-pod-identity-webhook
         svc_start mulga-eks-state-report
         svc_start mulga-eks-node-gc
+        svc_optional eks-pod-identity-webhook
         ;;
     agent)
         log "configuring agent role"

@@ -22,6 +22,7 @@ for tool in rc-update rc-service; do
     cat > "${STUB_OPENRC}/${tool}" <<EOF
 #!/bin/sh
 echo "${tool} \$*" >> "\${CALLS}"
+case "\$*" in *"\${STUB_FAIL:-@none@}"*) exit 1 ;; esac
 exit 0
 EOF
     chmod +x "${STUB_OPENRC}/${tool}"
@@ -32,6 +33,7 @@ mkdir -p "${STUB_SYSTEMD}"
 cat > "${STUB_SYSTEMD}/systemctl" <<'EOF'
 #!/bin/sh
 echo "systemctl $*" >> "${CALLS}"
+case "$*" in *"${STUB_FAIL:-@none@}"*) exit 1 ;; esac
 exit 0
 EOF
 chmod +x "${STUB_SYSTEMD}/systemctl"
@@ -146,6 +148,32 @@ for INIT in openrc systemd; do
     check "server(${INIT}): starts node-gc" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-node-gc)")"
     check "server(${INIT}): no k3s-agent" "no" "$(present "${CALLS}" "$(enable_cmd "${INIT}" k3s-agent)")"
     check "server(${INIT}): self-disables" "yes" "$(present "${CALLS}" "$(disable_cmd "${INIT}" eks-node-role)")"
+    check "server(${INIT}): pod-identity-webhook is the last call" "$(start_cmd "${INIT}" eks-pod-identity-webhook)" "$(grep -v "$(disable_cmd "${INIT}" eks-node-role)" "${CALLS}" | tail -n 1)"
+    check "server(${INIT}): pod-identity-webhook enabled after addon-sync start" "yes" "$(
+        awk -v a="$(start_cmd "${INIT}" mulga-eks-addon-sync)" -v w="$(enable_cmd "${INIT}" eks-pod-identity-webhook)" '
+            index($0, a) == 1 { an = NR }
+            index($0, w) == 1 { wn = NR }
+            END { print (an > 0 && wn > an) ? "yes" : "no" }
+        ' "${CALLS}"
+    )"
+
+    # A broken optional webhook must leave the control plane booting.
+    for FAILING in enable start; do
+        run_case "${INIT}" server_${FAILING}_fail
+        printf 'SPINIFEX_K3S_ROLE=server\nEKS_CLUSTER_NAME=alpha\n' > "${EKS_NODE_ENVFILE}"
+        if [ "${FAILING}" = enable ]; then
+            export STUB_FAIL="$(enable_cmd "${INIT}" eks-pod-identity-webhook)"
+            STUB_FAIL="${STUB_FAIL#rc-update add }"; STUB_FAIL="${STUB_FAIL#systemctl enable }"
+        else
+            export STUB_FAIL="$(start_cmd "${INIT}" eks-pod-identity-webhook)"
+            STUB_FAIL="${STUB_FAIL#rc-service }"; STUB_FAIL="${STUB_FAIL#systemctl start --no-block }"
+        fi
+        invoke
+        unset STUB_FAIL
+        check "server(${INIT}): webhook ${FAILING} failure still exits 0" 0 "${rc}"
+        check "server(${INIT}): webhook ${FAILING} failure still starts mulga-eks-addon-sync" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-addon-sync)")"
+        check "server(${INIT}): webhook ${FAILING} failure still self-disables" "yes" "$(present "${CALLS}" "$(disable_cmd "${INIT}" eks-node-role)")"
+    done
 
     # --- server-join ---
     run_case "${INIT}" server_join
@@ -165,6 +193,7 @@ for INIT in openrc systemd; do
     # Join servers must NOT re-publish bootstrap: the first server already
     # published the cluster-identical artifacts, and a join re-publish would
     # only race the bootstrap bus. This is deliberate, not an oversight.
+    check "server-join(${INIT}): pod-identity-webhook is the last call" "$(start_cmd "${INIT}" eks-pod-identity-webhook)" "$(grep -v "$(disable_cmd "${INIT}" eks-node-role)" "${CALLS}" | tail -n 1)"
     check "server-join(${INIT}): no k3s-first-boot" "yes" "$(absent_all "${CALLS}" "k3s-first-boot")"
     check "server-join(${INIT}): no k3s-agent" "yes" "$(absent_all "${CALLS}" "$(enable_cmd "${INIT}" k3s-agent)")"
     check "server-join(${INIT}): self-disables" "yes" "$(present "${CALLS}" "$(disable_cmd "${INIT}" eks-node-role)")"

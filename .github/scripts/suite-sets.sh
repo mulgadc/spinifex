@@ -130,6 +130,10 @@ e2e_suite_timeout() {
     # budget on a node stopping and starting: seven units down, a raft election,
     # and the whole service stack back up with every stream caught up.
     kvquorum) echo "40m" ;;
+    # single is the broadest suite and finishes, it does not hang: passing runs
+    # took 24-29m, and an Oracle host ran out at 30m inside the last test's
+    # cleanup. The default left it no headroom at all.
+    single) echo "40m" ;;
     *) echo "30m" ;;
   esac
 }

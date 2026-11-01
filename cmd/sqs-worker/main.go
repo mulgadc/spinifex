@@ -10,13 +10,16 @@
 // credentials, then loads or creates the store key on that disk and
 // publishes only the public key. ready then keeps checking the bound store's
 // JetStream with that key until it is stopped, keeping a readiness marker only
-// while the check passes; it proves the store accepted the worker key, not
-// the store server's identity. ready also serves SQS owner calls against
-// that store, pulling them from the gateway with the same credentials.
+// while the check passes. Every store connection is TLS 1.3 pinned to the
+// server key pin the store recorded with the gateway; nothing is sent to a
+// store that does not prove that key. ready also serves SQS owner calls
+// against that store, pulling them from the gateway with the same credentials.
 //
 // Serving is refused unless the gateway reports a single-node host cluster.
 // A disk with no receipt key refuses to serve; recovering it needs a safe
 // procedure not yet designed, and nothing deletes or replaces the store.
+// The host holds the store's data disk key, so the pin does not protect the
+// store from a privileged host.
 package main
 
 import (

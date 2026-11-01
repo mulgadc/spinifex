@@ -33,7 +33,7 @@ type NewDescriber func(region, gatewayURL string) (StoreDescriber, error)
 // Checker proves the store's JetStream answers this worker's key at address.
 // Only an error with Retryable() true is asked again.
 type Checker interface {
-	Check(ctx context.Context, address string, kp nkeys.KeyPair) error
+	Check(ctx context.Context, address, pin string, kp nkeys.KeyPair) error
 }
 
 // ReadyConfig is Config plus the readiness capabilities and cadence.
@@ -110,7 +110,7 @@ func Watch(ctx context.Context, cfg ReadyConfig) error {
 		case ctx.Err() != nil:
 			return ctx.Err()
 		case err == nil:
-			state = fmt.Sprintf("store at %s answered the worker key (client-authenticated only; the store server is not authenticated)", st.Address)
+			state = fmt.Sprintf("store at %s proved its pinned server key and admitted the worker key", st.Address)
 		default:
 			_ = os.Remove(marker)
 			delay = cfg.Wait
@@ -157,7 +157,7 @@ func readyOnce(ctx context.Context, cfg ReadyConfig, d StoreDescriber, keys work
 		return Store{}, err
 	}
 	defer kp.Wipe()
-	if err := cfg.Checker.Check(ctx, st.Address, kp); err != nil {
+	if err := cfg.Checker.Check(ctx, st.Address, st.ServerKeyPin, kp); err != nil {
 		return Store{}, err
 	}
 	return st, nil

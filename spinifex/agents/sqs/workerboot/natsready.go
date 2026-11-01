@@ -16,9 +16,9 @@ import (
 // StorePort is the port the store guest's NATS listens on.
 const StorePort = 4222
 
-// NATSChecker connects with the worker key and asks JetStream for its account
-// info. It authenticates the client only: there is no TLS, so a pass says
-// something answering at the address accepted the key.
+// NATSChecker connects over TLS pinned to the store's recorded server key,
+// then with the worker key asks JetStream for its account info. A pass says
+// the pinned store answered and admitted the worker key.
 type NATSChecker struct {
 	// Port overrides StorePort, for tests against a local server.
 	Port int
@@ -39,9 +39,13 @@ func (e *StoreUnreachableError) Retryable() bool { return true }
 var ErrStoreRefusedKey = errors.New("the store refused the worker key")
 
 // Check passes once JetStream answers for the worker key.
-func (c NATSChecker) Check(ctx context.Context, address string, kp nkeys.KeyPair) error {
+func (c NATSChecker) Check(ctx context.Context, address, pin string, kp nkeys.KeyPair) error {
 	if ip := net.ParseIP(address); ip == nil || ip.To4() == nil {
 		return errors.New("store address is not an IPv4 address")
+	}
+	tlsCfg, err := pinnedTLS(pin)
+	if err != nil {
+		return err
 	}
 	pub, err := kp.PublicKey()
 	if err != nil {
@@ -56,12 +60,16 @@ func (c NATSChecker) Check(ctx context.Context, address string, kp nkeys.KeyPair
 		dial = 5 * time.Second
 	}
 	nc, err := nats.Connect("nats://"+net.JoinHostPort(address, strconv.Itoa(port)),
+		nats.Secure(tlsCfg),
 		nats.Nkey(pub, kp.Sign),
 		nats.Timeout(dial),
 		nats.NoReconnect(),
 		nats.Name("spinifex-sqs-worker-readiness"),
 	)
 	if err != nil {
+		if errors.Is(err, ErrStoreIdentity) {
+			return err
+		}
 		if errors.Is(err, nats.ErrAuthorization) || errors.Is(err, nats.ErrAuthExpired) {
 			return fmt.Errorf("%w: %w", ErrStoreRefusedKey, err)
 		}

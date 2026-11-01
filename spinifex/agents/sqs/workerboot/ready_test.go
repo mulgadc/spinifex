@@ -38,7 +38,7 @@ type checker struct {
 	seen  []string
 }
 
-func (c *checker) Check(_ context.Context, address string, kp nkeys.KeyPair) error {
+func (c *checker) Check(_ context.Context, address, _ string, kp nkeys.KeyPair) error {
 	c.calls++
 	pub, _ := kp.PublicKey()
 	c.seen = append(c.seen, address+"|"+pub)
@@ -332,18 +332,7 @@ func (g *guest) assertNotReady() {
 
 func startStore(t *testing.T, pub string, port int) *server.Server {
 	t.Helper()
-	opts := &server.Options{Host: "127.0.0.1", Port: port, JetStream: true, StoreDir: t.TempDir(), NoLog: true,
-		NoSigs: true, Nkeys: []*server.NkeyUser{{Nkey: pub}}}
-	ns, err := server.NewServer(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	go ns.Start()
-	if !ns.ReadyForConnections(10 * time.Second) {
-		t.Fatal("store server did not start")
-	}
-	t.Cleanup(ns.Shutdown)
-	return ns
+	return tlsStore(t, pub, port, testStore)
 }
 
 // End to end on the guest with a real store: not ready before it serves,
@@ -356,7 +345,7 @@ func TestWatch_RealStoreStartsLateThenStops(t *testing.T) {
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	port := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close()
-	d := &describer{answers: []describeAnswer{{st: Store{Bound: true, Address: "127.0.0.1", PublicKey: pub}}}}
+	d := &describer{answers: []describeAnswer{{st: Store{Bound: true, Address: "127.0.0.1", PublicKey: pub, ServerKeyPin: testStorePin}}}}
 	cfg := g.readyCfg(d, NATSChecker{Port: port, Dial: time.Second})
 	var ns *server.Server
 	phase := 0
@@ -387,8 +376,14 @@ func TestWatch_RealStoreStartsLateThenStops(t *testing.T) {
 	}
 }
 
-// storeServer is a real NATS server with JetStream that admits only pub.
+// storeServer is the pinned test store admitting only pub; it returns its port.
 func storeServer(t *testing.T, pub string) int {
+	t.Helper()
+	return tlsStore(t, pub, 0, testStore).Addr().(*net.TCPAddr).Port
+}
+
+// plainStore is a real NATS server without TLS, as an unpinned store is.
+func plainStore(t *testing.T, pub string) int {
 	t.Helper()
 	opts := &server.Options{
 		Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
@@ -413,11 +408,11 @@ func TestNATSChecker_AgainstARealStore(t *testing.T) {
 	pub, _ := kp.PublicKey()
 	port := storeServer(t, pub)
 	c := NATSChecker{Port: port, Dial: 2 * time.Second}
-	if err := c.Check(context.Background(), "127.0.0.1", kp); err != nil {
+	if err := c.Check(context.Background(), "127.0.0.1", testStorePin, kp); err != nil {
 		t.Fatalf("admitted key: %v", err)
 	}
 	other, _ := nkeys.CreateUser()
-	err := c.Check(context.Background(), "127.0.0.1", other)
+	err := c.Check(context.Background(), "127.0.0.1", testStorePin, other)
 	if !errors.Is(err, ErrStoreRefusedKey) || retryable(err) {
 		t.Fatalf("wrong key: %v", err)
 	}
@@ -428,11 +423,11 @@ func TestNATSChecker_AgainstARealStore(t *testing.T) {
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	closed := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close()
-	err = NATSChecker{Port: closed, Dial: time.Second}.Check(context.Background(), "127.0.0.1", kp)
+	err = NATSChecker{Port: closed, Dial: time.Second}.Check(context.Background(), "127.0.0.1", testStorePin, kp)
 	if !retryable(err) {
 		t.Fatalf("nothing listening: %v is not retryable", err)
 	}
-	if err := c.Check(context.Background(), "store.example", kp); err == nil || retryable(err) {
+	if err := c.Check(context.Background(), "store.example", testStorePin, kp); err == nil || retryable(err) {
 		t.Fatalf("hostname accepted: %v", err)
 	}
 }

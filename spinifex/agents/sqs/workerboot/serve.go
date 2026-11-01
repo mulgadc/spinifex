@@ -25,11 +25,11 @@ type ServeConfig struct {
 
 // Connector opens the store's JetStream with the worker key.
 type Connector interface {
-	Connect(ctx context.Context, address string, kp nkeys.KeyPair) (jetstream.JetStream, func(), error)
+	Connect(ctx context.Context, address, pin string, kp nkeys.KeyPair) (jetstream.JetStream, func(), error)
 }
 
-// NATSConnector connects to the store guest's NATS; like NATSChecker it
-// authenticates the client only.
+// NATSConnector connects to the store guest's NATS over TLS pinned to its
+// recorded server key, as NATSChecker does; every reconnect is pinned too.
 type NATSConnector struct {
 	// Port overrides StorePort, for tests against a local server.
 	Port int
@@ -41,9 +41,13 @@ var _ Connector = NATSConnector{}
 // unless the gateway reports a single-node host cluster.
 var ErrUnsupportedTopology = errors.New("SQS serving supports only a single-node host cluster")
 
-func (c NATSConnector) Connect(_ context.Context, address string, kp nkeys.KeyPair) (jetstream.JetStream, func(), error) {
+func (c NATSConnector) Connect(_ context.Context, address, pin string, kp nkeys.KeyPair) (jetstream.JetStream, func(), error) {
 	if ip := net.ParseIP(address); ip == nil || ip.To4() == nil {
 		return nil, nil, errors.New("store address is not an IPv4 address")
+	}
+	tlsCfg, err := pinnedTLS(pin)
+	if err != nil {
+		return nil, nil, err
 	}
 	pub, err := kp.PublicKey()
 	if err != nil {
@@ -54,12 +58,16 @@ func (c NATSConnector) Connect(_ context.Context, address string, kp nkeys.KeyPa
 		port = StorePort
 	}
 	nc, err := nats.Connect("nats://"+net.JoinHostPort(address, strconv.Itoa(port)),
+		nats.Secure(tlsCfg),
 		nats.Nkey(pub, kp.Sign),
 		nats.Timeout(5*time.Second),
 		nats.MaxReconnects(-1),
 		nats.Name("spinifex-sqs-worker"),
 	)
 	if err != nil {
+		if errors.Is(err, ErrStoreIdentity) {
+			return nil, nil, err
+		}
 		return nil, nil, &StoreUnreachableError{Err: err}
 	}
 	js, err := jetstream.New(nc)
@@ -117,7 +125,7 @@ func serveOnce(ctx context.Context, cfg ReadyConfig, c contract, d StoreDescribe
 		return err
 	}
 	defer clear(receipt)
-	js, closeConn, err := cfg.Serve.Connector.Connect(callCtx, st.Address, kp)
+	js, closeConn, err := cfg.Serve.Connector.Connect(callCtx, st.Address, st.ServerKeyPin, kp)
 	if err != nil {
 		return err
 	}

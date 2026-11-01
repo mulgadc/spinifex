@@ -353,7 +353,7 @@ func TestServe_MultiNodeHostCreatesNoStoreState(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer kp.Wipe()
-	js, closeConn, err := NATSConnector{Port: port}.Connect(context.Background(), "127.0.0.1", kp)
+	js, closeConn, err := NATSConnector{Port: port}.Connect(context.Background(), "127.0.0.1", testStorePin, kp)
 	if err != nil {
 		t.Fatal(err)
 	}

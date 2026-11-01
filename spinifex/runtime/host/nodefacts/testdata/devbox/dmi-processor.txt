@@ -1,0 +1,404 @@
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 2.8 present.
+
+Handle 0x0400, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU 0
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0001
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x0401, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU 1
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0004
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x0402, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU 2
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0007
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x0403, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU 3
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0010
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x0404, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU 4
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0013
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x0405, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU 5
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0016
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x0406, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU 6
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0019
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x0407, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU 7
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0022
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x0408, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU 8
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0025
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x0409, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU 9
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0028
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x040A, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU a
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0031
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x040B, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU b
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0034
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x040C, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU c
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0037
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x040D, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU d
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0040
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x040E, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU e
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0043
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+
+Handle 0x040F, DMI type 4, 42 bytes
+Processor Information
+	Socket Designation: CPU f
+	Type: Central Processor
+	Family: Other
+	Manufacturer: QEMU
+	ID: TEST-0046
+	Version: pc-i440fx-10.0
+	Voltage: Unknown
+	External Clock: Unknown
+	Max Speed: 2000 MHz
+	Current Speed: 2000 MHz
+	Status: Populated, Enabled
+	Upgrade: Other
+	L1 Cache Handle: Not Provided
+	L2 Cache Handle: Not Provided
+	L3 Cache Handle: Not Provided
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Part Number: Not Specified
+	Core Count: 1
+	Core Enabled: 1
+	Thread Count: 1
+	Characteristics: None
+

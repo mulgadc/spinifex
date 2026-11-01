@@ -1,1 +1,0 @@
-import{Ft as e,Mt as t,Pt as n}from"./schemas-CKmbY8gV.js";import{s as r}from"./tabs-C7-u1MlW.js";function i(i){let{render:a,className:o,style:s,state:c=e,props:l=n,refs:u=n,metadata:d,stateAttributesMapping:f,tag:p=`div`,...m}=i,{compositeProps:h,compositeRef:g}=r({metadata:d});return t(p,i,{state:c,ref:[g,...u],props:[h,...l,m],stateAttributesMapping:f})}export{i as t};

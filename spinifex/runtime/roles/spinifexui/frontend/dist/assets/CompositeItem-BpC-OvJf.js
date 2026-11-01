@@ -1,0 +1,1 @@
+import{ft as e,ht as t,mt as n}from"./reason-parts-C6dH3Q7E.js";import{s as r}from"./tabs-fAN-O9EE.js";function i(i){let{render:a,className:o,style:s,state:c=t,props:l=n,refs:u=n,metadata:d,stateAttributesMapping:f,tag:p=`div`,...m}=i,{compositeProps:h,compositeRef:g}=r({metadata:d});return e(p,i,{state:c,ref:[g,...u],props:[h,...l,m],stateAttributesMapping:f})}export{i as t};

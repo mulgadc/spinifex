@@ -1,0 +1,50 @@
+# dmidecode 3.6
+Getting SMBIOS data from sysfs.
+SMBIOS 2.8 present.
+
+Handle 0x0000, DMI type 0, 24 bytes
+BIOS Information
+	Vendor: SeaBIOS
+	Version: 1.16.3-debian-1.16.3-2
+	Release Date: 04/01/2014
+	Address: 0xE8000
+	Runtime Size: 96 kB
+	ROM Size: 64 kB
+	Characteristics:
+		BIOS characteristics not supported
+		Targeted content distribution is supported
+	BIOS Revision: 0.0
+
+Handle 0x0100, DMI type 1, 27 bytes
+System Information
+	Manufacturer: QEMU
+	Product Name: Standard PC (i440FX + PIIX, 1996)
+	Version: pc-i440fx-10.0
+	Serial Number: Not Specified
+	UUID: TEST-0002
+	Wake-up Type: Power Switch
+	SKU Number: Not Specified
+	Family: Not Specified
+
+Handle 0x0300, DMI type 3, 22 bytes
+Chassis Information
+	Manufacturer: QEMU
+	Type: Other
+	Lock: Not Present
+	Version: pc-i440fx-10.0
+	Serial Number: Not Specified
+	Asset Tag: Not Specified
+	Boot-up State: Safe
+	Power Supply State: Safe
+	Thermal State: Safe
+	Security Status: Unknown
+	OEM Information: 0x00000000
+	Height: Unspecified
+	Number Of Power Cords: Unspecified
+	Contained Elements: 0
+	SKU Number: Not Specified
+
+Handle 0x2000, DMI type 32, 11 bytes
+System Boot Information
+	Status: No errors detected
+

@@ -65,7 +65,19 @@ export const NAV: readonly NavGroup[] = [
     label: "General",
     items: [
       { label: "Dashboard", icon: Home, to: "/", exact: true },
-      { label: "Nodes", icon: Server, to: "/nodes", admin: true },
+      {
+        label: "Nodes",
+        icon: Server,
+        to: "/nodes",
+        exact: true,
+        admin: true,
+      },
+      {
+        label: "Topology",
+        icon: Network,
+        to: "/nodes/topology",
+        admin: true,
+      },
     ],
   },
   {

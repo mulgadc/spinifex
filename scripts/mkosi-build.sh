@@ -100,7 +100,8 @@ profile_binaries() {
 ./cmd/eks-gateway-fetch:usr/local/bin/eks-gateway-fetch \
 ./cmd/eks-webhook-cert:usr/local/bin/eks-webhook-cert \
 ./cmd/eks-konnectivity-cert:usr/local/bin/eks-konnectivity-cert \
-./cmd/eks-etcd-member:usr/local/bin/eks-etcd-member"
+./cmd/eks-etcd-member:usr/local/bin/eks-etcd-member \
+./cmd/eks-pod-identity-webhook:usr/local/bin/eks-pod-identity-webhook"
             ;;
         ecs) echo "./cmd/ecs-agent:usr/local/bin/ecs-agent" ;;
         *)   echo "" ;;

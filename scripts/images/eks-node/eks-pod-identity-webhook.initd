@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+# eks-pod-identity-webhook — IRSA mutating admission webhook. Binds 127.0.0.1:8444
+# only; the local kube-apiserver is the sole client. Supervised and respawned so
+# it can wait out k3s writing its CAs without ever delaying k3s or the token
+# webhook: it exits until the CAs exist and supervise-daemon retries.
+
+description="EKS pod identity webhook (Mulga)"
+command="/usr/local/bin/eks-pod-identity-webhook"
+command_args="--addr=127.0.0.1:8444"
+pidfile="/run/eks-pod-identity-webhook.pid"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+output_log="/dev/console"
+error_log="/dev/console"
+
+if [ -f /etc/spinifex-eks/first-boot.env ]; then
+    # shellcheck disable=SC1091
+    . /etc/spinifex-eks/first-boot.env
+    export EKS_REGION EKS_ADDON_GATEWAY_URL EKS_GATEWAY_CA
+fi
+
+depend() {
+    need net
+    after k3s
+}

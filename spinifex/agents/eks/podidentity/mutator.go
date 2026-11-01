@@ -157,7 +157,7 @@ func (m *Mutator) containerOps(path string, c containerObject, in injection) []P
 	}
 	hasRole := has[envRoleARN] || has[envTokenFile]
 	hasRegion := m.cfg.Region == "" || has[envRegion] || has[envDefRegion]
-	hasSTS := !in.regional || has[envRegionalS]
+	hasSTS := has[envRegionalS]
 	if hasRole && hasRegion && hasSTS {
 		return nil
 	}
@@ -168,7 +168,7 @@ func (m *Mutator) containerOps(path string, c containerObject, in injection) []P
 		add(envRoleARN, in.roleARN)
 		add(envTokenFile, TokenMountPath+"/"+TokenPath)
 	}
-	if !hasSTS {
+	if !hasSTS && in.regional {
 		add(envRegionalS, "regional")
 	}
 	if !hasRegion {

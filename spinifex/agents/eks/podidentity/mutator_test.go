@@ -611,3 +611,20 @@ func patchAt(t *testing.T, node any, parts []string, op string, val any) any {
 	require.Fail(t, "patch path crosses a scalar")
 	return nil
 }
+
+// Upstream skips a container only when the regional STS key is present too: a
+// container with role and region but no STS key, on a ServiceAccount that does
+// not ask for regional endpoints, still gets the mounts but no new STS variable.
+func TestMutate_RoleAndRegionWithoutSTSKeyStillGetsMountsNotSTSEnv(t *testing.T) {
+	m, _, _ := newMutator(roleSA(nil))
+	c := ctr("app",
+		env{"AWS_ROLE_ARN", "arn:aws:iam::000000000001:role/own"},
+		env{"AWS_WEB_IDENTITY_TOKEN_FILE", "/own/token"},
+		env{"AWS_REGION", "us-east-1"})
+	out, _ := run(t, m, podOf("sa0", nil, c))
+
+	got := out.Spec.Containers[0]
+	assert.Equal(t, 1, got.mounts(TokenVolumeName))
+	assert.NotContains(t, got.envMap(), "AWS_STS_REGIONAL_ENDPOINTS")
+	assert.Equal(t, "arn:aws:iam::000000000001:role/own", got.envMap()["AWS_ROLE_ARN"])
+}

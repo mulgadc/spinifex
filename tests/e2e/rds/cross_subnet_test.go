@@ -157,7 +157,7 @@ func setupCrossSubnetVPC(t *testing.T, f *Fixture) crossSubnetNet {
 	})
 	require.NoError(t, err, "modify-subnet-attribute MapPublicIpOnLaunch")
 
-	igw, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}) // e2e:allow-create — the client subnet's own path out.
+	igw, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}) // The client subnet's own path out.
 	require.NoError(t, err, "create-internet-gateway")
 	igwID := aws.StringValue(igw.InternetGateway.InternetGatewayId)
 	t.Cleanup(func() {
@@ -180,7 +180,7 @@ func setupCrossSubnetVPC(t *testing.T, f *Fixture) crossSubnetNet {
 	// The default route goes on a table associated with the client subnet, not on
 	// the main table: putting it on main would give the DB subnet a way out too,
 	// and a private DB subnet is the layout under test.
-	rt, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(topo.VPCID)}) // e2e:allow-create — the client subnet's public table.
+	rt, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{VpcId: aws.String(topo.VPCID)}) // The client subnet's public table.
 	require.NoError(t, err, "create-route-table")
 	rtID := aws.StringValue(rt.RouteTable.RouteTableId)
 	t.Cleanup(func() {
@@ -242,7 +242,7 @@ func crossSubnetDBIngress() *ec2.IpPermission {
 func createCrossSubnetSG(t *testing.T, f *Fixture, vpcID, role string, ingress *ec2.IpPermission) string {
 	t.Helper()
 	name := fmt.Sprintf("%s-xsubnet-%s-%d", dbInstancePfx, role, time.Now().UnixNano())
-	out, err := f.AWS.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{ // e2e:allow-create — this test's own VPC, so no fixture group fits.
+	out, err := f.AWS.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{ // This test's own VPC, so no fixture group fits.
 		VpcId:       aws.String(vpcID),
 		GroupName:   aws.String(name),
 		Description: aws.String("rds e2e cross-subnet " + role),

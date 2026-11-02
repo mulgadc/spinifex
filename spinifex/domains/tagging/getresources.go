@@ -14,8 +14,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
-// defaultResourcesPerPage is used when the caller omits ResourcesPerPage (AWS max is 100).
-const defaultResourcesPerPage = 100
+// ResourcesPerPage bounds, from the AWS API reference; the default applies
+// when the caller omits it.
+const (
+	minResourcesPerPage     = 1
+	maxResourcesPerPage     = 100
+	defaultResourcesPerPage = maxResourcesPerPage
+)
 
 // Aggregator serves GetResources over the owner listers the composition root
 // wires. Listers are called in the order given; it holds no state of its own.
@@ -114,21 +119,25 @@ func matchesAllTagFilters(tags []*rgt.Tag, filters []*rgt.TagFilter) bool {
 // paginate slices a page from the sorted mappings and returns the page and the
 // next token (empty when exhausted).
 func paginate(mappings []*rgt.ResourceTagMapping, token *string, perPage *int64) ([]*rgt.ResourceTagMapping, string, error) {
+	size := defaultResourcesPerPage
+	if perPage != nil {
+		if *perPage < minResourcesPerPage || *perPage > maxResourcesPerPage {
+			return nil, "", awserrors.Errorf(awserrors.ErrorTaggingInvalidParameter,
+				"ResourcesPerPage must be between %d and %d", minResourcesPerPage, maxResourcesPerPage)
+		}
+		size = int(*perPage)
+	}
+
 	start := 0
 	if token != nil && *token != "" {
 		n, err := strconv.Atoi(*token)
 		if err != nil || n < 0 {
-			return nil, "", errors.New(awserrors.ErrorInvalidParameterValue)
+			return nil, "", awserrors.Errorf(awserrors.ErrorTaggingInvalidParameter, "PaginationToken is not valid")
 		}
 		start = n
 	}
 	if start > len(mappings) {
 		start = len(mappings)
-	}
-
-	size := defaultResourcesPerPage
-	if perPage != nil && *perPage > 0 {
-		size = int(*perPage)
 	}
 
 	end := start + size

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // A non-zero exit is a result, not a fault, so it comes back as a code; err is
@@ -77,14 +77,14 @@ const (
 
 // Only the heartbeat calls this, so the seenHealthy latch is single-goroutine
 // state.
-func (p *engineProbe) Check(ctx context.Context) (handlers_rds.EngineHealth, string) {
+func (p *engineProbe) Check(ctx context.Context) (rdsinstance.EngineHealth, string) {
 	state, message := p.state(ctx)
 	switch state {
 	case engineServing:
 		p.seenHealthy = true
-		return handlers_rds.EngineHealthHealthy, ""
+		return rdsinstance.EngineHealthHealthy, ""
 	case engineRecovering:
-		return handlers_rds.EngineHealthStarting, message
+		return rdsinstance.EngineHealthStarting, message
 	default:
 		return p.degraded(), message
 	}
@@ -97,9 +97,9 @@ func (p *engineProbe) state(ctx context.Context) (engineState, string) {
 }
 
 // A non-answering engine: starting until it has answered once, unhealthy after.
-func (p *engineProbe) degraded() handlers_rds.EngineHealth {
+func (p *engineProbe) degraded() rdsinstance.EngineHealth {
 	if p.seenHealthy {
-		return handlers_rds.EngineHealthUnhealthy
+		return rdsinstance.EngineHealthUnhealthy
 	}
-	return handlers_rds.EngineHealthStarting
+	return rdsinstance.EngineHealthStarting
 }

@@ -1,0 +1,59 @@
+package daemon
+
+import (
+	"encoding/json"
+	"log/slog"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/nats-io/nats.go"
+
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+)
+
+// handleENIPublicIPChanged applies an EIP association to the instance record on
+// whichever node is running it. AssociateAddress is served by a queue-group
+// worker that is rarely that node, so without this the address was written to
+// the EIP and ENI records while the instance kept reporting whatever launch
+// assigned it — the stale address survived the association and every describe.
+//
+// Every node receives this and all but one ignore it: UpdateState reports the
+// instance absent, which is the normal case, not a failure.
+func (d *Daemon) handleENIPublicIPChanged(msg *nats.Msg) string {
+	var evt ec2eip.ENIPublicIPChanged
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		slog.Error("public-IP change: bad event", "err", err)
+		return outcomeError
+	}
+	if evt.InstanceID == "" {
+		return outcomeSuccess
+	}
+
+	found, err := d.vmMgr.UpdateAndPersist(evt.InstanceID, func(v *vm.VM) bool {
+		if v.PublicIP == evt.PublicIP {
+			return false
+		}
+		v.PublicIP = evt.PublicIP
+		v.PublicIPPool = evt.PoolName
+		// Describe falls back to the launch stamp when PublicIP is empty, and an
+		// association released that address, so the stamp must follow too.
+		if v.Instance != nil {
+			v.Instance.PublicIpAddress = nil
+			v.Instance.PublicDnsName = nil
+			if evt.PublicIP != "" {
+				v.Instance.PublicIpAddress = aws.String(evt.PublicIP)
+			}
+		}
+		return true
+	})
+	if err != nil {
+		slog.Error("public-IP change: failed to persist the new address",
+			"instanceId", evt.InstanceID, "publicIp", evt.PublicIP, "err", err)
+		return outcomeError
+	}
+	if found {
+		slog.Info("public-IP change applied to a local instance",
+			"instanceId", evt.InstanceID, "eniId", evt.ENIID, "publicIp", evt.PublicIP)
+	}
+	return outcomeSuccess
+}

@@ -3,11 +3,11 @@
 package single
 
 import (
-	"context"
 	"crypto/tls"
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -21,6 +21,13 @@ import (
 // catalogHeadTimeout bounds one HEAD. Several of these hosts are CDN-fronted
 // and occasionally slow to first byte, but none is slow to answer a HEAD.
 const catalogHeadTimeout = 30 * time.Second
+
+// catalogRetryDelay spaces the one retry of an unreachable host, long enough
+// to ride out a CDN edge that dropped a connection.
+const catalogRetryDelay = 10 * time.Second
+
+// ownImageDomain is the domain of the catalog hosts we run ourselves.
+const ownImageDomain = "mulgadc.com"
 
 // runImageCatalogReachable HEADs every URL in the image catalog.
 //
@@ -62,14 +69,6 @@ func runImageCatalogReachable(t *testing.T, _ *Fixture) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			harness.Step(t, "HEAD %s", img.URL)
-			size, err := headOK(client, img.URL)
-			if !assert.NoErrorf(t, err, "catalog image %q is unreachable; `spx admin images import --name %s` would fail for every operator", name, name) {
-				return
-			}
-			assert.NotZerof(t, size, "%s answered but reports a zero-length body", name)
-			harness.Detail(t, "image", name, "bytes", fmt.Sprintf("%d", size))
-
 			// Exactly one of the two must be set, or a verified import is not
 			// possible; resolveDigest refuses the entry rather than importing
 			// it unverified, so an empty pair is a latent hard failure.
@@ -78,43 +77,57 @@ func runImageCatalogReachable(t *testing.T, _ *Fixture) {
 				"%s must set exactly one of Checksum (sums file URL) or ChecksumDigest (pinned digest); got url=%q pinned=%q",
 				name, img.Checksum, img.ChecksumDigest)
 			assert.NotEmptyf(t, img.ChecksumType, "%s sets no ChecksumType", name)
-
-			switch {
-			case hasURL:
-				harness.Step(t, "HEAD %s", img.Checksum)
-				_, err := headOK(client, img.Checksum)
-				assert.NoErrorf(t, err, "checksum file for %q is unreachable, so the import cannot verify and will refuse", name)
-			case hasPinned:
+			if hasPinned {
 				// A pinned digest is only safe on a URL that names one build.
 				// "latest" upstreams re-point, and the next release would fail
 				// every import of this entry until someone edited the catalog.
 				assert.NotContainsf(t, strings.ToLower(img.URL), "latest",
 					"%s pins a digest against a 'latest' URL, whose bytes change under it", name)
 			}
+
+			size, err := headCatalogURL(t, client, img.URL)
+			if !assert.NoErrorf(t, err, "catalog image %q is unreachable; `spx admin images import --name %s` would fail for every operator", name, name) {
+				return
+			}
+			assert.NotZerof(t, size, "%s answered but reports a zero-length body", name)
+			harness.Detail(t, "image", name, "bytes", fmt.Sprintf("%d", size))
+
+			if hasURL {
+				_, err := headCatalogURL(t, client, img.Checksum)
+				assert.NoErrorf(t, err, "checksum file for %q is unreachable, so the import cannot verify and will refuse", name)
+			}
 		})
 	}
 }
 
-// headOK issues a HEAD and returns Content-Length, erroring on any non-2xx.
-// A HEAD and not a ranged GET: the point is whether the artifact is still
-// published, and pulling bytes for twenty-odd multi-hundred-megabyte images
-// would make this the longest test in the suite.
-func headOK(client *http.Client, rawURL string) (int64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), catalogHeadTimeout)
-	defer cancel()
+// headCatalogURL HEADs one catalog URL, retrying once when the host could not
+// be reached. A third-party host still unreachable after that skips the
+// subtest, since its outage says nothing about the catalog; our own host fails.
+// A host that answers non-2xx always fails.
+func headCatalogURL(t *testing.T, client *http.Client, rawURL string) (int64, error) {
+	t.Helper()
+	harness.Step(t, "HEAD %s", rawURL)
+	size, err := harness.HeadContentLength(client, rawURL, catalogHeadTimeout)
+	if !harness.UpstreamUnavailable(err) || ownCatalogHost(rawURL) {
+		return size, err
+	}
+	harness.Step(t, "HEAD %s: %v; retrying once in %s", rawURL, err, catalogRetryDelay)
+	time.Sleep(catalogRetryDelay)
+	size, err = harness.HeadContentLength(client, rawURL, catalogHeadTimeout)
+	if harness.UpstreamUnavailable(err) {
+		t.Skipf("third-party host for %s is unreachable twice (%v): an upstream outage, not a catalog fault, so this entry is unverified this run",
+			rawURL, err)
+	}
+	return size, err
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+// ownCatalogHost reports whether rawURL is served from a host we run, whose
+// outage is ours to fix rather than an upstream's to wait out.
+func ownCatalogHost(rawURL string) bool {
+	u, err := url.Parse(rawURL)
 	if err != nil {
-		return 0, fmt.Errorf("build request: %w", err)
+		return false
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("HTTP %s", resp.Status)
-	}
-	return resp.ContentLength, nil
+	host := u.Hostname()
+	return host == ownImageDomain || strings.HasSuffix(host, "."+ownImageDomain)
 }

@@ -32,9 +32,9 @@ const (
 	crashConsistentNotice = "could not be quiesced"
 
 	// How long a retained volume is given to go once its last snapshot has: the
-	// delete is synchronous in the snapshot path, but the volume store's own
-	// bookkeeping settles behind it.
-	volumeReleaseTimeout = 2 * time.Minute
+	// delete only records it as deleting, and the reclaim reaper sweeps every two
+	// minutes, so this covers a full sweep interval plus the teardown itself.
+	volumeReleaseTimeout = 4 * time.Minute
 )
 
 // TestSnapshotRestore drives a manual snapshot and the instance restored from it.
@@ -260,21 +260,18 @@ func TestSnapshotRestore(t *testing.T) {
 	// failure this catches is the expensive one — a volume nothing points at, paid
 	// for indefinitely, invisible to the customer who deleted the database.
 	t.Run("DeletingTheLastSnapshotReleasesTheRetainedVolume", func(t *testing.T) {
-		// First, so the snapshots below are not being deleted from under a volume
-		// created from one of them.
-		harness.Step(t, "Deleting the restored instance %q", restoredID)
+		// The snapshot it was restored from goes straight after, while the restored
+		// volume's teardown is still owed: a customer is never made to wait for it.
+		harness.Step(t, "Deleting the restored instance %q, then the snapshot it came from", restoredID)
 		deleteInstance(t, f, restoredID)
+		deleteDBSnapshot(t, f, snapshotID)
 
-		harness.Step(t, "Deleting the source instance %q, whose volume two snapshots hold", sourceID)
+		harness.Step(t, "Deleting the source instance %q, whose volume a snapshot still holds", sourceID)
 		deleteInstance(t, f, sourceID)
 		requireVolumeExists(t, system, sourceVolumeID,
-			"the data volume must be retained while snapshots reference its chunks")
+			"the data volume must be retained while a snapshot references its chunks")
 
 		deleteDBSnapshot(t, f, stoppedSnapshotID)
-		requireVolumeExists(t, system, sourceVolumeID,
-			"one snapshot is gone but the other still holds the volume")
-
-		deleteDBSnapshot(t, f, snapshotID)
 		requireVolumeGone(t, system, sourceVolumeID)
 	})
 }
@@ -319,7 +316,7 @@ func restoreFromSnapshot(t *testing.T, f *Fixture, id, snapshotID string,
 		opt(in)
 	}
 	markDBCreateStarted(id)
-	out, err := f.AWS.RDS.RestoreDBInstanceFromDBSnapshot(in) //nolint:staticcheck // e2e:allow-create — the restored instance under test
+	out, err := f.AWS.RDS.RestoreDBInstanceFromDBSnapshot(in) //nolint:staticcheck // The restored instance under test.
 	require.NoError(t, err, "restore-db-instance-from-db-snapshot %s", id)
 	require.NotNil(t, out.DBInstance)
 	t.Cleanup(func() { deleteInstance(t, f, id) })
@@ -399,8 +396,8 @@ func requireVolumeExists(t *testing.T, system *harness.AWSClient, volumeID, why 
 	require.Len(t, out.Volumes, 1, why)
 }
 
-// Polled: the snapshot delete releases the volume synchronously, but the volume
-// store settles its own index behind that.
+// Polled: the snapshot delete leaves the volume deleting, and it is gone only
+// once the reclaim reaper has finished its teardown.
 func requireVolumeGone(t *testing.T, system *harness.AWSClient, volumeID string) {
 	t.Helper()
 	harness.EventuallyErr(t, func() error {

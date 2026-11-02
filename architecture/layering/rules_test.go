@@ -1,6 +1,9 @@
 package layering
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // rule is one ADR-0001 dependency rule over a classified import edge.
 type rule struct {
@@ -72,8 +75,7 @@ var rules = []rule{
 		hint:    "expose the runtime or operator state through a domain-owned projection or a capability wired at the composition root",
 		subject: func(f class, _ string) bool { return f.domainShaped() },
 		forbids: func(f, t class, _ string) bool {
-			return f.domainShaped() && (isLayer(t, layerRuntime, layerOperator) ||
-				t.isLegacy(runtimeLegacy...) || t.isLegacy(operatorLegacy...))
+			return f.domainShaped() && isLayer(t, layerRuntime, layerOperator)
 		},
 	},
 	{
@@ -121,13 +123,11 @@ var rules = []rule{
 				return false
 			}
 			switch {
-			case t.layer == layerAgents || t.isLegacy("lbagent"):
+			case t.layer == layerAgents:
 				return true
 			case t.layer == layerIngress:
-				return f.kind != domainAWSAPI && f.kind != legacyAdapter
-			case t.isLegacy("gateway") && !t.domainShaped():
-				return true
-			case t.isLegacy("handlers", "gateway"):
+				return f.kind != domainAWSAPI
+			case t.isLegacy("handlers"):
 				return f.layer == layerDomain
 			}
 			return false
@@ -137,9 +137,9 @@ var rules = []rule{
 		id:      "Agents_ImportNoDomainOrLegacyImplementation",
 		clause:  "area table: agents/<domain> own in-guest and service-role behaviour, not tenant API authority or another domain's private state",
 		hint:    "move the shared wire vocabulary behind a guest/controller contract under contracts/",
-		subject: func(f class, _ string) bool { return f.layer == layerAgents || f.isLegacy("lbagent") },
+		subject: func(f class, _ string) bool { return f.layer == layerAgents },
 		forbids: func(f, t class, _ string) bool {
-			return (f.layer == layerAgents || f.isLegacy("lbagent")) && (t.domainShaped() || t.isLegacy())
+			return f.layer == layerAgents && (t.domainShaped() || t.isLegacy())
 		},
 	},
 	{
@@ -153,18 +153,15 @@ var rules = []rule{
 		},
 	},
 	{
-		id:      "Interim_DaemonGatewayHandlersDirection",
-		clause:  "during migration the existing daemon -> gateway -> handlers rule remains the guardrail (Q-20, Q-29)",
-		hint:    "keep the dependency pointing daemon -> gateway -> handlers; invert it through a callback or capability",
-		subject: func(f class, _ string) bool { return f.isLegacy("handlers", "gateway") },
-		forbids: func(f, t class, _ string) bool {
-			switch {
-			case f.isLegacy("handlers"):
-				return t.isLegacy("gateway", "daemon")
-			case f.isLegacy("gateway"):
-				return t.isLegacy("daemon")
+		id:      "S7_RequestRecordPrivateToIngress",
+		clause:  "ADR-0002:S7: the request record is private to ingress, so no domain, runtime or operator package reads it; only packages under ingress/aws may import ingress/aws/reqctx",
+		hint:    "receive what you need through dispatch.Invocation instead of the request record",
+		subject: func(_ class, _ string) bool { return true },
+		forbids: func(_, t class, fromName string) bool {
+			if !t.requestRecord {
+				return false
 			}
-			return false
+			return !strings.HasPrefix(fromName, "ingress/aws/")
 		},
 	},
 }

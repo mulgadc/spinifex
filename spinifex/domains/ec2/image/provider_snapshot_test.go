@@ -193,3 +193,32 @@ func TestCreateImageFromInstance_DoesNotInheritSourceDigest(t *testing.T) {
 	assert.Equal(t, "uefi", ami.BootMode, "the source AMI must have been read")
 	assert.Nil(t, ami.SourceDigest)
 }
+
+// AWS takes an image's EnaSupport from the instance it was made from, and every
+// instance here reports it, so the source AMI's value is not inherited.
+func TestCreateImageFromInstance_SetsEnaSupportFromInstance(t *testing.T) {
+	svc, _, provider := setupProviderSnapshotImageService(t)
+	doc := seedProviderVolume(t, svc, provider, "vol-ena001", 8)
+	require.NoError(t, svc.MetadataStore().PutAMI(context.Background(), ebsmetadata.AMI{
+		ImageID:         "ami-src-ena",
+		Name:            "no-ena",
+		ImageOwnerAlias: testAccountID,
+		EnaSupport:      aws.Bool(false),
+	}))
+
+	out, err := svc.CreateImageFromInstance(CreateImageParams{
+		Input: &ec2.CreateImageInput{
+			InstanceId: aws.String("i-ena001"),
+			Name:       aws.String("from-no-ena"),
+		},
+		RootVolumeID:  doc.VolumeID,
+		SourceImageID: "ami-src-ena",
+		IsRunning:     false,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	ami, err := svc.MetadataStore().GetAMI(context.Background(), aws.StringValue(out.ImageId))
+	require.NoError(t, err)
+	require.NotNil(t, ami.EnaSupport)
+	assert.True(t, *ami.EnaSupport)
+}

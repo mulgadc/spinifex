@@ -2,7 +2,7 @@
 
 // Package rds is the RDS E2E suite: the create/describe/connect path against a
 // running cluster. The control-plane orchestration, the validation matrix and
-// the reconciler's status transitions are covered by the handlers/rds unit
+// the reconciler's status transitions are covered by the domains/rds/instance unit
 // tests; what only a live cluster can prove is that a DB VM actually boots, the
 // in-guest agent reports healthy, the endpoint resolves and a client can speak
 // the wire protocol to it.
@@ -337,7 +337,7 @@ func createDBInstanceFrom(t *testing.T, f *Fixture, in *rds.CreateDBInstanceInpu
 	}
 	id := aws.StringValue(in.DBInstanceIdentifier)
 	markDBCreateStarted(id)
-	out, err := f.AWS.RDS.CreateDBInstance(in) //nolint:staticcheck // e2e:allow-create — the instance under test
+	out, err := f.AWS.RDS.CreateDBInstance(in) //nolint:staticcheck // The instance under test.
 	require.NoError(t, err, "create-db-instance %s", id)
 	require.NotNil(t, out.DBInstance)
 	t.Cleanup(func() { deleteInstance(t, f, id) })
@@ -350,7 +350,7 @@ func createDBInstanceFrom(t *testing.T, f *Fixture, in *rds.CreateDBInstanceInpu
 // expected to succeed is otherwise a DB VM nobody waits for and nobody tears down.
 func expectCreateRefused(t *testing.T, f *Fixture, c *harness.AWSClient, code string, in *rds.CreateDBInstanceInput) {
 	t.Helper()
-	out, err := c.RDS.CreateDBInstance(in) //nolint:staticcheck // e2e:allow-create — asserted to be refused
+	out, err := c.RDS.CreateDBInstance(in) //nolint:staticcheck // Asserted to be refused.
 	if err == nil {
 		id := aws.StringValue(out.DBInstance.DBInstanceIdentifier)
 		deleteInstance(t, f, id)

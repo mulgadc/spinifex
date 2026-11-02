@@ -22,6 +22,7 @@ for tool in rc-update rc-service; do
     cat > "${STUB_OPENRC}/${tool}" <<EOF
 #!/bin/sh
 echo "${tool} \$*" >> "\${CALLS}"
+case "\$*" in *"\${STUB_FAIL:-@none@}"*) exit 1 ;; esac
 exit 0
 EOF
     chmod +x "${STUB_OPENRC}/${tool}"
@@ -32,6 +33,7 @@ mkdir -p "${STUB_SYSTEMD}"
 cat > "${STUB_SYSTEMD}/systemctl" <<'EOF'
 #!/bin/sh
 echo "systemctl $*" >> "${CALLS}"
+case "$*" in *"${STUB_FAIL:-@none@}"*) exit 1 ;; esac
 exit 0
 EOF
 chmod +x "${STUB_SYSTEMD}/systemctl"
@@ -129,6 +131,7 @@ for INIT in openrc systemd; do
     check "server(${INIT}): enables k3s-first-boot" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" k3s-first-boot)")"
     check "server(${INIT}): starts k3s" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" k3s)")"
     check "server(${INIT}): enables konnectivity-server" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" konnectivity-server)")"
+    check "server(${INIT}): enables pod-identity-webhook" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" eks-pod-identity-webhook)")"
     check "server(${INIT}): enables k3s-recovery" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-k3s-recovery)")"
     # Recovery is enabled (so it also runs pre-k3s on later boots) AND started
     # inline now — a restore-snapshot DR seed's directive must apply on this
@@ -141,8 +144,38 @@ for INIT in openrc systemd; do
             END { print (rn > 0 && kn > 0 && rn < kn) ? "yes" : "no" }
         ' "${CALLS}"
     )"
+    check "server(${INIT}): enables node-gc" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-node-gc)")"
+    check "server(${INIT}): starts node-gc" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-node-gc)")"
     check "server(${INIT}): no k3s-agent" "no" "$(present "${CALLS}" "$(enable_cmd "${INIT}" k3s-agent)")"
     check "server(${INIT}): self-disables" "yes" "$(present "${CALLS}" "$(disable_cmd "${INIT}" eks-node-role)")"
+    check "server(${INIT}): pod-identity-webhook is the last call" "$(start_cmd "${INIT}" eks-pod-identity-webhook)" "$(grep -v "$(disable_cmd "${INIT}" eks-node-role)" "${CALLS}" | tail -n 1)"
+    check "server(${INIT}): pod-identity-webhook enabled after addon-sync start" "yes" "$(
+        awk -v a="$(start_cmd "${INIT}" mulga-eks-addon-sync)" -v w="$(enable_cmd "${INIT}" eks-pod-identity-webhook)" '
+            index($0, a) == 1 { an = NR }
+            index($0, w) == 1 { wn = NR }
+            END { print (an > 0 && wn > an) ? "yes" : "no" }
+        ' "${CALLS}"
+    )"
+
+    # A broken optional webhook must leave the control plane booting.
+    for FAILING in enable start; do
+        run_case "${INIT}" server_${FAILING}_fail
+        printf 'SPINIFEX_K3S_ROLE=server\nEKS_CLUSTER_NAME=alpha\n' > "${EKS_NODE_ENVFILE}"
+        if [ "${FAILING}" = enable ]; then
+            STUB_FAIL="$(enable_cmd "${INIT}" eks-pod-identity-webhook)"
+            export STUB_FAIL
+            STUB_FAIL="${STUB_FAIL#rc-update add }"; STUB_FAIL="${STUB_FAIL#systemctl enable }"
+        else
+            STUB_FAIL="$(start_cmd "${INIT}" eks-pod-identity-webhook)"
+            export STUB_FAIL
+            STUB_FAIL="${STUB_FAIL#rc-service }"; STUB_FAIL="${STUB_FAIL#systemctl start --no-block }"
+        fi
+        invoke
+        unset STUB_FAIL
+        check "server(${INIT}): webhook ${FAILING} failure still exits 0" 0 "${rc}"
+        check "server(${INIT}): webhook ${FAILING} failure still starts mulga-eks-addon-sync" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-addon-sync)")"
+        check "server(${INIT}): webhook ${FAILING} failure still self-disables" "yes" "$(present "${CALLS}" "$(disable_cmd "${INIT}" eks-node-role)")"
+    done
 
     # --- server-join ---
     run_case "${INIT}" server_join
@@ -153,12 +186,16 @@ for INIT in openrc systemd; do
     check "server-join(${INIT}): enables webhook" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" eks-token-webhook)")"
     check "server-join(${INIT}): enables k3s" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" k3s)")"
     check "server-join(${INIT}): enables state-report" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-state-report)")"
+    check "server-join(${INIT}): enables node-gc" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-node-gc)")"
+    check "server-join(${INIT}): starts node-gc" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-node-gc)")"
     check "server-join(${INIT}): enables konnectivity-server" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" konnectivity-server)")"
+    check "server-join(${INIT}): enables pod-identity-webhook" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" eks-pod-identity-webhook)")"
     check "server-join(${INIT}): enables k3s-recovery" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-k3s-recovery)")"
     check "server-join(${INIT}): starts k3s-recovery" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-k3s-recovery)")"
     # Join servers must NOT re-publish bootstrap: the first server already
     # published the cluster-identical artifacts, and a join re-publish would
     # only race the bootstrap bus. This is deliberate, not an oversight.
+    check "server-join(${INIT}): pod-identity-webhook is the last call" "$(start_cmd "${INIT}" eks-pod-identity-webhook)" "$(grep -v "$(disable_cmd "${INIT}" eks-node-role)" "${CALLS}" | tail -n 1)"
     check "server-join(${INIT}): no k3s-first-boot" "yes" "$(absent_all "${CALLS}" "k3s-first-boot")"
     check "server-join(${INIT}): no k3s-agent" "yes" "$(absent_all "${CALLS}" "$(enable_cmd "${INIT}" k3s-agent)")"
     check "server-join(${INIT}): self-disables" "yes" "$(present "${CALLS}" "$(disable_cmd "${INIT}" eks-node-role)")"
@@ -170,7 +207,7 @@ for INIT in openrc systemd; do
     check "agent(${INIT}): exit 0" 0 "${rc}"
     check "agent(${INIT}): role file" "agent" "$(cat "${ROLE_FILE}")"
     check "agent(${INIT}): enables k3s-agent" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" k3s-agent)")"
-    check "agent(${INIT}): no server services" "yes" "$(absent_all "${CALLS}" "eks-token-webhook" "k3s-first-boot" "$(enable_cmd "${INIT}" k3s)")"
+    check "agent(${INIT}): no server services" "yes" "$(absent_all "${CALLS}" "eks-token-webhook" "eks-pod-identity-webhook" "k3s-first-boot" "mulga-eks-node-gc" "$(enable_cmd "${INIT}" k3s)")"
 
     # --- agent (inferred from agent.env, no explicit role) ---
     run_case "${INIT}" agent_inferred

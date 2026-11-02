@@ -50,6 +50,7 @@
     "InvalidCapacityReservationId.Malformed",
     "InvalidCapacityReservationId.NotFound",
     "InvalidEgressOnlyInternetGatewayId.NotFound",
+    "InvalidGatewayID.NotFound",
     "InvalidGroup.Duplicate",
     "InvalidGroup.NotFound",
     "InvalidGroup.Reserved",

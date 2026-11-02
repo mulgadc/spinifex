@@ -86,7 +86,7 @@ func volumeUsage(t *testing.T, c *harness.AWSClient) (count, gib int) {
 func createVPC(t *testing.T, c *harness.AWSClient, cidr string) string {
 	t.Helper()
 	// The create path is the subject under test, so it cannot route through a
-	// fixture that would hide the call being counted. e2e:allow-create
+	// fixture that would hide the call being counted.
 	out, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(cidr)})
 	require.NoError(t, err, "create-vpc %s", cidr)
 	id := aws.StringValue(out.Vpc.VpcId)
@@ -102,7 +102,7 @@ func deleteVPC(c *harness.AWSClient, vpcID string) {
 // createVolume creates one EBS volume and registers its removal.
 func createVolume(t *testing.T, c *harness.AWSClient, az string, sizeGiB int64) string {
 	t.Helper()
-	// e2e:allow-create — the create path is the subject under test.
+	// The create path is the subject under test.
 	out, err := c.EC2.CreateVolume(&ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String(az),
 		Size:             aws.Int64(sizeGiB),
@@ -131,7 +131,7 @@ func tenantKeyPair(t *testing.T, c *harness.AWSClient) string {
 	t.Helper()
 	name := fmt.Sprintf("e2e-quota-%d", time.Now().UnixNano())
 	// The fixture key pair belongs to the super-admin account; a launch by this
-	// tenant needs one of its own. e2e:allow-create
+	// tenant needs one of its own.
 	_, err := c.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(name)})
 	require.NoError(t, err, "create-key-pair")
 	t.Cleanup(func() {
@@ -151,7 +151,7 @@ type launchSpec struct {
 // unwrapped so the caller can assert on the code rather than on a wrapper.
 func (s launchSpec) runInstances(c *harness.AWSClient, instanceType string, count int64) (*ec2.Reservation, error) {
 	// The launch is the checked operation; a fixture would memoize it and the
-	// second, refused launch would never be issued. e2e:allow-create
+	// second, refused launch would never be issued.
 	return c.EC2.RunInstances(&ec2.RunInstancesInput{
 		ImageId:      aws.String(s.amiID),
 		InstanceType: aws.String(instanceType),

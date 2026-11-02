@@ -1,0 +1,1240 @@
+package cluster
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"log/slog"
+	"maps"
+	"net/http"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+const (
+	defaultReconcileLeaseRefresh = 20 * time.Second
+	defaultReconcileInterval     = 30 * time.Second
+	// reconcileResync is the drift backstop for a loop whose signals now arrive as
+	// watch updates and state reports. It also bounds every deadline below it, so
+	// the 15-minute create timeout is served by the resync rather than by a timer.
+	reconcileResync       = 5 * time.Minute
+	defaultHealthzTimeout = 5 * time.Second
+	// defaultCreateTimeout bounds how long a cluster may sit in CREATING before
+	// being marked FAILED. Measured from meta.CreatedAt so a VM that never boots
+	// reaches a terminal state even across daemon restarts.
+	defaultCreateTimeout = 15 * time.Minute
+	// defaultStateStaleAfter is the maximum age of a CP state report before
+	// health is treated as unknown. CP publishes every ~30s; 3× tolerates a missed tick.
+	defaultStateStaleAfter = 90 * time.Second
+	// defaultCPRestartGrace is how long an ACTIVE cluster's control plane may stay
+	// unhealthy before an in-place restart is attempted. Absorbs transient blips
+	// (a missed report, a brief apiserver stall) so a healthy CP is never bounced.
+	defaultCPRestartGrace = 2 * time.Minute
+	// defaultCPRestartBackoff is the minimum spacing between CP restart attempts.
+	defaultCPRestartBackoff = 2 * time.Minute
+	// defaultMaxCPRestartAttempts bounds in-place restarts before the reconciler
+	// gives up and leaves the cluster degraded for Phase-2 restore / operator action.
+	defaultMaxCPRestartAttempts = 3
+	// defaultCPReplaceGrace is how long a control-plane member must classify as
+	// lost (terminated/gone, not merely stopped) before a replacement is
+	// provisioned. Longer than the restart grace: replacement is the heavier,
+	// last-resort path once in-place restart plainly cannot recover the member.
+	defaultCPReplaceGrace = 5 * time.Minute
+	// defaultCPReplaceBackoff is the minimum spacing between replacement attempts.
+	defaultCPReplaceBackoff = 2 * time.Minute
+	// defaultMaxCPReplaceAttempts bounds replacement provisions before the
+	// reconciler yields and leaves the cluster running below quorum width.
+	defaultMaxCPReplaceAttempts = 3
+	// defaultCPResetGrace is how long an ACTIVE cluster's control plane must stay
+	// etcd-wedged — every member VM-running but etcd unreachable — before the
+	// reconciler escalates to a k3s cluster-reset. Longer than the restart grace:
+	// reset is the heavier last resort once an in-place restart plainly cannot
+	// reform quorum.
+	defaultCPResetGrace = 5 * time.Minute
+	// defaultCPResetBackoff is the minimum spacing between cluster-reset attempts;
+	// a reset reboots every member, so a boot + etcd-reform window must elapse.
+	defaultCPResetBackoff = 5 * time.Minute
+	// defaultMaxCPResetAttempts bounds cluster-reset escalations before the
+	// reconciler yields and leaves the cluster degraded for operator DR.
+	defaultMaxCPResetAttempts = 2
+)
+
+// CPInstanceControl is the minimal control-plane VM lifecycle surface the
+// reconciler needs to recover a wedged CP in place. A stopped/error CP is
+// restarted onto its existing root volume, so embedded etcd survives. Nil
+// disables auto-restart; degradation is still reflected in cluster health.
+type CPInstanceControl interface {
+	// InstanceState returns the CP instance lifecycle state, e.g. "running",
+	// "stopped", "error". Errors propagate so the reconciler retries next tick.
+	InstanceState(ctx context.Context, instanceID string) (string, error)
+	// StartInstance restarts a stopped/error CP instance in place.
+	StartInstance(ctx context.Context, instanceID string) error
+	// StopInstance gracefully powers off a running CP instance (QMP
+	// system_powerdown, clean unmount + SIGKILL fallback). The etcd reset path
+	// uses it so the in-place restart path boots the member clean and the
+	// boot-time recovery agent applies its pending directive; a hard reboot would
+	// corrupt the member's filesystem before recovery runs.
+	StopInstance(ctx context.Context, instanceID string) error
+}
+
+// CPProvisioner provisions a replacement control-plane member that joins the
+// surviving etcd quorum. Nil disables member-count reconcile — a lost member is
+// reflected in health but never re-provisioned. Implemented by the EKS service,
+// which replays the create-time launch template against a free host.
+type CPProvisioner interface {
+	ProvisionReplacementCP(ctx context.Context, req ReplacementCPRequest) (ControlPlaneNode, error)
+}
+
+// ReplacementCPRequest carries everything the provisioner needs to launch one
+// replacement CP that joins a surviving quorum member. The reconciler holds the
+// cluster meta, so it passes the persisted template and survivor join target
+// rather than the provisioner re-reading KV.
+type ReplacementCPRequest struct {
+	AccountID    string
+	ClusterName  string
+	Template     *K3sServerInput
+	JoinURL      string
+	SpreadGroup  string
+	ExcludeHosts []string
+	MemberCount  int
+	// DeadPeerIP is the terminated member's node IP the replacement evicts from
+	// etcd once it has joined; empty leaves the stale member for an operator.
+	DeadPeerIP string
+}
+
+// natsSubscriber is the minimal subscribe surface the reconciler needs; *nats.Conn satisfies it.
+type natsSubscriber interface {
+	Subscribe(subject string, cb nats.MsgHandler) (*nats.Subscription, error)
+}
+
+// ErrReconcilerLeaseLost is returned by Run when the leader lease is lost mid-loop.
+var ErrReconcilerLeaseLost = errors.New("eks: reconciler lease lost")
+
+// ErrReconcilerClusterDeleting is returned by Run when meta.Status is DELETING;
+// DeleteCluster owns teardown so the reconciler exits.
+var ErrReconcilerClusterDeleting = errors.New("eks: cluster deleting")
+
+// ErrReconcilerClusterFailed is returned by Run when meta.Status is FAILED.
+var ErrReconcilerClusterFailed = errors.New("eks: cluster failed")
+
+// HTTPDoer is the minimal http.Client surface needed for /healthz probes.
+type HTTPDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
+// ClusterReconciler drives one cluster's CREATING → ACTIVE → DELETING lifecycle
+// under a leader lease. One instance per (accountID, clusterName).
+type ClusterReconciler struct {
+	leaderKV    jetstream.KeyValue
+	acctKV      jetstream.KeyValue
+	accountID   string
+	clusterName string
+	holderID    string
+	healthURL   string
+
+	lease         *kvlease.Lease
+	leaseRefresh  time.Duration
+	interval      time.Duration
+	healthTimeout time.Duration
+	createTimeout time.Duration
+	httpClient    HTTPDoer
+
+	// When stateSub is non-nil, health is gated on the CP's NATS self-report
+	// rather than the HTTP /healthz probe (apiserver is VPC-only, host-unreachable).
+	stateSub        natsSubscriber
+	stateSubject    string
+	stateStaleAfter time.Duration
+	latest          atomic.Pointer[ServerStateReport]
+	// wake carries a report that changed the cluster's health into the reconcile
+	// loop, which watches KV and would otherwise never see it: the report arrives
+	// over core NATS and writes nothing.
+	wake chan struct{}
+
+	// terminal records why the loop is ending — a terminal cluster status or a
+	// lost lease — and stopRun cancels it. reconciler.Run has no exit condition
+	// of its own, so ending it is cancelling it, and this is what Run reports.
+	terminalMu sync.Mutex
+	terminal   error
+	stopRun    context.CancelFunc
+
+	// Add-on delivery status source. When addonStatusSub is non-nil the
+	// reconciler subscribes to the per-cluster add-on status subject and hands
+	// each guest report to addonReports, which owns the add-on status.
+	addonStatusSub     natsSubscriber
+	addonStatusSubject string
+	addonReports       addonReports
+
+	// cpControl recovers a wedged control-plane VM in place; nil disables
+	// auto-restart. restart* fields tune the grace window before the first
+	// restart, the spacing between attempts, and the attempt cap. degradedSince,
+	// restartAttempts, and lastRestartAt are per-cluster restart bookkeeping,
+	// mutated only from the single reconcile goroutine.
+	cpControl          CPInstanceControl
+	restartGrace       time.Duration
+	restartBackoff     time.Duration
+	maxRestartAttempts int
+	degradedSince      time.Time
+	restartAttempts    int
+	lastRestartAt      time.Time
+
+	// cpProvisioner replaces a terminated/gone control-plane member with a fresh
+	// one that joins the surviving quorum; nil disables member-count reconcile.
+	// replace* fields mirror the restart bookkeeping: a grace window a member must
+	// stay lost before replacement, spacing between attempts, and an attempt cap.
+	cpProvisioner      CPProvisioner
+	replaceGrace       time.Duration
+	replaceBackoff     time.Duration
+	maxReplaceAttempts int
+	replacingSince     time.Time
+	replaceAttempts    int
+	lastReplaceAt      time.Time
+
+	// etcdResetEnabled drives the last-resort escalation: when every CP member is
+	// VM-running but etcd never reformed quorum after a simultaneous restart, drive
+	// a k3s cluster-reset via per-member recovery directives (seed reseeds a
+	// single-member etcd from intact data; others wipe and rejoin). reset* fields
+	// mirror the restart bookkeeping; resetIssued gates the one-shot clear on
+	// recovery so a healthy cluster does not re-bump the directive epoch each tick.
+	etcdResetEnabled bool
+	resetGrace       time.Duration
+	resetBackoff     time.Duration
+	maxResetAttempts int
+	resetSince       time.Time
+	resetAttempts    int
+	lastResetAt      time.Time
+	resetIssued      bool
+}
+
+// ReconcilerOption tunes a ClusterReconciler.
+type ReconcilerOption func(*ClusterReconciler)
+
+// WithReconcileInterval overrides the default reconcile loop period.
+func WithReconcileInterval(d time.Duration) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.interval = d }
+}
+
+// WithLeaseRefresh overrides the leader-lease refresh period (should be < KVBucketEKSLeaderTTL).
+func WithLeaseRefresh(d time.Duration) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.leaseRefresh = d }
+}
+
+// WithHealthzTimeout overrides the per-probe HTTP timeout.
+func WithHealthzTimeout(d time.Duration) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.healthTimeout = d }
+}
+
+// WithCreateTimeout overrides the CREATING→FAILED timeout.
+func WithCreateTimeout(d time.Duration) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.createTimeout = d }
+}
+
+// WithHTTPClient injects a stub HTTPDoer (tests).
+func WithHTTPClient(c HTTPDoer) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.httpClient = c }
+}
+
+// WithStateSource gates health on the CP's NATS state report instead of an
+// HTTP /healthz probe. The subscription is opened in Run and closed on return.
+func WithStateSource(sub natsSubscriber, subject string) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		r.stateSub = sub
+		r.stateSubject = subject
+	}
+}
+
+// WithStateStaleAfter overrides the maximum age of a state report before health is treated as failing.
+func WithStateStaleAfter(d time.Duration) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.stateStaleAfter = d }
+}
+
+// WithAddonStatusSource configures the reconciler to consume per-add-on delivery
+// status reports (subject) via sub and apply each through reports. The
+// subscription is opened in Run and closed when it returns.
+func WithAddonStatusSource(sub natsSubscriber, subject string, reports addonReports) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		r.addonStatusSub = sub
+		r.addonStatusSubject = subject
+		r.addonReports = reports
+	}
+}
+
+// WithCPInstanceControl injects the control-plane VM lifecycle surface used to
+// restart a wedged CP in place. Absent, the reconciler only reflects health.
+func WithCPInstanceControl(c CPInstanceControl) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.cpControl = c }
+}
+
+// WithCPRestartPolicy overrides the CP auto-restart grace window, attempt
+// spacing, and max attempts. Non-positive values keep the default.
+func WithCPRestartPolicy(grace, backoff time.Duration, maxAttempts int) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		if grace > 0 {
+			r.restartGrace = grace
+		}
+		if backoff > 0 {
+			r.restartBackoff = backoff
+		}
+		if maxAttempts > 0 {
+			r.maxRestartAttempts = maxAttempts
+		}
+	}
+}
+
+// WithCPProvisioner injects the replacement-CP provisioner enabling member-count
+// reconcile. Absent, a lost member is reflected in health but never replaced.
+func WithCPProvisioner(p CPProvisioner) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.cpProvisioner = p }
+}
+
+// WithCPReplacePolicy overrides the member-count reconcile grace window, attempt
+// spacing, and max attempts. Non-positive values keep the default.
+func WithCPReplacePolicy(grace, backoff time.Duration, maxAttempts int) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		if grace > 0 {
+			r.replaceGrace = grace
+		}
+		if backoff > 0 {
+			r.replaceBackoff = backoff
+		}
+		if maxAttempts > 0 {
+			r.maxReplaceAttempts = maxAttempts
+		}
+	}
+}
+
+// WithEtcdResetRecovery enables the etcd quorum-reformation escalation: a wedged
+// HA control plane that survives in-place restarts (every member VM-running but
+// etcd unreachable) is driven through a k3s cluster-reset via per-member recovery
+// directives. Non-positive tunables keep the defaults. Requires a CPInstanceControl
+// for the member restarts; without one the escalation is inert.
+func WithEtcdResetRecovery(grace, backoff time.Duration, maxAttempts int) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		r.etcdResetEnabled = true
+		if grace > 0 {
+			r.resetGrace = grace
+		}
+		if backoff > 0 {
+			r.resetBackoff = backoff
+		}
+		if maxAttempts > 0 {
+			r.maxResetAttempts = maxAttempts
+		}
+	}
+}
+
+// NewClusterReconciler constructs a ClusterReconciler. healthURL is the
+// fully-qualified probe target (e.g. https://nlb-dns:443/healthz) or empty
+// to skip /healthz probing (CREATING transitions on bootstrap state alone).
+func NewClusterReconciler(leaderKV, acctKV jetstream.KeyValue, accountID, clusterName, holderID, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, error) {
+	if leaderKV == nil {
+		return nil, errors.New("eks: NewClusterReconciler nil leaderKV")
+	}
+	if acctKV == nil {
+		return nil, errors.New("eks: NewClusterReconciler nil acctKV")
+	}
+	if accountID == "" {
+		return nil, errors.New("eks: NewClusterReconciler empty accountID")
+	}
+	if clusterName == "" {
+		return nil, errors.New("eks: NewClusterReconciler empty clusterName")
+	}
+	if holderID == "" {
+		return nil, errors.New("eks: NewClusterReconciler empty holderID")
+	}
+	r := &ClusterReconciler{
+		leaderKV:        leaderKV,
+		acctKV:          acctKV,
+		accountID:       accountID,
+		clusterName:     clusterName,
+		holderID:        holderID,
+		healthURL:       healthURL,
+		leaseRefresh:    defaultReconcileLeaseRefresh,
+		interval:        defaultReconcileInterval,
+		healthTimeout:   defaultHealthzTimeout,
+		createTimeout:   defaultCreateTimeout,
+		stateStaleAfter: defaultStateStaleAfter,
+		// One slot: it means "a report changed something", and a second one
+		// arriving before the pass runs says nothing the first did not.
+		wake:               make(chan struct{}, 1),
+		restartGrace:       defaultCPRestartGrace,
+		restartBackoff:     defaultCPRestartBackoff,
+		maxRestartAttempts: defaultMaxCPRestartAttempts,
+		replaceGrace:       defaultCPReplaceGrace,
+		replaceBackoff:     defaultCPReplaceBackoff,
+		maxReplaceAttempts: defaultMaxCPReplaceAttempts,
+		resetGrace:         defaultCPResetGrace,
+		resetBackoff:       defaultCPResetBackoff,
+		maxResetAttempts:   defaultMaxCPResetAttempts,
+		httpClient: &http.Client{
+			Timeout: defaultHealthzTimeout,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true, //nolint:gosec // K3s NLB is self-signed; CA pinning is a v2 hardening item
+				},
+			},
+		},
+	}
+	for _, o := range opts {
+		o(r)
+	}
+	lease, err := kvlease.New(kvlease.Config{
+		Name:   "eks/cluster-reconciler",
+		Bucket: kvlease.StaticBucket(leaderKV),
+		Key:    reconcilerLeaderKey(accountID, clusterName),
+		Holder: holderID,
+		Attrs:  []any{"account", accountID, "cluster", clusterName},
+		TTL:    KVBucketEKSLeaderTTL,
+		Renew:  r.leaseRefresh,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cluster reconciler lease: %w", err)
+	}
+	r.lease = lease
+	return r, nil
+}
+
+func reconcilerLeaderKey(accountID, clusterName string) string {
+	return accountID + "/" + clusterName
+}
+
+// AcquireLease attempts a CAS Create on the leader bucket. Returns
+// (release, true) on success; (nil, false) otherwise. The bucket TTL reaps
+// stale leases when release does not run.
+func (r *ClusterReconciler) AcquireLease(ctx context.Context) (func(), bool) {
+	if !r.lease.TryAcquire(ctx) {
+		return nil, false
+	}
+	return func() { r.lease.Release(ctx) }, true
+}
+
+// Run drives reconcile until ctx is cancelled, the lease is lost, or the cluster
+// reaches a terminal state. Caller must AcquireLease first.
+func (r *ClusterReconciler) Run(ctx context.Context) error {
+	if r.lease == nil {
+		return errors.New("ClusterReconciler: Run called without AcquireLease")
+	}
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	r.stopRun = stop
+
+	if r.stateSub != nil && r.stateSubject != "" {
+		sub, err := r.stateSub.Subscribe(r.stateSubject, func(m *nats.Msg) {
+			report, perr := unmarshalServerStateReport(m.Data)
+			if perr != nil {
+				slog.Warn("ClusterReconciler: bad state report",
+					"cluster", r.clusterName, "subject", m.Subject, "err", perr)
+				return
+			}
+			r.storeReport(&report)
+		})
+		if err != nil {
+			return fmt.Errorf("subscribe state report %s: %w", r.stateSubject, err)
+		}
+		defer func() { _ = sub.Unsubscribe() }()
+	}
+
+	if r.addonStatusSub != nil && r.addonStatusSubject != "" && r.addonReports != nil {
+		sub, err := r.addonStatusSub.Subscribe(r.addonStatusSubject, func(m *nats.Msg) {
+			report, perr := unmarshalAddonStatusReport(m.Data)
+			if perr != nil {
+				slog.Warn("ClusterReconciler: bad addon status report",
+					"cluster", r.clusterName, "subject", m.Subject, "err", perr)
+				return
+			}
+			r.applyAddonStatusReport(ctx, report)
+		})
+		if err != nil {
+			return fmt.Errorf("subscribe addon status %s: %w", r.addonStatusSubject, err)
+		}
+		defer func() { _ = sub.Unsubscribe() }()
+	}
+
+	// The lease turning over is not a KV write this loop watches, so losing it has
+	// to end the loop from outside it.
+	go func() {
+		select {
+		case <-runCtx.Done():
+		case <-r.lease.Lost():
+			r.endRun(ErrReconcilerLeaseLost)
+		}
+	}()
+
+	// The whole account bucket, and that is forced rather than lazy: a cluster key
+	// is "clusters/<name>/meta", "/" is not the NATS subject separator, so the key
+	// is one token and no prefix wildcard selects a single cluster. The cost is
+	// waking on a sibling cluster's writes, which real activity bounds.
+	bucket := kvstore.NewOpenBucket(nil, r.acctKV, kvstore.Config{Name: r.acctKV.Bucket()})
+	reconciler.Run(runCtx, reconciler.Config{
+		Name:      "eks/" + r.clusterName,
+		Sources:   []reconciler.Source{reconciler.Fixed(bucket, ">")},
+		Reconcile: r.reconcilePass,
+		Trigger:   r.wake,
+		Resync:    reconcileResync,
+	})
+
+	if err := r.terminalErr(); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+// reconcilePass runs one reconcile and says when the loop should next run with
+// nothing arriving. A terminal outcome ends the loop rather than being returned:
+// the loop has no notion of finishing, so finishing it is cancelling it.
+func (r *ClusterReconciler) reconcilePass(ctx context.Context) (time.Duration, error) {
+	revisit, err := r.reconcileOnce(ctx)
+	switch {
+	case err == nil:
+		return revisit, nil
+	case terminalReconcileErr(err):
+		r.endRun(err)
+		return 0, nil
+	default:
+		// Retried at the old cadence rather than left to the resync: a pass that
+		// failed has learnt nothing, so waiting five minutes to try again would be
+		// slower than the ticker this replaced.
+		return r.interval, err
+	}
+}
+
+// endRun records the first reason the loop ended and cancels it. First wins: a
+// lost lease and a terminal status can land together, and which one is reported
+// should not depend on the race.
+func (r *ClusterReconciler) endRun(reason error) {
+	r.terminalMu.Lock()
+	if r.terminal == nil {
+		r.terminal = reason
+	}
+	r.terminalMu.Unlock()
+	if r.stopRun != nil {
+		r.stopRun()
+	}
+}
+
+func (r *ClusterReconciler) terminalErr() error {
+	r.terminalMu.Lock()
+	defer r.terminalMu.Unlock()
+	return r.terminal
+}
+
+// storeReport keeps the newest control-plane report and wakes the loop only when
+// it says something about health the last one did not. The control plane
+// publishes on its own timer whether or not anything changed, so waking on every
+// report would be the old tick again under another name.
+func (r *ClusterReconciler) storeReport(report *ServerStateReport) {
+	prev := r.latest.Swap(report)
+	r.logFsyncTransition(prev, report)
+	if prev != nil && sameHealth(prev, report) {
+		return
+	}
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+}
+
+// logFsyncTransition reports the control plane's datastore crossing the slow
+// threshold, and recovering from it. Deliberately NOT part of observe(): a slow
+// fsync is a reason the apiserver may be about to struggle, not evidence it has,
+// and gating cluster health on it would fail working clusters on a slow disk.
+//
+// Latched on the transition rather than logged per report, because the control
+// plane publishes on its own timer and a line every interval is how a real
+// signal gets tuned out.
+func (r *ClusterReconciler) logFsyncTransition(prev, report *ServerStateReport) {
+	// The baseline line. A healthy cluster logs no health lines at all, so
+	// without this the figure reaches the daemon on every report and is never
+	// seen — and a slow reading on some later run has nothing to be compared
+	// against. Fires once, when etcd has finally done enough work to average.
+	if report.FsyncMs != nil && (prev == nil || prev.FsyncMs == nil) {
+		slog.Info("ClusterReconciler: etcd fsync baseline",
+			"cluster", r.clusterName, "fsync_ms", *report.FsyncMs, "threshold_ms", slowFsyncMs)
+	}
+	if report.SlowFsync() && (prev == nil || !prev.SlowFsync()) {
+		slog.Warn("ClusterReconciler: etcd fsync is slow on the control plane",
+			"cluster", r.clusterName, "fsync_ms", *report.FsyncMs, "threshold_ms", slowFsyncMs,
+			"healthz", report.Healthz)
+		return
+	}
+	if prev != nil && prev.SlowFsync() && !report.SlowFsync() && report.FsyncMs != nil {
+		slog.Info("ClusterReconciler: etcd fsync recovered on the control plane",
+			"cluster", r.clusterName, "fsync_ms", *report.FsyncMs, "threshold_ms", slowFsyncMs)
+	}
+}
+
+// sameHealth reports whether two reports would produce the same observe result.
+// Freshness is deliberately excluded: a report that only repeats itself pushes
+// the staleness deadline out, which the next pass reads for itself.
+func sameHealth(a, b *ServerStateReport) bool {
+	return a.Healthz == b.Healthz && a.Reason == b.Reason &&
+		a.NodeCount == b.NodeCount && maps.Equal(a.NodegroupReady, b.NodegroupReady)
+}
+
+func terminalReconcileErr(err error) bool {
+	return errors.Is(err, ErrReconcilerClusterDeleting) ||
+		errors.Is(err, ErrReconcilerClusterFailed) ||
+		errors.Is(err, ErrClusterNotFound)
+}
+
+// reconcileOnce runs one pass and reports how long the loop may wait with
+// nothing arriving. The signals that do arrive — a bootstrap artifact landing, a
+// status change, a control plane changing its mind about its own health — are
+// watched or triggered, so the deadline covers only what elapsed time decides.
+func (r *ClusterReconciler) reconcileOnce(ctx context.Context) (time.Duration, error) {
+	meta, err := GetClusterMeta(ctx, r.acctKV, r.clusterName)
+	if err != nil {
+		return 0, err
+	}
+	switch meta.Status {
+	case ClusterStatusCreating:
+		ready, reason := r.bootstrapReady(ctx, meta)
+		if !ready {
+			// Info, not Debug: this is the per-pass reason a CREATING cluster has
+			// not yet flipped ACTIVE. At Debug it is invisible at the default
+			// level, so a cluster that stalls to the create-timeout FAILED gives
+			// no diagnosable cause. Logged only during the CREATING window.
+			slog.Info("ClusterReconciler: bootstrap not ready",
+				"cluster", r.clusterName, "reason", reason)
+			return r.createRevisit(meta), r.failIfCreateTimedOut(ctx, meta, "bootstrap not ready: "+reason)
+		}
+		issue, nodeCount, nodegroupReady := r.observe(ctx)
+		if issue != "" {
+			slog.Info("ClusterReconciler: health not ready",
+				"cluster", r.clusterName, "issue", issue)
+			return r.createRevisit(meta), r.failIfCreateTimedOut(ctx, meta, "healthz not ready: "+issue)
+		}
+		if err := SetClusterStatus(ctx, r.acctKV, r.clusterName, ClusterStatusActive); err != nil {
+			if errors.Is(err, ErrClusterDeleting) {
+				return 0, ErrReconcilerClusterDeleting
+			}
+			return 0, err
+		}
+		if err := SetClusterHealthState(ctx, r.acctKV, r.clusterName, "", nodeCount, nodegroupReady); err != nil {
+			if errors.Is(err, ErrClusterNotFound) {
+				return 0, ErrClusterNotFound
+			}
+			return 0, fmt.Errorf("record cluster health: %w", err)
+		}
+		slog.Info("ClusterReconciler: cluster transitioned to ACTIVE",
+			"cluster", r.clusterName, "nodes", nodeCount)
+		return r.activeRevisit(""), nil
+	case ClusterStatusActive:
+		issue, nodeCount, nodegroupReady := r.observe(ctx)
+		if issue != "" {
+			slog.Warn("ClusterReconciler: health failing for ACTIVE cluster",
+				"cluster", r.clusterName, "issue", issue)
+		}
+		if err := SetClusterHealthState(ctx, r.acctKV, r.clusterName, issue, nodeCount, nodegroupReady); err != nil {
+			if errors.Is(err, ErrClusterNotFound) {
+				return 0, ErrClusterNotFound
+			}
+			return 0, fmt.Errorf("record cluster health: %w", err)
+		}
+		r.maybeRecoverControlPlane(ctx, meta, issue)
+		r.maybeReformEtcdQuorum(ctx, meta, issue)
+		r.maybeReplaceControlPlaneMember(ctx, meta, issue)
+		return r.activeRevisit(issue), nil
+	case ClusterStatusDeleting:
+		return 0, ErrReconcilerClusterDeleting
+	case ClusterStatusFailed:
+		return 0, ErrReconcilerClusterFailed
+	}
+	return 0, nil
+}
+
+// createRevisit is what remains of the create timeout. Everything else a
+// CREATING cluster waits for is an event now: the bootstrap artifacts are keys
+// in the watched bucket, and the first healthy report is a trigger. Only the
+// timeout expiring announces itself to nobody.
+func (r *ClusterReconciler) createRevisit(meta *ClusterMeta) time.Duration {
+	if r.createTimeout <= 0 || meta.CreatedAt.IsZero() {
+		return 0
+	}
+	if remaining := time.Until(meta.CreatedAt.Add(r.createTimeout)); remaining > 0 {
+		return remaining
+	}
+	// Already due and still not failed, so the pass that fails it could not. Retry
+	// at the old cadence rather than immediately, which would spin.
+	return r.interval
+}
+
+// activeRevisit is the deadline for a cluster that is already up.
+func (r *ClusterReconciler) activeRevisit(issue string) time.Duration {
+	if issue != "" {
+		// A degraded cluster is on the recovery ladders' clocks — three graces,
+		// three backoffs and three attempt caps that interact — and queries its
+		// members' VM state every pass anyway. Keeping the old interval leaves
+		// that timing exactly as it is rather than restating it here.
+		return r.interval
+	}
+	return r.reportRevisit()
+}
+
+// reportRevisit is the instant the newest control-plane report goes stale, which
+// is what a healthy cluster is waiting for: silence is published by nobody, so
+// nothing else will wake the loop to notice it.
+func (r *ClusterReconciler) reportRevisit() time.Duration {
+	if r.stateSub == nil || r.stateSubject == "" {
+		// Health comes from an HTTP probe, which answers only when asked.
+		return r.interval
+	}
+	report := r.latest.Load()
+	if report == nil {
+		return r.interval
+	}
+	if fresh := time.Until(time.Unix(report.TS, 0).Add(r.stateStaleAfter)); fresh > 0 {
+		return fresh
+	}
+	// Already stale, so there is no expiry left to wait for and the next pass is
+	// what notices. Returning nothing here would leave that pass unscheduled.
+	return r.interval
+}
+
+// maybeRecoverControlPlane attempts a bounded in-place restart of a wedged
+// control-plane VM. A healthy CP clears the degraded clock and attempt count. An
+// unhealthy CP is left alone until it stays unhealthy past restartGrace, then
+// StartInstance is invoked (once per restartBackoff, up to maxRestartAttempts)
+// only when the instance is stopped/error — a restart re-mounts the same root
+// volume so embedded etcd survives. Best-effort: failures log and retry next
+// tick; the cluster stays degraded for operator/Phase-2 DR.
+func (r *ClusterReconciler) maybeRecoverControlPlane(ctx context.Context, meta *ClusterMeta, issue string) {
+	if issue == "" {
+		r.degradedSince = time.Time{}
+		r.restartAttempts = 0
+		return
+	}
+	members := cpMemberInstanceIDs(meta)
+	if r.cpControl == nil || len(members) == 0 {
+		return
+	}
+	now := time.Now()
+	if r.degradedSince.IsZero() {
+		r.degradedSince = now
+	}
+	if now.Sub(r.degradedSince) < r.restartGrace {
+		return
+	}
+	if r.restartAttempts >= r.maxRestartAttempts {
+		return
+	}
+	if !r.lastRestartAt.IsZero() && now.Sub(r.lastRestartAt) < r.restartBackoff {
+		return
+	}
+
+	// Collect every CP member currently restartable (stopped/error). An HA
+	// control plane needs etcd quorum, so recovering only the primary can leave
+	// the apiserver down (quorum 1/3); restart all wedged members in one pass. A
+	// per-member state query failure logs and skips that member, not the rest.
+	var restartable []string
+	for _, id := range members {
+		state, err := r.cpControl.InstanceState(ctx, id)
+		if err != nil {
+			slog.Warn("ClusterReconciler: CP instance state query failed",
+				"cluster", r.clusterName, "instanceId", id, "err", err)
+			continue
+		}
+		if cpRestartable(state) {
+			restartable = append(restartable, id)
+		}
+	}
+	if len(restartable) == 0 {
+		// Members are running (VM-level) but the cluster is still unhealthy — a
+		// restart won't fix wedged etcd; leave degraded for Phase-2 snapshot restore.
+		return
+	}
+
+	r.lastRestartAt = now
+	r.restartAttempts++
+	counted := false
+	for _, id := range restartable {
+		slog.Warn("ClusterReconciler: restarting wedged control-plane member in place",
+			"cluster", r.clusterName, "instanceId", id,
+			"attempt", r.restartAttempts, "members", len(members), "issue", issue)
+		if err := r.cpControl.StartInstance(ctx, id); err != nil {
+			if retryableStartRefusal(err) {
+				// Clears without anyone fixing anything: another node's room or
+				// its hold on the volume. Spent attempts would stop the retries
+				// while the member is still waiting to reuse its etcd disk.
+				slog.Warn("ClusterReconciler: CP restart refused, will retry",
+					"cluster", r.clusterName, "instanceId", id, "err", err)
+				continue
+			}
+			counted = true
+			slog.Warn("ClusterReconciler: CP restart failed",
+				"cluster", r.clusterName, "instanceId", id,
+				"attempt", r.restartAttempts, "err", err)
+			continue
+		}
+		counted = true
+		slog.Info("ClusterReconciler: control-plane restart issued",
+			"cluster", r.clusterName, "instanceId", id, "attempt", r.restartAttempts)
+	}
+	if !counted {
+		// Every member was refused for a reason that clears by itself. The
+		// backoff still spaces the next pass.
+		r.restartAttempts--
+	}
+}
+
+// retryableStartRefusal reports a start refused for a reason that clears by
+// itself: no capacity on the owning node, or its volume still held elsewhere.
+func retryableStartRefusal(err error) bool {
+	if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorInsufficientInstanceCapacity {
+		return true
+	}
+	_, message, _ := awserrors.ResolveErrorDetail(err)
+	return strings.Contains(message, ec2v1.VolumeHeldElsewhereText) || strings.Contains(err.Error(), ec2v1.VolumeHeldElsewhereText)
+}
+
+// maybeReformEtcdQuorum escalates a wedged HA control plane that the in-place
+// restart path cannot fix — every member is VM-running yet embedded etcd never
+// reformed quorum after a simultaneous restart — to a k3s cluster-reset. It sets
+// per-member recovery directives (the seed reseeds a single-member etcd from its
+// intact data; the others wipe and rejoin) then gracefully stops the members so the
+// in-place restart path boots them clean and the on-VM k3s-recovery agent applies the
+// directives on that boot. Bounded by resetGrace/backoff/attempts;
+// a recovered cluster clears the directives and the clock. Best-effort: failures
+// log and retry next tick, leaving the cluster degraded for operator DR.
+func (r *ClusterReconciler) maybeReformEtcdQuorum(ctx context.Context, meta *ClusterMeta, issue string) {
+	if r.cpControl == nil || !r.etcdResetEnabled {
+		return
+	}
+	if issue == "" {
+		// One-shot clear on the wedged→healthy edge so a stale cluster-reset cannot
+		// re-apply; resetIssued gates it so a steady-healthy cluster never re-bumps
+		// the directive epoch each tick.
+		if r.resetIssued {
+			r.clearRecoveryDirectives(ctx, meta)
+			r.resetIssued = false
+		}
+		r.resetSince = time.Time{}
+		r.resetAttempts = 0
+		return
+	}
+	// Only the guest's etcd-unreachable diagnosis qualifies; other issues are owned
+	// by the restart/replace paths or are transient apiserver blips.
+	if !reasonIndicatesEtcdDown(issue) || !isHAControlPlane(meta) {
+		return
+	}
+	members := cpMemberNodes(meta)
+	if len(members) < 2 {
+		return
+	}
+	// Every member must be VM-running: a stopped/error member is the restart path's
+	// job (a restart may still reform quorum), so reset is the last resort only when
+	// the VMs are up but etcd is wedged. A state-query failure defers the escalation.
+	for _, n := range members {
+		state, err := r.cpControl.InstanceState(ctx, n.InstanceID)
+		if err != nil {
+			slog.Warn("ClusterReconciler: CP member state query failed, deferring etcd reset",
+				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
+			return
+		}
+		if !cpLive(state) {
+			return
+		}
+	}
+	now := time.Now()
+	if r.resetSince.IsZero() {
+		r.resetSince = now
+		return
+	}
+	if now.Sub(r.resetSince) < r.resetGrace {
+		return
+	}
+	if r.resetAttempts >= r.maxResetAttempts {
+		return
+	}
+	if !r.lastResetAt.IsZero() && now.Sub(r.lastResetAt) < r.resetBackoff {
+		return
+	}
+
+	seed := members[0]
+	// Space retries even on a partial failure below, so a transient fault cannot
+	// tight-loop; but consume an attempt only once the seed directive is actually
+	// stored, so a KV blip does not silently burn the small attempt budget with no
+	// effective escalation.
+	r.lastResetAt = now
+
+	// Directives first, so the agents read them on the clean boot the restart path
+	// triggers. A directive-store failure for the seed aborts the pass without
+	// consuming an attempt (stopping without the cluster-reset directive would just
+	// reproduce the wedge); a follower failure logs and continues (that member stays
+	// wedged, retried next attempt).
+	if _, err := StoreRecoveryDirective(ctx, r.acctKV, r.clusterName, seed.InstanceID, RecoveryActionClusterReset, "", false); err != nil {
+		slog.Warn("ClusterReconciler: set cluster-reset directive failed",
+			"cluster", r.clusterName, "seed", seed.InstanceID, "err", err)
+		return
+	}
+	r.resetAttempts++
+	r.resetIssued = true
+	for _, n := range members[1:] {
+		if _, err := StoreRecoveryDirective(ctx, r.acctKV, r.clusterName, n.InstanceID, RecoveryActionWipeRejoin, "", false); err != nil {
+			slog.Warn("ClusterReconciler: set wipe-rejoin directive failed",
+				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
+		}
+	}
+	slog.Warn("ClusterReconciler: escalating wedged control plane to etcd cluster-reset",
+		"cluster", r.clusterName, "seed", seed.InstanceID, "members", len(members),
+		"attempt", r.resetAttempts, "issue", issue)
+
+	// Gracefully stop every member. The in-place restart path (maybeRecoverControlPlane)
+	// then boots each stopped member clean on a later tick, and the on-VM recovery
+	// agent applies its directive: the seed reseeds a single-member etcd, the others
+	// wipe and rejoin. A graceful stop — not a hard reboot — unmounts cleanly, so the
+	// next boot is not fsck-corrupted before recovery can run. k3s server-join retries
+	// on its own, so a boot race is self-correcting; a seed stop failure aborts before
+	// churning the followers.
+	if err := r.cpControl.StopInstance(ctx, seed.InstanceID); err != nil {
+		slog.Warn("ClusterReconciler: seed reset stop failed",
+			"cluster", r.clusterName, "seed", seed.InstanceID, "err", err)
+		return
+	}
+	for _, n := range members[1:] {
+		if err := r.cpControl.StopInstance(ctx, n.InstanceID); err != nil {
+			slog.Warn("ClusterReconciler: member rejoin stop failed",
+				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
+		}
+	}
+}
+
+// clearRecoveryDirectives resets every member's directive to none (advancing the
+// epoch) once a cluster has recovered, so a stale cluster-reset cannot re-apply on
+// a later reboot. Best-effort: a failure logs and the epoch guard on the guest
+// still prevents re-application of the already-applied directive.
+func (r *ClusterReconciler) clearRecoveryDirectives(ctx context.Context, meta *ClusterMeta) {
+	for _, n := range cpMemberNodes(meta) {
+		if _, err := StoreRecoveryDirective(ctx, r.acctKV, r.clusterName, n.InstanceID, RecoveryActionNone, "", false); err != nil {
+			slog.Warn("ClusterReconciler: clear recovery directive failed",
+				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
+		}
+	}
+}
+
+// reasonIndicatesEtcdDown reports whether a health issue carries the guest's
+// etcd-unreachable diagnosis token — the signal that embedded-etcd quorum did not
+// reform, as opposed to a disk-full or apiserver-config failure a reset won't fix.
+func reasonIndicatesEtcdDown(issue string) bool {
+	return strings.Contains(issue, "etcd:unreachable")
+}
+
+// cpMemberInstanceIDs returns every control-plane member instance ID from the
+// cluster meta. HA clusters list all servers in ControlPlaneNodes; older or
+// single-CP clusters only carry the scalar ControlPlaneInstanceID.
+func cpMemberInstanceIDs(meta *ClusterMeta) []string {
+	if len(meta.ControlPlaneNodes) > 0 {
+		ids := make([]string, 0, len(meta.ControlPlaneNodes))
+		for _, n := range meta.ControlPlaneNodes {
+			if n.InstanceID != "" {
+				ids = append(ids, n.InstanceID)
+			}
+		}
+		if len(ids) > 0 {
+			return ids
+		}
+	}
+	if meta.ControlPlaneInstanceID != "" {
+		return []string{meta.ControlPlaneInstanceID}
+	}
+	return nil
+}
+
+// cpRestartable reports whether an in-place StartInstance can plausibly recover a
+// CP in the given state. Only a stopped/error instance (VM died, but the
+// instance record + root volume survive) is restartable; running/pending are not.
+func cpRestartable(state string) bool {
+	switch state {
+	case "stopped", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+// cpLive reports whether a CP member is serving (or coming up): running/pending
+// count toward etcd quorum. stopped/error are the restart path's; everything
+// else (terminated, shutting-down, unknown) is treated as lost.
+func cpLive(state string) bool {
+	switch state {
+	case "running", "pending":
+		return true
+	default:
+		return false
+	}
+}
+
+// quorumOf returns the strict-majority size for n members (3 → 2). A replacement
+// may only join an etcd that still holds quorum, so this many members must be live.
+func quorumOf(n int) int { return n/2 + 1 }
+
+// isHAControlPlane reports whether the cluster runs a multi-member CP (a spread).
+// Single-CP clusters have no surviving quorum to join a replacement into, so
+// member-count reconcile is out of scope for them.
+func isHAControlPlane(meta *ClusterMeta) bool {
+	return len(meta.ControlPlaneNodes) > 1 || meta.ControlPlaneSpreadGroup != ""
+}
+
+// cpMemberNodes returns the CP member records (with ENI IP + host) from meta.
+// Prefers ControlPlaneNodes; falls back to synthesising one from the scalar
+// fields for clusters persisted before HA spread.
+func cpMemberNodes(meta *ClusterMeta) []ControlPlaneNode {
+	if len(meta.ControlPlaneNodes) > 0 {
+		return meta.ControlPlaneNodes
+	}
+	if meta.ControlPlaneInstanceID != "" {
+		return []ControlPlaneNode{{
+			InstanceID: meta.ControlPlaneInstanceID,
+			ENIID:      meta.ControlPlaneENIID,
+			ENIIP:      meta.ControlPlaneENIIP,
+			MgmtIP:     meta.ControlPlaneMgmtIP,
+		}}
+	}
+	return nil
+}
+
+// classifyCPMembers buckets every CP member by its instance state: live
+// (running/pending, count toward quorum), restartable (stopped/error, owned by
+// the in-place restart path), or lost (terminated/gone/unreadable). A describe
+// error is treated as lost, but the replaceGrace clock absorbs a transient blip
+// before any provision fires.
+func (r *ClusterReconciler) classifyCPMembers(ctx context.Context, meta *ClusterMeta) (live, restartable, lost []ControlPlaneNode) {
+	for _, n := range cpMemberNodes(meta) {
+		state, err := r.cpControl.InstanceState(ctx, n.InstanceID)
+		if err != nil {
+			slog.Warn("ClusterReconciler: CP member state query failed, treating as lost",
+				"cluster", r.clusterName, "instanceId", n.InstanceID, "err", err)
+			lost = append(lost, n)
+			continue
+		}
+		switch {
+		case cpRestartable(state):
+			restartable = append(restartable, n)
+		case cpLive(state):
+			live = append(live, n)
+		default:
+			lost = append(lost, n)
+		}
+	}
+	return live, restartable, lost
+}
+
+// maybeReplaceControlPlaneMember provisions one replacement for a genuinely-lost
+// control-plane member (terminated/gone), restoring the HA member count. It is a
+// last resort layered after maybeRecoverControlPlane: it acts only when no member
+// is restartable (the restart path has nothing left to do) and at least one is
+// lost, and only while a strict majority survives and is healthy — an etcd
+// without quorum cannot accept a member add. Bounded by a grace clock, backoff,
+// and attempt cap; best-effort, leaving the cluster degraded on failure.
+func (r *ClusterReconciler) maybeReplaceControlPlaneMember(ctx context.Context, meta *ClusterMeta, issue string) {
+	if r.cpControl == nil || r.cpProvisioner == nil {
+		return
+	}
+	if meta.ControlPlaneTemplate == nil || !isHAControlPlane(meta) {
+		return
+	}
+	if len(cpMemberNodes(meta)) == 0 {
+		return
+	}
+
+	live, restartable, lost := r.classifyCPMembers(ctx, meta)
+
+	// A restartable member belongs to the in-place restart path; a fully-live
+	// cluster has nothing to replace. Either case clears the replace bookkeeping.
+	if len(restartable) > 0 || len(lost) == 0 {
+		r.replacingSince = time.Time{}
+		r.replaceAttempts = 0
+		return
+	}
+	// Never add an etcd member without a healthy surviving quorum.
+	if issue != "" || len(live) < quorumOf(haControlPlaneCount) {
+		return
+	}
+	if len(live) >= haControlPlaneCount {
+		r.replacingSince = time.Time{}
+		r.replaceAttempts = 0
+		return
+	}
+
+	now := time.Now()
+	if r.replacingSince.IsZero() {
+		r.replacingSince = now
+	}
+	if now.Sub(r.replacingSince) < r.replaceGrace {
+		return
+	}
+	if r.replaceAttempts >= r.maxReplaceAttempts {
+		return
+	}
+	if !r.lastReplaceAt.IsZero() && now.Sub(r.lastReplaceAt) < r.replaceBackoff {
+		return
+	}
+	// Don't race an in-flight in-place restart of another member.
+	if !r.lastRestartAt.IsZero() && now.Sub(r.lastRestartAt) < r.restartBackoff {
+		return
+	}
+
+	survivor := pickSurvivor(live)
+	if survivor.ENIIP == "" {
+		slog.Warn("ClusterReconciler: no survivor ENI IP for CP replacement join",
+			"cluster", r.clusterName)
+		return
+	}
+
+	r.lastReplaceAt = now
+	r.replaceAttempts++
+	deadID := lost[0].InstanceID
+	slog.Warn("ClusterReconciler: provisioning replacement control-plane member",
+		"cluster", r.clusterName, "lost", deadID, "joinIP", survivor.ENIIP,
+		"attempt", r.replaceAttempts, "live", len(live))
+
+	newNode, err := r.cpProvisioner.ProvisionReplacementCP(ctx, ReplacementCPRequest{
+		AccountID:    r.accountID,
+		ClusterName:  r.clusterName,
+		Template:     meta.ControlPlaneTemplate,
+		JoinURL:      k3sServerJoinURL(survivor.ENIIP),
+		SpreadGroup:  meta.ControlPlaneSpreadGroup,
+		ExcludeHosts: liveHosts(live),
+		MemberCount:  haControlPlaneCount,
+		DeadPeerIP:   lost[0].ENIIP,
+	})
+	if err != nil {
+		slog.Warn("ClusterReconciler: CP replacement provision failed",
+			"cluster", r.clusterName, "lost", deadID, "attempt", r.replaceAttempts, "err", err)
+		return
+	}
+	if err := SwapControlPlaneMember(ctx, r.acctKV, r.clusterName, deadID, newNode); err != nil {
+		slog.Error("ClusterReconciler: CP replacement launched but meta swap failed (leak risk)",
+			"cluster", r.clusterName, "lost", deadID, "newInstanceId", newNode.InstanceID, "err", err)
+		return
+	}
+	slog.Info("ClusterReconciler: control-plane member replaced",
+		"cluster", r.clusterName, "lost", deadID, "newInstanceId", newNode.InstanceID,
+		"newHost", newNode.NodeID, "attempt", r.replaceAttempts)
+}
+
+// pickSurvivor returns the first live member carrying an ENI IP — the join
+// target the replacement points its k3s server at.
+func pickSurvivor(live []ControlPlaneNode) ControlPlaneNode {
+	for _, n := range live {
+		if n.ENIIP != "" {
+			return n
+		}
+	}
+	return ControlPlaneNode{}
+}
+
+// liveHosts returns the distinct hosts holding live members, so placement lands
+// the replacement on a different host and preserves spread.
+func liveHosts(live []ControlPlaneNode) []string {
+	hosts := make([]string, 0, len(live))
+	for _, n := range live {
+		if n.NodeID != "" {
+			hosts = append(hosts, n.NodeID)
+		}
+	}
+	return hosts
+}
+
+// observe returns the health issue ("" = healthy), node count, and per-nodegroup
+// Ready breakdown from the CP's latest NATS self-report, or from the HTTP
+// /healthz probe when no NATS source is set (nodegroupReady is nil in that case
+// — the probe carries no per-node label data).
+func (r *ClusterReconciler) observe(ctx context.Context) (issue string, nodeCount int, nodegroupReady map[string]int) {
+	if r.stateSub != nil && r.stateSubject != "" {
+		report := r.latest.Load()
+		if report == nil {
+			return "no control-plane state report received yet", 0, nil
+		}
+		age := time.Since(time.Unix(report.TS, 0))
+		if age > r.stateStaleAfter {
+			return fmt.Sprintf("control-plane state report stale (%s old)", age.Round(time.Second)), report.NodeCount, report.NodegroupReady
+		}
+		if !report.Healthy() {
+			if report.Reason != "" {
+				return fmt.Sprintf("apiserver healthz=%q: %s", report.Healthz, report.Reason), report.NodeCount, report.NodegroupReady
+			}
+			return fmt.Sprintf("apiserver healthz=%q", report.Healthz), report.NodeCount, report.NodegroupReady
+		}
+		return "", report.NodeCount, report.NodegroupReady
+	}
+	if err := r.probeHealthz(ctx); err != nil {
+		return err.Error(), 0, nil
+	}
+	return "", 0, nil
+}
+
+// failIfCreateTimedOut marks the cluster FAILED once createTimeout has elapsed
+// since meta.CreatedAt. Returns nil while still within the window so the next
+// tick retries. A zero CreatedAt disables the deadline.
+func (r *ClusterReconciler) failIfCreateTimedOut(ctx context.Context, meta *ClusterMeta, reason string) error {
+	if r.createTimeout <= 0 || meta.CreatedAt.IsZero() {
+		return nil
+	}
+	if time.Since(meta.CreatedAt) < r.createTimeout {
+		return nil
+	}
+	failReason := fmt.Sprintf("cluster did not become ACTIVE within %s: %s", r.createTimeout, reason)
+	if err := MarkClusterFailed(ctx, r.acctKV, r.clusterName, failReason); err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			return ErrClusterNotFound
+		}
+		return fmt.Errorf("mark create-timeout failed: %w", err)
+	}
+	slog.Warn("ClusterReconciler: CREATING timed out, marked FAILED",
+		"cluster", r.clusterName, "timeout_ms", otelsetup.Millis(r.createTimeout), "reason", reason)
+	return ErrReconcilerClusterFailed
+}
+
+// bootstrapReady returns true once the four bootstrap KV artifacts are present:
+// node token, admin kubeconfig, OIDC JWKS verified-marker, and CA on meta.
+// Uses the verified-marker (not OIDCJWKSKey) so ACTIVE always implies a verified key.
+func (r *ClusterReconciler) bootstrapReady(ctx context.Context, meta *ClusterMeta) (bool, string) {
+	if meta.CertificateAuthorityB64 == "" {
+		return false, "CA absent on meta"
+	}
+	keys := []string{
+		NodeTokenKey(r.clusterName),
+		AdminKubeconfigKey(r.clusterName),
+		OIDCJWKSVerifiedKey(r.clusterName),
+	}
+	for _, k := range keys {
+		if _, err := r.acctKV.Get(ctx, k); err != nil {
+			return false, fmt.Sprintf("%s missing: %s", k, err)
+		}
+	}
+	return true, ""
+}
+
+func (r *ClusterReconciler) probeHealthz(ctx context.Context) error {
+	if r.healthURL == "" {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, r.healthTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, r.healthURL, nil)
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("healthz request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("eks: /healthz status %d", resp.StatusCode)
+	}
+	return nil
+}

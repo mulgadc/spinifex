@@ -123,3 +123,16 @@ func TestValidateErrorResponseClassifiesCommonErrorsAsUnmodelled(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeRequestResultReadsRestXMLErrorEnvelope(t *testing.T) {
+	body := []byte(`<?xml version="1.0"?>
+<ErrorResponse xmlns="https://route53.amazonaws.com/doc/2013-04-01/"><Error><Type>Sender</Type><Code>NoSuchHostedZone</Code><Message>No hosted zone found with ID: Z1</Message></Error><RequestId>r-1</RequestId></ErrorResponse>`)
+	result := DecodeRequestResult(Route53, 404, nil, body)
+	if result.Code != "NoSuchHostedZone" || result.Message != "No hosted zone found with ID: Z1" {
+		t.Fatalf("result = %+v", result)
+	}
+	violations, modelled, err := ValidateErrorResponse(Route53, "GetHostedZone", body)
+	if err != nil || !modelled || len(violations) != 0 {
+		t.Fatalf("ValidateErrorResponse = %v, %v, %v; want a declared code", violations, modelled, err)
+	}
+}

@@ -8,13 +8,13 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // modelSelfHostLlama and modelAnthropic mirror the static Phase-1 catalog in
-// gateway/bedrock/catalog.go — see tests/e2e/bedrock/bedrock_test.go, whose
+// domains/ochre/catalog.go — see tests/e2e/bedrock/bedrock_test.go, whose
 // TestListFoundationModels this ports.
 const (
 	modelSelfHostLlama = "meta.llama3-2-1b-instruct-v1:0"
@@ -35,16 +35,16 @@ func (integrationWeightsStub) Resolve(_ context.Context, modelID string) (string
 
 // TestListFoundationModels ports tests/e2e/bedrock/bedrock_test.go's
 // TestListFoundationModels. ListFoundationModels is pure gateway-side static
-// catalog logic (gateway/bedrock/catalog.go) with no NATS/daemon hop at all —
+// catalog logic (domains/ochre/catalog.go) with no NATS/daemon hop at all —
 // no guest, no daemon wiring needed — so it round-trips through the real
 // gateway HTTP/SigV4 path exactly like the live test, without a live cluster.
 func TestListFoundationModels(t *testing.T) {
 	// Not t.Parallel(): ListFoundationModels/GetFoundationModel read the
 	// weights resolver through a package-level setter (StartGateway builds a
-	// GatewayConfig directly, with no field for it), so this test owns that
+	// pipeline.Config directly, with no field for it), so this test owns that
 	// process-wide state for its duration.
-	gateway_bedrock.SetWeightsResolver(integrationWeightsStub{})
-	t.Cleanup(func() { gateway_bedrock.SetWeightsResolver(nil) })
+	ochre.SetWeightsResolver(integrationWeightsStub{})
+	t.Cleanup(func() { ochre.SetWeightsResolver(nil) })
 
 	gw := StartGateway(t)
 	bedrockCli := gw.BedrockClient(t)

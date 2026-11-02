@@ -191,3 +191,48 @@ func TestADR0001_LayeringCheckerDetectsFaults(t *testing.T) {
 		t.Errorf("allow-listed cross-domain edge %s was not detected by R3, so the allowlist entry would read as stale", allowedEdge)
 	}
 }
+
+// TestADR0001_R2_IngressRejectsRuntimeOperatorAndDomains: the request pipeline
+// lives under ingress/aws, so it must not import the daemon, any runtime or
+// operator package, or a domain implementation.
+func TestADR0001_R2_IngressRejectsRuntimeOperatorAndDomains(t *testing.T) {
+	r := ruleByID("R2_IngressImportsNoImplementation")
+	from := "spinifex/ingress/aws/pipeline"
+	f, ok := classify(from)
+	if !ok || !r.subject(f, from) {
+		t.Fatalf("%s is not governed by R2", from)
+	}
+	for _, to := range []string{
+		"spinifex/runtime/daemon", "spinifex/runtime/host/process", "spinifex/runtime/roles/awsgw",
+		"spinifex/operator/admin", "spinifex/domains/ecs", "spinifex/domains/iam/awsapi",
+	} {
+		target, _ := classify(to)
+		if !r.forbids(f, target, from) {
+			t.Errorf("%s -> %s is not rejected by R2", from, to)
+		}
+	}
+}
+
+// TestADR0002_S7_RequestRecordRejectsOutsiders: the request record is readable
+// by packages under ingress/aws only.
+func TestADR0002_S7_RequestRecordRejectsOutsiders(t *testing.T) {
+	record, ok := classify("spinifex/ingress/aws/reqctx")
+	if !ok || !record.requestRecord {
+		t.Fatalf("ingress/aws/reqctx is not classified as the request record: %+v", record)
+	}
+	r := ruleByID("S7_RequestRecordPrivateToIngress")
+	for name, wantRejected := range map[string]bool{
+		"domains/ecs/awsapi":   true,
+		"runtime/roles/awsgw":  true,
+		"operator/admin":       true,
+		"ingress/aws/dispatch": false,
+	} {
+		from, ok := classify(fullPath(name))
+		if !ok {
+			t.Fatalf("%s is unclassified", name)
+		}
+		if got := r.forbids(from, record, name); got != wantRejected {
+			t.Errorf("%s -> ingress/aws/reqctx rejected=%v, want %v", name, got, wantRejected)
+		}
+	}
+}

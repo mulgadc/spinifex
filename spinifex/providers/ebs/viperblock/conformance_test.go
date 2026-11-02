@@ -12,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/require"
 )
 
 // pluginPathEnvVar names the built nbdkit plugin (viperblock's
@@ -87,6 +90,13 @@ func inProcessProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider
 	second := newNode("node-2")
 	nc := startProviderSubjects(t, first, natsURL)
 	startProviderSubjects(t, second, natsURL)
+
+	// The daemon creates the cluster-state bucket the liveness reader opens.
+	// With no heartbeat in it a previous owner counts as gone, so takeover is allowed.
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	_, err = js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: clusterv1.ClusterStateBucket})
+	require.NoError(t, err)
 
 	return func(t *testing.T) ebsprovider.EBSProvider {
 		t.Helper()

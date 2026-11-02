@@ -122,6 +122,20 @@ func TestRunInstance_RootDeviceFieldsPopulated(t *testing.T) {
 	assert.Equal(t, ec2.DeviceTypeEbs, aws.StringValue(ec2Instance.RootDeviceType))
 }
 
+func TestRunInstance_ReportsEnaSupport(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+
+	_, ec2Instance, err := svc.RunInstance(&ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-0abcdef1234567890"),
+		InstanceType: aws.String("t3.micro"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ec2Instance.EnaSupport)
+	assert.True(t, *ec2Instance.EnaSupport)
+}
+
 func TestVolumeTagsFromSpec(t *testing.T) {
 	specs := []*ec2.TagSpecification{
 		{ResourceType: aws.String("instance"), Tags: []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("node")}}},
@@ -679,6 +693,7 @@ type fakeResourceCapacityProvider struct {
 	allocated      []*ec2.InstanceTypeInfo
 	deallocated    []*ec2.InstanceTypeInfo
 	canAllocFn     func(*ec2.InstanceTypeInfo, int) int
+	availableFn    func(*ec2.InstanceTypeInfo) int64
 
 	reservationAllocErr  error
 	reservationAllocated []*ec2.InstanceTypeInfo
@@ -690,10 +705,18 @@ type fakeResourceCapacityProvider struct {
 
 func (f *fakeResourceCapacityProvider) HostUnderMemoryPressure() bool { return f.memPressure }
 
-func (f *fakeResourceCapacityProvider) GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo {
+func (f *fakeResourceCapacityProvider) GetInstanceTypeAvailability() []InstanceTypeAvailability {
 	f.calls++
-	f.gotShowCap = showCapacity
-	return f.types
+	f.gotShowCap = true
+	avail := make([]InstanceTypeAvailability, 0, len(f.types))
+	for _, it := range f.types {
+		slots := int64(1)
+		if f.availableFn != nil {
+			slots = f.availableFn(it)
+		}
+		avail = append(avail, InstanceTypeAvailability{Info: it, Available: slots})
+	}
+	return avail
 }
 
 func (f *fakeResourceCapacityProvider) GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeInfo {
@@ -778,15 +801,19 @@ func TestDescribeInstanceTypes_ReturnsSupportedByDefault(t *testing.T) {
 	assert.Equal(t, 0, prov.calls, "capacity-gated path must not be hit when capacity filter absent")
 }
 
+// The free slots cross as a number against each type, so the reply is sized by
+// the catalogue however much capacity the node has.
 func TestDescribeInstanceTypes_CapacityFilterHitsAvailable(t *testing.T) {
 	prov := &fakeResourceCapacityProvider{
 		types: []*ec2.InstanceTypeInfo{
 			{InstanceType: aws.String("t3.micro")},
-			{InstanceType: aws.String("t3.micro")},
-		},
-		supportedTypes: []*ec2.InstanceTypeInfo{
-			{InstanceType: aws.String("t3.micro")},
 			{InstanceType: aws.String("m5.large")},
+		},
+		availableFn: func(it *ec2.InstanceTypeInfo) int64 {
+			if aws.StringValue(it.InstanceType) == "t3.micro" {
+				return 874
+			}
+			return 3
 		},
 	}
 	svc := &InstanceServiceImpl{resourceMgr: prov}
@@ -798,7 +825,8 @@ func TestDescribeInstanceTypes_CapacityFilterHitsAvailable(t *testing.T) {
 	}
 	out, err := svc.DescribeInstanceTypes(context.Background(), input, "")
 	require.NoError(t, err)
-	require.Len(t, out.InstanceTypes, 2, "capacity=true must use the per-slot list")
+	require.Len(t, out.InstanceTypes, 2, "each admissible type is named once")
+	assert.Equal(t, map[string]int64{"t3.micro": 874, "m5.large": 3}, out.Availability)
 	assert.Equal(t, 1, prov.calls, "capacity-gated path must be hit when capacity=true")
 	assert.True(t, prov.gotShowCap, "capacity=true filter must reach the provider")
 	assert.Equal(t, 0, prov.supportedCalls, "supported-types path must not be hit when capacity=true")
@@ -2004,7 +2032,7 @@ func TestTerminateStoppedInstance_StampsTeardownVolumesDone(t *testing.T) {
 
 	require.NotNil(t, store.WroteTerminated[id])
 	assert.Equal(t, string(vm.TeardownDone), store.WroteTerminated[id].Teardown[vm.TeardownVolumes],
-		"ADR-0003 §1 semantics: a successful volume delete must stamp Teardown[volumes]=done")
+		"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism, semantics: a successful volume delete must stamp Teardown[volumes]=done")
 	assert.Equal(t, []string{"vol-root-001"}, vd.deleted, "the still-attached root volume must actually be deleted")
 }
 
@@ -2034,7 +2062,7 @@ func TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError(t *te
 
 // TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted locks the
 // second half of the terminate-implies-detach fix: a DeleteOnTermination=false
-// Boot volume is never cleared by Stop's Unmount (daemon/vm_adapters.go), so
+// Boot volume is never cleared by Stop's Unmount (runtime/daemon/vm_adapters.go), so
 // without this it would strand attached to the now-gone instance forever.
 // Terminate must still detach it (AWS semantics: it survives as available,
 // it just isn't deleted).

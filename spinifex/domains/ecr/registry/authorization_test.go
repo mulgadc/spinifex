@@ -133,6 +133,15 @@ func TestClassifyOperation_RouteMatrix(t *testing.T) {
 			},
 		},
 		{
+			name:   "GET referrers is a read of the repository images",
+			method: http.MethodGet,
+			path:   "/v2/team/app/referrers/sha256:abc",
+			want: ClassifiedOperation{
+				Repo:         "team/app",
+				Requirements: []ActionRequirement{{ActionBatchGetImage, ScopeDestination}},
+			},
+		},
+		{
 			name:   "cross-repo mount requires destination initiate + source read",
 			method: http.MethodPost,
 			path:   "/v2/team/app/blobs/uploads/",
@@ -205,6 +214,9 @@ func TestClassifyOperation_UnsupportedNeverClassifies(t *testing.T) {
 		{"manifest POST unsupported", http.MethodPost, "/v2/team/app/manifests/latest"},
 		{"manifest empty reference", http.MethodGet, "/v2/team/app/manifests/"},
 		{"catalog wrong method", http.MethodPost, "/v2/_catalog"},
+		{"referrers PUT unsupported", http.MethodPut, "/v2/team/app/referrers/sha256:abc"},
+		{"referrers DELETE unsupported", http.MethodDelete, "/v2/team/app/referrers/sha256:abc"},
+		{"referrers empty subject", http.MethodGet, "/v2/team/app/referrers/"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

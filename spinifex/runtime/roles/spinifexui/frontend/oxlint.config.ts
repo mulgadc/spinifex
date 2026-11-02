@@ -28,7 +28,6 @@ export default defineConfig({
     "@tanstack/router/create-route-property-order": "error",
     "@tanstack/router/route-param-names": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "off",
-    "eslint/complexity": "off",
     "eslint/func-style": [
       "error",
       "declaration",
@@ -38,9 +37,24 @@ export default defineConfig({
     ],
     "eslint/no-console": "error",
     "eslint/no-plusplus": ["error", { allowForLoopAfterthoughts: true }],
-    "eslint/no-use-before-define": "off",
+    "eslint/no-use-before-define": ["error", { functions: false }],
     "eslint/require-unicode-regexp": "off",
     "eslint/sort-keys": "off",
+    "jsx-a11y/label-has-associated-control": [
+      "error",
+      {
+        controlComponents: [
+          "Input",
+          "Select",
+          "Textarea",
+          "Checkbox",
+          "Radio",
+          "RadioGroupItem",
+        ],
+        depth: 3,
+        labelComponents: ["Label"],
+      },
+    ],
     "import/consistent-type-specifier-style": "off",
     "react/function-component-definition": [
       "error",
@@ -94,6 +108,40 @@ export default defineConfig({
     ],
   },
   overrides: [
+    {
+      // Pages chart through the design system's chart components, so the
+      // library can change in one place.
+      files: ["src/routes/**/*.{ts,tsx}"],
+      rules: {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            patterns: [
+              {
+                group: [
+                  "recharts",
+                  "recharts/*",
+                  "chart.js",
+                  "chart.js/*",
+                  "react-chartjs-2",
+                  "echarts",
+                  "echarts/*",
+                  "echarts-for-react",
+                  "uplot",
+                  "uplot-react",
+                  "d3",
+                  "d3-*",
+                  "@visx/*",
+                  "@nivo/*",
+                ],
+                message:
+                  "Use the chart components in src/components, not a chart library.",
+              },
+            ],
+          },
+        ],
+      },
+    },
     {
       files: [
         "**/*.{test,spec}.{ts,tsx,js,jsx}",

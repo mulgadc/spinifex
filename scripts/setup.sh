@@ -7,7 +7,7 @@
 #   INSTALL_SPINIFEX_CHANNEL   Release channel: latest (default), dev
 #   INSTALL_SPINIFEX_VERSION   Pin to specific version (overrides channel)
 #   INSTALL_SPINIFEX_TARBALL   Path to local tarball (skips download, for testing/air-gapped)
-#   INSTALL_SPINIFEX_SKIP_APT  Set to 1 to skip apt dependency install
+#   INSTALL_SPINIFEX_SKIP_APT  Set to 1 to skip the system package install (apt or dnf)
 #   INSTALL_SPINIFEX_SKIP_AWS  Set to 1 to skip AWS CLI install
 #   INSTALL_SPINIFEX_SKIP_NEWGRP  Set to 1 to skip newgrp exec at end (for callers like dev-install.sh)
 #   ISO_BUILD                  Set to 1 when running inside a debootstrap chroot from the ISO
@@ -15,9 +15,9 @@
 #                              skip systemctl daemon-reload + enable, short-circuit setup_sudo.
 #   VERBOSE                    Set to 1 to echo "[setup] <stage>" before each top-level step.
 #   SETUP_STAGES               Comma-separated subset of stages to run:
-#                                deps, aws, users, sudoers, firewall, timesync, files,
-#                                directories, env, systemd, sysctl, logrotate, udev,
-#                                fixown, migrations
+#                                deps, aws, dns, users, sudoers, firewall, timesync, files,
+#                                directories, env, systemd, sysctl, needrestart, modules,
+#                                logrotate, udev, fixown, migrations
 #                              Unset = run every stage appropriate for the current mode.
 
 set -e
@@ -39,8 +39,13 @@ FIREWALL_PEERS="${FIREWALL_DIR}/peers.nft"
 FIREWALL_LOCAL="${FIREWALL_DIR}/local.nft"
 FIREWALL_OPEN="${FIREWALL_DIR}/open-ports.nft"
 FIREWALL_CUSTOM="${FIREWALL_DIR}/custom.nft"
-FIREWALL_MODE_FILE="${FIREWALL_DIR}/mode"
+FIREWALL_TRACK="${FIREWALL_DIR}/conntrack.nft"
+FIREWALL_MODE_FILE="${SPINIFEX_FIREWALL_MODE_FILE:-${FIREWALL_DIR}/mode}"
 FIREWALL_APPLY="/usr/local/lib/spinifex/spinifex-firewall-apply"
+
+# The daemon runs with ProtectKernelModules=yes, so every module it needs must
+# already be loaded when it starts.
+SPINIFEX_KERNEL_MODULES="openvswitch geneve vhost_net tun"
 
 # Whether the policy is armed, not merely installed. The ISO is an appliance on
 # hardware we define, so a default-deny policy is the product; a curl-to-bash
@@ -57,6 +62,48 @@ NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 fatal() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+
+# --- BEGIN distro.sh probes ---
+# Copied from scripts/lib/distro.sh, which this script installs but cannot source
+# when piped from the install endpoint. distro_test.sh keeps the copies equal.
+distro_pkg_manager() {
+    local apt=false dnf=false
+    command -v apt-get >/dev/null 2>&1 && apt=true
+    command -v dnf >/dev/null 2>&1 && dnf=true
+    if $apt && $dnf; then
+        echo "distro.sh: package manager: found both apt-get and dnf; cannot tell which one manages this host" >&2
+        return 1
+    fi
+    if $apt; then echo apt; return 0; fi
+    if $dnf; then echo dnf; return 0; fi
+    echo "distro.sh: package manager: found neither apt-get nor dnf on PATH" >&2
+    return 1
+}
+
+distro_unit_exists() {
+    local dir
+    for dir in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+        if [ -e "${DISTRO_ROOT:-}$dir/$1" ] || [ -L "${DISTRO_ROOT:-}$dir/$1" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+distro_chrony_conf() {
+    local deb=false el=false
+    [ -f "${DISTRO_ROOT:-}/etc/chrony/chrony.conf" ] && deb=true
+    [ -f "${DISTRO_ROOT:-}/etc/chrony.conf" ] && el=true
+    if $deb && $el; then
+        echo "distro.sh: chrony config: found both /etc/chrony/chrony.conf and /etc/chrony.conf; cannot tell which one chronyd reads" >&2
+        return 1
+    fi
+    if $deb; then echo /etc/chrony/chrony.conf; return 0; fi
+    if $el; then echo /etc/chrony.conf; return 0; fi
+    echo "distro.sh: chrony config: found neither /etc/chrony/chrony.conf nor /etc/chrony.conf; is chrony installed?" >&2
+    return 1
+}
+# --- END distro.sh probes ---
 
 stage() {
     [ "${VERBOSE:-0}" = "1" ] && echo "[setup] $*"
@@ -92,14 +139,25 @@ setup_sudo() {
 }
 
 # --- OS detection ---
+# os_release_field <key> <file> — the value of KEY=value, with one level of quotes removed.
+os_release_field() {
+    sed -n "s/^$1=//p" "$2" | head -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
+}
+
+# The only place that keys on the OS ID: the gate and, later, the package table.
+# Everything else probes for the capability (scripts/lib/distro.sh).
 detect_os() {
-    if [ ! -f /etc/os-release ]; then
-        fatal "Cannot detect OS: /etc/os-release not found"
+    local os_release="${SPINIFEX_OS_RELEASE:-/etc/os-release}"
+    if [ ! -f "$os_release" ]; then
+        fatal "Cannot detect OS: $os_release not found"
     fi
 
-    . /etc/os-release
+    # Parsed, not sourced, so a malformed file is refused instead of executed.
+    ID=$(os_release_field ID "$os_release")
+    VERSION_ID=$(os_release_field VERSION_ID "$os_release")
+    PRETTY_NAME=$(os_release_field PRETTY_NAME "$os_release")
 
-    case "$ID" in
+    case "${ID:-}" in
         debian)
             if [ "${VERSION_ID%%.*}" -lt 13 ] 2>/dev/null; then
                 fatal "Debian $VERSION_ID is not supported. Minimum: Debian 13"
@@ -111,12 +169,77 @@ detect_os() {
                 fatal "Ubuntu $VERSION_ID is not supported. Minimum: Ubuntu 24.04"
             fi
             ;;
+        ol)
+            check_oracle_linux
+            ;;
         *)
-            fatal "Unsupported OS: $ID $VERSION_ID. Spinifex requires Debian 13+ or Ubuntu 24.04+"
+            fatal "Unsupported OS: ${ID:-unknown} ${VERSION_ID:-}. Spinifex requires Debian 13+, Ubuntu 24.04+ or Oracle Linux 10.2+"
             ;;
     esac
 
-    info "Detected OS: $PRETTY_NAME"
+    info "Detected OS: ${PRETTY_NAME:-$ID $VERSION_ID}"
+}
+
+# Oracle Linux 10.2+ on x86_64 only, running UEK R8: the KVM Utilities QEMU
+# needs UEK, and Oracle ships kernel modules per kernel, so installing a newer
+# kernel-uek alone leaves the running one without openvswitch.ko.
+check_oracle_linux() {
+    local unsupported="Oracle Linux ${VERSION_ID:-<no VERSION_ID>} is not supported. Spinifex requires Oracle Linux 10.2 or a later 10.x"
+    local major="${VERSION_ID%%.*}" minor="${VERSION_ID#*.}" kernel
+    minor="${minor%%.*}"
+    case "${VERSION_ID:-}" in *.*) ;; *) fatal "$unsupported" ;; esac
+    case "$major" in "" | *[!0-9]*) fatal "$unsupported" ;; esac
+    case "$minor" in "" | *[!0-9]*) fatal "$unsupported" ;; esac
+    if [ "$major" -ne 10 ] || [ "$minor" -lt 2 ]; then
+        fatal "$unsupported"
+    fi
+
+    if [ "$(uname -m)" != "x86_64" ]; then
+        fatal "Oracle Linux on $(uname -m) is not supported. Spinifex supports Oracle Linux on x86_64 only"
+    fi
+
+    kernel=$(uname -r)
+    case "$kernel" in
+        6.12.0-*uek*) ;;
+        *) fatal "The running kernel $kernel is not UEK R8 (6.12.0-*uek). Install kernel-uek, reboot into it, then re-run this installer" ;;
+    esac
+
+    check_x86_64_v3
+    check_selinux_not_enforcing
+}
+
+# Spinifex ships no SELinux policy yet. Oracle's templates boot enforcing, and
+# setenforce alone reverts on reboot, so the config file is checked as well.
+check_selinux_not_enforcing() {
+    local config="${SPINIFEX_SELINUX_CONFIG:-/etc/selinux/config}" now="" boot=""
+    if command -v getenforce >/dev/null 2>&1; then
+        now=$(getenforce 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    fi
+    if [ -f "$config" ]; then
+        boot=$(os_release_field SELINUX "$config" | tr '[:upper:]' '[:lower:]')
+    fi
+    if [ "$now" = "enforcing" ]; then
+        fatal "SELinux is enforcing, and Spinifex has no SELinux policy. Run 'sudo setenforce 0', set SELINUX=permissive in $config, then re-run this installer"
+    fi
+    if [ "$boot" = "enforcing" ]; then
+        fatal "SELinux is set to enforcing at next boot (SELINUX=enforcing in $config). Set SELINUX=permissive there, then re-run this installer"
+    fi
+}
+
+# The NFV SIG OVS/OVN and the KVM Utilities QEMU are built for x86-64-v3, so an
+# older CPU installs cleanly and then dies on an illegal instruction.
+check_x86_64_v3() {
+    local cpuinfo="${SPINIFEX_CPUINFO:-/proc/cpuinfo}" flags flag missing=""
+    flags=" $(grep -m1 '^flags' "$cpuinfo" 2>/dev/null | cut -d: -f2) "
+    for flag in cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3 avx avx2 bmi1 bmi2 f16c fma abm movbe xsave; do
+        case "$flags" in
+            *" $flag "*) ;;
+            *) missing="${missing:+$missing }$flag" ;;
+        esac
+    done
+    if [ -n "$missing" ]; then
+        fatal "This CPU is below x86-64-v3 (missing: $missing). Oracle Linux's OVS, OVN and QEMU builds require x86-64-v3"
+    fi
 }
 
 # --- Architecture detection ---
@@ -267,9 +390,67 @@ install_ipsec_state_helper() {
 set -eu
 
 if [ "$#" -ne 1 ]; then
-    echo "usage: $0 <on|off>" >&2
+    echo "usage: $0 <on|off|guard|unguard>" >&2
     exit 2
 fi
+
+# libreswan drops a tunnel's xfrm policies while IKE fails, and pluto flushes
+# the whole xfrm table when it starts or stops, so Geneve from the encap address
+# is dropped in nft unless the route carries an SA.
+GUARD_TABLE="inet spinifex_ipsec_guard"
+
+unguard() {
+    printf 'table %s\ndelete table %s\n' "$GUARD_TABLE" "$GUARD_TABLE" | nft -f -
+}
+
+want=""
+want_src() {
+    case "$1" in
+        *.*.*.*) case "$1" in *[!0-9.]*) src=0.0.0.0/0 ;; *) src="$1/32" ;; esac ;;
+        *) src=0.0.0.0/0 ;;
+    esac
+    case " $want " in *" $src "*) ;; *) want="$want $src" ;; esac
+}
+
+# One source per local address of a tunnel with a remote_name, which
+# ovn-controller sets only while NB_Global.ipsec is on. A tunnel without a
+# usable local_ip is guarded from every source rather than left open.
+guard() {
+    ifaces=$(ovs-vsctl --timeout=5 --bare --columns=name find Interface type=geneve)
+    for iface in $ifaces; do
+        peer=$(ovs-vsctl --timeout=5 --if-exists get Interface "$iface" options:remote_name)
+        [ -n "$peer" ] || continue
+        want_src "$(ovs-vsctl --timeout=5 --if-exists get Interface "$iface" options:local_ip | tr -d '"')"
+    done
+    # At boot pluto is up before ovn-controller builds the tunnels, and its
+    # callers guard only while encryption is wanted, so guard the encap address
+    # until the tunnels say otherwise.
+    if [ -z "$ifaces" ]; then
+        encap=$(ovs-vsctl --timeout=5 --if-exists get Open_vSwitch . external_ids:ovn-encap-ip | tr -d '"')
+        for ip in $(echo "$encap" | tr ',' ' '); do want_src "$ip"; done
+        [ -n "$want" ] || want_src ""
+    fi
+    if [ -z "$want" ]; then
+        unguard
+        return
+    fi
+    # One transaction, so the old set is never gone before the new one is in.
+    nft -f - << NFT
+table $GUARD_TABLE
+delete table $GUARD_TABLE
+table $GUARD_TABLE {
+    set srcs {
+        type ipv4_addr
+        flags interval
+        elements = { $(echo $want | tr ' ' ',') }
+    }
+    chain out {
+        type filter hook output priority 0; policy accept;
+        ip saddr @srcs udp dport 6081 rt ipsec missing drop
+    }
+}
+NFT
+}
 
 # mask/unmask rather than disable/enable. The daemon's unit sets
 # ProtectSystem=full, so /etc is read-only in the namespace its children inherit,
@@ -278,16 +459,40 @@ fi
 
 # ovs-monitor-ipsec execs the strongSwan starter itself rather than going through
 # this unit, so leaving it enabled only contends for UDP 500/4500. Off in both
-# states. Absent on a host without strongswan, which is not an error.
-systemctl mask --now strongswan-starter.service >/dev/null 2>&1 || true
+# states. Masking a unit no package ships leaves a stray /dev/null link, so a
+# host without strongSwan gets none, and loses one an older helper left.
+if [ -e /usr/lib/systemd/system/strongswan-starter.service ] || [ -e /lib/systemd/system/strongswan-starter.service ]; then
+    systemctl mask --now strongswan-starter.service >/dev/null 2>&1 || true
+elif [ "$(systemctl is-enabled strongswan-starter.service 2>/dev/null)" = masked ]; then
+    systemctl unmask strongswan-starter.service >/dev/null 2>&1 || true
+fi
 
 case "$1" in
     on)
-        systemctl unmask openvswitch-ipsec.service
+        if [ -x /usr/libexec/ipsec/pluto ]; then
+            # ovs-monitor-ipsec drives pluto over its control socket but does
+            # not start it, so pluto comes up first under its own unit.
+            systemctl unmask ipsec.service openvswitch-ipsec.service
+            systemctl start ipsec.service
+        else
+            systemctl unmask openvswitch-ipsec.service
+        fi
         exec systemctl start openvswitch-ipsec.service
         ;;
     off)
-        exec systemctl mask --now openvswitch-ipsec.service
+        systemctl mask --now openvswitch-ipsec.service
+        # libreswan's pluto listens on UDP 500/4500 whenever ipsec.service runs.
+        # On Debian that name is strongswan-starter's alias, masked above.
+        if [ -x /usr/libexec/ipsec/pluto ]; then
+            systemctl mask --now ipsec.service
+            unguard
+        fi
+        ;;
+    guard)
+        guard
+        ;;
+    unguard)
+        unguard
         ;;
     *)
         echo "state not permitted: $1" >&2
@@ -324,6 +529,101 @@ sshd_ports() {
         if [ -z "$_out" ]; then _out="$_p"; else _out="$_out, $_p"; fi
     done
     printf '%s' "$_out"
+}
+
+# An unset --firewall keeps the mode a previous install recorded, so a rerun
+# never disarms a node. The record is read as root: /etc/spinifex is closed to
+# anyone outside the spinifex group, who would otherwise see no record at all.
+resolve_firewall_mode() {
+    local recorded
+    case "${INSTALL_SPINIFEX_FIREWALL}" in
+        on|off) return 0 ;;
+        "") ;;
+        *) fatal "--firewall must be 'on' or 'off', got: ${INSTALL_SPINIFEX_FIREWALL}" ;;
+    esac
+    if ${SUDO:-} test -e "$FIREWALL_MODE_FILE"; then
+        recorded=$(${SUDO:-} cat "$FIREWALL_MODE_FILE") \
+            || fatal "Cannot read the recorded firewall mode in $FIREWALL_MODE_FILE. Re-run with --firewall=on or --firewall=off"
+        recorded=$(printf '%s' "$recorded" | tr -d '[:space:]')
+        case "$recorded" in
+            on|off) INSTALL_SPINIFEX_FIREWALL="$recorded"
+                info "Host firewall: keeping the recorded mode '$recorded' ($FIREWALL_MODE_FILE)"
+                return 0 ;;
+            *) fatal "$FIREWALL_MODE_FILE holds '${recorded}', not 'on' or 'off'. Re-run with --firewall=on or --firewall=off" ;;
+        esac
+    fi
+    if [ "${ISO_BUILD:-0}" != "1" ] && firewalld_active; then
+        INSTALL_SPINIFEX_FIREWALL="on"
+        info "Host firewall: firewalld is active, so the Spinifex policy will be armed in its place"
+        return 0
+    fi
+    if [ "${ISO_BUILD:-0}" != "1" ] && ufw_active; then
+        INSTALL_SPINIFEX_FIREWALL="on"
+        info "Host firewall: ufw is active, so the Spinifex policy will be armed in its place"
+        return 0
+    fi
+    # The ISO is an appliance and arms; any other host was already doing something.
+    if [ "${ISO_BUILD:-0}" = "1" ]; then
+        INSTALL_SPINIFEX_FIREWALL="on"
+    else
+        INSTALL_SPINIFEX_FIREWALL="off"
+    fi
+}
+
+firewalld_active() {
+    systemctl is-active --quiet firewalld.service 2>/dev/null
+}
+
+# Disable firewalld if present. The node firewall is spinifex-managed: with
+# firewalld running, a packet must be accepted by both its table and ours, so
+# routed NAT, elastic IPs and IMDS on ime-* ports break with nothing logged.
+# Masked, not just disabled, so a package update or D-Bus activation cannot
+# bring it back. Its rules are not saved or migrated.
+mask_firewalld() {
+    local state
+    [ "${ISO_BUILD:-0}" = "1" ] && return 0
+    state=$(systemctl is-enabled firewalld.service 2>/dev/null) || true
+    case "$state" in
+        "" | not-found) return 0 ;;
+        masked) if ! firewalld_active; then
+                info "  firewalld already masked"
+                return 0
+            fi ;;
+    esac
+    $SUDO systemctl mask --now firewalld.service > /dev/null \
+        || fatal "Cannot stop and mask firewalld. The Spinifex nftables policy cannot run beside it"
+    warn "firewalld is now stopped and masked: the Spinifex nftables policy is the only supported node firewall."
+    warn "  firewalld's rules were not migrated. The Spinifex policy filters input only, accepts ssh"
+    warn "  from every IPv4 source until \$trusted_ssh_peers in $FIREWALL_CUSTOM narrows it, and opens"
+    warn "  53, 443, 3000, 8443 and 9999 to any source. Restate any other restriction in that file."
+    if [ "$INSTALL_SPINIFEX_FIREWALL" = "on" ]; then
+        warn "  Until the daemon first loads the policy, this host accepts every connection."
+    else
+        warn "  The Spinifex policy is not armed (--firewall=off), so this host now has no firewall."
+    fi
+}
+
+ufw_active() {
+    command -v ufw > /dev/null 2>&1 || return 1
+    ${SUDO:-} ufw status 2>/dev/null | grep -q '^Status: active'
+}
+
+# Disable ufw if it is enforcing, as some cloud images ship it (Vultr's Ubuntu
+# does, with INPUT DROP). Its rules would have to accept everything the Spinifex
+# policy does, so guest IMDS, routed NAT and the API break with nothing logged.
+# `ufw disable` is persistent and reversible; the rules are kept, not migrated.
+disable_ufw() {
+    [ "${ISO_BUILD:-0}" = "1" ] && return 0
+    ufw_active || return 0
+    $SUDO ufw disable > /dev/null \
+        || fatal "Cannot disable ufw. The Spinifex nftables policy cannot run beside it"
+    warn "ufw is now disabled: the Spinifex nftables policy is the only supported node firewall."
+    warn "  ufw's rules were not migrated. Restate any restriction you relied on in $FIREWALL_CUSTOM."
+    if [ "$INSTALL_SPINIFEX_FIREWALL" = "on" ]; then
+        warn "  Until the daemon first loads the policy, this host accepts every connection."
+    else
+        warn "  The Spinifex policy is not armed (--firewall=off), so this host now has no firewall."
+    fi
 }
 
 # The policy is written here rather than shipped in the tarball so the ISO chroot
@@ -380,9 +680,12 @@ table inet spinifex_filter {
         # would expose every wildcard-bound host service (sshd, the AWS gateway,
         # northstar, the UI) to any tenant. IMDS is HTTP on .254:80; VPC DNS is
         # 53 on .253. Everything else on these ports falls through to policy drop.
-        iifname "ime-*" ip daddr 169.254.169.254 tcp dport 80 accept
-        iifname "ime-*" ip daddr 169.254.169.253 udp dport 53 accept
-        iifname "ime-*" ip daddr 169.254.169.253 tcp dport 53 accept
+        #
+        # Matched on the pre-DNAT destination: with imds_host_meta_ip set, the
+        # remap rewrites the address in prerouting, before this hook sees it.
+        iifname "ime-*" ct original ip daddr 169.254.169.254 tcp dport 80 accept
+        iifname "ime-*" ct original ip daddr 169.254.169.253 udp dport 53 accept
+        iifname "ime-*" ct original ip daddr 169.254.169.253 tcp dport 53 accept
 
         # PMTUD is not optional under a Geneve overlay.
         icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } accept
@@ -447,6 +750,28 @@ RULES
     $SUDO chmod 0644 "$FIREWALL_RULES"
     info "  $FIREWALL_RULES"
 
+    # The kernel only tracks connections while some rule uses conntrack. Without
+    # this table a disarmed node tracks nothing, and a flow opened then (OVN's
+    # RAFT links) is first seen mid-stream at arm time, from whichever end speaks
+    # first. Seen from the server, that is a new flow to an ephemeral port, and
+    # the policy drops it. Kept loaded whether or not the policy is armed.
+    $SUDO tee "$FIREWALL_TRACK" > /dev/null << 'TRACK'
+# Spinifex connection tracking. Managed by scripts/setup.sh — edits are overwritten.
+# Accepts everything and filters nothing; it exists so conntrack keeps running
+# while inet spinifex_filter is not loaded. Never delete it on a running node.
+table inet spinifex_conntrack
+delete table inet spinifex_conntrack
+
+table inet spinifex_conntrack {
+    chain input {
+        type filter hook input priority filter; policy accept;
+        ct state invalid counter
+    }
+}
+TRACK
+    $SUDO chmod 0644 "$FIREWALL_TRACK"
+    info "  $FIREWALL_TRACK"
+
     # Host-local facts the policy needs that the daemon has no view of. Separate
     # from peers.nft because the daemon rewrites that file and would drop this.
     # Refreshed on every setup.sh run, so an sshd port change is picked up by an
@@ -499,6 +824,11 @@ CUSTOM
     $SUDO chmod 0644 "$FIREWALL_MODE_FILE"
     info "  $FIREWALL_MODE_FILE ($INSTALL_SPINIFEX_FIREWALL)"
 
+    # After the mode file, so a retry after an interrupted install still finds
+    # 'on' once firewalld or ufw is no longer active.
+    mask_firewalld
+    disable_ufw
+
     $SUDO tee "$FIREWALL_APPLY" > /dev/null << 'APPLY'
 #!/bin/sh
 # Applies the spinifex host firewall. Fails without changing the ruleset when
@@ -509,6 +839,7 @@ set -eu
 RULES="/etc/spinifex/firewall/spinifex.nft"
 PEERS="/etc/spinifex/firewall/peers.nft"
 OPEN="/etc/spinifex/firewall/open-ports.nft"
+TRACK="/etc/spinifex/firewall/conntrack.nft"
 
 # 0 is a sentinel that keeps the set non-empty, because nft rejects an empty
 # one. No packet can match it: the kernel has no destination port 0.
@@ -530,11 +861,31 @@ write_open_ports() {
 # Deliberately ahead of the policy-file check below: turning the firewall off is
 # the recovery path, and refusing to run it because the policy is missing leaves
 # an operator with a node they can neither arm nor disarm.
+#
+# The tracking table goes in in the same transaction as the delete, so conntrack
+# never stops: a flow that opens while disarmed is then tracked from its SYN,
+# and re-arming does not drop it. The boot unit stays enabled to reload it.
 if [ "${1:-}" = "disable" ]; then
-    nft delete table inet spinifex_filter 2>/dev/null || true
+    if [ -r "$TRACK" ]; then
+        printf 'include "%s"\ntable inet spinifex_filter\ndelete table inet spinifex_filter\n' "$TRACK" | nft -f - \
+            || nft delete table inet spinifex_filter 2>/dev/null || true
+    else
+        nft delete table inet spinifex_filter 2>/dev/null || true
+    fi
     rm -f "$PEERS"
-    systemctl disable --now spinifex-firewall.service >/dev/null 2>&1 || true
     exit 0
+fi
+
+# track loads only the tracking table. boot is the unit's start: tracking on
+# every node, and the policy on top only where the daemon has written peers.
+if [ "${1:-}" = "track" ] || [ "${1:-}" = "boot" ]; then
+    if [ -r "$TRACK" ]; then
+        nft -f "$TRACK"
+    elif [ "$1" = "track" ]; then
+        echo "no tracking table at $TRACK" >&2
+        exit 1
+    fi
+    if [ "$1" = "track" ] || [ ! -r "$PEERS" ]; then exit 0; fi
 fi
 
 # Every remaining verb writes the policy, so it has to exist. Failing here
@@ -610,10 +961,9 @@ if [ "${1:-}" = "set-peers" ]; then
     fi
     rm -f "$tmp" "$bak"
 
-    # The policy is loaded, so make it survive a reboot too. `disable` turns this
-    # unit off, and forming a cluster means disabling the firewall on every node
-    # first; without this, re-arming would look complete while silently leaving
-    # the node bare after its next boot. Idempotent and quiet in the normal case.
+    # The policy is loaded, so make it survive a reboot too. An older helper's
+    # `disable` turned this unit off; without this, re-arming such a node would
+    # look complete while leaving it bare after its next boot. Idempotent.
     systemctl enable spinifex-firewall.service >/dev/null 2>&1 || true
     exit 0
 fi
@@ -629,6 +979,13 @@ APPLY
     $SUDO chown root:root "$FIREWALL_APPLY"
     $SUDO chmod 0755 "$FIREWALL_APPLY"
     info "  $FIREWALL_APPLY"
+
+    # Now, not at the next boot: a fresh install forms its cluster before then,
+    # and an upgrade must start tracking before the daemon next arms. A chroot
+    # would load it into the build host's kernel.
+    if [ "${ISO_BUILD:-0}" != "1" ]; then
+        $SUDO "$FIREWALL_APPLY" track || warn "  Could not load $FIREWALL_TRACK: arming later may drop live cluster connections"
+    fi
 
     # Say which state ssh is in either way. A node whose allowlist was never
     # narrowed reads as configured otherwise, and that is the whole risk here.
@@ -650,21 +1007,226 @@ APPLY
     fi
 }
 
+# --- Host DNS ---
+# The one resolver setup supported on a host with systemd-resolved installed:
+# NetworkManager hands link DNS to resolved, and /etc/resolv.conf is its stub.
+RESOLV_CONF="${SPINIFEX_RESOLV_CONF:-/etc/resolv.conf}"
+RESOLVED_STUB=/run/systemd/resolve/stub-resolv.conf
+# node-reset.sh keeps /var/lib/spinifex-reset, so the copy survives until uninstall.
+RESOLV_CONF_SAVED="${SPINIFEX_RESOLV_CONF_SAVED:-/var/lib/spinifex-reset/resolv.conf.orig}"
+# NetworkManager started while resolv.conf is a plain file rewrites it on its
+# next DNS update, replacing the stub link; this drop-in stops that.
+NM_DNS_DROPIN="${SPINIFEX_NM_DNS_DROPIN:-/etc/NetworkManager/conf.d/90-spinifex-dns.conf}"
+
+# systemd-resolved ships resolvconf as a link to resolvectl, which only works
+# while resolved runs, so that one is not a resolvconf backend.
+real_resolvconf() {
+    local path
+    path=$(command -v resolvconf) || return 1
+    [ "$(basename "$(readlink -f "$path")")" != resolvectl ]
+}
+
+# Prints the NetworkManager setting that keeps it from handing DNS to resolved,
+# or nothing. Only explicitly set keys are uncommented in --print-config.
+nm_dns_blocker() {
+    local config
+    config=$($SUDO NetworkManager --print-config) || return 1
+    printf '%s\n' "$config" | awk -F= '
+        /^\[/ { main = ($0 == "[main]"); next }
+        !main || /^#/ { next }
+        $1 == "dns" && $2 != "default" && $2 != "systemd-resolved" { print; exit }
+        $1 == "systemd-resolved" && ($2 == "false" || $2 == "no" || $2 == "0" || $2 == "off") { print; exit }'
+}
+
+# The URL of the first enabled package repository, which the install has
+# reached unless system packages were skipped.
+first_repo_url() {
+    # shellcheck disable=SC2016  # apt's own $(FIELD) template, not a shell expansion
+    case "$(distro_pkg_manager 2>/dev/null)" in
+        apt) apt-get indextargets --format '$(REPO_URI)' 2>/dev/null | head -n 1 ;;
+        dnf) dnf config-manager --dump '*' 2>/dev/null | awk '
+                function flush() { if (enabled == "1" && url != "") { print url; done = 1; exit } }
+                /^\[/ { flush(); enabled = ""; url = ""; next }
+                /^(baseurl|mirrorlist|metalink) = / { v = $3; sub(/,.*/, "", v); if (url == "") url = v }
+                /^enabled = / { enabled = $3 }
+                END { if (!done) flush() }' ;;
+    esac
+}
+
+# The host part of a URL. Prints nothing for a file:// or schemeless URL.
+url_host() {
+    local rest="${1#*://}"
+    case "$1" in file://* | "$rest") return 0 ;; esac
+    rest="${rest%%/*}"
+    rest="${rest##*@}"
+    case "$rest" in
+        \[*) echo "${rest%%]*}]" ;;
+        *) echo "${rest%%:*}" ;;
+    esac
+}
+
+dns_handover_failed() {
+    fatal "Host DNS through systemd-resolved does not work: $1.
+    To put host DNS back as it was before this installer:
+      sudo systemctl disable --now systemd-resolved
+      sudo rm -f $NM_DNS_DROPIN
+      sudo cp -a --remove-destination $RESOLV_CONF_SAVED $RESOLV_CONF
+      sudo systemctl restart NetworkManager"
+}
+
+# Prints the rc-manager NetworkManager would use if it is not unmanaged, which
+# means a file read after the Spinifex drop-in overrides it.
+nm_rc_manager_override() {
+    local config
+    config=$($SUDO NetworkManager --print-config) || return 1
+    printf '%s\n' "$config" | awk -F= '
+        /^\[/ { main = ($0 == "[main]"); next }
+        main && $1 == "rc-manager" { rc = $2 }
+        END { if (rc != "unmanaged") print "rc-manager=" (rc == "" ? "symlink" : rc) }'
+}
+
+# Writes the NetworkManager drop-in and checks nothing overrides it. Returns 1
+# when it was already in place.
+install_nm_dns_dropin() {
+    local want override changed=1
+    want=$(printf '[main]\ndns=systemd-resolved\nrc-manager=unmanaged')
+    if [ "$(cat "$NM_DNS_DROPIN" 2>/dev/null)" != "$want" ]; then
+        $SUDO mkdir -p "$(dirname "$NM_DNS_DROPIN")"
+        printf '%s\n' "$want" | $SUDO tee "$NM_DNS_DROPIN" > /dev/null || dns_handover_failed "cannot write $NM_DNS_DROPIN"
+        info "  $NM_DNS_DROPIN: NetworkManager leaves $RESOLV_CONF alone"
+        changed=0
+    fi
+    override=$(nm_rc_manager_override) || dns_handover_failed "cannot read NetworkManager's configuration with 'NetworkManager --print-config'"
+    if [ -n "$override" ]; then
+        dns_handover_failed "NetworkManager reads $override from a file after $NM_DNS_DROPIN, so it would replace the $RESOLV_CONF link. Remove that setting ('NetworkManager --print-config' shows the files it reads) and re-run this installer"
+    fi
+    return "$changed"
+}
+
+# Links the stub and checks the link is still there a second later, relinking a
+# bounded number of times in case a write NetworkManager had queued lands first.
+link_resolved_stub() {
+    local i
+    for i in 1 2 3 4 5; do
+        $SUDO ln -sfn "$RESOLVED_STUB" "$RESOLV_CONF"
+        sleep 1
+        [ "$(readlink "$RESOLV_CONF")" = "$RESOLVED_STUB" ] && return 0
+    done
+    dns_handover_failed "$RESOLV_CONF is not a link to $RESOLVED_STUB 5 seconds after linking it, so something keeps rewriting it"
+}
+
+# Checks resolved has upstream servers and still resolves the package
+# repository host, the one name this host is known to have resolved.
+check_resolved_dns() {
+    local i url host
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        resolvectl dns 2>/dev/null | grep -q ':[[:space:]]*[^[:space:]]' && break
+        [ "$i" = 10 ] && dns_handover_failed "'resolvectl dns' lists no DNS servers 10 seconds after NetworkManager restarted"
+        sleep 1
+    done
+
+    url=$(first_repo_url)
+    host=$(url_host "$url")
+    case "$host" in
+        "")
+            warn "No package repository with a host name to look up (${url:-none found}); not checking that names resolve"
+            return 0 ;;
+        \[*) ;;
+        *[!0-9.]*)
+            getent ahosts "$host" > /dev/null || dns_handover_failed "the package repository host $host no longer resolves"
+            return 0 ;;
+    esac
+    warn "The package repository host $host is an IP address; not checking that names resolve"
+}
+
+# Where systemd-resolved is installed but not running and nothing else manages
+# DNS, turns it on behind NetworkManager. The original resolv.conf is saved
+# once, so a rerun never replaces it with one this installer wrote.
+hand_dns_to_resolved() {
+    stage "handing host DNS to systemd-resolved"
+    local blocker
+    [ "${ISO_BUILD:-0}" = "1" ] && return 0
+
+    if systemctl is-active --quiet systemd-resolved.service; then
+        # A handover made by an earlier run is checked again, and repaired, on
+        # every run: installs before the drop-in could lose the link.
+        if [ -e "$RESOLV_CONF_SAVED" ] || [ -L "$RESOLV_CONF_SAVED" ]; then
+            if install_nm_dns_dropin && systemctl is-active --quiet NetworkManager.service; then
+                $SUDO systemctl reload NetworkManager.service || dns_handover_failed "NetworkManager did not reload"
+            fi
+            [ "$(readlink "$RESOLV_CONF")" = "$RESOLVED_STUB" ] || link_resolved_stub
+            check_resolved_dns
+        fi
+        return 0
+    fi
+    if ! distro_unit_exists systemd-resolved.service; then
+        return 0
+    fi
+    if real_resolvconf; then
+        info "resolvconf manages host DNS; leaving it as it is"
+        return 0
+    fi
+    if ! systemctl is-active --quiet NetworkManager.service; then
+        warn "systemd-resolved is installed but not running, and NetworkManager is not running to hand it DNS. Leaving host DNS as it is: Spinifex names will not resolve on this host until its resolver forwards them to northstar"
+        return 0
+    fi
+    blocker=$(nm_dns_blocker) || fatal "Cannot read NetworkManager's configuration with 'NetworkManager --print-config'"
+    if [ -n "$blocker" ]; then
+        fatal "NetworkManager sets $blocker, so it cannot hand DNS to systemd-resolved. Remove that setting ('NetworkManager --print-config' shows the files it reads) and re-run this installer"
+    fi
+
+    info "Handing host DNS to systemd-resolved..."
+    if [ ! -e "$RESOLV_CONF_SAVED" ] && [ ! -L "$RESOLV_CONF_SAVED" ]; then
+        $SUDO mkdir -p "$(dirname "$RESOLV_CONF_SAVED")"
+        $SUDO cp -a "$RESOLV_CONF" "$RESOLV_CONF_SAVED" || fatal "Cannot save $RESOLV_CONF to $RESOLV_CONF_SAVED"
+        info "  saved $RESOLV_CONF to $RESOLV_CONF_SAVED"
+    fi
+    install_nm_dns_dropin || true
+    $SUDO systemctl enable --now systemd-resolved.service > /dev/null 2>&1 \
+        || dns_handover_failed "systemd-resolved did not start"
+    $SUDO systemctl restart NetworkManager.service || dns_handover_failed "NetworkManager did not restart"
+    # Best effort: a link with no DHCP server can hold startup past the timeout.
+    if command -v nm-online > /dev/null; then
+        nm-online -s -q --timeout=15 || true
+    fi
+    link_resolved_stub
+    check_resolved_dns
+    info "  $RESOLV_CONF -> $RESOLVED_STUB"
+}
+
 # Debian's stock chrony.conf carries `makestep 1 3`: step the clock only for the
 # first three updates, then slew at ~83us/s, which is roughly 7 seconds of
 # correction per day. A node that burns those three before the network is usable
 # then crawls toward correct time for days, and SigV4 rejects its requests the
 # whole time. A drop-in rather than an edit to chrony.conf, which is a dpkg
 # conffile and would prompt on every future upgrade.
+#
+# EL's chrony.conf reads no drop-ins, so a confdir line is appended to it.
+# chronyd keeps the last makestep it reads, so drop-ins must come after the
+# stock line. DISTRO_ROOT prefixes the paths here as it does for the probes.
 install_chrony_conf() {
     stage "installing chrony drop-in"
+    local root="${DISTRO_ROOT:-}" conf dir="" confdir_line=0 makestep_line
 
-    if [ ! -d /etc/chrony/conf.d ]; then
-        warn "No /etc/chrony/conf.d — skipping chrony drop-in"
+    if ! conf=$(distro_chrony_conf); then
+        warn "Skipping the chrony drop-in"
         return
     fi
+    read -r confdir_line dir < <(awk '$1 == "confdir" { print NR, $2; exit }' "$root$conf") || true
+    if [ -z "$dir" ]; then
+        dir=/etc/chrony.d
+        printf '\n# Added by the Spinifex installer. Last, so a drop-in overrides the settings above.\nconfdir %s\n' "$dir" \
+            | $SUDO tee -a "$root$conf" > /dev/null
+        confdir_line=$(wc -l < "$root$conf")
+        info "  $conf: confdir $dir"
+    fi
+    makestep_line=$(awk '$1 == "makestep" { n = NR } END { print n + 0 }' "$root$conf")
+    if [ "$makestep_line" -gt "$confdir_line" ]; then
+        warn "$conf sets makestep on line $makestep_line, after its confdir line, which overrides the Spinifex drop-in. Move the confdir line to the end of $conf"
+    fi
 
-    $SUDO tee /etc/chrony/conf.d/spinifex.conf > /dev/null << 'CHRONY'
+    $SUDO mkdir -p "$root$dir"
+    $SUDO tee "$root$dir/spinifex.conf" > /dev/null << 'CHRONY'
 # Managed by scripts/setup.sh — edits are overwritten.
 # Step at any offset over a second, however many times it takes. The clock can
 # jump backwards under load, which is the accepted cost: everything
@@ -672,8 +1234,8 @@ install_chrony_conf() {
 # step fails every signed request until it converges.
 makestep 1 -1
 CHRONY
-    $SUDO chmod 0644 /etc/chrony/conf.d/spinifex.conf
-    info "  /etc/chrony/conf.d/spinifex.conf"
+    $SUDO chmod 0644 "$root$dir/spinifex.conf"
+    info "  $dir/spinifex.conf"
 }
 
 install_sudoers() {
@@ -733,7 +1295,7 @@ SUDOERS
     info "Scoped sudoers rules installed for spinifex-daemon (spinifex-vpcd needs none)"
 }
 
-# --- Install apt dependencies ---
+# --- Install system dependencies ---
 # NOTE: Runtime deps must stay in sync with the ISO package list at
 # scripts/iso-builder/build/packages.list in the mulga repo. When you add,
 # remove, or change a runtime package here, review that file too — drift means
@@ -746,33 +1308,47 @@ APT_RUNTIME_PACKAGES="nbdkit
 qemu-utils gdisk ovmf qemu-efi-aarch64 less
 libvirt-daemon-system libvirt-clients
 pciutils
-jq curl iproute2 ethtool netcat-openbsd wget unzip xz-utils file
+jq curl iproute2 iputils-arping ethtool netcat-openbsd wget unzip xz-utils file
 ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon dhcpcd-base
 chrony nftables"
 
-install_apt_deps() {
-    stage "installing apt dependencies"
+# The Oracle Linux equivalents, plus what a minimal OL install lacks. OVS 3.5
+# and OVN 25.03 come from the CentOS NFV SIG; 25.03 is Debian 13's OVN, which
+# the hand-written OVN NB models are written against.
+OL_RUNTIME_PACKAGES="nbdkit nbdkit-basic-filters
+qemu-kvm qemu-img edk2-ovmf seabios-bin less
+pciutils
+jq curl iproute iputils ethtool nmap-ncat wget unzip xz file
+ovn25.03-central ovn25.03-host openvswitch3.5 openvswitch3.5-ipsec libreswan dhcpcd
+chrony nftables iptables-nft systemd-resolved"
+
+# Oracle ships no OVS or OVN for OL10. The allowlist stops the SIG supplying
+# anything but OVS, OVN and the two SIG-only packages they depend on.
+NFV_SIG_REPO_ID="spinifex-nfv-sig"
+NFV_SIG_KEY_URL="https://www.centos.org/keys/RPM-GPG-KEY-CentOS-SIG-NFV"
+NFV_SIG_KEY_FILE="/etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-SIG-NFV"
+NFV_SIG_KEY_FPR="35154228174901BEFA8E69A621465E289D2A76A7"
+NFV_SIG_INCLUDEPKGS="openvswitch3.5* ovn25.03* python3-openvswitch3.5 openvswitch-selinux-extra-policy"
+
+# Only the KVM Utilities QEMU has the microvm machine. Excluding QEMU from
+# AppStream stops a later AppStream build ever replacing part of that stack.
+OL_KVM_UTILS_REPO="ol10_kvm_utils"
+OL_APPSTREAM_REPO="ol10_appstream"
+OL_APPSTREAM_EXCLUDES="qemu-kvm* qemu-img*"
+# The running kernel's modules come from here, and KVM Utilities requires kernel-uek.
+OL_UEK_REPO="ol10_UEKR8"
+
+install_deps() {
+    stage "installing system dependencies"
     if [ "${INSTALL_SPINIFEX_SKIP_APT}" = "1" ]; then
-        info "Skipping apt dependencies (INSTALL_SPINIFEX_SKIP_APT=1)"
+        info "Skipping system dependencies (INSTALL_SPINIFEX_SKIP_APT=1)"
     else
-        info "Installing system dependencies..."
-        $SUDO apt-get update -qq
-
-        # Unquoted on purpose: both variables are whitespace-separated package lists.
-        # shellcheck disable=SC2086
-        DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq \
-            $QEMU_PACKAGES $APT_RUNTIME_PACKAGES \
-            > /dev/null
-
-        info "System dependencies installed"
-
-        # Only on a machine that already boots from ZFS. Pulling zfsutils-linux
-        # in unconditionally would drag zfs-dkms onto every dev box and rebuild
-        # the module on each kernel upgrade for no benefit.
-        if [ "$(findmnt -no FSTYPE /)" = "zfs" ] && ! command -v zpool >/dev/null 2>&1; then
-            info "ZFS root detected, installing zfsutils-linux..."
-            DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq zfsutils-linux > /dev/null
-        fi
+        local pm
+        pm=$(distro_pkg_manager) || fatal "Cannot tell which package manager this host uses"
+        case "$pm" in
+            apt) install_apt_deps ;;
+            dnf) install_dnf_deps ;;
+        esac
     fi
 
     # Mask the standalone dhcpcd.service auto-enabled on Debian Trixie when
@@ -786,6 +1362,150 @@ install_apt_deps() {
     $SUDO systemctl mask dhcpcd.service 2>/dev/null || true
 }
 
+install_apt_deps() {
+    info "Installing system dependencies..."
+    $SUDO apt-get update -qq
+
+    # Unquoted on purpose: both variables are whitespace-separated package lists.
+    # shellcheck disable=SC2086
+    DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq \
+        $QEMU_PACKAGES $APT_RUNTIME_PACKAGES \
+        > /dev/null
+
+    info "System dependencies installed"
+
+    # Only on a machine that already boots from ZFS. Pulling zfsutils-linux
+    # in unconditionally would drag zfs-dkms onto every dev box and rebuild
+    # the module on each kernel upgrade for no benefit.
+    if [ "$(findmnt -no FSTYPE /)" = "zfs" ] && ! command -v zpool >/dev/null 2>&1; then
+        info "ZFS root detected, installing zfsutils-linux..."
+        DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq zfsutils-linux > /dev/null
+    fi
+}
+
+# The package table is the other place keyed on the OS ID: dnf alone does not
+# say which repositories or package names a host has.
+install_dnf_deps() {
+    case "${ID:-}" in
+        ol) ;;
+        *) fatal "No dnf package list for ${ID:-an unknown OS}. Spinifex installs with dnf on Oracle Linux only" ;;
+    esac
+    if [ "$(findmnt -no FSTYPE /)" = "zfs" ]; then
+        fatal "A ZFS root is not supported on Oracle Linux"
+    fi
+
+    ensure_ol_repos
+    install_running_kernel_modules
+
+    info "Installing system dependencies..."
+    # shellcheck disable=SC2086  # a whitespace-separated package list
+    $SUDO dnf install -y -q $OL_RUNTIME_PACKAGES > /dev/null
+    info "System dependencies installed"
+
+    # shellcheck disable=SC2086  # a whitespace-separated module list
+    load_kernel_modules $SPINIFEX_KERNEL_MODULES
+}
+
+# Enables KVM Utilities, pins QEMU to it, and adds the NFV SIG repository with
+# a key whose fingerprint must match the one recorded above.
+ensure_ol_repos() {
+    info "Configuring Oracle Linux repositories..."
+    local repo
+    $SUDO dnf install -y -q dnf-plugins-core gnupg2 curl > /dev/null
+
+    for repo in "$OL_UEK_REPO" "$OL_KVM_UTILS_REPO" "$OL_APPSTREAM_REPO"; do
+        dnf config-manager --dump "$repo" > /dev/null 2>&1 \
+            || fatal "Repository $repo is not defined on this host. Oracle Linux's release packages define it; reinstall oraclelinux-release-el10"
+    done
+    $SUDO dnf config-manager --set-enabled "$OL_UEK_REPO" "$OL_KVM_UTILS_REPO" > /dev/null
+    exclude_from_appstream
+
+    install_nfv_sig_key
+    $SUDO tee "/etc/yum.repos.d/${NFV_SIG_REPO_ID}.repo" > /dev/null <<EOF
+# Written by the Spinifex installer. Re-running it rewrites this file.
+[${NFV_SIG_REPO_ID}]
+name=CentOS NFV SIG Open vSwitch and OVN, for Spinifex
+baseurl=https://mirror.stream.centos.org/SIGs/10-stream/nfv/\$basearch/openvswitch-2/
+enabled=1
+gpgcheck=1
+gpgkey=file://${NFV_SIG_KEY_FILE}
+includepkgs=${NFV_SIG_INCLUDEPKGS}
+EOF
+
+    for repo in "$OL_UEK_REPO" "$OL_APPSTREAM_REPO" "$OL_KVM_UTILS_REPO" "$NFV_SIG_REPO_ID"; do
+        $SUDO dnf -q makecache --repo "$repo" > /dev/null \
+            || fatal "Repository $repo is unreachable. Check this host's network access and proxy settings, then re-run this installer"
+    done
+}
+
+# Adds the QEMU excludes to AppStream, keeping any exclude already set there.
+exclude_from_appstream() {
+    local current pattern merged="" patterns
+    current=$(dnf config-manager --dump "$OL_APPSTREAM_REPO" | sed -n 's/^excludepkgs = //p' | tr ',' ' ')
+    # read, not an unquoted expansion, so the patterns are never globbed.
+    read -ra patterns <<< "$current $OL_APPSTREAM_EXCLUDES"
+    for pattern in "${patterns[@]}"; do
+        case " $merged " in
+            *" $pattern "*) ;;
+            *) merged="${merged:+$merged }$pattern" ;;
+        esac
+    done
+    $SUDO dnf config-manager --save --setopt="${OL_APPSTREAM_REPO}.excludepkgs=${merged// /,}" > /dev/null
+}
+
+# gpg_fingerprints <file> — the primary-key fingerprint of each key in file.
+gpg_fingerprints() {
+    local home
+    home=$(mktemp -d)
+    GNUPGHOME="$home" gpg --batch --with-colons --show-keys "$1" 2>/dev/null \
+        | awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }'
+    rm -rf "$home"
+}
+
+install_nfv_sig_key() {
+    if [ -f "$NFV_SIG_KEY_FILE" ] && [ "$(gpg_fingerprints "$NFV_SIG_KEY_FILE")" = "$NFV_SIG_KEY_FPR" ]; then
+        $SUDO rpm --import "$NFV_SIG_KEY_FILE"
+        return 0
+    fi
+    local tmp got
+    tmp=$(mktemp)
+    curl -fsSL "$NFV_SIG_KEY_URL" -o "$tmp" \
+        || { rm -f "$tmp"; fatal "Cannot download the CentOS NFV SIG key from $NFV_SIG_KEY_URL"; }
+    got=$(gpg_fingerprints "$tmp")
+    if [ "$got" != "$NFV_SIG_KEY_FPR" ]; then
+        rm -f "$tmp"
+        fatal "The key at $NFV_SIG_KEY_URL has fingerprint ${got:-<unreadable>}, not the CentOS NFV SIG's $NFV_SIG_KEY_FPR. Refusing to trust it"
+    fi
+    $SUDO install -D -m 0644 "$tmp" "$NFV_SIG_KEY_FILE"
+    rm -f "$tmp"
+    $SUDO rpm --import "$NFV_SIG_KEY_FILE"
+}
+
+# Oracle ships kernel modules per kernel version. The unversioned package
+# follows the newest kernel and leaves the running one without openvswitch.ko.
+install_running_kernel_modules() {
+    local pkg
+    pkg="kernel-uek-modules-$(uname -r)"
+    if rpm -q "$pkg" > /dev/null 2>&1; then
+        return 0
+    fi
+    if ! $SUDO dnf -q list --available "$pkg" > /dev/null 2>&1; then
+        fatal "$pkg, the modules for the running kernel, is no longer in the repositories. Run 'sudo dnf update kernel-uek', reboot into the new kernel, then re-run this installer"
+    fi
+    info "Installing $pkg (it pulls in linux-firmware, about 800 MB)..."
+    $SUDO dnf install -y -q "$pkg" > /dev/null
+}
+
+load_kernel_modules() {
+    local mod failed=""
+    for mod in "$@"; do
+        $SUDO modprobe "$mod" || failed="${failed:+$failed }$mod"
+    done
+    if [ -n "$failed" ]; then
+        fatal "Cannot load kernel modules for the running kernel $(uname -r): $failed"
+    fi
+}
+
 # --- Install AWS CLI ---
 install_aws_cli() {
     stage "installing AWS CLI v2"
@@ -794,8 +1514,12 @@ install_aws_cli() {
         return
     fi
 
-    if command -v aws >/dev/null 2>&1; then
-        info "AWS CLI already installed: $(aws --version 2>&1 | head -1)"
+    # The bundled installer links /usr/local/bin/aws, which OL's sudo secure_path
+    # leaves out, so a PATH lookup alone misses it and reinstalls on every run.
+    local aws_bin
+    aws_bin=$(command -v aws 2>/dev/null || echo /usr/local/bin/aws)
+    if [ -x "$aws_bin" ]; then
+        info "AWS CLI already installed: $("$aws_bin" --version 2>&1 | head -1)"
         return
     fi
 
@@ -806,7 +1530,7 @@ install_aws_cli() {
     $SUDO "$AWS_TMPDIR/aws/install" --update > /dev/null
     rm -rf "$AWS_TMPDIR"
 
-    info "AWS CLI installed: $(aws --version 2>&1 | head -1)"
+    info "AWS CLI installed: $(/usr/local/bin/aws --version 2>&1 | head -1)"
 }
 
 # --- Download tarball ---
@@ -861,6 +1585,43 @@ download_spinifex() {
     EXTRACT_DIR="$SPINIFEX_TMPDIR"
 }
 
+# install.mulgadc.com serves the latest release's setup.sh, which cannot know what a
+# newer --channel or --version tarball needs installed, so it runs the tarball's own.
+hand_off_to_packaged_setup() {
+    [ -z "${INSTALL_SPINIFEX_TARBALL:-}" ] && [ -f "$EXTRACT_DIR/setup.sh" ] || return 0
+    info "Running the setup.sh shipped in the downloaded release"
+    export INSTALL_SPINIFEX_TARBALL="$TARBALL" SPINIFEX_HANDOFF_TMPDIR="$SPINIFEX_TMPDIR"
+    exec bash "$EXTRACT_DIR/setup.sh" "$@"
+}
+
+# OL's sudo secure_path leaves out /usr/local/bin, so `sudo spx` would find
+# nothing there. A link in /usr/bin changes sudo for nothing else on the host.
+link_spx_for_sudo() {
+    local sudo_path
+    [ "${ISO_BUILD:-0}" = "1" ] && return 0
+    command -v sudo > /dev/null 2>&1 || return 0
+    sudo_path=$(sudo -n /usr/bin/env 2> /dev/null | sed -n 's/^PATH=//p') || true
+    if [ -z "$sudo_path" ]; then
+        warn "Cannot read the PATH sudo gives commands. If 'sudo spx' is not found, run: sudo ln -s /usr/local/bin/spx /usr/bin/spx"
+        return 0
+    fi
+    case ":$sudo_path:" in *:/usr/local/bin:*) return 0 ;; esac
+    if [ -e /usr/bin/spx ] || [ -L /usr/bin/spx ]; then
+        [ "$(readlink /usr/bin/spx)" = /usr/local/bin/spx ] && return 0
+        fatal "/usr/bin/spx exists and is not a link to /usr/local/bin/spx. sudo's PATH ($sudo_path) leaves out /usr/local/bin, so 'sudo spx' would run that file. Remove it and re-run this installer"
+    fi
+    $SUDO ln -s /usr/local/bin/spx /usr/bin/spx
+    info "  /usr/bin/spx -> /usr/local/bin/spx (sudo's PATH leaves out /usr/local/bin)"
+}
+
+# Sets NBDKIT_PLUGINDIR from nbdkit itself; no guessed path is safe, since the
+# daemon loads the plugin from wherever systemd.env says it is.
+resolve_nbdkit_plugindir() {
+    NBDKIT_PLUGINDIR=$(nbdkit --dump-config 2> /dev/null | sed -n 's/^plugindir=//p') || true
+    [ -n "$NBDKIT_PLUGINDIR" ] \
+        || fatal "Cannot find nbdkit's plugin directory: 'nbdkit --dump-config' printed no plugindir. Check that nbdkit is installed and runs, then re-run this installer"
+}
+
 # --- Place files ---
 install_files() {
     stage "installing binaries and scripts"
@@ -870,25 +1631,26 @@ install_files() {
     $SUDO install -m 0755 "$EXTRACT_DIR/spx" /usr/local/bin/spx
     info "  /usr/local/bin/spx"
 
+    link_spx_for_sudo
+
     # nbdkit plugin
-    PLUGINDIR=$(nbdkit --dump-config 2>/dev/null | grep ^plugindir= | cut -d= -f2)
-    if [ -z "$PLUGINDIR" ]; then
-        warn "Could not detect nbdkit plugin directory, using default"
-        if [ "$ARCH" = "arm64" ]; then
-            PLUGINDIR="/usr/lib/aarch64-linux-gnu/nbdkit/plugins"
-        else
-            PLUGINDIR="/usr/lib/x86_64-linux-gnu/nbdkit/plugins"
-        fi
-    fi
-    $SUDO mkdir -p "$PLUGINDIR"
-    $SUDO install -m 0755 "$EXTRACT_DIR/nbdkit-viperblock-plugin.so" "$PLUGINDIR/nbdkit-viperblock-plugin.so"
-    info "  $PLUGINDIR/nbdkit-viperblock-plugin.so"
+    resolve_nbdkit_plugindir
+    $SUDO mkdir -p "$NBDKIT_PLUGINDIR"
+    $SUDO install -m 0755 "$EXTRACT_DIR/nbdkit-viperblock-plugin.so" "$NBDKIT_PLUGINDIR/nbdkit-viperblock-plugin.so"
+    info "  $NBDKIT_PLUGINDIR/nbdkit-viperblock-plugin.so"
 
     # Setup scripts
     $SUDO mkdir -p /usr/local/share/spinifex
     if [ -f "$EXTRACT_DIR/setup-ovn.sh" ]; then
         $SUDO install -m 0755 "$EXTRACT_DIR/setup-ovn.sh" /usr/local/share/spinifex/setup-ovn.sh
         info "  /usr/local/share/spinifex/setup-ovn.sh"
+    fi
+
+    # Sourced, not run, by setup-ovn.sh and uninstall-spx.sh wherever they are
+    # installed, including the ISO's /usr/local/bin/setup-ovn.sh.
+    if [ -f "$EXTRACT_DIR/lib/distro.sh" ]; then
+        $SUDO install -D -m 0644 "$EXTRACT_DIR/lib/distro.sh" /usr/local/share/spinifex/lib/distro.sh
+        info "  /usr/local/share/spinifex/lib/distro.sh"
     fi
 
     # Install setup.sh itself so firstboot and future re-runs can find it at a
@@ -926,6 +1688,46 @@ install_files() {
         $SUDO cp "$EXTRACT_DIR/microvm/"* /usr/share/spinifex/microvm/
         info "  /usr/share/spinifex/microvm/*"
     fi
+    install_sqs_worker_image
+}
+
+# The SQS image ships beside the load balancer's, not inside it: an older
+# installer copies microvm/* without -r and would stop at a subdirectory. A
+# store image left by an earlier install is not touched: nothing boots it.
+install_sqs_worker_image() { install_sqs_microvm_image sqs-worker "SQS worker"; }
+
+# install_sqs_microvm_image <name> <label>
+install_sqs_microvm_image() {
+    local name=$1 label=$2 f
+    local src="$EXTRACT_DIR/microvm-$name"
+    local dest="${SPINIFEX_MICROVM_DIR:-/usr/share/spinifex/microvm}/$name"
+    # A previously installed image belongs to an older release, and this
+    # release's daemon must not boot it. Only the two image files are removed.
+    if [ ! -d "$src" ]; then
+        remove_sqs_microvm_image "$dest" "$label"
+        warn "This release has no $label microVM image; $label launches will be refused"
+        return 0
+    fi
+    for f in vmlinuz initramfs.cpio.gz; do
+        if [ ! -s "$src/$f" ]; then
+            remove_sqs_microvm_image "$dest" "$label"
+            fatal "The $label microVM image in this release is incomplete: $f is missing"
+        fi
+    done
+    # The initramfs goes last, so an interrupted install leaves no pair the
+    # daemon would boot: it refuses a launch while either file is missing.
+    $SUDO install -d "$dest"
+    $SUDO rm -f "$dest/initramfs.cpio.gz"
+    $SUDO install -m 0644 "$src/vmlinuz" "$dest/vmlinuz"
+    $SUDO install -m 0644 "$src/initramfs.cpio.gz" "$dest/initramfs.cpio.gz"
+    info "  $dest/vmlinuz, $dest/initramfs.cpio.gz"
+}
+
+# Running VMs keep their already-loaded kernel; the files are read at boot.
+remove_sqs_microvm_image() {
+    [ -e "$1/initramfs.cpio.gz" ] || [ -e "$1/vmlinuz" ] || return 0
+    $SUDO rm -f "$1/initramfs.cpio.gz" "$1/vmlinuz"
+    warn "Removed the $2 microVM image left by an earlier install from $1"
 }
 
 # --- Create directories ---
@@ -1062,23 +1864,13 @@ TMPEOF
 install_systemd_env() {
     stage "generating /etc/spinifex/systemd.env"
 
-    # nbdkit plugin path is arch-dependent (`nbdkit --dump-config` returns
-    # /usr/lib/{x86_64,aarch64}-linux-gnu/nbdkit/plugins). Resolve it here so
-    # systemd.env always matches wherever install_files placed the .so.
-    local plugindir
-    plugindir=$(nbdkit --dump-config 2>/dev/null | grep ^plugindir= | cut -d= -f2)
-    if [ -z "$plugindir" ]; then
-        if [ "${ARCH:-}" = "arm64" ]; then
-            plugindir="/usr/lib/aarch64-linux-gnu/nbdkit/plugins"
-        else
-            plugindir="/usr/lib/x86_64-linux-gnu/nbdkit/plugins"
-        fi
-    fi
+    # The same directory install_files placed the plugin in.
+    resolve_nbdkit_plugindir
 
     $SUDO mkdir -p /etc/spinifex
     $SUDO tee /etc/spinifex/systemd.env > /dev/null << EOF
 # Generated by setup.sh — install-specific environment variables
-SPINIFEX_VIPERBLOCK_PLUGIN_PATH=${plugindir}/nbdkit-viperblock-plugin.so
+SPINIFEX_VIPERBLOCK_PLUGIN_PATH=${NBDKIT_PLUGINDIR}/nbdkit-viperblock-plugin.so
 EOF
     $SUDO chown "spinifex-viperblock:${SPINIFEX_GROUP:-spinifex}" /etc/spinifex/systemd.env
     $SUDO chmod 0640 /etc/spinifex/systemd.env
@@ -1223,6 +2015,18 @@ CPUWeight=300
 EOF
     info "  /etc/systemd/system/system.slice.d/spinifex-reserve.conf"
 
+    # The plaintext Geneve guard is not persisted, so it goes in when pluto
+    # starts at boot, before ovn-controller builds the tunnels. `-`: the guard
+    # must never fail the unit, and the daemon re-asserts it each pass.
+    if [ -x /usr/libexec/ipsec/pluto ]; then
+        $SUDO mkdir -p /etc/systemd/system/ipsec.service.d
+        $SUDO tee /etc/systemd/system/ipsec.service.d/spinifex-guard.conf > /dev/null << EOF
+[Service]
+ExecStartPost=-${IPSEC_STATE_HELPER} guard
+EOF
+        info "  /etc/systemd/system/ipsec.service.d/spinifex-guard.conf"
+    fi
+
     # daemon-reload / enable require a running systemd — skip inside the ISO
     # chroot. Unit files are still dropped into place; firstboot enables them.
     if [ "${ISO_BUILD:-0}" = "1" ]; then
@@ -1235,11 +2039,28 @@ EOF
     # takes effect once enabled) — without this the JetStream ENOSPC-latch
     # watchdog is inert and a full disk requires a manual restart forever.
     $SUDO systemctl enable --now spinifex-nats-watchdog.timer
-    # Enabled, not started: its ConditionPathExists holds it inert until the
-    # daemon writes a peer file, so this only decides that a node which has one
-    # gets the policy back at boot, before any service opens a socket.
+    # Enabled on every node: at boot it loads connection tracking everywhere,
+    # and the policy only on a node whose daemon has written a peer file, so it
+    # is back before any service opens a socket.
     $SUDO systemctl enable spinifex-firewall.service
     info "Systemd units installed and enabled (per-service users)"
+}
+
+# --- Install kernel module list ---
+# The file covers later boots; modprobe covers this one.
+install_kernel_modules() {
+    stage "installing kernel module list"
+    $SUDO install -d /etc/modules-load.d
+    # shellcheck disable=SC2086  # one module per line
+    printf '# Managed by spinifex setup.sh — do not edit.\n%s\n' $SPINIFEX_KERNEL_MODULES \
+        | $SUDO tee /etc/modules-load.d/spinifex.conf > /dev/null
+    $SUDO chmod 0644 /etc/modules-load.d/spinifex.conf
+    # A chroot would load them into the build host's kernel.
+    if [ "${ISO_BUILD:-0}" != "1" ]; then
+        # shellcheck disable=SC2086  # a whitespace-separated module list
+        load_kernel_modules $SPINIFEX_KERNEL_MODULES
+    fi
+    info "Kernel modules: $SPINIFEX_KERNEL_MODULES (/etc/modules-load.d/spinifex.conf)"
 }
 
 # --- Install kernel tunables ---
@@ -1258,6 +2079,28 @@ SYSCTL
         $SUDO sysctl -q --system 2>/dev/null || true
     fi
     info "Kernel tunables installed (net.core.rmem_max/wmem_max = 16MB)"
+}
+
+# --- Keep needrestart off the Spinifex, OVS and OVN units ---
+# Guest QEMU runs in spinifex-daemon's cgroup, so needrestart charges QEMU's
+# replaced libraries to the daemon and restarts it after every dpkg run, which
+# never clears them and ends at the unit's start limit. Restarting the stack
+# after an upgrade is the operator's call; needrestart still lists the units.
+install_needrestart_conf() {
+    stage "installing needrestart override"
+    local dir="${DISTRO_ROOT:-}/etc/needrestart/conf.d"
+    $SUDO install -d "$dir"
+    $SUDO tee "$dir/90-spinifex.conf" > /dev/null << 'NEEDRESTART'
+# Managed by spinifex setup.sh — edits are overwritten.
+# Never restart these automatically; restart them by hand when it suits.
+$nrconf{override_rc}{qr(^spinifex-)} = 0;
+$nrconf{override_rc}{qr(^ovs-)} = 0;
+$nrconf{override_rc}{qr(^ovsdb-)} = 0;
+$nrconf{override_rc}{qr(^ovn-)} = 0;
+$nrconf{override_rc}{qr(^openvswitch-)} = 0;
+NEEDRESTART
+    $SUDO chmod 0644 "$dir/90-spinifex.conf"
+    info "needrestart will not restart the spinifex, OVS or OVN units"
 }
 
 # --- Install logrotate ---
@@ -1398,6 +2241,7 @@ EOF
 
 # --- Main ---
 main() {
+    local args=("$@")
     while [ $# -gt 0 ]; do
         case "$1" in
             --firewall=*) INSTALL_SPINIFEX_FIREWALL="${1#*=}" ;;
@@ -1418,24 +2262,24 @@ main() {
         *) fatal "--channel must be 'latest' or 'dev', got: ${INSTALL_SPINIFEX_CHANNEL} (use --version for a specific tag)" ;;
     esac
 
-    case "${INSTALL_SPINIFEX_FIREWALL}" in
-        on|off) ;;
-        # Unset resolves by install path: the ISO arms, everything else does not.
-        "") if [ "${ISO_BUILD:-0}" = "1" ]; then
-                INSTALL_SPINIFEX_FIREWALL="on"
-            else
-                INSTALL_SPINIFEX_FIREWALL="off"
-            fi ;;
-        *) fatal "--firewall must be 'on' or 'off', got: ${INSTALL_SPINIFEX_FIREWALL}" ;;
-    esac
-
     info "Spinifex installer"
     echo ""
 
     # Always needed: sudo resolution, OS/arch detection.
     setup_sudo
+    resolve_firewall_mode
     detect_os
     detect_arch
+
+    # Stages that need EXTRACT_DIR: files, directories, systemd, logrotate, udev.
+    # Only download/extract when at least one such stage is enabled, and before
+    # anything on the host changes, so the hand-off finds it untouched.
+    if stage_enabled files || stage_enabled directories \
+        || stage_enabled systemd || stage_enabled logrotate \
+        || stage_enabled udev; then
+        download_spinifex
+        hand_off_to_packaged_setup "${args[@]}"
+    fi
 
     # Orchestration (stop running services, fix stale /run/spinifex/nbd perms)
     # only applies in full-install mode on a live host.
@@ -1443,16 +2287,9 @@ main() {
         handle_upgrade
     fi
 
-    # Stages that need EXTRACT_DIR: files, directories, systemd, logrotate, udev.
-    # Only download/extract when at least one such stage is enabled.
-    if stage_enabled files || stage_enabled directories \
-        || stage_enabled systemd || stage_enabled logrotate \
-        || stage_enabled udev; then
-        download_spinifex
-    fi
-
-    stage_enabled deps       && install_apt_deps
+    stage_enabled deps       && install_deps
     stage_enabled aws        && install_aws_cli
+    stage_enabled dns        && hand_dns_to_resolved
     stage_enabled users      && create_service_users
     stage_enabled sudoers    && install_sudoers
     stage_enabled firewall   && install_firewall
@@ -1463,6 +2300,8 @@ main() {
     stage_enabled fixown     && fix_file_ownership
     stage_enabled systemd    && install_systemd
     stage_enabled sysctl     && install_sysctl
+    stage_enabled needrestart && install_needrestart_conf
+    stage_enabled modules    && install_kernel_modules
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev
     stage_enabled swap       && setup_swap
@@ -1475,6 +2314,7 @@ main() {
     fi
 
     [ -n "${SPINIFEX_TMPDIR:-}" ] && rm -rf "$SPINIFEX_TMPDIR"
+    [ -n "${SPINIFEX_HANDOFF_TMPDIR:-}" ] && rm -rf "$SPINIFEX_HANDOFF_TMPDIR"
 
     # Post-install orchestration (service restart, summary, newgrp) only in
     # full-install mode on a live host.

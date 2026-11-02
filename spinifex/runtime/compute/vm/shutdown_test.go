@@ -62,10 +62,11 @@ func TestMarkFailed_TransitionsToTerminated(t *testing.T) {
 	m, _, _, _, rt := shutdownTestManager(t)
 
 	instance := &VM{
-		ID:        "i-mark-failed",
-		Status:    StatePending,
-		AccountID: "111122223333",
-		Instance:  &ec2.Instance{},
+		ID:          "i-mark-failed",
+		Status:      StatePending,
+		AccountID:   "111122223333",
+		Instance:    &ec2.Instance{},
+		FirstLaunch: true,
 	}
 	m.Insert(instance)
 
@@ -100,10 +101,11 @@ func TestMarkFailed_NilInstance(t *testing.T) {
 	m, _, _, _, rt := shutdownTestManager(t)
 
 	instance := &VM{
-		ID:        "i-mark-failed-nil",
-		Status:    StatePending,
-		AccountID: "111122223333",
-		Instance:  nil,
+		ID:          "i-mark-failed-nil",
+		Status:      StatePending,
+		AccountID:   "111122223333",
+		Instance:    nil,
+		FirstLaunch: true,
 	}
 	m.Insert(instance)
 
@@ -921,7 +923,7 @@ func terminateTestManager(t *testing.T, store StateStore) (m *Manager, cleaner *
 }
 
 // TestTerminate_AbsentIdempotent covers the idempotent guard at the top of
-// Terminate (ADR-0003 §2, rule #1). An unknown id returns success without
+// Terminate (Q-78, rule #1). An unknown id returns success without
 // touching cleaners, transitions, or hooks so destroy retries converge.
 func TestTerminate_AbsentIdempotent(t *testing.T) {
 	m, cleaner, rt, down, _ := terminateTestManager(t, newFakeStateStore())
@@ -954,7 +956,7 @@ func TestTerminate_AlreadyShuttingDown_Idempotent(t *testing.T) {
 }
 
 // TestTerminate_AlreadyTerminated_Idempotent covers the idempotent short-circuit
-// for an already-terminated instance (ADR-0003 §2). Terminate returns nil and
+// for an already-terminated instance (Q-78). Terminate returns nil and
 // runs no cleanup or transition rather than failing the terminal-state precheck.
 func TestTerminate_AlreadyTerminated_Idempotent(t *testing.T) {
 	m, cleaner, _, down, _ := terminateTestManager(t, newFakeStateStore())

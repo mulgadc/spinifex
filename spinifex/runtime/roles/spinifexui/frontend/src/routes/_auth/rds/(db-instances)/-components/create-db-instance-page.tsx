@@ -1,9 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery, useQuery } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
-import { Controller, useForm, useWatch } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   cliPlaceholder,
@@ -11,32 +9,16 @@ import {
   optionalFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
-import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
-import { PageHeading } from "@/components/page-heading"
-import type { PickerNotice } from "@/components/picker-notice"
+import { FormLock } from "@/components/form-lock"
 import {
-  SecurityGroupCheckboxes,
   securityGroupIdsForVpc,
   securityGroupsForVpc,
-} from "@/components/security-group-checkboxes"
+} from "@/components/security-group-picker"
 import { SystemImageRequired } from "@/components/system-image-required"
 import { TagsFieldArray } from "@/components/tags-field-array"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldTitle,
-} from "@/components/ui/field"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { isRdsSystemImage, rdsImportCommand } from "@/lib/system-managed"
+import { rdsImportCommand } from "@/lib/system-managed"
 import { useCreateDBInstance } from "@/mutations/rds"
 import {
   ec2ImagesQueryOptions,
@@ -59,35 +41,30 @@ import {
 import {
   DeletionProtectionField,
   instanceClassOptions,
+  parameterGroupOptions,
   parameterGroupsForEngine,
+  subnetGroupOptions,
 } from "../../-components/rds-form-fields"
+import {
+  AllocatedStorageField,
+  type CreateCliValues,
+  createCliValues,
+  DEFAULT_BACKUP_RETENTION_DAYS,
+  EngineField,
+  engineImageCatalog,
+  EngineVersionField,
+  instanceClassNotice,
+  PlacementSecurityGroupsField,
+  StorageEncryptionField,
+  UnavailableOptionsFieldset,
+} from "./create-db-instance-fields"
 
-// The retention the backend applies when a create names none.
-const DEFAULT_BACKUP_RETENTION_DAYS = 7
+interface CreateDBInstancePageProps {
+  // Called with the new DB instance's identifier once created, or with nothing on cancel.
+  onClose: (id?: string) => void
+}
 
-// Parameters CreateDBInstance rejects outright. Rendered as disabled controls
-// rather than omitted: a user arriving from the AWS console looks for these,
-// and a visible disabled control answers what a missing one only raises.
-const UNAVAILABLE_OPTIONS = [
-  {
-    id: "multi-az",
-    label: "Multi-AZ deployment",
-    note: "Not available on Spinifex — the platform is single-AZ, so a standby would not exist.",
-  },
-  {
-    id: "publicly-accessible",
-    label: "Public access",
-    note: "Not available on Spinifex — the endpoint is a private VPC address.",
-  },
-  {
-    id: "storage-autoscaling",
-    label: "Storage autoscaling",
-    note: "Not available on Spinifex — allocated storage grows only when you ask it to.",
-  },
-] as const
-
-export function CreateDBInstancePage() {
-  const navigate = useNavigate()
+export function CreateDBInstancePage({ onClose }: CreateDBInstancePageProps) {
   const createInstance = useCreateDBInstance()
 
   const { data: engineVersionsData } = useSuspenseQuery(
@@ -112,24 +89,14 @@ export function CreateDBInstancePage() {
   const images = imagesData.Images ?? []
   const engineVersions = engineVersionsData.DBEngineVersions ?? []
 
-  const engines = [
-    ...new Set(engineVersions.map((v) => v.Engine ?? "").filter(Boolean)),
-  ]
+  const {
+    engines,
+    bootableEngines,
+    engineVersionHasImage,
+    firstBootableVersion,
+    engineHasImage,
+  } = engineImageCatalog(engineVersions, images)
 
-  const engineVersionHasImage = (engine: string, version: string) =>
-    images.some((image) => isRdsSystemImage(image, engine, version))
-
-  const firstBootableVersion = (engine: string) =>
-    engineVersions.find(
-      (version) =>
-        version.Engine === engine &&
-        engineVersionHasImage(engine, version.EngineVersion ?? ""),
-    )?.EngineVersion ?? ""
-
-  const engineHasImage = (engine: string) =>
-    firstBootableVersion(engine).length > 0
-
-  const bootableEngines = engines.filter(engineHasImage)
   const initialEngine = bootableEngines[0] ?? ""
 
   const {
@@ -224,8 +191,14 @@ export function CreateDBInstancePage() {
   }
 
   const onSubmit = async (data: CreateDBInstanceFormData) => {
-    await createInstance.mutateAsync(data)
-    await navigate({ to: "/rds/describe-db-instances" })
+    try {
+      await createInstance.mutateAsync(data)
+    } catch {
+      // Surfaced beside the submit button through the mutation's error.
+      return
+    }
+
+    onClose(data.dbInstanceIdentifier)
   }
 
   // Both engine images absent is a cluster that cannot run RDS at all, so the
@@ -233,15 +206,11 @@ export function CreateDBInstancePage() {
   // must leave the other engine's create path intact.
   if (engines.length > 0 && bootableEngines.length === 0) {
     return (
-      <>
-        <BackLink to="/rds/describe-db-instances">Back to databases</BackLink>
-        <PageHeading title="Create Database" />
-        <SystemImageRequired
-          description={`RDS boots a Spinifex-managed engine image that is not shipped with the platform. Import one before creating a database. Engines offered: ${engines.join(", ")}.`}
-          importCommand={rdsImportCommand(engines[0] ?? "")}
-          title="RDS system image not found"
-        />
-      </>
+      <SystemImageRequired
+        description={`RDS boots a Spinifex-managed engine image that is not shipped with the platform. Import one before creating a database. Engines offered: ${engines.join(", ")}.`}
+        importCommand={rdsImportCommand(engines[0] ?? "")}
+        title="RDS system image not found"
+      />
     )
   }
 
@@ -250,27 +219,14 @@ export function CreateDBInstancePage() {
   // selection is a callout that never appears.
   const enginesMissingImage = engines.filter((e) => !engineHasImage(e))
 
-  const classNotice: PickerNotice | undefined =
-    selectedEngine === ""
-      ? {
-          tone: "muted",
-          text: "Select an engine to see the instance classes this cluster can run.",
-        }
-      : engineClassNotice
+  const classNotice = instanceClassNotice(selectedEngine, engineClassNotice)
 
   return (
-    <>
-      <BackLink to="/rds/describe-db-instances">Back to databases</BackLink>
-      <PageHeading title="Create Database" />
-
-      {createInstance.error && (
-        <ErrorBanner
-          error={createInstance.error}
-          msg="Failed to create the DB instance"
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={createInstance.isPending || isSubmitting}
+      >
         <TextField
           description="Lowercase letters, digits and hyphens. This is also the endpoint hostname, so it cannot be changed later."
           error={errors.dbInstanceIdentifier}
@@ -280,45 +236,13 @@ export function CreateDBInstancePage() {
           {...register("dbInstanceIdentifier")}
         />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-engine">Engine</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="engine"
-            render={({ field }) => (
-              <Select
-                onValueChange={(value) => {
-                  handleEngineChange(value ?? "")
-                }}
-                value={field.value}
-              >
-                <SelectTrigger
-                  aria-invalid={!!errors.engine}
-                  className="w-full"
-                  id="db-engine"
-                >
-                  <SelectValue placeholder="Select an engine" />
-                </SelectTrigger>
-                <SelectContent>
-                  {engines.map((engine) => (
-                    <SelectItem
-                      disabled={!engineHasImage(engine)}
-                      key={engine}
-                      value={engine}
-                    >
-                      {engineHasImage(engine)
-                        ? engine
-                        : `${engine} — image not imported`}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldError errors={[errors.engine]} />
-        </Field>
+        <EngineField
+          control={control}
+          engineHasImage={engineHasImage}
+          engines={engines}
+          error={errors.engine}
+          onEngineChange={handleEngineChange}
+        />
 
         {enginesMissingImage.map((engine) => (
           <SystemImageRequired
@@ -329,44 +253,13 @@ export function CreateDBInstancePage() {
           />
         ))}
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-engine-version">Engine version</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="engineVersion"
-            render={({ field }) => (
-              <Select onValueChange={field.onChange} value={field.value}>
-                <SelectTrigger className="w-full" id="db-engine-version">
-                  <SelectValue placeholder="Engine default" />
-                </SelectTrigger>
-                <SelectContent>
-                  {versionsForEngine.map((version) => (
-                    <SelectItem
-                      disabled={
-                        !engineVersionHasImage(
-                          selectedEngine,
-                          version.EngineVersion ?? "",
-                        )
-                      }
-                      key={version.EngineVersion}
-                      value={version.EngineVersion ?? ""}
-                    >
-                      {version.DBEngineVersionDescription ??
-                        version.EngineVersion}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldDescription>
-            There is no in-place version upgrade, so this cannot be changed
-            after the database is created.
-          </FieldDescription>
-          <FieldError errors={[errors.engineVersion]} />
-        </Field>
+        <EngineVersionField
+          control={control}
+          engineVersionHasImage={engineVersionHasImage}
+          error={errors.engineVersion}
+          selectedEngine={selectedEngine}
+          versions={versionsForEngine}
+        />
 
         <SelectField
           control={control}
@@ -378,31 +271,13 @@ export function CreateDBInstancePage() {
           placeholder="Select an instance class"
         />
 
-        <TextField
-          description={
-            <>
-              gp3, encrypted. Storage grows only — it can never be shrunk.
-              {storageBounds?.MinStorageSize !== undefined &&
-                ` This engine accepts ${storageBounds.MinStorageSize}–${storageBounds.MaxStorageSize} GiB.`}
-            </>
-          }
+        <AllocatedStorageField
+          bounds={storageBounds}
           error={errors.allocatedStorage}
-          id="db-storage"
-          label="Allocated storage (GiB)"
-          max={storageBounds?.MaxStorageSize}
-          min={storageBounds?.MinStorageSize}
-          type="number"
           {...register("allocatedStorage", { valueAsNumber: true })}
         />
 
-        <Field>
-          <FieldTitle>Storage encryption</FieldTitle>
-          <p className="text-sm">Encrypted — always on.</p>
-          <FieldDescription>
-            Storage is encrypted with the cluster key. Unencrypted storage is
-            not offered and a customer-managed key is not selectable.
-          </FieldDescription>
-        </Field>
+        <StorageEncryptionField />
 
         <TextField
           error={errors.masterUsername}
@@ -459,37 +334,24 @@ export function CreateDBInstancePage() {
           label="DB subnet group"
           name="dbSubnetGroupName"
           onValueChange={handleSubnetGroupChange}
-          options={subnetGroups.map((g) => ({
-            value: g.DBSubnetGroupName ?? "",
-            label: `${g.DBSubnetGroupName} (${g.VpcId})`,
-          }))}
+          options={subnetGroupOptions(subnetGroups)}
           placeholder="Default VPC subnet"
         />
 
-        <Field>
-          <FieldTitle>VPC security groups</FieldTitle>
-          <SecurityGroupCheckboxes
-            emptyText={
-              placementVpcId
-                ? `No security groups available in ${placementVpcId}.`
-                : "No default VPC is available for security groups."
-            }
-            groups={securityGroups}
-            onChange={setSecurityGroups}
-            selected={selectedSecurityGroups}
-          />
-          <FieldError errors={[errors.vpcSecurityGroupIds]} />
-        </Field>
+        <PlacementSecurityGroupsField
+          error={errors.vpcSecurityGroupIds}
+          groups={securityGroups}
+          onChange={setSecurityGroups}
+          placementVpcId={placementVpcId}
+          selected={selectedSecurityGroups}
+        />
 
         <SelectField
           control={control}
           id="db-parameter-group"
           label="DB parameter group"
           name="dbParameterGroupName"
-          options={groupsForEngine.map((g) => ({
-            value: g.DBParameterGroupName ?? "",
-            label: g.DBParameterGroupName ?? "",
-          }))}
+          options={parameterGroupOptions(groupsForEngine)}
           placeholder="Engine default group"
         />
 
@@ -526,68 +388,29 @@ export function CreateDBInstancePage() {
 
         <TagsFieldArray control={control} name="tags" />
 
-        <fieldset className="space-y-3 rounded-md border border-border p-4">
-          <legend className="px-1 text-sm font-medium">
-            Not available on Spinifex
-          </legend>
-          {UNAVAILABLE_OPTIONS.map((option) => (
-            <label
-              className="flex items-start gap-2 text-xs text-muted-foreground"
-              key={option.id}
-            >
-              <input checked={false} disabled readOnly type="checkbox" />
-              <span>
-                {option.label}
-                <span className="mt-0.5 block">{option.note}</span>
-              </span>
-            </label>
-          ))}
-        </fieldset>
+        <UnavailableOptionsFieldset />
 
         <CliCommandPanel
-          commands={buildCreateDBInstanceCommands({
-            dbInstanceIdentifier: values.dbInstanceIdentifier ?? "",
-            engine: selectedEngine,
-            engineVersion: values.engineVersion ?? "",
-            dbInstanceClass: values.dbInstanceClass ?? "",
-            allocatedStorage:
-              values.allocatedStorage ?? MIN_ALLOCATED_STORAGE_GIB,
-            masterUsername: values.masterUsername ?? "",
-            dbName: values.dbName ?? "",
-            port: values.port ?? "",
-            dbSubnetGroupName: selectedSubnetGroup,
-            vpcSecurityGroupIds: selectedSecurityGroups,
-            dbParameterGroupName: values.dbParameterGroupName ?? "",
-            deletionProtection: values.deletionProtection ?? false,
-            backupRetentionPeriod:
-              values.backupRetentionPeriod ?? DEFAULT_BACKUP_RETENTION_DAYS,
-            preferredBackupWindow: values.preferredBackupWindow ?? "",
-            preferredMaintenanceWindow: values.preferredMaintenanceWindow ?? "",
-          })}
+          commands={buildCreateDBInstanceCommands(createCliValues(values))}
         />
 
         <FormActions
+          error={createInstance.error}
+          errorMsg="Failed to create the DB instance"
           isPending={createInstance.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => {
-            await navigate({ to: "/rds/describe-db-instances" })
+          onCancel={() => {
+            onClose()
           }}
           pendingLabel="Creating…"
           submitLabel="Create Database"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
 }
 
-// Everything the CLI panel renders, already flattened out of the form state so
-// the builder needs no optional handling of its own.
-type CliValues = Omit<
-  CreateDBInstanceFormData,
-  "masterUserPassword" | "confirmPassword" | "tags"
->
-
-function buildCreateDBInstanceCommands(values: CliValues): CliCommand[] {
+function buildCreateDBInstanceCommands(values: CreateCliValues): CliCommand[] {
   const parts: CliCommand["parts"] = [
     { type: "bin", value: "AWS_PROFILE=spinifex aws rds create-db-instance" },
     ...commandFlag(

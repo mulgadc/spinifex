@@ -16,6 +16,7 @@ export function DeleteDBSnapshotDialog({
 }: DeleteDBSnapshotDialogProps) {
   return (
     <ResourceDeleteDialog
+      confirmPhrase="delete"
       description={
         <>
           This deletes the DB snapshot &quot;{dbSnapshotIdentifier}&quot; and

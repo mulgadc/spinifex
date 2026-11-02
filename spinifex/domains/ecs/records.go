@@ -1,0 +1,404 @@
+package ecs
+
+import (
+	"fmt"
+	"strings"
+	"time"
+	"uuid"
+
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
+)
+
+// Lifecycle status constants matching the AWS ECS enums. Task statuses are
+// re-exported from contracts/ecs/v1 so the scheduler and the wire payloads agree.
+const (
+	ClusterStatusActive   = "ACTIVE"
+	ClusterStatusInactive = "INACTIVE"
+
+	InstanceStatusActive   = "ACTIVE"
+	InstanceStatusDraining = "DRAINING"
+
+	TaskStatusPending = ecsv1.TaskStatusPending
+	TaskStatusRunning = ecsv1.TaskStatusRunning
+	TaskStatusStopped = ecsv1.TaskStatusStopped
+
+	ServiceStatusActive   = "ACTIVE"
+	ServiceStatusDraining = "DRAINING"
+	ServiceStatusInactive = "INACTIVE"
+
+	// SchedulingStrategyReplica is the only strategy supported in v1 (Q15);
+	// DAEMON is rejected at CreateService.
+	SchedulingStrategyReplica = "REPLICA"
+	SchedulingStrategyDaemon  = "DAEMON"
+
+	// Deployment status: PRIMARY is the deployment being rolled out (or steady);
+	// ACTIVE is a superseded deployment still draining its tasks.
+	DeploymentStatusPrimary = "PRIMARY"
+	DeploymentStatusActive  = "ACTIVE"
+
+	// Deployment rollout state (AWS deploymentController rollout enum subset).
+	RolloutStateInProgress = "IN_PROGRESS"
+	RolloutStateCompleted  = "COMPLETED"
+	RolloutStateFailed     = "FAILED"
+
+	// deploymentConfiguration defaults for a REPLICA service when unset.
+	defaultMinimumHealthyPercent = 100
+	defaultMaximumPercent        = 200
+
+	// circuitBreakerFailureThreshold trips the breaker once this many of the
+	// primary deployment's task launches stop before ever reaching RUNNING.
+	circuitBreakerFailureThreshold = 3
+
+	// launchBackoff bounds: past circuitBreakerFailureThreshold the wait doubles
+	// from the base on each further failed task, up to the cap. The shift bound
+	// keeps the doubling inside a duration for a long-failing deployment.
+	launchBackoffBase     = 15 * time.Second
+	launchBackoffCap      = 5 * time.Minute
+	launchBackoffMaxShift = 16
+
+	CapacityProviderStatusActive   = "ACTIVE"
+	CapacityProviderStatusInactive = "INACTIVE"
+
+	// serviceEventRingCap bounds ServiceRecord.Events at roughly AWS's own
+	// retention window; the oldest entry is discarded once a new one pushes
+	// past it.
+	serviceEventRingCap = 100
+)
+
+// Deployment is one rollout of a service's task definition. A service has exactly
+// one PRIMARY deployment plus zero or more ACTIVE (superseded, draining) ones
+// while a rolling update is in flight; steady state is a single PRIMARY.
+type Deployment struct {
+	ID              string `json:"id"`
+	Status          string `json:"status"`
+	TaskDefARN      string `json:"taskDefArn"`
+	TaskDefFamily   string `json:"taskDefFamily"`
+	TaskDefRevision int    `json:"taskDefRevision"`
+	DesiredCount    int    `json:"desiredCount"`
+	RunningCount    int    `json:"runningCount"`
+	PendingCount    int    `json:"pendingCount"`
+	FailedTasks     int    `json:"failedTasks"`
+	RolloutState    string `json:"rolloutState"`
+	RolloutReason   string `json:"rolloutStateReason,omitempty"`
+	// NextLaunchAt holds off the next launch attempt after tasks have failed to
+	// start, so a deployment that cannot run anywhere backs off instead of
+	// relaunching on every reconcile pass. Zero means launch now.
+	NextLaunchAt time.Time `json:"nextLaunchAt,omitzero"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+// ServiceEvent is one lifecycle event on a service, mirroring ecs.ServiceEvent.
+// Events are populated by appendServiceEvent at the rollout transitions AWS
+// itself reports, never by a level-triggered condition (see appendServiceEvent).
+type ServiceEvent struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+	Message   string    `json:"message"`
+}
+
+// ClusterARN returns arn:aws:ecs:{region}:{account}:cluster/{name}. Region and accountID scope every
+// ECS ARN; the partition is fixed to "aws" to match the rest of the stack.
+func ClusterARN(region, accountID, name string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:cluster/%s", region, accountID, name)
+}
+
+// TaskARN returns the long-format task ARN, arn:aws:ecs:{region}:{account}:task/{cluster}/{taskID}.
+func TaskARN(region, accountID, cluster, taskID string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:task/%s/%s", region, accountID, cluster, taskID)
+}
+
+// ContainerInstanceARN returns the long-format container-instance ARN, scoped under its cluster.
+func ContainerInstanceARN(region, accountID, cluster, ciID string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:container-instance/%s/%s", region, accountID, cluster, ciID)
+}
+
+// ServiceARN returns the long-format service ARN, arn:aws:ecs:{region}:{account}:service/{cluster}/{name}.
+func ServiceARN(region, accountID, cluster, name string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:service/%s/%s", region, accountID, cluster, name)
+}
+
+// CapacityProviderARN returns arn:aws:ecs:{region}:{account}:capacity-provider/{name}.
+func CapacityProviderARN(region, accountID, name string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:capacity-provider/%s", region, accountID, name)
+}
+
+// serviceTaskGroup is the AWS task-group label a service stamps on its tasks
+// ("service:{name}"). The reconciler counts a service's tasks by this group and
+// the task-state hook resolves a task back to its owning service through it.
+func serviceTaskGroup(name string) string {
+	return "service:" + name
+}
+
+// serviceNameFromGroup returns the service name encoded in a task group, or ""
+// when the group is not a service group.
+func serviceNameFromGroup(group string) string {
+	name, ok := strings.CutPrefix(group, "service:")
+	if !ok {
+		return ""
+	}
+	return name
+}
+
+// ClusterRecord is the persisted cluster meta at ClusterMetaKey.
+type ClusterRecord struct {
+	Name      string            `json:"name"`
+	ARN       string            `json:"arn"`
+	Status    string            `json:"status"`
+	Tags      map[string]string `json:"tags,omitempty"`
+	CreatedAt time.Time         `json:"createdAt"`
+	// CapacityProviders / DefaultCapacityProviderStrategy are accepted and
+	// persisted by PutClusterCapacityProviders but are otherwise inert in v1:
+	// no scheduler coupling, no scale loop (a separate follow-on binds them to
+	// an ASG primitive).
+	CapacityProviders               []string                       `json:"capacityProviders,omitempty"`
+	DefaultCapacityProviderStrategy []CapacityProviderStrategyItem `json:"defaultCapacityProviderStrategy,omitempty"`
+	Settings                        []ClusterSetting               `json:"settings,omitempty"`
+}
+
+// ClusterSetting is one CreateCluster setting, stored and described back.
+type ClusterSetting struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// CapacityProviderStrategyItem is one entry of a capacity-provider strategy:
+// how many tasks (Base) and what share of the remainder (Weight) a named
+// capacity provider takes. Persisted verbatim; not consulted by placement.
+type CapacityProviderStrategyItem struct {
+	Provider string `json:"provider"`
+	Weight   int    `json:"weight,omitempty"`
+	Base     int    `json:"base,omitempty"`
+}
+
+// ManagedScalingRecord is the persisted subset of an AutoScalingGroupProvider's
+// managed-scaling configuration. Accepted and stored; no scale loop reads it.
+type ManagedScalingRecord struct {
+	Status                 string `json:"status,omitempty"`
+	TargetCapacity         int    `json:"targetCapacity,omitempty"`
+	MinimumScalingStepSize int    `json:"minimumScalingStepSize,omitempty"`
+	MaximumScalingStepSize int    `json:"maximumScalingStepSize,omitempty"`
+	InstanceWarmupPeriod   int    `json:"instanceWarmupPeriod,omitempty"`
+}
+
+// AutoScalingGroupProviderRecord is the persisted ASG binding for a capacity
+// provider. Spinifex has no ASG primitive in v1, so this is stored for API
+// parity only; nothing reads AutoScalingGroupARN to launch/terminate capacity.
+type AutoScalingGroupProviderRecord struct {
+	AutoScalingGroupARN          string               `json:"autoScalingGroupArn"`
+	ManagedScaling               ManagedScalingRecord `json:"managedScaling,omitzero"`
+	ManagedTerminationProtection string               `json:"managedTerminationProtection,omitempty"`
+}
+
+// CapacityProviderRecord is the persisted capacity provider at
+// CapacityProviderKey. Account-scoped (not cluster-scoped), matching the AWS
+// ARN shape; a cluster references providers by name via CapacityProviders.
+type CapacityProviderRecord struct {
+	Name                     string                         `json:"name"`
+	ARN                      string                         `json:"arn"`
+	Status                   string                         `json:"status"`
+	AutoScalingGroupProvider AutoScalingGroupProviderRecord `json:"autoScalingGroupProvider"`
+	Tags                     map[string]string              `json:"tags,omitempty"`
+	CreatedAt                time.Time                      `json:"createdAt"`
+}
+
+// LogDriverJSONFile is the only log driver the agent honors: containerd's task IO
+// lands in the host journal/file, retrievable per ecs-logging.md.
+const LogDriverJSONFile = "json-file"
+
+// InstanceRecord is the persisted container-instance state at InstanceKey. The
+// scheduler writes it from the Layer-2 bus (register/heartbeat) and reserves
+// capacity by appending placed task IDs.
+type InstanceRecord struct {
+	InstanceID string            `json:"instanceId"`
+	ARN        string            `json:"arn"`
+	Cluster    string            `json:"cluster"`
+	AZ         string            `json:"availabilityZone,omitempty"`
+	Hostname   string            `json:"hostname,omitempty"`
+	Status     string            `json:"status"`
+	Tags       map[string]string `json:"tags,omitempty"`
+	// InstanceType is the EC2 type the agent reports as its ecs.instance-type
+	// attribute. The awsvpc ENI slot count is derived from it rather than stored,
+	// so a corrected limit table applies on the next read.
+	InstanceType   string `json:"instanceType,omitempty"`
+	TotalCPU       int    `json:"totalCpu"`
+	TotalMemoryMiB int    `json:"totalMemoryMiB"`
+	// TotalGPU is the instance's whole-GPU count, mirroring TotalCPU/TotalMemoryMiB.
+	// It is the placement/capacity source of truth even before GPUIDs is populated.
+	TotalGPU int `json:"totalGpu"`
+	// ReservedCPU/ReservedMemoryMiB track capacity committed to placed tasks;
+	// placement increments them under a KV CAS and the task-state STOPPED path
+	// releases them. Remaining = Total - Reserved.
+	ReservedCPU       int `json:"reservedCpu"`
+	ReservedMemoryMiB int `json:"reservedMemoryMiB"`
+	// ReservedGPU mirrors ReservedCPU/ReservedMemoryMiB for whole-GPU counts.
+	ReservedGPU int `json:"reservedGpu"`
+	// ReservedENIs counts the awsvpc task ENI slots committed to placed tasks.
+	// Its total comes from InstanceType, not from a stored figure.
+	ReservedENIs int `json:"reservedEnis,omitempty"`
+	// GPUIDs holds the instance's total GPU device UUIDs, as reported at
+	// registration (AWS "GPU" STRINGSET resource) from the agent's nvidia-smi
+	// discovery. Empty on a non-GPU host; TotalGPU (not len(GPUIDs)) stays the
+	// authoritative capacity count.
+	GPUIDs       []string  `json:"gpuIds,omitempty"`
+	AgentVersion string    `json:"agentVersion,omitempty"`
+	PlacedTasks  []string  `json:"placedTasks,omitempty"`
+	RegisteredAt time.Time `json:"registeredAt"`
+	LastSeen     time.Time `json:"lastSeen"`
+	// Reaped marks a DRAINING caused by the heartbeat reaper (involuntary), as
+	// opposed to an operator UpdateContainerInstancesState drain. A reaped
+	// instance is restored to ACTIVE when its agent re-registers; an operator
+	// drain persists.
+	Reaped bool `json:"reaped,omitempty"`
+}
+
+// ContainerState is a container's last-reported status within a task record.
+type ContainerState struct {
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	ContainerID string `json:"containerId,omitempty"`
+	ExitCode    *int   `json:"exitCode,omitempty"`
+	// GPUIDs are the agent-reported device UUIDs pinned to this container,
+	// surfaced verbatim as the AWS Container.gpuIds field on DescribeTasks.
+	GPUIDs []string `json:"gpuIds,omitempty"`
+}
+
+// TaskRecord is the persisted task state at TaskKey; source of truth for
+// DescribeTasks and the placement/capacity accounting.
+type TaskRecord struct {
+	TaskID  string `json:"taskId"`
+	ARN     string `json:"arn"`
+	Cluster string `json:"cluster"`
+	// Group / StartedBy mirror the AWS task fields. A service's tasks carry
+	// Group="service:{name}" so the reconciler counts them and the task-state
+	// hook resolves a RUNNING/STOPPED task back to its owning service.
+	Group                string `json:"group,omitempty"`
+	StartedBy            string `json:"startedBy,omitempty"`
+	TaskDefFamily        string `json:"taskDefFamily"`
+	TaskDefRevision      int    `json:"taskDefRevision"`
+	TaskDefARN           string `json:"taskDefArn"`
+	ContainerInstanceID  string `json:"containerInstanceId,omitempty"`
+	ContainerInstanceARN string `json:"containerInstanceArn,omitempty"`
+	DesiredStatus        string `json:"desiredStatus"`
+	LastStatus           string `json:"lastStatus"`
+	StoppedReason        string `json:"stoppedReason,omitempty"`
+	ReservedCPU          int    `json:"reservedCpu"`
+	ReservedMemoryMiB    int    `json:"reservedMemoryMiB"`
+	// GPU is the task-level whole-GPU total (sum of its container defs' GPU
+	// counts). Not yet reserved against instance capacity (Epic C placement).
+	GPU        int               `json:"gpu,omitempty"`
+	Tags       map[string]string `json:"tags,omitempty"`
+	Containers []ContainerState  `json:"containers,omitempty"`
+	// NetworkMode is the resolved task network mode (awsvpc|bridge|host). The
+	// STOPPED path consults it to decide whether an ENI must be reclaimed.
+	NetworkMode string `json:"networkMode,omitempty"`
+	// ENI* hold the per-task elastic network interface for awsvpc mode, allocated
+	// by the scheduler at placement and reclaimed at STOPPED. Empty otherwise.
+	ENIID           string `json:"eniId,omitempty"`
+	ENIAttachmentID string `json:"eniAttachmentId,omitempty"`
+	ENIPrivateIP    string `json:"eniPrivateIp,omitempty"`
+	ENIMacAddress   string `json:"eniMac,omitempty"`
+	ENISubnetID     string `json:"eniSubnetId,omitempty"`
+	// ENIReleaseAttempts / ENIReleaseNextTry are the stopped-task sweep's retry
+	// state once a release attempt has failed. Both stay zero on the common
+	// path, so an untroubled record serialises exactly as it always has.
+	// ENIReleased marks that Release has already succeeded for this task's ENI,
+	// so a second sweep pass is a no-op rather than a repeat delete; ENIID itself
+	// is left in place afterwards as the forensic record DescribeTasks projects.
+	ENIReleaseAttempts int       `json:"eniReleaseAttempts,omitempty"`
+	ENIReleaseNextTry  time.Time `json:"eniReleaseNextTry,omitzero"`
+	ENIReleased        bool      `json:"eniReleased,omitempty"`
+	// ENIPublicIP / ENIEIPAllocationID hold the auto-assigned Elastic IP for an
+	// awsvpc task whose service has AssignPublicIp=ENABLED. Set on the RUNNING
+	// transition and released on STOPPED. Empty otherwise.
+	ENIPublicIP        string    `json:"eniPublicIp,omitempty"`
+	ENIEIPAllocationID string    `json:"eniEipAllocationId,omitempty"`
+	CreatedAt          time.Time `json:"createdAt"`
+	StartedAt          time.Time `json:"startedAt,omitzero"`
+	StoppedAt          time.Time `json:"stoppedAt,omitzero"`
+}
+
+// LoadBalancerTarget is one ELBv2 target-group attachment on a service. On task
+// RUNNING the scheduler registers the task's ENI IP at ContainerPort; on STOPPED
+// it deregisters (ecs-v1.md Q8, single-writer).
+type LoadBalancerTarget struct {
+	TargetGroupARN string `json:"targetGroupArn"`
+	ContainerName  string `json:"containerName,omitempty"`
+	ContainerPort  int    `json:"containerPort"`
+}
+
+// ServiceRecord is the persisted service state at ServiceKey. The captured
+// network config + placement strategy let the reconciler launch replacement
+// tasks identically to the original RunTask.
+type ServiceRecord struct {
+	Name               string               `json:"name"`
+	ARN                string               `json:"arn"`
+	Cluster            string               `json:"cluster"`
+	TaskDefFamily      string               `json:"taskDefFamily"`
+	TaskDefRevision    int                  `json:"taskDefRevision"`
+	TaskDefARN         string               `json:"taskDefArn"`
+	DesiredCount       int                  `json:"desiredCount"`
+	Status             string               `json:"status"`
+	SchedulingStrategy string               `json:"schedulingStrategy"`
+	LaunchType         string               `json:"launchType,omitempty"`
+	NetworkMode        string               `json:"networkMode,omitempty"`
+	Subnets            []string             `json:"subnets,omitempty"`
+	SecurityGroups     []string             `json:"securityGroups,omitempty"`
+	AssignPublicIP     string               `json:"assignPublicIp,omitempty"`
+	PlacementStrategy  string               `json:"placementStrategy,omitempty"`
+	LoadBalancers      []LoadBalancerTarget `json:"loadBalancers,omitempty"`
+	DeploymentID       string               `json:"deploymentId"`
+	RunningCount       int                  `json:"runningCount"`
+	PendingCount       int                  `json:"pendingCount"`
+	// EnableECSManagedTags is persisted purely so Describe echoes back what
+	// Create was given; nothing in v1 propagates ECS-managed tags onto tasks.
+	EnableECSManagedTags bool              `json:"enableEcsManagedTags,omitempty"`
+	Tags                 map[string]string `json:"tags,omitempty"`
+	// Rolling-update configuration (deploymentConfiguration) and its live state.
+	// MinimumHealthyPercent / MaximumPercent gate the rollout; the circuit breaker
+	// trips a failing deployment and optionally rolls back to LastGoodTaskDefARN.
+	MinimumHealthyPercent  int          `json:"minimumHealthyPercent,omitempty"`
+	MaximumPercent         int          `json:"maximumPercent,omitempty"`
+	CircuitBreakerEnable   bool         `json:"deploymentCircuitBreakerEnable,omitempty"`
+	CircuitBreakerRollback bool         `json:"deploymentCircuitBreakerRollback,omitempty"`
+	LastGoodTaskDefARN     string       `json:"lastGoodTaskDefArn,omitempty"`
+	Deployments            []Deployment `json:"deployments,omitempty"`
+	// Events is the service's lifecycle event ring, newest first, capped at
+	// serviceEventRingCap. Always projected as a list (never null) on Describe;
+	// see appendServiceEvent and serviceToAWS.
+	Events    []ServiceEvent `json:"events,omitempty"`
+	CreatedAt time.Time      `json:"createdAt"`
+	UpdatedAt time.Time      `json:"updatedAt"`
+}
+
+// primaryDeployment returns a pointer to the service's PRIMARY deployment, or nil
+// when none exists (a legacy record before ensurePrimaryDeployment runs).
+func (r *ServiceRecord) primaryDeployment() *Deployment {
+	for i := range r.Deployments {
+		if r.Deployments[i].Status == DeploymentStatusPrimary {
+			return &r.Deployments[i]
+		}
+	}
+	return nil
+}
+
+// appendServiceEvent unconditionally records a lifecycle event, newest first,
+// discarding the oldest once the ring exceeds serviceEventRingCap.
+//
+// It does no de-duplication of its own: the reconcile loop runs repeatedly, so
+// a caller sitting behind a level-triggered condition (one that stays true
+// across many passes, rather than firing once on a transition) must guard its
+// own call, or the ring fills with one repeated message within seconds and
+// evicts every event that would actually help diagnose a stuck service. The
+// rollout-state transitions in deployments.go already carry that guard for
+// free, since they only run their append inside a state-change check.
+func appendServiceEvent(r *ServiceRecord, message string) {
+	r.Events = append([]ServiceEvent{{
+		ID:        uuid.NewV4().String(),
+		CreatedAt: time.Now().UTC(),
+		Message:   message,
+	}}, r.Events...)
+	if len(r.Events) > serviceEventRingCap {
+		r.Events = r.Events[:serviceEventRingCap]
+	}
+}

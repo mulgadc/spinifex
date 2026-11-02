@@ -1,8 +1,9 @@
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
+import { Plus } from "lucide-react"
 import { useState } from "react"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { DetailCard } from "@/components/detail-card"
+import { PanelSection } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
@@ -89,104 +90,98 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
       if (editing === policyName) {
         setEditing(null)
       }
+    } catch {
+      // Shown by the banner above.
     } finally {
       setConfirmDelete(null)
     }
   }
 
   return (
-    <>
-      <DetailCard>
-        <DetailCard.Header>
-          <div className="flex items-center justify-between">
-            <span>Inline Policies</span>
-            <Button
-              onClick={() => {
-                setAdding((open) => !open)
-                setEditing(null)
-              }}
-              size="sm"
-            >
-              Add Inline Policy
-            </Button>
-          </div>
-        </DetailCard.Header>
-        <DetailCard.Content>
-          {remove.error && (
-            <div className="col-span-2">
-              <ErrorBanner
-                error={remove.error}
-                msg="Failed to delete inline policy"
-              />
-            </div>
-          )}
+    <PanelSection title="Inline policies">
+      <div className="flex flex-col gap-3">
+        {remove.error && (
+          <ErrorBanner
+            error={remove.error}
+            msg="Failed to delete inline policy"
+          />
+        )}
 
-          {adding && (
-            <div className="col-span-2">
-              <AddInlinePolicyForm
-                name={name}
-                onClose={() => {
-                  setAdding(false)
-                }}
-                put={put}
-              />
-            </div>
-          )}
+        <div>
+          <Button
+            onClick={() => {
+              setAdding((open) => !open)
+              setEditing(null)
+            }}
+            size="sm"
+            variant="outline"
+          >
+            <Plus data-icon="inline-start" />
+            Add inline policy
+          </Button>
+        </div>
 
-          {policyNames.length > 0 ? (
-            <div className="col-span-2 space-y-3">
-              {policyNames.map((policyName) => (
-                <div className="rounded-md border" key={policyName}>
-                  <div className="flex items-center justify-between p-3">
-                    <p className="text-sm font-medium">{policyName}</p>
-                    <div className="flex gap-2">
-                      <Button
-                        onClick={() => {
-                          setEditing((current) =>
-                            current === policyName ? null : policyName,
-                          )
-                        }}
-                        size="sm"
-                        variant="outline"
-                      >
-                        {editing === policyName ? "Close" : "Edit"}
-                      </Button>
-                      <Button
-                        onClick={() => {
-                          setConfirmDelete(policyName)
-                        }}
-                        size="sm"
-                        variant="destructive"
-                      >
-                        Delete
-                      </Button>
-                    </div>
+        {adding && (
+          <AddInlinePolicyForm
+            name={name}
+            onClose={() => {
+              setAdding(false)
+            }}
+            put={put}
+          />
+        )}
+
+        {policyNames.length > 0 ? (
+          <ul className="divide-y text-sm">
+            {policyNames.map((policyName) => (
+              <li className="py-2" key={policyName}>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="min-w-0 truncate font-medium">{policyName}</p>
+                  <div className="flex shrink-0 gap-2">
+                    <Button
+                      onClick={() => {
+                        setEditing((current) =>
+                          current === policyName ? null : policyName,
+                        )
+                      }}
+                      size="sm"
+                      variant="outline"
+                    >
+                      {editing === policyName ? "Close" : "Edit"}
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        setConfirmDelete(policyName)
+                      }}
+                      size="sm"
+                      variant="destructive"
+                    >
+                      Delete
+                    </Button>
                   </div>
-                  {editing === policyName && (
-                    <div className="border-t p-3">
-                      <EditInlinePolicyForm
-                        name={name}
-                        onClose={() => {
-                          setEditing(null)
-                        }}
-                        policyName={policyName}
-                        put={put}
-                        queryOptions={policyQuery(name, policyName)}
-                      />
-                    </div>
-                  )}
                 </div>
-              ))}
-            </div>
-          ) : (
-            !adding && (
-              <p className="col-span-2 text-sm text-muted-foreground">
-                No inline policies.
-              </p>
-            )
-          )}
-        </DetailCard.Content>
-      </DetailCard>
+                {editing === policyName && (
+                  <div className="pt-3">
+                    <EditInlinePolicyForm
+                      name={name}
+                      onClose={() => {
+                        setEditing(null)
+                      }}
+                      policyName={policyName}
+                      put={put}
+                      queryOptions={policyQuery(name, policyName)}
+                    />
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          !adding && (
+            <p className="text-sm text-muted-foreground">No inline policies.</p>
+          )
+        )}
+      </div>
       <DeleteConfirmationDialog
         description={`Are you sure you want to delete the inline policy "${confirmDelete ?? ""}"? This action cannot be undone.`}
         isPending={remove.isPending}
@@ -199,9 +194,9 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
           }
         }}
         open={confirmDelete !== null}
-        title="Delete Inline Policy"
+        title="Delete inline policy"
       />
-    </>
+    </PanelSection>
   )
 }
 

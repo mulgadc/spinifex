@@ -270,3 +270,146 @@ func TestRequestSignalsJSONProtocol(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteTooLargeText(t *testing.T) {
+	w := httptest.NewRecorder()
+	WriteTooLargeText(w, 2097152)
+	resp := w.Result()
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+	assert.Equal(t, "text; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "close", resp.Header.Get("Connection"))
+	assert.Empty(t, resp.Header.Get(QueryErrorHeader))
+	assert.Equal(t, "HTTP content length exceeded 2097152 bytes.", w.Body.String())
+}
+
+func TestWriteJSON_WireBytesPerProtocol(t *testing.T) {
+	cases := []struct {
+		name         string
+		p            Protocol
+		e            JSONError
+		contentType  string
+		headers      map[string]string
+		absentHeader string
+		body         string
+	}{
+		{
+			name:        "JSON 1.1 appends Exception",
+			p:           ProtocolJSON11,
+			e:           JSONError{Code: "Throttling", Message: "slow", Status: 400, RequestID: "req-json11"},
+			contentType: "application/x-amz-json-1.1",
+			headers:     map[string]string{"X-Amzn-Errortype": "ThrottlingException", "x-amzn-RequestId": "req-json11"},
+			body:        `{"__type":"ThrottlingException","message":"slow"}`,
+		},
+		{
+			name:        "REST-JSON keeps a verbatim type and sorts extra fields",
+			p:           ProtocolRESTJSON,
+			e:           JSONError{Code: "TooManyRequestsException", Verbatim: true, Message: "Rate Exceeded.", Status: 429, Fields: map[string]string{"Reason": "CallerRateLimitExceeded"}, RequestID: "req-restjson"},
+			contentType: "application/json",
+			headers:     map[string]string{"X-Amzn-Errortype": "TooManyRequestsException", "x-amzn-RequestId": "req-restjson"},
+			body:        `{"Reason":"CallerRateLimitExceeded","Type":"User","message":"Rate Exceeded."}`,
+		},
+		{
+			name:        "REST-JSON common error gets Exception and a 5xx is a Service fault",
+			p:           ProtocolRESTJSON,
+			e:           JSONError{Code: "ServiceUnavailable", Message: "down", Status: 503},
+			contentType: "application/json",
+			headers:     map[string]string{"X-Amzn-Errortype": "ServiceUnavailableException"},
+			body:        `{"Type":"Service","message":"down"}`,
+		},
+		{
+			name:        "REST-JSON extra fields cannot replace reserved keys",
+			p:           ProtocolRESTJSON,
+			e:           JSONError{Code: "X", Verbatim: true, Message: "m", Status: 400, Fields: map[string]string{"Type": "Evil", "message": "evil"}},
+			contentType: "application/json",
+			body:        `{"Type":"User","message":"m"}`,
+		},
+		{
+			name:         "JSON 1.0 never suffixes and sends the query header",
+			p:            ProtocolJSON10Query,
+			e:            JSONError{Code: "QueueDoesNotExist", Verbatim: true, Message: "gone", Status: 400, QueryCode: "AWS.SimpleQueueService.NonExistentQueue", RequestID: "req-json10"},
+			contentType:  "application/x-amz-json-1.0",
+			headers:      map[string]string{"X-Amzn-Query-Error": "AWS.SimpleQueueService.NonExistentQueue;Sender", "x-amzn-RequestId": "req-json10"},
+			absentHeader: "X-Amzn-Errortype",
+			body:         `{"__type":"QueueDoesNotExist","message":"gone"}`,
+		},
+		{
+			name:        "JSON 1.0 namespaces a verbatim type only in the body",
+			p:           ProtocolJSON10Query,
+			e:           JSONError{Code: "QueueDoesNotExist", Verbatim: true, Namespace: "com.amazonaws.sqs", Message: "gone", Status: 400},
+			contentType: "application/x-amz-json-1.0",
+			headers:     map[string]string{"X-Amzn-Query-Error": "QueueDoesNotExist;Sender"},
+			body:        `{"__type":"com.amazonaws.sqs#QueueDoesNotExist","message":"gone"}`,
+		},
+		{
+			name:        "JSON 1.0 captured QueueDoesNotExist",
+			p:           ProtocolJSON10Query,
+			e:           JSONError{Code: "QueueDoesNotExist", Verbatim: true, Namespace: "com.amazonaws.sqs", Message: "The specified queue does not exist.", Status: 400, QueryCode: "AWS.SimpleQueueService.NonExistentQueue"},
+			contentType: "application/x-amz-json-1.0",
+			headers:     map[string]string{"X-Amzn-Query-Error": "AWS.SimpleQueueService.NonExistentQueue;Sender"},
+			body:        `{"__type":"com.amazonaws.sqs#QueueDoesNotExist","message":"The specified queue does not exist."}`,
+		},
+		{
+			name:        "JSON 1.0 captured framework error raised by a service",
+			p:           ProtocolJSON10Query,
+			e:           JSONError{Code: "MissingRequiredParameterException", Verbatim: true, Namespace: CoralNamespace, Message: "The request must contain the parameter MessageBody.", Status: 400, QueryCode: "MissingParameter"},
+			contentType: "application/x-amz-json-1.0",
+			headers:     map[string]string{"X-Amzn-Query-Error": "MissingParameter;Sender"},
+			body:        `{"__type":"com.amazon.coral.service#MissingRequiredParameterException","message":"The request must contain the parameter MessageBody."}`,
+		},
+		{
+			name:        "JSON 1.0 captured unknown operation has no message",
+			p:           ProtocolJSON10Query,
+			e:           JSONError{Code: "InvalidAction", Status: 400},
+			contentType: "application/x-amz-json-1.0",
+			headers:     map[string]string{"X-Amzn-Query-Error": "InvalidAction;Sender"},
+			body:        `{"__type":"com.amazon.coral.service#UnknownOperationException"}`,
+		},
+		{
+			name:        "JSON 1.0 captured wrong secret key",
+			p:           ProtocolJSON10Query,
+			e:           JSONError{Code: "SignatureDoesNotMatch", Message: "sig", Status: 403},
+			contentType: "application/x-amz-json-1.0",
+			headers:     map[string]string{"X-Amzn-Query-Error": "SignatureDoesNotMatch;Sender"},
+			body:        `{"__type":"com.amazon.coral.service#InvalidSignatureException","message":"sig"}`,
+		},
+		{
+			name:        "JSON 1.0 captured unknown token",
+			p:           ProtocolJSON10Query,
+			e:           JSONError{Code: "InvalidClientTokenId", Message: "The security token included in the request is invalid", Status: 403},
+			contentType: "application/x-amz-json-1.0",
+			headers:     map[string]string{"X-Amzn-Query-Error": "InvalidClientTokenId;Sender"},
+			body:        `{"__type":"com.amazon.coral.service#UnrecognizedClientException","message":"The security token included in the request is invalid"}`,
+		},
+		{
+			name:        "JSON 1.1 and REST-JSON still send a message when empty",
+			p:           ProtocolRESTJSON,
+			e:           JSONError{Code: "X", Verbatim: true, Status: 400},
+			contentType: "application/json",
+			body:        `{"Type":"User","message":""}`,
+		},
+		{
+			name:        "JSON 1.0 query code defaults to the code and a 5xx is a Receiver",
+			p:           ProtocolJSON10Query,
+			e:           JSONError{Code: "InternalError", Verbatim: true, Message: "boom", Status: 500},
+			contentType: "application/x-amz-json-1.0",
+			headers:     map[string]string{"X-Amzn-Query-Error": "InternalError;Receiver"},
+			body:        `{"__type":"InternalError","message":"boom"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			WriteJSON(w, tc.p, tc.e)
+			resp := w.Result()
+			assert.Equal(t, tc.e.Status, resp.StatusCode)
+			assert.Equal(t, tc.contentType, resp.Header.Get("Content-Type"))
+			for k, v := range tc.headers {
+				assert.Equal(t, v, resp.Header.Get(k), k)
+			}
+			if tc.absentHeader != "" {
+				assert.Empty(t, resp.Header.Get(tc.absentHeader))
+			}
+			assert.Equal(t, tc.body, w.Body.String())
+		})
+	}
+}

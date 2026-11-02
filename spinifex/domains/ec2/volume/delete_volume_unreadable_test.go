@@ -92,6 +92,48 @@ func TestDeleteVolume_UnreadableDocumentIsInternalError(t *testing.T) {
 	require.NotNil(t, provVol, "the provider's data must survive a failed delete")
 }
 
+// racingDeleteStore lets a concurrent deleter win every DeleteObject, so the
+// caller's own delete answers NoSuchKey as Predastore would.
+type racingDeleteStore struct {
+	*objectstore.MemoryObjectStore
+}
+
+func (s *racingDeleteStore) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+	_, _ = s.MemoryObjectStore.DeleteObject(ctx, input)
+	return s.MemoryObjectStore.DeleteObject(ctx, input)
+}
+
+// A document another sweep removed after this one read it is deleted, so the
+// reclaimer must count it done rather than fail the sweep for a finished
+// delete. The record is the obligation, so retiring it is the reclaimer's step
+// and this is where a concurrent remover is now observed.
+func TestDeleteVolume_ConcurrentlyDeletedDocumentIsSuccess(t *testing.T) {
+	memory := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", memory)
+	svc.snapshotKV = setupTestVolumeKV(t)
+
+	volumeID := "vol-racingdelete00"
+	createVolumeInStoreWithMeta(t, svc, memory, volumeID, ebsmetadata.Volume{
+		VolumeID: volumeID, CapacityGiB: 10, State: "available",
+	})
+
+	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
+		VolumeId: aws.String(volumeID),
+	}, testVolAccountID)
+	require.NoError(t, err)
+
+	racing := &racingDeleteStore{MemoryObjectStore: memory}
+	svc.store = racing
+	svc.metadata = ebsmetadata.NewStore(racing, "test-bucket")
+
+	reclaimed, err := svc.NewVolumeReclaimReaper().Sweep(context.Background())
+	require.NoError(t, err, "a document a concurrent sweep removed is a finished delete, not a sweep failure")
+	assert.Equal(t, 1, reclaimed)
+
+	_, getErr := ebsmetadata.NewStore(memory, "test-bucket").GetVolume(context.Background(), testVolAccountID, volumeID)
+	assert.True(t, objectstore.IsNoSuchKeyError(getErr), "the document must be gone, got %v", getErr)
+}
+
 // TestDeleteVolume_AbsentDocumentIsStillNotFound guards the other side of the
 // fix: absence (NoSuchKey) must keep returning InvalidVolume.NotFound, not be
 // swept up into the new InternalError branch.
@@ -130,7 +172,7 @@ func TestDeleteVolume_CrossAccountDocumentIsStillNotFound(t *testing.T) {
 // UpdateVolumeState succeeds, but the document goes unreadable before
 // DeleteVolume's own read of the same key. That read failure must come back
 // as a non-NotFound error, which is exactly the signal
-// daemon/vm_adapters.go's DeleteVolumes and instance/service_impl.go's
+// runtime/daemon/vm_adapters.go's DeleteVolumes and instance/service_impl.go's
 // deleteInstanceVolumes use to tell a real failure from an already-gone
 // volume (!awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err)).
 func TestDeleteVolumeOnTerminate_DeleteReadFailureIsNotSuccess(t *testing.T) {

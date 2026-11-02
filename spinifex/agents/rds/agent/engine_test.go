@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // Stands in for the engine in the registry tests, where what matters is that a
@@ -20,7 +20,7 @@ import (
 type fakeEngine struct {
 	username string
 	password string
-	params   []handlers_rds.Parameter
+	params   []rdsinstance.Parameter
 	pending  []string
 	stopped  bool
 	label    string
@@ -36,7 +36,7 @@ func (f *fakeEngine) SetPassword(_ context.Context, username, password string) e
 	return f.err
 }
 
-func (f *fakeEngine) ApplyParameters(_ context.Context, params []handlers_rds.Parameter) ([]string, error) {
+func (f *fakeEngine) ApplyParameters(_ context.Context, params []rdsinstance.Parameter) ([]string, error) {
 	f.params = params
 	return f.pending, f.err
 }
@@ -58,16 +58,16 @@ func (f *fakeEngine) Unquiesce(context.Context) error {
 
 func TestCommandRegistry_SetPasswordCarriesBothParameters(t *testing.T) {
 	engine := &fakeEngine{}
-	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(), handlers_rds.Command{
+	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(), rdsinstance.Command{
 		CommandID: "cmd-1",
-		Type:      handlers_rds.CommandSetPassword,
-		Parameters: []handlers_rds.Parameter{
-			{Name: handlers_rds.CommandParamMasterUsername, Value: "mulgamaster"},
-			{Name: handlers_rds.CommandParamMasterUserPassword, Value: "n3w-pw"},
+		Type:      rdsinstance.CommandSetPassword,
+		Parameters: []rdsinstance.Parameter{
+			{Name: rdsinstance.CommandParamMasterUsername, Value: "mulgamaster"},
+			{Name: rdsinstance.CommandParamMasterUserPassword, Value: "n3w-pw"},
 		},
 	})
 
-	if reply.Status != handlers_rds.CommandStatusSucceeded {
+	if reply.Status != rdsinstance.CommandStatusSucceeded {
 		t.Fatalf("reply = %+v, want succeeded", reply)
 	}
 	if engine.username != "mulgamaster" || engine.password != "n3w-pw" {
@@ -84,13 +84,13 @@ func TestCommandRegistry_SetPasswordCarriesBothParameters(t *testing.T) {
 // restart come back as the message the issuer parses.
 func TestCommandRegistry_ApplyParamsReportsPendingRestart(t *testing.T) {
 	engine := &fakeEngine{pending: []string{"shared_buffers", "max_connections"}}
-	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(), handlers_rds.Command{
+	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(), rdsinstance.Command{
 		CommandID:  "cmd-2",
-		Type:       handlers_rds.CommandApplyParams,
-		Parameters: []handlers_rds.Parameter{{Name: "shared_buffers", Value: "256MB"}},
+		Type:       rdsinstance.CommandApplyParams,
+		Parameters: []rdsinstance.Parameter{{Name: "shared_buffers", Value: "256MB"}},
 	})
 
-	if reply.Status != handlers_rds.CommandStatusSucceeded {
+	if reply.Status != rdsinstance.CommandStatusSucceeded {
 		t.Fatalf("reply = %+v, want succeeded", reply)
 	}
 	if reply.Message != "shared_buffers,max_connections" {
@@ -104,9 +104,9 @@ func TestCommandRegistry_ApplyParamsReportsPendingRestart(t *testing.T) {
 func TestCommandRegistry_StopEngineReachesTheEngine(t *testing.T) {
 	engine := &fakeEngine{}
 	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(),
-		handlers_rds.Command{CommandID: "cmd-3", Type: handlers_rds.CommandStopEngine})
+		rdsinstance.Command{CommandID: "cmd-3", Type: rdsinstance.CommandStopEngine})
 
-	if reply.Status != handlers_rds.CommandStatusSucceeded {
+	if reply.Status != rdsinstance.CommandStatusSucceeded {
 		t.Fatalf("reply = %+v, want succeeded", reply)
 	}
 	if !engine.stopped {
@@ -117,9 +117,9 @@ func TestCommandRegistry_StopEngineReachesTheEngine(t *testing.T) {
 func TestCommandRegistry_FailureRepliesFailed(t *testing.T) {
 	engine := &fakeEngine{err: errors.New("the engine did not stop")}
 	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(),
-		handlers_rds.Command{CommandID: "cmd-4", Type: handlers_rds.CommandStopEngine})
+		rdsinstance.Command{CommandID: "cmd-4", Type: rdsinstance.CommandStopEngine})
 
-	if reply.Status != handlers_rds.CommandStatusFailed {
+	if reply.Status != rdsinstance.CommandStatusFailed {
 		t.Fatalf("reply = %+v, want failed", reply)
 	}
 	if !strings.Contains(reply.Message, "the engine did not stop") {
@@ -329,7 +329,7 @@ func TestPostgresEngine_ApplyParametersInstallsAndReloads(t *testing.T) {
 	engine := newTestEngine(t, runner.run)
 
 	pending, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "shared_buffers", Value: "256MB"}})
+		[]rdsinstance.Parameter{{Name: "shared_buffers", Value: "256MB"}})
 	if err != nil {
 		t.Fatalf("ApplyParameters: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestPostgresEngine_ApplyParametersSurfacesAFailedReload(t *testing.T) {
 	engine := newTestEngine(t, runner.run)
 
 	if _, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "work_mem", Value: "8MB"}}); err == nil {
+		[]rdsinstance.Parameter{{Name: "work_mem", Value: "8MB"}}); err == nil {
 		t.Fatal("ApplyParameters succeeded against a failing reload")
 	}
 }
@@ -389,7 +389,7 @@ func TestPostgresEngine_ApplyParametersSurfacesAnUnsignalledReload(t *testing.T)
 	engine := newScriptedTestEngine(t, runner.run)
 
 	_, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "work_mem", Value: "8MB"}})
+		[]rdsinstance.Parameter{{Name: "work_mem", Value: "8MB"}})
 	if err == nil || !strings.Contains(err.Error(), `pg_reload_conf() returned "f"`) {
 		t.Fatalf("ApplyParameters error = %v, want a refusal naming the answer the postmaster gave", err)
 	}
@@ -424,7 +424,7 @@ func TestPostgresEngine_ApplyParametersRestartsOnARepairSetWhileEngineIsDown(t *
 	})
 	engine.repairTimeout = 100 * time.Millisecond
 	engine.repairPoll = time.Millisecond
-	params := []handlers_rds.Parameter{
+	params := []rdsinstance.Parameter{
 		{Name: "shared_buffers", Value: "32768"},
 		{Name: "work_mem", Value: "8192"},
 	}
@@ -488,9 +488,9 @@ func (r *tlsReadBackRunner) run(ctx context.Context, c command) (string, error) 
 	return r.recordingRunner.run(ctx, c)
 }
 
-func forceSSLParameter(t *testing.T, value string) []handlers_rds.Parameter {
+func forceSSLParameter(t *testing.T, value string) []rdsinstance.Parameter {
 	t.Helper()
-	return []handlers_rds.Parameter{
+	return []rdsinstance.Parameter{
 		{Name: "work_mem", Value: "4096"},
 		{Name: testPostgresEngineMeta(t).TLSEnforcementParameter(), Value: value},
 	}
@@ -542,7 +542,7 @@ func TestPostgresEngine_ApplyParametersEnforcesOnAnAbsentKey(t *testing.T) {
 	engine := newScriptedTestEngine(t, runner.run)
 
 	if _, err := engine.ApplyParameters(t.Context(),
-		[]handlers_rds.Parameter{{Name: "work_mem", Value: "4096"}}); err != nil {
+		[]rdsinstance.Parameter{{Name: "work_mem", Value: "4096"}}); err != nil {
 		t.Fatalf("ApplyParameters: %v", err)
 	}
 	if _, err := os.Stat(engine.forceSSLRulePath()); err != nil {
@@ -683,7 +683,7 @@ func TestPostgresEngine_ApplyParametersKeepsRepairSetWhenRestartTimesOut(t *test
 	engine.repairTimeout = 10 * time.Millisecond
 	engine.repairPoll = time.Millisecond
 
-	_, err := engine.ApplyParameters(t.Context(), []handlers_rds.Parameter{{Name: "work_mem", Value: "8192"}})
+	_, err := engine.ApplyParameters(t.Context(), []rdsinstance.Parameter{{Name: "work_mem", Value: "8192"}})
 	if err == nil || !strings.Contains(err.Error(), "wait for the engine") {
 		t.Fatalf("ApplyParameters error = %v, want the repair wait failure", err)
 	}

@@ -34,8 +34,13 @@ func TestS7_NATSSubjectsCarryAZPrefix(t *testing.T) {
 	roots := []string{
 		filepath.Join(repoRoot(t), "spinifex", "domains", "network"),
 		filepath.Join(repoRoot(t), "spinifex", "runtime", "roles", "vpcd"),
-		filepath.Join(repoRoot(t), "spinifex", "daemon"),
-		filepath.Join(repoRoot(t), "spinifex", "handlers"),
+		filepath.Join(repoRoot(t), "spinifex", "runtime", "daemon"),
+		filepath.Join(repoRoot(t), "spinifex", "domains", "ecs"),
+		filepath.Join(repoRoot(t), "spinifex", "domains", "iam"),
+		filepath.Join(repoRoot(t), "spinifex", "domains", "sts"),
+		filepath.Join(repoRoot(t), "spinifex", "domains", "rds", "instance"),
+		filepath.Join(repoRoot(t), "spinifex", "domains", "eks", "cluster"),
+		filepath.Join(repoRoot(t), "spinifex", "domains", "elbv2"),
 		filepath.Join(repoRoot(t), "internal", "testkit"),
 		filepath.Join(repoRoot(t), "contracts", "network"),
 	}

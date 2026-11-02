@@ -18,7 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
@@ -39,10 +39,10 @@ const (
 // newWeightsStoreForTest builds a WeightsStore backed by an embedded
 // JetStream server, so stage/list/remove tests exercise the real KV
 // idempotency and persistence logic instead of a hand-rolled fake.
-func newWeightsStoreForTest(t *testing.T) *gateway_bedrock.WeightsStore {
+func newWeightsStoreForTest(t *testing.T) *ochre.WeightsStore {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	return gateway_bedrock.NewWeightsStore(testutil.NewJetStream(t, nc))
+	return ochre.NewWeightsStore(testutil.NewJetStream(t, nc))
 }
 
 // explodingObjectStore fails the test immediately if any of its methods is
@@ -775,7 +775,7 @@ func TestRunOchreWeightsList_PrintsStagedModels(t *testing.T) {
 	}
 	stubConnect(t, cfg, nc, nil)
 
-	seedStore := gateway_bedrock.NewWeightsStore(js)
+	seedStore := ochre.NewWeightsStore(js)
 	require.NoError(t, seedStore.PutWeights(context.Background(), selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
 
 	out := captureStdout(t, func() { runOchreWeightsList(nil, nil) })
@@ -822,7 +822,7 @@ func TestRunOchreWeightsRemove_RoundTripPrintsSnapshotAndDropsEntry(t *testing.T
 	ns, nc, js := testutil.StartTestJetStream(t)
 	stubConnect(t, fakeClusterConfig(), nc, nil)
 
-	seedStore := gateway_bedrock.NewWeightsStore(js)
+	seedStore := ochre.NewWeightsStore(js)
 	require.NoError(t, seedStore.PutWeights(context.Background(), selfHostModelID, "s3://models/llama-3.2-1b/", "snap-0001"))
 
 	cmd := newOchreWeightsRemoveTestCmd(t, selfHostModelID)
@@ -835,7 +835,7 @@ func TestRunOchreWeightsRemove_RoundTripPrintsSnapshotAndDropsEntry(t *testing.T
 	verifyNC, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
 	t.Cleanup(func() { verifyNC.Close() })
-	verifyStore := gateway_bedrock.NewWeightsStore(testutil.NewJetStream(t, verifyNC))
+	verifyStore := ochre.NewWeightsStore(testutil.NewJetStream(t, verifyNC))
 
 	_, ok, err := verifyStore.GetWeights(context.Background(), selfHostModelID)
 	require.NoError(t, err)
@@ -1147,7 +1147,7 @@ func TestOchreTargetModels_SingleModel(t *testing.T) {
 func TestOchreTargetModels_AllModels(t *testing.T) {
 	models, err := ochreTargetModels(ochreFlagCmd(t, "", true))
 	require.NoError(t, err)
-	assert.Equal(t, gateway_bedrock.CatalogModelIDs(), models)
+	assert.Equal(t, ochre.CatalogModelIDs(), models)
 	assert.NotEmpty(t, models)
 }
 
@@ -1257,7 +1257,7 @@ func TestRunOchreAccessGrant_AllModelsGrantsWholeCatalog(t *testing.T) {
 
 	listCmd := ochreAccessCmd(t, accessTestAccount, "", false)
 	out := captureStdout(t, func() { runOchreAccessList(listCmd, nil) })
-	for _, modelID := range gateway_bedrock.CatalogModelIDs() {
+	for _, modelID := range ochre.CatalogModelIDs() {
 		assert.Contains(t, out, modelID)
 	}
 }
@@ -1280,7 +1280,7 @@ func TestRunOchreAccessList_OtherAccountSeesNothing(t *testing.T) {
 // before granting: every catalog ID, one per line.
 func TestRunOchreModels_PrintsSortedCatalog(t *testing.T) {
 	out := captureStdout(t, func() { runOchreModels(nil, nil) })
-	for _, modelID := range gateway_bedrock.CatalogModelIDs() {
+	for _, modelID := range ochre.CatalogModelIDs() {
 		assert.Contains(t, out, modelID)
 	}
 }

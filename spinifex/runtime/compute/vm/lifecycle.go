@@ -20,7 +20,6 @@ import (
 
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
@@ -103,142 +102,6 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	return m.launch(ctx, instance)
 }
 
-const rebootRunningTimeout = 4 * time.Second
-
-// rebootStatusPollInterval is how often Reboot samples the run state after
-// system_reset. A var so tests need not wait out the real interval.
-var rebootStatusPollInterval = 100 * time.Millisecond
-
-// rebootPowerdownTimeout is how long the guest gets to shut itself down before
-// it is reset under. Nova's shutdown_timeout, and the same shape as the hard
-// reboot AWS documents once a guest will not go quietly.
-var rebootPowerdownTimeout = 60 * time.Second
-
-// Reboot admits a reboot and runs it in the background, the way EC2 does: the
-// answer says the request was accepted, not that the guest is back. Asking a
-// guest to shut down takes as long as the guest takes, which is far longer than
-// any caller waits, so only the two admission failures can be reported at all.
-func (m *Manager) Reboot(ctx context.Context, id string) error {
-	instance, ok := m.Get(id)
-	if !ok {
-		return ErrInstanceNotFound
-	}
-	if status := m.Status(instance); status != StateRunning {
-		return fmt.Errorf("%w: cannot reboot instance %s in state %s",
-			ErrInvalidTransition, id, status)
-	}
-
-	// Tell the heartbeat this guest is meant to be stopped for a moment: it
-	// quits a guest it finds in the shutdown run state, which is the state a
-	// reboot passes through. Claiming the flag also serialises reboots, so a
-	// repeated request joins the one in flight instead of racing it.
-	if !instance.rebooting.CompareAndSwap(false, true) {
-		slog.InfoContext(ctx, "Reboot already in flight, ignoring the repeat", "instanceId", id)
-		return nil
-	}
-
-	// Detached rather than derived: the caller is answered immediately, so its
-	// context is cancelled long before the guest has finished shutting down.
-	rebootCtx := context.WithoutCancel(ctx)
-	m.goroutineWg.Go(func() {
-		defer instance.rebooting.Store(false)
-		if err := m.rebootNow(rebootCtx, instance); err != nil {
-			// Nobody is left to return this to. The guest is either back or it
-			// is not, and the heartbeat is what notices the second case.
-			slog.ErrorContext(rebootCtx, "Reboot failed", "instanceId", id, "err", err)
-		}
-	})
-	return nil
-}
-
-// rebootNow asks the guest to shut itself down, then resets and resumes it in
-// the same QEMU process. The VM remains in StateRunning throughout. A guest
-// that will not power down inside its budget is hard-reset, and that is logged.
-func (m *Manager) rebootNow(ctx context.Context, instance *VM) error {
-	// A reset alone never reaches the guest kernel, so it syncs nothing and
-	// every dirty page is lost. Ask first; reset only once asking has failed.
-	// A guest whose QEMU would exit rather than pause is reset without asking,
-	// because a powerdown there leaves nothing to reset and the guest down.
-	switch {
-	case !qemuPausesOnShutdown(instance):
-		slog.InfoContext(ctx, "Guest predates the paused-shutdown flag, hard-resetting",
-			"instanceId", instance.ID)
-	default:
-		if err := m.gracefulPowerdown(ctx, instance, rebootPowerdownTimeout); err != nil {
-			slog.WarnContext(ctx, "Guest did not power down for reboot, hard-resetting",
-				"instanceId", instance.ID, "budget_ms", otelsetup.Millis(rebootPowerdownTimeout), "err", err)
-		}
-	}
-
-	rebootCtx, cancel := context.WithTimeout(ctx, rebootRunningTimeout)
-	defer cancel()
-
-	if _, err := sendQMPCommandWithTimeout(rebootCtx, instance.QMPClient,
-		qmp.QMPCommand{Execute: "system_reset"}, instance.ID, contextTimeRemaining(rebootCtx)); err != nil {
-		return fmt.Errorf("QMP system_reset: %w", err)
-	}
-	return m.waitForQMPRunning(rebootCtx, instance, rebootStatusPollInterval)
-}
-
-// waitForQMPRunning polls until QEMU reports running or ctx expires. Paused,
-// prelaunch and shutdown guests receive cont so a reset cannot leave their
-// vCPUs parked — a reset from a powered-down guest lands in one of the three.
-func (m *Manager) waitForQMPRunning(ctx context.Context, instance *VM, pollInterval time.Duration) error {
-	var lastStatus qmp.Status
-	for {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("wait for QMP running (last status %q): %w", lastStatus.Status, err)
-		}
-		if status := m.Status(instance); status != StateRunning {
-			return fmt.Errorf("%w: reboot interrupted for instance %s in state %s",
-				ErrInvalidTransition, instance.ID, status)
-		}
-
-		qmpStatus, err := queryQMPStatus(ctx, instance, contextTimeRemaining(ctx))
-		if err != nil {
-			return fmt.Errorf("verify QMP running: %w", err)
-		}
-		lastStatus = qmpStatus
-		if qmpStatus.Running {
-			return nil
-		}
-
-		if qmpStatus.Status == "paused" || qmpStatus.Status == "prelaunch" ||
-			qmpStatus.Status == qmpStatusShutdown {
-			if status := m.Status(instance); status != StateRunning {
-				return fmt.Errorf("%w: cannot resume instance %s in state %s",
-					ErrInvalidTransition, instance.ID, status)
-			}
-			if _, err := sendQMPCommandWithTimeout(ctx, instance.QMPClient,
-				qmp.QMPCommand{Execute: "cont"}, instance.ID, contextTimeRemaining(ctx)); err != nil {
-				return fmt.Errorf("QMP cont from status %q: %w", qmpStatus.Status, err)
-			}
-		}
-
-		timer := time.NewTimer(pollInterval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return fmt.Errorf("wait for QMP running (last status %q): %w", lastStatus.Status, ctx.Err())
-		case <-timer.C:
-		}
-	}
-}
-
-// contextTimeRemaining returns the active context deadline budget. Reboot
-// always installs a deadline before issuing QMP commands.
-func contextTimeRemaining(ctx context.Context) time.Duration {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return qmpCommandTimeout
-	}
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return time.Nanosecond
-	}
-	return remaining
-}
-
 // launchStillValid returns true when status is still pending/stopped/provisioning.
 // Returns false if a concurrent terminate took ownership; launch must bail.
 func (m *Manager) launchStillValid(instance *VM) bool {
@@ -313,7 +176,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	}
 
 	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
-	qemuErr := m.startQEMU(instance)
+	qemuErr := m.startQEMU(instance, false)
 	endSpanWithError(qemuSpan, qemuErr)
 	if qemuErr != nil {
 		slog.ErrorContext(ctx, "Failed to launch instance", "err", qemuErr)
@@ -347,6 +210,10 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	if !m.launchStillValid(instance) {
 		return nil
 	}
+
+	// Cleared before the running state is written, so the record that says
+	// running never also says the instance may be terminated on a failure.
+	m.Inspect(instance, func(v *VM) { v.FirstLaunch = false })
 
 	if m.deps.TransitionState != nil {
 		_, stateSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.persist_state")
@@ -401,9 +268,23 @@ const (
 	qemuStartupTimeout = 5 * time.Second
 )
 
+// waitForNBDReady is a test seam over nbd.WaitForNBDReady.
+var waitForNBDReady = nbd.WaitForNBDReady
+
+// qemuStderrLevel reports the level a QEMU stderr line belongs at. QEMU
+// announces its own exit on stderr, so the notice for the signal a stop sends
+// it is the shutdown working rather than a fault.
+func qemuStderrLevel(line string) slog.Level {
+	if strings.Contains(line, "terminating on signal") {
+		return slog.LevelInfo
+	}
+	return slog.LevelError
+}
+
 // startQEMU launches the QEMU process for instance and waits for startup to
-// confirm.
-func (m *Manager) startQEMU(instance *VM) error {
+// confirm. appendConsole keeps the console log of the process it replaces, so a
+// reboot does not erase what the guest printed before it.
+func (m *Manager) startQEMU(instance *VM, appendConsole bool) error {
 	pidFile, err := hostprocess.GeneratePidFile(instance.ID)
 	if err != nil {
 		slog.Error("Failed to generate PID file", "err", err)
@@ -607,17 +488,45 @@ func (m *Manager) startQEMU(instance *VM) error {
 		refreshTelemetryMeta(instance)
 	}
 
+	// One snapshot feeds both the readiness probes and the direct-boot command,
+	// so a concurrent remount cannot launch an endpoint that was never checked.
 	instance.EBSRequests.Mu.Lock()
-	nbdEndpoints := make([]struct{ name, uri string }, 0, len(instance.EBSRequests.Requests))
-	for _, req := range instance.EBSRequests.Requests {
-		if req.NBDURI != "" {
+	requests := slices.Clone(instance.EBSRequests.Requests)
+	instance.EBSRequests.Mu.Unlock()
+
+	// A direct-boot Config is the launcher's saved base, so mounted data volumes
+	// go on a launch-only copy and their current endpoints are never saved.
+	launchCfg := &instance.Config
+	if instance.DirectBoot && len(requests) > 0 {
+		composed, err := directBootLaunchConfig(instance.Config, requests, instance.Config.CPUCount)
+		if err != nil {
+			return err
+		}
+		launchCfg = &composed
+	}
+	launchCfg.ConsoleLogAppend = appendConsole
+
+	// An NBD export is waited on until it accepts connections; a block export
+	// is local to the host and only has to exist. An invalid request has no
+	// endpoint to probe (buildDrives rejects it on the command-line path).
+	nbdEndpoints := make([]struct{ name, uri string }, 0, len(requests))
+	var blockDevices []struct{ name, path string }
+	for _, req := range requests {
+		switch kind, _ := classifyVolumeExport(req); kind {
+		case volumeExportNBD:
 			nbdEndpoints = append(nbdEndpoints, struct{ name, uri string }{req.Name, req.NBDURI})
+		case volumeExportBlock:
+			blockDevices = append(blockDevices, struct{ name, path string }{req.Name, req.BlockDevice})
 		}
 	}
-	instance.EBSRequests.Mu.Unlock()
 	for _, ep := range nbdEndpoints {
-		if err := nbd.WaitForNBDReady(ep.uri, nbdReadyTimeout); err != nil {
+		if err := waitForNBDReady(ep.uri, nbdReadyTimeout); err != nil {
 			return fmt.Errorf("nbd endpoint not ready for %s: %w", ep.name, err)
+		}
+	}
+	for _, dev := range blockDevices {
+		if err := checkBlockDevice(dev.path); err != nil {
+			return fmt.Errorf("block device not present for %s: %w", dev.name, err)
 		}
 	}
 
@@ -626,7 +535,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 	startupConfirmed := make(chan bool, 1)
 
 	go func() {
-		cmd, err := instance.Config.Execute()
+		cmd, err := launchCfg.Execute()
 		if err != nil {
 			slog.Error("Failed to execute VM", "err", err)
 			processChan <- 0
@@ -653,6 +562,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 		}
 
 		slog.Info("VM started successfully", "pid", cmd.Process.Pid)
+		instance.qemuPID.Store(int64(cmd.Process.Pid))
 
 		oomScore := guestOOMScore(instance.ManagedBy)
 		if err := hostprocess.SetOOMScore(cmd.Process.Pid, oomScore); err != nil {
@@ -669,7 +579,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 			scanner := bufio.NewScanner(stderr)
 			slog.Info("QEMU stderr reader started")
 			for scanner.Scan() {
-				slog.Error("[qemu-stderr]", "line", scanner.Text())
+				line := scanner.Text()
+				slog.Log(context.Background(), qemuStderrLevel(line), "[qemu-stderr]", "line", line)
 			}
 		}()
 
@@ -690,6 +601,12 @@ func (m *Manager) startQEMU(instance *VM) error {
 			return
 		}
 
+		// A reboot ends this process on purpose and starts its replacement, so
+		// the exit belongs to the reboot rather than to crash recovery.
+		if instance.qemuPID.Load() != int64(cmd.Process.Pid) {
+			slog.Info("Replaced VM process exited", "instance", instance.ID, "pid", cmd.Process.Pid, "err", waitErr)
+			return
+		}
 		if waitErr != nil {
 			if m.deps.CrashHandler != nil {
 				m.deps.CrashHandler(instance, waitErr)
@@ -900,11 +817,11 @@ func qmpGreetingTimeout(v *VM) time.Duration {
 
 // hasNetworkBackedDrive reports whether any of the guest's drives is served
 // over NBD, and so has to be opened across the object store before QEMU's
-// monitor answers. Every production guest boots from one; a VM without is a
-// unit test.
+// monitor answers. A host block device opens locally and does not count.
 func hasNetworkBackedDrive(v *VM) bool {
 	return slices.ContainsFunc(v.EBSRequests.Requests, func(req EBSRequest) bool {
-		return req.NBDURI != ""
+		kind, _ := classifyVolumeExport(req)
+		return kind == volumeExportNBD
 	})
 }
 
@@ -1027,6 +944,12 @@ func (m *Manager) qmpHeartbeat(instance *VM) {
 // qmpHeartbeatPoll performs one status check and returns false after crash
 // recovery takes ownership.
 func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
+	// A reboot ends and replaces this QEMU, so the socket going away and the
+	// guest sitting powered off are both expected. Reboot bounds its own window.
+	if instance.rebooting.Load() {
+		return true
+	}
+
 	slog.Debug("QMP heartbeat", "instance", instance.ID)
 	ctx := context.WithValue(context.Background(), noTraceKey{}, true)
 	qmpStatus, err := queryQMPStatus(ctx, instance, qmpCommandTimeout)
@@ -1039,11 +962,11 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 		return true
 	}
 
-	// A guest that powered itself off leaves QEMU paused rather than gone,
-	// because that window is what a reboot needs. Nobody is rebooting this one,
-	// so close it: quit lets the process exit and recovery proceed as before.
+	// A guest that powered itself off leaves QEMU paused rather than gone.
+	// Nobody is rebooting this one, so close it: quit lets the process exit and
+	// recovery proceed as before.
 	if err == nil && qmpStatus.Status == qmpStatusShutdown &&
-		m.Status(instance) == StateRunning && !instance.rebooting.Load() {
+		m.Status(instance) == StateRunning {
 		slog.InfoContext(ctx, "Guest powered itself off, ending QEMU", "instance", instance.ID)
 		if _, quitErr := sendQMPCommand(ctx, instance.QMPClient,
 			qmp.QMPCommand{Execute: "quit"}, instance.ID); quitErr != nil {
@@ -1053,11 +976,7 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 		return true
 	}
 
-	// A reboot in flight is meant to be stopped for a moment, so counting it as
-	// unresponsive would mark a healthy guest impaired for doing what it was
-	// asked. Reboot bounds its own window; this only declines to judge it.
-	if err == nil && !qmpStatus.Running && m.Status(instance) == StateRunning &&
-		!instance.rebooting.Load() {
+	if err == nil && !qmpStatus.Running && m.Status(instance) == StateRunning {
 		err = fmt.Errorf("QMP reported non-running status %q", qmpStatus.Status)
 	}
 	if err != nil {
@@ -1093,6 +1012,15 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 // retrying a backend that is still down is nearly free, while a guest still
 // paused minutes after its backend returned is an outage of our own making.
 func (m *Manager) resumeAfterIOError(ctx context.Context, instance *VM) {
+	// A fenced guest's disk belongs to another node, and the heartbeat may have
+	// read Running just before the fence landed. Resuming it serves nobody.
+	var stopped bool
+	m.Inspect(instance, func(v *VM) { stopped = v.Status != StateRunning || VolumeFenced(v.Instance) })
+	if stopped {
+		slog.InfoContext(ctx, "Not resuming a guest that is fenced or no longer running", "instance", instance.ID)
+		return
+	}
+
 	var attempt int
 	m.UpdateState(instance.ID, func(v *VM) {
 		v.Health.IOErrorResumes++
@@ -1444,9 +1372,36 @@ type driveConfig struct {
 	Blockdevs []Blockdev
 }
 
+// directBootLaunchConfig returns a launch-only copy of a clean direct-boot base
+// with the mounted data volumes appended after its devices. Neither input is
+// modified, so composing again from the same base never accumulates entries.
+func directBootLaunchConfig(base Config, requests []EBSRequest, cpuCount int) (Config, error) {
+	if !IsMicrovm(base.MachineType) {
+		return Config{}, fmt.Errorf("direct-boot launch config needs a microvm base, got machine type %q", base.MachineType)
+	}
+	for _, r := range requests {
+		if r.Boot || r.EFI {
+			return Config{}, fmt.Errorf("volume %s: a direct-boot microvm takes data volumes only", r.Name)
+		}
+	}
+	drives, err := buildDrives(slices.Clone(requests), cpuCount, base.MachineType)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg := base
+	cfg.Drives = slices.Clone(base.Drives)
+	cfg.NetDevs = slices.Clone(base.NetDevs)
+	cfg.FwCfg = slices.Clone(base.FwCfg)
+	cfg.IOThreads = append(slices.Clone(base.IOThreads), drives.IOThreads...)
+	cfg.Blockdevs = append(slices.Clone(base.Blockdevs), drives.Blockdevs...)
+	cfg.Devices = append(slices.Clone(base.Devices), drives.Devices...)
+	return cfg, nil
+}
+
 // buildDrives converts EBS requests into QEMU drive/iothread/device/blockdev
-// configs. Returns an error if any volume is missing its NBDURI, or if the
-// EBS hot-plug port pool is exhausted while allocating one for a data volume.
+// configs. Returns an error if any volume has no valid export (see
+// classifyVolumeExport), or if the EBS hot-plug port pool is exhausted while
+// allocating one for a data volume.
 //
 // Boot volumes keep the existing anonymous if=none -drive shape exactly as
 // before — they are not detachable (see ErrVolumeNotDetachable), so the
@@ -1471,11 +1426,17 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 
 	for i := range requests {
 		v := &requests[i]
-		if v.NBDURI == "" {
-			return driveConfig{}, fmt.Errorf("NBDURI not set for volume %s - was volume mounted?", v.Name)
+		kind, err := classifyVolumeExport(*v)
+		if err != nil {
+			return driveConfig{}, err
 		}
 
 		switch {
+		case kind == volumeExportBlock && (v.Boot || v.EFI):
+			// Boot and EFI keep the legacy -drive shape, which has no
+			// host_device form here; only data volumes take a block export.
+			return driveConfig{}, fmt.Errorf("volume %s: block device export is only supported for data volumes", v.Name)
+
 		case v.Boot:
 			drive := Drive{
 				File:   v.NBDURI,
@@ -1516,12 +1477,14 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 			})
 
 		default:
+			// microvm has no PCIe root ports, so its data volumes take none.
+			microvm := IsMicrovm(machineType)
 			// A data (non-boot, non-EFI) volume. Allocate a stable hot-plug
 			// port when the persisted state predates port accounting, or the
 			// volume was attached at RunInstances time without one;
 			// freeHotplugEBSPort re-scans requests as mutated so far in this
 			// loop, so two unset data volumes in one call cannot collide.
-			if v.HotplugPort == 0 {
+			if v.HotplugPort == 0 && !microvm {
 				port := freeHotplugEBSPort(requests)
 				if port == 0 {
 					return driveConfig{}, fmt.Errorf("no free EBS hot-plug port for volume %s", v.Name)
@@ -1529,29 +1492,45 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 				v.HotplugPort = port
 			}
 
-			serverType, socketPath, nbdHost, nbdPort, err := nbd.ParseNBDURI(v.NBDURI)
-			if err != nil {
-				return driveConfig{}, fmt.Errorf("parse NBDURI for volume %s: %w", v.Name, err)
-			}
-
 			nodeName := VolumeNodeName(v.Name)
 			iothreadID := VolumeIOThreadID(v.Name)
-			bus := HotplugEBSBus(v.HotplugPort)
+
+			var blockdev Blockdev
+			if kind == volumeExportBlock {
+				blockdev = VolumeHostDeviceBlockdev(nodeName, HostDeviceOpts{Path: v.BlockDevice, SizeBytes: v.BlockSizeBytes})
+			} else {
+				serverType, socketPath, nbdHost, nbdPort, err := nbd.ParseNBDURI(v.NBDURI)
+				if err != nil {
+					return driveConfig{}, fmt.Errorf("parse NBDURI for volume %s: %w", v.Name, err)
+				}
+				blockdev = VolumeBlockdev(nodeName, NBDServerOpts{
+					Type: serverType,
+					Path: socketPath,
+					Host: nbdHost,
+					Port: nbdPort,
+				})
+			}
 
 			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})
-			cfg.Blockdevs = append(cfg.Blockdevs, VolumeBlockdev(nodeName, NBDServerOpts{
-				Type: serverType,
-				Path: socketPath,
-				Host: nbdHost,
-				Port: nbdPort,
-			}))
-			cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, bus))
+			cfg.Blockdevs = append(cfg.Blockdevs, blockdev)
+			switch {
+			case IsMMIO(machineType):
+				cfg.Devices = append(cfg.Devices, volumeMMIOBlkDevice(v.Name, nodeName, iothreadID))
+			case microvm:
+				cfg.Devices = append(cfg.Devices, volumeMicrovmPCIBlkDevice(v.Name, nodeName, iothreadID))
+			default:
+				cfg.Devices = append(cfg.Devices, VolumeBlkDevice(v.Name, nodeName, iothreadID, HotplugEBSBus(v.HotplugPort)))
+			}
 			// Deliberately no entry in cfg.Drives: the bare anonymous -drive
 			// this case used to emit (no id=, no node-name=) is exactly what
 			// left the volume undetachable.
 		}
 
-		slog.Info("Using NBD URI for drive", "volume", v.Name, "uri", v.NBDURI)
+		if kind == volumeExportBlock {
+			slog.Info("Using block device for drive", "volume", v.Name, "device", v.BlockDevice, "size_bytes", v.BlockSizeBytes)
+		} else {
+			slog.Info("Using NBD URI for drive", "volume", v.Name, "uri", v.NBDURI)
+		}
 	}
 
 	return cfg, nil

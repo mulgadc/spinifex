@@ -1,3 +1,4 @@
+import { CSPProvider } from "@base-ui/react/csp-provider"
 import { QueryClientProvider } from "@tanstack/react-query"
 import { createRouter, RouterProvider } from "@tanstack/react-router"
 import { StrictMode } from "react"
@@ -59,13 +60,16 @@ async function bootstrap(root: ReactDOM.Root) {
 
   root.render(
     <StrictMode>
-      <ThemeProvider defaultTheme="dark" storageKey="spinifex-ui-theme">
-        <QueryClientProvider client={queryClient}>
-          <SidebarProvider>
-            <RouterProvider router={router} />
-          </SidebarProvider>
-        </QueryClientProvider>
-      </ThemeProvider>
+      {/* The console's CSP blocks inline <style>; styles.css carries the rules. */}
+      <CSPProvider disableStyleElements>
+        <ThemeProvider defaultTheme="dark" storageKey="spinifex-ui-theme">
+          <QueryClientProvider client={queryClient}>
+            <SidebarProvider>
+              <RouterProvider router={router} />
+            </SidebarProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </CSPProvider>
     </StrictMode>,
   )
 }

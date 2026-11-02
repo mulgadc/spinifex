@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -221,4 +223,56 @@ func TestResolveSGNames_BadJSONFallsBackToID(t *testing.T) {
 
 	got := r.resolveSGNames(context.Background(), "111122223333", []string{"sg-1"})
 	assert.Equal(t, []string{"sg-1"}, got)
+}
+
+// The per-tap responder pins the ENI it resolved at start, but every request
+// must answer from the record as it is now: associating an Elastic IP restamps
+// the ENI, and IMDS public-ipv4 must follow it without a responder restart.
+func TestIMDS_PublicIPv4FollowsENIRecordAfterResponderStart(t *testing.T) {
+	r, _ := newTestResolver(t)
+	rec := eniRecord{
+		NetworkInterfaceId: "eni-aaa",
+		VpcId:              testVPC,
+		PrivateIpAddress:   testIP,
+		InstanceId:         "i-0123456789",
+		PublicIpAddress:    "203.0.113.7", // auto-assigned at launch
+	}
+	seedENIByID(t, r, "111122223333", "eni-aaa", rec)
+
+	pinned, err := r.resolveENIByID(t.Context(), "eni-aaa")
+	require.NoError(t, err)
+	svc, _ := newTestService(r, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), pinned)
+	token := issueToken(t, h)
+
+	publicIPv4 := func() *httptest.ResponseRecorder {
+		return get(t, h, prefixMetaData+"public-ipv4", token)
+	}
+	assert.Equal(t, "203.0.113.7", publicIPv4().Body.String())
+
+	rec.PublicIpAddress = "198.51.100.20" // AssociateAddress stamps the EIP
+	seedENIByID(t, r, "111122223333", "eni-aaa", rec)
+	assert.Equal(t, "198.51.100.20", publicIPv4().Body.String())
+
+	refreshed, err := r.refreshENI(t.Context(), pinned)
+	require.NoError(t, err)
+	fresh, err := r.resolveENIByID(t.Context(), "eni-aaa")
+	require.NoError(t, err)
+	assert.Equal(t, fresh, refreshed, "a re-read must carry the owning account like a full resolve")
+
+	rec.PublicIpAddress = "" // DisassociateAddress clears it
+	seedENIByID(t, r, "111122223333", "eni-aaa", rec)
+	assert.Equal(t, http.StatusNotFound, publicIPv4().Code)
+
+	require.NoError(t, r.eniKV.Delete(t.Context(), "111122223333.eni-aaa"))
+	assert.Equal(t, http.StatusNotFound, publicIPv4().Code, "a deleted ENI serves nothing")
+}
+
+func TestRefreshENI_BadRecordIsError(t *testing.T) {
+	r, _ := newTestResolver(t)
+	_, err := r.eniKV.Put(t.Context(), "111122223333.eni-aaa", []byte("not json"))
+	require.NoError(t, err)
+
+	_, err = r.refreshENI(t.Context(), &eniFacts{eniID: "eni-aaa", accountID: "111122223333"})
+	require.Error(t, err)
 }

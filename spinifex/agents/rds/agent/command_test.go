@@ -6,30 +6,30 @@ import (
 	"testing"
 	"time"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestCommander_DispatchesByNameAndReplies(t *testing.T) {
-	var ran handlers_rds.Command
+	var ran rdsinstance.Command
 	registry := commandRegistry{
-		"reload-parameters": func(_ context.Context, cmd handlers_rds.Command) (string, error) {
+		"reload-parameters": func(_ context.Context, cmd rdsinstance.Command) (string, error) {
 			ran = cmd
 			return "reloaded", nil
 		},
 	}
 
-	reply := newCommander(nil, registry, time.Second).execute(context.Background(), handlers_rds.Command{
+	reply := newCommander(nil, registry, time.Second).execute(context.Background(), rdsinstance.Command{
 		CommandID:  "cmd-1",
 		Type:       "reload-parameters",
-		Parameters: []handlers_rds.Parameter{{Name: "work_mem", Value: "8MB"}},
+		Parameters: []rdsinstance.Parameter{{Name: "work_mem", Value: "8MB"}},
 	})
 
 	if ran.CommandID != "cmd-1" || len(ran.Parameters) != 1 {
 		t.Errorf("handler received %+v, want the command with its parameters", ran)
 	}
-	if reply.Status != handlers_rds.CommandStatusSucceeded || reply.Message != "reloaded" {
+	if reply.Status != rdsinstance.CommandStatusSucceeded || reply.Message != "reloaded" {
 		t.Errorf("reply = %+v, want succeeded/reloaded", reply)
 	}
 	if reply.CommandID != "cmd-1" {
@@ -39,15 +39,15 @@ func TestCommander_DispatchesByNameAndReplies(t *testing.T) {
 
 func TestCommander_FailedHandlerRepliesWithItsError(t *testing.T) {
 	registry := commandRegistry{
-		"grow-storage": func(context.Context, handlers_rds.Command) (string, error) {
+		"grow-storage": func(context.Context, rdsinstance.Command) (string, error) {
 			return "", errors.New("no space left on device")
 		},
 	}
 
 	reply := newCommander(nil, registry, time.Second).execute(context.Background(),
-		handlers_rds.Command{CommandID: "cmd-2", Type: "grow-storage"})
+		rdsinstance.Command{CommandID: "cmd-2", Type: "grow-storage"})
 
-	if reply.Status != handlers_rds.CommandStatusFailed {
+	if reply.Status != rdsinstance.CommandStatusFailed {
 		t.Errorf("reply status = %q, want failed", reply.Status)
 	}
 	if reply.Message != "no space left on device" {
@@ -60,9 +60,9 @@ func TestCommander_FailedHandlerRepliesWithItsError(t *testing.T) {
 // than a timeout.
 func TestCommander_UnknownTypeRepliesFailedNotDropped(t *testing.T) {
 	reply := newCommander(nil, newCommandRegistry(&fakeEngine{}, &fakeStorage{}), time.Second).execute(context.Background(),
-		handlers_rds.Command{CommandID: "cmd-3", Type: "quiesce"})
+		rdsinstance.Command{CommandID: "cmd-3", Type: "quiesce"})
 
-	if reply.CommandID != "cmd-3" || reply.Status != handlers_rds.CommandStatusFailed {
+	if reply.CommandID != "cmd-3" || reply.Status != rdsinstance.CommandStatusFailed {
 		t.Errorf("reply = %+v, want a failed reply for cmd-3", reply)
 	}
 	if reply.Message == "" {
@@ -74,11 +74,11 @@ func TestCommander_UnknownTypeRepliesFailedNotDropped(t *testing.T) {
 // fails must not consume it, or the issuer never learns the outcome.
 func TestCommander_RunCarriesRepliesOnTheNextPoll(t *testing.T) {
 	cp := newFakeControlPlane()
-	cp.pollQueue = [][]handlers_rds.Command{
+	cp.pollQueue = [][]rdsinstance.Command{
 		{{CommandID: "cmd-1", Type: "reload-parameters"}},
 	}
 	registry := commandRegistry{
-		"reload-parameters": func(context.Context, handlers_rds.Command) (string, error) { return "done", nil },
+		"reload-parameters": func(context.Context, rdsinstance.Command) (string, error) { return "done", nil },
 	}
 
 	c := newCommander(cp, registry, 10*time.Millisecond)
@@ -98,23 +98,23 @@ func TestCommander_RunCarriesRepliesOnTheNextPoll(t *testing.T) {
 	if len(replies[0]) != 0 {
 		t.Errorf("first poll carried replies %+v, want none", replies[0])
 	}
-	if got := replies[1][0]; got.CommandID != "cmd-1" || got.Status != handlers_rds.CommandStatusSucceeded {
+	if got := replies[1][0]; got.CommandID != "cmd-1" || got.Status != rdsinstance.CommandStatusSucceeded {
 		t.Errorf("second poll carried %+v, want the succeeded reply for cmd-1", got)
 	}
 }
 
 func TestCommander_RetainsAndRetriesTheCompletePendingBatch(t *testing.T) {
 	cp := newFakeControlPlane()
-	pending := []handlers_rds.CommandReply{
-		{CommandID: "cmd-1", Status: handlers_rds.CommandStatusSucceeded},
-		{CommandID: "cmd-2", Status: handlers_rds.CommandStatusFailed, Message: "disk full"},
+	pending := []rdsinstance.CommandReply{
+		{CommandID: "cmd-1", Status: rdsinstance.CommandStatusSucceeded},
+		{CommandID: "cmd-2", Status: rdsinstance.CommandStatusFailed, Message: "disk full"},
 	}
 	c := newCommander(cp, commandRegistry{
-		"reload-parameters": func(context.Context, handlers_rds.Command) (string, error) {
+		"reload-parameters": func(context.Context, rdsinstance.Command) (string, error) {
 			return "reloaded", nil
 		},
 	}, 10*time.Millisecond)
-	c.pending = append([]handlers_rds.CommandReply(nil), pending...)
+	c.pending = append([]rdsinstance.CommandReply(nil), pending...)
 	cp.pollErr = errors.New("reply publication failed")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -131,7 +131,7 @@ func TestCommander_RetainsAndRetriesTheCompletePendingBatch(t *testing.T) {
 
 	cp.mu.Lock()
 	cp.pollErr = nil
-	cp.pollQueue = [][]handlers_rds.Command{{{
+	cp.pollQueue = [][]rdsinstance.Command{{{
 		CommandID: "cmd-3",
 		Type:      "reload-parameters",
 	}}}
@@ -150,7 +150,7 @@ func TestCommander_RetainsAndRetriesTheCompletePendingBatch(t *testing.T) {
 	assert.Equal(t, pending, replies[1], "the complete failed batch must be retried in order")
 	require.Len(t, replies[2], 1)
 	assert.Equal(t, "cmd-3", replies[2][0].CommandID)
-	assert.Equal(t, handlers_rds.CommandStatusSucceeded, replies[2][0].Status)
+	assert.Equal(t, rdsinstance.CommandStatusSucceeded, replies[2][0].Status)
 }
 
 // A poll error must not spin the loop: without a backoff a gateway that is down

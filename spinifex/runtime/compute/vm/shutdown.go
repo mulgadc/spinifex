@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -36,30 +34,8 @@ const (
 var powerdownPollInterval = 500 * time.Millisecond
 
 // errPowerdownTimedOut reports a guest still running at the end of its budget.
-// Callers escalate: Stop to SIGKILL, Reboot to a hard reset.
+// Callers escalate: Stop to SIGKILL, Reboot to ending QEMU without asking.
 var errPowerdownTimedOut = errors.New("guest did not power down within its budget")
-
-// qemuPausesOnShutdown reports whether this guest's QEMU was launched with the
-// shutdown action that leaves it paused. A guest started before that flag
-// exits on powerdown instead, and a reboot would have nothing left to reset.
-// Indirected so a test can describe a guest without one running behind it.
-var qemuPausesOnShutdown = func(instance *VM) bool {
-	pid, err := hostprocess.ReadPidFile(instance.ID)
-	if err != nil || pid <= 0 {
-		return false
-	}
-	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if err != nil {
-		return false
-	}
-	return cmdlineHasPauseAction(cmdline)
-}
-
-// cmdlineHasPauseAction looks for the shutdown action in a NUL-separated
-// /proc cmdline. Split out from the /proc read so the matching is testable.
-func cmdlineHasPauseAction(cmdline []byte) bool {
-	return slices.Contains(strings.Split(string(cmdline), "\x00"), "shutdown=pause")
-}
 
 // gracefulPowerdown presses the guest's power button until it shuts itself
 // down, so it syncs and unmounts rather than losing its dirty pages. QEMU is
@@ -146,7 +122,8 @@ func (m *Manager) Stop(id string) error {
 }
 
 // stopOne runs the stop sequence shared by Stop and StopAll:
-// Stopping → stopCleanup → Stopped → migrate to "stopped" KV → OnInstanceDown.
+// Stopping → stopCleanup → release auto-assigned IP → Stopped → migrate to
+// "stopped" KV → OnInstanceDown.
 // The bool reports whether migration removed the instance (caller must persist).
 //
 // A failed volume seal (ErrVolumeSealFailed) does not abort the sequence —
@@ -161,6 +138,12 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 	sealErr := m.stopCleanup(instance)
 
 	m.UpdateState(instance.ID, func(v *VM) { v.LastNode = m.deps.NodeID })
+
+	// Released before the stopped state is published: DescribeInstances reads
+	// the record from that moment, and must never show a borrowed address on it.
+	if instance.DesiredState == DesiredStopped {
+		m.releaseAutoAssignedPublicIP(instance)
+	}
 
 	if err := m.transitionWithPrecheck(instance, StateStopped); err != nil {
 		slog.Error("Failed to transition to stopped", "instanceId", instance.ID, "err", err)
@@ -177,8 +160,6 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 		// than changing it under a guest nobody asked to move.
 		return false, sealErr
 	}
-
-	m.releaseAutoAssignedPublicIP(instance)
 
 	if !m.MigrateStoppedToSharedKV(instance) {
 		// Either StateStore unavailable / write failed (instance stays in
@@ -264,16 +245,21 @@ func (m *Manager) Terminate(id string) error {
 	return m.finalizeTerminated(instance)
 }
 
-// MarkFailed sets a failure reason, transitions to shutting-down synchronously,
-// then runs the cleanup chain in a goroutine so callers return immediately.
-// Tolerates instances already in a cleanup state (no-op).
+// MarkFailed terminates a first launch that failed, as AWS does, and runs the
+// cleanup in a goroutine. An instance that has run before is never terminated
+// here: it is marked recovery-failed with its volumes kept (ADR-0003:S7).
 func (m *Manager) MarkFailed(ctx context.Context, instance *VM, reason string) {
 	skip := false
+	firstLaunch := false
 	var observed InstanceState
 	m.Inspect(instance, func(v *VM) {
 		observed = v.Status
+		firstLaunch = v.FirstLaunch
 		if v.Status == StateShuttingDown || v.Status == StateTerminated {
 			skip = true
+			return
+		}
+		if !firstLaunch {
 			return
 		}
 		if v.Instance != nil {
@@ -286,6 +272,12 @@ func (m *Manager) MarkFailed(ctx context.Context, instance *VM, reason string) {
 	if skip {
 		slog.Info("MarkFailed: instance already in cleanup state, skipping",
 			"instanceId", instance.ID, "status", string(observed), "reason", reason)
+		return
+	}
+	if !firstLaunch {
+		slog.ErrorContext(ctx, "MarkFailed: refusing to terminate an instance that has run before; keeping its volumes",
+			"instanceId", instance.ID, "status", string(observed), "reason", reason)
+		m.MarkRecoveryFailed(instance, reason)
 		return
 	}
 
@@ -693,11 +685,16 @@ func (m *Manager) ForgetSuperseded(instance *VM) {
 // unmounting: a fenced node's volumes belong to another node now, and an
 // unmount would seal this node's stale copy over theirs.
 func (m *Manager) shutdownQEMU(instance *VM) {
+	// Wait out a reboot swapping the process, then stop whichever QEMU is
+	// current. Without this a stop could seal volumes under a fresh process.
+	instance.relaunchMu.Lock()
+	defer instance.relaunchMu.Unlock()
+
 	if instance.QMPClient != nil {
 		ctx := context.Background()
 		// The whole graceful budget is the pid-file wait it replaces, so a stop
-		// takes no longer than it used to. quit closes the paused-on-shutdown
-		// window a reboot needs and a stop does not.
+		// takes no longer than it used to. quit ends the QEMU the guest left
+		// paused when it powered off.
 		if err := m.gracefulPowerdown(ctx, instance, pidFileRemovalTimeout); err != nil {
 			slog.Warn("Guest did not power down gracefully", "id", instance.ID, "err", err)
 		} else if _, err := sendQMPCommand(ctx, instance.QMPClient,
@@ -730,11 +727,14 @@ func (m *Manager) shutdownQEMU(instance *VM) {
 func (m *Manager) cleanupTapDevices(instance *VM) {
 	if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
 		// Detach the primary ENI's IMDS datapath before removing its tap, the
-		// inverse of the launch-time attach-after-SetupTap order.
+		// inverse of the launch-time attach-after-SetupTap order. Both run under
+		// the ENI's lock so a datapath repair cannot re-create what this removes.
+		unlock := m.imdsLocks.lock(instance.ENIId)
 		m.detachPrimaryIMDSDatapath(instance)
 		if err := m.deps.NetworkPlumber.CleanupTap(TapDeviceName(instance.ENIId)); err != nil {
 			slog.Warn("Failed to clean up tap device", "eni", instance.ENIId, "err", err)
 		}
+		unlock()
 		m.cleanupExtraENITaps(instance)
 	}
 

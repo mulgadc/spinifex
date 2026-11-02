@@ -4,6 +4,7 @@ package multinode
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,21 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
+
+// envDurationOr reads a positive time.Duration from key, returning def when
+// unset. A malformed or non-positive value panics rather than falling back, so
+// a mistyped budget can't quietly run with the default and be blamed on it.
+func envDurationOr(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		panic(fmt.Sprintf("%s=%q is not a positive duration", key, v))
+	}
+	return d
+}
 
 // needAZ returns the discovered default AZ, memoized on the harness fixture.
 func needAZ(t *testing.T, fix *Fixture) string {
@@ -134,4 +150,76 @@ func readyNodeCount(out string) int {
 		}
 	}
 	return n
+}
+
+// pairedInstance is a running instance and the node whose qemu hosts it.
+type pairedInstance struct {
+	id   string
+	node harness.Node
+}
+
+// crossNodePair is two default-SG instances on distinct nodes, with the source
+// reachable over SSH and the destination addressed by its private IP.
+type crossNodePair struct {
+	src, dst     pairedInstance
+	keyPath      string
+	sshHost      string
+	sshPort      int
+	dstPrivateIP string
+}
+
+// launchCrossNodePair launches instances until two land on distinct nodes and
+// waits for the source's SSH. The runner SG opens tcp/22 only, so ICMP between
+// the pair still depends on the default SG self-ingress. Skips if colocated.
+func launchCrossNodePair(t *testing.T, fix *Fixture, runnerSGPrefix string) crossNodePair {
+	t.Helper()
+
+	vpcID, defSGID, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
+	instType, arch := needInstanceTypeArch(t, fix)
+	amiID := needAMI(t, fix, arch)
+	keyName, keyPath := needKeyPair(t, fix)
+
+	runnerSG := harness.EnsureSG(t, fix.Harness, vpcID, runnerSGPrefix)
+	harness.AuthorizeSSHIngress(t, fix.AWS, runnerSG)
+
+	// Bounded so a degenerate single-node placement can't loop forever.
+	var instances []pairedInstance
+	var srcIdx, dstIdx = -1, -1
+	for attempt := 0; attempt < 4 && (srcIdx < 0 || dstIdx < 0); attempt++ {
+		id := baselineLaunch(t, fix, amiID, instType, keyName, subnetID, []string{defSGID, runnerSG})
+		var node harness.Node
+		if n := harness.InstanceHostingNode(t, fix.Cluster, id); n != nil {
+			node = *n
+		}
+		instances = append(instances, pairedInstance{id: id, node: node})
+		srcIdx, dstIdx = -1, -1
+		for i := range instances {
+			for j := range instances {
+				if i != j && instances[i].node.Name != "" && instances[i].node.Name != instances[j].node.Name {
+					srcIdx, dstIdx = i, j
+				}
+			}
+		}
+	}
+	if srcIdx < 0 || dstIdx < 0 {
+		placements := make([]string, 0, len(instances))
+		for _, in := range instances {
+			placements = append(placements, in.id+"@"+in.node.Name)
+		}
+		t.Skipf("could not place two instances on distinct nodes (got %v); scheduler colocated", placements)
+	}
+	src, dst := instances[srcIdx], instances[dstIdx]
+	harness.Detail(t, "src", src.id, "src_node", src.node.Name, "dst", dst.id, "dst_node", dst.node.Name)
+
+	dstPriv := instancePrivateIP(t, fix, dst.id)
+
+	host, port := harness.GuestSSHEndpoint(t, fix.AWS, fix.Cluster, src.id)
+	harness.GuestSSHReady(t, host, port, "ubuntu", keyPath,
+		harness.WithTimeout(3*time.Minute), harness.WithPoll(3*time.Second))
+
+	return crossNodePair{
+		src: src, dst: dst,
+		keyPath: keyPath, sshHost: host, sshPort: port,
+		dstPrivateIP: dstPriv,
+	}
 }

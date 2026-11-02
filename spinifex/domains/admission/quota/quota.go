@@ -90,6 +90,14 @@ type Service struct {
 	// overrides holds the per-account limit overrides. Nil leaves every account
 	// on the configured limits, which is also what an absent key means.
 	overrides jetstream.KeyValue
+
+	// js opens the override bucket for SealAccountOverrides when quotas were
+	// disabled at startup; nil makes such a seal refuse rather than create it.
+	js jetstream.KeyValueManager
+
+	// terminationChecker is the seal precondition; SealAccountOverrides
+	// refuses until it is wired.
+	terminationChecker AccountTerminationChecker
 }
 
 // New constructs a quota Service from the configured limits and the gateway-owned
@@ -123,6 +131,16 @@ func (s *Service) SetOverrides(kv jetstream.KeyValue) {
 		return
 	}
 	s.overrides = kv
+}
+
+// SetJetStream wires the client SealAccountOverrides uses to get-or-create
+// the override bucket when this gateway disabled quotas. Called once at
+// wiring time, regardless of whether quotas are enabled here.
+func (s *Service) SetJetStream(js jetstream.KeyValueManager) {
+	if s == nil {
+		return
+	}
+	s.js = js
 }
 
 // Exempt returns true for the global/system account and whenever quotas are

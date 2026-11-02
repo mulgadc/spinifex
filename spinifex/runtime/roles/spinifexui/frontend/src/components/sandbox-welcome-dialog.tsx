@@ -7,7 +7,7 @@ import {
   Network,
   Ship,
 } from "lucide-react"
-import { useState } from "react"
+import { type ReactNode, useState } from "react"
 
 import {
   AlertDialog,
@@ -25,9 +25,17 @@ import {
 const SANDBOX_HOST = "console.spx3.com"
 const DISMISSED_KEY = "spinifex:v1:sandbox-welcome"
 
-const STARTING_POINTS = [
+// Only the first entry opens a form, the launch panel over the instance list.
+const STARTING_POINTS: {
+  to: string
+  search?: { create: true }
+  icon: ReactNode
+  label: string
+  hint: string
+}[] = [
   {
-    to: "/ec2/run-instances",
+    to: "/ec2/describe-instances",
+    search: { create: true },
     icon: <HardDrive className="size-3.5" />,
     label: "Launch an instance",
     hint: "Boot a VM on real hardware",
@@ -115,6 +123,7 @@ export function SandboxWelcomeDialog() {
               onClick={() => {
                 handleOpenChange(false)
               }}
+              search={point.search}
               to={point.to}
             >
               {point.icon}

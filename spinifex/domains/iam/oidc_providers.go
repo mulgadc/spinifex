@@ -1,0 +1,392 @@
+package iam
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/nats-io/nats.go/jetstream"
+
+	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+)
+
+// Per-account IAM bucket holds account-scoped resources (currently the OIDC provider registry).
+// Readers must tolerate ErrBucketNotFound; writers must use GetOrCreateIAMAccountBucket.
+const (
+	KVBucketIAMAccountPrefix  = "iam-account-"
+	KVBucketIAMAccountVersion = 1
+
+	oidcProvidersKeyPrefix = "oidc-providers/"
+)
+
+// IAMAccountBucketName returns the JetStream KV bucket name for the supplied
+// AWS account ID.
+func IAMAccountBucketName(accountID string) string {
+	return KVBucketIAMAccountPrefix + accountID
+}
+
+// OIDCProviderKey returns the KV key for an OIDC provider, derived from the SHA-256 of the issuer URL.
+func OIDCProviderKey(issuer string) string {
+	sum := sha256.Sum256([]byte(issuer))
+	return oidcProvidersKeyPrefix + hex.EncodeToString(sum[:])
+}
+
+// OIDCProviderARN returns the arn:aws:iam::{accountID}:oidc-provider/{issuerHostPath} ARN.
+// issuerHostPath is the issuer URL with the https:// scheme stripped.
+func OIDCProviderARN(accountID, issuerHostPath string) string {
+	return resourcearn.FormatIAMResource(resourcearn.IAMOIDCProvider, accountID, issuerHostPath)
+}
+
+// GetOrCreateIAMAccountBucket opens the per-account IAM bucket, creating it on first use.
+func GetOrCreateIAMAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
+	return kvutil.GetOrCreateBucket(ctx, js, IAMAccountBucketName(accountID), 1)
+}
+
+// OIDCProviderRecord is the stored shape of a registered OIDC identity provider.
+// Url is the full issuer URL; the KV key is its SHA-256 hash.
+type OIDCProviderRecord struct {
+	Url            string   `json:"url"`
+	ClientIDList   []string `json:"clientIDList,omitempty"`
+	ThumbprintList []string `json:"thumbprintList,omitempty"`
+	CreatedAt      string   `json:"createdAt"`
+	Tags           []Tag    `json:"tags,omitempty"`
+}
+
+// OIDCProviderHostPathFromARN extracts the provider component accepted by IAM
+// handlers. The account segment is intentionally not trusted by callers.
+func OIDCProviderHostPathFromARN(providerARN string) (string, error) {
+	_, hostPath, ok := strings.Cut(providerARN, ":oidc-provider/")
+	if !ok {
+		return "", errors.New("not an oidc-provider ARN")
+	}
+	if hostPath == "" {
+		return "", errors.New("oidc-provider ARN missing host/path")
+	}
+	return hostPath, nil
+}
+
+// OIDCProviderHostPathFromURL validates an issuer and returns its exact
+// resource component without normalizing host or path text.
+func OIDCProviderHostPathFromURL(raw string) (string, error) {
+	if raw == "" {
+		return "", errors.New("url is required")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse url: %w", err)
+	}
+	if u.Scheme != "https" {
+		return "", fmt.Errorf("url scheme must be https, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", errors.New("url missing host")
+	}
+	return strings.TrimPrefix(raw, "https://"), nil
+}
+
+// issuerFromOIDCProviderARN reverses OIDCProviderARN, reconstructing the full https issuer URL.
+func issuerFromOIDCProviderARN(providerARN string) (string, error) {
+	hostPath, err := OIDCProviderHostPathFromARN(providerARN)
+	if err != nil {
+		return "", err
+	}
+	return "https://" + hostPath, nil
+}
+
+// validateOIDCProviderURL enforces the issuer shape: a parseable https URL with a non-empty host.
+func validateOIDCProviderURL(raw string) error {
+	_, err := OIDCProviderHostPathFromURL(raw)
+	return err
+}
+
+func awsStrings(in []*string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s != nil {
+			out = append(out, *s)
+		}
+	}
+	return out
+}
+
+// validateOIDCProviderLists checks every client ID and thumbprint against the
+// model's lengths, before the Url as AWS orders them. AWS names each list once,
+// however many of its entries break.
+func validateOIDCProviderLists(clientIDs, thumbprints []*string) error {
+	outside := func(minLen, maxLen int) func(*string) bool {
+		return func(v *string) bool {
+			n := utf8.RuneCountInString(aws.StringValue(v))
+			return v == nil || n < minLen || n > maxLen
+		}
+	}
+	var violations []string
+	if slices.ContainsFunc(clientIDs, outside(1, 255)) {
+		violations = append(violations, "Value at 'clientIDList' failed to satisfy constraint: Member must satisfy constraint: "+
+			"[Member must have length less than or equal to 255, Member must have length greater than or equal to 1]")
+	}
+	if slices.ContainsFunc(thumbprints, outside(40, 40)) {
+		violations = append(violations, "Value at 'thumbprintList' failed to satisfy constraint: Member must satisfy constraint: "+
+			"[Member must have length less than or equal to 40, Member must have length greater than or equal to 40]")
+	}
+	return validationError(violations)
+}
+
+func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *iam.CreateOpenIDConnectProviderInput) (*iam.CreateOpenIDConnectProviderOutput, error) {
+	ctx := context.Background()
+	if err := validateOIDCProviderLists(input.ClientIDList, input.ThumbprintList); err != nil {
+		return nil, err
+	}
+	issuer := aws.StringValue(input.Url)
+	if err := validateOIDCProviderURL(issuer); err != nil {
+		slog.Debug("CreateOpenIDConnectProvider: invalid Url", "url", issuer, "err", err)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The specified value for url is invalid: %v", err)
+	}
+
+	if err := validateTags(input.Tags, exactKeys); err != nil {
+		return nil, err
+	}
+
+	record := OIDCProviderRecord{
+		Url:            issuer,
+		ClientIDList:   awsStrings(input.ClientIDList),
+		ThumbprintList: awsStrings(input.ThumbprintList),
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+		Tags:           copyTags(input.Tags),
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return nil, fmt.Errorf("marshal OIDC provider: %w", err)
+	}
+
+	kv, err := GetOrCreateIAMAccountBucket(ctx, s.js, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("open IAM account bucket: %w", err)
+	}
+
+	if _, err := kv.Create(ctx, OIDCProviderKey(issuer), data); err != nil {
+		if errors.Is(err, jetstream.ErrKeyExists) {
+			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+		}
+		return nil, fmt.Errorf("store OIDC provider: %w", err)
+	}
+
+	issuerHostPath, _ := OIDCProviderHostPathFromURL(issuer)
+	arn := OIDCProviderARN(accountID, issuerHostPath)
+	slog.Info("IAM OIDC provider created", "accountID", accountID, "url", issuer, "arn", arn)
+	return &iam.CreateOpenIDConnectProviderOutput{
+		OpenIDConnectProviderArn: aws.String(arn),
+		Tags:                     tagsToSDK(record.Tags),
+	}, nil
+}
+
+func (s *IAMServiceImpl) GetOpenIDConnectProvider(accountID string, input *iam.GetOpenIDConnectProviderInput) (*iam.GetOpenIDConnectProviderOutput, error) {
+	ctx := context.Background()
+	record, err := s.getOIDCProvider(ctx, accountID, aws.StringValue(input.OpenIDConnectProviderArn))
+	if err != nil {
+		return nil, err
+	}
+	// The scheme is kept, unlike AWS, which strips it. A caller comparing the
+	// read against what it sent parses this value, and an issuer carrying a port
+	// is not parseable without a scheme. The ARN keeps the stripped form.
+	return &iam.GetOpenIDConnectProviderOutput{
+		Url:            aws.String(record.Url),
+		ClientIDList:   aws.StringSlice(record.ClientIDList),
+		ThumbprintList: aws.StringSlice(record.ThumbprintList),
+		CreateDate:     aws.Time(parseCreatedAt(record.CreatedAt)),
+		Tags:           tagsToSDK(record.Tags),
+	}, nil
+}
+
+func (s *IAMServiceImpl) ListOpenIDConnectProviders(accountID string, _ *iam.ListOpenIDConnectProvidersInput) (*iam.ListOpenIDConnectProvidersOutput, error) {
+	ctx := context.Background()
+	out := &iam.ListOpenIDConnectProvidersOutput{
+		OpenIDConnectProviderList: []*iam.OpenIDConnectProviderListEntry{},
+	}
+
+	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
+	if err != nil {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
+			return out, nil
+		}
+		return nil, fmt.Errorf("open IAM account bucket: %w", err)
+	}
+
+	keys, err := kvutil.Keys(ctx, kv)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return out, nil
+		}
+		return nil, fmt.Errorf("list OIDC provider keys: %w", err)
+	}
+
+	for _, key := range keys {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, oidcProvidersKeyPrefix) {
+			continue
+		}
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			slog.Warn("ListOpenIDConnectProviders: get failed", "key", key, "err", err)
+			continue
+		}
+		var record OIDCProviderRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			slog.Warn("ListOpenIDConnectProviders: unmarshal failed", "key", key, "err", err)
+			continue
+		}
+		out.OpenIDConnectProviderList = append(out.OpenIDConnectProviderList,
+			&iam.OpenIDConnectProviderListEntry{
+				Arn: aws.String(OIDCProviderARN(accountID, strings.TrimPrefix(record.Url, "https://"))),
+			})
+	}
+	return out, nil
+}
+
+func (s *IAMServiceImpl) DeleteOpenIDConnectProvider(accountID string, input *iam.DeleteOpenIDConnectProviderInput) (*iam.DeleteOpenIDConnectProviderOutput, error) {
+	ctx := context.Background()
+	arn := aws.StringValue(input.OpenIDConnectProviderArn)
+	issuer, err := issuerFromOIDCProviderARN(arn)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+
+	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
+	if err != nil {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
+			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		return nil, fmt.Errorf("open IAM account bucket: %w", err)
+	}
+
+	key := OIDCProviderKey(issuer)
+	if _, err := kv.Get(ctx, key); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		return nil, fmt.Errorf("get OIDC provider: %w", err)
+	}
+	if err := kv.Delete(ctx, key); err != nil {
+		return nil, fmt.Errorf("delete OIDC provider: %w", err)
+	}
+
+	slog.Info("IAM OIDC provider deleted", "accountID", accountID, "arn", arn)
+	return &iam.DeleteOpenIDConnectProviderOutput{}, nil
+}
+
+// TagOpenIDConnectProvider upserts tags on an OIDC provider.
+func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
+	ctx := context.Background()
+	if err := validateTags(input.Tags, exactKeys); err != nil {
+		return nil, err
+	}
+
+	arn := aws.StringValue(input.OpenIDConnectProviderArn)
+	err := s.updateOIDCProviderCAS(ctx, accountID, arn, func(record *OIDCProviderRecord) (bool, error) {
+		merged := mergeTags(record.Tags, input.Tags, exactKeys)
+		if len(merged) > maxTagsPerResource {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		record.Tags = merged
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("IAM OIDC provider tagged", "accountID", accountID, "arn", arn)
+	return &iam.TagOpenIDConnectProviderOutput{}, nil
+}
+
+// UntagOpenIDConnectProvider removes the named tag keys from an OIDC provider;
+// unknown keys are a no-op.
+func (s *IAMServiceImpl) UntagOpenIDConnectProvider(accountID string, input *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
+	if err := validateTagKeys(input.TagKeys); err != nil {
+		return nil, err
+	}
+	ctx := context.Background()
+	arn := aws.StringValue(input.OpenIDConnectProviderArn)
+	err := s.updateOIDCProviderCAS(ctx, accountID, arn, func(record *OIDCProviderRecord) (bool, error) {
+		record.Tags = removeTagKeys(record.Tags, input.TagKeys, exactKeys)
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("IAM OIDC provider untagged", "accountID", accountID, "arn", arn)
+	return &iam.UntagOpenIDConnectProviderOutput{}, nil
+}
+
+// ListOpenIDConnectProviderTags returns an OIDC provider's tags, all of them; the gateway pages the list.
+func (s *IAMServiceImpl) ListOpenIDConnectProviderTags(accountID string, input *iam.ListOpenIDConnectProviderTagsInput) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
+	ctx := context.Background()
+	record, err := s.getOIDCProvider(ctx, accountID, aws.StringValue(input.OpenIDConnectProviderArn))
+	if err != nil {
+		return nil, err
+	}
+	return &iam.ListOpenIDConnectProviderTagsOutput{
+		Tags:        tagsToSDK(record.Tags),
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
+// updateOIDCProviderCAS applies mutate to an existing provider record under
+// optimistic concurrency, so a provider deleted concurrently fails NoSuchEntity
+// instead of being recreated.
+func (s *IAMServiceImpl) updateOIDCProviderCAS(ctx context.Context, accountID, arn string, mutate func(*OIDCProviderRecord) (bool, error)) error {
+	issuer, err := issuerFromOIDCProviderARN(arn)
+	if err != nil {
+		return errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
+	if err != nil {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
+			return errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		return fmt.Errorf("open IAM account bucket: %w", err)
+	}
+	defer s.recordLocks.lock("oidc-provider/" + accountID + "/" + OIDCProviderKey(issuer))()
+	_, err = kvutil.Update(ctx, kv, OIDCProviderKey(issuer), iamRecordCASConfig("oidc-provider", accountID, arn), mutate)
+	return err
+}
+
+func (s *IAMServiceImpl) getOIDCProvider(ctx context.Context, accountID, arn string) (*OIDCProviderRecord, error) {
+	issuer, err := issuerFromOIDCProviderARN(arn)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
+	if err != nil {
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
+			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		return nil, fmt.Errorf("open IAM account bucket: %w", err)
+	}
+	entry, err := kv.Get(ctx, OIDCProviderKey(issuer))
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		return nil, fmt.Errorf("get OIDC provider: %w", err)
+	}
+	var record OIDCProviderRecord
+	if err := json.Unmarshal(entry.Value(), &record); err != nil {
+		return nil, fmt.Errorf("unmarshal OIDC provider: %w", err)
+	}
+	return &record, nil
+}

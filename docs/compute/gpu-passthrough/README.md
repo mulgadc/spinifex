@@ -51,12 +51,24 @@ sudo spx admin gpu setup
 What it does:
 
 1. Detects installed GPUs and their PCI IDs.
-2. Enables IOMMU in GRUB (`intel_iommu=on iommu=pt` or `amd_iommu=on iommu=pt`).
+2. Adds the IOMMU kernel arguments (`intel_iommu=on iommu=pt` or `amd_iommu=on iommu=pt`): to `GRUB_CMDLINE_LINUX_DEFAULT` with `update-grub`, or with `grubby` to every boot entry and to `/etc/kernel/cmdline`, which kernels installed later inherit.
 3. Writes the vfio udev rule (`/etc/udev/rules.d/99-spinifex-vfio.rules`).
 4. Blacklists `nouveau` (NVIDIA) and `amdgpu` (AMD) so the host kernel does not claim the device.
 5. Configures `vfio-pci` early binding in `/etc/modprobe.d/vfio-pci.conf`.
-6. Adds vfio modules to initramfs.
+6. Loads the vfio modules from the initramfs: through `/etc/initramfs-tools/modules` and `update-initramfs -u`, or through `/etc/dracut.conf.d/spinifex-vfio.conf` and `dracut -f --regenerate-all`. With dracut, each rebuilt image is checked with `lsinitrd` for `vfio_pci`, its early-load line and the `modprobe.d` files, and setup stops naming whatever is missing.
 
+The command finds its boot tools before changing anything, and stops naming them if the host has neither or both of `update-grub` and `grubby`, or of `update-initramfs` and `dracut`.
+
+**Oracle Linux hosts** take the `grubby` and `dracut` path: Oracle Linux keeps kernel arguments in BLS boot entries and has no `GRUB_CMDLINE_LINUX_DEFAULT`.
+`grubby --update-kernel=ALL` writes the IOMMU arguments to every entry and to `/etc/kernel/cmdline`, from which a kernel installed later builds its own entry, and dracut applies `spinifex-vfio.conf` to every initramfs it builds.
+After installing a new `kernel-uek`, check its entry before rebooting into it:
+
+```bash
+sudo grubby --info=ALL | grep -E '^(kernel|args)'
+sudo lsinitrd -k <new-kernel-version> | grep vfio
+```
+
+Whole-GPU passthrough is supported on Oracle Linux; NVIDIA MIG is not.
 If any change requires a reboot, the command prints instructions and exits:
 
 ```
@@ -175,7 +187,7 @@ The command signals the daemon and waits for confirmation. The GPU is released b
 
 ### IOMMU not active after reboot
 
-Verify IOMMU is enabled in BIOS/UEFI (`Intel VT-d` or `AMD-Vi`). Then check GRUB picked up the parameters:
+Verify IOMMU is enabled in BIOS/UEFI (`Intel VT-d` or `AMD-Vi`). Then check the boot loader picked up the parameters (on Oracle Linux, `sudo grubby --info=DEFAULT` lists them for the default entry):
 
 ```bash
 cat /proc/cmdline | grep iommu

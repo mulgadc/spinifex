@@ -44,6 +44,27 @@ func newProxyTransport(caCertPath string) (*http.Transport, error) {
 	}, nil
 }
 
+// transferDeadline bounds one request through the S3 proxy. The server's
+// ReadTimeout and WriteTimeout suit API calls, but would cut off an object
+// upload or download on any link too slow to finish within them.
+const transferDeadline = time.Hour
+
+// withTransferDeadline replaces the server's read and write deadlines for
+// each request with one transferDeadline away.
+func withTransferDeadline(deadline time.Duration, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		until := time.Now().Add(deadline)
+		if err := rc.SetReadDeadline(until); err != nil {
+			slog.Warn("Could not extend the transfer read deadline", "path", r.URL.Path, "error", err)
+		}
+		if err := rc.SetWriteDeadline(until); err != nil {
+			slog.Warn("Could not extend the transfer write deadline", "path", r.URL.Path, "error", err)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // newReverseProxy forwards requests to backendHost after stripping pathPrefix.
 // Sets req.Host to the backend so SigV4 canonical-host verification passes.
 // The transport is wrapped with otelhttp so proxied requests inject

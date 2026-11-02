@@ -1,0 +1,11 @@
+#cloud-config
+# Host preparation only. Spinifex is installed and formed over SSH by deploy.sh,
+# and the API key is copied the same way so it never sits in instance metadata.
+write_files:
+  - path: /etc/cloud/cloud.cfg.d/99-spinifex-network.cfg
+    content: |
+      network: {config: disabled}
+runcmd:
+  - [sh, -c, "command -v ufw >/dev/null && ufw --force disable || true"]
+  - [sh, -c, "systemctl disable --now unattended-upgrades.service apt-daily-upgrade.timer apt-daily.timer || true"]
+  - [sh, -c, "touch /var/lib/cloud/spinifex-host-ready"]

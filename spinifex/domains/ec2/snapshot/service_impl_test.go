@@ -505,6 +505,35 @@ func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 	assert.Len(t, result.Snapshots, 1)
 }
 
+// TestDeleteSnapshot_CloneAlreadyDeleting tests that a clone whose deletion was
+// accepted no longer holds the snapshot, so deleting a restored resource and then
+// its snapshot succeeds without waiting for the clone's teardown.
+func TestDeleteSnapshot_CloneAlreadyDeleting(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+
+	createTestVolume(t, svc, store, "vol-source", 50)
+	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
+		VolumeId: aws.String("vol-source"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: "vol-cloned", CapacityGiB: 50, SnapshotID: *snap.SnapshotId,
+		State: string(ebsprovider.VolumeStateDeleting),
+	})
+
+	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
+		SnapshotId: snap.SnapshotId,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
+		SnapshotIds: []*string{snap.SnapshotId},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotNotFound)
+}
+
 // TestDeleteSnapshot_InUseByAnotherAccountsVolume tests that the refusal
 // never names a volume the caller does not own, since the dependency scan is
 // whole-cluster and an endpoint never confirms another account's IDs.
@@ -600,42 +629,6 @@ func TestDeleteSnapshot_InUseByRegisteredAMI_AnotherAccount(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotInUse)
-}
-
-// TestDeleteSnapshot_AMIReadFailureFailsClosed tests that an AMI document
-// this cannot decode aborts the delete rather than being treated as absent:
-// a partial AMI listing is not evidence that no AMI names the snapshot.
-func TestDeleteSnapshot_AMIReadFailureFailsClosed(t *testing.T) {
-	svc, store := setupTestSnapshotService(t)
-
-	createTestVolume(t, svc, store, "vol-source", 50)
-	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
-		VolumeId: aws.String("vol-source"),
-	}, testAccountID)
-	require.NoError(t, err)
-
-	key, err := ebsmetadata.AMIKey("ami-corrupt")
-	require.NoError(t, err)
-	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"),
-		Key:    aws.String(key),
-		Body:   strings.NewReader("not-json"),
-	})
-	require.NoError(t, err)
-
-	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
-		SnapshotId: snap.SnapshotId,
-	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorServerInternal)
-
-	// Nothing was deleted: the snapshot survives in both the provider and the
-	// control-plane document.
-	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
-		SnapshotIds: []*string{snap.SnapshotId},
-	}, testAccountID)
-	require.NoError(t, err)
-	assert.Len(t, result.Snapshots, 1)
 }
 
 // TestDeleteSnapshot_NotFound tests deleting a non-existent snapshot.

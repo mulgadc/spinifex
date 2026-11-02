@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // Legacy answers service selection for signed services not yet registered,
@@ -42,6 +44,14 @@ func (s *Selector) Lookup(service string) (*Entry, bool) {
 	return s.registry.Lookup(service)
 }
 
+// Traits returns the traits declared for a credential scope, served or not.
+func (s *Selector) Traits(service string) (ServiceTraits, bool) {
+	if s.registry == nil {
+		return ServiceTraits{}, false
+	}
+	return s.registry.Traits(service)
+}
+
 // Served reports whether either dispatch path serves service.
 func (s *Selector) Served(service string) bool {
 	if _, ok := s.Lookup(service); ok {
@@ -59,13 +69,25 @@ func (s *Selector) ResolveAction(r *http.Request, service string) string {
 	return s.legacy.ResolveAction(r, service)
 }
 
-// JSONErrors reports whether service's errors render in the AWS JSON 1.1
-// envelope: a registration's declared envelope, else the legacy answer.
+// JSONErrors reports whether service's errors render in a JSON envelope: a
+// registration's declared envelope, else the legacy answer.
 func (s *Selector) JSONErrors(service string) bool {
 	if e, ok := s.Lookup(service); ok {
-		return e.ErrorEnvelope() == ErrorEnvelopeJSON
+		return e.ErrorEnvelope().IsJSON()
 	}
 	return s.legacy.JSONErrors(service)
+}
+
+// ErrorProtocol returns the JSON protocol service's errors use; ok is false
+// when they render as XML. A service served only by the legacy path is JSON 1.1.
+func (s *Selector) ErrorProtocol(service string) (p envelope.Protocol, ok bool) {
+	if e, found := s.Lookup(service); found {
+		return e.ErrorEnvelope().Protocol()
+	}
+	if s.legacy.JSONErrors(service) {
+		return envelope.ProtocolJSON11, true
+	}
+	return envelope.ProtocolJSON11, false
 }
 
 // Validate fails if any name the registry serves, alias included, is also

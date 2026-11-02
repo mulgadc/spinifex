@@ -29,10 +29,7 @@ func (e RepositoryEndpoint) RegistryURIHost(accountID string) string {
 	if host == "" {
 		host = accountID + ".dkr.ecr." + e.Region + "." + e.ServicesDomain
 	}
-	if e.RegistryPort != "" && e.RegistryPort != "443" {
-		return host + ":" + e.RegistryPort
-	}
-	return host
+	return ecr.RegistryURIHost(host, e.RegistryPort)
 }
 
 // RepositoryURI returns the pull/push URI for an account-scoped repository.

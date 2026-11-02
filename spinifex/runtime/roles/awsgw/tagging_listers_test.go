@@ -22,12 +22,12 @@ import (
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 const (
@@ -101,7 +101,10 @@ func TestEC2IndexLister_ListsCallerIndexEntriesAsRegionalARNs(t *testing.T) {
 	nc, svc := newEC2IndexFixture(t)
 	seedEC2Tags(t, svc, listerAccount, []string{"sg-0000000000000000a"}, map[string]string{"env": "prod", "Name": "web"})
 	seedEC2Tags(t, svc, listerAccount, []string{"subnet-0000000000000000b"}, map[string]string{"env": "dev"})
-	seedEC2Tags(t, svc, listerAccount, []string{"not-a-real-id", "vol-00000000000000000"}, map[string]string{"env": "orphan"})
+	seedEC2Tags(t, svc, listerAccount, []string{"vol-00000000000000000"}, map[string]string{"env": "orphan"})
+	// CreateTags rejects an unrecognised prefix, but an entry stored before it
+	// did is still in the index and still listed.
+	require.NoError(t, svc.PutResourceTags(t.Context(), listerAccount, "not-a-real-id", map[string]string{"env": "orphan"}))
 	seedEC2Tags(t, svc, foreignAccount, []string{"sg-0000000000000000f"}, map[string]string{"env": "other"})
 
 	got, err := newEC2IndexLister(nc, listerRegion).ListTagged(t.Context(), listerAccount, nil)
@@ -198,7 +201,7 @@ func TestEC2ARN(t *testing.T) {
 // embedded JetStream, recording the ARN count of every DescribeTags request.
 type elbv2Fixture struct {
 	nc    *nats.Conn
-	store *handlers_elbv2.Store
+	store *elbv2domain.Store
 
 	mu            sync.Mutex
 	describeCalls int
@@ -208,12 +211,12 @@ type elbv2Fixture struct {
 func newELBv2Fixture(t *testing.T) *elbv2Fixture {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
+	svc, err := elbv2domain.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
 	t.Cleanup(svc.Close)
-	store, err := handlers_elbv2.NewStore(t.Context(), nc)
+	store, err := elbv2domain.NewStore(t.Context(), nc)
 	require.NoError(t, err)
 
 	f := &elbv2Fixture{nc: nc, store: store}
@@ -255,7 +258,7 @@ func (f *elbv2Fixture) calls() (describes int, batches []int) {
 func (f *elbv2Fixture) putLB(t *testing.T, accountID, name, id string, tags map[string]string) string {
 	t.Helper()
 	lbARN := arn.FormatELBv2LoadBalancer(listerRegion, accountID, name, id, "application")
-	require.NoError(t, f.store.PutLoadBalancer(t.Context(), &handlers_elbv2.LoadBalancerRecord{
+	require.NoError(t, f.store.PutLoadBalancer(t.Context(), &elbv2domain.LoadBalancerRecord{
 		LoadBalancerArn: lbARN, LoadBalancerID: id, Name: name, Type: "application", AccountID: accountID, Tags: tags,
 	}))
 	return lbARN
@@ -264,7 +267,7 @@ func (f *elbv2Fixture) putLB(t *testing.T, accountID, name, id string, tags map[
 func (f *elbv2Fixture) putTG(t *testing.T, accountID, name, id string, tags map[string]string) string {
 	t.Helper()
 	tgARN := arn.FormatELBv2TargetGroup(listerRegion, accountID, name, id)
-	require.NoError(t, f.store.PutTargetGroup(t.Context(), &handlers_elbv2.TargetGroupRecord{
+	require.NoError(t, f.store.PutTargetGroup(t.Context(), &elbv2domain.TargetGroupRecord{
 		TargetGroupArn: tgARN, TargetGroupID: id, Name: name, AccountID: accountID, Tags: tags,
 	}))
 	return tgARN

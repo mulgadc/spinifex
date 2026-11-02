@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +32,8 @@ func newOverrideService(t *testing.T) (*Service, jetstream.KeyValue) {
 func TestLimitsForAbsentKeyInherits(t *testing.T) {
 	svc, _ := newOverrideService(t)
 
-	got := svc.limitsFor(t.Context(), "123456789012")
+	got, err := svc.limitsFor(t.Context(), "123456789012")
+	require.NoError(t, err)
 	require.Equal(t, baseLimits(), got)
 }
 
@@ -44,10 +46,14 @@ func TestLimitsForIsPerAccount(t *testing.T) {
 	require.NoError(t, svc.PutAccountQuota(t.Context(), upgraded,
 		Overrides{VCPUs: ptr(32), RDSInstances: ptr(8)}, "operator"))
 
-	require.Equal(t, 32, svc.limitsFor(t.Context(), upgraded).VCPUs)
-	require.Equal(t, 8, svc.limitsFor(t.Context(), upgraded).RDSInstances)
-	require.Equal(t, baseLimits().VCPUs, svc.limitsFor(t.Context(), sandbox).VCPUs)
-	require.Equal(t, baseLimits().RDSInstances, svc.limitsFor(t.Context(), sandbox).RDSInstances)
+	upgradedLimits, err := svc.limitsFor(t.Context(), upgraded)
+	require.NoError(t, err)
+	sandboxLimits, err := svc.limitsFor(t.Context(), sandbox)
+	require.NoError(t, err)
+	require.Equal(t, 32, upgradedLimits.VCPUs)
+	require.Equal(t, 8, upgradedLimits.RDSInstances)
+	require.Equal(t, baseLimits().VCPUs, sandboxLimits.VCPUs)
+	require.Equal(t, baseLimits().RDSInstances, sandboxLimits.RDSInstances)
 }
 
 // A stored override must round-trip through KV with its provenance, and an
@@ -79,7 +85,9 @@ func TestPutAccountQuotaEmptyClears(t *testing.T) {
 
 	_, err := kv.Get(t.Context(), account)
 	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
-	require.Equal(t, baseLimits(), svc.limitsFor(t.Context(), account))
+	limits, err := svc.limitsFor(t.Context(), account)
+	require.NoError(t, err)
+	require.Equal(t, baseLimits(), limits)
 }
 
 // Clearing an account that never had a record must succeed rather than fail on
@@ -97,8 +105,10 @@ func TestPutAccountQuotaExplicitZero(t *testing.T) {
 
 	require.NoError(t, svc.PutAccountQuota(t.Context(), account, Overrides{VPCs: ptr(0)}, "operator"))
 
-	require.Equal(t, 0, svc.limitsFor(t.Context(), account).VPCs)
-	require.Error(t, exceeds(0, 1, svc.limitsFor(t.Context(), account).VPCs))
+	limits, err := svc.limitsFor(t.Context(), account)
+	require.NoError(t, err)
+	require.Equal(t, 0, limits.VPCs)
+	require.Error(t, exceeds(0, 1, limits.VPCs))
 }
 
 // A corrupt record is a read failure, not an absent one: it must fall back to
@@ -110,7 +120,9 @@ func TestLimitsForCorruptRecordFailsClosed(t *testing.T) {
 	_, err := kv.Put(t.Context(), account, []byte("{not json"))
 	require.NoError(t, err)
 
-	require.Equal(t, baseLimits(), svc.limitsFor(t.Context(), account),
+	limits, err := svc.limitsFor(t.Context(), account)
+	require.NoError(t, err, "a decode failure must fall back, not error, from limitsFor")
+	require.Equal(t, baseLimits(), limits,
 		"a corrupt override must fall back to the configured limits")
 
 	_, _, err = svc.GetAccountQuota(t.Context(), account)
@@ -122,4 +134,37 @@ func TestLimitsForCorruptRecordFailsClosed(t *testing.T) {
 func TestPutAccountQuotaWithoutBucket(t *testing.T) {
 	svc := New(baseLimits(), nil)
 	require.Error(t, svc.PutAccountQuota(t.Context(), "000000000002", Overrides{VCPUs: ptr(32)}, "operator"))
+}
+
+// The cap DescribeAccountLimits reports follows the account's stored override
+// and falls back to the configured baseline for an account without one.
+func TestLoadBalancerLimit_FollowsPerAccountOverride(t *testing.T) {
+	svc, _ := newOverrideService(t)
+	const upgraded, plain = "000000000002", "000000000003"
+	require.NoError(t, svc.PutAccountQuota(t.Context(), upgraded, Overrides{LoadBalancers: ptr(31)}, "operator"))
+
+	got, err := svc.LoadBalancerLimit(t.Context(), upgraded)
+	require.NoError(t, err)
+	require.Equal(t, 31, got)
+
+	got, err = svc.LoadBalancerLimit(t.Context(), plain)
+	require.NoError(t, err)
+	require.Equal(t, baseLimits().LoadBalancers, got)
+}
+
+// A sealed account is refused with Blocked, and an unreadable record is an
+// InternalError, never a made-up number.
+func TestLoadBalancerLimit_RefusesSealedAndUnreadableRecords(t *testing.T) {
+	svc, kv := newOverrideService(t)
+	const sealed, corrupt = "000000000004", "000000000005"
+	_, err := kv.Put(t.Context(), sealed, []byte(`{"state":"sealed"}`))
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), corrupt, []byte(`not json`))
+	require.NoError(t, err)
+
+	_, err = svc.LoadBalancerLimit(t.Context(), sealed)
+	require.EqualError(t, err, awserrors.ErrorBlocked)
+
+	_, err = svc.LoadBalancerLimit(t.Context(), corrupt)
+	require.EqualError(t, err, awserrors.ErrorInternalError)
 }

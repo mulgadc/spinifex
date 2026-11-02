@@ -5,6 +5,7 @@ package image
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -13,8 +14,12 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDescribeImagesInput accepts a nil input and rejects any ImageIds entry without the ami-
-// prefix with InvalidAMIID.Malformed.
+// imageIDSuffixPattern is the AWS AMI ID shape after ami-: 8 (legacy) or 17
+// lowercase hex characters.
+var imageIDSuffixPattern = regexp.MustCompile(`^([0-9a-f]{8}|[0-9a-f]{17})$`)
+
+// ValidateDescribeImagesInput accepts a nil input and rejects any ImageIds entry that is not
+// ami- followed by 8 or 17 lowercase hex characters with InvalidAMIID.Malformed.
 func ValidateDescribeImagesInput(input *ec2.DescribeImagesInput) (err error) {
 	if input == nil {
 		return nil
@@ -22,8 +27,15 @@ func ValidateDescribeImagesInput(input *ec2.DescribeImagesInput) (err error) {
 
 	if input.ImageIds != nil {
 		for _, imageId := range input.ImageIds {
-			if imageId != nil && !strings.HasPrefix(*imageId, "ami-") {
+			if imageId == nil {
+				continue
+			}
+			suffix, ok := strings.CutPrefix(*imageId, "ami-")
+			if !ok {
 				return errors.New(awserrors.ErrorInvalidAMIIDMalformed)
+			}
+			if !imageIDSuffixPattern.MatchString(suffix) {
+				return awserrors.Errorf(awserrors.ErrorInvalidAMIIDMalformed, "Invalid id: %q", *imageId)
 			}
 		}
 	}
@@ -34,11 +46,6 @@ func ValidateDescribeImagesInput(input *ec2.DescribeImagesInput) (err error) {
 // DescribeImages implements the EC2 DescribeImages action, returning the AMIs visible to
 // accountID from the NATS image service.
 func DescribeImages(ctx context.Context, input *ec2.DescribeImagesInput, natsConn *nats.Conn, accountID string) (output ec2.DescribeImagesOutput, err error) {
-	err = ValidateDescribeImagesInput(input)
-	if err != nil {
-		return output, err
-	}
-
 	imageService := ec2image.NewNATSImageService(natsConn, 0)
 	result, err := imageService.DescribeImages(ctx, input, accountID)
 	if err != nil {

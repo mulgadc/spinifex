@@ -28,6 +28,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
 	toml "github.com/pelletier/go-toml/v2"
 	"gopkg.in/ini.v1"
 )
@@ -90,6 +91,10 @@ type ConfigSettings struct {
 
 	// Node capabilities
 	Services []string
+
+	// NameserverNodes pins the published nameservers, rendered as
+	// [northstar] nameserver_nodes. Empty leaves the key out.
+	NameserverNodes []string
 
 	// OVN Northbound DB address — "tcp:127.0.0.1:6641" on the primary node,
 	// "tcp:<primary-mgmt-ip>:6641" on joining nodes.
@@ -245,8 +250,12 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, a
 		// Print manual instructions only when not root (root gets auto-install)
 		if os.Getuid() != 0 {
 			fmt.Println("\n📋 To trust the Spinifex CA system-wide (recommended):")
-			fmt.Printf("   sudo cp %s /usr/local/share/ca-certificates/spinifex-ca.crt\n", caCertPath)
-			fmt.Println("   sudo update-ca-certificates")
+			if trust, err := hostos.SystemCATrust(); err == nil {
+				fmt.Printf("   sudo cp %s %s\n", caCertPath, filepath.Join(trust.AnchorDir, "spinifex-ca.crt"))
+				fmt.Printf("   sudo %s\n", trust.Update.Name)
+			} else {
+				fmt.Printf("   Add %s to the host trust store (%v)\n", caCertPath, err)
+			}
 			fmt.Println("\n   This allows AWS CLI and other tools to trust Spinifex services automatically.")
 		}
 	} else {
@@ -254,11 +263,7 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, a
 	}
 
 	if force || !FileExists(serverCertPath) || !FileExists(serverKeyPath) {
-		extraDNS := AWSGWServiceDNSNames(awsRegion, servicesDomain)
-		// Always pin the canonical mgmt-bridge IP; the control plane publishes to
-		// it regardless of whether br-mgmt is up when this cert is minted.
-		extraIPs := []string{bindIP, config.DefaultMgmtBridgeIP}
-		if err := GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS); err != nil {
+		if err := GenerateServerCert(configDir, bindIP, awsRegion, servicesDomain, nil, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
 			os.Exit(1)
 		}
@@ -276,19 +281,25 @@ func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, a
 // Used by joining nodes that receive the CA from the leader. awsRegion and
 // servicesDomain add the AWS-parity ECR SANs; empty values omit them.
 func GenerateServerCertOnly(configDir string, bindIP, awsRegion, servicesDomain string) error {
+	return GenerateServerCert(configDir, bindIP, awsRegion, servicesDomain, nil, nil)
+}
+
+// GenerateServerCert (re)issues configDir's server.pem/server.key from its CA.
+// Every server cert carries the bind IP, the mgmt-bridge IP and the AWS-parity
+// service names on top of extraIPs/extraDNS, so no issuer can drop them.
+func GenerateServerCert(configDir, bindIP, awsRegion, servicesDomain string, extraIPs, extraDNS []string) error {
 	caCertPath := filepath.Join(configDir, "ca.pem")
 	caKeyPath := filepath.Join(configDir, "ca.key")
-	serverCertPath := filepath.Join(configDir, "server.pem")
-	serverKeyPath := filepath.Join(configDir, "server.key")
-
 	if !FileExists(caCertPath) || !FileExists(caKeyPath) {
 		return fmt.Errorf("CA files not found in %s", configDir)
 	}
 
-	extraDNS := AWSGWServiceDNSNames(awsRegion, servicesDomain)
-	// Always pin the canonical mgmt-bridge IP (see GenerateCertificatesIfNeeded).
-	extraIPs := []string{bindIP, config.DefaultMgmtBridgeIP}
-	return GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS)
+	// Always pin the canonical mgmt-bridge IP; the control plane publishes to
+	// it regardless of whether br-mgmt is up when this cert is minted.
+	ips := append([]string{bindIP, config.DefaultMgmtBridgeIP}, extraIPs...)
+	dnsNames := append(AWSGWServiceDNSNames(awsRegion, servicesDomain), extraDNS...)
+	return GenerateSignedCert(filepath.Join(configDir, "server.pem"), filepath.Join(configDir, "server.key"),
+		caCertPath, caKeyPath, ips, dnsNames)
 }
 
 // PredastoreDataDir is the root a Predastore host keeps its per-node state

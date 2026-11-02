@@ -598,6 +598,7 @@ detect_instance_type() {
 }
 
 INSTANCE_TYPE=""
+CLUSTER_REGION=$(aws configure get region --profile spinifex 2>/dev/null || true)
 
 # --- Workbook driver ---
 
@@ -636,6 +637,10 @@ run_workbook() {
         "-var=spinifex_endpoint=https://${WAN_IP}:9999"
         "-var=${size_var}=${instance_type}"
     )
+
+    # The cluster's own region, which signs every request: a workbook's default
+    # is only right on a cluster that happens to use it.
+    [ -n "$CLUSTER_REGION" ] && apply_args+=("-var=region=${CLUSTER_REGION}")
 
     # ecs-quickstart's gateway_url is required and has no default: the container
     # instances read it from their own user-data, so it must be the address a

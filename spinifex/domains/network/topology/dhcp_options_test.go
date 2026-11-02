@@ -54,6 +54,24 @@ func TestSubnetMTU_ClampsImplausibleUnderlay(t *testing.T) {
 	}
 }
 
+func TestGatewayMTU(t *testing.T) {
+	tests := []struct {
+		underlay int
+		ipsec    bool
+		want     int
+	}{
+		{1500, false, 1442},
+		{1500, true, 1408},
+		{9000, false, 1500},
+		{9000, true, 1500},
+	}
+	for _, tt := range tests {
+		if got := GatewayMTU(tt.underlay, tt.ipsec); got != tt.want {
+			t.Errorf("GatewayMTU(%d, ipsec=%v) = %d, want %d", tt.underlay, tt.ipsec, got, tt.want)
+		}
+	}
+}
+
 func TestBuildSubnetDHCPOptions_MTUFollowsIPSec(t *testing.T) {
 	on := BuildSubnetDHCPOptions("10.0.1.1", "02:00:00:00:00:01", "{8.8.8.8}", DefaultUnderlayMTU, true)
 	if got := on["mtu"]; got != "1408" {

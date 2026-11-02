@@ -1,22 +1,39 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path"
 	"reflect"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 )
 
 // fakeNetworkPlumber records calls so tests can assert per-spec behaviour.
 type fakeNetworkPlumber struct {
+	mu                  sync.Mutex
+	order               []string // cleanup, detach and repair calls, in order
+	detachHook          func()
+	cleanupHook         func()
+	repairHook          func()
+	repairCtxHook       func(context.Context) error // runs inside a repair; its error is the repair's
+	statesHook          func(context.Context) error // runs inside a state read; its error is the read's
 	setupCalls          []TapSpec
 	cleanupCalls        []string
 	imdsAttachCalls     []imdsAttachCall
 	imdsDetachCalls     []string
+	imdsRepairCalls     []imdsAttachCall
+	imdsStates          map[string]IMDSDatapathState
+	imdsStatesErr       error
+	imdsRepairErr       error
 	hostPortCalls       []hostPortCall
 	hostPortRemoveCalls []string
 	ensureBridgeCalls   int
@@ -49,7 +66,13 @@ func (p *fakeNetworkPlumber) SetupTap(spec TapSpec) error {
 }
 
 func (p *fakeNetworkPlumber) CleanupTap(name string) error {
+	if p.cleanupHook != nil {
+		p.cleanupHook()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.cleanupCalls = append(p.cleanupCalls, name)
+	p.order = append(p.order, "cleanup:"+name)
 	return p.cleanupErr
 }
 
@@ -59,8 +82,54 @@ func (p *fakeNetworkPlumber) AttachIMDSDatapath(eniID, mac, subnetID string) err
 }
 
 func (p *fakeNetworkPlumber) DetachIMDSDatapath(eniID string) error {
+	if p.detachHook != nil {
+		p.detachHook()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.imdsDetachCalls = append(p.imdsDetachCalls, eniID)
+	p.order = append(p.order, "detach:"+eniID)
 	return p.imdsDetachErr
+}
+
+func (p *fakeNetworkPlumber) IMDSDatapathStates(ctx context.Context, eniIDs []string) (map[string]IMDSDatapathState, error) {
+	if p.statesHook != nil {
+		if err := p.statesHook(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if p.imdsStatesErr != nil {
+		return nil, p.imdsStatesErr
+	}
+	out := make(map[string]IMDSDatapathState, len(eniIDs))
+	for _, id := range eniIDs {
+		if s, ok := p.imdsStates[id]; ok {
+			out[id] = s
+		}
+	}
+	return out, nil
+}
+
+func (p *fakeNetworkPlumber) RepairIMDSDatapath(ctx context.Context, eniID, mac, subnetID string) error {
+	if p.repairHook != nil {
+		p.repairHook()
+	}
+	if p.repairCtxHook != nil {
+		if err := p.repairCtxHook(ctx); err != nil {
+			return err
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.imdsRepairCalls = append(p.imdsRepairCalls, imdsAttachCall{eniID: eniID, mac: mac, subnetID: subnetID})
+	p.order = append(p.order, "repair:"+eniID)
+	return p.imdsRepairErr
+}
+
+func (p *fakeNetworkPlumber) repairCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.imdsRepairCalls)
 }
 
 func (p *fakeNetworkPlumber) EnsureIMDSDatapathBridge() error {
@@ -100,6 +169,32 @@ func TestMgmtTapName(t *testing.T) {
 				t.Errorf("MgmtTapName(%q) = %q (len %d), exceeds IFNAMSIZ", tt.instanceID, got, len(got))
 			}
 		})
+	}
+}
+
+// TestMgmtTapNameMatchesNMUnmanagedGlob checks the udev glob setup-ovn.sh uses
+// to keep NetworkManager off management TAPs matches every real TAP name, and
+// not a host NIC that merely starts with "mg".
+func TestMgmtTapNameMatchesNMUnmanagedGlob(t *testing.T) {
+	data, err := os.ReadFile("../../../../scripts/setup-ovn.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^MGMT_TAP_GLOB='([^']+)'$`).FindSubmatch(data)
+	if m == nil {
+		t.Fatal("setup-ovn.sh: no MGMT_TAP_GLOB")
+	}
+	glob := string(m[1])
+	for range 1000 {
+		tap := MgmtTapName(identifiers.GenerateResourceID("i"))
+		if ok, err := path.Match(glob, tap); err != nil || !ok {
+			t.Fatalf("glob %q does not match TAP %q (err %v)", glob, tap, err)
+		}
+	}
+	for _, name := range []string{"mgmt0", "mgmt", "br-mgmt", "mg0123456789abcdef"} {
+		if ok, _ := path.Match(glob, name); ok {
+			t.Errorf("glob %q matches %q, which is not a management TAP", glob, name)
+		}
 	}
 }
 

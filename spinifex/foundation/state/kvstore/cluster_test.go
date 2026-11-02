@@ -3,8 +3,7 @@ package kvstore_test
 import (
 	"context"
 	"fmt"
-	"net"
-	"strings"
+	"net/url"
 	"testing"
 	"time"
 
@@ -18,36 +17,42 @@ import (
 )
 
 // startJetStreamCluster starts n routed JetStream servers and returns a handle
-// connected to the first, so a create can actually place n replicas.
+// connected to the first once a create can actually place n replicas.
 func startJetStreamCluster(t *testing.T, n int) jetstream.JetStream {
 	t.Helper()
-	ports := make([]int, n)
-	routes := make([]string, n)
-	for i := range ports {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		ports[i] = l.Addr().(*net.TCPAddr).Port
-		require.NoError(t, l.Close())
-		routes[i] = fmt.Sprintf("nats://127.0.0.1:%d", ports[i])
-	}
+	// Servers bind their own route ports, so none is ever free to be taken.
+	// JetStream needs a configured route, so the first, which cannot name the
+	// others yet, gets port 1, where nothing listens; the rest route to it.
+	seed := []*url.URL{{Scheme: "nats", Host: "127.0.0.1:1"}}
 	servers := make([]*server.Server, n)
 	for i := range servers {
 		ns, err := server.NewServer(&server.Options{
 			ServerName: fmt.Sprintf("s%d", i+1), JetStream: true, StoreDir: t.TempDir(),
 			Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true,
-			Cluster: server.ClusterOpts{Name: "kvstore", Host: "127.0.0.1", Port: ports[i]},
-			Routes:  server.RoutesFromStr(strings.Join(routes, ",")),
+			Cluster: server.ClusterOpts{Name: "kvstore", Host: "127.0.0.1", Port: -1},
+			Routes:  seed,
 		})
 		require.NoError(t, err)
 		ns.Start()
 		servers[i] = ns
-	}
-	t.Cleanup(func() {
-		for _, ns := range servers {
-			ns.Shutdown()
-			ns.WaitForShutdown()
+		// Registered after its TempDir, so the server stops before that is removed.
+		t.Cleanup(func() { ns.Shutdown(); ns.WaitForShutdown() })
+		require.True(t, ns.ReadyForConnections(10*time.Second), "server %d not ready", i+1)
+		if i == 0 {
+			seed = []*url.URL{{Scheme: "nats", Host: ns.ClusterAddr().String()}}
 		}
-	})
+	}
+
+	// The meta leader places replicas only on peers it has stats for, which
+	// can trail its election, so a create before then finds too few peers.
+	require.Eventually(t, func() bool {
+		for _, ns := range servers {
+			if len(ns.JetStreamClusterPeers()) == n {
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 50*time.Millisecond, "meta leader never had stats for all %d peers", n)
 
 	nc, err := nats.Connect("", nats.InProcessServer(servers[0]))
 	require.NoError(t, err)

@@ -12,7 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,7 +49,7 @@ func TestDBVMIsolation(t *testing.T) {
 
 	harness.Phase(t, "Creating DB instance %q in a second tenant", theirs)
 	other := isolationSecondTenant(t, f, suffix)
-	_, err := other.RDS.CreateDBInstance(validCreateInput(theirs)) //nolint:staticcheck // e2e:allow-create — the second tenant's own instance
+	_, err := other.RDS.CreateDBInstance(validCreateInput(theirs)) //nolint:staticcheck // The second tenant's own instance.
 	require.NoError(t, err, "create-db-instance %s in the second tenant", theirs)
 	t.Cleanup(func() { deleteInstanceAs(t, other, theirs) })
 
@@ -89,7 +89,7 @@ func TestDBVMIsolation(t *testing.T) {
 	// not be admitted on the system NIC. Both instances' system NICs live in the
 	// same shared VPC, so the group they carry is what separates them.
 	t.Run("TheSystemNICCarriesAnIngressFreeGroup", func(t *testing.T) {
-		want := handlers_rds.SystemSecurityGroupName(f.Region)
+		want := rdsinstance.SystemSecurityGroupName(f.Region)
 
 		var vpcIDs []string
 		for _, id := range []string{mine, theirs} {

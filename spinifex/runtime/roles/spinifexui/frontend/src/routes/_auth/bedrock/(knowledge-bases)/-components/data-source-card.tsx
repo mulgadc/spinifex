@@ -69,11 +69,11 @@ export function DataSourceCard({
   }
 
   return (
-    <div className="rounded-lg border bg-card p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <div>
-          <h3 className="font-medium">{dataSource.name}</h3>
-          <p className="font-mono text-xs text-muted-foreground">
+    <li className="py-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate font-medium">{dataSource.name}</p>
+          <p className="truncate font-mono text-xs text-muted-foreground">
             {dataSourceId}
           </p>
         </div>
@@ -87,14 +87,14 @@ export function DataSourceCard({
             size="icon-sm"
             variant="destructive"
           >
-            <Trash2 className="size-3.5" />
+            <Trash2 />
           </Button>
         </div>
       </div>
 
-      <h4 className="mb-1 text-xs font-medium text-muted-foreground">
+      <p className="mb-1 text-xs font-medium text-muted-foreground">
         Recent ingestion jobs
-      </h4>
+      </p>
       {isLoading && (
         <p className="text-sm text-muted-foreground">Loading jobs…</p>
       )}
@@ -133,8 +133,8 @@ export function DataSourceCard({
         }}
         onOpenChange={setShowDelete}
         open={showDelete}
-        title="Remove Data Source"
+        title="Remove data source"
       />
-    </div>
+    </li>
   )
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -139,12 +140,12 @@ func TestLookupServesEveryNameOfOneRegistration(t *testing.T) {
 func TestUnknownServiceKeepsTheEstablishedResult(t *testing.T) {
 	b := NewBuilder()
 	require.NoError(t, b.Register(validReg("ecr")))
-	_, ok := b.Build().Lookup("route53")
+	_, ok := b.Build().Lookup("sqs")
 	assert.False(t, ok)
 
-	code, msg := UnknownService("route53")
+	code, msg := UnknownService("sqs")
 	assert.Equal(t, awserrors.ErrorInvalidAction, code)
-	assert.Equal(t, `Service "route53" is not served by this gateway.`, msg)
+	assert.Equal(t, `Service "sqs" is not served by this gateway.`, msg)
 }
 
 func TestResolveActionIsAdvisory(t *testing.T) {
@@ -223,4 +224,178 @@ func TestRegistryAllowsConcurrentReads(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+func TestRegisterValidatesErrorSpecs(t *testing.T) {
+	spec := &ErrorSpec{Code: "Throttled", Status: 429}
+	mutate := map[string]func(*Registration){
+		"throttle on XML":         func(r *Registration) { r.Errors = ErrorEnvelopeXML; r.Throttle = spec },
+		"throttle without code":   func(r *Registration) { r.Throttle = &ErrorSpec{Status: 429} },
+		"throttle with 2xx":       func(r *Registration) { r.Throttle = &ErrorSpec{Code: "X", Status: 200} },
+		"query codes on JSON 1.1": func(r *Registration) { r.QueryErrorCodes = map[string]string{"A": "B"} },
+		"namespaces on JSON 1.1":  func(r *Registration) { r.ErrorNamespaces = map[string]string{"A": "ns"} },
+		"namespace on JSON 1.1":   func(r *Registration) { r.ErrorNamespace = "com.amazonaws.sqs" },
+		"empty query code": func(r *Registration) {
+			r.Errors = ErrorEnvelopeJSON10Query
+			r.QueryErrorCodes = map[string]string{"A": ""}
+		},
+	}
+	for name, m := range mutate {
+		t.Run(name, func(t *testing.T) {
+			r := validReg("ecr")
+			m(&r)
+			require.Error(t, NewBuilder().Register(r))
+		})
+	}
+
+	for _, env := range []ErrorEnvelope{ErrorEnvelopeRESTJSON, ErrorEnvelopeJSON10Query} {
+		r := validReg("svc")
+		r.Errors = env
+		r.Throttle = spec
+		require.NoError(t, NewBuilder().Register(r))
+	}
+}
+
+func TestEntryThrottleErrorDefaultsPerEnvelope(t *testing.T) {
+	entry := func(env ErrorEnvelope) *Entry {
+		b := NewBuilder()
+		r := validReg("svc")
+		r.Errors = env
+		require.NoError(t, b.Register(r))
+		e, ok := b.Build().Lookup("svc")
+		require.True(t, ok)
+		return e
+	}
+
+	_, own := entry(ErrorEnvelopeJSON).ThrottleError()
+	assert.False(t, own, "JSON 1.1 keeps the gateway default")
+	_, own = entry(ErrorEnvelopeXML).ThrottleError()
+	assert.False(t, own, "XML keeps the gateway default")
+
+	rest, own := entry(ErrorEnvelopeRESTJSON).ThrottleError()
+	require.True(t, own)
+	assert.Equal(t, ErrorSpec{
+		Code: "TooManyRequestsException", Message: "Rate Exceeded.", Status: 429,
+		Fields: map[string]string{"Reason": "CallerRateLimitExceeded"},
+	}, rest)
+	rest.Fields["Reason"] = "mutated"
+	again, _ := entry(ErrorEnvelopeRESTJSON).ThrottleError()
+	assert.Equal(t, "CallerRateLimitExceeded", again.Fields["Reason"], "a caller cannot mutate the default")
+
+	q, own := entry(ErrorEnvelopeJSON10Query).ThrottleError()
+	require.True(t, own)
+	assert.Equal(t, "RequestThrottled", q.Code)
+	assert.Equal(t, 400, q.Status)
+}
+
+func TestSelectorErrorProtocol(t *testing.T) {
+	b := NewBuilder()
+	for svc, env := range map[string]ErrorEnvelope{
+		"rest": ErrorEnvelopeRESTJSON, "q": ErrorEnvelopeJSON10Query, "j": ErrorEnvelopeJSON, "x": ErrorEnvelopeXML,
+	} {
+		r := validReg(svc)
+		r.Errors = env
+		require.NoError(t, b.Register(r))
+	}
+	sel := NewSelector(b.Build(), nil)
+
+	for svc, want := range map[string]envelope.Protocol{
+		"rest": envelope.ProtocolRESTJSON, "q": envelope.ProtocolJSON10Query, "j": envelope.ProtocolJSON11,
+	} {
+		p, ok := sel.ErrorProtocol(svc)
+		assert.True(t, ok, svc)
+		assert.Equal(t, want, p, svc)
+		assert.True(t, sel.JSONErrors(svc), svc)
+	}
+	_, ok := sel.ErrorProtocol("x")
+	assert.False(t, ok)
+	assert.False(t, sel.JSONErrors("x"))
+	_, ok = sel.ErrorProtocol("unknown")
+	assert.False(t, ok)
+}
+
+func TestEntryQueryErrorCode(t *testing.T) {
+	b := NewBuilder()
+	r := validReg("svc")
+	r.Errors = ErrorEnvelopeJSON10Query
+	r.QueryErrorCodes = map[string]string{"QueueDoesNotExist": "AWS.SimpleQueueService.NonExistentQueue"}
+	require.NoError(t, b.Register(r))
+	e, _ := b.Build().Lookup("svc")
+	assert.Equal(t, "AWS.SimpleQueueService.NonExistentQueue", e.QueryErrorCode("QueueDoesNotExist"))
+	assert.Equal(t, "OverLimit", e.QueryErrorCode("OverLimit"))
+}
+
+func TestEntryInternalErrorCode(t *testing.T) {
+	entry := func(env ErrorEnvelope, code string) *Entry {
+		b := NewBuilder()
+		r := validReg("svc")
+		r.Errors = env
+		r.InternalErrorCode = code
+		require.NoError(t, b.Register(r))
+		e, _ := b.Build().Lookup("svc")
+		return e
+	}
+	code, ok := entry(ErrorEnvelopeRESTJSON, "").InternalErrorCode()
+	assert.True(t, ok)
+	assert.Equal(t, "ServiceException", code)
+	code, ok = entry(ErrorEnvelopeJSON10Query, "").InternalErrorCode()
+	assert.True(t, ok)
+	assert.Equal(t, "InternalFailure", code)
+	code, _ = entry(ErrorEnvelopeRESTJSON, "Mine").InternalErrorCode()
+	assert.Equal(t, "Mine", code)
+	_, ok = entry(ErrorEnvelopeJSON, "").InternalErrorCode()
+	assert.False(t, ok)
+	_, ok = entry(ErrorEnvelopeXML, "").InternalErrorCode()
+	assert.False(t, ok)
+
+	r := validReg("svc")
+	r.InternalErrorCode = "Mine"
+	require.Error(t, NewBuilder().Register(r), "JSON 1.1 cannot set an internal error code")
+}
+
+func TestEntryErrorNamespacePerCodeOverride(t *testing.T) {
+	b := NewBuilder()
+	r := validReg("svc")
+	r.Errors = ErrorEnvelopeJSON10Query
+	r.ErrorNamespace = "com.amazonaws.sqs"
+	r.ErrorNamespaces = map[string]string{"SerializationException": "com.amazon.coral.service"}
+	require.NoError(t, b.Register(r))
+	e, _ := b.Build().Lookup("svc")
+	assert.Equal(t, "com.amazonaws.sqs", e.ErrorNamespace("QueueDoesNotExist"))
+	assert.Equal(t, "com.amazon.coral.service", e.ErrorNamespace("SerializationException"))
+}
+
+func TestRegisterXMLThrottleCodeNeedsXMLEnvelope(t *testing.T) {
+	r := validReg("svc")
+	r.Errors = ErrorEnvelopeXML
+	r.Traits = ServiceTraits{XMLThrottleCode: "Throttling"}
+	b := NewBuilder()
+	require.NoError(t, b.Register(r))
+	e, _ := b.Build().Lookup("svc")
+	assert.Equal(t, "Throttling", e.Traits().XMLThrottleCode)
+
+	r = validReg("other")
+	r.Errors = ErrorEnvelopeJSON
+	r.Traits = ServiceTraits{XMLThrottleCode: "Throttling"}
+	assert.Error(t, NewBuilder().Register(r))
+}
+
+func TestDeclareScope(t *testing.T) {
+	b := NewBuilder()
+	require.NoError(t, b.Register(validReg("svc")))
+	require.NoError(t, b.DeclareScope("other", ServiceTraits{XMLErrorShape: XMLErrorShapeS3}))
+
+	assert.Error(t, b.DeclareScope("svc", ServiceTraits{}), "a served service cannot be declared")
+	assert.Error(t, b.DeclareScope("other", ServiceTraits{}), "a scope is declared once")
+	assert.Error(t, b.DeclareScope("Bad Name", ServiceTraits{}))
+
+	reg := b.Build()
+	traits, ok := reg.Traits("other")
+	require.True(t, ok)
+	assert.Equal(t, XMLErrorShapeS3, traits.XMLErrorShape)
+	_, served := reg.Lookup("other")
+	assert.False(t, served)
+	_, ok = reg.Traits("unknown")
+	assert.False(t, ok)
+	assert.ErrorIs(t, b.DeclareScope("late", ServiceTraits{}), ErrSealed)
 }

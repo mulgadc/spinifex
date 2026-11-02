@@ -25,7 +25,7 @@ var instanceIDPattern = regexp.MustCompile(`^i-([0-9a-f]{8}|[0-9a-f]{17})$`)
 func validateInstanceIDFormat(ids []*string) error {
 	for _, id := range ids {
 		if id != nil && !instanceIDPattern.MatchString(*id) {
-			return errors.New(awserrors.ErrorInvalidInstanceIDMalformed)
+			return awserrors.Errorf(awserrors.ErrorInvalidInstanceIDMalformed, "Invalid id: %q", *id)
 		}
 	}
 	return nil

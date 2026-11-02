@@ -155,6 +155,48 @@ func (s *deleteFailingStore) DeleteObject(ctx context.Context, input *s3.DeleteO
 	return s.MemoryObjectStore.DeleteObject(ctx, input)
 }
 
+// racingDeleteStore lets a concurrent deleter win every DeleteObject once race
+// is set, so the caller's own delete answers NoSuchKey as Predastore would.
+type racingDeleteStore struct {
+	*objectstore.MemoryObjectStore
+
+	race bool
+}
+
+func (s *racingDeleteStore) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+	if s.race {
+		_, _ = s.MemoryObjectStore.DeleteObject(ctx, input)
+	}
+	return s.MemoryObjectStore.DeleteObject(ctx, input)
+}
+
+// A chunk or document another deleter already removed is deleted, not a
+// failure: the sweep and the document delete must both finish.
+func TestDeleteSnapshot_ConcurrentlyDeletedKeysAreDone(t *testing.T) {
+	ctx := context.Background()
+	objects := &racingDeleteStore{MemoryObjectStore: objectstore.NewMemoryObjectStore()}
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewSnapshotServiceImplWithStore(cfg, objects, nil)
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	createTestVolume(t, svc, objects.MemoryObjectStore, "vol-race", 8)
+
+	snap, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-race")}, testAccountID)
+	require.NoError(t, err)
+	snapshotID := aws.StringValue(snap.SnapshotId)
+	_, err = objects.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"), Key: aws.String(snapshotID + "/chunk-0"),
+		Body: strings.NewReader("blocks"),
+	})
+	require.NoError(t, err)
+	objects.race = true
+
+	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: snap.SnapshotId}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.metadata.GetSnapshot(ctx, testAccountID, snapshotID)
+	assert.True(t, objectstore.IsNoSuchKeyError(err), "the document must be gone, got %v", err)
+}
+
 // Isolation must be enforced *by* the read, not by a filter after it. A
 // whole-tree listing plus a correct in-memory filter would return the same
 // snapshots, so this asserts the access pattern: the listing prefix is the

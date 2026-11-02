@@ -55,15 +55,11 @@ func TestNetworkInterface_NamesGroupsAndPrivateAddress(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	sgId := createTestSG(t, svc, vpcId, "web")
+	setHostnames(t, svc, vpcId, true)
 
 	// Without a namer an interface carries no private name.
 	unnamed := createTestENI(t, svc, subnetId)
-	desc, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
-		NetworkInterfaceIds: []*string{aws.String(unnamed)},
-	}, testAccountID)
-	require.NoError(t, err)
-	require.Len(t, desc.NetworkInterfaces, 1)
-	assert.Nil(t, desc.NetworkInterfaces[0].PrivateDnsName)
+	assert.Nil(t, describeTestENI(t, svc, unnamed).PrivateDnsName)
 
 	svc.SetPrivateDNSNamer(func(ip string) string { return "name-of-" + ip })
 	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
@@ -72,13 +68,8 @@ func TestNetworkInterface_NamesGroupsAndPrivateAddress(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	desc, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
-		NetworkInterfaceIds: []*string{out.NetworkInterface.NetworkInterfaceId},
-	}, testAccountID)
-	require.NoError(t, err)
-	require.Len(t, desc.NetworkInterfaces, 1)
-
-	for name, eni := range map[string]*ec2.NetworkInterface{"create": out.NetworkInterface, "describe": desc.NetworkInterfaces[0]} {
+	desc := describeTestENI(t, svc, *out.NetworkInterface.NetworkInterfaceId)
+	for name, eni := range map[string]*ec2.NetworkInterface{"create": out.NetworkInterface, "describe": desc} {
 		want := "name-of-" + aws.StringValue(eni.PrivateIpAddress)
 		assert.Equal(t, want, aws.StringValue(eni.PrivateDnsName), name)
 		require.Len(t, eni.PrivateIpAddresses, 1, name)
@@ -87,6 +78,58 @@ func TestNetworkInterface_NamesGroupsAndPrivateAddress(t *testing.T) {
 		assert.Equal(t, sgId, aws.StringValue(eni.Groups[0].GroupId), name)
 		assert.Equal(t, "web", aws.StringValue(eni.Groups[0].GroupName), name)
 	}
+}
+
+func TestNetworkInterface_PrivateDnsNameFollowsVpcDnsHostnames(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	svc.SetPrivateDNSNamer(func(ip string) string { return "name-of-" + ip })
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+
+	// A new VPC has enableDnsHostnames off, so its interfaces go unnamed.
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(subnetId),
+	}, testAccountID)
+	require.NoError(t, err)
+	eniId := *out.NetworkInterface.NetworkInterfaceId
+	for name, eni := range map[string]*ec2.NetworkInterface{"create": out.NetworkInterface, "describe": describeTestENI(t, svc, eniId)} {
+		assert.Nil(t, eni.PrivateDnsName, name)
+		require.Len(t, eni.PrivateIpAddresses, 1, name)
+		assert.Nil(t, eni.PrivateIpAddresses[0].PrivateDnsName, name)
+	}
+
+	// Turning the flag on names the existing interface.
+	setHostnames(t, svc, vpcId, true)
+	eni := describeTestENI(t, svc, eniId)
+	want := "name-of-" + aws.StringValue(eni.PrivateIpAddress)
+	assert.Equal(t, want, aws.StringValue(eni.PrivateDnsName))
+	assert.Equal(t, want, aws.StringValue(eni.PrivateIpAddresses[0].PrivateDnsName))
+
+	// And turning it off again drops the name.
+	setHostnames(t, svc, vpcId, false)
+	eni = describeTestENI(t, svc, eniId)
+	assert.Nil(t, eni.PrivateDnsName)
+	assert.Nil(t, eni.PrivateIpAddresses[0].PrivateDnsName)
+}
+
+func setHostnames(t *testing.T, svc *VPCServiceImpl, vpcId string, on bool) {
+	t.Helper()
+	_, err := svc.ModifyVpcAttribute(context.Background(), &ec2.ModifyVpcAttributeInput{
+		VpcId:              aws.String(vpcId),
+		EnableDnsHostnames: &ec2.AttributeBooleanValue{Value: aws.Bool(on)},
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
+func describeTestENI(t *testing.T, svc *VPCServiceImpl, eniId string) *ec2.NetworkInterface {
+	t.Helper()
+	desc, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.NetworkInterfaces, 1)
+	return desc.NetworkInterfaces[0]
 }
 
 func TestCreateNetworkInterface_SequentialIPs(t *testing.T) {

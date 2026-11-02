@@ -8,22 +8,24 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
-	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
+	route53domain "github.com/mulgadc/spinifex/spinifex/domains/route53"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
 
-// StartServiceDaemonLite subscribes the real ACM, ECS, EKS, ELBv2 and RDS
+// StartServiceDaemonLite subscribes the real ACM, ECS, EKS, ELBv2, RDS and Route 53
 // services to their "<service>.<Method>" subjects. ECS and RDS run without
 // their provisioning dependencies, so checks that need them do not run.
 func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	t.Helper()
 	nc := gw.NATSConn
 	cfg := &config.Config{AZ: testAZ, Region: testRegion}
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 
 	acm, err := acmdomain.NewACMServiceImplWithNATS(t.Context(), cfg, nc, masterKey)
@@ -35,18 +37,24 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	require.NoError(t, err, "create ACM tenant CA")
 	subscribeServiceMethods(t, nc, "acm", acm)
 
-	elbv2, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(cfg, nc, masterKey)
+	elbv2, err := elbv2domain.NewELBv2ServiceImplWithNATS(cfg, nc, masterKey)
 	require.NoError(t, err, "construct ELBv2 service")
 	t.Cleanup(elbv2.Close)
 	subscribeServiceMethods(t, nc, "elbv2", elbv2)
 
-	eks, err := handlers_eks.NewEKSServiceImpl(handlers_eks.EKSServiceDeps{
+	eks, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{
 		Config: cfg, NATSConn: nc, MasterKey: masterKey, Region: testRegion, HolderID: "integration-test-node",
 	})
 	require.NoError(t, err, "construct EKS service")
 	t.Cleanup(eks.Shutdown)
 	subscribeServiceMethods(t, nc, "eks", eks)
 
-	subscribeServiceMethods(t, nc, "ecs", handlers_ecs.NewService(nc, testRegion, ""))
-	subscribeServiceMethods(t, nc, "rds", handlers_rds.NewService(nc, testRegion))
+	subscribeServiceMethods(t, nc, "ecs", ecsdomain.NewService(nc, testRegion, ""))
+	subscribeServiceMethods(t, nc, "rds", rdsinstance.NewService(nc, testRegion))
+
+	js, err := jetstream.New(nc)
+	require.NoError(t, err, "open JetStream for Route 53")
+	route53 := route53domain.NewService(route53domain.NewStore(js))
+	route53.Nameservers = func() []string { return []string{"ns1.spx3.net"} }
+	subscribeServiceMethods(t, nc, "route53", route53)
 }

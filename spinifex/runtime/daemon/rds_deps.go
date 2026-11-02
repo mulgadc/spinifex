@@ -1,0 +1,98 @@
+package daemon
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
+)
+
+// A launch can only arrive over the gateway, long after service init, so unlike
+// the EKS/ECS IAM deps none of this is built lazily.
+func (d *Daemon) buildRDSLaunchDeps() rdsinstance.LaunchDeps {
+	return rdsinstance.LaunchDeps{
+		Config: d.config,
+		SystemVPC: systemvpc.Deps{
+			VPC:      d.vpcService,
+			SG:       d.vpcService,
+			IGW:      d.igwService,
+			RT:       d.routeTableService,
+			NGW:      d.natGatewayService,
+			EIP:      d.eipService,
+			NATSConn: d.natsConn,
+		},
+		VPC:      d.vpcService,
+		Instance: d,
+		Image:    d.imageService,
+		Volume:   d.volumeService,
+		Attacher: rdsinstance.NewNATSVolumeAttacher(d.natsConn),
+	}
+}
+
+// The control-plane deps on top of the launch primitives: where the endpoint
+// ENI is placed, the instance role the agent authenticates with, the base zone
+// the endpoint record lands in, and the VM-state lookup the reconciler needs.
+func (d *Daemon) buildRDSDeps() (rdsinstance.Deps, error) {
+	gatewayCA := ""
+	if d.config.NATS.CACert != "" {
+		if caBytes, err := os.ReadFile(d.config.NATS.CACert); err == nil {
+			gatewayCA = string(caBytes)
+		} else {
+			slog.Warn("RDS: read gateway CACert failed; the DB VM agent will not verify the gateway over TLS",
+				"path", d.config.NATS.CACert, "err", err)
+		}
+	}
+
+	// No degraded mode: a create cannot stage a master password without it, and
+	// the fetch that replays one is answered by any node in the queue group.
+	masterKey, err := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
+	if err != nil {
+		return rdsinstance.Deps{}, fmt.Errorf("load RDS master key: %w", err)
+	}
+
+	return rdsinstance.Deps{
+		CACertPath:    d.config.NATS.CACert,
+		CAKeyPath:     clusterCAKeyPath(d.config.NATS.CACert),
+		MasterKey:     masterKey,
+		Launch:        d.buildRDSLaunchDeps(),
+		Network:       d.vpcService,
+		IAM:           d.systemRoleEnsurer,
+		InstanceState: rdsinstance.NewDescribeInstanceState(d.describeInstancesFanOut),
+		Instances:     rdsinstance.NewNATSInstanceCommander(d.natsConn),
+		Snapshots:     d.snapshotService,
+		Storage:       d.volumeService,
+		BaseDomain:    d.dnsBaseDomain,
+		HolderID:      d.node,
+		// A DB VM reaches the daemon only over the mgmt bridge, the same
+		// constraint the EKS control-plane VM has.
+		GatewayURL:       d.resolveSystemGatewayBaseURL(),
+		GatewayCACert:    gatewayCA,
+		BootstrapTimeout: time.Duration(d.config.RDS.BootstrapTimeoutSeconds) * time.Second,
+		FailureGrace:     time.Duration(d.config.RDS.FailureGraceSeconds) * time.Second,
+		Backup: rdsinstance.BackupPolicy{
+			RetentionCapDays:       int64(d.config.RDS.BackupRetentionCapDays),
+			RetentionDays:          int64(d.config.RDS.BackupRetentionDays),
+			BackupWindowBlock:      d.config.RDS.BackupWindowBlock,
+			MaintenanceWindowBlock: d.config.RDS.MaintenanceWindowBlock,
+			SweepDeleteLimit:       d.config.RDS.BackupSweepDeleteLimit,
+		},
+	}, nil
+}
+
+// Fans out across every host so a DB VM is observed wherever it landed; a
+// node-local describe would report an instance on another node as missing.
+func (d *Daemon) describeInstancesFanOut(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	expected := 1
+	if d.clusterConfig != nil && len(d.clusterConfig.Nodes) > 0 {
+		expected = len(d.clusterConfig.Nodes)
+	}
+	return ec2instanceapi.DescribeInstances(context.Background(), input, d.natsConn, expected, accountID)
+}

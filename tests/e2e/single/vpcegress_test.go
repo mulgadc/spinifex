@@ -105,7 +105,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 	// --- VPC A: public + private subnet, explicit route table, normal ordering (subnet before route) ---
 
 	harness.Step(t, "create-vpc 10.99.0.0/16")
-	vpcOut, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String("10.99.0.0/16")}) // e2e:allow-create — VPC A is the egress-datapath topology under test.
+	vpcOut, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String("10.99.0.0/16")}) // VPC A is the egress-datapath topology under test.
 	require.NoError(t, err, "create-vpc")
 	require.NotNil(t, vpcOut.Vpc, "create-vpc returned nil Vpc")
 	vpcID := aws.StringValue(vpcOut.Vpc.VpcId)
@@ -116,7 +116,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "vpc", vpcID, "cidr", "10.99.0.0/16")
 
 	harness.Step(t, "create-subnet 10.99.1.0/24 (public)")
-	pubSubOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{ // e2e:allow-create — the public subnet is the IGW-egress datapath under test.
+	pubSubOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{ // The public subnet is the IGW-egress datapath under test.
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String("10.99.1.0/24"),
 	})
@@ -137,7 +137,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "pub_subnet", pubSubnetID, "map_public_ip", "true")
 
 	harness.Step(t, "create-subnet 10.99.2.0/24 (private)")
-	privSubOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{ // e2e:allow-create — the private subnet is the NAT-gateway egress datapath under test.
+	privSubOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{ // The private subnet is the NAT-gateway egress datapath under test.
 		VpcId:     aws.String(vpcID),
 		CidrBlock: aws.String("10.99.2.0/24"),
 	})
@@ -154,7 +154,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "priv_subnet", privSubnetID, "map_public_ip", "false")
 
 	harness.Step(t, "create-internet-gateway")
-	igwOut, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}) // e2e:allow-create — the IGW is the egress path under test.
+	igwOut, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}) // The IGW is the egress path under test.
 	require.NoError(t, err, "create-internet-gateway")
 	require.NotNil(t, igwOut.InternetGateway, "create-internet-gateway returned nil InternetGateway")
 	igwID := aws.StringValue(igwOut.InternetGateway.InternetGatewayId)
@@ -181,7 +181,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "igw", igwID)
 
 	harness.Step(t, "create-route-table (vpc=%s)", vpcID)
-	rtOut, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{ // e2e:allow-create — the explicit route table exercises the CreateRouteTable+Associate egress path under test.
+	rtOut, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{ // The explicit route table exercises the CreateRouteTable+Associate egress path under test.
 		VpcId: aws.String(vpcID),
 	})
 	require.NoError(t, err, "create-route-table")
@@ -252,7 +252,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 	// --- Public guest: PublicSubnetEgress, then the NAT bastion hop, then (last) EIPFlip ---
 
 	harness.Step(t, "run-instances ami=%s subnet=%s (public)", amiID, pubSubnetID)
-	pubRunOut, err := c.EC2.RunInstances(&ec2.RunInstancesInput{ // e2e:allow-create — the public guest is the egress / EIP subject under test.
+	pubRunOut, err := c.EC2.RunInstances(&ec2.RunInstancesInput{ // The public guest is the egress / EIP subject under test.
 		ImageId:      aws.String(amiID),
 		InstanceType: aws.String(instType),
 		KeyName:      aws.String(keyName),
@@ -281,7 +281,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "public_ip", pubIP, "private_ip", pubPrivIP)
 
 	pubOK := t.Run("PublicSubnetEgress", func(t *testing.T) {
-		if !sshHealth.TryReady(pubIP, 22, keyPath, harness.SSHReadyBudget) {
+		if !sshHealth.TryReady(t, pubIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 				fmt.Sprintf("PublicSubnetEgress SSH timeout — vpc=%s igw=%s pub=%s", vpcID, igwID, pubIP),
 				harness.VPCDiagnosticsOpts{
@@ -333,14 +333,14 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		const vpcCIDR = "10.231.0.0/16"
 		const subnetCIDR = "10.231.1.0/24"
 
-		vOut, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(vpcCIDR)}) // e2e:allow-create — a second VPC reproduces the route-before-subnet ordering under test.
+		vOut, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(vpcCIDR)}) // A second VPC reproduces the route-before-subnet ordering under test.
 		require.NoError(t, err, "create-vpc")
 		require.NotNil(t, vOut.Vpc, "create-vpc returned nil Vpc")
 		vID := aws.StringValue(vOut.Vpc.VpcId)
 		require.NotEmpty(t, vID, "VpcId empty")
 		t.Cleanup(func() { _, _ = c.EC2.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vID)}) })
 
-		iOut, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}) // e2e:allow-create — this IGW is routed on the main RT before any subnet exists — the ordering under test.
+		iOut, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}) // This IGW is routed on the main RT before any subnet exists — the ordering under test.
 		require.NoError(t, err, "create-internet-gateway")
 		require.NotNil(t, iOut.InternetGateway, "create-internet-gateway returned nil InternetGateway")
 		iID := aws.StringValue(iOut.InternetGateway.InternetGatewayId)
@@ -378,7 +378,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 
 		// Subnet AFTER the route (implicit main-RT membership).
 		harness.Step(t, "create-subnet %s (implicit main RT, after IGW route)", subnetCIDR)
-		sOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{ // e2e:allow-create — the subnet created after the main-RT IGW route is the ordering regression under test.
+		sOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{ // The subnet created after the main-RT IGW route is the ordering regression under test.
 			VpcId:            aws.String(vID),
 			CidrBlock:        aws.String(subnetCIDR),
 			AvailabilityZone: aws.String(az),
@@ -405,7 +405,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		harness.Detail(t, "instance", instanceID, "public_ip", rbPubIP)
 
 		harness.Step(t, "expecting external SSH to instance in fresh-VPC public subnet")
-		if !sshHealth.TryReady(rbPubIP, 22, keyPath, harness.SSHReadyBudget) {
+		if !sshHealth.TryReady(t, rbPubIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, instanceID,
 				fmt.Sprintf("RouteBeforeSubnet SSH timeout — vpc=%s igw=%s pub=%s", vID, iID, rbPubIP),
 				harness.VPCDiagnosticsOpts{
@@ -426,7 +426,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 	// --- NAT Gateway: private guest in VPC A's private subnet, bastion-hop via the public guest ---
 
 	harness.Step(t, "run-instances private (VPC A private subnet)")
-	privRunOut, err := c.EC2.RunInstances(&ec2.RunInstancesInput{ // e2e:allow-create — the private guest is the NAT-gateway egress subject under test.
+	privRunOut, err := c.EC2.RunInstances(&ec2.RunInstancesInput{ // The private guest is the NAT-gateway egress subject under test.
 		ImageId:      aws.String(amiID),
 		InstanceType: aws.String(instType),
 		KeyName:      aws.String(keyName),
@@ -507,7 +507,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 
 			natUpOK := t.Run("NATGatewayUp", func(t *testing.T) {
 				harness.Step(t, "allocate-address (NAT EIP)")
-				eipOut, err := c.EC2.AllocateAddress(&ec2.AllocateAddressInput{ // e2e:allow-create — the NAT gateway's Elastic IP is part of the egress path under test.
+				eipOut, err := c.EC2.AllocateAddress(&ec2.AllocateAddressInput{ // The NAT gateway's Elastic IP is part of the egress path under test.
 					Domain: aws.String("vpc"),
 				})
 				require.NoError(t, err, "allocate-address vpc")
@@ -525,7 +525,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 				harness.Detail(t, "eip", natPubIP, "alloc", natAllocID)
 
 				harness.Step(t, "create-nat-gateway in %s", pubSubnetID)
-				natOut, err := c.EC2.CreateNatGateway(&ec2.CreateNatGatewayInput{ // e2e:allow-create — the NAT gateway is the egress datapath under test.
+				natOut, err := c.EC2.CreateNatGateway(&ec2.CreateNatGatewayInput{ // The NAT gateway is the egress datapath under test.
 					SubnetId:     aws.String(pubSubnetID),
 					AllocationId: aws.String(natAllocID),
 				})
@@ -550,7 +550,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 				// must exist before the route so the SNAT publication fires
 				// off it, mirroring the original test's ordering.
 				harness.Step(t, "create-route-table")
-				rtOut, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{ // e2e:allow-create — the private-subnet route table steers egress through the NAT gateway under test.
+				rtOut, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{ // The private-subnet route table steers egress through the NAT gateway under test.
 					VpcId: aws.String(vpcID),
 				})
 				require.NoError(t, err, "create-route-table")
@@ -727,7 +727,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		}
 
 		harness.Step(t, "ssh to guest via %s after restart", newIP)
-		if !sshHealth.TryReady(newIP, 22, keyPath, harness.SSHReadyBudget) {
+		if !sshHealth.TryReady(t, newIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 				fmt.Sprintf("StopStartAddress SSH timeout — was=%s now=%s instance=%s", pubIP, newIP, pubInstanceID),
 				harness.VPCDiagnosticsOpts{
@@ -753,7 +753,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		harness.SkipIfNoOVN(t)
 
 		harness.Step(t, "allocate-address (vpc)")
-		eipOut, err := c.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")}) // e2e:allow-create — the Elastic IP flipped onto the guest is the datapath under test.
+		eipOut, err := c.EC2.AllocateAddress(&ec2.AllocateAddressInput{Domain: aws.String("vpc")}) // The Elastic IP flipped onto the guest is the datapath under test.
 		require.NoError(t, err, "allocate-address")
 		allocID := aws.StringValue(eipOut.AllocationId)
 		eipIP := aws.StringValue(eipOut.PublicIp)
@@ -789,7 +789,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		// association publishes; poll the SSH handshake rather than
 		// asserting immediately.
 		harness.Step(t, "ssh to guest via EIP %s", eipIP)
-		if !sshHealth.TryReady(eipIP, 22, keyPath, harness.SSHReadyBudget) {
+		if !sshHealth.TryReady(t, eipIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 				fmt.Sprintf("EIP SSH timeout — eip=%s instance=%s", eipIP, pubInstanceID),
 				harness.VPCDiagnosticsOpts{
@@ -851,7 +851,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 				"instance came back on a different address than the Elastic IP associated to it")
 
 			harness.Step(t, "ssh to guest via EIP %s after restart", eipIP)
-			if !sshHealth.TryReady(eipIP, 22, keyPath, harness.SSHReadyBudget) {
+			if !sshHealth.TryReady(t, eipIP, 22, keyPath, harness.SSHReadyBudget) {
 				harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 					fmt.Sprintf("EIP SSH timeout after restart — eip=%s instance=%s", eipIP, pubInstanceID),
 					harness.VPCDiagnosticsOpts{

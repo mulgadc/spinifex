@@ -33,11 +33,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	awscredentials "github.com/mulgadc/spinifex/spinifex/foundation/aws/credentials"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
 	operatorprogress "github.com/mulgadc/spinifex/spinifex/operator/progress"
@@ -48,6 +48,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
 	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pterm/pterm"
@@ -289,9 +290,11 @@ var certRenewCmd = &cobra.Command{
 	Use:   "renew",
 	Short: "Regenerate the server certificate with current IPs",
 	Long: `Regenerate the server certificate signed by the existing CA.
-The new certificate will include all current network interface IPs
-and the machine hostname in its SANs. Use this after adding a new
-network interface or changing IP addresses.`,
+The new certificate keeps the SANs 'spx admin init' gave it (bind IP,
+mgmt-bridge IP and the AWS service names for the configured region and
+services domain) and picks up all current network interface IPs and the
+machine hostname. Use this after adding a new network interface or
+changing IP addresses.`,
 	Run: runCertRenew,
 }
 
@@ -392,7 +395,7 @@ func init() {
 	adminInitCmd.Flags().String("cluster-name", "spinifex", "NATS cluster name")
 	adminInitCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during init (default: enabled)")
 	adminInitCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
-	adminInitCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all). Valid: nats,predastore,viperblock,daemon,awsgw,ui")
+	adminInitCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all). Valid: nats,predastore,viperblock,daemon,awsgw,ui. northstar publishes this node as one of up to 4 nameservers; it runs on every node regardless")
 
 	// External networking flags
 	adminInitCmd.Flags().String("external-mode", "", "External network mode: 'pool' (default when WAN detected), 'nat' (routed; non-bridgeable uplinks; add --external-pool or --external-source=dhcp for public IPs), or '' (disabled)")
@@ -402,6 +405,7 @@ func init() {
 	adminInitCmd.Flags().String("external-pool", "", "External IP pool range as start-end (e.g., 192.168.1.150-192.168.1.250)")
 	adminInitCmd.Flags().String("external-gateway", "", "WAN gateway IP (auto-detected from default route)")
 	adminInitCmd.Flags().String("gateway-ip", "", "OVN gateway router's external IP for SNAT (default: pool range_start for pool mode, required for nat mode without DHCP)")
+	adminInitCmd.Flags().StringSlice("external-dns", nil, "Comma-separated IPv4 DNS servers handed to guests on the external pool, at most 3 (auto-detected from the host resolver when omitted)")
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
 	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
@@ -421,7 +425,7 @@ func init() {
 	adminJoinCmd.Flags().String("token", "", "Join token from the init node (required)")
 	adminJoinCmd.Flags().Bool("force", false, "Join even though this node is already initialized, discarding its own CA and master key")
 	adminJoinCmd.Flags().Duration("join-timeout", 20*time.Minute, "How long to keep retrying while the formation server is unreachable")
-	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all)")
+	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all). northstar publishes this node as one of up to 4 nameservers; it runs on every node regardless")
 	adminJoinCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during join (default: enabled)")
 	adminJoinCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
 	adminJoinCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
@@ -1274,6 +1278,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		fmt.Fprintln(os.Stderr, "   Service user setup and CA certificate installation will be skipped.")
 		fmt.Fprintln(os.Stderr, "   For production deployments, run with sudo.")
 	}
+	requireCATrust()
 
 	force, _ := cmd.Flags().GetBool("force")
 	configDir, _ := cmd.Flags().GetString("config-dir")
@@ -1297,6 +1302,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
 	clusterName, _ := cmd.Flags().GetString("cluster-name")
 	services, _ := cmd.Flags().GetStringSlice("services")
+	services, nameserver := config.SplitNameserverService(services)
 
 	// Rejected before anything is written, because a two-node cluster has no
 	// correct answer rather than a worse one: no layer of the stack has a
@@ -1328,6 +1334,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	externalPool, _ := cmd.Flags().GetString("external-pool")
 	externalGateway, _ := cmd.Flags().GetString("external-gateway")
 	externalPrefixLen, _ := cmd.Flags().GetInt("external-prefix-len")
+	externalDNS, _ := cmd.Flags().GetStringSlice("external-dns")
 	gatewayIP, _ := cmd.Flags().GetString("gateway-ip")
 	gpuPassthrough, _ := cmd.Flags().GetBool("gpu-passthrough")
 	ipsecEnabled, _ := cmd.Flags().GetBool("ipsec")
@@ -1499,8 +1506,22 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// forced re-init, resolvconf may still list this address first; forwarding it
 	// back to Northstar creates a recursive DNS loop.
 	var dnsServers []string
+	if cmd.Flags().Changed("external-dns") && len(externalDNS) == 0 {
+		fmt.Fprintf(os.Stderr, "❌ Error: --external-dns requires at least one IP\n")
+		os.Exit(1)
+	}
+	if externalMode == "" && len(externalDNS) > 0 {
+		fmt.Fprintf(os.Stderr, "❌ Error: --external-dns requires external networking (--external-mode)\n")
+		os.Exit(1)
+	}
 	if externalMode != "" {
-		dnsServers = detectDNSServers(externalIface, advertiseIP)
+		dnsServers, err = resolvePoolDNSServers(externalDNS, func() []string {
+			return detectDNSServers(externalIface, advertiseIP)
+		}, advertiseIP)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+			os.Exit(1)
+		}
 		if len(dnsServers) > 0 {
 			fmt.Printf("  DNS servers: %s\n", strings.Join(dnsServers, ", "))
 		}
@@ -1699,7 +1720,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	if ipsecEnabled {
 		caCertPath := filepath.Join(configDir, "ca.pem")
 		caKeyPath := filepath.Join(configDir, "ca.key")
-		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP, hostos.HasLibreswan()); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
 			os.Exit(1)
 		}
@@ -1707,7 +1728,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	// Install CA certificate into system trust store
-	installCACertificate(filepath.Join(configDir, "ca.pem"))
+	exitOnCATrustError(installCACertificate(filepath.Join(configDir, "ca.pem")))
 
 	// Generate NATS token
 	natsToken, err := admin.GenerateNATSToken()
@@ -1774,7 +1795,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey,
 			masterKey, viperblockKey, natsToken, clusterName,
 			configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email,
-			port, nodes, formationTimeoutStr, tokenTTLStr, services, networkConfig, northstarCreds)
+			port, nodes, formationTimeoutStr, tokenTTLStr, services, nameserver, networkConfig, northstarCreds)
 		return
 	}
 
@@ -1873,6 +1894,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		PredastoreAdminPort:       admin.PredastoreAdminPort,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
+		NameserverNodes:           singleNodeNameservers(node, nameserver),
 
 		OVNNBAddr: "tcp:127.0.0.1:6641",
 		OVNSBAddr: "tcp:127.0.0.1:6642",
@@ -1982,7 +2004,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey string,
 	masterKey, viperblockKey []byte, natsToken, clusterName,
 	configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email string,
-	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, networkConfig *formation.NetworkConfig,
+	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, nameserver bool, networkConfig *formation.NetworkConfig,
 	northstarCreds admin.NorthstarCredentials) {
 	formationTimeout, err := time.ParseDuration(formationTimeoutStr)
 	if err != nil {
@@ -2060,6 +2082,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		Region:      region,
 		AZ:          az,
 		Port:        port,
+		Nameserver:  nameserver,
 	}
 	if err := fs.RegisterNode(selfNode); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Error registering self: %v\n", err)
@@ -2186,6 +2209,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		PredastoreAdminPort:       admin.PredastoreAdminPort,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
+		NameserverNodes:           formation.NameserverNodes(allNodes),
 		RemoteNodes:               buildRemoteNodes(allNodes, node, northstarConfigPath),
 
 		OperatorEmail: email,
@@ -2313,6 +2337,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		fmt.Fprintln(os.Stderr, "   Service user setup and CA certificate installation will be skipped.")
 		fmt.Fprintln(os.Stderr, "   For production deployments, run with sudo.")
 	}
+	requireCATrust()
 
 	node, _ := cmd.Flags().GetString("node")
 	leaderHost, _ := cmd.Flags().GetString("host")
@@ -2326,6 +2351,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	configDir, _ := cmd.Flags().GetString("config-dir")
 	clusterBind, _ := cmd.Flags().GetString("cluster-bind")
 	services, _ := cmd.Flags().GetStringSlice("services")
+	services, nameserver := config.SplitNameserverService(services)
 	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
 	force, _ := cmd.Flags().GetBool("force")
 	joinTimeout, _ := cmd.Flags().GetDuration("join-timeout")
@@ -2413,6 +2439,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 			Region:      region,
 			AZ:          az,
 			Port:        port,
+			Nameserver:  nameserver,
 		},
 	}
 
@@ -2612,7 +2639,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	fmt.Printf("✅ CA certificate received from leader: %s\n", caCertPath)
 
 	// Install CA certificate into system trust store
-	installCACertificate(caCertPath)
+	exitOnCATrustError(installCACertificate(caCertPath))
 
 	// Extract and write master key from formation server
 	if statusResp.MasterKey == "" {
@@ -2686,7 +2713,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	if ipsecEnabled {
 		caCertPath := filepath.Join(configDir, "ca.pem")
 		caKeyPath := filepath.Join(configDir, "ca.key")
-		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP, hostos.HasLibreswan()); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
 			os.Exit(1)
 		}
@@ -2763,6 +2790,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		PredastoreAdminPort:       admin.PredastoreAdminPort,
 		CompactionIntervalSeconds: compactionInterval,
 		Services:                  services,
+		NameserverNodes:           formation.NameserverNodes(statusResp.Nodes),
 		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node, northstarConfigPath),
 
 		OperatorEmail: email,
@@ -2832,6 +2860,14 @@ func resolveAdvertiseIP(bindIP, advertiseFlag string, detected *admin.DetectedNe
 	return "127.0.0.1", nil
 }
 
+// singleNodeNameservers pins a lone node that named northstar in --services.
+func singleNodeNameservers(node string, nameserver bool) []string {
+	if !nameserver {
+		return nil
+	}
+	return []string{node}
+}
+
 // buildRemoteNodes converts formation NodeInfo into RemoteNode entries,
 // excluding the local node. This puts all cluster members into spinifex.toml
 // so config is the source of truth for expected cluster membership.
@@ -2873,7 +2909,7 @@ func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode, northst
 
 // initIAMServiceFromConfig loads config, connects to NATS, loads the master
 // key, and returns an initialised IAMServiceImpl. Callers must defer nc.Close().
-func initIAMServiceFromConfig() (*handlers_iam.IAMServiceImpl, *config.ClusterConfig, *nats.Conn, func(), error) {
+func initIAMServiceFromConfig() (*iamdomain.IAMServiceImpl, *config.ClusterConfig, *nats.Conn, func(), error) {
 	cfg, nc, err := loadConfigAndConnect()
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("connect to cluster: %w", err)
@@ -2888,7 +2924,7 @@ func initIAMServiceFromConfig() (*handlers_iam.IAMServiceImpl, *config.ClusterCo
 
 	// Background: this runs at CLI top level, where there is no request to
 	// inherit a deadline from and the process exits after the one command.
-	svc, err := handlers_iam.NewIAMServiceImpl(context.Background(), nc, masterKey)
+	svc, err := iamdomain.NewIAMServiceImpl(context.Background(), nc, masterKey)
 	if err != nil {
 		nc.Close()
 		return nil, nil, nil, nil, fmt.Errorf("init IAM service: %w", err)
@@ -2899,12 +2935,12 @@ func initIAMServiceFromConfig() (*handlers_iam.IAMServiceImpl, *config.ClusterCo
 
 // openAccountNameIndex opens the account-name reservation index over an
 // existing NATS connection.
-func openAccountNameIndex(ctx context.Context, nc *nats.Conn) (*handlers_iam.AccountNameIndex, error) {
+func openAccountNameIndex(ctx context.Context, nc *nats.Conn) (*iamdomain.AccountNameIndex, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("get JetStream context: %w", err)
 	}
-	return handlers_iam.NewAccountNameIndex(ctx, js)
+	return iamdomain.NewAccountNameIndex(ctx, js)
 }
 
 func runAccountCreate(cmd *cobra.Command, args []string) {
@@ -2927,7 +2963,7 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 	// Reject a duplicate before allocating an account ID. CreateAccount does not
 	// check names, so without this two runs of the same command silently produce
 	// two accounts that differ only by ID.
-	existing, err := handlers_iam.FindAccountByName(svc, name)
+	existing, err := iamdomain.FindAccountByName(svc, name)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error checking existing accounts: %v\n", err)
 		os.Exit(1)
@@ -2949,10 +2985,10 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 	}
 	reservationOwner := "spx-cli-" + uuid.NewV4().String()
 	switch err := names.Reserve(ctx, name, reservationOwner); {
-	case errors.Is(err, handlers_iam.ErrNameTaken):
+	case errors.Is(err, iamdomain.ErrNameTaken):
 		fmt.Fprintf(os.Stderr, "Error: account %q already exists\n", name)
 		os.Exit(1)
-	case errors.Is(err, handlers_iam.ErrNameInFlight):
+	case errors.Is(err, iamdomain.ErrNameInFlight):
 		fmt.Fprintf(os.Stderr, "Error: another account creation for %q is in progress\n", name)
 		os.Exit(1)
 	case err != nil:
@@ -2960,7 +2996,7 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	account, err := svc.CreateAccount(handlers_iam.NormalizeAccountName(name))
+	account, err := svc.CreateAccount(iamdomain.NormalizeAccountName(name))
 	if err != nil {
 		if relErr := names.Release(ctx, name, reservationOwner); relErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not release name reservation: %v\n", relErr)
@@ -2986,7 +3022,7 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 
 	// Shared with /admin/CreateAccount so the CLI and the remote endpoint cannot
 	// drift in what an account is made of.
-	provisioned, err := handlers_iam.ProvisionAccount(svc, accountID, account.AccountName)
+	provisioned, err := iamdomain.ProvisionAccount(svc, accountID, account.AccountName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error provisioning account: %v\n", err)
 		os.Exit(1)
@@ -3073,17 +3109,40 @@ func runCertRenew(cmd *cobra.Command, _ []string) {
 	extraIPs, _ := cmd.Flags().GetStringSlice("extra-ip")
 	extraDNS, _ := cmd.Flags().GetStringSlice("extra-dns")
 
-	serverCertPath := filepath.Join(configDir, "server.pem")
-	serverKeyPath := filepath.Join(configDir, "server.key")
+	cfgPath := filepath.Join(configDir, "spinifex.toml")
+	if !admin.FileExists(cfgPath) {
+		fmt.Fprintf(os.Stderr, "Error: %s not found\nRun 'spx admin init' first.\n", cfgPath)
+		os.Exit(1)
+	}
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
 
-	if err := admin.GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS); err != nil {
+	if err := renewServerCert(configDir, cfg, extraIPs, extraDNS); err != nil {
 		fmt.Fprintf(os.Stderr, "Error regenerating server certificate: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Println("✅ Server certificate regenerated with current IPs and hostname")
-	fmt.Printf("   Certificate: %s\n", serverCertPath)
+	fmt.Printf("   Certificate: %s\n", filepath.Join(configDir, "server.pem"))
 	fmt.Println("\n⚠️  Restart awsgw and daemon services to pick up the new certificate.")
+}
+
+// renewServerCert reissues the server cert with the SANs init gave it, taking
+// the bind IP and region from the node's entry (the region the daemon publishes
+// service names under) and the services domain from the config.
+func renewServerCert(configDir string, cfg *config.ClusterConfig, extraIPs, extraDNS []string) error {
+	node, ok := cfg.Nodes[cfg.Node]
+	if !ok {
+		return fmt.Errorf("node %q not found in config [nodes]", cfg.Node)
+	}
+	region := node.Region
+	if region == "" {
+		region = cfg.AWS.Region
+	}
+	return admin.GenerateServerCert(configDir, node.Host, region, cfg.AWS.ServicesDomain, extraIPs, extraDNS)
 }
 
 // configDirs holds the paths to config subdirectories created by createConfigSubdirs.
@@ -3230,7 +3289,7 @@ func hostDNSParams(settings admin.ConfigSettings, skip bool) (hostdns.Params, bo
 // configureHostDNS points this node's host resolver at its own northstar so the
 // Spinifex authoritative zones (ELB/EKS names) resolve from the node itself on
 // every install path. Failures are surfaced loudly but never abort a formed
-// cluster, mirroring installCACertificate.
+// cluster.
 func configureHostDNS(settings admin.ConfigSettings, skip bool) {
 	params, ok := hostDNSParams(settings, skip)
 	if !ok {
@@ -3271,7 +3330,8 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
 	settings.IPSecEnabled = nc.IPSecEnabled
 	settings.ExternalMode = nc.ExternalMode
-	settings.PoolDNSServers = nc.PoolDNSServers
+	// A node's own address is northstar itself; forwarding to it would loop.
+	settings.PoolDNSServers = filterDNSServers(nc.PoolDNSServers, settings.AdvertiseIP, settings.BindIP)
 	// Derived from the mode rather than carried in NetworkConfig, so the leader
 	// and every joiner pin the same value from the same rule as single-node init.
 	settings.BridgeMode = bridgeModeFor(nc.ExternalMode)
@@ -3314,7 +3374,7 @@ func ensureMasterKey(configDir string) (key []byte, existed bool, err error) {
 		}
 		return key, true, nil
 	}
-	key, err = handlers_iam.GenerateMasterKey()
+	key, err = iamdomain.GenerateMasterKey()
 	if err != nil {
 		return nil, false, fmt.Errorf("generate master key: %w", err)
 	}
@@ -3378,11 +3438,11 @@ func writePredastoreEncryptionKey(configDir string) (string, error) {
 	if admin.FileExists(keyPath) {
 		return keyPath, nil
 	}
-	key, err := handlers_iam.GenerateMasterKey()
+	key, err := iamdomain.GenerateMasterKey()
 	if err != nil {
 		return "", fmt.Errorf("generate predastore encryption key: %w", err)
 	}
-	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
+	if err := iamdomain.SaveMasterKey(keyPath, key); err != nil {
 		return "", fmt.Errorf("save predastore encryption key: %w", err)
 	}
 	return keyPath, nil
@@ -3407,11 +3467,11 @@ func ensureViperblockEncryptionKey(configDir string) ([]byte, string, error) {
 		}
 		return key, keyPath, nil
 	}
-	key, err := handlers_iam.GenerateMasterKey()
+	key, err := iamdomain.GenerateMasterKey()
 	if err != nil {
 		return nil, "", fmt.Errorf("generate viperblock encryption key: %w", err)
 	}
-	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
+	if err := iamdomain.SaveMasterKey(keyPath, key); err != nil {
 		return nil, "", fmt.Errorf("save viperblock encryption key: %w", err)
 	}
 	return key, keyPath, nil
@@ -3426,7 +3486,7 @@ func saveViperblockEncryptionKey(configDir string, key []byte) (string, error) {
 		return "", fmt.Errorf("create viperblock config dir: %w", err)
 	}
 	keyPath := filepath.Join(viperblockDir, "encryption.key")
-	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
+	if err := iamdomain.SaveMasterKey(keyPath, key); err != nil {
 		return "", fmt.Errorf("save viperblock encryption key: %w", err)
 	}
 	return keyPath, nil
@@ -3457,25 +3517,25 @@ func writeBootstrapFilesWithAdmin(configDir, bootstrapDir string, masterKey []by
 	if err := os.MkdirAll(bootstrapDir, 0700); err != nil {
 		return fmt.Errorf("create bootstrap directory %s: %w", bootstrapDir, err)
 	}
-	if err := handlers_iam.SaveMasterKey(filepath.Join(configDir, "master.key"), masterKey); err != nil {
+	if err := iamdomain.SaveMasterKey(filepath.Join(configDir, "master.key"), masterKey); err != nil {
 		return fmt.Errorf("saving master key: %w", err)
 	}
-	encryptedSecret, err := handlers_iam.EncryptSecret(secretKey, masterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(secretKey, masterKey)
 	if err != nil {
 		return fmt.Errorf("encrypting system secret: %w", err)
 	}
 
-	adminEncryptedSecret, err := handlers_iam.EncryptSecret(adminSecretKey, masterKey)
+	adminEncryptedSecret, err := iamdomain.EncryptSecret(adminSecretKey, masterKey)
 	if err != nil {
 		return fmt.Errorf("encrypting admin secret: %w", err)
 	}
 
-	bd := &handlers_iam.BootstrapData{
-		Version:         handlers_iam.BootstrapVersion,
+	bd := &iamdomain.BootstrapData{
+		Version:         iamdomain.BootstrapVersion,
 		AccessKeyID:     accessKey,
 		EncryptedSecret: encryptedSecret,
 		AccountID:       accountID,
-		Admin: &handlers_iam.AdminBootstrapData{
+		Admin: &iamdomain.AdminBootstrapData{
 			AccountID:       awsidentifiers.DefaultAccountID(),
 			AccountName:     awsidentifiers.DefaultAccountName(),
 			UserName:        "admin",
@@ -3484,7 +3544,7 @@ func writeBootstrapFilesWithAdmin(configDir, bootstrapDir string, masterKey []by
 		},
 	}
 
-	return handlers_iam.SaveBootstrapData(filepath.Join(bootstrapDir, "bootstrap.json"), bd)
+	return iamdomain.SaveBootstrapData(filepath.Join(bootstrapDir, "bootstrap.json"), bd)
 }
 
 // isNonBridgeableUplink reports whether the interface name indicates an uplink
@@ -3554,6 +3614,38 @@ const dnsDetectionCommandTimeout = 5 * time.Second
 type dnsDetectionSources struct {
 	queryResolvectl func(args ...string) (string, error)
 	readResolvConf  func() (string, error)
+}
+
+// maxPoolDNSServers is the upstream count generated resolver configs support.
+const maxPoolDNSServers = 3
+
+// resolvePoolDNSServers returns the operator's explicit pool DNS servers
+// verbatim after validation, or the detected ones when none were given.
+func resolvePoolDNSServers(explicit []string, detect func() []string, localIPs ...string) ([]string, error) {
+	if len(explicit) == 0 {
+		return detect(), nil
+	}
+	if len(explicit) > maxPoolDNSServers {
+		return nil, fmt.Errorf("--external-dns accepts at most %d servers, got %d", maxPoolDNSServers, len(explicit))
+	}
+	local := make(map[string]struct{}, len(localIPs))
+	for _, value := range localIPs {
+		if ip := net.ParseIP(value); ip != nil {
+			local[ip.String()] = struct{}{}
+		}
+	}
+	servers := make([]string, 0, len(explicit))
+	for _, value := range explicit {
+		ip := net.ParseIP(strings.TrimSpace(value))
+		if ip == nil || ip.To4() == nil || ip.IsUnspecified() {
+			return nil, fmt.Errorf("--external-dns entry is not a valid IPv4 address: %q", value)
+		}
+		if _, ok := local[ip.String()]; ip.IsLoopback() || ok {
+			return nil, fmt.Errorf("--external-dns entry %s is this node's own resolver and would loop back into northstar", ip)
+		}
+		servers = append(servers, ip.String())
+	}
+	return servers, nil
 }
 
 // detectDNSServers auto-detects up to three host DNS servers, preferring
@@ -3666,41 +3758,64 @@ func parseDNSFromResolvectl(output string) []string {
 	return servers
 }
 
-// installCACertificate copies the Spinifex CA certificate into the system
-// trust store and runs update-ca-certificates so TLS clients (AWS CLI, etc.)
-// trust the self-signed gateway certificate without extra configuration.
-func installCACertificate(caPemPath string) {
+// caTrustFile is the Spinifex CA's file name in the host's anchor directory.
+const caTrustFile = "spinifex-ca.crt"
+
+// installCACertificate adds the Spinifex CA to the host trust store and rebuilds
+// the bundle, so TLS clients (AWS CLI, etc.) trust the gateway certificate
+// without extra configuration. Without root it does nothing.
+func installCACertificate(caPemPath string) error {
+	if os.Getuid() != 0 {
+		return nil
+	}
+	trust, err := hostos.SystemCATrust()
+	if err != nil {
+		return err
+	}
+	return trustCACertificate(caPemPath, trust, func(path string) error {
+		cmd := exec.Command(path)
+		cmd.Stdout = io.Discard
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	})
+}
+
+func trustCACertificate(caPemPath string, trust hostos.CATrust, update func(path string) error) error {
+	data, err := os.ReadFile(caPemPath)
+	if err != nil {
+		return fmt.Errorf("read CA certificate: %w", err)
+	}
+	dest := filepath.Join(trust.AnchorDir, caTrustFile)
+	if err := os.MkdirAll(trust.AnchorDir, 0755); err != nil { //nolint:gosec // G301: system CA trust-store directory must be 0755 for every TLS client to read it. Contains no secret material.
+		return fmt.Errorf("create %s: %w", trust.AnchorDir, err)
+	}
+	if err := os.WriteFile(dest, data, 0644); err != nil { //nolint:gosec // G306: public CA certificate in the system trust store must be world-readable (0644); no private key is written here.
+		return fmt.Errorf("write %s: %w", dest, err)
+	}
+	if err := update(trust.Update.Path); err != nil {
+		return fmt.Errorf("%s failed after writing %s: %w", trust.Update.Name, dest, err)
+	}
+	fmt.Printf("✅ CA certificate installed to system trust store (%s)\n", dest)
+	return nil
+}
+
+// requireCATrust fails before init or join writes anything when the host has
+// no single trust store to add the CA to, so neither stops halfway on it.
+func requireCATrust() {
 	if os.Getuid() != 0 {
 		return
 	}
+	_, err := hostos.SystemCATrust()
+	exitOnCATrustError(err)
+}
 
-	const systemCertPath = "/usr/local/share/ca-certificates/spinifex-ca.crt"
-
-	data, err := os.ReadFile(caPemPath)
+// exitOnCATrustError stops the command when the Spinifex CA could not be
+// trusted, since every AWS CLI call on the node would then fail TLS.
+func exitOnCATrustError(err error) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not read CA certificate %s: %v\n", caPemPath, err)
-		return
+		fmt.Fprintf(os.Stderr, "❌ Error: could not add the Spinifex CA to the host trust store: %v\n", err)
+		os.Exit(1)
 	}
-
-	if err := os.MkdirAll(filepath.Dir(systemCertPath), 0755); err != nil { //nolint:gosec // G301: system CA trust-store directory must be 0755 for every TLS client to read it. Contains no secret material.
-		fmt.Fprintf(os.Stderr, "Warning: could not create certificate directory: %v\n", err)
-		return
-	}
-
-	if err := os.WriteFile(systemCertPath, data, 0644); err != nil { //nolint:gosec // G306: public CA certificate in the system trust store must be world-readable (0644); no private key is written here.
-		fmt.Fprintf(os.Stderr, "Warning: could not install CA certificate: %v\n", err)
-		return
-	}
-
-	cmd := exec.Command("update-ca-certificates")
-	cmd.Stdout = io.Discard
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: update-ca-certificates failed: %v\n", err)
-		return
-	}
-
-	fmt.Printf("✅ CA certificate installed to system trust store\n")
 }
 
 // runAdminBanner writes the Spinifex console banner to /etc/motd.

@@ -3,15 +3,22 @@ package vm
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-// IsMMIO reports whether machineType is a memory-mapped I/O bus machine (e.g.
-// microvm). MMIO machines use virtio-*-device transports instead of
-// virtio-*-pci, because they have no PCI bus.
-func IsMMIO(machineType string) bool {
+// IsMicrovm reports whether machineType is the QEMU microvm machine, with or
+// without a PCIe bus.
+func IsMicrovm(machineType string) bool {
 	return strings.HasPrefix(machineType, "microvm")
+}
+
+// IsMMIO reports whether machineType attaches virtio devices over memory-mapped
+// I/O. A microvm without pcie=on has no PCI bus, so it uses virtio-*-device
+// transports; with pcie=on devices are virtio-*-pci like any other machine.
+func IsMMIO(machineType string) bool {
+	return IsMicrovm(machineType) && !slices.Contains(strings.Split(machineType, ","), "pcie=on")
 }
 
 // MaxNICQueues caps the queue pairs on a guest NIC. vhost-net spawns a kernel
@@ -297,6 +304,31 @@ func VolumeBlkDevice(volumeID, nodeName, iothreadID, bus string) Device {
 	return Device{Value: strings.Join(args, ",")}
 }
 
+// volumeMMIOBlkDevice renders a microvm data volume as virtio-blk-device with
+// VolumeBlkDeviceArgs' identity and error policy; MMIO has no PCI bus to name.
+func volumeMMIOBlkDevice(volumeID, nodeName, iothreadID string) Device {
+	args := []string{"virtio-blk-device"}
+	for _, arg := range VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, "") {
+		if !strings.HasPrefix(arg, "bus=") {
+			args = append(args, arg)
+		}
+	}
+	return Device{Value: strings.Join(args, ",")}
+}
+
+// volumeMicrovmPCIBlkDevice renders a data volume on a microvm with a PCIe bus
+// as virtio-blk-pci with VolumeBlkDeviceArgs' identity and error policy. The
+// microvm has no hot-plug root ports, so the device sits on the default bus.
+func volumeMicrovmPCIBlkDevice(volumeID, nodeName, iothreadID string) Device {
+	args := []string{"virtio-blk-pci"}
+	for _, arg := range VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, "") {
+		if !strings.HasPrefix(arg, "bus=") {
+			args = append(args, arg)
+		}
+	}
+	return Device{Value: strings.Join(args, ",")}
+}
+
 // VolumeBlkDeviceQMPArgs renders the same virtio-blk-pci arguments as a
 // device_add argument map for AttachVolume's QMP hot-attach path. See
 // VolumeBlkDeviceArgs for why werror/rerror are set here.
@@ -354,4 +386,36 @@ func VolumeBlockdev(nodeName string, server NBDServerOpts) Blockdev {
 	opts := append([]string{"driver=nbd", fmt.Sprintf("node-name=%s", nodeName)}, server.CommandLineArgs()...)
 	opts = append(opts, "export=", fmt.Sprintf("reconnect-delay=%d", NBDReconnectDelaySeconds))
 	return Blockdev{Value: strings.Join(opts, ",")}
+}
+
+// HostDeviceOpts is a host block device export. QEMU opens Path through the
+// host_device protocol driver with O_DIRECT and native AIO, and a raw format
+// node over it exposes only the first SizeBytes to the guest.
+type HostDeviceOpts struct {
+	Path      string
+	SizeBytes uint64
+}
+
+// QMPArgs renders the blockdev-add arguments for the raw node and its nested
+// host_device file node.
+func (o HostDeviceOpts) QMPArgs(nodeName string) map[string]any {
+	return map[string]any{
+		"node-name": nodeName,
+		"driver":    "raw",
+		"size":      o.SizeBytes,
+		"file": map[string]any{
+			"driver":   "host_device",
+			"filename": o.Path,
+			"aio":      "native",
+			"cache":    map[string]any{"direct": true},
+		},
+	}
+}
+
+// VolumeHostDeviceBlockdev renders the -blockdev equivalent of QMPArgs for a
+// data volume backed by a host block device.
+func VolumeHostDeviceBlockdev(nodeName string, dev HostDeviceOpts) Blockdev {
+	return Blockdev{Value: fmt.Sprintf(
+		"driver=raw,node-name=%s,size=%d,file.driver=host_device,file.filename=%s,file.aio=native,file.cache.direct=on",
+		nodeName, dev.SizeBytes, dev.Path)}
 }

@@ -19,6 +19,12 @@ bin/
 dist/
 build/microvm/vmlinuz
 build/microvm/initramfs.cpio.gz
+build/microvm/qboot.rom
+build/microvm/qboot.LICENSE
+build/microvm/sqs-worker/vmlinuz
+build/microvm/sqs-worker/initramfs.cpio.gz
+build/microvm/sqs-worker/.stage.*/
+build/qboot/
 !spinifex/runtime/roles/spinifexui/frontend/dist/
 tmp/
 *.test

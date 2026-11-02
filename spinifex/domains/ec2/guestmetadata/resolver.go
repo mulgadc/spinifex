@@ -123,6 +123,24 @@ func (r *metadataResolver) resolveENIByID(ctx context.Context, eniID string) (*e
 	return eniFactsFromRecord(accountID, &rec), nil
 }
 
+// refreshENI re-reads a pinned ENI's record by its key, so a request sees the
+// interface as it is now (an Elastic IP associated or released since the tap's
+// responder started). Returns (nil, nil) once the record is gone.
+func (r *metadataResolver) refreshENI(ctx context.Context, pinned *eniFacts) (*eniFacts, error) {
+	entry, err := r.eniKV.Get(ctx, pinned.accountID+"."+pinned.eniID)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get eni record %s: %w", pinned.eniID, err)
+	}
+	var rec eniRecord
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		return nil, fmt.Errorf("unmarshal eni record %s: %w", pinned.eniID, err)
+	}
+	return eniFactsFromRecord(pinned.accountID, &rec), nil
+}
+
 // findENIByID scans the ENI bucket for the record whose key ends in ".{eniID}",
 // returning the owning account and the raw record bytes, or ("", nil, nil) on
 // miss. ENI IDs are globally unique, so at most one key matches.

@@ -5,7 +5,9 @@ package viperblock
 
 import (
 	"testing"
+	"time"
 
+	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	vbdirty "github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock/dirty"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -46,11 +48,11 @@ func TestVolumeDirty_MarkedOnOpenNotOnSealFailure(t *testing.T) {
 	assert.Equal(t, "node-a", record.Owner)
 }
 
-// TestVolumeDirty_DoesNotRefuseAnotherNode locks the availability half. Instance
+// TestVolumeDirty_DoesNotPinAVolumeToAGoneNode locks the availability half. Instance
 // start forwards to the node that last ran the instance and only falls back once
 // that node has failed its window, so refusing here would leave the instance
 // unable to run anywhere rather than running with a slightly older copy.
-func TestVolumeDirty_DoesNotRefuseAnotherNode(t *testing.T) {
+func TestVolumeDirty_DoesNotPinAVolumeToAGoneNode(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-dirtytakeoverallowed"
@@ -59,8 +61,9 @@ func TestVolumeDirty_DoesNotRefuseAnotherNode(t *testing.T) {
 	require.NoError(t, gone.mark(t.Context(), volumeName, 1, "seal volume: predastore unreachable"))
 
 	survivor := &Config{
-		leases: newTestLeases(t, natsURL, "node-b"),
-		dirty:  newTestDirty(t, natsURL, "node-b"),
+		leases:   newTestLeases(t, natsURL, "node-b"),
+		dirty:    newTestDirty(t, natsURL, "node-b"),
+		liveness: &fakeLiveness{seen: time.Now().Add(-2 * nodeLivenessWindow), found: true},
 	}
 
 	lease, err := survivor.acquireVolumeLease(t.Context(), volumeName)
@@ -80,8 +83,9 @@ func TestVolumeDirty_TakeoverNamesThePreviousHolder(t *testing.T) {
 	require.NoError(t, gone.mark(t.Context(), volumeName, 1, "seal volume: predastore unreachable"))
 
 	survivor := &Config{
-		leases: newTestLeases(t, natsURL, "node-b"),
-		dirty:  newTestDirty(t, natsURL, "node-b"),
+		leases:   newTestLeases(t, natsURL, "node-b"),
+		dirty:    newTestDirty(t, natsURL, "node-b"),
+		liveness: &fakeLiveness{seen: time.Now().Add(-2 * nodeLivenessWindow), found: true},
 	}
 	_, err := survivor.acquireVolumeLease(t.Context(), volumeName)
 	require.NoError(t, err)
@@ -263,4 +267,47 @@ func TestVolumeDirty_ListReportsTheHolder(t *testing.T) {
 	assert.Equal(t, "vol-dirtylisted", unsealed[0].VolumeID)
 	assert.Equal(t, "node-a", unsealed[0].Owner)
 	assert.Contains(t, unsealed[0].Reason, "predastore unreachable")
+}
+
+// A node answers "do you hold unsealed writes" for exactly the volumes whose
+// marker names it, over the subject a start on another node reaches it by.
+func TestHoldsUnsealedWrites_AnswersOverTheNodeSubject(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	cfg := &Config{NodeName: "node-a", dirty: newTestDirty(t, natsURL, "node-a")}
+	other := newTestDirty(t, natsURL, "node-b")
+	require.NoError(t, cfg.dirty.mark(t.Context(), "vol-mine", 1, "open"))
+	require.NoError(t, other.mark(t.Context(), "vol-theirs", 1, "open"))
+
+	subject, err := ebsprovider.UnsealedWritesSubject("node-a")
+	require.NoError(t, err)
+	_, err = nc.Subscribe(subject, func(msg *nats.Msg) { handleHoldsUnsealedWrites(t.Context(), cfg, msg) })
+	require.NoError(t, err)
+
+	client := ebsprovider.NewNATSProvider(nc, 5*time.Second)
+	held, err := client.HoldsUnsealedWrites(t.Context(), "node-a", []string{"vol-mine", "vol-theirs", "vol-clean"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vol-mine"}, held)
+
+	_, err = client.HoldsUnsealedWrites(t.Context(), "node-a", []string{"../escape"})
+	require.Error(t, err, "a volume name that is not a plain name is refused")
+}
+
+// A node that cannot read its markers must say so rather than answer none,
+// because the answer decides whether another node may open the volume.
+func TestHoldsUnsealedWrites_UnreadableMarkerIsAnError(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	dirty := newTestDirty(t, natsURL, "node-a")
+	cfg := &Config{NodeName: "node-a", dirty: dirty}
+
+	_, err := dirty.kv.Put(t.Context(), "vol-garbled", []byte("not json"))
+	require.NoError(t, err)
+	_, err = cfg.unsealedWritesHeld(t.Context(), []string{"vol-garbled"})
+	require.Error(t, err)
+
+	_, err = (&Config{}).unsealedWritesHeld(t.Context(), []string{"vol-x"})
+	require.Error(t, err, "a node with no marker store cannot say it holds nothing")
 }

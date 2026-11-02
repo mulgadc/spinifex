@@ -178,6 +178,13 @@ interface ListAccountsResponse {
   count: number
 }
 
+// How many instances of each type the cluster can still admit, summed over the
+// nodes that answered. A type with no free slot is absent rather than zero.
+interface InstanceTypeCapacity {
+  available: Record<string, number>
+  nodes: number
+}
+
 export type {
   VersionInfo,
   InstanceTypeCap,
@@ -199,7 +206,22 @@ export type {
   ModelAccessChange,
   AccountSummary,
   ListAccountsResponse,
+  InstanceTypeCapacity,
 }
+
+// Capacity is a figure, not a catalogue, so it is read on its own rather than
+// encoded into the instance-type listing. The action names no resource, so a
+// policy that does not grant it answers AccessDenied: retry: false, and the
+// caller treats an absent figure as unknown rather than as none.
+export const instanceTypeCapacityQueryOptions = queryOptions({
+  queryKey: ["spinifex", "instanceTypeCapacity"],
+  queryFn: async () =>
+    await signedFetch<InstanceTypeCapacity>({
+      action: "GetInstanceTypeCapacity",
+    }),
+  retry: false,
+  staleTime: 30_000,
+})
 
 export const adminVersionQueryOptions = queryOptions({
   queryKey: ["admin", "version"],

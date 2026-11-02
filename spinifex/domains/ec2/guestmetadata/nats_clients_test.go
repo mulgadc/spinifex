@@ -13,9 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,9 +41,9 @@ func serveCounted[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn 
 func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	var gotReq handlers_sts.AssumeRoleForInstanceRequest
-	calls := serveCounted(t, nc, handlers_sts.SubjectAssumeRoleForInstance,
-		func(req *handlers_sts.AssumeRoleForInstanceRequest) (*sts.AssumeRoleOutput, error) {
+	var gotReq stsdomain.AssumeRoleForInstanceRequest
+	calls := serveCounted(t, nc, stsdomain.SubjectAssumeRoleForInstance,
+		func(req *stsdomain.AssumeRoleForInstanceRequest) (*sts.AssumeRoleOutput, error) {
 			gotReq = *req
 			return &sts.AssumeRoleOutput{Credentials: &sts.Credentials{
 				AccessKeyId:     aws.String("ASIATESTKEY"),
@@ -61,7 +61,7 @@ func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
 	assert.Equal(t, "ASIATESTKEY", aws.StringValue(out.Credentials.AccessKeyId))
 	assert.Equal(t, int32(1), atomic.LoadInt32(calls))
 	// The request payload must round-trip every field the responder needs.
-	assert.Equal(t, handlers_sts.AssumeRoleForInstanceRequest{
+	assert.Equal(t, stsdomain.AssumeRoleForInstanceRequest{
 		AccountID:       imdsTestAccountID,
 		RoleARN:         "arn:aws:iam::123456789012:role/app",
 		InstanceID:      "i-abc",
@@ -72,9 +72,9 @@ func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
 func TestNATSProfileLookup_CachesProfile(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	calls := serveCounted(t, nc, handlers_iam.SubjectResolveInstanceProfile,
-		func(req *handlers_iam.ResolveInstanceProfileRequest) (*handlers_iam.InstanceProfile, error) {
-			return &handlers_iam.InstanceProfile{
+	calls := serveCounted(t, nc, iamdomain.SubjectResolveInstanceProfile,
+		func(req *iamdomain.ResolveInstanceProfileRequest) (*iamdomain.InstanceProfile, error) {
+			return &iamdomain.InstanceProfile{
 				InstanceProfileName: "app",
 				AccountID:           req.AccountID,
 				RoleName:            "app-role",
@@ -94,8 +94,8 @@ func TestNATSProfileLookup_CachesProfile(t *testing.T) {
 func TestNATSProfileLookup_CachesRole(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	calls := serveCounted(t, nc, handlers_iam.SubjectGetRole,
-		func(req *handlers_iam.GetRoleRequest) (*iam.GetRoleOutput, error) {
+	calls := serveCounted(t, nc, iamdomain.SubjectGetRole,
+		func(req *iamdomain.GetRoleRequest) (*iam.GetRoleOutput, error) {
 			return &iam.GetRoleOutput{Role: &iam.Role{
 				RoleName: req.Input.RoleName,
 				Arn:      aws.String("arn:aws:iam::123456789012:role/app-role"),
@@ -114,8 +114,8 @@ func TestNATSProfileLookup_CachesRole(t *testing.T) {
 func TestNATSProfileLookup_PropagatesError(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	serveCounted(t, nc, handlers_iam.SubjectResolveInstanceProfile,
-		func(_ *handlers_iam.ResolveInstanceProfileRequest) (*handlers_iam.InstanceProfile, error) {
+	serveCounted(t, nc, iamdomain.SubjectResolveInstanceProfile,
+		func(_ *iamdomain.ResolveInstanceProfileRequest) (*iamdomain.InstanceProfile, error) {
 			return nil, assert.AnError
 		})
 
@@ -126,25 +126,39 @@ func TestNATSProfileLookup_PropagatesError(t *testing.T) {
 
 const pubKeySubject = "imds.ec2.get_public_key"
 
-func TestNATSPublicKeyLookup_CachesMaterial(t *testing.T) {
+// Deleting a key pair and re-importing new material under the same name must
+// take effect on the next lookup, not after a cache expires.
+func TestNATSPublicKeyLookup_ServesReimportedMaterial(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
+	var stored atomic.Value
+	stored.Store("ssh-ed25519 AAAAold my-key")
 	var gotReq ec2key.GetPublicKeyRequest
-	calls := serveCounted(t, nc, pubKeySubject,
+	serveCounted(t, nc, pubKeySubject,
 		func(req *ec2key.GetPublicKeyRequest) (*ec2key.GetPublicKeyResponse, error) {
 			gotReq = *req
-			return &ec2key.GetPublicKeyResponse{OpenSSHKey: "ssh-ed25519 AAAA " + req.KeyName}, nil
+			material := stored.Load().(string)
+			if material == "" {
+				return nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+			}
+			return &ec2key.GetPublicKeyResponse{OpenSSHKey: material}, nil
 		})
 
 	lookup := NewNATSPublicKeyLookup(nc)
-	for range 3 {
-		got, err := lookup.GetPublicKey(context.Background(), imdsTestAccountID, "my-key")
-		require.NoError(t, err)
-		assert.Equal(t, "ssh-ed25519 AAAA my-key", got)
-	}
-	// Three lookups, one round-trip: the TTL cache suppressed the repeats.
-	assert.Equal(t, int32(1), atomic.LoadInt32(calls))
+	got, err := lookup.GetPublicKey(context.Background(), imdsTestAccountID, "my-key")
+	require.NoError(t, err)
+	assert.Equal(t, "ssh-ed25519 AAAAold my-key", got)
 	assert.Equal(t, ec2key.GetPublicKeyRequest{AccountID: imdsTestAccountID, KeyName: "my-key"}, gotReq)
+
+	stored.Store("")
+	_, err = lookup.GetPublicKey(context.Background(), imdsTestAccountID, "my-key")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
+
+	stored.Store("ssh-ed25519 AAAAnew my-key")
+	got, err = lookup.GetPublicKey(context.Background(), imdsTestAccountID, "my-key")
+	require.NoError(t, err)
+	assert.Equal(t, "ssh-ed25519 AAAAnew my-key", got)
 }
 
 // An error result is never cached: the next call must re-issue the RPC so a

@@ -7,17 +7,14 @@ package pagedstore
 
 import (
 	"context"
-	"sort"
-	"strconv"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
 
-// Store wraps a MemoryObjectStore and splits ListObjectsV2's answer into
-// pages of at most PageSize objects, sorted by key so pagination is
-// deterministic across runs (MemoryObjectStore itself iterates a map).
+// Store wraps a MemoryObjectStore whose ListObjectsV2 pages like S3, capping
+// every page at PageSize entries so small fixtures span several pages.
 type Store struct {
 	*objectstore.MemoryObjectStore
 
@@ -28,51 +25,20 @@ type Store struct {
 	Calls int
 }
 
-// New returns a paging store with the given per-page object limit.
+// New returns an empty Store that serves at most pageSize entries per page.
 func New(pageSize int) *Store {
 	return &Store{MemoryObjectStore: objectstore.NewMemoryObjectStore(), PageSize: pageSize}
 }
 
 var _ objectstore.ObjectStore = (*Store)(nil)
 
-// ListObjectsV2 delegates to MemoryObjectStore for prefix/delimiter matching,
-// then slices the sorted result into one page per call, resuming from the
-// offset encoded in ContinuationToken.
+// ListObjectsV2 lowers the caller's MaxKeys to PageSize and lets the memory
+// store page, so tokens, ordering and common prefixes follow S3's rules.
 func (s *Store) ListObjectsV2(ctx context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
 	s.Calls++
-
-	full, err := s.MemoryObjectStore.ListObjectsV2(ctx, input)
-	if err != nil {
-		return nil, err
+	page := *input
+	if page.MaxKeys == nil || *page.MaxKeys > int64(s.PageSize) {
+		page.MaxKeys = aws.Int64(int64(s.PageSize))
 	}
-
-	sort.Slice(full.Contents, func(i, j int) bool {
-		return aws.StringValue(full.Contents[i].Key) < aws.StringValue(full.Contents[j].Key)
-	})
-
-	start := 0
-	if tok := aws.StringValue(input.ContinuationToken); tok != "" {
-		start, err = strconv.Atoi(tok)
-		if err != nil {
-			return nil, err
-		}
-	}
-	end := min(start+s.PageSize, len(full.Contents))
-	if start > end {
-		start = end
-	}
-
-	page := &s3.ListObjectsV2Output{
-		Contents:       full.Contents[start:end],
-		CommonPrefixes: full.CommonPrefixes,
-		Name:           input.Bucket,
-		KeyCount:       aws.Int64(int64(end - start)),
-	}
-	if end < len(full.Contents) {
-		page.IsTruncated = aws.Bool(true)
-		page.NextContinuationToken = aws.String(strconv.Itoa(end))
-	} else {
-		page.IsTruncated = aws.Bool(false)
-	}
-	return page, nil
+	return s.MemoryObjectStore.ListObjectsV2(ctx, &page)
 }

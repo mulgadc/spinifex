@@ -177,6 +177,19 @@ func TestVolumeBlkDevice_OnErrorStop(t *testing.T) {
 	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop", d.Value)
 }
 
+// TestVolumeMMIOBlkDevice pins the microvm data-volume device: the PCI
+// device's identity, block node, I/O thread and stop-on-error policy on
+// virtio-blk-device, with no PCI bus, which MMIO has no root port for.
+func TestVolumeMMIOBlkDevice(t *testing.T) {
+	d := volumeMMIOBlkDevice("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a")
+	assert.Equal(t, "virtio-blk-device,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,werror=stop,rerror=stop", d.Value)
+	assert.NotContains(t, d.Value, "bus=")
+
+	pci := VolumeBlkDevice("vol-data-a", "nbd-vol-data-a", "ioth-vol-data-a", "hotplug-ebs3")
+	assert.Equal(t, "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop", pci.Value,
+		"the PCI device keeps its bus and shape")
+}
+
 // TestVolumeBlkDeviceQMPArgs_OnErrorStop is the hotplug counterpart: the QMP
 // device_add argument map AttachVolume sends must carry the same policy.
 func TestVolumeBlkDeviceQMPArgs_OnErrorStop(t *testing.T) {
@@ -300,4 +313,28 @@ func TestBlkDeviceMapped_EveryQueueMappedOnce(t *testing.T) {
 			t.Errorf("queues=%d pool=%d: %d mapping entries, want %d", tc.queues, tc.pool, len(dev.Mapping), want)
 		}
 	}
+}
+
+func TestNetDevice_MicrovmWithPCIEIsPCI(t *testing.T) {
+	mt := "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on,pcie=on"
+	assert.False(t, IsMMIO(mt), "a microvm with a PCIe bus must not use MMIO transports")
+	d := NetDevice(mt, "net0", "02:00:00:aa:bb:cc", 1, 0)
+	assert.Contains(t, d.Value, "virtio-net-pci,netdev=net0")
+	assert.NotContains(t, d.Value, "virtio-net-device")
+}
+
+func TestNetDevice_PlainMicrovmStaysMMIO(t *testing.T) {
+	assert.True(t, IsMMIO("microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on"))
+	assert.Contains(t, NetDevice("microvm", "net0", "", 0, 0).Value, "virtio-net-device")
+}
+
+func TestNetDevice_Q35Unchanged(t *testing.T) {
+	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc", 1, 0)
+	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc,rx_queue_size=1024", d.Value)
+}
+
+func TestIsMicrovm(t *testing.T) {
+	assert.True(t, IsMicrovm("microvm"))
+	assert.True(t, IsMicrovm("microvm,pcie=on"))
+	assert.False(t, IsMicrovm("q35"))
 }

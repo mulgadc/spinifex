@@ -7,20 +7,17 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
-// qemuProcessPrefix matches both qemu-system-x86_64 and qemu-system-aarch64;
-// /proc/<pid>/comm truncates at 15 bytes but this prefix is only 11.
-const qemuProcessPrefix = "qemu-system"
-
-// qemuProcRoot is the /proc mount scanned for live qemu-system processes.
+// qemuProcRoot is the /proc mount scanned for live QEMU processes.
 // Overridden in tests to avoid depending on the real host process table.
 var qemuProcRoot = "/proc"
 
-// scanLiveQEMUPIDs walks procRoot for processes whose comm starts with
-// qemuProcessPrefix. procRoot is a parameter so tests point it at a
-// fabricated directory instead of spawning a real qemu-system binary.
+// scanLiveQEMUPIDs walks procRoot for processes whose comm names a QEMU
+// guest. procRoot is a parameter so tests point it at a fabricated directory
+// instead of spawning a real QEMU binary.
 func scanLiveQEMUPIDs(procRoot string) ([]int, error) {
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -37,7 +34,7 @@ func scanLiveQEMUPIDs(procRoot string) ([]int, error) {
 		if err != nil {
 			continue
 		}
-		if strings.HasPrefix(strings.TrimSpace(string(comm)), qemuProcessPrefix) {
+		if hostos.IsQEMUProcess(string(comm)) {
 			pids = append(pids, pid)
 		}
 	}
@@ -67,7 +64,7 @@ func pidFileOwners(runtimeDir string) map[int]string {
 	return owners
 }
 
-// qemuOrphan is a live qemu-system PID with no matching instance in
+// qemuOrphan is a live QEMU PID with no matching instance in
 // Snapshot(). hasPidFile distinguishes two very different situations: a
 // pidfile this daemon itself wrote (instanceID is that pidfile's claim,
 // positively this daemon's process) versus no pidfile at all (could be
@@ -78,7 +75,7 @@ type qemuOrphan struct {
 	hasPidFile bool
 }
 
-// classifyQEMUOrphans returns every live qemu-system PID not vouched for by
+// classifyQEMUOrphans returns every live QEMU PID not vouched for by
 // a pidfile naming a known instance. This is the gap classifyRestoredInstances
 // cannot see, since it only walks Snapshot().
 func classifyQEMUOrphans(procRoot, runtimeDir string, known map[string]bool) ([]qemuOrphan, error) {
@@ -102,7 +99,7 @@ func classifyQEMUOrphans(procRoot, runtimeDir string, known map[string]bool) ([]
 	return orphans, nil
 }
 
-// reportRecordlessQEMUOrphans logs, but never kills, a qemu-system process
+// reportRecordlessQEMUOrphans logs, but never kills, a QEMU process
 // with no instance record. A pidfile in runtimeDir naming an unknown
 // instance positively identifies the process as this daemon's own stale
 // orphan (logged distinctly, safe for an operator to reap by hand); no
@@ -123,11 +120,11 @@ func (m *Manager) reportRecordlessQEMUOrphans() {
 	}
 	for _, o := range orphans {
 		if o.hasPidFile {
-			slog.Warn("qemu-system process has a stale spinifex pidfile with no matching instance record; not killing, safe to reap manually",
+			slog.Warn("QEMU process has a stale spinifex pidfile with no matching instance record; not killing, safe to reap manually",
 				"pid", o.pid, "instanceId", o.instanceID)
 			continue
 		}
-		slog.Warn("qemu-system process has no spinifex pidfile at all; not killing, ownership unconfirmed",
+		slog.Warn("QEMU process has no spinifex pidfile at all; not killing, ownership unconfirmed",
 			"pid", o.pid)
 	}
 }

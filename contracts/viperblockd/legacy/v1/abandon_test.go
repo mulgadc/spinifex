@@ -17,7 +17,7 @@ func TestVolumeAbandonSubject_BothForms(t *testing.T) {
 	assert.Equal(t, "ebs.abandon", viperblocklegacyv1.VolumeAbandonSubject(""))
 }
 
-// TestVolumeAbandonRequest_JSON pins the request daemon/vm_adapters.go sends
+// TestVolumeAbandonRequest_JSON pins the request runtime/daemon/vm_adapters.go sends
 // on the abandon route.
 func TestVolumeAbandonRequest_JSON(t *testing.T) {
 	golden := `{"volume":"vol-1","reason":"instance owned by another node"}`

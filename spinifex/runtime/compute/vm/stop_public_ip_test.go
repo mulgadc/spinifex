@@ -120,3 +120,32 @@ func TestAStopWithNoAddressAsksThePoolNothing(t *testing.T) {
 
 	assert.Empty(t, cleaner.releaseAutoAssigned)
 }
+
+// DescribeInstances reads the record the moment it says stopped, so the address
+// must already be gone by then: a stopped instance still holding a borrowed
+// address is one the pool has already lent to someone else.
+func TestAStoppedInstanceNeverShowsTheAddressItReturned(t *testing.T) {
+	m, store, _, cleaner, rt := shutdownTestManager(t)
+	cleaner.releaseAutoAssignedOK = true
+	v := stoppableWithAddress(t, m, "i-race")
+
+	var ipWhenStopped string
+	deps := m.deps
+	deps.TransitionState = func(inst *VM, target InstanceState) error {
+		if target == StateStopped {
+			m.Inspect(inst, func(vv *VM) { ipWhenStopped = vv.PublicIP })
+		}
+		return rt.apply(inst, target)
+	}
+	m.SetDeps(deps)
+
+	require.NoError(t, m.Stop(v.ID))
+
+	require.Equal(t, []InstanceState{StateStopping, StateStopped}, rt.targets("i-race"))
+	assert.Empty(t, ipWhenStopped,
+		"the instance was published as stopped while still advertising its auto-assigned address")
+	stored, err := store.LoadStoppedInstance("i-race")
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Empty(t, stored.PublicIP)
+}

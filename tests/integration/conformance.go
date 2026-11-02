@@ -378,6 +378,8 @@ func modelService(signatureService string) (awsmodel.Service, bool) {
 		return awsmodel.ElasticLoadBalancingV2, true
 	case "iam":
 		return awsmodel.IAM, true
+	case "route53":
+		return awsmodel.Route53, true
 	case "s3":
 		return awsmodel.S3, true
 	case "sts":

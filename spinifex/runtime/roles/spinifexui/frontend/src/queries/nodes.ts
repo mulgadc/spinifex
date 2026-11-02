@@ -42,6 +42,7 @@ export interface CPUFacts {
   current_mhz?: number
   virtualization?: string
   features?: string[]
+  flags?: string[]
 }
 
 export interface MemoryGroup {

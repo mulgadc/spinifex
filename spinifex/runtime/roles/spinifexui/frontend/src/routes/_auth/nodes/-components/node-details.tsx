@@ -1,7 +1,7 @@
 import { Activity, Eye, Gauge, Network } from "lucide-react"
 
 import { DetailPanel } from "@/components/detail-panel"
-import { Badge } from "@/components/ui/badge"
+import { StateBadge } from "@/components/state-badge"
 import type { PanelTab } from "@/lib/panel-search"
 import type { NodeInfo } from "@/queries/admin"
 import type { NodeFacts } from "@/queries/nodes"
@@ -41,11 +41,7 @@ export function NodeDetails({
       onClose={onClose}
       onTabChange={onTabChange}
       subtitle={model || node.host}
-      summary={
-        <Badge variant={node.status === "Ready" ? "default" : "secondary"}>
-          {node.status}
-        </Badge>
-      }
+      summary={<StateBadge state={node.status} />}
       tab={tab}
       tabs={[
         {

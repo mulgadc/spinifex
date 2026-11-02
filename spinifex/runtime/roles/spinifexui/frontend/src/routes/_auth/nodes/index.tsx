@@ -14,13 +14,12 @@ import {
   type SortState,
 } from "@/components/data-table"
 import { GPUInventoryCard } from "@/components/gpu-inventory-card"
+import { NodesTable } from "@/components/nodes-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
 import { StateBadge } from "@/components/state-badge"
-import { Badge } from "@/components/ui/badge"
 import { buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { formatLinkSpeed } from "@/lib/node-topology"
 import {
   CLOSED_PANEL,
   type PanelSearch,
@@ -35,7 +34,7 @@ import {
   type NodeInfo,
   type VMInfo,
 } from "@/queries/admin"
-import { type NodeFacts, nodeFactsQueryOptions } from "@/queries/nodes"
+import { nodeFactsQueryOptions } from "@/queries/nodes"
 
 import { NodeDetails } from "./-components/node-details"
 
@@ -82,138 +81,6 @@ function formatAge(launchTime: number): string {
   return `${days}d ${hours % 24}h`
 }
 
-function formatUptime(seconds: number): string {
-  const days = Math.floor(seconds / 86_400)
-  const hours = Math.floor((seconds % 86_400) / 3600)
-
-  if (days > 0) {
-    return `${days}d ${hours}h`
-  }
-
-  const minutes = Math.floor((seconds % 3600) / 60)
-
-  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
-}
-
-interface ClusterNode {
-  info: NodeInfo
-  facts: NodeFacts | undefined
-}
-
-// The fastest port that is up, which is what the node's uplink can carry.
-function fastestLink(facts: NodeFacts | undefined): number | undefined {
-  const speeds = (facts?.nics ?? [])
-    .filter((nic) => nic.state === "up" && nic.speed_mbps)
-    .map((nic) => nic.speed_mbps ?? 0)
-
-  return speeds.length > 0 ? Math.max(...speeds) : undefined
-}
-
-const NODE_COLUMNS: DataColumn<ClusterNode>[] = [
-  {
-    id: "name",
-    header: "Name",
-    sortValue: ({ info }) => info.node,
-    cell: ({ info }) => (
-      <span className="font-mono text-xs font-medium text-primary">
-        {info.node}
-      </span>
-    ),
-  },
-  {
-    id: "status",
-    header: "Status",
-    sortValue: ({ info }) => info.status,
-    cell: ({ info }) => (
-      <Badge variant={info.status === "Ready" ? "default" : "secondary"}>
-        {info.status}
-      </Badge>
-    ),
-  },
-  {
-    id: "model",
-    header: "Model",
-    hideBelow: "md",
-    sortValue: ({ facts }) => facts?.system.product,
-    cell: ({ facts }) => (
-      <span className="block max-w-56 truncate text-xs">
-        {facts
-          ? [facts.system.vendor, facts.system.product]
-              .filter(Boolean)
-              .join(" ") || "-"
-          : "-"}
-      </span>
-    ),
-  },
-  {
-    id: "cpu",
-    header: "CPU",
-    hideBelow: "lg",
-    sortValue: ({ facts }) => facts?.cpu.threads,
-    cell: ({ facts }) => (
-      <span className="text-xs tabular-nums">
-        {facts ? `${facts.cpu.threads} threads` : "-"}
-      </span>
-    ),
-  },
-  {
-    id: "link",
-    header: "Fastest port",
-    hideBelow: "lg",
-    sortValue: ({ facts }) => fastestLink(facts),
-    cell: ({ facts }) => (
-      <span className="text-xs tabular-nums">
-        {formatLinkSpeed(fastestLink(facts))}
-      </span>
-    ),
-  },
-  {
-    id: "roles",
-    header: "Roles",
-    hideBelow: "xl",
-    cell: ({ info }) => (
-      <span className="font-mono text-xs text-muted-foreground">
-        {[
-          info.nats_role && `nats:${info.nats_role}`,
-          info.predastore_role && `predastore:${info.predastore_role}`,
-        ]
-          .filter(Boolean)
-          .join(",") || "-"}
-      </span>
-    ),
-  },
-  {
-    id: "ip",
-    header: "IP",
-    hideBelow: "sm",
-    sortValue: ({ info }) => info.host,
-    cell: ({ info }) => <span className="font-mono text-xs">{info.host}</span>,
-  },
-  {
-    id: "az",
-    header: "AZ",
-    hideBelow: "xl",
-    sortValue: ({ info }) => info.az,
-    cell: ({ info }) => <span className="text-xs">{info.az}</span>,
-  },
-  {
-    id: "uptime",
-    header: "Uptime",
-    hideBelow: "md",
-    sortValue: ({ info }) => info.uptime,
-    cell: ({ info }) => (
-      <span className="tabular-nums">{formatUptime(info.uptime)}</span>
-    ),
-  },
-  {
-    id: "ec2",
-    header: "EC2",
-    align: "end",
-    sortValue: ({ info }) => info.vm_count,
-    cell: ({ info }) => <span className="tabular-nums">{info.vm_count}</span>,
-  },
-]
-
 function NodesPage() {
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
@@ -234,14 +101,7 @@ function NodesPage() {
   const nodes = nodesData?.nodes ?? []
   const vms = (vmsData?.vms ?? []).filter((vm) => !vm.managed_by)
 
-  const factsByNode = new Map(
-    (factsData?.nodes ?? []).map((facts) => [facts.node, facts]),
-  )
-
-  const clusterNodes: ClusterNode[] = nodes.map((info) => ({
-    info,
-    facts: factsByNode.get(info.node),
-  }))
+  const facts = factsData?.nodes ?? []
 
   // Opening or closing a panel adds a history entry, so Back closes it.
   function onSearchChange(next: Partial<PanelSearch>) {
@@ -251,8 +111,8 @@ function NodesPage() {
     })
   }
 
-  const open = clusterNodes.find(
-    ({ info }) => search.selected !== "" && info.node === search.selected,
+  const open = nodes.find(
+    (node) => search.selected !== "" && node.node === search.selected,
   )
 
   let panel: ReactNode = null
@@ -260,9 +120,9 @@ function NodesPage() {
   if (open) {
     panel = (
       <NodeDetails
-        facts={open.facts}
-        key={open.info.node}
-        node={open.info}
+        facts={facts.find((f) => f.node === open.node)}
+        key={open.node}
+        node={open}
         onClose={() => {
           onSearchChange(CLOSED_PANEL)
         }}
@@ -321,17 +181,14 @@ function NodesPage() {
             <CardTitle>Cluster Nodes</CardTitle>
           </CardHeader>
           <CardContent>
-            <DataTable
-              activeId={open?.info.node}
-              caption="Cluster nodes"
-              columns={NODE_COLUMNS}
-              empty="No nodes responding."
-              getRowId={({ info }) => info.node}
+            <NodesTable
+              activeId={open?.node}
+              facts={facts}
+              nodes={nodes}
               onRowClick={(selected) => {
                 onSearchChange({ ...CLOSED_PANEL, selected })
               }}
               onSortChange={setSort}
-              rows={clusterNodes}
               sort={sort}
             />
           </CardContent>
@@ -597,7 +454,10 @@ function InstanceTypesTable({
 }: {
   instanceTypes: InstanceTypeCap[]
 }) {
-  const [sort, setSort] = useState<SortState>()
+  const [sort, setSort] = useState<SortState>({
+    column: "available",
+    desc: true,
+  })
 
   return (
     <DataTable

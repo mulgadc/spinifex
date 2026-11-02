@@ -269,6 +269,8 @@ func (d Deps) runAccountDeletion(
 			AccountID:   job.AccountID,
 			AccountName: job.AccountName,
 			Force:       job.Force,
+			OperationID: job.OperationID,
+			Fence:       job.Fence,
 		})
 		tracker.finished(ctx, result, err)
 	}()

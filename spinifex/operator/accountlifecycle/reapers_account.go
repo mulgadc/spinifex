@@ -94,7 +94,10 @@ func (r *nameReservationReaper) Delete(ctx context.Context, accountID string, re
 // place the two meet.
 type IAMAccounts struct{ svc iamdomain.IAMService }
 
-var _ AccountStore = (*IAMAccounts)(nil)
+var (
+	_ AccountStore    = (*IAMAccounts)(nil)
+	_ AccountQuiescer = iamdomain.IAMService(nil)
+)
 
 // NewIAMAccounts wraps svc as the engine's AccountStore.
 func NewIAMAccounts(svc iamdomain.IAMService) *IAMAccounts {
@@ -111,14 +114,8 @@ func (a *IAMAccounts) GetAccount(accountID string) (*Account, error) {
 	}, nil
 }
 
-func (a *IAMAccounts) SetAccountStatus(accountID, status string) (*Account, error) {
-	account, err := a.svc.SetAccountStatus(accountID, status)
-	if err != nil {
-		return nil, err
-	}
-	return &Account{
-		AccountID: account.AccountID, AccountName: account.AccountName, Status: account.Status,
-	}, nil
+func (a *IAMAccounts) QuiesceAccount(accountID, operationID string, fence uint64) (uint64, error) {
+	return a.svc.QuiesceAccount(accountID, operationID, fence)
 }
 
 func (a *IAMAccounts) DeleteAccount(accountID string) error {

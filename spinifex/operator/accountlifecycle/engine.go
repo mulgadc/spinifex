@@ -118,8 +118,8 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		return e.Inventory(ctx, req.AccountID)
 	}
 
-	if _, err := e.Accounts.SetAccountStatus(req.AccountID, AccountStatusTerminating); err != nil {
-		return nil, fmt.Errorf("mark account terminating: %w", err)
+	if _, err := e.Accounts.QuiesceAccount(req.AccountID, req.OperationID, req.Fence); err != nil {
+		return nil, fmt.Errorf("quiesce account: %w", err)
 	}
 	e.logger().InfoContext(ctx, "Account teardown started",
 		"accountID", account.AccountID, "accountName", account.AccountName, "force", req.Force)

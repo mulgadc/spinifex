@@ -32,7 +32,7 @@ func TestAccountStatusReader_TerminatingIsTrue(t *testing.T) {
 	require.NoError(t, err)
 	account, err := svc.CreateAccount("tenant@example.com")
 	require.NoError(t, err)
-	_, err = svc.SetAccountStatus(account.AccountID, iamdomain.AccountStatusTerminating)
+	_, err = svc.QuiesceAccount(account.AccountID, "op-1", 1)
 	require.NoError(t, err)
 
 	terminating, err := reader.AccountTerminating(t.Context(), account.AccountID)

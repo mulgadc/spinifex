@@ -35,12 +35,12 @@ func (f *accountIAM) GetAccount(string) (*iamdomain.Account, error) {
 	return f.account, nil
 }
 
-func (f *accountIAM) SetAccountStatus(_, status string) (*iamdomain.Account, error) {
-	f.setStatus = status
+func (f *accountIAM) QuiesceAccount(_, _ string, _ uint64) (uint64, error) {
+	f.setStatus = iamdomain.AccountStatusTerminating
 	updated := *f.account
-	updated.Status = status
+	updated.Status = iamdomain.AccountStatusTerminating
 	f.account = &updated
-	return f.account, nil
+	return 1, nil
 }
 
 func (f *accountIAM) DeleteAccount(string) error {
@@ -190,9 +190,8 @@ func TestIAMAccountsAdapterCarriesEveryField(t *testing.T) {
 	assert.Equal(t, "tenant@example.com", account.AccountName)
 	assert.Equal(t, iamdomain.AccountStatusActive, account.Status)
 
-	updated, err := accounts.SetAccountStatus("000000000042", AccountStatusTerminating)
+	_, err = accounts.QuiesceAccount("000000000042", "op-1", 1)
 	require.NoError(t, err)
-	assert.Equal(t, AccountStatusTerminating, updated.Status)
 	assert.Equal(t, iamdomain.AccountStatusTerminating, svc.setStatus)
 
 	require.NoError(t, accounts.DeleteAccount("000000000042"))

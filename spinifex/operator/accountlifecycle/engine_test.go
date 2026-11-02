@@ -25,6 +25,7 @@ const (
 type fakeAccounts struct {
 	account   *Account
 	statuses  []string
+	quiesces  []quiesceCall
 	deleted   bool
 	getErr    error
 	statusErr error
@@ -46,13 +47,19 @@ func (f *fakeAccounts) GetAccount(string) (*Account, error) {
 	return f.account, nil
 }
 
-func (f *fakeAccounts) SetAccountStatus(_, status string) (*Account, error) {
+type quiesceCall struct {
+	operationID string
+	fence       uint64
+}
+
+func (f *fakeAccounts) QuiesceAccount(_, operationID string, fence uint64) (uint64, error) {
 	if f.statusErr != nil {
-		return nil, f.statusErr
+		return 0, f.statusErr
 	}
-	f.statuses = append(f.statuses, status)
-	f.account.Status = status
-	return f.account, nil
+	f.statuses = append(f.statuses, AccountStatusTerminating)
+	f.quiesces = append(f.quiesces, quiesceCall{operationID, fence})
+	f.account.Status = AccountStatusTerminating
+	return 1, nil
 }
 
 func (f *fakeAccounts) DeleteAccount(string) error {
@@ -219,6 +226,45 @@ func TestTeardownMarksTerminatingBeforeDeletingAnything(t *testing.T) {
 	}
 	if !accounts.deleted {
 		t.Fatal("a fully drained account must be deleted")
+	}
+}
+
+// A superseded holder is refused at the quiesce, so it must run no stage and
+// delete nothing: the newer holder owns the account.
+func TestTeardownWithASupersededFenceRunsNoStage(t *testing.T) {
+	accounts := newFakeAccounts()
+	accounts.statusErr = errors.New("account is owned by a newer fence")
+	reaper := &fakeReaper{
+		kind: "volume", stage: StageStorage,
+		resources: []Resource{{Kind: "volume", ID: "vol-1"}},
+	}
+	engine := quietEngine(accounts, reaper)
+
+	req := request()
+	req.OperationID, req.Fence = "op-1", 1
+	_, err := engine.Teardown(context.Background(), req)
+
+	if err == nil {
+		t.Fatal("a superseded holder must be refused")
+	}
+	if reaper.deletesAttempted != 0 || accounts.deleted {
+		t.Fatalf("a refused quiesce must run no stage: deletes=%d deleted=%v", reaper.deletesAttempted, accounts.deleted)
+	}
+}
+
+// A job taken over at a higher fence quiesces under that fence and the same
+// operation, so the account record follows the new holder.
+func TestTeardownQuiescesUnderTheRequestsOperationAndFence(t *testing.T) {
+	accounts := newFakeAccounts()
+	engine := quietEngine(accounts)
+
+	req := request()
+	req.OperationID, req.Fence = "op-7", 2
+	if _, err := engine.Teardown(context.Background(), req); err != nil {
+		t.Fatalf("teardown: %v", err)
+	}
+	if len(accounts.quiesces) != 1 || accounts.quiesces[0] != (quiesceCall{"op-7", 2}) {
+		t.Fatalf("expected one quiesce under op-7 fence 2, got %v", accounts.quiesces)
 	}
 }
 

@@ -56,7 +56,7 @@ func TestTerminatingIsAOneWayDoor(t *testing.T) {
 	account, err := svc.CreateAccount("tenant@example.com")
 	require.NoError(t, err)
 
-	_, err = svc.SetAccountStatus(account.AccountID, iamdomain.AccountStatusTerminating)
+	_, err = svc.QuiesceAccount(account.AccountID, "op-1", 1)
 	require.NoError(t, err)
 
 	for _, status := range []string{iamdomain.AccountStatusActive, iamdomain.AccountStatusSuspended} {
@@ -94,7 +94,7 @@ func TestDeleteAccountRequiresTerminating(t *testing.T) {
 
 	require.Error(t, svc.DeleteAccount(account.AccountID))
 
-	_, err = svc.SetAccountStatus(account.AccountID, iamdomain.AccountStatusTerminating)
+	_, err = svc.QuiesceAccount(account.AccountID, "op-1", 1)
 	require.NoError(t, err)
 	require.NoError(t, svc.DeleteAccount(account.AccountID))
 
@@ -112,7 +112,7 @@ func TestProtectedAccountsCanNeverBeDeleted(t *testing.T) {
 		t.Run(accountID, func(t *testing.T) {
 			t.Parallel()
 			// Even a status that would otherwise permit deletion must not.
-			_, _ = svc.SetAccountStatus(accountID, iamdomain.AccountStatusTerminating)
+			_, _ = svc.QuiesceAccount(accountID, "op-1", 1)
 
 			err := svc.DeleteAccount(accountID)
 

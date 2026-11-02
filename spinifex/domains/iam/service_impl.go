@@ -1214,6 +1214,60 @@ var UndeletableAccountIDs = map[string]string{
 // deliberately distinct from a permissions error: no credential grants it.
 var ErrAccountUndeletable = errors.New("account is protected and cannot be deleted")
 
+// ErrQuiesceSuperseded reports that another deletion operation, or a holder
+// with a higher fence, owns the account's termination.
+var ErrQuiesceSuperseded = errors.New("account termination is owned by another operation or a newer fence")
+
+// ErrUseQuiesceAccount reports an attempt to enter TERMINATING without an
+// operation: only QuiesceAccount may, so every termination has an owner.
+var ErrUseQuiesceAccount = errors.New("an account can only be set TERMINATING through QuiesceAccount")
+
+// QuiesceAccount moves the account to TERMINATING on behalf of one deletion
+// operation and returns the account's generation. It is idempotent for the
+// same operation and refuses a lower fence or a different operation, so a
+// superseded job holder cannot act on the account.
+func (s *IAMServiceImpl) QuiesceAccount(accountID, operationID string, fence uint64) (uint64, error) {
+	if operationID == "" || fence == 0 {
+		return 0, awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
+			"QuiesceAccount needs an operation id and a fence of at least 1.")
+	}
+	if reason, protected := UndeletableAccountIDs[accountID]; protected {
+		return 0, fmt.Errorf("%s (%s) cannot be %s: %w", accountID, reason, AccountStatusTerminating, ErrAccountUndeletable)
+	}
+
+	account, err := kvutil.Update(context.Background(), s.accountsBucket, accountID,
+		kvutil.CASConfig{NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity)},
+		func(a *Account) (bool, error) {
+			if a.Status != AccountStatusTerminating {
+				a.Status = AccountStatusTerminating
+				a.Generation++
+				a.TerminationOp = &TerminationOp{OperationID: operationID, Fence: fence}
+				return true, nil
+			}
+			switch current := a.TerminationOp; {
+			case current == nil:
+				a.TerminationOp = &TerminationOp{OperationID: operationID, Fence: fence}
+				return true, nil
+			case current.OperationID != operationID || fence < current.Fence:
+				return false, fmt.Errorf("account %s is owned by operation %s at fence %d: %w",
+					accountID, current.OperationID, current.Fence, ErrQuiesceSuperseded)
+			case fence > current.Fence:
+				a.TerminationOp = &TerminationOp{OperationID: operationID, Fence: fence}
+				return true, nil
+			}
+			return false, nil
+		})
+	if err != nil {
+		if errors.Is(err, kvutil.ErrWrite) || errors.Is(err, kvutil.ErrRead) || errors.Is(err, kvutil.ErrDecode) {
+			return 0, fmt.Errorf("store account quiesce: %w", err)
+		}
+		return 0, err
+	}
+
+	slog.Info("Account quiesced", "accountID", accountID, "operation_id", operationID, "fence", fence, "generation", account.Generation)
+	return account.Generation, nil
+}
+
 // SetAccountStatus writes a new status and returns the updated account. It
 // refuses to move an account out of TERMINATING: teardown has already begun
 // destroying data, so restoring service would hand back a hollowed-out account.
@@ -1230,6 +1284,9 @@ func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, e
 
 	if reason, protected := UndeletableAccountIDs[accountID]; protected && status != AccountStatusActive {
 		return nil, fmt.Errorf("%s (%s) cannot be %s: %w", accountID, reason, status, ErrAccountUndeletable)
+	}
+	if status == AccountStatusTerminating {
+		return nil, fmt.Errorf("account %s: %w", accountID, ErrUseQuiesceAccount)
 	}
 
 	account, err := kvutil.Update(context.Background(), s.accountsBucket, accountID,

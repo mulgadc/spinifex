@@ -55,6 +55,7 @@ function Choice({
         <label htmlFor={id}>{label}</label>
       </FieldTitle>
       <Select
+        items={options}
         onValueChange={(next) => {
           onChange(next ?? value)
         }}

@@ -30,6 +30,10 @@ type Env struct {
 	LiveLLDP func(context.Context) ([]byte, error)
 	// Addrs returns an interface's IPv4 addresses with their prefix lengths.
 	Addrs func(iface string) []net.IPNet
+	// HostAddr and WANInterface are this node's configured cluster address and
+	// WAN NIC. A plane is found from them before the br-* naming convention.
+	HostAddr     string
+	WANInterface string
 }
 
 // DefaultEnv reads the live host.
@@ -339,8 +343,8 @@ func ovsBridge(text string) string {
 	return ""
 }
 
-// planeFacts finds each plane's bridge and address. A host without br-vpc
-// carries the overlay on whichever bridge holds the encap address.
+// planeFacts finds the device carrying each plane: the one holding the address
+// or NIC the node was configured with, else the plane's br-* bridge.
 func planeFacts(env Env, nics []clusterv1.NICFacts) []clusterv1.PlaneFacts {
 	addrs := env.Addrs
 	if addrs == nil {
@@ -351,37 +355,41 @@ func planeFacts(env Env, nics []clusterv1.NICFacts) []clusterv1.PlaneFacts {
 		encap = strings.TrimSpace(string(data))
 	}
 
-	bridges := map[string]string{
+	devices := map[string]string{
+		clusterv1.PlaneWAN: wanDevice(env.WANInterface, nics),
+		clusterv1.PlaneLAN: deviceHolding(env.SysRoot, env.HostAddr, addrs),
+		clusterv1.PlaneVPC: deviceHolding(env.SysRoot, encap, addrs),
+	}
+	fallback := map[string]string{
 		clusterv1.PlaneWAN: "br-wan",
 		clusterv1.PlaneLAN: "br-lan",
 		clusterv1.PlaneVPC: "br-vpc",
 	}
-	if encap != "" {
-		if br := bridgeHolding(encap, addrs); br != "" {
-			bridges[clusterv1.PlaneVPC] = br
-		}
+	want := map[string]string{
+		clusterv1.PlaneLAN: env.HostAddr,
+		clusterv1.PlaneVPC: encap,
 	}
 
 	var out []clusterv1.PlaneFacts
 	for _, plane := range []string{clusterv1.PlaneWAN, clusterv1.PlaneLAN, clusterv1.PlaneVPC} {
-		br := bridges[plane]
-		if _, err := os.Stat(filepath.Join(env.SysRoot, "class", "net", br)); err != nil {
+		dev, match := devices[plane], want[plane]
+		if dev == "" {
+			dev, match = fallback[plane], ""
+		}
+		if _, err := os.Stat(filepath.Join(env.SysRoot, "class", "net", dev)); err != nil {
 			continue
 		}
-		p := clusterv1.PlaneFacts{Plane: plane, Bridge: br}
-		p.MTU, _ = strconv.Atoi(readSys(env.SysRoot, br, "mtu"))
-		list := addrs(br)
-		for _, a := range list {
-			if plane == clusterv1.PlaneVPC && encap != "" && a.IP.String() != encap {
-				continue
-			}
-			ones, _ := a.Mask.Size()
-			p.Address, p.Prefix = a.IP.String(), ones
-			break
-		}
-		for _, n := range nics {
-			if n.Master == br {
-				p.NICs = append(p.NICs, n.Name)
+		p := clusterv1.PlaneFacts{Plane: plane}
+		p.MTU, _ = strconv.Atoi(readSys(env.SysRoot, dev, "mtu"))
+		p.Address, p.Prefix = planeAddress(addrs(dev), match)
+		if slices.ContainsFunc(nics, func(n clusterv1.NICFacts) bool { return n.Name == dev }) {
+			p.NICs = []string{dev}
+		} else {
+			p.Bridge = dev
+			for _, n := range nics {
+				if n.Master == dev {
+					p.NICs = append(p.NICs, n.Name)
+				}
 			}
 		}
 		out = append(out, p)
@@ -389,13 +397,44 @@ func planeFacts(env Env, nics []clusterv1.NICFacts) []clusterv1.PlaneFacts {
 	return out
 }
 
-func bridgeHolding(ip string, addrs func(string) []net.IPNet) string {
-	for _, br := range []string{"br-vpc", "br-lan", "br-wan"} {
-		for _, a := range addrs(br) {
+// wanDevice is the configured WAN NIC, or the bridge it is enslaved to: on a
+// bridged host the NIC is a port of br-wan and holds no address.
+func wanDevice(iface string, nics []clusterv1.NICFacts) string {
+	for _, n := range nics {
+		if n.Name == iface && n.Master != "" && n.Master != "ovs-system" {
+			return n.Master
+		}
+	}
+	return iface
+}
+
+// deviceHolding names the interface that holds ip, searching every device.
+func deviceHolding(sysRoot, ip string, addrs func(string) []net.IPNet) string {
+	if ip == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(filepath.Join(sysRoot, "class", "net"))
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		for _, a := range addrs(e.Name()) {
 			if a.IP.String() == ip {
-				return br
+				return e.Name()
 			}
 		}
 	}
 	return ""
+}
+
+// planeAddress is want when the device holds it, or the device's first
+// address when nothing particular is wanted.
+func planeAddress(list []net.IPNet, want string) (string, int) {
+	for _, a := range list {
+		if want == "" || a.IP.String() == want {
+			ones, _ := a.Mask.Size()
+			return a.IP.String(), ones
+		}
+	}
+	return "", 0
 }

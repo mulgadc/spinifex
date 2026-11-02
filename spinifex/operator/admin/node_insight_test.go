@@ -123,6 +123,12 @@ func fakeNode(t *testing.T, nc *nats.Conn, node, addr string, bps float64, broke
 		}
 		var req clusterv1.NetTestRunRequest
 		_ = json.Unmarshal(m.Data, &req)
+		// The daemon refuses a run that does not name its target node.
+		if req.Target == "" || req.Target == node {
+			data, _ := json.Marshal(clusterv1.NetTestRunResponse{Error: "invalid request"})
+			_ = m.Respond(data)
+			return
+		}
 		data, _ := json.Marshal(clusterv1.NetTestRunResponse{
 			SourceAddress: addr, BitsPerSecond: bps, Streams: req.Streams, LinkMbps: 25000, Tool: "iperf2",
 		})

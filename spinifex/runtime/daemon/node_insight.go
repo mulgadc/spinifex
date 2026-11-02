@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,8 +50,10 @@ type nodeInsight struct {
 	testing sync.Mutex
 }
 
-func newNodeInsight(node string) *nodeInsight {
-	return &nodeInsight{node: node, env: nodefacts.DefaultEnv(node, buildVersion, buildCommit)}
+func newNodeInsight(node, hostAddr, wanInterface string) *nodeInsight {
+	env := nodefacts.DefaultEnv(node, buildVersion, buildCommit)
+	env.HostAddr, env.WANInterface = hostAddr, wanInterface
+	return &nodeInsight{node: node, env: env}
 }
 
 func (n *nodeInsight) currentFacts(ctx context.Context) clusterv1.NodeFacts {
@@ -68,25 +69,37 @@ func (n *nodeInsight) currentFacts(ctx context.Context) clusterv1.NodeFacts {
 	return n.facts
 }
 
+// planeAddress is the node's address on plane, or "" when it has none.
 func (n *nodeInsight) planeAddress(ctx context.Context, plane string) string {
-	addr, _ := n.planeSubnet(ctx, plane)
-	return addr
+	return addressOn(n.currentFacts(ctx), plane)
 }
 
-// planeSubnet is the node's address on plane and the subnet it sits in. A
-// client may only be pointed inside that subnet, never at an arbitrary host.
-func (n *nodeInsight) planeSubnet(ctx context.Context, plane string) (string, *net.IPNet) {
-	for _, p := range n.currentFacts(ctx).Planes {
-		if p.Plane != plane || p.Address == "" {
-			continue
+func addressOn(f clusterv1.NodeFacts, plane string) string {
+	for _, p := range f.Planes {
+		if p.Plane == plane && p.Address != "" {
+			return p.Address
 		}
-		_, subnet, err := net.ParseCIDR(p.Address + "/" + strconv.Itoa(p.Prefix))
-		if err != nil {
-			return p.Address, nil
-		}
-		return p.Address, subnet
 	}
-	return "", nil
+	return ""
+}
+
+// targetFactsTimeout allows the target node to rebuild its facts.
+const targetFactsTimeout = 7 * time.Second
+
+// targetAddress asks the target node for its own address on plane, so a run
+// is only ever pointed at a cluster node and never at an arbitrary host.
+func (d *Daemon) targetAddress(ctx context.Context, target, plane string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, targetFactsTimeout)
+	defer cancel()
+	msg, err := d.natsConn.RequestWithContext(ctx, clusterv1.NodeFactsOfSubject(target), []byte("{}"))
+	if err != nil {
+		return "", err
+	}
+	var f clusterv1.NodeFacts
+	if err := json.Unmarshal(msg.Data, &f); err != nil {
+		return "", err
+	}
+	return addressOn(f, plane), nil
 }
 
 func (n *nodeInsight) planeLink(ctx context.Context, plane string) (speed, mtu int) {
@@ -140,19 +153,21 @@ func (d *Daemon) handleNetTestRun(msg *nats.Msg) string {
 	var req clusterv1.NetTestRunRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil || !validPlane(req.Plane) ||
 		req.DurationSeconds < nettest.MinDuration || req.DurationSeconds > nettest.MaxDuration ||
-		req.Streams < 1 || req.Streams > nettest.MaxStreams || req.Port != clusterv1.NetTestPort {
+		req.Streams < 1 || req.Streams > nettest.MaxStreams || req.Port != clusterv1.NetTestPort ||
+		!clusterv1.ValidNodeID(req.Target) || req.Target == d.node {
 		respondWithJSON(d.node, msg, clusterv1.NetTestRunResponse{Error: "invalid request"})
 		return outcomeError
 	}
 	go func() {
 		ctx := context.Background()
-		addr, subnet := d.insight.planeSubnet(ctx, req.Plane)
+		addr := d.insight.planeAddress(ctx, req.Plane)
 		if addr == "" {
 			respondWithJSON(d.node, msg, clusterv1.NetTestRunResponse{Error: "this node has no address on the " + req.Plane + " plane"})
 			return
 		}
-		if target := net.ParseIP(req.Address); subnet == nil || target == nil || !subnet.Contains(target) {
-			respondWithJSON(d.node, msg, clusterv1.NetTestRunResponse{Error: "target is outside this node's " + req.Plane + " subnet"})
+		want, err := d.targetAddress(ctx, req.Target, req.Plane)
+		if err != nil || want == "" || want != req.Address {
+			respondWithJSON(d.node, msg, clusterv1.NetTestRunResponse{Error: req.Address + " is not " + req.Target + "'s " + req.Plane + " address"})
 			return
 		}
 		if !d.insight.testing.TryLock() {

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
@@ -277,4 +278,95 @@ func TestWriteFile_ReplacesAtomicallyGroupReadOnly(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Len(t, entries, 1, "no temporary file is left behind")
+}
+
+// cloudHost lays out a Vultr VM: the WAN and cluster addresses sit on plain
+// NICs, and the only bridges are OVS's own.
+func cloudHost(t *testing.T) Env {
+	t.Helper()
+	root := t.TempDir()
+	sys := filepath.Join(root, "sys")
+	for _, name := range []string{"enp1s0", "enp8s0", "br-ext", "br-int"} {
+		dir := filepath.Join(sys, "class", "net", name)
+		if strings.HasPrefix(name, "enp") {
+			dir = filepath.Join(dir, "device")
+		}
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+	}
+	for _, name := range []string{"enp1s0", "enp8s0"} {
+		dir := filepath.Join(sys, "class", "net", name)
+		for file, value := range map[string]string{"operstate": "up", "mtu": "1500", "address": "56:00:06:ff:58:51"} {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, file), []byte(value+"\n"), 0o644))
+		}
+	}
+	dir := filepath.Join(root, "facts")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fileEncapIP), []byte("10.10.8.5"), 0o644))
+
+	addrs := map[string][]net.IPNet{
+		"enp1s0": {{IP: net.IPv4(64, 177, 123, 18), Mask: net.CIDRMask(23, 32)}},
+		"enp8s0": {{IP: net.IPv4(10, 10, 8, 5), Mask: net.CIDRMask(24, 32)}},
+	}
+	return Env{
+		Dir: dir, SysRoot: sys, ProcRoot: filepath.Join(root, "proc"), EtcRoot: filepath.Join(root, "etc"),
+		Node:         "node2",
+		Addrs:        func(name string) []net.IPNet { return addrs[name] },
+		HostAddr:     "10.10.8.5",
+		WANInterface: "enp1s0",
+	}
+}
+
+func planesByName(f clusterv1.NodeFacts) map[string]clusterv1.PlaneFacts {
+	planes := map[string]clusterv1.PlaneFacts{}
+	for _, p := range f.Planes {
+		planes[p.Plane] = p
+	}
+	return planes
+}
+
+func TestBuildFindsPlanesOnPlainNICsFromTheConfiguredAddresses(t *testing.T) {
+	f := Build(context.Background(), cloudHost(t))
+
+	planes := planesByName(f)
+	require.Len(t, planes, 3)
+	assert.Equal(t, clusterv1.PlaneFacts{Plane: "wan", Address: "64.177.123.18", Prefix: 23, NICs: []string{"enp1s0"}, MTU: 1500}, planes["wan"])
+	assert.Equal(t, clusterv1.PlaneFacts{Plane: "lan", Address: "10.10.8.5", Prefix: 24, NICs: []string{"enp8s0"}, MTU: 1500}, planes["lan"])
+	assert.Equal(t, clusterv1.PlaneFacts{Plane: "vpc", Address: "10.10.8.5", Prefix: 24, NICs: []string{"enp8s0"}, MTU: 1500}, planes["vpc"])
+
+	nics := map[string][]string{}
+	for _, n := range f.NICs {
+		nics[n.Name] = n.Planes
+	}
+	assert.Equal(t, []string{"wan"}, nics["enp1s0"])
+	assert.Equal(t, []string{"lan", "vpc"}, nics["enp8s0"])
+}
+
+func TestBuildFindsNoPlanesOnAPlainNICHostWithoutConfiguration(t *testing.T) {
+	env := cloudHost(t)
+	env.HostAddr, env.WANInterface = "", ""
+	require.NoError(t, os.Remove(filepath.Join(env.Dir, fileEncapIP)))
+
+	assert.Empty(t, Build(context.Background(), env).Planes, "no br-* bridge and nothing configured names a device")
+}
+
+func TestConfiguredPlanesMatchTheBridgesOnABridgedHost(t *testing.T) {
+	bare := planesByName(Build(context.Background(), fakeHost(t)))
+
+	env := fakeHost(t)
+	env.HostAddr, env.WANInterface = "10.10.8.4", "eno1"
+	configured := planesByName(Build(context.Background(), env))
+
+	assert.Equal(t, bare, configured)
+	assert.Equal(t, "br-wan", configured["wan"].Bridge, "the WAN NIC is a br-wan port, so the plane is the bridge")
+	assert.Equal(t, "192.168.1.14", configured["wan"].Address)
+	assert.Equal(t, "br-lan", configured["lan"].Bridge)
+}
+
+func TestAHostnameInHostLeavesTheLANBridgeItsAddress(t *testing.T) {
+	env := fakeHost(t)
+	env.HostAddr = "bottlebrush"
+
+	lan := planesByName(Build(context.Background(), env))["lan"]
+	assert.Equal(t, "br-lan", lan.Bridge)
+	assert.Equal(t, "10.10.8.4", lan.Address)
 }

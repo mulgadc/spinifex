@@ -37,7 +37,7 @@ func insightFacts() clusterv1.NodeFacts {
 func insightDaemon(t *testing.T, facts clusterv1.NodeFacts) (*Daemon, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	insight := newNodeInsight("node1")
+	insight := newNodeInsight("node1", "", "")
 	insight.facts, insight.factsAt = facts, time.Now()
 	return &Daemon{node: "node1", natsConn: nc, insight: insight}, nc
 }
@@ -61,20 +61,46 @@ func callHandler[T any](t *testing.T, nc *nats.Conn, handler func(*nats.Msg) str
 
 func validRun() clusterv1.NetTestRunRequest {
 	return clusterv1.NetTestRunRequest{
-		Plane: clusterv1.PlaneLAN, Address: "10.10.8.2", Port: clusterv1.NetTestPort,
+		Plane: clusterv1.PlaneLAN, Target: "node2", Address: "10.10.8.2", Port: clusterv1.NetTestPort,
 		DurationSeconds: 5, Streams: 4,
 	}
 }
 
-func TestHandleNetTestRun_RefusesTargetOutsidePlaneSubnet(t *testing.T) {
+// servePeerFacts answers for another node, as its daemon would.
+func servePeerFacts(t *testing.T, nc *nats.Conn, node string, facts clusterv1.NodeFacts) {
+	t.Helper()
+	data, err := json.Marshal(facts)
+	require.NoError(t, err)
+	sub, err := nc.Subscribe(clusterv1.NodeFactsOfSubject(node), func(msg *nats.Msg) { _ = msg.Respond(data) })
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+}
+
+func peerFacts() clusterv1.NodeFacts {
+	return clusterv1.NodeFacts{Node: "node2", Planes: []clusterv1.PlaneFacts{
+		{Plane: clusterv1.PlaneLAN, Address: "10.10.8.2", Prefix: 24, NICs: []string{"eth0"}},
+	}}
+}
+
+// A shared subnet is not a cluster: on a cloud the WAN subnet holds other
+// tenants, so only the address the target node reports is admitted.
+func TestHandleNetTestRun_RefusesAddressTheTargetDoesNotReport(t *testing.T) {
+	d, nc := insightDaemon(t, insightFacts())
+	servePeerFacts(t, nc, "node2", peerFacts())
+
+	for _, addr := range []string{"10.10.8.9", "10.10.9.2", "8.8.8.8", "127.0.0.1", ""} {
+		req := validRun()
+		req.Address = addr
+		res := callHandler[clusterv1.NetTestRunResponse](t, nc, d.handleNetTestRun, req)
+		assert.Equal(t, addr+" is not node2's lan address", res.Error, "address %q", addr)
+	}
+}
+
+func TestHandleNetTestRun_RefusesATargetThatDoesNotAnswer(t *testing.T) {
 	d, nc := insightDaemon(t, insightFacts())
 
-	for _, target := range []string{"10.10.9.2", "8.8.8.8", "127.0.0.1", "not-an-ip", ""} {
-		req := validRun()
-		req.Address = target
-		res := callHandler[clusterv1.NetTestRunResponse](t, nc, d.handleNetTestRun, req)
-		assert.Contains(t, res.Error, "outside this node's lan subnet", "target %q", target)
-	}
+	res := callHandler[clusterv1.NetTestRunResponse](t, nc, d.handleNetTestRun, validRun())
+	assert.Equal(t, "10.10.8.2 is not node2's lan address", res.Error)
 }
 
 func TestHandleNetTestRun_RefusesInvalidRequests(t *testing.T) {
@@ -87,6 +113,9 @@ func TestHandleNetTestRun_RefusesInvalidRequests(t *testing.T) {
 		"no streams":     func(r *clusterv1.NetTestRunRequest) { r.Streams = 0 },
 		"many streams":   func(r *clusterv1.NetTestRunRequest) { r.Streams = 99 },
 		"other port":     func(r *clusterv1.NetTestRunRequest) { r.Port = 22 },
+		"no target":      func(r *clusterv1.NetTestRunRequest) { r.Target = "" },
+		"self as target": func(r *clusterv1.NetTestRunRequest) { r.Target = "node1" },
+		"subject target": func(r *clusterv1.NetTestRunRequest) { r.Target = "node2.>" },
 	}
 	for name, mutate := range mutations {
 		req := validRun()
@@ -107,6 +136,7 @@ func TestHandleNetTestRun_RefusesPlaneWithoutAddress(t *testing.T) {
 
 func TestHandleNetTestRun_OneTestPerNode(t *testing.T) {
 	d, nc := insightDaemon(t, insightFacts())
+	servePeerFacts(t, nc, "node2", peerFacts())
 	d.insight.testing.Lock()
 	defer d.insight.testing.Unlock()
 

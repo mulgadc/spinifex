@@ -20,6 +20,9 @@ interface FakeInstance {
   tags?: Record<string, string>
 }
 
+// Launch times render relative to now, so the baselines pin the clock.
+const BASELINE_NOW = new Date("2026-11-02T15:40:00Z")
+
 const INSTANCES: FakeInstance[] = [
   {
     id: "i-0a1b2c3d4e5f60001",
@@ -544,6 +547,7 @@ test.describe("instances list", () => {
   for (const theme of ["dark", "light"] satisfies Theme[]) {
     test(`matches the ${theme} baseline`, async ({ page }) => {
       await useTheme(page, theme)
+      await page.clock.setFixedTime(BASELINE_NOW)
       await page.setViewportSize({ width: 1440, height: 900 })
       await page.goto("/ec2/describe-instances")
       await page
@@ -555,6 +559,7 @@ test.describe("instances list", () => {
 
     test(`matches the ${theme} panel baseline`, async ({ page }) => {
       await useTheme(page, theme)
+      await page.clock.setFixedTime(BASELINE_NOW)
       await page.setViewportSize({ width: 1440, height: 900 })
       await page.goto("/ec2/describe-instances?selected=i-0a1b2c3d4e5f60001")
       await expect(

@@ -2580,6 +2580,66 @@ func TestModifyTargetGroup_RerendersReferencingLBConfig(t *testing.T) {
 	assert.NotEqual(t, before.ConfigHash, after.ConfigHash, "the agent reloads only on a hash change")
 }
 
+// An NLB's probe port lives only in HealthTargets, not the nginx text, so the
+// hash must cover HealthTargets or the agent keeps probing the old port.
+func TestModifyTargetGroup_NLBHealthCheckPortChangesHash(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	ctx := t.Context()
+
+	lb := &LoadBalancerRecord{
+		LoadBalancerArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/mtg-nlb/lb-mtgn1",
+		LoadBalancerID:  "lb-mtgn1",
+		Name:            "mtg-nlb",
+		Type:            LoadBalancerTypeNetwork,
+		State:           StateActive,
+		InstanceID:      "i-sys-mtgn1",
+		AccountID:       testAccountID,
+	}
+	require.NoError(t, svc.store.PutLoadBalancer(ctx, lb))
+
+	hc := DefaultHealthCheck()
+	hc.Protocol = ProtocolTCP
+	tg := &TargetGroupRecord{
+		TargetGroupArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/mtgn-tg/tg-mtgn1",
+		TargetGroupID:  "tg-mtgn1",
+		Protocol:       ProtocolTCP,
+		Port:           80,
+		HealthCheck:    hc,
+		Targets: []Target{
+			{Id: "i-srv1", Port: 80, HealthState: TargetHealthHealthy, PrivateIP: "10.0.1.30"},
+		},
+		AccountID: testAccountID,
+	}
+	require.NoError(t, svc.store.PutTargetGroup(ctx, tg))
+
+	require.NoError(t, svc.store.PutListener(ctx, &ListenerRecord{
+		ListenerArn:     "arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/net/mtg-nlb/lb-mtgn1/lst-mtgn1",
+		ListenerID:      "lst-mtgn1",
+		LoadBalancerArn: lb.LoadBalancerArn,
+		Protocol:        ProtocolTCP,
+		Port:            80,
+		DefaultActions:  []ListenerAction{{Type: ActionTypeForward, TargetGroupArn: tg.TargetGroupArn}},
+		AccountID:       testAccountID,
+	}))
+	require.NoError(t, svc.updateStoredConfig(ctx, lb))
+
+	before, err := svc.store.GetLoadBalancer(ctx, "lb-mtgn1")
+	require.NoError(t, err)
+
+	_, err = svc.ModifyTargetGroup(ctx, &elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:  aws.String(tg.TargetGroupArn),
+		HealthCheckPort: aws.String("8081"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	after, err := svc.store.GetLoadBalancer(ctx, "lb-mtgn1")
+	require.NoError(t, err)
+	require.Len(t, after.HealthTargets, 1)
+	assert.Equal(t, "10.0.1.30:8081", after.HealthTargets[0].Address)
+	assert.NotEqual(t, before.ConfigHash, after.ConfigHash, "the agent re-fetches health targets only on a hash change")
+}
+
 func TestUpdateStoredConfig_SkipsWhenNoInstance(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)

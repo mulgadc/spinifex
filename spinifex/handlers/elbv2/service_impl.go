@@ -714,16 +714,17 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalan
 		return fmt.Errorf("generate config: %w", err)
 	}
 
-	hash := configCertHash(configContent, certFiles)
+	// NLBs: the agent actively probes targets (nginx has no upstream probing).
+	var healthTargets []HealthTargetSpec
+	if lb.Type == LoadBalancerTypeNetwork {
+		healthTargets = buildNLBHealthTargets(tgByArn)
+	}
+
+	hash := configCertHash(configContent, certFiles, healthTargets)
 	lb.ConfigText = configContent
 	lb.ConfigHash = hash
 	lb.CertFiles = certFiles
-	// NLBs: the agent actively probes targets (nginx has no upstream probing).
-	if lb.Type == LoadBalancerTypeNetwork {
-		lb.HealthTargets = buildNLBHealthTargets(tgByArn)
-	} else {
-		lb.HealthTargets = nil
-	}
+	lb.HealthTargets = healthTargets
 
 	if err := s.store.PutLoadBalancer(ctx, lb); err != nil {
 		slog.ErrorContext(ctx, "updateStoredConfig: failed to persist LB", "lbId", lb.LoadBalancerID, "err", err)
@@ -798,9 +799,10 @@ func (s *ELBv2ServiceImpl) validateListenerCerts(ctx context.Context, certs []Li
 	return nil
 }
 
-// configCertHash hashes the config and all cert files so a cert rotation triggers
-// an agent reload even when the config text is unchanged.
-func configCertHash(configContent string, certFiles map[string]string) string {
+// configCertHash hashes the config, cert files and NLB health targets so a cert
+// rotation or probe change triggers an agent reload even when the config text is
+// unchanged. No health targets leaves the hash as config and certs alone.
+func configCertHash(configContent string, certFiles map[string]string, healthTargets []HealthTargetSpec) string {
 	h := sha256.New()
 	h.Write([]byte(configContent))
 	paths := slices.Sorted(maps.Keys(certFiles))
@@ -809,6 +811,12 @@ func configCertHash(configContent string, certFiles map[string]string) string {
 		h.Write([]byte{0})
 		h.Write([]byte(certFiles[p]))
 		h.Write([]byte{0})
+	}
+	for _, t := range healthTargets {
+		for _, f := range []string{t.ServerName, t.Address, t.Protocol, t.Path} {
+			h.Write([]byte(f))
+			h.Write([]byte{0})
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

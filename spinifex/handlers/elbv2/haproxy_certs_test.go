@@ -92,15 +92,15 @@ func TestConfigCertHash_ChangesOnRotation(t *testing.T) {
 	const cfg = "frontend ft\n    bind *:443 ssl crt /etc/haproxy/certs/x.pem\n"
 	path := "/etc/haproxy/certs/x.pem"
 
-	base := configCertHash(cfg, map[string]string{path: "PEM-A"})
-	rotated := configCertHash(cfg, map[string]string{path: "PEM-B"})
-	same := configCertHash(cfg, map[string]string{path: "PEM-A"})
+	base := configCertHash(cfg, map[string]string{path: "PEM-A"}, nil)
+	rotated := configCertHash(cfg, map[string]string{path: "PEM-B"}, nil)
+	same := configCertHash(cfg, map[string]string{path: "PEM-A"}, nil)
 
 	assert.NotEqual(t, base, rotated, "rotating cert content must change the hash")
 	assert.Equal(t, base, same, "identical inputs hash identically")
 
 	// Config-only change also moves the hash.
-	assert.NotEqual(t, base, configCertHash(cfg+"\n", map[string]string{path: "PEM-A"}))
+	assert.NotEqual(t, base, configCertHash(cfg+"\n", map[string]string{path: "PEM-A"}, nil))
 }
 
 func putTestCert(t *testing.T, svc *ELBv2ServiceImpl, arn, account, leaf, chain, key string) {

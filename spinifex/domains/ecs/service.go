@@ -258,6 +258,11 @@ func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInp
 			Status:    ClusterStatusActive,
 			CreatedAt: time.Now().UTC(),
 		}
+		settings, err := clusterSettingsFromAWS(input.Settings)
+		if err != nil {
+			return nil, err
+		}
+		rec.Settings = settings
 		if len(input.Tags) > 0 {
 			rec.Tags = map[string]string{}
 			for _, t := range input.Tags {
@@ -271,8 +276,8 @@ func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInp
 	return &ecs.CreateClusterOutput{Cluster: rec.toAWS()}, nil
 }
 
-// DescribeClusters returns meta for the named clusters; unknown names are
-// silently skipped (AWS returns them under "failures", omitted here in v1).
+// DescribeClusters returns meta for the named clusters; unknown names surface
+// as MISSING failures. Settings are only returned under Include=SETTINGS.
 func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error) {
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
@@ -282,7 +287,8 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 	if len(names) == 0 {
 		names = []string{defaultCluster}
 	}
-	out := &ecs.DescribeClustersOutput{}
+	includeSettings := slices.Contains(awsStringSlice(input.Include), ecs.ClusterFieldSettings)
+	out := &ecs.DescribeClustersOutput{Clusters: []*ecs.Cluster{}, Failures: []*ecs.Failure{}}
 	for _, name := range names {
 		name = ClusterShortName(name)
 		var rec ClusterRecord
@@ -291,9 +297,13 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 			return nil, err
 		}
 		if !found {
+			out.Failures = append(out.Failures, &ecs.Failure{Arn: aws.String(ClusterARN(s.region, accountID, name)), Reason: aws.String("MISSING")})
 			continue
 		}
 		c := rec.toAWS()
+		if !includeSettings {
+			c.Settings = nil
+		}
 		if err := s.applyClusterCounts(ctx, kv, name, c); err != nil {
 			return nil, err
 		}
@@ -382,8 +392,30 @@ func (r *ClusterRecord) toAWS() *ecs.Cluster {
 	for _, item := range r.DefaultCapacityProviderStrategy {
 		c.DefaultCapacityProviderStrategy = append(c.DefaultCapacityProviderStrategy, item.toAWS())
 	}
+	for _, st := range r.Settings {
+		c.Settings = append(c.Settings, &ecs.ClusterSetting{Name: aws.String(st.Name), Value: aws.String(st.Value)})
+	}
 	return c
 }
+
+// clusterSettingsFromAWS validates CreateCluster settings against the names
+// and values AWS accepts, so an unsupported setting is refused, not dropped.
+func clusterSettingsFromAWS(in []*ecs.ClusterSetting) ([]ClusterSetting, error) {
+	var out []ClusterSetting
+	for _, st := range in {
+		if st == nil {
+			continue
+		}
+		name, value := aws.StringValue(st.Name), aws.StringValue(st.Value)
+		if name != ecs.ClusterSettingNameContainerInsights || !slices.Contains(containerInsightsValues, value) {
+			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		}
+		out = append(out, ClusterSetting{Name: name, Value: value})
+	}
+	return out, nil
+}
+
+var containerInsightsValues = []string{"enabled", "disabled", "enhanced"}
 
 // tagsToAWS converts a stored tag map into the AWS list form with a stable
 // key order so Describe output is deterministic.
@@ -426,7 +458,7 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 	if family == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	if err := validateContainerDefs(input.ContainerDefinitions); err != nil {
+	if err := validateContainerDefs(input.ContainerDefinitions, aws.StringValue(input.Memory)); err != nil {
 		return nil, err
 	}
 	warnUnsupportedLogDrivers(ctx, family, input.ContainerDefinitions)
@@ -465,12 +497,23 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 // The test here is per value, not per field: an empty list or a false/unset
 // flag requests nothing and is accepted, because there is nothing to enforce
 // or refuse. Only a value that asks for the restriction is rejected.
-func validateContainerDefs(defs []*ecs.ContainerDefinition) error {
+//
+// Ahead of those, AWS's own rules: every container needs an image, and without
+// a task-level memory every container needs memory or memoryReservation.
+func validateContainerDefs(defs []*ecs.ContainerDefinition, taskMemory string) error {
 	for _, c := range defs {
 		if c == nil {
 			continue
 		}
 		name := aws.StringValue(c.Name)
+		if aws.StringValue(c.Image) == "" {
+			return awserrors.Errorf(awserrors.ErrorECSClientException,
+				"Container.image should not be null or empty.")
+		}
+		if taskMemory == "" && c.Memory == nil && c.MemoryReservation == nil {
+			return awserrors.Errorf(awserrors.ErrorECSClientException,
+				"Invalid setting for container '%s'. At least one of 'memory' or 'memoryReservation' must be specified.", name)
+		}
 		if len(c.Secrets) > 0 {
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
@@ -539,7 +582,10 @@ func (s *Service) DeregisterTaskDefinition(ctx context.Context, input *ecs.Dereg
 	if err != nil {
 		return nil, err
 	}
-	return &ecs.DeregisterTaskDefinitionOutput{TaskDefinition: taskDefToAWS(rec)}, nil
+	// AWS reports deregisteredAt on later reads, not in this response.
+	td := taskDefToAWS(rec)
+	td.DeregisteredAt = nil
+	return &ecs.DeregisterTaskDefinitionOutput{TaskDefinition: td}, nil
 }
 
 // DescribeTaskDefinition resolves "family", "family:rev" or an ARN to a revision.
@@ -548,11 +594,24 @@ func (s *Service) DescribeTaskDefinition(ctx context.Context, input *ecs.Describ
 	if err != nil {
 		return nil, err
 	}
-	rec, err := s.taskDefs.Resolve(ctx, kv, aws.StringValue(input.TaskDefinition))
+	ref := aws.StringValue(input.TaskDefinition)
+	if family, _ := taskdefinition.ParseRef(ref); family == "" {
+		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+	}
+	// AWS answers an unknown revision with ClientException, not the
+	// InvalidParameterException that launches get for the same reference.
+	rec, err := s.taskDefs.Resolve(ctx, kv, ref)
+	if err != nil && err.Error() == awserrors.ErrorECSInvalidParameter {
+		return nil, errors.New(awserrors.ErrorECSClientException)
+	}
 	if err != nil {
 		return nil, err
 	}
-	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: taskDefToAWS(rec), Tags: tagsToAWS(rec.Tags)}, nil
+	tags := []*ecs.Tag{}
+	if slices.Contains(awsStringSlice(input.Include), ecs.TaskDefinitionFieldTags) {
+		tags = append(tags, tagsToAWS(rec.Tags)...)
+	}
+	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: taskDefToAWS(rec), Tags: tags}, nil
 }
 
 // ListTaskDefinitions returns revision ARNs, optionally filtered by family and
@@ -593,6 +652,11 @@ func taskDefToAWS(r *taskdefinition.Record) *ecs.TaskDefinition {
 		Revision:          aws.Int64(int64(r.Revision)),
 		TaskDefinitionArn: aws.String(r.ARN),
 		Status:            aws.String(r.Status),
+		RegisteredAt:      aws.Time(r.RegisteredAt),
+		DeregisteredAt:    r.DeregisteredAt,
+		// No task volume model, so AWS's empty defaults.
+		Volumes:              []*ecs.Volume{},
+		PlacementConstraints: []*ecs.TaskDefinitionPlacementConstraint{},
 	}
 	if r.NetworkMode != "" {
 		td.NetworkMode = aws.String(r.NetworkMode)
@@ -623,7 +687,7 @@ func taskDefToAWS(r *taskdefinition.Record) *ecs.TaskDefinition {
 		td.RuntimePlatform = rp
 	}
 	for _, c := range r.Containers {
-		td.ContainerDefinitions = append(td.ContainerDefinitions, containerToAWS(c))
+		td.ContainerDefinitions = append(td.ContainerDefinitions, containerToAWS(c, r.NetworkMode))
 	}
 	return td
 }

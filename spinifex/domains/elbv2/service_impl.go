@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -182,7 +184,7 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []
 
 	hc := newHealthChecker(store)
 
-	return &ELBv2ServiceImpl{
+	svc := &ELBv2ServiceImpl{
 		config:         cfg,
 		store:          store,
 		acmStore:       acmStore,
@@ -194,7 +196,9 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []
 		cancel:         cancel,
 		hc:             hc,
 		reaperInterval: lbReaperInterval,
-	}, nil
+	}
+	hc.onChanged = svc.reRenderForTargetGroups
+	return svc, nil
 }
 
 // Close cancels background goroutines.
@@ -714,18 +718,35 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalan
 		return fmt.Errorf("generate config: %w", err)
 	}
 
-	hash := configCertHash(configContent, certFiles)
+	// NLBs: the agent actively probes targets (nginx has no upstream probing).
+	var healthTargets []HealthTargetSpec
+	if lb.Type == LoadBalancerTypeNetwork {
+		healthTargets = buildNLBHealthTargets(tgByArn)
+	}
+	// The agent re-fetches only when the hash moves, so probe settings are part of it.
+	hashed := configContent
+	if len(healthTargets) > 0 {
+		probes, err := json.Marshal(healthTargets)
+		if err != nil {
+			return fmt.Errorf("marshal health targets: %w", err)
+		}
+		hashed += "\n# probes " + string(probes)
+	}
+	hash := configCertHash(hashed, certFiles)
 	lb.ConfigText = configContent
 	lb.ConfigHash = hash
 	lb.CertFiles = certFiles
-	// NLBs: the agent actively probes targets (nginx has no upstream probing).
-	if lb.Type == LoadBalancerTypeNetwork {
-		lb.HealthTargets = buildNLBHealthTargets(tgByArn)
-	} else {
-		lb.HealthTargets = nil
-	}
+	lb.HealthTargets = healthTargets
 
-	if err := s.store.PutLoadBalancer(ctx, lb); err != nil {
+	// Only the rendered fields are written, under CAS, so a concurrent heartbeat
+	// or re-render of the same LB is never overwritten with a stale record.
+	if _, err := s.store.UpdateLoadBalancer(ctx, lb.LoadBalancerID, func(rec *LoadBalancerRecord) (bool, error) {
+		rec.ConfigText = lb.ConfigText
+		rec.ConfigHash = lb.ConfigHash
+		rec.CertFiles = lb.CertFiles
+		rec.HealthTargets = lb.HealthTargets
+		return true, nil
+	}); err != nil {
 		slog.ErrorContext(ctx, "updateStoredConfig: failed to persist LB", "lbId", lb.LoadBalancerID, "err", err)
 		return fmt.Errorf("persist LB: %w", err)
 	}
@@ -733,6 +754,46 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(ctx context.Context, lb *LoadBalan
 	slog.InfoContext(ctx, "updateStoredConfig: config stored",
 		"lbId", lb.LoadBalancerID, "hash", hash[:12], "size", len(configContent), "certs", len(certFiles))
 	return nil
+}
+
+// reRenderForTargetGroups regenerates the stored config of every load balancer
+// that references one of tgIDs, so a target health change reaches the data plane.
+// The LB is re-read just before rendering and failures are logged, never returned.
+func (s *ELBv2ServiceImpl) reRenderForTargetGroups(ctx context.Context, tgIDs []string) {
+	changed := make(map[string]struct{}, len(tgIDs))
+	for _, id := range tgIDs {
+		changed[id] = struct{}{}
+	}
+	lbs, err := s.store.ListLoadBalancers(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "reRenderForTargetGroups: failed to list load balancers", "err", err)
+		return
+	}
+	for _, listed := range lbs {
+		tgs, err := s.store.TargetGroupsForLB(ctx, listed.LoadBalancerID)
+		if err != nil {
+			slog.ErrorContext(ctx, "reRenderForTargetGroups: failed to resolve target groups", "lbId", listed.LoadBalancerID, "err", err)
+			continue
+		}
+		uses := false
+		for _, tg := range tgs {
+			if _, ok := changed[tg.TargetGroupID]; ok {
+				uses = true
+				break
+			}
+		}
+		if !uses {
+			continue
+		}
+		lb, err := s.store.GetLoadBalancer(ctx, listed.LoadBalancerID)
+		if err != nil || lb == nil {
+			slog.ErrorContext(ctx, "reRenderForTargetGroups: failed to re-read load balancer", "lbId", listed.LoadBalancerID, "err", err)
+			continue
+		}
+		if err := s.updateStoredConfig(ctx, lb); err != nil {
+			slog.ErrorContext(ctx, "reRenderForTargetGroups: re-render failed", "lbId", lb.LoadBalancerID, "err", err)
+		}
+	}
 }
 
 // resolveListenerCerts resolves each distinct certificate ARN to its combined PEM.
@@ -1067,8 +1128,21 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 	heartbeatStale := now.Sub(lb.LastHeartbeat) >= heartbeatPersistInterval
 	lb.LastHeartbeat = now
 
+	// Both writes touch only the fields this heartbeat owns, under CAS, so a
+	// concurrent config re-render of the same LB is never rolled back.
 	switch {
 	case stateChanged:
+		if _, err := s.store.UpdateLoadBalancer(ctx, lbID, func(rec *LoadBalancerRecord) (bool, error) {
+			if rec.State == StateProvisioning {
+				rec.State = StateActive
+				rec.StateReason = ""
+			}
+			rec.LastHeartbeat = now
+			return true, nil
+		}); err != nil {
+			slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to persist activation", "lbId", lbID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 		// Build data-plane config on activation: reactive calls during create
 		// no-op while InstanceID is empty, so we build it now from existing listeners/targets.
 		if err := s.updateStoredConfig(ctx, lb); err != nil {
@@ -1077,7 +1151,10 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 		}
 	case heartbeatStale:
 		// Refresh the heartbeat timestamp only; avoid writing the full record on every tick.
-		if err := s.store.PutLoadBalancer(ctx, lb); err != nil {
+		if _, err := s.store.UpdateLoadBalancer(ctx, lbID, func(rec *LoadBalancerRecord) (bool, error) {
+			rec.LastHeartbeat = now
+			return true, nil
+		}); err != nil {
 			slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to persist LB", "lbId", lbID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -1695,6 +1772,31 @@ func (s *ELBv2ServiceImpl) reapStuckProvisioningLBs(ctx context.Context, now tim
 			"lbArn", lb.LoadBalancerArn, "lbId", lb.LoadBalancerID,
 			"instanceId", lb.InstanceID, "createdAt", lb.CreatedAt)
 		s.markLBFailed(ctx, lb.LoadBalancerArn, reason)
+		s.releaseFailedLBVM(ctx, lb)
+	}
+}
+
+// releaseFailedLBVM stops the failed LB's own managed VM and detaches its ENIs,
+// so a failed LB holds no running capacity. The ENIs stay on the record for
+// DeleteLoadBalancer to remove. A VM that cannot be stopped keeps its ENIs
+// attached, since detaching under a running guest would only hide the leak.
+func (s *ELBv2ServiceImpl) releaseFailedLBVM(ctx context.Context, lb *LoadBalancerRecord) {
+	if lb.InstanceID == "" || s.InstanceLauncher == nil {
+		return
+	}
+	if err := s.InstanceLauncher.TerminateSystemInstance(lb.InstanceID); err != nil {
+		slog.Error("ELBv2 lifecycle reaper: failed to terminate failed LB VM",
+			"lbId", lb.LoadBalancerID, "instanceId", lb.InstanceID, "err", err)
+		return
+	}
+	if s.VPCService == nil {
+		return
+	}
+	for _, eniID := range lb.ENIs {
+		if err := s.VPCService.DetachENI(ctx, lb.AccountID, eniID); err != nil && !awserrors.IsNotFound(err) {
+			slog.Warn("ELBv2 lifecycle reaper: failed to detach failed LB ENI",
+				"lbId", lb.LoadBalancerID, "eniId", eniID, "err", err)
+		}
 	}
 }
 
@@ -1868,6 +1970,24 @@ func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elb
 		result = append(result, s.lbRecordToSDK(ctx, lb))
 	}
 
+	// AWS fails the whole call when any requested name is unknown.
+	if len(nameFilter) > 0 {
+		for _, lb := range result {
+			delete(nameFilter, aws.StringValue(lb.LoadBalancerName))
+		}
+		var missing []string
+		for _, name := range aws.StringValueSlice(input.Names) {
+			if nameFilter[name] {
+				missing = append(missing, name)
+				delete(nameFilter, name)
+			}
+		}
+		if len(missing) > 0 {
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound,
+				"Load balancers '[%s]' not found", strings.Join(missing, ", "))
+		}
+	}
+
 	return &elbv2.DescribeLoadBalancersOutput{
 		LoadBalancers: result,
 	}, nil
@@ -1922,6 +2042,17 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 		vpcID = *input.VpcId
 	}
 
+	// AWS rejects a VPC the caller does not own with ValidationError.
+	if vpcID != "" && s.VPCService != nil {
+		if _, err := s.VPCService.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, accountID); err != nil {
+			if awserrors.IsNotFound(err) {
+				return nil, errors.New(awserrors.ErrorValidationError)
+			}
+			slog.ErrorContext(ctx, "CreateTargetGroup: failed to look up VPC", "vpcId", vpcID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+
 	// Check duplicate name within VPC
 	existing, err := s.store.GetTargetGroupByName(ctx, name, vpcID)
 	if err != nil {
@@ -1939,6 +2070,15 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 	if targetType != TargetTypeInstance && targetType != TargetTypeIP {
 		slog.WarnContext(ctx, "CreateTargetGroup: unsupported target type", "targetType", targetType)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	// Only IPv4 targets are supported; ipv6 is a valid AWS value we cannot serve.
+	switch aws.StringValue(input.IpAddressType) {
+	case "", IPAddressTypeIPv4:
+	case "ipv6":
+		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
+	default:
+		return nil, errors.New(awserrors.ErrorValidationError)
 	}
 
 	// Use NLB health check defaults for NLB protocols.
@@ -2011,13 +2151,20 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 	slog.InfoContext(ctx, "CreateTargetGroup completed", "name", name, "tgArn", tgArn, "accountID", accountID)
 
 	return &elbv2.CreateTargetGroupOutput{
-		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(record)},
+		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(record, nil)},
 	}, nil
 }
 
 func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	// Resolved before the write, so a lookup failure cannot report a saved change as failed.
+	tgLBs, err := s.targetGroupLoadBalancers(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "ModifyTargetGroup: failed to resolve load balancers", "arn", *input.TargetGroupArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Under CAS, so a health-check change and a concurrent target registration
@@ -2067,10 +2214,12 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.M
 		return nil, err
 	}
 
+	s.reRenderForTargetGroups(ctx, []string{tg.TargetGroupID})
+
 	slog.InfoContext(ctx, "ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
 
 	return &elbv2.ModifyTargetGroupOutput{
-		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(tg)},
+		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(tg, tgLBs[tg.TargetGroupArn])},
 	}, nil
 }
 
@@ -2147,9 +2296,21 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(ctx context.Context, input *elbv2.D
 }
 
 func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv2.DescribeTargetGroupsInput, accountID string) (*elbv2.DescribeTargetGroupsOutput, error) {
+	for _, arn := range aws.StringValueSlice(input.TargetGroupArns) {
+		if parsed, ok := resourcearn.ParseELBv2(arn); !ok || parsed.Kind != resourcearn.ELBv2TargetGroup {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationError, "'%s' is not a valid target group ARN", arn)
+		}
+	}
+
 	allTGs, err := s.store.ListTargetGroups(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "DescribeTargetGroups: failed to list TGs", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	tgLBs, err := s.targetGroupLoadBalancers(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "DescribeTargetGroups: failed to resolve load balancers", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -2177,28 +2338,61 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 		if len(nameFilter) > 0 && !nameFilter[tg.Name] {
 			continue
 		}
-		// Filter by LB ARN if specified
-		if input.LoadBalancerArn != nil && *input.LoadBalancerArn != "" {
-			// Check if any listener on this LB references this TG
-			listeners, _ := s.store.ListListenersByLB(ctx, *input.LoadBalancerArn)
-			found := false
-			for _, l := range listeners {
-				for _, a := range l.DefaultActions {
-					if a.TargetGroupArn == tg.TargetGroupArn {
-						found = true
-					}
-				}
-			}
-			if !found {
-				continue
-			}
+		if lbArn := aws.StringValue(input.LoadBalancerArn); lbArn != "" && !slices.Contains(tgLBs[tg.TargetGroupArn], lbArn) {
+			continue
 		}
-		result = append(result, s.tgRecordToSDK(tg))
+		result = append(result, s.tgRecordToSDK(tg, tgLBs[tg.TargetGroupArn]))
+	}
+
+	// AWS fails the whole call when any requested ARN or name is unknown.
+	if len(arnFilter) > 0 || len(nameFilter) > 0 {
+		for _, tg := range result {
+			delete(arnFilter, aws.StringValue(tg.TargetGroupArn))
+			delete(nameFilter, aws.StringValue(tg.TargetGroupName))
+		}
+		if len(arnFilter) > 0 || len(nameFilter) > 0 {
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2TargetGroupNotFound, "One or more target groups not found")
+		}
+	}
+
+	slices.SortFunc(result, func(a, b *elbv2.TargetGroup) int {
+		return strings.Compare(aws.StringValue(a.TargetGroupName), aws.StringValue(b.TargetGroupName))
+	})
+	page, nextMarker, err := pageTargetGroups(result, input.Marker, input.PageSize)
+	if err != nil {
+		return nil, err
 	}
 
 	return &elbv2.DescribeTargetGroupsOutput{
-		TargetGroups: result,
+		TargetGroups: page,
+		NextMarker:   nextMarker,
 	}, nil
+}
+
+// pageTargetGroups slices one page out of the sorted result. The marker is an
+// opaque offset and AWS allows a PageSize of 1 to 400; without one the whole
+// result is returned so internal callers that never page see every group.
+func pageTargetGroups(items []*elbv2.TargetGroup, marker *string, pageSize *int64) ([]*elbv2.TargetGroup, *string, error) {
+	start := 0
+	if aws.StringValue(marker) != "" {
+		n, err := strconv.Atoi(*marker)
+		if err != nil || n < 0 {
+			return nil, nil, errors.New(awserrors.ErrorValidationError)
+		}
+		start = min(n, len(items))
+	}
+	size := len(items)
+	if pageSize != nil {
+		if *pageSize < 1 || *pageSize > 400 {
+			return nil, nil, errors.New(awserrors.ErrorValidationError)
+		}
+		size = int(*pageSize)
+	}
+	end := start + size
+	if end >= len(items) {
+		return items[start:], nil, nil
+	}
+	return items[start:end], aws.String(strconv.Itoa(end)), nil
 }
 
 // --- Target registration ---
@@ -3000,8 +3194,21 @@ func (s *ELBv2ServiceImpl) DescribeListeners(ctx context.Context, input *elbv2.D
 	var listeners []*ListenerRecord
 	var err error
 
-	if input.LoadBalancerArn != nil && *input.LoadBalancerArn != "" {
-		listeners, err = s.store.ListListenersByLB(ctx, *input.LoadBalancerArn)
+	if lbArn := aws.StringValue(input.LoadBalancerArn); lbArn != "" {
+		// An unparseable ARN is reported as not found rather than reaching the
+		// KV store, which rejects some characters as an invalid key.
+		var lb *LoadBalancerRecord
+		if parsed, ok := resourcearn.ParseELBv2(lbArn); ok && parsed.Kind == resourcearn.ELBv2LoadBalancer {
+			var lbErr error
+			if lb, lbErr = s.store.GetLoadBalancerByArn(ctx, lbArn); lbErr != nil {
+				slog.ErrorContext(ctx, "DescribeListeners: failed to get LB", "lbArn", lbArn, "err", lbErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+		}
+		if lb == nil || lb.AccountID != accountID {
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound, "Load balancer '%s' not found", lbArn)
+		}
+		listeners, err = s.store.ListListenersByLB(ctx, lbArn)
 	} else {
 		listeners, err = s.store.ListListeners(ctx)
 	}
@@ -3230,10 +3437,65 @@ func (s *ELBv2ServiceImpl) lbRecordToSDK(ctx context.Context, r *LoadBalancerRec
 	return lb
 }
 
-func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord) *elbv2.TargetGroup {
+// targetGroupLoadBalancers maps each target group ARN to the live load
+// balancers whose listener default actions or rules forward to it.
+func (s *ELBv2ServiceImpl) targetGroupLoadBalancers(ctx context.Context) (map[string][]string, error) {
+	lbs, err := s.store.ListLoadBalancers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	liveLB := make(map[string]bool, len(lbs))
+	for _, lb := range lbs {
+		liveLB[lb.LoadBalancerArn] = true
+	}
+	listeners, err := s.store.ListListeners(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := s.store.ListRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string][]string)
+	seen := make(map[[2]string]bool)
+	add := func(tgArn, lbArn string) {
+		key := [2]string{tgArn, lbArn}
+		if tgArn == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		result[tgArn] = append(result[tgArn], lbArn)
+	}
+
+	listenerLB := make(map[string]string, len(listeners))
+	for _, l := range listeners {
+		if !liveLB[l.LoadBalancerArn] {
+			continue
+		}
+		listenerLB[l.ListenerArn] = l.LoadBalancerArn
+		for _, a := range l.DefaultActions {
+			add(a.TargetGroupArn, l.LoadBalancerArn)
+		}
+	}
+	for _, r := range rules {
+		lbArn, ok := listenerLB[r.ListenerArn]
+		if !ok {
+			continue
+		}
+		for _, a := range r.Actions {
+			add(a.TargetGroupArn, lbArn)
+		}
+	}
+	return result, nil
+}
+
+func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord, lbArns []string) *elbv2.TargetGroup {
 	tg := &elbv2.TargetGroup{
 		TargetGroupArn:             aws.String(r.TargetGroupArn),
 		TargetGroupName:            aws.String(r.Name),
+		IpAddressType:              aws.String(IPAddressTypeIPv4),
+		LoadBalancerArns:           aws.StringSlice(lbArns),
 		Protocol:                   aws.String(r.Protocol),
 		Port:                       aws.Int64(r.Port),
 		VpcId:                      aws.String(r.VpcId),
@@ -3241,14 +3503,18 @@ func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord) *elbv2.TargetGrou
 		HealthCheckEnabled:         aws.Bool(r.HealthCheck.Enabled),
 		HealthCheckProtocol:        aws.String(r.HealthCheck.Protocol),
 		HealthCheckPort:            aws.String(r.HealthCheck.Port),
-		HealthCheckPath:            aws.String(r.HealthCheck.Path),
 		HealthCheckIntervalSeconds: aws.Int64(r.HealthCheck.IntervalSeconds),
 		HealthCheckTimeoutSeconds:  aws.Int64(r.HealthCheck.TimeoutSeconds),
 		HealthyThresholdCount:      aws.Int64(r.HealthCheck.HealthyThreshold),
 		UnhealthyThresholdCount:    aws.Int64(r.HealthCheck.UnhealthyThreshold),
-		Matcher: &elbv2.Matcher{
-			HttpCode: aws.String(r.HealthCheck.Matcher),
-		},
+	}
+
+	// AWS omits both keys on TCP target groups, which have no path or matcher.
+	if r.HealthCheck.Path != "" {
+		tg.HealthCheckPath = aws.String(r.HealthCheck.Path)
+	}
+	if r.HealthCheck.Matcher != "" {
+		tg.Matcher = &elbv2.Matcher{HttpCode: aws.String(r.HealthCheck.Matcher)}
 	}
 
 	// Omitted for NLB (TCP/UDP/TLS) target groups, matching AWS, which returns

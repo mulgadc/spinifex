@@ -39,8 +39,12 @@ func (s *ELBv2ServiceImpl) resolveTaggable(ctx context.Context, arn string) (h t
 		if lb != nil {
 			found = true
 			h = taggable{tags: lb.Tags, owner: lb.AccountID, save: func(t map[string]string) error {
-				lb.Tags = t
-				return s.store.PutLoadBalancer(ctx, lb)
+				// CAS the tag field alone so a concurrent config re-render survives.
+				_, uerr := s.store.UpdateLoadBalancer(ctx, lb.LoadBalancerID, func(rec *LoadBalancerRecord) (bool, error) {
+					rec.Tags = t
+					return true, nil
+				})
+				return uerr
 			}}
 		}
 	case resourcearn.ELBv2TargetGroup:
@@ -95,9 +99,46 @@ func (s *ELBv2ServiceImpl) resolveTaggable(ctx context.Context, arn string) (h t
 	return h, notFoundError, found, nil
 }
 
-// AddTags adds or overwrites tags on ELBv2 resources. Tags are validated up-front
-// so a malformed key can't leave a partial apply; cross-account or unknown ARNs
-// yield the per-resource not-found error.
+// resolveOwnedTaggable resolves arn and returns the per-type not-found error
+// when the resource is missing or owned by another account.
+func (s *ELBv2ServiceImpl) resolveOwnedTaggable(ctx context.Context, arn, accountID string) (taggable, error) {
+	h, notFoundError, found, err := s.resolveTaggable(ctx, arn)
+	if err != nil {
+		return taggable{}, err
+	}
+	if !found || h.owner != accountID {
+		return taggable{}, errors.New(notFoundError)
+	}
+	return h, nil
+}
+
+// validateAllTaggable checks every ARN before the caller writes anything, so
+// an unknown or cross-account ARN anywhere in the request fails it with no
+// resource modified. It returns the ARNs with repeats removed.
+func (s *ELBv2ServiceImpl) validateAllTaggable(ctx context.Context, arns []*string, accountID string) ([]string, error) {
+	unique := make([]string, 0, len(arns))
+	seen := make(map[string]struct{}, len(arns))
+	for _, arnPtr := range arns {
+		if arnPtr == nil || *arnPtr == "" {
+			return nil, errors.New(awserrors.ErrorMissingParameter)
+		}
+		arn := *arnPtr
+		if _, dup := seen[arn]; dup {
+			continue
+		}
+		seen[arn] = struct{}{}
+
+		if _, err := s.resolveOwnedTaggable(ctx, arn, accountID); err != nil {
+			return nil, err
+		}
+		unique = append(unique, arn)
+	}
+	return unique, nil
+}
+
+// AddTags adds or overwrites tags on ELBv2 resources. Tags and every ARN are
+// validated before any write so a bad key or ARN can't leave a partial apply;
+// cross-account or unknown ARNs yield the per-resource not-found error.
 func (s *ELBv2ServiceImpl) AddTags(ctx context.Context, input *elbv2.AddTagsInput, accountID string) (*elbv2.AddTagsOutput, error) {
 	if input == nil || len(input.ResourceArns) == 0 || len(input.Tags) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -115,20 +156,18 @@ func (s *ELBv2ServiceImpl) AddTags(ctx context.Context, input *elbv2.AddTagsInpu
 		newTags[*t.Key] = v
 	}
 
-	for _, arnPtr := range input.ResourceArns {
-		if arnPtr == nil || *arnPtr == "" {
-			return nil, errors.New(awserrors.ErrorMissingParameter)
-		}
-		arn := *arnPtr
+	arns, err := s.validateAllTaggable(ctx, input.ResourceArns, accountID)
+	if err != nil {
+		return nil, err
+	}
 
-		h, notFoundError, found, err := s.resolveTaggable(ctx, arn)
+	// Re-read each resource just before its write so the whole-record save
+	// doesn't overwrite changes made while the other ARNs were validated.
+	for _, arn := range arns {
+		h, err := s.resolveOwnedTaggable(ctx, arn, accountID)
 		if err != nil {
 			return nil, err
 		}
-		if !found || h.owner != accountID {
-			return nil, errors.New(notFoundError)
-		}
-
 		merged := h.tags
 		if merged == nil {
 			merged = make(map[string]string, len(newTags))
@@ -159,20 +198,17 @@ func (s *ELBv2ServiceImpl) RemoveTags(ctx context.Context, input *elbv2.RemoveTa
 		keys = append(keys, *k)
 	}
 
-	for _, arnPtr := range input.ResourceArns {
-		if arnPtr == nil || *arnPtr == "" {
-			return nil, errors.New(awserrors.ErrorMissingParameter)
-		}
-		arn := *arnPtr
+	arns, err := s.validateAllTaggable(ctx, input.ResourceArns, accountID)
+	if err != nil {
+		return nil, err
+	}
 
-		h, notFoundError, found, err := s.resolveTaggable(ctx, arn)
+	// Re-read each resource just before its write; see AddTags.
+	for _, arn := range arns {
+		h, err := s.resolveOwnedTaggable(ctx, arn, accountID)
 		if err != nil {
 			return nil, err
 		}
-		if !found || h.owner != accountID {
-			return nil, errors.New(notFoundError)
-		}
-
 		if len(h.tags) == 0 {
 			continue
 		}

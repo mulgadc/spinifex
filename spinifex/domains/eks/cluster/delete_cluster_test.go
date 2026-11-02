@@ -155,6 +155,39 @@ func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFix
 	return &deleteClusterFixture{svc: f.svc, kv: kv, nlb: f.nlb, inst: f.inst, vpc: f.vpc, eip: f.eip, sg: f.sg}
 }
 
+// deleteAndSettle issues DeleteCluster, which must accept the delete with
+// DELETING, then waits for the teardown that the request started to return.
+func deleteAndSettle(t *testing.T, svc *EKSServiceImpl, name string) *eks.DeleteClusterOutput {
+	t.Helper()
+	out, err := svc.DeleteCluster(context.Background(), deleteInput(name), testAccountID)
+	require.NoError(t, err, "DeleteCluster records the delete and returns; the teardown's outcome is not its answer")
+	require.NotNil(t, out.Cluster)
+	require.Equal(t, string(ClusterStatusDeleting), aws.StringValue(out.Cluster.Status))
+	svc.WaitTeardowns()
+	return out
+}
+
+// redrive runs the deleting reaper once with no backoff and waits for the
+// teardown it hands off.
+func redrive(t *testing.T, svc *EKSServiceImpl) {
+	t.Helper()
+	_, err := (&EKSDeletingReaper{svc: svc}).Sweep(t.Context())
+	require.NoError(t, err)
+	svc.WaitTeardowns()
+}
+
+// requireTeardownRetained asserts a failed teardown kept the record DELETING
+// with its failure recorded for the next pass.
+func requireTeardownRetained(t *testing.T, kv jetstream.KeyValue, name string) *ClusterMeta {
+	t.Helper()
+	meta, err := GetClusterMeta(t.Context(), kv, name)
+	require.NoError(t, err, "a failed teardown must keep the record that owns the stranded resources")
+	require.Equal(t, ClusterStatusDeleting, meta.Status)
+	require.NotEmpty(t, meta.LastDeleteReapError, "the failure must be recorded, not swallowed")
+	require.NotEmpty(t, meta.DeleteFailedStep)
+	return meta
+}
+
 // TestDeleteCluster_LeakedSGKeepsClusterDeleting guards the customer-VPC SG
 // no-orphan contract: the cluster SGs live in the customer VPC,
 // so a DeleteClusterSGs failure must surface and leave the cluster DELETING — its
@@ -172,12 +205,10 @@ func TestDeleteCluster_LeakedSGKeepsClusterDeleting(t *testing.T) {
 	// A worker ENI never detaches — the SG delete keeps returning DependencyViolation.
 	f.sg.deleteErr = errors.New("DependencyViolation: resource has a dependent object")
 
-	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.Error(t, err, "a leaked customer-VPC SG must surface, not be swallowed")
+	deleteAndSettle(t, f.svc, "alpha")
 
-	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
-	require.NoError(t, getErr, "the KV sweep must NOT run while an SG is still leaked — meta must survive for retry")
-	assert.Equal(t, ClusterStatusDeleting, meta.Status, "a cluster with a leaked SG must stay DELETING")
+	meta := requireTeardownRetained(t, f.kv, "alpha")
+	assert.Contains(t, meta.DeleteFailedStep, stepSecurityGroups)
 }
 
 // TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes locks the
@@ -246,11 +277,9 @@ func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {
 	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
-	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.NoError(t, err)
-	require.NotNil(t, out)
+	deleteAndSettle(t, f.svc, "alpha")
 
-	_, err = GetClusterMeta(t.Context(), f.kv, "alpha")
+	_, err := GetClusterMeta(t.Context(), f.kv, "alpha")
 	assert.ErrorIs(t, err, ErrClusterNotFound, "meta must be swept after successful teardown")
 	assert.Len(t, f.inst.terminateCalls, 1)
 	assert.Len(t, f.vpc.deleteCalls, 1)
@@ -273,9 +302,7 @@ func TestDeleteCluster_DetachesPrivateEndpointENIBeforeDelete(t *testing.T) {
 	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 	f.vpc.inUseUntilDetached = map[string]bool{"eni-pe-001": true}
 
-	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.NoError(t, err, "teardown must complete: the private-endpoint ENI is detached before delete")
-	require.NotNil(t, out)
+	deleteAndSettle(t, f.svc, "alpha")
 
 	assert.Contains(t, f.vpc.detachCalls, "eni-pe-001", "private-endpoint ENI must be detached before delete")
 	_, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
@@ -294,12 +321,9 @@ func TestDeleteCluster_NLBFailureLeavesMetaAndDELETING(t *testing.T) {
 	}
 	f.nlb.deleteLBErr = errors.New("elbv2 unavailable")
 
-	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.Error(t, err, "teardown failure must surface, not be swallowed")
+	deleteAndSettle(t, f.svc, "alpha")
 
-	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
-	require.NoError(t, getErr, "meta must survive so a retry can find the resource ARNs")
-	assert.Equal(t, ClusterStatusDeleting, meta.Status)
+	meta := requireTeardownRetained(t, f.kv, "alpha")
 	assert.NotEmpty(t, meta.NLBArn, "NLB ARN must remain recorded for retry")
 }
 
@@ -308,12 +332,10 @@ func TestDeleteCluster_VMTerminateFailureLeavesMeta(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 	f.inst.terminateErr = errors.New("hypervisor unreachable")
 
-	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.Error(t, err)
+	deleteAndSettle(t, f.svc, "alpha")
 
-	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
-	require.NoError(t, getErr)
-	assert.Equal(t, ClusterStatusDeleting, meta.Status)
+	meta := requireTeardownRetained(t, f.kv, "alpha")
+	assert.Equal(t, stepControlPlane, meta.DeleteFailedStep)
 }
 
 // A prior retry (or the egress-delete cascade) already released the allocation,
@@ -324,9 +346,7 @@ func TestDeleteCluster_EgressEIPAlreadyReleasedSweepsKV(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 	f.eip.releaseErr = errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
 
-	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.NoError(t, err)
-	require.NotNil(t, out)
+	deleteAndSettle(t, f.svc, "alpha")
 
 	require.Len(t, f.eip.releaseCalls, 1, "release must still be attempted")
 	_, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
@@ -340,54 +360,42 @@ func TestDeleteCluster_EgressEIPReleaseRealErrorLeavesMeta(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 	f.eip.releaseErr = errors.New("AddressLimitExceeded")
 
-	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.Error(t, err)
+	deleteAndSettle(t, f.svc, "alpha")
 
-	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
-	require.NoError(t, getErr)
-	assert.Equal(t, ClusterStatusDeleting, meta.Status)
+	meta := requireTeardownRetained(t, f.kv, "alpha")
 	assert.NotEmpty(t, meta.EgressEIPAllocationID, "alloc ID must remain for retry")
 }
 
-// TestDeleteClusterSingleFlightLoserSkipsTeardown locks the contract: when a
-// concurrent handler already holds the per-cluster teardown lease (an SDK retry
-// fanned to another worker), DeleteCluster must return the cluster as DELETING
-// without running purgeClusterInfra — no duplicate ENI/NLB/EIP teardown — and
-// must leave the meta for the lease holder to sweep.
-func TestDeleteClusterSingleFlightLoserSkipsTeardown(t *testing.T) {
+// TestDeleteClusterLeaseHeldElsewhereLeavesTeardownToTheHolder: when another
+// node holds the teardown lease, DeleteCluster still records DELETING and
+// returns it, but runs no teardown of its own and leaves the record for the
+// holder (or the reaper) to finish.
+func TestDeleteClusterLeaseHeldElsewhereLeavesTeardownToTheHolder(t *testing.T) {
 	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
-	// Stand in for the winning handler: hold the teardown lease.
 	_, err := f.svc.leaderKV.Create(t.Context(), teardownLeaderKey(testAccountID, "alpha"), []byte("node-2"))
 	require.NoError(t, err)
 
-	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.NoError(t, err)
-	require.NotNil(t, out.Cluster)
-	assert.Equal(t, string(ClusterStatusDeleting), aws.StringValue(out.Cluster.Status),
-		"the loser must report the cluster as DELETING (AWS-async delete semantics)")
+	deleteAndSettle(t, f.svc, "alpha")
 
-	assert.Empty(t, f.inst.terminateCalls, "the loser must not terminate the CP VM — the lease holder owns the teardown")
-	assert.Empty(t, f.eip.releaseCalls, "the loser must not release the billable EIP")
-
+	assert.Empty(t, f.inst.terminated(), "the lease holder owns the teardown")
+	assert.Empty(t, f.eip.releaseCalls, "no second release of the billable EIP")
 	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
-	require.NoError(t, getErr, "the loser must leave the meta for the lease holder to sweep")
-	assert.Equal(t, ClusterStatusCreating, meta.Status, "the loser must not mutate KV state; the winner owns the DELETING transition")
+	require.NoError(t, getErr, "the record stays for the lease holder to sweep")
+	assert.Equal(t, ClusterStatusDeleting, meta.Status, "the delete is recorded even though another node tears it down")
 }
 
-// TestDeleteClusterWinnerReleasesTeardownLease: a successful synchronous delete
-// must release the teardown lease so a later delete or the backstop reaper can
-// re-acquire it (a leaked lease would wedge every future teardown until TTL).
-func TestDeleteClusterWinnerReleasesTeardownLease(t *testing.T) {
+// TestDeleteClusterTeardownReleasesItsLease: a completed teardown must release
+// the lease so a later delete or the reaper can re-acquire it.
+func TestDeleteClusterTeardownReleasesItsLease(t *testing.T) {
 	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
-	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.NoError(t, err)
+	deleteAndSettle(t, f.svc, "alpha")
 
 	_, getErr := f.svc.leaderKV.Get(t.Context(), teardownLeaderKey(testAccountID, "alpha"))
-	assert.ErrorIs(t, getErr, jetstream.ErrKeyNotFound, "the teardown lease must be released after a successful delete")
+	assert.ErrorIs(t, getErr, jetstream.ErrKeyNotFound, "the teardown lease must be released after the teardown")
 }
 
 func TestTeardownLeaseReleaseSurvivesCallerCancellation(t *testing.T) {
@@ -395,10 +403,10 @@ func TestTeardownLeaseReleaseSurvivesCallerCancellation(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 	ctx, cancel := context.WithCancel(t.Context())
 
-	release, acquired := f.svc.acquireTeardownLease(ctx, testAccountID, "alpha")
+	lease, acquired := f.svc.acquireTeardownLease(ctx, testAccountID, "alpha")
 	require.True(t, acquired)
 	cancel()
-	release()
+	lease.release()
 
 	_, err := f.svc.leaderKV.Get(t.Context(), teardownLeaderKey(testAccountID, "alpha"))
 	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
@@ -423,8 +431,7 @@ func TestDeleteCluster_ManagedCPVPCReclaimsCustomerVPCSGs(t *testing.T) {
 	f.sg.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-cust-cp"
 	f.sg.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-cust-ng"
 
-	_, err = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.NoError(t, err)
+	deleteAndSettle(t, f.svc, "alpha")
 
 	var deleted []string
 	for _, c := range f.sg.deleteCalls {
@@ -463,12 +470,9 @@ func TestDeleteCluster_ManagedCPVPCAlreadyGoneClearsStateRecord(t *testing.T) {
 	}
 	f.nlb.deleteLBErr = errors.New("elbv2 unavailable")
 
-	_, err = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.Error(t, err, "the unrelated NLB failure must still surface")
+	deleteAndSettle(t, f.svc, "alpha")
 
-	stuck, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
-	require.NoError(t, getErr, "meta must survive for retry")
-	assert.Equal(t, ClusterStatusDeleting, stuck.Status)
+	stuck := requireTeardownRetained(t, f.kv, "alpha")
 	assert.Nil(t, stuck.ManagedCPVPC,
 		"the internal cp-vpc state record must be cleared once its VPC converges to deleted, independent of the NLB failure")
 
@@ -476,10 +480,9 @@ func TestDeleteCluster_ManagedCPVPCAlreadyGoneClearsStateRecord(t *testing.T) {
 	// and must NOT re-attempt any CP-VPC/SG calls against the stale VpcId,
 	// since the state record is already cleared.
 	f.nlb.deleteLBErr = nil
-	_, err = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.NoError(t, err, "the re-drive must converge to fully deleted")
+	redrive(t, f.svc)
 
-	_, getErr = GetClusterMeta(t.Context(), f.kv, "alpha")
+	_, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
 	assert.ErrorIs(t, getErr, ErrClusterNotFound, "meta must be swept once teardown converges")
 }
 

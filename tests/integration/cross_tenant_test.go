@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
@@ -22,9 +23,9 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
-	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
-	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -232,7 +233,7 @@ func TestCrossTenant_ForeignResourceARNNeverAuthorizes(t *testing.T) {
 	StartServiceDaemonLite(t, gw)
 
 	home, creds := createProbePrincipal(t, gw, "cross-tenant-home")
-	foreign, err := gw.Config.IAMService.CreateAccount("cross-tenant-foreign")
+	foreign, err := gwfix.DepsOf(gw.Config).IAM.CreateAccount("cross-tenant-foreign")
 	require.NoError(t, err, "create foreign account")
 	require.NotEqual(t, home, foreign.AccountID, "the two tenants share an account id")
 
@@ -342,7 +343,7 @@ func scopedServices() []scopedService {
 		// Every ECS identifier is folded through a ShortName/ShortID helper and
 		// rebuilt on the caller's account, so a full ARN is accepted wherever a
 		// name is. The two cases drive the tag and the cluster-list resolvers.
-		{name: "ecs", actions: gateway_ecs.ScopedActions(), uncased: map[string]string{
+		{name: "ecs", actions: ecsawsapi.ScopedActions(), uncased: map[string]string{
 			"TagResource":                   sameHelper("ListTagsForResource"),
 			"UntagResource":                 sameHelper("ListTagsForResource"),
 			"CreateCluster":                 sameHelper("DescribeClusters"),
@@ -390,7 +391,7 @@ func scopedServices() []scopedService {
 		// cluster, nodegroup or addon by path segment.
 		{name: "eks", actions: eksawsapi.ScopedActions(), uncased: eksUncased()},
 
-		{name: "elasticloadbalancing", actions: gateway_elbv2.ScopedActions(), uncased: elbv2Uncased()},
+		{name: "elasticloadbalancing", actions: elbv2awsapi.ScopedActions(), uncased: elbv2Uncased()},
 
 		{name: "iam", actions: iamawsapi.ScopedActions(), uncased: iamUncased()},
 	}
@@ -430,7 +431,7 @@ func eksUncased() map[string]string {
 	// These name the cluster's account in the path or body. AuthorizeInternal
 	// refuses every tenant principal outright and binds a control-plane VM to
 	// the cluster it serves, so no tenant ARN reaches the evaluator.
-	for _, action := range []string{"GetRecoveryDirective", "ListInternalAddons", "PublishInternal", "WebhookTokenReview"} {
+	for _, action := range []string{"GetRecoveryDirective", "ListInternalAddons", "ListInternalWorkers", "PublishInternal", "WebhookTokenReview"} {
 		uncased[action] = "internal control-plane route: refused to tenants, bound to the caller's own cluster"
 	}
 	for _, action := range []string{
@@ -628,15 +629,15 @@ func signedRequest(t *testing.T, gw *Gateway, creds *awscreds.Credentials, servi
 func createProbePrincipal(t *testing.T, gw *Gateway, name string) (string, *awscreds.Credentials) {
 	t.Helper()
 
-	acct, err := gw.Config.IAMService.CreateAccount(name)
+	acct, err := gwfix.DepsOf(gw.Config).IAM.CreateAccount(name)
 	require.NoError(t, err, "create account %s", name)
 
-	_, err = gw.Config.IAMService.CreateUser(acct.AccountID, &iam.CreateUserInput{
+	_, err = gwfix.DepsOf(gw.Config).IAM.CreateUser(acct.AccountID, &iam.CreateUserInput{
 		UserName: aws.String(probeUser),
 	})
 	require.NoError(t, err, "create %s in %s", probeUser, name)
 
-	key, err := gw.Config.IAMService.CreateAccessKey(acct.AccountID, &iam.CreateAccessKeyInput{
+	key, err := gwfix.DepsOf(gw.Config).IAM.CreateAccessKey(acct.AccountID, &iam.CreateAccessKeyInput{
 		UserName: aws.String(probeUser),
 	})
 	require.NoError(t, err, "create access key in %s", name)
@@ -652,7 +653,7 @@ func createProbePrincipal(t *testing.T, gw *Gateway, name string) (string, *awsc
 // refresh.
 func putProbePolicy(t *testing.T, gw *Gateway, accountID, document string) {
 	t.Helper()
-	_, err := gw.Config.IAMService.PutUserPolicy(accountID, &iam.PutUserPolicyInput{
+	_, err := gwfix.DepsOf(gw.Config).IAM.PutUserPolicy(accountID, &iam.PutUserPolicyInput{
 		UserName:       aws.String(probeUser),
 		PolicyName:     aws.String(probePolicyName),
 		PolicyDocument: aws.String(document),

@@ -339,6 +339,9 @@ func deletePrefix(store objectstore.ObjectStore, bucket, prefix string) (int, in
 				Bucket: aws.String(bucket),
 				Key:    obj.Key,
 			}); err != nil {
+				if objectstore.IsNoSuchKeyError(err) {
+					continue
+				}
 				return count, bytes, fmt.Errorf("delete %s: %w", *obj.Key, err)
 			}
 			count++

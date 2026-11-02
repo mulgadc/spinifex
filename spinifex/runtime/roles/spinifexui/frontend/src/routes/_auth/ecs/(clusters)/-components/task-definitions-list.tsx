@@ -1,7 +1,11 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { Link } from "@tanstack/react-router"
 import { useState } from "react"
 
+import {
+  type DataColumn,
+  DataTable,
+  type SortState,
+} from "@/components/data-table"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { ErrorBanner } from "@/components/error-banner"
 import { Button } from "@/components/ui/button"
@@ -9,12 +13,49 @@ import { arnResourceId } from "@/lib/utils"
 import { useDeregisterTaskDefinition } from "@/mutations/ecs"
 import { ecsTaskDefinitionsQueryOptions } from "@/queries/ecs"
 
-// TaskDefinitionsList renders the account-scoped task definitions. clusterName,
-// when present, is only the return target for the register wizard.
-export function TaskDefinitionsList({ clusterName }: { clusterName?: string }) {
+// DeregisterTaskDefinition requires the explicit "family:revision", which is
+// the ARN's resource part.
+interface TaskDefinitionRow {
+  arn: string
+  id: string
+}
+
+function taskDefinitionColumns(
+  onDeregister: (id: string) => void,
+): DataColumn<TaskDefinitionRow>[] {
+  return [
+    {
+      id: "family",
+      header: "Family : Revision",
+      sortValue: (row) => row.id,
+      cell: (row) => <span className="font-mono text-xs">{row.id}</span>,
+    },
+    {
+      id: "actions",
+      header: "Actions",
+      align: "end",
+      cell: (row) => (
+        <Button
+          onClick={() => {
+            onDeregister(row.id)
+          }}
+          size="sm"
+          variant="destructive"
+        >
+          Deregister
+        </Button>
+      ),
+    },
+  ]
+}
+
+// TaskDefinitionsList renders the account-scoped task definitions.
+export function TaskDefinitionsList() {
   const { data: arns } = useSuspenseQuery(ecsTaskDefinitionsQueryOptions)
   const deregister = useDeregisterTaskDefinition()
   const [target, setTarget] = useState<string | null>(null)
+  const [sort, setSort] = useState<SortState>()
+  const columns = taskDefinitionColumns(setTarget)
 
   function handleDeregister() {
     if (!target) {
@@ -30,15 +71,6 @@ export function TaskDefinitionsList({ clusterName }: { clusterName?: string }) {
 
   return (
     <>
-      <div className="mb-4 flex justify-end">
-        <Link
-          search={{ cluster: clusterName ?? "" }}
-          to="/ecs/register-task-definition"
-        >
-          <Button size="sm">Register task definition</Button>
-        </Link>
-      </div>
-
       {deregister.isError && (
         <ErrorBanner
           error={deregister.error}
@@ -46,45 +78,15 @@ export function TaskDefinitionsList({ clusterName }: { clusterName?: string }) {
         />
       )}
 
-      {arns.length === 0 ? (
-        <p className="text-muted-foreground">No task definitions found.</p>
-      ) : (
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-2 font-medium">Family : Revision</th>
-                <th className="px-4 py-2 font-medium">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {arns.map((arn: string) => {
-                // DeregisterTaskDefinition requires the explicit "family:revision".
-                const id = arnResourceId(arn)
-
-                return (
-                  <tr className="border-b last:border-0" key={arn}>
-                    <td className="px-4 py-2 font-mono text-xs">{id}</td>
-                    <td className="px-4 py-2 text-right">
-                      <Button
-                        onClick={() => {
-                          setTarget(id)
-                        }}
-                        size="sm"
-                        variant="destructive"
-                      >
-                        Deregister
-                      </Button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <DataTable
+        caption="Task definitions"
+        columns={columns}
+        empty="No task definitions found."
+        getRowId={(row) => row.arn}
+        onSortChange={setSort}
+        rows={arns.map((arn) => ({ arn, id: arnResourceId(arn) }))}
+        sort={sort}
+      />
 
       <DeleteConfirmationDialog
         confirmLabel="Deregister"

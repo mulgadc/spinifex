@@ -1,17 +1,24 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { ListCard } from "@/components/list-card"
-import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { getNameTag } from "@/lib/utils"
+import {
+  CLOSED_PANEL,
+  type PanelSearch,
+  panelSearchFields,
+} from "@/lib/panel-search"
 import { ec2RouteTablesQueryOptions } from "@/queries/ec2"
+
+import { RouteTablesPage } from "../-components/route-tables-page"
+
+const searchSchema = z.object(panelSearchFields)
 
 export const Route = createFileRoute(
   "/_auth/ec2/(route-tables)/describe-route-tables/",
 )({
+  validateSearch: searchSchema,
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...ec2RouteTablesQueryOptions,
@@ -30,44 +37,22 @@ export const Route = createFileRoute(
 
 function RouteTables() {
   const { data } = useSuspenseQuery(ec2RouteTablesQueryOptions)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
 
-  const routeTables = data.RouteTables ?? []
+  // Opening or closing a panel adds a history entry, so Back closes it.
+  function onSearchChange(next: Partial<PanelSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next || "create" in next),
+    })
+  }
 
   return (
-    <>
-      <PageHeading
-        actions={
-          <Link to="/ec2/create-route-table">
-            <Button>Create Route Table</Button>
-          </Link>
-        }
-        title="Route Tables"
-      />
-
-      <ResourceList
-        empty="No Route Tables found."
-        getKey={(rtb) => rtb.RouteTableId}
-        items={routeTables}
-        renderItem={(rtb, id) => {
-          const name = getNameTag(rtb.Tags)
-          const isMain = rtb.Associations?.some((a) => a.Main) ?? false
-
-          const subnetCount =
-            rtb.Associations?.filter((a) => a.SubnetId).length ?? 0
-
-          return (
-            <ListCard
-              badge={isMain ? <Badge variant="secondary">Main</Badge> : null}
-              params={{ id }}
-              subtitle={`${rtb.VpcId ?? ""} · ${subnetCount} subnet${
-                subnetCount === 1 ? "" : "s"
-              }`}
-              title={name ? `${id} (${name})` : id}
-              to="/ec2/describe-route-tables/$id"
-            />
-          )
-        }}
-      />
-    </>
+    <RouteTablesPage
+      onSearchChange={onSearchChange}
+      routeTables={data.RouteTables ?? []}
+      search={search}
+    />
   )
 }

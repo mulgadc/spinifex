@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -102,7 +102,7 @@ func TestQuotaOverridesFromFlagsNoneChanged(t *testing.T) {
 // The table must name every dimension, label its source, and render the
 // Unlimited sentinel as a word rather than as -1, which reads like a bug.
 func TestPrintAccountQuota(t *testing.T) {
-	resp := &gateway.AccountQuotaResponse{
+	resp := &admin.AccountQuotaResponse{
 		AccountID: "000000000042",
 		Limits:    map[string]int{"vcpus": 32, "vpcs": quota.Unlimited, "eips": 4},
 		Source:    map[string]string{"vcpus": "override", "vpcs": "override", "eips": "config"},

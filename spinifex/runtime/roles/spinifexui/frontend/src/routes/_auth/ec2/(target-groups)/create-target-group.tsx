@@ -1,24 +1,13 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { ec2VpcsQueryOptions } from "@/queries/ec2"
-
-import { CreateTargetGroupPage } from "./-components/create-target-group-page"
-
+// The form opens in the list's side panel; this address is kept for links.
 export const Route = createFileRoute(
   "/_auth/ec2/(target-groups)/create-target-group",
 )({
-  loader: async ({ context }) => {
-    await context.queryClient.query({
-      ...ec2VpcsQueryOptions,
-      staleTime: "static",
+  beforeLoad: () => {
+    throw redirect({
+      to: "/ec2/describe-target-groups",
+      search: { create: true },
     })
   },
-  head: () => ({
-    meta: [
-      {
-        title: "Create Target Group | EC2 | Mulga",
-      },
-    ],
-  }),
-  component: CreateTargetGroupPage,
 })

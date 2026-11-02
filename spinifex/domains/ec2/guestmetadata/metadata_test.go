@@ -24,6 +24,7 @@ import (
 type fakeResolver struct {
 	eni        *eniFacts
 	eniErr     error
+	refreshErr error // refreshENI fails with this; otherwise the pinned ENI is current
 	inst       *instanceFacts
 	instErr    error
 	sgNames    map[string]string // sg-id → group name; absent IDs fall back to the ID
@@ -35,6 +36,13 @@ type fakeResolver struct {
 
 func (f *fakeResolver) resolveENIByID(_ context.Context, _ string) (*eniFacts, error) {
 	return f.eni, f.eniErr
+}
+
+func (f *fakeResolver) refreshENI(_ context.Context, pinned *eniFacts) (*eniFacts, error) {
+	if f.refreshErr != nil {
+		return nil, f.refreshErr
+	}
+	return pinned, nil
 }
 
 func (f *fakeResolver) resolveInstance(_ context.Context, _ *eniFacts) (*instanceFacts, error) {
@@ -151,6 +159,7 @@ func newTestService(res eniResolver, fIAM profileLookup, assumer stsAssumer) (*I
 		roleMiss:       newRoleMissLogger(func() time.Time { return now }),
 		pubKeys:        &fakePublicKeys{},
 		now:            func() time.Time { return now },
+		region:         "ap-southeast-2",
 		baseDomain:     "spx3.net",
 		servicesDomain: testServicesDomain,
 	}, now
@@ -265,6 +274,26 @@ func TestHTTP_ENIMissReturns404(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// A failed re-read of the caller's ENI is a server fault: it must not be served
+// as a missing ENI, nor answered from the facts pinned when the tap came up.
+func TestHTTP_ENIRefreshErrorIs500(t *testing.T) {
+	res := &fakeResolver{eni: testENI()}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+
+	res.refreshErr = errors.New("kv unavailable")
+	assert.Equal(t, http.StatusInternalServerError, get(t, h, prefixMetaData+"public-ipv4", token).Code)
+
+	req := httptest.NewRequest(http.MethodPut, "http://"+MetaDataServerIP+pathToken, nil)
+	req.Header.Set(hdrTokenTTL, "60")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+
+	assert.Equal(t, http.StatusInternalServerError, get(t, h, pathSpinifexCACert, "").Code)
 }
 
 // ----- version discovery -------------------------------------------------
@@ -483,6 +512,43 @@ func TestHTTP_ServicesDomainEmpty404(t *testing.T) {
 	rec := get(t, h, prefixMetaData+"services/domain", token)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	assert.NotContains(t, rec.Body.String(), "amazonaws.com")
+}
+
+// The region comes from the node's configuration, not the zone name, so a zone
+// named <region>-azN (no trailing letter) still reports the bare region.
+func TestHTTP_RegionFromNodeNotZoneName(t *testing.T) {
+	for _, az := range []string{"us-west-1a", "us-west-1-az2"} {
+		t.Run(az, func(t *testing.T) {
+			eni := testENI()
+			eni.availabilityZone = az
+			res := &fakeResolver{eni: eni, inst: &instanceFacts{instanceType: "t3.micro", imageID: "ami-12345"}}
+			svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+			svc.region = "us-west-1"
+			h := withTapENI(svc.httpHandler(), eni)
+			token := issueToken(t, h)
+
+			for path, want := range map[string]string{
+				prefixMetaData + "placement/availability-zone": az,
+				prefixMetaData + "placement/region":            "us-west-1",
+				prefixMetaData + "hostname":                    "ip-10-0-1-5.us-west-1.compute.internal",
+				prefixMetaData + "local-hostname":              "ip-10-0-1-5.us-west-1.compute.internal",
+				prefixMetaData + "public-hostname":             "ec2-203-0-113-7.us-west-1.compute.spx3.net",
+				macPath(eni.mac, "local-hostname"):             "ip-10-0-1-5.us-west-1.compute.internal",
+				macPath(eni.mac, "public-hostname"):            "ec2-203-0-113-7.us-west-1.compute.spx3.net",
+			} {
+				rec := get(t, h, path, token)
+				assert.Equal(t, http.StatusOK, rec.Code, "path=%s", path)
+				assert.Equal(t, want, rec.Body.String(), "path=%s", path)
+			}
+
+			rec := get(t, h, pathIdentityDocument, token)
+			require.Equal(t, http.StatusOK, rec.Code)
+			var doc map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+			assert.Equal(t, "us-west-1", doc["region"])
+			assert.Equal(t, az, doc["availabilityZone"])
+		})
+	}
 }
 
 // An instance with no public IP has no public hostname or public IPv4: both leaves
@@ -1147,6 +1213,19 @@ func TestHTTP_RoleCredentials(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "ASIAEXAMPLE")
 	assert.Contains(t, rec.Body.String(), `"Code":"Success"`)
+}
+
+func TestHTTP_RoleCredentialsMintRefusedYieldsFailedBody(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
+	assumer := &fakeAssumer{err: errors.New(awserrors.ErrorAccessDenied)}
+	svc, _ := newTestService(res, &fakeIAM{profile: profileFixture(), roleARN: "arn:aws:iam::111122223333:role/app-role"}, assumer)
+	h := withTapENI(svc.httpHandler(), testENI())
+	token := issueToken(t, h)
+
+	rec := get(t, h, prefixSecurityCreds+"app-role", token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"Code":"Failed"`)
+	assert.NotContains(t, rec.Body.String(), "AccessKeyId")
 }
 
 func TestHTTP_RoleCredentialsWrongRole404(t *testing.T) {

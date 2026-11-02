@@ -397,8 +397,8 @@ func EnsureNodegroupSGRules(ctx context.Context, sgp sgProvisioner, accountID, c
 }
 
 // EnsureControlPlaneIngress admits the NLB→CP hops from the VPC CIDR: the
-// apiserver (k3sAPIServerPort) and the konnectivity-server agent port
-// (konnectivityAgentPort). Public access is gated separately at the NLB
+// apiserver (k3sAPIServerPort), the konnectivity-server agent port
+// (konnectivityAgentPort) and the webhook readiness port. Public access is gated separately at the NLB
 // front-end. Idempotent.
 func EnsureControlPlaneIngress(ctx context.Context, sgp sgProvisioner, accountID, cpSGID, vpcCIDR string) error {
 	if cpSGID == "" {
@@ -414,6 +414,7 @@ func EnsureControlPlaneIngress(ctx context.Context, sgp sgProvisioner, accountID
 	}{
 		{k3sAPIServerPort, "EKS NLB to apiserver"},
 		{konnectivityAgentPort, "EKS NLB to konnectivity-server"},
+		{webhookReadyPort, "EKS NLB to token webhook readiness"},
 	} {
 		perm := &ec2.IpPermission{
 			IpProtocol: aws.String("tcp"),

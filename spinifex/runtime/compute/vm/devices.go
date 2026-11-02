@@ -3,15 +3,22 @@ package vm
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-// IsMMIO reports whether machineType is a memory-mapped I/O bus machine (e.g.
-// microvm). MMIO machines use virtio-*-device transports instead of
-// virtio-*-pci, because they have no PCI bus.
-func IsMMIO(machineType string) bool {
+// IsMicrovm reports whether machineType is the QEMU microvm machine, with or
+// without a PCIe bus.
+func IsMicrovm(machineType string) bool {
 	return strings.HasPrefix(machineType, "microvm")
+}
+
+// IsMMIO reports whether machineType attaches virtio devices over memory-mapped
+// I/O. A microvm without pcie=on has no PCI bus, so it uses virtio-*-device
+// transports; with pcie=on devices are virtio-*-pci like any other machine.
+func IsMMIO(machineType string) bool {
+	return IsMicrovm(machineType) && !slices.Contains(strings.Split(machineType, ","), "pcie=on")
 }
 
 // MaxNICQueues caps the queue pairs on a guest NIC. vhost-net spawns a kernel
@@ -294,6 +301,31 @@ func VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus string) []string {
 // path: the virtio-blk-pci driver name followed by VolumeBlkDeviceArgs.
 func VolumeBlkDevice(volumeID, nodeName, iothreadID, bus string) Device {
 	args := append([]string{"virtio-blk-pci"}, VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus)...)
+	return Device{Value: strings.Join(args, ",")}
+}
+
+// volumeMMIOBlkDevice renders a microvm data volume as virtio-blk-device with
+// VolumeBlkDeviceArgs' identity and error policy; MMIO has no PCI bus to name.
+func volumeMMIOBlkDevice(volumeID, nodeName, iothreadID string) Device {
+	args := []string{"virtio-blk-device"}
+	for _, arg := range VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, "") {
+		if !strings.HasPrefix(arg, "bus=") {
+			args = append(args, arg)
+		}
+	}
+	return Device{Value: strings.Join(args, ",")}
+}
+
+// volumeMicrovmPCIBlkDevice renders a data volume on a microvm with a PCIe bus
+// as virtio-blk-pci with VolumeBlkDeviceArgs' identity and error policy. The
+// microvm has no hot-plug root ports, so the device sits on the default bus.
+func volumeMicrovmPCIBlkDevice(volumeID, nodeName, iothreadID string) Device {
+	args := []string{"virtio-blk-pci"}
+	for _, arg := range VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, "") {
+		if !strings.HasPrefix(arg, "bus=") {
+			args = append(args, arg)
+		}
+	}
 	return Device{Value: strings.Join(args, ",")}
 }
 

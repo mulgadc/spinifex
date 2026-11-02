@@ -1,3 +1,5 @@
+import { AppBreadcrumbs } from "@/components/app-breadcrumbs"
+import { CommandPalette } from "@/components/command-palette"
 import { ThemeSwitch } from "@/components/theme-switch"
 import { buttonVariants } from "@/components/ui/button"
 import { SidebarTrigger } from "@/components/ui/sidebar"
@@ -11,12 +13,14 @@ export function Header() {
   return (
     <header
       className={cn(
-        "z-50 flex h-10 shrink-0 items-center gap-2 border-b border-sidebar-border bg-sidebar px-4 text-sidebar-foreground",
+        "z-50 flex h-12 shrink-0 items-center gap-3 border-b border-sidebar-border bg-sidebar px-4 text-sidebar-foreground",
         "sticky top-0",
       )}
     >
       <SidebarTrigger className="-ml-1" />
-      <div className="flex w-full items-center justify-end gap-2">
+      <AppBreadcrumbs />
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        <CommandPalette />
         {showUpgrade && (
           <a
             href="https://mulgadc.com/purchase"

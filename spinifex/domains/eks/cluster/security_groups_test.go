@@ -337,10 +337,13 @@ func TestDeleteClusterSGs_FirstErrorSurfacedSweepContinues(t *testing.T) {
 // cluster SG pins the customer VPC.
 func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 	origBudget, origInterval := sgDeleteWaitBudget, sgDeleteWaitInterval
-	sgDeleteWaitBudget, sgDeleteWaitInterval = 20*time.Millisecond, time.Millisecond
+	sgDeleteWaitInterval = time.Millisecond
 	defer func() { sgDeleteWaitBudget, sgDeleteWaitInterval = origBudget, origInterval }()
 
+	// The budget is wall-clock, so only the subtest meant to spend it gets a
+	// short one; a slow runner must not run out of time between two retries.
 	t.Run("transient then succeeds", func(t *testing.T) {
+		sgDeleteWaitBudget = origBudget
 		sgp := newFakeSGProvisioner()
 		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
 		sgp.deleteFailsBefore = map[string]int{"sg-ng": 2} // 2 DepViolations, then ok
@@ -351,6 +354,7 @@ func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 	})
 
 	t.Run("persistent surfaced past budget", func(t *testing.T) {
+		sgDeleteWaitBudget = 20 * time.Millisecond
 		sgp := newFakeSGProvisioner()
 		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
 		sgp.deleteErr = errors.New("DependencyViolation: still referenced")
@@ -457,8 +461,8 @@ func TestEnsureControlPlaneIngress_AuthorizesAPIServerFromVPCCIDR(t *testing.T) 
 	err := EnsureControlPlaneIngress(context.Background(), sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
 	require.NoError(t, err)
 
-	// NLB → apiserver (:6443) and NLB → konnectivity-server (:8132).
-	require.Len(t, sgp.authorizeCalls, 2)
+	// NLB → apiserver (:6443), konnectivity-server (:8132) and webhook readiness (:8444).
+	require.Len(t, sgp.authorizeCalls, 3)
 	ports := map[int64]bool{}
 	for _, in := range sgp.authorizeCalls {
 		assert.Equal(t, "sg-cp-001", aws.StringValue(in.GroupId))
@@ -472,6 +476,7 @@ func TestEnsureControlPlaneIngress_AuthorizesAPIServerFromVPCCIDR(t *testing.T) 
 	}
 	assert.True(t, ports[k3sAPIServerPort], "admits :6443")
 	assert.True(t, ports[konnectivityAgentPort], "admits :8132")
+	assert.True(t, ports[webhookReadyPort], "admits the webhook readiness port from the VPC CIDR")
 }
 
 func TestEnsureControlPlaneIngress_EmptyInputsRejected(t *testing.T) {

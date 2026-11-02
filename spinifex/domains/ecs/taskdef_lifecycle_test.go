@@ -71,11 +71,15 @@ func TestDescribeTaskDefinition_ResolvesEveryReferenceForm(t *testing.T) {
 		assert.Equal(t, want, aws.Int64Value(out.TaskDefinition.Revision), ref)
 	}
 
-	for _, ref := range []string{"app:3", "ghost", ""} {
+	for ref, want := range map[string]string{
+		"app:3": awserrors.ErrorECSClientException,
+		"ghost": awserrors.ErrorECSClientException,
+		"":      awserrors.ErrorECSInvalidParameter,
+	} {
 		_, err := svc.DescribeTaskDefinition(context.Background(),
 			&ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String(ref)}, testAccountID)
 		require.Error(t, err, ref)
-		assert.Equal(t, awserrors.ErrorECSInvalidParameter, err.Error(), ref)
+		assert.Equal(t, want, err.Error(), ref)
 	}
 }
 
@@ -96,6 +100,40 @@ func TestDeregisterTaskDefinition_RepeatSucceedsAndUnknownIsRefused(t *testing.T
 		&ecs.DeregisterTaskDefinitionInput{TaskDefinition: aws.String("app:9")}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorECSInvalidParameter, err.Error())
+}
+
+// registeredAt is on every read; deregisteredAt appears on reads after the
+// first deregistration, keeps that first time, and is absent from the
+// DeregisterTaskDefinition response itself, as on AWS.
+func TestTaskDefinition_RegisteredAndDeregisteredAt(t *testing.T) {
+	svc, _ := newTestService(t)
+	reg := registerTaskDef(t, svc, "app", 128, 256)
+	registeredAt := aws.TimeValue(reg.TaskDefinition.RegisteredAt)
+	require.False(t, registeredAt.IsZero())
+
+	describe := func() *ecs.TaskDefinition {
+		out, err := svc.DescribeTaskDefinition(context.Background(),
+			&ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String("app:1")}, testAccountID)
+		require.NoError(t, err)
+		return out.TaskDefinition
+	}
+	active := describe()
+	assert.True(t, registeredAt.Equal(aws.TimeValue(active.RegisteredAt)))
+	assert.Nil(t, active.DeregisteredAt)
+
+	dereg, err := svc.DeregisterTaskDefinition(context.Background(),
+		&ecs.DeregisterTaskDefinitionInput{TaskDefinition: aws.String("app:1")}, testAccountID)
+	require.NoError(t, err)
+	assert.Nil(t, dereg.TaskDefinition.DeregisteredAt)
+
+	first := describe().DeregisteredAt
+	require.NotNil(t, first)
+	assert.False(t, first.Before(registeredAt))
+
+	_, err = svc.DeregisterTaskDefinition(context.Background(),
+		&ecs.DeregisterTaskDefinitionInput{TaskDefinition: aws.String("app:1")}, testAccountID)
+	require.NoError(t, err)
+	assert.True(t, first.Equal(aws.TimeValue(describe().DeregisteredAt)))
 }
 
 // Present behaviour: resolution for a launch does not read the revision's

@@ -377,6 +377,7 @@ func (s *IAMServiceImpl) getInstanceProfile(ctx context.Context, accountID, prof
 // re-reading and re-running mutate when a concurrent writer wins the race.
 // mutate reports whether it changed the record; a false return commits nothing.
 func (s *IAMServiceImpl) updateInstanceProfileCAS(ctx context.Context, accountID, profileName string, mutate func(*InstanceProfile) (bool, error)) error {
+	defer s.recordLocks.lock("instance-profile/" + accountID + "." + profileName)()
 	_, err := kvutil.Update(ctx, s.instanceProfilesBucket, accountID+"."+profileName, s.instanceProfileCASConfig(accountID, profileName), mutate)
 	return err
 }

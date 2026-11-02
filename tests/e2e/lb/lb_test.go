@@ -39,6 +39,7 @@ const (
 	tcpPort      = 9000
 	udpPort      = 9001
 	triggerPort  = 9090
+	healthPort   = 8081
 	probesPerRun = 20
 )
 
@@ -90,9 +91,9 @@ func TestLoadBalancer(t *testing.T) {
 	client := harness.NewAWSClient(t, env)
 	fixture := setupSharedFixture(t, client, artifacts)
 
-	// A live peer implies the 3-node multinode cluster this restructure targets, which has
-	// the spare capacity to stand up every scenario's LB concurrently (see doc comment
-	// above). Single-node dev boxes (peer == "") fall through to the serial path below.
+	// A live peer implies the 3-node multinode cluster, which has the spare capacity to run
+	// the scenarios' LBs concurrently. The two health suites stay serial because they flip a
+	// health switch shared by the fixture app instances. Single-node boxes run everything serially.
 	parallelizeLBs := peer != ""
 
 	// Internal and internet-facing LB records share one zone object: ELBChanges
@@ -139,25 +140,35 @@ func TestLoadBalancer(t *testing.T) {
 		// cascade into 5x sequential 5-minute timeouts, so the serial path's fail-fast gate
 		// (below) is unnecessary here: concurrency itself bounds the worst-case wall time to
 		// one timeout window instead of five.
-		t.Run("Internal_ALB", func(t *testing.T) {
-			t.Parallel()
-			runLBSuite(t, client, fixture, kindALB, "internal", nil, "")
+		// The health suites flip a per-instance health switch the other suites share, so they
+		// run serially after this group completes instead of in parallel with it.
+		t.Run("Internal_Parallel", func(t *testing.T) {
+			t.Run("Internal_ALB", func(t *testing.T) {
+				t.Parallel()
+				runLBSuite(t, client, fixture, kindALB, "internal", nil, "")
+			})
+			t.Run("Internal_NLB", func(t *testing.T) {
+				t.Parallel()
+				runLBSuite(t, client, fixture, kindNLB, "internal", nil, "")
+			})
+			t.Run("Internal_NLB_UDP", func(t *testing.T) {
+				t.Parallel()
+				runUDPNLBSuite(t, client, fixture)
+			})
+			t.Run("Internal_ALB_ModifyListener", func(t *testing.T) {
+				t.Parallel()
+				runModifyListenerSuite(t, client, fixture)
+			})
+			t.Run("Internal_ALB_ListenerRules", func(t *testing.T) {
+				t.Parallel()
+				runListenerRulesSuite(t, client, fixture)
+			})
 		})
-		t.Run("Internal_NLB", func(t *testing.T) {
-			t.Parallel()
-			runLBSuite(t, client, fixture, kindNLB, "internal", nil, "")
+		t.Run("Internal_NLB_UnhealthyTargets", func(t *testing.T) {
+			runNLBUnhealthyTargetsSuite(t, client, fixture)
 		})
-		t.Run("Internal_NLB_UDP", func(t *testing.T) {
-			t.Parallel()
-			runUDPNLBSuite(t, client, fixture)
-		})
-		t.Run("Internal_ALB_ModifyListener", func(t *testing.T) {
-			t.Parallel()
-			runModifyListenerSuite(t, client, fixture)
-		})
-		t.Run("Internal_ALB_ListenerRules", func(t *testing.T) {
-			t.Parallel()
-			runListenerRulesSuite(t, client, fixture)
+		t.Run("Internal_ALB_FailOpen", func(t *testing.T) {
+			runALBFailOpenSuite(t, client, fixture)
 		})
 		return
 	}
@@ -189,6 +200,14 @@ func TestLoadBalancer(t *testing.T) {
 	t.Run("Internal_ALB_ListenerRules", func(t *testing.T) {
 		skipIfInternalBroken(t)
 		runListenerRulesSuite(t, client, fixture)
+	})
+	t.Run("Internal_NLB_UnhealthyTargets", func(t *testing.T) {
+		skipIfInternalBroken(t)
+		runNLBUnhealthyTargetsSuite(t, client, fixture)
+	})
+	t.Run("Internal_ALB_FailOpen", func(t *testing.T) {
+		skipIfInternalBroken(t)
+		runALBFailOpenSuite(t, client, fixture)
 	})
 }
 
@@ -454,7 +473,7 @@ func configureDefaultSG(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 
 	// Use structured IpPermissions form — vpcd ignores the top-level shorthand fields
 	// so the OVN ACL would never be installed otherwise.
-	for _, port := range []int64{httpPort, tcpPort, triggerPort} {
+	for _, port := range []int64{httpPort, tcpPort, triggerPort, healthPort} {
 		_, err := c.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
 			GroupId: aws.String(f.SecurityGroup),
 			IpPermissions: []*ec2.IpPermission{{
@@ -599,6 +618,9 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 	assertInternalDNS(t, c, lb.ARN, label)
 	assertLBDNSResolves(t, lb.DNSName, priv, label)
 	runInternalTrafficViaClient(t, c, f, kind, priv)
+	if kind == kindALB {
+		runForwardedHeadersInternal(t, c, f, label, lb.ARN, priv)
+	}
 }
 
 // runHTTPSCertSuite exercises the ACM → HTTPS listener path end-to-end:
@@ -688,6 +710,8 @@ func runHTTPSCertSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 		return nil
 	}, 90*time.Second, 3*time.Second)
 	t.Logf("HTTPS GET %s -> 200 (TLS terminated at LB, forwarded to backend)", url)
+
+	runForwardedHeadersHTTPS(t, c, label, lb.ARN, pubIP, httpsPort, pool, []string{pubIP, privateIP(eni)})
 }
 
 // createHTTPSListener creates an HTTPS listener referencing certArn. Distinct
@@ -695,7 +719,7 @@ func runHTTPSCertSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 // and rejects them for HTTP.
 func createHTTPSListener(t *testing.T, c *harness.AWSClient, lbArn string, port int64, tgArn, certArn string) string {
 	t.Helper()
-	// e2e:allow-create — the HTTPS listener is the subject under test (ACM cert -> termination).
+	// The HTTPS listener is the subject under test (ACM cert -> termination).
 	out, err := c.ELBv2.CreateListener(&elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(lbArn),
 		Protocol:        aws.String("HTTPS"),
@@ -732,7 +756,7 @@ func createHTTPSListener(t *testing.T, c *harness.AWSClient, lbArn string, port 
 // shared VPC default SG) require an explicit dedicated SG here.
 func createScenarioSG(t *testing.T, c *harness.AWSClient, f *sharedFixture, name string, ports ...int64) string {
 	t.Helper()
-	out, err := c.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{ // e2e:allow-create — a dedicated per-scenario LB SG is the isolation under test; a shared Ensure* fixture would defeat it.
+	out, err := c.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{ // A dedicated per-scenario LB SG is the isolation under test; a shared Ensure* fixture would defeat it.
 		VpcId:       aws.String(f.VPCID),
 		GroupName:   aws.String(name),
 		Description: aws.String("lb-e2e dedicated LB-facing security group"),
@@ -1689,7 +1713,9 @@ func remoteTCPRoundRobin(t *testing.T, ctx context.Context, ssh *harness.PeerSSH
 	t.Helper()
 	var lines []string
 	for i := 0; i < n; i++ {
-		out, err := ssh.Run(ctx, peer, fmt.Sprintf("echo '' | nc -w5 '%s' %d", host, port))
+		// Read without writing, as TCPRoundRobin does: nmap-ncat (Oracle Linux) half-closes
+		// on stdin EOF where netcat-openbsd does not, and the NLB then drops the reply.
+		out, err := ssh.Run(ctx, peer, fmt.Sprintf("timeout 5 bash -c 'exec 3<>/dev/tcp/%s/%d && head -n1 <&3'", host, port))
 		if err != nil {
 			continue
 		}

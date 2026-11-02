@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"encoding/pem"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/operator/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -161,7 +161,7 @@ func TestCreateAccountRemoteSignsAndPosts(t *testing.T) {
 
 	out, err := cli.CreateAccountRemote(t.Context(),
 		cli.AdminTarget(srv.URL, "us-west-1", writeServerCA(t, srv)),
-		gateway.CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 32)})
+		operatorv1.CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 32)})
 	require.NoError(t, err)
 
 	assert.Equal(t, "000000000042", out.AccountID)
@@ -186,7 +186,7 @@ func TestCreateAccountRemoteTrimsEndpointSlash(t *testing.T) {
 
 	_, err := cli.CreateAccountRemote(t.Context(),
 		cli.AdminTarget(srv.URL+"/", "us-west-1", writeServerCA(t, srv)),
-		gateway.CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 32)})
+		operatorv1.CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 32)})
 	require.NoError(t, err)
 	assert.Equal(t, "/admin/CreateAccount", got.URL.Path)
 }
@@ -201,7 +201,7 @@ func TestCreateAccountRemoteSurfacesGatewayError(t *testing.T) {
 
 	_, err := cli.CreateAccountRemote(t.Context(),
 		cli.AdminTarget(srv.URL, "us-west-1", writeServerCA(t, srv)),
-		gateway.CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 32)})
+		operatorv1.CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 32)})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "AccountAlreadyExists")
@@ -219,7 +219,7 @@ func TestCreateAccountRemoteRefusesUntrustedServer(t *testing.T) {
 
 	_, err := cli.CreateAccountRemote(t.Context(),
 		cli.AdminTarget(srv.URL, "us-west-1", ""),
-		gateway.CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 32)})
+		operatorv1.CreateAccountRequest{Name: "ben@example.com", ClientToken: strings.Repeat("a", 32)})
 	assert.Error(t, err)
 }
 

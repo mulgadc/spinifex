@@ -24,13 +24,16 @@ func TestScanLiveQEMUPIDs(t *testing.T) {
 	fakeProcEntry(t, procRoot, 111, "qemu-system-x86_64")
 	fakeProcEntry(t, procRoot, 222, "qemu-system-aarch64")
 	fakeProcEntry(t, procRoot, 333, "bash")
+	// EL-family hosts run QEMU as /usr/libexec/qemu-kvm.
+	fakeProcEntry(t, procRoot, 444, "qemu-kvm")
+	fakeProcEntry(t, procRoot, 555, "qemu-img")
 	// Non-numeric /proc entries (self, curproc, etc.) must not crash the scan.
 	require.NoError(t, os.MkdirAll(filepath.Join(procRoot, "self"), 0o755))
 
 	pids, err := scanLiveQEMUPIDs(procRoot)
 
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []int{111, 222}, pids, "only qemu-system* processes are returned")
+	assert.ElementsMatch(t, []int{111, 222, 444}, pids, "only QEMU guest processes are returned")
 }
 
 func TestScanLiveQEMUPIDs_MissingProcRoot(t *testing.T) {

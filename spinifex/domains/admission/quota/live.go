@@ -3,15 +3,16 @@ package quota
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
 	"github.com/nats-io/nats.go"
 )
 
@@ -85,7 +86,7 @@ func (s *Service) EnforceLoadBalancers(ctx context.Context, natsConn *nats.Conn,
 	if s.Exempt(accountID) {
 		return nil
 	}
-	out, err := gateway_elbv2.DescribeLoadBalancers(ctx, &elbv2.DescribeLoadBalancersInput{}, natsConn, accountID)
+	out, err := elbv2awsapi.DescribeLoadBalancers(ctx, &elbv2.DescribeLoadBalancersInput{}, natsConn, accountID)
 	if err != nil {
 		return err
 	}
@@ -113,3 +114,23 @@ func (s *Service) EnforceRDSInstances(ctx context.Context, natsConn *nats.Conn, 
 	}
 	return exceeds(len(out.DBInstances), want, limits.RDSInstances)
 }
+
+// LoadBalancerLimit is the load balancer cap DescribeAccountLimits reports.
+func (s *Service) LoadBalancerLimit(ctx context.Context, accountID string) (int, error) {
+	// An exempt account has no cap enforced against it, so the AWS default is a
+	// truer answer than a configured limit nothing consults.
+	if s.Exempt(accountID) {
+		return elbv2awsapi.DefaultLoadBalancerLimit, nil
+	}
+	_, limits, err := s.GetAccountQuota(ctx, accountID)
+	if err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
+			return 0, err
+		}
+		slog.ErrorContext(ctx, "DescribeAccountLimits: failed to read account quota", "accountID", accountID, "err", err)
+		return 0, errors.New(awserrors.ErrorInternalError)
+	}
+	return limits.LoadBalancers, nil
+}
+
+var _ elbv2awsapi.Quota = (*Service)(nil)

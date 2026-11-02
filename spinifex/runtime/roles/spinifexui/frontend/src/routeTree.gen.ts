@@ -13,6 +13,7 @@ import { Route as AuthRouteRouteImport } from './routes/_auth/route'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthIndexRouteImport } from './routes/_auth/index'
 import { Route as AuthBedrockRouteRouteImport } from './routes/_auth/bedrock/route'
+import { Route as AuthDesignRouteImport } from './routes/_auth/design'
 import { Route as AuthNodesRouteImport } from './routes/_auth/nodes'
 import { Route as AuthS3ServiceMetricsRouteImport } from './routes/_auth/s3/service-metrics'
 import { Route as AuthEc2elasticIpsAllocateAddressRouteImport } from './routes/_auth/ec2/(elastic-ips)/allocate-address'
@@ -44,6 +45,7 @@ import { Route as AuthIamusersCreateUserRouteImport } from './routes/_auth/iam/(
 import { Route as AuthRdsdbInstancesCreateDbInstanceRouteImport } from './routes/_auth/rds/(db-instances)/create-db-instance'
 import { Route as AuthRdsparameterGroupsCreateDbParameterGroupRouteImport } from './routes/_auth/rds/(parameter-groups)/create-db-parameter-group'
 import { Route as AuthRdssubnetGroupsCreateDbSubnetGroupRouteImport } from './routes/_auth/rds/(subnet-groups)/create-db-subnet-group'
+import { Route as AuthRoute53hostedZonesCreateHostedZoneRouteImport } from './routes/_auth/route53/(hosted-zones)/create-hosted-zone'
 import { Route as AuthS3bucketsCreateBucketRouteImport } from './routes/_auth/s3/(buckets)/create-bucket'
 import { Route as AuthS3LsIndexRouteImport } from './routes/_auth/s3/ls/index'
 import { Route as AuthS3LsBucketRouteRouteImport } from './routes/_auth/s3/ls/$bucket/route'
@@ -113,6 +115,8 @@ import { Route as AuthRdssnapshotsDescribeDbSnapshotsIdRouteImport } from './rou
 import { Route as AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRouteImport } from './routes/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id'
 import { Route as AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRouteImport } from './routes/_auth/rds/(subnet-groups)/describe-db-subnet-groups/index'
 import { Route as AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRouteImport } from './routes/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name'
+import { Route as AuthRoute53hostedZonesListHostedZonesIndexRouteImport } from './routes/_auth/route53/(hosted-zones)/list-hosted-zones/index'
+import { Route as AuthRoute53hostedZonesListHostedZonesIdRouteImport } from './routes/_auth/route53/(hosted-zones)/list-hosted-zones/$id'
 import { Route as AuthS3LsBucketIndexRouteImport } from './routes/_auth/s3/ls/$bucket/index'
 import { Route as AuthS3LsBucketSplatRouteImport } from './routes/_auth/s3/ls/$bucket/$'
 import { Route as AuthBedrockguardrailsListGuardrailsGuardrailIdIndexRouteImport } from './routes/_auth/bedrock/(guardrails)/list-guardrails/$guardrailId.index'
@@ -137,6 +141,11 @@ const AuthIndexRoute = AuthIndexRouteImport.update({
 const AuthBedrockRouteRoute = AuthBedrockRouteRouteImport.update({
   id: '/bedrock',
   path: '/bedrock',
+  getParentRoute: () => AuthRouteRoute,
+} as any)
+const AuthDesignRoute = AuthDesignRouteImport.update({
+  id: '/design',
+  path: '/design',
   getParentRoute: () => AuthRouteRoute,
 } as any)
 const AuthNodesRoute = AuthNodesRouteImport.update({
@@ -315,6 +324,12 @@ const AuthRdssubnetGroupsCreateDbSubnetGroupRoute =
   AuthRdssubnetGroupsCreateDbSubnetGroupRouteImport.update({
     id: '/rds/(subnet-groups)/create-db-subnet-group',
     path: '/rds/create-db-subnet-group',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthRoute53hostedZonesCreateHostedZoneRoute =
+  AuthRoute53hostedZonesCreateHostedZoneRouteImport.update({
+    id: '/route53/(hosted-zones)/create-hosted-zone',
+    path: '/route53/create-hosted-zone',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthS3bucketsCreateBucketRoute =
@@ -731,6 +746,18 @@ const AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute =
     path: '/rds/describe-db-subnet-groups/$name',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const AuthRoute53hostedZonesListHostedZonesIndexRoute =
+  AuthRoute53hostedZonesListHostedZonesIndexRouteImport.update({
+    id: '/route53/(hosted-zones)/list-hosted-zones/',
+    path: '/route53/list-hosted-zones/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthRoute53hostedZonesListHostedZonesIdRoute =
+  AuthRoute53hostedZonesListHostedZonesIdRouteImport.update({
+    id: '/route53/(hosted-zones)/list-hosted-zones/$id',
+    path: '/route53/list-hosted-zones/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthS3LsBucketIndexRoute = AuthS3LsBucketIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -770,6 +797,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AuthIndexRoute
   '/login': typeof LoginRoute
   '/bedrock': typeof AuthBedrockRouteRouteWithChildren
+  '/design': typeof AuthDesignRoute
   '/nodes': typeof AuthNodesRoute
   '/s3/service-metrics': typeof AuthS3ServiceMetricsRoute
   '/s3/ls/$bucket': typeof AuthS3LsBucketRouteRouteWithChildren
@@ -802,6 +830,7 @@ export interface FileRoutesByFullPath {
   '/rds/create-db-instance': typeof AuthRdsdbInstancesCreateDbInstanceRoute
   '/rds/create-db-parameter-group': typeof AuthRdsparameterGroupsCreateDbParameterGroupRoute
   '/rds/create-db-subnet-group': typeof AuthRdssubnetGroupsCreateDbSubnetGroupRoute
+  '/route53/create-hosted-zone': typeof AuthRoute53hostedZonesCreateHostedZoneRoute
   '/s3/create-bucket': typeof AuthS3bucketsCreateBucketRoute
   '/s3/ls/': typeof AuthS3LsIndexRoute
   '/bedrock/list-guardrails/create': typeof AuthBedrockguardrailsListGuardrailsCreateRoute
@@ -837,6 +866,7 @@ export interface FileRoutesByFullPath {
   '/rds/describe-db-snapshots/$id': typeof AuthRdssnapshotsDescribeDbSnapshotsIdRoute
   '/rds/restore-db-instance-from-db-snapshot/$id': typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   '/rds/describe-db-subnet-groups/$name': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
+  '/route53/list-hosted-zones/$id': typeof AuthRoute53hostedZonesListHostedZonesIdRoute
   '/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
   '/bedrock/list-model-catalog/': typeof AuthBedrockcatalogListModelCatalogIndexRoute
   '/bedrock/list-guardrails/': typeof AuthBedrockguardrailsListGuardrailsIndexRoute
@@ -871,6 +901,7 @@ export interface FileRoutesByFullPath {
   '/rds/describe-db-parameter-groups/': typeof AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute
   '/rds/describe-db-snapshots/': typeof AuthRdssnapshotsDescribeDbSnapshotsIndexRoute
   '/rds/describe-db-subnet-groups/': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute
+  '/route53/list-hosted-zones/': typeof AuthRoute53hostedZonesListHostedZonesIndexRoute
   '/s3/ls/$bucket/': typeof AuthS3LsBucketIndexRoute
   '/bedrock/list-guardrails/$guardrailId/edit': typeof AuthBedrockguardrailsListGuardrailsGuardrailIdEditRoute
   '/bedrock/list-guardrails/$guardrailId/': typeof AuthBedrockguardrailsListGuardrailsGuardrailIdIndexRoute
@@ -880,6 +911,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/bedrock': typeof AuthBedrockRouteRouteWithChildren
+  '/design': typeof AuthDesignRoute
   '/nodes': typeof AuthNodesRoute
   '/': typeof AuthIndexRoute
   '/s3/service-metrics': typeof AuthS3ServiceMetricsRoute
@@ -912,6 +944,7 @@ export interface FileRoutesByTo {
   '/rds/create-db-instance': typeof AuthRdsdbInstancesCreateDbInstanceRoute
   '/rds/create-db-parameter-group': typeof AuthRdsparameterGroupsCreateDbParameterGroupRoute
   '/rds/create-db-subnet-group': typeof AuthRdssubnetGroupsCreateDbSubnetGroupRoute
+  '/route53/create-hosted-zone': typeof AuthRoute53hostedZonesCreateHostedZoneRoute
   '/s3/create-bucket': typeof AuthS3bucketsCreateBucketRoute
   '/s3/ls': typeof AuthS3LsIndexRoute
   '/bedrock/list-guardrails/create': typeof AuthBedrockguardrailsListGuardrailsCreateRoute
@@ -947,6 +980,7 @@ export interface FileRoutesByTo {
   '/rds/describe-db-snapshots/$id': typeof AuthRdssnapshotsDescribeDbSnapshotsIdRoute
   '/rds/restore-db-instance-from-db-snapshot/$id': typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   '/rds/describe-db-subnet-groups/$name': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
+  '/route53/list-hosted-zones/$id': typeof AuthRoute53hostedZonesListHostedZonesIdRoute
   '/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
   '/bedrock/list-model-catalog': typeof AuthBedrockcatalogListModelCatalogIndexRoute
   '/bedrock/list-guardrails': typeof AuthBedrockguardrailsListGuardrailsIndexRoute
@@ -981,6 +1015,7 @@ export interface FileRoutesByTo {
   '/rds/describe-db-parameter-groups': typeof AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute
   '/rds/describe-db-snapshots': typeof AuthRdssnapshotsDescribeDbSnapshotsIndexRoute
   '/rds/describe-db-subnet-groups': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute
+  '/route53/list-hosted-zones': typeof AuthRoute53hostedZonesListHostedZonesIndexRoute
   '/s3/ls/$bucket': typeof AuthS3LsBucketIndexRoute
   '/bedrock/list-guardrails/$guardrailId/edit': typeof AuthBedrockguardrailsListGuardrailsGuardrailIdEditRoute
   '/bedrock/list-guardrails/$guardrailId': typeof AuthBedrockguardrailsListGuardrailsGuardrailIdIndexRoute
@@ -992,6 +1027,7 @@ export interface FileRoutesById {
   '/_auth': typeof AuthRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/_auth/bedrock': typeof AuthBedrockRouteRouteWithChildren
+  '/_auth/design': typeof AuthDesignRoute
   '/_auth/nodes': typeof AuthNodesRoute
   '/_auth/': typeof AuthIndexRoute
   '/_auth/s3/service-metrics': typeof AuthS3ServiceMetricsRoute
@@ -1025,6 +1061,7 @@ export interface FileRoutesById {
   '/_auth/rds/(db-instances)/create-db-instance': typeof AuthRdsdbInstancesCreateDbInstanceRoute
   '/_auth/rds/(parameter-groups)/create-db-parameter-group': typeof AuthRdsparameterGroupsCreateDbParameterGroupRoute
   '/_auth/rds/(subnet-groups)/create-db-subnet-group': typeof AuthRdssubnetGroupsCreateDbSubnetGroupRoute
+  '/_auth/route53/(hosted-zones)/create-hosted-zone': typeof AuthRoute53hostedZonesCreateHostedZoneRoute
   '/_auth/s3/(buckets)/create-bucket': typeof AuthS3bucketsCreateBucketRoute
   '/_auth/s3/ls/': typeof AuthS3LsIndexRoute
   '/_auth/bedrock/(guardrails)/list-guardrails/create': typeof AuthBedrockguardrailsListGuardrailsCreateRoute
@@ -1060,6 +1097,7 @@ export interface FileRoutesById {
   '/_auth/rds/(snapshots)/describe-db-snapshots/$id': typeof AuthRdssnapshotsDescribeDbSnapshotsIdRoute
   '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id': typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
+  '/_auth/route53/(hosted-zones)/list-hosted-zones/$id': typeof AuthRoute53hostedZonesListHostedZonesIdRoute
   '/_auth/s3/ls/$bucket/$': typeof AuthS3LsBucketSplatRoute
   '/_auth/bedrock/(catalog)/list-model-catalog/': typeof AuthBedrockcatalogListModelCatalogIndexRoute
   '/_auth/bedrock/(guardrails)/list-guardrails/': typeof AuthBedrockguardrailsListGuardrailsIndexRoute
@@ -1094,6 +1132,7 @@ export interface FileRoutesById {
   '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/': typeof AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute
   '/_auth/rds/(snapshots)/describe-db-snapshots/': typeof AuthRdssnapshotsDescribeDbSnapshotsIndexRoute
   '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/': typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute
+  '/_auth/route53/(hosted-zones)/list-hosted-zones/': typeof AuthRoute53hostedZonesListHostedZonesIndexRoute
   '/_auth/s3/ls/$bucket/': typeof AuthS3LsBucketIndexRoute
   '/_auth/bedrock/(guardrails)/list-guardrails/$guardrailId/edit': typeof AuthBedrockguardrailsListGuardrailsGuardrailIdEditRoute
   '/_auth/bedrock/(guardrails)/list-guardrails/$guardrailId/': typeof AuthBedrockguardrailsListGuardrailsGuardrailIdIndexRoute
@@ -1106,6 +1145,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/bedrock'
+    | '/design'
     | '/nodes'
     | '/s3/service-metrics'
     | '/s3/ls/$bucket'
@@ -1138,6 +1178,7 @@ export interface FileRouteTypes {
     | '/rds/create-db-instance'
     | '/rds/create-db-parameter-group'
     | '/rds/create-db-subnet-group'
+    | '/route53/create-hosted-zone'
     | '/s3/create-bucket'
     | '/s3/ls/'
     | '/bedrock/list-guardrails/create'
@@ -1173,6 +1214,7 @@ export interface FileRouteTypes {
     | '/rds/describe-db-snapshots/$id'
     | '/rds/restore-db-instance-from-db-snapshot/$id'
     | '/rds/describe-db-subnet-groups/$name'
+    | '/route53/list-hosted-zones/$id'
     | '/s3/ls/$bucket/$'
     | '/bedrock/list-model-catalog/'
     | '/bedrock/list-guardrails/'
@@ -1207,6 +1249,7 @@ export interface FileRouteTypes {
     | '/rds/describe-db-parameter-groups/'
     | '/rds/describe-db-snapshots/'
     | '/rds/describe-db-subnet-groups/'
+    | '/route53/list-hosted-zones/'
     | '/s3/ls/$bucket/'
     | '/bedrock/list-guardrails/$guardrailId/edit'
     | '/bedrock/list-guardrails/$guardrailId/'
@@ -1216,6 +1259,7 @@ export interface FileRouteTypes {
   to:
     | '/login'
     | '/bedrock'
+    | '/design'
     | '/nodes'
     | '/'
     | '/s3/service-metrics'
@@ -1248,6 +1292,7 @@ export interface FileRouteTypes {
     | '/rds/create-db-instance'
     | '/rds/create-db-parameter-group'
     | '/rds/create-db-subnet-group'
+    | '/route53/create-hosted-zone'
     | '/s3/create-bucket'
     | '/s3/ls'
     | '/bedrock/list-guardrails/create'
@@ -1283,6 +1328,7 @@ export interface FileRouteTypes {
     | '/rds/describe-db-snapshots/$id'
     | '/rds/restore-db-instance-from-db-snapshot/$id'
     | '/rds/describe-db-subnet-groups/$name'
+    | '/route53/list-hosted-zones/$id'
     | '/s3/ls/$bucket/$'
     | '/bedrock/list-model-catalog'
     | '/bedrock/list-guardrails'
@@ -1317,6 +1363,7 @@ export interface FileRouteTypes {
     | '/rds/describe-db-parameter-groups'
     | '/rds/describe-db-snapshots'
     | '/rds/describe-db-subnet-groups'
+    | '/route53/list-hosted-zones'
     | '/s3/ls/$bucket'
     | '/bedrock/list-guardrails/$guardrailId/edit'
     | '/bedrock/list-guardrails/$guardrailId'
@@ -1327,6 +1374,7 @@ export interface FileRouteTypes {
     | '/_auth'
     | '/login'
     | '/_auth/bedrock'
+    | '/_auth/design'
     | '/_auth/nodes'
     | '/_auth/'
     | '/_auth/s3/service-metrics'
@@ -1360,6 +1408,7 @@ export interface FileRouteTypes {
     | '/_auth/rds/(db-instances)/create-db-instance'
     | '/_auth/rds/(parameter-groups)/create-db-parameter-group'
     | '/_auth/rds/(subnet-groups)/create-db-subnet-group'
+    | '/_auth/route53/(hosted-zones)/create-hosted-zone'
     | '/_auth/s3/(buckets)/create-bucket'
     | '/_auth/s3/ls/'
     | '/_auth/bedrock/(guardrails)/list-guardrails/create'
@@ -1395,6 +1444,7 @@ export interface FileRouteTypes {
     | '/_auth/rds/(snapshots)/describe-db-snapshots/$id'
     | '/_auth/rds/(snapshots)/restore-db-instance-from-db-snapshot/$id'
     | '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/$name'
+    | '/_auth/route53/(hosted-zones)/list-hosted-zones/$id'
     | '/_auth/s3/ls/$bucket/$'
     | '/_auth/bedrock/(catalog)/list-model-catalog/'
     | '/_auth/bedrock/(guardrails)/list-guardrails/'
@@ -1429,6 +1479,7 @@ export interface FileRouteTypes {
     | '/_auth/rds/(parameter-groups)/describe-db-parameter-groups/'
     | '/_auth/rds/(snapshots)/describe-db-snapshots/'
     | '/_auth/rds/(subnet-groups)/describe-db-subnet-groups/'
+    | '/_auth/route53/(hosted-zones)/list-hosted-zones/'
     | '/_auth/s3/ls/$bucket/'
     | '/_auth/bedrock/(guardrails)/list-guardrails/$guardrailId/edit'
     | '/_auth/bedrock/(guardrails)/list-guardrails/$guardrailId/'
@@ -1469,6 +1520,13 @@ declare module '@tanstack/react-router' {
       path: '/bedrock'
       fullPath: '/bedrock'
       preLoaderRoute: typeof AuthBedrockRouteRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/design': {
+      id: '/_auth/design'
+      path: '/design'
+      fullPath: '/design'
+      preLoaderRoute: typeof AuthDesignRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/nodes': {
@@ -1686,6 +1744,13 @@ declare module '@tanstack/react-router' {
       path: '/rds/create-db-subnet-group'
       fullPath: '/rds/create-db-subnet-group'
       preLoaderRoute: typeof AuthRdssubnetGroupsCreateDbSubnetGroupRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/route53/(hosted-zones)/create-hosted-zone': {
+      id: '/_auth/route53/(hosted-zones)/create-hosted-zone'
+      path: '/route53/create-hosted-zone'
+      fullPath: '/route53/create-hosted-zone'
+      preLoaderRoute: typeof AuthRoute53hostedZonesCreateHostedZoneRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/s3/(buckets)/create-bucket': {
@@ -2171,6 +2236,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/route53/(hosted-zones)/list-hosted-zones/': {
+      id: '/_auth/route53/(hosted-zones)/list-hosted-zones/'
+      path: '/route53/list-hosted-zones'
+      fullPath: '/route53/list-hosted-zones/'
+      preLoaderRoute: typeof AuthRoute53hostedZonesListHostedZonesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/route53/(hosted-zones)/list-hosted-zones/$id': {
+      id: '/_auth/route53/(hosted-zones)/list-hosted-zones/$id'
+      path: '/route53/list-hosted-zones/$id'
+      fullPath: '/route53/list-hosted-zones/$id'
+      preLoaderRoute: typeof AuthRoute53hostedZonesListHostedZonesIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/s3/ls/$bucket/': {
       id: '/_auth/s3/ls/$bucket/'
       path: '/'
@@ -2270,6 +2349,7 @@ const AuthS3LsBucketRouteRouteWithChildren =
 
 interface AuthRouteRouteChildren {
   AuthBedrockRouteRoute: typeof AuthBedrockRouteRouteWithChildren
+  AuthDesignRoute: typeof AuthDesignRoute
   AuthNodesRoute: typeof AuthNodesRoute
   AuthIndexRoute: typeof AuthIndexRoute
   AuthS3ServiceMetricsRoute: typeof AuthS3ServiceMetricsRoute
@@ -2303,6 +2383,7 @@ interface AuthRouteRouteChildren {
   AuthRdsdbInstancesCreateDbInstanceRoute: typeof AuthRdsdbInstancesCreateDbInstanceRoute
   AuthRdsparameterGroupsCreateDbParameterGroupRoute: typeof AuthRdsparameterGroupsCreateDbParameterGroupRoute
   AuthRdssubnetGroupsCreateDbSubnetGroupRoute: typeof AuthRdssubnetGroupsCreateDbSubnetGroupRoute
+  AuthRoute53hostedZonesCreateHostedZoneRoute: typeof AuthRoute53hostedZonesCreateHostedZoneRoute
   AuthS3bucketsCreateBucketRoute: typeof AuthS3bucketsCreateBucketRoute
   AuthS3LsIndexRoute: typeof AuthS3LsIndexRoute
   AuthEc2elasticIpsDescribeAddressesIdRoute: typeof AuthEc2elasticIpsDescribeAddressesIdRoute
@@ -2335,6 +2416,7 @@ interface AuthRouteRouteChildren {
   AuthRdssnapshotsDescribeDbSnapshotsIdRoute: typeof AuthRdssnapshotsDescribeDbSnapshotsIdRoute
   AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute: typeof AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute
   AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute: typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute
+  AuthRoute53hostedZonesListHostedZonesIdRoute: typeof AuthRoute53hostedZonesListHostedZonesIdRoute
   AuthEc2elasticIpsDescribeAddressesIndexRoute: typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
   AuthEc2imagesDescribeImagesIndexRoute: typeof AuthEc2imagesDescribeImagesIndexRoute
   AuthEc2instancesDescribeInstancesIndexRoute: typeof AuthEc2instancesDescribeInstancesIndexRoute
@@ -2363,12 +2445,14 @@ interface AuthRouteRouteChildren {
   AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute: typeof AuthRdsparameterGroupsDescribeDbParameterGroupsIndexRoute
   AuthRdssnapshotsDescribeDbSnapshotsIndexRoute: typeof AuthRdssnapshotsDescribeDbSnapshotsIndexRoute
   AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute: typeof AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute
+  AuthRoute53hostedZonesListHostedZonesIndexRoute: typeof AuthRoute53hostedZonesListHostedZonesIndexRoute
   AuthEcsclustersListClustersClusterNameServicesServiceNameRoute: typeof AuthEcsclustersListClustersClusterNameServicesServiceNameRoute
   AuthEcsclustersListClustersClusterNameTasksTaskIdRoute: typeof AuthEcsclustersListClustersClusterNameTasksTaskIdRoute
 }
 
 const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthBedrockRouteRoute: AuthBedrockRouteRouteWithChildren,
+  AuthDesignRoute: AuthDesignRoute,
   AuthNodesRoute: AuthNodesRoute,
   AuthIndexRoute: AuthIndexRoute,
   AuthS3ServiceMetricsRoute: AuthS3ServiceMetricsRoute,
@@ -2415,6 +2499,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthRdsparameterGroupsCreateDbParameterGroupRoute,
   AuthRdssubnetGroupsCreateDbSubnetGroupRoute:
     AuthRdssubnetGroupsCreateDbSubnetGroupRoute,
+  AuthRoute53hostedZonesCreateHostedZoneRoute:
+    AuthRoute53hostedZonesCreateHostedZoneRoute,
   AuthS3bucketsCreateBucketRoute: AuthS3bucketsCreateBucketRoute,
   AuthS3LsIndexRoute: AuthS3LsIndexRoute,
   AuthEc2elasticIpsDescribeAddressesIdRoute:
@@ -2468,6 +2554,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthRdssnapshotsRestoreDbInstanceFromDbSnapshotIdRoute,
   AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute:
     AuthRdssubnetGroupsDescribeDbSubnetGroupsNameRoute,
+  AuthRoute53hostedZonesListHostedZonesIdRoute:
+    AuthRoute53hostedZonesListHostedZonesIdRoute,
   AuthEc2elasticIpsDescribeAddressesIndexRoute:
     AuthEc2elasticIpsDescribeAddressesIndexRoute,
   AuthEc2imagesDescribeImagesIndexRoute: AuthEc2imagesDescribeImagesIndexRoute,
@@ -2515,6 +2603,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthRdssnapshotsDescribeDbSnapshotsIndexRoute,
   AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute:
     AuthRdssubnetGroupsDescribeDbSubnetGroupsIndexRoute,
+  AuthRoute53hostedZonesListHostedZonesIndexRoute:
+    AuthRoute53hostedZonesListHostedZonesIndexRoute,
   AuthEcsclustersListClustersClusterNameServicesServiceNameRoute:
     AuthEcsclustersListClustersClusterNameServicesServiceNameRoute,
   AuthEcsclustersListClustersClusterNameTasksTaskIdRoute:

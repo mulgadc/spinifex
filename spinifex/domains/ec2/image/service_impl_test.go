@@ -2,11 +2,13 @@ package image
 
 import (
 	"context"
+	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1329,6 +1331,42 @@ func TestRegisterImage_HappyPath(t *testing.T) {
 	assert.Equal(t, testAccountID, *img.OwnerId)
 }
 
+func TestRegisterImage_EnaSupport(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *bool
+		want *bool
+	}{
+		{"true is stored and described", aws.Bool(true), aws.Bool(true)},
+		{"false is stored and described", aws.Bool(false), aws.Bool(false)},
+		{"unset is omitted", nil, nil},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, store := setupTestImageService(t)
+			snapID := fmt.Sprintf("snap-ena%03d", i)
+			putTestSnapshotConfig(t, store, snapID, 8, testAccountID)
+
+			input := validRegisterImageServiceInput(snapID)
+			input.EnaSupport = tt.in
+			out, err := svc.RegisterImage(context.Background(), input, testAccountID)
+			require.NoError(t, err)
+
+			desc, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
+				ImageIds: []*string{out.ImageId},
+			}, testAccountID)
+			require.NoError(t, err)
+			require.Len(t, desc.Images, 1)
+			if tt.want == nil {
+				assert.Nil(t, desc.Images[0].EnaSupport, "an image registered without EnaSupport must omit the member")
+				return
+			}
+			require.NotNil(t, desc.Images[0].EnaSupport)
+			assert.Equal(t, *tt.want, *desc.Images[0].EnaSupport)
+		})
+	}
+}
+
 func TestRegisterImage_DuplicateName(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
@@ -1798,10 +1836,39 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 	assert.Equal(t, uint64(32), newMeta.VolumeSizeGiB)
 	assert.Equal(t, "ebs", newMeta.RootDeviceType)
 	assert.Equal(t, "uefi", newMeta.BootMode, "CopyImage must propagate BootMode from source")
+	assert.Nil(t, newMeta.EnaSupport, "an unset EnaSupport stays unset on the copy")
 	assert.Equal(t, "debian-12", newMeta.Distro, "CopyImage must propagate Distro from source")
 	assert.Equal(t, "debian", newMeta.DistroFamily, "cloud-init family detection reads DistroFamily")
 	assert.Equal(t, digest, newMeta.SourceDigest, "a zero-copy share still holds the source artifact")
 	assert.False(t, newMeta.CreationDate.Before(before), "CreationDate must be refreshed on copy, not inherited")
+}
+
+func TestCopyImage_CarriesEnaSupport(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		t.Run(strconv.FormatBool(want), func(t *testing.T) {
+			svc, store := setupTestImageService(t)
+			putTestSnapshotDoc(t, store, ebsmetadata.Snapshot{
+				SnapshotID: "snap-ena-src", VolumeID: "vol-ena", VolumeSize: 8,
+				State: "completed", Progress: "100%", OwnerID: testAccountID,
+			})
+			putTestAMIConfigWithSnapshot(t, store, "ami-ena-src", "ena-source", testAccountID, "snap-ena-src", ebsmetadata.AMI{
+				Architecture:    "x86_64",
+				PlatformDetails: "Linux/UNIX",
+				Virtualization:  "hvm",
+				VolumeSizeGiB:   8,
+				RootDeviceType:  "ebs",
+				EnaSupport:      aws.Bool(want),
+			})
+
+			out, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-ena-src", "ena-copy"), testAccountID)
+			require.NoError(t, err)
+
+			newMeta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
+			require.NoError(t, err)
+			require.NotNil(t, newMeta.EnaSupport)
+			assert.Equal(t, want, *newMeta.EnaSupport)
+		})
+	}
 }
 
 func TestCopyImage_NewSnapshotSharesSourceVolumeID(t *testing.T) {

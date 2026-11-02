@@ -3,10 +3,12 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats-server/v2/server"
 )
 
@@ -20,16 +22,25 @@ var (
 
 func TestMain(m *testing.M) {
 	// Pin host vCPU so the resource manager is deterministic regardless of the
-	// runner's CPU topology. Without this, scheduling is denominated by physical
-	// cores (physicalCoreCount), and a 2-physical-core CI runner would leave 0
-	// schedulable after the default 2-vCPU reserve, so NewResourceManager would
-	// refuse to start and every daemon-constructing test would fail. 4 keeps the
-	// default reserve intact with 2 schedulable cores — enough for these tests.
+	// runner's CPU count. 4 online CPUs reserve 1 (ADR-0015:S2), leaving 3.
 	os.Setenv("SPINIFEX_HOST_VCPU", "4")
 	// Admission otherwise also clamps on the host's live MemAvailable, which a
 	// loaded box running tests in parallel can drop below the reserve. The gate
 	// has its own tests that inject a reader.
 	os.Setenv("SPINIFEX_ADMISSION_LIVE_MEM", "0")
+
+	// System-instance launches refuse to build a config without the microvm
+	// firmware, which a test host does not have installed.
+	fwDir, err := os.MkdirTemp("", "microvm-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create microvm fixture dir: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(filepath.Join(fwDir, vm.MicroVMFirmware), []byte("qboot"), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to write microvm firmware fixture: %v\n", err)
+		os.Exit(1)
+	}
+	microvmDir = fwDir
 
 	// Start a plain NATS server (no JetStream)
 	ns, err := server.NewServer(&server.Options{
@@ -88,6 +99,7 @@ func TestMain(m *testing.M) {
 	ns.Shutdown()
 	jsNS.Shutdown()
 	os.RemoveAll(jsTmpDir)
+	os.RemoveAll(fwDir)
 
 	os.Exit(code)
 }

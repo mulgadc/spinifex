@@ -307,3 +307,48 @@ func TestCertDNSNames_DropsNamesThatAreNotHostnames(t *testing.T) {
 	assert.Equal(t, []string{"ok.example.com", "upper.example.com"}, certDNSNames(pemText))
 	assert.Nil(t, certDNSNames("not a pem"), "unparseable material yields no names")
 }
+
+func TestGenerateNLBStream_UnhealthyTargetLeavesUpstreamButStaysProbed(t *testing.T) {
+	t.Parallel()
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-unh", Type: LoadBalancerTypeNetwork}
+	tgArn := "arn:aws:elasticloadbalancing:us-east-1:1:targetgroup/db/tg-db"
+	listeners := []*ListenerRecord{tcpListener("arn:lst", "lst", ProtocolTCP, 5432, tgArn)}
+	tgByArn := map[string]*TargetGroupRecord{
+		tgArn: nlbTG(tgArn,
+			Target{Id: "i-ok", Port: 5432, PrivateIP: "10.0.1.10", HealthState: TargetHealthHealthy},
+			Target{Id: "i-bad", Port: 5432, PrivateIP: "10.0.1.11", HealthState: TargetHealthUnhealthy},
+		),
+	}
+
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "10.0.1.5", nil)
+	require.NoError(t, err)
+	assert.Contains(t, config, "server 10.0.1.10:5432 ")
+	assert.NotContains(t, config, "10.0.1.11")
+
+	probed := buildNLBHealthTargets(tgByArn)
+	var addrs []string
+	for _, p := range probed {
+		addrs = append(addrs, p.Address)
+	}
+	assert.ElementsMatch(t, []string{"10.0.1.10:5432", "10.0.1.11:5432"}, addrs)
+}
+
+func TestGenerateNLBStream_AllUnhealthyFailsOpen(t *testing.T) {
+	t.Parallel()
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-allunh", Type: LoadBalancerTypeNetwork}
+	tgArn := "arn:aws:elasticloadbalancing:us-east-1:1:targetgroup/db/tg-db"
+	listeners := []*ListenerRecord{tcpListener("arn:lst", "lst", ProtocolTCP, 5432, tgArn)}
+	tgByArn := map[string]*TargetGroupRecord{
+		tgArn: nlbTG(tgArn,
+			Target{Id: "i-1", Port: 5432, PrivateIP: "10.0.1.10", HealthState: TargetHealthUnhealthy},
+			Target{Id: "i-2", Port: 5432, PrivateIP: "10.0.1.11", HealthState: TargetHealthUnhealthy},
+			Target{Id: "i-drain", Port: 5432, PrivateIP: "10.0.1.12", HealthState: TargetHealthDraining},
+		),
+	}
+
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, nil, "10.0.1.5", nil)
+	require.NoError(t, err)
+	assert.Contains(t, config, "server 10.0.1.10:5432 ")
+	assert.Contains(t, config, "server 10.0.1.11:5432 ")
+	assert.NotContains(t, config, "10.0.1.12")
+}

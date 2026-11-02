@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecs"
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,6 +64,48 @@ func TestService_DescribeClusters_DefaultAndMissing(t *testing.T) {
 	miss, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{Clusters: []*string{aws.String("nope")}}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, miss.Clusters)
+	require.Len(t, miss.Failures, 1)
+	assert.Equal(t, ClusterARN(testRegion, testAccountID, "nope"), aws.StringValue(miss.Failures[0].Arn))
+	assert.Equal(t, "MISSING", aws.StringValue(miss.Failures[0].Reason))
+}
+
+func TestService_CreateCluster_StoresSettings(t *testing.T) {
+	svc, _ := newTestService(t)
+	setting := &ecs.ClusterSetting{Name: aws.String(ecs.ClusterSettingNameContainerInsights), Value: aws.String("enabled")}
+	created, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{
+		ClusterName: aws.String("web"), Settings: []*ecs.ClusterSetting{setting},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []*ecs.ClusterSetting{setting}, created.Cluster.Settings)
+
+	withSettings, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{
+		Clusters: []*string{aws.String("web")}, Include: []*string{aws.String(ecs.ClusterFieldSettings)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, withSettings.Clusters, 1)
+	assert.Equal(t, []*ecs.ClusterSetting{setting}, withSettings.Clusters[0].Settings)
+
+	plain, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{Clusters: []*string{aws.String("web")}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, plain.Clusters, 1)
+	assert.Empty(t, plain.Clusters[0].Settings)
+}
+
+func TestService_CreateCluster_RejectsUnsupportedSetting(t *testing.T) {
+	svc, _ := newTestService(t)
+	for _, st := range []*ecs.ClusterSetting{
+		{Name: aws.String("unknownSetting"), Value: aws.String("enabled")},
+		{Name: aws.String(ecs.ClusterSettingNameContainerInsights), Value: aws.String("sometimes")},
+	} {
+		_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{
+			ClusterName: aws.String("web"), Settings: []*ecs.ClusterSetting{st},
+		}, testAccountID)
+		require.Error(t, err)
+		assert.Equal(t, awserrors.ErrorECSInvalidParameter, err.Error())
+	}
+	list, err := svc.ListClusters(context.Background(), &ecs.ListClustersInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, list.ClusterArns)
 }
 
 func TestService_DescribeClusters_ReturnsTags(t *testing.T) {
@@ -854,6 +897,12 @@ func TestService_ListTasks_EmptyIsPresentNotAbsent(t *testing.T) {
 	assert.Empty(t, out.TaskArns)
 }
 
+func TestService_ListTasks_ClusterNotFound(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.ListTasks(context.Background(), &ecs.ListTasksInput{Cluster: aws.String("ghost")}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorECSClusterNotFound)
+}
+
 func TestService_ListContainerInstances_EmptyIsPresentNotAbsent(t *testing.T) {
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
@@ -870,4 +919,22 @@ func TestAccountIDFromBucket(t *testing.T) {
 	assert.Equal(t, testAccountID, id)
 	_, ok = accountIDFromBucket("some-other-bucket")
 	assert.False(t, ok)
+}
+
+func TestService_DescribeClusters_ListsAlwaysPresent(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+
+	found, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{Clusters: []*string{aws.String("web")}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, found.Clusters, 1)
+	assert.NotNil(t, found.Failures)
+	assert.Empty(t, found.Failures)
+
+	miss, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{Clusters: []*string{aws.String("nope")}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, miss.Failures, 1)
+	assert.NotNil(t, miss.Clusters)
+	assert.Empty(t, miss.Clusters)
 }

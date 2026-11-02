@@ -65,8 +65,7 @@ func TestCreateCluster_FailedCreateThenDeleteReclaimsNLB(t *testing.T) {
 	// The NLB the partial create provisioned exists in the fake.
 	require.NotEmpty(t, f.nlb.createLBCalls, "create provisioned an NLB")
 
-	_, err = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.NoError(t, err)
+	deleteAndSettle(t, f.svc, "alpha")
 
 	assert.NotEmpty(t, f.nlb.deleteLBCalls, "DeleteCluster must tear down the NLB recorded by the failed create")
 	_, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
@@ -109,8 +108,7 @@ func TestCreateCluster_PostPlacementFailedThenDeleteTerminatesControlPlane(t *te
 	f.svc.WaitLaunches()
 	require.NotEmpty(t, f.inst.launchCalls, "create launched a CP VM")
 
-	_, err = f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.NoError(t, err)
+	deleteAndSettle(t, f.svc, "alpha")
 
 	assert.NotEmpty(t, f.inst.terminateCalls, "DeleteCluster must terminate the CP VM recorded by the failed create")
 	_, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")

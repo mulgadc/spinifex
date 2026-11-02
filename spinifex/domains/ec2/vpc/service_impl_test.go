@@ -864,6 +864,26 @@ func TestDeleteVpc_RejectsAttachedInternetGateway(t *testing.T) {
 	require.Len(t, desc.Vpcs, 1, "VPC must persist so the caller can detach the gateway and retry")
 }
 
+// AWS refuses DeleteVpc while an egress-only internet gateway names the VPC;
+// deleting it anyway leaves the gateway pointing at a VPC that no longer exists.
+func TestDeleteVpc_RejectsEgressOnlyInternetGateway(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.66.0.0/16")
+
+	_, err := svc.eigwKV.Put(t.Context(), testAccountID+".eigw-attached",
+		[]byte(`{"egress_only_internet_gateway_id":"eigw-attached","vpc_id":"`+vpcID+`","state":"attached"}`))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.Error(t, err)
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The vpc '"+vpcID+"' has dependencies and cannot be deleted.")
+
+	desc, err := svc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{VpcIds: []*string{aws.String(vpcID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Vpcs, 1, "VPC must persist so the caller can delete the gateway and retry")
+}
+
 // A gateway attached to some other VPC must not block this one.
 func TestDeleteVpc_IgnoresInternetGatewayOnAnotherVPC(t *testing.T) {
 	t.Parallel()
@@ -992,6 +1012,28 @@ func TestDeleteSubnet_RouteTableCheckFailsClosedOnCorruptRTB(t *testing.T) {
 	desc, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{SubnetIds: []*string{aws.String(subnetID)}}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, desc.Subnets, 1, "subnet must persist so a KV read failure never strands an association unseen")
+}
+
+// TestDeleteSubnet_ResidentCheckFailsClosedOnCorruptENI asserts an ENI
+// record that cannot be decoded blocks DeleteSubnet, since it may be a live
+// port in this subnet.
+func TestDeleteSubnet_ResidentCheckFailsClosedOnCorruptENI(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.66.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.66.1.0/24")
+	eniID := createTestENI(t, svc, subnetID)
+
+	_, err := svc.eniKV.Put(t.Context(), testAccountID+"."+eniID, []byte("{not json"))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "ServerInternal")
+
+	desc, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{SubnetIds: []*string{aws.String(subnetID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Subnets, 1)
 }
 
 // TestEnsureDefaultVPC_NoVpcdResponder simulates the daemon-startup race where

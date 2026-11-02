@@ -153,6 +153,13 @@ type ClusterRecord struct {
 	// an ASG primitive).
 	CapacityProviders               []string                       `json:"capacityProviders,omitempty"`
 	DefaultCapacityProviderStrategy []CapacityProviderStrategyItem `json:"defaultCapacityProviderStrategy,omitempty"`
+	Settings                        []ClusterSetting               `json:"settings,omitempty"`
+}
+
+// ClusterSetting is one CreateCluster setting, stored and described back.
+type ClusterSetting struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // CapacityProviderStrategyItem is one entry of a capacity-provider strategy:

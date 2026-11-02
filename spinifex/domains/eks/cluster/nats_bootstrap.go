@@ -236,6 +236,23 @@ func (b *NATSBootstrap) RunForKinds(ctx context.Context, kinds []string) error {
 	}
 }
 
+// clusterAcceptsArtifacts refuses a write into a cluster whose record is gone
+// or being deleted: the teardown has swept, or is about to sweep, its prefix,
+// and a key written now would outlive it into a later cluster of the same name.
+func (b *NATSBootstrap) clusterAcceptsArtifacts(ctx context.Context) error {
+	meta, err := GetClusterMeta(ctx, b.kv, b.clusterName)
+	if err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			return fmt.Errorf("%w: cluster record is gone", errBootstrapPermanent)
+		}
+		return err
+	}
+	if meta.Status == ClusterStatusDeleting {
+		return fmt.Errorf("%w: cluster is being deleted", errBootstrapPermanent)
+	}
+	return nil
+}
+
 func (b *NATSBootstrap) persistToken(ctx context.Context, data []byte) error {
 	env, err := unmarshalBootstrapEnvelope(data)
 	if err != nil {
@@ -247,6 +264,9 @@ func (b *NATSBootstrap) persistToken(ctx context.Context, data []byte) error {
 	ct, err := iamdomain.EncryptSecret(env.Token, b.masterKey)
 	if err != nil {
 		return fmt.Errorf("encrypt token: %w", err)
+	}
+	if err := b.clusterAcceptsArtifacts(ctx); err != nil {
+		return err
 	}
 	if _, err := b.kv.Put(ctx, NodeTokenKey(b.clusterName), []byte(ct)); err != nil {
 		return fmt.Errorf("kv put %s: %w", NodeTokenKey(b.clusterName), err)
@@ -265,6 +285,9 @@ func (b *NATSBootstrap) persistKubeconfig(ctx context.Context, data []byte) erro
 	ct, err := iamdomain.EncryptSecret(env.AdminKubeconfig, b.masterKey)
 	if err != nil {
 		return fmt.Errorf("encrypt kubeconfig: %w", err)
+	}
+	if err := b.clusterAcceptsArtifacts(ctx); err != nil {
+		return err
 	}
 	if _, err := b.kv.Put(ctx, AdminKubeconfigKey(b.clusterName), []byte(ct)); err != nil {
 		return fmt.Errorf("kv put %s: %w", AdminKubeconfigKey(b.clusterName), err)
@@ -288,6 +311,9 @@ func (b *NATSBootstrap) persistJWKS(ctx context.Context, data []byte) error {
 		return err
 	}
 	// Reconciler gates ACTIVE on this verified-marker, not OIDCJWKSKey (pre-seeded by controller).
+	if err := b.clusterAcceptsArtifacts(ctx); err != nil {
+		return err
+	}
 	if _, err := b.kv.Put(ctx, OIDCJWKSVerifiedKey(b.clusterName), []byte("verified")); err != nil {
 		return fmt.Errorf("kv put %s: %w", OIDCJWKSVerifiedKey(b.clusterName), err)
 	}

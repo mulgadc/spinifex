@@ -6,7 +6,12 @@ import {
   setSessionCredentials,
 } from "./auth"
 import { isStaleCredentialsError } from "./auth-error"
-import { signedAdminFetch, SignedFetchError, signedFetch } from "./signed-fetch"
+import {
+  signedAdminFetch,
+  SignedFetchError,
+  signedFetch,
+  signedProxyXmlFetch,
+} from "./signed-fetch"
 
 const credentials: SessionCredentials = {
   accessKeyId: "ASIAIOSFODNN7EXAMPLE",
@@ -180,5 +185,98 @@ describe("signedAdminFetch", () => {
 
     expect(err).toBeInstanceOf(SignedFetchError)
     expect(err).toMatchObject({ name: "SignedFetchError", status: 503 })
+  })
+})
+
+describe("signedProxyXmlFetch", () => {
+  beforeEach(() => {
+    setSessionCredentials(credentials)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    clearCredentials()
+  })
+
+  const PATH = "/2013-04-01/hostedzone/Z1/activation"
+
+  it("sends a GET with no body or content type, signed for the named service", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response("<Root><Value>1</Value></Root>"))
+
+    vi.stubGlobal("fetch", fetchMock)
+
+    const doc = await signedProxyXmlFetch({
+      label: "GetHostedZoneActivation",
+      service: "route53",
+      method: "GET",
+      path: PATH,
+    })
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toMatch(
+      /\/proxy\/awsgw\/2013-04-01\/hostedzone\/Z1\/activation$/,
+    )
+    expect(init.method).toBe("GET")
+    expect(init.body).toBeUndefined()
+    const headers = init.headers as Record<string, string>
+    expect(findHeader(headers, "content-type")).toBeUndefined()
+    expect(findHeader(headers, "authorization")).toContain(
+      "/route53/aws4_request",
+    )
+    expect(doc.documentElement.localName).toBe("Root")
+    expect(doc.documentElement.textContent).toBe("1")
+  })
+
+  it("sends a POST with an empty body when none is given", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("<Root/>"))
+
+    vi.stubGlobal("fetch", fetchMock)
+
+    await signedProxyXmlFetch({
+      label: "VerifyHostedZoneDelegation",
+      service: "route53",
+      path: PATH,
+    })
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit
+    expect(init.method).toBe("POST")
+    expect(init.body).toBeUndefined()
+  })
+
+  it("throws the Route 53 error code from an ErrorResponse body", async () => {
+    stubFetch(
+      `<?xml version="1.0"?><ErrorResponse xmlns="https://route53.amazonaws.com/doc/2013-04-01/"><Error><Type>Sender</Type><Code>NoSuchHostedZone</Code><Message>No hosted zone found with ID: Z1</Message></Error><RequestId>r</RequestId></ErrorResponse>`,
+      404,
+    )
+
+    const err = await rejection(
+      signedProxyXmlFetch({
+        label: "GetHostedZoneActivation",
+        service: "route53",
+        method: "GET",
+        path: PATH,
+      }),
+    )
+
+    expect(err).toBeInstanceOf(SignedFetchError)
+    expect(err).toMatchObject({ name: "NoSuchHostedZone", status: 404 })
+    expect(err.message).toContain("No hosted zone found with ID: Z1")
+  })
+
+  it("rejects a response that is not XML", async () => {
+    stubFetch("<unclosed", 200)
+
+    const err = await rejection(
+      signedProxyXmlFetch({
+        label: "GetHostedZoneActivation",
+        service: "route53",
+        method: "GET",
+        path: PATH,
+      }),
+    )
+
+    expect(err).toBeInstanceOf(SignedFetchError)
+    expect(err.message).toContain("not valid XML")
   })
 })

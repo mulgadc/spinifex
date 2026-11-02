@@ -66,7 +66,7 @@ MAX_QEMU_ATTEMPTS=60
 QEMU_CMD=""
 
 while [ $QEMU_ATTEMPTS -lt $MAX_QEMU_ATTEMPTS ]; do
-    QEMU_CMD=$(ps auxw | grep "$INSTANCE_ID" | grep qemu-system | grep -v grep)
+    QEMU_CMD=$(ps auxw | grep "$INSTANCE_ID" | grep -E "qemu-system|qemu-kvm" | grep -v grep)
 
     if [ -n "$QEMU_CMD" ]; then
         break

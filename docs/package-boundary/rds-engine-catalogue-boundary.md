@@ -18,7 +18,7 @@ The characterization tests below were written in `handlers/rds` before the move;
 ## Discovered and corrected divergence
 
 `ValidateMasterUserPassword` built its empty-password error with a bare `errors.New`, which `awserrors` does not resolve, so `CreateDBInstance` without `MasterUserPassword` returned HTTP 500 `ServerInternal` where AWS returns a 400 client error.
-It now returns 400 `InvalidParameterValue`; `gateway/rds_test.go` `TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400` covers the gateway, NATS and RDS service path.
+It now returns 400 `InvalidParameterValue`; `ingress/aws/pipeline/rds_test.go` `TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400` covers the gateway, NATS and RDS service path.
 
 ## Boundaries kept by the move
 

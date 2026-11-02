@@ -712,3 +712,54 @@ func TestQueryParamsToStruct_CreateLaunchTemplateNestedData(t *testing.T) {
 	assert.Equal(t, time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC),
 		*input.LaunchTemplateData.InstanceMarketOptions.SpotOptions.ValidUntil)
 }
+
+func TestParseArgs(t *testing.T) {
+	t.Run("indexed members stay distinct keys", func(t *testing.T) {
+		got, err := ParseArgs("Action=DescribeTags&ResourceArns.member.1=a&ResourceArns.member.2=b")
+		assert.NoError(t, err)
+		assert.Equal(t, map[string]string{
+			"Action":                "DescribeTags",
+			"ResourceArns.member.1": "a",
+			"ResourceArns.member.2": "b",
+		}, got)
+	})
+
+	t.Run("an empty value is kept as an empty string", func(t *testing.T) {
+		got, err := ParseArgs("Action=DescribeLoadBalancers&Marker=")
+		assert.NoError(t, err)
+		v, ok := got["Marker"]
+		assert.True(t, ok)
+		assert.Empty(t, v)
+	})
+
+	t.Run("a bare duplicate key takes the last value", func(t *testing.T) {
+		got, err := ParseArgs("Action=First&Action=Second")
+		assert.NoError(t, err)
+		assert.Equal(t, "Second", got["Action"])
+	})
+
+	t.Run("percent and plus encoding decode", func(t *testing.T) {
+		got, err := ParseArgs("Name=my%2Dalb+one&Tag=a%26b")
+		assert.NoError(t, err)
+		assert.Equal(t, "my-alb one", got["Name"])
+		assert.Equal(t, "a&b", got["Tag"])
+	})
+
+	t.Run("an empty body is no arguments, not an error", func(t *testing.T) {
+		got, err := ParseArgs("")
+		assert.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	for name, body := range map[string]string{
+		"truncated percent escape": "Action=%2",
+		"non-hex percent escape":   "Action=%zz",
+		"semicolon separator":      "Action=A;Version=B",
+	} {
+		t.Run("rejects "+name, func(t *testing.T) {
+			got, err := ParseArgs(body)
+			assert.Error(t, err)
+			assert.Nil(t, got)
+		})
+	}
+}

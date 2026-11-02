@@ -20,7 +20,7 @@ export function ErrorBoundary({ error, reset }: ErrorComponentProps) {
   return (
     <>
       <SidebarLayout />
-      <main className="flex flex-1 flex-col">
+      <main className="flex min-w-0 flex-1 flex-col">
         <Header />
         <div className="flex flex-1 items-center justify-center p-6 pt-0">
           <div className="max-w-md space-y-4 text-center">

@@ -51,8 +51,11 @@ func TestValidateRepositoryName(t *testing.T) {
 
 func TestValidateTags(t *testing.T) {
 	requireInvalidParameter(t,
-		awsapi.ValidateTags([]*ecr.Tag{{Key: aws.String("env")}, {Value: aws.String("prod")}}),
+		awsapi.ValidateTags([]*ecr.Tag{{Key: aws.String("env"), Value: aws.String("dev")}, {Value: aws.String("prod")}}),
 		"Invalid parameter at 'tags.2.member.key' failed to satisfy constraint: 'Member must not be null'")
+	requireInvalidParameter(t,
+		awsapi.ValidateTags([]*ecr.Tag{{Key: aws.String("env")}}),
+		"Invalid parameter at 'tags.1.member.value' failed to satisfy constraint: 'Member must not be null'")
 	err := awsapi.ValidateTags([]*ecr.Tag{{Key: aws.String("")}})
 	require.Error(t, err)
 	code, message, ok := awserrors.ResolveErrorDetail(err)

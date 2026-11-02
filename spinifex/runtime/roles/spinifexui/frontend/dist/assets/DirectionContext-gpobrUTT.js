@@ -1,1 +1,0 @@
-import{R as e,V as t}from"./httpRequest-B7cy3kOC.js";var n=t(e(),1),r=n.createContext(void 0);function i(){return n.useContext(r)?.direction??`ltr`}export{i as t};

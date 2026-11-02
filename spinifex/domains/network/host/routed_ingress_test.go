@@ -14,7 +14,7 @@ func TestEnsureVPCIngressRoute_InstallsRoute(t *testing.T) {
 	if err := EnsureVPCIngressRoute(context.Background(), r, "10.0.0.0/16", "100.127.0.10"); err != nil {
 		t.Fatalf("EnsureVPCIngressRoute: %v", err)
 	}
-	want := "ip route replace 10.0.0.0/16 via 100.127.0.10 dev " + NATTransitHostEnd
+	want := "ip route replace 10.0.0.0/16 via 100.127.0.10 dev " + NATTransitHostEnd + " proto " + VPCIngressRouteProto
 	if !r.called(want) {
 		t.Errorf("missing route call:\n  want %q\n  got  %v", want, r.calls)
 	}
@@ -43,43 +43,52 @@ func TestEnsureVPCIngressRoute_RouteFailure(t *testing.T) {
 	}
 }
 
-func TestVPCIngressRouteVia_ParsesHolder(t *testing.T) {
+// The list is what the per-node pass prunes from, so it must carry only the
+// tagged routes and key them exactly as intent renders a VPC CIDR.
+func TestListVPCIngressRoutes_ParsesTaggedRoutes(t *testing.T) {
 	r := newStubRunner()
-	r.expect("ip route show", []byte("172.31.0.0/16 via 100.127.0.239 dev spx-nat-host \n"), nil)
+	r.expect("ip -o route show", []byte("172.31.0.0/16 via 100.127.0.16 \n10.1.0.0/16 via 100.127.0.17 \n"), nil)
 
-	via, err := VPCIngressRouteVia(context.Background(), r, "172.31.0.0/16")
+	routes, err := ListVPCIngressRoutes(context.Background(), r)
 	if err != nil {
-		t.Fatalf("VPCIngressRouteVia: %v", err)
+		t.Fatalf("ListVPCIngressRoutes: %v", err)
 	}
-	if via != "100.127.0.239" {
-		t.Errorf("via = %q, want 100.127.0.239", via)
+	want := map[string]string{"172.31.0.0/16": "100.127.0.16", "10.1.0.0/16": "100.127.0.17"}
+	if len(routes) != len(want) {
+		t.Fatalf("routes = %v, want %v", routes, want)
 	}
-	want := "ip route show 172.31.0.0/16 dev " + NATTransitHostEnd
-	if !r.called(want) {
-		t.Errorf("missing route show call:\n  want %q\n  got  %v", want, r.calls)
+	for cidr, via := range want {
+		if routes[cidr] != via {
+			t.Errorf("routes[%s] = %q, want %q", cidr, routes[cidr], via)
+		}
+	}
+	call := "ip -o route show dev " + NATTransitHostEnd + " proto " + VPCIngressRouteProto
+	if !r.called(call) {
+		t.Errorf("missing list call:\n  want %q\n  got  %v", call, r.calls)
 	}
 }
 
-func TestVPCIngressRouteVia_NoRoute(t *testing.T) {
+func TestListVPCIngressRoutes_Empty(t *testing.T) {
 	r := newStubRunner()
-	r.expect("ip route show", nil, nil)
+	r.expect("ip -o route show", nil, nil)
 
-	via, err := VPCIngressRouteVia(context.Background(), r, "172.31.0.0/16")
+	routes, err := ListVPCIngressRoutes(context.Background(), r)
 	if err != nil {
-		t.Fatalf("VPCIngressRouteVia: %v", err)
+		t.Fatalf("ListVPCIngressRoutes: %v", err)
 	}
-	if via != "" {
-		t.Errorf("via = %q, want empty for absent route", via)
+	if len(routes) != 0 {
+		t.Errorf("routes = %v, want none", routes)
 	}
 }
 
-func TestVPCIngressRouteVia_ValidatesArgs(t *testing.T) {
+// A failed list must surface: read as empty it would prune nothing, but read as
+// a partial table the caller could not tell what it was missing.
+func TestListVPCIngressRoutes_Failure(t *testing.T) {
 	r := newStubRunner()
-	if _, err := VPCIngressRouteVia(context.Background(), r, ""); err == nil {
-		t.Error("empty vpcCIDR: expected error")
-	}
-	if len(r.calls) != 0 {
-		t.Errorf("validation failures must not run commands: %v", r.calls)
+	r.expect("ip -o route show", []byte("Cannot find device"), fmt.Errorf("exit 1"))
+
+	if _, err := ListVPCIngressRoutes(context.Background(), r); err == nil {
+		t.Fatal("expected list failure to be returned")
 	}
 }
 
@@ -90,7 +99,7 @@ func TestRemoveVPCIngressRoute_DeletesRoute(t *testing.T) {
 	if err := RemoveVPCIngressRoute(context.Background(), r, "10.0.0.0/16"); err != nil {
 		t.Fatalf("RemoveVPCIngressRoute: %v", err)
 	}
-	want := "ip route del 10.0.0.0/16 dev " + NATTransitHostEnd
+	want := "ip route del 10.0.0.0/16 dev " + NATTransitHostEnd + " proto " + VPCIngressRouteProto
 	if !r.called(want) {
 		t.Errorf("missing route del call:\n  want %q\n  got  %v", want, r.calls)
 	}

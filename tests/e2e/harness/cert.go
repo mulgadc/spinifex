@@ -47,8 +47,23 @@ func ResolveCACert(env *Env) (string, error) {
 	return "", fmt.Errorf("CA cert not found in any candidate location: %v", candidates)
 }
 
-// SystemCAPath is the canonical install location used by setup.sh.
-const SystemCAPath = "/usr/local/share/ca-certificates/spinifex-ca.crt"
+// systemCAPaths are where init installs the CA: Debian's anchor directory,
+// then Oracle Linux's. Probed by file rather than by the trust tool, which a
+// non-root PATH on Debian does not reach.
+var systemCAPaths = []string{
+	"/usr/local/share/ca-certificates/spinifex-ca.crt",
+	"/etc/pki/ca-trust/source/anchors/spinifex-ca.crt",
+}
+
+// SystemCAPath returns the CA's file in the host trust store.
+func SystemCAPath() (string, error) {
+	for _, p := range systemCAPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("CA cert not installed in any system trust store: %v", systemCAPaths)
+}
 
 // ServerCertPath returns the local file path for a node's server cert,
 // or empty string if the cert must be fetched over the wire instead.

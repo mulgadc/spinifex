@@ -5,6 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -36,9 +37,9 @@ func TestValidateDescribeVolumesInput(t *testing.T) {
 			name: "ValidMultipleVolumeIds",
 			input: &ec2.DescribeVolumesInput{
 				VolumeIds: []*string{
-					aws.String("vol-abc123"),
-					aws.String("vol-def456"),
-					aws.String("vol-ghi789"),
+					aws.String("vol-0123456789abcdef1"),
+					aws.String("vol-1a2b3c4d"),
+					aws.String("vol-0123456789abcdef2"),
 				},
 			},
 			wantErr: false,
@@ -71,7 +72,7 @@ func TestValidateDescribeVolumesInput(t *testing.T) {
 			name: "MixedValidAndInvalid",
 			input: &ec2.DescribeVolumesInput{
 				VolumeIds: []*string{
-					aws.String("vol-valid123"),
+					aws.String("vol-0123456789abcdef3"),
 					aws.String("invalid-id"),
 				},
 			},
@@ -81,7 +82,7 @@ func TestValidateDescribeVolumesInput(t *testing.T) {
 		{
 			name: "NilVolumeIdInList",
 			input: &ec2.DescribeVolumesInput{
-				VolumeIds: []*string{nil, aws.String("vol-abc123")},
+				VolumeIds: []*string{nil, aws.String("vol-0123456789abcdef1")},
 			},
 			wantErr: false,
 		},
@@ -98,5 +99,17 @@ func TestValidateDescribeVolumesInput(t *testing.T) {
 				assert.NoError(t, err)
 			}
 		})
+	}
+}
+
+// AWS answers a well-prefixed ID whose suffix is not 8 or 17 lowercase hex
+// characters with InvalidParameterValue, not NotFound.
+func TestValidateDescribeVolumesInput_MalformedSuffix(t *testing.T) {
+	for _, id := range []string{"vol-zzz", "vol-0123456789ABCDEF0", "vol-0123456789abcdef", "vol-"} {
+		err := ValidateDescribeVolumesInput(&ec2.DescribeVolumesInput{VolumeIds: []*string{aws.String(id)}})
+		code, msg, ok := awserrors.ResolveErrorDetail(err)
+		assert.True(t, ok, id)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, code, id)
+		assert.Equal(t, "Value ("+id+") for parameter volumes is invalid. Expected: 'vol-...'.", msg, id)
 	}
 }

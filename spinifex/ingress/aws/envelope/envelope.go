@@ -8,6 +8,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
 )
@@ -163,4 +164,169 @@ func RequestSignalsJSONProtocol(r *http.Request) bool {
 		return true
 	}
 	return strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-amz-json")
+}
+
+// REST-JSON and AWS JSON 1.0 content types.
+const (
+	RESTJSONContentType = "application/json"
+	JSON10ContentType   = "application/x-amz-json-1.0"
+)
+
+// QueryErrorHeader carries the legacy query-protocol error code and fault on
+// an awsQueryCompatible JSON 1.0 response, as "<code>;<Sender|Receiver>".
+const QueryErrorHeader = "X-Amzn-Query-Error"
+
+// RequestIDHeader carries the request ID on every JSON-protocol response.
+const RequestIDHeader = "X-Amzn-Requestid"
+
+// CoralNamespace is the __type namespace of errors the AWS framework raises
+// ahead of a service, as opposed to errors the service model defines.
+const CoralNamespace = "com.amazon.coral.service"
+
+// coralTypes maps a gateway error code to the framework error AWS JSON 1.0
+// services send for it. A code absent here becomes "<code>Exception".
+var coralTypes = map[string]string{
+	"SignatureDoesNotMatch": "InvalidSignatureException",
+	"InvalidClientTokenId":  "UnrecognizedClientException",
+	"InvalidAction":         "UnknownOperationException",
+}
+
+// Protocol selects a JSON error wire format.
+type Protocol int
+
+const (
+	// ProtocolJSON11 is AWS JSON 1.1: __type and message, X-Amzn-Errortype.
+	ProtocolJSON11 Protocol = iota
+	// ProtocolRESTJSON is REST-JSON: Type and message, x-amzn-ErrorType, plus
+	// any service-supplied fields.
+	ProtocolRESTJSON
+	// ProtocolJSON10Query is AWS JSON 1.0 with the awsQueryCompatible trait:
+	// __type and message, and an x-amzn-query-error header.
+	ProtocolJSON10Query
+)
+
+// JSONError describes one error for WriteJSON.
+type JSONError struct {
+	// Code is the AWS error code.
+	Code string
+	// Verbatim sends Code as the wire error type. Otherwise "Exception" is
+	// appended when absent, as AWS does for errors raised outside a service
+	// model.
+	Verbatim bool
+	Message  string
+	Status   int
+	// Fields are extra top-level body keys; they never replace a reserved key.
+	Fields map[string]string
+	// Namespace is the Smithy shape namespace prefixed to __type as
+	// "<namespace>#<code>" on ProtocolJSON10Query, for a Verbatim code only.
+	// A code that is not Verbatim is a framework error and always takes
+	// CoralNamespace on that protocol.
+	Namespace string
+	// QueryCode is the legacy query code for ProtocolJSON10Query; Code is used
+	// when empty.
+	QueryCode string
+	// RequestID is sent as x-amzn-RequestId, which every JSON protocol carries.
+	RequestID string
+}
+
+// senderFault reports whether the error is the caller's ("Sender"/"User") or
+// the service's ("Receiver"/"Service"), derived from the HTTP status.
+func (e JSONError) senderFault() bool { return e.Status < http.StatusInternalServerError }
+
+// json10Type is the __type of e on JSON 1.0: a framework error is a coral
+// type, a service error its code under the service namespace when it has one.
+func (e JSONError) json10Type() string {
+	if !e.Verbatim {
+		name, ok := coralTypes[e.Code]
+		if !ok {
+			name = JSONErrorType(e.Code)
+		}
+		return CoralNamespace + "#" + name
+	}
+	if e.Namespace != "" {
+		return e.Namespace + "#" + e.Code
+	}
+	return e.Code
+}
+
+func (e JSONError) wireType() string {
+	if e.Verbatim {
+		return e.Code
+	}
+	return JSONErrorType(e.Code)
+}
+
+// JSONContentTypeFor returns the content type p's responses use.
+func JSONContentTypeFor(p Protocol) string {
+	switch p {
+	case ProtocolRESTJSON:
+		return RESTJSONContentType
+	case ProtocolJSON10Query:
+		return JSON10ContentType
+	default:
+		return JSONContentType
+	}
+}
+
+// JSONErrorBody renders e's body for p.
+func JSONErrorBody(p Protocol, e JSONError) []byte {
+	typeKey, typeVal := "__type", e.wireType()
+	if p == ProtocolJSON10Query {
+		typeVal = e.json10Type()
+	}
+	if p == ProtocolRESTJSON {
+		typeKey, typeVal = "Type", "User"
+		if !e.senderFault() {
+			typeVal = "Service"
+		}
+	}
+	body := map[string]string{}
+	maps.Copy(body, e.Fields)
+	body[typeKey] = typeVal
+	// AWS sends no message key at all for some JSON 1.0 errors.
+	if e.Message != "" || p != ProtocolJSON10Query {
+		body["message"] = e.Message
+	}
+	out, err := json.Marshal(body)
+	if err != nil {
+		slog.Error("envelope: failed to marshal JSON error", "code", e.Code, "err", err)
+		return fmt.Appendf(nil, `{"%s":"InternalError","message":%q}`, typeKey, e.Message)
+	}
+	return out
+}
+
+// WriteJSON writes e as a complete response in p's wire format.
+func WriteJSON(w http.ResponseWriter, p Protocol, e JSONError) {
+	h := w.Header()
+	h.Set("Content-Type", JSONContentTypeFor(p))
+	h.Set(RequestIDHeader, e.RequestID)
+	if p == ProtocolJSON10Query {
+		fault := "Sender"
+		if !e.senderFault() {
+			fault = "Receiver"
+		}
+		code := e.QueryCode
+		if code == "" {
+			code = e.Code
+		}
+		h.Set(QueryErrorHeader, code+";"+fault)
+	} else {
+		h.Set("X-Amzn-Errortype", e.wireType())
+	}
+	w.WriteHeader(e.Status)
+	if _, err := w.Write(JSONErrorBody(p, e)); err != nil {
+		slog.Error("envelope: failed to write JSON error response", "err", err)
+	}
+}
+
+// WriteTooLargeText writes the oversize-request rejection AWS JSON 1.0
+// services send: a plain-text 413 with no error type and no query header.
+func WriteTooLargeText(w http.ResponseWriter, limit int64) {
+	h := w.Header()
+	h.Set("Content-Type", "text; charset=utf-8")
+	h.Set("Connection", "close")
+	w.WriteHeader(http.StatusRequestEntityTooLarge)
+	if _, err := fmt.Fprintf(w, "HTTP content length exceeded %d bytes.", limit); err != nil {
+		slog.Error("envelope: failed to write oversize response", "err", err)
+	}
 }

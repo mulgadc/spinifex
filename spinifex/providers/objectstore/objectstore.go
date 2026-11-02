@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -266,6 +267,8 @@ func (m *MemoryObjectStore) PutObject(_ context.Context, input *s3.PutObjectInpu
 	return &s3.PutObjectOutput{}, nil
 }
 
+// DeleteObject answers NoSuchKeyError for an absent key, matching what
+// S3ObjectStore returns against Predastore.
 func (m *MemoryObjectStore) DeleteObject(_ context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
 	if err := checkKey(input.Key); err != nil {
 		return nil, err
@@ -274,67 +277,92 @@ func (m *MemoryObjectStore) DeleteObject(_ context.Context, input *s3.DeleteObje
 	defer m.mu.Unlock()
 
 	storageKey := makeKey(*input.Bucket, *input.Key)
+	if _, ok := m.objects[storageKey]; !ok {
+		return nil, &NoSuchKeyError{Key: *input.Key}
+	}
 	delete(m.objects, storageKey)
 	delete(m.modified, storageKey)
 
 	return &s3.DeleteObjectOutput{}, nil
 }
 
+// ListObjectsV2 pages like S3: keys and common prefixes in UTF-8 binary order,
+// at most MaxKeys (default 1000) entries per page, resumed by StartAfter or
+// the returned NextContinuationToken.
 func (m *MemoryObjectStore) ListObjectsV2(_ context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	bucket := *input.Bucket
-	prefix := ""
-	if input.Prefix != nil {
-		prefix = *input.Prefix
-	}
-	delimiter := ""
-	if input.Delimiter != nil {
-		delimiter = *input.Delimiter
+	prefix := aws.StringValue(input.Prefix)
+	delimiter := aws.StringValue(input.Delimiter)
+	startAfter := aws.StringValue(input.StartAfter)
+	token := aws.StringValue(input.ContinuationToken)
+	maxKeys := int64(memoryListMaxKeys)
+	if input.MaxKeys != nil && *input.MaxKeys < maxKeys {
+		maxKeys = max(*input.MaxKeys, 0)
 	}
 
-	var contents []*s3.Object
-	prefixes := make(map[string]bool)
+	// S3 lists in UTF-8 binary key order; Go string comparison is bytewise.
+	var keys []string
+	for key := range m.objects {
+		if objectKey, ok := strings.CutPrefix(key, bucket+"/"); ok && strings.HasPrefix(objectKey, prefix) && objectKey > startAfter {
+			keys = append(keys, objectKey)
+		}
+	}
+	slices.Sort(keys)
 
-	for key, data := range m.objects {
-		if !strings.HasPrefix(key, bucket+"/") {
-			continue
-		}
-		objectKey := key[len(bucket)+1:]
-		if prefix != "" && !strings.HasPrefix(objectKey, prefix) {
-			continue
-		}
+	out := &s3.ListObjectsV2Output{
+		Name:              input.Bucket,
+		Prefix:            input.Prefix,
+		Delimiter:         input.Delimiter,
+		StartAfter:        input.StartAfter,
+		ContinuationToken: input.ContinuationToken,
+		MaxKeys:           aws.Int64(maxKeys),
+		IsTruncated:       aws.Bool(false),
+	}
+	// The token is the last key or common prefix returned. Every key under a
+	// returned common prefix rolls up to that same entry, so "entry <= token"
+	// skips the whole group on the next page.
+	var count int64
+	last := ""
+	for _, objectKey := range keys {
+		entry, isPrefix := objectKey, false
 		if delimiter != "" {
-			afterPrefix := objectKey[len(prefix):]
-			if idx := strings.Index(afterPrefix, delimiter); idx >= 0 {
-				commonPrefix := objectKey[:len(prefix)+idx+len(delimiter)]
-				prefixes[commonPrefix] = true
-				continue
+			if idx := strings.Index(objectKey[len(prefix):], delimiter); idx >= 0 {
+				entry, isPrefix = objectKey[:len(prefix)+idx+len(delimiter)], true
 			}
 		}
-
-		contents = append(contents, &s3.Object{
+		if (token != "" && entry <= token) || (isPrefix && entry == last) {
+			continue
+		}
+		if maxKeys == 0 {
+			break
+		}
+		if count == maxKeys {
+			out.IsTruncated = aws.Bool(true)
+			out.NextContinuationToken = aws.String(last)
+			break
+		}
+		last = entry
+		count++
+		if isPrefix {
+			out.CommonPrefixes = append(out.CommonPrefixes, &s3.CommonPrefix{Prefix: aws.String(entry)})
+			continue
+		}
+		full := bucket + "/" + objectKey
+		out.Contents = append(out.Contents, &s3.Object{
 			Key:          aws.String(objectKey),
-			Size:         aws.Int64(int64(len(data))),
-			LastModified: aws.Time(m.modified[key]),
+			Size:         aws.Int64(int64(len(m.objects[full]))),
+			LastModified: aws.Time(m.modified[full]),
 		})
 	}
-
-	var commonPrefixes []*s3.CommonPrefix
-	for p := range prefixes {
-		commonPrefixes = append(commonPrefixes, &s3.CommonPrefix{
-			Prefix: aws.String(p),
-		})
-	}
-
-	return &s3.ListObjectsV2Output{
-		Contents:       contents,
-		CommonPrefixes: commonPrefixes,
-		Name:           input.Bucket,
-		KeyCount:       aws.Int64(int64(len(contents))),
-	}, nil
+	out.KeyCount = aws.Int64(count)
+	return out, nil
 }
+
+// memoryListMaxKeys is S3's per-page cap on ListObjectsV2 results.
+const memoryListMaxKeys = 1000
 
 // EnsureBucket is a no-op: the memory store has no bucket namespace, keys are
 // prefixed with the bucket name on write.

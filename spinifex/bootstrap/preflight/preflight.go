@@ -29,6 +29,13 @@ const (
 	Stale
 	// Ungranted means the sudoers grant for a helper is absent or missing its NOPASSWD line.
 	Ungranted
+	// Unsupported means the asset is present but lacks a capability this build needs.
+	Unsupported
+	// Failed means a host check that gates the services did not pass.
+	Failed
+	// Warning means a host setting degrades a feature without gating the
+	// services. It is reported but does not fail preflight.
+	Warning
 )
 
 // String returns the human-readable name of the status, used in table output and log lines.
@@ -42,6 +49,12 @@ func (s Status) String() string {
 		return "Stale"
 	case Ungranted:
 		return "Ungranted"
+	case Unsupported:
+		return "Unsupported"
+	case Failed:
+		return "Failed"
+	case Warning:
+		return "Warning"
 	default:
 		return "Unknown"
 	}
@@ -50,7 +63,7 @@ func (s Status) String() string {
 // Result is the outcome of checking one managed asset against this build's manifest.
 type Result struct {
 	Path   string
-	Kind   string // "helper" | "sudoers-grant" | "service"
+	Kind   string // "helper" | "sudoers-grant" | "service" | "qemu" | "firmware" | "hostnet" | "host-firewall" | "host-dns"
 	Status Status
 	Detail string
 }
@@ -82,13 +95,17 @@ func CheckHostAt(root string) []Result {
 	}
 	results = append(results, checkSudoersGrant(root))
 	results = append(results, checkRunningBinaries(root)...)
+	results = append(results, checkMicroVM(root)...)
+	results = append(results, checkHostnet(root))
+	results = append(results, checkHostFirewalls(root)...)
+	results = append(results, checkHostDNS(root))
 	return results
 }
 
-// HasProblem reports whether any result is not OK.
+// HasProblem reports whether any result is neither OK nor a Warning.
 func HasProblem(results []Result) bool {
 	return slices.ContainsFunc(results, func(r Result) bool {
-		return r.Status != OK
+		return r.Status != OK && r.Status != Warning
 	})
 }
 

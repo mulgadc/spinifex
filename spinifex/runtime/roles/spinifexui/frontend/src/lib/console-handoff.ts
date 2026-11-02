@@ -115,7 +115,7 @@ export function startConsoleHandoff(opts?: {
 
   // The listener must return void, so the async work is kicked off rather than
   // returned; nothing awaits it and failures are handled inside.
-  const onMessage = (ev: MessageEvent) => {
+  function onMessage(ev: MessageEvent) {
     void handleMessage(ev)
   }
 

@@ -34,8 +34,8 @@ type encryptionConfigurationInput struct {
 
 // CreateRepository creates only the account-scoped ECR metadata record. The
 // Predastore bucket remains lazy until the first image push. An omitted
-// mutability value defaults to MUTABLE and an omitted encryption type defaults
-// to AES256.
+// mutability value defaults to MUTABLE and an omitted encryptionConfiguration
+// defaults to AES256.
 //
 // The advertised endpoint is deployment composition rather than ECR resource
 // state, so the caller supplies it to project the AWS response.
@@ -109,13 +109,15 @@ func tagMapFromInput(in []*ecr.Tag) (map[string]string, error) {
 }
 
 // normalizeEncryptionType validates the requested encryption configuration,
-// defaulting an absent one to AES256. KMS is rejected because no
-// customer-managed key material is implemented.
+// defaulting an absent one to AES256; a present one must name its type. KMS
+// is rejected because no customer-managed key material is implemented.
 func normalizeEncryptionType(cfg *encryptionConfigurationInput) (string, error) {
-	if cfg == nil || cfg.EncryptionType == "" {
+	if cfg == nil {
 		return ecrdomain.EncryptionTypeAES256, nil
 	}
 	switch cfg.EncryptionType {
+	case "":
+		return "", RequiredParameterError("encryptionConfiguration.encryptionType")
 	case ecrdomain.EncryptionTypeAES256:
 		return cfg.EncryptionType, nil
 	case ecrdomain.EncryptionTypeKMS:

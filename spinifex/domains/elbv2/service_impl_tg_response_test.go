@@ -1,0 +1,245 @@
+package elbv2
+
+import (
+	"context"
+	"testing"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+)
+
+func describeTG(t *testing.T, svc *ELBv2ServiceImpl, arn string) *elbv2.TargetGroup {
+	t.Helper()
+	out, err := svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{
+		TargetGroupArns: []*string{aws.String(arn)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.TargetGroups, 1)
+	return out.TargetGroups[0]
+}
+
+// Terraform treats ip_address_type as force-new, so an absent value on read
+// replaces the target group on every plan.
+func TestTargetGroup_IpAddressTypeDefaultsToIPv4(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("ipat-tg")}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.TargetGroups[0].IpAddressType)
+	assert.Equal(t, "ipv4", *out.TargetGroups[0].IpAddressType)
+	assert.Empty(t, out.TargetGroups[0].LoadBalancerArns)
+
+	tg := describeTG(t, svc, *out.TargetGroups[0].TargetGroupArn)
+	require.NotNil(t, tg.IpAddressType)
+	assert.Equal(t, "ipv4", *tg.IpAddressType)
+}
+
+func TestCreateTargetGroup_IpAddressType(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name:          aws.String("ipat-v4"),
+		IpAddressType: aws.String("ipv4"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "ipv4", *out.TargetGroups[0].IpAddressType)
+
+	out, err = svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name:          aws.String("ipat-empty"),
+		IpAddressType: aws.String(""),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "ipv4", *out.TargetGroups[0].IpAddressType)
+
+	// ipv6 is in AWS's enum but unsupported here; anything else fails the enum.
+	_, err = svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name:          aws.String("ipat-v6"),
+		IpAddressType: aws.String("ipv6"),
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorELBv2InvalidConfigurationRequest)
+
+	_, err = svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name:          aws.String("ipat-bogus"),
+		IpAddressType: aws.String("dualstack"),
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorValidationError)
+}
+
+func TestCreateTargetGroup_UnknownVpcRejected(t *testing.T) {
+	t.Parallel()
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+	_, vpcID := firstSubnet(t, vpcSvc)
+
+	_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name:  aws.String("vpc-missing"),
+		VpcId: aws.String("vpc-0123456789abcdef0"),
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorValidationError)
+
+	// Another account's VPC is as unknown to the caller as a missing one.
+	_, err = svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name:  aws.String("vpc-foreign"),
+		VpcId: aws.String(vpcID),
+	}, "000000000999")
+	assert.EqualError(t, err, awserrors.ErrorValidationError)
+
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name:  aws.String("vpc-known"),
+		VpcId: aws.String(vpcID),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, vpcID, *out.TargetGroups[0].VpcId)
+}
+
+func TestDescribeTargetGroups_UnknownReturnsNotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("nf-known")}, testAccountID)
+	require.NoError(t, err)
+	knownArn := *out.TargetGroups[0].TargetGroupArn
+
+	for name, input := range map[string]*elbv2.DescribeTargetGroupsInput{
+		"unknown name":        {Names: aws.StringSlice([]string{"nf-missing"})},
+		"known and unknown":   {Names: aws.StringSlice([]string{"nf-known", "nf-missing"})},
+		"unknown arn":         {TargetGroupArns: aws.StringSlice([]string{knownArn + "0"})},
+		"other account's arn": {TargetGroupArns: aws.StringSlice([]string{knownArn})},
+	} {
+		account := testAccountID
+		if name == "other account's arn" {
+			account = "000000000999"
+		}
+		_, err := svc.DescribeTargetGroups(context.Background(), input, account)
+		code, msg, _ := awserrors.ResolveErrorDetail(err)
+		assert.Equal(t, awserrors.ErrorELBv2TargetGroupNotFound, code, name)
+		assert.Equal(t, "One or more target groups not found", msg, name)
+	}
+
+	_, err = svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{
+		TargetGroupArns: aws.StringSlice([]string{"not-an-arn"}),
+	}, testAccountID)
+	code, msg, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorValidationError, code)
+	assert.Equal(t, "'not-an-arn' is not a valid target group ARN", msg)
+
+	_, err = svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{TargetGroupArn: aws.String(knownArn)}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{
+		TargetGroupArns: aws.StringSlice([]string{knownArn}),
+	}, testAccountID)
+	code, _, _ = awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorELBv2TargetGroupNotFound, code, "deleted group")
+
+	// An unfiltered describe with nothing to return is still a success.
+	empty, err := svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{}, "000000000999")
+	require.NoError(t, err)
+	assert.Empty(t, empty.TargetGroups)
+}
+
+func TestDescribeTargetGroups_PageSize(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	for _, name := range []string{"page-c", "page-a", "page-b"} {
+		_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String(name)}, testAccountID)
+		require.NoError(t, err)
+	}
+	names := func(tgs []*elbv2.TargetGroup) []string {
+		var out []string
+		for _, tg := range tgs {
+			out = append(out, *tg.TargetGroupName)
+		}
+		return out
+	}
+
+	first, err := svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{PageSize: aws.Int64(2)}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"page-a", "page-b"}, names(first.TargetGroups))
+	require.NotNil(t, first.NextMarker)
+
+	second, err := svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{PageSize: aws.Int64(2), Marker: first.NextMarker}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"page-c"}, names(second.TargetGroups))
+	assert.Nil(t, second.NextMarker)
+
+	all, err := svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"page-a", "page-b", "page-c"}, names(all.TargetGroups))
+	assert.Nil(t, all.NextMarker)
+
+	for _, input := range []*elbv2.DescribeTargetGroupsInput{
+		{PageSize: aws.Int64(0)},
+		{PageSize: aws.Int64(401)},
+		{Marker: aws.String("not-a-marker")},
+	} {
+		_, err := svc.DescribeTargetGroups(context.Background(), input, testAccountID)
+		assert.EqualError(t, err, awserrors.ErrorValidationError)
+	}
+}
+
+func TestTargetGroup_LoadBalancerArns(t *testing.T) {
+	t.Parallel()
+	env := newRuleTestEnv(t, "tg-lbarns")
+
+	// The alt TG is not referenced until a rule forwards to it.
+	assert.Empty(t, describeTG(t, env.svc, env.tgAltArn).LoadBalancerArns)
+	assert.Equal(t, []*string{aws.String(env.lbArn)}, describeTG(t, env.svc, env.tgArn).LoadBalancerArns)
+
+	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(10),
+		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/api/*"})}},
+		Actions:     []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: aws.String(env.tgArn)}},
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(20),
+		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/alt/*"})}},
+		Actions:     []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: aws.String(env.tgAltArn)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// A TG reached by both a listener and a rule on the same LB lists it once.
+	assert.Equal(t, []*string{aws.String(env.lbArn)}, describeTG(t, env.svc, env.tgArn).LoadBalancerArns)
+	assert.Equal(t, []*string{aws.String(env.lbArn)}, describeTG(t, env.svc, env.tgAltArn).LoadBalancerArns)
+
+	// The LoadBalancerArn filter matches the same association, rules included.
+	byLB, err := env.svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{
+		LoadBalancerArn: aws.String(env.lbArn),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, byLB.TargetGroups, 2)
+
+	// A listener left behind by a deleted LB, or a rule by a deleted listener,
+	// adds nothing.
+	fwdAlt := []ListenerAction{{Type: "forward", TargetGroupArn: env.tgAltArn}}
+	require.NoError(t, env.svc.store.PutListener(context.Background(), &ListenerRecord{
+		ListenerArn: env.listenerArn + "0", ListenerID: "orphanlistener", LoadBalancerArn: env.lbArn + "0",
+		DefaultActions: fwdAlt, AccountID: testAccountID,
+	}))
+	require.NoError(t, env.svc.store.PutRule(context.Background(), &RuleRecord{
+		RuleArn: env.listenerArn + "/orphanrule", RuleID: "orphanrule", ListenerArn: env.listenerArn + "1",
+		Priority: 30, Actions: fwdAlt, AccountID: testAccountID,
+	}))
+	assert.Equal(t, []*string{aws.String(env.lbArn)}, describeTG(t, env.svc, env.tgAltArn).LoadBalancerArns)
+
+	mod, err := env.svc.ModifyTargetGroup(context.Background(), &elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:  aws.String(env.tgAltArn),
+		HealthCheckPath: aws.String("/healthz"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []*string{aws.String(env.lbArn)}, mod.TargetGroups[0].LoadBalancerArns)
+
+	_, err = env.svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: aws.String(env.lbArn),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, describeTG(t, env.svc, env.tgArn).LoadBalancerArns)
+}

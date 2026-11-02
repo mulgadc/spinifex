@@ -18,7 +18,8 @@ import (
 
 // RequestOptions places generated ARNs in the account and region the
 // requests are sent as. AccessKeyID is the key the requests are signed with.
-// Fixtures maps a member to an existing resource it can name.
+// Fixtures maps a member, or an "Operation.Member" that overrides it for one
+// operation, to an existing resource it can name.
 type RequestOptions struct {
 	AccountID   string
 	Region      string
@@ -73,6 +74,12 @@ var ec2IDMember = regexp.MustCompile(`^(.*?)Ids?$`)
 // with a code the judge cannot tell from a real finding.
 var conditionallyRequired = map[Service]map[string][]string{
 	EC2: {"CreateCapacityReservation": {"AvailabilityZone"}},
+	// A listing that starts at a zone ID needs the name it starts at, and
+	// one that starts at a record type or identifier needs a name and type.
+	Route53: {
+		"ListHostedZonesByName":  {"DNSName"},
+		"ListResourceRecordSets": {"StartRecordName", "StartRecordType"},
+	},
 	ECS: {
 		"CreateCapacityProvider": {"autoScalingGroupProvider"},
 		"CreateService":          {"taskDefinition"},
@@ -123,14 +130,47 @@ var ec2TaggedTypes = map[string]string{
 	"RunInstances":                    "instance",
 }
 
+// exclusiveMembers are optional members a valid request leaves out of the
+// structure that holds them, because AWS refuses them in combination with
+// the rest. Generation skips them, so their constraints are not broken.
+var exclusiveMembers = map[Service]map[string][]string{
+	// A record set takes one routing policy and either records or an alias.
+	Route53: {"ResourceRecordSet": {
+		"AliasTarget", "CidrRoutingConfig", "Failover", "GeoLocation", "GeoProximityLocation", "HealthCheckId",
+		"MultiValueAnswer", "Region", "SetIdentifier", "TrafficPolicyInstanceId", "Weight",
+	}},
+}
+
+// fixture returns the fixture the member at path names, preferring one scoped
+// to the operation.
+func (g *requestGenerator) fixture(member string) (string, bool) {
+	if fixture, ok := g.options.Fixtures[g.operation+"."+member]; ok {
+		return fixture, true
+	}
+	fixture, ok := g.options.Fixtures[member]
+	return fixture, ok
+}
+
 // enumHint returns the enum value a valid request needs at path, where the
 // first value would not do.
 func (g *requestGenerator) enumHint(path []pathStep) (string, bool) {
-	if g.model.service != EC2 || len(path) == 0 || path[0] != "TagSpecifications" || memberName(path) != "ResourceType" {
-		return "", false
+	member := memberName(path)
+	if fixture, ok := g.fixture(member); ok {
+		return fixture, true
 	}
-	value, ok := ec2TaggedTypes[g.operation]
-	return value, ok
+	switch g.model.service {
+	case EC2:
+		if len(path) > 0 && path[0] == "TagSpecifications" && member == "ResourceType" {
+			value, ok := ec2TaggedTypes[g.operation]
+			return value, ok
+		}
+	case Route53:
+		// The first RRType, SOA, is one a zone already has and cannot gain.
+		if member == "Type" {
+			return "A", true
+		}
+	}
+	return "", false
 }
 
 // hint returns a value of the right form for the member at path, if one is
@@ -141,7 +181,7 @@ func (g *requestGenerator) hint(path []pathStep) (string, bool) {
 		return "", false
 	}
 	options := g.options
-	if fixture, ok := options.Fixtures[member]; ok {
+	if fixture, ok := g.fixture(member); ok {
 		return fixture, true
 	}
 	suffix := fmt.Sprintf("%017x", g.saltNumber)
@@ -229,6 +269,17 @@ func (g *requestGenerator) hint(path []pathStep) (string, bool) {
 		// An access entry's type; a nested type names an identity provider's.
 		if member == "type" && len(path) == 1 {
 			return "STANDARD", true
+		}
+	case Route53:
+		// A generated name is a top-level domain, which cannot be a zone.
+		// Record names fall inside the fixture zone, example.com.
+		switch member {
+		case "Name", "DNSName", "StartRecordName":
+			return name + ".example.com", true
+		case "Value":
+			if slices.Contains(path, pathStep("ResourceRecords")) {
+				return "192.0.2.1", true
+			}
 		}
 	case STS:
 		// GetAccessKeyInfo answers only for a key that exists.

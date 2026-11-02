@@ -125,40 +125,28 @@ func TestAccessEntryRecord_DecodesHandWrittenJSON(t *testing.T) {
 	assert.Equal(t, time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), rec.ModifiedAt)
 }
 
-// Pins present behavior: acctKVForCluster only checks the cluster exists, not
-// its lifecycle Status, so AccessEntry actions succeed on a DELETING or FAILED
-// cluster exactly as on an ACTIVE one.
-func TestAccessEntryActionsIgnoreClusterLifecycleStatus(t *testing.T) {
+// AccessEntry actions do not gate on a FAILED cluster's status: an entry can
+// still be created and read there. A DELETING cluster refuses new entries;
+// TestS2_EKSDeletingClusterAdmitsNoNewDependants pins that.
+func TestAccessEntryActionsIgnoreFailedClusterStatus(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		cluster string
-		status  ClusterStatus
-	}{
-		{"deleting-cluster", ClusterStatusDeleting},
-		{"failed-cluster", ClusterStatusFailed},
-	}
-	for _, tc := range cases {
-		t.Run(string(tc.status), func(t *testing.T) {
-			t.Parallel()
-			svc := setupTestService(t)
-			js := testutil.NewJetStream(t, svc.deps.NATSConn)
-			kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
-			require.NoError(t, err)
-			require.NoError(t, PutClusterMeta(t.Context(), kv, &ClusterMeta{Name: tc.cluster, Status: tc.status}))
+	svc := setupTestService(t)
+	js := testutil.NewJetStream(t, svc.deps.NATSConn)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
+	require.NoError(t, err)
+	require.NoError(t, PutClusterMeta(t.Context(), kv, &ClusterMeta{Name: "failed-cluster", Status: ClusterStatusFailed}))
 
-			out, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
-				ClusterName: aws.String(tc.cluster), PrincipalArn: aws.String(testPrincipalARN),
-			}, testAccountID)
-			require.NoError(t, err)
-			require.NotNil(t, out.AccessEntry)
+	out, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
+		ClusterName: aws.String("failed-cluster"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.AccessEntry)
 
-			desc, err := svc.DescribeAccessEntry(context.Background(), &eks.DescribeAccessEntryInput{
-				ClusterName: aws.String(tc.cluster), PrincipalArn: aws.String(testPrincipalARN),
-			}, testAccountID)
-			require.NoError(t, err)
-			require.NotNil(t, desc.AccessEntry)
-		})
-	}
+	desc, err := svc.DescribeAccessEntry(context.Background(), &eks.DescribeAccessEntryInput{
+		ClusterName: aws.String("failed-cluster"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, desc.AccessEntry)
 }
 
 // AssociateAccessPolicy on a principal with no AccessEntry today returns the
@@ -252,10 +240,10 @@ func TestAccessEntry_UpdateWithNoFieldsKeepsUsernameAndGroups(t *testing.T) {
 	assert.True(t, after.ModifiedAt.After(before.ModifiedAt))
 }
 
-// DeleteClusterPrefix_SweepsEveryKey (cluster_state_test.go) covers the
+// DeleteClusterChildren_SweepsEveryKey (cluster_state_test.go) covers the
 // nodegroup/OIDC/event keys; this covers the access-entries key specifically,
 // scoped correctly so a sibling cluster's entry survives.
-func TestDeleteClusterPrefix_SweepsAccessEntriesScopedToCluster(t *testing.T) {
+func TestDeleteClusterChildren_SweepsAccessEntriesScopedToCluster(t *testing.T) {
 	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
@@ -269,7 +257,7 @@ func TestDeleteClusterPrefix_SweepsAccessEntriesScopedToCluster(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, DeleteClusterPrefix(t.Context(), kv, "cluster-a"))
+	require.NoError(t, DeleteClusterChildren(t.Context(), kv, "cluster-a"))
 
 	_, err = access.Get(t.Context(), kv, "cluster-a", testPrincipalARN)
 	require.ErrorIs(t, err, access.ErrNotFound)

@@ -61,7 +61,7 @@ func TestI1_GuestLSPMustHavePortSecurity(t *testing.T) {
 	})
 }
 
-// TestRLC5_OrphanLSPPrunedAfterReconcile asserts ADR-0003 §4 "OVN LSP prune":
+// TestRLC5_OrphanLSPPrunedAfterReconcile asserts Q-61 / Q-78 "OVN LSP prune":
 // an LSP whose spinifex:eni_id has no matching intent ENI is deleted by one
 // reconcile. Without it, guest LSPs leak across instance terminate and host
 // reinstall — the orphan-LSP capacity-drift root cause.
@@ -95,7 +95,7 @@ func TestRLC5_OrphanLSPPrunedAfterReconcile(t *testing.T) {
 	}
 
 	if _, ok := m.Ports[topology.Port("eni-orphan")]; ok {
-		t.Errorf("orphan LSP %s survived reconcile: ADR-0003 §4 requires an LSP "+
+		t.Errorf("orphan LSP %s survived reconcile: Q-61 / Q-78 requires an LSP "+
 			"whose spinifex:eni_id has no intent ENI to be pruned; create-only gap "+
 			"leaks OVN ports across terminate/reinstall", topology.Port("eni-orphan"))
 	}

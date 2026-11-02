@@ -21,12 +21,15 @@ interface SignedProxyFetchOptions {
   // label prefixes the thrown error, naming the action or JSON-1.1 target.
   label: string
   service: string
-  contentType: string
-  body: string
+  // method defaults to POST; a GET carries no body and no content type.
+  method?: "GET" | "POST"
+  contentType?: string
+  body?: string
   target?: string
   // path is the gateway path the request is signed for and proxied to.
   path?: string
   parseError?: ErrorParser
+  signal?: AbortSignal
 }
 
 export interface SignedFetchOptions {
@@ -107,18 +110,20 @@ function errorFromBody(
   )
 }
 
-// signedProxyFetch SigV4-signs a request with the stored session against the
-// gateway and POSTs it through the same-origin proxy. Callers differ only in
-// path, content type, target header and error body shape.
-export async function signedProxyFetch<T>({
+// sendSigned SigV4-signs a request with the stored session against the gateway
+// and sends it through the same-origin proxy, throwing parseError's result for
+// a non-ok status. Callers differ only in how they read the body.
+async function sendSigned({
   label,
   service,
+  method = "POST",
   contentType,
   body,
   target,
   path = "/",
   parseError = errorFromBody,
-}: SignedProxyFetchOptions): Promise<T> {
+  signal,
+}: SignedProxyFetchOptions): Promise<Response> {
   const credentials = getCredentials()
 
   if (!credentials) {
@@ -130,17 +135,14 @@ export async function signedProxyFetch<T>({
   // Headers are set before signing so they are part of the signature, against
   // the real backend (localhost:9999) so the gateway's SigV4 verification sees
   // the host value it expects.
-  const baseHeaders = {
+  const requestHeaders = {
     host: `localhost:${GATEWAY_PORT}`,
-    "content-type": contentType,
+    ...(contentType && { "content-type": contentType }),
+    ...(target && { "x-amz-target": target }),
   }
 
-  const requestHeaders = target
-    ? { ...baseHeaders, "x-amz-target": target }
-    : baseHeaders
-
   const request = new HttpRequest({
-    method: "POST",
+    method,
     protocol,
     hostname: "localhost",
     port: GATEWAY_PORT,
@@ -171,9 +173,10 @@ export async function signedProxyFetch<T>({
   const proxyUrl = `${window.location.protocol}//${window.location.host}/proxy/awsgw${path}`
 
   const response = await fetch(proxyUrl, {
-    method: "POST",
+    method,
     headers,
     body,
+    signal,
   })
 
   if (!response.ok) {
@@ -181,10 +184,40 @@ export async function signedProxyFetch<T>({
     throw parseError(label, response.status, detail)
   }
 
+  return response
+}
+
+// signedProxyFetch sends a signed request through the gateway proxy and parses
+// the JSON response.
+export async function signedProxyFetch<T>(
+  options: SignedProxyFetchOptions,
+): Promise<T> {
+  const response = await sendSigned(options)
+
   // The caller names the response shape its action returns, and the gateway has
   // already been checked for a non-ok status above.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- response.json() returns Promise<any>
   return await (response.json() as Promise<T>)
+}
+
+// signedProxyXmlFetch sends a signed request through the gateway proxy and
+// parses the REST-XML response into a document.
+export async function signedProxyXmlFetch(
+  options: SignedProxyFetchOptions,
+): Promise<Document> {
+  const response = await sendSigned(options)
+  const text = await response.text()
+  const doc = new DOMParser().parseFromString(text, "application/xml")
+
+  if (doc.querySelectorAll("parsererror").length > 0) {
+    throw new SignedFetchError(
+      `${options.label} failed: the response is not valid XML`,
+      "SignedFetchError",
+      response.status,
+    )
+  }
+
+  return doc
 }
 
 export async function signedFetch<T>({
@@ -199,6 +232,25 @@ export async function signedFetch<T>({
     service,
     contentType: FORM_CONTENT_TYPE,
     body: `Action=${action}${extraParams}`,
+  })
+}
+
+// signedStream sends a signed Action= request and returns the response unread,
+// for an action that streams its body; abort the signal to end it.
+export async function signedStream({
+  action,
+  service = "spinifex",
+  params,
+  signal,
+}: SignedFetchOptions & { signal?: AbortSignal }): Promise<Response> {
+  const extraParams = params ? `&${new URLSearchParams(params).toString()}` : ""
+
+  return await sendSigned({
+    label: action,
+    service,
+    contentType: FORM_CONTENT_TYPE,
+    body: `Action=${action}${extraParams}`,
+    signal,
   })
 }
 

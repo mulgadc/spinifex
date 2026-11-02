@@ -1,7 +1,7 @@
 ---
 title: "Source Install"
 seoTitle: "Build and Install Spinifex from Source — Spinifex Docs"
-description: "Build Spinifex from source on Ubuntu or Debian for development, custom builds, or contributing changes, then install and run the resulting binaries locally."
+description: "Build Spinifex from source on Debian, Ubuntu or Oracle Linux for development, custom builds or contributing changes, then install and run the binaries."
 category: "Install"
 tags:
   - install
@@ -34,6 +34,7 @@ This guide builds Spinifex from source. For production deployments, the [binary 
 
 - Ubuntu 26.04
 - Debian 13
+- Oracle Linux 10.2 or a later 10.x, on UEK R8, x86_64 only. Prepare the host with [Oracle Linux Hosts](/docs/install-oracle-linux) first; `make quickinstall` also enables the CodeReady Builder repository for `nbdkit-devel`.
 
 ## Instructions
 

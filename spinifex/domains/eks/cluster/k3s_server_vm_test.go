@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -95,6 +97,7 @@ func (f *fakeK3sVPC) DescribeNetworkInterfaces(_ context.Context, input *ec2.Des
 }
 
 type fakeK3sInst struct {
+	mu             sync.Mutex
 	launchCalls    []*systeminstance.SystemInstanceInput
 	launchNodes    []string // TargetNodeID per launch (parallel to launchCalls)
 	terminateCalls []string
@@ -102,6 +105,20 @@ type fakeK3sInst struct {
 	launchOut    *systeminstance.SystemInstanceOutput
 	launchErr    error
 	terminateErr error
+
+	// launchHook / terminateHook run before the call records, unlocked, so a
+	// test can hold a launch or a teardown at that step.
+	launchHook    func()
+	terminateHook func(instanceID string)
+	// uniqueIDs makes each launch return a fresh instance ID.
+	uniqueIDs bool
+}
+
+// terminated returns a copy of the terminate calls so far.
+func (f *fakeK3sInst) terminated() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.terminateCalls...)
 }
 
 var _ k3sInstanceLauncher = (*fakeK3sInst)(nil)
@@ -111,6 +128,11 @@ func (f *fakeK3sInst) LaunchSystemInstance(input *systeminstance.SystemInstanceI
 }
 
 func (f *fakeK3sInst) LaunchSystemInstanceOnNode(nodeID string, input *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error) {
+	if f.launchHook != nil {
+		f.launchHook()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.launchCalls = append(f.launchCalls, input)
 	f.launchNodes = append(f.launchNodes, nodeID)
 	if f.launchErr != nil {
@@ -119,10 +141,18 @@ func (f *fakeK3sInst) LaunchSystemInstanceOnNode(nodeID string, input *systemins
 	if f.launchOut != nil {
 		return f.launchOut, nil
 	}
+	if f.uniqueIDs {
+		return &systeminstance.SystemInstanceOutput{InstanceID: fmt.Sprintf("i-launch-%d", len(f.launchCalls))}, nil
+	}
 	return &systeminstance.SystemInstanceOutput{InstanceID: "i-aaa111"}, nil
 }
 
 func (f *fakeK3sInst) TerminateSystemInstance(instanceID string) error {
+	if f.terminateHook != nil {
+		f.terminateHook(instanceID)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.terminateCalls = append(f.terminateCalls, instanceID)
 	return f.terminateErr
 }
@@ -459,6 +489,44 @@ func TestBuildK3sUserData_EgressSelectorDisabledWithKonnConfig(t *testing.T) {
 		"the EgressSelectorConfiguration file routes the cluster egress to the konn socket")
 }
 
+func TestBuildK3sUserData_DisablesAgentOnClusterInit(t *testing.T) {
+	t.Parallel()
+	in := validK3sInput()
+	in.ServerURL = ""
+
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "cluster-init: true")
+	assert.Contains(t, ud, "disable-agent: true",
+		"a control-plane host must not register as a Node (EKS parity)")
+}
+
+func TestBuildK3sUserData_DisablesAgentOnJoin(t *testing.T) {
+	t.Parallel()
+	in := validK3sInput()
+	in.ServerURL = k3sServerJoinURL("10.0.0.10")
+	in.JoinToken = "tok"
+
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "server: "+in.ServerURL)
+	assert.Contains(t, ud, "disable-agent: true",
+		"join servers run without an agent too")
+}
+
+func TestBuildK3sUserData_DisableAgentKeepsControlPlaneConfig(t *testing.T) {
+	t.Parallel()
+	in := validK3sInput()
+	in.PrivateEndpointIP = "10.20.0.5"
+
+	ud := buildK3sUserData(in)
+	require.Contains(t, ud, "disable-agent: true")
+	assert.Contains(t, ud, "egress-selector-mode: disabled")
+	assert.Contains(t, ud, "egress-selector-config-file="+k3sEgressSelectorConfigPath)
+	assert.Contains(t, ud, "advertise-address: 10.20.0.5")
+	for _, addon := range []string{"traefik", "servicelb", "local-storage"} {
+		assert.Contains(t, ud, "  - "+addon, "packaged addon %s stays disabled", addon)
+	}
+}
+
 func TestEgressSelectorConfigYAML_TunnelsClusterOnly(t *testing.T) {
 	t.Parallel()
 	cfg := egressSelectorConfigYAML()
@@ -487,6 +555,29 @@ func TestBuildK3sUserData_KonnectivityEnv(t *testing.T) {
 	assert.Contains(t, ud, "EKS_KONNECTIVITY_SERVER_COUNT=3",
 		"agents must learn the apiserver replica count to tunnel to every replica")
 	assert.Contains(t, ud, "EKS_KONNECTIVITY_SANS=10.32.100.4,203.0.113.9,"+in.NLBDNS)
+}
+
+func TestBuildK3sUserData_WebhookReadinessListener(t *testing.T) {
+	t.Parallel()
+	ud := buildK3sUserData(validK3sInput())
+	assert.Contains(t, ud, "EKS_WEBHOOK_READY_ADDR=0.0.0.0:8444",
+		"the webhook must serve /readyz beyond loopback for the NLB health check")
+}
+
+// The env line alone does nothing: the webhook service only passes through
+// the variables its init script exports.
+func TestWebhookInitExportsReadyAddr(t *testing.T) {
+	t.Parallel()
+	b, err := os.ReadFile("../../../../scripts/images/eks-node/eks-token-webhook.initd")
+	require.NoError(t, err)
+	var exported bool
+	for line := range strings.SplitSeq(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) > 1 && f[0] == "export" && slices.Contains(f[1:], "EKS_WEBHOOK_READY_ADDR") {
+			exported = true
+		}
+	}
+	assert.True(t, exported, "eks-token-webhook.initd must export EKS_WEBHOOK_READY_ADDR or the readiness listener never starts")
 }
 
 func TestBuildK3sUserData_KonnServerCountDefaultsToOne(t *testing.T) {
@@ -562,10 +653,9 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "FAKEPUB")
 
 	assert.Contains(t, udata, "path: "+k3sConfigPath)
-	// The control plane is tainted so user workloads never schedule on it (EKS
-	// parity, and it keeps image pulls off the etcd disk).
-	assert.Contains(t, udata, "node-taint:")
-	assert.Contains(t, udata, "  - CriticalAddonsOnly=true:NoExecute")
+	// The control plane runs no agent, so it is never a Node and needs no taint.
+	assert.Contains(t, udata, "disable-agent: true")
+	assert.NotContains(t, udata, "node-taint:")
 	// AWS parity: K3s' bundled traefik + servicelb are always disabled; Service
 	// type=LoadBalancer / Ingress are the AWS LB Controller's job. local-storage is
 	// disabled too so its local-path provisioner does not add a second default

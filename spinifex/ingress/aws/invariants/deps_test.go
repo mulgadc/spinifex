@@ -81,8 +81,9 @@ var declaredInventoryReaders = map[string]bool{
 // implementations ADR-0002 acceptance 3 confines to the awsgw role,
 // alongside the registration contract itself.
 var domainAWSAPIImpls = map[string]string{
-	modulePrefix + "domains/ecr/awsapi": "ECR implementation",
-	modulePrefix + "domains/acm/awsapi": "ACM implementation",
+	modulePrefix + "domains/ecr/awsapi":     "ECR implementation",
+	modulePrefix + "domains/acm/awsapi":     "ACM implementation",
+	modulePrefix + "domains/route53/awsapi": "Route 53 implementation",
 }
 
 // ADR-0002 acceptance 3: the awsgw role is the only production composition

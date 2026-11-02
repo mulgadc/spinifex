@@ -313,7 +313,7 @@ func TestService_CreateService_ProjectsNetworkConfigurationAndManagedTags(t *tes
 		Family:      aws.String("app"),
 		NetworkMode: aws.String(NetworkModeAwsvpc),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 		}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -352,7 +352,7 @@ func TestService_UpdateService_ChangesNetworkConfiguration(t *testing.T) {
 		Family:      aws.String("app"),
 		NetworkMode: aws.String(NetworkModeAwsvpc),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 		}},
 	}, testAccountID)
 	require.NoError(t, err)

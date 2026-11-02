@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/testkit/deadpid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -208,7 +209,7 @@ func TestKillProcess(t *testing.T) {
 	wg.Wait()
 
 	// Test killing non-existent process
-	err = KillProcess(999999)
+	err = KillProcess(deadpid.PID)
 	assert.Error(t, err, "Should error when killing non-existent process")
 }
 
@@ -223,7 +224,7 @@ func TestProcessAlive(t *testing.T) {
 	assert.True(t, ProcessAlive(pid), "a running process must report alive")
 	assert.False(t, ProcessAlive(0), "pid 0 must report not alive")
 	assert.False(t, ProcessAlive(-1), "negative pid must report not alive")
-	assert.False(t, ProcessAlive(999999), "a non-existent pid must report not alive")
+	assert.False(t, ProcessAlive(deadpid.PID), "a non-existent pid must report not alive")
 
 	require.NoError(t, cmd.Process.Kill())
 	wg.Wait()

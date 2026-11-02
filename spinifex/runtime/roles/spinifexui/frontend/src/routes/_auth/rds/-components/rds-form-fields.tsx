@@ -1,4 +1,8 @@
-import type { OrderableDBInstanceOption } from "@aws-sdk/client-rds"
+import type {
+  DBParameterGroup,
+  DBSubnetGroup,
+  OrderableDBInstanceOption,
+} from "@aws-sdk/client-rds"
 import {
   type Control,
   type FieldValues,
@@ -8,6 +12,8 @@ import {
 
 import { pickerNotice } from "@/components/picker-notice"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 
 // Offered identically wherever an instance is created, restored or modified.
 export function DeletionProtectionField<T extends FieldValues>({
@@ -24,17 +30,17 @@ export function DeletionProtectionField<T extends FieldValues>({
       render={({ field, fieldState }) => (
         <Field>
           <FieldTitle>Deletion protection</FieldTitle>
-          <label className="flex items-center gap-2 text-xs">
-            <input
+          <div className="flex items-center gap-2 text-xs">
+            <Switch
               aria-label="Enable deletion protection"
               checked={field.value}
-              onChange={(e) => {
-                field.onChange(e.target.checked)
-              }}
-              type="checkbox"
+              id={name}
+              onCheckedChange={field.onChange}
             />
-            <span>Refuse DeleteDBInstance while this is on</span>
-          </label>
+            <Label htmlFor={name}>
+              Refuse DeleteDBInstance while this is on
+            </Label>
+          </div>
           <FieldError errors={[fieldState.error]} />
         </Field>
       )}
@@ -85,4 +91,44 @@ export function instanceClassOptions(
       empty: `No instance class this cluster's nodes can run is available for ${engine}.`,
     }),
   }
+}
+
+export function subnetGroupOptions(
+  groups: DBSubnetGroup[],
+): { value: string; label: string }[] {
+  return groups.map((g) => ({
+    value: g.DBSubnetGroupName ?? "",
+    label: `${g.DBSubnetGroupName} (${g.VpcId})`,
+  }))
+}
+
+export function parameterGroupOptions(
+  groups: DBParameterGroup[],
+): { value: string; label: string }[] {
+  return groups.map((g) => ({
+    value: g.DBParameterGroupName ?? "",
+    label: g.DBParameterGroupName ?? "",
+  }))
+}
+
+// A boxed list of the settings a form cannot change, each with the reason.
+export function FieldNotes({
+  className,
+  entries,
+  title,
+}: {
+  className: string
+  entries: { label: string; note: string }[]
+  title: string
+}) {
+  return (
+    <div className={className}>
+      <h3 className="text-xs font-medium">{title}</h3>
+      {entries.map((entry) => (
+        <p className="text-xs text-muted-foreground" key={entry.label}>
+          <span className="font-medium">{entry.label}</span> — {entry.note}
+        </p>
+      ))}
+    </div>
+  )
 }

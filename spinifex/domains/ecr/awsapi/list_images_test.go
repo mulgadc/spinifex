@@ -63,3 +63,30 @@ func TestListImages_ValidatesRequestAndCatalogFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestImageFilters_RefuseUnknownTagStatus(t *testing.T) {
+	catalog := fakeImageCatalog{records: []ecrregistry.ImageRecord{{Digest: "sha256:untagged"}}}
+	body := []byte(`{"repositoryName":"team/app","filter":{"tagStatus":"BOGUS"}}`)
+	actions := map[string]func() error{
+		"ListImages": func() error {
+			_, err := ListImages(context.Background(), catalog, "123456789012", body)
+			return err
+		},
+		"DescribeImages": func() error {
+			_, err := DescribeImages(context.Background(), catalog, "123456789012", body)
+			return err
+		},
+	}
+	for name, call := range actions {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorECRInvalidParameter, awserrors.ValidErrorCodeFromError(err))
+			assert.Contains(t, err.Error(), "Invalid parameter at 'filter.tagStatus' failed to satisfy constraint: 'Member must satisfy enum value set: [TAGGED, UNTAGGED, ANY]'")
+		})
+	}
+
+	out, err := ListImages(context.Background(), catalog, "123456789012", []byte(`{"repositoryName":"team/app","filter":{"tagStatus":"ANY"}}`))
+	require.NoError(t, err)
+	assert.Len(t, out.ImageIds, 1)
+}

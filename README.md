@@ -54,7 +54,7 @@ For Terraform, start from the [example workbooks](https://docs.mulgadc.com/docs/
 
 ## Services
 
-The platform serves **392 AWS API operations** across the services below. See exactly which ones in the [coverage report](https://docs.mulgadc.com/coverage).
+The platform serves **405 AWS API operations** across the services below. See exactly which ones in the [coverage report](https://docs.mulgadc.com/coverage).
 
 | Service | What it is | Built on | Status |
 | --- | --- | --- | --- |
@@ -68,8 +68,10 @@ The platform serves **392 AWS API operations** across the services below. See ex
 | **ECR** | Container registry | Predastore, deduplicated per account | Available |
 | **ECS** | Container service | Spinifex instances | Available |
 | **RDS** | Databases | PostgreSQL and MariaDB, with automated backups | Available |
+| **Route 53** | DNS | [Northstar](https://github.com/mulgadc/northstar): authoritative DNS with hosted zones | Available |
 | **Bedrock** | AI deployment | vLLM for text generation and Hugging Face TEI for embeddings and reranking | Q4 2026 |
 | **Lambda** | Serverless functions | | Q1 2027 |
+| **SQS** | Message queues | | Q1 2027 |
 
 Roadmap services ship under the same AWS API surface, so code written for AWS today works the moment they land. [Track what's shipped in the release notes](https://github.com/mulgadc/spinifex/releases).
 

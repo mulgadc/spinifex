@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	instancesvc "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	filterutil "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/nats-io/nats.go"
@@ -43,18 +44,24 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 	}
 
 	var allInstanceTypes []*ec2.InstanceTypeInfo
+	availability := make(map[string]int64)
 	answered := make(map[string]bool, len(frames))
+	usable := 0
 	for _, frame := range frames {
-		var nodeOutput ec2.DescribeInstanceTypesOutput
+		var nodeOutput instancesvc.DescribeInstanceTypesNodeOutput
 		if json.Unmarshal(frame.Data, &nodeOutput) == nil {
 			allInstanceTypes = append(allInstanceTypes, nodeOutput.InstanceTypes...)
+			for name, count := range nodeOutput.Availability {
+				availability[name] += count
+			}
+			usable++
 			if frame.NodeID != "" {
 				answered[frame.NodeID] = true
 			}
 		}
 	}
 
-	// capacity=true filter shows all slots (including duplicates) across nodes.
+	// capacity=true reports cluster-wide free slots per type.
 	showCapacity := false
 	for _, f := range input.Filters {
 		if f.Name != nil && *f.Name == "capacity" {
@@ -76,17 +83,19 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 
 	var finalInstanceTypes []*ec2.InstanceTypeInfo
 	if showCapacity {
-		finalInstanceTypes = allInstanceTypes
-	} else {
-		seen := make(map[string]bool)
-		for _, it := range allInstanceTypes {
-			if it != nil && it.InstanceType != nil {
-				if !seen[*it.InstanceType] {
-					seen[*it.InstanceType] = true
-					finalInstanceTypes = append(finalInstanceTypes, it)
-				}
-			}
+		// No node answered, so nothing is known about capacity. Reporting an
+		// empty list here reads as "no capacity anywhere", which is what made
+		// the console refuse every launch.
+		if usable == 0 {
+			return nil, awserrors.WithRetryAfter(
+				awserrors.Errorf(awserrors.ErrorServiceUnavailable,
+					"cannot determine cluster capacity: no node answered the describe fan-out"),
+				describeIncompleteRetryAfter,
+			)
 		}
+		finalInstanceTypes = dedupeByName(allInstanceTypes, availability)
+	} else {
+		finalInstanceTypes = dedupeByName(allInstanceTypes, nil)
 	}
 
 	if len(requestedTypes) > 0 {
@@ -128,8 +137,8 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 
 	output := &ec2.DescribeInstanceTypesOutput{InstanceTypes: finalInstanceTypes}
 
-	// Unpaged unless asked: the capacity listing the UI reads has one entry per
-	// free slot and does not follow NextToken.
+	// Unpaged unless asked. The listing is one entry per instance type, which is
+	// inside the page cap AWS declares, so a caller that wants pages asks.
 	if input.MaxResults != nil || aws.StringValue(input.NextToken) != "" {
 		page, nextToken, err := pageByOffset(finalInstanceTypes, input.NextToken, input.MaxResults)
 		if err != nil {
@@ -141,6 +150,28 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 
 	slog.InfoContext(ctx, "DescribeInstanceTypes: Aggregated response", "total_instance_types", len(finalInstanceTypes), "show_capacity", showCapacity)
 	return output, nil
+}
+
+// dedupeByName returns one entry per instance type name. Every node describes
+// the types it hosts, so the fan-out carries a copy per node.
+//
+// A non-nil availability keeps only the types with a free slot, which is the
+// capacity request. The count itself is not carried here: the reply is bounded
+// by the catalogue, never by how much capacity is free.
+func dedupeByName(types []*ec2.InstanceTypeInfo, availability map[string]int64) []*ec2.InstanceTypeInfo {
+	seen := make(map[string]bool, len(types))
+	deduped := make([]*ec2.InstanceTypeInfo, 0, len(types))
+	for _, it := range types {
+		if it == nil || it.InstanceType == nil || seen[*it.InstanceType] {
+			continue
+		}
+		if availability != nil && availability[*it.InstanceType] <= 0 {
+			continue
+		}
+		seen[*it.InstanceType] = true
+		deduped = append(deduped, it)
+	}
+	return deduped
 }
 
 // missingInstanceTypes returns the requested types absent from found, in the

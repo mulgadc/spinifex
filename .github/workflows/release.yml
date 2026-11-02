@@ -57,8 +57,8 @@ jobs:
           go-version-file: spinifex/go.mod
           cache: false
 
-      - name: Build microVM artifacts (lb-agent + kernel + initramfs)
-        run: cd spinifex && make build-microvm-image
+      - name: Build microVM artifacts (lb-agent + kernel + initramfs + qboot + SQS store and worker images)
+        run: cd spinifex && make build-microvm-image build-sqs-worker-microvm-image
 
       - name: Build amd64 Tarball
         env:
@@ -72,6 +72,7 @@ jobs:
           path: |
             spinifex/dist/spinifex-${{ github.ref_name }}-linux-amd64.tar.gz
             spinifex/dist/spinifex-${{ github.ref_name }}-linux-amd64.tar.gz.sha256
+            spinifex/dist/qboot-*.tar.gz
             spinifex/scripts/setup.sh
 
   distro-arm64:

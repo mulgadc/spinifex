@@ -216,7 +216,7 @@ func (denyAllAccessResolver) Granted(_ context.Context, _, _ string) (bool, erro
 }
 
 // DenyAllAccessResolver grants no model to any account. It is the fallback for
-// a nil GatewayConfig.BedrockAccess: the insecure direction of this default is
+// a nil pipeline.Config.BedrockAccess: the insecure direction of this default is
 // "nothing works", which surfaces immediately, rather than "everything works",
 // which surfaces as a breach.
 var DenyAllAccessResolver AccessResolver = denyAllAccessResolver{}

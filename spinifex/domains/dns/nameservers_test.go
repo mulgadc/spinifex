@@ -1,8 +1,10 @@
 package dns
 
 import (
+	"fmt"
 	"testing"
 
+	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -131,4 +133,63 @@ func TestResolverNameserverIPs(t *testing.T) {
 		"node1": {Host: "0.0.0.0", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}},
 	}}
 	assert.Empty(t, ResolverNameserverIPs(dev))
+}
+
+func northstarNodes(n int) map[string]config.Config {
+	nodes := make(map[string]config.Config, n)
+	for i := 1; i <= n; i++ {
+		nodes[fmt.Sprintf("node%02d", i)] = config.Config{
+			AdvertiseIP: fmt.Sprintf("10.0.0.%d", i),
+			Northstar:   config.NorthstarConfig{ConfigPath: "/etc/n.toml"},
+		}
+	}
+	return nodes
+}
+
+func seedIPs(seeds []nsconfig.NameserverSeed) []string {
+	ips := make([]string, 0, len(seeds))
+	for i, s := range seeds {
+		if s.Host != fmt.Sprintf("ns%d", i+1) {
+			return []string{"misnumbered " + s.Host}
+		}
+		ips = append(ips, s.IP)
+	}
+	return ips
+}
+
+// A large cluster publishes at most four nameservers, while every northstar
+// node stays a resolver backend for the guest shim.
+func TestNameserverSeedsCappedAtFour(t *testing.T) {
+	cluster := &config.ClusterConfig{Node: "node01", Nodes: northstarNodes(12)}
+	assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"}, seedIPs(NameserverSeeds(cluster)))
+	assert.Len(t, ResolverNameserverIPs(cluster), 12)
+}
+
+func TestNameserverSeedsHonourCountAndPins(t *testing.T) {
+	nodes := northstarNodes(6)
+	nodes["node06"] = config.Config{AdvertiseIP: "127.0.0.1", Northstar: config.NorthstarConfig{ConfigPath: "/etc/n.toml"}}
+
+	for name, tc := range map[string]struct {
+		ns   config.NorthstarClusterConfig
+		want []string
+	}{
+		"count below the node count": {config.NorthstarClusterConfig{NameserverCount: 2}, []string{"10.0.0.1", "10.0.0.2"}},
+		"pins first, rest in name order": {
+			config.NorthstarClusterConfig{NameserverNodes: []string{"node05", "node03"}},
+			[]string{"10.0.0.5", "10.0.0.3", "10.0.0.1", "10.0.0.2"},
+		},
+		"pins fill the count": {
+			config.NorthstarClusterConfig{NameserverCount: 2, NameserverNodes: []string{"node04", "node02"}},
+			[]string{"10.0.0.4", "10.0.0.2"},
+		},
+		"unusable pin is skipped": {
+			config.NorthstarClusterConfig{NameserverCount: 2, NameserverNodes: []string{"node06", "node05"}},
+			[]string{"10.0.0.5", "10.0.0.1"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cluster := &config.ClusterConfig{Node: "node01", Nodes: nodes, Northstar: tc.ns}
+			assert.Equal(t, tc.want, seedIPs(NameserverSeeds(cluster)))
+		})
+	}
 }

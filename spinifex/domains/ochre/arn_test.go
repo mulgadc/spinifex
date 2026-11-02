@@ -69,17 +69,17 @@ func TestParseProvisionedModelARN_RejectsMalformed(t *testing.T) {
 // TestResolveProvisionedModelID_AcceptsRawIDOrARN covers the shape every PT
 // op's ProvisionedModelId field allows: a bare id or a full ARN.
 func TestResolveProvisionedModelID_AcceptsRawIDOrARN(t *testing.T) {
-	id, err := resolveProvisionedModelID(ptTestID, ptTestRegion, ptTestAccount)
+	id, err := ResolveProvisionedModelID(ptTestID, ptTestRegion, ptTestAccount)
 	require.NoError(t, err)
 	assert.Equal(t, ptTestID, id)
 
 	arn := FormatProvisionedModelARN(ptTestRegion, ptTestAccount, ptTestID)
-	id, err = resolveProvisionedModelID(arn, ptTestRegion, ptTestAccount)
+	id, err = ResolveProvisionedModelID(arn, ptTestRegion, ptTestAccount)
 	require.NoError(t, err)
 	assert.Equal(t, ptTestID, id)
 
 	foreignARN := FormatProvisionedModelARN(ptTestRegion, ptOtherAccount, ptTestID)
-	_, err = resolveProvisionedModelID(foreignARN, ptTestRegion, ptTestAccount)
+	_, err = ResolveProvisionedModelID(foreignARN, ptTestRegion, ptTestAccount)
 	require.Error(t, err)
 }
 
@@ -137,16 +137,16 @@ func TestParseGuardrailARN_RejectsMalformed(t *testing.T) {
 // TestResolveGuardrailID_AcceptsRawIDOrARN covers the shape every guardrail
 // op's GuardrailIdentifier field allows: a bare id or a full ARN.
 func TestResolveGuardrailID_AcceptsRawIDOrARN(t *testing.T) {
-	id, err := resolveGuardrailID(ptTestID, ptTestRegion, ptTestAccount)
+	id, err := ResolveGuardrailID(ptTestID, ptTestRegion, ptTestAccount)
 	require.NoError(t, err)
 	assert.Equal(t, ptTestID, id)
 
 	arn := FormatGuardrailARN(ptTestRegion, ptTestAccount, ptTestID)
-	id, err = resolveGuardrailID(arn, ptTestRegion, ptTestAccount)
+	id, err = ResolveGuardrailID(arn, ptTestRegion, ptTestAccount)
 	require.NoError(t, err)
 	assert.Equal(t, ptTestID, id)
 
 	foreignARN := FormatGuardrailARN(ptTestRegion, ptOtherAccount, ptTestID)
-	_, err = resolveGuardrailID(foreignARN, ptTestRegion, ptTestAccount)
+	_, err = ResolveGuardrailID(foreignARN, ptTestRegion, ptTestAccount)
 	require.Error(t, err)
 }

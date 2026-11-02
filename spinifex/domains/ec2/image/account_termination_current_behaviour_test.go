@@ -111,6 +111,10 @@ func TestCurrentBehaviour_AccountTermination_CreateImageSnapshotDoesNotPinSource
 	imageID := s.createImage(t, "vol-imaged", "ct-image")
 	require.NoError(t, s.deleteVolume("vol-imaged"), "a CreateImage snapshot does not block deleting its source volume")
 
+	// DeleteVolume records the obligation and returns, so the document is gone
+	// once the reclaimer has converged it rather than when the call returns.
+	_, err = s.volumes.NewVolumeReclaimReaper().Sweep(ctx)
+	require.NoError(t, err)
 	_, err = s.metadata.GetVolume(ctx, ctAccountID, "vol-imaged")
 	require.Error(t, err, "the source volume's document is gone")
 

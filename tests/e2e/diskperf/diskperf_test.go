@@ -274,7 +274,7 @@ func medianAggregate(results []runResult) fioJob {
 // needs.
 func createVolume(t *testing.T, fix *Fixture, az string, sizeGiB int64) string {
 	t.Helper()
-	// e2e:allow-create — a fresh volume per repetition is the reset this gate depends on.
+	// A fresh volume per repetition is the reset this gate depends on.
 	out, err := fix.AWS.EC2.CreateVolume(&ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String(az),
 		Size:             aws.Int64(sizeGiB),

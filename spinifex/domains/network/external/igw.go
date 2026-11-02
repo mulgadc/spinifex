@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
+	"strconv"
 
 	networkids "github.com/mulgadc/spinifex/spinifex/domains/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
@@ -54,10 +56,9 @@ type IGWManager interface {
 	RebindGatewayIP(ctx context.Context, vpcID, newIP string, prefixLen int) error
 }
 
-// RoutedIngressHooks deliver host-side ingress plumbing in routed-NAT mode:
-// Ensure installs the host route sending VPC-CIDR traffic into OVN via the
-// gateway LRP transit IP; Remove tears it down on detach. Both idempotent.
-// Nil hooks (all other modes) are never called.
+// RoutedIngressHooks report routed-NAT ingress changes to the host: Ensure when
+// a VPC's gateway transit IP is set or re-asserted, Remove on detach. Both must
+// be idempotent. Nil hooks (all other modes) are never called.
 type RoutedIngressHooks struct {
 	Ensure func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error
 	Remove func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error
@@ -79,6 +80,9 @@ type IGWManagerConfig struct {
 	// upstream nexthop, removing the dependency on lazy dynamic ARP. Optional;
 	// nil skips seeding.
 	NexthopSeed func(ctx context.Context, lrpName, nexthopIP string) error
+	// GatewayMTU is written to the gateway LRP's gateway_mtu option so OVN
+	// emits ICMP frag-needed for oversized packets. 0 = do not manage the option.
+	GatewayMTU int
 }
 
 type igwManager struct {
@@ -92,6 +96,7 @@ type igwManager struct {
 	barrier       FlowsBarrier
 	routedIngress *RoutedIngressHooks
 	nexthopSeed   func(ctx context.Context, lrpName, nexthopIP string) error
+	gatewayMTU    int
 }
 
 var _ IGWManager = (*igwManager)(nil)
@@ -125,6 +130,7 @@ func NewIGWManager(cfg IGWManagerConfig) (IGWManager, error) {
 		barrier:       barrier,
 		routedIngress: cfg.RoutedIngress,
 		nexthopSeed:   cfg.NexthopSeed,
+		gatewayMTU:    cfg.GatewayMTU,
 	}, nil
 }
 
@@ -164,6 +170,9 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 		if err := m.ensureNATAdvertisement(ctx, existing); err != nil {
 			return err
 		}
+		if err := m.ensureGatewayMTU(ctx, gwPortName); err != nil {
+			return err
+		}
 		// OVN state survives reboots but host routes do not: re-run the routed
 		// leg so reconcile's replayed attach re-ensures ingress + SNAT.
 		if m.natMode == policy.NATModeRouted {
@@ -193,15 +202,22 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 		if gwLrpIP != "" {
 			lrpExtIDs[gatewayIPExtIDKey] = gwLrpIP
 		}
+		var lrpOpts map[string]string
+		if m.gatewayMTU > 0 {
+			lrpOpts = map[string]string{gatewayMTUOption: strconv.Itoa(m.gatewayMTU)}
+		}
 		if err := m.ovn.CreateLogicalRouterPort(ctx, routerName, &nbdb.LogicalRouterPort{
 			Name:        gwPortName,
 			MAC:         networkids.HashMAC(gwPortName),
 			Networks:    []string{gwNetwork},
 			ExternalIDs: lrpExtIDs,
+			Options:     lrpOpts,
 		}); err != nil {
 			return fmt.Errorf("create gateway router port %s: %w", gwPortName, err)
 		}
 		createdLRP = true
+	} else if err := m.ensureGatewayMTU(ctx, gwPortName); err != nil {
+		return err
 	}
 
 	// nat-addresses is only honoured on a router-type port; OVN silently ignores
@@ -278,7 +294,7 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 // ensureRoutedLeg installs the routed-mode datapath legs for a VPC: the OVN
 // SNAT (VPC CIDR → gateway LRP transit IP) and the host ingress route into
 // it. No-op outside routed mode or without a gateway IP. Idempotent — the
-// reconcile loop replays AttachIGW, re-ensuring host state lost on reboot.
+// reconcile loop replays AttachIGW to re-ensure the SNAT.
 func (m *igwManager) ensureRoutedLeg(ctx context.Context, vpcID, gwLrpIP string) error {
 	if m.natMode != policy.NATModeRouted || gwLrpIP == "" {
 		return nil
@@ -401,6 +417,35 @@ func (m *igwManager) ensureNATAdvertisement(ctx context.Context, port *nbdb.Logi
 		return fmt.Errorf("set %s on %s: %w", natAdvertiseOption, port.Name, err)
 	}
 	slog.Info("external: enabled EIP advertisement on gateway port", "port", port.Name)
+	return nil
+}
+
+// gatewayMTUOption makes OVN answer packets larger than this with ICMP
+// frag-needed instead of silently dropping them at the gateway router.
+const gatewayMTUOption = "gateway_mtu"
+
+// ensureGatewayMTU converges the gateway_mtu option on a gateway LRP, leaving
+// its other options untouched. A no-op when no gateway MTU is configured.
+func (m *igwManager) ensureGatewayMTU(ctx context.Context, lrpName string) error {
+	if m.gatewayMTU == 0 {
+		return nil
+	}
+	lrp, err := m.ovn.GetLogicalRouterPort(ctx, lrpName)
+	if err != nil {
+		return fmt.Errorf("get gateway port %s to set %s: %w", lrpName, gatewayMTUOption, err)
+	}
+	want := strconv.Itoa(m.gatewayMTU)
+	if lrp.Options[gatewayMTUOption] == want {
+		return nil
+	}
+	opts := make(map[string]string, len(lrp.Options)+1)
+	maps.Copy(opts, lrp.Options)
+	opts[gatewayMTUOption] = want
+	lrp.Options = opts
+	if err := m.ovn.UpdateLogicalRouterPort(ctx, lrp); err != nil {
+		return fmt.Errorf("set %s on %s: %w", gatewayMTUOption, lrpName, err)
+	}
+	slog.Info("external: set gateway MTU on gateway port", "port", lrpName, "mtu", m.gatewayMTU)
 	return nil
 }
 

@@ -300,6 +300,27 @@ expected_nodes = 3
 
 // Tests for HasService / GetServices
 
+func TestSplitNameserverService(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in    []string
+		rest  []string
+		named bool
+	}{
+		"absent":                    {[]string{"nats", "daemon"}, []string{"nats", "daemon"}, false},
+		"alone keeps every service": {[]string{"northstar"}, nil, true},
+		"among others":              {[]string{"nats", " Northstar ", "daemon"}, []string{"nats", "daemon"}, true},
+		"empty":                     {nil, nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rest, named := SplitNameserverService(tc.in)
+			assert.Equal(t, tc.rest, rest)
+			assert.Equal(t, tc.named, named)
+		})
+	}
+	rest, _ := SplitNameserverService([]string{"northstar"})
+	assert.Equal(t, AllServices, Config{Services: rest}.GetServices(), "northstar alone must not narrow the node's services")
+}
+
 func TestHasService(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1425,4 +1446,120 @@ exoscale_instance_id = "0f1e2d3c-0000-4000-8000-000000000001"
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
+}
+
+// loadVultrPool loads a two-node cluster with one pool; nodes is the per-node
+// provider_host_id, empty to omit the key.
+func loadVultrPool(t *testing.T, externalMode, poolBody string, nodes [2]string) (*ClusterConfig, error) {
+	t.Helper()
+	resetViper(t)
+	body := "node = \"n1\"\n\n[network]\nexternal_mode = \"" + externalMode + "\"\n\n" +
+		"[[network.external_pools]]\nname = \"public\"\n" + poolBody + "\n"
+	for i, id := range nodes {
+		body += fmt.Sprintf("\n[nodes.n%d]\nregion = \"us-east-1\"\n", i+1)
+		if id != "" {
+			body += fmt.Sprintf("provider_host_id = %q\n", id)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "spinifex.toml")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0600))
+	return LoadConfig(path)
+}
+
+const vultrPoolBase = `
+source = "vultr"
+vultr_region = "ord"
+label_prefix = "spinifex-v1"
+`
+
+func TestLoadConfig_NetworkPoolVultrSourceAccepted(t *testing.T) {
+	cfg, err := loadVultrPool(t, "nat", vultrPoolBase+"vultr_key_file = \"/etc/spinifex/vultr/api-key\"\n",
+		[2]string{"e7d5eb7e-ca76-443c-8a59-fc450b1ed475", "0f1e2d3c-0000-4000-8000-000000000002"})
+	require.NoError(t, err)
+	p := cfg.Network.ExternalPools[0]
+	assert.Equal(t, "vultr", p.Source)
+	assert.Equal(t, "ord", p.VultrRegion)
+	assert.Equal(t, "spinifex-v1", p.LabelPrefix)
+	assert.Equal(t, "/etc/spinifex/vultr/api-key", p.VultrKeyFile)
+	assert.Equal(t, "e7d5eb7e-ca76-443c-8a59-fc450b1ed475", cfg.Nodes["n1"].ProviderHostID)
+}
+
+func TestLoadConfig_NetworkPoolVultrRejections(t *testing.T) {
+	both := [2]string{"a", "b"}
+	cases := []struct {
+		name, mode, body string
+		nodes            [2]string
+		want             string
+	}{
+		{"pool mode", "pool", vultrPoolBase, both, `requires [network] external_mode = "nat"`},
+		{"no region", "nat", "source = \"vultr\"\nlabel_prefix = \"p\"\n", both, "requires vultr_region and label_prefix"},
+		{"no prefix", "nat", "source = \"vultr\"\nvultr_region = \"ord\"\n", both, "requires vultr_region and label_prefix"},
+		{"colon in prefix", "nat", "source = \"vultr\"\nvultr_region = \"ord\"\nlabel_prefix = \"a:b\"\n", both, "must not contain ':'"},
+		{"relative key file", "nat", vultrPoolBase + "vultr_key_file = \"api-key\"\n", both, "absolute path"},
+		{"range", "nat", vultrPoolBase + "range_start = \"1.2.3.4\"\nrange_end = \"1.2.3.4\"\n", both, "Vultr picks the address"},
+		{"gw lrp range", "nat", vultrPoolBase + "gw_lrp_range_start = \"1.2.3.4\"\ngw_lrp_range_end = \"1.2.3.5\"\n", both, "account quota"},
+		{"a node without its host id", "nat", vultrPoolBase, [2]string{"a", ""}, "[nodes.n2] provider_host_id is required"},
+		{"vultr keys on static", "nat", "vultr_region = \"ord\"\n", both, `only valid with source="vultr"`},
+		{"exoscale keys", "nat", vultrPoolBase + "exoscale_zone = \"de-fra-1\"\n", both, `exoscale_* keys are only valid`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadVultrPool(t, tc.mode, tc.body, tc.nodes)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestLoadConfig_NorthstarNameservers(t *testing.T) {
+	load := func(t *testing.T, block string) (*ClusterConfig, error) {
+		t.Helper()
+		resetViper(t)
+		path := filepath.Join(t.TempDir(), "spinifex.toml")
+		body := "node = \"n1\"\n\n" + block + "\n[nodes.n1]\nregion = \"us-east-1\"\n\n[nodes.n2]\nregion = \"us-east-1\"\n"
+		require.NoError(t, os.WriteFile(path, []byte(body), 0600))
+		return LoadConfig(path)
+	}
+
+	t.Run("absent block means automatic", func(t *testing.T) {
+		cfg, err := load(t, "")
+		require.NoError(t, err)
+		assert.Zero(t, cfg.Northstar.NameserverCount)
+		assert.Empty(t, cfg.Northstar.NameserverNodes)
+	})
+
+	t.Run("count and pin load", func(t *testing.T) {
+		cfg, err := load(t, "[northstar]\nnameserver_count = 2\nnameserver_nodes = [\"n2\", \"n1\"]\n")
+		require.NoError(t, err)
+		assert.Equal(t, 2, cfg.Northstar.NameserverCount)
+		assert.Equal(t, []string{"n2", "n1"}, cfg.Northstar.NameserverNodes)
+	})
+
+	for name, tc := range map[string]struct{ block, want string }{
+		"count above the cap":       {"[northstar]\nnameserver_count = 5\n", "nameserver_count=5"},
+		"negative count":            {"[northstar]\nnameserver_count = -1\n", "nameserver_count=-1"},
+		"pin longer than count":     {"[northstar]\nnameserver_count = 1\nnameserver_nodes = [\"n1\", \"n2\"]\n", "nameserver_count is 1"},
+		"pin names an unknown node": {"[northstar]\nnameserver_nodes = [\"n9\"]\n", `"n9"`},
+		"pin repeats a node":        {"[northstar]\nnameserver_nodes = [\"n1\", \"n1\"]\n", "twice"},
+		"pin above the cap":         {"[northstar]\nnameserver_nodes = [\"n1\", \"n2\", \"n3\", \"n4\", \"n5\"]\n", "at most 4"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := load(t, tc.block)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestNodesRunning(t *testing.T) {
+	c := ClusterConfig{Nodes: map[string]Config{
+		"b": {Services: []string{"nats", "awsgw"}},
+		"a": {Services: []string{"daemon"}},
+		"c": {},
+		"d": {Services: []string{"awsgw", "daemon"}},
+	}}
+	// An empty service list means every service, so c runs awsgw too.
+	assert.Equal(t, []string{"b", "c", "d"}, c.NodesRunning("awsgw"))
+	assert.Equal(t, []string{"a", "c", "d"}, c.NodesRunning("daemon"))
+	assert.Empty(t, c.NodesRunning("nonesuch"))
 }

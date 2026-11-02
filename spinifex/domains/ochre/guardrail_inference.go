@@ -18,7 +18,7 @@ func loadGuardrailView(ctx context.Context, store *GuardrailStore, accountID, id
 	if store == nil || ident == "" {
 		return guardrailView{}, errGuardrailNotFound(ident, "")
 	}
-	id, err := resolveGuardrailID(ident, store.region, accountID)
+	id, err := ResolveGuardrailID(ident, store.region, accountID)
 	if err != nil {
 		return guardrailView{}, err
 	}

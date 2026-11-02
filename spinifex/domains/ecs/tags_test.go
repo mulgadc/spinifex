@@ -161,7 +161,14 @@ func TestService_Tags_TaskDefinitionRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listed.Tags, 1)
 
+	// AWS returns tags only when include names TAGS, and [] otherwise.
 	described, err := svc.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String(arn)}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []*ecs.Tag{}, described.Tags)
+
+	described, err = svc.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{
+		TaskDefinition: aws.String(arn), Include: aws.StringSlice([]string{ecs.TaskDefinitionFieldTags}),
+	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, described.Tags, 1)
 	assert.Equal(t, "env", aws.StringValue(described.Tags[0].Key))

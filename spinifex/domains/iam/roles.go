@@ -254,24 +254,17 @@ func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput
 		return nil, err
 	}
 
-	role, err := s.getRole(ctx, accountID, roleName)
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
+		if input.Description != nil {
+			role.Description = *input.Description
+		}
+		if input.MaxSessionDuration != nil {
+			role.MaxSessionDuration = *input.MaxSessionDuration
+		}
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if input.Description != nil {
-		role.Description = *input.Description
-	}
-	if input.MaxSessionDuration != nil {
-		role.MaxSessionDuration = *input.MaxSessionDuration
-	}
-
-	data, err := json.Marshal(role)
-	if err != nil {
-		return nil, fmt.Errorf("marshal role: %w", err)
-	}
-	if _, err := s.rolesBucket.Put(ctx, accountID+"."+roleName, data); err != nil {
-		return nil, fmt.Errorf("update role: %w", err)
 	}
 
 	slog.Info("IAM role updated", "accountID", accountID, "roleName", roleName)
@@ -287,19 +280,14 @@ func (s *IAMServiceImpl) UpdateRoleDescription(accountID string, input *iam.Upda
 		return nil, err
 	}
 
-	role, err := s.getRole(ctx, accountID, roleName)
+	var role *Role
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(r *Role) (bool, error) {
+		r.Description = *input.Description
+		role = r
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	role.Description = *input.Description
-
-	data, err := json.Marshal(role)
-	if err != nil {
-		return nil, fmt.Errorf("marshal role: %w", err)
-	}
-	if _, err := s.rolesBucket.Put(ctx, accountID+"."+roleName, data); err != nil {
-		return nil, fmt.Errorf("update role description: %w", err)
 	}
 
 	slog.Info("IAM role description updated", "accountID", accountID, "roleName", roleName)
@@ -315,19 +303,12 @@ func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.Upd
 			"trust policy for role %q: %w", roleName, err)
 	}
 
-	role, err := s.getRole(ctx, accountID, roleName)
+	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
+		role.AssumeRolePolicyDocument = *input.PolicyDocument
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	role.AssumeRolePolicyDocument = *input.PolicyDocument
-
-	data, err := json.Marshal(role)
-	if err != nil {
-		return nil, fmt.Errorf("marshal role: %w", err)
-	}
-	if _, err := s.rolesBucket.Put(ctx, accountID+"."+roleName, data); err != nil {
-		return nil, fmt.Errorf("update role trust policy: %w", err)
 	}
 
 	slog.Info("IAM role trust policy updated", "accountID", accountID, "roleName", roleName)
@@ -638,6 +619,7 @@ func (s *IAMServiceImpl) getRole(ctx context.Context, accountID, roleName string
 // to one role at once) write the same record concurrently. mutate reports
 // whether it changed the record; a false return commits nothing.
 func (s *IAMServiceImpl) updateRoleCAS(ctx context.Context, accountID, roleName string, mutate func(*Role) (bool, error)) error {
+	defer s.recordLocks.lock("role/" + accountID + "." + roleName)()
 	_, err := kvutil.Update(ctx, s.rolesBucket, accountID+"."+roleName, kvutil.CASConfig{
 		Attempts: roleCASMaxRetries,
 		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),
@@ -802,7 +784,7 @@ func ValidateTrustPolicyDocument(docJSON string) (*TrustPolicyDocument, error) {
 
 // validateWebIdentityCondition gates Condition blocks to the two actions STS
 // evaluates conditions for: sts:AssumeRoleWithWebIdentity (the IRSA {iss}:sub /
-// {iss}:aud keys, StringEquals only) and sts:AssumeRole (aws:SourceAccount,
+// {iss}:aud keys, StringEquals and StringLike) and sts:AssumeRole (aws:SourceAccount,
 // StringEquals only). Everything else is rejected at write time — accepting a
 // condition nothing evaluates would store a security control that never fires.
 func validateWebIdentityCondition(i int, stmt TrustStatement) error {
@@ -821,8 +803,8 @@ func validateWebIdentityCondition(i int, stmt TrustStatement) error {
 
 	if action == STSActionAssumeRoleWithWebIdentity {
 		for op := range ops {
-			if op != "StringEquals" {
-				return fmt.Errorf("statement %d: Condition operator %q on action %q is not supported in this release; only StringEquals is supported", i, op, action)
+			if op != "StringEquals" && op != "StringLike" {
+				return fmt.Errorf("statement %d: Condition operator %q on action %q is not supported in this release; supported operators are StringEquals and StringLike", i, op, action)
 			}
 		}
 		return nil

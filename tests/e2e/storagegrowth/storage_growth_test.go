@@ -326,7 +326,6 @@ func createWorkloadVolume(t *testing.T, fix *Fixture, az string, retain bool) st
 
 	// The volume's own backing-store cost is the subject under test, so its
 	// identity and lifetime cannot be delegated to the memoized helper.
-	// e2e:allow-create
 	out, err := fix.AWS.EC2.CreateVolume(&ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String(az),
 		Size:             aws.Int64(npassVolumeSizeGiB),

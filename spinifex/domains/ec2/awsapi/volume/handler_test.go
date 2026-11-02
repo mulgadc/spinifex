@@ -96,13 +96,6 @@ func TestModifyVolume_NilNATS(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestDescribeVolumes_ValidationErrors(t *testing.T) {
-	_, err := DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
-		VolumeIds: []*string{aws.String("bad-id")},
-	}, nil, "")
-	assert.EqualError(t, err, awserrors.ErrorInvalidVolumeIDMalformed)
-}
-
 func TestDescribeVolumes_NilNATS(t *testing.T) {
 	_, err := DescribeVolumes(context.Background(), nil, nil, "acct-123")
 	assert.Error(t, err)

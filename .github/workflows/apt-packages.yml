@@ -2,7 +2,8 @@ name: Apt Packages
 
 # Path-filtered like image-scripts.yml: this resolves setup.sh's runtime package
 # list against each supported suite's real indices, so a renamed, dropped, or
-# ambiguously virtual package fails here rather than on a user's machine.
+# ambiguously virtual package fails here rather than on a user's machine. The
+# dnf job does the same for Oracle Linux, through setup.sh's own repo setup.
 on:
   push:
     branches:
@@ -11,6 +12,7 @@ on:
     paths:
       - scripts/setup.sh
       - scripts/lint-apt-packages.sh
+      - scripts/lint-dnf-packages.sh
       - .github/workflows/apt-packages.yml
   pull_request:
     branches:
@@ -19,6 +21,7 @@ on:
     paths:
       - scripts/setup.sh
       - scripts/lint-apt-packages.sh
+      - scripts/lint-dnf-packages.sh
       - .github/workflows/apt-packages.yml
   workflow_dispatch:
 
@@ -44,3 +47,14 @@ jobs:
 
       - name: Resolve runtime package list
         run: ./scripts/lint-apt-packages.sh ${{ matrix.image }}
+
+  dnf_packages:
+    name: Resolve dnf list (oraclelinux:10)
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7.0.1
+
+      - name: Resolve runtime package list
+        run: ./scripts/lint-dnf-packages.sh oraclelinux:10

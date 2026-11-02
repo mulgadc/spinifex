@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/mock"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
@@ -784,4 +785,122 @@ func TestAttachIGW_NexthopSeed_NilHookSkipped(t *testing.T) {
 	mgr, _ := newTestIGWManager(t, m, policy.NATModeCentralized, pool, NewStaticRangeAllocator(m), []string{"chassis-a"})
 
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+}
+
+// failingLRPUpdateClient fails UpdateLogicalRouterPort; the mock has no hook.
+type failingLRPUpdateClient struct{ *mock.Client }
+
+func (failingLRPUpdateClient) UpdateLogicalRouterPort(context.Context, *nbdb.LogicalRouterPort) error {
+	return errors.New("nb unavailable")
+}
+
+func newGatewayMTUManager(t *testing.T, c ovn.Client, mtu int) IGWManager {
+	t.Helper()
+	nm, err := policy.NewNATManager(c, policy.NATModeDistributed)
+	require.NoError(t, err)
+	mgr, err := NewIGWManager(IGWManagerConfig{
+		OVN:        c,
+		Routes:     policy.NewRouteManager(c),
+		NAT:        nm,
+		Allocator:  LinkLocalAllocator{},
+		Chassis:    []string{"chassis-a"},
+		NATMode:    policy.NATModeDistributed,
+		GatewayMTU: mtu,
+	})
+	require.NoError(t, err)
+	return mgr
+}
+
+func seedGatewayLRP(t *testing.T, m *mock.Client, vpcID string, opts map[string]string) {
+	t.Helper()
+	require.NoError(t, m.CreateLogicalRouterPort(context.Background(), topology.VPCRouter(vpcID), &nbdb.LogicalRouterPort{
+		Name:     topology.GatewayRouterPort(vpcID),
+		MAC:      "02:00:00:00:00:01",
+		Networks: []string{"169.254.0.1/30"},
+		Options:  opts,
+	}))
+}
+
+func seedGatewaySwitchPort(t *testing.T, m *mock.Client, vpcID string) {
+	t.Helper()
+	ctx := context.Background()
+	_, _, err := m.EnsureLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: topology.ExternalSwitchShared()})
+	require.NoError(t, err)
+	require.NoError(t, m.CreateLogicalSwitchPort(ctx, topology.ExternalSwitchShared(), &nbdb.LogicalSwitchPort{
+		Name:    topology.GatewaySwitchPort(vpcID),
+		Type:    "router",
+		Options: map[string]string{"router-port": topology.GatewayRouterPort(vpcID), natAdvertiseOption: "router"},
+	}))
+}
+
+func gatewayLRPOptions(t *testing.T, m *mock.Client, vpcID string) map[string]string {
+	t.Helper()
+	lrp, err := m.GetLogicalRouterPort(context.Background(), topology.GatewayRouterPort(vpcID))
+	require.NoError(t, err)
+	return lrp.Options
+}
+
+func TestAttachIGW_SetsGatewayMTUOnNewAttach(t *testing.T) {
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	mgr := newGatewayMTUManager(t, m, 1442)
+	require.NoError(t, mgr.AttachIGW(context.Background(), IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	assert.Equal(t, "1442", gatewayLRPOptions(t, m, "vpc-1")[gatewayMTUOption])
+}
+
+func TestAttachIGW_ConvergesGatewayMTUOnAnAttachedVPC(t *testing.T) {
+	for name, opts := range map[string]map[string]string{
+		"missing": nil,
+		"stale":   {gatewayMTUOption: "1408"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := mock.New()
+			seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+			seedGatewayLRP(t, m, "vpc-1", opts)
+			seedGatewaySwitchPort(t, m, "vpc-1")
+			mgr := newGatewayMTUManager(t, m, 1442)
+			require.NoError(t, mgr.AttachIGW(context.Background(), IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+			assert.Equal(t, "1442", gatewayLRPOptions(t, m, "vpc-1")[gatewayMTUOption])
+		})
+	}
+}
+
+func TestAttachIGW_SetsGatewayMTUOnExistingLRPWithoutSwitchPort(t *testing.T) {
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	seedGatewayLRP(t, m, "vpc-1", nil)
+	mgr := newGatewayMTUManager(t, m, 1442)
+	require.NoError(t, mgr.AttachIGW(context.Background(), IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	assert.Equal(t, "1442", gatewayLRPOptions(t, m, "vpc-1")[gatewayMTUOption])
+}
+
+func TestAttachIGW_ZeroGatewayMTUManagesNothing(t *testing.T) {
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	mgr := newGatewayMTUManager(t, m, 0)
+	require.NoError(t, mgr.AttachIGW(context.Background(), IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	assert.NotContains(t, gatewayLRPOptions(t, m, "vpc-1"), gatewayMTUOption)
+}
+
+func TestAttachIGW_GatewayMTUPreservesOtherLRPOptions(t *testing.T) {
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	seedGatewayLRP(t, m, "vpc-1", map[string]string{"reside-on-redirect-chassis": "true"})
+	seedGatewaySwitchPort(t, m, "vpc-1")
+	mgr := newGatewayMTUManager(t, m, 1442)
+	require.NoError(t, mgr.AttachIGW(context.Background(), IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	opts := gatewayLRPOptions(t, m, "vpc-1")
+	assert.Equal(t, "1442", opts[gatewayMTUOption])
+	assert.Equal(t, "true", opts["reside-on-redirect-chassis"])
+}
+
+func TestAttachIGW_GatewayMTUUpdateErrorNamesThePort(t *testing.T) {
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	seedGatewayLRP(t, m, "vpc-1", nil)
+	seedGatewaySwitchPort(t, m, "vpc-1")
+	mgr := newGatewayMTUManager(t, failingLRPUpdateClient{m}, 1442)
+	err := mgr.AttachIGW(context.Background(), IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), topology.GatewayRouterPort("vpc-1"))
 }

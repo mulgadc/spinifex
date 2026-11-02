@@ -1,7 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useState } from "react"
 
+import {
+  type DataColumn,
+  DataTable,
+  type SortState,
+} from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -34,7 +40,7 @@ function accountLabel(account: AccountSummary): string {
   return `${account.accountName} (${account.accountId}) — ${account.status}`
 }
 
-function ModelAccessRow({
+function ModelAccessAction({
   entry,
   accountId,
   granted,
@@ -45,6 +51,7 @@ function ModelAccessRow({
 }) {
   const queryClient = useQueryClient()
   const modelAccessQueryKey = adminModelAccessQueryOptions(accountId).queryKey
+  const [confirm, setConfirm] = useState(false)
 
   const grant = useMutation({
     mutationFn: grantModelAccess,
@@ -62,44 +69,92 @@ function ModelAccessRow({
 
   const pending = grant.isPending || revoke.isPending
 
+  if (!granted) {
+    return (
+      <Button
+        disabled={pending}
+        onClick={() => {
+          grant.mutate({ accountId, modelId: entry.modelId })
+        }}
+        size="sm"
+        variant="outline"
+      >
+        Grant
+      </Button>
+    )
+  }
+
   return (
-    <tr className="border-b last:border-0" key={entry.modelId}>
-      <td className="py-1.5 pr-4">
-        <div className="font-medium">{entry.modelName}</div>
-        <div className="font-mono text-muted-foreground">{entry.modelId}</div>
-      </td>
-      <td className="py-1.5 pr-4">
-        <Badge variant={granted ? "default" : "secondary"}>
-          {granted ? "Granted" : "Ungranted"}
-        </Badge>
-      </td>
-      <td className="py-1.5">
-        {granted ? (
-          <Button
-            disabled={pending}
-            onClick={() => {
-              revoke.mutate({ accountId, modelId: entry.modelId })
-            }}
-            size="sm"
-            variant="destructive"
-          >
-            Revoke
-          </Button>
-        ) : (
-          <Button
-            disabled={pending}
-            onClick={() => {
-              grant.mutate({ accountId, modelId: entry.modelId })
-            }}
-            size="sm"
-            variant="outline"
-          >
-            Grant
-          </Button>
-        )}
-      </td>
-    </tr>
+    <>
+      <Button
+        disabled={pending}
+        onClick={() => {
+          setConfirm(true)
+        }}
+        size="sm"
+        variant="destructive"
+      >
+        Revoke
+      </Button>
+      <ResourceDeleteDialog
+        confirmLabel="Revoke"
+        description={`Revoke ${accountId}'s access to ${entry.modelName}? Its calls to the model are refused from then on.`}
+        identifier={{ accountId, modelId: entry.modelId }}
+        mutation={revoke}
+        onOpenChange={setConfirm}
+        open={confirm}
+        pendingLabel="Revoking…"
+        title="Revoke model access"
+      />
+    </>
   )
+}
+
+function modelAccessColumns(
+  accountId: string,
+  grantedModelIds: ReadonlySet<string>,
+): DataColumn<AdminCatalogEntry>[] {
+  return [
+    {
+      id: "model",
+      header: "Model",
+      sortValue: (entry) => entry.modelName,
+      cell: (entry) => (
+        <div className="min-w-0">
+          <div className="truncate font-medium">{entry.modelName}</div>
+          <div className="truncate font-mono text-xs text-muted-foreground">
+            {entry.modelId}
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: "access",
+      header: "Access",
+      sortValue: (entry) => (grantedModelIds.has(entry.modelId) ? 0 : 1),
+      cell: (entry) => {
+        const granted = grantedModelIds.has(entry.modelId)
+
+        return (
+          <Badge variant={granted ? "default" : "secondary"}>
+            {granted ? "Granted" : "Ungranted"}
+          </Badge>
+        )
+      },
+    },
+    {
+      id: "action",
+      header: "Action",
+      align: "end",
+      cell: (entry) => (
+        <ModelAccessAction
+          accountId={accountId}
+          entry={entry}
+          granted={grantedModelIds.has(entry.modelId)}
+        />
+      ),
+    },
+  ]
 }
 
 function ModelAccessTable({
@@ -111,28 +166,18 @@ function ModelAccessTable({
   accountId: string
   grantedModelIds: Set<string>
 }) {
+  const [sort, setSort] = useState<SortState>({ column: "model", desc: false })
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="pr-4 pb-1 font-medium">Model</th>
-            <th className="pr-4 pb-1 font-medium">Access</th>
-            <th className="pb-1 font-medium">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {entries.map((entry) => (
-            <ModelAccessRow
-              accountId={accountId}
-              entry={entry}
-              granted={grantedModelIds.has(entry.modelId)}
-              key={entry.modelId}
-            />
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      caption="Model access"
+      columns={modelAccessColumns(accountId, grantedModelIds)}
+      empty="No models found."
+      getRowId={(entry) => entry.modelId}
+      onSortChange={setSort}
+      rows={entries}
+      sort={sort}
+    />
   )
 }
 

@@ -11,12 +11,14 @@ set -eu
 # cron can branch without re-parsing, then disables itself so it runs exactly
 # once.
 #
-#   server      → eks-token-webhook, k3s (server), k3s-first-boot (bootstrap
-#                 publish), mulga-eks-state-report
+#   server      → eks-token-webhook, k3s (server), eks-pod-identity-webhook,
+#                 k3s-first-boot (bootstrap publish), mulga-eks-state-report,
+#                 mulga-eks-node-gc
 #   server-join → eks-token-webhook, k3s (server, joins the first server's etcd
-#                 quorum), mulga-eks-state-report. NO k3s-first-boot: the first
-#                 server already publishes the cluster-identical bootstrap
-#                 artifacts; a join re-publish only races the bootstrap bus.
+#                 quorum), eks-pod-identity-webhook, mulga-eks-state-report,
+#                 mulga-eks-node-gc. NO k3s-first-boot: the first server
+#                 already publishes the cluster-identical bootstrap artifacts;
+#                 a join re-publish only races the bootstrap bus.
 #   agent       → k3s-agent
 #
 # Paths are overridable via env so the selection logic is unit-testable (bats)
@@ -80,6 +82,14 @@ svc_start() {
     esac
 }
 
+# IRSA injector: every server runs one, called by its own apiserver. It is
+# optional (failurePolicy Ignore), so it goes last and a fault only costs
+# injection, never the control plane.
+svc_optional() {
+    svc_enable "$1" && svc_start "$1" ||
+        log "WARN: optional service $1 failed to enable or start; continuing without it"
+}
+
 svc_disable() {
     case "${INIT_SYSTEM}" in
         openrc) rc-update del "$1" default 2>/dev/null || true ;;
@@ -140,6 +150,7 @@ case "${ROLE}" in
         # writer owns. HA multi-server addon delivery is tracked separately
         # Server-join nodes do not run this setup.
         svc_enable mulga-eks-addon-sync
+        svc_enable mulga-eks-node-gc
         svc_start eks-token-webhook
         svc_start mulga-eks-k3s-recovery
         svc_start k3s
@@ -147,6 +158,8 @@ case "${ROLE}" in
         svc_start k3s-first-boot
         svc_start mulga-eks-state-report
         svc_start mulga-eks-addon-sync
+        svc_start mulga-eks-node-gc
+        svc_optional eks-pod-identity-webhook
         ;;
     server-join)
         log "configuring server-join role"
@@ -158,11 +171,14 @@ case "${ROLE}" in
         svc_enable k3s
         svc_enable konnectivity-server
         svc_enable mulga-eks-state-report
+        svc_enable mulga-eks-node-gc
         svc_start eks-token-webhook
         svc_start mulga-eks-k3s-recovery
         svc_start k3s
         svc_start konnectivity-server
         svc_start mulga-eks-state-report
+        svc_start mulga-eks-node-gc
+        svc_optional eks-pod-identity-webhook
         ;;
     agent)
         log "configuring agent role"

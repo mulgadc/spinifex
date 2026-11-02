@@ -224,7 +224,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	groupNames := make(map[string]string)
 	s.fillSGNames(ctx, accountID, record.SecurityGroupIds, groupNames)
 	return &ec2.CreateNetworkInterfaceOutput{
-		NetworkInterface: s.eniRecordToEC2(&record, accountID, groupNames),
+		NetworkInterface: s.eniRecordToEC2(&record, accountID, groupNames, s.vpcDNSHostnames(ctx, accountID, record.VpcId)),
 	}, nil
 }
 
@@ -239,7 +239,7 @@ func (s *VPCServiceImpl) DeleteNetworkInterface(ctx context.Context, input *ec2.
 
 // ForceDeleteInstanceENI deletes an instance's own ENI, bypassing the in-use
 // guard. The guard protects against deleting an ENI a *different* live instance
-// holds; an instance tearing down its own ENI is always permitted (ADR-0003 §2),
+// holds; an instance tearing down its own ENI is always permitted (historic PROP-LIFECYCLE-003 §2),
 // which breaks the un-terminable-ENI deadlock. Absent is success (idempotent).
 func (s *VPCServiceImpl) ForceDeleteInstanceENI(ctx context.Context, accountID, eniId string) error {
 	if eniId == "" {
@@ -257,7 +257,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			// Internal teardown (force) tolerates an already-gone ENI so
-			// instance terminate converges (ADR-0003 §2); the public API is
+			// instance terminate converges (historic PROP-LIFECYCLE-003 §2); the public API is
 			// AWS-faithful and returns NotFound.
 			if force {
 				return &ec2.DeleteNetworkInterfaceOutput{}, nil
@@ -274,7 +274,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 
 	// Cannot delete an ENI that is a live attachment unless the owning
 	// instance forces teardown. An ENI whose instance is gone is detached by
-	// terminate (0003 §2) and falls through as deletable.
+	// terminate (historic PROP-LIFECYCLE-003 §2) and falls through as deletable.
 	if !force && eniIsLiveAttachment(&record) {
 		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
 	}
@@ -595,7 +595,7 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 		}
 
 		s.fillSGNames(ctx, accountID, record.SecurityGroupIds, groupNames)
-		enis = append(enis, s.eniRecordToEC2(&record, accountID, groupNames))
+		enis = append(enis, s.eniRecordToEC2(&record, accountID, groupNames, s.vpcDNSHostnames(ctx, accountID, record.VpcId)))
 	}
 
 	// If specific ENI IDs were requested but not found, return error
@@ -694,43 +694,39 @@ func eniMatchesFilters(record *ENIRecord, filters map[string][]string) bool {
 // AttachENI marks an ENI as attached to an instance (internal use by RunInstances).
 // accountID scopes the lookup to the correct KV key.
 func (s *VPCServiceImpl) AttachENI(accountID, eniId, instanceId string, deviceIndex int64) (string, error) {
-	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex)
+	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex, "")
 }
 
-func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instanceId string, deviceIndex int64) (string, error) {
-	key := kvutil.AccountKey(accountID, eniId)
-	entry, err := s.eniKV.Get(ctx, key)
-	if err != nil {
-		return "", eniNotFoundError(eniId)
-	}
+// AttachENIWithOwner attaches the ENI and records instanceOwnerID as the owner
+// of the attached instance in the same write, so no later write can lose the
+// stamp. An empty owner leaves the record's owner untouched.
+func (s *VPCServiceImpl) AttachENIWithOwner(accountID, eniId, instanceId string, deviceIndex int64, instanceOwnerID string) (string, error) {
+	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex, instanceOwnerID)
+}
 
-	var record ENIRecord
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return "", errors.New(awserrors.ErrorServerInternal)
-	}
-
-	if record.Status == "in-use" {
-		return "", errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
-	}
-
+func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instanceId string, deviceIndex int64, instanceOwnerID string) (string, error) {
 	attachmentId := awsidentifiers.GenerateResourceID("eni-attach")
-	record.Status = "in-use"
-	record.AttachmentId = attachmentId
-	record.InstanceId = instanceId
-	record.DeviceIndex = deviceIndex
-	// Default DeleteOnTermination to true on first attach, matching what
-	// DescribeNetworkInterfaces already advertises; a record carrying an
-	// explicit value from an earlier attach keeps it across re-attach.
-	if record.DeleteOnTermination == nil {
-		record.DeleteOnTermination = aws.Bool(true)
-	}
-
-	data, err := json.Marshal(record)
+	err := s.casENI(ctx, kvutil.AccountKey(accountID, eniId), eniId, func(record *ENIRecord) error {
+		if record.Status == "in-use" {
+			return errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
+		}
+		record.Status = "in-use"
+		record.AttachmentId = attachmentId
+		record.InstanceId = instanceId
+		record.DeviceIndex = deviceIndex
+		if instanceOwnerID != "" {
+			record.InstanceOwnerId = instanceOwnerID
+		}
+		// Default DeleteOnTermination to true on first attach, matching what
+		// DescribeNetworkInterfaces already advertises; a record carrying an
+		// explicit value from an earlier attach keeps it across re-attach.
+		if record.DeleteOnTermination == nil {
+			record.DeleteOnTermination = aws.Bool(true)
+		}
+		return nil
+	})
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal ENI record: %w", err)
-	}
-	if _, err := s.eniKV.Update(ctx, key, data, entry.Revision()); err != nil {
-		return "", errors.New(awserrors.ErrorServerInternal)
+		return "", err
 	}
 
 	slog.InfoContext(ctx, "ENI attached", "eniId", eniId, "instanceId", instanceId, "attachmentId", attachmentId)
@@ -796,24 +792,69 @@ func (s *VPCServiceImpl) UpdateENI(accountID, eniId string, fn func(*ENIRecord))
 }
 
 func (s *VPCServiceImpl) updateENI(ctx context.Context, accountID, eniId string, fn func(*ENIRecord)) error {
-	key := kvutil.AccountKey(accountID, eniId)
-	entry, err := s.eniKV.Get(ctx, key)
-	if err != nil {
-		return eniNotFoundError(eniId)
+	return s.casENI(ctx, kvutil.AccountKey(accountID, eniId), eniId, func(r *ENIRecord) error {
+		fn(r)
+		return nil
+	})
+}
+
+const (
+	eniCASAttempts = 3
+	eniCASBackoff  = 10 * time.Millisecond
+)
+
+// storeError reports ServerInternal to API callers while keeping the store
+// failure reachable through errors.Is for the caller's log.
+type storeError struct{ cause error }
+
+func (e *storeError) Error() string { return awserrors.ErrorServerInternal }
+func (e *storeError) Unwrap() error { return e.cause }
+
+// casENI reads the ENI record, applies mutate and writes it back under the
+// revision it read. A direct get can be answered by a replica that has not yet
+// applied the caller's own earlier write, so a revision conflict re-reads and
+// re-applies mutate, bounded. mutate may run more than once and must only
+// depend on the record it is given.
+func (s *VPCServiceImpl) casENI(ctx context.Context, key, eniId string, mutate func(*ENIRecord) error) error {
+	var lastErr error
+	attempts := 0
+	for attempt := range eniCASAttempts {
+		attempts = attempt + 1
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return &storeError{ctx.Err()}
+			case <-time.After(time.Duration(attempt) * eniCASBackoff):
+			}
+		}
+		entry, err := s.eniKV.Get(ctx, key)
+		if err != nil {
+			return eniNotFoundError(eniId)
+		}
+		var record ENIRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		if err := mutate(&record); err != nil {
+			return err
+		}
+		data, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("marshal ENI record: %w", err)
+		}
+		if _, err = s.eniKV.Update(ctx, key, data, entry.Revision()); err == nil {
+			if attempt > 0 {
+				slog.InfoContext(ctx, "ENI write succeeded after revision conflict", "eniId", eniId, "attempt", attempt+1)
+			}
+			return nil
+		}
+		lastErr = err
+		if !errors.Is(err, jetstream.ErrKeyExists) {
+			break
+		}
 	}
-	var record ENIRecord
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	fn(&record)
-	data, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("marshal ENI record: %w", err)
-	}
-	if _, err := s.eniKV.Update(ctx, key, data, entry.Revision()); err != nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	return nil
+	slog.ErrorContext(ctx, "ENI write failed", "eniId", eniId, "attempts", attempts, "err", lastErr)
+	return &storeError{lastErr}
 }
 
 // ListInstanceENIs returns every ENIRecord in accountID currently attached to
@@ -1035,9 +1076,26 @@ func (s *VPCServiceImpl) fillSGNames(ctx context.Context, accountID string, ids 
 	}
 }
 
+// vpcDNSHostnames reports whether the VPC has enableDnsHostnames on. An
+// unreadable VPC reads as off, so its interfaces go unnamed.
+func (s *VPCServiceImpl) vpcDNSHostnames(ctx context.Context, accountID, vpcID string) bool {
+	entry, err := s.vpcKV.Get(ctx, kvutil.AccountKey(accountID, vpcID))
+	if err != nil {
+		slog.WarnContext(ctx, "vpcDNSHostnames: VPC read failed", "vpcId", vpcID, "err", err)
+		return false
+	}
+	var rec VPCRecord
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		slog.WarnContext(ctx, "vpcDNSHostnames: VPC unmarshal failed", "vpcId", vpcID, "err", err)
+		return false
+	}
+	return rec.EnableDnsHostnames
+}
+
 // eniRecordToEC2 converts an ENI record to an EC2 NetworkInterface, naming
-// each security group from groupNames.
-func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, groupNames map[string]string) *ec2.NetworkInterface {
+// each security group from groupNames. AWS names the interface only while its
+// VPC has enableDnsHostnames on.
+func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, groupNames map[string]string, dnsHostnames bool) *ec2.NetworkInterface {
 	// ENIs with spinifex:managed-by tag are system-managed (e.g. by ELBv2)
 	requesterManaged := record.Tags["spinifex:managed-by"] != ""
 
@@ -1075,7 +1133,7 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, gro
 		eni.Groups = groups
 	}
 
-	if s.privateDNSName != nil && record.PrivateIpAddress != "" {
+	if dnsHostnames && s.privateDNSName != nil && record.PrivateIpAddress != "" {
 		if name := s.privateDNSName(record.PrivateIpAddress); name != "" {
 			eni.PrivateDnsName = aws.String(name)
 			eni.PrivateIpAddresses[0].PrivateDnsName = aws.String(name)

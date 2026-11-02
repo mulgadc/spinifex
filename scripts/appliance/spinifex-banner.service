@@ -1,0 +1,15 @@
+[Unit]
+Description=Spinifex console banner and boot health check
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/spx admin banner --boot-check
+RemainAfterExit=yes
+# Cap it so a stuck boot-check cannot hold getty behind the console drop-in.
+TimeoutStartSec=30s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

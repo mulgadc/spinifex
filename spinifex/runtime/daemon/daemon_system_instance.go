@@ -39,29 +39,24 @@ func resolveENIAccount(owner, fallback string) string {
 	return fallback
 }
 
-// recordENIInstanceOwner stamps the attached instance's owning account onto the
-// ENI record. System VMs run in the system account but plug into a customer ENI,
-// so without this IMDS would resolve the instance and its IAM role under the ENI
-// account and serve no credentials. Best-effort: a miss leaves IMDS falling back
-// to the ENI account, which only matters for the cross-account system path.
-func (d *Daemon) recordENIInstanceOwner(eniAccountID, eniID, instanceOwnerID string) {
-	if d.vpcService == nil || eniID == "" || instanceOwnerID == eniAccountID {
-		return
+// eniInstanceOwner is the owner to stamp on an ENI record when a system VM
+// attaches it. System VMs run in the system account but plug into a customer
+// ENI, so without the stamp IMDS resolves the instance under the ENI account
+// and serves no credentials. It is empty when both accounts are the same.
+func eniInstanceOwner(eniAccountID, instanceOwnerID string) string {
+	if instanceOwnerID == eniAccountID {
+		return ""
 	}
-	if err := d.vpcService.UpdateENI(eniAccountID, eniID, func(r *ec2vpc.ENIRecord) {
-		r.InstanceOwnerId = instanceOwnerID
-	}); err != nil {
-		slog.Warn("LaunchSystemInstance: failed to record ENI instance owner",
-			"eniId", eniID, "instanceOwner", instanceOwnerID, "err", err)
-	}
+	return instanceOwnerID
 }
 
-// attachExtraENI attaches one pre-created extra ENI and, when the caller asked
-// for an explicit DeleteOnTermination, persists it onto the record. An ENI that
-// has to outlive its VM is only safe once that flag is stored, so a failed stamp
-// fails the attach rather than leaving a disposable NIC behind.
-func (d *Daemon) attachExtraENI(eniAccountID string, extra systeminstance.ExtraENIInput, instanceID string, deviceIndex int64) error {
-	if _, err := d.vpcService.AttachENI(eniAccountID, extra.ENIID, instanceID, deviceIndex); err != nil {
+// attachExtraENI attaches one pre-created extra ENI, stamping the instance
+// owner in the attach write, and, when the caller asked for an explicit
+// DeleteOnTermination, persists it onto the record. An ENI that has to outlive
+// its VM is only safe once that flag is stored, so a failed stamp fails the
+// attach rather than leaving a disposable NIC behind.
+func (d *Daemon) attachExtraENI(eniAccountID string, extra systeminstance.ExtraENIInput, instanceID string, deviceIndex int64, instanceOwnerID string) error {
+	if _, err := d.vpcService.AttachENIWithOwner(eniAccountID, extra.ENIID, instanceID, deviceIndex, eniInstanceOwner(eniAccountID, instanceOwnerID)); err != nil {
 		return err
 	}
 	if extra.DeleteOnTermination == nil {
@@ -81,8 +76,28 @@ func (d *Daemon) attachExtraENI(eniAccountID string, extra systeminstance.ExtraE
 // (bundled vmlinuz+initramfs, fw_cfg-delivered config). There is no AMI,
 // volume, or cloud-init path.
 func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*elbv2domain.SystemInstanceOutput, error) {
+	if err := input.RefuseNonLoadBalancerKind(); err != nil {
+		return nil, err
+	}
 	if input.BootMode == systeminstance.BootAMI {
 		return d.launchAMISystemInstance(input)
+	}
+	return d.launchDirectSystemInstance(input, nil)
+}
+
+// launchDirectSystemInstance boots a direct-boot microVM. A nil guest is the
+// load balancer; an SQS guest's volume and config were checked by the caller
+// before anything here allocates.
+func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInput, guest sqsGuest) (*elbv2domain.SystemInstanceOutput, error) {
+	managedBy := tags.ManagedByELBv2
+	if guest != nil {
+		managedBy = tags.ManagedBySQS
+	}
+	// The SQS guests reach the gateway only over their mgmt NIC.
+	mgmtRequired := input.Scheme == elbv2domain.SchemeInternal || (guest != nil && guest.needsMgmtNIC())
+	mgmtFor := "internal-scheme ALB"
+	if guest != nil && guest.needsMgmtNIC() {
+		mgmtFor = guest.label()
 	}
 	accountID := awsidentifiers.GlobalAccountID
 	// ENI account may differ from system account — the ENI is created under
@@ -111,7 +126,7 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 			{
 				ResourceType: aws.String("instance"),
 				Tags: []*ec2.Tag{
-					{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByELBv2)},
+					{Key: aws.String(tags.ManagedByKey), Value: aws.String(managedBy)},
 				},
 			},
 		},
@@ -131,9 +146,9 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 	}
 
 	instance.AccountID = accountID
-	instance.ManagedBy = tags.ManagedByELBv2
+	instance.ManagedBy = managedBy
 	ec2Instance.Tags = []*ec2.Tag{
-		{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByELBv2)},
+		{Key: aws.String(tags.ManagedByKey), Value: aws.String(managedBy)},
 	}
 	instance.Reservation = &ec2.Reservation{}
 	instance.Reservation.SetReservationId(awsidentifiers.GenerateResourceID("r"))
@@ -168,10 +183,11 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 		}
 		// Mark ENI as attached to this instance
 		if d.vpcService != nil {
-			if _, attachErr := d.vpcService.AttachENI(eniAccountID, instance.ENIId, instance.ID, 0); attachErr != nil {
-				slog.Warn("LaunchSystemInstance: failed to attach ENI", "eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
+			if _, attachErr := d.vpcService.AttachENIWithOwner(eniAccountID, instance.ENIId, instance.ID, 0, eniInstanceOwner(eniAccountID, accountID)); attachErr != nil {
+				slog.Error("LaunchSystemInstance: failed to attach ENI", "eniId", instance.ENIId, "instanceId", instance.ID, "instanceOwner", accountID, "err", attachErr)
+				d.cleanupFailedSystemInstance(instance, instanceType)
+				return nil, fmt.Errorf("attach ENI %s: %w", instance.ENIId, attachErr)
 			}
-			d.recordENIInstanceOwner(eniAccountID, instance.ENIId, accountID)
 		}
 		// Attach any additional pre-created ENIs (multi-subnet ALB VMs).
 		// Use the launcher input slice as the source of truth so the VM
@@ -183,12 +199,11 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 				// customer-VPC ENI) lives in its own account; the ENI record is
 				// account-keyed, so attach under extra.AccountID when set.
 				extraAccount := resolveENIAccount(extra.AccountID, eniAccountID)
-				if attachErr := d.attachExtraENI(extraAccount, extra, instance.ID, int64(idx+1)); attachErr != nil {
+				if attachErr := d.attachExtraENI(extraAccount, extra, instance.ID, int64(idx+1), accountID); attachErr != nil {
 					slog.Error("LaunchSystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", instance.ID, "err", attachErr)
 					d.cleanupFailedSystemInstance(instance, instanceType)
 					return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)
 				}
-				d.recordENIInstanceOwner(extraAccount, extra.ENIID, accountID)
 			}
 			instance.ExtraENIs = append(instance.ExtraENIs, vm.ExtraENI{
 				ENIID:         extra.ENIID,
@@ -220,7 +235,6 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 		if _, attachErr := d.vpcService.AttachENI(accountID, instance.ENIId, instance.ID, 0); attachErr != nil {
 			slog.Warn("LaunchSystemInstance: failed to attach auto-created ENI", "eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
 		}
-		d.recordENIInstanceOwner(accountID, instance.ENIId, accountID)
 	}
 
 	// Allocate public IP for internet-facing ALBs. Route through the EIP
@@ -349,9 +363,9 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 
 		mgmtIP, allocErr := d.mgmtIPAllocator.Allocate(instance.ID)
 		if allocErr != nil {
-			if input.Scheme == elbv2domain.SchemeInternal {
+			if mgmtRequired {
 				d.cleanupFailedSystemInstance(instance, instanceType)
-				return nil, fmt.Errorf("allocate mgmt IP for internal-scheme ALB: %w", allocErr)
+				return nil, fmt.Errorf("allocate mgmt IP for %s: %w", mgmtFor, allocErr)
 			}
 			slog.Warn("LaunchSystemInstance: failed to allocate mgmt IP, skipping mgmt NIC", "instanceId", instance.ID, "err", allocErr)
 		} else {
@@ -372,9 +386,9 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 				d.mgmtIPAllocator.Release(instance.ID)
 				instance.MgmtMAC = ""
 				instance.MgmtIP = ""
-				if input.Scheme == elbv2domain.SchemeInternal {
+				if mgmtRequired {
 					d.cleanupFailedSystemInstance(instance, instanceType)
-					return nil, fmt.Errorf("setup mgmt tap for internal-scheme ALB: %w", tapErr)
+					return nil, fmt.Errorf("setup mgmt tap for %s: %w", mgmtFor, tapErr)
 				}
 				slog.Error("LaunchSystemInstance: failed to setup mgmt tap", "instanceId", instance.ID, "err", tapErr)
 			} else {
@@ -385,19 +399,41 @@ func (d *Daemon) LaunchSystemInstance(input *elbv2domain.SystemInstanceInput) (*
 		}
 	}
 
+	if guest != nil && guest.needsMgmtNIC() && instance.MgmtIP == "" {
+		d.cleanupFailedSystemInstance(instance, instanceType)
+		return nil, fmt.Errorf("%s: no mgmt NIC on this node", guest.label())
+	}
+
 	// The requested guest ports. The host ports they land on are observed by
 	// the launch and reported back through HostfwdPortMap.
 	instance.HostfwdPorts = slices.Clone(input.HostfwdPorts)
 
 	// Direct-boot (microvm) path: build the vm.Config directly with microvm
 	// machine settings and fw_cfg blobs for network, lb-agent env, and CA cert.
-	cfg, err := d.buildDirectBootConfig(instance.ID, input)
+	cfg, err := d.buildDirectBootConfig(instance.ID, input, guest)
 	if err != nil {
 		d.cleanupFailedSystemInstance(instance, instanceType)
 		return nil, fmt.Errorf("build direct-boot config: %w", err)
 	}
 	instance.Config = cfg
 	instance.DirectBoot = true
+	if guest != nil {
+		netcfg, err := netcfgForInput(input)
+		if err != nil {
+			d.cleanupFailedSystemInstance(instance, instanceType)
+			return nil, fmt.Errorf("render sqs guest netcfg: %w", err)
+		}
+		guest.record(instance, d.node, netcfg)
+		// Mounted and marked in-use by the normal launch path, and only
+		// detached when the instance terminates.
+		instance.EBSRequests.Mu.Lock()
+		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{
+			Name:                guest.dataVolume(),
+			DeviceName:          sqsDataDevice,
+			DeleteOnTermination: false,
+		})
+		instance.EBSRequests.Mu.Unlock()
+	}
 
 	// Launch QEMU VM
 	t1 := time.Now()
@@ -507,7 +543,7 @@ func (d *Daemon) launchAMISystemInstance(input *systeminstance.SystemInstanceInp
 	for idx, extra := range input.ExtraENIs {
 		if d.vpcService != nil {
 			extraAccount := resolveENIAccount(extra.AccountID, input.AccountID)
-			if attachErr := d.attachExtraENI(extraAccount, extra, inst.ID, int64(idx+1)); attachErr != nil {
+			if attachErr := d.attachExtraENI(extraAccount, extra, inst.ID, int64(idx+1), ""); attachErr != nil {
 				slog.Error("launchAMISystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", inst.ID, "err", attachErr)
 				d.vmMgr.MarkFailed(context.Background(), inst, "extra_eni_attach_failed")
 				return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)
@@ -675,6 +711,12 @@ func (d *Daemon) prepareInstanceRelaunch(inst *vm.VM) error {
 // vm.Config still references the same paths. Customer VMs use only paths
 // under /var/lib/spinifex/ and are a no-op.
 func (d *Daemon) refreshSystemInstanceState(inst *vm.VM) error {
+	if inst.ManagedBy == tags.ManagedBySQS {
+		if inst.SQSWorkerGuest != nil {
+			return d.refreshSQSWorkerState(inst)
+		}
+		return refuseSQSStoreRelaunch(inst)
+	}
 	if inst.ManagedBy != tags.ManagedByELBv2 {
 		return nil
 	}
@@ -774,14 +816,18 @@ func (d *Daemon) WaitForSystemInstance(instanceID string, timeout time.Duration)
 	return fmt.Errorf("instance %s did not reach running state within %s", instanceID, timeout)
 }
 
+// microvmDir holds the microvm kernel, initramfs and firmware. A variable so
+// tests can supply their own.
+var microvmDir = vm.MicroVMDir
+
 // buildDirectBootConfig constructs a vm.Config for a direct-boot microVM
 // launch. It does not call buildBaseVMConfig — the microvm machine type
-// requires no PCIe root ports, no UEFI/BIOS, and no drives. Runtime paths
-// (PID file, console log, serial socket) are filled in later by startQEMU.
+// requires no PCIe root ports, no UEFI, and no drives; it boots qboot. Runtime
+// paths (PID file, console log, serial socket) are filled in later by startQEMU.
 //
 // Network topology from input.NICs is serialised to three fw_cfg tmpfiles
 // (netcfg, lb-agent-env, ca-cert) under hostprocess.RuntimeDir().
-func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.SystemInstanceInput) (vm.Config, error) {
+func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.SystemInstanceInput, guest sqsGuest) (vm.Config, error) {
 	it := d.resourceMgr.instanceTypes[input.InstanceType]
 	architecture := "x86_64"
 	if it != nil && it.ProcessorInfo != nil && len(it.ProcessorInfo.SupportedArchitectures) > 0 && it.ProcessorInfo.SupportedArchitectures[0] != nil {
@@ -794,70 +840,50 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 		memMiB = int(instanceTypeMemoryMiB(it))
 	}
 
-	const imagePath = "/usr/share/spinifex/microvm"
+	firmware := filepath.Join(microvmDir, vm.MicroVMFirmware)
+	if _, err := os.Stat(firmware); err != nil {
+		return vm.Config{}, fmt.Errorf("microvm firmware %s is missing, so load balancer instances cannot boot; reinstall Spinifex to restore it: %w", firmware, err)
+	}
 
 	fwCfg, err := d.writeFwCfgBlobs(instanceID, input)
 	if err != nil {
 		return vm.Config{}, fmt.Errorf("write fw_cfg blobs: %w", err)
 	}
-
-	// Build kernel cmdline.
-	//
-	// QEMU microvm maps virtio-mmio slots at 0xfeb00000 + n*0x200 with IRQ 5+n.
-	// Without virtio_mmio.device params the kernel never discovers the devices
-	// (auto-kernel-cmdline does not append when -append is specified).
-	//
-	// Boot-time performance flags:
-	//   quiet loglevel=3        — suppress printk to ttyS0 (115200 baud serial
-	//                             writes dominate boot time; warnings+errors only)
-	//   mitigations=off         — skip spectre/meltdown microcode patching at
-	//                             boot. Safe here: KVM guest on trusted host CPU,
-	//                             single-tenant LB workload, no untrusted code in
-	//                             the VM. Saves ~200-500ms.
-	//   tsc=reliable            — skip TSC calibration loop on KVM (host already
-	//                             vouched for invariant TSC)
-	//   no_timer_check          — skip APIC/PIT cross-check; microvm has no PIT
-	//   reboot=t                — triple-fault reboot; skip ACPI/keyboard probes
-	//   i8042.no{pnp,aux,kbd}   — microvm has no PS/2; skip i8042 probe timeouts
-	var sb strings.Builder
-	sb.WriteString("console=ttyS0 quiet loglevel=3 mitigations=off tsc=reliable no_timer_check reboot=t i8042.nopnp i8042.noaux i8042.nokbd")
-	// Slots must stay packed in the same order QEMU actually creates
-	// -device entries (buildNICNetdevs), so an unprovisioned mgmt NIC
-	// (skipped there) must not reserve a slot here either.
-	slot := 0
-	for i, nic := range input.NICs {
-		if !nicProvisioned(i, nic) {
-			continue
+	imageDir := microvmDir
+	if guest != nil {
+		guestCfg, err := guest.writeFwCfg(instanceID)
+		if err != nil {
+			return vm.Config{}, fmt.Errorf("write sqs guest fw_cfg blobs: %w", err)
 		}
-		fmt.Fprintf(&sb, " virtio_mmio.device=0x200@0x%x:%d",
-			0xfeb00000+slot*0x200, 5+slot)
-		slot++
+		fwCfg = append(sqsNetcfgOnly(fwCfg), guestCfg...)
+		imageDir = guest.imageDir()
 	}
-	cmdline := sb.String()
 
-	machineType := microvmMachineType()
-
-	cfg := vm.Config{
-		Name:          instanceID,
-		EnableKVM:     true,
-		NoGraphic:     true,
-		Architecture:  architecture,
-		CPUType:       "host,-pmu",
-		CPUCount:      vcpus,
-		Memory:        memMiB,
-		MachineType:   machineType,
-		KernelImage:   filepath.Join(imagePath, "vmlinuz"),
-		Initrd:        filepath.Join(imagePath, "initramfs.cpio.gz"),
-		KernelCmdline: cmdline,
-		FwCfg:         fwCfg,
+	// The LB opts out of mitigations: single-tenant, no untrusted code, and it
+	// saves ~200-500ms of boot. SQS guests hold tenant data and keep them on.
+	// loglevel 7 lets LB kernel warnings reach the console; SQS logs errors only.
+	spec := vm.MicroVMSpec{
+		Name:           instanceID,
+		Architecture:   architecture,
+		VCPUs:          vcpus,
+		MemoryMiB:      memMiB,
+		Firmware:       firmware,
+		ImageDir:       imageDir,
+		LogLevel:       3,
+		MitigationsOff: guest == nil,
+		FwCfg:          fwCfg,
+	}
+	if guest == nil {
+		spec.LogLevel = 7
 	}
 
 	// Wire netdevs and devices for each NIC in declaration order.
 	// Tap device creation happens later in startQEMU (host-side only here).
-	allNICs := buildNICNetdevs(instanceID, input, machineType, d.guestOverlayMTU())
-	cfg.NetDevs = append(cfg.NetDevs, allNICs.netdevs...)
-	cfg.Devices = append(cfg.Devices, allNICs.devices...)
+	allNICs := buildNICNetdevs(instanceID, input, vm.MicroVMMachineType(), d.guestOverlayMTU())
+	spec.NetDevs = allNICs.netdevs
+	spec.Devices = allNICs.devices
 
+	cfg := vm.NewMicroVMConfig(spec)
 	return cfg, nil
 }
 
@@ -865,13 +891,6 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 type nicNetdevResult struct {
 	netdevs []vm.NetDev
 	devices []vm.Device
-}
-
-// microvmMachineType returns the QEMU -M string for the microvm machine.
-// isa-serial is kept on permanently for per-VM console log access — the
-// boot-time saving from turning it off is not worth losing console output.
-func microvmMachineType() string {
-	return "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on"
 }
 
 // buildNICNetdevs produces QEMU -netdev and -device entries for each NIC in
@@ -931,21 +950,11 @@ func tapNameForNIC(idx int, _ elbv2domain.NICConfig, instanceID string, input *e
 func (d *Daemon) writeFwCfgBlobs(instanceID string, input *elbv2domain.SystemInstanceInput) ([]vm.FwCfgEntry, error) {
 	runtimeDir := hostprocess.RuntimeDir()
 
-	netcfgPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-netcfg.tmp", instanceID))
+	netcfgPath := netcfgFwCfgPath(instanceID)
 	lbenvPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-lbenv.tmp", instanceID))
 	cacertPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-cacert.tmp", instanceID))
 
-	// Exclude any unprovisioned mgmt NIC so the guest is only ever told about
-	// interfaces that physically exist — mirrors the netdev/mmio-slot skip
-	// in buildNICNetdevs/buildDirectBootConfig.
-	provisionedNICs := make([]elbv2domain.NICConfig, 0, len(input.NICs))
-	for i, nic := range input.NICs {
-		if nicProvisioned(i, nic) {
-			provisionedNICs = append(provisionedNICs, nic)
-		}
-	}
-
-	netcfg, err := buildNetcfgBlob(provisionedNICs)
+	netcfg, err := netcfgForInput(input)
 	if err != nil {
 		return nil, err
 	}
@@ -976,6 +985,23 @@ func (d *Daemon) writeFwCfgBlobs(instanceID string, input *elbv2domain.SystemIns
 		{Name: "opt/spinifex/lb-agent-env", File: lbenvPath},
 		{Name: "opt/spinifex/ca-cert", File: cacertPath},
 	}, nil
+}
+
+func netcfgFwCfgPath(instanceID string) string {
+	return filepath.Join(hostprocess.RuntimeDir(), fmt.Sprintf("fwcfg-%s-netcfg.tmp", instanceID))
+}
+
+// netcfgForInput renders the guest network config. Any unprovisioned mgmt NIC
+// is excluded so the guest is only told about interfaces that exist, as in
+// buildNICNetdevs/buildDirectBootConfig.
+func netcfgForInput(input *elbv2domain.SystemInstanceInput) (string, error) {
+	provisionedNICs := make([]elbv2domain.NICConfig, 0, len(input.NICs))
+	for i, nic := range input.NICs {
+		if nicProvisioned(i, nic) {
+			provisionedNICs = append(provisionedNICs, nic)
+		}
+	}
+	return buildNetcfgBlob(provisionedNICs)
 }
 
 // buildNetcfgBlob serialises a slice of NICConfig entries to the shell KEY=value

@@ -46,6 +46,10 @@ func (l *natsSystemInstanceLauncher) LaunchSystemInstance(input *SystemInstanceI
 	if input.InstanceType == "" {
 		return nil, fmt.Errorf("system instance input missing InstanceType")
 	}
+	// An older receiver would ignore the kind and boot a load balancer.
+	if err := input.RefuseNonLoadBalancerKind(); err != nil {
+		return nil, err
+	}
 
 	payload, err := json.Marshal(input)
 	if err != nil {

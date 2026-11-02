@@ -206,32 +206,23 @@ func (s *IAMServiceImpl) AddUserToGroup(accountID string, input *iam.AddUserToGr
 	ctx := context.Background()
 	groupName := *input.GroupName
 	userName := *input.UserName
-	userKVKey := accountID + "." + userName
 
 	if _, err := s.getGroup(ctx, accountID, groupName); err != nil {
 		return nil, err
 	}
 
-	user, err := s.getUser(ctx, accountID, userName)
+	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
+		if slices.Contains(u.Groups, groupName) { // idempotent
+			return false, nil
+		}
+		if len(u.Groups) >= maxGroupsPerUser {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		u.Groups = append(u.Groups, groupName)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if slices.Contains(user.Groups, groupName) { // idempotent
-		return &iam.AddUserToGroupOutput{}, nil
-	}
-	if len(user.Groups) >= maxGroupsPerUser {
-		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
-	}
-
-	user.Groups = append(user.Groups, groupName)
-	userData, err := json.Marshal(user)
-	if err != nil {
-		return nil, fmt.Errorf("marshal user: %w", err)
-	}
-
-	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
-		return nil, fmt.Errorf("update user: %w", err)
 	}
 
 	slog.Info("IAM user added to group", "accountID", accountID, "userName", userName, "groupName", groupName)
@@ -242,28 +233,19 @@ func (s *IAMServiceImpl) RemoveUserFromGroup(accountID string, input *iam.Remove
 	ctx := context.Background()
 	groupName := *input.GroupName
 	userName := *input.UserName
-	userKVKey := accountID + "." + userName
-
-	user, err := s.getUser(ctx, accountID, userName)
-	if err != nil {
-		return nil, err
-	}
 
 	// Operate purely on the membership reference so a dangling pointer to an
 	// already-deleted group is still cleanable; never fetch the group here.
-	idx := slices.Index(user.Groups, groupName)
-	if idx < 0 {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-
-	user.Groups = slices.Delete(user.Groups, idx, idx+1)
-	userData, err := json.Marshal(user)
+	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
+		idx := slices.Index(u.Groups, groupName)
+		if idx < 0 {
+			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		u.Groups = slices.Delete(u.Groups, idx, idx+1)
+		return true, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal user: %w", err)
-	}
-
-	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
-		return nil, fmt.Errorf("update user: %w", err)
+		return nil, err
 	}
 
 	slog.Info("IAM user removed from group", "accountID", accountID, "userName", userName, "groupName", groupName)
@@ -309,7 +291,6 @@ func (s *IAMServiceImpl) AttachGroupPolicy(accountID string, input *iam.AttachGr
 	ctx := context.Background()
 	groupName := *input.GroupName
 	policyARN := *input.PolicyArn
-	kvKey := accountID + "." + groupName
 
 	// AWS-managed ARNs are stored opaquely (like roles); customer-managed ARNs must exist.
 	if !iamarn.IsAWSManagedPolicyARN(policyARN) {
@@ -318,23 +299,15 @@ func (s *IAMServiceImpl) AttachGroupPolicy(accountID string, input *iam.AttachGr
 		}
 	}
 
-	group, err := s.getGroup(ctx, accountID, groupName)
+	err := s.updateGroupCAS(ctx, accountID, groupName, func(g *Group) (bool, error) {
+		if slices.Contains(g.AttachedPolicies, policyARN) { // idempotent
+			return false, nil
+		}
+		g.AttachedPolicies = append(g.AttachedPolicies, policyARN)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if slices.Contains(group.AttachedPolicies, policyARN) { // idempotent
-		return &iam.AttachGroupPolicyOutput{}, nil
-	}
-
-	group.AttachedPolicies = append(group.AttachedPolicies, policyARN)
-	data, err := json.Marshal(group)
-	if err != nil {
-		return nil, fmt.Errorf("marshal group: %w", err)
-	}
-
-	if _, err := s.groupsBucket.Put(ctx, kvKey, data); err != nil {
-		return nil, fmt.Errorf("update group: %w", err)
 	}
 
 	slog.Info("IAM policy attached to group", "accountID", accountID, "groupName", groupName, "policyArn", policyARN)
@@ -345,26 +318,17 @@ func (s *IAMServiceImpl) DetachGroupPolicy(accountID string, input *iam.DetachGr
 	ctx := context.Background()
 	groupName := *input.GroupName
 	policyARN := *input.PolicyArn
-	kvKey := accountID + "." + groupName
 
-	group, err := s.getGroup(ctx, accountID, groupName)
+	err := s.updateGroupCAS(ctx, accountID, groupName, func(g *Group) (bool, error) {
+		idx := slices.Index(g.AttachedPolicies, policyARN)
+		if idx < 0 {
+			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		g.AttachedPolicies = slices.Delete(g.AttachedPolicies, idx, idx+1)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	idx := slices.Index(group.AttachedPolicies, policyARN)
-	if idx < 0 {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-	group.AttachedPolicies = slices.Delete(group.AttachedPolicies, idx, idx+1)
-
-	data, err := json.Marshal(group)
-	if err != nil {
-		return nil, fmt.Errorf("marshal group: %w", err)
-	}
-
-	if _, err := s.groupsBucket.Put(ctx, kvKey, data); err != nil {
-		return nil, fmt.Errorf("update group: %w", err)
 	}
 
 	slog.Info("IAM policy detached from group", "accountID", accountID, "groupName", groupName, "policyArn", policyARN)
@@ -394,14 +358,12 @@ func (s *IAMServiceImpl) ListAttachedGroupPolicies(accountID string, input *iam.
 // ---------------------------------------------------------------------------
 
 // PutGroupPolicy embeds an inline policy document in a group, keyed by PolicyName.
-// Idempotent upsert: a same-name policy is overwritten, mirroring AWS. Uses a
-// blind read-modify-write Put like the other group writers (no CAS).
+// Idempotent upsert: a same-name policy is overwritten, mirroring AWS.
 func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPolicyInput) (*iam.PutGroupPolicyOutput, error) {
 	ctx := context.Background()
 	groupName := *input.GroupName
 	policyName := *input.PolicyName
 	policyDoc := *input.PolicyDocument
-	kvKey := accountID + "." + groupName
 
 	if err := validateIAMName("policyName", policyName, 128); err != nil {
 		return nil, err
@@ -414,26 +376,18 @@ func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPol
 			"policy %q on group %q: %w", policyName, groupName, err)
 	}
 
-	group, err := s.getGroup(ctx, accountID, groupName)
+	err := s.updateGroupCAS(ctx, accountID, groupName, func(g *Group) (bool, error) {
+		if err := checkInlinePolicySize("group", groupName, groupPolicySizeQuota, g.InlinePolicies, policyName, policyDoc); err != nil {
+			return false, err
+		}
+		if g.InlinePolicies == nil {
+			g.InlinePolicies = map[string]string{}
+		}
+		g.InlinePolicies[policyName] = policyDoc
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	if err := checkInlinePolicySize("group", groupName, groupPolicySizeQuota, group.InlinePolicies, policyName, policyDoc); err != nil {
-		return nil, err
-	}
-
-	if group.InlinePolicies == nil {
-		group.InlinePolicies = map[string]string{}
-	}
-	group.InlinePolicies[policyName] = policyDoc
-
-	data, err := json.Marshal(group)
-	if err != nil {
-		return nil, fmt.Errorf("marshal group: %w", err)
-	}
-
-	if _, err := s.groupsBucket.Put(ctx, kvKey, data); err != nil {
-		return nil, fmt.Errorf("update group: %w", err)
 	}
 
 	slog.Info("IAM inline policy put on group", "accountID", accountID, "groupName", groupName, "policyName", policyName)
@@ -465,30 +419,21 @@ func (s *IAMServiceImpl) GetGroupPolicy(accountID string, input *iam.GetGroupPol
 }
 
 // DeleteGroupPolicy removes a group's inline policy by name. A missing name
-// yields NoSuchEntity, matching AWS. Blind Put like the other group writers.
+// yields NoSuchEntity, matching AWS.
 func (s *IAMServiceImpl) DeleteGroupPolicy(accountID string, input *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
 	ctx := context.Background()
 	groupName := *input.GroupName
 	policyName := *input.PolicyName
-	kvKey := accountID + "." + groupName
 
-	group, err := s.getGroup(ctx, accountID, groupName)
+	err := s.updateGroupCAS(ctx, accountID, groupName, func(g *Group) (bool, error) {
+		if _, ok := g.InlinePolicies[policyName]; !ok {
+			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		delete(g.InlinePolicies, policyName)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if _, ok := group.InlinePolicies[policyName]; !ok {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-	delete(group.InlinePolicies, policyName)
-
-	data, err := json.Marshal(group)
-	if err != nil {
-		return nil, fmt.Errorf("marshal group: %w", err)
-	}
-
-	if _, err := s.groupsBucket.Put(ctx, kvKey, data); err != nil {
-		return nil, fmt.Errorf("update group: %w", err)
 	}
 
 	slog.Info("IAM inline policy deleted from group", "accountID", accountID, "groupName", groupName, "policyName", policyName)
@@ -535,6 +480,14 @@ func (s *IAMServiceImpl) getGroup(ctx context.Context, accountID, groupName stri
 		return nil, fmt.Errorf("unmarshal group: %w", err)
 	}
 	return &group, nil
+}
+
+// updateGroupCAS applies mutate to a group under optimistic concurrency, like
+// updateUserCAS.
+func (s *IAMServiceImpl) updateGroupCAS(ctx context.Context, accountID, groupName string, mutate func(*Group) (bool, error)) error {
+	defer s.recordLocks.lock("group/" + accountID + "." + groupName)()
+	_, err := kvutil.Update(ctx, s.groupsBucket, accountID+"."+groupName, iamRecordCASConfig("group", accountID, groupName), mutate)
+	return err
 }
 
 // findGroupMembers scans the users bucket for any user in the account whose

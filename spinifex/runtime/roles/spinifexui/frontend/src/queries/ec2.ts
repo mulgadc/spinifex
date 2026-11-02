@@ -18,6 +18,7 @@ import {
   DescribeSubnetsCommand,
   DescribeVolumesCommand,
   DescribeVpcsCommand,
+  GetConsoleOutputCommand,
 } from "@aws-sdk/client-ec2"
 import { queryOptions } from "@tanstack/react-query"
 
@@ -42,6 +43,21 @@ export const ec2InstancesQueryOptions = queryOptions({
   },
   refetchInterval: 5000,
 })
+
+// Fetched on request, not on mount: the log can be large and is read rarely.
+// Cached by instance, so the output survives moving from panel to page.
+export const ec2ConsoleOutputQueryOptions = (instanceId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "consoleOutput", instanceId],
+    queryFn: async () => {
+      const command = new GetConsoleOutputCommand({ InstanceId: instanceId })
+      const result = await getEc2Client().send(command)
+
+      return result.Output ? atob(result.Output) : ""
+    },
+    enabled: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  })
 
 export const ec2InstanceQueryOptions = (instanceId: string) =>
   queryOptions({
@@ -71,6 +87,9 @@ export const ec2IamInstanceProfileAssociationsQueryOptions = (
     refetchInterval: 5000,
   })
 
+// The admissible instance types, read once when a panel that needs them opens.
+// This is a catalogue: it changes when a node joins or leaves, not as instances
+// come and go, so it is not polled. The free-slot figure is a separate query.
 export const ec2InstanceTypesQueryOptions = queryOptions({
   queryKey: ["ec2", "instances", "types"],
   queryFn: async () => {
@@ -85,7 +104,7 @@ export const ec2InstanceTypesQueryOptions = queryOptions({
 
     return await getEc2Client().send(command)
   },
-  refetchInterval: 5000,
+  staleTime: 5 * 60 * 1000,
 })
 
 export const ec2ImagesQueryOptions = queryOptions({

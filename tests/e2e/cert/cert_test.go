@@ -78,12 +78,14 @@ func TestCertIssuance(t *testing.T) {
 
 	t.Run("SystemTrustStore", func(t *testing.T) {
 		t.Run("CAInstalled", func(t *testing.T) {
-			_, err := os.Stat(harness.SystemCAPath)
-			require.NoError(t, err, "CA cert must be installed at %s", harness.SystemCAPath)
+			_, err := harness.SystemCAPath()
+			require.NoError(t, err)
 		})
 
 		t.Run("FingerprintMatchesConfig", func(t *testing.T) {
-			sysCert, err := harness.ParseCertFile(harness.SystemCAPath)
+			sysPath, err := harness.SystemCAPath()
+			require.NoError(t, err)
+			sysCert, err := harness.ParseCertFile(sysPath)
 			require.NoError(t, err)
 			assert.True(t, harness.FingerprintMatches(sysCert, caCert),
 				"system CA fingerprint differs from %s — system trust store stale", caPath)
@@ -161,9 +163,9 @@ func TestCertIssuance(t *testing.T) {
 	harness.OnFailure(t, func() {
 		harness.DumpCmd(t, artifacts, "ip-addr.txt", "ip", "-4", "addr", "show")
 		harness.DumpCmd(t, artifacts, "ca-text.txt", "openssl", "x509", "-in", caPath, "-text", "-noout")
-		if _, err := os.Stat(harness.SystemCAPath); err == nil {
+		if sysPath, err := harness.SystemCAPath(); err == nil {
 			harness.DumpCmd(t, artifacts, "system-ca-text.txt",
-				"openssl", "x509", "-in", harness.SystemCAPath, "-text", "-noout")
+				"openssl", "x509", "-in", sysPath, "-text", "-noout")
 		}
 	})
 }

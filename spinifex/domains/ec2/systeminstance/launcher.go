@@ -86,6 +86,11 @@ type SystemInstanceInput struct {
 	// endpoint serves the profile's role credentials. Empty leaves the VM
 	// without a profile (the agent then needs static keys).
 	IamInstanceProfileArn string `json:"iam_instance_profile_arn,omitempty"`
+
+	// Kind selects a non-load-balancer direct-boot guest; empty is the load
+	// balancer. SQSWorker carries the KindSQSWorker guest's volume and Region.
+	Kind      Kind            `json:"kind,omitempty"`
+	SQSWorker *SQSWorkerInput `json:"sqs_worker,omitempty"`
 }
 
 // ExtraENIInput describes an additional pre-created ENI to attach to a system

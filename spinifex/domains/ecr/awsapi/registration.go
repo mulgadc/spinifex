@@ -160,7 +160,22 @@ func tokenPrincipal(inv dispatch.Invocation) (ecrauth.Principal, error) {
 		ARN:         actor.CallerARN,
 		Type:        actor.PrincipalType,
 		AccessKeyID: actor.AccessKeyID,
+		RoleID:      roleIDOf(actor),
 	}, nil
+}
+
+// roleIDOf is the immutable ID of the role behind an assumed-role session, taken from
+// aws:userid ("<roleID>:<session>"). Any other principal, or a UserID without that
+// shape, yields none and the token carries no role claim.
+func roleIDOf(actor dispatch.Actor) string {
+	if actor.PrincipalType != dispatch.PrincipalTypeAssumedRole {
+		return ""
+	}
+	roleID, _, found := strings.Cut(actor.UserID, ":")
+	if !found {
+		return ""
+	}
+	return roleID
 }
 
 // readBoundedBody reads the body under the SigV4 payload cap, so a body read

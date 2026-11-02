@@ -1,16 +1,29 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { ListCard } from "@/components/list-card"
-import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
-import { StateBadge } from "@/components/state-badge"
-import { Button } from "@/components/ui/button"
+import { panelSearchFields } from "@/lib/panel-search"
 import { ec2SnapshotsQueryOptions } from "@/queries/ec2"
+
+import {
+  CLOSED_SNAPSHOTS_PANEL,
+  type SnapshotsSearch,
+  SnapshotsPage,
+} from "../-components/snapshots-page"
+
+/* oxlint-disable promise/prefer-await-to-then -- zod's .catch() supplies a schema fallback, not a promise handler */
+const searchSchema = z.object({
+  ...panelSearchFields,
+  volume: z.string().default("").catch(""),
+})
+/* oxlint-enable promise/prefer-await-to-then */
 
 export const Route = createFileRoute(
   "/_auth/ec2/(snapshots)/describe-snapshots/",
 )({
+  validateSearch: searchSchema,
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(CLOSED_SNAPSHOTS_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...ec2SnapshotsQueryOptions,
@@ -29,34 +42,22 @@ export const Route = createFileRoute(
 
 function Snapshots() {
   const { data } = useSuspenseQuery(ec2SnapshotsQueryOptions)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
 
-  const snapshots = data.Snapshots ?? []
+  // Opening or closing a panel adds a history entry, so Back closes it.
+  function onSearchChange(next: Partial<SnapshotsSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next || "create" in next),
+    })
+  }
 
   return (
-    <>
-      <PageHeading
-        actions={
-          <Link to="/ec2/create-snapshot">
-            <Button>Create Snapshot</Button>
-          </Link>
-        }
-        title="Snapshots"
-      />
-
-      <ResourceList
-        empty="No snapshots found."
-        getKey={(snapshot) => snapshot.SnapshotId}
-        items={snapshots}
-        renderItem={(snapshot, id) => (
-          <ListCard
-            badge={<StateBadge state={snapshot.State} />}
-            params={{ id }}
-            subtitle={`${snapshot.VolumeSize} GiB \u2022 ${snapshot.VolumeId}`}
-            title={id}
-            to="/ec2/describe-snapshots/$id"
-          />
-        )}
-      />
-    </>
+    <SnapshotsPage
+      onSearchChange={onSearchChange}
+      search={search}
+      snapshots={data.Snapshots ?? []}
+    />
   )
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,6 +37,25 @@ func TestService_DeleteCluster_Unknown(t *testing.T) {
 	svc, _ := newTestService(t)
 	_, err := svc.DeleteCluster(context.Background(), &ecs.DeleteClusterInput{Cluster: aws.String("ghost")}, testAccountID)
 	require.Error(t, err)
+}
+
+// cluster is required on DeleteCluster: omitting it must not resolve to, and
+// delete, the default cluster.
+func TestService_DeleteCluster_ClusterOmitted(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{}, testAccountID)
+	require.NoError(t, err)
+
+	for _, cluster := range []*string{nil, aws.String(""), aws.String("  ")} {
+		_, err = svc.DeleteCluster(context.Background(), &ecs.DeleteClusterInput{Cluster: cluster}, testAccountID)
+		code, _, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok)
+		assert.Equal(t, awserrors.ErrorECSInvalidParameter, code)
+	}
+
+	list, err := svc.ListClusters(context.Background(), &ecs.ListClustersInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, list.ClusterArns, 1)
 }
 
 func TestService_DeregisterTaskDefinition_InactivatesRevision(t *testing.T) {

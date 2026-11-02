@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -822,4 +823,88 @@ func TestPullResolver(t *testing.T) {
 	if got == nil || got == fake {
 		t.Fatalf("execution role + cred endpoint: want distinct exec-role resolver, got %v", got)
 	}
+}
+
+// orderingCP fails the run if a container exit-wait starts before the RUNNING
+// report is sent: an instant exit's STOPPED could then be overtaken by RUNNING.
+type orderingCP struct {
+	*fakeCP
+
+	waitStarted chan struct{}
+	early       atomic.Bool
+}
+
+func newOrderingCP(rt *ctrruntime.FakePuller) *orderingCP {
+	cp := &orderingCP{fakeCP: &fakeCP{}, waitStarted: make(chan struct{}, 8)}
+	rt.OnWait = func(string) { cp.waitStarted <- struct{}{} }
+	return cp
+}
+
+func (c *orderingCP) SubmitTaskState(st ecsv1.TaskState) error {
+	if st.LastStatus == ecsv1.TaskStatusRunning {
+		// A wait launched before this report is scheduled well within the window.
+		select {
+		case <-c.waitStarted:
+			c.early.Store(true)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return c.fakeCP.SubmitTaskState(st)
+}
+
+func waitStopped(t *testing.T, cp *orderingCP, taskID string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for countStatus(cp.taskStates(), taskID, ecsv1.TaskStatusStopped) == 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("task %s never reported STOPPED; states %+v", taskID, cp.taskStates())
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func assertRunningThenStopped(t *testing.T, cp *orderingCP, taskID string) {
+	t.Helper()
+	if cp.early.Load() {
+		t.Fatalf("exit-wait started before the RUNNING report; states %+v", cp.taskStates())
+	}
+	var seq []string
+	for _, st := range cp.taskStates() {
+		if st.TaskID == taskID {
+			seq = append(seq, st.LastStatus)
+		}
+	}
+	if !slices.Equal(seq, []string{ecsv1.TaskStatusRunning, ecsv1.TaskStatusStopped}) {
+		t.Fatalf("task %s reported %v, want [RUNNING STOPPED]", taskID, seq)
+	}
+}
+
+// A container that exits the instant it starts must not let RUNNING be
+// reported after its STOPPED: the gateway would revive a dead task.
+func TestRunTask_InstantExitStoppedNeverPrecedesRunning(t *testing.T) {
+	rt := &ctrruntime.FakePuller{WaitCode: 7}
+	cp := newOrderingCP(rt)
+	a := newRunAgent(cp, rt)
+	a.runTask(context.Background(), testAssign())
+
+	waitStopped(t, cp, "t-001")
+	assertRunningThenStopped(t, cp, "t-001")
+}
+
+// The re-adopt path has the same ordering rule for a container that exits
+// right after the agent re-attaches to it.
+func TestReconcile_InstantExitStoppedNeverPrecedesRunning(t *testing.T) {
+	rt := &ctrruntime.FakePuller{
+		Containers: []ctrruntime.Container{
+			adoptedContainer("t-live", "web", "default", "t-live", testTaskRole, "", true),
+		},
+	}
+	cp := newOrderingCP(rt)
+	a := newAgent(Config{}, testIdentity(), cp, rt, nil)
+	a.cred = newCredEndpoint(nil, "us-east-1", "https://gw", "", "127.0.0.1", 0, nil)
+	a.reconcile(context.Background())
+
+	waitStopped(t, cp, "t-live")
+	assertRunningThenStopped(t, cp, "t-live")
 }

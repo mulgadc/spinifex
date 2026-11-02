@@ -93,7 +93,11 @@ func (s *IMDSServiceImpl) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eni := s.resolveCaller(r)
+	eni, err := s.resolveCaller(r)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	if eni == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -135,7 +139,11 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	eni := s.resolveCaller(r)
+	eni, err := s.resolveCaller(r)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	if eni == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -152,12 +160,20 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 	s.dispatch(w, r, eni)
 }
 
-// resolveCaller returns the request's owning ENI, threaded in via ctxKeyENI by the
-// per-tap responder (resolved once from the tap's bound device). The tap is unique,
-// so source IP is never consulted. Returns nil on miss, producing a 404 not a 500.
-func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
-	eni, _ := r.Context().Value(ctxKeyENI).(*eniFacts)
-	return eni
+// resolveCaller returns the request's owning ENI as its record reads now. The
+// identity is the one the per-tap responder pinned (the tap is unique, so source
+// IP is never consulted); nil on miss or a deleted record, producing a 404.
+func (s *IMDSServiceImpl) resolveCaller(r *http.Request) (*eniFacts, error) {
+	pinned, _ := r.Context().Value(ctxKeyENI).(*eniFacts)
+	if pinned == nil {
+		return nil, nil
+	}
+	eni, err := s.resolver.refreshENI(r.Context(), pinned)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "IMDS: re-reading the caller's ENI failed", "eni_id", pinned.eniID, "err", err)
+		return nil, err
+	}
+	return eni, nil
 }
 
 // dispatch routes a token-validated GET to the right metadata producer.
@@ -230,13 +246,13 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "security-groups":
 		writeText(w, strings.Join(s.resolver.resolveSGNames(ctx, eni.accountID, eni.securityGroupIDs), "\n"))
 	case prefixMetaData + "hostname", prefixMetaData + "local-hostname":
-		writeText(w, s.privateHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
+		writeText(w, s.privateHostname(eni.privateIP, s.region))
 	case prefixMetaData + "placement", prefixMetaData + "placement/":
 		writeText(w, "availability-zone\nregion")
 	case prefixMetaData + "placement/availability-zone":
 		writeText(w, eni.availabilityZone)
 	case prefixMetaData + "placement/region":
-		writeText(w, regionFromAZ(eni.availabilityZone))
+		writeText(w, s.region)
 	case prefixMetaData + "instance-type":
 		s.serveInstanceField(ctx, w, eni, func(i *instanceFacts) string { return i.instanceType })
 	case prefixMetaData + "ami-id":
@@ -403,7 +419,7 @@ func (s *IMDSServiceImpl) serveInstanceIdentityDocument(ctx context.Context, w h
 		InstanceType:     inst.instanceType,
 		PendingTime:      inst.pendingTime.UTC().Format("2006-01-02T15:04:05Z"),
 		PrivateIP:        eni.privateIP,
-		Region:           regionFromAZ(eni.availabilityZone),
+		Region:           s.region,
 		Version:          identityDocSchemaVersion,
 	}
 	writeIdentityDocument(w, doc)
@@ -571,7 +587,7 @@ func (s *IMDSServiceImpl) serveNetworkInterface(ctx context.Context, w http.Resp
 	case "local-ipv4s":
 		writeText(w, eni.privateIP)
 	case "local-hostname":
-		writeText(w, s.privateHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
+		writeText(w, s.privateHostname(eni.privateIP, s.region))
 	case "security-group-ids":
 		writeText(w, strings.Join(eni.securityGroupIDs, "\n"))
 	case "security-groups":
@@ -681,7 +697,7 @@ func (s *IMDSServiceImpl) servePublicHostname(w http.ResponseWriter, eni *eniFac
 		w.WriteHeader(http.StatusNotFound) // no public IP → no public hostname
 		return
 	}
-	if h := s.publicHostname(eni.publicIP, regionFromAZ(eni.availabilityZone)); h != "" {
+	if h := s.publicHostname(eni.publicIP, s.region); h != "" {
 		writeText(w, h)
 		return
 	}
@@ -756,18 +772,6 @@ func parseTokenTTL(raw string) (time.Duration, bool) {
 	return time.Duration(n) * time.Second, true
 }
 
-// regionFromAZ strips the trailing AZ letter from an AZ name to get the region.
-func regionFromAZ(az string) string {
-	if az == "" {
-		return ""
-	}
-	last := az[len(az)-1]
-	if last >= 'a' && last <= 'z' {
-		return az[:len(az)-1]
-	}
-	return az
-}
-
 // privateHostname is the AWS-parity local hostname (ip-<dashed>.<region>.<internal
 // domain>) honoring the configured internal_domain, so it matches the record the
 // DNS writer publishes. Empty when the IP or region is missing.
@@ -819,8 +823,8 @@ func writeJSON(w http.ResponseWriter, v any) {
 type ctxKey int
 
 const (
-	// ctxKeyENI carries a *eniFacts resolved once per per-tap responder — the
-	// authoritative caller identity for every request it serves.
+	// ctxKeyENI carries the *eniFacts a per-tap responder resolved at start: the
+	// caller identity for every request it serves, re-read per request.
 	ctxKeyENI ctxKey = iota
 	// ctxKeyConnTTL carries the connTTLSetter for the request's accepted socket,
 	// threaded per connection by the per-tap responder's ConnContext.

@@ -93,14 +93,13 @@ func (s *missingAccountService) GetAccount(string) (*iamdomain.Account, error) {
 	return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 }
 
-// A key whose account record is gone is never admitted. The gateway surfaces the failed
-// read as a server error rather than a 403, which is the response it has always given.
-func TestAuthDoesNotAdmitAMissingAccountRecord(t *testing.T) {
+// A key whose account record is gone is denied: an absent account is not admitted.
+func TestAuthDeniesAMissingAccountRecord(t *testing.T) {
 	svc := &missingAccountService{statusGateService(t, "123456789012", iamdomain.AccountStatusActive)}
 	r, req := statusGateRouter(t, svc)
 
-	if resp := doRequest(r, req); resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500 for a missing account record, got %d", resp.StatusCode)
+	if resp := doRequest(r, req); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a missing account record, got %d", resp.StatusCode)
 	}
 }
 

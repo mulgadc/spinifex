@@ -35,6 +35,9 @@ func TestAdmit(t *testing.T) {
 			assert.ErrorIs(t, New(&fakeIAM{status: status}).Admit("1", ""), ErrNotActive)
 		})
 	}
+	t.Run("missing account is denied", func(t *testing.T) {
+		assert.ErrorIs(t, New(&fakeIAM{err: errors.New(awserrors.ErrorIAMNoSuchEntity)}).Admit("1", ""), ErrNotActive)
+	})
 	t.Run("unreadable account fails closed", func(t *testing.T) {
 		err := New(&fakeIAM{err: errors.New("store down")}).Admit("1", "")
 		require.Error(t, err)

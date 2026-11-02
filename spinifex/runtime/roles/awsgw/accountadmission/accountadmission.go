@@ -29,7 +29,7 @@ func New(iam iamdomain.IAMService) *Admitter {
 }
 
 // Admit returns nil when the account may proceed, ErrNotActive when it may not, and
-// any other error when its status could not be read. An unreadable account is not
+// a missing record too, and any other error when its status could not be read. An unreadable account is not
 // evidence of one in good standing, so callers must fail closed on every error. An
 // empty accountID is admitted: the caller has no account to gate. logIP is for log
 // lines only.
@@ -43,6 +43,12 @@ func (a *Admitter) Admit(accountID, logIP string) error {
 	}
 
 	account, err := a.iam.GetAccount(accountID)
+	if awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity) {
+		// The in-process read is the complete view, so an absent record is a denial
+		// rather than a dependency failure.
+		slog.Warn("Auth failure: account does not exist", "accountID", accountID, "sourceIP", logIP)
+		return ErrNotActive
+	}
 	if err != nil {
 		// This gate is what stops a terminating tenant from creating resources the
 		// teardown has already walked past.

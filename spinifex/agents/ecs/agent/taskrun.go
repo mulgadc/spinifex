@@ -295,10 +295,13 @@ func (a *Agent) pullResolver(as *ecsv1.Assign) ctrruntime.Resolver {
 // credential endpoint and returns the credID (empty when the task has no role).
 func (a *Agent) registerTaskCreds(as *ecsv1.Assign) string {
 	credID := taskCredID(as)
+	if credID == "" && as.TaskRoleARN != "" {
+		slog.Warn("ecs-agent: task has a role but no credential ID, starting it without credentials", "task", as.TaskID, "role", as.TaskRoleARN)
+	}
 	if credID == "" || a.cred == nil {
 		return credID
 	}
-	a.cred.Register(credID, as.TaskRoleARN)
+	a.cred.Register(credID, as.TaskID, as.TaskRoleARN)
 	return credID
 }
 

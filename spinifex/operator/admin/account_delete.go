@@ -477,11 +477,9 @@ func claimDeletionJob(
 	return takeOverDeletionJob(ctx, jobs, req, holder, existing, existingRevision, reason, now)
 }
 
-// takeOverDeletionJob moves an unfinished job to the next fence under holder. The
-// write is conditional on the revision existing was read at, so of any number of
-// takers of one record exactly one succeeds. A failed job, or one whose holder
-// stopped renewing its lease, is taken over; teardown is idempotent and re-lists
-// what is left. The operation keeps its id; a record from before fences gets one.
+// takeOverDeletionJob moves an unfinished job to the next fence under holder.
+// The write is conditional on the revision existing was read at, so of any
+// number of takers exactly one succeeds. The operation keeps its id.
 func takeOverDeletionJob(
 	ctx context.Context,
 	jobs jetstream.KeyValue,

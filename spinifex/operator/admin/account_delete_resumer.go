@@ -13,17 +13,14 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// accountDeletionResumeInterval is how often each gateway looks for deletion
-// jobs whose holder died. A dead holder is found within one interval of its
-// lease lapsing, so recovery lands between five and six minutes after the crash.
-// A scan is one key listing and a read per unfinished job, which is cheap enough
-// to leave well below the lease; the jitter keeps gateways from scanning in step.
+// accountDeletionResumeInterval is the scan period. Recovery lands within one
+// interval of a dead holder's lease lapsing; a scan is one key listing, so it
+// stays well below the lease.
 const accountDeletionResumeInterval = 60 * time.Second
 
-// StartDeletionResumer runs the deletion resumer until ctx is cancelled or the
-// returned stop is called, and stop waits for the scan loop to exit. A teardown
-// it resumed keeps running on its own context, exactly as one started by a
-// request does.
+// StartDeletionResumer scans until ctx is cancelled or stop is called, and stop
+// waits for the loop to exit. A resumed teardown runs on its own context, like
+// one started by a request.
 func (d Deps) StartDeletionResumer(ctx context.Context) (stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
@@ -49,12 +46,9 @@ func jittered(d time.Duration) time.Duration {
 	return d - d/5 + time.Duration(rand.Int64N(int64(d/5)*2+1)) //nolint:gosec // jitter, not cryptographic
 }
 
-// resumeDeletions takes over every deletion job that carries an accepted
-// operation, is still RUNNING and has no live lease, and returns how many it
-// resumed. Resuming completes an account-level decision already recorded
-// (ADR-0003:S7): a record without an operation id and a fence was never accepted
-// by the coordinator, and a live lease has a holder that is still working, so
-// neither is touched. Failed jobs are not resumed here; they wait for a retry.
+// resumeDeletions takes over RUNNING jobs that carry an accepted operation and
+// have no live lease, which completes a decision already recorded (ADR-0003:S7).
+// Records without an operation id and fence, and failed jobs, are left alone.
 func (d Deps) resumeDeletions(ctx context.Context, now time.Time) int {
 	if d.Termination == nil || d.NATS == nil {
 		return 0

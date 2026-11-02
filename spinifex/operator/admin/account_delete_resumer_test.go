@@ -30,11 +30,9 @@ func abandonedJob(accountID, name string) *accountDeletionJob {
 	}
 }
 
-// ADR-0003:S7: the resumer is an automatic actor that can end in deleting an
-// account's data, so it may only complete a deletion the coordinator already
-// accepted. A record without an operation id and a fence was never accepted, a
-// live lease still has a holder, and a finished or failed job is not its to
-// restart.
+// ADR-0003:S7: the resumer may only complete a deletion the coordinator already
+// accepted. No operation id or fence, a live lease, or a finished or failed job
+// means it must not act.
 func TestS7_DeletionResumerActsOnlyOnAnAcceptedOperationWithoutALiveLease(t *testing.T) {
 	now := time.Now().UTC()
 	future := now.Add(accountDeletionStale).Format(time.RFC3339)

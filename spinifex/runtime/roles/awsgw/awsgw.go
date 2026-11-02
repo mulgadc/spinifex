@@ -672,7 +672,7 @@ func launchService(config *config.ClusterConfig) error {
 	sqsControlPlane := sqsRegistrations(sqsRelay, registryHost, registryPort)
 	// Set once the gateway is composed, so status reports the registry it serves.
 	var composedServices *dispatch.Registry
-	operatorControlPlane := operatoradmin.NewRegistration(withClusterNodes(operatoradmin.Deps{
+	operatorControlPlane := operatoradmin.NewRegistration(operatorDeps(iamService, config, operatoradmin.Deps{
 		Version:     version,
 		Commit:      commit,
 		NATS:        natsConn,
@@ -682,15 +682,13 @@ func launchService(config *config.ClusterConfig) error {
 		Credentials: bedrockCredentials,
 		Access:      bedrockAccess,
 
-		IAM:                    iamService,
-		Termination:            iamService,
 		Quota:                  quotaSvc,
 		BucketStore:            objStore,
 		SignupMaxAccounts:      signupMaxAccounts,
 		Region:                 nodeConfig.Region,
 		SQSWorkerPolling:       sqsRelay.WorkerPresent,
 		SQSTenantAPIRegistered: func() bool { return sqsServed(composedServices) },
-	}, config))
+	}))
 	// The SQS worker's internal surface binds its buckets per request and never
 	// creates them, so it refuses every caller until a worker launch has.
 	sqsWorkerDeps := sqsworkerapi.JetStreamDeps(js)
@@ -894,6 +892,16 @@ func parseBedrockEndpoints(raw string) map[string]string {
 		return nil
 	}
 	return endpoints
+}
+
+// operatorDeps binds the concrete IAM service, the only holder of the quiesce
+// and fenced-delete capabilities, and the configured node sets onto the /admin
+// dependencies. A missing Termination would answer every account deletion with
+// InternalError.
+func operatorDeps(iamService *iamdomain.IAMServiceImpl, config *config.ClusterConfig, d operatoradmin.Deps) operatoradmin.Deps {
+	d.IAM = iamService
+	d.Termination = iamService
+	return withClusterNodes(d, config)
 }
 
 // withClusterNodes sets the configured node sets teardown reaches: the

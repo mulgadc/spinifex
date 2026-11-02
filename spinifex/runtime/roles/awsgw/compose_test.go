@@ -7,6 +7,7 @@ import (
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
@@ -53,4 +54,17 @@ func TestWithClusterNodes_SetsDaemonAndGatewaySets(t *testing.T) {
 	assert.Equal(t, []string{"n1", "n2", "n3"}, got.NodeIDs)
 	// n3 has no service list, which means every service, awsgw included.
 	assert.Equal(t, []string{"n1", "n3"}, got.GatewayNodeIDs)
+}
+
+// Deletion runs the quiesce and the fenced removal, which only the concrete IAM
+// service carries. awsgw must bind it, or every DeleteAccount fails.
+func TestOperatorDeps_BindsTheConcreteIAMServiceAndNodes(t *testing.T) {
+	cfg := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{"n1": {}}}
+	iamService := &iamdomain.IAMServiceImpl{}
+
+	got := operatorDeps(iamService, cfg, operatoradmin.Deps{})
+
+	assert.Same(t, iamService, got.IAM, "IAM")
+	assert.Same(t, iamService, got.Termination, "Termination")
+	assert.Equal(t, []string{"n1"}, got.GatewayNodeIDs, "GatewayNodeIDs")
 }

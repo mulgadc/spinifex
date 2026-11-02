@@ -52,7 +52,11 @@ func EvaluateLifecyclePreview(ctx context.Context, policies LifecyclePolicyStore
 	}
 
 	policyText := req.LifecyclePolicyText
-	if policyText == "" {
+	if policyText != "" {
+		if err := ValidateTextLength("lifecyclePolicyText", policyText, minLifecyclePolicyTextLength, maxLifecyclePolicyTextLength); err != nil {
+			return LifecyclePreview{}, err
+		}
+	} else {
 		stored, err := policies.GetLifecyclePolicy(ctx, accountID, req.RepositoryName)
 		if err != nil {
 			if errors.Is(err, ecrdomain.ErrNotFound) {

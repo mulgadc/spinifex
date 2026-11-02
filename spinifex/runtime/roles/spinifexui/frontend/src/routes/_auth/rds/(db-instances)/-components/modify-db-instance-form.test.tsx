@@ -46,6 +46,20 @@ function seed(): QueryClient {
       },
     ],
   })
+  qc.setQueryData(["ec2", "instances", "types"], {
+    InstanceTypes: [
+      {
+        InstanceType: "t3.micro",
+        VCpuInfo: { DefaultVCpus: 2 },
+        MemoryInfo: { SizeInMiB: 1024 },
+      },
+      {
+        InstanceType: "t3.small",
+        VCpuInfo: { DefaultVCpus: 2 },
+        MemoryInfo: { SizeInMiB: 2048 },
+      },
+    ],
+  })
   qc.setQueryData(["ec2", "securityGroups"], {
     SecurityGroups: [
       { GroupId: "sg-1", GroupName: "default", VpcId: "vpc-1" },
@@ -72,6 +86,11 @@ function render(onClose = vi.fn()) {
 }
 
 describe("ModifyDBInstanceForm", () => {
+  it("shows the class's vCPUs and memory, as EC2 does for a type", () => {
+    const panel = render()
+    expect(panel.getByText("2 vCPU · 1 GiB memory")).toBeInTheDocument()
+  })
+
   it("opens with the instance's current values", () => {
     const panel = render()
     expect(panel.getByLabelText("Allocated storage (GiB)")).toHaveValue(40)

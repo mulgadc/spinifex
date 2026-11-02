@@ -1,8 +1,10 @@
+import type { InstanceTypeInfo } from "@aws-sdk/client-ec2"
 import type {
   DBParameterGroup,
   DBSubnetGroup,
   OrderableDBInstanceOption,
 } from "@aws-sdk/client-rds"
+import { useQuery } from "@tanstack/react-query"
 import {
   type Control,
   type FieldValues,
@@ -10,10 +12,13 @@ import {
   Controller,
 } from "react-hook-form"
 
+import type { SelectFieldOption } from "@/components/form-fields"
 import { pickerNotice } from "@/components/picker-notice"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { describeClassSize } from "@/lib/instance-type-size"
+import { ec2InstanceTypesQueryOptions } from "@/queries/ec2"
 
 // Offered identically wherever an instance is created, restored or modified.
 export function DeletionProtectionField<T extends FieldValues>({
@@ -66,6 +71,15 @@ export function parameterGroupsForEngine<
   return groups.filter((g) => families.has(g.DBParameterGroupFamily))
 }
 
+type OrderableQuery = Parameters<typeof instanceClassOptions>[0]
+
+// The class options sized by the EC2 type each class runs on.
+export function useInstanceClassOptions(query: OrderableQuery, engine: string) {
+  const types = useQuery(ec2InstanceTypesQueryOptions).data?.InstanceTypes
+
+  return instanceClassOptions(query, engine, types)
+}
+
 // The catalog lists a class once per engine version, so it is offered once.
 export function instanceClassOptions(
   query: {
@@ -74,6 +88,7 @@ export function instanceClassOptions(
     isPending: boolean
   },
   engine: string,
+  types: readonly InstanceTypeInfo[] = [],
 ) {
   const instanceClasses = [
     ...new Set(
@@ -83,8 +98,17 @@ export function instanceClassOptions(
     ),
   ]
 
+  const classOptions: SelectFieldOption[] = instanceClasses.map((c) => ({
+    value: c,
+    label: c,
+    detail: describeClassSize(c, types),
+  }))
+
   return {
     instanceClasses,
+    classOptions,
+    classSize: (c: string | undefined) =>
+      c ? describeClassSize(c, types) : undefined,
     classNotice: pickerNotice(query, instanceClasses.length === 0, {
       loading: "Loading the instance classes…",
       failed: "Could not read the instance classes",

@@ -99,6 +99,20 @@ function seed(options: SeedOptions = {}): QueryClient {
       },
     ],
   })
+  qc.setQueryData(["ec2", "instances", "types"], {
+    InstanceTypes: [
+      {
+        InstanceType: "t3.micro",
+        VCpuInfo: { DefaultVCpus: 2 },
+        MemoryInfo: { SizeInMiB: 1024 },
+      },
+      {
+        InstanceType: "t3.small",
+        VCpuInfo: { DefaultVCpus: 2 },
+        MemoryInfo: { SizeInMiB: 2048 },
+      },
+    ],
+  })
   qc.setQueryData(["ec2", "securityGroups"], {
     SecurityGroups: [
       { GroupId: "sg-1", GroupName: "default", VpcId: "vpc-1" },
@@ -131,7 +145,9 @@ function storageField(): HTMLInputElement {
 
 async function selectInstanceClass(user: UserEvent) {
   await user.click(screen.getByLabelText("DB instance class"))
-  await user.click(screen.getByRole("option", { name: "db.t3.micro" }))
+  await user.click(
+    screen.getByRole("option", { name: /^db\.t3\.micro.*1 GiB memory$/ }),
+  )
 }
 
 describe("RestoreDBSnapshotPage gating", () => {

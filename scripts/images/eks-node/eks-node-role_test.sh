@@ -162,10 +162,12 @@ for INIT in openrc systemd; do
         run_case "${INIT}" server_${FAILING}_fail
         printf 'SPINIFEX_K3S_ROLE=server\nEKS_CLUSTER_NAME=alpha\n' > "${EKS_NODE_ENVFILE}"
         if [ "${FAILING}" = enable ]; then
-            export STUB_FAIL="$(enable_cmd "${INIT}" eks-pod-identity-webhook)"
+            STUB_FAIL="$(enable_cmd "${INIT}" eks-pod-identity-webhook)"
+            export STUB_FAIL
             STUB_FAIL="${STUB_FAIL#rc-update add }"; STUB_FAIL="${STUB_FAIL#systemctl enable }"
         else
-            export STUB_FAIL="$(start_cmd "${INIT}" eks-pod-identity-webhook)"
+            STUB_FAIL="$(start_cmd "${INIT}" eks-pod-identity-webhook)"
+            export STUB_FAIL
             STUB_FAIL="${STUB_FAIL#rc-service }"; STUB_FAIL="${STUB_FAIL#systemctl start --no-block }"
         fi
         invoke

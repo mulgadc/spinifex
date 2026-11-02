@@ -561,7 +561,13 @@ func TestUpdateRole_NotFound(t *testing.T) {
 func TestUpdateRoleDescription(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
-	createTestRole(t, svc, "desc-role")
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("desc-role"),
+		AssumeRolePolicyDocument: aws.String(validTrustPolicy()),
+		MaxSessionDuration:       aws.Int64(7200),
+		Tags:                     []*iam.Tag{{Key: aws.String("team"), Value: aws.String("infra")}},
+	})
+	require.NoError(t, err)
 
 	out, err := svc.UpdateRoleDescription(testAccountID, &iam.UpdateRoleDescriptionInput{
 		RoleName:    aws.String("desc-role"),
@@ -571,7 +577,15 @@ func TestUpdateRoleDescription(t *testing.T) {
 	got, err := svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: aws.String("desc-role")})
 	require.NoError(t, err)
 	assert.Equal(t, "new description", *got.Role.Description)
-	assert.Equal(t, got.Role, out.Role, "output carries the role in the GetRole shape")
+	assert.Equal(t, &iam.Role{
+		Path:                     got.Role.Path,
+		RoleName:                 got.Role.RoleName,
+		RoleId:                   got.Role.RoleId,
+		Arn:                      got.Role.Arn,
+		CreateDate:               got.Role.CreateDate,
+		AssumeRolePolicyDocument: got.Role.AssumeRolePolicyDocument,
+		Description:              aws.String("new description"),
+	}, out.Role, "AWS omits MaxSessionDuration, Tags and RoleLastUsed from this output")
 
 	_, err = svc.UpdateRoleDescription(testAccountID, &iam.UpdateRoleDescriptionInput{
 		RoleName:    aws.String("desc-role"),

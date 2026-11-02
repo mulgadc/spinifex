@@ -170,10 +170,6 @@ func (s *Service) issueCommand(ctx context.Context, accountID, dbInstanceIdentif
 		Parameters: params,
 		IssuedAt:   &issuedAt,
 	}
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		return nil, err
-	}
 
 	// Subscribed before the first publish, so a reply cannot land in the gap
 	// between the command going out and the issuer starting to listen.
@@ -191,7 +187,15 @@ func (s *Service) issueCommand(ctx context.Context, accountID, dbInstanceIdentif
 	defer cancel()
 	subject := BusCommandSubject(accountID, dbInstanceIdentifier)
 
+	deadline, _ := deadlineCtx.Deadline()
 	for {
+		// Stamped per copy, so a copy that reaches the agent late carries only what
+		// its issuer has left rather than a whole fresh budget.
+		cmd.RemainingBudgetMs = max(time.Until(deadline).Milliseconds(), 1)
+		data, err := json.Marshal(cmd)
+		if err != nil {
+			return nil, err
+		}
 		if err := s.nc.Publish(subject, data); err != nil {
 			return nil, fmt.Errorf("rds: publish %s command to %s: %w", commandType, dbInstanceIdentifier, err)
 		}

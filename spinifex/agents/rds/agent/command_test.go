@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -407,4 +408,105 @@ func (c *commander) pendingReplies() []rdsinstance.CommandReply {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.Clone(c.pending)
+}
+
+// The first copy can reach the agent late, after a gateway or bus outage, with
+// its issuer about to give up. A quiesce granted a fresh budget then would take
+// a hold nobody is left to release.
+func TestCommander_AQuiesceStampedNearlyOutOfBudgetNeverTakesAHold(t *testing.T) {
+	cp := newFakeControlPlane()
+	cp.pollQueue = [][]rdsinstance.Command{
+		{{CommandID: "cmd-apply", Type: rdsinstance.CommandApplyParams}},
+		{{CommandID: "cmd-quiesce", Type: rdsinstance.CommandQuiesce, RemainingBudgetMs: 50, Parameters: []rdsinstance.Parameter{
+			{Name: rdsinstance.CommandParamQuiesceLabel, Value: "orders-db-automated"},
+			{Name: rdsinstance.CommandParamQuiesceDeadlineSeconds, Value: "360"},
+		}}},
+	}
+	engine := &fakeEngine{}
+	registry := newCommandRegistry(engine, &fakeStorage{})
+	applying, release := make(chan struct{}), make(chan struct{})
+	registry[rdsinstance.CommandApplyParams] = func(context.Context, rdsinstance.Command) (string, error) {
+		close(applying)
+		<-release
+		return "", nil
+	}
+	c := newCommander(cp, registry, 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { c.Run(ctx); close(done) }()
+
+	<-applying
+	waitFor(t, func() bool { return len(cp.snapshotReplies()) >= 3 }, "the quiesce to be delivered behind the apply")
+	// The quiesce was received before the third poll began, so its stamped budget
+	// has run out 50ms after this point.
+	queuedAt := time.Now()
+	waitFor(t, func() bool { return time.Since(queuedAt) > 50*time.Millisecond }, "the stamped budget to pass")
+	close(release)
+	waitFor(t, func() bool { return len(repliesFor(cp, "cmd-quiesce")) > 0 }, "the quiesce to be answered")
+	cancel()
+	<-done
+
+	reply := repliesFor(cp, "cmd-quiesce")[0]
+	assert.Equal(t, rdsinstance.CommandStatusFailed, reply.Status)
+	assert.Contains(t, reply.Message, "expired")
+	assert.Empty(t, engine.label, "a quiesce whose issuer had all but given up must never reach the engine")
+}
+
+// A full lane refuses at once rather than queueing work its issuer will not
+// outlive, and the refusal is the command's answer: a re-published copy must
+// not slip in once the lane has room.
+func TestCommander_AFullLaneRefusesAtOnceAndNeverRunsTheCommand(t *testing.T) {
+	var mu sync.Mutex
+	runs := map[string]int{}
+	running, release := make(chan struct{}, 1), make(chan struct{})
+	handler := func(_ context.Context, cmd rdsinstance.Command) (string, error) {
+		mu.Lock()
+		runs[cmd.CommandID]++
+		mu.Unlock()
+		if cmd.CommandID == "cmd-blocker" {
+			running <- struct{}{}
+			<-release
+		}
+		return "", nil
+	}
+	c := newCommander(nil, commandRegistry{"reload-parameters": handler}, time.Second)
+	ctx := t.Context()
+	go c.serveSerial(ctx)
+
+	c.dispatch(ctx, rdsinstance.Command{CommandID: "cmd-blocker", Type: "reload-parameters"})
+	<-running
+	for i := range serialQueueDepth {
+		c.dispatch(ctx, rdsinstance.Command{CommandID: fmt.Sprintf("cmd-queued-%d", i), Type: "reload-parameters"})
+	}
+
+	overflow := rdsinstance.Command{CommandID: "cmd-overflow", Type: "reload-parameters"}
+	c.dispatch(ctx, overflow)
+	refused := slices.IndexFunc(c.pendingReplies(), func(r rdsinstance.CommandReply) bool { return r.CommandID == overflow.CommandID })
+	require.GreaterOrEqual(t, refused, 0, "a full lane must answer at once, before anything ahead of it finishes")
+	assert.Equal(t, rdsinstance.CommandStatusFailed, c.pendingReplies()[refused].Status)
+	assert.Contains(t, c.pendingReplies()[refused].Message, "busy")
+
+	close(release)
+	last := fmt.Sprintf("cmd-queued-%d", serialQueueDepth-1)
+	waitFor(t, func() bool {
+		return slices.ContainsFunc(c.pendingReplies(), func(r rdsinstance.CommandReply) bool { return r.CommandID == last })
+	}, "the queue to drain")
+	c.dispatch(ctx, overflow)
+	// FIFO again: once this answers, a copy let onto the lane would have run.
+	c.dispatch(ctx, rdsinstance.Command{CommandID: "cmd-after", Type: "reload-parameters"})
+	waitFor(t, func() bool {
+		return slices.ContainsFunc(c.pendingReplies(), func(r rdsinstance.CommandReply) bool { return r.CommandID == "cmd-after" })
+	}, "the command after the re-published copy")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Zero(t, runs[overflow.CommandID], "a refused command must never run")
+	answers := 0
+	for _, r := range c.pendingReplies() {
+		if r.CommandID == overflow.CommandID {
+			answers++
+		}
+	}
+	assert.Equal(t, 1, answers, "a re-published copy of a refused command must be ignored, not answered again")
 }

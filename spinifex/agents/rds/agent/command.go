@@ -126,9 +126,9 @@ type commander struct {
 	id       identity
 	registry commandRegistry
 	wait     time.Duration
-	// The control plane's budget per type, measured from receipt so the agent never
-	// gives up before its issuer. IssuedAt is not compared: the guest clock is not
-	// trusted against the host's.
+	// The control plane's budget per type, capped by the remaining budget the
+	// issuer stamps on each copy and measured from receipt. IssuedAt is not
+	// compared: the guest clock is not trusted against the host's.
 	budget func(commandType string) time.Duration
 	serial chan queuedCommand
 
@@ -244,7 +244,7 @@ func (c *commander) dispatch(ctx context.Context, cmd rdsinstance.Command) {
 	c.inFlight[cmd.CommandID] = struct{}{}
 	c.mu.Unlock()
 
-	q := queuedCommand{cmd: cmd, deadline: time.Now().Add(c.budget(cmd.Type))}
+	q := queuedCommand{cmd: cmd, deadline: time.Now().Add(c.budgetFor(cmd))}
 	if outOfBand(cmd.Type) {
 		c.running.Go(func() { c.runQueued(ctx, q) })
 		return
@@ -254,6 +254,17 @@ func (c *commander) dispatch(ctx context.Context, cmd rdsinstance.Command) {
 	default:
 		c.finish(cmd, failedReply(cmd, "the agent is busy; too many commands are waiting"))
 	}
+}
+
+// The type's budget, or what the issuer had left when it published this copy if
+// that is less: a copy delayed in transit must not be granted a fresh budget its
+// issuer will not wait out.
+func (c *commander) budgetFor(cmd rdsinstance.Command) time.Duration {
+	budget := c.budget(cmd.Type)
+	if cmd.RemainingBudgetMs > 0 {
+		budget = min(budget, time.Duration(cmd.RemainingBudgetMs)*time.Millisecond)
+	}
+	return budget
 }
 
 func (c *commander) serveSerial(ctx context.Context) {

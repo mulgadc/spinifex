@@ -104,9 +104,9 @@ type deletionTakeover struct {
 }
 
 const (
-	takeoverReasonLeaseExpired = "lease_expired"
-	takeoverReasonFailed       = "failed"
-	takeoverReasonExercised    = "exercised"
+	takeoverReasonLeaseExpired     = "lease_expired"
+	takeoverReasonFailed           = "failed"
+	takeoverReasonExerciseFinished = "exercise_finished"
 )
 
 // deleteAccount starts a teardown, or answers a dry run inline.
@@ -511,7 +511,7 @@ func claimDeletionJob(
 
 	reason := takeoverReasonFailed
 	if existing.State == operatorv1.DeletionStateExercised {
-		reason = takeoverReasonExercised
+		reason = takeoverReasonExerciseFinished
 	}
 	if existing.State == operatorv1.DeletionStateRunning {
 		if !deletionLeaseExpired(existing, now) {

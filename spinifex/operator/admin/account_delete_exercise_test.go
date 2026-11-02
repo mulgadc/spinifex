@@ -71,7 +71,7 @@ func TestNonFinalizingDeleteEndsExercisedAndALaterDeleteTakesItOver(t *testing.T
 	assert.Equal(t, exercised.OperationID, done.OperationID)
 	assert.Equal(t, uint64(2), done.Fence)
 	require.Len(t, done.Takeovers, 1)
-	assert.Equal(t, takeoverReasonExercised, done.Takeovers[0].Reason)
+	assert.Equal(t, takeoverReasonExerciseFinished, done.Takeovers[0].Reason)
 	assert.Nil(t, done.Exercise, "the takeover starts a fresh run")
 	assert.Equal(t, uint64(2), done.IAM.Fence)
 	assert.Empty(t, done.IAM.QuiescedScope, "an ordinary delete records no scope")

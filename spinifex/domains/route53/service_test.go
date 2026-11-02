@@ -662,3 +662,21 @@ func TestModelBoundViolationsAreInvalidInput(t *testing.T) {
 	_, err := svc.ListResourceRecordSets(ctx, &r53.ListResourceRecordSetsInput{HostedZoneId: aws.String(id), StartRecordName: aws.String("example.com"), StartRecordType: aws.String("HTTPS")}, acctA)
 	require.NoError(t, err, "the model's RRType includes types the v1 SDK predates")
 }
+
+func TestListAndLookupErrorsMatchAWS(t *testing.T) {
+	svc := newService(t)
+	id := createZone(t, svc, acctA, "example.com")
+
+	out, err := svc.ListHostedZones(ctx, &r53.ListHostedZonesInput{}, acctA)
+	require.NoError(t, err)
+	assert.Nil(t, out.Marker)
+
+	_, err = svc.GetChange(ctx, &r53.GetChangeInput{Id: aws.String("C0000000000000000PROBE")}, acctA)
+	assert.Equal(t, "Could not find resource with ID: C0000000000000000PROBE", requireCode(t, err, awserrors.ErrorNoSuchChange))
+	_, err = svc.ListTagsForResource(ctx, &r53.ListTagsForResourceInput{ResourceType: aws.String("bogus"), ResourceId: aws.String(id)}, acctA)
+	assert.Equal(t, "Invalid resource type: bogus", requireCode(t, err, awserrors.ErrorInvalidInput))
+	_, err = svc.ListHostedZones(ctx, &r53.ListHostedZonesInput{MaxItems: aws.String("0")}, acctA)
+	assert.Equal(t, "maxitems must be a positive integer.", requireCode(t, err, awserrors.ErrorInvalidInput))
+	_, err = svc.ListHostedZonesByName(ctx, &r53.ListHostedZonesByNameInput{HostedZoneId: aws.String(id)}, acctA)
+	assert.Equal(t, "The specified marker is not valid.", requireCode(t, err, awserrors.ErrorInvalidInput))
+}

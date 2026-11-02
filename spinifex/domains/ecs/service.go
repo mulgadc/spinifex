@@ -458,7 +458,7 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 	if family == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	if err := validateContainerDefs(input.ContainerDefinitions); err != nil {
+	if err := validateContainerDefs(input.ContainerDefinitions, aws.StringValue(input.Memory)); err != nil {
 		return nil, err
 	}
 	warnUnsupportedLogDrivers(ctx, family, input.ContainerDefinitions)
@@ -497,12 +497,23 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 // The test here is per value, not per field: an empty list or a false/unset
 // flag requests nothing and is accepted, because there is nothing to enforce
 // or refuse. Only a value that asks for the restriction is rejected.
-func validateContainerDefs(defs []*ecs.ContainerDefinition) error {
+//
+// Ahead of those, AWS's own rules: every container needs an image, and without
+// a task-level memory every container needs memory or memoryReservation.
+func validateContainerDefs(defs []*ecs.ContainerDefinition, taskMemory string) error {
 	for _, c := range defs {
 		if c == nil {
 			continue
 		}
 		name := aws.StringValue(c.Name)
+		if aws.StringValue(c.Image) == "" {
+			return awserrors.Errorf(awserrors.ErrorECSClientException,
+				"Container.image should not be null or empty.")
+		}
+		if taskMemory == "" && c.Memory == nil && c.MemoryReservation == nil {
+			return awserrors.Errorf(awserrors.ErrorECSClientException,
+				"Invalid setting for container '%s'. At least one of 'memory' or 'memoryReservation' must be specified.", name)
+		}
 		if len(c.Secrets) > 0 {
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}

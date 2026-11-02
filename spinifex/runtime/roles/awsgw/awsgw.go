@@ -365,6 +365,21 @@ func launchService(config *config.ClusterConfig) error {
 		ecrRegistry, activeAccountIDs(iamService), ecrregistry.DefaultLifecycleSweepInterval)
 	go lifecycleSweeper.Run(janitorCtx)
 
+	// Lambda code copies live in a Regional system bucket reached through a
+	// scoped role session. Nothing is provisioned until the store is first used.
+	lambdaCodeStore, err := newLambdaCodeStore(codeStoreWiring{
+		Region:        nodeConfig.Region,
+		Node:          config.Node,
+		Endpoint:      netaddr.DialTarget(nodeConfig.Predastore.Host),
+		SigningRegion: nodeConfig.Predastore.Region,
+		RootAccessKey: nodeConfig.Predastore.AccessKey,
+		RootSecretKey: nodeConfig.Predastore.SecretKey,
+	}, iamService, stsService)
+	if err != nil {
+		return err
+	}
+	_ = lambdaCodeStore // no Lambda handler is registered to use it yet
+
 	// ECR auth bridge: load (or first-run create) the ES256 signing key from the
 	// cluster-replicated awsgw-keys KV bucket, then build the token issuer
 	// (GetAuthorizationToken) and verifier (/v2 Authorization). The bridge reads

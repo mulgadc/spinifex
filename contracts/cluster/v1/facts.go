@@ -84,7 +84,8 @@ type OSFacts struct {
 	Hostname      string `json:"hostname,omitempty"`
 }
 
-// CPUFacts summarises the sockets. Threads and Cores are totals.
+// CPUFacts summarises the sockets. Threads and Cores are totals. Features are
+// the flags worth naming; Flags is every flag the CPU reports.
 type CPUFacts struct {
 	Model          string   `json:"model,omitempty"`
 	Vendor         string   `json:"vendor,omitempty"`
@@ -95,7 +96,6 @@ type CPUFacts struct {
 	MaxMHz         int      `json:"max_mhz,omitempty"`
 	CurrentMHz     int      `json:"current_mhz,omitempty"`
 	Virtualization string   `json:"virtualization,omitempty"`
-	// Features are the flags worth naming; Flags is every flag the CPU reports.
 	Features       []string `json:"features,omitempty"`
 	Flags          []string `json:"flags,omitempty"`
 }

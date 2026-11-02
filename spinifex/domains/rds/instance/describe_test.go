@@ -61,6 +61,8 @@ func TestDescribeDBInstances_NamedMissingInstanceIsAnError(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorDBInstanceNotFound)
+	_, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, "DBInstance no-such-db not found.", message)
 }
 
 func TestDescribeDBInstances_NamedInstanceProjectsTheRecord(t *testing.T) {

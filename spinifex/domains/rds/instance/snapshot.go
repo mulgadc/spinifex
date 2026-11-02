@@ -632,7 +632,7 @@ func (s *Service) getDBSnapshot(ctx context.Context, kv *kvstore.Bucket, id stri
 		return nil, 0, err
 	}
 	if !found {
-		return nil, 0, awserrors.Errorf(awserrors.ErrorDBSnapshotNotFound, "DB snapshot %s not found", id)
+		return nil, 0, awserrors.Errorf(awserrors.ErrorDBSnapshotNotFound, "DBSnapshot not found: %s", id)
 	}
 	return &rec, rev, nil
 }

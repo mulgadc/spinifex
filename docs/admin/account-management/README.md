@@ -241,7 +241,7 @@ AWS_PROFILE=spinifex-operator spx admin account delete 000000000042 \
   --endpoint https://node1.example.com:9999 --region us-west-1
 ```
 
-`spx admin account delete` always goes through the admin API, so it needs AWS credentials for an IAM user holding `spinifex:DeleteAccount` and `spinifex:DescribeAccountDeletion`, and a reachable gateway. The older `--remote` flag is accepted and ignored. The command starts the job and then polls, printing each stage as it lands. Your own client can do the same, or start the job and check back later — the deletion record outlives the account, so `DescribeAccountDeletion` stays answerable after the account is gone.
+`spx admin account delete` always goes through the admin API, so it signs with the standard AWS credential chain. On a cluster node that means `AWS_PROFILE=spinifex` (there is no default profile, so without it the command cannot find credentials), or equivalent credentials for an IAM user holding `spinifex:DeleteAccount` and `spinifex:DescribeAccountDeletion`, and a reachable gateway. The older `--remote` flag is accepted and ignored. The command starts the job and then polls, printing each stage as it lands. Your own client can do the same, or start the job and check back later — the deletion record outlives the account, so `DescribeAccountDeletion` stays answerable after the account is gone.
 
 One job runs per account. A second `DeleteAccount` with a different token while one is running returns `OperationInProgress`; with the *same* token it returns the running job, which is what makes a retry safe.
 

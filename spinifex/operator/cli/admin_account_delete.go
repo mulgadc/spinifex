@@ -41,8 +41,9 @@ never be emptied. It clears the attachment in the control plane without the
 guest's cooperation, so use it only once the guest is being destroyed.
 
 The deletion always runs through the gateway's admin API (POST /admin/DeleteAccount,
-then DescribeAccountDeletion), signed with credentials from the standard AWS chain;
-the caller must hold spinifex:DeleteAccount and spinifex:DescribeAccountDeletion.
+then DescribeAccountDeletion), signed with the standard AWS credential chain. On a cluster node that
+means AWS_PROFILE=spinifex; without it no credentials are found. The caller
+must hold spinifex:DeleteAccount and spinifex:DescribeAccountDeletion.
 --remote is accepted for existing scripts and has no effect.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runAccountDelete,

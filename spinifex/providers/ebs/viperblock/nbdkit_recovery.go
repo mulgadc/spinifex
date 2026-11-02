@@ -363,11 +363,11 @@ func endpointReferencer(procRoot string, disc discoveredNbdkit) (pid int, found 
 
 // cmdlineReferencesEndpoint checks a NUL-separated /proc/<pid>/cmdline for
 // disc's endpoint. A socket mount's path appears verbatim in whichever
-// argument named it (QEMU's nbd+unix:///?socket=<path> file= or its
-// server.path=<path> -blockdev option). A TCP mount's 127.0.0.1:<port> pair
-// may appear joined in one argument (a boot/EFI drive's nbd://host:port) or
-// split across server.host=/server.port= within the same comma-joined
-// -blockdev argument, so both shapes are checked.
+// argument named it (an EFI -drive's file= or a -blockdev's server.path=). A
+// TCP mount's 127.0.0.1:<port> pair may appear joined in one argument (an EFI
+// pflash drive's nbd://host:port) or split across server.host=/server.port=
+// within one -blockdev argument. The match is by substring, so the boot
+// volume's file.server.path=/file.server.host=/file.server.port= also match.
 func cmdlineReferencesEndpoint(cmdline []byte, disc discoveredNbdkit) bool {
 	args := bytes.Split(bytes.TrimRight(cmdline, "\x00"), []byte{0})
 

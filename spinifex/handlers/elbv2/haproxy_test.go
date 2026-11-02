@@ -252,7 +252,7 @@ func TestGenerateHAProxyConfig_FixedResponseDefault(t *testing.T) {
 	// Synthetic default backend named off the listener ARN, returning the fixed response.
 	assert.Contains(t, config, "default_backend bkdefault_lst-616760baf6a3031c3")
 	assert.Contains(t, config, "backend bkdefault_lst-616760baf6a3031c3")
-	assert.Contains(t, config, `http-request return status 404 content-type "text/plain" string "no route"`)
+	assert.Contains(t, config, `http-request return status 404 content-type 'text/plain' string 'no route'`)
 	// Host-header rule still routes to the app backend.
 	assert.Contains(t, config, "use_backend bk_tg-app1 if")
 	assert.Contains(t, config, "10.42.0.9:8080")
@@ -282,7 +282,34 @@ func TestGenerateHAProxyConfig_FixedResponseRejectsUnsafeBody(t *testing.T) {
 
 	assert.Contains(t, config, "http-request return status 200")
 	assert.NotContains(t, config, "always_true")
-	assert.NotContains(t, config, `string "evil`)
+	assert.NotContains(t, config, `string 'evil`)
+}
+
+// TestGenerateHAProxyConfig_FixedResponseIsLiteral renders the content type and
+// body in single quotes, where HAProxy performs no environment expansion, so a
+// body referencing the lb-agent's environment is served verbatim.
+func TestGenerateHAProxyConfig_FixedResponseIsLiteral(t *testing.T) {
+	t.Parallel()
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-env"}
+	listeners := []*ListenerRecord{
+		{
+			ListenerArn: "arn:lst-env",
+			Port:        80,
+			DefaultActions: []ListenerAction{
+				{Type: ActionTypeFixedResponse, FixedResponse: &FixedResponseAction{
+					StatusCode:  "200",
+					ContentType: "text/plain",
+					MessageBody: `sk=${LB_SECRET_KEY} ak=$LB_ACCESS_KEY it's "q" \ #x`,
+				}},
+			},
+		},
+	}
+
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, nil, nil, "0.0.0.0", nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, config, `http-request return status 200 content-type 'text/plain' string 'sk=${LB_SECRET_KEY} ak=$LB_ACCESS_KEY it'\''s "q" \ #x'`+"\n")
+	assert.NotContains(t, config, `"${LB_SECRET_KEY}`)
 }
 
 // TestGenerateHAProxyConfig_RedirectSchemeDefault renders the canonical

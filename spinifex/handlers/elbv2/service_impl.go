@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -2507,14 +2508,48 @@ func listenerActionFromSDK(a *elbv2.Action) ListenerAction {
 	return action
 }
 
-// validateListenerAction enforces the per-type action contract. Redirect fields
-// are validated here so invalid input fails at the API, not at render time.
+// validateListenerAction enforces the per-type action contract. Redirect and
+// fixed-response fields are validated here so invalid input fails at the API,
+// not at render time.
 func validateListenerAction(a ListenerAction) error {
 	if a.Type == ActionTypeRedirect {
 		if a.Redirect == nil {
 			return errors.New(awserrors.ErrorMissingParameter)
 		}
 		return validateRedirectAction(a.Redirect)
+	}
+	if a.Type == ActionTypeFixedResponse {
+		return validateFixedResponseAction(a.FixedResponse)
+	}
+	return nil
+}
+
+// fixedResponseContentTypes are the only ContentType values ELBv2 accepts.
+var fixedResponseContentTypes = map[string]bool{
+	"text/plain":             true,
+	"text/css":               true,
+	"text/html":              true,
+	"application/javascript": true,
+	"application/json":       true,
+}
+
+// maxFixedResponseBodyLen is ELBv2's MessageBody length limit in characters.
+const maxFixedResponseBodyLen = 1024
+
+// validateFixedResponseAction rejects a ContentType ELBv2 does not allow, or a
+// MessageBody that is too long or holds control characters.
+func validateFixedResponseAction(fr *FixedResponseAction) error {
+	if fr == nil {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if fr.ContentType != "" && !fixedResponseContentTypes[fr.ContentType] {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if utf8.RuneCountInString(fr.MessageBody) > maxFixedResponseBodyLen {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if fr.MessageBody != "" && !validFixedResponseBody(fr.MessageBody) {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	return nil
 }

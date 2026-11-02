@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"unicode"
 
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
 )
@@ -43,7 +44,7 @@ backend {{.Name}}
 {{- if .Redirect}}
     http-request redirect {{if .Redirect.Scheme}}scheme {{.Redirect.Scheme}}{{else}}location {{.Redirect.Location}}{{end}} code {{.Redirect.Code}}
 {{- else if .FixedResponse}}
-    http-request return status {{.FixedResponse.StatusCode}}{{if .FixedResponse.ContentType}} content-type "{{.FixedResponse.ContentType}}"{{end}}{{if .FixedResponse.Body}} string "{{.FixedResponse.Body}}"{{end}}
+    http-request return status {{.FixedResponse.StatusCode}}{{if .FixedResponse.ContentType}} content-type {{squote .FixedResponse.ContentType}}{{end}}{{if .FixedResponse.Body}} string {{squote .FixedResponse.Body}}{{end}}
 {{- else}}
     balance roundrobin{{if .HealthCheckPath}}
     option httpchk GET {{.HealthCheckPath}}
@@ -55,7 +56,14 @@ backend {{.Name}}
 {{end}}
 `
 
-var haproxyHTTPTmpl = template.Must(template.New("haproxy").Parse(haproxyConfigTemplate))
+var haproxyHTTPTmpl = template.Must(template.New("haproxy").Funcs(template.FuncMap{"squote": haproxySingleQuote}).Parse(haproxyConfigTemplate))
+
+// haproxySingleQuote renders s as one literal HAProxy word. HAProxy expands
+// environment variables inside double quotes but not single quotes, so tenant
+// text is single-quoted with each embedded quote closed, escaped and reopened.
+func haproxySingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
 
 // HAProxyConfig holds the full configuration for rendering the HAProxy template.
 type HAProxyConfig struct {
@@ -529,17 +537,13 @@ func validHTTPStatusCode(s string) bool {
 	return true
 }
 
-// validFixedResponseBody rejects bytes that would terminate or inject into the HAProxy directive.
+// validFixedResponseBody rejects control characters, which would end or break
+// the single-line HAProxy directive the body is rendered into.
 func validFixedResponseBody(s string) bool {
 	if s == "" {
 		return false
 	}
-	for _, r := range s {
-		if r == '\n' || r == '\r' || r == '"' || r == '\\' || r == '#' {
-			return false
-		}
-	}
-	return true
+	return !strings.ContainsFunc(s, unicode.IsControl)
 }
 
 // buildRedirect translates a RedirectAction into an HAProxy redirect directive.

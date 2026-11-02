@@ -1108,6 +1108,48 @@ provider = "bogus"
 	assert.Contains(t, err.Error(), `provider="bogus"`)
 }
 
+func TestLoadConfig_EBSProvider_SingleProviderPerCluster(t *testing.T) {
+	base := `
+node = "n1"
+
+[nodes.n1]
+region = "us-east-1"
+%s
+[nodes.n2]
+region = "us-east-1"
+%s
+`
+	qemu1 := "[nodes.n1.ebs]\nprovider = \"qemunbd\"\n"
+	qemu2 := "[nodes.n2.ebs]\nprovider = \"qemunbd\"\n"
+	viper2 := "[nodes.n2.ebs]\nprovider = \"viperblockd\"\n"
+	cases := []struct {
+		name    string
+		n1, n2  string
+		wantErr string
+	}{
+		{"both unset", "", "", ""},
+		{"unset and explicit viperblockd resolve alike", "", viper2, ""},
+		{"both qemunbd", qemu1, qemu2, ""},
+		{"unset beside qemunbd", "", qemu2, `[nodes.n1.ebs] provider resolves to "viperblockd" but [nodes.n2.ebs] resolves to "qemunbd"`},
+		{"qemunbd beside viperblockd", qemu1, viper2, `[nodes.n1.ebs] provider resolves to "qemunbd" but [nodes.n2.ebs] resolves to "viperblockd"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetViper(t)
+			path := filepath.Join(t.TempDir(), "spinifex.toml")
+			require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, base, tc.n1, tc.n2), 0600))
+
+			_, err := LoadConfig(path)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
 func TestEBSConfig_ResolvedTunablesDefault(t *testing.T) {
 	var c EBSConfig
 	assert.Equal(t, DefaultNBDKitThreads, c.ResolvedThreads())

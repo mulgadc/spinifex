@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -801,6 +802,24 @@ func validateVultrPool(cc *ClusterConfig, p ExternalPool) error {
 	return nil
 }
 
+// validateSingleEBSProvider refuses nodes whose [nodes.<name>.ebs] entries
+// resolve to different providers. A cluster has one provider, because a volume
+// records none and any node may be asked to address it.
+func validateSingleEBSProvider(cc *ClusterConfig) error {
+	names := slices.Sorted(maps.Keys(cc.Nodes))
+	if len(names) == 0 {
+		return nil
+	}
+	first := names[0]
+	want := cc.Nodes[first].EBS.ResolvedProvider()
+	for _, name := range names[1:] {
+		if got := cc.Nodes[name].EBS.ResolvedProvider(); got != want {
+			return fmt.Errorf("config: [nodes.%s.ebs] provider resolves to %q but [nodes.%s.ebs] resolves to %q; every node in a cluster must use the same EBS provider (an unset provider means %q)", first, want, name, got, EBSProviderViperblockd)
+		}
+	}
+	return nil
+}
+
 func validateClusterConfig(cc *ClusterConfig) error {
 	if viper.IsSet("network.external_dhcp") {
 		return fmt.Errorf("config: [network] external_dhcp is no longer supported; remove the key (static WAN-pool allocation only)")
@@ -828,6 +847,9 @@ func validateClusterConfig(cc *ClusterConfig) error {
 		if c := nodeCfg.EBS.CacheSizeMB; c != nil && *c < 0 {
 			return fmt.Errorf("config: [nodes.%s.ebs] cache_size_mb=%d must not be negative; use 0 to disable the cache, or remove the key for the default of %d", nodeName, *c, DefaultCacheSizeMB)
 		}
+	}
+	if err := validateSingleEBSProvider(cc); err != nil {
+		return err
 	}
 
 	if err := validateNorthstarCluster(cc); err != nil {

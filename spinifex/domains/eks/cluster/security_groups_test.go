@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -52,6 +53,11 @@ type fakeSGProvisioner struct {
 	// nodegroup SG IDs.
 	createIDs []string
 
+	// uniqueIDs makes CreateSecurityGroup hand out sg-1, sg-2, ... once createIDs
+	// is exhausted, so a flow that creates several SGs can tell them apart.
+	uniqueIDs bool
+	nextSeq   int
+
 	createErr    error
 	describeErr  error
 	deleteErr    error
@@ -72,12 +78,22 @@ func (f *fakeSGProvisioner) CreateSecurityGroup(_ context.Context, input *ec2.Cr
 		return nil, f.createErr
 	}
 	id := "sg-default"
-	if len(f.createIDs) > 0 {
+	switch {
+	case len(f.createIDs) > 0:
 		id = f.createIDs[0]
 		f.createIDs = f.createIDs[1:]
+	case f.uniqueIDs:
+		f.nextSeq++
+		id = "sg-" + strconv.Itoa(f.nextSeq)
 	}
 	if input.GroupName != nil && input.VpcId != nil {
 		f.existing[*input.GroupName+"|"+*input.VpcId] = id
+	}
+	for _, spec := range input.TagSpecifications {
+		if f.tagsByID == nil {
+			f.tagsByID = map[string][]*ec2.Tag{}
+		}
+		f.tagsByID[id] = append(f.tagsByID[id], spec.Tags...)
 	}
 	return &ec2.CreateSecurityGroupOutput{GroupId: aws.String(id)}, nil
 }
@@ -104,15 +120,18 @@ func (f *fakeSGProvisioner) DescribeSecurityGroups(_ context.Context, input *ec2
 		return out, nil
 	}
 	var name, vpc string
+	tagFilters := map[string]string{}
 	for _, filt := range input.Filters {
 		if filt == nil || filt.Name == nil || len(filt.Values) == 0 || filt.Values[0] == nil {
 			continue
 		}
-		switch *filt.Name {
-		case "group-name":
+		switch {
+		case *filt.Name == "group-name":
 			name = *filt.Values[0]
-		case "vpc-id":
+		case *filt.Name == "vpc-id":
 			vpc = *filt.Values[0]
+		case strings.HasPrefix(*filt.Name, "tag:"):
+			tagFilters[strings.TrimPrefix(*filt.Name, "tag:")] = *filt.Values[0]
 		}
 	}
 	out := &ec2.DescribeSecurityGroupsOutput{}
@@ -121,6 +140,9 @@ func (f *fakeSGProvisioner) DescribeSecurityGroups(_ context.Context, input *ec2
 		for key, id := range f.existing {
 			parts := strings.SplitN(key, "|", 2)
 			if len(parts) != 2 || parts[1] != vpc {
+				continue
+			}
+			if !sgTagsMatch(f.tagsByID[id], tagFilters) {
 				continue
 			}
 			out.SecurityGroups = append(out.SecurityGroups, &ec2.SecurityGroup{
@@ -590,4 +612,23 @@ func assertSGCreateTagged(t *testing.T, in *ec2.CreateSecurityGroupInput, name, 
 	assert.Equal(t, tags.ManagedByEKS, got[tags.ManagedByKey])
 	assert.Equal(t, clusterName, got[clusterEKSClusterTagKey])
 	assert.Equal(t, role, got[clusterEKSRoleTagKey])
+}
+
+// sgTagsMatch reports whether tags carry every key=value in want.
+func sgTagsMatch(tags []*ec2.Tag, want map[string]string) bool {
+	have := sgTagMap(tags)
+	for k, v := range want {
+		if have[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func sgTagMap(tags []*ec2.Tag) map[string]string {
+	m := map[string]string{}
+	for _, tg := range tags {
+		m[aws.StringValue(tg.Key)] = aws.StringValue(tg.Value)
+	}
+	return m
 }

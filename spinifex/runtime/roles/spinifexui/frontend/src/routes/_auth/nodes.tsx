@@ -1,10 +1,16 @@
 import { useQuery } from "@tanstack/react-query"
 import { createFileRoute } from "@tanstack/react-router"
+import { useState } from "react"
 
+import {
+  type DataColumn,
+  DataTable,
+  type SortState,
+} from "@/components/data-table"
 import { GPUInventoryCard } from "@/components/gpu-inventory-card"
 import { NodesTable } from "@/components/nodes-table"
 import { PageHeading } from "@/components/page-heading"
-import { Badge } from "@/components/ui/badge"
+import { StateBadge } from "@/components/state-badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { requireAdmin } from "@/lib/require-admin"
 import { formatVRAMMiB } from "@/lib/utils"
@@ -122,13 +128,7 @@ function NodesPage() {
             <CardTitle>Elastic Compute Cloud (EC2)</CardTitle>
           </CardHeader>
           <CardContent>
-            {vms.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No instances running
-              </p>
-            ) : (
-              <VMsTable vms={vms} />
-            )}
+            <VMsTable vms={vms} />
           </CardContent>
         </Card>
 
@@ -139,19 +139,13 @@ function NodesPage() {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {nodes.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No data</p>
-              ) : (
+              <ResourceTable nodes={nodes} />
+              {instanceTypes.length > 0 && (
                 <>
-                  <ResourceTable nodes={nodes} />
-                  {instanceTypes.length > 0 && (
-                    <>
-                      <h4 className="mt-4 text-xs font-medium text-muted-foreground">
-                        Instance Type Capacity
-                      </h4>
-                      <InstanceTypesTable instanceTypes={instanceTypes} />
-                    </>
-                  )}
+                  <h4 className="mt-4 text-xs font-medium text-muted-foreground">
+                    Instance Type Capacity
+                  </h4>
+                  <InstanceTypesTable instanceTypes={instanceTypes} />
                 </>
               )}
             </div>
@@ -188,122 +182,217 @@ function formatVMGPUs(gpus: VMInfo["gpus"]): string {
     .join(", ")
 }
 
+const VM_COLUMNS: DataColumn<VMInfo>[] = [
+  {
+    id: "instance",
+    header: "Instance",
+    sortValue: (vm) => vm.instance_id,
+    cell: (vm) => <span className="font-mono text-xs">{vm.instance_id}</span>,
+  },
+  {
+    id: "status",
+    header: "Status",
+    sortValue: (vm) => vm.status,
+    cell: (vm) => <StateBadge state={vm.status} />,
+  },
+  {
+    id: "type",
+    header: "Type",
+    sortValue: (vm) => vm.instance_type,
+    cell: (vm) => <span className="font-mono text-xs">{vm.instance_type}</span>,
+  },
+  {
+    id: "vcpu",
+    header: "vCPU",
+    sortValue: (vm) => vm.vcpu,
+    align: "end",
+    hideBelow: "md",
+    cell: (vm) => <span className="tabular-nums">{vm.vcpu}</span>,
+  },
+  {
+    id: "memory",
+    header: "Memory",
+    sortValue: (vm) => vm.memory_gb,
+    align: "end",
+    hideBelow: "md",
+    cell: (vm) => (
+      <span className="tabular-nums">{formatMemory(vm.memory_gb)}</span>
+    ),
+  },
+  {
+    id: "gpu",
+    header: "GPU",
+    hideBelow: "xl",
+    cell: (vm) => (
+      <span className="font-mono text-xs">{formatVMGPUs(vm.gpus)}</span>
+    ),
+  },
+  {
+    id: "node",
+    header: "Node",
+    sortValue: (vm) => vm.node,
+    hideBelow: "sm",
+    cell: (vm) => <span className="font-mono text-xs">{vm.node}</span>,
+  },
+  {
+    id: "age",
+    header: "Age",
+    // An older launch sorts first ascending, so the column reads oldest-first.
+    sortValue: (vm) => (vm.launch_time > 0 ? vm.launch_time : undefined),
+    hideBelow: "lg",
+    cell: (vm) => (
+      <span className="tabular-nums">
+        {vm.launch_time > 0 ? formatAge(vm.launch_time) : "-"}
+      </span>
+    ),
+  },
+]
+
 function VMsTable({ vms }: { vms: VMInfo[] }) {
+  const [sort, setSort] = useState<SortState>()
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="pr-4 pb-1 font-medium">Instance</th>
-            <th className="pr-4 pb-1 font-medium">Status</th>
-            <th className="pr-4 pb-1 font-medium">Type</th>
-            <th className="pr-4 pb-1 font-medium">vCPU</th>
-            <th className="pr-4 pb-1 font-medium">Memory</th>
-            <th className="pr-4 pb-1 font-medium">GPU</th>
-            <th className="pr-4 pb-1 font-medium">Node</th>
-            <th className="pb-1 font-medium">Age</th>
-          </tr>
-        </thead>
-        <tbody>
-          {vms.map((vm) => (
-            <tr key={vm.instance_id} className="border-b last:border-0">
-              <td className="py-1.5 pr-4 font-mono">{vm.instance_id}</td>
-              <td className="py-1.5 pr-4">
-                <Badge
-                  variant={vm.status === "running" ? "default" : "secondary"}
-                >
-                  {vm.status}
-                </Badge>
-              </td>
-              <td className="py-1.5 pr-4 font-mono">{vm.instance_type}</td>
-              <td className="py-1.5 pr-4">{vm.vcpu}</td>
-              <td className="py-1.5 pr-4">{formatMemory(vm.memory_gb)}</td>
-              <td className="py-1.5 pr-4 font-mono">{formatVMGPUs(vm.gpus)}</td>
-              <td className="py-1.5 pr-4 font-mono">{vm.node}</td>
-              <td className="py-1.5">
-                {vm.launch_time > 0 ? formatAge(vm.launch_time) : "-"}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      caption="EC2 instances"
+      columns={VM_COLUMNS}
+      empty="No instances running."
+      getRowId={(vm) => vm.instance_id}
+      onSortChange={setSort}
+      rows={vms}
+      sort={sort}
+    />
   )
 }
+
+// Schedulable = host total minus the daemon reserve; this is the capacity a
+// tenant deployment can actually consume.
+function schedulableVcpu(node: NodeInfo): number {
+  return node.total_vcpu - (node.reserved_vcpu ?? 0)
+}
+
+function schedulableMemGb(node: NodeInfo): number {
+  return node.total_mem_gb - (node.reserved_mem_gb ?? 0)
+}
+
+const RESOURCE_COLUMNS: DataColumn<NodeInfo>[] = [
+  {
+    id: "name",
+    header: "Name",
+    sortValue: (node) => node.node,
+    cell: (node) => (
+      <span className="font-mono text-xs font-medium">{node.node}</span>
+    ),
+  },
+  {
+    id: "cpu",
+    header: "CPU (used/sched)",
+    sortValue: (node) => node.alloc_vcpu,
+    align: "end",
+    cell: (node) => (
+      <span className="font-mono text-xs">
+        {node.alloc_vcpu}/{schedulableVcpu(node)}
+      </span>
+    ),
+  },
+  {
+    id: "memory",
+    header: "MEM (used/sched)",
+    sortValue: (node) => node.alloc_mem_gb,
+    align: "end",
+    cell: (node) => (
+      <span className="font-mono text-xs">
+        {formatMemory(node.alloc_mem_gb)}/{formatMemory(schedulableMemGb(node))}
+      </span>
+    ),
+  },
+  {
+    id: "gpu",
+    header: "GPU (used/total)",
+    sortValue: (node) => (node.total_gpus > 0 ? node.alloc_gpus : undefined),
+    align: "end",
+    hideBelow: "md",
+    cell: (node) => (
+      <span className="font-mono text-xs">
+        {node.total_gpus > 0 ? `${node.alloc_gpus}/${node.total_gpus}` : "-"}
+      </span>
+    ),
+  },
+  {
+    id: "ec2",
+    header: "EC2",
+    sortValue: (node) => node.vm_count,
+    align: "end",
+    hideBelow: "sm",
+    cell: (node) => <span className="tabular-nums">{node.vm_count}</span>,
+  },
+]
 
 function ResourceTable({ nodes }: { nodes: NodeInfo[] }) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="pr-4 pb-1 font-medium">Name</th>
-            <th className="pr-4 pb-1 font-medium">CPU (used/sched)</th>
-            <th className="pr-4 pb-1 font-medium">MEM (used/sched)</th>
-            <th className="pr-4 pb-1 font-medium">GPU (used/total)</th>
-            <th className="pb-1 font-medium">EC2</th>
-          </tr>
-        </thead>
-        <tbody>
-          {nodes.map((node) => {
-            // Schedulable = host total minus the daemon reserve; this is the
-            // capacity a tenant deployment can actually consume.
-            const schedVcpu = node.total_vcpu - (node.reserved_vcpu ?? 0)
-            const schedMemGb = node.total_mem_gb - (node.reserved_mem_gb ?? 0)
+  const [sort, setSort] = useState<SortState>()
 
-            return (
-              <tr key={node.node} className="border-b last:border-0">
-                <td className="py-1.5 pr-4 font-mono font-medium">
-                  {node.node}
-                </td>
-                <td className="py-1.5 pr-4 font-mono">
-                  {node.alloc_vcpu}/{schedVcpu}
-                </td>
-                <td className="py-1.5 pr-4 font-mono">
-                  {formatMemory(node.alloc_mem_gb)}/{formatMemory(schedMemGb)}
-                </td>
-                <td className="py-1.5 pr-4 font-mono">
-                  {node.total_gpus > 0
-                    ? `${node.alloc_gpus}/${node.total_gpus}`
-                    : "-"}
-                </td>
-                <td className="py-1.5">{node.vm_count}</td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
+  return (
+    <DataTable
+      caption="Resource usage by node"
+      columns={RESOURCE_COLUMNS}
+      empty="No nodes responding."
+      getRowId={(node) => node.node}
+      onSortChange={setSort}
+      rows={nodes}
+      sort={sort}
+    />
   )
 }
+
+const INSTANCE_TYPE_COLUMNS: DataColumn<InstanceTypeCap>[] = [
+  {
+    id: "name",
+    header: "Instance Type",
+    sortValue: (it) => it.name,
+    cell: (it) => <span className="font-mono text-xs">{it.name}</span>,
+  },
+  {
+    id: "available",
+    header: "Available",
+    sortValue: (it) => it.available,
+    align: "end",
+    cell: (it) => <span className="tabular-nums">{it.available}</span>,
+  },
+  {
+    id: "vcpu",
+    header: "vCPU",
+    sortValue: (it) => it.vcpu,
+    align: "end",
+    hideBelow: "sm",
+    cell: (it) => <span className="tabular-nums">{it.vcpu}</span>,
+  },
+  {
+    id: "memory",
+    header: "Memory",
+    sortValue: (it) => it.memory_gb,
+    align: "end",
+    hideBelow: "sm",
+    cell: (it) => (
+      <span className="tabular-nums">{formatMemory(it.memory_gb)}</span>
+    ),
+  },
+]
 
 function InstanceTypesTable({
   instanceTypes,
 }: {
   instanceTypes: InstanceTypeCap[]
 }) {
+  const [sort, setSort] = useState<SortState>()
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="pr-4 pb-1 font-medium">Instance Type</th>
-            <th className="pr-4 pb-1 font-medium">Available</th>
-            <th className="pr-4 pb-1 font-medium">vCPU</th>
-            <th className="pb-1 font-medium">Memory</th>
-          </tr>
-        </thead>
-        <tbody>
-          {instanceTypes.map((it) => (
-            <tr key={it.name} className="border-b last:border-0">
-              <td className="py-1.5 pr-4 font-mono">{it.name}</td>
-              <td className="py-1.5 pr-4">{it.available}</td>
-              <td className="py-1.5 pr-4">{it.vcpu}</td>
-              <td className="py-1.5">{formatMemory(it.memory_gb)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      caption="Instance type capacity"
+      columns={INSTANCE_TYPE_COLUMNS}
+      empty="No instance types available."
+      getRowId={(it) => it.name}
+      onSortChange={setSort}
+      rows={instanceTypes}
+      sort={sort}
+    />
   )
 }

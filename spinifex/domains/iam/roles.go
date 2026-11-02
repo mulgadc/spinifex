@@ -619,6 +619,7 @@ func (s *IAMServiceImpl) getRole(ctx context.Context, accountID, roleName string
 // to one role at once) write the same record concurrently. mutate reports
 // whether it changed the record; a false return commits nothing.
 func (s *IAMServiceImpl) updateRoleCAS(ctx context.Context, accountID, roleName string, mutate func(*Role) (bool, error)) error {
+	defer s.recordLocks.lock("role/" + accountID + "." + roleName)()
 	_, err := kvutil.Update(ctx, s.rolesBucket, accountID+"."+roleName, kvutil.CASConfig{
 		Attempts: roleCASMaxRetries,
 		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),
@@ -783,7 +784,7 @@ func ValidateTrustPolicyDocument(docJSON string) (*TrustPolicyDocument, error) {
 
 // validateWebIdentityCondition gates Condition blocks to the two actions STS
 // evaluates conditions for: sts:AssumeRoleWithWebIdentity (the IRSA {iss}:sub /
-// {iss}:aud keys, StringEquals only) and sts:AssumeRole (aws:SourceAccount,
+// {iss}:aud keys, StringEquals and StringLike) and sts:AssumeRole (aws:SourceAccount,
 // StringEquals only). Everything else is rejected at write time — accepting a
 // condition nothing evaluates would store a security control that never fires.
 func validateWebIdentityCondition(i int, stmt TrustStatement) error {
@@ -802,8 +803,8 @@ func validateWebIdentityCondition(i int, stmt TrustStatement) error {
 
 	if action == STSActionAssumeRoleWithWebIdentity {
 		for op := range ops {
-			if op != "StringEquals" {
-				return fmt.Errorf("statement %d: Condition operator %q on action %q is not supported in this release; only StringEquals is supported", i, op, action)
+			if op != "StringEquals" && op != "StringLike" {
+				return fmt.Errorf("statement %d: Condition operator %q on action %q is not supported in this release; supported operators are StringEquals and StringLike", i, op, action)
 			}
 		}
 		return nil

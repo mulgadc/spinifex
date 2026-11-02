@@ -112,12 +112,25 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 		audience:              []string(claims.Audience),
 	}
 	if err := evalTrustPolicyForWebIdentity(aws.StringValue(role.AssumeRolePolicyDocument), identity); err != nil {
+		if denial, ok := errors.AsType[*trustPolicyDeniedError](err); ok {
+			slog.Warn("AssumeRoleWithWebIdentity: trust policy denied",
+				"role_arn", aws.StringValue(role.Arn),
+				"issuer", claims.Issuer,
+				"subject", claims.Subject,
+				"reason", denial.reason,
+				"condition_operator", denial.operator,
+				"condition_key", denial.key,
+			)
+		}
 		return nil, err
 	}
 
 	env := assumedRoleEnvelope(role, roleAccountID, sessionName, claims.Subject)
 	cred, plainSecret, plainToken, err := s.mintSession(ctx, env, duration)
 	if err != nil {
+		if errors.Is(err, errAccountNotActive) {
+			return nil, errors.New(awserrors.ErrorAccessDenied)
+		}
 		return nil, err
 	}
 

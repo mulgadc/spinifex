@@ -1,12 +1,19 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
-import { Controller, useForm } from "react-hook-form"
+import {
+  Controller,
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
-import { ErrorBanner } from "@/components/error-banner"
+import {
+  type CliCommand,
+  CliCommandPanel,
+  shellSingleQuote,
+} from "@/components/cli-command-panel"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
 import {
   Field,
   FieldDescription,
@@ -27,12 +34,16 @@ import { foundationModelsQueryOptions } from "@/queries/bedrock"
 import {
   dimensionsForModelArn,
   EMPTY_KB_FORM_DEFAULTS,
+  formToCreateKnowledgeBaseInput,
   kbFormSchema,
   type KnowledgeBaseFormData,
 } from "@/types/bedrockAgent"
 
-export function KnowledgeBaseFormPage() {
-  const navigate = useNavigate()
+export function KnowledgeBaseFormPage({
+  onClose,
+}: {
+  onClose: (knowledgeBaseId?: string) => void
+}) {
   const createKnowledgeBase = useCreateKnowledgeBase()
   const { data: modelsData } = useSuspenseQuery(foundationModelsQueryOptions)
 
@@ -51,39 +62,29 @@ export function KnowledgeBaseFormPage() {
     defaultValues: EMPTY_KB_FORM_DEFAULTS,
   })
 
-  const onSubmit = async (data: KnowledgeBaseFormData) => {
-    const result = await createKnowledgeBase.mutateAsync(data)
-    await navigate({
-      params: {
-        knowledgeBaseId: result.knowledgeBase?.knowledgeBaseId ?? "",
-      },
-      to: "/bedrock/list-knowledge-bases/$knowledgeBaseId",
-    })
-  }
+  const values = useWatch({ control })
 
-  const handleCancel = async () => {
-    await navigate({ to: "/bedrock/list-knowledge-bases" })
+  const onSubmit = async (data: KnowledgeBaseFormData) => {
+    try {
+      const result = await createKnowledgeBase.mutateAsync(data)
+
+      onClose(result.knowledgeBase?.knowledgeBaseId)
+    } catch {
+      // Surfaced beside the submit button through createKnowledgeBase.error.
+    }
   }
 
   return (
-    <>
-      <BackLink to="/bedrock/list-knowledge-bases">
-        Back to knowledge bases
-      </BackLink>
-      <PageHeading title="Create Knowledge Base" />
-      <FieldDescription className="mb-6 max-w-4xl">
-        After the knowledge base is created, add one or more S3 data sources to
-        it from its detail page, then run an ingestion job to load them.
-      </FieldDescription>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={createKnowledgeBase.isPending || isSubmitting}
+      >
+        <FieldDescription>
+          After the knowledge base is created, add one or more S3 data sources
+          to it from its detail page, then run an ingestion job to load them.
+        </FieldDescription>
 
-      {createKnowledgeBase.error && (
-        <ErrorBanner
-          error={createKnowledgeBase.error}
-          msg="Failed to create the knowledge base"
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
         <Field>
           <FieldTitle>
             <label htmlFor="kb-name">Name</label>
@@ -184,16 +185,47 @@ export function KnowledgeBaseFormPage() {
           <FieldError errors={[errors.roleArn]} />
         </Field>
 
+        <CliCommandPanel commands={buildCreateKnowledgeBaseCommands(values)} />
+
         <FormActions
+          error={createKnowledgeBase.error}
+          errorMsg="Failed to create the knowledge base"
           isPending={createKnowledgeBase.isPending}
           isSubmitting={isSubmitting}
           onCancel={() => {
-            void handleCancel()
+            onClose()
           }}
           pendingLabel="Creating…"
           submitLabel="Create Knowledge Base"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
+}
+
+// The configuration nests too deeply for flags, so the request goes as one
+// JSON document, the same input the console sends.
+function buildCreateKnowledgeBaseCommands(
+  values: DeepPartialSkipArrayKey<KnowledgeBaseFormData>,
+): CliCommand[] {
+  const input = formToCreateKnowledgeBaseInput({
+    ...EMPTY_KB_FORM_DEFAULTS,
+    ...values,
+    name: values.name || "<Name>",
+    embeddingModelArn: values.embeddingModelArn || "<EmbeddingModelArn>",
+  })
+
+  return [
+    {
+      label: "Create knowledge base",
+      parts: [
+        {
+          type: "bin",
+          value: "AWS_PROFILE=spinifex aws bedrock-agent create-knowledge-base",
+        },
+        { type: "flag", value: " --cli-input-json" },
+        { type: "value", value: ` ${shellSingleQuote(JSON.stringify(input))}` },
+      ],
+    },
+  ]
 }

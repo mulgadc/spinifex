@@ -1,16 +1,13 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { CreateHostedZonePage } from "./-components/create-hosted-zone-page"
-
+// The form opens in the list's side panel; this address is kept for links.
 export const Route = createFileRoute(
   "/_auth/route53/(hosted-zones)/create-hosted-zone",
 )({
-  head: () => ({
-    meta: [
-      {
-        title: "Add domain | DNS | Mulga",
-      },
-    ],
-  }),
-  component: CreateHostedZonePage,
+  beforeLoad: () => {
+    throw redirect({
+      to: "/route53/list-hosted-zones",
+      search: { create: true },
+    })
+  },
 })

@@ -1717,23 +1717,18 @@ describe("useCreateVpcWizard", () => {
       .mockImplementationOnce(async () => await secondPrivate.promise)
 
     const { result } = renderMutationHook(() => useCreateVpcWizard())
-    let settled = false
-    void result.current
-      .mutateAsync({
-        ...baseParams,
-        mode: "vpc-and-more",
-        publicSubnetCount: 0,
-        privateSubnetCount: 2,
-      })
-      .then(() => {
-        settled = true
-      })
+    result.current.mutate({
+      ...baseParams,
+      mode: "vpc-and-more",
+      publicSubnetCount: 0,
+      privateSubnetCount: 2,
+    })
 
     await waitFor(() => {
       expect(mockSend).toHaveBeenCalledTimes(3)
     })
     await settleTimers()
-    expect(settled).toBeFalsy()
+    expect(result.current.isPending).toBeTruthy()
 
     secondPrivate.release({ Subnet: { SubnetId: "subnet-priv-2" } })
     await waitFor(() => {

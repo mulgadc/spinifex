@@ -101,11 +101,11 @@ describe("CliCommandPanel", () => {
       "AWS_PROFILE=spinifex aws ec2 create-key-pair",
     )
 
-    expect(binPart.className).toContain("text-tactical-cyan")
+    expect(binPart.className).toContain("text-info-foreground")
     expect(binPart.className).toContain("font-semibold")
 
     const flagPart = screen.getByText("--key-name", { exact: false })
-    expect(flagPart.className).toContain("text-tactical-amber")
+    expect(flagPart.className).toContain("text-warning-foreground")
 
     const valuePart = screen.getByText("my-key", { exact: false })
     expect(valuePart.className).toContain("text-foreground")
@@ -133,7 +133,7 @@ describe("CliCommandPanel", () => {
     expect(commentPart.className).toContain("italic")
 
     const varPart = screen.getByText("MY_VAR=")
-    expect(varPart.className).toContain("text-tactical-green")
+    expect(varPart.className).toContain("text-success-foreground")
   })
 
   it("copies plain text to clipboard", async () => {

@@ -1,16 +1,24 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { ListCard } from "@/components/list-card"
-import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
-import { Button } from "@/components/ui/button"
-import { getNameTag } from "@/lib/utils"
+import {
+  CLOSED_PANEL,
+  type PanelSearch,
+  panelSearchFields,
+} from "@/lib/panel-search"
 import { ec2InternetGatewaysQueryOptions } from "@/queries/ec2"
+
+import { InternetGatewaysPage } from "../-components/internet-gateways-page"
+
+const searchSchema = z.object(panelSearchFields)
 
 export const Route = createFileRoute(
   "/_auth/ec2/(internet-gateways)/describe-internet-gateways/",
 )({
+  validateSearch: searchSchema,
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...ec2InternetGatewaysQueryOptions,
@@ -29,38 +37,22 @@ export const Route = createFileRoute(
 
 function InternetGateways() {
   const { data } = useSuspenseQuery(ec2InternetGatewaysQueryOptions)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
 
-  const internetGateways = data.InternetGateways ?? []
+  // Opening or closing a panel adds a history entry, so Back closes it.
+  function onSearchChange(next: Partial<PanelSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next || "create" in next),
+    })
+  }
 
   return (
-    <>
-      <PageHeading
-        actions={
-          <Link to="/ec2/create-internet-gateway">
-            <Button>Create Internet Gateway</Button>
-          </Link>
-        }
-        title="Internet Gateways"
-      />
-
-      <ResourceList
-        empty="No Internet Gateways found."
-        getKey={(igw) => igw.InternetGatewayId}
-        items={internetGateways}
-        renderItem={(igw, id) => {
-          const name = getNameTag(igw.Tags)
-          const attachedVpc = igw.Attachments?.[0]?.VpcId
-
-          return (
-            <ListCard
-              params={{ id }}
-              subtitle={attachedVpc ? `attached to ${attachedVpc}` : "detached"}
-              title={name ? `${id} (${name})` : id}
-              to="/ec2/describe-internet-gateways/$id"
-            />
-          )
-        }}
-      />
-    </>
+    <InternetGatewaysPage
+      internetGateways={data.InternetGateways ?? []}
+      onSearchChange={onSearchChange}
+      search={search}
+    />
   )
 }

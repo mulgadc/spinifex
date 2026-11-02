@@ -28,12 +28,12 @@ export function SystemImageRequired({
   return (
     <div
       className={cn(
-        "max-w-2xl rounded-md border border-tactical-amber/40 bg-tactical-amber/5 p-6",
+        "max-w-2xl rounded-md border border-warning-border bg-warning-subtle p-6",
         className,
       )}
     >
       <div className="flex items-start gap-3">
-        <TriangleAlert className="mt-0.5 size-5 shrink-0 text-tactical-amber" />
+        <TriangleAlert className="mt-0.5 size-5 shrink-0 text-warning-foreground" />
         <div className="space-y-4">
           <div className="space-y-1">
             <h2 className="text-sm font-semibold text-foreground">{title}</h2>
@@ -52,7 +52,7 @@ export function SystemImageRequired({
               type="button"
             >
               {copied ? (
-                <Check className="size-3.5 text-tactical-green" />
+                <Check className="size-3.5 text-success-foreground" />
               ) : (
                 <Copy className="size-3.5" />
               )}

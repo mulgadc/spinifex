@@ -36,6 +36,10 @@ const (
 	// vllm-serving AMI, and the shared Bedrock system VPC.
 	ManagedByBedrock = "bedrock"
 
+	// ManagedBySQS identifies the dedicated SQS store VMs, which live in the
+	// system account on a persistent data volume.
+	ManagedBySQS = "sqs"
+
 	// LBARNKey stores the parent LB ARN on ELBv2-managed ENIs.
 	LBARNKey = "spinifex:lb-arn"
 
@@ -64,7 +68,7 @@ const (
 // VMs bind a system.TerminateInstance.{id} subject so a cluster-wide teardown
 // invoked on any node can route a terminate to the owning node.
 func IsSystemManaged(managedBy string) bool {
-	return managedBy == ManagedByELBv2 || managedBy == ManagedByEKS || managedBy == ManagedByRDS || managedBy == ManagedByBedrock
+	return managedBy == ManagedByELBv2 || managedBy == ManagedByEKS || managedBy == ManagedByRDS || managedBy == ManagedByBedrock || managedBy == ManagedBySQS
 }
 
 // MapToEC2 converts a tag map to a slice of EC2 Tag pointers. It returns nil

@@ -49,7 +49,9 @@ describe("AttributesEditor", () => {
       />,
     )
 
-    expect(screen.getByLabelText("Deletion protection")).not.toBeChecked()
+    expect(
+      screen.getByRole("switch", { name: "Deletion protection" }),
+    ).not.toBeChecked()
     expect(screen.getByLabelText("Idle timeout (s)")).toHaveValue("60")
     expect(screen.getByText("No changes")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /save changes/i })).toBeDisabled()
@@ -67,7 +69,9 @@ describe("AttributesEditor", () => {
       />,
     )
 
-    await user.click(screen.getByLabelText("Deletion protection"))
+    await user.click(
+      screen.getByRole("switch", { name: "Deletion protection" }),
+    )
     const idle = screen.getByLabelText("Idle timeout (s)")
     await user.clear(idle)
     await user.type(idle, "120")
@@ -113,12 +117,18 @@ describe("AttributesEditor", () => {
       />,
     )
 
-    await user.click(screen.getByLabelText("Deletion protection"))
-    expect(screen.getByLabelText("Deletion protection")).toBeChecked()
+    await user.click(
+      screen.getByRole("switch", { name: "Deletion protection" }),
+    )
+    expect(
+      screen.getByRole("switch", { name: "Deletion protection" }),
+    ).toBeChecked()
 
     await user.click(screen.getByRole("button", { name: /reset/i }))
 
-    expect(screen.getByLabelText("Deletion protection")).not.toBeChecked()
+    expect(
+      screen.getByRole("switch", { name: "Deletion protection" }),
+    ).not.toBeChecked()
     expect(screen.getByText("No changes")).toBeInTheDocument()
   })
 

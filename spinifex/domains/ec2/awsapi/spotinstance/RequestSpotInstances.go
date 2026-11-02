@@ -14,10 +14,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
-	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
@@ -64,7 +62,7 @@ func ValidateRequestSpotInstancesInput(input *ec2.RequestSpotInstancesInput) err
 // ClientToken passed through, same vCPU quota gate), then builds and persists one
 // active/fulfilled SpotInstanceRequest per launched instance. On a launch failure
 // (including InsufficientInstanceCapacity) it returns the error and persists nothing.
-func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesInput, natsConn *nats.Conn, iamSvc iamdomain.IAMService, accountID, az string, passRoleCheck ec2instanceapi.PassRoleChecker, quota *admissionquota.Service, expectedNodes int) (ec2.RequestSpotInstancesOutput, error) {
+func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesInput, natsConn *nats.Conn, iamSvc ec2instanceapi.InstanceProfiles, accountID, az string, passRoleCheck ec2instanceapi.PassRoleChecker, quota LaunchQuota, expectedNodes int) (ec2.RequestSpotInstancesOutput, error) {
 	var output ec2.RequestSpotInstancesOutput
 
 	if err := ValidateRequestSpotInstancesInput(input); err != nil {
@@ -223,4 +221,10 @@ func buildSpotRequests(input *ec2.RequestSpotInstancesInput, runInput *ec2.RunIn
 		}
 	}
 	return requests
+}
+
+// LaunchQuota is the vCPU quota a spot request launches under.
+type LaunchQuota interface {
+	EnforceLaunch(ctx context.Context, accountID, instanceType string, maxCount int) error
+	ChargeLaunch(ctx context.Context, accountID string, reservation *ec2.Reservation) error
 }

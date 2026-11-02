@@ -1,14 +1,20 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { ListCard } from "@/components/list-card"
-import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
-import { Button } from "@/components/ui/button"
-import { byName } from "@/lib/utils"
+import {
+  CLOSED_PANEL,
+  type PanelSearch,
+  panelSearchFields,
+} from "@/lib/panel-search"
 import { iamGroupsQueryOptions } from "@/queries/iam"
 
+import { GroupsPage } from "../-components/groups-page"
+
 export const Route = createFileRoute("/_auth/iam/(groups)/list-groups/")({
+  validateSearch: z.object(panelSearchFields),
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...iamGroupsQueryOptions,
@@ -23,33 +29,22 @@ export const Route = createFileRoute("/_auth/iam/(groups)/list-groups/")({
 
 function Groups() {
   const { data } = useSuspenseQuery(iamGroupsQueryOptions)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
 
-  const groups = (data.Groups ?? []).toSorted(byName((g) => g.GroupName))
+  // Opening or closing a panel adds a history entry, so Back closes it.
+  function onSearchChange(next: Partial<PanelSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next || "create" in next),
+    })
+  }
 
   return (
-    <>
-      <PageHeading
-        actions={
-          <Link to="/iam/create-group">
-            <Button>Create Group</Button>
-          </Link>
-        }
-        title="Groups"
-      />
-
-      <ResourceList
-        empty="No IAM groups found."
-        getKey={(group) => group.GroupName}
-        items={groups}
-        renderItem={(group, groupName) => (
-          <ListCard
-            params={{ groupName }}
-            subtitle={group.Arn ?? ""}
-            title={groupName}
-            to="/iam/list-groups/$groupName"
-          />
-        )}
-      />
-    </>
+    <GroupsPage
+      groups={data.Groups ?? []}
+      onSearchChange={onSearchChange}
+      search={search}
+    />
   )
 }

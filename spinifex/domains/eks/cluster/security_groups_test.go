@@ -337,10 +337,13 @@ func TestDeleteClusterSGs_FirstErrorSurfacedSweepContinues(t *testing.T) {
 // cluster SG pins the customer VPC.
 func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 	origBudget, origInterval := sgDeleteWaitBudget, sgDeleteWaitInterval
-	sgDeleteWaitBudget, sgDeleteWaitInterval = 20*time.Millisecond, time.Millisecond
+	sgDeleteWaitInterval = time.Millisecond
 	defer func() { sgDeleteWaitBudget, sgDeleteWaitInterval = origBudget, origInterval }()
 
+	// The budget is wall-clock, so only the subtest meant to spend it gets a
+	// short one; a slow runner must not run out of time between two retries.
 	t.Run("transient then succeeds", func(t *testing.T) {
+		sgDeleteWaitBudget = origBudget
 		sgp := newFakeSGProvisioner()
 		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
 		sgp.deleteFailsBefore = map[string]int{"sg-ng": 2} // 2 DepViolations, then ok
@@ -351,6 +354,7 @@ func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 	})
 
 	t.Run("persistent surfaced past budget", func(t *testing.T) {
+		sgDeleteWaitBudget = 20 * time.Millisecond
 		sgp := newFakeSGProvisioner()
 		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
 		sgp.deleteErr = errors.New("DependencyViolation: still referenced")

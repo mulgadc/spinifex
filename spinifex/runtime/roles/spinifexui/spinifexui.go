@@ -197,7 +197,8 @@ func (svc *Service) newHandler(contentFS fs.FS, caCertPath string, proxyTranspor
 
 	// Reverse proxy routes — must be registered before the SPA catch-all.
 	mux.Handle("/proxy/awsgw/", namedRoute("ui.proxy.awsgw", newReverseProxy("localhost:9999", "/proxy/awsgw", proxyTransport)))
-	mux.Handle("/proxy/s3/", namedRoute("ui.proxy.s3", newReverseProxy("localhost:8443", "/proxy/s3", proxyTransport)))
+	mux.Handle("/proxy/s3/", namedRoute("ui.proxy.s3", withTransferDeadline(transferDeadline,
+		newReverseProxy("localhost:8443", "/proxy/s3", proxyTransport))))
 
 	// CA certificate download.
 	mux.HandleFunc("/api/ca.pem", func(w http.ResponseWriter, r *http.Request) {

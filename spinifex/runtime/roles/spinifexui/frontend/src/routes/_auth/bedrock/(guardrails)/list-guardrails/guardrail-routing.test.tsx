@@ -130,7 +130,7 @@ describe("guardrail detail/edit route nesting", () => {
     const { router } = renderAppAt(`/bedrock/list-guardrails/${GUARDRAIL_ID}`)
 
     // Confirm we actually land on the detail leaf first.
-    await screen.findByRole("link", { name: /Edit/ })
+    await screen.findByRole("heading", { name: "content-safety" })
 
     await act(async () => {
       await router.navigate({

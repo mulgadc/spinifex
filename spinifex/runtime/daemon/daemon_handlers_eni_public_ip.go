@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/nats-io/nats.go"
 
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
@@ -34,6 +35,15 @@ func (d *Daemon) handleENIPublicIPChanged(msg *nats.Msg) string {
 		}
 		v.PublicIP = evt.PublicIP
 		v.PublicIPPool = evt.PoolName
+		// Describe falls back to the launch stamp when PublicIP is empty, and an
+		// association released that address, so the stamp must follow too.
+		if v.Instance != nil {
+			v.Instance.PublicIpAddress = nil
+			v.Instance.PublicDnsName = nil
+			if evt.PublicIP != "" {
+				v.Instance.PublicIpAddress = aws.String(evt.PublicIP)
+			}
+		}
 		return true
 	})
 	if err != nil {

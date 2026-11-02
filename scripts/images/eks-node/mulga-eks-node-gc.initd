@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+# mulga-eks-node-gc — server-role service that deletes the Node of every
+# nodegroup worker the nodegroup has terminated, every NODE_GC_INTERVAL
+# seconds. Enabled on every server role by eks-node-role.sh.
+
+description="Mulga EKS terminated-worker Node cleanup"
+command="/usr/local/sbin/mulga-eks-node-gc"
+command_background="yes"
+pidfile="/run/mulga-eks-node-gc.pid"
+output_log="/var/log/mulga-eks-node-gc.log"
+error_log="/var/log/mulga-eks-node-gc.log"
+
+# A Node goes NotReady about 40s after its worker stops, so 30s deletes it
+# within a couple of minutes of the terminate.
+export NODE_GC_INTERVAL="${NODE_GC_INTERVAL:-30}"
+
+depend() {
+    need net
+    after k3s
+}
+
+start_pre() {
+    if [ ! -f /etc/spinifex-eks/first-boot.env ]; then
+        eerror "/etc/spinifex-eks/first-boot.env not present — cloud-init did not seed gateway creds"
+        return 1
+    fi
+}

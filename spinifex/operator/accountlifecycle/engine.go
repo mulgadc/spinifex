@@ -187,6 +187,15 @@ func (e *Engine) runStage(ctx context.Context, stage Stage, req Request) (StageR
 			return result, nil
 		}
 		if !time.Now().Before(deadline) {
+			// remaining was listed before this pass's deletes, so list again:
+			// a resource deleted on the last pass is gone, not stuck.
+			if remaining, err = e.list(ctx, reapers, req); err != nil {
+				return result, err
+			}
+			if len(remaining) == 0 {
+				result.Elapsed = time.Since(started).String()
+				return result, nil
+			}
 			for _, resource := range remaining {
 				reason := reasons[resource.Kind+"/"+resource.ID]
 				if reason == "" {
@@ -206,6 +215,19 @@ func (e *Engine) runStage(ctx context.Context, stage Stage, req Request) (StageR
 		case <-time.After(e.drainPoll()):
 		}
 	}
+}
+
+// list returns what every reaper in the stage still lists, deleting nothing.
+func (e *Engine) list(ctx context.Context, reapers []Reaper, req Request) ([]Resource, error) {
+	var remaining []Resource
+	for _, reaper := range reapers {
+		found, err := reaper.List(ctx, req.AccountID)
+		if err != nil {
+			return nil, fmt.Errorf("list %s: %w", reaper.Kind(), err)
+		}
+		remaining = append(remaining, found...)
+	}
+	return remaining, nil
 }
 
 // sweep lists every reaper in the stage and issues a delete for whatever it

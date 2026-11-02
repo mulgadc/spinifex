@@ -62,10 +62,11 @@ func TestMarkFailed_TransitionsToTerminated(t *testing.T) {
 	m, _, _, _, rt := shutdownTestManager(t)
 
 	instance := &VM{
-		ID:        "i-mark-failed",
-		Status:    StatePending,
-		AccountID: "111122223333",
-		Instance:  &ec2.Instance{},
+		ID:          "i-mark-failed",
+		Status:      StatePending,
+		AccountID:   "111122223333",
+		Instance:    &ec2.Instance{},
+		FirstLaunch: true,
 	}
 	m.Insert(instance)
 
@@ -100,10 +101,11 @@ func TestMarkFailed_NilInstance(t *testing.T) {
 	m, _, _, _, rt := shutdownTestManager(t)
 
 	instance := &VM{
-		ID:        "i-mark-failed-nil",
-		Status:    StatePending,
-		AccountID: "111122223333",
-		Instance:  nil,
+		ID:          "i-mark-failed-nil",
+		Status:      StatePending,
+		AccountID:   "111122223333",
+		Instance:    nil,
+		FirstLaunch: true,
 	}
 	m.Insert(instance)
 

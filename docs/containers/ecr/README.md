@@ -46,7 +46,7 @@ Each repository holds image manifests and their layers. Images are stored in obj
 - Repository lifecycle — `CreateRepository`, `DeleteRepository`, `DescribeRepositories`.
 - OCI push and pull — blobs, manifests, and tags, including cross-repository blob mounts.
 - OCI 1.1 referrers — the referrers API, so cosign v3 signatures and other artifacts attached to an image can be listed (see [OCI referrers and image signing](#oci-referrers-and-image-signing)).
-- Token auth — `GetAuthorizationToken` plus bearer/basic auth on `/v2/`.
+- Token auth — `GetAuthorizationToken` plus bearer/basic auth on `/v2/`. A token is valid for 12 hours. One minted by an assumed-role session (an EKS node, for example) stays valid after that session expires and is checked against the live role on every request, so it stops working when the role is deleted or loses its ECR permissions.
 - Repository policies — set, get, and delete a repository policy document.
 
 **Current limitations**

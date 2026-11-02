@@ -237,6 +237,8 @@ type InstanceServiceImpl struct {
 	gpuClaimer        GPUClaimer
 	amiLoader         AMIMetaLoader
 	ebsProvider       ebsprovider.EBSProvider
+	unsealedChecker   ebsprovider.UnsealedWritesChecker
+	nodeID            string
 	metadata          *ebsmetadata.Store
 	keyValidator      KeyPairValidator
 	eniCreator        ENICreator
@@ -250,6 +252,14 @@ type InstanceServiceImpl struct {
 // control-plane storage engine.
 func (s *InstanceServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
 	s.ebsProvider = provider
+}
+
+// SetUnsealedWritesChecker injects the check a capacity refusal makes before
+// letting a start fall back to another node, and the name this node is known by
+// to that check.
+func (s *InstanceServiceImpl) SetUnsealedWritesChecker(checker ebsprovider.UnsealedWritesChecker, nodeID string) {
+	s.unsealedChecker = checker
+	s.nodeID = nodeID
 }
 
 // SetVolumeCreator injects the volume service a launch uses for the volumes it
@@ -336,6 +346,7 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 		ID:           instanceId,
 		Status:       vm.StateProvisioning,
 		InstanceType: *input.InstanceType,
+		FirstLaunch:  true,
 	}
 
 	// Create EC2 instance metadata
@@ -2130,9 +2141,9 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 }
 
 // DescribeInstanceTypes returns supported instance types. With filter
-// capacity=true, expands each type to one entry per free slot for cluster-wide
-// capacity aggregation.
-func (s *InstanceServiceImpl) DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypesInput, _ string) (*ec2.DescribeInstanceTypesOutput, error) {
+// capacity=true, each admissible type is returned once with the number of
+// instances of it this node can take, for cluster-wide capacity aggregation.
+func (s *InstanceServiceImpl) DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypesInput, _ string) (*DescribeInstanceTypesNodeOutput, error) {
 	slog.InfoContext(ctx, "Processing DescribeInstanceTypes request from this node")
 
 	if s.resourceMgr == nil {
@@ -2151,14 +2162,30 @@ func (s *InstanceServiceImpl) DescribeInstanceTypes(ctx context.Context, input *
 		}
 	}
 
-	var filteredTypes []*ec2.InstanceTypeInfo
-	if showCapacity {
-		filteredTypes = s.resourceMgr.GetAvailableInstanceTypeInfos(true)
-	} else {
-		filteredTypes = s.resourceMgr.GetSupportedInstanceTypeInfos()
+	if !showCapacity {
+		types := s.resourceMgr.GetSupportedInstanceTypeInfos()
+		slog.InfoContext(ctx, "DescribeInstanceTypes completed", "count", len(types), "showCapacity", false)
+		return &DescribeInstanceTypesNodeOutput{InstanceTypes: types}, nil
 	}
-	slog.InfoContext(ctx, "DescribeInstanceTypes completed", "count", len(filteredTypes), "showCapacity", showCapacity)
-	return &ec2.DescribeInstanceTypesOutput{InstanceTypes: filteredTypes}, nil
+
+	avail := s.resourceMgr.GetInstanceTypeAvailability()
+	out := &DescribeInstanceTypesNodeOutput{
+		InstanceTypes: make([]*ec2.InstanceTypeInfo, 0, len(avail)),
+		Availability:  make(map[string]int64, len(avail)),
+	}
+	totalSlots := int64(0)
+	for _, a := range avail {
+		if a.Info == nil || a.Info.InstanceType == nil || a.Available <= 0 {
+			continue
+		}
+		out.InstanceTypes = append(out.InstanceTypes, a.Info)
+		out.Availability[*a.Info.InstanceType] = a.Available
+		totalSlots += a.Available
+	}
+
+	slog.InfoContext(ctx, "DescribeInstanceTypes completed", "count", len(out.InstanceTypes),
+		"total_available_slots", totalSlots, "showCapacity", true)
+	return out, nil
 }
 
 // DescribeStoppedInstances returns stopped instances from shared KV.
@@ -2597,6 +2624,63 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil
 }
 
+// unsealedCheckTimeout bounds the unsealed-writes check. It must stay well under
+// the forwarder's wait for this node, or a wedged provider answers after the
+// forwarder has already started the instance elsewhere. A var so tests shrink it.
+var unsealedCheckTimeout = 5 * time.Second
+
+// errInsufficientCapacity is the plain capacity refusal.
+var errInsufficientCapacity = errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+
+// UnsealedWritesError is a capacity refusal from a node that still holds
+// unsealed writes for the instance's volumes, or could not say whether it does.
+// It reads as InsufficientInstanceCapacity everywhere; only the ec2.start
+// forwarder looks for it, to refuse a start on a node with the older copy.
+type UnsealedWritesError struct {
+	InstanceID string
+	Volumes    []string
+	// CheckErr is set when the node could not read the markers.
+	CheckErr error
+}
+
+func (e *UnsealedWritesError) Error() string { return awserrors.ErrorInsufficientInstanceCapacity }
+
+func (e *UnsealedWritesError) Unwrap() error { return errInsufficientCapacity }
+
+// capacityRefusal is the error a launch that cannot take the instance returns.
+// When this node holds unsealed writes for the instance's volumes the refusal is
+// typed, because the volumes would otherwise be opened elsewhere from the backend
+// checkpoint. A check that cannot be made counts as held.
+func (s *InstanceServiceImpl) capacityRefusal(ctx context.Context, instance *vm.VM) error {
+	if s.unsealedChecker == nil {
+		return errInsufficientCapacity
+	}
+	instance.EBSRequests.Mu.Lock()
+	volumes := make([]string, 0, len(instance.EBSRequests.Requests))
+	for _, req := range instance.EBSRequests.Requests {
+		volumes = append(volumes, req.Name)
+	}
+	instance.EBSRequests.Mu.Unlock()
+	if len(volumes) == 0 {
+		return errInsufficientCapacity
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, unsealedCheckTimeout)
+	defer cancel()
+	held, err := s.unsealedChecker.HoldsUnsealedWrites(checkCtx, s.nodeID, volumes)
+	if err != nil {
+		slog.ErrorContext(ctx, "launchClaimedInstance: could not check for unsealed writes, refusing to let the start fall back",
+			"instanceId", instance.ID, "err", err)
+		return &UnsealedWritesError{InstanceID: instance.ID, Volumes: volumes, CheckErr: err}
+	}
+	if len(held) == 0 {
+		return errInsufficientCapacity
+	}
+	slog.WarnContext(ctx, "launchClaimedInstance: at capacity while holding unsealed writes",
+		"instanceId", instance.ID, "volumes", held)
+	return &UnsealedWritesError{InstanceID: instance.ID, Volumes: held}
+}
+
 // launchClaimedInstance runs an instance this node has already won the right
 // to run, and is the whole of the launch both claims share.
 //
@@ -2607,17 +2691,26 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instance *vm.VM, undo func()) error {
 	instance.ResetNodeLocalState()
 
+	// AWS restamps LaunchTime on every start. The pending watchdog times a
+	// launch from it, so a stale one terminates the instance mid-boot.
+	if instance.Instance != nil {
+		instance.Instance.LaunchTime = aws.Time(time.Now())
+	}
+	// A claimed instance has run before, so it must never be terminated by a
+	// failure of this launch.
+	instance.FirstLaunch = false
+
 	instanceType, ok := s.resourceMgr.InstanceTypes()[instance.InstanceType]
 	if !ok {
 		slog.ErrorContext(ctx, "launchClaimedInstance: instance type not available on this node",
 			"instanceId", instance.ID, "instanceType", instance.InstanceType)
 		undo()
-		return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		return s.capacityRefusal(ctx, instance)
 	}
 	if err := s.resourceMgr.Allocate(instanceType); err != nil {
 		slog.ErrorContext(ctx, "launchClaimedInstance: failed to allocate resources", "instanceId", instance.ID, "err", err)
 		undo()
-		return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		return s.capacityRefusal(ctx, instance)
 	}
 
 	// Add to local map + clear the stop intent before launch.
@@ -2638,7 +2731,7 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 			s.resourceMgr.Deallocate(instanceType)
 			s.vmMgr.Delete(instance.ID)
 			undo()
-			return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+			return s.capacityRefusal(ctx, instance)
 		}
 		profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
 		gpuCount := instancetypes.GPUCountForType(instance.InstanceType)
@@ -2662,7 +2755,7 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 			s.resourceMgr.Deallocate(instanceType)
 			s.vmMgr.Delete(instance.ID)
 			undo()
-			return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+			return s.capacityRefusal(ctx, instance)
 		}
 		instance.GPUAttachments = attachments
 		gpuClaimed = true
@@ -2746,11 +2839,11 @@ func (s *InstanceServiceImpl) RecoverInstance(ctx context.Context, instance *vm.
 }
 
 // volumeExclusionMarkers are the refusals that mean another node is writing this
-// volume right now. Only the lease refuses: a volume whose writes are merely
-// unsealed is opened here with a warning rather than blocked, so the instance
-// still runs. The text arrives having crossed NATS from viperblockd.
+// volume right now, or is still live and holds its unsealed writes. A previous
+// owner that has stopped heartbeating is opened over with a warning instead. The
+// text arrives having crossed NATS from viperblockd.
 var volumeExclusionMarkers = []string{
-	"volume is leased by another owner",
+	ec2v1.VolumeHeldElsewhereText,
 }
 
 // ErrVolumeHeldElsewhere reports a launch refused because another node still

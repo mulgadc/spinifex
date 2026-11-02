@@ -747,3 +747,27 @@ func TestResolveAndAuthorizeProfile_CanonicalLookupError(t *testing.T) {
 		})
 	}
 }
+
+// Current behaviour, not a statement of what AWS does: a profile whose role no
+// longer exists surfaces the store's NoSuchEntity unchanged and PassRole is
+// never evaluated.
+func TestResolveAndAuthorizeProfile_DanglingRoleSurfacesNoSuchEntityBeforePassRole(t *testing.T) {
+	t.Parallel()
+	svc := &fakeIAMService{
+		resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) { return profileWithRole(), nil },
+		canonicalFn: func(string, arn.IAMResourceType, string) (string, error) {
+			return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
+		},
+	}
+	checkCalled := false
+	check := func(string) error {
+		checkCalled = true
+		return nil
+	}
+	_, err := resolveAndAuthorizeProfile(
+		&ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
+		svc, testGwAccountID, check)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+	assert.False(t, checkCalled, "a dangling role is reported without evaluating iam:PassRole")
+}

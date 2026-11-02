@@ -26,6 +26,7 @@ type regService struct {
 
 	getUserName   string
 	getUserCalls  int
+	updateUser    *iam.UpdateUserInput
 	addRoleCalls  int
 	canonicalARN  string
 	canonicalErr  error
@@ -39,6 +40,11 @@ func (s *regService) GetUser(_ string, in *iam.GetUserInput) (*iam.GetUserOutput
 		s.getUserName = *in.UserName
 	}
 	return &iam.GetUserOutput{}, nil
+}
+
+func (s *regService) UpdateUser(_ string, in *iam.UpdateUserInput) (*iam.UpdateUserOutput, error) {
+	s.updateUser = in
+	return &iam.UpdateUserOutput{}, nil
 }
 
 func (s *regService) AddRoleToInstanceProfile(_ string, _ *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
@@ -266,6 +272,23 @@ func TestRegistration_AddRoleToInstanceProfilePassRole(t *testing.T) {
 		assert.Len(t, calls, 1, "PassRole is never evaluated on a failed lookup")
 		assert.Zero(t, svc.addRoleCalls)
 	})
+}
+
+func TestRegistration_UpdateUser(t *testing.T) {
+	svc := &regService{}
+	w, calls, err := invoke(t, Deps{IAM: svc}, testAccountID, dispatch.Actor{}, nil, url.Values{
+		"Action": {"UpdateUser"}, "UserName": {"alice"}, "NewUserName": {"alicia"}, "NewPath": {"/eng/"},
+	})
+	require.NoError(t, err)
+	require.Len(t, calls, 1)
+	assert.Equal(t, []string{"arn:aws:iam::" + testAccountID + ":user/alice"}, calls[0].resources)
+	assert.Contains(t, w.Body.String(), "UpdateUserResponse")
+	require.NotNil(t, svc.updateUser)
+	assert.Equal(t, "alicia", *svc.updateUser.NewUserName)
+	assert.Equal(t, "/eng/", *svc.updateUser.NewPath)
+
+	_, _, err = invoke(t, Deps{IAM: svc}, testAccountID, dispatch.Actor{}, nil, url.Values{"Action": {"UpdateUser"}})
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorMissingParameter), "got %v", err)
 }
 
 func TestActionNames_SortedAndInventory(t *testing.T) {

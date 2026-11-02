@@ -58,7 +58,7 @@ Authentication uses **EKS access entries** (the API authentication mode) — IAM
 **Spinifex specifics**
 
 - **Access entries are the only auth path.** `authentication_mode` accepts `API` (the default when unset) and `API_AND_CONFIG_MAP`; bare `CONFIG_MAP` is rejected. Spinifex has no `aws-auth` ConfigMap path, so `API_AND_CONFIG_MAP` behaves as `API`: grant access with access entries.
-- **Security groups are auto-managed.** Spinifex creates the cluster and node-group security groups deterministically (e.g. `eks-cluster-<name>-nodegroup-sg`); `vpc_config.security_group_ids` is ignored. To expose a workload you add an ingress rule to the auto-managed node-group SG.
+- **The cluster security group is auto-managed.** As on EKS, Spinifex creates one `eks-cluster-sg-<name>-<id>` in your VPC, tagged `kubernetes.io/cluster/<name>=owned` and `aws:eks:cluster-name`, allowing all traffic from itself. It is attached to the workers and the private-endpoint network interface, and `DescribeCluster` reports it as `clusterSecurityGroupId`. A launch template that names security groups replaces it on the workers, as on AWS. Clusters created before this change keep their `-control-plane-sg` and `-nodegroup-sg` until you recreate them. Deleting a cluster deletes the cluster security group and removes only the rules on your other security groups that reference it. `vpc_config.security_group_ids` is ignored. To expose a workload you add an ingress rule to the auto-managed node-group SG.
 - **The worker image is fixed.** Node groups always boot Spinifex's `eks-node` image. `ami_type` is recorded but does not select the image, and the image must be registered on the cluster before you create a node group.
 - **Workers launch with IMDSv2 required and an IMDS hop limit of 2.**
   This matches AWS managed node groups and lets a pod without IRSA reach the node role through the SDK default credential chain.
@@ -244,12 +244,11 @@ The list shows the node group workers only. The control-plane VMs never appear a
 
 ### 4. Expose a workload
 
-Workers join an auto-managed security group that only allows intra-cluster traffic. To reach a NodePort service, add one ingress rule to that SG (look it up by its deterministic name):
+Workers join the cluster security group, which only allows intra-cluster traffic. To reach a NodePort service, add one ingress rule to it (`DescribeCluster` reports its id):
 
 ```bash
-SG=$(aws ec2 describe-security-groups \
-  --filters Name=group-name,Values=eks-cluster-demo-nodegroup-sg \
-  --query 'SecurityGroups[0].GroupId' --output text)
+SG=$(aws eks describe-cluster --name demo \
+  --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text)
 
 aws ec2 authorize-security-group-ingress \
   --group-id "$SG" --protocol tcp --port 30080 --cidr 0.0.0.0/0
@@ -291,7 +290,7 @@ The form notes that the authentication mode is API and that the legacy aws-auth 
 
 - The **Access** tab lists IAM principals and their cluster-access policies — add an access entry to let another user or role reach the cluster.
 - The **Addons** tab installs and shows the health of managed addons.
-- The **Networking** tab shows the cluster's VPC, subnets, endpoint access, and the auto-managed security groups.
+- The **Networking** tab shows the cluster's VPC, subnets, endpoint access, and the auto-managed cluster security group.
 
 To run `kubectl` against the cluster, follow the AWS CLI tab's `update-kubeconfig` step.
 
@@ -374,7 +373,7 @@ Control plane readiness and kubectl authentication above lists which clusters re
 - Confirm the workers can pull images — a default route to an Internet Gateway (public) or NAT Gateway (private).
 - Confirm the node role has `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`.
 
-**Workload unreachable from outside the cluster.** The node-group security group only allows intra-cluster traffic by default. Add an ingress rule for your NodePort to `eks-cluster-<name>-nodegroup-sg`, as shown in the CLI tab.
+**Workload unreachable from outside the cluster.** The cluster security group only allows intra-cluster traffic by default. Add an ingress rule for your NodePort to it, as shown in the CLI tab. An Ingress served by the AWS Load Balancer Controller needs no rule: the controller adds it to the cluster security group.
 
 **`create-cluster` rejected with an authentication-mode error.** `CONFIG_MAP` is the one mode Spinifex rejects, because it has no `aws-auth` ConfigMap path. Set `authentication_mode` to `API` or `API_AND_CONFIG_MAP`, or leave it unset, and grant access with access entries.
 

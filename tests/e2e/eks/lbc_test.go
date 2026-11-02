@@ -233,4 +233,8 @@ spec:
 		}
 		return fmt.Errorf("no ALB with DNS name %s", dns)
 	}, 5*time.Minute, 10*time.Second)
+
+	t.Run("InstanceTargetNeedsNoHandRule", func(t *testing.T) {
+		runInstanceTargetIngress(t, c, kc, artifacts, fx)
+	})
 }

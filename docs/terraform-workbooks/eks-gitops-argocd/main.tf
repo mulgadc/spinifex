@@ -471,8 +471,7 @@ resource "aws_eks_cluster" "this" {
   # expects: access_config reads as absent (and its ForceNew
   # bootstrap_cluster_creator_admin_permissions would replace the live cluster on
   # re-add), and vpc_config.security_group_ids reads back as drift. Ignore both so
-  # later applies (e.g. adding the Argo CD NodePort rule) neither replace the
-  # cluster nor detach its security groups.
+  # later applies neither replace the cluster nor detach its security groups.
   lifecycle {
     ignore_changes = [access_config, vpc_config[0].security_group_ids]
   }
@@ -639,53 +638,6 @@ resource "aws_acm_certificate" "ingress" {
 
   tags = {
     Name = "${var.cluster_name}-ingress"
-  }
-}
-
-# ---------------------------------------------------------------------------
-# Let the ALB reach the workers' NodePort
-#
-# Spinifex auto-manages the nodegroup SG and admits only intra-cluster traffic.
-# The LBC-provisioned ALB lives in this VPC, so admit the VPC CIDR on the
-# NodePort. Look the SG up by its deterministic name and add one rule.
-# ---------------------------------------------------------------------------
-
-data "aws_security_group" "nodegroup" {
-  filter {
-    name   = "group-name"
-    values = ["eks-cluster-${var.cluster_name}-nodegroup-sg"]
-  }
-
-  filter {
-    name   = "vpc-id"
-    values = [aws_vpc.main.id]
-  }
-
-  depends_on = [aws_eks_node_group.workers]
-}
-
-resource "aws_vpc_security_group_ingress_rule" "nodeport_from_vpc" {
-  security_group_id = data.aws_security_group.nodegroup.id
-  cidr_ipv4         = aws_vpc.main.cidr_block
-  from_port         = var.node_port
-  to_port           = var.node_port
-  ip_protocol       = "tcp"
-
-  tags = {
-    Name = "${var.cluster_name}-alb-nodeport"
-  }
-}
-
-# Same, for the Argo CD UI NodePort its ALB forwards to.
-resource "aws_vpc_security_group_ingress_rule" "argocd_nodeport_from_vpc" {
-  security_group_id = data.aws_security_group.nodegroup.id
-  cidr_ipv4         = aws_vpc.main.cidr_block
-  from_port         = var.argocd_node_port
-  to_port           = var.argocd_node_port
-  ip_protocol       = "tcp"
-
-  tags = {
-    Name = "${var.cluster_name}-argocd-nodeport"
   }
 }
 

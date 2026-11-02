@@ -706,3 +706,74 @@ func (s *truncatedNoTokenStore) ListObjectsV2(_ context.Context, _ *s3.ListObjec
 	}
 	return &s3.ListObjectsV2Output{Contents: contents, IsTruncated: aws.Bool(true)}, nil
 }
+
+// A partial listing hands back each document it could not use, identified by
+// the account and ID its key was built from, and leaves out one deleted
+// between listing and read.
+func TestListPartial_ReportsUnreadableAndDropsDeleted(t *testing.T) {
+	objects := objectstore.NewMemoryObjectStore()
+	store := NewStore(objects, "control-plane")
+	ctx := context.Background()
+
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-good", TenantID: "000000000001", CapacityGiB: 1}))
+	require.NoError(t, store.PutVolume(ctx, Volume{VolumeID: "vol-unreadable", TenantID: "000000000002", CapacityGiB: 1}))
+	unreadableKey, err := VolumeKey("000000000002", "vol-unreadable")
+	require.NoError(t, err)
+	corruptKey, err := VolumeKey("000000000001", "vol-corrupt")
+	require.NoError(t, err)
+	writeRaw(t, objects, corruptKey, []byte("{not json"))
+	badAMIKey, err := AMIKey("ami-bad")
+	require.NoError(t, err)
+	writeRaw(t, objects, badAMIKey, []byte("{not json"))
+	require.NoError(t, store.PutAMI(ctx, AMI{ImageID: "ami-good"}))
+	deletedKey, err := AMIKey("ami-deleted")
+	require.NoError(t, err)
+	writeRaw(t, objects, deletedKey, []byte("{}"))
+
+	broken := NewStore(&deletedAndFailingStore{
+		ObjectStore: objects, failKey: unreadableKey, deletedKey: deletedKey,
+	}, "control-plane")
+
+	volumes, unreadable, err := broken.ListAllVolumesPartial(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vol-good"}, volumeIDs(volumes))
+	require.Len(t, unreadable, 2)
+	byID := map[string]UnreadableDocument{}
+	for _, doc := range unreadable {
+		byID[doc.ID] = doc
+	}
+	assert.Equal(t, "000000000001", byID["vol-corrupt"].AccountID)
+	assert.ErrorIs(t, byID["vol-corrupt"].Err, ErrCorruptDocument)
+	assert.Equal(t, "000000000002", byID["vol-unreadable"].AccountID)
+	assert.NotErrorIs(t, byID["vol-unreadable"].Err, ErrCorruptDocument)
+
+	amis, unreadable, err := broken.ListAMIsPartial(ctx)
+	require.NoError(t, err)
+	require.Len(t, amis, 1)
+	assert.Equal(t, "ami-good", amis[0].ImageID)
+	require.Len(t, unreadable, 1, "a deleted document is absent, not unreadable")
+	assert.Equal(t, UnreadableDocument{Key: badAMIKey, ID: "ami-bad", Err: unreadable[0].Err}, unreadable[0])
+
+	_, _, err = (&Store{}).ListAllVolumesPartial(ctx)
+	require.Error(t, err)
+	_, _, err = (&Store{}).ListAMIsPartial(ctx)
+	require.Error(t, err)
+}
+
+// deletedAndFailingStore fails one key's read and reports another as already
+// deleted, while still listing both.
+type deletedAndFailingStore struct {
+	objectstore.ObjectStore
+
+	failKey, deletedKey string
+}
+
+func (s *deletedAndFailingStore) GetObject(ctx context.Context, in *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	switch aws.StringValue(in.Key) {
+	case s.failKey:
+		return nil, errors.New("reconstruction failed")
+	case s.deletedKey:
+		return nil, &objectstore.NoSuchKeyError{Key: s.deletedKey}
+	}
+	return s.ObjectStore.GetObject(ctx, in)
+}

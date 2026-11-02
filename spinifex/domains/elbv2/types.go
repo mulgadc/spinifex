@@ -99,8 +99,8 @@ const (
 	// Default health check values (NLB).
 	DefaultNLBHealthCheckInterval = 30
 	DefaultNLBHealthCheckTimeout  = 10
-	DefaultNLBHealthyThreshold    = 3
-	DefaultNLBUnhealthyThreshold  = 3
+	DefaultNLBHealthyThreshold    = 5
+	DefaultNLBUnhealthyThreshold  = 2
 	DefaultNLBHealthCheckProtocol = ProtocolTCP
 	DefaultNLBHealthCheckPort     = "traffic-port"
 

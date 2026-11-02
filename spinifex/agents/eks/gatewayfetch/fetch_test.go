@@ -49,7 +49,7 @@ func TestRun_RejectsBeforeContactingGateway(t *testing.T) {
 	}{
 		{"account", func(c *Config) { c.AccountID = "" }, "--account-id is required (or set EKS_ACCOUNT_ID)"},
 		{"cluster", func(c *Config) { c.ClusterName = "" }, "--cluster is required (or set EKS_CLUSTER_NAME)"},
-		{"resource", func(c *Config) { c.Resource = "secrets" }, "--resource must be addons or recovery"},
+		{"resource", func(c *Config) { c.Resource = "secrets" }, "--resource must be addons, recovery or workers"},
 		{"recovery instance", func(c *Config) { c.Resource = "recovery" }, "--instance-id is required for --resource recovery (or set EKS_INSTANCE_ID)"},
 		{"gateway client", func(c *Config) { c.GatewayURL = "" }, "build gateway client: eksgw: baseURL is required"},
 	}
@@ -89,6 +89,26 @@ func TestRun_RendersRecoveryDirective(t *testing.T) {
 	}
 	if got, want := out.String(), "7\tcluster-reset\tsnap-1\t1\n"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+// The gateway's restjson marshaler names the field InstanceIDs; both that and
+// the json-tag spelling decode, so the agent reads either.
+func TestRun_RendersManagedWorkers(t *testing.T) {
+	for _, body := range []string{
+		`{"InstanceIDs":["i-0aaa","i-0bbb"]}`,
+		`{"instanceIds":["i-0aaa","i-0bbb"]}`,
+	} {
+		var hits atomic.Int32
+		cfg, out := gateway(t, "/clusters/demo/internal-workers/123456789012", http.StatusOK, body, &hits)
+		cfg.Resource = "workers"
+
+		if err := Run(context.Background(), cfg); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got, want := out.String(), "i-0aaa\ni-0bbb\n"; got != want {
+			t.Fatalf("stdout = %q, want %q", got, want)
+		}
 	}
 }
 

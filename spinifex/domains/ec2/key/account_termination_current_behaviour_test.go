@@ -68,6 +68,19 @@ func (f *faultyStore) DeleteObject(ctx context.Context, in *s3.DeleteObjectInput
 	return f.MemoryObjectStore.DeleteObject(ctx, in)
 }
 
+// ListObjectsV2 returns keys in S3's lexicographic order, so a test can place
+// one record ahead of another in a scan.
+func (f *faultyStore) ListObjectsV2(ctx context.Context, in *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+	out, err := f.MemoryObjectStore.ListObjectsV2(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(out.Contents, func(a, b *s3.Object) int {
+		return strings.Compare(aws.StringValue(a.Key), aws.StringValue(b.Key))
+	})
+	return out, nil
+}
+
 // accountObjects lists every object key under the account's key prefix.
 func accountObjects(t *testing.T, store objectstore.ObjectStore, account string) []string {
 	t.Helper()
@@ -239,6 +252,22 @@ func TestAccountTermination_DeleteKeyPairByNameFailsOnUndecodableMetadata(t *tes
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Equal(t, sortedStrings(broken, pub), accountObjects(t, store, ctAccount))
+}
+
+// An unreadable record listed ahead of the named key pair cannot hide it: the
+// match proves the name present, so the delete goes ahead.
+func TestAccountTermination_DeleteKeyPairByNameSucceedsPastUndecodableMetadata(t *testing.T) {
+	store := newFaultyStore()
+	svc := ec2key.NewKeyServiceImplWithStore(store, ctBucket)
+	broken := "keys/" + ctAccount + "/key-000000000000000000.json"
+	putObject(t, store, broken, "{not json")
+	id := aws.StringValue(importKey(t, svc, ctAccount, "deploy").KeyPairId)
+	require.Less(t, broken, "keys/"+ctAccount+"/"+id+".json", "the broken record must be scanned first")
+
+	out, err := svc.DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{KeyName: aws.String("deploy")}, ctAccount)
+	require.NoError(t, err)
+	assert.Equal(t, id, aws.StringValue(out.KeyPairId))
+	assert.Equal(t, []string{broken}, accountObjects(t, store, ctAccount))
 }
 
 func sortedStrings(s ...string) []string {

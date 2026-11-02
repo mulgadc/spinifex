@@ -915,7 +915,7 @@ func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
 	var primaryErr error
 	if instance.ENIId != "" {
 		// force=true bypasses the in-use guard for the owning instance,
-		// breaking the un-terminable-ENI deadlock (ADR-0003 §2). One call
+		// breaking the un-terminable-ENI deadlock (historic PROP-LIFECYCLE-003 §2). One call
 		// carries the detach's revision into the delete, so a lagging KV
 		// replica can never decide the outcome.
 		deleted, err := a.d.vpcService.DetachAndDeleteENI(context.Background(), instance.AccountID, instance.ENIId, true)

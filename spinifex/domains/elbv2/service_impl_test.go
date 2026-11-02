@@ -313,9 +313,9 @@ func TestDeleteLoadBalancer_CleansUpListeners(t *testing.T) {
 	require.NoError(t, err)
 
 	// Listener should be gone
-	lstDesc, err := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{LoadBalancerArn: lbArn}, testAccountID)
+	listeners, err := svc.store.ListListenersByLB(context.Background(), *lbArn)
 	require.NoError(t, err)
-	assert.Empty(t, lstDesc.Listeners)
+	assert.Empty(t, listeners)
 }
 
 func TestDescribeLoadBalancers_FilterByName(t *testing.T) {
@@ -333,6 +333,53 @@ func TestDescribeLoadBalancers_FilterByName(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.LoadBalancers, 1)
 	assert.Equal(t, "alb-one", *desc.LoadBalancers[0].LoadBalancerName)
+}
+
+func TestDescribeLoadBalancers_UnknownNameReturnsNotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("nf-alb")}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{
+		Names: aws.StringSlice([]string{"nf-alb", "awsdiff-nope"}),
+	}, testAccountID)
+	code, msg, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorELBv2LoadBalancerNotFound, code)
+	assert.Equal(t, "Load balancers '[awsdiff-nope]' not found", msg)
+
+	// Another account's load balancer is not visible by name.
+	_, err = svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{
+		Names: aws.StringSlice([]string{"nf-alb"}),
+	}, "999999999999")
+	code, _, _ = awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorELBv2LoadBalancerNotFound, code)
+}
+
+func TestDescribeListeners_UnknownLoadBalancerReturnsNotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("nf-lst-alb")}, testAccountID)
+	require.NoError(t, err)
+	lbArn := *lbOut.LoadBalancers[0].LoadBalancerArn
+
+	for account, arn := range map[string]string{
+		testAccountID:  "arn:aws:elasticloadbalancing:ap-southeast-2:" + testAccountID + ":loadbalancer/app/nope/0123456789abcdef",
+		"999999999999": lbArn,
+		"000000000777": "not/an arn",
+	} {
+		_, err = svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{LoadBalancerArn: aws.String(arn)}, account)
+		code, msg, _ := awserrors.ResolveErrorDetail(err)
+		assert.Equal(t, awserrors.ErrorELBv2LoadBalancerNotFound, code, account)
+		assert.Equal(t, "Load balancer '"+arn+"' not found", msg, account)
+	}
+
+	// A load balancer with no listeners is still a success.
+	out, err := svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{LoadBalancerArn: aws.String(lbArn)}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Listeners)
 }
 
 func TestDescribeLoadBalancers_AccountIsolation(t *testing.T) {
@@ -412,11 +459,12 @@ func TestCreateTargetGroup_TCPProtocol(t *testing.T) {
 	assert.Equal(t, int64(5432), *tg.Port)
 	// NLB health check defaults: TCP protocol, no path, no matcher.
 	assert.Equal(t, "TCP", *tg.HealthCheckProtocol)
-	assert.Empty(t, *tg.HealthCheckPath)
-	assert.Empty(t, *tg.Matcher.HttpCode)
+	assert.Nil(t, tg.HealthCheckPath)
+	assert.Nil(t, tg.Matcher)
+	assert.Equal(t, int64(30), *tg.HealthCheckIntervalSeconds)
 	assert.Equal(t, int64(10), *tg.HealthCheckTimeoutSeconds)
-	assert.Equal(t, int64(3), *tg.HealthyThresholdCount)
-	assert.Equal(t, int64(3), *tg.UnhealthyThresholdCount)
+	assert.Equal(t, int64(5), *tg.HealthyThresholdCount)
+	assert.Equal(t, int64(2), *tg.UnhealthyThresholdCount)
 }
 
 func TestCreateTargetGroup_NLBProtocols(t *testing.T) {

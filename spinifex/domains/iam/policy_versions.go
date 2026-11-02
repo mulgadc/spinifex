@@ -93,6 +93,7 @@ func (s *IAMServiceImpl) updatePolicyCAS(ctx context.Context, accountID, policyA
 	if err != nil {
 		return err
 	}
+	defer s.recordLocks.lock("policy/" + key)()
 	_, err = kvutil.Update(ctx, s.policiesBucket, key, cfg, func(p *Policy) (bool, error) {
 		// The key omits the path, so an ARN with the wrong path names no policy.
 		if p.ARN != policyARN {

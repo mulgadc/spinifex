@@ -29,7 +29,7 @@ var (
 //
 // To make a future test exercise a different control-plane path, call
 // StubSubject once per NATS subject the handler under test publishes to (grep
-// spinifex/gateway/**/*.go for the literal subject string passed to
+// spinifex/ingress/aws/pipeline/*.go for the literal subject string passed to
 // natsmsg.Gather or natsConn.RequestMsg), then use SetSubjectReply to vary the
 // response per test case — e.g. an error envelope from awserrors.GenerateErrorPayload
 // for a validation-error test, or a populated output struct for a happy path.

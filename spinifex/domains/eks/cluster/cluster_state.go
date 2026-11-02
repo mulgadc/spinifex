@@ -139,30 +139,33 @@ type ClusterMeta struct {
 	NLBTargetGroupArn     string    `json:"nlbTargetGroupArn,omitempty"`
 	KonnTargetGroupArn    string    `json:"konnTargetGroupArn,omitempty"`
 	CreatedAt             time.Time `json:"createdAt"`
-	// DeletingSince stamps when the cluster entered DELETING. The teardown
-	// backstop reaper waits out a healthy synchronous DeleteCluster (min-age)
-	// before re-driving purgeClusterInfra, so it only ever re-drives a wedged
-	// teardown, never one still in progress. No omitempty: encoding/json never
-	// treats a time.Time as empty.
+	// DeletingSince stamps when the cluster entered DELETING. No omitempty:
+	// encoding/json never treats a time.Time as empty.
 	DeletingSince time.Time `json:"deletingSince"`
-	// DeleteReapAttempts counts backstop-reaper re-drive attempts against this
-	// DELETING cluster since DeletingSince. Drives the reaper's exponential
-	// backoff and the terminal give-up after maxDeleteReapAttempts.
+	// DeleteReapAttempts counts teardown passes against this DELETING cluster
+	// since DeletingSince. Drives the reaper's capped exponential backoff.
 	DeleteReapAttempts int `json:"deleteReapAttempts,omitempty"`
-	// LastDeleteReapAttempt stamps the most recent backstop-reaper re-drive, so
-	// backoff grows from the last attempt rather than from DeletingSince.
+	// LastDeleteReapAttempt stamps the most recent teardown pass, so backoff
+	// grows from the last attempt rather than from DeletingSince.
 	// No omitempty: encoding/json never treats a time.Time as empty.
 	LastDeleteReapAttempt time.Time `json:"lastDeleteReapAttempt"`
-	// DeleteReapExhausted marks a DELETING cluster whose backstop reaper gave up
-	// after maxDeleteReapAttempts. Status stays DELETING — its infra remains
-	// tracked and billable pending operator intervention — only the automatic
-	// re-drive stops.
+	// DeleteReapExhausted marks a DELETING cluster whose teardown has failed
+	// maxDeleteReapAttempts times, for an operator. Retries continue regardless.
 	DeleteReapExhausted bool `json:"deleteReapExhausted,omitempty"`
-	// LastDeleteReapError is the error string from the most recent failed
-	// backstop-reaper re-drive, so an operator sees why teardown is stuck
-	// instead of just that it is. Set on every failed attempt, not only on
-	// exhaustion, and cleared once a re-drive succeeds.
+	// LastDeleteReapError is the error from the most recent failed teardown
+	// pass, so an operator sees why it is stuck instead of just that it is.
 	LastDeleteReapError string `json:"lastDeleteReapError,omitempty"`
+	// DeleteFailedStep names, in tenant-facing words, the teardown steps the
+	// last failed pass could not complete. DescribeCluster surfaces it; the raw
+	// error above carries system-account IDs and is never shown to the tenant.
+	DeleteFailedStep string `json:"deleteFailedStep,omitempty"`
+	// LaunchOwner names the node whose create launch is still building this
+	// record, and LaunchHeartbeat is when that launch last confirmed it was
+	// alive. The teardown leaves the record alone while the heartbeat is fresh,
+	// so an overtaken launch hands its refs over before the record goes.
+	LaunchOwner string `json:"launchOwner,omitempty"`
+	// No omitempty: encoding/json never treats a time.Time as empty.
+	LaunchHeartbeat time.Time `json:"launchHeartbeat"`
 	// HealthIssue is the last health failure reason ("" = healthy).
 	// DescribeCluster surfaces it as a ClusterHealth issue.
 	HealthIssue string `json:"healthIssue,omitempty"`
@@ -287,13 +290,25 @@ func casUpdateMeta(ctx context.Context, kv jetstream.KeyValue, name string, muta
 	return err
 }
 
-// SetClusterStatus does a CAS update of meta.Status. Returns ErrClusterNotFound if deleted concurrently.
+// ErrClusterDeleting is returned by a status writer that would move a cluster
+// off DELETING. A recorded delete is the tenant's decision and nothing but the
+// teardown removing the record may end it.
+var ErrClusterDeleting = errors.New("eks: cluster is deleting")
+
+// SetClusterStatus does a CAS update of meta.Status. Returns ErrClusterNotFound
+// if deleted concurrently, and ErrClusterDeleting rather than leave DELETING.
 func SetClusterStatus(ctx context.Context, kv jetstream.KeyValue, name string, status ClusterStatus) error {
 	if name == "" {
 		return errors.New("eks: SetClusterStatus empty name")
 	}
-	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+	refused := false
+	err := casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		refused = false
 		if m.Status == status {
+			return false
+		}
+		if m.Status == ClusterStatusDeleting {
+			refused = true
 			return false
 		}
 		m.Status = status
@@ -302,6 +317,232 @@ func SetClusterStatus(ctx context.Context, kv jetstream.KeyValue, name string, s
 		}
 		return true
 	})
+	if err == nil && refused {
+		return ErrClusterDeleting
+	}
+	return err
+}
+
+// errLaunchSuperseded is returned by persistLaunchMeta when the launch no
+// longer owns the record it is building: a delete was recorded against it,
+// the record is gone, or the name now belongs to a newer cluster.
+var errLaunchSuperseded = errors.New("eks: cluster launch superseded")
+
+// errLaunchNewGeneration is errLaunchSuperseded for a record that belongs to a
+// different cluster of the same name, created after this launch's was removed.
+var errLaunchNewGeneration = fmt.Errorf("%w: the name belongs to a newer cluster", errLaunchSuperseded)
+
+// errLaunchMarkedFailed is returned when the launch's record was marked FAILED
+// under it. The refs are merged in and the launch releases what it built.
+var errLaunchMarkedFailed = errors.New("eks: cluster marked FAILED during launch")
+
+// sameGeneration reports whether two records describe the same cluster, not
+// merely the same name: CreatedAt and the ARN are stamped once, at the claim.
+func sameGeneration(a, b *ClusterMeta) bool {
+	return a.CreatedAt.Equal(b.CreatedAt) && a.Arn == b.Arn
+}
+
+// persistLaunchMeta is the create path's meta write, fenced on the record's
+// generation. While its own record is CREATING it writes meta whole. Once a
+// delete is recorded it only adds the launch's resource refs, so the teardown
+// reaches them, and returns errLaunchSuperseded; a FAILED record also takes
+// the refs, with errLaunchMarkedFailed. It never writes a newer cluster's
+// record and never recreates a removed one.
+func persistLaunchMeta(ctx context.Context, kv jetstream.KeyValue, meta *ClusterMeta) error {
+	if meta == nil || meta.Name == "" {
+		return errors.New("eks: persistLaunchMeta missing meta")
+	}
+	var outcome error
+	err := casUpdateMeta(ctx, kv, meta.Name, func(m *ClusterMeta) bool {
+		outcome = nil
+		if !sameGeneration(m, meta) {
+			outcome = errLaunchNewGeneration
+			return false
+		}
+		switch m.Status {
+		case ClusterStatusCreating:
+			*m = *meta
+			m.Status = ClusterStatusCreating
+			m.LaunchHeartbeat = time.Now().UTC()
+			return true
+		case ClusterStatusDeleting:
+			// Handing the refs over acknowledges the delete: the launch stops.
+			outcome = errLaunchSuperseded
+			merged := mergeOwnershipRefs(m, meta)
+			return clearLaunchOwner(m) || merged
+		case ClusterStatusFailed:
+			outcome = errLaunchMarkedFailed
+			merged := mergeOwnershipRefs(m, meta)
+			return clearLaunchOwner(m) || merged
+		default:
+			return mergeOwnershipRefs(m, meta)
+		}
+	})
+	if errors.Is(err, ErrClusterNotFound) {
+		return fmt.Errorf("%w: %w", errLaunchSuperseded, ErrClusterNotFound)
+	}
+	if err != nil {
+		return err
+	}
+	return outcome
+}
+
+func clearLaunchOwner(m *ClusterMeta) bool {
+	if m.LaunchOwner == "" {
+		return false
+	}
+	m.LaunchOwner = ""
+	return true
+}
+
+// launchInFlight reports whether a create launch is still building the record:
+// it has an owner whose heartbeat is younger than staleAfter. A launch that
+// crashed stops heartbeating and stops counting once staleAfter passes.
+func launchInFlight(m *ClusterMeta, staleAfter time.Duration) bool {
+	return m.LaunchOwner != "" && time.Since(m.LaunchHeartbeat) < staleAfter
+}
+
+// putIfGeneration writes key only while the cluster record under meta's name
+// is meta's generation. The key's revision is read before the record is
+// checked, so a newer cluster's write in between fails the update and the
+// retry sees the newer record.
+func putIfGeneration(ctx context.Context, kv jetstream.KeyValue, meta *ClusterMeta, key string, value []byte) error {
+	for range maxClusterStateCASRetries {
+		var rev uint64
+		entry, err := kv.Get(ctx, key)
+		switch {
+		case err == nil:
+			rev = entry.Revision()
+		case errors.Is(err, jetstream.ErrKeyNotFound):
+		default:
+			return fmt.Errorf("kv get %s: %w", key, err)
+		}
+		cur, err := GetClusterMeta(ctx, kv, meta.Name)
+		if err != nil {
+			if errors.Is(err, ErrClusterNotFound) {
+				return fmt.Errorf("%w: %w", errLaunchSuperseded, ErrClusterNotFound)
+			}
+			return err
+		}
+		if !sameGeneration(cur, meta) {
+			return errLaunchNewGeneration
+		}
+		if rev == 0 {
+			_, err = kv.Create(ctx, key, value)
+		} else {
+			_, err = kv.Update(ctx, key, value, rev)
+		}
+		if err == nil {
+			return nil
+		}
+		if !isRevisionConflict(err) {
+			return fmt.Errorf("kv write %s: %w", key, err)
+		}
+	}
+	return fmt.Errorf("eks: write %s kept conflicting", key)
+}
+
+// isRevisionConflict reports a revision-conditional write losing its race.
+func isRevisionConflict(err error) bool {
+	if errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		return true
+	}
+	if apiErr, ok := errors.AsType[*jetstream.APIError](err); ok {
+		return apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence ||
+			apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequenceConstant
+	}
+	return false
+}
+
+// clusterOwnershipRefs lists every resource ID the teardown reads from meta to
+// find what it must remove. A ref present in a later read and absent from the
+// one a teardown pass worked from means that pass did not remove it.
+func clusterOwnershipRefs(m *ClusterMeta) map[string]struct{} {
+	refs := map[string]struct{}{}
+	add := func(kind, id string) {
+		if id != "" {
+			refs[kind+"="+id] = struct{}{}
+		}
+	}
+	if m == nil {
+		return refs
+	}
+	add("nlb", m.NLBArn)
+	add("tg", m.NLBTargetGroupArn)
+	add("konn-tg", m.KonnTargetGroupArn)
+	add("pe-eni", m.PrivateEndpointENIID)
+	add("instance", m.ControlPlaneInstanceID)
+	add("eni", m.ControlPlaneENIID)
+	for _, n := range m.ControlPlaneNodes {
+		add("instance", n.InstanceID)
+		add("eni", n.ENIID)
+	}
+	add("egress-eip", m.EgressEIPAllocationID)
+	add("spread", m.ControlPlaneSpreadGroup)
+	if m.ManagedCPVPC != nil {
+		add("cp-vpc", m.ManagedCPVPC.VpcId)
+		add("cp-igw", m.ManagedCPVPC.IGWId)
+		add("cp-natgw", m.ManagedCPVPC.NatGatewayId)
+		add("cp-nat-eip", m.ManagedCPVPC.NatEIPAllocationID)
+	}
+	if m.ResourcesVpcConfig != nil {
+		add("vpc", m.ResourcesVpcConfig.VpcId)
+	}
+	return refs
+}
+
+// refsAddedSince reports whether after records a ref that before did not.
+func refsAddedSince(before, after *ClusterMeta) bool {
+	seen := clusterOwnershipRefs(before)
+	for ref := range clusterOwnershipRefs(after) {
+		if _, ok := seen[ref]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeOwnershipRefs copies src's resource refs into dst where dst lacks them,
+// leaving dst's status and delete bookkeeping alone. Reports whether dst changed.
+func mergeOwnershipRefs(dst, src *ClusterMeta) bool {
+	if !refsAddedSince(dst, src) {
+		return false
+	}
+	setIfEmpty := func(d *string, v string) {
+		if *d == "" {
+			*d = v
+		}
+	}
+	setIfEmpty(&dst.NLBArn, src.NLBArn)
+	setIfEmpty(&dst.NLBTargetGroupArn, src.NLBTargetGroupArn)
+	setIfEmpty(&dst.KonnTargetGroupArn, src.KonnTargetGroupArn)
+	setIfEmpty(&dst.PrivateEndpointENIID, src.PrivateEndpointENIID)
+	setIfEmpty(&dst.PrivateEndpointIP, src.PrivateEndpointIP)
+	setIfEmpty(&dst.ControlPlaneInstanceID, src.ControlPlaneInstanceID)
+	setIfEmpty(&dst.ControlPlaneENIID, src.ControlPlaneENIID)
+	setIfEmpty(&dst.ControlPlaneENIIP, src.ControlPlaneENIIP)
+	setIfEmpty(&dst.ControlPlaneMgmtIP, src.ControlPlaneMgmtIP)
+	setIfEmpty(&dst.EgressEIPAllocationID, src.EgressEIPAllocationID)
+	setIfEmpty(&dst.EgressEIPPublicIP, src.EgressEIPPublicIP)
+	setIfEmpty(&dst.ControlPlaneSpreadGroup, src.ControlPlaneSpreadGroup)
+	known := map[string]struct{}{}
+	for _, n := range dst.ControlPlaneNodes {
+		known[n.InstanceID] = struct{}{}
+	}
+	for _, n := range src.ControlPlaneNodes {
+		if _, ok := known[n.InstanceID]; !ok {
+			dst.ControlPlaneNodes = append(dst.ControlPlaneNodes, n)
+		}
+	}
+	if dst.ManagedCPVPC == nil && src.ManagedCPVPC != nil {
+		cp := *src.ManagedCPVPC
+		dst.ManagedCPVPC = &cp
+	}
+	if dst.ResourcesVpcConfig == nil && src.ResourcesVpcConfig != nil {
+		vc := *src.ResourcesVpcConfig
+		dst.ResourcesVpcConfig = &vc
+	}
+	return true
 }
 
 // MarkClusterFailed transitions the cluster to FAILED with a reason, but only
@@ -320,21 +561,55 @@ func MarkClusterFailed(ctx context.Context, kv jetstream.KeyValue, name, reason 
 	})
 }
 
-// maxDeleteReapAttempts caps automatic backstop re-drives of a wedged DELETING
-// cluster. A teardown that still fails after this many attempts is failing for
-// a reason retries will not fix (e.g. an unretriable DependencyViolation), so
-// further re-drives would only keep hammering AWS/OVN forever.
+// maxDeleteReapAttempts is how many failed teardown passes a DELETING cluster
+// takes before it is flagged DeleteReapExhausted. The flag is a marker for an
+// operator; the reaper keeps retrying at its capped interval regardless.
 const maxDeleteReapAttempts = 6
 
-// RecordDeleteReapAttempt increments the backstop reaper's attempt counter and
-// stamps LastDeleteReapAttempt, returning the updated count. Called immediately
-// before each re-drive so a crash mid-purge still counts the attempt on restart.
+// MarkClusterDeleting records the tenant's delete: status DELETING, stamped,
+// with the teardown bookkeeping reset. It returns the record as written and
+// whether this call made the transition; a record already DELETING is
+// returned unchanged so concurrent deletes record one obligation.
+func MarkClusterDeleting(ctx context.Context, kv jetstream.KeyValue, name string) (*ClusterMeta, bool, error) {
+	if name == "" {
+		return nil, false, errors.New("eks: MarkClusterDeleting empty name")
+	}
+	var out ClusterMeta
+	transitioned := false
+	err := casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		transitioned = false
+		if m.Status != ClusterStatusDeleting {
+			m.Status = ClusterStatusDeleting
+			m.DeletingSince = time.Now().UTC()
+			m.DeleteReapAttempts = 0
+			m.LastDeleteReapAttempt = time.Time{}
+			m.DeleteReapExhausted = false
+			m.LastDeleteReapError = ""
+			m.DeleteFailedStep = ""
+			transitioned = true
+		}
+		out = *m
+		return transitioned
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return &out, transitioned, nil
+}
+
+// RecordDeleteReapAttempt increments the teardown attempt counter and stamps
+// LastDeleteReapAttempt on a DELETING record, returning the updated count.
+// Called before each pass so a crash mid-teardown still counts the attempt.
 func RecordDeleteReapAttempt(ctx context.Context, kv jetstream.KeyValue, name string) (int, error) {
 	if name == "" {
 		return 0, errors.New("eks: RecordDeleteReapAttempt empty name")
 	}
 	var attempts int
 	err := casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		attempts = m.DeleteReapAttempts
+		if m.Status != ClusterStatusDeleting {
+			return false
+		}
 		m.DeleteReapAttempts++
 		m.LastDeleteReapAttempt = time.Now().UTC()
 		attempts = m.DeleteReapAttempts
@@ -343,35 +618,51 @@ func RecordDeleteReapAttempt(ctx context.Context, kv jetstream.KeyValue, name st
 	return attempts, err
 }
 
-// RecordDeleteReapFailure persists the error from a failed backstop re-drive
-// onto ClusterMeta, so an operator inspecting a wedged DELETING cluster sees
-// why teardown keeps failing instead of just that it is. Called on every
-// failed attempt, not only on eventual exhaustion.
-func RecordDeleteReapFailure(ctx context.Context, kv jetstream.KeyValue, name string, purgeErr error) error {
+// RecordDeleteReapFailure persists a failed teardown pass: the error for an
+// operator, the tenant-facing names of the failed steps for DescribeCluster,
+// and DeleteReapExhausted once the attempt count reaches maxDeleteReapAttempts.
+func RecordDeleteReapFailure(ctx context.Context, kv jetstream.KeyValue, name string, steps []string, purgeErr error) error {
 	if name == "" {
 		return errors.New("eks: RecordDeleteReapFailure empty name")
 	}
 	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+		if m.Status != ClusterStatusDeleting {
+			return false
+		}
 		m.LastDeleteReapError = purgeErr.Error()
+		m.DeleteFailedStep = strings.Join(steps, "; ")
+		if m.DeleteReapAttempts >= maxDeleteReapAttempts {
+			m.DeleteReapExhausted = true
+		}
 		return true
 	})
 }
 
-// MarkDeleteReapExhausted flags a DELETING cluster whose backstop reaper has
-// given up after maxDeleteReapAttempts. Status stays DELETING — a cluster with
-// un-torn-down infra must stay DELETING so its resources remain tracked and
-// billable — only the automatic re-drive stops; an operator must intervene.
-func MarkDeleteReapExhausted(ctx context.Context, kv jetstream.KeyValue, name string) error {
+// DeleteClusterChildren removes every KV key under clusters/{name}/ except
+// the meta. It stops at the first failure, so a record whose children could not
+// all be removed is still there to own them.
+func DeleteClusterChildren(ctx context.Context, kv jetstream.KeyValue, name string) error {
 	if name == "" {
-		return errors.New("eks: MarkDeleteReapExhausted empty name")
+		return errors.New("eks: DeleteClusterChildren empty name")
 	}
-	return casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
-		if m.Status != ClusterStatusDeleting || m.DeleteReapExhausted {
-			return false
+	prefix := fmt.Sprintf("clusters/%s/", name)
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
 		}
-		m.DeleteReapExhausted = true
-		return true
-	})
+		return fmt.Errorf("kv keys: %w", err)
+	}
+	meta := ClusterMetaKey(name)
+	for _, k := range keys {
+		if !strings.HasPrefix(k, prefix) || k == meta {
+			continue
+		}
+		if err := kv.Delete(ctx, k); err != nil {
+			return fmt.Errorf("kv delete %s: %w", k, err)
+		}
+	}
+	return nil
 }
 
 // SetClusterCertificateAuthority does a CAS update of meta.CertificateAuthorityB64.
@@ -486,30 +777,4 @@ func SwapControlPlaneMember(ctx context.Context, kv jetstream.KeyValue, name, de
 		m.ControlPlaneMgmtIP = primary.MgmtIP
 		return true
 	})
-}
-
-// DeleteClusterPrefix removes every KV key under clusters/{name}/.
-// Returns the first error but continues sweeping.
-func DeleteClusterPrefix(ctx context.Context, kv jetstream.KeyValue, name string) error {
-	if name == "" {
-		return errors.New("eks: DeleteClusterPrefix empty name")
-	}
-	prefix := fmt.Sprintf("clusters/%s/", name)
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil
-		}
-		return fmt.Errorf("kv keys: %w", err)
-	}
-	var firstErr error
-	for _, k := range keys {
-		if !strings.HasPrefix(k, prefix) {
-			continue
-		}
-		if err := kv.Delete(ctx, k); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("kv delete %s: %w", k, err)
-		}
-	}
-	return firstErr
 }

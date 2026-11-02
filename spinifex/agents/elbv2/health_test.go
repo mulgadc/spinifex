@@ -58,3 +58,38 @@ func TestQueryHAProxyStats_SocketNotFound(t *testing.T) {
 		t.Error("expected error for non-existent socket")
 	}
 }
+
+func TestQueryHAProxyStats_IgnoresFailoverCopies(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "haproxy.sock")
+
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		buf := make([]byte, 256)
+		conn.Read(buf)
+
+		csv := "# pxname,svname,qcur,qmax,scur,smax,slim,stot,bin,bout,dreq,dresp,ereq,econ,eresp,wretr,wredis,status,weight\n"
+		csv += "bk_tg1,srv_i-aaa111,0,0,0,0,0,5,0,0,0,0,0,0,0,0,0,DOWN,1\n"
+		csv += "bk_tg1,srv_i-aaa111" + FailoverServerSuffix + ",0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,UP,1\n"
+		fmt.Fprint(conn, csv)
+	}()
+
+	servers, err := queryHAProxyStats(sock)
+	if err != nil {
+		t.Fatalf("queryHAProxyStats: %v", err)
+	}
+	if len(servers) != 1 || servers[0].Server != "srv_i-aaa111" || servers[0].Status != "DOWN" {
+		t.Fatalf("got %+v, want only srv_i-aaa111/DOWN", servers)
+	}
+}

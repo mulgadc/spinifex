@@ -214,10 +214,10 @@ func launchProbeGuest(t *testing.T, fix *fixture, userData, label string) (id, p
 	t.Helper()
 	harness.Step(t, "launching the %s guest", label)
 
-	// e2e:allow-create — the guest is the subject: each variant carries its own
+	// The guest is the subject: each variant carries its own
 	// shutdown behaviour in user-data, so a memoised fixture guest is the wrong
 	// shape and sharing one between the variants would erase the difference.
-	out, err := fix.aws.EC2.RunInstances(&ec2.RunInstancesInput{ //nolint:staticcheck // e2e:allow-create
+	out, err := fix.aws.EC2.RunInstances(&ec2.RunInstancesInput{ //nolint:staticcheck // the create path is the subject under test
 		ImageId:          aws.String(fix.amiID),
 		InstanceType:     aws.String(fix.instanceType),
 		KeyName:          aws.String(fix.keyPairName),

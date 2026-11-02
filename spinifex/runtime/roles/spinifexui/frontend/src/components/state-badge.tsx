@@ -53,29 +53,47 @@ const WARNING_STATES = new Set([
   "draining",
 ])
 
-function getStateClass(state: string | undefined): string {
+type StateTone = "success" | "danger" | "warning" | "muted" | "neutral"
+
+const TONE_CLASSES: Record<StateTone, string> = {
+  success: "bg-success-subtle text-success-foreground",
+  danger: "bg-danger-subtle text-danger-foreground",
+  warning: "bg-warning-subtle text-warning-foreground",
+  muted: "bg-neutral-subtle text-muted-foreground",
+  neutral: "bg-neutral-subtle text-foreground",
+}
+
+function getStateTone(state: string | undefined): StateTone {
   if (state && SUCCESS_STATES.has(state)) {
-    return "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100"
+    return "success"
   }
 
   if (state && ERROR_STATES.has(state)) {
-    return "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100"
+    return "danger"
   }
 
   if (state && WARNING_STATES.has(state)) {
-    return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-100"
+    return "warning"
   }
 
   if (state === "terminated") {
-    return "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+    return "muted"
   }
 
-  return "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-100"
+  return "neutral"
 }
 
 export function StateBadge({ state }: { state: string | undefined }) {
+  const tone = getStateTone(state)
+
   return (
-    <div className={cn("rounded-full px-2 py-1 text-xs", getStateClass(state))}>
+    <div
+      className={cn(
+        "inline-flex w-fit rounded-full px-2 py-1 text-xs",
+        TONE_CLASSES[tone],
+      )}
+      data-tone={tone}
+    >
       {state}
     </div>
   )

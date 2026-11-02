@@ -14,7 +14,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
@@ -88,6 +87,12 @@ func DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, n
 		return nil, client4xx
 	}
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+}
+
+// ValidateDescribeInstancesInput rejects any InstanceIds entry that is not a
+// well-formed instance ID with InvalidInstanceID.Malformed.
+func ValidateDescribeInstancesInput(input *ec2.DescribeInstancesInput) error {
+	return validateInstanceIDFormat(input.InstanceIds)
 }
 
 // DescribeInstancesChecked is the customer-facing variant served by the
@@ -465,7 +470,7 @@ func judgeIdentityCompleteness(ctx context.Context, frames []natsmsg.Frame, sum 
 // that carries only an ARN. Results are cached per ARN to avoid repeated RPCs.
 // Misses are warn-logged and leave Id empty (graceful degradation for deleted profiles).
 // Safe to call with a nil output or nil IAMService (no-op).
-func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc iamdomain.IAMService, accountID string) {
+func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc InstanceProfiles, accountID string) {
 	if out == nil || iamSvc == nil {
 		return
 	}

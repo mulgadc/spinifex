@@ -6,6 +6,7 @@ import (
 	"math"
 	"testing"
 
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -80,5 +81,27 @@ func TestEnforceLiveExemptShortCircuits(t *testing.T) {
 				t.Fatalf("exempt path returned %v, want nil", err)
 			}
 		})
+	}
+}
+
+func TestLoadBalancerLimit_ExemptAccountReportsAWSDefault(t *testing.T) {
+	var disabled *Service
+	got, err := disabled.LoadBalancerLimit(t.Context(), "123456789012")
+	if err != nil {
+		t.Fatalf("LoadBalancerLimit: %v", err)
+	}
+	if got != elbv2awsapi.DefaultLoadBalancerLimit {
+		t.Errorf("limit = %d, want the AWS default %d", got, elbv2awsapi.DefaultLoadBalancerLimit)
+	}
+}
+
+func TestLoadBalancerLimit_EnabledAccountReportsConfiguredLimit(t *testing.T) {
+	svc := New(Limits{Enabled: true, LoadBalancers: 7}, nil)
+	got, err := svc.LoadBalancerLimit(t.Context(), "123456789012")
+	if err != nil {
+		t.Fatalf("LoadBalancerLimit: %v", err)
+	}
+	if got != 7 {
+		t.Errorf("limit = %d, want 7", got)
 	}
 }

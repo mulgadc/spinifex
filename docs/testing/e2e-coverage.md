@@ -6,8 +6,8 @@ Suites live in `tests/e2e/<name>/` and build to `tests/e2e/_bin/<name>.test`. Ev
 
 | Set | Suites |
 | --- | --- |
-| `E2E_SUITES_SINGLE` | `single iam cert eks ecs storagegrowth partialblock rds quota storagefault` |
-| `E2E_SUITES_MULTI` | `multinode lb cert quota kvquorum lbrecovery instancerecovery storagefault` |
+| `E2E_SUITES_SINGLE` | `single iam cert eks ecs storagegrowth partialblock rds quota route53 storagefault` |
+| `E2E_SUITES_MULTI` | `multinode lb cert quota route53 kvquorum lbrecovery instancerecovery storagefault` |
 | `E2E_SUITES_NIGHTLY_SINGLE` | `single cert iam` |
 | `E2E_SUITES_NIGHTLY_MULTI` | `multinode cert lb` |
 
@@ -29,18 +29,21 @@ The largest suite, 27 top-level tests. Notable entry points:
 - `TestInstanceMetadata` — IMDS from inside a guest.
 - **`TestIMDSDatapathSurvivesVswitchdRestart`** restarts `ovs-vswitchd` under a guest with an Elastic IP, once through systemd and once with SIGKILL. After each, the guest must answer over its EIP and fetch its instance ID through IMDSv2 within 60 seconds, and `br-imds` must hold all 7 of the guest's own flows. It is sequential because it takes the whole node's datapath down.
 - `TestStopStart`, `TestEarlyRebootLiveness`, `TestGuestChurnDurability`, `TestSnapshotLifecycle`, `TestSnapshotBackedLaunch`, `TestCreateImage`, `TestVolumeLifecycle`, `TestSpotInstanceLifecycle`, `TestLaunchTemplateBoot`.
+- **`TestRebootLoop`** is opt-in and skipped in a whole-suite run. Name it in `-test.run`, or set `SPINIFEX_REBOOT_LOOP_ROUNDS` (default 10), and it reboots one fresh guest through the API that many times and then once from inside, requiring a new boot ID every time.
 - `TestNegativeErrorPaths` — the `8a`–`8t` AWS error-shape cases (malformed AMI ID, invalid instance type, volume in use, detach-root forbidden, unknown or malformed instance IDs on the lifecycle verbs, and so on).
-- **`TestKVReplication`** — the single-node half of the KV replication policy, and it is not the multi-node assertion with a smaller number in it. On one node one replica per bucket is the correct answer rather than the defect, so what it proves is the opposite: that nothing declared a replica count this deployment cannot place, that `spx admin kv replicas` exits 0 and reports `WANT 1`, and that `--repair` run twice against a cluster with nothing to repair changes no bucket's replica count and leaves every bucket serving. The multi-node suites cannot cover any of that, because on three nodes the unplaceable count is the right one. It lives here rather than in its own suite so it runs in every single-node nightly cell, across all three host and network permutations.
+- **`TestKVReplication`** — the single-node half of the KV replication policy, and it is not the multi-node assertion with a smaller number in it. On one node one replica per bucket is the correct answer rather than the defect, so what it proves is the opposite: that nothing declared a replica count this deployment cannot place, that `spx admin kv replicas` exits 0 and reports `WANT 1`, and that `--repair` run twice against a cluster with nothing to repair changes no bucket's replica count and leaves every bucket serving. The multi-node suites cannot cover any of that, because on three nodes the unplaceable count is the right one. It lives here rather than in its own suite so it runs in every single-node nightly cell, across every host and network permutation.
 
 ### `natuplink` — routed NAT (`external_mode = "nat"`), one node or three
 
 Runs **on** a node, shelling out to `ip`/`iptables`/`ovn-nbctl` locally. Skips unless `spinifex.toml` says `external_mode = "nat"`. Nine sequential phases: host wiring (transit veth, `ip_forward`, NAT egress rules), config, the EIP surface (enabled or disabled depending on whether a public pool exists), default-subnet public IP mapping, OVN gateway and SNAT on the transit net, instance egress **proven via the serial console**, host-to-guest Tier 1 ingress, a second VPC getting a unique transit gateway IP, and the EIP ingress lifecycle.
 
+**The EIP ingress phase also proves hairpin traffic.** On a single node a second guest must complete a TCP handshake to the first guest's EIP on port 22, as an AWS instance reaches a public address in its own VPC. Without the `SPX-EIP-HAIRPIN` SNAT the packet returns to OVN from the transit range, which is exempt from EIP DNAT, and is never answered; found when an EKS worker on Vultr could not reach its control plane's endpoint.
+
 **Phase 9 has two shapes.** On one node it is the EIP lifecycle: allocate, associate, host delivery plumbing, a TCP handshake to the address, a vpcd restart that must replay the plumbing, and disassociate tearing it down. On a cluster it is the distributed lane instead — a guest on every node, each public IP plumbed by the node running its guest and by **no other**, every transit veth carrying the one cluster-wide MAC, each `dnat_and_snat` row carrying `external_mac` and `logical_port`, inbound proven by a handshake and outbound by each guest's own console. **That lane is the regression guard for the two defects that made routed NAT work on one node only**, and neither is visible to a single-node run.
 
 Phases 7 and 8 are gated on a cluster by what the datapath can actually do: the transit segment is a localnet, so host-to-guest Tier 1 ingress only exists where the VPC's gateway router port and the guest are both on this host. The VPC ingress route itself is installed on every node, so phase 8 checks it unconditionally.
 
-Two nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 30). Cell 20 is the bare-metal job and is not in the permutation matrix at all, which is why the multi-node NAT cell is numbered past the end rather than filling a gap.
+Four nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 30), and their Oracle Linux twins (cells 36 and 38). Cell 20 is the bare-metal job and is not in the permutation matrix at all, which is why the multi-node NAT cell is numbered past the end rather than filling a gap.
 
 ### `multinode` — behaviour that only exists on more than one node
 
@@ -49,6 +52,17 @@ Two nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 30). Cell
 **`TestMultinodeJetStreamReplicas` is a whole-cluster sweep, not a named list, and it lives here on purpose.** It audits every KV bucket the cluster has and fails any that is replicated across fewer nodes than the cluster has, capped at JetStream's ceiling of five. Naming buckets would only ever cover the ones somebody remembered — a replica count is set where a bucket is created, and there is a bucket-creating call in most services — so the sweep is the assertion and the three daemon-owned buckets are named only so that a run enumerating nothing still fails. Because `multinode` is in `E2E_SUITES_NIGHTLY_MULTI`, this runs in every multi-node permutation cell, and no cell can be added that quietly opts out of it.
 
 **`TestMultinodeDNS` convergence budgets are env-tunable.** `SPINIFEX_MULTINODE_DNS_TOPOLOGY_TIMEOUT` (default `90s`) bounds every node agreeing on the NS topology, `SPINIFEX_MULTINODE_DNS_TIMEOUT` (default `2m`) bounds a record becoming answerable from a guest or a node, and `SPINIFEX_MULTINODE_DNS_POLL` (default `3s`) is the poll interval for both. Values are Go durations; a malformed or non-positive value panics rather than falling back to the default.
+
+**`TestMultinodeOVNRaft` restarts each node's OVN central in turn before it kills the NB leader.**
+A `setup-ovn.sh` rerun restarts a node's NB and SB members together, on EL through the one `ovn-northd.service`, so the test does the same on every database node in turn, waits for both members to be back as cluster members under a known leader, and requires an NB write to land after each step and the full quorum with one leader at the end.
+
+**`TestMultinodeIPSec` proves guest traffic is encrypted on the wire, not only that IPsec is configured.**
+It first requires every node to carry the OVS certificate, key and CA pointers, `NB_Global.ipsec=true` never asserted over an unconfigured chassis, and an AES-GCM SA in `ip xfrm state`.
+None of those fails when SAs exist but traffic bypasses them, so it then launches two instances on distinct nodes and sends 200 pings of 1000 bytes between them.
+For each direction of that pair it fails unless the outbound SAs to the peer's `ovn-encap-ip` carried at least the payload sent, an outbound-only capture on the interface routing to the peer saw ESP (raw or UDP/4500-encapsulated), and that capture saw no plaintext Geneve (UDP/6081).
+The capture is outbound-only because inbound ESP is decrypted and seen again as Geneve on the same interface, which would read as plaintext on a healthy node.
+It proves the node pair the guests landed on; the SA check covers every node.
+It skips when the node config sets `network.ipsec_enabled=false`, or when the scheduler places all four launches on one node.
 
 ### `kvquorum` — the cluster's own state survives losing a node (multi-node, needs three)
 
@@ -67,6 +81,8 @@ Three entry points, in the order they run:
 ### `instancerecovery` — a guest whose node goes away (multi-node)
 
 **Asserted from both sides, and the pair is the point.** `InstanceAutoRecovery` takes a node down and requires the guest to come back on exactly one survivor, identified by the qemu process rather than by what the API says, then brings the node back and requires it to drop the local copy instead of relaunching it. `InstanceRecoveryRefusesStorageFault` freezes predastore cluster-wide first, so the guest is paused by `werror=stop` when its node goes away, and requires that **nothing moves** — a store that refuses every node cannot be fixed by moving a guest, and the relaunch would cost it the request QEMU is holding. A reconciler that cannot tell a host failure from a storage failure passes the first and fails the second. Neither turns recovery on, because there is no setting for it: both wait for every node to report the reconciler active on a cluster nothing configured, so a build that reintroduced a switch fails here.
+
+**`InstanceRecoveryKeepsAnOlderInstanceAndItsDisk` asserts the guest survives with its data, which the first test never did.** Its guest writes a token to its root volume and prints it from the volume at every boot, and it is left running past the pending watchdog's timeout before its node is taken away, because a real instance is always older than a minute. After the survivor relaunches it, the instance must stay running for three watchdog ticks with its root volume present, and the new console must print the token, so the guest booted from the disk it wrote. The node then returns, and the instance is stopped and started once its last launch is older than the timeout again, with the same checks and a later `LaunchTime`. Before ADR-0003:S7, both relaunches carried the original launch time, and the watchdog terminated the instance seconds after QEMU started and deleted its root volume.
 
 **`InstancePartitionRecovery` is the fault this feature exists for, and the only one of the three that produces it rather than approximating it.** It drops NATS on 4222 and 4248 between one node and its peers and nothing else, so that node keeps its services, keeps its QEMU and keeps answering its own local clients while it cannot reach consensus — half healthy, which is what a real network fault looks like and what a service stop cannot imitate. It then requires that the node gives up the volume on a clock it can evaluate without reaching anything, that a survivor takes the guest over, and that the rejoining node forgets its copy rather than relaunching it. **The assertion it exists for is the one no single sample can reach:** a watch samples every node every three seconds for the whole run and fails on any sample naming two hosts, because two guests writing one volume through one object store is data loss already under way rather than a race that resolves. The evidence for *why* the guest stopped is the surrender and the fence in the node's own journal — a guest killed for any other reason satisfies the process count and means the opposite.
 
@@ -104,9 +120,16 @@ CA installed and downloadable, fingerprint matches config, hostnames present in 
 
 Internal and internet-facing ALB and NLB, HTTPS listeners, listener rules, `ModifyListener`, and NLB UDP.
 
+Unhealthy-target routing: an NLB with an HTTP health check on a TCP target group stops sending traffic to a target that fails it while still accepting TCP, sends traffic again once it recovers, and fails open when every target is unhealthy.
+An ALB whose targets all fail their health check keeps serving from them instead of answering 503.
+
+`TestInternalALBPrivateSubnet` launches an internal ALB in a private subnet of a non-default VPC with no internet gateway and no public route.
+The load balancer must reach active with a healthy target, which needs the owner stamp on its ENI to resolve, and a client inside the VPC must be served by it on every request.
+The client reports on its serial console because the runner has no route into the VPC.
+
 ### `eks`, `ecs`, `ecr` — container services
 
-`eks`: cluster create/delete, access entries, addon delivery, `GetToken`, kubeconfig artifacts, the EBS CSI volume path, and an IRSA pod wired with a projected SA token. `ecs`: clusters, container instances, the three network modes (`awsvpc`, `bridge`, `host`), task-role credentials fetched from the container credentials endpoint, a service behind an ELB, and ENI release on terminate. `ecr`: control-plane CRUD plus a real OCI data plane — docker login/build/push/pull round trips, multi-layer images, and raw blob HTTP.
+`eks`: cluster create/delete, access entries, addon delivery, `GetToken`, kubeconfig artifacts, the EBS CSI volume path, an IRSA web-identity exchange under the stock AWS trust policy (`StringEquals` on the issuer host-path `:sub`/`:aud`, a mismatched `:sub` denied with `AccessDenied`, a `StringLike` `:sub` granted), and an IRSA pod whose spec names only a ServiceAccount with the role-arn annotation, where the pod-identity webhook injects the token volume, `AWS_*` environment, STS endpoint and CA bundle and the pod assumes the role, while a pod of an unannotated ServiceAccount is left untouched. The unmodified aws-load-balancer-controller chart 1.11.0 installs with the values an AWS user passes plus the gateway endpoint override, the Shield and WAF switches and the single-subnet feature gate, and reconciles an Ingress into an active ALB. Worker IMDS is covered too: a managed nodegroup worker reports IMDSv2 required with hop limit 2, a pod with no IRSA resolves to the node role through IMDS, and a nodegroup built from a launch template takes the template's metadata options. Control-plane isolation is covered as well: no control-plane host registers as a Node, a DaemonSet tolerating every taint runs on workers only, metrics-server is Ready, and logs work for every kube-system pod. `ecs`: clusters, container instances, the three network modes (`awsvpc`, `bridge`, `host`), task-role credentials fetched from the container credentials endpoint, a service behind an ELB, and ENI release on terminate. `ecr`: control-plane CRUD plus a real OCI data plane — docker login/build/push/pull round trips, multi-layer images, and raw blob HTTP.
 
 ### `rds` — managed databases
 
@@ -117,18 +140,18 @@ The create/describe/connect path against a live cluster: a DB VM that actually b
 - **`storagefault`** — what a guest does when its storage backend stops answering, and what stop/start does when the seal failed. **The claim is about corruption, not availability.** SIGSTOPs a cluster-wide service, so it always runs last and in its own cell. Three-node, because the RS(2,1) shard floor and cross-node takeover after a failed seal do not exist on one node.
 - **`partialblock`** — concurrent sub-block writes to the same block surviving a cold reread through NBD from a real guest.
 - **`storagegrowth`** — volume growth and image pull. Requires `external_mode=pool`; skips on a nat env, which has no EIP and therefore no guest SSH.
-- **`reboot`** — a slow guest waited for and keeping what it wrote, and a wedged guest reset once its budget expires. Proves a real reboot by requiring a *new* boot ID.
+- **`reboot`** — a slow guest waited for and keeping what it wrote, and a wedged guest forced off and relaunched once its budget expires. Proves a real reboot by requiring a *new* boot ID.
 - **`diskperf`** — guest disk performance gate, pinned fio profile on a dedicated blank volume. Also requires `external_mode=pool` for guest SSH.
 
 ### Other
 
 - **`quota`** — every enforced dimension refuses with the same `quotaExceeded` code; a launch is charged for every instance it asks for; one instance wider than the cap is refused.
+- **`route53`** — hosted zones as northstar serves them, on every node. `TestNorthstarServesZonesBeyondFirstListPage` writes 1,100 zone objects (more than one `ListObjectsV2` page), requires the last one to resolve on every node and the platform base zone to survive the sync, then requires the deleted zones to stop resolving.
 - **`gpu`** — device visible in the guest, driver access, launch.
 - **`bedrock`** — `ListFoundationModels`/`GetFoundationModel` against a running cluster. Wire-format parity is unit-tested, not here.
 - **`ddil`** — Denied, Disrupted, Intermittent, Limited network scenarios.
 - **`teardown`** — sweeps leftovers.
 - **`harness`** — shared primitives, not a suite. `harness/vpc_egress.go` carries the VPC/subnet/IGW/NAT-gateway fixtures the egress scenarios build on.
-- **`manifest-check`, `manifest-lint`** — manifest validation, not cluster behaviour.
 
 ## Keeping this honest
 

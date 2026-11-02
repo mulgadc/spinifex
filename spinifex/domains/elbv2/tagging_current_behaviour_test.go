@@ -17,10 +17,10 @@ import (
 // multi-resource request today. They describe current behaviour, not the
 // target design, and a failure means the behaviour changed.
 
-// AddTags walks ResourceArns in order and writes each before resolving the
-// next, so an unknown ARN after a valid one fails the call with the earlier
-// resource already tagged.
-func TestCurrentBehaviour_Tagging_ELBv2AddTagsPartiallyAppliesBeforeUnknownARN(t *testing.T) {
+// AWS's AddTags reference (API_AddTags) returns a per-type NotFound error and
+// has no partial-success result, so a failed call must tag nothing: every ARN
+// is resolved before any write and the earlier resource stays untagged.
+func TestCurrentBehaviour_Tagging_ELBv2AddTagsAppliesNothingWhenALaterARNIsUnknown(t *testing.T) {
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("cb-partial-lb")}, testAccountID)
 	require.NoError(t, err)
@@ -34,7 +34,7 @@ func TestCurrentBehaviour_Tagging_ELBv2AddTagsPartiallyAppliesBeforeUnknownARN(t
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorELBv2TargetGroupNotFound, err.Error())
 
-	assert.Equal(t, map[string]string{"env": "prod"}, tagsFor(t, svc, arn), "the first resource keeps the tag")
+	assert.Empty(t, tagsFor(t, svc, arn), "the first resource must not be tagged")
 }
 
 // AddTags refuses only an empty key: 51 tags, a 129-character key, a

@@ -99,6 +99,8 @@ func ClassifyOperation(method, urlPath string, query url.Values) (ClassifiedOper
 		return classifyBlobOperation(method, name, ref, query)
 	case "manifests":
 		return classifyManifestOperation(method, name, ref)
+	case "referrers":
+		return classifyReferrersOperation(method, name, ref)
 	default:
 		return ClassifiedOperation{}, false
 	}
@@ -163,6 +165,15 @@ func classifyBlobOperation(method, name, ref string, query url.Values) (Classifi
 			return ClassifiedOperation{}, false
 		}
 	}
+}
+
+// classifyReferrersOperation authorizes the referrers listing as a read of the
+// repository's images.
+func classifyReferrersOperation(method, name, subject string) (ClassifiedOperation, bool) {
+	if method != http.MethodGet || subject == "" {
+		return ClassifiedOperation{}, false
+	}
+	return ClassifiedOperation{Repo: name, Requirements: []ActionRequirement{{ActionBatchGetImage, ScopeDestination}}}, true
 }
 
 func classifyManifestOperation(method, name, reference string) (ClassifiedOperation, bool) {

@@ -3,6 +3,7 @@ package awsapi
 import (
 	"context"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,7 +74,7 @@ func TestLifecyclePolicy_Errors(t *testing.T) {
 		expect string
 	}{
 		{"put missing repo", PutLifecyclePolicy, `{"repositoryName":"team/ghost","lifecyclePolicyText":` + strconvQuote(validLifecyclePolicy) + `}`, awserrors.ErrorRepositoryNotFound},
-		{"put invalid json", PutLifecyclePolicy, `{"repositoryName":"team/app","lifecyclePolicyText":"not-json"}`, awserrors.ErrorECRInvalidParameter},
+		{"put invalid json", PutLifecyclePolicy, `{"repositoryName":"team/app","lifecyclePolicyText":` + strconvQuote("not-json"+strings.Repeat(" ", 100)) + `}`, awserrors.ErrorECRInvalidParameter},
 		{"put bad rule", PutLifecyclePolicy, `{"repositoryName":"team/app","lifecyclePolicyText":"{\"rules\":[{\"rulePriority\":1,\"selection\":{\"tagStatus\":\"tagged\",\"countType\":\"imageCountMoreThan\",\"countNumber\":1},\"action\":{\"type\":\"expire\"}}]}"}`, awserrors.ErrorECRInvalidParameter},
 		{"put empty name", PutLifecyclePolicy, `{"lifecyclePolicyText":` + strconvQuote(validLifecyclePolicy) + `}`, awserrors.ErrorECRInvalidParameter},
 		{"put cross-account", PutLifecyclePolicy, `{"repositoryName":"team/app","registryId":"999999999999","lifecyclePolicyText":` + strconvQuote(validLifecyclePolicy) + `}`, awserrors.ErrorAccessDenied},
@@ -143,4 +144,30 @@ func TestLifecyclePolicy_NotFoundMessagesNameRepository(t *testing.T) {
 	require.True(t, found)
 	assert.Equal(t, awserrors.ErrorRepositoryNotFound, code)
 	assert.Equal(t, "The repository with name 'team/ghost' does not exist in the registry with id '"+policyTestAccount+"'", message)
+}
+
+// The text is checked for presence and the model's 100-30720 characters before
+// it is parsed, so a parseable policy outside those bounds is still refused.
+func TestPutLifecyclePolicy_PolicyTextRequiredAndLength(t *testing.T) {
+	nc := newLifecycleTestConn(t)
+	seedRepo(t, nc, "team/app")
+
+	cases := []struct {
+		name    string
+		body    string
+		message string
+	}{
+		{"omitted", `{"repositoryName":"team/app"}`, "Invalid parameter at 'lifecyclePolicyText' failed to satisfy constraint: 'Member must not be null'"},
+		{"too short", `{"repositoryName":"team/app","lifecyclePolicyText":"{\"rules\":[]}"}`, "Invalid parameter at 'lifecyclePolicyText' failed to satisfy constraint: 'Member must have length greater than or equal to 100'"},
+		{"too long", `{"repositoryName":"team/app","lifecyclePolicyText":` + strconvQuote(validLifecyclePolicy+strings.Repeat(" ", 30720)) + `}`, "Invalid parameter at 'lifecyclePolicyText' failed to satisfy constraint: 'Member must have length less than or equal to 30720'"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := PutLifecyclePolicy(context.Background(), nc, policyTestAccount, []byte(tc.body))
+			code, message, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorECRInvalidParameter, code)
+			assert.Equal(t, tc.message, message)
+		})
+	}
 }

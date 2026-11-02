@@ -13,7 +13,7 @@ import (
 	"time"
 	"uuid"
 
-	"github.com/mulgadc/spinifex/spinifex/accountteardown"
+	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/spf13/cobra"
 )
@@ -95,8 +95,12 @@ func runAccountDelete(cmd *cobra.Command, args []string) error {
 
 	// The configured node set, in the namespace daemons reply under, is what
 	// the instance inventory must hear from in full before it reads as empty.
-	nodeIDs := slices.Collect(maps.Keys(cfg.Nodes))
-	engine, err := accountteardown.NewClusterEngine(ctx, nc, len(cfg.Nodes), nodeIDs, svc, buckets)
+	nodes := accountteardown.ClusterNodes{
+		Expected:   len(cfg.Nodes),
+		DaemonIDs:  slices.Collect(maps.Keys(cfg.Nodes)),
+		GatewayIDs: cfg.NodesRunning("awsgw"),
+	}
+	engine, err := accountteardown.NewClusterEngine(ctx, nc, nodes, svc, buckets)
 	if err != nil {
 		return err
 	}

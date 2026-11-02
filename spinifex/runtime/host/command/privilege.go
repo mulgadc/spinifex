@@ -49,7 +49,7 @@ const (
 // caller must go through sudo.
 func capForTool(name string, args []string) (uint, bool) {
 	switch name {
-	case "ip", "iptables", "ip6tables":
+	case "ip", "iptables", "ip6tables", "nft":
 		return capNetAdmin, true
 	case "arping", "ping":
 		return capNetRaw, true

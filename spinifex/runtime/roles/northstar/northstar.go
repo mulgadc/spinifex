@@ -28,7 +28,9 @@ type Config struct {
 	// ConfigPath is the path to northstar.toml (written by `spx admin init`).
 	ConfigPath string
 	// BasePath is the node base dir where the PID file is written.
-	BasePath   string
+	BasePath string
+	// NodeName identifies this server in zone reload acknowledgements.
+	NodeName   string
 	NatsHost   string
 	NatsToken  string
 	NatsCACert string
@@ -114,18 +116,42 @@ func (svc *Service) subscribeReload() {
 	svc.nc = nc
 
 	if _, err := nc.Subscribe(dns.SubjectZoneReload, func(msg *nats.Msg) {
-		var evt dns.ZoneReload
-		if err := json.Unmarshal(msg.Data, &evt); err != nil || evt.Zone == "" {
-			return
-		}
-		if err := svc.server.ReloadZone(evt.Zone); err != nil {
-			slog.Warn("northstar: reload zone", "zone", evt.Zone, "error", err)
-			return
-		}
-		slog.Info("northstar: zone reloaded via NATS", "zone", evt.Zone)
+		handleReload(svc.server, svc.Config.NodeName, msg)
 	}); err != nil {
 		slog.Warn("northstar: subscribe zone reload", "error", err)
 		return
 	}
 	slog.Info("northstar: subscribed to live zone reload", "subject", dns.SubjectZoneReload)
+}
+
+type zoneReloader interface {
+	ReloadZoneVersion(zone string) (string, error)
+}
+
+// handleReload reloads the zone a ZoneReload names and, when the sender asked
+// for a reply, acknowledges with the version now served or the failure.
+func handleReload(server zoneReloader, node string, msg *nats.Msg) {
+	var evt dns.ZoneReload
+	if err := json.Unmarshal(msg.Data, &evt); err != nil || evt.Zone == "" {
+		return
+	}
+	ack := dns.ZoneReloadAck{Zone: evt.Zone, Node: node}
+	etag, err := server.ReloadZoneVersion(evt.Zone)
+	if err != nil {
+		ack.Error = err.Error()
+		slog.Warn("northstar: reload zone", "zone", evt.Zone, "error", err)
+	} else {
+		ack.ETag = etag
+		slog.Info("northstar: zone reloaded via NATS", "zone", evt.Zone)
+	}
+	if msg.Reply == "" {
+		return
+	}
+	payload, err := json.Marshal(ack)
+	if err != nil {
+		return
+	}
+	if err := msg.Respond(payload); err != nil {
+		slog.Warn("northstar: acknowledge zone reload", "zone", evt.Zone, "error", err)
+	}
 }

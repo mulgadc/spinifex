@@ -111,6 +111,7 @@ type IAMServiceImpl struct {
 	groupsBucket           jetstream.KeyValue
 	key                    *masterkey.Key
 	sessionRevoker         SessionRevoker
+	recordLocks            recordLocks
 }
 
 var _ IAMService = (*IAMServiceImpl)(nil)
@@ -631,7 +632,6 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 func (s *IAMServiceImpl) CreateAccessKey(accountID string, input *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error) {
 	ctx := context.Background()
 	userName := *input.UserName
-	userKVKey := accountID + "." + userName
 
 	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
@@ -674,20 +674,18 @@ func (s *IAMServiceImpl) CreateAccessKey(accountID string, input *iam.CreateAcce
 		return nil, fmt.Errorf("store access key: %w", err)
 	}
 
-	user.AccessKeys = append(user.AccessKeys, accessKeyID)
-	userData, err := json.Marshal(user)
+	err = s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
+		if len(u.AccessKeys) >= maxAccessKeysPerUser {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		u.AccessKeys = append(u.AccessKeys, accessKeyID)
+		return true, nil
+	})
 	if err != nil {
 		if rbErr := s.accessKeysBucket.Delete(ctx, accessKeyID); rbErr != nil {
 			slog.Error("Rollback failed: orphaned access key", "accessKeyID", accessKeyID, "err", rbErr)
 		}
-		return nil, fmt.Errorf("marshal user: %w", err)
-	}
-
-	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
-		if rbErr := s.accessKeysBucket.Delete(ctx, accessKeyID); rbErr != nil {
-			slog.Error("Rollback failed: orphaned access key", "accessKeyID", accessKeyID, "err", rbErr)
-		}
-		return nil, fmt.Errorf("update user: %w", err)
+		return nil, err
 	}
 
 	slog.Info("IAM access key created", "accountID", accountID, "userName", userName, "accessKeyID", accessKeyID)
@@ -750,27 +748,18 @@ func (s *IAMServiceImpl) DeleteAccessKey(accountID string, input *iam.DeleteAcce
 	ctx := context.Background()
 	userName := *input.UserName
 	accessKeyID := *input.AccessKeyId
-	userKVKey := accountID + "." + userName
-
-	user, err := s.getUser(ctx, accountID, userName)
-	if err != nil {
-		return nil, err
-	}
-
-	idx := slices.Index(user.AccessKeys, accessKeyID)
-	if idx < 0 {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
 
 	// Update user record first to avoid orphaning the reference on crash.
-	user.AccessKeys = slices.Delete(user.AccessKeys, idx, idx+1)
-	userData, err := json.Marshal(user)
+	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
+		idx := slices.Index(u.AccessKeys, accessKeyID)
+		if idx < 0 {
+			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		u.AccessKeys = slices.Delete(u.AccessKeys, idx, idx+1)
+		return true, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal user: %w", err)
-	}
-
-	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
-		return nil, fmt.Errorf("update user: %w", err)
+		return nil, err
 	}
 
 	if err := s.accessKeysBucket.Delete(ctx, accessKeyID); err != nil {
@@ -1228,6 +1217,8 @@ var ErrAccountUndeletable = errors.New("account is protected and cannot be delet
 // SetAccountStatus writes a new status and returns the updated account. It
 // refuses to move an account out of TERMINATING: teardown has already begun
 // destroying data, so restoring service would hand back a hollowed-out account.
+// The two protected accounts are never moved off ACTIVE, because control-plane
+// credentials for them skip the account-admission check downstream.
 func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, error) {
 	switch status {
 	case AccountStatusActive, AccountStatusSuspended, AccountStatusTerminating:
@@ -1237,27 +1228,31 @@ func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, e
 			status, AccountStatusActive, AccountStatusSuspended, AccountStatusTerminating)
 	}
 
-	account, err := s.GetAccount(accountID)
+	if reason, protected := UndeletableAccountIDs[accountID]; protected && status != AccountStatusActive {
+		return nil, fmt.Errorf("%s (%s) cannot be %s: %w", accountID, reason, status, ErrAccountUndeletable)
+	}
+
+	account, err := kvutil.Update(context.Background(), s.accountsBucket, accountID,
+		kvutil.CASConfig{NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity)},
+		func(a *Account) (bool, error) {
+			if a.Status == AccountStatusTerminating && status != AccountStatusTerminating {
+				return false, fmt.Errorf("account %s is terminating: %w", accountID, ErrAccountUndeletable)
+			}
+			if a.Status == status {
+				return false, nil
+			}
+			a.Status = status
+			a.Generation++
+			return true, nil
+		})
 	if err != nil {
+		if errors.Is(err, kvutil.ErrWrite) || errors.Is(err, kvutil.ErrRead) || errors.Is(err, kvutil.ErrDecode) {
+			return nil, fmt.Errorf("store account status: %w", err)
+		}
 		return nil, err
 	}
-	if account.Status == AccountStatusTerminating && status != AccountStatusTerminating {
-		return nil, fmt.Errorf("account %s is terminating: %w", accountID, ErrAccountUndeletable)
-	}
-	if account.Status == status {
-		return account, nil
-	}
 
-	account.Status = status
-	data, err := json.Marshal(account)
-	if err != nil {
-		return nil, fmt.Errorf("marshal account: %w", err)
-	}
-	if _, err := s.accountsBucket.Put(context.Background(), accountID, data); err != nil {
-		return nil, fmt.Errorf("store account status: %w", err)
-	}
-
-	slog.Info("Account status changed", "accountID", accountID, "status", status)
+	slog.Info("Account status changed", "accountID", accountID, "status", status, "generation", account.Generation)
 	return account, nil
 }
 
@@ -1611,7 +1606,6 @@ func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUse
 	ctx := context.Background()
 	userName := *input.UserName
 	policyARN := *input.PolicyArn
-	userKVKey := accountID + "." + userName
 
 	// AWS-managed policy ARNs (arn:aws:iam::aws:policy/...) are never provisioned
 	// in Spinifex, so store them opaquely rather than failing NoSuchEntity — the
@@ -1623,23 +1617,15 @@ func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUse
 		}
 	}
 
-	user, err := s.getUser(ctx, accountID, userName)
+	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
+		if slices.Contains(u.AttachedPolicies, policyARN) { // idempotent
+			return false, nil
+		}
+		u.AttachedPolicies = append(u.AttachedPolicies, policyARN)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if slices.Contains(user.AttachedPolicies, policyARN) { // idempotent
-		return &iam.AttachUserPolicyOutput{}, nil
-	}
-
-	user.AttachedPolicies = append(user.AttachedPolicies, policyARN)
-	userData, err := json.Marshal(user)
-	if err != nil {
-		return nil, fmt.Errorf("marshal user: %w", err)
-	}
-
-	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
-		return nil, fmt.Errorf("update user: %w", err)
 	}
 
 	slog.Info("IAM policy attached to user", "accountID", accountID, "userName", userName, "policyArn", policyARN)
@@ -1650,26 +1636,17 @@ func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUse
 	ctx := context.Background()
 	userName := *input.UserName
 	policyARN := *input.PolicyArn
-	userKVKey := accountID + "." + userName
 
-	user, err := s.getUser(ctx, accountID, userName)
+	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
+		idx := slices.Index(u.AttachedPolicies, policyARN)
+		if idx < 0 {
+			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		u.AttachedPolicies = slices.Delete(u.AttachedPolicies, idx, idx+1)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	idx := slices.Index(user.AttachedPolicies, policyARN)
-	if idx < 0 {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-
-	user.AttachedPolicies = slices.Delete(user.AttachedPolicies, idx, idx+1)
-	userData, err := json.Marshal(user)
-	if err != nil {
-		return nil, fmt.Errorf("marshal user: %w", err)
-	}
-
-	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
-		return nil, fmt.Errorf("update user: %w", err)
 	}
 
 	slog.Info("IAM policy detached from user", "accountID", accountID, "userName", userName, "policyArn", policyARN)
@@ -1747,14 +1724,12 @@ func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.L
 // ---------------------------------------------------------------------------
 
 // PutUserPolicy embeds an inline policy document in a user, keyed by PolicyName.
-// Idempotent upsert: a same-name policy is overwritten, mirroring AWS. Uses a
-// blind read-modify-write Put like the other user writers (no CAS).
+// Idempotent upsert: a same-name policy is overwritten, mirroring AWS.
 func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
 	ctx := context.Background()
 	userName := *input.UserName
 	policyName := *input.PolicyName
 	policyDoc := *input.PolicyDocument
-	userKVKey := accountID + "." + userName
 
 	if err := validateIAMName("policyName", policyName, 128); err != nil {
 		return nil, err
@@ -1767,26 +1742,18 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 			"policy %q on user %q: %w", policyName, userName, err)
 	}
 
-	user, err := s.getUser(ctx, accountID, userName)
+	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
+		if err := checkInlinePolicySize("user", userName, userPolicySizeQuota, u.InlinePolicies, policyName, policyDoc); err != nil {
+			return false, err
+		}
+		if u.InlinePolicies == nil {
+			u.InlinePolicies = map[string]string{}
+		}
+		u.InlinePolicies[policyName] = policyDoc
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	if err := checkInlinePolicySize("user", userName, userPolicySizeQuota, user.InlinePolicies, policyName, policyDoc); err != nil {
-		return nil, err
-	}
-
-	if user.InlinePolicies == nil {
-		user.InlinePolicies = map[string]string{}
-	}
-	user.InlinePolicies[policyName] = policyDoc
-
-	userData, err := json.Marshal(user)
-	if err != nil {
-		return nil, fmt.Errorf("marshal user: %w", err)
-	}
-
-	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
-		return nil, fmt.Errorf("update user: %w", err)
 	}
 
 	slog.Info("IAM inline policy put on user", "accountID", accountID, "userName", userName, "policyName", policyName)
@@ -1818,30 +1785,21 @@ func (s *IAMServiceImpl) GetUserPolicy(accountID string, input *iam.GetUserPolic
 }
 
 // DeleteUserPolicy removes a user's inline policy by name. A missing name
-// yields NoSuchEntity, matching AWS. Blind Put like the other user writers.
+// yields NoSuchEntity, matching AWS.
 func (s *IAMServiceImpl) DeleteUserPolicy(accountID string, input *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
 	ctx := context.Background()
 	userName := *input.UserName
 	policyName := *input.PolicyName
-	userKVKey := accountID + "." + userName
 
-	user, err := s.getUser(ctx, accountID, userName)
+	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
+		if _, ok := u.InlinePolicies[policyName]; !ok {
+			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		delete(u.InlinePolicies, policyName)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if _, ok := user.InlinePolicies[policyName]; !ok {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-	delete(user.InlinePolicies, policyName)
-
-	userData, err := json.Marshal(user)
-	if err != nil {
-		return nil, fmt.Errorf("marshal user: %w", err)
-	}
-
-	if _, err := s.usersBucket.Put(ctx, userKVKey, userData); err != nil {
-		return nil, fmt.Errorf("update user: %w", err)
 	}
 
 	slog.Info("IAM inline policy deleted from user", "accountID", accountID, "userName", userName, "policyName", policyName)
@@ -1874,8 +1832,7 @@ func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserP
 // User + policy tagging
 // ---------------------------------------------------------------------------
 
-// TagUser upserts tags on a user. Blind read-modify-write Put like the other
-// user writers (no CAS).
+// TagUser upserts tags on a user.
 func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*iam.TagUserOutput, error) {
 	ctx := context.Background()
 	if err := validateTags(input.Tags, foldedKeys); err != nil {
@@ -1883,23 +1840,16 @@ func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*ia
 	}
 
 	userName := *input.UserName
-	user, err := s.getUser(ctx, accountID, userName)
+	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
+		merged := mergeTags(u.Tags, input.Tags, foldedKeys)
+		if len(merged) > maxTagsPerResource {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		u.Tags = merged
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	merged := mergeTags(user.Tags, input.Tags, foldedKeys)
-	if len(merged) > maxTagsPerResource {
-		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
-	}
-	user.Tags = merged
-
-	data, err := json.Marshal(user)
-	if err != nil {
-		return nil, fmt.Errorf("marshal user: %w", err)
-	}
-	if _, err := s.usersBucket.Put(ctx, accountID+"."+userName, data); err != nil {
-		return nil, fmt.Errorf("update user: %w", err)
 	}
 
 	slog.Info("IAM user tagged", "accountID", accountID, "userName", userName)
@@ -1913,19 +1863,12 @@ func (s *IAMServiceImpl) UntagUser(accountID string, input *iam.UntagUserInput) 
 	}
 	ctx := context.Background()
 	userName := *input.UserName
-	user, err := s.getUser(ctx, accountID, userName)
+	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
+		u.Tags = removeTagKeys(u.Tags, input.TagKeys, foldedKeys)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	user.Tags = removeTagKeys(user.Tags, input.TagKeys, foldedKeys)
-
-	data, err := json.Marshal(user)
-	if err != nil {
-		return nil, fmt.Errorf("marshal user: %w", err)
-	}
-	if _, err := s.usersBucket.Put(ctx, accountID+"."+userName, data); err != nil {
-		return nil, fmt.Errorf("update user: %w", err)
 	}
 
 	slog.Info("IAM user untagged", "accountID", accountID, "userName", userName)
@@ -2238,6 +2181,29 @@ func (s *IAMServiceImpl) getUser(ctx context.Context, accountID, userName string
 		return nil, fmt.Errorf("unmarshal user: %w", err)
 	}
 	return &user, nil
+}
+
+// updateUserCAS applies mutate to a user under optimistic concurrency, like
+// updateRoleCAS. Every writer of a user record must use it: one blind Put can
+// restore a policy or group membership that a concurrent writer removed.
+func (s *IAMServiceImpl) updateUserCAS(ctx context.Context, accountID, userName string, mutate func(*User) (bool, error)) error {
+	defer s.recordLocks.lock("user/" + accountID + "." + userName)()
+	_, err := kvutil.Update(ctx, s.usersBucket, accountID+"."+userName, iamRecordCASConfig("user", accountID, userName), mutate)
+	return err
+}
+
+// iamRecordCASConfig is the CAS policy for an IAM user, group or OIDC provider
+// record: a missing record is NoSuchEntity and exhausted retries are logged.
+func iamRecordCASConfig(kind, accountID, name string) kvutil.CASConfig {
+	return kvutil.CASConfig{
+		Attempts: roleCASMaxRetries,
+		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),
+		Exhausted: func(string, int) error {
+			slog.Error("IAM record CAS retries exhausted under contention",
+				"kind", kind, "accountID", accountID, "name", name, "attempts", roleCASMaxRetries)
+			return errors.New(awserrors.ErrorServerInternal)
+		},
+	}
 }
 
 func generateIAMID(prefix string) (string, error) {

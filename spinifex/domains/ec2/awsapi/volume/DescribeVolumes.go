@@ -5,6 +5,7 @@ package volume
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -13,8 +14,13 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDescribeVolumesInput accepts a nil input and rejects any VolumeIds entry without the
-// vol- prefix with InvalidVolumeID.Malformed.
+// volumeIDSuffixPattern is the AWS volume ID shape after vol-: 8 (legacy) or
+// 17 lowercase hex characters.
+var volumeIDSuffixPattern = regexp.MustCompile(`^([0-9a-f]{8}|[0-9a-f]{17})$`)
+
+// ValidateDescribeVolumesInput accepts a nil input, rejects any VolumeIds entry without the
+// vol- prefix with InvalidVolumeID.Malformed, and any with a malformed suffix with
+// InvalidParameterValue, as AWS does.
 func ValidateDescribeVolumesInput(input *ec2.DescribeVolumesInput) error {
 	if input == nil {
 		return nil
@@ -22,8 +28,16 @@ func ValidateDescribeVolumesInput(input *ec2.DescribeVolumesInput) error {
 
 	if input.VolumeIds != nil {
 		for _, volumeId := range input.VolumeIds {
-			if volumeId != nil && !strings.HasPrefix(*volumeId, "vol-") {
+			if volumeId == nil {
+				continue
+			}
+			suffix, ok := strings.CutPrefix(*volumeId, "vol-")
+			if !ok {
 				return errors.New(awserrors.ErrorInvalidVolumeIDMalformed)
+			}
+			if !volumeIDSuffixPattern.MatchString(suffix) {
+				return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+					"Value (%s) for parameter volumes is invalid. Expected: 'vol-...'.", *volumeId)
 			}
 		}
 	}
@@ -34,11 +48,6 @@ func ValidateDescribeVolumesInput(input *ec2.DescribeVolumesInput) error {
 // DescribeVolumes handles the DescribeVolumes API call.
 func DescribeVolumes(ctx context.Context, input *ec2.DescribeVolumesInput, natsConn *nats.Conn, accountID string) (ec2.DescribeVolumesOutput, error) {
 	var output ec2.DescribeVolumesOutput
-
-	err := ValidateDescribeVolumesInput(input)
-	if err != nil {
-		return output, err
-	}
 
 	volumeService := ec2volume.NewNATSVolumeService(natsConn)
 	result, err := volumeService.DescribeVolumes(ctx, input, accountID)

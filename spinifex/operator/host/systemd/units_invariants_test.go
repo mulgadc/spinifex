@@ -423,9 +423,18 @@ var unitBodyHashes = map[string]map[int]string{
 		1: "04b0f23b9cda322e4012d589acc196abe466b619dec5ac0d832897b9af2f926c",
 		2: "97a2d4c72967a9bdf9545ff74593de532e8469568bb717c9958d33b77e62d0ed",
 		3: "8059fe13a678b8cb2a383ae75c069560cf39adece9a9394e17781998c711cd57",
+		4: "f66e1240cc5655f6a13f3b56ca282c73e2fe289f2e51d0ce624d14b90f12f838",
+		5: "d3d25d7eb0051ccf97f70838ddff763bade38bef934b8f85733e048151ac9319",
 	},
-	"spinifex-firewall.service": {1: "01d0a7a79f47eedca02aaab3ff97a0b6462d61b7834e16c7336a7b96034dc392"},
-	"spinifex-guests.slice":     {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},
+	"spinifex-firewall.service": {
+		1: "01d0a7a79f47eedca02aaab3ff97a0b6462d61b7834e16c7336a7b96034dc392",
+		2: "0786c7312ccf8099910a8545416e859b40116e574a740c0d561b6527e4b38f84",
+	},
+	"spinifex-guests.slice": {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},
+	"spinifex-hostnet.service": {
+		1: "4a110daac63b652aef49e358f22ac8a27a7797261b231d5b1184e171cccb8f87",
+		2: "13fd4231bb850198616ba31f25dfc2ec0aa9edb2c3f170320aa6f7cc6142ba77",
+	},
 	"spinifex-nats-watchdog.service": {
 		1: "b778e398da37c4cb3c170781f074c76555cb6a137a7f96f8dc692457b12aa9b8",
 		2: "c31eb4fa964060e1681113a3de4f8f3ee4336aee96469380aac5fc77480c964a",
@@ -449,9 +458,18 @@ var unitBodyHashes = map[string]map[int]string{
 		1: "5c8cdd2004abf8e5725cbce0200565b9b29be7ab3210a4e0a2cdfe37ec5facb9",
 		2: "5d691bf5ce4a5a636d5dcc07f7bfa36d0da9eb0d7fb26079f89358ca0e5440cd",
 	},
-	"spinifex-vpcd.service": {1: "1b722640310145767cd34e87f4804852e63f46d2145ed20f8cc5f5400ebc5965"},
-	"spinifex.slice":        {1: "f73d9343e0e1bedd647835c8bb0c80fb3a3bd66474661234ecac23a4caafc24f"},
-	"spinifex.target":       {1: "0ffba9faee5a477f8ff7466a6bccb4dc7e04f5cf92a405553c242e6548402078"},
+	"spinifex-vpcd.service": {
+		1: "1b722640310145767cd34e87f4804852e63f46d2145ed20f8cc5f5400ebc5965",
+		2: "6ca01c8104ce0fc96ee4fdd8c0f2cd2ae907211b58b6f868fdc6a26f55a579f8",
+		3: "3ac639bf8017f6eeb8777096edc40aaeeda9ca2bcc0a8313b93c51d20847ea20",
+	},
+	"spinifex.slice": {1: "f73d9343e0e1bedd647835c8bb0c80fb3a3bd66474661234ecac23a4caafc24f"},
+	"spinifex.target": {
+		1: "0ffba9faee5a477f8ff7466a6bccb4dc7e04f5cf92a405553c242e6548402078",
+		2: "16b75e47e6ea724463a7710f3af3705e6cda600df4020ca621e96dad48b150d5",
+		3: "f249a5b8876e08741cd6d78515efa46a1e51f9135c34373f51b0fce9d57d9680",
+		4: "0dc31d0e415277d10e4d90959f40d574f5c2319560299448002f701453737d5b",
+	},
 }
 
 // TestUnitBodyPinnedToVersion asserts each unit's body hash matches the
@@ -492,4 +510,101 @@ func stripVersionMarkerLine(content string) string {
 		return rest
 	}
 	return content
+}
+
+// crossDistroOVSUnits are the OVS and OVN units Debian and EL both ship under
+// the same name. The umbrella differs (openvswitch-switch against openvswitch),
+// and systemd silently drops ordering against a unit that does not exist.
+var crossDistroOVSUnits = []string{
+	"ovsdb-server.service",
+	"ovs-vswitchd.service",
+	"ovn-controller.service",
+	"ovn-northd.service",
+	"openvswitch-ipsec.service",
+}
+
+// TestOVSDependenciesExistOnEveryDistro asserts every OVS or OVN unit a
+// Spinifex unit depends on or orders against is one both distros ship.
+func TestOVSDependenciesExistOnEveryDistro(t *testing.T) {
+	dir := unitsDir(t)
+	keys := []string{"After", "Before", "Wants", "Requires", "Requisite", "BindsTo", "PartOf", "Upholds"}
+	for _, name := range allUnitFiles(t, dir) {
+		u := readUnit(t, dir, name)
+		for line := range strings.SplitSeq(u, "\n") {
+			key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if !ok || !slices.Contains(keys, key) {
+				continue
+			}
+			for dep := range strings.FieldsSeq(value) {
+				if !strings.HasPrefix(dep, "ovs") && !strings.HasPrefix(dep, "ovn") && !strings.HasPrefix(dep, "openvswitch") {
+					continue
+				}
+				if !slices.Contains(crossDistroOVSUnits, dep) {
+					t.Errorf("%s: %s=%s is not shipped under that name on every distro; use one of %v", name, key, dep, crossDistroOVSUnits)
+				}
+			}
+		}
+	}
+}
+
+// TestHostnetIsWantedNotRequired asserts the daemon and vpcd start after
+// spinifex-hostnet without Requires=: hostnet is PartOf ovs-vswitchd, so a
+// Requires= would restart both on every OVS restart or package upgrade.
+func TestHostnetIsWantedNotRequired(t *testing.T) {
+	dir := unitsDir(t)
+	for _, name := range []string{"spinifex-daemon.service", "spinifex-vpcd.service"} {
+		u := readUnit(t, dir, name)
+		for _, key := range []string{"Wants", "After"} {
+			if !directiveContains(u, key, "spinifex-hostnet.service") {
+				t.Errorf("%s: %s= must include spinifex-hostnet.service", name, key)
+			}
+		}
+		for _, key := range []string{"Requires", "Requisite", "BindsTo", "PartOf"} {
+			if directiveContains(u, key, "spinifex-hostnet.service") {
+				t.Errorf("%s: %s=spinifex-hostnet.service would restart it with OVS; use Wants=", name, key)
+			}
+		}
+	}
+}
+
+// TestHostnetFollowsOVS asserts spinifex-hostnet re-applies whenever
+// ovs-vswitchd starts, brings back the ovn-controller an OVS stop took down,
+// and runs even when its state file is gone: a unit skipped by a condition
+// still satisfies the daemon and vpcd ordering on it.
+func TestHostnetFollowsOVS(t *testing.T) {
+	dir := unitsDir(t)
+	u := readUnit(t, dir, "spinifex-hostnet.service")
+	for key, values := range map[string][]string{
+		"Requires": {"ovs-vswitchd.service"},
+		"After":    {"ovs-vswitchd.service", "NetworkManager-wait-online.service"},
+		"PartOf":   {"ovs-vswitchd.service"},
+		"Wants":    {"ovn-controller.service"},
+		"Before":   {"spinifex.target"},
+		"WantedBy": {"spinifex.target", "ovs-vswitchd.service"},
+	} {
+		for _, v := range values {
+			if !directiveContains(u, key, v) {
+				t.Errorf("spinifex-hostnet.service: %s= must include %s", key, v)
+			}
+		}
+	}
+	for _, want := range []string{"Type=oneshot", "RemainAfterExit=yes", "ExecStart=/usr/local/bin/spx admin hostnet apply"} {
+		if !hasDirective(u, want) {
+			t.Errorf("spinifex-hostnet.service must carry %q", want)
+		}
+	}
+	if strings.Contains(u, "\nCondition") {
+		t.Error("spinifex-hostnet.service must not be conditional: a skipped unit lets the daemon and vpcd start unwired")
+	}
+}
+
+// TestDaemonAndVPCDCheckHostnet asserts both refuse to start, including on a
+// crash restart, while the host network is not applied.
+func TestDaemonAndVPCDCheckHostnet(t *testing.T) {
+	dir := unitsDir(t)
+	for _, name := range []string{"spinifex-daemon.service", "spinifex-vpcd.service"} {
+		if !hasDirective(readUnit(t, dir, name), "ExecStartPre=/usr/local/bin/spx admin hostnet check") {
+			t.Errorf("%s must run `spx admin hostnet check` before it starts", name)
+		}
+	}
 }

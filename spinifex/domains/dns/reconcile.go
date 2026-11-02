@@ -68,6 +68,11 @@ type PruneScope struct {
 	// whenever the cluster topology used to build the address set was
 	// readable, since that view is always cluster-wide by construction.
 	ServiceEndpoint bool
+
+	// Nameservers covers the base zone's nsK glue. It is set only when the
+	// published assignment was non-empty, so a glue name dropped from it is
+	// removed and an unreadable topology removes nothing.
+	Nameservers bool
 }
 
 // Reconciler converges the zone toward the live inventory. On each pass it
@@ -271,8 +276,8 @@ func (r *Reconciler) computeBatch() ([]Change, error) {
 
 // prunable returns the predicate deciding whether a (zone, label) record may be
 // deleted when absent from the desired set, for the classes this cycle
-// enumerated authoritatively across all tenants. Structural (apex/NS/glue)
-// records carry none of these prefixes, so they never match.
+// enumerated authoritatively across all tenants. The apex is never pruned; an
+// nsK glue name is, once the published assignment no longer holds it.
 func (r *Reconciler) prunable(scope PruneScope) func(zone, label string) bool {
 	private := privateZoneOrDefault(r.internalDomain)
 	return func(zone, label string) bool {
@@ -293,6 +298,9 @@ func (r *Reconciler) prunable(scope PruneScope) func(zone, label string) bool {
 		}
 		if zone != r.baseDomain {
 			return false
+		}
+		if scope.Nameservers && isNameserverGlueLabel(label) {
+			return true
 		}
 		if scope.EC2 && strings.HasPrefix(label, ec2PublicLabelPrefix) {
 			return true

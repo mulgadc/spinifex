@@ -25,9 +25,9 @@ func TestCreateNodegroup_RecreateDoesNotBaselineOnPriorWorkers(t *testing.T) {
 	seedActiveClusterWithToken(t, f, "c1")
 
 	// First incarnation: two workers register Ready and the nodegroup activates.
+	markWorkersReady(t, f, "c1", "ng", 2)
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng", 2), testAccountID)
 	require.NoError(t, err)
-	markWorkersReady(t, f, "c1", "ng", 2)
 	f.svc.WaitLaunches()
 
 	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng")

@@ -79,6 +79,7 @@ func (d *Daemon) buildEKSServiceDeps() ekscluster.EKSServiceDeps {
 		Region:              d.config.Region,
 		HolderID:            d.node,
 		InternalSuffix:      internalSuffix,
+		RegistryHosts:       d.registryHosts,
 		SystemGatewayURL:    d.resolveSystemGatewayBaseURL(),
 		SystemAccessKey:     d.config.Predastore.AccessKey,
 		SystemSecretKey:     d.config.Predastore.SecretKey,
@@ -116,6 +117,9 @@ func (d *Daemon) buildEKSServiceDeps() ekscluster.EKSServiceDeps {
 	// reclaimCSIVolumes' own nil check.
 	if d.volumeService != nil {
 		deps.Volume = d.volumeService
+	}
+	if d.launchTemplateService != nil {
+		deps.LaunchTemplates = d.launchTemplateService
 	}
 
 	return deps

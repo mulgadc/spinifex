@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"os"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/accountteardown"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +38,7 @@ func runAccountDeleteRemote(cmd *cobra.Command, accountID string) error {
 
 	// The inventory is fetched first even for a real deletion: an operator who
 	// has not seen what is about to go has not really confirmed anything.
-	plan, err := deleteAccountRemote(ctx, target, gateway.DeleteAccountRequest{
+	plan, err := deleteAccountRemote(ctx, target, operatorv1.DeleteAccountRequest{
 		AccountID: accountID, DryRun: true,
 	})
 	if err != nil {
@@ -63,7 +64,7 @@ func runAccountDeleteRemote(cmd *cobra.Command, accountID string) error {
 		clientToken = newClientToken()
 	}
 
-	started, err := deleteAccountRemote(ctx, target, gateway.DeleteAccountRequest{
+	started, err := deleteAccountRemote(ctx, target, operatorv1.DeleteAccountRequest{
 		AccountID: accountID, AccountName: name, ClientToken: clientToken, Force: force,
 	})
 	if err != nil {
@@ -85,6 +86,10 @@ func followAccountDeletion(ctx context.Context, target adminTarget, accountID st
 	for {
 		job, err := describeAccountDeletionRemote(ctx, target, accountID)
 		if err != nil {
+			// The deadline often lands mid-poll; the caller still needs the account.
+			if ctx.Err() != nil {
+				return stoppedFollowing(accountID, ctx.Err())
+			}
 			return err
 		}
 
@@ -93,28 +98,32 @@ func followAccountDeletion(ctx context.Context, target adminTarget, accountID st
 		}
 
 		switch job.State {
-		case gateway.DeletionStateCompleted:
+		case operatorv1.DeletionStateCompleted:
 			fmt.Printf("\nAccount %s deleted.\n", accountID)
 			return nil
-		case gateway.DeletionStateFailed:
+		case operatorv1.DeletionStateFailed:
 			fmt.Fprintf(os.Stderr, "\nThe account is still TERMINATING so its leftovers keep an owner.\n")
 			return fmt.Errorf("teardown failed: %s", job.Error)
 		}
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("stopped following teardown of %s: %w", accountID, ctx.Err())
+			return stoppedFollowing(accountID, ctx.Err())
 		case <-time.After(accountDeletePollInterval):
 		}
 	}
 }
 
+func stoppedFollowing(accountID string, cause error) error {
+	return fmt.Errorf("stopped following teardown of %s: %w", accountID, cause)
+}
+
 func deleteAccountRemote(
 	ctx context.Context,
 	target adminTarget,
-	req gateway.DeleteAccountRequest,
-) (*gateway.DeleteAccountResponse, error) {
-	var out gateway.DeleteAccountResponse
+	req operatorv1.DeleteAccountRequest,
+) (*admin.DeleteAccountResponse, error) {
+	var out admin.DeleteAccountResponse
 	if err := callAdmin(ctx, target, "DeleteAccount", req, &out); err != nil {
 		return nil, err
 	}
@@ -124,7 +133,7 @@ func deleteAccountRemote(
 func describeAccountDeletionRemote(ctx context.Context, target adminTarget, accountID string) (*accountDeletionStatus, error) {
 	var out accountDeletionStatus
 	err := callAdmin(ctx, target, "DescribeAccountDeletion",
-		gateway.DescribeAccountDeletionRequest{AccountID: accountID}, &out)
+		operatorv1.DescribeAccountDeletionRequest{AccountID: accountID}, &out)
 	if err != nil {
 		return nil, err
 	}

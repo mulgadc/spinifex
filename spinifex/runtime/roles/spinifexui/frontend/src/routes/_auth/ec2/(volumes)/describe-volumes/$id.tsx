@@ -1,48 +1,18 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
-import { Camera, Link2, Link2Off } from "lucide-react"
-import { useState } from "react"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
-import { DeleteResourceButton } from "@/components/delete-resource-button"
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
-import { ErrorBanner } from "@/components/error-banner"
-import { PageHeading } from "@/components/page-heading"
-import { StateBadge } from "@/components/state-badge"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
-import { Button, buttonVariants } from "@/components/ui/button"
-import { Field, FieldTitle } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { formatDateTime, getNameTag } from "@/lib/utils"
-import {
-  useAttachVolume,
-  useDeleteVolume,
-  useDetachVolume,
-} from "@/mutations/ec2"
+import { panelSearchFields } from "@/lib/panel-search"
 import { ec2InstancesQueryOptions, ec2VolumeQueryOptions } from "@/queries/ec2"
 
-type DialogType = "attach" | "detach" | null
+import { VolumeDetails } from "../-components/volume-details"
 
 export const Route = createFileRoute(
   "/_auth/ec2/(volumes)/describe-volumes/$id",
 )({
+  validateSearch: z.object({ tab: panelSearchFields.tab }),
+  search: { middlewares: [stripSearchParams({ tab: "overview" })] },
   loader: async ({ context, params }) => {
     await Promise.all([
       context.queryClient.query({
@@ -65,62 +35,13 @@ export const Route = createFileRoute(
   component: VolumeDetail,
 })
 
+// The volume's own page: the side panel's tabs, laid out for the full width.
 function VolumeDetail() {
   const { id } = Route.useParams()
+  const { tab } = Route.useSearch()
+  const navigate = Route.useNavigate()
   const { data } = useSuspenseQuery(ec2VolumeQueryOptions(id))
-  const { data: instancesData } = useSuspenseQuery(ec2InstancesQueryOptions)
   const volume = data.Volumes?.[0]
-  const deleteMutation = useDeleteVolume()
-  const attachMutation = useAttachVolume()
-  const detachMutation = useDetachVolume()
-  const [activeDialog, setActiveDialog] = useState<DialogType>(null)
-  const [attachInstanceId, setAttachInstanceId] = useState("")
-  const [attachDevice, setAttachDevice] = useState("")
-  const [detachForce, setDetachForce] = useState(false)
-
-  const runningInstances =
-    instancesData.Reservations?.flatMap(
-      (r) => r.Instances?.filter((i) => i.State?.Name === "running") ?? [],
-    ) ?? []
-
-  const isAvailable =
-    volume?.State === "available" &&
-    (!volume.Attachments || volume.Attachments.length === 0)
-
-  const closeDialog = () => {
-    setActiveDialog(null)
-    setAttachInstanceId("")
-    setAttachDevice("")
-    setDetachForce(false)
-  }
-
-  const handleAttach = async () => {
-    try {
-      await attachMutation.mutateAsync({
-        volumeId: id,
-        instanceId: attachInstanceId,
-        device: attachDevice || undefined,
-      })
-      closeDialog()
-    } catch {
-      // error shown via attachMutation.error
-    }
-  }
-
-  const handleDetach = async () => {
-    const instanceId = volume?.Attachments?.[0]?.InstanceId
-
-    try {
-      await detachMutation.mutateAsync({
-        volumeId: id,
-        instanceId: instanceId ?? undefined,
-        force: detachForce || undefined,
-      })
-      closeDialog()
-    } catch {
-      // error shown via detachMutation.error
-    }
-  }
 
   if (!volume?.VolumeId) {
     return (
@@ -132,254 +53,16 @@ function VolumeDetail() {
   }
 
   return (
-    <>
-      <BackLink to="/ec2/describe-volumes">Back to volumes</BackLink>
-
-      {attachMutation.error && (
-        <ErrorBanner
-          error={attachMutation.error}
-          msg="Failed to attach volume"
-        />
-      )}
-
-      {detachMutation.error && (
-        <ErrorBanner
-          error={detachMutation.error}
-          msg="Failed to detach volume"
-        />
-      )}
-
-      <div className="space-y-6">
-        <PageHeading
-          actions={
-            <div className="flex items-center gap-2">
-              <DeleteResourceButton
-                description={`Are you sure you want to delete the volume "${volume.VolumeId}"? This action cannot be undone.`}
-                disabled={!isAvailable}
-                id={id}
-                mutation={deleteMutation}
-                title="Delete Volume"
-                to="/ec2/describe-volumes"
-              />
-              {isAvailable ? (
-                <Link
-                  className={buttonVariants({ variant: "outline" })}
-                  params={{ id: volume.VolumeId }}
-                  to="/ec2/modify-volume/$id"
-                >
-                  Resize Volume
-                </Link>
-              ) : (
-                <Button disabled variant="outline">
-                  Resize Volume
-                </Button>
-              )}
-              {isAvailable ? (
-                <Button
-                  onClick={() => {
-                    setActiveDialog("attach")
-                  }}
-                  size="sm"
-                  variant="outline"
-                >
-                  <Link2 className="size-4" />
-                  Attach
-                </Button>
-              ) : null}
-              {volume.Attachments && volume.Attachments.length > 0 ? (
-                <Button
-                  onClick={() => {
-                    setActiveDialog("detach")
-                  }}
-                  size="sm"
-                  variant="outline"
-                >
-                  <Link2Off className="size-4" />
-                  Detach
-                </Button>
-              ) : null}
-              <Link
-                className={buttonVariants({ variant: "outline", size: "sm" })}
-                search={{ volumeId: volume.VolumeId }}
-                to="/ec2/create-snapshot"
-              >
-                <Camera className="size-4" />
-                Create Snapshot
-              </Link>
-              <StateBadge state={volume.State} />
-            </div>
-          }
-          subtitle="Volume Details"
-          title={volume.VolumeId}
-        />
-
-        <DetailCard>
-          <DetailCard.Header>Volume Information</DetailCard.Header>
-          <DetailCard.Content>
-            <DetailRow label="Volume ID" value={volume.VolumeId} />
-            <DetailRow label="Size" value={`${volume.Size} GiB`} />
-            <DetailRow label="Volume Type" value={volume.VolumeType} />
-            <DetailRow label="State" value={volume.State} />
-            <DetailRow
-              label="Availability Zone"
-              value={volume.AvailabilityZone}
-            />
-            <DetailRow
-              label="Create Time"
-              value={formatDateTime(volume.CreateTime)}
-            />
-            <DetailRow
-              label="Encrypted"
-              value={volume.Encrypted ? "Yes" : "No"}
-            />
-            <DetailRow label="KMS Key ID" value={volume.KmsKeyId} />
-          </DetailCard.Content>
-        </DetailCard>
-
-        {volume.Attachments && volume.Attachments.length > 0 && (
-          <DetailCard>
-            <DetailCard.Header>Attachments</DetailCard.Header>
-            {volume.Attachments.map((attachment) => (
-              <DetailCard.Content key={attachment.InstanceId}>
-                <DetailRow
-                  label="Instance ID"
-                  value={
-                    attachment.InstanceId ? (
-                      <Link
-                        className="text-primary hover:underline"
-                        params={{ id: attachment.InstanceId }}
-                        to="/ec2/describe-instances/$id"
-                      >
-                        {attachment.InstanceId}
-                      </Link>
-                    ) : undefined
-                  }
-                />
-                <DetailRow label="Device" value={attachment.Device} />
-                <DetailRow label="Status" value={attachment.State} />
-                <DetailRow
-                  label="Attach Time"
-                  value={formatDateTime(attachment.AttachTime)}
-                />
-                <DetailRow
-                  label="Delete on Termination"
-                  value={attachment.DeleteOnTermination ? "Yes" : "No"}
-                />
-              </DetailCard.Content>
-            ))}
-          </DetailCard>
-        )}
-      </div>
-
-      <AlertDialog
-        onOpenChange={(open) => {
-          if (!open) {
-            closeDialog()
-          }
-        }}
-        open={activeDialog === "attach"}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Attach Volume</AlertDialogTitle>
-            <AlertDialogDescription>
-              Attach this volume to a running instance.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <Field>
-            <FieldTitle>
-              <label htmlFor="attachInstance">Instance</label>
-            </FieldTitle>
-            <Select
-              onValueChange={(value) => {
-                setAttachInstanceId(value ?? "")
-              }}
-              value={attachInstanceId}
-            >
-              <SelectTrigger className="w-full" id="attachInstance">
-                <SelectValue placeholder="Select an instance" />
-              </SelectTrigger>
-              <SelectContent>
-                {runningInstances.map((instance) => {
-                  const name = getNameTag(instance.Tags)
-
-                  return (
-                    <SelectItem
-                      key={instance.InstanceId}
-                      value={instance.InstanceId ?? ""}
-                    >
-                      {instance.InstanceId}
-                      {name ? ` (${name})` : ""}
-                    </SelectItem>
-                  )
-                })}
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
-            <FieldTitle>
-              <label htmlFor="attachDevice">Device (optional)</label>
-            </FieldTitle>
-            <Input
-              id="attachDevice"
-              onChange={(e) => {
-                setAttachDevice(e.target.value)
-              }}
-              placeholder="/dev/sdf"
-              value={attachDevice}
-            />
-          </Field>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={attachMutation.isPending || !attachInstanceId}
-              onClick={handleAttach}
-            >
-              {attachMutation.isPending ? "Attaching\u2026" : "Attach"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog
-        onOpenChange={(open) => {
-          if (!open) {
-            closeDialog()
-          }
-        }}
-        open={activeDialog === "detach"}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Detach Volume</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to detach the volume &quot;{volume.VolumeId}
-              &quot; from instance &quot;{volume.Attachments?.[0]?.InstanceId}
-              &quot;?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              aria-label="Force detach"
-              checked={detachForce}
-              onChange={(e) => {
-                setDetachForce(e.target.checked)
-              }}
-              type="checkbox"
-            />
-            Force detach
-          </label>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={detachMutation.isPending}
-              onClick={handleDetach}
-            >
-              {detachMutation.isPending ? "Detaching\u2026" : "Detach"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
+    <VolumeDetails
+      layout="page"
+      onClose={() => {
+        void navigate({ to: "/ec2/describe-volumes" })
+      }}
+      onTabChange={(next) => {
+        void navigate({ search: { tab: next }, replace: true })
+      }}
+      tab={tab}
+      volume={volume}
+    />
   )
 }

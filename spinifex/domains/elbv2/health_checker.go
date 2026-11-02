@@ -15,6 +15,10 @@ import (
 type healthChecker struct {
 	store *Store
 
+	// onChanged, when set, is called with the IDs of target groups whose
+	// target states were just persisted, so load balancers can re-render.
+	onChanged func(ctx context.Context, tgIDs []string)
+
 	mu       sync.Mutex
 	counters map[string]*targetCounter // key: "tgID:targetId:port"
 }
@@ -118,6 +122,7 @@ func (hc *healthChecker) handleHealthReportDirect(ctx context.Context, report lb
 	// Apply the new states field-by-field under CAS. A whole-record Put here
 	// would discard any target registered since this scan read the group, which
 	// is the one write on this key that runs on its own schedule.
+	var persisted []string
 	for _, tg := range changedTGs {
 		states := make(map[string]Target, len(tg.Targets))
 		for _, t := range tg.Targets {
@@ -139,7 +144,14 @@ func (hc *healthChecker) handleHealthReportDirect(ctx context.Context, report lb
 		})
 		if err != nil && !errors.Is(err, ErrTargetGroupNotFound) {
 			slog.ErrorContext(ctx, "healthChecker: failed to persist target group", "tgId", tg.TargetGroupID, "err", err)
+			continue
 		}
+		if err == nil {
+			persisted = append(persisted, tg.TargetGroupID)
+		}
+	}
+	if len(persisted) > 0 && hc.onChanged != nil {
+		hc.onChanged(ctx, persisted)
 	}
 }
 

@@ -1,0 +1,9 @@
+#!/bin/sh
+# sysinit: load the disk drivers and clear this boot's markers. The respawned
+# store step mounts the disk, settles the receipt key and starts the store.
+. /usr/local/lib/sqs-worker/sqs-worker-lib.sh
+modprobe virtio_blk 2>/dev/null || true
+modprobe ext4 2>/dev/null || true
+mkdir -p "$SQSW_RUN"
+rm -f "$SQSW_RUN/receipt-ready" "$SQSW_RUN/store.conf" "$SQSW_RUN/boot-refused"
+exit 0

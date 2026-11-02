@@ -10,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 
 export type AttributeSpec =
   | {
@@ -83,7 +84,7 @@ function validate(spec: AttributeSpec, value: string): string | undefined {
       return "Value is required"
     }
 
-    if (!/^-?\d+$/.test(value)) {
+    if (!/^-?\d+$/u.test(value)) {
       return "Must be a whole number"
     }
 
@@ -147,28 +148,42 @@ export function AttributesEditor({
       }}
       successMsg="Attributes saved."
     >
-      <div className="grid gap-4 p-4 sm:grid-cols-2">
+      <div className="flex flex-col gap-4 p-4">
         {specs.map((spec) => {
           const id = `attr-${spec.key}`
           const value = values[spec.key] ?? ""
           const fieldError = errors[spec.key]
+
+          if (spec.type === "bool") {
+            return (
+              <Field key={spec.key}>
+                <div className="flex items-center justify-between gap-4">
+                  <FieldTitle>
+                    <label htmlFor={id}>{spec.label}</label>
+                  </FieldTitle>
+                  <Switch
+                    aria-label={spec.label}
+                    checked={value === "true"}
+                    id={id}
+                    onCheckedChange={(checked) => {
+                      setValue(spec.key, checked ? "true" : "false")
+                    }}
+                  />
+                </div>
+                {spec.description && (
+                  <p className="text-xs text-muted-foreground">
+                    {spec.description}
+                  </p>
+                )}
+              </Field>
+            )
+          }
 
           return (
             <Field key={spec.key}>
               <FieldTitle>
                 <label htmlFor={id}>{spec.label}</label>
               </FieldTitle>
-              {spec.type === "bool" && (
-                <input
-                  aria-label={spec.label}
-                  checked={value === "true"}
-                  id={id}
-                  onChange={(e) => {
-                    setValue(spec.key, e.target.checked ? "true" : "false")
-                  }}
-                  type="checkbox"
-                />
-              )}
               {spec.type === "int" && (
                 <Input
                   aria-invalid={!!fieldError}

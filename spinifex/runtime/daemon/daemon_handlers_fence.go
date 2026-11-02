@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
@@ -23,14 +24,19 @@ func (d *Daemon) handleVolumeFenced(msg *nats.Msg) string {
 	var event viperblocklegacyv1.VolumeFencedEvent
 	if err := json.Unmarshal(msg.Data, &event); err != nil {
 		slog.ErrorContext(ctx, "volume fenced: bad event", "err", err)
+		ackVolumeFenced(ctx, msg, viperblocklegacyv1.VolumeFencedAck{Error: "bad event: " + err.Error()})
 		return outcomeError
 	}
 	if event.Volume == "" {
 		slog.ErrorContext(ctx, "volume fenced: event named no volume")
+		ackVolumeFenced(ctx, msg, viperblocklegacyv1.VolumeFencedAck{Error: "event named no volume"})
 		return outcomeError
 	}
 
+	// FenceVolume moves the guest out of running before it returns, so the ack
+	// below is sent only once nothing here will resume it.
 	instanceID := d.vmMgr.FenceVolume(ctx, event.Volume, event.Reason)
+	ackVolumeFenced(ctx, msg, viperblocklegacyv1.VolumeFencedAck{Instance: instanceID})
 	if instanceID == "" {
 		// The usual case: the volume outlived the guest that was using it, so
 		// there is nothing local left to stop.
@@ -42,4 +48,20 @@ func (d *Daemon) handleVolumeFenced(msg *nats.Msg) string {
 	slog.ErrorContext(ctx, "volume fenced, stopped the guest that was using it",
 		"volumeId", event.Volume, "instanceId", instanceID, "winner", event.Winner)
 	return outcomeSuccess
+}
+
+// ackVolumeFenced answers viperblockd, which repeats the notice until it hears
+// back. A notice with no reply subject was published once and needs no answer.
+func ackVolumeFenced(ctx context.Context, msg *nats.Msg, ack viperblocklegacyv1.VolumeFencedAck) {
+	if msg.Reply == "" {
+		return
+	}
+	payload, err := json.Marshal(ack)
+	if err != nil {
+		slog.ErrorContext(ctx, "volume fenced: marshal ack", "err", err)
+		return
+	}
+	if err := msg.Respond(payload); err != nil {
+		slog.WarnContext(ctx, "volume fenced: could not acknowledge, viperblockd will repeat the notice", "err", err)
+	}
 }

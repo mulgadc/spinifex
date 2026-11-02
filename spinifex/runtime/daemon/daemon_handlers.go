@@ -17,6 +17,7 @@ import (
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
@@ -53,8 +54,13 @@ func endOpSpan(span trace.Span, err error) {
 // daemon answered. nodeID "" (an unconfigured caller) omits the header rather
 // than sending an empty one, which downstream fan-outs already treat as absent.
 func respondNATSMsg(nodeID string, msg *nats.Msg, data []byte) {
+	respondNATSMsgWithHeader(nodeID, msg, data, nil)
+}
+
+func respondNATSMsgWithHeader(nodeID string, msg *nats.Msg, data []byte, extra nats.Header) {
 	reply := nats.NewMsg("")
 	reply.Data = data
+	maps.Copy(reply.Header, extra)
 	if nodeID != "" {
 		reply.Header.Set(natsmsg.NodeIDHeader, nodeID)
 	}
@@ -77,7 +83,13 @@ func respondWithError(nodeID string, msg *nats.Msg, errCode string) {
 func respondWithServiceError(nodeID string, msg *nats.Msg, err error) {
 	_, message, _ := awserrors.ResolveErrorDetail(err)
 	payload := awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message)
-	respondNATSMsg(nodeID, msg, payload)
+	// The AWS body stays as it is; the header is how ec2.start tells its
+	// forwarder this refusal must not be answered by starting elsewhere.
+	var extra nats.Header
+	if _, ok := errors.AsType[*ec2instance.UnsealedWritesError](err); ok {
+		extra = nats.Header{natsmsg.UnsealedWritesHeader: []string{"true"}}
+	}
+	respondNATSMsgWithHeader(nodeID, msg, payload, extra)
 }
 
 // respondErrorOutcome answers with errCode and reports the outcome that code

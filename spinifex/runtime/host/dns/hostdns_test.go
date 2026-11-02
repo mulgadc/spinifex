@@ -2,6 +2,7 @@ package hostdns
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -201,5 +202,48 @@ func writeFile(t *testing.T, path string, content []byte) {
 	}
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestResolvconfOnPath(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	link := func(name, target string) string {
+		path := filepath.Join(dir, name)
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	resolvconf := write("resolvconf")
+	resolvectl := write("resolvectl")
+	// The layout systemd-resolved installs: /usr/sbin/resolvconf -> ../bin/resolvectl.
+	compat := link("resolvconf-compat", "resolvectl")
+	dangling := link("resolvconf-dangling", "missing")
+
+	for name, tc := range map[string]struct {
+		path string
+		err  error
+		want bool
+	}{
+		"real resolvconf":           {path: resolvconf, want: true},
+		"link to a real resolvconf": {path: link("resolvconf-link", resolvconf), want: true},
+		"resolvectl compat link":    {path: compat, want: false},
+		"resolvectl itself":         {path: resolvectl, want: false},
+		"dangling link":             {path: dangling, want: false},
+		"not on PATH":               {err: exec.ErrNotFound, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lookPath := func(string) (string, error) { return tc.path, tc.err }
+			if got := resolvconfOnPath(lookPath); got != tc.want {
+				t.Errorf("resolvconfOnPath = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

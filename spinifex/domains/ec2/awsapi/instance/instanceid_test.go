@@ -57,8 +57,10 @@ func TestValidateInstanceIDFormat(t *testing.T) {
 	}
 	for _, id := range malformed {
 		err := validateInstanceIDFormat([]*string{aws.String(id)})
-		require.Error(t, err, id)
-		assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error(), id)
+		code, msg, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok, id)
+		assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, code, id)
+		assert.Equal(t, `Invalid id: "`+id+`"`, msg, id)
 	}
 	err := validateInstanceIDFormat([]*string{aws.String("i-0123456789abcdef0"), aws.String("i-abc")})
 	require.Error(t, err, "one malformed id fails the whole batch")
@@ -100,8 +102,9 @@ func TestLifecycleVerbs_MalformedIDRejectedBeforeNATS(t *testing.T) {
 	}
 	for name, call := range calls {
 		err := call()
-		require.Error(t, err, name)
-		assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error(), name)
+		code, ok := awserrors.ResolveErrorCode(err)
+		require.True(t, ok, name)
+		assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, code, name)
 	}
 	require.NoError(t, nc.Flush())
 	assert.Zero(t, requests.Load(), "no NATS request may be sent for a batch holding a malformed id")

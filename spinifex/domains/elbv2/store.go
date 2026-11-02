@@ -181,6 +181,23 @@ func (s *Store) PutLoadBalancer(ctx context.Context, lb *LoadBalancerRecord) err
 	return err
 }
 
+// ErrLoadBalancerNotFound is what a load-balancer CAS update reports when the
+// record is absent, so a deleted LB is never resurrected by a late writer.
+var ErrLoadBalancerNotFound = errors.New("elbv2: load balancer not found")
+
+// UpdateLoadBalancer applies mutate to one load balancer under optimistic
+// concurrency: a writer that loses the race re-reads and retries instead of
+// overwriting the winner. mutate returns false to commit nothing.
+func (s *Store) UpdateLoadBalancer(ctx context.Context, lbID string, mutate func(*LoadBalancerRecord) (bool, error)) (*LoadBalancerRecord, error) {
+	return kvutil.Update(ctx, s.kv, KeyPrefixLB+lbID, kvutil.CASConfig{
+		Attempts: targetGroupCASAttempts,
+		NotFound: ErrLoadBalancerNotFound,
+		Exhausted: func(_ string, attempts int) error {
+			return fmt.Errorf("elbv2: load balancer %s contended, CAS exhausted after %d attempts", lbID, attempts)
+		},
+	}, mutate)
+}
+
 // GetLoadBalancer retrieves a load balancer by its short ID.
 func (s *Store) GetLoadBalancer(ctx context.Context, lbID string) (*LoadBalancerRecord, error) {
 	entry, err := s.kv.Get(ctx, KeyPrefixLB+lbID)

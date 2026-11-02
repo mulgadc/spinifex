@@ -44,9 +44,11 @@ ln -sf /usr/local/bin/k3s /usr/local/bin/ctr
 # role's services are baked; the selector enables the right ones at first boot.
 chmod 0755 /etc/init.d/eks-node-role /etc/init.d/k3s /etc/init.d/k3s-agent \
     /etc/init.d/eks-token-webhook /etc/init.d/k3s-first-boot /etc/init.d/mulga-eks-state-report \
-    /etc/init.d/mulga-eks-addon-sync /etc/init.d/konnectivity-server
+    /etc/init.d/mulga-eks-addon-sync /etc/init.d/mulga-eks-node-gc /etc/init.d/konnectivity-server \
+    /etc/init.d/eks-pod-identity-webhook
 chmod 0755 /usr/local/sbin/eks-node-role /usr/local/sbin/k3s-first-boot \
-    /usr/local/sbin/mulga-eks-state-report /usr/local/sbin/mulga-eks-addon-sync
+    /usr/local/sbin/mulga-eks-state-report /usr/local/sbin/mulga-eks-addon-sync \
+    /usr/local/sbin/mulga-eks-node-gc
 # start_pre helpers shared with the systemd wrappers that will eventually
 # replace these runscripts.
 chmod 0755 /usr/local/sbin/k3s-prestart /usr/local/sbin/k3s-agent-prestart \

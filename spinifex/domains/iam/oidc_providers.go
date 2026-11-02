@@ -288,8 +288,7 @@ func (s *IAMServiceImpl) DeleteOpenIDConnectProvider(accountID string, input *ia
 	return &iam.DeleteOpenIDConnectProviderOutput{}, nil
 }
 
-// TagOpenIDConnectProvider upserts tags on an OIDC provider. Blind
-// read-modify-write Put like the other writers here (no CAS).
+// TagOpenIDConnectProvider upserts tags on an OIDC provider.
 func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
 	ctx := context.Background()
 	if err := validateTags(input.Tags, exactKeys); err != nil {
@@ -297,18 +296,15 @@ func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.T
 	}
 
 	arn := aws.StringValue(input.OpenIDConnectProviderArn)
-	record, err := s.getOIDCProvider(ctx, accountID, arn)
+	err := s.updateOIDCProviderCAS(ctx, accountID, arn, func(record *OIDCProviderRecord) (bool, error) {
+		merged := mergeTags(record.Tags, input.Tags, exactKeys)
+		if len(merged) > maxTagsPerResource {
+			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+		}
+		record.Tags = merged
+		return true, nil
+	})
 	if err != nil {
-		return nil, err
-	}
-
-	merged := mergeTags(record.Tags, input.Tags, exactKeys)
-	if len(merged) > maxTagsPerResource {
-		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
-	}
-	record.Tags = merged
-
-	if err := s.putOIDCProvider(ctx, accountID, record); err != nil {
 		return nil, err
 	}
 
@@ -324,14 +320,11 @@ func (s *IAMServiceImpl) UntagOpenIDConnectProvider(accountID string, input *iam
 	}
 	ctx := context.Background()
 	arn := aws.StringValue(input.OpenIDConnectProviderArn)
-	record, err := s.getOIDCProvider(ctx, accountID, arn)
+	err := s.updateOIDCProviderCAS(ctx, accountID, arn, func(record *OIDCProviderRecord) (bool, error) {
+		record.Tags = removeTagKeys(record.Tags, input.TagKeys, exactKeys)
+		return true, nil
+	})
 	if err != nil {
-		return nil, err
-	}
-
-	record.Tags = removeTagKeys(record.Tags, input.TagKeys, exactKeys)
-
-	if err := s.putOIDCProvider(ctx, accountID, record); err != nil {
 		return nil, err
 	}
 
@@ -352,12 +345,13 @@ func (s *IAMServiceImpl) ListOpenIDConnectProviderTags(accountID string, input *
 	}, nil
 }
 
-// putOIDCProvider overwrites an existing provider record, keyed by its issuer
-// URL. The record must have been read from the bucket first.
-func (s *IAMServiceImpl) putOIDCProvider(ctx context.Context, accountID string, record *OIDCProviderRecord) error {
-	data, err := json.Marshal(record)
+// updateOIDCProviderCAS applies mutate to an existing provider record under
+// optimistic concurrency, so a provider deleted concurrently fails NoSuchEntity
+// instead of being recreated.
+func (s *IAMServiceImpl) updateOIDCProviderCAS(ctx context.Context, accountID, arn string, mutate func(*OIDCProviderRecord) (bool, error)) error {
+	issuer, err := issuerFromOIDCProviderARN(arn)
 	if err != nil {
-		return fmt.Errorf("marshal OIDC provider: %w", err)
+		return errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
 	if err != nil {
@@ -366,10 +360,9 @@ func (s *IAMServiceImpl) putOIDCProvider(ctx context.Context, accountID string, 
 		}
 		return fmt.Errorf("open IAM account bucket: %w", err)
 	}
-	if _, err := kv.Put(ctx, OIDCProviderKey(record.Url), data); err != nil {
-		return fmt.Errorf("store OIDC provider: %w", err)
-	}
-	return nil
+	defer s.recordLocks.lock("oidc-provider/" + accountID + "/" + OIDCProviderKey(issuer))()
+	_, err = kvutil.Update(ctx, kv, OIDCProviderKey(issuer), iamRecordCASConfig("oidc-provider", accountID, arn), mutate)
+	return err
 }
 
 func (s *IAMServiceImpl) getOIDCProvider(ctx context.Context, accountID, arn string) (*OIDCProviderRecord, error) {

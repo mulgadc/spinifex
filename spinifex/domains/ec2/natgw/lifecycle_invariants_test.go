@@ -30,7 +30,7 @@ func TestRLC1_NatGatewayDeleteNotFoundOnAbsent(t *testing.T) {
 	assert.ErrorContains(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound, "DeleteNatGateway on an absent NAT gateway must return the canonical NotFound (RLC rule #1)")
 }
 
-// TestRLC3_NatGatewayDeletesWhileRouted enforces ADR-0004 §2: a NAT gateway is
+// TestRLC3_NatGatewayDeletesWhileRouted enforces Q-98: a NAT gateway is
 // exempt from rule #3 route-reference guards. AWS deletes a NAT gateway even
 // while a route table forwards to it (the route blackholes); delete tears down
 // the SNAT for each routed subnet so egress stops. Delete must succeed whether
@@ -47,7 +47,7 @@ func TestRLC3_NatGatewayDeletesWhileRouted(t *testing.T) {
 
 		_, err := svc.DeleteNatGateway(t.Context(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
 		require.NoErrorf(t, err,
-			"ADR-0004 §2: DeleteNatGateway must succeed even while a live route table forwards to it (the route blackholes, AWS-faithful)")
+			"Q-98: DeleteNatGateway must succeed even while a live route table forwards to it (the route blackholes, AWS-faithful)")
 	})
 
 	t.Run("succeeds with no routes", func(t *testing.T) {
@@ -56,12 +56,12 @@ func TestRLC3_NatGatewayDeletesWhileRouted(t *testing.T) {
 
 		_, err := svc.DeleteNatGateway(t.Context(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
 		require.NoErrorf(t, err,
-			"ADR-0004 §2: with no route forwarding to it, DeleteNatGateway must succeed")
+			"Q-98: with no route forwarding to it, DeleteNatGateway must succeed")
 	})
 }
 
-// TestRLC3_NatGatewayDeleteDisassociatesEIPKeepingAllocated enforces ADR-0004
-// §2: deleting a NAT gateway releases its EIP association but keeps the
+// TestRLC3_NatGatewayDeleteDisassociatesEIPKeepingAllocated enforces Q-97 / Q-98:
+// deleting a NAT gateway releases its EIP association but keeps the
 // allocation (AWS parity), never orphaning the EIP as permanently associated.
 func TestRLC3_NatGatewayDeleteDisassociatesEIPKeepingAllocated(t *testing.T) {
 	svc := setupTestService(t)
@@ -76,8 +76,8 @@ func TestRLC3_NatGatewayDeleteDisassociatesEIPKeepingAllocated(t *testing.T) {
 	require.NoError(t, err)
 
 	eip := readEIP(t, svc, "eipalloc-test1")
-	assert.Equal(t, "allocated", eip.State, "ADR-0004 §2: the EIP must stay allocated after NAT GW delete (AWS parity)")
-	assert.Empty(t, eip.AssociationId, "ADR-0004 §2: the EIP must be disassociated, not left orphaned as associated")
+	assert.Equal(t, "allocated", eip.State, "Q-97 / Q-98: the EIP must stay allocated after NAT GW delete (AWS parity)")
+	assert.Empty(t, eip.AssociationId, "Q-97 / Q-98: the EIP must be disassociated, not left orphaned as associated")
 }
 
 func createTestNatGateway(t *testing.T, svc *NatGatewayServiceImpl) string {

@@ -19,7 +19,7 @@ func TestRegisterTaskDefinition_RejectsSecrets(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			Secrets: []*ecs.Secret{{
 				Name: aws.String("DB_PASSWORD"), ValueFrom: aws.String("arn:aws:ssm:::parameter/db"),
 			}},
@@ -37,7 +37,7 @@ func TestRegisterTaskDefinition_AcceptsUnsupportedLogDriver(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			LogConfiguration: &ecs.LogConfiguration{
 				LogDriver: aws.String("awslogs"),
 				Options:   map[string]*string{"awslogs-group": aws.String("/ecs/app")},
@@ -67,7 +67,7 @@ func TestRegisterTaskDefinition_EchoesRequiresCompatibilities(t *testing.T) {
 		Family:                  aws.String("app"),
 		RequiresCompatibilities: aws.StringSlice([]string{"EC2"}),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 		}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -91,7 +91,7 @@ func TestRegisterTaskDefinition_EchoesRuntimePlatform(t *testing.T) {
 			OperatingSystemFamily: aws.String("LINUX"),
 		},
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 		}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -113,7 +113,7 @@ func TestRegisterTaskDefinition_RuntimePlatformOmittedWhenUnset(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 		}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -253,7 +253,7 @@ func TestRegisterTaskDefinition_EchoesRuntimeFields(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			User:                   aws.String("1000:1000"),
 			ReadonlyRootFilesystem: aws.Bool(true),
 			Privileged:             aws.Bool(false),
@@ -310,7 +310,7 @@ func TestRegisterTaskDefinition_RuntimeFieldsOmittedWhenUnset(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 		}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -347,7 +347,7 @@ func TestRegisterTaskDefinition_EchoesEmptyCollections(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			Environment:     []*ecs.KeyValuePair{},
 			MountPoints:     []*ecs.MountPoint{},
 			VolumesFrom:     []*ecs.VolumeFrom{},
@@ -377,15 +377,17 @@ func TestRegisterTaskDefinition_EchoesEmptyCollections(t *testing.T) {
 	assert.False(t, aws.BoolValue(c.LinuxParameters.InitProcessEnabled))
 }
 
-// A container that supplied none of these fields must still read back with
-// them absent, so an existing revision registered before this change does not
-// gain fields and churn.
-func TestRegisterTaskDefinition_OmitsUnsuppliedCollections(t *testing.T) {
+// A container that supplied none of these fields reads back with AWS's
+// defaults: cpu 0, empty mountPoints/volumesFrom/systemControls, and on each
+// port mapping protocol tcp and, under awsvpc, hostPort equal to containerPort.
+func TestRegisterTaskDefinition_FillsAWSDefaults(t *testing.T) {
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
-		Family: aws.String("app"),
+		Family:      aws.String("app"),
+		NetworkMode: aws.String("awsvpc"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
+			PortMappings: []*ecs.PortMapping{{ContainerPort: aws.Int64(80)}},
 		}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -394,13 +396,38 @@ func TestRegisterTaskDefinition_OmitsUnsuppliedCollections(t *testing.T) {
 		TaskDefinition: aws.String("app"),
 	}, testAccountID)
 	require.NoError(t, err)
+	assert.Equal(t, []*ecs.Volume{}, d.TaskDefinition.Volumes)
+	assert.Equal(t, []*ecs.TaskDefinitionPlacementConstraint{}, d.TaskDefinition.PlacementConstraints)
 	c := d.TaskDefinition.ContainerDefinitions[0]
 
 	assert.Nil(t, c.Environment)
-	assert.Nil(t, c.MountPoints)
-	assert.Nil(t, c.VolumesFrom)
-	assert.Nil(t, c.SystemControls)
+	require.NotNil(t, c.Cpu)
+	assert.Equal(t, int64(0), aws.Int64Value(c.Cpu))
+	assert.Equal(t, []*ecs.MountPoint{}, c.MountPoints)
+	assert.Equal(t, []*ecs.VolumeFrom{}, c.VolumesFrom)
+	assert.Equal(t, []*ecs.SystemControl{}, c.SystemControls)
 	assert.Nil(t, c.LinuxParameters)
+	require.Len(t, c.PortMappings, 1)
+	assert.Equal(t, "tcp", aws.StringValue(c.PortMappings[0].Protocol))
+	assert.Equal(t, int64(80), aws.Int64Value(c.PortMappings[0].HostPort))
+}
+
+// Outside awsvpc an omitted hostPort stays omitted, and a sent protocol is
+// echoed rather than defaulted.
+func TestRegisterTaskDefinition_BridgeLeavesHostPortUnset(t *testing.T) {
+	svc, _ := newTestService(t)
+	out, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family:      aws.String("app"),
+		NetworkMode: aws.String("bridge"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
+			PortMappings: []*ecs.PortMapping{{ContainerPort: aws.Int64(53), Protocol: aws.String("udp")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	pm := out.TaskDefinition.ContainerDefinitions[0].PortMappings[0]
+	assert.Nil(t, pm.HostPort)
+	assert.Equal(t, "udp", aws.StringValue(pm.Protocol))
 }
 
 func TestRegisterTaskDefinition_AcceptsEmptyRuntimeFields(t *testing.T) {
@@ -408,7 +435,7 @@ func TestRegisterTaskDefinition_AcceptsEmptyRuntimeFields(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			MountPoints:    []*ecs.MountPoint{},
 			VolumesFrom:    []*ecs.VolumeFrom{},
 			SystemControls: []*ecs.SystemControl{},
@@ -428,7 +455,7 @@ func TestRegisterTaskDefinition_RejectsMountPoints(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			MountPoints: []*ecs.MountPoint{{
 				SourceVolume: aws.String("data"), ContainerPath: aws.String("/data"),
 			}},
@@ -449,7 +476,7 @@ func TestRegisterTaskDefinition_RejectsVolumesFrom(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			VolumesFrom: []*ecs.VolumeFrom{{SourceContainer: aws.String("other")}},
 		}},
 	}, testAccountID)
@@ -467,7 +494,7 @@ func TestRegisterTaskDefinition_RejectsLinuxParametersDevices(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			LinuxParameters: &ecs.LinuxParameters{
 				Devices: []*ecs.Device{{HostPath: aws.String("/dev/fuse")}},
 			},
@@ -487,7 +514,7 @@ func TestRegisterTaskDefinition_RejectsInitProcessEnabled(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			LinuxParameters: &ecs.LinuxParameters{InitProcessEnabled: aws.Bool(true)},
 		}},
 	}, testAccountID)
@@ -506,7 +533,7 @@ func TestRegisterTaskDefinition_RejectsSharedMemoryAndTmpfs(t *testing.T) {
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("shm"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			LinuxParameters: &ecs.LinuxParameters{SharedMemorySize: aws.Int64(64)},
 		}},
 	}, testAccountID)
@@ -518,7 +545,7 @@ func TestRegisterTaskDefinition_RejectsSharedMemoryAndTmpfs(t *testing.T) {
 	_, err = svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("tmpfs"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			LinuxParameters: &ecs.LinuxParameters{
 				Tmpfs: []*ecs.Tmpfs{{ContainerPath: aws.String("/tmp"), Size: aws.Int64(64)}},
 			},
@@ -540,7 +567,7 @@ func TestRunTask_AssignCarriesRuntimeFields(t *testing.T) {
 	_, err = svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
 		Family: aws.String("app"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
-			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true), Memory: aws.Int64(256),
 			User:                   aws.String("1000"),
 			ReadonlyRootFilesystem: aws.Bool(true),
 			Privileged:             aws.Bool(true),
@@ -580,4 +607,43 @@ func TestRunTask_AssignCarriesRuntimeFields(t *testing.T) {
 	require.Len(t, ac.SystemControls, 1)
 	assert.Equal(t, "net.core.somaxconn", ac.SystemControls[0].Namespace)
 	assert.Equal(t, []string{"SYS_PTRACE"}, ac.CapAdd)
+}
+
+// AWS rejects a container with no image before checking its memory, and
+// without task-level memory requires memory or memoryReservation per container.
+func TestRegisterTaskDefinition_RequiresImageAndMemory(t *testing.T) {
+	tests := []struct {
+		name       string
+		taskMemory *string
+		container  *ecs.ContainerDefinition
+		wantErr    string
+	}{
+		{"no image or memory", nil, &ecs.ContainerDefinition{Name: aws.String("web")},
+			"Container.image should not be null or empty."},
+		{"empty image", aws.String("512"), &ecs.ContainerDefinition{Name: aws.String("web"), Image: aws.String("")},
+			"Container.image should not be null or empty."},
+		{"no memory", nil, &ecs.ContainerDefinition{Name: aws.String("web"), Image: aws.String("registry/web:1")},
+			"Invalid setting for container 'web'. At least one of 'memory' or 'memoryReservation' must be specified."},
+		{"memoryReservation only", nil, &ecs.ContainerDefinition{
+			Name: aws.String("web"), Image: aws.String("registry/web:1"), MemoryReservation: aws.Int64(128)}, ""},
+		{"task-level memory", aws.String("512"), &ecs.ContainerDefinition{
+			Name: aws.String("web"), Image: aws.String("registry/web:1")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := newTestService(t)
+			_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+				Family: aws.String("app"), Memory: tc.taskMemory,
+				ContainerDefinitions: []*ecs.ContainerDefinition{tc.container},
+			}, testAccountID)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			code, msg, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorECSClientException, code)
+			assert.Equal(t, tc.wantErr, msg)
+		})
+	}
 }

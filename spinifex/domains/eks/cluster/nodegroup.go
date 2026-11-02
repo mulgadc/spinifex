@@ -33,6 +33,14 @@ import (
 // when the caller omits instanceTypes.
 const defaultNodegroupInstanceType = "t3.medium"
 
+// workerMetadataHopLimit is the IMDS hop limit managed nodegroups launch workers
+// with, one more than the EC2 default so pods behind the node reach IMDS.
+const workerMetadataHopLimit = int64(2)
+
+// launchTemplateDefaultVersion is the alias EC2 resolves when a template
+// reference names no version.
+const launchTemplateDefaultVersion = "$Default"
+
 // defaultNodegroupDiskSizeGiB mirrors the AWS EKS managed-nodegroup default when
 // the caller omits diskSize. Without it the record stores 0, the launch skips
 // its block device mapping entirely, and the node silently inherits the AMI's
@@ -85,6 +93,23 @@ const ngCASMaxRetries = 16
 // absent. Callers translate to the AWS shape (ResourceNotFoundException) at the
 // service boundary.
 var ErrNodegroupNotFound = errors.New("eks: nodegroup not found")
+
+// nodegroupNotFound is the AWS answer for a missing node group on an existing
+// cluster; a missing cluster keeps the code's default cluster message.
+func nodegroupNotFound(ng string) error {
+	return awserrors.Errorf(awserrors.ErrorEKSResourceNotFound, "No node group found for name: %s.", ng)
+}
+
+// requireCluster returns ResourceNotFoundException when the cluster is absent.
+func requireCluster(ctx context.Context, kv jetstream.KeyValue, cluster string) error {
+	if _, err := GetClusterMeta(ctx, kv, cluster); err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			return errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return err
+	}
+	return nil
+}
 
 // PutNodegroupRecord writes the record unconditionally.
 func PutNodegroupRecord(ctx context.Context, kv jetstream.KeyValue, rec *NodegroupRecord) error {
@@ -406,7 +431,7 @@ func gpuFieldsForInstanceTypes(instanceTypes []string) (gpuEnabled bool, gpuVend
 // nodegroup's cluster. Any failure only logs: a GPU nodegroup must still come
 // up even if add-on staging fails.
 func (s *EKSServiceImpl) stageGPUDeviceAddon(ctx context.Context, accountID, cluster string) {
-	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
+	acctKV, err := s.acctKVForNewDependant(ctx, accountID, cluster)
 	if err == nil {
 		err = s.addons().EnsureGPUDevicePlugin(ctx, acctKV, accountID, cluster)
 	}
@@ -638,6 +663,11 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 			"gatewayBaseURL", s.deps.GatewayBaseURL, "registryHost", registryHost)
 	}
 
+	var registryHosts []string
+	if s.deps.RegistryHosts != nil {
+		registryHosts = s.deps.RegistryHosts()
+	}
+
 	userData := buildAgentUserData(agentUserDataInput{
 		ClusterName:   rec.ClusterName,
 		NodegroupName: rec.Name,
@@ -650,6 +680,7 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 		AccountID:     accountID,
 		RegistryHost:  registryHost,
 		GatewayIP:     gatewayIP,
+		RegistryHosts: registryHosts,
 		GPUEnabled:    rec.GPUEnabled,
 		GPUVendor:     rec.GPUVendor,
 	})
@@ -675,6 +706,12 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 			Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(rec.DiskSize)},
 		}}
 	}
+
+	metadataOptions, err := s.workerMetadataOptions(ctx, rec, accountID)
+	if err != nil {
+		return "", err
+	}
+	runInput.MetadataOptions = metadataOptions
 
 	// Attach the node role's instance profile so IMDS serves the role to the ECR
 	// credential provider; without it worker pulls from the internal ECR get 401.
@@ -704,6 +741,62 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 		}
 	}
 	return "", errors.New("run worker returned no instance id")
+}
+
+// workerMetadataOptions chooses a worker's IMDS options: fields a launch template
+// version sets win as given, and every unset field gets the managed nodegroup
+// default (IMDSv2 required, hop limit 2) so pods behind the node can reach IMDS.
+func (s *EKSServiceImpl) workerMetadataOptions(ctx context.Context, rec *NodegroupRecord, accountID string) (*ec2.InstanceMetadataOptionsRequest, error) {
+	managedDefault := &ec2.InstanceMetadataOptionsRequest{
+		HttpTokens:              aws.String(ec2.HttpTokensStateRequired),
+		HttpPutResponseHopLimit: aws.Int64(workerMetadataHopLimit),
+	}
+	if rec.LaunchTemplate == nil {
+		return managedDefault, nil
+	}
+	if s.deps.LaunchTemplates == nil {
+		slog.ErrorContext(ctx, "EKS nodegroup: launch template named but no launch template service wired",
+			"nodegroup", rec.Name, "launchTemplate", rec.LaunchTemplate.ID+rec.LaunchTemplate.Name)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	version := rec.LaunchTemplate.Version
+	if version == "" {
+		version = launchTemplateDefaultVersion
+	}
+	in := &ec2.DescribeLaunchTemplateVersionsInput{Versions: aws.StringSlice([]string{version})}
+	if rec.LaunchTemplate.ID != "" {
+		in.LaunchTemplateId = aws.String(rec.LaunchTemplate.ID)
+	} else {
+		in.LaunchTemplateName = aws.String(rec.LaunchTemplate.Name)
+	}
+	out, err := s.deps.LaunchTemplates.DescribeLaunchTemplateVersions(ctx, in, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if len(out.LaunchTemplateVersions) == 0 || out.LaunchTemplateVersions[0].LaunchTemplateData == nil {
+		return nil, errors.New(awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound)
+	}
+	opts := out.LaunchTemplateVersions[0].LaunchTemplateData.MetadataOptions
+	if opts == nil {
+		return managedDefault, nil
+	}
+	req := &ec2.InstanceMetadataOptionsRequest{
+		HttpTokens:              opts.HttpTokens,
+		HttpPutResponseHopLimit: opts.HttpPutResponseHopLimit,
+		HttpEndpoint:            opts.HttpEndpoint,
+		HttpProtocolIpv6:        opts.HttpProtocolIpv6,
+		InstanceMetadataTags:    opts.InstanceMetadataTags,
+	}
+	// EKS node AMIs launch with IMDSv2 required and hop limit 2 when a template
+	// leaves them unset, so only fields the template sets override the default.
+	if req.HttpTokens == nil {
+		req.HttpTokens = managedDefault.HttpTokens
+	}
+	if req.HttpPutResponseHopLimit == nil {
+		req.HttpPutResponseHopLimit = managedDefault.HttpPutResponseHopLimit
+	}
+	return req, nil
 }
 
 // selectWorkerHost picks the host for the next worker: the eligible host (one
@@ -841,10 +934,13 @@ func (s *EKSServiceImpl) describeNodegroup(ctx context.Context, acctKV jetstream
 	if cluster == "" || ng == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+	if err := requireCluster(ctx, acctKV, cluster); err != nil {
+		return nil, err
+	}
 	rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
 	if err != nil {
 		if errors.Is(err, ErrNodegroupNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, nodegroupNotFound(ng)
 		}
 		return nil, err
 	}
@@ -914,7 +1010,7 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstrea
 		rec, rev, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
 		if err != nil {
 			if errors.Is(err, ErrNodegroupNotFound) {
-				return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+				return nil, nodegroupNotFound(ng)
 			}
 			return nil, err
 		}
@@ -1124,10 +1220,13 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.K
 	if cluster == "" || ng == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+	if err := requireCluster(ctx, acctKV, cluster); err != nil {
+		return nil, err
+	}
 	rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
 	if err != nil {
 		if errors.Is(err, ErrNodegroupNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, nodegroupNotFound(ng)
 		}
 		return nil, err
 	}
@@ -1139,6 +1238,12 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.K
 	}
 	if err := DeleteNodegroupRecord(ctx, acctKV, cluster, ng); err != nil {
 		return nil, err
+	}
+	// A cluster delete waits on its node groups; the last one going lets it run.
+	if meta, err := GetClusterMeta(ctx, acctKV, cluster); err == nil && meta.Status == ClusterStatusDeleting {
+		if rest, err := ListNodegroupRecords(ctx, acctKV, cluster); err == nil && len(rest) == 0 {
+			s.startTeardown(accountID, cluster)
+		}
 	}
 
 	rec.Status = eks.NodegroupStatusDeleting

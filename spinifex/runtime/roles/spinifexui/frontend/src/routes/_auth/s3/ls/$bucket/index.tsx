@@ -1,24 +1,27 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { BackLink } from "@/components/back-link"
-import { ErrorBanner } from "@/components/error-banner"
-import { PageHeading } from "@/components/page-heading"
-import { useUploadObject } from "@/mutations/s3"
+import {
+  CLOSED_PANEL,
+  type PanelSearch,
+  panelSearchFields,
+} from "@/lib/panel-search"
 import { s3BucketObjectsQueryOptions } from "@/queries/s3"
-import { BucketObjectList } from "@/routes/_auth/s3/-components/bucket-object-list"
-import { UploadButton } from "@/routes/_auth/s3/-components/upload-button"
+import { ObjectBrowser } from "@/routes/_auth/s3/-components/object-browser"
 
 export const Route = createFileRoute("/_auth/s3/ls/$bucket/")({
+  validateSearch: z.object(panelSearchFields),
+  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
   loader: async ({ context, params }) => {
     await context.queryClient.query({
-      ...s3BucketObjectsQueryOptions(params.bucket),
+      ...s3BucketObjectsQueryOptions(params.bucket, ""),
       staleTime: "static",
     })
   },
   head: ({ params }) => ({
     meta: [
       {
-        title: `${params.bucket} | S3 | Mulga`,
+        title: `${params.bucket} | Object Storage | Mulga`,
       },
     ],
   }),
@@ -26,29 +29,25 @@ export const Route = createFileRoute("/_auth/s3/ls/$bucket/")({
 })
 
 function BucketObjects() {
-  const { bucket: bucketName } = Route.useParams()
-  const uploadMutation = useUploadObject()
+  const { bucket } = Route.useParams()
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+
+  // Opening or closing a panel adds a history entry, so Back closes it.
+  function onSearchChange(next: Partial<PanelSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next),
+    })
+  }
 
   return (
-    <>
-      <BackLink to="/s3/ls">Back to buckets</BackLink>
-      <PageHeading
-        actions={
-          <UploadButton
-            bucket={bucketName}
-            isPending={uploadMutation.isPending}
-            onUpload={uploadMutation.mutateAsync}
-          />
-        }
-        title={bucketName}
-      />
-      {uploadMutation.error && (
-        <ErrorBanner
-          error={uploadMutation.error}
-          msg="Failed to upload object"
-        />
-      )}
-      <BucketObjectList bucket={bucketName} prefix="" />
-    </>
+    <ObjectBrowser
+      bucket={bucket}
+      folder=""
+      key={bucket}
+      onSearchChange={onSearchChange}
+      search={search}
+    />
   )
 }

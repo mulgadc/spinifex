@@ -1,47 +1,183 @@
-import { useSuspenseQuery } from "@tanstack/react-query"
+import type { GuardrailSummary } from "@aws-sdk/client-bedrock"
 import { Link } from "@tanstack/react-router"
+import { Plus } from "lucide-react"
+import { type ReactNode, useState } from "react"
 
-import { ListCard } from "@/components/list-card"
+import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
+import {
+  type DataColumn,
+  DataTable,
+  type SortState,
+} from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
+import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
-import { byName } from "@/lib/utils"
-import { guardrailsQueryOptions } from "@/queries/bedrock"
+import { useRowSelection } from "@/hooks/use-row-selection"
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import { formatDateTime } from "@/lib/utils"
+import { useDeleteGuardrail } from "@/mutations/bedrock"
+import { EMPTY_GUARDRAIL_FORM_DEFAULTS } from "@/types/bedrock"
 
-export function GuardrailsPage() {
-  const { data } = useSuspenseQuery(guardrailsQueryOptions)
+import { GuardrailDetails } from "./guardrail-details"
+import { GuardrailFormPage } from "./guardrail-form-page"
 
-  const guardrails = (data.guardrails ?? []).toSorted(byName((g) => g.name))
+const COLUMNS: DataColumn<GuardrailSummary>[] = [
+  {
+    id: "name",
+    header: "Name",
+    sortValue: (guardrail) => guardrail.name,
+    cell: (guardrail) => (
+      <Link
+        className="group block max-w-72 min-w-0 rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        from="/bedrock/list-guardrails/"
+        search={(previous) => ({
+          ...previous,
+          ...CLOSED_PANEL,
+          selected: guardrail.id ?? "",
+        })}
+        to="."
+      >
+        <span className="block truncate font-medium text-primary group-hover:underline">
+          {guardrail.name ?? guardrail.id}
+        </span>
+      </Link>
+    ),
+  },
+  {
+    id: "status",
+    header: "Status",
+    sortValue: (guardrail) => guardrail.status,
+    cell: (guardrail) => <StateBadge state={guardrail.status} />,
+  },
+  {
+    id: "id",
+    header: "Guardrail ID",
+    sortValue: (guardrail) => guardrail.id,
+    hideBelow: "md",
+    cell: (guardrail) => (
+      <span className="font-mono text-xs">{guardrail.id}</span>
+    ),
+  },
+  {
+    id: "updated",
+    header: "Updated",
+    sortValue: (guardrail) => guardrail.updatedAt?.getTime(),
+    hideBelow: "lg",
+    cell: (guardrail) => formatDateTime(guardrail.updatedAt),
+  },
+]
+
+interface GuardrailsPageProps {
+  guardrails: readonly GuardrailSummary[]
+  search: PanelSearch
+  onSearchChange: (search: Partial<PanelSearch>) => void
+}
+
+export function GuardrailsPage({
+  guardrails,
+  search,
+  onSearchChange,
+}: GuardrailsPageProps) {
+  const [sort, setSort] = useState<SortState>({ column: "name", desc: false })
+
+  const open = guardrails.find(
+    (guardrail) => search.selected !== "" && guardrail.id === search.selected,
+  )
+
+  function closePanel() {
+    onSearchChange(CLOSED_PANEL)
+  }
+
+  const selection = useRowSelection(
+    guardrails.map((guardrail) => guardrail.id ?? ""),
+    open !== undefined,
+    closePanel,
+  )
+
+  const deleteGuardrail = useDeleteGuardrail()
+
+  const names = new Map(
+    guardrails.map((guardrail) => [guardrail.id, guardrail.name]),
+  )
+
+  let panel: ReactNode = null
+
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Create guardrail">
+        <GuardrailFormPage
+          defaultValues={EMPTY_GUARDRAIL_FORM_DEFAULTS}
+          mode="create"
+          onClose={(guardrailId) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: guardrailId ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.id) {
+    panel = (
+      <GuardrailDetails
+        guardrail={open}
+        key={open.id}
+        onClose={closePanel}
+        onTabChange={(tab) => {
+          onSearchChange({ tab })
+        }}
+        tab={search.tab}
+      />
+    )
+  }
 
   return (
-    <>
+    <ResourceView panel={panel}>
       <PageHeading
         actions={
           <Link
-            className={buttonVariants({ size: "sm" })}
-            to="/bedrock/list-guardrails/create"
+            className={buttonVariants()}
+            from="/bedrock/list-guardrails/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
           >
+            <Plus data-icon="inline-start" />
             Create guardrail
           </Link>
         }
         title="Guardrails"
       />
-
-      <ResourceList
-        empty="No guardrails found."
-        getKey={(guardrail) => guardrail.id}
-        items={guardrails}
-        renderItem={(guardrail, guardrailId) => (
-          <ListCard
-            badge={<StateBadge state={guardrail.status} />}
-            params={{ guardrailId }}
-            subtitle={guardrailId}
-            title={guardrail.name ?? guardrailId}
-            to="/bedrock/list-guardrails/$guardrailId"
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            deleteOne={deleteGuardrail.mutateAsync}
+            description="This tears them down with all of their versions. It cannot be undone."
+            ids={selection.ids}
+            label={(id) => `${names.get(id) ?? id} (${id})`}
+            noun={["guardrail", "guardrails"]}
+            onDeleted={selection.drop}
           />
-        )}
+        </SelectionBar>
+      )}
+      <DataTable
+        activeId={open?.id}
+        caption="Guardrails"
+        columns={COLUMNS}
+        empty="No guardrails found."
+        getRowId={(guardrail) => guardrail.id ?? ""}
+        onRowClick={(selected) => {
+          onSearchChange({ ...CLOSED_PANEL, selected })
+        }}
+        onSelectedChange={selection.onSelectedChange}
+        onSortChange={setSort}
+        rows={guardrails}
+        selected={selection.selected}
+        sort={sort}
       />
-    </>
+    </ResourceView>
   )
 }

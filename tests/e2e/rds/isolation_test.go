@@ -49,7 +49,7 @@ func TestDBVMIsolation(t *testing.T) {
 
 	harness.Phase(t, "Creating DB instance %q in a second tenant", theirs)
 	other := isolationSecondTenant(t, f, suffix)
-	_, err := other.RDS.CreateDBInstance(validCreateInput(theirs)) //nolint:staticcheck // e2e:allow-create — the second tenant's own instance
+	_, err := other.RDS.CreateDBInstance(validCreateInput(theirs)) //nolint:staticcheck // The second tenant's own instance.
 	require.NoError(t, err, "create-db-instance %s in the second tenant", theirs)
 	t.Cleanup(func() { deleteInstanceAs(t, other, theirs) })
 

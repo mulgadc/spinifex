@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"io"
 	"net"
 	"net/http"
@@ -22,7 +23,6 @@ import (
 	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -79,7 +79,7 @@ func runAccountCreateRemote(cmd *cobra.Command, name string) {
 	}
 
 	out, err := createAccountRemote(ctx, target,
-		gateway.CreateAccountRequest{Name: name, ClientToken: clientToken, Source: source})
+		operatorv1.CreateAccountRequest{Name: name, ClientToken: clientToken, Source: source})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		var adminErr *adminError
@@ -151,8 +151,8 @@ func (e *adminError) Error() string {
 // createAccountRemote signs and sends POST /admin/CreateAccount. Credentials
 // come from the standard AWS chain, so this never reads the cluster master
 // key — it is the same request a self-service signup form makes.
-func createAccountRemote(ctx context.Context, target adminTarget, req gateway.CreateAccountRequest) (*gateway.CreateAccountResponse, error) {
-	var out gateway.CreateAccountResponse
+func createAccountRemote(ctx context.Context, target adminTarget, req operatorv1.CreateAccountRequest) (*operatorv1.CreateAccountResponse, error) {
+	var out operatorv1.CreateAccountResponse
 	if err := callAdmin(ctx, target, "CreateAccount", req, &out); err != nil {
 		return nil, err
 	}

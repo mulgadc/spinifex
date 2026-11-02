@@ -16,6 +16,8 @@ import (
 // agent to reach anything other than PENDING.
 func seedTasks(t *testing.T, svc *ecsdomain.Service, cluster string, recs ...*ecsdomain.TaskRecord) {
 	t.Helper()
+	_, err := svc.CreateCluster(t.Context(), &ecs.CreateClusterInput{ClusterName: aws.String(cluster)}, ecsdomain.TestAccountID)
+	require.NoError(t, err)
 	kv, err := svc.Bucket(t.Context(), ecsdomain.TestAccountID)
 	require.NoError(t, err)
 	for _, r := range recs {

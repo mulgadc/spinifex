@@ -789,6 +789,7 @@ var vpcdStartCmd = &cobra.Command{
 			ExternalInterface:       nodeConfig.VPCD.ExternalInterface,
 			BridgeMode:              nodeConfig.VPCD.BridgeMode,
 			AZ:                      nodeConfig.AZ,
+			Region:                  nodeConfig.Region,
 			NorthstarBaseDomain:     dns.ResolveBaseDomain(&nodeConfig),
 			NorthstarInternalDomain: dns.ResolveInternalDomain(&nodeConfig),
 			ServicesDomain:          clusterConfig.AWS.ServicesDomain,
@@ -914,6 +915,7 @@ func runNorthstarStart(options northstarStartOptions, deps northstarStartDepende
 	svc, err := deps.newService(&northstar.Config{
 		ConfigPath: configPath,
 		BasePath:   baseDir,
+		NodeName:   clusterConfig.Node,
 		NatsHost:   nodeConfig.NATS.Host,
 		NatsToken:  nodeConfig.NATS.ACL.Token,
 		NatsCACert: nodeConfig.NATS.CACert,

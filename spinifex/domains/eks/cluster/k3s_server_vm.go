@@ -566,6 +566,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_KONNECTIVITY_HOST="+konnHost,
 		"EKS_KONNECTIVITY_SANS="+strings.Join(konnSANs, ","),
 		"EKS_KONNECTIVITY_SERVER_COUNT="+strconv.Itoa(konnCount),
+		"EKS_WEBHOOK_READY_ADDR=0.0.0.0:"+strconv.FormatInt(webhookReadyPort, 10),
 	)
 	// A replacement CP prunes the terminated member it supersedes from etcd once
 	// it has joined (k3s-first-boot deletes the dead Node → embedded-etcd drops
@@ -597,11 +598,9 @@ func buildK3sUserData(in K3sServerInput) string {
 	// out and hold a tunnel to every apiserver replica, so apiserver→pod/kubelet
 	// egress is HA-correct (no single-VIP fan-out 502). EKS-parity datapath.
 	configLines = append(configLines, "egress-selector-mode: disabled")
-	configLines = append(configLines,
-		// Prevent user workloads on the CP (EKS parity). k3s packaged addons tolerate CriticalAddonsOnly.
-		"node-taint:",
-		"  - CriticalAddonsOnly=true:NoExecute",
-	)
+	// No agent: a control-plane host never registers as a Node (EKS parity), so
+	// no pod runs there and none needs a taint to stay away.
+	configLines = append(configLines, "disable-agent: true")
 	configLines = append(configLines,
 		"disable:",
 		"  - traefik",

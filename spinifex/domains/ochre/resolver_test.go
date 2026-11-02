@@ -296,6 +296,7 @@ func TestDynamicEndpointResolver_ColdStartWaitDefaultsToNoWait(t *testing.T) {
 // With a wait configured, a launch that lands inside the budget is served on
 // the original call rather than a retry.
 func TestDynamicEndpointResolver_ColdStartWaitResolvesWhenReady(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
 	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(5*time.Second))
 
@@ -314,6 +315,7 @@ func TestDynamicEndpointResolver_ColdStartWaitResolvesWhenReady(t *testing.T) {
 // A launch slower than the budget still gets the retryable answer, and the
 // budget is what bounds the hold.
 func TestDynamicEndpointResolver_ColdStartWaitGivesUpAtTheBudget(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
 	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(600*time.Millisecond))
 
@@ -329,6 +331,7 @@ func TestDynamicEndpointResolver_ColdStartWaitGivesUpAtTheBudget(t *testing.T) {
 // A client that disconnects mid-wait releases the goroutine without turning
 // its own departure into a server error; the launch it triggered carries on.
 func TestDynamicEndpointResolver_ColdStartWaitStopsOnClientCancel(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
 	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute))
 
@@ -346,6 +349,7 @@ func TestDynamicEndpointResolver_ColdStartWaitStopsOnClientCancel(t *testing.T) 
 
 // A burst of cold callers shares one wait, not one describe loop each.
 func TestDynamicEndpointResolver_ColdStartWaitIsSharedAcrossCallers(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
 	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(3*time.Second))
 

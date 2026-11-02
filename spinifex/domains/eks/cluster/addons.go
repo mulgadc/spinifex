@@ -95,7 +95,7 @@ func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddon
 	} else if !spec.SupportsVersion(version) {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
+	acctKV, err := s.acctKVForNewDependant(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err
 	}

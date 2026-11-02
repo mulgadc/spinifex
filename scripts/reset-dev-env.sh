@@ -50,6 +50,8 @@ CONFIG_FILE="$ETC_DIR/spinifex.toml"
 # --- Script context ---
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/distro.sh
+. "$SCRIPT_DIR/lib/distro.sh"
 
 # Resolve invoking user's HOME. $HOME is unsafe under sudo (resolves to /root).
 INVOKING_USER="${SUDO_USER:-$(id -un)}"
@@ -359,17 +361,29 @@ fi
 # --- Shutdown services ---
 echo "==> Stopping services"
 sudo systemctl stop spinifex.target 2>/dev/null || true
+# spinifex-hostnet starts with OVS, which is started below to delete bridges; it
+# would rebuild the old veth pairs. setup-ovn.sh enables it again.
+sudo systemctl disable --now spinifex-hostnet.service 2>/dev/null || true
 sudo systemctl reset-failed 'spinifex-*' 2>/dev/null || true
-sudo pkill -x qemu-system-x86_64 2>/dev/null || true
-sudo pkill -x qemu-system-aarch64 2>/dev/null || true
+# comm truncates to 15 characters, so match qemu-system-* by prefix; EL-family
+# hosts run qemu-kvm. Scoped to the user the daemon runs guests as, as in
+# node-reset.sh, so libvirt guests on the same host are left alone.
+QEMU_PGREP=('^(qemu-system|qemu-kvm$)')
+for qemu_user in spinifex-daemon spinifex "$INVOKING_USER"; do
+    if id -u "$qemu_user" >/dev/null 2>&1; then
+        QEMU_PGREP=(-u "$qemu_user" "${QEMU_PGREP[@]}")
+        break
+    fi
+done
+sudo pkill "${QEMU_PGREP[@]}" 2>/dev/null || true
 
 # Wait for QEMU to fully exit before tearing down viperblock state.
 timeout=30
 elapsed=0
-while pgrep -x 'qemu-system-x86_64|qemu-system-aarch64' > /dev/null 2>&1; do
+while pgrep "${QEMU_PGREP[@]}" > /dev/null 2>&1; do
     if [ "$elapsed" -ge "$timeout" ]; then
         echo "❌ QEMU still running after ${timeout}s:"
-        pgrep -af 'qemu-system-' || true
+        pgrep -a "${QEMU_PGREP[@]}" || true
         echo "   Kill them manually and re-run this script."
         exit 1
     fi
@@ -380,21 +394,26 @@ done
 # --- Clean OVS / OVN ---
 echo "==> Cleaning OVS bridges"
 if command -v ovs-vsctl >/dev/null 2>&1; then
-    sudo systemctl start openvswitch-switch 2>/dev/null || true
+    OVS_UNIT=$(distro_ovs_unit) || exit 1
+    sudo systemctl start "$OVS_UNIT" 2>/dev/null || true
     sleep 1
     for br in $(sudo ovs-vsctl list-br 2>/dev/null); do
         echo "  Deleting bridge: $br"
         sudo ovs-vsctl --if-exists del-br "$br"
     done
     sudo ovs-vsctl --if-exists clear Open_vSwitch . external_ids 2>/dev/null || true
-    sudo systemctl stop openvswitch-switch 2>/dev/null || true
+    sudo systemctl stop "$OVS_UNIT" 2>/dev/null || true
 fi
 
 # Delete OVN DB files outright — setup-ovn.sh will restart ovn-central with
 # fresh empty DBs. Eliminates stale SB state (chassis entries, port bindings)
 # that accumulates across resets and triggers ovn-controller commit loops.
 echo "==> Removing OVN database files"
-sudo systemctl stop ovn-central 2>/dev/null || true
+for unit in ovn-central.service ovn-northd.service; do
+    if distro_unit_exists "$unit"; then
+        sudo systemctl stop "$unit" 2>/dev/null || true
+    fi
+done
 sudo systemctl stop ovn-controller 2>/dev/null || true
 if [ -d /var/lib/ovn ]; then
     sudo rm -f /var/lib/ovn/ovnnb_db.db /var/lib/ovn/ovnsb_db.db
@@ -516,10 +535,16 @@ sleep 5
 echo "==> Building and installing microVM artifacts"
 cd "$PROJECT_ROOT" && make build-lb-agent install-microvm
 
+# By absolute path: sudo's secure_path leaves out /usr/local/bin on some hosts,
+# Oracle Linux among them, and setup.sh installs the AWS CLI there.
+AWS_BIN=$(command -v aws || true)
+[ -z "$AWS_BIN" ] && [ -x /usr/local/bin/aws ] && AWS_BIN=/usr/local/bin/aws
+[ -n "$AWS_BIN" ] || { echo "ERROR: aws CLI not found on PATH or at /usr/local/bin/aws" >&2; exit 1; }
+
 # --- Authorize SSH ingress on the default security group ---
 # Default SG denies all inbound, so smoke-test.sh's SSH probe times out.
 # Open port 22 on the default VPC's default SG before the smoke test runs.
-aws_as_user() { sudo -u "$INVOKING_USER" env HOME="$INVOKING_HOME" AWS_PROFILE=spinifex aws "$@"; }
+aws_as_user() { sudo -u "$INVOKING_USER" env HOME="$INVOKING_HOME" AWS_PROFILE=spinifex "$AWS_BIN" "$@"; }
 
 echo "==> Waiting for EC2 daemon"
 DAEMON_TIMEOUT=60

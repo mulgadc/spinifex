@@ -290,12 +290,12 @@ func TestBuildNICNetdevs_SingleNIC(t *testing.T) {
 			{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 		},
 	}
-	res := buildNICNetdevs("i-test", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-test", input, vm.MicroVMMachineType(), 0)
 	require.Len(t, res.netdevs, 1)
 	require.Len(t, res.devices, 1)
 	assert.Contains(t, res.netdevs[0].Value, "tap,id=net0,")
-	// microvm machine type → virtio-net-device transport
-	assert.Contains(t, res.devices[0].Value, "virtio-net-device,netdev=net0")
+	// microvm with pcie=on → virtio-net-pci transport
+	assert.Contains(t, res.devices[0].Value, "virtio-net-pci,netdev=net0")
 	assert.Contains(t, res.devices[0].Value, "02:aa:bb:cc:dd:01")
 }
 
@@ -307,7 +307,7 @@ func TestBuildNICNetdevs_TwoNICs(t *testing.T) {
 			{MAC: "02:aa:bb:cc:dd:02", IsDefault: false},
 		},
 	}
-	res := buildNICNetdevs("i-test2", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-test2", input, vm.MicroVMMachineType(), 0)
 	require.Len(t, res.netdevs, 2)
 	require.Len(t, res.devices, 2)
 	assert.Contains(t, res.netdevs[0].Value, "id=net0,")
@@ -318,7 +318,7 @@ func TestBuildNICNetdevs_TwoNICs(t *testing.T) {
 
 func TestBuildNICNetdevs_EmptyNICs(t *testing.T) {
 	input := &elbv2domain.SystemInstanceInput{ENIID: "eni-empty"}
-	res := buildNICNetdevs("i-empty", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-empty", input, vm.MicroVMMachineType(), 0)
 	assert.Empty(t, res.netdevs)
 	assert.Empty(t, res.devices)
 }
@@ -332,7 +332,7 @@ func TestBuildNICNetdevs_UnprovisionedMgmtNIC_Skipped(t *testing.T) {
 			{MAC: ""},
 		},
 	}
-	res := buildNICNetdevs("i-test3", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-test3", input, vm.MicroVMMachineType(), 0)
 	require.Len(t, res.netdevs, 1)
 	require.Len(t, res.devices, 1)
 	assert.Contains(t, res.netdevs[0].Value, "id=net0,")
@@ -348,7 +348,7 @@ func TestBuildNICNetdevs_ProvisionedMgmtNIC_Included(t *testing.T) {
 			{MAC: "02:aa:bb:cc:dd:02"},
 		},
 	}
-	res := buildNICNetdevs("i-test4", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-test4", input, vm.MicroVMMachineType(), 0)
 	require.Len(t, res.netdevs, 2)
 	require.Len(t, res.devices, 2)
 	assert.Contains(t, res.netdevs[0].Value, "id=net0,")
@@ -371,7 +371,7 @@ func TestBuildNICNetdevs_UnprovisionedMgmtNIC_ExtraENIUnaffected(t *testing.T) {
 			{MAC: "02:aa:bb:cc:dd:03"},
 		},
 	}
-	res := buildNICNetdevs("i-test5", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-test5", input, vm.MicroVMMachineType(), 0)
 	require.Len(t, res.netdevs, 2)
 	require.Len(t, res.devices, 2)
 	assert.Contains(t, res.netdevs[0].Value, "id=net0,")
@@ -405,11 +405,11 @@ func TestNicProvisioned_NonMgmtSlotsAlwaysTrue(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// microvmMachineType
+// vm.MicroVMMachineType
 // ---------------------------------------------------------------------------
 
 func TestMicrovmMachineType(t *testing.T) {
-	mt := microvmMachineType()
+	mt := vm.MicroVMMachineType()
 	assert.Contains(t, mt, "microvm,")
 	assert.Contains(t, mt, "isa-serial=on")
 }
@@ -547,7 +547,7 @@ func TestWriteFwCfgBlobs_InvalidNICs_NoDefault(t *testing.T) {
 // buildDirectBootConfig — mmio slot packing
 // ---------------------------------------------------------------------------
 
-func TestBuildDirectBootConfig_MmioSlotsPacked_MgmtSkipped(t *testing.T) {
+func TestBuildDirectBootConfig_PCINICsPacked_MgmtSkipped(t *testing.T) {
 	// NIC[1] (mgmt) unprovisioned (no br-mgmt) must not reserve an mmio slot;
 	// remaining NICs (primary, extra ENI) get packed, contiguous slots.
 	tmpDir := t.TempDir()
@@ -566,13 +566,14 @@ func TestBuildDirectBootConfig_MmioSlotsPacked_MgmtSkipped(t *testing.T) {
 		},
 	}
 
-	cfg, err := d.buildDirectBootConfig("i-mmio-test", input)
+	cfg, err := d.buildDirectBootConfig("i-mmio-test", input, nil)
 	require.NoError(t, err)
 
-	// Only 2 real devices (mgmt skipped) → slots packed at 0 and 1, not 0 and 2.
-	assert.Contains(t, cfg.KernelCmdline, "virtio_mmio.device=0x200@0xfeb00000:5")
-	assert.Contains(t, cfg.KernelCmdline, "virtio_mmio.device=0x200@0xfeb00200:6")
-	assert.NotContains(t, cfg.KernelCmdline, "virtio_mmio.device=0x200@0xfeb00400:7")
+	// Only 2 real devices (mgmt skipped), both PCI and in NIC order.
+	assert.NotContains(t, cfg.KernelCmdline, "virtio_mmio.device=")
+	require.Len(t, cfg.Devices, 2)
+	assert.Contains(t, cfg.Devices[0].Value, "virtio-net-pci,netdev=net0,mac=02:aa:bb:cc:dd:01")
+	assert.Contains(t, cfg.Devices[1].Value, "virtio-net-pci,netdev=net2,mac=02:aa:bb:cc:dd:03")
 
 	require.Len(t, cfg.NetDevs, 2)
 	require.Len(t, cfg.Devices, 2)
@@ -582,7 +583,7 @@ func TestBuildDirectBootConfig_MmioSlotsPacked_MgmtSkipped(t *testing.T) {
 	}
 }
 
-func TestBuildDirectBootConfig_MmioSlotsUnchanged_MgmtProvisioned(t *testing.T) {
+func TestBuildDirectBootConfig_PCINICsUnchanged_MgmtProvisioned(t *testing.T) {
 	// Multi-node host with br-mgmt: all NICs provisioned, slots stay 1:1
 	// with NIC index as before this fix.
 	tmpDir := t.TempDir()
@@ -597,11 +598,13 @@ func TestBuildDirectBootConfig_MmioSlotsUnchanged_MgmtProvisioned(t *testing.T) 
 		},
 	}
 
-	cfg, err := d.buildDirectBootConfig("i-mmio-test2", input)
+	cfg, err := d.buildDirectBootConfig("i-mmio-test2", input, nil)
 	require.NoError(t, err)
 
-	assert.Contains(t, cfg.KernelCmdline, "virtio_mmio.device=0x200@0xfeb00000:5")
-	assert.Contains(t, cfg.KernelCmdline, "virtio_mmio.device=0x200@0xfeb00200:6")
+	assert.NotContains(t, cfg.KernelCmdline, "virtio_mmio.device=")
+	require.Len(t, cfg.Devices, 2)
+	assert.Contains(t, cfg.Devices[0].Value, "virtio-net-pci,netdev=net0,mac=02:aa:bb:cc:dd:01")
+	assert.Contains(t, cfg.Devices[1].Value, "virtio-net-pci,netdev=net1,mac=02:aa:bb:cc:dd:02")
 	require.Len(t, cfg.NetDevs, 2)
 	require.Len(t, cfg.Devices, 2)
 
@@ -920,7 +923,7 @@ func TestAttachExtraENI_DeleteOnTerminationFalseSurvivesTerminate(t *testing.T) 
 	require.NoError(t, f.daemon.attachExtraENI(testAccountID, systeminstance.ExtraENIInput{
 		ENIID:               f.eniID,
 		DeleteOnTermination: aws.Bool(false),
-	}, f.vmInst.ID, 1))
+	}, f.vmInst.ID, 1, ""))
 
 	rec, err := f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
 	require.NoError(t, err)
@@ -944,7 +947,7 @@ func TestAttachExtraENI_NilDeleteOnTerminationStaysDisposable(t *testing.T) {
 
 	require.NoError(t, f.daemon.attachExtraENI(testAccountID, systeminstance.ExtraENIInput{
 		ENIID: f.eniID,
-	}, f.vmInst.ID, 1))
+	}, f.vmInst.ID, 1, ""))
 
 	require.NoError(t, newInstanceCleanerAdapter(f.daemon).DetachAndDeleteENI(f.vmInst))
 

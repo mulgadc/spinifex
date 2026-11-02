@@ -28,6 +28,7 @@ const (
 	SubjectManifestDescribe = "ecr.manifest.describe"
 	SubjectManifestList     = "ecr.manifest.list"
 	SubjectManifestDelete   = "ecr.manifest.delete"
+	SubjectReferrerList     = "ecr.referrer.list"
 
 	SubjectUploadCreate = "ecr.upload.create"
 	SubjectUploadGet    = "ecr.upload.get"
@@ -223,6 +224,17 @@ type ManifestListResponse struct {
 	Digests []string `json:"digests"`
 }
 
+// ReferrerListRequest is the payload for SubjectReferrerList, naming the subject whose referrers to list.
+type ReferrerListRequest struct {
+	Repo    string `json:"repo"`
+	Subject string `json:"subject"`
+}
+
+// ReferrerListResponse is the reply to SubjectReferrerList, holding one descriptor per referrer.
+type ReferrerListResponse struct {
+	Referrers []ReferrerDescriptor `json:"referrers"`
+}
+
 // ManifestDeleteRequest is the payload for SubjectManifestDelete, naming the manifest metadata record to remove.
 type ManifestDeleteRequest struct {
 	Repo   string `json:"repo"`
@@ -313,6 +325,7 @@ type MetaService interface {
 	ManifestDescribe(ctx context.Context, req *ManifestDescribeRequest, accountID string) (*ManifestDescribeResponse, error)
 	ManifestList(ctx context.Context, req *ManifestListRequest, accountID string) (*ManifestListResponse, error)
 	ManifestDelete(ctx context.Context, req *ManifestDeleteRequest, accountID string) (*ManifestDeleteResponse, error)
+	ReferrerList(ctx context.Context, req *ReferrerListRequest, accountID string) (*ReferrerListResponse, error)
 
 	UploadCreate(ctx context.Context, req *UploadCreateRequest, accountID string) (*UploadCreateResponse, error)
 	UploadGet(ctx context.Context, req *UploadGetRequest, accountID string) (*UploadGetResponse, error)

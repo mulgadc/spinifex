@@ -105,7 +105,7 @@ func TestHasProblem(t *testing.T) {
 }
 
 func TestStatusString(t *testing.T) {
-	cases := map[Status]string{OK: "OK", Missing: "Missing", Stale: "Stale", Ungranted: "Ungranted"}
+	cases := map[Status]string{OK: "OK", Missing: "Missing", Stale: "Stale", Ungranted: "Ungranted", Unsupported: "Unsupported", Failed: "Failed"}
 	for status, want := range cases {
 		if got := status.String(); got != want {
 			t.Errorf("Status(%d).String() = %q, want %q", status, got, want)

@@ -193,54 +193,10 @@ func dumpSameSGDiag(t *testing.T, fix *Fixture, tag, keyPath, host string, port 
 func runMultinodeSameSGCrossHostComms(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — Baseline: same default-SG instances communicate across hosts")
 
-	vpcID, defSGID, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
-	instType, arch := needInstanceTypeArch(t, fix)
-	amiID := needAMI(t, fix, arch)
-	keyName, keyPath := needKeyPair(t, fix)
-
-	// Dedicated SG for runner SSH — opens tcp/22 only; ICMP between guests
-	// still depends on the default SG self-ingress, keeping the signal clean.
-	runnerSG := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-runnersg")
-	harness.AuthorizeSSHIngress(t, fix.AWS, runnerSG)
-
-	// Launch instances until two land on distinct nodes. Bounded so a degenerate
-	// single-node placement can't loop forever.
-	type placed struct {
-		id   string
-		node string
-	}
-	var instances []placed
-	var srcIdx, dstIdx = -1, -1
-	for attempt := 0; attempt < 4 && (srcIdx < 0 || dstIdx < 0); attempt++ {
-		id := baselineLaunch(t, fix, amiID, instType, keyName, subnetID, []string{defSGID, runnerSG})
-		node := harness.InstanceHostingNode(t, fix.Cluster, id)
-		nodeName := ""
-		if node != nil {
-			nodeName = node.Name
-		}
-		instances = append(instances, placed{id: id, node: nodeName})
-		// Re-scan for a distinct-node pair.
-		srcIdx, dstIdx = -1, -1
-		for i := range instances {
-			for j := range instances {
-				if i != j && instances[i].node != "" && instances[i].node != instances[j].node {
-					srcIdx, dstIdx = i, j
-				}
-			}
-		}
-	}
-	if srcIdx < 0 || dstIdx < 0 {
-		t.Skipf("could not place two instances on distinct nodes (got %v); scheduler colocated", instances)
-	}
-	src, dst := instances[srcIdx], instances[dstIdx]
-	harness.Detail(t, "src", src.id, "src_node", src.node, "dst", dst.id, "dst_node", dst.node)
-
-	dstPriv := instancePrivateIP(t, fix, dst.id)
-
-	// Shell into the source instance via its dedicated runner-SSH SG.
-	host, port := harness.GuestSSHEndpoint(t, fix.AWS, fix.Cluster, src.id)
-	harness.GuestSSHReady(t, host, port, "ubuntu", keyPath,
-		harness.WithTimeout(3*time.Minute), harness.WithPoll(3*time.Second))
+	// Dedicated SG for runner SSH keeps ICMP dependent on the default SG self-ingress.
+	pair := launchCrossNodePair(t, fix, "baseline-runnersg")
+	src, dst := pair.src, pair.dst
+	keyPath, host, port, dstPriv := pair.keyPath, pair.sshHost, pair.sshPort, pair.dstPrivateIP
 
 	harness.Step(t, "ping %s (%s) from %s across hosts via default-SG self-ingress", dst.id, dstPriv, src.id)
 	// Snapshot OVN/OVS state on the first failed burst, while the drop is still

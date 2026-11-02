@@ -29,6 +29,10 @@ const blockdevDelMaxAttempts = 20
 // margin; the ebs.unmount seal keeps its separate unmountSealTimeout.
 const detachAggregateTimeout = 3 * time.Minute
 
+// ErrHotAttachUnsupported is returned by AttachVolume for a direct-boot microvm,
+// whose MMIO bus has no PCIe root port to hot-plug a volume into.
+var ErrHotAttachUnsupported = errors.New("volume hot-attach is not supported on a direct-boot microvm")
+
 // rollbackUnmount unmounts a volume while unwinding a failed AttachVolume.
 // Callers keep the volume non-available when the seal fails so a later attach
 // cannot discard local state that may still be owned by the backend.
@@ -80,6 +84,12 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	instance, ok := m.Get(id)
 	if !ok {
 		return "", ErrInstanceNotFound
+	}
+
+	// Refused before anything is mounted or recorded: the hot-plug below needs
+	// a PCIe root port that a microvm's MMIO bus does not have.
+	if instance.DirectBoot {
+		return "", fmt.Errorf("%w: instance %s", ErrHotAttachUnsupported, id)
 	}
 
 	if status := m.Status(instance); status != StateRunning {

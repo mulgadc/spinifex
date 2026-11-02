@@ -24,6 +24,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 
 import { CreateDBParameterGroupPage } from "./create-db-parameter-group-page"
 
+const onClose = vi.fn()
+
 function seed() {
   const qc = createTestQueryClient()
   qc.setQueryData(["rds", "engineVersions"], {
@@ -51,7 +53,7 @@ describe("CreateDBParameterGroupPage", () => {
   // picker without the console being edited.
   it("reads the families from the engine catalog", async () => {
     const user = userEvent.setup()
-    renderWithClient(<CreateDBParameterGroupPage />, seed())
+    renderWithClient(<CreateDBParameterGroupPage onClose={onClose} />, seed())
 
     await user.click(screen.getByLabelText("Family"))
 
@@ -64,7 +66,7 @@ describe("CreateDBParameterGroupPage", () => {
   })
 
   it("sends CreateDBParameterGroup with the family", async () => {
-    renderWithClient(<CreateDBParameterGroupPage />, seed())
+    renderWithClient(<CreateDBParameterGroupPage onClose={onClose} />, seed())
 
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "orders-pg" },
@@ -83,10 +85,42 @@ describe("CreateDBParameterGroupPage", () => {
     expect(input.DBParameterGroupName).toBe("orders-pg")
     expect(input.DBParameterGroupFamily).toBe("postgres18")
     expect(input.Description).toBe("Tuned settings")
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalledWith("orders-pg")
+    })
+  })
+
+  it("shows a refused create beside the button and stays open", async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error("Parameter group orders-pg already exists"), {
+        name: "DBParameterGroupAlreadyExists",
+      }),
+    )
+    renderWithClient(<CreateDBParameterGroupPage onClose={onClose} />, seed())
+
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "orders-pg" },
+    })
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Tuned settings" },
+    })
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create Parameter Group" }),
+    )
+
+    await expect(
+      screen.findByText(
+        "DBParameterGroupAlreadyExists: Parameter group orders-pg already exists",
+      ),
+    ).resolves.toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole("button", { name: "Create Parameter Group" }),
+    ).toBeEnabled()
   })
 
   it("refuses the reserved default prefix before the round trip", async () => {
-    renderWithClient(<CreateDBParameterGroupPage />, seed())
+    renderWithClient(<CreateDBParameterGroupPage onClose={onClose} />, seed())
 
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "default.postgres18" },
@@ -105,7 +139,7 @@ describe("CreateDBParameterGroupPage", () => {
   })
 
   it("requires a description, as the backend does", async () => {
-    renderWithClient(<CreateDBParameterGroupPage />, seed())
+    renderWithClient(<CreateDBParameterGroupPage onClose={onClose} />, seed())
 
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "orders-pg" },

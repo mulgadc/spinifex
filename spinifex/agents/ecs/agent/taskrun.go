@@ -191,6 +191,7 @@ func (a *Agent) runTask(ctx context.Context, as *ecsv1.Assign) {
 			slog.Error("ecs-agent: pull failed", "task", as.TaskID, "image", c.Image, "err", err)
 			a.teardownTaskNetns(as)
 			a.reportTaskState(as, ecsv1.TaskStatusStopped, "image pull failed: "+err.Error(), statuses)
+			a.waitContainers(ctx, as, statuses)
 			return
 		}
 
@@ -223,16 +224,26 @@ func (a *Agent) runTask(ctx context.Context, as *ecsv1.Assign) {
 			slog.Error("ecs-agent: run failed", "task", as.TaskID, "container", c.Name, "err", err)
 			a.teardownTaskNetns(as)
 			a.reportTaskState(as, ecsv1.TaskStatusStopped, "container start failed: "+err.Error(), statuses)
+			a.waitContainers(ctx, as, statuses)
 			return
 		}
 		statuses = append(statuses, ecsv1.ContainerStatus{
 			Name: c.Name, Status: ecsv1.TaskStatusRunning, ContainerID: id, GPUIDs: gpuIDs,
 		})
-		go a.waitContainer(ctx, as, c.Name, id)
 	}
 
 	a.reportTaskState(as, ecsv1.TaskStatusRunning, "", statuses)
+	a.waitContainers(ctx, as, statuses)
 	slog.Info("ecs-agent: task running", "task", as.TaskID, "containers", len(statuses))
+}
+
+// waitContainers starts one exit-wait per started container. Callers start
+// them only after the report that precedes STOPPED is sent, so a container
+// that exits at once can never have its STOPPED overtaken by that report.
+func (a *Agent) waitContainers(ctx context.Context, as *ecsv1.Assign, started []ecsv1.ContainerStatus) {
+	for _, c := range started {
+		go a.waitContainer(ctx, as, c.Name, c.ContainerID)
+	}
 }
 
 // waitContainer blocks until a container exits, then reports the task STOPPED

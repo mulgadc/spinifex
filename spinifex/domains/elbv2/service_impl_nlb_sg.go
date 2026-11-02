@@ -245,7 +245,10 @@ func (s *ELBv2ServiceImpl) SetLoadBalancerIngressCIDRs(lbArn string, cidrs []str
 		}
 	}
 
-	if err := s.store.PutLoadBalancer(s.ctx, lb); err != nil {
+	if _, err := s.store.UpdateLoadBalancer(s.ctx, lb.LoadBalancerID, func(rec *LoadBalancerRecord) (bool, error) {
+		rec.NLBIngressCIDRs = lb.NLBIngressCIDRs
+		return true, nil
+	}); err != nil {
 		slog.Error("SetLoadBalancerIngressCIDRs: persist failed", "arn", lbArn, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}

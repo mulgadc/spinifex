@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -60,6 +62,31 @@ const lbcClusterOwnershipTagKey = "elbv2.k8s.aws/cluster"
 // through one VIP; server-count fan-out gives each apiserver a tunnel to every
 // agent (HA apiserver->pod/kubelet/webhook egress, EKS-parity).
 const konnectivityAgentPort int64 = 8132
+
+// webhookReadyPort is the plain-HTTP port on which the control-plane VM's token
+// webhook serves only /readyz, so the NLB can tell whether the VM can authenticate.
+const webhookReadyPort int64 = 8444
+
+// Health check of the apiserver target group: the control-plane token webhook's
+// /readyz, which also requires the local apiserver, so a CP that cannot
+// authenticate leaves rotation. Timeout stays below the interval.
+const (
+	cpHealthCheckPath      = "/readyz"
+	cpHealthCheckInterval  = 5
+	cpHealthCheckTimeout   = 3
+	cpHealthCheckThreshold = 2
+)
+
+// cpReadinessHealthCheck applies the readiness health check to a TG create.
+func cpReadinessHealthCheck(in *elbv2.CreateTargetGroupInput) {
+	in.HealthCheckProtocol = aws.String(elbv2.ProtocolEnumHttp)
+	in.HealthCheckPort = aws.String(strconv.FormatInt(webhookReadyPort, 10))
+	in.HealthCheckPath = aws.String(cpHealthCheckPath)
+	in.HealthCheckIntervalSeconds = aws.Int64(cpHealthCheckInterval)
+	in.HealthCheckTimeoutSeconds = aws.Int64(cpHealthCheckTimeout)
+	in.HealthyThresholdCount = aws.Int64(cpHealthCheckThreshold)
+	in.UnhealthyThresholdCount = aws.Int64(cpHealthCheckThreshold)
+}
 
 // ClusterNLB is the NLB resource tuple produced by EnsureClusterNLB; ARNs are persisted to ClusterMeta.
 type ClusterNLB struct {
@@ -161,7 +188,7 @@ func EnsureClusterNLB(ctx context.Context, nlbp nlbProvisioner, accountID, clust
 		return nil, err
 	}
 	var err error
-	if out.TargetGroupArn, err = ensureClusterTG(ctx, nlbp, accountID, clusterName, tgName, k3sAPIServerPort); err != nil {
+	if out.TargetGroupArn, err = ensureClusterTG(ctx, nlbp, accountID, clusterName, tgName, k3sAPIServerPort, cpReadinessHealthCheck); err != nil {
 		return nil, err
 	}
 	if out.ListenerArn, err = ensureClusterListener(ctx, nlbp, accountID, lbName, out.LoadBalancerArn, out.TargetGroupArn, clusterNLBListenPort); err != nil {
@@ -175,7 +202,7 @@ func EnsureClusterNLB(ctx context.Context, nlbp nlbProvisioner, accountID, clust
 	}
 	// Konnectivity TG + listener :8132 → the 3 CP konnectivity-servers. Worker
 	// konnectivity-agents dial this VIP; server-count fan-out reaches all 3 servers.
-	if out.KonnTargetGroupArn, err = ensureClusterTG(ctx, nlbp, accountID, clusterName, konnTGName, konnectivityAgentPort); err != nil {
+	if out.KonnTargetGroupArn, err = ensureClusterTG(ctx, nlbp, accountID, clusterName, konnTGName, konnectivityAgentPort, nil); err != nil {
 		return nil, err
 	}
 	if _, err = ensureClusterListener(ctx, nlbp, accountID, lbName, out.LoadBalancerArn, out.KonnTargetGroupArn, konnectivityAgentPort); err != nil {
@@ -405,8 +432,9 @@ func ensureClusterLB(ctx context.Context, nlbp nlbProvisioner, accountID, cluste
 }
 
 // ensureClusterTG creates (or reuses) a TCP target group of the given name
-// forwarding to port, returning its ARN. Idempotent on name.
-func ensureClusterTG(ctx context.Context, nlbp nlbProvisioner, accountID, clusterName, tgName string, port int64) (string, error) {
+// forwarding to port, returning its ARN. Idempotent on name. configure, if set,
+// adjusts the create input; an existing group is returned as is, unmodified.
+func ensureClusterTG(ctx context.Context, nlbp nlbProvisioner, accountID, clusterName, tgName string, port int64, configure func(*elbv2.CreateTargetGroupInput)) (string, error) {
 	if tg, err := lookupTGByName(ctx, nlbp, accountID, tgName); err != nil {
 		return "", err
 	} else if tg != nil {
@@ -417,7 +445,7 @@ func ensureClusterTG(ctx context.Context, nlbp nlbProvisioner, accountID, cluste
 		return arn, nil
 	}
 
-	created, err := nlbp.CreateTargetGroup(ctx, &elbv2.CreateTargetGroupInput{
+	in := &elbv2.CreateTargetGroupInput{
 		Name:       aws.String(tgName),
 		Protocol:   aws.String(elbv2.ProtocolEnumTcp),
 		Port:       aws.Int64(port),
@@ -426,7 +454,11 @@ func ensureClusterTG(ctx context.Context, nlbp nlbProvisioner, accountID, cluste
 			{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
 			{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(clusterName)},
 		},
-	}, accountID)
+	}
+	if configure != nil {
+		configure(in)
+	}
+	created, err := nlbp.CreateTargetGroup(ctx, in, accountID)
 	if err != nil {
 		return "", fmt.Errorf("create TG %s: %w", tgName, err)
 	}
@@ -481,6 +513,9 @@ func lookupLBByName(ctx context.Context, nlbp nlbProvisioner, accountID, name st
 		Names: aws.StringSlice([]string{name}),
 	}, accountID)
 	if err != nil {
+		if strings.Contains(err.Error(), awserrors.ErrorELBv2LoadBalancerNotFound) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("describe NLB %s: %w", name, err)
 	}
 	for _, lb := range out.LoadBalancers {
@@ -496,6 +531,9 @@ func lookupTGByName(ctx context.Context, nlbp nlbProvisioner, accountID, name st
 		Names: aws.StringSlice([]string{name}),
 	}, accountID)
 	if err != nil {
+		if strings.Contains(err.Error(), awserrors.ErrorELBv2TargetGroupNotFound) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("describe TG %s: %w", name, err)
 	}
 	for _, tg := range out.TargetGroups {

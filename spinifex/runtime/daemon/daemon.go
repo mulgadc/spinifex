@@ -1943,6 +1943,13 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
+	// Before any service is built: a node on a different provider from the
+	// cluster's would address existing volumes through the wrong implementation.
+	if err := d.claimEBSProvider(); err != nil {
+		slog.Error("Refusing to start: EBS provider lock", "err", err)
+		return fmt.Errorf("EBS provider lock: %w", err)
+	}
+
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
 	if js, jsErr := jetstream.New(d.natsConn); jsErr == nil {
 		if err := kvutil.DeleteBucketIfExists(d.ctx, js, "spinifex-dhcp-leases"); err != nil {
@@ -2710,6 +2717,10 @@ func (d *Daemon) initJetStream() error {
 		}
 
 		if err == nil {
+			err = d.jsManager.InitClusterConfigBucket()
+		}
+
+		if err == nil {
 			d.jsManager.SetSyncObserver(d)
 			// Replicas cannot be undeclared here: bucket creation refuses
 			// before it, so reaching this line means it was declared.
@@ -2757,6 +2768,32 @@ func (d *Daemon) upgradeJetStreamReplicas() {
 	}
 }
 
+// claimEBSProvider records this node's EBS provider as the cluster's, or
+// refuses when the cluster already records a different one.
+func (d *Daemon) claimEBSProvider() error {
+	provider := d.config.EBS.ResolvedProvider()
+	_, err := initServiceWithRetry("EBS provider lock", func() (struct{}, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), ebsProviderClaimTimeout)
+		defer cancel()
+		return struct{}{}, d.jsManager.ClaimEBSProvider(ctx, d.node, provider)
+	})
+	if err != nil {
+		return err
+	}
+	slog.Info("EBS provider matches the cluster's", "provider", provider)
+	return nil
+}
+
+// ebsProviderClaimTimeout bounds one attempt at the provider lock's KV calls.
+const ebsProviderClaimTimeout = 10 * time.Second
+
+// permanentError marks an error that a startup retry loop cannot clear, so
+// the loop returns it at once rather than waiting out its budget.
+type permanentError interface {
+	error
+	Permanent() bool
+}
+
 // initRetrySleep is the sleep seam used by initServiceWithRetry; tests override it.
 var initRetrySleep = time.Sleep
 
@@ -2776,6 +2813,10 @@ func initServiceWithRetry[T any](name string, initFn func() (T, error)) (T, erro
 				slog.Info(name+" initialized successfully", "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			}
 			return result, nil
+		}
+		if perm, ok := errors.AsType[permanentError](err); ok && perm.Permanent() {
+			var zero T
+			return zero, err
 		}
 
 		elapsed := time.Since(start)

@@ -53,6 +53,7 @@ const (
 	// on a bucket stamped 5 rather than reading the keys it no longer owns.
 	InstanceStateBucketVersion      = 5
 	ClusterStateBucketVersion       = 1
+	ClusterConfigBucketVersion      = 1
 	TerminatedInstanceBucketVersion = 3
 )
 
@@ -83,6 +84,7 @@ type JetStreamManager struct {
 	records     *kvstore.Store[vm.InstanceRecord] // i.<id>, instance-state bucket
 	termRecords *kvstore.Store[vm.InstanceRecord] // i.<id>, terminated bucket
 	clusterKV   jetstream.KeyValue                // spinifex-cluster-state
+	ebsLock     *kvstore.Store[EBSProviderRecord] // spinifex-cluster-config
 	obs         KVSyncObserver
 	running     runningSetState
 }

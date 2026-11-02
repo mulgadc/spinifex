@@ -409,6 +409,18 @@ func TestRemoveUserFromGroup_NotMember(t *testing.T) {
 		GroupName: aws.String("team"),
 		UserName:  aws.String("erin"),
 	})
+	require.NoError(t, err)
+}
+
+func TestRemoveUserFromGroup_GroupNotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "erin")
+
+	_, err := svc.RemoveUserFromGroup(testAccountID, &iam.RemoveUserFromGroupInput{
+		GroupName: aws.String("ghost"),
+		UserName:  aws.String("erin"),
+	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
 }

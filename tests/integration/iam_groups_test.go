@@ -238,9 +238,14 @@ func TestIAMGroupsLifecycle(t *testing.T) {
 	_, err = iamCli.CreateUser(&iam.CreateUserInput{UserName: aws.String(grpLifecycleUser)})
 	require.NoError(t, err, "create-user")
 
-	// remove-user-from-group on a non-member surfaces NoSuchEntity (must not no-op).
+	// remove-user-from-group on a non-member of an existing group succeeds, as on AWS.
 	_, err = iamCli.RemoveUserFromGroup(&iam.RemoveUserFromGroupInput{
 		GroupName: aws.String(grpLifecycleGroup),
+		UserName:  aws.String(grpLifecycleUser),
+	})
+	require.NoError(t, err, "remove-user-from-group non-member")
+	_, err = iamCli.RemoveUserFromGroup(&iam.RemoveUserFromGroupInput{
+		GroupName: aws.String("ghost-group"),
 		UserName:  aws.String(grpLifecycleUser),
 	})
 	requireAWSErrorCode(t, err, "NoSuchEntity")

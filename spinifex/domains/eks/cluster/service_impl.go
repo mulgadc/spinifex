@@ -1621,7 +1621,7 @@ func (s *EKSServiceImpl) teardownClusterInfra(ctx context.Context, accountID, na
 		// New topology: SGs + IGW + subnets + route tables + NAT GW + VPC all live
 		// in the managed CP VPC under the system account. DeleteClusterCPVPC removes
 		// the IGW + VPC after the SGs, so SG cleanup must precede it.
-		cpSGErr := DeleteClusterSGs(ctx, s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId)
+		cpSGErr := DeleteClusterSGs(ctx, s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId, "")
 		if cpSGErr != nil {
 			fail(stepSecurityGroups, fmt.Errorf("delete cluster SGs: %w", cpSGErr))
 		}
@@ -1629,7 +1629,7 @@ func (s *EKSServiceImpl) teardownClusterInfra(ctx context.Context, accountID, na
 		// worker<->control-plane networking; reclaim them here too, or they orphan
 		// (cross-referencing each other) and pin the customer VPC on destroy.
 		if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
-			if err := DeleteClusterSGs(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
+			if err := DeleteClusterSGs(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId, meta.ResourcesVpcConfig.ClusterSecurityGroupId); err != nil {
 				fail(stepSecurityGroups, fmt.Errorf("delete customer-VPC cluster SGs: %w", err))
 			}
 		}
@@ -1653,7 +1653,7 @@ func (s *EKSServiceImpl) teardownClusterInfra(ctx context.Context, accountID, na
 		// Legacy topology: CP lived in the customer VPC; reclaim its SGs + the
 		// cluster-owned IGW (ownership-scoped — a reused customer IGW is left
 		// intact). IGW delete must precede any VPC delete to avoid DependencyViolation.
-		if err := DeleteClusterSGs(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
+		if err := DeleteClusterSGs(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId, meta.ResourcesVpcConfig.ClusterSecurityGroupId); err != nil {
 			fail(stepSecurityGroups, fmt.Errorf("delete cluster SGs: %w", err))
 		}
 		if s.deps.IGW != nil {

@@ -132,19 +132,20 @@ func EnsureClusterSG(ctx context.Context, sgp sgProvisioner, accountID, clusterN
 
 // EnsureWorkerSG returns the SG nodegroup workers launch with. A cluster created
 // before the cluster SG existed keeps its nodegroup SG and control-plane rules
-// until it is recreated; every other cluster gets the cluster SG.
-func EnsureWorkerSG(ctx context.Context, sgp sgProvisioner, accountID, clusterName, vpcID string) (string, error) {
+// until it is recreated; every other cluster gets the SG recorded on it,
+// clusterSGID, or a freshly ensured one when none is recorded yet.
+func EnsureWorkerSG(ctx context.Context, sgp sgProvisioner, accountID, clusterName, vpcID, clusterSGID string) (string, error) {
 	if vpcID == "" {
 		return "", errors.New("eks: EnsureWorkerSG empty vpc id")
-	}
-	if id, err := lookupClusterSG(ctx, sgp, accountID, vpcID, clusterName); err != nil || id != "" {
-		return id, err
 	}
 	legacy, err := lookupSGByName(ctx, sgp, accountID, vpcID, ClusterNodegroupSGName(clusterName))
 	if err != nil {
 		return "", err
 	}
 	if legacy == "" {
+		if clusterSGID != "" {
+			return clusterSGID, nil
+		}
 		return EnsureClusterSG(ctx, sgp, accountID, clusterName, vpcID)
 	}
 	cpSGID, ngSGID, err := EnsureClusterSGs(ctx, sgp, accountID, clusterName, vpcID)
@@ -187,16 +188,16 @@ func EnsureClusterSGs(ctx context.Context, sgp sgProvisioner, accountID, cluster
 	return controlPlaneSGID, nodegroupSGID, nil
 }
 
-// DeleteClusterSGs removes the cluster control-plane and nodegroup SGs. AWS
-// refuses to delete a security group still referenced by ANY other SG's rule —
-// not just the cp<->ng cross-reference (EnsureNodegroupSGRules) but the VPC's
-// LBC/ALB SG, the private-endpoint SG, and user/TF SGs, in either direction
-// (ingress or egress). To break every cycle order-independently, all ingress and
-// egress rules are revoked on every non-default SG in the VPC first, then the two
-// cluster-owned SGs are deleted. Referrer SGs are owned and deleted by their own
-// teardown — only the cluster SGs are deleted here. Missing SGs are no-ops; the
-// first error is returned after the full sweep.
-func DeleteClusterSGs(ctx context.Context, sgp sgProvisioner, accountID, clusterName, vpcID string) error {
+// DeleteClusterSGs removes the cluster's SGs: the stored cluster SG, the
+// control-plane and nodegroup SGs of a cluster created before the cluster SG, and
+// the LBC-orphaned SGs. AWS refuses to delete an SG still referenced by another
+// SG's rule, in either direction, so before any delete every rule on a
+// cluster-owned SG is revoked and, on any other SG in the VPC, only the rules that
+// reference a cluster-owned SG. Unrelated customer SGs keep everything else.
+// clusterSGID is the id recorded on the cluster; ownership never comes from a
+// customer-settable tag. Missing SGs are no-ops; the first error is returned
+// after the full sweep.
+func DeleteClusterSGs(ctx context.Context, sgp sgProvisioner, accountID, clusterName, vpcID, clusterSGID string) error {
 	if clusterName == "" {
 		return errors.New("eks: DeleteClusterSGs empty cluster name")
 	}
@@ -211,9 +212,6 @@ func DeleteClusterSGs(ctx context.Context, sgp sgProvisioner, accountID, cluster
 		}
 	}
 
-	// Break every cross-reference in the VPC before deleting any SG. Revoking
-	// both directions on every non-default SG guarantees no rule still points at
-	// a cluster SG, so the deletes below succeed regardless of order.
 	out, err := sgp.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("vpc-id"), Values: aws.StringSlice([]string{vpcID})},
@@ -223,12 +221,49 @@ func DeleteClusterSGs(ctx context.Context, sgp sgProvisioner, accountID, cluster
 		slog.WarnContext(ctx, "DeleteClusterSGs: describe SGs failed", "vpc", vpcID, "err", err)
 		record(fmt.Errorf("describe SGs in vpc %s: %w", vpcID, err))
 	}
-	// A failed describe returns a nil out; fall back to an empty set so the two
-	// cross-reference sweeps below become no-ops while the targeted deletes still run.
+	// A failed describe returns a nil out; fall back to an empty set so the
+	// sweeps below become no-ops while the targeted deletes still run.
 	var sgs []*ec2.SecurityGroup
 	if out != nil {
 		sgs = out.SecurityGroups
 	}
+
+	// owned is every SG this cluster owns, in delete order: LBC-orphaned SGs
+	// first (they reference the cluster SG), then the stored cluster SG, then the
+	// pre-cluster-SG named ones.
+	var owned []string
+	isOwned := map[string]bool{}
+	own := func(id string) {
+		if id != "" && !isOwned[id] {
+			isOwned[id] = true
+			owned = append(owned, id)
+		}
+	}
+	for _, g := range sgs {
+		if g != nil && g.GroupId != nil && aws.StringValue(g.GroupName) != "default" && sgHasLBCClusterTag(g, clusterName) {
+			own(*g.GroupId)
+		}
+	}
+	own(clusterSGID)
+	// With no stored id (a create that died before recording it) the SG is still
+	// ours when it carries the tags only the service can set.
+	if clusterSGID == "" {
+		for _, g := range sgs {
+			if g != nil && g.GroupId != nil && sgIsClusterSG(g, clusterName) {
+				own(*g.GroupId)
+			}
+		}
+	}
+	for _, name := range []string{ClusterControlPlaneSGName(clusterName), ClusterNodegroupSGName(clusterName)} {
+		id, lookupErr := lookupSGByName(ctx, sgp, accountID, vpcID, name)
+		if lookupErr != nil {
+			slog.WarnContext(ctx, "DeleteClusterSGs: SG lookup failed", "sg", name, "err", lookupErr)
+			record(lookupErr)
+			continue
+		}
+		own(id)
+	}
+
 	for _, g := range sgs {
 		if g == nil || g.GroupId == nil {
 			continue
@@ -238,52 +273,19 @@ func DeleteClusterSGs(ctx context.Context, sgp sgProvisioner, accountID, cluster
 		if aws.StringValue(g.GroupName) == "default" {
 			continue
 		}
-		if revokeErr := revokeAllSGRules(ctx, sgp, accountID, g); revokeErr != nil {
+		var revokeErr error
+		if isOwned[*g.GroupId] {
+			revokeErr = revokeAllSGRules(ctx, sgp, accountID, g)
+		} else {
+			revokeErr = revokeRulesReferencing(ctx, sgp, accountID, g, isOwned)
+		}
+		if revokeErr != nil {
 			slog.WarnContext(ctx, "DeleteClusterSGs: revoke rules failed", "sg", aws.StringValue(g.GroupId), "err", revokeErr)
 			record(revokeErr)
 		}
 	}
 
-	// Reap LBC-orphaned SGs (k8s-traffic-toc-*): the in-cluster AWS LoadBalancer
-	// Controller creates these in the customer VPC and spinifex never tracks them,
-	// so nothing else deletes them and they pin the VPC on DependencyViolation.
-	// Match by the LBC ownership tag; rules were already revoked above. Runs after
-	// the matching ALB reap, so the LB no longer references the SG.
-	for _, g := range sgs {
-		if g == nil || g.GroupId == nil || aws.StringValue(g.GroupName) == "default" {
-			continue
-		}
-		if !sgHasLBCClusterTag(g, clusterName) {
-			continue
-		}
-		if delErr := deleteSGAwaitingDetach(ctx, sgp, accountID, aws.StringValue(g.GroupId)); delErr != nil {
-			slog.WarnContext(ctx, "DeleteClusterSGs: LBC SG delete failed", "sg", aws.StringValue(g.GroupId), "err", delErr)
-			record(fmt.Errorf("delete LBC SG %s: %w", aws.StringValue(g.GroupId), delErr))
-		}
-	}
-
-	// The AWS-style cluster SG has a random name, so it is found by tag.
-	for _, g := range sgs {
-		if g == nil || g.GroupId == nil || !sgIsClusterSG(g, clusterName) {
-			continue
-		}
-		if delErr := deleteSGAwaitingDetach(ctx, sgp, accountID, aws.StringValue(g.GroupId)); delErr != nil {
-			slog.WarnContext(ctx, "DeleteClusterSGs: cluster SG delete failed", "sg", aws.StringValue(g.GroupId), "err", delErr)
-			record(fmt.Errorf("delete cluster SG %s: %w", aws.StringValue(g.GroupId), delErr))
-		}
-	}
-
-	// Delete the named cluster-owned SGs of a cluster created before the cluster SG.
-	for _, name := range []string{ClusterControlPlaneSGName(clusterName), ClusterNodegroupSGName(clusterName)} {
-		id, lookupErr := lookupSGByName(ctx, sgp, accountID, vpcID, name)
-		if lookupErr != nil {
-			slog.WarnContext(ctx, "DeleteClusterSGs: SG lookup failed", "sg", name, "err", lookupErr)
-			record(lookupErr)
-			continue
-		}
-		if id == "" {
-			continue
-		}
+	for _, id := range owned {
 		if delErr := deleteSGAwaitingDetach(ctx, sgp, accountID, id); delErr != nil {
 			slog.WarnContext(ctx, "DeleteClusterSGs: SG delete failed", "sg", id, "err", delErr)
 			record(fmt.Errorf("delete SG %s: %w", id, delErr))
@@ -353,6 +355,57 @@ func revokeAllSGRules(ctx context.Context, sgp sgProvisioner, accountID string, 
 		}
 	}
 	return nil
+}
+
+// revokeRulesReferencing revokes, on a SG the cluster does not own, only the
+// rules that reference an owned SG, and only those references. Every other rule
+// on the SG is left in place.
+func revokeRulesReferencing(ctx context.Context, sgp sgProvisioner, accountID string, g *ec2.SecurityGroup, owned map[string]bool) error {
+	sgID := aws.StringValue(g.GroupId)
+	if perms := referencingPerms(g.IpPermissions, owned); len(perms) > 0 {
+		if _, err := sgp.RevokeSecurityGroupIngress(ctx, &ec2.RevokeSecurityGroupIngressInput{
+			GroupId:       g.GroupId,
+			IpPermissions: perms,
+		}, accountID); err != nil && !awserrors.IsNotFound(err) {
+			return fmt.Errorf("revoke ingress on %s: %w", sgID, err)
+		}
+	}
+	if perms := referencingPerms(g.IpPermissionsEgress, owned); len(perms) > 0 {
+		if _, err := sgp.RevokeSecurityGroupEgress(ctx, &ec2.RevokeSecurityGroupEgressInput{
+			GroupId:       g.GroupId,
+			IpPermissions: perms,
+		}, accountID); err != nil && !awserrors.IsNotFound(err) {
+			return fmt.Errorf("revoke egress on %s: %w", sgID, err)
+		}
+	}
+	return nil
+}
+
+// referencingPerms returns, for each permission that names an owned SG, a copy
+// carrying only those group references.
+func referencingPerms(perms []*ec2.IpPermission, owned map[string]bool) []*ec2.IpPermission {
+	var out []*ec2.IpPermission
+	for _, p := range perms {
+		if p == nil {
+			continue
+		}
+		var pairs []*ec2.UserIdGroupPair
+		for _, pair := range p.UserIdGroupPairs {
+			if pair != nil && owned[aws.StringValue(pair.GroupId)] {
+				pairs = append(pairs, pair)
+			}
+		}
+		if len(pairs) == 0 {
+			continue
+		}
+		out = append(out, &ec2.IpPermission{
+			IpProtocol:       p.IpProtocol,
+			FromPort:         p.FromPort,
+			ToPort:           p.ToPort,
+			UserIdGroupPairs: pairs,
+		})
+	}
+	return out
 }
 
 // EnsurePrivateEndpointSG creates (or reuses) the customer-VPC SG for the
@@ -593,24 +646,27 @@ func sgHasLBCClusterTag(g *ec2.SecurityGroup, clusterName string) bool {
 	})
 }
 
-// sgIsClusterSG reports whether g is this cluster's AWS-style cluster SG.
+// sgIsClusterSG reports whether g carries every tag the service stamps on this
+// cluster's SG. aws:eks:cluster-name is reserved, so a customer cannot set it.
 func sgIsClusterSG(g *ec2.SecurityGroup, clusterName string) bool {
-	var cluster, role string
+	have := map[string]string{}
 	for _, tag := range g.Tags {
-		switch aws.StringValue(tag.Key) {
-		case clusterEKSClusterTagKey:
-			cluster = aws.StringValue(tag.Value)
-		case clusterEKSRoleTagKey:
-			role = aws.StringValue(tag.Value)
-		}
+		have[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
 	}
-	return cluster == clusterName && role == clusterEKSRoleCluster
+	return have[tags.ManagedByKey] == tags.ManagedByEKS &&
+		have["aws:eks:cluster-name"] == clusterName &&
+		have[clusterEKSClusterTagKey] == clusterName &&
+		have[clusterEKSRoleTagKey] == clusterEKSRoleCluster
 }
 
+// lookupClusterSG finds a cluster SG that an earlier, interrupted create made
+// before its id was recorded. Only the tags the service alone can set count.
 func lookupClusterSG(ctx context.Context, sgp sgProvisioner, accountID, vpcID, clusterName string) (string, error) {
 	out, err := sgp.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
 			{Name: aws.String("vpc-id"), Values: aws.StringSlice([]string{vpcID})},
+			{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByEKS})},
+			{Name: aws.String("tag:aws:eks:cluster-name"), Values: aws.StringSlice([]string{clusterName})},
 			{Name: aws.String("tag:" + clusterEKSClusterTagKey), Values: aws.StringSlice([]string{clusterName})},
 			{Name: aws.String("tag:" + clusterEKSRoleTagKey), Values: aws.StringSlice([]string{clusterEKSRoleCluster})},
 		},
@@ -619,7 +675,7 @@ func lookupClusterSG(ctx context.Context, sgp sgProvisioner, accountID, vpcID, c
 		return "", fmt.Errorf("describe cluster SG for %s: %w", clusterName, err)
 	}
 	for _, g := range out.SecurityGroups {
-		if g != nil && g.GroupId != nil {
+		if g != nil && g.GroupId != nil && sgIsClusterSG(g, clusterName) {
 			return *g.GroupId, nil
 		}
 	}

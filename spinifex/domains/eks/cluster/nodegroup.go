@@ -472,7 +472,7 @@ type nodegroupLaunchCtx struct {
 func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupLaunchCtx) {
 	acctKV, accountID, cluster, ng, meta, rec := lc.acctKV, lc.accountID, lc.cluster, lc.ng, lc.meta, lc.rec
 
-	ngSGID, err := EnsureWorkerSG(ctx, s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
+	ngSGID, err := EnsureWorkerSG(ctx, s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId, meta.ResourcesVpcConfig.ClusterSecurityGroupId)
 	if err != nil {
 		s.markNodegroupFailed(ctx, acctKV, cluster, ng, "ensure cluster SG: "+err.Error())
 		return
@@ -1096,7 +1096,7 @@ func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV jetstream.
 		}
 		return nil, fmt.Errorf("resolve eks-node AMI: %w", err)
 	}
-	ngSGID, err := EnsureWorkerSG(ctx, s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
+	ngSGID, err := EnsureWorkerSG(ctx, s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId, meta.ResourcesVpcConfig.ClusterSecurityGroupId)
 	if err != nil {
 		return nil, fmt.Errorf("ensure cluster SG: %w", err)
 	}

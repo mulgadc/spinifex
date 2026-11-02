@@ -289,7 +289,7 @@ func TestDeleteClusterSGs_DeletesBothExisting(t *testing.T) {
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-existing-cp"
 	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-existing-ng"
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.NoError(t, err)
 
 	require.Len(t, sgp.deleteCalls, 2)
@@ -313,7 +313,7 @@ func TestDeleteClusterSGs_ReapsLBCTaggedSGs(t *testing.T) {
 		"sg-lbc-other": {{Key: aws.String(lbcClusterOwnershipTagKey), Value: aws.String("beta")}},
 	}
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.NoError(t, err)
 
 	deleted := map[string]bool{}
@@ -331,7 +331,7 @@ func TestDeleteClusterSGs_MissingSGsNoOp(t *testing.T) {
 	t.Parallel()
 	sgp := newFakeSGProvisioner()
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.NoError(t, err)
 	assert.Empty(t, sgp.deleteCalls, "no delete calls expected when SGs already absent")
 }
@@ -345,7 +345,7 @@ func TestDeleteClusterSGs_FirstErrorSurfacedSweepContinues(t *testing.T) {
 	// after a single attempt per SG (the retry path is covered separately).
 	sgp.deleteErr = errors.New("vpcd unavailable")
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sg-existing-cp")
 	assert.Len(t, sgp.deleteCalls, 2, "both delete calls should be attempted despite first error")
@@ -370,7 +370,7 @@ func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
 		sgp.deleteFailsBefore = map[string]int{"sg-ng": 2} // 2 DepViolations, then ok
 
-		err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+		err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 		require.NoError(t, err, "delete must succeed once the ENI detaches")
 		assert.GreaterOrEqual(t, len(sgp.deleteCalls), 3, "retried past the transient violations")
 	})
@@ -381,7 +381,7 @@ func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
 		sgp.deleteErr = errors.New("DependencyViolation: still referenced")
 
-		err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+		err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 		require.Error(t, err, "a persistent DependencyViolation must surface, not leak the SG")
 		assert.Contains(t, err.Error(), "sg-ng")
 	})
@@ -404,7 +404,7 @@ func TestDeleteClusterSGs_RevokesCrossRefsBeforeDelete(t *testing.T) {
 	// AWS refuses to delete an SG still referenced by a sibling's rule.
 	sgp.enforceDepViolation = true
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.NoError(t, err, "revoke-then-delete must clear the cp<->ng cycle so both SGs delete")
 
 	require.Len(t, sgp.revokeCalls, 2, "ingress on both SGs must be revoked before delete")
@@ -440,7 +440,7 @@ func TestDeleteClusterSGs_RevokesEgressAndNonClusterReferrers(t *testing.T) {
 	}
 	sgp.enforceDepViolation = true
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.NoError(t, err, "revoking both directions on all non-default SGs must clear every cycle")
 
 	revokedEgress := map[string]bool{}

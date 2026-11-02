@@ -63,7 +63,35 @@ func seedClusterSG(f *fakeSGProvisioner, cluster, vpc, id string) {
 		{Key: aws.String("aws:eks:cluster-name"), Value: aws.String(cluster)},
 		{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(cluster)},
 		{Key: aws.String(clusterEKSRoleTagKey), Value: aws.String("cluster")},
+		{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
 	}
+}
+
+// seedCustomerSG registers a customer-made SG, optionally tagged to imitate ours.
+func seedCustomerSG(f *fakeSGProvisioner, name, vpc, id string, tg []*ec2.Tag) {
+	f.existing[name+"|"+vpc] = id
+	if f.tagsByID == nil {
+		f.tagsByID = map[string][]*ec2.Tag{}
+	}
+	f.tagsByID[id] = tg
+}
+
+// spoofTags are every tag a customer can set that the service also stamps.
+func spoofTags(cluster string) []*ec2.Tag {
+	return []*ec2.Tag{
+		{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(cluster)},
+		{Key: aws.String(clusterEKSRoleTagKey), Value: aws.String("cluster")},
+		{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
+		{Key: aws.String("kubernetes.io/cluster/" + cluster), Value: aws.String("owned")},
+	}
+}
+
+func setStoredClusterSG(t *testing.T, f *deleteClusterFixture, cluster, id string) {
+	t.Helper()
+	meta, err := GetClusterMeta(t.Context(), f.kv, cluster)
+	require.NoError(t, err)
+	meta.ResourcesVpcConfig.ClusterSecurityGroupId = id
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 }
 
 func createAlpha(t *testing.T, mutate func(*eks.CreateClusterInput)) (*eksServiceFixture, *ClusterMeta) {
@@ -245,13 +273,14 @@ func TestLaunchOneWorker_TemplateWithoutSecurityGroupsUsesClusterSG(t *testing.T
 	assert.Equal(t, []string{"sg-ng"}, aws.StringValueSlice(f.worker.runCalls[0].SecurityGroupIds))
 }
 
-// Delete finds the AWS-style cluster SG by tag, not by name, and leaves another
-// cluster's SG in the same VPC alone.
+// Delete removes the SG recorded on the cluster, whatever its name, and leaves
+// another cluster's SG in the same VPC alone.
 func TestDeleteCluster_RemovesClusterSGFoundByTag(t *testing.T) {
 	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	seedClusterSG(f.sg, "alpha", "vpc-aaa", "sg-new")
 	seedClusterSG(f.sg, "beta", "vpc-aaa", "sg-beta")
+	setStoredClusterSG(t, f, "alpha", "sg-new")
 	f.sg.perms = map[string][]*ec2.IpPermission{"sg-new": {{
 		IpProtocol:       aws.String("-1"),
 		UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String("sg-new")}},
@@ -291,6 +320,7 @@ func TestDeleteCluster_ClusterSGConvergesInTheReaper(t *testing.T) {
 
 	f := newDeleteClusterFixture(t, "alpha")
 	seedClusterSG(f.sg, "alpha", "vpc-aaa", "sg-new")
+	setStoredClusterSG(t, f, "alpha", "sg-new")
 	f.sg.deleteFailsBefore = map[string]int{"sg-new": 1000}
 
 	deleteAndSettle(t, f.svc, "alpha")
@@ -304,4 +334,88 @@ func TestDeleteCluster_ClusterSGConvergesInTheReaper(t *testing.T) {
 
 	_, err := GetClusterMeta(t.Context(), f.kv, "alpha")
 	assert.Error(t, err, "the reaper finished the teardown")
+}
+
+// A customer-made SG carrying the tags the service stamps is neither adopted by
+// a create retry nor deleted with the cluster.
+func TestEnsureClusterSG_DoesNotAdoptACustomerTaggedSG(t *testing.T) {
+	t.Parallel()
+	sg := newFakeSGProvisioner()
+	sg.uniqueIDs = true
+	seedCustomerSG(sg, "customer-sg", "vpc-aaa", "sg-spoof", spoofTags("c1"))
+
+	id, err := EnsureClusterSG(context.Background(), sg, testAccountID, "c1", "vpc-aaa")
+	require.NoError(t, err)
+
+	assert.NotEqual(t, "sg-spoof", id)
+	assert.Len(t, sg.createCalls, 1)
+	for _, p := range sg.authorizeCalls {
+		assert.NotEqual(t, "sg-spoof", aws.StringValue(p.GroupId))
+	}
+}
+
+func TestDeleteCluster_DoesNotDeleteACustomerTaggedSG(t *testing.T) {
+	t.Parallel()
+	f := newDeleteClusterFixture(t, "alpha")
+	seedClusterSG(f.sg, "alpha", "vpc-aaa", "sg-new")
+	setStoredClusterSG(t, f, "alpha", "sg-new")
+	seedCustomerSG(f.sg, "customer-sg", "vpc-aaa", "sg-spoof", spoofTags("alpha"))
+	f.sg.perms = map[string][]*ec2.IpPermission{"sg-spoof": {{
+		IpProtocol: aws.String("tcp"), FromPort: aws.Int64(22), ToPort: aws.Int64(22),
+		IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+	}}}
+
+	deleteAndSettle(t, f.svc, "alpha")
+
+	assert.Contains(t, deletedSGIDs(f.sg), "sg-new")
+	assert.NotContains(t, deletedSGIDs(f.sg), "sg-spoof")
+	for _, r := range f.sg.revokeCalls {
+		assert.NotEqual(t, "sg-spoof", aws.StringValue(r.GroupId), "no rule is revoked on it")
+	}
+}
+
+// Deleting a cluster revokes, on an unrelated SG in the VPC, only the rules that
+// reference a cluster-owned SG.
+func TestDeleteClusterSGs_UnrelatedSGKeepsItsOtherRules(t *testing.T) {
+	t.Parallel()
+	sgp := newFakeSGProvisioner()
+	seedClusterSG(sgp, "alpha", "vpc-aaa", "sg-new")
+	seedCustomerSG(sgp, "customer-sg", "vpc-aaa", "sg-other", nil)
+	ssh := &ec2.IpPermission{
+		IpProtocol: aws.String("tcp"), FromPort: aws.Int64(22), ToPort: aws.Int64(22),
+		IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+	}
+	mixed := &ec2.IpPermission{
+		IpProtocol: aws.String("tcp"), FromPort: aws.Int64(443), ToPort: aws.Int64(443),
+		IpRanges: []*ec2.IpRange{{CidrIp: aws.String("192.168.0.0/16")}},
+		UserIdGroupPairs: []*ec2.UserIdGroupPair{
+			{GroupId: aws.String("sg-new")},
+			{GroupId: aws.String("sg-peer")},
+		},
+	}
+	sgp.perms = map[string][]*ec2.IpPermission{"sg-other": {ssh, mixed}}
+	sgp.permsEgress = map[string][]*ec2.IpPermission{"sg-other": {groupRefPerm("tcp", 6443, "sg-new"), groupRefPerm("tcp", 80, "sg-peer")}}
+
+	require.NoError(t, DeleteClusterSGs(context.Background(), sgp, testAccountID, "alpha", "vpc-aaa", "sg-new"))
+
+	var revoked []*ec2.IpPermission
+	for _, r := range sgp.revokeCalls {
+		if aws.StringValue(r.GroupId) == "sg-other" {
+			revoked = append(revoked, r.IpPermissions...)
+		}
+	}
+	require.Len(t, revoked, 1, "only the rule referencing the cluster SG goes")
+	require.Len(t, revoked[0].UserIdGroupPairs, 1)
+	assert.Equal(t, "sg-new", aws.StringValue(revoked[0].UserIdGroupPairs[0].GroupId))
+	assert.Empty(t, revoked[0].IpRanges, "its CIDR sources are not part of the revoke")
+
+	var revokedEgress []*ec2.IpPermission
+	for _, r := range sgp.revokeEgressCall {
+		if aws.StringValue(r.GroupId) == "sg-other" {
+			revokedEgress = append(revokedEgress, r.IpPermissions...)
+		}
+	}
+	require.Len(t, revokedEgress, 1)
+	assert.Equal(t, "sg-new", aws.StringValue(revokedEgress[0].UserIdGroupPairs[0].GroupId))
+	assert.NotContains(t, deletedSGIDs(sgp), "sg-other")
 }

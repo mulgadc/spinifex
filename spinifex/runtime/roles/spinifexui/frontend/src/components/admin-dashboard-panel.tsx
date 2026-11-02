@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Lock, Monitor, Server } from "lucide-react"
 import { useState } from "react"
 
 import { NodesTable } from "@/components/nodes-table"
+import { StatusBadge } from "@/components/state-badge"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useAdmin } from "@/hooks/use-admin"
@@ -89,7 +90,7 @@ export function AdminDashboardPanel() {
             <div className="space-y-2 text-xs">
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">License</span>
-                <Badge variant={isOpenSource ? "secondary" : "default"}>
+                <Badge variant={isOpenSource ? "secondary" : "outline"}>
                   {isOpenSource ? "Open Source (AGPLv3)" : "Commercial"}
                 </Badge>
               </div>
@@ -196,7 +197,7 @@ export function AdminDashboardPanel() {
                 {isOpenSource ? (
                   <Lock className="size-3 text-muted-foreground" />
                 ) : (
-                  <Badge variant="outline">Active</Badge>
+                  <StatusBadge tone="success">active</StatusBadge>
                 )}
               </div>
             ))}

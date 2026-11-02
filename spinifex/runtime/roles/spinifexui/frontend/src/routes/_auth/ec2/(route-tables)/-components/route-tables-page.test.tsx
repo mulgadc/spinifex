@@ -220,3 +220,44 @@ describe("RouteTableDetails", () => {
     ).toBeDisabled()
   })
 })
+
+describe("RouteTableDetails associations", () => {
+  // A long list pushed the picker past the bottom of the panel.
+  it("puts the subnet picker above the associations list", () => {
+    const qc = seed()
+    qc.setQueryData(["ec2", "routeTables"], { RouteTables: [MAIN, CUSTOM] })
+    renderWithClient(
+      <RouteTableDetails
+        layout="page"
+        onClose={vi.fn()}
+        onTabChange={vi.fn()}
+        rtb={CUSTOM}
+        tab="overview"
+      />,
+      qc,
+    )
+
+    const picker = screen.getByRole("combobox", { name: "Associate subnet" })
+    const firstAssociation = screen.getByRole("link", { name: "subnet-1" })
+
+    expect(picker.compareDocumentPosition(firstAssociation)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+  })
+})
+
+describe("RouteTablesPage main column", () => {
+  it("shows main as a green pill and every other table as a grey no", () => {
+    renderWithClient(
+      <RouteTablesPage
+        onSearchChange={vi.fn()}
+        routeTables={[MAIN, CUSTOM]}
+        search={CLOSED_PANEL}
+      />,
+      seed(),
+    )
+
+    expect(screen.getByText("main")).toHaveAttribute("data-tone", "success")
+    expect(screen.getByText("no")).toHaveAttribute("data-tone", "muted")
+  })
+})

@@ -10,9 +10,9 @@ import {
   PanelFields,
   PanelSection,
   PanelSpinner,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { IamTags } from "@/components/resource-tags"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { decodePolicyDocument } from "@/lib/json"
 import type { PanelTab } from "@/lib/panel-search"
@@ -82,7 +82,7 @@ function InstanceProfiles({ roleName }: { roleName: string }) {
 function Tags({ roleName }: { roleName: string }) {
   const { data } = useSuspenseQuery(iamRoleQueryOptions(roleName))
 
-  return <PanelTags tags={data.Role?.Tags} />
+  return <IamTags id={roleName} kind="role" tags={data.Role?.Tags} />
 }
 
 function Overview({ role }: { role: Role }) {
@@ -198,6 +198,7 @@ export function RoleDetails({
             aria-label="Open role page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ roleName }}
+            search={{ tab }}
             to="/iam/list-roles/$roleName"
           >
             <Maximize2 />

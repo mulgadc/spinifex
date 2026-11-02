@@ -15,9 +15,9 @@ import {
   PanelField,
   PanelFields,
   PanelSection,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
@@ -93,7 +93,11 @@ function Settings({
 
   return (
     <>
-      <PanelTags tags={snapshot.Tags} />
+      <Ec2Tags
+        id={snapshot.SnapshotId}
+        invalidate={["ec2", "snapshots"]}
+        tags={snapshot.Tags}
+      />
       <PanelSection title="Manage">
         <div className="flex flex-col items-start gap-3">
           {!completed && (
@@ -199,6 +203,7 @@ export function SnapshotDetails({
             aria-label="Open snapshot page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ id }}
+            search={{ tab }}
             to="/ec2/describe-snapshots/$id"
           >
             <Maximize2 />

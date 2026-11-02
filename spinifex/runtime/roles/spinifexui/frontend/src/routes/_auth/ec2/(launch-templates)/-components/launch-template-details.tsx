@@ -23,10 +23,10 @@ import {
   PanelFields,
   PanelSection,
   PanelSpinner,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { Ec2Tags } from "@/components/resource-tags"
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { Field, FieldTitle } from "@/components/ui/field"
@@ -430,7 +430,11 @@ function Settings({
       <Suspense fallback={<PanelSpinner />}>
         <CreateVersion lt={lt} />
       </Suspense>
-      <PanelTags tags={lt.Tags} />
+      <Ec2Tags
+        id={lt.LaunchTemplateId}
+        invalidate={["ec2", "launchTemplates"]}
+        tags={lt.Tags}
+      />
       <PanelSection title="Manage">
         <Button
           disabled={remove.isPending}
@@ -490,6 +494,7 @@ export function LaunchTemplateDetails({
             aria-label="Open launch template page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ id }}
+            search={{ tab }}
             to="/ec2/describe-launch-templates/$id"
           >
             <Maximize2 />

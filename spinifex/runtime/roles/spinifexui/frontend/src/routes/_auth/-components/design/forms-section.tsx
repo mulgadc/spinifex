@@ -114,6 +114,7 @@ function SampleCreateForm({ onClose }: { onClose: () => void }) {
         <SelectField
           control={control}
           id="sample-scheme"
+          info="Internet-facing takes traffic from outside the VPC; internal only from inside it."
           label="Scheme"
           name="scheme"
           options={selectOptions(["internet-facing", "internal"])}

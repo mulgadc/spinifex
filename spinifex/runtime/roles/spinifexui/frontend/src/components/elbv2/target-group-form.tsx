@@ -1,6 +1,7 @@
 import type { Vpc } from "@aws-sdk/client-ec2"
+import { useState } from "react"
 import type { UseFormReturn } from "react-hook-form"
-import { Controller, useWatch } from "react-hook-form"
+import { Controller, useFormState, useWatch } from "react-hook-form"
 
 import { TagsFieldArray } from "@/components/tags-field-array"
 import {
@@ -40,12 +41,11 @@ export function TargetGroupForm({
   vpcs,
   allowedProtocols = DEFAULT_ALLOWED_PROTOCOLS,
 }: TargetGroupFormProps) {
-  const {
-    control,
-    register,
-    setValue,
-    formState: { errors },
-  } = form
+  const { control, register, setValue } = form
+  // Read through the hook: the compiler memoises this component on `form`,
+  // whose identity never changes, so `form.formState` would never re-render it.
+  const { errors } = useFormState({ control })
+  const [healthCheckOpen, setHealthCheckOpen] = useState(false)
 
   const protocol = useWatch({ control, name: "protocol" })
   // Path + Matcher only apply to HTTP(S) health checks; L4 target groups (TCP/
@@ -155,7 +155,11 @@ export function TargetGroupForm({
         <FieldError errors={[errors.vpcId]} />
       </Field>
 
-      <Collapsible>
+      {/* Held open by an error inside, or Create appears to do nothing. */}
+      <Collapsible
+        onOpenChange={setHealthCheckOpen}
+        open={healthCheckOpen || errors.healthCheck !== undefined}
+      >
         <CollapsibleTrigger
           variant="subtle"
           render={<button aria-label="Health check settings" type="button" />}

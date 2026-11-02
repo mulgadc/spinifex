@@ -86,7 +86,7 @@ describe("DataSourceCard", () => {
     })
     renderWithClient()
     await expect(screen.findByText("job-1")).resolves.toBeInTheDocument()
-    expect(screen.getByText("COMPLETE")).toBeInTheDocument()
+    expect(screen.getByText("complete")).toBeInTheDocument()
     expect(
       screen.getByText("scanned 10 · indexed 9 · failed 1"),
     ).toBeInTheDocument()

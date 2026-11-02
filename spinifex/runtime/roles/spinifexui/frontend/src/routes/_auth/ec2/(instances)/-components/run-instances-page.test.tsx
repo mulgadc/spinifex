@@ -1,7 +1,9 @@
 import type {
+  AuthorizeSecurityGroupIngressCommandInput,
   Image,
   InstanceTypeInfo,
   LaunchTemplate,
+  PlacementGroup,
   RunInstancesCommandInput,
   Subnet,
 } from "@aws-sdk/client-ec2"
@@ -120,6 +122,7 @@ interface SetupOptions {
   capacity?: Record<string, number>
   subnets?: Subnet[]
   launchTemplates?: LaunchTemplate[]
+  placementGroups?: PlacementGroup[]
   onClose?: (instanceId?: string) => void
 }
 
@@ -129,6 +132,7 @@ function setup({
   capacity = CAPACITY,
   subnets = [DEFAULT_SUBNET],
   launchTemplates = [],
+  placementGroups = [],
   onClose = vi.fn(),
 }: SetupOptions = {}) {
   sdk.reset()
@@ -155,7 +159,7 @@ function setup({
   })
   queryClient.setQueryData(ec2PlacementGroupsQueryOptions.queryKey, {
     $metadata: {},
-    PlacementGroups: [],
+    PlacementGroups: placementGroups,
   })
   queryClient.setQueryData(ec2VpcsQueryOptions.queryKey, {
     $metadata: {},
@@ -434,6 +438,54 @@ describe("run-instances launch template", () => {
   })
 })
 
+describe("run-instances placement group", () => {
+  it("is hidden when no group can take a launch", async () => {
+    setup({
+      placementGroups: [
+        {
+          GroupId: "pg-1",
+          GroupName: "gone",
+          Strategy: "spread",
+          State: "deleted",
+        },
+      ],
+    })
+
+    await screen.findByLabelText("Version")
+
+    expect(screen.queryByLabelText("Placement Group")).not.toBeInTheDocument()
+  })
+
+  it("offers only the available groups", async () => {
+    const user = userEvent.setup()
+    setup({
+      placementGroups: [
+        {
+          GroupId: "pg-1",
+          GroupName: "web",
+          Strategy: "spread",
+          State: "available",
+        },
+        {
+          GroupId: "pg-2",
+          GroupName: "old",
+          Strategy: "cluster",
+          State: "deleting",
+        },
+      ],
+    })
+
+    await user.click(await screen.findByLabelText("Placement Group"))
+
+    await expect(
+      screen.findByRole("option", { name: "web (spread)" }),
+    ).resolves.toBeInTheDocument()
+    expect(
+      screen.queryByRole("option", { name: "old (cluster)" }),
+    ).not.toBeInTheDocument()
+  })
+})
+
 describe("run-instances network", () => {
   it("shows the region with its flag and the default subnet's zone", async () => {
     setup()
@@ -475,15 +527,22 @@ describe("run-instances network", () => {
 })
 
 describe("run-instances security group mode", () => {
-  it("defaults to creating a group with SSH allowed and switches to existing groups", async () => {
+  it("defaults to creating a group with ping and SSH allowed and switches to existing groups", async () => {
     const user = userEvent.setup()
     setup()
 
     await expect(
       screen.findByRole("radio", { name: "Create new security group" }),
     ).resolves.toBeChecked()
+    expect(screen.getByLabelText("Allow ping")).toBeChecked()
     expect(screen.getByLabelText("Allow SSH")).toBeChecked()
     expect(screen.getByLabelText("Allow HTTP")).not.toBeChecked()
+
+    const rules = screen
+      .getAllByRole("switch")
+      .map((el) => el.getAttribute("aria-label"))
+
+    expect(rules.indexOf("Allow ping")).toBeLessThan(rules.indexOf("Allow SSH"))
 
     await user.click(
       screen.getByRole("radio", { name: "Select existing security group" }),
@@ -526,6 +585,88 @@ describe("run-instances submit", () => {
     })
     expect(input?.SubnetId).toBeUndefined()
     expect(input?.BlockDeviceMappings).toBeUndefined()
+  })
+
+  it("sends no tags when the name is left blank", async () => {
+    const user = userEvent.setup()
+
+    const runInstances = vi.fn((_input: RunInstancesCommandInput) => ({
+      Instances: [{ InstanceId: "i-1" }],
+    }))
+
+    setup()
+    sdk.setHandler("CreateSecurityGroupCommand", () => ({ GroupId: "sg-new" }))
+    sdk.setHandler("AuthorizeSecurityGroupIngressCommand", () => ({}))
+    sdk.setHandler("RunInstancesCommand", runInstances)
+
+    await user.click(await screen.findByRole("radio", { name: "Oracle Linux" }))
+    await user.click(screen.getByRole("button", { name: "Create Instance" }))
+
+    await waitFor(() => {
+      expect(runInstances).toHaveBeenCalled()
+    })
+    expect(runInstances.mock.calls[0]?.[0].TagSpecifications).toBeUndefined()
+  })
+
+  it("tags the instance with its name, trimmed", async () => {
+    const user = userEvent.setup()
+
+    const runInstances = vi.fn((_input: RunInstancesCommandInput) => ({
+      Instances: [{ InstanceId: "i-1" }],
+    }))
+
+    setup()
+    sdk.setHandler("CreateSecurityGroupCommand", () => ({ GroupId: "sg-new" }))
+    sdk.setHandler("AuthorizeSecurityGroupIngressCommand", () => ({}))
+    sdk.setHandler("RunInstancesCommand", runInstances)
+
+    await user.click(await screen.findByRole("radio", { name: "Oracle Linux" }))
+    await user.type(screen.getByLabelText("Name (optional)"), "  web-1 ")
+
+    await user.click(screen.getByRole("button", { name: "Create Instance" }))
+
+    await waitFor(() => {
+      expect(runInstances).toHaveBeenCalled()
+    })
+    expect(runInstances.mock.calls[0]?.[0].TagSpecifications).toStrictEqual([
+      { ResourceType: "instance", Tags: [{ Key: "Name", Value: "web-1" }] },
+    ])
+  })
+
+  it("opens ping and SSH on the new group by default, ping as echo request only", async () => {
+    const user = userEvent.setup()
+
+    const authorize = vi.fn(
+      (_input: AuthorizeSecurityGroupIngressCommandInput) => ({}),
+    )
+
+    setup()
+    sdk.setHandler("CreateSecurityGroupCommand", () => ({ GroupId: "sg-new" }))
+    sdk.setHandler("AuthorizeSecurityGroupIngressCommand", authorize)
+    sdk.setHandler("RunInstancesCommand", () => ({
+      Instances: [{ InstanceId: "i-1" }],
+    }))
+
+    await user.click(await screen.findByRole("radio", { name: "Oracle Linux" }))
+    await user.click(screen.getByRole("button", { name: "Create Instance" }))
+
+    await waitFor(() => {
+      expect(authorize).toHaveBeenCalled()
+    })
+    expect(authorize.mock.calls[0]?.[0].IpPermissions).toStrictEqual([
+      {
+        IpProtocol: "icmp",
+        FromPort: 8,
+        ToPort: -1,
+        IpRanges: [{ CidrIp: "0.0.0.0/0" }],
+      },
+      {
+        IpProtocol: "tcp",
+        FromPort: 22,
+        ToPort: 22,
+        IpRanges: [{ CidrIp: "0.0.0.0/0" }],
+      },
+    ])
   })
 
   it("shows a refused launch beside the button and stays open", async () => {

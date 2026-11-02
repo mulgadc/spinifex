@@ -263,14 +263,46 @@ export async function useTheme(page: Page, theme: Theme): Promise<void> {
 
 // The page must never scroll sideways: wide content scrolls in its own box.
 export async function expectNoHorizontalOverflow(page: Page): Promise<void> {
-  const widths = await page.evaluate(() => ({
-    scroll: document.documentElement.scrollWidth,
-    client: document.documentElement.clientWidth,
-  }))
+  const widths = await page.evaluate(() => {
+    const client = document.documentElement.clientWidth
 
-  expect(widths.scroll, "page scrolls horizontally").toBeLessThanOrEqual(
-    widths.client,
-  )
+    // The outermost elements past the edge, so a failure names its culprit.
+    // Content inside its own scrolling box is allowed past it.
+    const past = [...document.body.querySelectorAll<HTMLElement>("*")].filter(
+      (el) => {
+        if (el.getBoundingClientRect().right <= client + 1) {
+          return false
+        }
+
+        for (let up = el.parentElement; up; up = up.parentElement) {
+          if (
+            up.getBoundingClientRect().right > client + 1 ||
+            getComputedStyle(up).overflowX !== "visible"
+          ) {
+            return false
+          }
+        }
+
+        return true
+      },
+    )
+
+    return {
+      scroll: document.documentElement.scrollWidth,
+      client,
+      past: past
+        .slice(0, 5)
+        .map(
+          (el) =>
+            `${el.tagName.toLowerCase()}.${(el.getAttribute("class") ?? "").slice(0, 120)} "${(el.textContent ?? "").slice(0, 40)}"`,
+        ),
+    }
+  })
+
+  expect(
+    widths.scroll,
+    `page scrolls horizontally past: ${widths.past.join(" | ")}`,
+  ).toBeLessThanOrEqual(widths.client)
 }
 
 export const test = base.extend<{ api: ConsoleApi }>({

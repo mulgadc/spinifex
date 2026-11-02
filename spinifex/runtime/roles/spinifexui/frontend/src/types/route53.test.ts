@@ -112,6 +112,7 @@ function issues(input: Partial<RecordSetFormData>): string[] {
     name: "",
     type: "A",
     ttl: 300,
+    priority: 10,
     values: "",
     ...input,
   })
@@ -151,8 +152,24 @@ describe("recordSetSchema", () => {
     expect(issues({ values: "192.0.2.1\n300.1.1.1" })).toStrictEqual([
       '"300.1.1.1" is not an IPv4 address',
     ])
-    expect(issues({ type: "MX", values: "mail.example.com" })).toStrictEqual([
-      '"mail.example.com" must be a priority and a mail server',
+    expect(issues({ type: "MX", values: "mail example" })).toStrictEqual([
+      '"mail example" is not a mail server',
+    ])
+    expect(
+      issues({ name: "dev", type: "NS", values: "not a host" }),
+    ).toStrictEqual(['"not a host" is not a name server'])
+  })
+
+  it("accepts a bare MX server, which takes the priority field", () => {
+    expect(issues({ type: "MX", values: "mail.example.com" })).toStrictEqual([])
+  })
+
+  it("delegates a subdomain with NS but refuses the zone's own", () => {
+    expect(
+      issues({ name: "dev", type: "NS", values: "ns1.example.net" }),
+    ).toStrictEqual([])
+    expect(issues({ type: "NS", values: "ns1.example.net" })).toStrictEqual([
+      "The zone manages its own name servers. Enter a subdomain to delegate it.",
     ])
   })
 
@@ -177,6 +194,7 @@ describe("form mapping", () => {
         name: "_dmarc",
         type: "TXT",
         ttl: 60,
+        priority: 10,
         values: "v=DMARC1; p=none\nsecond",
       },
       ZONE,
@@ -192,16 +210,58 @@ describe("form mapping", () => {
       name: "_dmarc",
       type: "TXT",
       ttl: 60,
+      priority: 10,
       values: "v=DMARC1; p=none\nsecond",
     })
   })
 
-  it("passes other types through unchanged", () => {
+  it("keeps an MX line's own priority and gives the rest the field's", () => {
     expect(
       toRecordSet(
-        { name: "", type: "MX", ttl: 300, values: "10 mx.example.com" },
+        {
+          name: "",
+          type: "MX",
+          ttl: 300,
+          priority: 5,
+          values: "10 mx.example.com\nbackup.example.com",
+        },
         ZONE,
       ).ResourceRecords,
-    ).toStrictEqual([{ Value: "10 mx.example.com" }])
+    ).toStrictEqual([
+      { Value: "10 mx.example.com" },
+      { Value: "5 backup.example.com" },
+    ])
+  })
+
+  it("lifts a shared MX priority into its field and leaves mixed ones on their lines", () => {
+    const shared = toFormValues(
+      {
+        Name: "example.com.",
+        Type: "MX",
+        TTL: 300,
+        ResourceRecords: [{ Value: "20 a.example" }, { Value: "20 b.example" }],
+      },
+      ZONE,
+    )
+
+    expect(shared).toMatchObject({
+      priority: 20,
+      values: "a.example\nb.example",
+    })
+
+    const mixed = toFormValues(
+      {
+        Name: "example.com.",
+        Type: "MX",
+        TTL: 300,
+        ResourceRecords: [{ Value: "10 a.example" }, { Value: "20 b.example" }],
+      },
+      ZONE,
+    )
+
+    expect(mixed).toMatchObject({
+      priority: 10,
+      values: "10 a.example\n20 b.example",
+    })
   })
 })

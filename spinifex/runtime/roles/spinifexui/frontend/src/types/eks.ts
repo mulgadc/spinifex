@@ -128,29 +128,6 @@ export const createAddonSchema = z.object({
 
 export type CreateAddonFormValues = z.infer<typeof createAddonSchema>
 
-// Map an add-on status to a Badge variant. In-progress states render calmly
-// (secondary) rather than as errors; only terminal failures are destructive.
-export function addonStatusVariant(
-  status: string | undefined,
-): "default" | "secondary" | "destructive" {
-  switch (status ?? "") {
-    case "ACTIVE": {
-      return "default"
-    }
-
-    case "CREATE_FAILED":
-    case "DELETE_FAILED":
-    case "UPDATE_FAILED":
-    case "DEGRADED": {
-      return "destructive"
-    }
-
-    default: {
-      return "secondary"
-    }
-  }
-}
-
 export const createAccessEntrySchema = z.object({
   principalArn: z.string().min(1, "Principal ARN is required"),
   kubernetesGroups: z.string(),

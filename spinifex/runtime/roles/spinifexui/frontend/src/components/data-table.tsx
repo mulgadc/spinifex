@@ -63,6 +63,9 @@ interface DataTableProps<T> {
   // The row whose detail panel is open, and what a click on a row opens.
   activeId?: string
   onRowClick?: (id: string) => void
+  // Rows it rejects, such as records the zone manages, get no checkbox and do
+  // not open on click.
+  isRowActionable?: (row: T) => boolean
 }
 
 const features = tableFeatures({
@@ -140,6 +143,7 @@ export function DataTable<T extends RowData>({
   onSelectedChange,
   activeId,
   onRowClick,
+  isRowActionable,
 }: DataTableProps<T>) {
   const selectable = selected !== undefined && onSelectedChange !== undefined
 
@@ -164,7 +168,10 @@ export function DataTable<T extends RowData>({
     data: rows,
     getRowId,
     enableSortingRemoval: false,
-    enableRowSelection: selectable,
+    enableRowSelection:
+      selectable && isRowActionable
+        ? (row: Row<Features, T>) => isRowActionable(row.original)
+        : selectable,
     state: { sorting, rowSelection },
     onSortingChange: (updater: Updater<SortingState>) => {
       const [next] = functionalUpdate(updater, sorting)
@@ -245,20 +252,23 @@ export function DataTable<T extends RowData>({
           )}
           {visibleRows.map((row) => {
             const toggle = row.getToggleSelectedHandler()
+            const actionable = isRowActionable?.(row.original) ?? true
+            const clickable = onRowClick !== undefined && actionable
 
             return (
               <TableRow
                 data-active={row.id === activeId ? "" : undefined}
-                data-clickable={onRowClick ? "" : undefined}
+                data-clickable={clickable ? "" : undefined}
                 data-state={row.getIsSelected() ? "selected" : undefined}
                 key={row.id}
                 onClick={(event) => {
-                  if (onRowClick && !fromControl(event)) {
+                  if (clickable && !fromControl(event)) {
                     onRowClick(row.id)
                   }
                 }}
               >
-                {selectable && (
+                {selectable && !actionable && <TableCell />}
+                {selectable && actionable && (
                   <TableCell>
                     <Checkbox
                       aria-label={`Select ${row.id}`}

@@ -9,9 +9,9 @@ import {
   PanelField,
   PanelFields,
   PanelSection,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
@@ -122,7 +122,11 @@ function Settings({
 
   return (
     <>
-      <PanelTags tags={pg.Tags} />
+      <Ec2Tags
+        id={pg.GroupId}
+        invalidate={["ec2", "placementGroups"]}
+        tags={pg.Tags}
+      />
       <PanelSection title="Manage">
         <div className="flex flex-col items-start gap-3">
           {inUse && (
@@ -188,6 +192,7 @@ export function PlacementGroupDetails({
             aria-label="Open placement group page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ id }}
+            search={{ tab }}
             to="/ec2/describe-placement-groups/$id"
           >
             <Maximize2 />

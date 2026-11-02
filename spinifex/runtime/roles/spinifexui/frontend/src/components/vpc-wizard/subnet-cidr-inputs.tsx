@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight } from "lucide-react"
 import { useState } from "react"
-import type { UseFormReturn } from "react-hook-form"
+import { type UseFormReturn, useFormState } from "react-hook-form"
 
 import { Button } from "@/components/ui/button"
 import { FieldError } from "@/components/ui/field"
@@ -25,7 +25,8 @@ export function SubnetCidrInputs({
   const fieldName =
     type === "public" ? "publicSubnetCidrs" : "privateSubnetCidrs"
 
-  const fieldErrors = form.formState.errors[fieldName]
+  const { errors } = useFormState({ control: form.control })
+  const fieldErrors = errors[fieldName]
   // A subnet error must be visible, or Create appears to do nothing.
   const isOpen = expanded || fieldErrors !== undefined
 

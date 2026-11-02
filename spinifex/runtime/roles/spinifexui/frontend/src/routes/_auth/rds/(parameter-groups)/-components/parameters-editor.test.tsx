@@ -93,6 +93,17 @@ describe("ParametersEditor", () => {
     expect(screen.queryByText("ssl")).not.toBeInTheDocument()
   })
 
+  it("narrows to the modified parameters, counting each source", () => {
+    render()
+    expect(screen.getByRole("button", { name: "All 3" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Modified 1" }))
+    expect(screen.getByText("max_connections")).toBeInTheDocument()
+    expect(screen.queryByText("ssl")).not.toBeInTheDocument()
+  })
+
   it("reports a filter that matches nothing", () => {
     render()
     fireEvent.change(screen.getByLabelText("Filter parameters"), {

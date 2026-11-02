@@ -7,6 +7,7 @@ import {
   type SortState,
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
+import { StatusBadge } from "@/components/state-badge"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -131,14 +132,14 @@ function ClusterHealthBadge({
   quorumHealthy: boolean
 }) {
   if (nodeCount === 0) {
-    return <Badge variant="secondary">Unknown</Badge>
+    return <StatusBadge tone="neutral">Unknown</StatusBadge>
   }
 
   if (quorumHealthy) {
-    return <Badge variant="default">Healthy</Badge>
+    return <StatusBadge tone="success">Healthy</StatusBadge>
   }
 
-  return <Badge variant="destructive">Degraded</Badge>
+  return <StatusBadge tone="danger">Degraded</StatusBadge>
 }
 
 const DASH = <span className="text-muted-foreground">-</span>
@@ -170,9 +171,9 @@ const META_COLUMNS: DataColumn<MetaNodeStatus>[] = [
     header: "Health",
     sortValue: (node) => (node.healthy ? 0 : 1),
     cell: (node) => (
-      <Badge variant={node.healthy ? "default" : "destructive"}>
+      <StatusBadge tone={node.healthy ? "success" : "danger"}>
         {node.healthy ? "Healthy" : "Unreachable"}
-      </Badge>
+      </StatusBadge>
     ),
   },
   {
@@ -181,7 +182,7 @@ const META_COLUMNS: DataColumn<MetaNodeStatus>[] = [
     sortValue: (node) => node.state || undefined,
     cell: (node) =>
       node.state ? (
-        <Badge variant={node.state === "Leader" ? "default" : "secondary"}>
+        <Badge variant={node.state === "Leader" ? "outline" : "secondary"}>
           {node.state}
         </Badge>
       ) : (

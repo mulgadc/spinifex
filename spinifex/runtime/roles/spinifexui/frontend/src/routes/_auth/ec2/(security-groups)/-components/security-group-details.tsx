@@ -8,9 +8,9 @@ import {
   PanelField,
   PanelFields,
   PanelSection,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { Ec2Tags } from "@/components/resource-tags"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { useDeleteSecurityGroup } from "@/mutations/ec2"
@@ -68,7 +68,11 @@ function Settings({
 
   return (
     <>
-      <PanelTags tags={sg.Tags} />
+      <Ec2Tags
+        id={sg.GroupId}
+        invalidate={["ec2", "securityGroups"]}
+        tags={sg.Tags}
+      />
       <PanelSection title="Manage">
         <div className="flex flex-col items-start gap-3">
           {isDefault && (
@@ -134,6 +138,7 @@ export function SecurityGroupDetails({
             aria-label="Open security group page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ id }}
+            search={{ tab }}
             to="/ec2/describe-security-groups/$id"
           >
             <Maximize2 />

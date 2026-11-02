@@ -277,6 +277,7 @@ export function GroupDetails({
             aria-label="Open group page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ groupName }}
+            search={{ tab }}
             to="/iam/list-groups/$groupName"
           >
             <Maximize2 />

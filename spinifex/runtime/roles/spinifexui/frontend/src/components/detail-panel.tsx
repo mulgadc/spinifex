@@ -448,28 +448,6 @@ export function PanelField({
   )
 }
 
-interface PanelTagsProps {
-  tags: readonly { Key?: string; Value?: string }[] | undefined
-}
-
-export function PanelTags({ tags }: PanelTagsProps) {
-  return (
-    <PanelSection title="Tags">
-      {tags?.length ? (
-        <PanelFields>
-          {tags.map((tag) => (
-            <PanelField key={tag.Key} label={tag.Key ?? ""}>
-              {tag.Value}
-            </PanelField>
-          ))}
-        </PanelFields>
-      ) : (
-        <p className="text-sm text-muted-foreground">No tags.</p>
-      )}
-    </PanelSection>
-  )
-}
-
 // What a panel shows while its form loads: a spinner on the panel's own
 // background, so nothing flashes a grey block before the content.
 export function PanelSpinner() {

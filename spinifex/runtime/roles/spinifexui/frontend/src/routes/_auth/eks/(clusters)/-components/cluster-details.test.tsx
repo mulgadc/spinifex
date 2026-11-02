@@ -1,5 +1,6 @@
 import type { Cluster } from "@aws-sdk/client-eks"
 import { fireEvent, screen } from "@testing-library/react"
+import type { ComponentProps } from "react"
 import { describe, expect, it, vi } from "vitest"
 
 import type { PanelTab } from "@/lib/panel-search"
@@ -13,8 +14,21 @@ vi.mock("@/lib/awsClient", async () => {
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
+  const router = await mockRouter(importOriginal)
 
-  return await mockRouter(importOriginal)
+  // The shared stub drops `search`; the full-page link is asserted on it here.
+  function Link({
+    search,
+    ...props
+  }: ComponentProps<typeof router.Link> & { search?: { tab?: string } }) {
+    return (
+      <span data-tab={search?.tab}>
+        <router.Link {...props} />
+      </span>
+    )
+  }
+
+  return { ...router, Link }
 })
 
 import { ClusterDetails } from "./cluster-details"
@@ -50,12 +64,17 @@ function renderDetails(
   {
     tab = "overview",
     onClose = vi.fn(),
-  }: { tab?: PanelTab; onClose?: () => void } = {},
+    layout = "page",
+  }: {
+    tab?: PanelTab
+    onClose?: () => void
+    layout?: "auto" | "page"
+  } = {},
 ) {
   renderWithClient(
     <ClusterDetails
       clusterName={CLUSTER}
-      layout="page"
+      layout={layout}
       onClose={onClose}
       onTabChange={vi.fn()}
       tab={tab}
@@ -96,7 +115,7 @@ describe("ClusterDetails", () => {
 
   it("falls back to UNKNOWN status when the cluster has none", () => {
     renderDetails({})
-    expect(screen.getByText("UNKNOWN")).toBeInTheDocument()
+    expect(screen.getByText("unknown")).toBeInTheDocument()
   })
 
   it("keeps add-ons, access entries, tags and delete in Settings", () => {
@@ -115,5 +134,15 @@ describe("ClusterDetails", () => {
     renderDetails(ACTIVE, { onClose })
     fireEvent.click(screen.getByRole("button", { name: "Back to clusters" }))
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it("opens its own page on the tab in view", () => {
+    renderDetails(ACTIVE, { tab: "settings", layout: "auto" })
+
+    const link = screen
+      .getAllByRole("link")
+      .find((a) => a.getAttribute("href") === "/eks/list-clusters/demo")
+
+    expect(link?.parentElement).toHaveAttribute("data-tab", "settings")
   })
 })

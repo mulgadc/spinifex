@@ -182,6 +182,7 @@ export function runInstancesDefaults({
 
   return {
     count: 1,
+    name: "",
     imageId: defaultImageId ?? "",
     keyName: keyPairs[0]?.KeyName ?? "",
     instanceType: defaultTypeName(archTypeNames) ?? "",
@@ -194,6 +195,7 @@ export function runInstancesDefaults({
       securityGroups.map((sg) => sg.GroupName ?? ""),
     ),
     newSgDescription: "Created by launch wizard",
+    allowPing: true,
     allowSsh: true,
     allowHttp: false,
     allowHttps: false,

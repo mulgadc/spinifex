@@ -97,7 +97,7 @@ function NavSection({
           <span className="flex-1 text-left">{group.label}</span>
           <ChevronRight className="transition-transform group-data-panel-open/nav-trigger:rotate-90 motion-reduce:transition-none" />
         </SidebarGroupLabel>
-        <CollapsibleContent>
+        <CollapsibleContent variant="nav">
           <SidebarMenu>
             {group.items.map((item) => (
               <SidebarMenuItem key={item.to}>

@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query"
 import { fireEvent, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
@@ -75,8 +76,17 @@ describe("ModifyDBInstanceForm", () => {
     const panel = render()
     expect(panel.getByLabelText("Allocated storage (GiB)")).toHaveValue(40)
     expect(panel.getByLabelText("Backup retention (days)")).toHaveValue(7)
-    expect(panel.getByLabelText("Preferred backup window")).toHaveValue(
-      "03:00-03:30",
+    expect(panel.getByLabelText("Backup window start")).toHaveTextContent(
+      "03:00",
+    )
+    expect(panel.getByLabelText("Backup window length")).toHaveTextContent(
+      "30 min",
+    )
+    expect(panel.getByLabelText("Maintenance window day")).toHaveTextContent(
+      "Sunday",
+    )
+    expect(panel.getByLabelText("Maintenance window start")).toHaveTextContent(
+      "04:00",
     )
     expect(panel.getByLabelText("Security group sg-1 (default)")).toBeChecked()
     expect(panel.getByLabelText("Security group sg-2 (db)")).not.toBeChecked()
@@ -169,5 +179,37 @@ describe("ModifyDBInstanceForm", () => {
     ).resolves.toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
     expect(panel.getByRole("button", { name: "Save Changes" })).toBeEnabled()
+  })
+
+  it("sends a window moved with the pickers", async () => {
+    const user = userEvent.setup()
+    const panel = render()
+    mockSend.mockClear()
+    await user.click(panel.getByLabelText("Backup window length"))
+    await user.click(screen.getByRole("option", { name: "1 hour" }))
+    await user.click(panel.getByRole("button", { name: "Save Changes" }))
+
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalled()
+    })
+    expect(mockSend.mock.calls[0]?.[0].input.PreferredBackupWindow).toBe(
+      "03:00-04:00",
+    )
+  })
+
+  it("refuses a maintenance window over the backup window", async () => {
+    const user = userEvent.setup()
+    const panel = render()
+    mockSend.mockClear()
+    await user.click(panel.getByLabelText("Maintenance window start"))
+    await user.click(screen.getByRole("option", { name: "03:00" }))
+    await user.click(panel.getByRole("button", { name: "Save Changes" }))
+
+    await expect(
+      panel.findByText(
+        "The maintenance window overlaps the backup window at that time of day",
+      ),
+    ).resolves.toBeInTheDocument()
+    expect(mockSend).not.toHaveBeenCalled()
   })
 })

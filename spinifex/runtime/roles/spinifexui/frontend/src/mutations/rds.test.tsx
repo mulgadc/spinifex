@@ -38,7 +38,6 @@ import {
   useRestoreDBInstanceFromDBSnapshot,
   useStartDBInstance,
   useStopDBInstance,
-  useUpdateRdsTags,
 } from "./rds"
 
 const CREATE_FORM: CreateDBInstanceFormData = {
@@ -300,45 +299,6 @@ describe("rds lifecycle mutations", () => {
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       DBInstanceIdentifier: "orders-db",
     })
-  })
-})
-
-describe("useUpdateRdsTags", () => {
-  it("adds the final set and removes the keys that went away", async () => {
-    const { result } = renderMutationHook(() => useUpdateRdsTags())
-
-    result.current.mutate({
-      resourceName: "arn:db",
-      tags: [{ key: "env", value: "prod" }],
-      initialKeys: ["env", "owner"],
-    })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      ResourceName: "arn:db",
-      Tags: [{ Key: "env", Value: "prod" }],
-    })
-    expect(mockSend.mock.calls[1]?.[0].input).toStrictEqual({
-      ResourceName: "arn:db",
-      TagKeys: ["owner"],
-    })
-  })
-
-  it("skips both calls when there is nothing to do", async () => {
-    const { result } = renderMutationHook(() => useUpdateRdsTags())
-
-    result.current.mutate({
-      resourceName: "arn:db",
-      tags: [],
-      initialKeys: [],
-    })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend).not.toHaveBeenCalled()
   })
 })
 

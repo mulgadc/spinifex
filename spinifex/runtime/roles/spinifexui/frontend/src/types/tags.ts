@@ -39,24 +39,3 @@ export function toSdkTags(tags: TagFormData[]): SdkTag[] | undefined {
 
   return set.length > 0 ? set : undefined
 }
-
-export interface TagDiff {
-  // Sent whole: an add-tags call overwrites existing keys, so it covers both
-  // added and changed tags.
-  toSet: SdkTag[] | undefined
-  // Keys present before the edit that the desired set no longer carries.
-  toRemove: string[]
-}
-
-export function diffTags(
-  desired: TagFormData[],
-  initialKeys: string[],
-): TagDiff {
-  const toSet = toSdkTags(desired)
-  const finalKeys = new Set(toSet?.map((t) => t.Key))
-
-  return {
-    toSet,
-    toRemove: initialKeys.filter((k) => !finalKeys.has(k)),
-  }
-}

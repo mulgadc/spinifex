@@ -17,6 +17,7 @@ interface FakeInstance {
   privateIp: string
   publicIp?: string
   launched: string
+  tags?: Record<string, string>
 }
 
 const INSTANCES: FakeInstance[] = [
@@ -35,6 +36,10 @@ const INSTANCES: FakeInstance[] = [
     state: "running",
     type: "t3.micro",
     privateIp: "10.200.0.10",
+    tags: {
+      "spinifex:eks-cluster": "test-cluster",
+      "spinifex:eks-nodegroup": "node-gap",
+    },
     launched: "2026-10-21T09:00:00Z",
   },
   {
@@ -71,9 +76,15 @@ const STATE_CODES = {
 } satisfies Record<FakeState, number>
 
 function instanceXml(instance: FakeInstance): string {
-  const tags = instance.name
-    ? `<tagSet><item><key>Name</key><value>${instance.name}</value></item></tagSet>`
-    : ""
+  const pairs = [
+    ...(instance.name ? [["Name", instance.name]] : []),
+    ...Object.entries(instance.tags ?? {}),
+  ]
+
+  const tags =
+    pairs.length > 0
+      ? `<tagSet>${pairs.map(([key, value]) => `<item><key>${key}</key><value>${value}</value></item>`).join("")}</tagSet>`
+      : ""
 
   return `<item><instanceId>${instance.id}</instanceId><imageId>ami-ubuntu-26.04-x86_64</imageId>
 <instanceState><code>${STATE_CODES[instance.state]}</code><name>${instance.state}</name></instanceState>
@@ -107,13 +118,18 @@ test.describe("instances list", () => {
     const table = page.getByRole("table", { name: "Instances" })
 
     await expect(table.getByRole("row")).toHaveCount(INSTANCES.length + 1)
-    await expect(
-      table
-        .getByRole("link", { name: /web-01/u })
-        .getByText("i-0a1b2c3d4e5f60001"),
-    ).toBeVisible()
+    await expect(table.getByRole("columnheader", { name: "Zone" })).toHaveCount(
+      0,
+    )
 
-    // An instance with no Name tag is named by its ID alone.
+    const web01 = table.getByRole("row").filter({ hasText: "web-01" })
+    await expect(
+      web01.getByRole("link", { name: "i-0a1b2c3d4e5f60001" }),
+    ).toBeVisible()
+    await expect(web01.getByRole("cell", { name: "web-01" })).toBeVisible()
+    await expect(web01.getByText(/ ago$/u)).toBeVisible()
+
+    // An instance with no Name tag is reached by its ID.
     await table.getByRole("link", { name: "i-0a1b2c3d4e5f60004" }).click()
     await expect(page).toHaveURL(/\?selected=i-0a1b2c3d4e5f60004$/u)
 
@@ -322,7 +338,17 @@ test.describe("instances list", () => {
   test("shows the panel as its own page on a phone", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto("/ec2/describe-instances")
-    await page.getByRole("link", { name: /web-02/u }).click()
+    const table = page.getByRole("table", { name: "Instances" })
+    await expect(
+      table.getByRole("columnheader", { name: "Name" }),
+    ).toBeVisible()
+    await expect(
+      table.getByRole("columnheader", { name: "State" }),
+    ).toBeVisible()
+    await expect(table.getByRole("columnheader", { name: "Type" })).toBeHidden()
+    await expectNoHorizontalOverflow(page)
+
+    await page.getByRole("link", { name: "i-0a1b2c3d4e5f60002" }).click()
 
     const panel = page.getByRole("region", { name: "Instance details" })
     await expect(panel).toBeVisible()
@@ -359,6 +385,44 @@ test.describe("instances list", () => {
 
     await page.getByRole("button", { name: "Clear filters" }).click()
     await expect(rows).toHaveCount(INSTANCES.length + 1)
+  })
+
+  test("shows tags other than Name as one pill and a count", async ({
+    page,
+  }) => {
+    await page.goto("/ec2/describe-instances")
+
+    const row = page
+      .getByRole("table", { name: "Instances" })
+      .getByRole("row")
+      .filter({ hasText: "web-02" })
+
+    await expect(row.getByText("spinifex:eks-cluster")).toBeVisible()
+    await expect(row.getByText("+1")).toBeVisible()
+
+    await row.getByText("spinifex:eks-cluster").hover()
+    await expect(page.getByText("node-gap")).toBeVisible()
+  })
+
+  test("keeps a long name to its column, in full on hover", async ({
+    page,
+  }) => {
+    await page.goto("/ec2/describe-instances")
+    const long = INSTANCES[4]?.name ?? ""
+
+    const cell = page
+      .getByRole("table", { name: "Instances" })
+      .getByRole("row")
+      .filter({ hasText: "i-0a1b2c3d4e5f60005" })
+      .getByText(long)
+
+    const box = await cell.boundingBox()
+    expect(box?.width).toBeLessThan(260)
+
+    await cell.hover()
+    await expect(page.locator("[data-slot=tooltip-content]")).toContainText(
+      long,
+    )
   })
 
   test("counts each state on its filter", async ({ page }) => {

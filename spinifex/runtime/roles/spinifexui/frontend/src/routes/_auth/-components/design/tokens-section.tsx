@@ -1,4 +1,4 @@
-import { StateBadge } from "@/components/state-badge"
+import { StateBadge, StatusBadge } from "@/components/state-badge"
 
 import { CatalogueSection, Specimen } from "./catalogue-section"
 
@@ -25,6 +25,11 @@ const STATUSES = [
     name: "warning",
     solid: "bg-warning",
     tint: "border-warning-border bg-warning-subtle text-warning-foreground",
+  },
+  {
+    name: "caution",
+    solid: "bg-caution",
+    tint: "border-caution-border bg-caution-subtle text-caution-foreground",
   },
   {
     name: "danger",
@@ -66,9 +71,12 @@ const TYPE_SCALE = [
 
 const SAMPLE_STATES = [
   "running",
-  "available",
+  "associated",
+  "ACTIVE",
   "pending",
   "stopping",
+  "DEGRADED",
+  "impaired",
   "stopped",
   "failed",
   "terminated",
@@ -107,10 +115,15 @@ export function TokensSection() {
           </div>
         ))}
       </Specimen>
-      <Specimen label="StateBadge: AWS states mapped to tones">
+      <Specimen label="StateBadge: green settled, yellow changing, orange warning, red failed or stopped, grey gone; always lowercase">
         {SAMPLE_STATES.map((state) => (
           <StateBadge key={state} state={state} />
         ))}
+      </Specimen>
+      <Specimen label="StatusBadge: a status that is not an API state">
+        <StatusBadge tone="success">Healthy</StatusBadge>
+        <StatusBadge tone="caution">Degraded</StatusBadge>
+        <StatusBadge tone="muted">no</StatusBadge>
       </Specimen>
       <Specimen label="Chart palette">
         {CHARTS.map((chart) => (

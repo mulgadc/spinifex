@@ -24,7 +24,7 @@ All colours are OKLCH and come from mulgadc.com, so product and site match.
 | Token | Use |
 |---|---|
 | `background` | The app page. Warm off-white in light, ink `#14181D` in dark. |
-| `card`, `popover` | Raised surfaces. White in light, about `#1B2027` in dark. |
+| `card`, `popover` | Raised surfaces. White in light, about `#1B2027` in dark. `popover` is every floating surface: tooltips, popovers, menus and pickers. |
 | `muted`, `secondary`, `accent` | Hover rows, secondary buttons, quiet fills. |
 | `border` | Every divider and card edge. `#DCD8CE` in light, `oklch(1 0 0 / 8%)` in dark. |
 | `brand` | Brand orange `#EE4B12`, for the logo and decoration only. It fails text contrast, so it never carries text. |
@@ -39,15 +39,22 @@ Each status has a solid token plus `-foreground` (text on a tinted background), 
 
 | Status | Hue | AWS states |
 |---|---|---|
-| `success` | green | running, available, completed, healthy |
-| `warning` | brand yellow `#F5B500` | pending, stopping, creating, modifying, deleting, draining |
-| `danger` | cool red, hue 17 | stopped, error, failed, unhealthy, unavailable |
+| `success` | green | settled and good: running, available, active, associated, attached, in-use, healthy, ok, main |
+| `warning` | brand yellow `#F5B500` | changing state and will settle: pending, stopping, creating, modifying, deleting, draining |
+| `caution` | orange, hue 58 | works but needs attention: degraded, impaired, insufficient-data |
+| `danger` | cool red, hue 17 | stopped, error, failed, update-failed, unhealthy, unavailable, blackhole |
 | `info` | blue | informational notes |
-| `neutral` | grey `#9AA1A8` | terminated (muted text), and any unmapped state |
+| `neutral` | grey `#9AA1A8` | gone or absent (terminated, deleted, no) in muted text, and any unmapped state |
 
 `stopped` is danger because EC2 reads it that way, although RDS treats it as a resting state; splitting the map by service is its own change.
 
 `StateBadge` (`src/components/state-badge.tsx`) is the only mapping from an AWS state to a tone, and it exposes the result as `data-tone` for tests.
+Its tones are `success`, `progress` (the yellow `warning` token), `caution`, `danger`, `muted` and `neutral`.
+A `progress` state carries the submit button's spinning loader, so a launching instance reads as work under way; `StatusBadge` does not, because its yellow can mean waiting on the user, as a zone's `pending nameservers` does.
+It shows every state lowercase with hyphens, as EC2 writes them, so EKS's `ACTIVE` reads `active` and Bedrock's `IN_PROGRESS` reads `in-progress`; the API value, filters and CLI panels keep AWS's case.
+A good or settled state is always green, never grey, and a status that is not an API state, such as a cluster's health, uses `StatusBadge` with a tone rather than a `Badge`.
+The orange of `caution` is kept clear of the primary accent's hue, which marks actions and never a status.
+`Badge`'s default variant is the brand primary and is never used for a status; a label that is not a status, such as `default v3` or `Leader`, uses a `secondary` or `outline` `Badge`.
 Every status badge measures above 4.8:1 against its tinted background in both themes.
 
 **Danger is separated from the primary accent by hue alone in dark mode**: the two have the same lightness.
@@ -67,18 +74,21 @@ Colour is never the only key: label every series.
 | UI text, tables and forms | Geist (`font-sans`) |
 | IDs, ARNs, IPs, CIDRs, code and eyebrow labels | JetBrains Mono (`font-mono`), with `tabular-nums` for figures |
 
-| Step | Size | Use |
-|---|---|---|
-| `2xl` | 26px | page title (`PageHeading`) |
-| `xl` | 22px | section heading |
-| `lg` | 17px | |
-| `base` | 15px | |
-| `sm` | 14px | body and table default |
-| `xs` | 13px | badges, secondary text |
-| `2xs` | 12px | mono eyebrow labels |
+| Step | rem | At the default 16px browser font | Use |
+|---|---|---|---|
+| `2xl` | 1.625 | 28.6px | page title (`PageHeading`) |
+| `xl` | 1.375 | 24.2px | section heading |
+| `lg` | 1.0625 | 18.7px | |
+| `base` | 0.9375 | 16.5px | |
+| `sm` | 0.875 | 15.4px | body and table default |
+| `xs` | 0.8125 | 14.3px | badges, secondary text |
+| `2xs` | 0.75 | 13.2px | mono eyebrow labels |
 
-The scale sits a step above Tailwind's defaults, as consoles such as Vultr's do, because 13px body text read as cramped on a wide screen.
-Code blocks are set at 12px (`--text-code-block`) so a long command still fits.
+The root font size is 110% (`html` in `src/styles.css`), so one rem is 17.6px at the browser default.
+Everything is sized in rem, so text, spacing and breakpoints scale together, as they would at 110% browser zoom, and a user's own font-size setting still applies.
+The scale sits above Tailwind's defaults, as consoles such as Vultr's do, because the console read as small on a wide screen at 100%.
+Code blocks are set at 0.75rem (`--text-code-block`) so a long command still fits.
+Size new things in rem through the type and spacing scales, never in px, or they will not scale with the rest.
 
 ### Primary and contrast
 
@@ -169,6 +179,22 @@ Every other list is a `DataTable`, and the test also fails when an allowed file 
 | S13 | a component outside `ui/` renders a raw `<input>`, `<select>` or `<textarea>` |
 | S15 | a route imports the `ui/alert` primitive instead of using `ErrorBanner` |
 
+Rules that ADR-0016 does not yet number are named by what they hold until their amendment is accepted:
+
+| Rule | Fails when |
+|---|---|
+| status pills come from StateBadge or StatusBadge | a component outside `ui/` renders `<Badge>` with the default variant |
+| status pills come from StateBadge or StatusBadge | a file outside `state-badge.tsx` builds a `rounded-full` pill on a status colour |
+| floating surfaces follow the theme | a file fills with `bg-foreground` or `text-background`, or a tooltip, popover, hover card, menu, select or combobox is not on `bg-popover` and `text-popover-foreground` |
+| expanding a panel keeps its tab | a `fullPage` link does not pass `search={{ tab }}` |
+| resource tags are edited in place | `PanelTags` or `TagsEditor` comes back |
+| lists filter through one FilterBar | a component other than `FilterBar` imports `ui/toggle-group` |
+| a component handed a form reads errors through `useFormState` | a file typed with `UseFormReturn` reads `form.formState` |
+
+The last one matters because the console builds with the React compiler and the unit tests run without it.
+With the compiler on, a child handed a react-hook-form object is cached on that object, whose identity never changes, so errors read from `form.formState` never draw and the submit looks dead.
+`useFormState({ control })` subscribes the child itself.
+
 An exception is named in that rule's allowlist with its reason, and the test fails when an allowed file stops needing it.
 S11, S14 and S16 are held by review, since none has a shape in the source a test can read without false alarms.
 
@@ -177,7 +203,7 @@ S11, S14 and S16 are held by review, since none has a shape in the source a test
 `src/lib/nav.ts` is the one description of the console's navigation.
 The sidebar, the command palette and the breadcrumbs all read it, and `nav.test.ts` checks every destination against the generated route tree, so a renamed route fails a test rather than leaving a dead link.
 
-- **Sidebar.** Groups take generic names rather than AWS's service marks: Compute, Databases, Authentication and Object Storage, not EC2, RDS, IAM and S3. Pages and the rest of the console keep the AWS names, and each group's `service` keeps its AWS name findable in the command palette, where typing it exactly ranks that group first. Each service group folds, and a folded group stays folded across reloads (`localStorage["spinifex-ui-nav-collapsed"]`). Navigating into a folded group unfolds it so the active item shows, and it can then be folded again, the current group included. On a phone the sidebar is a sheet, and any navigation closes it.
+- **Sidebar.** Groups take generic names rather than AWS's service marks: Compute, Databases, Authentication and Object Storage, not EC2, RDS, IAM and S3. Pages and the rest of the console keep the AWS names, and each group's `service` keeps its AWS name findable in the command palette, where typing it exactly ranks that group first. Each service group folds, and a folded group stays folded across reloads (`localStorage["spinifex-ui-nav-collapsed"]`). Navigating into a folded group unfolds it so the active item shows, and it can then be folded again, the current group included. Folding animates through the `nav` variant of `CollapsibleContent`, opening over 200ms and closing over 150ms, and switches at once under reduced motion. On a phone the sidebar is a sheet, and any navigation closes it.
 - **Command palette.** ⌘K or Ctrl K, or the Search button in the header. It lists every page the user can reach, every create flow (`create` on a nav item), and a theme toggle. It is navigation only, with no resource search yet.
 - **Breadcrumbs.** Service, then list page, then the resource or the create flow. A resource ID is set in mono. On a phone only the last crumb shows.
 - **Sign in.** The sign-in card sits over the shell on a light, barely blurred overlay rather than on a page of its own, so the console stays in view. The shell behind it is `inert`, which keeps pointer, keyboard and screen reader out of it until the user signs in.
@@ -202,8 +228,13 @@ So columns drop out when a side panel narrows the list as well as on a small scr
 List pages keep their filter, state and sort in the URL, so a filtered view can be bookmarked, shared and survives a reload.
 EC2 Instances is the reference page (`ec2/(instances)/-components/instances-page.tsx`):
 
-- The first column names the resource: the `Name` tag in the primary colour, with the ID in mono beneath it, opening its side panel.
+- The first column is the instance ID in mono, opening its side panel, and the second its `Name` tag.
+- A long value ends in an ellipsis and shows in full on hover (`TruncatedText`), so it never widens its column.
+- A time column shows a relative time, `33 min ago` or `8 months ago`, with the full timestamp on hover (`RelativeTime`).
+- A Tags column shows one tag key as a pill and `+N` for the rest, and hover lists every tag with its value (`TagPills`); it leaves out `Name`, which has its own column.
+- Below `md`, only the ID, Name and State columns remain.
 - Bulk actions appear above the table once a row is selected. Each action counts only the selected instances it applies to, so a mixed selection never sends a call that must fail, and Terminate asks first and lists every ID.
+- Search and state filters sit in one `FilterBar` (`src/components/filter-bar.tsx`) above the table: a search box, an optional set of choices with counts, and Clear filters while anything is filtered.
 - An empty account gets a call to action, and an empty filter result says the filters are why.
 
 VPCs and Internet gateways follow the same pattern.
@@ -218,6 +249,12 @@ Every list with a delete action has row checkboxes. Selecting a row shows `Selec
 - **No pre-filtering.** The bar sends what was selected and lets AWS refuse, rather than guessing which deletes would fail. Instances are the exception, since one call takes many IDs and a mixed selection would fail as a whole.
 - **The bulk delete and the panel's delete are the same function.** Where a single delete is several calls, such as removing dependants first, the sequence lives in one place and both use it.
 - The verb follows the AWS console: Release for an Elastic IP, Deregister for an image.
+
+### Lists inside a panel
+
+A list inside a panel tab, such as a hosted zone's records, is a `DataTable` with row checkboxes, and a click on a row opens it for editing in a `FormPanel`.
+Rows the user cannot change, such as a zone's own SOA and NS, are muted and cannot be selected (`isRowActionable`).
+A batch delete uses the service's batch call where it has one, so Route 53 removes the whole selection in one `ChangeResourceRecordSets`.
 
 ### Typed confirmation
 
@@ -264,12 +301,23 @@ Modelled on UniFi's console: a click on a row opens the resource in a panel besi
 - **URL.** The panel is search state on the list route: `selected=<id>`, `tab=overview|monitoring|settings`, and `create=true`. Defaults are stripped, so a closed panel leaves the plain list address. Opening or closing a panel pushes a history entry, so Back closes it; a tab or filter change replaces the entry.
 - **Layout.** From `lg` (1024px) the panel is fixed to the right edge, full height below the header, flush with no outer margin, and it slides in over the list. The list keeps its width and columns underneath, so nothing reflows when a panel opens, and a soft gradient on the panel's left edge reads as the panel lying on top. Below `lg` there is no room to share, so the panel replaces the list as a full page with a back arrow. `useWideLayout` decides, through `matchMedia`.
 - **`DetailPanel`.** A header with the resource's own page (left) and close (right), the title and its ID, a summary of state and quick actions, then icon tabs with tooltips. Escape closes it unless a dialog or menu is open over it. Closing slides the panel out over 150ms, or at once under reduced motion. Each tab, and a create form, sits in its own error boundary, so a failed query shows in the panel and the list keeps working.
-- **Contents.** `PanelSection` is a folding card, `PanelFields` and `PanelField` a label and value list, with `copy` for a one-click copy of IDs and addresses, and `PanelTags` the tag list. Create forms take an `onClose(id?)` prop: embedded, they hide their back link and heading, and a create selects the new resource.
+- **Contents.** `PanelSection` is a folding card, `PanelFields` and `PanelField` a label and value list, with `copy` for a one-click copy of IDs and addresses, and `InlineTags` the tag list. Create forms take an `onClose(id?)` prop: embedded, they hide their back link and heading, and a create selects the new resource.
 - **One component is both the panel and the page.** Each resource has a single details component (`InstanceDetails`, `VpcDetails`, `InternetGatewayDetails`) that takes `layout="auto" | "page"`. The list renders it as the panel; `/ec2/describe-instances/$id` and its kind render the same component as a page, as one centred column under a standard left-aligned heading, with state and actions on the right and text tabs. A feature added to the panel is on the page by construction, and the page ignores Escape and has a back arrow in place of close. Expanding the panel to its page keeps the tab, and query results such as fetched console output come along from the cache.
 - **A click on the list's background closes the panel**, as UniFi's does. A row selects another resource instead, and links, buttons and inputs keep their own behaviour. Selecting rows for a bulk action closes it too, so the bulk bar and the panel never compete.
 - **Actions.** State actions sit in the summary as a button group, and the rest go in an Actions menu, Unikraft style. Stop, Reboot and every destructive action confirm in a dialog.
 - **Loading.** A panel or page still loading shows `PanelSpinner`, a centred spinner on the background, not a grey skeleton block.
 - **`DetailCard`, `DetailRow` and `ListCard` are retired.** Every resource page uses the panel sections instead.
+
+### Tags
+
+`InlineTags` (`src/components/inline-tags.tsx`) shows a resource's tags in its panel and edits them in place.
+Each row has a pencil, which turns the key and value into inputs and becomes a tick to save, and a bin to remove the tag; `+ Add tag` appends a row being edited.
+Enter saves and Escape cancels the row without closing the panel.
+Every row saves on its own request through the service's own tagging call, and a failure shows beside its row.
+AWS has no rename, so changing a key puts the new key and then removes the old one, and a failure between the two leaves both rather than neither.
+Keys are 1 to 128 characters with no `aws:` prefix and no duplicates, and values up to 256.
+Without `onPut` and `onRemove` it is read-only, as for a system image or an AWS-managed policy.
+Panels use the per-service wrappers in `src/components/resource-tags.tsx` and the writers in `src/mutations/tags.ts` rather than wiring the calls themselves.
 
 ### Forms from a resource's panel
 
@@ -285,8 +333,16 @@ Every create flow opens in the side panel over its list, through `CreatePanel`, 
 
 - **URL.** `create=true` opens it, plus a list-local field where the flow needs context (`volume` for a snapshot, `instance` for an RDS snapshot, `launch=service|task` on ECS clusters). The old `create-*` addresses redirect to the list with the panel open, so links and bookmarks keep working.
 - **Form.** The fields come in the order AWS asks for them. Settings that are on or off are `Switch`es, and a multi-select picker (subnets, security groups) is a `SwitchList`, a boxed list with one switch per row. Checkboxes only select table rows.
-- **CLI.** Every create form ends with a `CliCommandPanel` showing the AWS CLI commands that send the same request, built from the form's live values and only the flags the console actually sends.
-- **Submit.** `FormActions` turns the submit button into a spinner with its pending label in place, and `FormLock`, a native `<fieldset disabled>`, disables every control above it until the request settles. Nothing above the form appears or moves, and the panel does not scroll.
+- **CLI.** Every create form ends with a `CliCommandPanel` showing the AWS CLI commands that send the same request, built from the form's live values and only the flags the console actually sends. The commands wrap to the panel's width and never scroll sideways; Copy takes the unwrapped text.
+- **Sections.** Related fields are grouped in `PanelSection` boxes, as the instance launch form groups Image, Instance, Network and Root volume.
+- **Nothing to pick, no field.** An optional picker with nothing usable to choose, such as Launch Template or Placement Group with none available, is left out of the form rather than shown holding only `none`.
+- **Advanced settings.** Settings most users leave at their defaults sit in a collapsed Advanced settings section, which opens by itself when a field inside it fails validation.
+- **Choices with a mark.** A few named products, such as database engines or distributions, are `ChoiceTile`s with the product's own mark from `src/assets/`, not a select. One that cannot be used stays visible and disabled, saying why.
+- **Durations and windows.** A duration is a select of presets with the AWS default first and named (`Auto (5 min)` for a record's TTL), keeping a custom value the API returned. A time window, such as an RDS backup or maintenance window, is a day, start time and length picker that refuses an overlap before submitting.
+- **Labels by type.** Where one field means different things by type, its label follows the type, as a record's value reads `IPv4 address` for A and `Mail server` for MX.
+- **Long pickers.** A `SwitchList` that can run long, such as security groups, scrolls inside its box rather than pushing the form down.
+- **Help.** A field's longer explanation goes in an (i) beside its label, through the `info` prop of `TextField` and `SelectField`, rather than in text under the field. Text under a field is for what the user must know before submitting.
+- **Submit.** `FormActions` cross-fades the submit label into a spinner with its pending label over 150ms, at one width, so the button never changes size, and `FormLock`, a native `<fieldset disabled>`, disables every control above it until the request settles. Nothing above the form appears or moves, and the panel does not scroll.
 - **Failure.** A refused request shows beside the button through `FormActions`'s `error`, and the form unlocks. The handler wraps only the mutation call in `try`, with an empty `catch` that returns, because react-hook-form rethrows whatever the handler throws and the error is already on screen from the mutation's state.
 - **Success.** `onClose(id)` closes the panel and selects the new resource, where the list has a panel to select it in.
 - **Appliance images.** A create that needs an ECS, EKS or RDS appliance image shows the missing-image callout inside its panel, never on the list, and only the step that needs the image is blocked.
@@ -306,6 +362,7 @@ A gap of more than three sample periods breaks the line rather than drawing acro
 ## Dates
 
 `formatDateTime` writes the AWS console's form in the viewer's zone, `2026/06/04 02:00 GMT-5`, with a 24-hour clock and UTC as plain `GMT`.
+In a table the time is relative (`relativeTime` in `src/lib/relative-time.ts`), rounded down to the largest whole unit, and the full form shows on hover.
 
 ## Testing
 

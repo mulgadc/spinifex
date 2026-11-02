@@ -194,6 +194,7 @@ export function KnowledgeBaseDetails({
             aria-label="Open knowledge base page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ knowledgeBaseId }}
+            search={{ tab }}
             to="/bedrock/list-knowledge-bases/$knowledgeBaseId"
           >
             <Maximize2 />

@@ -11,10 +11,10 @@ import {
   PanelFields,
   PanelSection,
   PanelSpinner,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { IamTags } from "@/components/resource-tags"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
@@ -182,7 +182,13 @@ function Tags({ instanceProfileName }: { instanceProfileName: string }) {
     iamInstanceProfileQueryOptions(instanceProfileName),
   )
 
-  return <PanelTags tags={data.InstanceProfile?.Tags} />
+  return (
+    <IamTags
+      id={instanceProfileName}
+      kind="instance-profile"
+      tags={data.InstanceProfile?.Tags}
+    />
+  )
 }
 
 function Overview({ profile }: { profile: InstanceProfile }) {
@@ -290,6 +296,7 @@ export function InstanceProfileDetails({
             aria-label="Open instance profile page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ instanceProfileName }}
+            search={{ tab }}
             to="/iam/list-instance-profiles/$instanceProfileName"
           >
             <Maximize2 />

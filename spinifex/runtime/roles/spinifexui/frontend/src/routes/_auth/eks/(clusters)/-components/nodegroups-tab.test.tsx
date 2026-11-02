@@ -76,7 +76,7 @@ describe("NodegroupsTab", () => {
       seed(),
     )
     expect(screen.getByText("ng-1")).toBeInTheDocument()
-    expect(screen.getByText("ACTIVE")).toBeInTheDocument()
+    expect(screen.getByText("active")).toBeInTheDocument()
     expect(screen.getByText("1 / 2 / 3")).toBeInTheDocument()
   })
 

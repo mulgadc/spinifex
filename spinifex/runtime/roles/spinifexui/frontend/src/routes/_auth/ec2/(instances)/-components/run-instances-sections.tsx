@@ -20,7 +20,9 @@ import {
   useWatch,
 } from "react-hook-form"
 
+import { ChoiceTile, ChoiceTiles } from "@/components/choice-tile"
 import { PanelSection } from "@/components/detail-panel"
+import { TextField } from "@/components/form-fields"
 import { GpuInstanceTypeSelect } from "@/components/gpu-instance-type-select"
 import { InfoTip } from "@/components/info-tip"
 import { SecurityGroupPicker } from "@/components/security-group-picker"
@@ -47,7 +49,6 @@ import { formatVRAMMiB } from "@/lib/utils"
 import { ec2LaunchTemplateVersionsQueryOptions } from "@/queries/ec2"
 import { type CreateInstanceFormData, VOLUME_TYPES } from "@/types/ec2"
 
-import { ChoiceTile, ChoiceTiles } from "./choice-tile"
 import { ImagePicker } from "./image-picker"
 import { LocationTile } from "./location-tile"
 import {
@@ -65,6 +66,7 @@ const MAX_VOLUME_SIZE_GIB = 16_384
 const DEFAULT_SUBNET = "default"
 
 const INBOUND_RULE_SWITCHES = [
+  { name: "allowPing", label: "Allow ping", text: "Ping (ICMP echo request)" },
   { name: "allowSsh", label: "Allow SSH", text: "SSH (tcp/22)" },
   { name: "allowHttp", label: "Allow HTTP", text: "HTTP (tcp/80)" },
   { name: "allowHttps", label: "Allow HTTPS", text: "HTTPS (tcp/443)" },
@@ -358,6 +360,7 @@ interface InstanceSectionProps {
   instanceTypeCapacity: Record<string, number>
   keyPairs: readonly KeyPairInfo[]
   placementGroups: readonly PlacementGroup[]
+  register: FormRegister
 }
 
 export function InstanceSection({
@@ -372,10 +375,21 @@ export function InstanceSection({
   instanceTypeCapacity,
   keyPairs,
   placementGroups,
+  register,
 }: InstanceSectionProps) {
   return (
     <PanelSection title="Instance">
       <div className="flex flex-col gap-4">
+        <TextField
+          autoComplete="off"
+          error={errors.name}
+          id="instance-name"
+          info="A Name tag, to tell instances apart in lists and search."
+          label="Name (optional)"
+          placeholder="web-1"
+          {...register("name")}
+        />
+
         <InstanceTypeField
           allInstanceTypes={allInstanceTypes}
           arch={arch}
@@ -402,7 +416,7 @@ export function InstanceSection({
 
 type InstanceTypeFieldProps = Omit<
   InstanceSectionProps,
-  "countField" | "keyPairs" | "placementGroups"
+  "countField" | "keyPairs" | "placementGroups" | "register"
 >
 
 function InstanceTypeField({
@@ -530,6 +544,15 @@ function PlacementGroupField({
   control: FormControl
   placementGroups: readonly PlacementGroup[]
 }) {
+  // Only an available group takes a launch, and with none the field is noise.
+  const usable = placementGroups.filter(
+    (pg) => pg.State === undefined || pg.State === "available",
+  )
+
+  if (usable.length === 0) {
+    return null
+  }
+
   return (
     <Field>
       <FieldTitle>
@@ -550,7 +573,7 @@ function PlacementGroupField({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="none">none</SelectItem>
-              {placementGroups.map((pg) => (
+              {usable.map((pg) => (
                 <SelectItem key={pg.GroupId} value={pg.GroupName ?? ""}>
                   {pg.GroupName} ({pg.Strategy})
                 </SelectItem>

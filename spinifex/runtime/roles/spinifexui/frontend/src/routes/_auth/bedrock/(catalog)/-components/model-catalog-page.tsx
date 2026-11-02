@@ -7,6 +7,7 @@ import {
   type SortState,
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
+import { type StateTone, StatusBadge } from "@/components/state-badge"
 import { Badge } from "@/components/ui/badge"
 import { formatVRAMMiB } from "@/lib/utils"
 import {
@@ -71,18 +72,17 @@ const AVAILABILITY_HINT = {
   "no-credential": "Add a provider credential to enable this model",
 } satisfies Record<CatalogAvailability, string | undefined>
 
-function availabilityVariant(
-  availability: CatalogAvailability,
-): "default" | "secondary" | "destructive" {
+// Ungranted is a choice; the other two need an operator to act.
+function availabilityTone(availability: CatalogAvailability): StateTone {
   if (availability === "available") {
-    return "default"
+    return "success"
   }
 
   if (availability === "ungranted") {
-    return "secondary"
+    return "neutral"
   }
 
-  return "destructive"
+  return "caution"
 }
 
 function AvailabilityCell({
@@ -94,9 +94,9 @@ function AvailabilityCell({
 
   return (
     <div>
-      <Badge variant={availabilityVariant(availability)}>
+      <StatusBadge tone={availabilityTone(availability)}>
         {AVAILABILITY_LABEL[availability]}
-      </Badge>
+      </StatusBadge>
       {hint && <p className="mt-1 text-2xs text-muted-foreground">{hint}</p>}
     </div>
   )

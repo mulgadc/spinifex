@@ -9,7 +9,7 @@ import {
   PanelFields,
   PanelSection,
 } from "@/components/detail-panel"
-import { Badge } from "@/components/ui/badge"
+import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { useDeleteAddon } from "@/mutations/eks"
 import {
@@ -17,7 +17,6 @@ import {
   eksAddonsQueryOptions,
   eksAddonVersionsQueryOptions,
 } from "@/queries/eks"
-import { addonStatusVariant } from "@/types/eks"
 
 import { AddAddonForm } from "./add-addon-form"
 import { UpdateAddonForm } from "./update-addon-form"
@@ -62,9 +61,7 @@ function AddonRow({
           {addonName}
         </span>
         <div className="flex items-center gap-1">
-          <Badge variant={addonStatusVariant(addon?.status)}>
-            {addon?.status ?? "UNKNOWN"}
-          </Badge>
+          <StateBadge state={addon?.status ?? "UNKNOWN"} />
           <Button
             aria-label="Update add-on"
             onClick={() => {

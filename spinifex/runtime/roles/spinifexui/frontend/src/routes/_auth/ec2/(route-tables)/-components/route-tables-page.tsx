@@ -13,7 +13,7 @@ import {
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
 import { SelectionBar } from "@/components/selection-bar"
-import { Badge } from "@/components/ui/badge"
+import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
 import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
@@ -65,9 +65,9 @@ const COLUMNS: DataColumn<RouteTable>[] = [
     sortValue: (rtb) => (isMainRouteTable(rtb) ? 1 : 0),
     cell: (rtb) =>
       isMainRouteTable(rtb) ? (
-        <Badge variant="secondary">Main</Badge>
+        <StateBadge state="main" />
       ) : (
-        <span className="text-muted-foreground">No</span>
+        <StateBadge state="no" />
       ),
   },
   {

@@ -9,6 +9,8 @@ import { type DataColumn, DataTable } from "@/components/data-table"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { PanelSection } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
+import { StateBadge } from "@/components/state-badge"
+import { TruncatedText } from "@/components/table-cells"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
@@ -61,15 +63,22 @@ function routeColumns(
       id: "target",
       header: "Target",
       cell: (route) => (
-        <span className="font-mono text-xs break-all">
-          {routeTarget(route)}
-        </span>
+        <TruncatedText
+          className="max-w-32 font-mono text-xs"
+          text={routeTarget(route)}
+        />
       ),
     },
-    { id: "state", header: "Status", cell: (route) => route.State ?? "—" },
     {
+      id: "state",
+      header: "Status",
+      cell: (route) => <StateBadge state={route.State} />,
+    },
+    {
+      // The delete button carries its own label, and a header word would push
+      // the column past a panel's width.
       id: "actions",
-      header: "Actions",
+      header: "",
       align: "end",
       cell: (route) => {
         const cidr = route.DestinationCidrBlock

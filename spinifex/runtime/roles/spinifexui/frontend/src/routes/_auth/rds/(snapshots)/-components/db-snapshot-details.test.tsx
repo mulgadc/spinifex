@@ -174,8 +174,11 @@ describe("DBSnapshotDetails", () => {
       qc: seed({ tags: [{ Key: "env", Value: "prod" }] }),
     })
     await waitFor(() => {
-      expect(screen.getByDisplayValue("env")).toBeInTheDocument()
+      expect(screen.getByText("env")).toBeInTheDocument()
     })
-    expect(screen.getByDisplayValue("prod")).toBeInTheDocument()
+    expect(screen.getByText("prod")).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Edit tag env" }),
+    ).toBeInTheDocument()
   })
 })

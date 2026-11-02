@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { diffTags, tagSchema, toSdkTags } from "./tags"
+import { tagSchema, toSdkTags } from "./tags"
 
 describe("tagSchema", () => {
   // AWS accepts a key of 1-128 characters and a value of 0-256.
@@ -32,32 +32,5 @@ describe("toSdkTags", () => {
   it("returns undefined when no keyed rows remain", () => {
     expect(toSdkTags([])).toBeUndefined()
     expect(toSdkTags([{ key: "", value: "" }])).toBeUndefined()
-  })
-})
-
-describe("diffTags", () => {
-  it("sets the whole desired set and removes only the keys that went away", () => {
-    expect(
-      diffTags(
-        [
-          { key: "env", value: "staging" },
-          { key: "owner", value: "alice" },
-        ],
-        ["env", "team"],
-      ),
-    ).toStrictEqual({
-      toSet: [
-        { Key: "env", Value: "staging" },
-        { Key: "owner", Value: "alice" },
-      ],
-      toRemove: ["team"],
-    })
-  })
-
-  it("removes every prior key when the desired set is empty", () => {
-    expect(diffTags([], ["env", "team"])).toStrictEqual({
-      toSet: undefined,
-      toRemove: ["env", "team"],
-    })
   })
 })

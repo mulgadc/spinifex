@@ -6,6 +6,7 @@ import {
   Controller,
 } from "react-hook-form"
 
+import { InfoTip } from "@/components/info-tip"
 import { type PickerNotice, PickerNoticeText } from "@/components/picker-notice"
 import {
   Field,
@@ -43,10 +44,29 @@ export interface SelectFieldProps<T extends FieldValues> {
   // an inert dropdown does not say what it is.
   notice?: PickerNotice
   description?: ReactNode
+  // An (i) beside the label, for help that would otherwise crowd the form.
+  info?: ReactNode
   // Rendered under the control, for a change whose cost the user should see
   // before submitting rather than after.
   warning?: ReactNode
   onValueChange?: (value: string) => void
+}
+
+export function FieldLabel({
+  id,
+  label,
+  info,
+}: {
+  id: string
+  label: string
+  info?: ReactNode
+}) {
+  return (
+    <FieldTitle>
+      <label htmlFor={id}>{label}</label>
+      {info && <InfoTip label={label}>{info}</InfoTip>}
+    </FieldTitle>
+  )
 }
 
 // The base-ui Select is not a native input and cannot be wired up with
@@ -60,6 +80,7 @@ export function SelectField<T extends FieldValues>({
   placeholder,
   notice,
   description,
+  info,
   warning,
   onValueChange,
 }: SelectFieldProps<T>) {
@@ -82,9 +103,7 @@ export function SelectField<T extends FieldValues>({
 
         return (
           <Field>
-            <FieldTitle>
-              <label htmlFor={id}>{label}</label>
-            </FieldTitle>
+            <FieldLabel id={id} info={info} label={label} />
             {notice ? (
               <PickerNoticeText notice={notice} />
             ) : (
@@ -126,6 +145,7 @@ type TextFieldProps = ComponentProps<typeof Input> & {
   label: string
   error?: { message?: string }
   description?: ReactNode
+  info?: ReactNode
   warning?: ReactNode
 }
 
@@ -136,14 +156,13 @@ export function TextField({
   label,
   error,
   description,
+  info,
   warning,
   ...inputProps
 }: TextFieldProps) {
   return (
     <Field>
-      <FieldTitle>
-        <label htmlFor={id}>{label}</label>
-      </FieldTitle>
+      <FieldLabel id={id} info={info} label={label} />
       <Input aria-invalid={!!error} id={id} {...inputProps} />
       {description && <FieldDescription>{description}</FieldDescription>}
       {warning && <p className="text-xs text-warning-foreground">{warning}</p>}

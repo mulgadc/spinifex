@@ -8,9 +8,9 @@ import {
   PanelField,
   PanelFields,
   PanelSection,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { Ec2Tags } from "@/components/resource-tags"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
@@ -50,7 +50,11 @@ function Settings({
 
   return (
     <>
-      <PanelTags tags={keyPair.Tags} />
+      <Ec2Tags
+        id={keyPair.KeyPairId}
+        invalidate={["ec2", "keypairs"]}
+        tags={keyPair.Tags}
+      />
       <PanelSection title="Manage">
         <div className="flex flex-col items-start gap-3">
           <Button
@@ -109,6 +113,7 @@ export function KeyPairDetails({
             aria-label="Open key pair page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ id }}
+            search={{ tab }}
             to="/ec2/describe-key-pairs/$id"
           >
             <Maximize2 />

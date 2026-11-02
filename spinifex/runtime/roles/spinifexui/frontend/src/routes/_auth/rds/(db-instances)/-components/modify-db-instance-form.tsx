@@ -38,6 +38,10 @@ import {
   parameterGroupsForEngine,
 } from "../../-components/rds-form-fields"
 import {
+  BackupWindowField,
+  MaintenanceWindowField,
+} from "../../-components/window-fields"
+import {
   ApplyImmediatelyField,
   currentSecurityGroupIds,
   InstanceSecurityGroupsField,
@@ -231,20 +235,16 @@ export function ModifyDBInstanceForm({
             {...register("backupRetentionPeriod", { valueAsNumber: true })}
           />
 
-          <TextField
-            error={errors.preferredBackupWindow}
+          <BackupWindowField
+            control={control}
             id="modify-backup-window"
-            label="Preferred backup window"
-            placeholder="hh24:mi-hh24:mi in UTC"
-            {...register("preferredBackupWindow")}
+            name="preferredBackupWindow"
           />
 
-          <TextField
-            error={errors.preferredMaintenanceWindow}
+          <MaintenanceWindowField
+            control={control}
             id="modify-maintenance-window"
-            label="Preferred maintenance window"
-            placeholder="ddd:hh24:mi-ddd:hh24:mi in UTC"
-            {...register("preferredMaintenanceWindow")}
+            name="preferredMaintenanceWindow"
           />
 
           <TextField

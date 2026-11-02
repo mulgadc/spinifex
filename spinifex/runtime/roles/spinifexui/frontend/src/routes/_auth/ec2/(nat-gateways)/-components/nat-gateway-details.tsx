@@ -8,9 +8,9 @@ import {
   PanelField,
   PanelFields,
   PanelSection,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
@@ -108,7 +108,11 @@ function Settings({
 
   return (
     <>
-      <PanelTags tags={nat.Tags} />
+      <Ec2Tags
+        id={nat.NatGatewayId}
+        invalidate={["ec2", "natGateways"]}
+        tags={nat.Tags}
+      />
       <PanelSection title="Manage">
         <Button
           disabled={isGone(nat) || remove.isPending}

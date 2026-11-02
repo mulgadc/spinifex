@@ -2,6 +2,7 @@ import { useId, type ReactNode } from "react"
 
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { cn } from "@/lib/utils"
 
 export interface SwitchListItem {
   id: string
@@ -18,6 +19,9 @@ interface SwitchListProps {
   // Prefixes each row's accessible name, as in "Subnet subnet-0abc".
   itemLabel: string
   mono?: boolean
+  // Caps the box at about five rows and scrolls the rest, for lists that grow
+  // with the account, such as security groups.
+  scroll?: boolean
 }
 
 // A boxed multi-select, one switch per row, for picking subnets, security
@@ -29,6 +33,7 @@ export function SwitchList({
   emptyText,
   itemLabel,
   mono = true,
+  scroll = false,
 }: SwitchListProps) {
   const baseId = useId()
 
@@ -39,7 +44,13 @@ export function SwitchList({
   const chosen = new Set(selected)
 
   return (
-    <ul className="divide-y rounded-md border bg-background/40">
+    <ul
+      className={cn(
+        "divide-y rounded-md border bg-background/40",
+        scroll && "max-h-64 overflow-y-auto",
+      )}
+      data-scroll={scroll ? "" : undefined}
+    >
       {items.map((item, index) => {
         const id = `${baseId}-${index}`
 

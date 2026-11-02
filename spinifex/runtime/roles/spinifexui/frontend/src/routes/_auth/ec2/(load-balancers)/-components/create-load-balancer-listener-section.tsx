@@ -4,7 +4,7 @@ import type {
   SslPolicy,
   TargetGroup,
 } from "@aws-sdk/client-elastic-load-balancing-v2"
-import { Controller, type UseFormReturn } from "react-hook-form"
+import { Controller, type UseFormReturn, useFormState } from "react-hook-form"
 
 import { TargetGroupForm } from "@/components/elbv2/target-group-form"
 import { Button } from "@/components/ui/button"
@@ -45,10 +45,8 @@ function SecureListenerFields({
   sslPolicies,
   onImportCertificate,
 }: SecureListenerFieldsProps) {
-  const {
-    control,
-    formState: { errors },
-  } = form
+  const { control } = form
+  const { errors } = useFormState({ control })
 
   return (
     <>
@@ -140,10 +138,8 @@ function ExistingTargetGroupField({
   form: LbForm
   vpcTgs: TargetGroup[]
 }) {
-  const {
-    control,
-    formState: { errors },
-  } = form
+  const { control } = form
+  const { errors } = useFormState({ control })
 
   return (
     <Field>
@@ -217,11 +213,8 @@ export function CreateLoadBalancerListenerSection({
   onProtocolChange,
   onImportCertificate,
 }: CreateLoadBalancerListenerSectionProps) {
-  const {
-    control,
-    register,
-    formState: { errors },
-  } = form
+  const { control, register } = form
+  const { errors } = useFormState({ control })
 
   return (
     <div className="space-y-4 rounded-md border bg-card p-4">

@@ -64,6 +64,17 @@ function subnetSwitch(subnetId: string): HTMLElement {
 }
 
 describe("CreateDBSubnetGroupPage", () => {
+  it.each(["Details", "Subnets", "Tags"])(
+    "groups the form under an open %s section",
+    (title) => {
+      renderWithClient(<CreateDBSubnetGroupPage onClose={onClose} />, seed())
+      expect(screen.getByRole("button", { name: title })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      )
+    },
+  )
+
   it("groups the subnets by VPC", () => {
     renderWithClient(<CreateDBSubnetGroupPage onClose={onClose} />, seed())
     expect(screen.getByText(/vpc-1 \(prod\)/)).toBeInTheDocument()

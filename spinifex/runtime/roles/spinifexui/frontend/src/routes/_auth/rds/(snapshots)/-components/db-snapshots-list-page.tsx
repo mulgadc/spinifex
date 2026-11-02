@@ -10,11 +10,12 @@ import {
   DataTable,
   type SortState,
 } from "@/components/data-table"
+import { FilterBar } from "@/components/filter-bar"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
 import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
-import { Button, buttonVariants } from "@/components/ui/button"
+import { buttonVariants } from "@/components/ui/button"
 import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
@@ -25,10 +26,27 @@ import { CreateDBSnapshotPage } from "./create-db-snapshot-page"
 import { DBSnapshotDetails } from "./db-snapshot-details"
 
 const TYPE_FILTERS = [
-  { value: "", label: "All types" },
+  { value: "all", label: "All" },
   { value: SNAPSHOT_TYPE_MANUAL, label: "Manual" },
   { value: SNAPSHOT_TYPE_AUTOMATED, label: "Automated" },
 ] as const
+
+type TypeFilter = (typeof TYPE_FILTERS)[number]["value"]
+
+function matchesType(snapshot: DBSnapshot, filter: TypeFilter): boolean {
+  return filter === "all" || snapshot.SnapshotType === filter
+}
+
+// Searches what a customer would recognise a snapshot by.
+function matchesQuery(snapshot: DBSnapshot, query: string): boolean {
+  const needle = query.trim().toLowerCase()
+
+  return [
+    snapshot.DBSnapshotIdentifier,
+    snapshot.DBInstanceIdentifier,
+    engineLabel(snapshot),
+  ].some((field) => field?.toLowerCase().includes(needle))
+}
 
 function engineLabel(snapshot: DBSnapshot): string {
   return [snapshot.Engine, snapshot.EngineVersion].filter(Boolean).join(" ")
@@ -132,11 +150,20 @@ export function DBSnapshotsListPage({
   onSearchChange,
 }: DBSnapshotsListPageProps) {
   const [sort, setSort] = useState<SortState>()
-  const [typeFilter, setTypeFilter] = useState<string>("")
+  const [query, setQuery] = useState("")
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all")
 
-  const visible = snapshots.filter(
-    (snapshot) => typeFilter === "" || snapshot.SnapshotType === typeFilter,
+  const searched = snapshots.filter((snapshot) => matchesQuery(snapshot, query))
+
+  const visible = searched.filter((snapshot) =>
+    matchesType(snapshot, typeFilter),
   )
+
+  const typeChoices = TYPE_FILTERS.map((filter) => ({
+    ...filter,
+    count: searched.filter((snapshot) => matchesType(snapshot, filter.value))
+      .length,
+  }))
 
   // Looked up in every snapshot, so a filter never closes an open panel.
   const open = snapshots.find(
@@ -207,19 +234,17 @@ export function DBSnapshotsListPage({
         title="Snapshots"
       />
 
-      <div className="mb-4 flex items-center gap-2">
-        {TYPE_FILTERS.map((filter) => (
-          <Button
-            key={filter.value}
-            onClick={() => {
-              setTypeFilter(filter.value)
-            }}
-            size="sm"
-            variant={typeFilter === filter.value ? "default" : "outline"}
-          >
-            {filter.label}
-          </Button>
-        ))}
+      <div className="mb-4">
+        <FilterBar
+          choice={typeFilter}
+          choices={typeChoices}
+          choicesLabel="Snapshot type"
+          onChoiceChange={setTypeFilter}
+          onQueryChange={setQuery}
+          placeholder="Filter by identifier, DB instance or engine"
+          query={query}
+          searchLabel="Filter snapshots"
+        />
       </div>
 
       {selection.ids.length > 0 && (
@@ -250,12 +275,6 @@ export function DBSnapshotsListPage({
         selected={selection.selected}
         sort={sort}
       />
-
-      <p className="mt-4 text-xs text-muted-foreground">
-        Automated backups live in the reserved rds: namespace and cannot be
-        deleted by hand — the instance&apos;s backup retention is what removes
-        them.
-      </p>
     </ResourceView>
   )
 }

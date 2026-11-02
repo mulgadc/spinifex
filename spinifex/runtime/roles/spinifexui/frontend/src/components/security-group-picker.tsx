@@ -56,6 +56,7 @@ export function SecurityGroupPicker({
         detail: group.Description,
       }))}
       onChange={onChange}
+      scroll
       selected={selected}
     />
   )

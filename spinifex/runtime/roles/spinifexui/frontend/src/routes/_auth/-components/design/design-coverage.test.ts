@@ -29,7 +29,7 @@ const NOT_SHOWN = {
   "sandbox-welcome-dialog": "shown once to a new sandbox account",
   "security-group-picker": "a SwitchList over live security groups",
   "system-image-required": "rechecks the account's images",
-  "tags-editor": "drives a real tagging mutation",
+  "resource-tags": "InlineTags wired to each service's tagging calls",
   "theme-provider": "part of the shell",
   "theme-switch": "part of the shell, in the header",
   "upload-progress-dialog": "tracks real S3 uploads",

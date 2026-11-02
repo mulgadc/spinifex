@@ -97,7 +97,7 @@ export function RouteTableAssociations({ rtb }: { rtb: RouteTable }) {
     try {
       await disassociate.mutateAsync(toRemove.associationId)
     } catch {
-      // Shown by the banner above the form.
+      // Shown by the banner beside the form.
     } finally {
       setToRemove(null)
     }
@@ -107,7 +107,7 @@ export function RouteTableAssociations({ rtb }: { rtb: RouteTable }) {
     try {
       await associate.mutateAsync({ routeTableId, subnetId: values.subnetId })
     } catch {
-      // Shown by the banner above the form.
+      // Shown by the banner beside the form.
       return
     }
 
@@ -117,6 +117,55 @@ export function RouteTableAssociations({ rtb }: { rtb: RouteTable }) {
   return (
     <PanelSection title={`Subnet associations (${total})`}>
       <div className="flex flex-col gap-4">
+        {/* Above the list, so a long list never pushes the picker out of view. */}
+        {error && (
+          <ErrorBanner error={error} msg="Failed to update association" />
+        )}
+
+        <form
+          className="flex items-end gap-2"
+          onSubmit={form.handleSubmit(onAssociate)}
+        >
+          <Field className="min-w-0 flex-1">
+            <FieldTitle>
+              <label htmlFor="subnetId">Associate subnet</label>
+            </FieldTitle>
+            <Controller
+              control={form.control}
+              name="subnetId"
+              render={({ field }) => (
+                <Select onValueChange={field.onChange} value={field.value}>
+                  <SelectTrigger
+                    aria-invalid={!!form.formState.errors.subnetId}
+                    className="w-full"
+                    id="subnetId"
+                  >
+                    <SelectValue placeholder="Select a subnet" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {available.map((subnet) => {
+                      const name = getNameTag(subnet.Tags)
+
+                      return (
+                        <SelectItem
+                          key={subnet.SubnetId}
+                          value={subnet.SubnetId ?? ""}
+                        >
+                          {`${subnet.SubnetId} (${name ?? subnet.CidrBlock})`}
+                        </SelectItem>
+                      )
+                    })}
+                  </SelectContent>
+                </Select>
+              )}
+            />
+            <FieldError errors={[form.formState.errors.subnetId]} />
+          </Field>
+          <Button disabled={associate.isPending} size="sm" type="submit">
+            <Link2 data-icon="inline-start" />
+            Associate
+          </Button>
+        </form>
         {total > 0 ? (
           <ul className="flex flex-col gap-2">
             {associations.map((assoc) => {
@@ -179,55 +228,6 @@ export function RouteTableAssociations({ rtb }: { rtb: RouteTable }) {
             No subnet associations.
           </p>
         )}
-
-        {error && (
-          <ErrorBanner error={error} msg="Failed to update association" />
-        )}
-
-        <form
-          className="flex items-end gap-2"
-          onSubmit={form.handleSubmit(onAssociate)}
-        >
-          <Field className="min-w-0 flex-1">
-            <FieldTitle>
-              <label htmlFor="subnetId">Associate subnet</label>
-            </FieldTitle>
-            <Controller
-              control={form.control}
-              name="subnetId"
-              render={({ field }) => (
-                <Select onValueChange={field.onChange} value={field.value}>
-                  <SelectTrigger
-                    aria-invalid={!!form.formState.errors.subnetId}
-                    className="w-full"
-                    id="subnetId"
-                  >
-                    <SelectValue placeholder="Select a subnet" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {available.map((subnet) => {
-                      const name = getNameTag(subnet.Tags)
-
-                      return (
-                        <SelectItem
-                          key={subnet.SubnetId}
-                          value={subnet.SubnetId ?? ""}
-                        >
-                          {`${subnet.SubnetId} (${name ?? subnet.CidrBlock})`}
-                        </SelectItem>
-                      )
-                    })}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-            <FieldError errors={[form.formState.errors.subnetId]} />
-          </Field>
-          <Button disabled={associate.isPending} size="sm" type="submit">
-            <Link2 data-icon="inline-start" />
-            Associate
-          </Button>
-        </form>
       </div>
 
       <DeleteConfirmationDialog

@@ -18,11 +18,10 @@ import {
   PanelFields,
   PanelSection,
   PanelSpinner,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
-import { StateBadge } from "@/components/state-badge"
-import { Badge } from "@/components/ui/badge"
+import { EksTags } from "@/components/resource-tags"
+import { StateBadge, StatusBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { getRegion } from "@/lib/cluster-config"
 import type { PanelTab } from "@/lib/panel-search"
@@ -122,11 +121,6 @@ function Settings({
   const deleteCluster = useDeleteCluster()
   const [confirm, setConfirm] = useState(false)
 
-  const tags = Object.entries(cluster.tags ?? {}).map(([Key, Value]) => ({
-    Key,
-    Value,
-  }))
-
   return (
     <>
       <Suspense fallback={<PanelSpinner />}>
@@ -135,7 +129,7 @@ function Settings({
       <Suspense fallback={<PanelSpinner />}>
         <AccessTab clusterName={clusterName} />
       </Suspense>
-      <PanelTags tags={tags} />
+      <EksTags arn={cluster.arn} tags={cluster.tags} />
       <PanelSection title="Manage">
         <div className="flex flex-col items-start gap-3">
           {deleteCluster.isError && (
@@ -184,10 +178,10 @@ function Summary({ cluster }: { cluster: Cluster | undefined }) {
     <div className="flex flex-wrap items-center justify-center gap-2">
       <StateBadge state={cluster?.status ?? "UNKNOWN"} />
       {issues > 0 && (
-        <Badge variant="destructive">
-          <AlertTriangle />
+        <StatusBadge tone="caution">
+          <AlertTriangle aria-hidden className="mr-1 inline size-3" />
           {issues === 1 ? "1 health issue" : `${issues} health issues`}
-        </Badge>
+        </StatusBadge>
       )}
     </div>
   )
@@ -241,6 +235,7 @@ export function ClusterDetails({
             aria-label="Open cluster page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ clusterName }}
+            search={{ tab }}
             to="/eks/list-clusters/$clusterName"
           >
             <Maximize2 />

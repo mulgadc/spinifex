@@ -1,6 +1,6 @@
+import { ChoiceTile, ChoiceTiles } from "@/components/choice-tile"
 import { regionLocation } from "@/lib/aws-regions"
 
-import { ChoiceTile, ChoiceTiles } from "./choice-tile"
 import { RegionFlag } from "./region-flag"
 
 interface LocationTileProps {

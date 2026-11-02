@@ -303,6 +303,7 @@ export function RunInstancesPage({
                 instanceTypeCapacity={instanceTypeCapacity}
                 keyPairs={keyPairs}
                 placementGroups={placementGroups}
+                register={register}
               />
 
               <NetworkSection

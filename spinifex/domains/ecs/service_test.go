@@ -2,7 +2,9 @@ package ecs
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
+	"maps"
 	"strconv"
 	"testing"
 	"time"
@@ -300,6 +302,89 @@ func TestService_RunTask_AssignCarriesTaskRole(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, poll.Assignments, 1)
 	assert.Equal(t, roleARN, poll.Assignments[0].TaskRoleARN)
+}
+
+// A role task's credential ID is a scheduler-minted secret: not the public task
+// ID, distinct per task, stable on re-delivery, persisted on the task record and
+// absent from every API response. A role-less task gets none.
+func TestService_TaskCredIDIsMintedSecret(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.RegisterTaskDefinition(ctx, &ecs.RegisterTaskDefinitionInput{
+		Family:      aws.String("victim"),
+		TaskRoleArn: aws.String("arn:aws:iam::123456789012:role/task-high"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"),
+			Cpu: aws.Int64(128), Memory: aws.Int64(256), Essential: aws.Bool(true),
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	registerTaskDef(t, svc, "attacker", 128, 256)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+
+	run, err := svc.RunTask(ctx, &ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("victim")}, testAccountID)
+	require.NoError(t, err)
+	start, err := svc.StartTask(ctx, &ecs.StartTaskInput{
+		Cluster: aws.String("web"), TaskDefinition: aws.String("victim"), ContainerInstances: []*string{aws.String("i-1")},
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.StartTask(ctx, &ecs.StartTaskInput{
+		Cluster: aws.String("web"), TaskDefinition: aws.String("attacker"), ContainerInstances: []*string{aws.String("i-1")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	poll := func() map[string]ecsv1.Assign {
+		p, perr := svc.PollAssignments(ctx, &PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+		require.NoError(t, perr)
+		byTask := map[string]ecsv1.Assign{}
+		for _, as := range p.Assignments {
+			byTask[as.TaskID] = as
+		}
+		return byTask
+	}
+	first, second := poll(), poll()
+	require.Len(t, first, 3)
+
+	kv, err := svc.bucket(ctx, testAccountID)
+	require.NoError(t, err)
+	var apiJSON []byte
+	for _, out := range []any{run, start} {
+		b, merr := json.Marshal(out)
+		require.NoError(t, merr)
+		apiJSON = append(apiJSON, b...)
+	}
+	var taskARNs []*string
+	for as := range maps.Values(first) {
+		taskARNs = append(taskARNs, aws.String(as.TaskARN))
+	}
+	desc, err := svc.DescribeTasks(ctx, &ecs.DescribeTasksInput{Cluster: aws.String("web"), Tasks: taskARNs}, testAccountID)
+	require.NoError(t, err)
+	b, err := json.Marshal(desc)
+	require.NoError(t, err)
+	apiJSON = append(apiJSON, b...)
+
+	seen := map[string]bool{}
+	for taskID, as := range first {
+		if as.TaskRoleARN == "" {
+			assert.Empty(t, as.CredID, "role-less task got a credential ID")
+			continue
+		}
+		require.NotEmpty(t, as.CredID)
+		assert.NotEqual(t, taskID, as.CredID)
+		assert.False(t, seen[as.CredID], "credential ID reused across tasks")
+		seen[as.CredID] = true
+		assert.Equal(t, as.CredID, second[taskID].CredID, "re-delivered assign changed credential ID")
+
+		var rec TaskRecord
+		found, gerr := getJSON(ctx, kv, TaskKey("web", taskID), &rec)
+		require.NoError(t, gerr)
+		require.True(t, found)
+		assert.Equal(t, as.CredID, rec.CredID)
+		assert.NotContains(t, string(apiJSON), as.CredID, "credential ID leaked in an API response")
+	}
+	assert.Len(t, seen, 2)
 }
 
 // PollAssignments is at-least-once: re-poll without ack re-delivers the assign;

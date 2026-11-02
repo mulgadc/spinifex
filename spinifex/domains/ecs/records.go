@@ -272,11 +272,15 @@ type TaskRecord struct {
 	// Group / StartedBy mirror the AWS task fields. A service's tasks carry
 	// Group="service:{name}" so the reconciler counts them and the task-state
 	// hook resolves a RUNNING/STOPPED task back to its owning service.
-	Group                string `json:"group,omitempty"`
-	StartedBy            string `json:"startedBy,omitempty"`
-	TaskDefFamily        string `json:"taskDefFamily"`
-	TaskDefRevision      int    `json:"taskDefRevision"`
-	TaskDefARN           string `json:"taskDefArn"`
+	Group           string `json:"group,omitempty"`
+	StartedBy       string `json:"startedBy,omitempty"`
+	TaskDefFamily   string `json:"taskDefFamily"`
+	TaskDefRevision int    `json:"taskDefRevision"`
+	TaskDefARN      string `json:"taskDefArn"`
+	// CredID is the secret under which the task's containers fetch task-role
+	// credentials from the agent. Set only when the task has a role; it must
+	// never be projected into an API response or logged.
+	CredID               string `json:"credId,omitempty"`
 	ContainerInstanceID  string `json:"containerInstanceId,omitempty"`
 	ContainerInstanceARN string `json:"containerInstanceArn,omitempty"`
 	DesiredStatus        string `json:"desiredStatus"`

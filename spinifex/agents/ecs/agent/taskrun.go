@@ -306,24 +306,24 @@ func (a *Agent) pullResolver(as *ecsv1.Assign) ctrruntime.Resolver {
 // credential endpoint and returns the credID (empty when the task has no role).
 func (a *Agent) registerTaskCreds(as *ecsv1.Assign) string {
 	credID := taskCredID(as)
+	if credID == "" && as.TaskRoleARN != "" {
+		slog.Warn("ecs-agent: task has a role but no credential ID, starting it without credentials", "task", as.TaskID, "role", as.TaskRoleARN)
+	}
 	if credID == "" || a.cred == nil {
 		return credID
 	}
-	a.cred.Register(credID, as.TaskRoleARN)
+	a.cred.Register(credID, as.TaskID, as.TaskRoleARN)
 	return credID
 }
 
 // taskCredID is the credential ID a task's containers fetch credentials under:
-// the scheduler-assigned CredID, falling back to the taskID. Empty when the task
-// carries no IAM role.
+// the scheduler-minted secret CredID. Empty when the task carries no IAM role or
+// no CredID; the public task ID is never used, since any API caller can learn it.
 func taskCredID(as *ecsv1.Assign) string {
 	if as.TaskRoleARN == "" {
 		return ""
 	}
-	if as.CredID != "" {
-		return as.CredID
-	}
-	return as.TaskID
+	return as.CredID
 }
 
 // withCredEnv returns env with AWS_CONTAINER_CREDENTIALS_RELATIVE_URI set for

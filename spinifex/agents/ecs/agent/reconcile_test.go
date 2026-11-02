@@ -63,7 +63,7 @@ func TestReconcile_AdoptsRunningLabeledContainer(t *testing.T) {
 	if !adopted["t-001"] {
 		t.Fatalf("t-001 not adopted; got %v", adopted)
 	}
-	if got := a.cred.roles["t-001"]; got != testTaskRole {
+	if got := a.cred.roles["t-001"].roleARN; got != testTaskRole {
 		t.Errorf("cred not re-registered: roles[t-001] = %q, want %q", got, testTaskRole)
 	}
 	if n := countStatus(cp.taskStates(), "t-001", ecsv1.TaskStatusRunning); n != 1 {

@@ -443,18 +443,6 @@ func (m *Client) DeleteDHCPOptions(_ context.Context, uuid string) error {
 	return nil
 }
 
-func (m *Client) FindDHCPOptionsByCIDR(_ context.Context, cidr string) (*nbdb.DHCPOptions, error) {
-	m.Mu.Lock()
-	defer m.Mu.Unlock()
-	for _, opts := range m.DHCPOpts {
-		if opts.CIDR == cidr {
-			result := *opts
-			return &result, nil
-		}
-	}
-	return nil, fmt.Errorf("DHCP options for CIDR %q not found", cidr)
-}
-
 func (m *Client) FindDHCPOptionsByExternalID(_ context.Context, key, value string) (*nbdb.DHCPOptions, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()

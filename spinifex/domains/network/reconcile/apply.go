@@ -374,7 +374,8 @@ func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual 
 			continue
 		}
 
-		if _, err := r.ovn.GetLogicalSwitchPort(ctx, portName); err != nil {
+		existing, err := r.ovn.GetLogicalSwitchPort(ctx, portName)
+		if err != nil {
 			addrStr := spec.MAC.String() + " " + spec.PrivateIP.String()
 			lsp := &nbdb.LogicalSwitchPort{
 				Name:         portName,
@@ -398,6 +399,10 @@ func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual 
 			continue
 		}
 
+		if !spec.SuppressDHCP {
+			r.convergePortDHCP(ctx, existing, spec.SubnetID, res)
+		}
+
 		currentPGs, err := r.ovn.ListPortGroupsForPort(ctx, portName)
 		if err != nil {
 			slog.Warn("reconcile/apply: list port groups for port failed", "port", portName, "err", err)
@@ -418,6 +423,26 @@ func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual 
 		return
 	}
 	r.pruneOrphanPorts(ctx, intent, res)
+}
+
+// convergePortDHCP points an existing LSP's dhcpv4_options at its subnet's
+// current DHCP_Options row. The reference is weak, so deleting or recreating
+// the row leaves the port without OVN DHCP until it is re-linked here.
+func (r *reconciler) convergePortDHCP(ctx context.Context, lsp *nbdb.LogicalSwitchPort, subnetID string, res *passResult) {
+	dhcpOpts, err := r.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", subnetID)
+	if err != nil || dhcpOpts == nil {
+		return
+	}
+	if lsp.DHCPv4Options != nil && *lsp.DHCPv4Options == dhcpOpts.UUID {
+		return
+	}
+	lsp.DHCPv4Options = &dhcpOpts.UUID
+	if err := r.ovn.UpdateLogicalSwitchPort(ctx, lsp); err != nil {
+		slog.Warn("reconcile/apply: re-link port DHCP options failed", "port", lsp.Name, "subnet_id", subnetID, "err", err)
+		res.fail(classPort, lsp.Name, err)
+		return
+	}
+	slog.Info("reconcile/apply: re-linked port DHCP options", "port", lsp.Name, "subnet_id", subnetID)
 }
 
 // pruneOrphanPorts deletes guest LSPs whose spinifex:eni_id has no matching

@@ -278,10 +278,19 @@ func (m *liveManager) DeleteSubnet(ctx context.Context, spec SubnetSpec) error {
 	if err := m.ovn.DeleteLogicalRouterPort(ctx, routerName, routerPortName); err != nil {
 		slog.Warn("topology: DeleteSubnet router port", "port", routerPortName, "err", err)
 	}
-	if spec.CIDR.IsValid() {
-		if dhcpOpts, err := m.ovn.FindDHCPOptionsByCIDR(ctx, spec.CIDR.String()); err == nil {
-			if err := m.ovn.DeleteDHCPOptions(ctx, dhcpOpts.UUID); err != nil {
-				slog.Warn("topology: DeleteSubnet DHCP options", "cidr", spec.CIDR.String(), "err", err)
+	// Subnet CIDRs overlap across VPCs and accounts, so only the subnet_id
+	// external ID identifies this subnet's DHCP_Options rows.
+	if spec.SubnetID != "" {
+		dhcpOpts, err := m.ovn.ListDHCPOptions(ctx)
+		if err != nil {
+			slog.Warn("topology: DeleteSubnet list DHCP options", "subnet_id", spec.SubnetID, "err", err)
+		}
+		for _, opts := range dhcpOpts {
+			if opts.ExternalIDs["spinifex:subnet_id"] != spec.SubnetID {
+				continue
+			}
+			if err := m.ovn.DeleteDHCPOptions(ctx, opts.UUID); err != nil {
+				slog.Warn("topology: DeleteSubnet DHCP options", "uuid", opts.UUID, "subnet_id", spec.SubnetID, "err", err)
 			}
 		}
 	}

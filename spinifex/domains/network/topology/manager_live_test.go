@@ -473,7 +473,7 @@ func TestLiveManager_WithDNSServer(t *testing.T) {
 	ctx := context.Background()
 	_ = mgr.EnsureVPC(ctx, VPCSpec{VPCID: "vpc-dns", CIDR: netip.MustParsePrefix("10.6.0.0/16")})
 	_ = mgr.EnsureSubnet(ctx, SubnetSpec{SubnetID: "subnet-dns", VPCID: "vpc-dns", CIDR: netip.MustParsePrefix("10.6.1.0/24")})
-	opts, err := mockClient.FindDHCPOptionsByCIDR(ctx, "10.6.1.0/24")
+	opts, err := mockClient.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", "subnet-dns")
 	if err != nil {
 		t.Fatalf("DHCPOptions missing: %v", err)
 	}

@@ -39,7 +39,7 @@ func TestUpdateUser_RenameKeepsRelationships(t *testing.T) {
 
 	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{UserName: aws.String("bob")})
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, awserrors.ValidErrorCodeFromError(err))
 
 	got, err := svc.GetUser(testAccountID, &iam.GetUserInput{UserName: aws.String("robert")})
 	require.NoError(t, err)
@@ -164,7 +164,7 @@ func TestUpdateUser_RenameRetriesAfterRacingWrite(t *testing.T) {
 	assert.Equal(t, []string{"arn:aws:iam::" + testAccountID + ":policy/raced"}, user.AttachedPolicies,
 		"the racing write survives the rename")
 	_, err = svc.getUser(t.Context(), testAccountID, "frank")
-	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, awserrors.ValidErrorCodeFromError(err))
 	ak, err := svc.LookupAccessKey(*key.AccessKey.AccessKeyId)
 	require.NoError(t, err)
 	assert.Equal(t, "franklin", ak.UserName)

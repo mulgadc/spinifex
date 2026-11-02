@@ -63,6 +63,7 @@ func TestVolumeAbandon_DoesNotSeal(t *testing.T) {
 
 	sealed := false
 	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
+	withLocalState(t, cfg, volumeName)
 	cfg.sealVolume = func(context.Context, string) error { sealed = true; return nil }
 
 	_, err := cfg.abandonVolume(t.Context(), volumeName, "the instance moved")

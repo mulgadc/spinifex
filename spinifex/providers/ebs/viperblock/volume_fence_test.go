@@ -5,7 +5,9 @@ package viperblock
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -68,6 +70,15 @@ func fencedConfig(t *testing.T, natsURL, owner, volumeName string) *Config {
 	// spends the TTL surrendering a lease no test is looking at any more.
 	t.Cleanup(func() { cfg.releaseVolumeLease(context.Background(), lease) })
 	return cfg
+}
+
+// withLocalState gives cfg a BaseDir holding local state for volumeName, so a
+// teardown that seals has a copy to seal and a test that no seal ran means it.
+func withLocalState(t *testing.T, cfg *Config, volumeName string) {
+	t.Helper()
+	cfg.BaseDir = t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(cfg.BaseDir, volumeName), 0o750))
+	require.True(t, volumeNeedsSeal(volumeName, cfg.BaseDir), "a seal must be reachable for the test to mean anything")
 }
 
 // TestVolumeFence_TearsDownWhenAnotherNodeHoldsTheLease is the property the

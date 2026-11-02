@@ -56,9 +56,10 @@ func TestMemoryProviderLifecycleAndIdempotency(t *testing.T) {
 		Versioned: NewVersioned(), VolumeID: volume.ID, Handle: volume.Handle,
 	}), ErrVolumeInUse)
 
-	require.NoError(t, provider.UnpublishVolume(ctx, UnpublishVolumeRequest{
+	_, err = provider.UnpublishVolume(ctx, UnpublishVolumeRequest{
 		Versioned: NewVersioned(), VolumeID: volume.ID, Handle: volume.Handle, NodeID: "node-1",
-	}))
+	})
+	require.NoError(t, err)
 
 	expanded, err := provider.ExpandVolume(ctx, ExpandVolumeRequest{
 		Versioned: NewVersioned(), VolumeID: volume.ID, Handle: volume.Handle,
@@ -141,7 +142,7 @@ func TestMemoryProviderChecksVersionOnEveryMethod(t *testing.T) {
 	_, err = provider.PublishVolume(ctx, PublishVolumeRequest{VolumeID: "vol-1", NodeID: "node-1"})
 	require.ErrorIs(t, err, ErrUnsupportedVersion)
 
-	err = provider.UnpublishVolume(ctx, UnpublishVolumeRequest{VolumeID: "vol-1", NodeID: "node-1"})
+	_, err = provider.UnpublishVolume(ctx, UnpublishVolumeRequest{VolumeID: "vol-1", NodeID: "node-1"})
 	require.ErrorIs(t, err, ErrUnsupportedVersion)
 }
 

@@ -96,8 +96,12 @@ func (p *failingProvider) PublishVolume(context.Context, ebsprovider.PublishVolu
 	return nil, p.err
 }
 
-func (p *failingProvider) UnpublishVolume(context.Context, ebsprovider.UnpublishVolumeRequest) error {
-	return p.err
+func (p *failingProvider) UnpublishVolume(context.Context, ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error) {
+	return nil, p.err
+}
+
+func (p *failingProvider) HoldsUnsealedWrites(context.Context, string, []string) ([]string, error) {
+	return nil, p.err
 }
 
 // wireVerb names one subject Serve subscribes, a valid request body for it,
@@ -119,6 +123,10 @@ func wireVerbs(t *testing.T) []wireVerb {
 	mountSubject, err := ebsprovider.PublishSubject("node-1")
 	require.NoError(t, err)
 	unmountSubject, err := ebsprovider.UnpublishSubject("node-1")
+	require.NoError(t, err)
+	unsealedSubject, err := ebsprovider.UnsealedWritesSubject("node-1")
+	require.NoError(t, err)
+	nodeCapabilitiesSubject, err := ebsprovider.NodeCapabilitiesSubject("node-1")
 	require.NoError(t, err)
 
 	return []wireVerb{
@@ -146,7 +154,120 @@ func wireVerbs(t *testing.T) []wireVerb {
 			request: ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", NodeID: "node-1"}},
 		{name: "unmount", subject: unmountSubject,
 			request: ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", NodeID: "node-1"}},
+		{name: "unsealed", subject: unsealedSubject,
+			request: ebsprovider.HoldsUnsealedWritesRequest{Versioned: ebsprovider.NewVersioned(), NodeID: "node-1", VolumeIDs: []string{"vol-1"}}},
+		{name: "node.capabilities", subject: nodeCapabilitiesSubject,
+			request: ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()}},
 	}
+}
+
+// withVersion re-encodes a wireVerb request at version, so one table drives
+// every served version without a copy of each request per version.
+func withVersion(t *testing.T, request any, version uint16) []byte {
+	t.Helper()
+	payload, err := json.Marshal(request)
+	require.NoError(t, err)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(payload, &body))
+	body["schema_version"] = version
+	payload, err = json.Marshal(body)
+	require.NoError(t, err)
+	return payload
+}
+
+// TestHandlersReplyInRequestVersion is what lets a version 3 server serve a
+// v1.23.0 caller: every reply, success or provider failure, carries the
+// version the request was sent at, never the server's newest.
+func TestHandlersReplyInRequestVersion(t *testing.T) {
+	failing := serveProvider(t, &failingProvider{err: fmt.Errorf("vol-1: %w", ebsprovider.ErrUnavailable)}, natsserve.Options{NoQueueGroup: true})
+	for _, version := range ebsprovider.SupportedSchemaVersions() {
+		for _, verb := range wireVerbs(t) {
+			// Each success case gets its own seeded provider, so none relies on
+			// an earlier case having created or deleted something.
+			t.Run(fmt.Sprintf("success/v%d/%s", version, verb.name), func(t *testing.T) {
+				conn := serveProvider(t, seededProvider(t), natsserve.Options{NoQueueGroup: true})
+				for _, envelope := range requestAt(t, conn, verb, version) {
+					require.Nil(t, envelope.Error, "the case must succeed for it to check a success reply")
+					assert.Equal(t, version, envelope.SchemaVersion)
+				}
+			})
+			t.Run(fmt.Sprintf("failure/v%d/%s", version, verb.name), func(t *testing.T) {
+				envelopes := requestAt(t, failing, verb, version)
+				// A snapshot create is accepted first; the failure is in its completion.
+				require.NotNil(t, envelopes[len(envelopes)-1].Error, "the case must fail for it to check a failure reply")
+				for _, envelope := range envelopes {
+					assert.Equal(t, version, envelope.SchemaVersion)
+				}
+			})
+		}
+	}
+}
+
+// seededProvider holds what every wireVerbs request needs to succeed: vol-1
+// and snap-1 taken from it, with enumeration advertised so listing succeeds.
+func seededProvider(t *testing.T) ebsprovider.EBSProvider {
+	t.Helper()
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{VolumeEnumeration: true, SnapshotEnumeration: true})
+	ctx := context.Background()
+	_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+	require.NoError(t, err)
+	_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol-1"})
+	require.NoError(t, err)
+	return provider
+}
+
+// requestAt sends verb at version and returns the reply envelope, followed by
+// the completion's for a verb that publishes one.
+func requestAt(t *testing.T, conn *nats.Conn, verb wireVerb, version uint16) []wireEnvelope {
+	t.Helper()
+	var completionSub *nats.Subscription
+	if verb.completionSubject != "" {
+		var err error
+		completionSub, err = conn.SubscribeSync(verb.completionSubject)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = completionSub.Unsubscribe() })
+		require.NoError(t, conn.Flush())
+	}
+
+	msg, err := conn.Request(verb.subject, withVersion(t, verb.request, version), requestTimeout)
+	require.NoError(t, err)
+	envelopes := []wireEnvelope{decodeEnvelope(t, msg.Data)}
+	if completionSub != nil {
+		msg, err = completionSub.NextMsg(requestTimeout)
+		require.NoError(t, err)
+		envelopes = append(envelopes, decodeEnvelope(t, msg.Data))
+	}
+	return envelopes
+}
+
+// TestUnpublishNoSealOnTheWire pins the server half of no_seal: refused below
+// version 3 without reaching the provider, and reported as torn down at 3.
+func TestUnpublishNoSealOnTheWire(t *testing.T) {
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	conn := serveProvider(t, provider, natsserve.Options{NoQueueGroup: true})
+	ctx := context.Background()
+	_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+	require.NoError(t, err)
+	_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", NodeID: "node-1"})
+	require.NoError(t, err)
+	subject, err := ebsprovider.UnpublishSubject("node-1")
+	require.NoError(t, err)
+	request := ebsprovider.UnpublishVolumeRequest{VolumeID: "vol-1", NodeID: "node-1", NoSeal: true}
+
+	msg, err := conn.Request(subject, withVersion(t, request, ebsprovider.DescriptorSchemaVersion), requestTimeout)
+	require.NoError(t, err)
+	envelope := decodeEnvelope(t, msg.Data)
+	require.NotNil(t, envelope.Error)
+	assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, envelope.Error.Code)
+	err = provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1"})
+	require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse, "the refused unpublish must not have reached the provider")
+
+	msg, err = conn.Request(subject, withVersion(t, request, ebsprovider.NoSealSchemaVersion), requestTimeout)
+	require.NoError(t, err)
+	var resp ebsprovider.UnpublishVolumeResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.Nil(t, resp.Error)
+	assert.True(t, resp.TornDown)
 }
 
 // TestHandlersRejectMalformedRequests pins the caller-fault arm of every
@@ -184,7 +305,8 @@ func TestHandlersRejectVersionSkew(t *testing.T) {
 			assert.Equal(t, ebsprovider.LegacySchemaVersion, envelope.SchemaVersion, "the refusal itself must be versioned")
 			require.NotNil(t, envelope.Error)
 			assert.Equal(t, ebsprovider.ErrorCodeUnsupportedVersion, envelope.Error.Code)
-			assert.Equal(t, fmt.Sprintf("unsupported schema version 99; supported versions are %d and %d", ebsprovider.LegacySchemaVersion, ebsprovider.SchemaVersion), envelope.Error.Message)
+			assert.Contains(t, envelope.Error.Message, "99", "the refusal must name the version it refused")
+			assert.Contains(t, envelope.Error.Message, ebsprovider.SupportedVersionsText(), "the refusal must name the versions served")
 		})
 	}
 }
@@ -282,9 +404,10 @@ func TestServedProviderRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ebsprovider.VolumeStateInUse, inUse.State)
 
-	require.NoError(t, client.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
+	_, err = client.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-roundtrip", NodeID: "node-1",
-	}))
+	})
+	require.NoError(t, err)
 	available, err := client.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-roundtrip"})
 	require.NoError(t, err)
 	assert.Equal(t, ebsprovider.VolumeStateAvailable, available.State)
@@ -614,6 +737,22 @@ func TestServeNodeIDScopesMountSubjects(t *testing.T) {
 	require.ErrorIs(t, err, nats.ErrNoResponders, "another node's mount subject must go unanswered")
 }
 
+// TestGetNodeCapabilitiesIsAnsweredOnlyByThatNode is why the per-node subject
+// exists: the shared one is answered by whichever node's provider is fastest,
+// which says nothing about the provider on the node a caller will mount on.
+func TestGetNodeCapabilitiesIsAnsweredOnlyByThatNode(t *testing.T) {
+	conn := serveProvider(t, ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}), natsserve.Options{NodeID: "node-1"})
+	client := ebsprovider.NewNATSProvider(conn, requestTimeout)
+	request := ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()}
+
+	resp, err := client.GetNodeCapabilities(t.Context(), "node-1", request)
+	require.NoError(t, err)
+	assert.Equal(t, ebsprovider.SupportedSchemaVersions(), resp.ContractVersions)
+
+	_, err = client.GetNodeCapabilities(t.Context(), "node-2", request)
+	require.ErrorIs(t, err, nats.ErrNoResponders, "another node's capabilities subject must go unanswered")
+}
+
 // TestServeRejectsUnroutableNodeID covers the subject-build failure path: an
 // unsubscribable node ID must fail Serve outright rather than leave a server
 // running with the shared subjects subscribed and no mount subject at all.
@@ -622,7 +761,7 @@ func TestServeRejectsUnroutableNodeID(t *testing.T) {
 
 	stop, err := natsserve.Serve(t.Context(), conn, ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}), natsserve.Options{NodeID: "node.*"})
 	require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
-	assert.Contains(t, err.Error(), "build publish subject")
+	assert.Contains(t, err.Error(), "build per-node subject for "+ebsprovider.PublishSubjectWildcard)
 	assert.Nil(t, stop)
 
 	_, err = conn.Request(ebsprovider.CapabilitiesSubject, []byte(fmt.Sprintf(`{"schema_version":%d}`, ebsprovider.SchemaVersion)), 200*time.Millisecond)

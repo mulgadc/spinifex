@@ -105,14 +105,17 @@ func (h *harness) PublishVolume(_ context.Context, req ebsprovider.PublishVolume
 	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, Export: export}, nil
 }
 
-func (h *harness) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) error {
+func (h *harness) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error) {
 	h.record("unpublish " + req.VolumeID + " on " + req.NodeID)
 	h.unpublishCtxOK = ctx.Err() == nil
 	if h.unpublishBlocks {
 		<-ctx.Done()
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
-	return h.unpublishErr
+	if h.unpublishErr != nil {
+		return nil, h.unpublishErr
+	}
+	return &ebsprovider.UnpublishedVolume{}, nil
 }
 
 func (h *harness) preparer(t *testing.T) *Preparer {

@@ -23,6 +23,7 @@ func TestClassifyError(t *testing.T) {
 		{ebsprovider.ErrVolumeInUse, ebsprovider.ErrorCodeVolumeInUse},
 		{ebsprovider.ErrUnsupportedCapability, ebsprovider.ErrorCodeUnsupportedCap},
 		{ebsprovider.ErrUnavailable, ebsprovider.ErrorCodeUnavailable},
+		{ebsprovider.ErrVolumeHeldElsewhere, ebsprovider.ErrorCodeVolumeHeldElsewhere},
 	}
 
 	for _, tt := range tests {

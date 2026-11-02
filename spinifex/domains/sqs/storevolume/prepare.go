@@ -31,7 +31,7 @@ type VolumeService interface {
 // Publisher is the provider pair used to reach the new volume's blocks.
 type Publisher interface {
 	PublishVolume(context.Context, ebsprovider.PublishVolumeRequest) (*ebsprovider.PublishedVolume, error)
-	UnpublishVolume(context.Context, ebsprovider.UnpublishVolumeRequest) error
+	UnpublishVolume(context.Context, ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error)
 }
 
 // Request names the volume to create.
@@ -204,9 +204,10 @@ func (p *Preparer) fill(ctx context.Context, volumeID, image string) error {
 func (p *Preparer) unpublish(ctx context.Context, volumeID string) error {
 	cctx, cancel := p.cleanupContext(ctx)
 	defer cancel()
-	return p.Provider.UnpublishVolume(cctx, ebsprovider.UnpublishVolumeRequest{
+	_, err := p.Provider.UnpublishVolume(cctx, ebsprovider.UnpublishVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: p.NodeID,
 	})
+	return err
 }
 
 // fail discards the volume when its export is known closed and otherwise

@@ -76,7 +76,7 @@ func ImportImage(ctx context.Context, provider ebsprovider.EBSProvider, opts Imp
 
 	// Unpublish regardless: a volume left published cannot be snapshotted or
 	// attached, and on the failure path it would strand the export too.
-	if err := provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
+	if _, err := provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(),
 		VolumeID:  opts.VolumeID,
 		NodeID:    opts.NodeID,

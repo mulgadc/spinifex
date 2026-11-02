@@ -76,13 +76,15 @@ func TestLive_QEMUNBDLifecycle(t *testing.T) {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		cleanupBestEffort(t, "unpublish restored volume", func() error {
-			return provider.UnpublishVolume(cleanupCtx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: restoredVolumeID, NodeID: nodeID})
+			_, err := provider.UnpublishVolume(cleanupCtx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: restoredVolumeID, NodeID: nodeID})
+			return err
 		})
 		cleanupBestEffort(t, "delete restored volume", func() error {
 			return provider.DeleteVolume(cleanupCtx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: restoredVolumeID})
 		})
 		cleanupBestEffort(t, "unpublish volume", func() error {
-			return provider.UnpublishVolume(cleanupCtx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: nodeID})
+			_, err := provider.UnpublishVolume(cleanupCtx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: nodeID})
+			return err
 		})
 		cleanupBestEffort(t, "delete snapshot", func() error {
 			return provider.DeleteSnapshot(cleanupCtx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID})
@@ -110,7 +112,8 @@ func TestLive_QEMUNBDLifecycle(t *testing.T) {
 	writePattern(t, sockPath, pattern, liveVolumeBytes)
 	readAndVerifyPattern(t, sockPath, pattern, liveVolumeBytes)
 
-	require.NoError(t, provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: nodeID}), "unpublish volume")
+	_, err = provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: nodeID})
+	require.NoError(t, err, "unpublish volume")
 	t.Logf("unpublished volume %s", volumeID)
 
 	snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
@@ -136,7 +139,8 @@ func TestLive_QEMUNBDLifecycle(t *testing.T) {
 	// snapshot and the restore into an independent volume.
 	readAndVerifyPattern(t, restoredSockPath, pattern, liveVolumeBytes)
 
-	require.NoError(t, provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: restoredVolumeID, NodeID: nodeID}), "unpublish restored volume")
+	_, err = provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: restoredVolumeID, NodeID: nodeID})
+	require.NoError(t, err, "unpublish restored volume")
 	t.Logf("unpublished restored volume %s", restoredVolumeID)
 }
 

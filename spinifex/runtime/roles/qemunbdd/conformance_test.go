@@ -7,6 +7,8 @@ package qemunbdd_test
 import (
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +16,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qemunbdd"
 	"github.com/stretchr/testify/require"
 )
@@ -58,9 +62,23 @@ func newQEMUProviderTB(t testing.TB) ebsprovider.EBSProvider {
 	return provider
 }
 
+// killQEMUExport stops the qemu-nbd serving an export behind the provider's
+// back, through the pid file it writes beside the socket, as a crash would.
+func killQEMUExport(t *testing.T, published *ebsprovider.PublishedVolume) {
+	t.Helper()
+	serverType, socketPath, _, _, err := nbd.ParseNBDURI(published.Export.NBD.NBDURI)
+	require.NoError(t, err)
+	require.Equal(t, "unix", serverType)
+	data, err := os.ReadFile(strings.TrimSuffix(socketPath, ".sock") + ".pid")
+	require.NoError(t, err)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	require.NoError(t, err)
+	require.NoError(t, hostprocess.ForceKillProcess(pid, 5*time.Second))
+}
+
 func TestQEMUNBDProviderConformance(t *testing.T) {
 	requireQEMUTools(t)
-	conformance.RunSuite(t, newQEMUProvider)
+	conformance.RunSuiteWithConfig(t, newQEMUProvider, conformance.SuiteConfig{KillExport: killQEMUExport})
 }
 
 // TestQEMUNBDExternalNBDClient checks the half of the boundary our own Go
@@ -76,12 +94,12 @@ func TestQEMUNBDExternalNBDClient(t *testing.T) {
 // in it, and a client that cannot tell the difference.
 func TestQEMUNBDProviderNATSConformance(t *testing.T) {
 	requireQEMUTools(t)
-	conformance.RunSuite(t, func(t *testing.T) ebsprovider.EBSProvider {
+	conformance.RunSuiteWithConfig(t, func(t *testing.T) ebsprovider.EBSProvider {
 		t.Helper()
 		_, conn := testutil.StartTestNATS(t)
 		stop, err := natsserve.Serve(t.Context(), conn, newQEMUProvider(t), natsserve.Options{})
 		require.NoError(t, err)
 		t.Cleanup(stop)
 		return ebsprovider.NewNATSProvider(conn, 15*time.Second)
-	})
+	}, conformance.SuiteConfig{KillExport: killQEMUExport})
 }

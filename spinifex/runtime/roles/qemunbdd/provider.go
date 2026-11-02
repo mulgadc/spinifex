@@ -14,9 +14,11 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 // nbdSharedClients bounds how many simultaneous NBD connections qemu-nbd
@@ -69,7 +71,26 @@ type publication struct {
 	nodeID     string
 	socketPath string
 	pid        int
+	readOnly   bool
 }
+
+// dead reports positive evidence that the export is no longer serving: its
+// qemu-nbd has exited or its socket is gone. Without a PID nothing is known.
+// A qemu-nbd whose socket is gone can still be writing for a connected client.
+func (p *publication) dead() bool {
+	if p.pid <= 0 {
+		return false
+	}
+	if !hostprocess.ProcessAlive(p.pid) {
+		return true
+	}
+	_, err := os.Stat(p.socketPath)
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// defaultStopWait bounds the wait for a qemu-nbd to exit after SIGTERM
+// before a republish over its dead socket is refused.
+const defaultStopWait = 10 * time.Second
 
 // Provider is an EBSProvider backed by qcow2 files and qemu-nbd. One volume
 // is one qcow2 file; a snapshot is an independent copy, not a chunk
@@ -77,6 +98,9 @@ type publication struct {
 type Provider struct {
 	baseDir string
 	run     runner
+
+	// stopWait overrides defaultStopWait. Zero means the default.
+	stopWait time.Duration
 
 	mu           sync.Mutex
 	published    map[string]*publication
@@ -131,11 +155,11 @@ func (p *Provider) pidFilePath(volumeID string) string {
 }
 
 // checkVersion mirrors ebsprovider's supported schema window. qemunbdd's
-// normal operations have the same representation in both versions; the NATS
+// normal operations have the same representation in every version; the NATS
 // server owns the version-specific PublishVolume wire conversion.
 func checkVersion(version uint16) error {
 	if !ebsprovider.SupportsSchemaVersion(version) {
-		return fmt.Errorf("%w: got %d, supported versions are %d and %d", ebsprovider.ErrUnsupportedVersion, version, ebsprovider.LegacySchemaVersion, ebsprovider.SchemaVersion)
+		return fmt.Errorf("%w: got %d, %s", ebsprovider.ErrUnsupportedVersion, version, ebsprovider.SupportedVersionsText())
 	}
 	return nil
 }
@@ -148,7 +172,11 @@ func (p *Provider) GetCapabilities(_ context.Context, req ebsprovider.GetCapabil
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
-	return &ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), Capabilities: capabilities}, nil
+	return &ebsprovider.GetCapabilitiesResponse{
+		Versioned:        ebsprovider.ReplyVersioned(req.SchemaVersion),
+		Capabilities:     capabilities,
+		ContractVersions: ebsprovider.SupportedSchemaVersions(),
+	}, nil
 }
 
 // qemuImgInfo is the subset of `qemu-img info --output=json` this provider
@@ -350,7 +378,7 @@ func (p *Provider) ListVolumes(_ context.Context, req ebsprovider.ListVolumesReq
 		return nil, fmt.Errorf("qemunbdd: read volumes directory: %w", err)
 	}
 
-	response := &ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned()}
+	response := &ebsprovider.ListVolumesResponse{Versioned: ebsprovider.ReplyVersioned(req.SchemaVersion)}
 	response.Volumes, response.NextToken = ebsprovider.Page(qcow2IDs(entries), req.StartingToken, int(req.PageSize()),
 		func(id string) ebsprovider.VolumeRef {
 			return ebsprovider.VolumeRef{ID: id, Handle: p.volumePath(id)}
@@ -527,7 +555,7 @@ func (p *Provider) ListSnapshots(_ context.Context, req ebsprovider.ListSnapshot
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	response := &ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned()}
+	response := &ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.ReplyVersioned(req.SchemaVersion)}
 	response.Snapshots, response.NextToken = ebsprovider.Page(qcow2IDs(entries), req.StartingToken, int(req.PageSize()),
 		func(id string) ebsprovider.SnapshotRef {
 			return ebsprovider.SnapshotRef{
@@ -686,9 +714,21 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 	}
 	if pub, ok := p.published[req.VolumeID]; ok {
 		if pub.nodeID != req.NodeID {
-			return nil, fmt.Errorf("%w: volume %s is published to %s", ebsprovider.ErrVolumeInUse, req.VolumeID, pub.nodeID)
+			return nil, fmt.Errorf("%w: volume %s is published to %s", ebsprovider.HeldElsewhereError(req.SchemaVersion), req.VolumeID, pub.nodeID)
 		}
-		return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: pub.nodeID, Export: ebsprovider.NewNBDExport(nbd.FormatNBDSocketURI(pub.socketPath))}, nil
+		// A dead export's entry is dropped and the volume exported again, so
+		// a republish after a crash never returns a socket nothing serves.
+		if pub.dead() {
+			if err := p.stopOrphanedExport(pub); err != nil {
+				return nil, fmt.Errorf("%w: volume %s: %w", ebsprovider.ErrUnavailable, req.VolumeID, err)
+			}
+			delete(p.published, req.VolumeID)
+		} else {
+			if pub.readOnly != req.ReadOnly {
+				return nil, fmt.Errorf("%w: volume %s is already published read_only=%t", ebsprovider.ErrVolumeInUse, req.VolumeID, pub.readOnly)
+			}
+			return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: pub.nodeID, Export: ebsprovider.NewNBDExport(nbd.FormatNBDSocketURI(pub.socketPath))}, nil
+		}
 	}
 
 	sockPath := p.socketPath(req.VolumeID)
@@ -717,8 +757,25 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 	}
 
 	pid := readPID(pidPath)
-	p.published[req.VolumeID] = &publication{nodeID: req.NodeID, socketPath: sockPath, pid: pid}
+	p.published[req.VolumeID] = &publication{nodeID: req.NodeID, socketPath: sockPath, pid: pid, readOnly: req.ReadOnly}
 	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, Export: ebsprovider.NewNBDExport(nbd.FormatNBDSocketURI(sockPath))}, nil
+}
+
+// stopOrphanedExport stops a dead entry's qemu-nbd if it is still running,
+// since a connected client keeps writing through it and a second export would
+// make two writers. It stops it as UnpublishVolume does, with SIGTERM.
+func (p *Provider) stopOrphanedExport(pub *publication) error {
+	if !hostprocess.ProcessAlive(pub.pid) {
+		return nil
+	}
+	wait := p.stopWait
+	if wait == 0 {
+		wait = defaultStopWait
+	}
+	if !hostprocess.TerminateProcess(pub.pid, wait) {
+		return fmt.Errorf("qemu-nbd %d lost its socket and did not exit", pub.pid)
+	}
+	return nil
 }
 
 // readPID best-effort reads the PID qemu-nbd's --fork wrote to pidPath. A
@@ -736,20 +793,23 @@ func readPID(pidPath string) int {
 	return pid
 }
 
-func (p *Provider) UnpublishVolume(_ context.Context, req ebsprovider.UnpublishVolumeRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
-		return err
+// UnpublishVolume honours NoSeal trivially: qemu-nbd writes straight to the
+// volume's qcow2 file, so there is no separate copy to seal or to drop.
+func (p *Provider) UnpublishVolume(_ context.Context, req ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error) {
+	if err := ebsprovider.CheckUnpublishVersion(req); err != nil {
+		return nil, err
 	}
 	if req.VolumeID == "" || req.NodeID == "" {
-		return fmt.Errorf("%w: volume and node IDs are required", ebsprovider.ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: volume and node IDs are required", ebsprovider.ErrInvalidArgument)
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	result := &ebsprovider.UnpublishedVolume{}
 	pub, ok := p.published[req.VolumeID]
 	if !ok || pub.nodeID != req.NodeID {
-		return nil
+		return result, nil
 	}
 	if pub.pid > 0 {
 		if proc, err := os.FindProcess(pub.pid); err == nil {
@@ -759,5 +819,18 @@ func (p *Provider) UnpublishVolume(_ context.Context, req ebsprovider.UnpublishV
 	_ = os.Remove(pub.socketPath)
 	_ = os.Remove(p.pidFilePath(req.VolumeID))
 	delete(p.published, req.VolumeID)
-	return nil
+	result.TornDown = req.SchemaVersion >= ebsprovider.NoSealSchemaVersion
+	return result, nil
+}
+
+// HoldsUnsealedWrites answers that none are held: the qcow2 file qemu-nbd
+// writes is the backend, so no write is held anywhere it does not already have.
+func (p *Provider) HoldsUnsealedWrites(_ context.Context, nodeID string, volumeIDs []string) ([]string, error) {
+	if nodeID == "" {
+		return nil, fmt.Errorf("%w: node ID is required", ebsprovider.ErrInvalidArgument)
+	}
+	if slices.Contains(volumeIDs, "") {
+		return nil, fmt.Errorf("%w: empty volume ID", ebsprovider.ErrInvalidArgument)
+	}
+	return nil, nil
 }

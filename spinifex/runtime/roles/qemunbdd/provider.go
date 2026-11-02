@@ -720,7 +720,7 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 		// a republish after a crash never returns a socket nothing serves.
 		if pub.dead() {
 			if err := p.stopOrphanedExport(pub); err != nil {
-				return nil, fmt.Errorf("%w: volume %s: %v", ebsprovider.ErrUnavailable, req.VolumeID, err)
+				return nil, fmt.Errorf("%w: volume %s: %w", ebsprovider.ErrUnavailable, req.VolumeID, err)
 			}
 			delete(p.published, req.VolumeID)
 		} else {

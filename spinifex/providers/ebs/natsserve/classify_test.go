@@ -40,5 +40,4 @@ func TestClassifyError(t *testing.T) {
 		assert.Equal(t, ebsprovider.ErrorCodeInternal, got.Code)
 		assert.False(t, got.Code.Retryable(), "an error we cannot classify must not invite a retry loop")
 	})
-
 }

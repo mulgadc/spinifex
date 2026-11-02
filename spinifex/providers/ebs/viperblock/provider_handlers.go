@@ -1993,7 +1993,7 @@ func mountEntryIsStale(mv MountedVolume) (bool, string) {
 func releaseStaleMount(ctx context.Context, cfg *Config, volumeName string) error {
 	if mv, ok := findMountedVolume(cfg, volumeName); ok && hostprocess.ProcessAlive(mv.PID) {
 		if _, err := unmountVolume(ctx, cfg, volumeName); err != nil {
-			return fmt.Errorf("%w: stop nbdkit %d behind the lost socket of %s: %v", ebsprovider.ErrUnavailable, mv.PID, volumeName, err)
+			return fmt.Errorf("%w: stop nbdkit %d behind the lost socket of %s: %w", ebsprovider.ErrUnavailable, mv.PID, volumeName, err)
 		}
 		return nil
 	}

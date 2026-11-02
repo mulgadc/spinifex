@@ -11,9 +11,9 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
-	"golang.org/x/sys/unix"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 // call records one invocation the fake runner captured, so tests can assert
@@ -703,6 +703,7 @@ func unstoppableExport(t *testing.T) int {
 // aliveAtRun records, at the moment qemu-nbd is run, whether pid is alive.
 type aliveAtRun struct {
 	*fakeRunner
+
 	pid       int
 	aliveSeen []bool
 }

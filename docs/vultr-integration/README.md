@@ -97,15 +97,8 @@ The deploy script, `deploy-vultr.sh`, is in the Spinifex repository:
 
 ```bash
 git clone https://github.com/mulgadc/spinifex.git
-cd spinifex
-git switch dev
-cd scripts/terraform/vultr-spx
+cd spinifex/scripts/terraform/vultr-spx
 ```
-
-> [!NOTE]
-> Vultr support is on the development branch and not yet in a published release.
-> `git switch dev` gives you the deploy script for it, and `--channel dev` in [step 3](#3-deploy) installs the matching Spinifex build, the pre-release published from every change to `dev`.
-> Once Vultr support is in a release, skip `git switch dev` and pass `--channel latest`.
 
 ## 2. Choose a deployment
 
@@ -143,14 +136,14 @@ Set your API key, then run the command for the deployment you chose:
 export VULTR_API_KEY=<your key>
 
 # Development and testing: one VM
-./deploy-vultr.sh up --channel dev --plan vx1-g-16c-64g
+./deploy-vultr.sh up --channel latest --plan vx1-g-16c-64g
 
 # Production: three VMs
-./deploy-vultr.sh up --channel dev --plan vx1-g-16c-64g --nodes 3
+./deploy-vultr.sh up --channel latest --plan vx1-g-16c-64g --nodes 3
 
 # Production on bare metal: one server, or three
-./deploy-vultr.sh up --channel dev --plan vbm-8c-64gb-amd
-./deploy-vultr.sh up --channel dev --plan vbm-8c-64gb-amd --nodes 3
+./deploy-vultr.sh up --channel latest --plan vbm-8c-64gb-amd
+./deploy-vultr.sh up --channel latest --plan vbm-8c-64gb-amd --nodes 3
 ```
 
 One VM takes about 4 minutes and three VMs about 16 minutes.

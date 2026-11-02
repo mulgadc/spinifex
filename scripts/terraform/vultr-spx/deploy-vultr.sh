@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # deploy-vultr.sh — build a one- or three-node Spinifex deployment on Vultr, or tear it down.
 #
-#   deploy-vultr.sh up --channel dev                                  one VX VM
-#   deploy-vultr.sh up --channel dev --nodes 3 --plan vbm-8c-64gb-amd three bare-metal servers
+#   deploy-vultr.sh up --channel latest                               one VX VM
+#   deploy-vultr.sh up --channel latest --nodes 3 --plan vbm-8c-64gb-amd three bare-metal servers
 #   deploy-vultr.sh status                 nodes, addresses and what the deployment holds
 #   deploy-vultr.sh credentials            print the AWS access key and secret
 #   deploy-vultr.sh ssh [nodeN] [command]  SSH to a node, node1 by default

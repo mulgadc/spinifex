@@ -1585,6 +1585,15 @@ download_spinifex() {
     EXTRACT_DIR="$SPINIFEX_TMPDIR"
 }
 
+# install.mulgadc.com serves the latest release's setup.sh, which cannot know what a
+# newer --channel or --version tarball needs installed, so it runs the tarball's own.
+hand_off_to_packaged_setup() {
+    [ -z "${INSTALL_SPINIFEX_TARBALL:-}" ] && [ -f "$EXTRACT_DIR/setup.sh" ] || return 0
+    info "Running the setup.sh shipped in the downloaded release"
+    export INSTALL_SPINIFEX_TARBALL="$TARBALL" SPINIFEX_HANDOFF_TMPDIR="$SPINIFEX_TMPDIR"
+    exec bash "$EXTRACT_DIR/setup.sh" "$@"
+}
+
 # OL's sudo secure_path leaves out /usr/local/bin, so `sudo spx` would find
 # nothing there. A link in /usr/bin changes sudo for nothing else on the host.
 link_spx_for_sudo() {
@@ -2232,6 +2241,7 @@ EOF
 
 # --- Main ---
 main() {
+    local args=("$@")
     while [ $# -gt 0 ]; do
         case "$1" in
             --firewall=*) INSTALL_SPINIFEX_FIREWALL="${1#*=}" ;;
@@ -2261,18 +2271,20 @@ main() {
     detect_os
     detect_arch
 
-    # Orchestration (stop running services, fix stale /run/spinifex/nbd perms)
-    # only applies in full-install mode on a live host.
-    if [ "${ISO_BUILD:-0}" != "1" ] && [ -z "${SETUP_STAGES:-}" ]; then
-        handle_upgrade
-    fi
-
     # Stages that need EXTRACT_DIR: files, directories, systemd, logrotate, udev.
-    # Only download/extract when at least one such stage is enabled.
+    # Only download/extract when at least one such stage is enabled, and before
+    # anything on the host changes, so the hand-off finds it untouched.
     if stage_enabled files || stage_enabled directories \
         || stage_enabled systemd || stage_enabled logrotate \
         || stage_enabled udev; then
         download_spinifex
+        hand_off_to_packaged_setup "${args[@]}"
+    fi
+
+    # Orchestration (stop running services, fix stale /run/spinifex/nbd perms)
+    # only applies in full-install mode on a live host.
+    if [ "${ISO_BUILD:-0}" != "1" ] && [ -z "${SETUP_STAGES:-}" ]; then
+        handle_upgrade
     fi
 
     stage_enabled deps       && install_deps
@@ -2302,6 +2314,7 @@ main() {
     fi
 
     [ -n "${SPINIFEX_TMPDIR:-}" ] && rm -rf "$SPINIFEX_TMPDIR"
+    [ -n "${SPINIFEX_HANDOFF_TMPDIR:-}" ] && rm -rf "$SPINIFEX_HANDOFF_TMPDIR"
 
     # Post-install orchestration (service restart, summary, newgrp) only in
     # full-install mode on a live host.

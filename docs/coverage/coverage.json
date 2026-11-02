@@ -2413,6 +2413,7 @@
           "ListAssociatedAccessPolicies",
           "ListClusters",
           "ListInternalAddons",
+          "ListInternalWorkers",
           "ListNodegroups",
           "ListTagsForResource",
           "PublishInternal",
@@ -2502,6 +2503,7 @@
         "extra": [
           "GetRecoveryDirective",
           "ListInternalAddons",
+          "ListInternalWorkers",
           "PublishInternal",
           "WebhookTokenReview"
         ]

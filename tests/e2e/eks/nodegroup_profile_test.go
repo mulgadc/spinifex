@@ -18,8 +18,10 @@ import (
 // runNodegroupDelete proves DeleteNodegroup is asynchronous and leaves nothing
 // behind that blocks the customer: the group answers DELETING first, then
 // ResourceNotFound, after which the node role deletes with no hand step and an
-// instance profile the customer made is untouched.
-func runNodegroupDelete(t *testing.T, c *harness.AWSClient, fx *clusterFixture) {
+// instance profile the customer made is untouched. The bystander profile is
+// cleaned up on the parent test so it outlives this subtest and DeleteCluster
+// can check it too.
+func runNodegroupDelete(t, parent *testing.T, c *harness.AWSClient, fx *clusterFixture) {
 	const trustPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 	roleName := fx.ClusterName + "-ngdel-node"
 	roleOut, err := c.IAM.CreateRole(&iam.CreateRoleInput{
@@ -37,7 +39,7 @@ func runNodegroupDelete(t *testing.T, c *harness.AWSClient, fx *clusterFixture) 
 	fx.BystanderProfile = fx.ClusterName + "-bystander"
 	_, err = c.IAM.CreateInstanceProfile(&iam.CreateInstanceProfileInput{InstanceProfileName: aws.String(fx.BystanderProfile)})
 	require.NoError(t, err, "create-bystander-instance-profile")
-	t.Cleanup(func() {
+	parent.Cleanup(func() {
 		_, _ = c.IAM.DeleteInstanceProfile(&iam.DeleteInstanceProfileInput{InstanceProfileName: aws.String(fx.BystanderProfile)})
 	})
 

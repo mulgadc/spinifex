@@ -242,9 +242,10 @@ func TestEKS(t *testing.T) {
 		runEBSCSIVolume(t, c, env, artifacts, fx)
 	})
 
+	parent := t
 	t.Run("NodegroupDelete", func(t *testing.T) {
 		requireClusterReady(t, fx)
-		runNodegroupDelete(t, c, fx)
+		runNodegroupDelete(t, parent, c, fx)
 	})
 
 	t.Run("DeleteCluster", func(t *testing.T) {

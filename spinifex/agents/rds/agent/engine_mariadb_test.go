@@ -1151,3 +1151,65 @@ func TestMariaDBEngine_EveryResolvedDynamicValueRenders(t *testing.T) {
 		}
 	}
 }
+
+// ALTER USER under a held BACKUP STAGE swaps the password in memory and then
+// waits at its commit, so a rotation issued mid-backup must not reach the
+// engine until the hold is released.
+func TestMariaDBEngine_SetPasswordWaitsForTheBackupHoldToEnd(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestMariaDBEngine(t, runner.run)
+	engine.startSess = func(context.Context, command) (engineSession, error) { return &fakeSession{}, nil }
+	if err := engine.Quiesce(context.Background(), "orders-db-automated", time.Minute); err != nil {
+		t.Fatalf("Quiesce: %v", err)
+	}
+
+	rotated := make(chan error, 1)
+	go func() { rotated <- engine.SetPassword(context.Background(), "mulgamaster", "n3w-pw") }()
+	select {
+	case err := <-rotated:
+		t.Fatalf("SetPassword returned %v while the engine was held for a backup", err)
+	case <-time.After(3 * holdPollInterval):
+	}
+
+	if err := engine.Unquiesce(context.Background()); err != nil {
+		t.Fatalf("Unquiesce: %v", err)
+	}
+	select {
+	case err := <-rotated:
+		if err != nil {
+			t.Fatalf("SetPassword after the release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SetPassword did not run once the hold was released")
+	}
+	if len(runner.calls) != 1 || !strings.Contains(runner.calls[0].Stdin, "ALTER USER") {
+		t.Errorf("ran %d commands, want the one rotation after the release", len(runner.calls))
+	}
+}
+
+// A hold that outlasts the wait fails the rotation before anything is sent, so
+// the control plane's error is the truth rather than half of it.
+func TestMariaDBEngine_SetPasswordFailsUntouchedWhenTheHoldOutlastsItsWait(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestMariaDBEngine(t, runner.run)
+	engine.holdWait = 3 * holdPollInterval
+	engine.startSess = func(context.Context, command) (engineSession, error) { return &fakeSession{}, nil }
+	if err := engine.Quiesce(context.Background(), "orders-db-automated", time.Minute); err != nil {
+		t.Fatalf("Quiesce: %v", err)
+	}
+
+	if err := engine.SetPassword(context.Background(), "mulgamaster", "n3w-pw"); err == nil {
+		t.Fatal("SetPassword succeeded while the engine stayed held for a backup")
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("ran %d commands against a held engine, want none", len(runner.calls))
+	}
+}
+
+// The wait has to end before the control plane gives up on the command, or the
+// rotation can still land after the caller was told it failed.
+func TestMariaDBEngine_PasswordHoldWaitFitsInsideTheControlPlaneTimeout(t *testing.T) {
+	if mariadbPasswordHoldWait >= 30*time.Second-5*time.Second {
+		t.Errorf("a %s hold wait leaves no room inside the control plane's 30s set-password budget", mariadbPasswordHoldWait)
+	}
+}

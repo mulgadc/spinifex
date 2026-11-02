@@ -94,6 +94,8 @@ type mariadbEngine struct {
 	socket    string
 	rcService string
 	service   string
+	// How long a password rotation waits for a backup hold to end.
+	holdWait time.Duration
 }
 
 var _ engine = (*mariadbEngine)(nil)
@@ -151,6 +153,7 @@ func newMariaDBEngine(cfg Config, rules controlPlaneRules, run commandRunner, st
 		socket:    mariadbSocketPath(cfg),
 		rcService: cfg.RCService,
 		service:   cfg.EngineService,
+		holdWait:  mariadbPasswordHoldWait,
 		parameterManager: parameterManager{
 			probe: probe,
 			params: parameterStore{
@@ -380,6 +383,11 @@ SET SESSION slow_query_log = 0;
 SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';
 `
 
+// ALTER USER can take effect in memory and then wait at its commit for a held
+// BACKUP STAGE to end. Waiting before the statement instead, for less than the
+// control plane's budget, means a rotation that cannot finish is never half-applied.
+const mariadbPasswordHoldWait = 20 * time.Second
+
 // Rotates the master's password. The statement is built here rather than by the
 // client, which has neither psql's identifier interpolation nor its parameter
 // quoting, and it rides stdin so it is never visible in the process table.
@@ -398,13 +406,15 @@ func (e *mariadbEngine) SetPassword(ctx context.Context, username, password stri
 	escaped := sqlLiteral(password)
 	sql := fmt.Sprintf("%sALTER USER '%s'@'%s' IDENTIFIED BY '%s';\n",
 		mariadbSessionGuard, username, mariadbMasterHost, escaped)
-	if _, err := e.clientRun(ctx, sql); err != nil {
-		// The client echoes the failing statement, which carries the escaped form
-		// of the password rather than the raw one — so redacting only the raw one
-		// would leak exactly the passwords that needed escaping.
-		return fmt.Errorf("apply the master password: %s", redact(redact(err.Error(), password), escaped))
-	}
-	return nil
+	return e.outsideHold(ctx, e.holdWait, func() error {
+		if _, err := e.clientRun(ctx, sql); err != nil {
+			// The client echoes the failing statement, which carries the escaped form
+			// of the password rather than the raw one — so redacting only the raw one
+			// would leak exactly the passwords that needed escaping.
+			return fmt.Errorf("apply the master password: %s", redact(redact(err.Error(), password), escaped))
+		}
+		return nil
+	})
 }
 
 // Installs the resolved set and applies the half a running server can adopt.

@@ -201,8 +201,8 @@ type PollDBCommandsInput struct {
 	Replies              []rdsinstance.CommandReply `locationName:"Replies" locationNameList:"member"`
 }
 
-// PollDBCommandsOutput holds at most one command per poll: each is a discrete guest operation the
-// agent must complete and report before the next is safe to issue.
+// PollDBCommandsOutput holds at most one command per poll. The agent runs each on its own and keeps
+// polling, so a command the engine is blocking cannot keep out the one that would unblock it.
 type PollDBCommandsOutput struct {
 	Commands []rdsinstance.Command `locationName:"Commands" locationNameList:"member"`
 }

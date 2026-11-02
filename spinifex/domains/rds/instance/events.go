@@ -37,13 +37,28 @@ const (
 	defaultEventDuration = time.Hour
 )
 
-// AWS's SourceType values. Only the ones some phase actually writes are
-// defined; an unknown one from a request is rejected rather than matched
-// against nothing, which would look like a resource with no history.
+// The SourceType values some phase actually writes.
 const (
 	EventSourceTypeDBInstance = "db-instance"
 	EventSourceTypeDBSnapshot = "db-snapshot"
 )
+
+// Every SourceType in AWS's model. A read of one nothing writes is answered with
+// no events, as AWS answers a source that emitted none; a value outside the
+// model is rejected rather than matched against nothing.
+var eventSourceTypes = []string{
+	"blue-green-deployment",
+	"custom-engine-version",
+	"db-cluster",
+	"db-cluster-snapshot",
+	EventSourceTypeDBInstance,
+	"db-parameter-group",
+	"db-proxy",
+	"db-security-group",
+	"db-shard-group",
+	EventSourceTypeDBSnapshot,
+	"zero-etl",
+}
 
 // AWS's event categories. A customer filters and subscribes on these, so the
 // strings are AWS's exactly, spaces included.
@@ -58,15 +73,6 @@ const (
 	EventCategoryNotification        = "notification"
 	EventCategoryRecovery            = "recovery"
 )
-
-func validEventSourceType(sourceType string) bool {
-	switch sourceType {
-	case EventSourceTypeDBInstance, EventSourceTypeDBSnapshot:
-		return true
-	default:
-		return false
-	}
-}
 
 // Event is one entry in a resource's ring.
 type Event struct {
@@ -168,7 +174,7 @@ func (s *Service) DescribeEvents(ctx context.Context, input *rds.DescribeEventsI
 	}
 	sourceType := aws.StringValue(input.SourceType)
 	sourceIdentifier := aws.StringValue(input.SourceIdentifier)
-	if sourceType != "" && !validEventSourceType(sourceType) {
+	if sourceType != "" && !slices.Contains(eventSourceTypes, sourceType) {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"SourceType %q is not an RDS event source", sourceType)
 	}

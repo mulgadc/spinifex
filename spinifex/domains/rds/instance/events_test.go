@@ -102,6 +102,23 @@ func TestDescribeEvents_ReadsAcrossResourcesAndScopesToOneWhenAsked(t *testing.T
 	assert.Equal(t, []string{"snapshot event"}, messagesOf(scoped))
 }
 
+// AWS accepts every SourceType in its model; one that emits no events reads as
+// an empty list, not an error.
+func TestDescribeEvents_AcceptsEveryModelSourceTypeWithNoEvents(t *testing.T) {
+	t.Parallel()
+	svc := newTestService(t)
+	seedEvent(t, svc, EventSourceTypeDBInstance, testDBID, time.Now().UTC(), "instance event")
+
+	for _, sourceType := range []string{"db-parameter-group", "db-security-group", "db-cluster",
+		"db-cluster-snapshot", "custom-engine-version", "db-proxy", "blue-green-deployment",
+		"db-shard-group", "zero-etl"} {
+		out, err := svc.DescribeEvents(t.Context(),
+			&rds.DescribeEventsInput{SourceType: aws.String(sourceType), Duration: aws.Int64(60)}, testAccountID)
+		require.NoError(t, err, sourceType)
+		assert.Empty(t, out.Events, sourceType)
+	}
+}
+
 // A truncated read carries a Marker, so a client can tell the list was cut and
 // resume from it.
 func TestDescribeEvents_PagesOldestFirst(t *testing.T) {
@@ -136,7 +153,7 @@ func TestDescribeEvents_RejectsMalformedRequests(t *testing.T) {
 			SourceIdentifier: aws.String(testDBID),
 		}, awserrors.ErrorInvalidParameterCombination},
 		{"UnknownSourceType", &rds.DescribeEventsInput{
-			SourceType: aws.String("db-cluster"),
+			SourceType: aws.String("db-table"),
 		}, awserrors.ErrorInvalidParameterValue},
 		{"EndBeforeStart", &rds.DescribeEventsInput{
 			StartTime: aws.Time(time.Now()),

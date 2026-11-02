@@ -220,7 +220,7 @@ func TestCurrentBehaviour_ClusterPrefixDeletedIsNotFound(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found, "sanity: JWKS published before the prefix is swept")
 
-	require.NoError(t, DeleteClusterPrefix(t.Context(), kv, jwksReaderCluster))
+	require.NoError(t, DeleteClusterChildren(t.Context(), kv, jwksReaderCluster))
 	raw, found, err := reader.LookupClusterJWKS(t.Context(), jwksReaderAccountID, jwksReaderCluster)
 	require.NoError(t, err)
 	assert.False(t, found)

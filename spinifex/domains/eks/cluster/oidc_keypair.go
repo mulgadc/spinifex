@@ -61,6 +61,23 @@ const p256CoordLen = 32
 // GenerateClusterOIDCKeypair creates an ECDSA-P256 keypair, encrypts the private key PEM
 // into KV, and writes the JWKS document. Returns plaintext PEM + JWKS for immediate use.
 func GenerateClusterOIDCKeypair(ctx context.Context, kv jetstream.KeyValue, clusterName string, masterKey []byte) (privPEM string, jwksBytes []byte, err error) {
+	put := func(key string, value []byte) error {
+		_, err := kv.Put(ctx, key, value)
+		return err
+	}
+	return generateClusterOIDCKeypair(clusterName, masterKey, put)
+}
+
+// GenerateClusterOIDCKeypairFor is GenerateClusterOIDCKeypair for a create
+// launch: each write lands only while the record is meta's generation, so a
+// launch overtaken by a newer cluster of the same name cannot replace that
+// cluster's signing key.
+func GenerateClusterOIDCKeypairFor(ctx context.Context, kv jetstream.KeyValue, meta *ClusterMeta, masterKey []byte) (privPEM string, jwksBytes []byte, err error) {
+	put := func(key string, value []byte) error { return putIfGeneration(ctx, kv, meta, key, value) }
+	return generateClusterOIDCKeypair(meta.Name, masterKey, put)
+}
+
+func generateClusterOIDCKeypair(clusterName string, masterKey []byte, put func(key string, value []byte) error) (privPEM string, jwksBytes []byte, err error) {
 	if clusterName == "" {
 		return "", nil, errors.New("eks: GenerateClusterOIDCKeypair empty cluster name")
 	}
@@ -83,7 +100,7 @@ func GenerateClusterOIDCKeypair(ctx context.Context, kv jetstream.KeyValue, clus
 	if err != nil {
 		return "", nil, fmt.Errorf("encrypt OIDC private key: %w", err)
 	}
-	if _, err := kv.Put(ctx, OIDCSigningKeyKey(clusterName), []byte(ciphertext)); err != nil {
+	if err := put(OIDCSigningKeyKey(clusterName), []byte(ciphertext)); err != nil {
 		return "", nil, fmt.Errorf("kv put %s: %w", OIDCSigningKeyKey(clusterName), err)
 	}
 
@@ -91,7 +108,7 @@ func GenerateClusterOIDCKeypair(ctx context.Context, kv jetstream.KeyValue, clus
 	if err != nil {
 		return "", nil, err
 	}
-	if _, err := kv.Put(ctx, OIDCJWKSKey(clusterName), jwksBytes); err != nil {
+	if err := put(OIDCJWKSKey(clusterName), jwksBytes); err != nil {
 		return "", nil, fmt.Errorf("kv put %s: %w", OIDCJWKSKey(clusterName), err)
 	}
 	return string(pemBlock), jwksBytes, nil

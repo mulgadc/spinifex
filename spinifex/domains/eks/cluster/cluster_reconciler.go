@@ -617,6 +617,9 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) (time.Duration, e
 			return r.createRevisit(meta), r.failIfCreateTimedOut(ctx, meta, "healthz not ready: "+issue)
 		}
 		if err := SetClusterStatus(ctx, r.acctKV, r.clusterName, ClusterStatusActive); err != nil {
+			if errors.Is(err, ErrClusterDeleting) {
+				return 0, ErrReconcilerClusterDeleting
+			}
 			return 0, err
 		}
 		if err := SetClusterHealthState(ctx, r.acctKV, r.clusterName, "", nodeCount, nodegroupReady); err != nil {

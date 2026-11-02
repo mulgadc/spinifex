@@ -239,9 +239,14 @@ func TestEKS(t *testing.T) {
 
 	t.Run("DeleteCluster", func(t *testing.T) {
 		requireClusterReady(t, fx)
-		_, err := c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(fx.ClusterName)})
+		started := time.Now()
+		out, err := c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(fx.ClusterName)})
+		elapsed := time.Since(started)
 		require.NoError(t, err, "delete-cluster")
-		harness.WaitForEKSClusterDeleted(t, c, fx.ClusterName)
+		t.Logf("delete-cluster returned in %s", elapsed)
+		assert.Less(t, elapsed, 5*time.Second, "DeleteCluster must return without waiting for the teardown, as AWS does")
+		assert.Equal(t, eks.ClusterStatusDeleting, aws.StringValue(out.Cluster.Status), "delete-cluster response status")
+		waitClusterGoneWhileDeleting(t, c, fx.ClusterName)
 		fx.Deleted = true
 
 		_, err = c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(fx.ClusterName)})
@@ -1079,6 +1084,39 @@ func requireClusterReady(t *testing.T, fx *clusterFixture) {
 	if fx.Cluster == nil {
 		t.Skip("cluster never reached ACTIVE (CreateCluster subtest failed)")
 	}
+}
+
+// waitClusterGoneWhileDeleting polls DescribeCluster until the cluster is gone,
+// failing if it ever reports anything but DELETING on the way. A repeat delete
+// while it is DELETING must answer from the record with DELETING.
+func waitClusterGoneWhileDeleting(t *testing.T, c *harness.AWSClient, name string) {
+	t.Helper()
+	repeated := false
+	deadline := time.Now().Add(10 * time.Minute)
+	for time.Now().Before(deadline) {
+		desc, err := c.EKS.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String(name)})
+		if err != nil {
+			var aerr awserr.Error
+			require.ErrorAs(t, err, &aerr, "describe-cluster %s", name)
+			require.Contains(t, aerr.Code(), "ResourceNotFound", "describe-cluster %s", name)
+			t.Logf("cluster %s deleted", name)
+			return
+		}
+		require.Equal(t, eks.ClusterStatusDeleting, aws.StringValue(desc.Cluster.Status),
+			"a deleted cluster must read DELETING until it is gone, never ACTIVE")
+		if !repeated {
+			repeated = true
+			again, err := c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(name)})
+			var aerr awserr.Error
+			if err == nil {
+				assert.Equal(t, eks.ClusterStatusDeleting, aws.StringValue(again.Cluster.Status), "repeat delete-cluster while DELETING")
+			} else if !errors.As(err, &aerr) || !strings.Contains(aerr.Code(), "ResourceNotFound") {
+				t.Errorf("repeat delete-cluster while DELETING: %v", err)
+			}
+		}
+		time.Sleep(5 * time.Second)
+	}
+	t.Fatalf("cluster %s still present after 10m", name)
 }
 
 // deleteClusterBestEffort tears the cluster down if the DeleteCluster subtest did not.

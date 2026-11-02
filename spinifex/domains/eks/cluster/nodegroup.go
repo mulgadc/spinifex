@@ -431,7 +431,7 @@ func gpuFieldsForInstanceTypes(instanceTypes []string) (gpuEnabled bool, gpuVend
 // nodegroup's cluster. Any failure only logs: a GPU nodegroup must still come
 // up even if add-on staging fails.
 func (s *EKSServiceImpl) stageGPUDeviceAddon(ctx context.Context, accountID, cluster string) {
-	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
+	acctKV, err := s.acctKVForNewDependant(ctx, accountID, cluster)
 	if err == nil {
 		err = s.addons().EnsureGPUDevicePlugin(ctx, acctKV, accountID, cluster)
 	}
@@ -1238,6 +1238,12 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.K
 	}
 	if err := DeleteNodegroupRecord(ctx, acctKV, cluster, ng); err != nil {
 		return nil, err
+	}
+	// A cluster delete waits on its node groups; the last one going lets it run.
+	if meta, err := GetClusterMeta(ctx, acctKV, cluster); err == nil && meta.Status == ClusterStatusDeleting {
+		if rest, err := ListNodegroupRecords(ctx, acctKV, cluster); err == nil && len(rest) == 0 {
+			s.startTeardown(accountID, cluster)
+		}
 	}
 
 	rec.Status = eks.NodegroupStatusDeleting

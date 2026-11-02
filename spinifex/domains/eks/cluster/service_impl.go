@@ -33,7 +33,6 @@ import (
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -264,6 +263,25 @@ type EKSServiceImpl struct {
 
 	// launchWG tracks in-flight async create launches for test determinism (WaitLaunches).
 	launchWG sync.WaitGroup
+	// launchStepHook, when set by a test, runs at named points in the launch.
+	launchStepHook func(step string)
+	// launchHeartbeatEvery is how often a running launch refreshes its record's
+	// LaunchHeartbeat; launchStaleAfter is how old a heartbeat may be before the
+	// teardown stops waiting for the launch. Tests inject small values.
+	launchHeartbeatEvery time.Duration
+	launchStaleAfter     time.Duration
+
+	// teardownRunning holds the clusters this process is tearing down, the
+	// in-process gate the teardown lease cannot provide; teardownWG tracks them.
+	teardownMu      sync.Mutex
+	teardownRunning map[string]struct{}
+	teardownWG      sync.WaitGroup
+	// teardownKV, when set by a test, replaces the converger's account bucket.
+	teardownKV func(ctx context.Context, accountID string) (jetstream.KeyValue, error)
+
+	// bootstraps cancels the bootstrap subscribers this process runs, by cluster.
+	bootstrapMu sync.Mutex
+	bootstraps  map[string]*bootstrapRun
 
 	// baseDomain is the northstar default_domain; "" disables endpoint DNS naming
 	// (the cluster then publishes its bare IP:port endpoint as before).
@@ -300,6 +318,13 @@ func (s *EKSServiceImpl) WaitLaunches() { s.launchWG.Wait() }
 
 const defaultK8sVersion = "1.32"
 
+// A running launch heartbeats every 20 s; one silent for 90 s is taken as
+// crashed, so the teardown waits for a live launch and not for a dead one.
+const (
+	defaultLaunchHeartbeatEvery = 20 * time.Second
+	defaultLaunchStaleAfter     = 90 * time.Second
+)
+
 // NewEKSServiceImpl initialises EKSServiceImpl, wiring the leader KV and reconciler registry.
 func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	if err := addon.ValidateCatalog(); err != nil {
@@ -333,6 +358,8 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 		workerLaunchRetryTimeout: defaultWorkerLaunchRetryTimeout,
 		workerLaunchRetryBackoff: defaultWorkerLaunchRetryBackoff,
 		spawnScanRetryBackoff:    defaultSpawnScanRetryBackoff,
+		launchHeartbeatEvery:     defaultLaunchHeartbeatEvery,
+		launchStaleAfter:         defaultLaunchStaleAfter,
 	}, nil
 }
 
@@ -613,6 +640,8 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 		Logging:                                 clusterLoggingFromInput(input.Logging),
 		Tags:                                    aws.StringValueMap(input.Tags),
 		CreatedAt:                               time.Now().UTC(),
+		LaunchOwner:                             s.launchOwnerID(),
+		LaunchHeartbeat:                         time.Now().UTC(),
 	}
 	// Claim the cluster name before any launching; duplicate/retry handlers lose the claim.
 	if err := s.claimClusterName(ctx, accountID, acctKV, meta); err != nil {
@@ -709,6 +738,9 @@ type clusterLaunchCtx struct {
 // launch runs after the CREATING response was already sent, so a failure can
 // only surface as status, never as the CreateCluster return value.
 func (s *EKSServiceImpl) failClusterLaunch(ctx context.Context, kv jetstream.KeyValue, name, accountID string, meta *ClusterMeta, stage string, err error) {
+	if s.launchSuperseded(ctx, kv, name, accountID, meta, err) {
+		return
+	}
 	_ = logCreateErr(name, accountID, stage, err)
 	// Release any billable infra already provisioned this launch (LB VM + its
 	// associated EIP, egress EIP, NLB, CP VMs, OIDC) so a failed create never
@@ -717,14 +749,170 @@ func (s *EKSServiceImpl) failClusterLaunch(ctx context.Context, kv jetstream.Key
 	// internet-facing LB VM's EIP leaks permanently. Operate on the in-memory
 	// meta: a failure in PutClusterMeta itself leaves the freshest refs only
 	// here, not in the KV record. Best-effort; the FAILED status is recorded
-	// regardless (deleteMeta=false keeps the meta for DescribeCluster/reclaim).
+	// regardless; the meta is kept for DescribeCluster and the reclaim.
 	if meta != nil {
-		if perr := s.purgeClusterInfra(ctx, accountID, name, meta, kv, false); perr != nil {
+		if perr := s.purgeClusterInfra(ctx, accountID, name, meta, kv); perr != nil {
 			slog.WarnContext(ctx, "failClusterLaunch: infra purge incomplete", "cluster", name, "stage", stage, "err", perr)
 		}
 	}
 	if mErr := MarkClusterFailed(ctx, kv, name, stage+": "+err.Error()); mErr != nil && !errors.Is(mErr, ErrClusterNotFound) {
 		slog.WarnContext(ctx, "launchClusterInfra: MarkClusterFailed failed", "cluster", name, "err", mErr)
+	}
+}
+
+// launchSuperseded stops a launch that no longer owns its record, and makes
+// sure what it built is still owned by something. A DELETING record has the
+// launch's refs and the teardown owns them. A removed record is recreated as
+// DELETING with those refs, so the teardown and its reaper own them too. A
+// record that now belongs to a newer cluster gets nothing: the launch releases
+// only the instances it launched itself, by ID, never anything found by name.
+func (s *EKSServiceImpl) launchSuperseded(ctx context.Context, kv jetstream.KeyValue, name, accountID string, meta *ClusterMeta, err error) bool {
+	if meta == nil {
+		return false
+	}
+	if !errors.Is(err, errLaunchSuperseded) {
+		err = persistLaunchMeta(ctx, kv, meta)
+		if !errors.Is(err, errLaunchSuperseded) {
+			return false
+		}
+	}
+	slog.InfoContext(ctx, "launchClusterInfra: stopping, the cluster no longer owns its record",
+		"cluster", name, "accountID", accountID, "reason", err)
+	switch {
+	case errors.Is(err, ErrClusterNotFound):
+		if s.adoptLaunchForTeardown(ctx, kv, accountID, meta) {
+			return true
+		}
+		s.releaseLaunchInstances(ctx, kv, accountID, meta)
+	case errors.Is(err, errLaunchNewGeneration):
+		s.releaseLaunchInstances(ctx, kv, accountID, meta)
+	}
+	return true
+}
+
+// launchOwnerID names this process as a launch owner in the record.
+func (s *EKSServiceImpl) launchOwnerID() string {
+	if s.deps.HolderID != "" {
+		return s.deps.HolderID
+	}
+	return "local"
+}
+
+// heartbeatLaunch refreshes the record's LaunchHeartbeat while the launch runs,
+// so the teardown of a cluster deleted mid-launch waits for the launch to hand
+// its refs over. A record that is DELETING, gone or a newer cluster's cancels
+// the launch, which then stops at its next step. The returned func stops it.
+func (s *EKSServiceImpl) heartbeatLaunch(ctx context.Context, cancel context.CancelFunc, kv jetstream.KeyValue, meta *ClusterMeta) func() {
+	name, owner, createdAt, arn := meta.Name, meta.LaunchOwner, meta.CreatedAt, meta.Arn
+	every := s.launchHeartbeatEvery
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		if every <= 0 {
+			<-done
+			return
+		}
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			stop := false
+			err := casUpdateMeta(ctx, kv, name, func(m *ClusterMeta) bool {
+				stop = false
+				if !m.CreatedAt.Equal(createdAt) || m.Arn != arn || m.LaunchOwner != owner || m.Status != ClusterStatusCreating {
+					stop = true
+					return false
+				}
+				m.LaunchHeartbeat = time.Now().UTC()
+				return true
+			})
+			if stop || errors.Is(err, ErrClusterNotFound) {
+				cancel()
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
+}
+
+// endLaunch clears the record's launch owner when the launch returns, by
+// whatever path. A record that is DELETING by then was waiting for this
+// launch, so its teardown is started now rather than at the next sweep.
+func (s *EKSServiceImpl) endLaunch(kv jetstream.KeyValue, accountID string, meta *ClusterMeta) {
+	ctx := context.WithoutCancel(s.bgCtx)
+	deleting := false
+	err := casUpdateMeta(ctx, kv, meta.Name, func(m *ClusterMeta) bool {
+		deleting = m.Status == ClusterStatusDeleting
+		if !sameGeneration(m, meta) {
+			deleting = false
+			return false
+		}
+		return clearLaunchOwner(m)
+	})
+	if err != nil && !errors.Is(err, ErrClusterNotFound) {
+		slog.WarnContext(ctx, "launchClusterInfra: clear launch owner", "cluster", meta.Name, "err", err)
+	}
+	if deleting {
+		s.startTeardown(accountID, meta.Name)
+	}
+}
+
+// adoptLaunchForTeardown recreates a removed record as DELETING with the
+// launch's refs and hands it to the teardown. It reports false if the name was
+// claimed again first.
+func (s *EKSServiceImpl) adoptLaunchForTeardown(ctx context.Context, kv jetstream.KeyValue, accountID string, meta *ClusterMeta) bool {
+	rec := *meta
+	rec.Status = ClusterStatusDeleting
+	rec.StatusReason = ""
+	rec.DeletingSince = time.Now().UTC()
+	rec.DeleteReapAttempts = 0
+	rec.LastDeleteReapAttempt = time.Time{}
+	rec.DeleteReapExhausted = false
+	rec.LastDeleteReapError = ""
+	rec.DeleteFailedStep = ""
+	rec.LaunchOwner = ""
+	data, err := json.Marshal(&rec)
+	if err != nil {
+		return false
+	}
+	if _, err := kv.Create(ctx, ClusterMetaKey(meta.Name), data); err != nil {
+		if !errors.Is(err, jetstream.ErrKeyExists) {
+			slog.WarnContext(ctx, "launchClusterInfra: record the overtaken launch for teardown", "cluster", meta.Name, "err", err)
+		}
+		return false
+	}
+	s.startTeardown(accountID, meta.Name)
+	return true
+}
+
+// releaseLaunchInstances terminates the control-plane instances this launch
+// started that the record now under its name does not own. Instances are the
+// only refs unique to one launch; name-keyed resources (load balancer, CP VPC,
+// security groups) belong to whoever holds the name and are left to it.
+func (s *EKSServiceImpl) releaseLaunchInstances(ctx context.Context, kv jetstream.KeyValue, accountID string, meta *ClusterMeta) {
+	current, _ := GetClusterMeta(ctx, kv, meta.Name)
+	infraAcct := accountID
+	if meta.ManagedCPVPC != nil {
+		infraAcct = awsidentifiers.GlobalAccountID
+	}
+	for _, cp := range controlPlaneTeardownNodes(meta) {
+		if current != nil && current.IsControlPlaneMember(cp.InstanceID) {
+			continue
+		}
+		if err := TerminateK3sServerVM(ctx, s.deps.VPCK3s, s.deps.Instance, infraAcct, cp.InstanceID, cp.ENIID); err != nil {
+			slog.WarnContext(ctx, "launchClusterInfra: release overtaken control-plane instance", "cluster", meta.Name,
+				"instanceId", cp.InstanceID, "err", err)
+		}
 	}
 }
 
@@ -742,6 +930,11 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	meta := lc.meta
 	acctKV := lc.acctKV
 
+	ctx, cancel := context.WithCancel(ctx)
+	stopHeartbeat := s.heartbeatLaunch(ctx, cancel, acctKV, meta)
+	defer s.endLaunch(acctKV, accountID, meta)
+	defer stopHeartbeat()
+
 	// Build the managed control-plane VPC ("Set B") under the system account: the
 	// AWS-managed-account analogue the customer never provisions. The
 	// internet-facing NLB lives in its public subnet and the control-plane VM(s)
@@ -758,7 +951,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	meta.ManagedCPVPC = managedCPVPCFromRefs(cpRefs)
 	// Persist the CP VPC refs before any further fallible step so teardown can
 	// reclaim the VPC/subnets/IGW/NAT GW even if the launch fails after here.
-	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
+	if err := persistLaunchMeta(ctx, acctKV, meta); err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist managed CP VPC", err)
 		return
 	}
@@ -794,7 +987,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		return
 	}
 	meta.ResourcesVpcConfig.ClusterSecurityGroupId = custClusterSG
-	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
+	if err := persistLaunchMeta(ctx, acctKV, meta); err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist cluster security group id", err)
 		return
 	}
@@ -816,7 +1009,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		}
 		meta.PrivateEndpointENIID = pe.ENIID
 		meta.PrivateEndpointIP = pe.ENIIP
-		if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
+		if err := persistLaunchMeta(ctx, acctKV, meta); err != nil {
 			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist private endpoint refs", err)
 			return
 		}
@@ -868,7 +1061,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 
 	// Persist the endpoint before publishing it so reconcile never observes a DNS
 	// record whose creating cluster lacks its desired endpoint metadata.
-	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
+	if err := persistLaunchMeta(ctx, acctKV, meta); err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist endpoint metadata", err)
 		return
 	}
@@ -880,7 +1073,10 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	}
 	meta.OIDCIssuer = oidcIssuer
 
-	privPEM, _, err := GenerateClusterOIDCKeypair(ctx, acctKV, name, s.deps.MasterKey)
+	if s.launchStepHook != nil {
+		s.launchStepHook("oidc-keypair")
+	}
+	privPEM, _, err := GenerateClusterOIDCKeypairFor(ctx, acctKV, meta, s.deps.MasterKey)
 	if err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "generate OIDC keypair", err)
 		return
@@ -978,7 +1174,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	// failure between here and the next PutClusterMeta leaves them launched but
 	// unrecorded, so neither DeleteCluster nor the FAILED-cluster reclaim could
 	// reach them and the sys.medium VMs leak.
-	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
+	if err := persistLaunchMeta(ctx, acctKV, meta); err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist control-plane ids", err)
 		return
 	}
@@ -1002,15 +1198,28 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		return
 	}
 
-	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
+	if err := persistLaunchMeta(ctx, acctKV, meta); err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist final meta", err)
 		return
 	}
 
 	// Seed creator system:masters AccessEntry so the token webhook can authenticate the creator immediately.
+	if s.launchStepHook != nil {
+		s.launchStepHook("seed-creator-admin")
+	}
 	if bootstrapCreatorAdmin(input) && callerPrincipalARN != "" {
+		if err := persistLaunchMeta(ctx, acctKV, meta); err != nil {
+			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "confirm cluster before seeding access entry", err)
+			return
+		}
 		if err := s.owner.SeedCreatorAdmin(ctx, acctKV, accountID, name, callerPrincipalARN); err != nil {
 			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "seed cluster-creator admin access entry", err)
+			return
+		}
+		// The entry is a child of the record: if a delete removed the record
+		// while it was being written, it must not outlive it.
+		if err := persistLaunchMeta(ctx, acctKV, meta); err != nil {
+			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "confirm cluster after seeding access entry", err)
 			return
 		}
 	} else if bootstrapCreatorAdmin(input) {
@@ -1129,70 +1338,33 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 		return nil, err
 	}
 
-	// Single-flight the teardown: SDK retries of the same DeleteCluster are fanned
-	// across nodes by the worker queue group, so without this gate multiple
-	// purgeClusterInfra runs race the same cluster (duplicate ENI/NLB teardown,
-	// risking a double-release on the billable NAT-GW EIP). The loser returns the
-	// cluster as DELETING — AWS-async delete semantics — and the winner (or the
-	// DELETING backstop reaper) drives the teardown to completion.
-	release, ok := s.acquireTeardownLease(ctx, accountID, name)
-	if !ok {
-		meta.Status = ClusterStatusDeleting
+	// A recorded delete is answered from the record: the teardown it started is
+	// still converging, so a retry starts nothing.
+	if meta.Status == ClusterStatusDeleting {
 		return &eks.DeleteClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
 	}
-	defer release()
 
-	if err := SetClusterStatus(ctx, acctKV, name, ClusterStatusDeleting); err != nil {
-		return nil, fmt.Errorf("set DELETING: %w", err)
-	}
-	meta.Status = ClusterStatusDeleting
-
-	if err := s.purgeClusterInfra(ctx, accountID, name, meta, acctKV, true); err != nil {
-		slog.ErrorContext(ctx, "DeleteCluster: teardown incomplete; leaving cluster DELETING for retry",
-			"cluster", name, "err", err)
-		return nil, fmt.Errorf("eks: DeleteCluster %s: %w", name, err)
-	}
-
-	return &eks.DeleteClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
-}
-
-// teardownLeaderKey is the per-cluster single-flight gate for a DELETING
-// teardown. It is distinct from reconcilerLeaderKey so a delete never contends
-// with the still-live reconciler, which holds the reconciler lease until it
-// observes DELETING and exits; only concurrent purgeClusterInfra runs meet here.
-func teardownLeaderKey(accountID, clusterName string) string {
-	return reconcilerLeaderKey(accountID, clusterName) + "/teardown"
-}
-
-// acquireTeardownLease takes the per-cluster teardown lease so only one
-// purgeClusterInfra runs at a time for a cluster — the gate against the
-// concurrent-handler herd from SDK-retried DeleteClusters fanned across nodes by
-// the worker queue group. Shared by the synchronous DeleteCluster path and the
-// DELETING backstop reaper. CAS Create fails when another holder owns it. A nil
-// leaderKV (single-node/test) skips gating; the bucket TTL reaps a lease whose
-// release never runs.
-func (s *EKSServiceImpl) acquireTeardownLease(ctx context.Context, accountID, clusterName string) (func(), bool) {
-	if s.leaderKV == nil {
-		return func() {}, true
-	}
-	key := teardownLeaderKey(accountID, clusterName)
-	lease, err := kvlease.New(kvlease.Config{
-		Name:   "eks/teardown",
-		Bucket: kvlease.StaticBucket(s.leaderKV),
-		Key:    key,
-		Holder: s.deps.HolderID,
-		Attrs:  []any{"account", accountID, "cluster", clusterName},
-		TTL:    KVBucketEKSLeaderTTL,
-		Renew:  defaultReconcileLeaseRefresh,
-	})
+	// AWS refuses while managed node groups remain: deleting the control plane
+	// under them would orphan their running workers.
+	groups, err := ListNodegroupRecords(ctx, acctKV, name)
 	if err != nil {
-		slog.ErrorContext(ctx, "eks: teardown lease config invalid", "key", key, "err", err)
-		return nil, false
+		return nil, fmt.Errorf("list node groups: %w", err)
 	}
-	if !lease.TryAcquire(ctx) {
-		return nil, false
+	if len(groups) > 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorEKSResourceInUse, "Cluster has nodegroups attached")
 	}
-	return func() { lease.Release(ctx) }, true
+
+	recorded, transitioned, err := MarkClusterDeleting(ctx, acctKV, name)
+	if err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return nil, fmt.Errorf("record DELETING: %w", err)
+	}
+	if transitioned && !s.startTeardown(accountID, name) {
+		slog.InfoContext(ctx, "DeleteCluster: teardown left to the deleting reaper", "cluster", name)
+	}
+	return &eks.DeleteClusterOutput{Cluster: clusterMetaToAWS(recorded)}, nil
 }
 
 // claimClusterName atomically claims the cluster meta key before any launch work.
@@ -1205,12 +1377,26 @@ func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string,
 	}
 
 	if _, cerr := acctKV.Create(ctx, ClusterMetaKey(name), data); cerr == nil {
-		return nil // won a fresh claim
+		// Keys an earlier cluster of this name left under its prefix (a late
+		// bootstrap or launch write) must not be inherited by this one.
+		if derr := DeleteClusterChildren(ctx, acctKV, name); derr != nil {
+			slog.WarnContext(ctx, "CreateCluster: clear stale child records", "cluster", name, "err", derr)
+		}
+		return nil
 	} else if !errors.Is(cerr, jetstream.ErrKeyExists) {
 		return logCreateErr(name, accountID, "claim cluster name", cerr)
 	}
 
-	// Key already present: reclaim a FAILED attempt via CAS; old refs survive for teardown.
+	// Key already present: reclaim a FAILED attempt via CAS; old refs survive for
+	// teardown. The purge below is a teardown, so it runs under the same gate
+	// and lease as one, and a cluster whose teardown is running is in use.
+	if existing, gerr := GetClusterMeta(ctx, acctKV, name); gerr == nil && existing.Status == ClusterStatusFailed {
+		release, _, held := s.holdTeardown(accountID, name, false)
+		if !held {
+			return errors.New(awserrors.ErrorEKSResourceInUse)
+		}
+		defer release()
+	}
 	var oldRefs *ClusterMeta
 	reclaimed := false
 	if err := casUpdateMeta(ctx, acctKV, name, func(m *ClusterMeta) bool {
@@ -1225,6 +1411,10 @@ func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string,
 		snapshot := *m
 		oldRefs = &snapshot
 		m.Status = ClusterStatusCreating
+		m.CreatedAt = meta.CreatedAt
+		m.Arn = meta.Arn
+		m.LaunchOwner = meta.LaunchOwner
+		m.LaunchHeartbeat = time.Now().UTC()
 		reclaimed = true
 		return true
 	}); err != nil {
@@ -1243,30 +1433,59 @@ func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string,
 
 	slog.InfoContext(ctx, "CreateCluster: reclaiming FAILED cluster before recreate",
 		"name", name, "accountID", accountID)
-	// Purge the failed attempt's infra but KEEP the meta claim (deleteMeta=false)
-	// — the CREATING record is our lock for the rest of this create.
-	if perr := s.purgeClusterInfra(ctx, accountID, name, oldRefs, acctKV, false); perr != nil {
+	// Purge the failed attempt's infra but KEEP the meta claim: the CREATING
+	// record is our lock for the rest of this create.
+	if perr := s.purgeClusterInfra(ctx, accountID, name, oldRefs, acctKV); perr != nil {
 		s.markFailed(ctx, acctKV, name)
 		return logCreateErr(name, accountID, "reclaim failed cluster", perr)
 	}
 	// Infra gone: overwrite with the fresh CREATING meta (clears the old refs).
-	if err := PutClusterMeta(ctx, acctKV, meta); err != nil {
+	if err := persistLaunchMeta(ctx, acctKV, meta); err != nil {
+		if errors.Is(err, errLaunchSuperseded) {
+			return errors.New(awserrors.ErrorEKSResourceInUse)
+		}
 		s.markFailed(ctx, acctKV, name)
 		return logCreateErr(name, accountID, "persist reclaimed meta", err)
 	}
 	return nil
 }
 
-// purgeClusterInfra tears down a cluster's live AWS resources and erases its
-// per-cluster KV state. Zeroize (a security guarantee — no recoverable key
-// material), NLB, VM, SG, IGW, and CP-VPC teardown are all blocking: their
-// failures are joined and returned BEFORE the KV sweep, so neither a billable
-// resource nor a VPC-pinning SG is orphaned without the meta record that owns
-// its IDs. The cluster SGs sit in the customer VPC, so a leaked SG pins the VPC
-// on DependencyViolation — leaving the cluster DELETING for a retry is correct.
-// Shared by DeleteCluster and the FAILED-cluster reclaim path in CreateCluster.
-func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name string, meta *ClusterMeta, acctKV jetstream.KeyValue, deleteMeta bool) error {
+// purgeClusterInfra tears down a cluster's live AWS resources without touching
+// its record, for the create paths that release a failed launch's infra.
+func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name string, meta *ClusterMeta, acctKV jetstream.KeyValue) error {
+	_, err := s.teardownClusterInfra(ctx, accountID, name, meta, acctKV, nil)
+	return err
+}
+
+// Tenant-facing names for teardown steps. DescribeCluster reports which step a
+// stuck delete is retrying by these, never by the error, which carries
+// system-account resource IDs.
+const (
+	stepOIDCKey         = "erasing the OIDC signing key"
+	stepEndpointLB      = "deleting the endpoint load balancer"
+	stepPrivateENI      = "deleting the private endpoint network interface"
+	stepControlPlane    = "terminating control-plane instances"
+	stepEgressAddress   = "releasing the egress address"
+	stepClusterLBs      = "deleting load balancers created in the cluster"
+	stepSecurityGroups  = "deleting cluster security groups"
+	stepCPNetwork       = "deleting the control-plane network"
+	stepInternetGateway = "deleting the cluster internet gateway"
+	stepRecord          = "removing the cluster record"
+	stepNodegroups      = "waiting for the cluster's node groups to be deleted"
+	stepLaunch          = "waiting for the cluster's creation to stop"
+)
+
+// teardownClusterInfra removes every dependant the meta records and returns
+// the joined error with the tenant-facing names of the steps that failed.
+// Zeroize (no recoverable key material), NLB, VM, EIP, SG, IGW and CP-VPC
+// failures are all blocking, so the caller keeps the record that owns their
+// IDs. checkpoint, when set, runs between steps and stops the teardown early.
+func (s *EKSServiceImpl) teardownClusterInfra(ctx context.Context, accountID, name string, meta *ClusterMeta, acctKV jetstream.KeyValue, checkpoint func() error) ([]string, error) {
 	s.registry.Stop(accountID, name)
+	s.stopBootstrap(accountID, name)
+	if checkpoint == nil {
+		checkpoint = func() error { return nil }
+	}
 
 	// infraAcct owns the NLB, CP VMs, and CP VPC. Clusters built with the managed
 	// CP VPC ("Set B") hold them under the system account; legacy clusters
@@ -1277,11 +1496,21 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 	}
 
 	var teardownErrs []error
-
-	if err := ZeroizeClusterOIDCKey(ctx, acctKV, name); err != nil {
-		teardownErrs = append(teardownErrs, fmt.Errorf("zeroize OIDC key: %w", err))
+	var failedSteps []string
+	fail := func(step string, err error) {
+		teardownErrs = append(teardownErrs, err)
+		if !slices.Contains(failedSteps, step) {
+			failedSteps = append(failedSteps, step)
+		}
 	}
 
+	if err := ZeroizeClusterOIDCKey(ctx, acctKV, name); err != nil {
+		fail(stepOIDCKey, fmt.Errorf("zeroize OIDC key: %w", err))
+	}
+
+	if err := checkpoint(); err != nil {
+		return failedSteps, err
+	}
 	if meta.NLBArn != "" {
 		// Deregister is best-effort: DeleteClusterNLB tears down the whole NLB
 		// + target group, so a stale target registration cannot leak past it.
@@ -1291,7 +1520,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 			}
 		}
 		if err := DeleteClusterNLB(ctx, s.deps.NLB, infraAcct, name); err != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("delete NLB: %w", err))
+			fail(stepEndpointLB, fmt.Errorf("delete NLB: %w", err))
 		}
 	}
 
@@ -1303,17 +1532,26 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 	// missing/already-detached ENI is fine; the delete is the authoritative gate.
 	if meta.PrivateEndpointENIID != "" {
 		if err := detachAndDeleteServerENI(ctx, s.deps.VPCK3s, accountID, meta.PrivateEndpointENIID); err != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("delete private-endpoint ENI: %w", err))
+			fail(stepPrivateENI, fmt.Errorf("delete private-endpoint ENI: %w", err))
 		}
 	}
 
+	if err := checkpoint(); err != nil {
+		return failedSteps, err
+	}
 	for _, cp := range controlPlaneTeardownNodes(meta) {
+		if err := checkpoint(); err != nil {
+			return failedSteps, err
+		}
 		if err := TerminateK3sServerVM(ctx, s.deps.VPCK3s, s.deps.Instance,
 			infraAcct, cp.InstanceID, cp.ENIID); err != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("terminate K3s VM %s: %w", cp.InstanceID, err))
+			fail(stepControlPlane, fmt.Errorf("terminate K3s VM %s: %w", cp.InstanceID, err))
 		}
 	}
 
+	if err := checkpoint(); err != nil {
+		return failedSteps, err
+	}
 	// Egress: drop the OVN reroute+snat (fire-and-forget event, prune-safe) and
 	// release the hidden pool address. ReleaseAddress is blocking — the EIP is
 	// billable and its allocation ID lives in the meta we are about to erase, so
@@ -1345,7 +1583,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 					slog.DebugContext(ctx, "purgeClusterInfra: egress EIP already released",
 						"cluster", name, "allocationId", meta.EgressEIPAllocationID)
 				default:
-					teardownErrs = append(teardownErrs, fmt.Errorf("release egress EIP: %w", err))
+					fail(stepEgressAddress, fmt.Errorf("release egress EIP: %w", err))
 				}
 			}
 		}
@@ -1359,6 +1597,9 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 		}
 	}
 
+	if err := checkpoint(); err != nil {
+		return failedSteps, err
+	}
 	// Reap LBC-orphaned ALBs (k8s-toc-*) in the customer VPC before the SG sweep:
 	// the in-cluster AWS LoadBalancer Controller runs under the customer account and
 	// spinifex never tracks its ALBs, so nothing else deletes them and they pin the
@@ -1366,10 +1607,13 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 	// so the ALB no longer references the SG it reaps.
 	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
 		if err := ReapLBCLoadBalancers(ctx, s.deps.NLB, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("reap LBC ALBs: %w", err))
+			fail(stepClusterLBs, fmt.Errorf("reap LBC ALBs: %w", err))
 		}
 	}
 
+	if err := checkpoint(); err != nil {
+		return failedSteps, err
+	}
 	// SG / IGW / CP-VPC cleanup runs even when an earlier step failed: the cluster
 	// SGs sit in the customer VPC, so skipping them would pin the VPC. Failures are
 	// joined into teardownErrs (not swallowed) so the meta survives for a retry.
@@ -1379,19 +1623,19 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 		// the IGW + VPC after the SGs, so SG cleanup must precede it.
 		cpSGErr := DeleteClusterSGs(ctx, s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId)
 		if cpSGErr != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", cpSGErr))
+			fail(stepSecurityGroups, fmt.Errorf("delete cluster SGs: %w", cpSGErr))
 		}
 		// launchNodegroupInfra also creates the cluster SGs in the customer VPC for
 		// worker<->control-plane networking; reclaim them here too, or they orphan
 		// (cross-referencing each other) and pin the customer VPC on destroy.
 		if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
 			if err := DeleteClusterSGs(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
-				teardownErrs = append(teardownErrs, fmt.Errorf("delete customer-VPC cluster SGs: %w", err))
+				fail(stepSecurityGroups, fmt.Errorf("delete customer-VPC cluster SGs: %w", err))
 			}
 		}
 		cpVPCErr := DeleteClusterCPVPC(ctx, s.cpVPCDeps(), infraAcct, name, meta.ManagedCPVPC)
 		if cpVPCErr != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("delete managed CP VPC: %w", cpVPCErr))
+			fail(stepCPNetwork, fmt.Errorf("delete managed CP VPC: %w", cpVPCErr))
 		}
 		if cpSGErr == nil && cpVPCErr == nil {
 			// The CP VPC (including when already gone — tolerated as success)
@@ -1402,7 +1646,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 			// DependencyViolation into a permanent DELETING loop.
 			meta.ManagedCPVPC = nil
 			if perr := ClearClusterManagedCPVPC(ctx, acctKV, name); perr != nil && !errors.Is(perr, ErrClusterNotFound) {
-				teardownErrs = append(teardownErrs, fmt.Errorf("clear managed CP VPC state: %w", perr))
+				fail(stepCPNetwork, fmt.Errorf("clear managed CP VPC state: %w", perr))
 			}
 		}
 	} else if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
@@ -1410,11 +1654,11 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 		// cluster-owned IGW (ownership-scoped — a reused customer IGW is left
 		// intact). IGW delete must precede any VPC delete to avoid DependencyViolation.
 		if err := DeleteClusterSGs(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster SGs: %w", err))
+			fail(stepSecurityGroups, fmt.Errorf("delete cluster SGs: %w", err))
 		}
 		if s.deps.IGW != nil {
 			if err := DeleteClusterIGW(ctx, s.deps.IGW, accountID, meta.ResourcesVpcConfig.VpcId, name); err != nil {
-				teardownErrs = append(teardownErrs, fmt.Errorf("delete cluster IGW: %w", err))
+				fail(stepInternetGateway, fmt.Errorf("delete cluster IGW: %w", err))
 			}
 		}
 	}
@@ -1434,22 +1678,11 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 	}
 
 	// Any blocking-teardown failure (billable infra or a VPC-pinning SG) keeps the
-	// meta — and the IDs that own the stranded resources — alive for a delete retry
-	// or the DELETING backstop, rather than completing deletion with infra leaked.
+	// meta, and the IDs that own the stranded resources, for the next pass.
 	if len(teardownErrs) > 0 {
-		return errors.Join(teardownErrs...)
+		return failedSteps, errors.Join(teardownErrs...)
 	}
-
-	// Only now, with NLB + VM confirmed gone, erase the meta + per-cluster KV.
-	// The reclaim path passes deleteMeta=false: it has already CAS-claimed the
-	// meta key (status CREATING) as its lock for the recreate, so the key must
-	// survive — only the failed attempt's infra is purged here.
-	if deleteMeta {
-		if err := DeleteClusterPrefix(ctx, acctKV, name); err != nil {
-			return fmt.Errorf("delete cluster prefix: %w", err)
-		}
-	}
-	return nil
+	return nil, nil
 }
 
 // --- Nodegroup ---
@@ -1533,6 +1766,27 @@ func (s *EKSServiceImpl) acctKVForCluster(ctx context.Context, accountID, cluste
 	return acctKV, nil
 }
 
+// acctKVForNewDependant is acctKVForCluster for a call that adds a dependant
+// to the cluster. A recorded delete admits no new dependant (ADR-0003:S2): the
+// teardown would sweep it with the record, so it is refused with ResourceInUse.
+func (s *EKSServiceImpl) acctKVForNewDependant(ctx context.Context, accountID, cluster string) (jetstream.KeyValue, error) {
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := GetClusterMeta(ctx, acctKV, cluster)
+	if err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return nil, err
+	}
+	if meta.Status == ClusterStatusDeleting {
+		return nil, awserrors.Errorf(awserrors.ErrorEKSResourceInUse, "Cluster %s is being deleted", cluster)
+	}
+	return acctKV, nil
+}
+
 func (s *EKSServiceImpl) CreateAccessEntry(ctx context.Context, input *eks.CreateAccessEntryInput, accountID string) (*eks.CreateAccessEntryOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -1550,7 +1804,7 @@ func (s *EKSServiceImpl) CreateAccessEntry(ctx context.Context, input *eks.Creat
 		// Non-standard types (EC2_LINUX etc.) are not yet implemented.
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
+	acctKV, err := s.acctKVForNewDependant(ctx, accountID, cluster)
 	if err != nil {
 		return nil, err
 	}
@@ -2108,7 +2362,7 @@ func (s *EKSServiceImpl) DesiredDNSChanges() (changes []dns.Change, ok bool) {
 }
 
 func (s *EKSServiceImpl) markFailed(ctx context.Context, kv jetstream.KeyValue, name string) {
-	if err := SetClusterStatus(ctx, kv, name, ClusterStatusFailed); err != nil {
+	if err := SetClusterStatus(ctx, kv, name, ClusterStatusFailed); err != nil && !errors.Is(err, ErrClusterDeleting) {
 		slog.Warn("CreateCluster: SetClusterStatus(FAILED) failed", "cluster", name, "err", err)
 	}
 }
@@ -2122,8 +2376,28 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv jetstr
 		slog.Error("spawnBootstrap: NewNATSBootstrap failed", "cluster", clusterName, "err", err)
 		return
 	}
+	ctx, cancel := context.WithCancel(s.bgCtx)
+	key := reconcilerLeaderKey(accountID, clusterName)
+	entry := &bootstrapRun{cancel: cancel}
+	s.bootstrapMu.Lock()
+	if s.bootstraps == nil {
+		s.bootstraps = map[string]*bootstrapRun{}
+	}
+	if prev := s.bootstraps[key]; prev != nil {
+		prev.cancel()
+	}
+	s.bootstraps[key] = entry
+	s.bootstrapMu.Unlock()
 	go func() {
-		err := boot.RunForKinds(s.bgCtx, kinds)
+		defer func() {
+			cancel()
+			s.bootstrapMu.Lock()
+			if s.bootstraps[key] == entry {
+				delete(s.bootstraps, key)
+			}
+			s.bootstrapMu.Unlock()
+		}()
+		err := boot.RunForKinds(ctx, kinds)
 		if err == nil || errors.Is(err, context.Canceled) {
 			return
 		}
@@ -2137,6 +2411,25 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv jetstr
 			slog.Error("spawnBootstrap: MarkClusterFailed", "cluster", clusterName, "err", markErr)
 		}
 	}()
+}
+
+// bootstrapRun is one running bootstrap subscriber; its pointer identifies the
+// map entry so an exiting run removes only its own.
+type bootstrapRun struct {
+	cancel context.CancelFunc
+}
+
+// stopBootstrap cancels this process's bootstrap subscriber for a cluster, so
+// a cluster being torn down stops collecting artifacts into its prefix.
+func (s *EKSServiceImpl) stopBootstrap(accountID, clusterName string) {
+	key := reconcilerLeaderKey(accountID, clusterName)
+	s.bootstrapMu.Lock()
+	run := s.bootstraps[key]
+	delete(s.bootstraps, key)
+	s.bootstrapMu.Unlock()
+	if run != nil {
+		run.cancel()
+	}
 }
 
 func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *ClusterMeta) {
@@ -2364,6 +2657,14 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 		issues = append(issues, &eks.ClusterIssue{
 			Code:    aws.String(eks.ClusterIssueCodeClusterUnreachable),
 			Message: aws.String(meta.HealthIssue),
+		})
+	}
+	// A stuck delete names its step in tenant words only; LastDeleteReapError
+	// carries system-account IDs and stays operator-side.
+	if meta.Status == ClusterStatusDeleting && meta.DeleteFailedStep != "" {
+		issues = append(issues, &eks.ClusterIssue{
+			Code:    aws.String(eks.ClusterIssueCodeInternalFailure),
+			Message: aws.String("Cluster deletion has not completed and is being retried. Waiting on: " + meta.DeleteFailedStep + "."),
 		})
 	}
 	// StatusReason is the launch-failure cause MarkClusterFailed recorded; surface

@@ -113,7 +113,7 @@ aws ec2 describe-instance-types
 ## Web Console
 
 <p align="center">
-  <img src=".github/assets/spinifex-ui.jpg" alt="Spinifex web console dashboard" width="900">
+  <img src=".github/assets/dashboard.webp" alt="Spinifex web console dashboard" width="900">
 </p>
 
 Spinifex ships with a built-in web console for your instances, volumes, buckets, networks, and IAM. See [Launching the Web UI](https://docs.mulgadc.com/docs/setting-up-your-cluster#7-launching-the-web-ui).

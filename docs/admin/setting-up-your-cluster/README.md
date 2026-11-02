@@ -340,7 +340,7 @@ spx get vms
 Spinifex ships with a built-in web console — an alternative to the AWS CLI, SDKs, and Terraform, analogous to the AWS Management Console. Every action in the UI is a standard AWS SigV4 API call, so the same IAM policies and audit behaviour apply.
 
 <p align="center">
-  <img src="../../../.github/assets/spinifex-ui.jpg" alt="Spinifex Web UI" width="900">
+  <img src="../../../.github/assets/dashboard.webp" alt="Spinifex Web UI" width="900">
 </p>
 
 ### Open the Console

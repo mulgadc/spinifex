@@ -255,7 +255,7 @@ The same profile is set up on node 1, if you prefer to work from there:
 If this returns a list of available instance types, your installation is working.
 
 <p align="center">
-  <img src="../../.github/assets/spinifex-ui.jpg" alt="Spinifex Web UI" width="900">
+  <img src="../../.github/assets/dashboard.webp" alt="Spinifex Web UI" width="900">
 </p>
 <p align="center"><em>The Spinifex web console, on port 3000 of node 1.</em></p>
 

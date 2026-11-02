@@ -633,7 +633,7 @@ ssh -i ~/.ssh/oci-spx ubuntu@"$(head -1 .validate-vm-multi/hosts)" \
 If this returns a list of available instance types, your installation is working.
 
 <p align="center">
-  <img src="../../.github/assets/spinifex-ui.jpg" alt="Spinifex Web UI" width="900">
+  <img src="../../.github/assets/dashboard.webp" alt="Spinifex Web UI" width="900">
 </p>
 
 

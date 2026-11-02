@@ -781,6 +781,10 @@ func (svc *echoIAMService) UpdateAccessKey(accountID string, input *iam.UpdateAc
 	return echoIAMCall[iam.UpdateAccessKeyInput, iam.UpdateAccessKeyOutput](svc, accountID, input)
 }
 
+func (svc *echoIAMService) UpdateUser(accountID string, input *iam.UpdateUserInput) (*iam.UpdateUserOutput, error) {
+	return echoIAMCall[iam.UpdateUserInput, iam.UpdateUserOutput](svc, accountID, input)
+}
+
 func (svc *echoIAMService) UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
 	return echoIAMCall[iam.UpdateAssumeRolePolicyInput, iam.UpdateAssumeRolePolicyOutput](svc, accountID, input)
 }

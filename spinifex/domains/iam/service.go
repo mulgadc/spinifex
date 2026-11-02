@@ -15,6 +15,7 @@ type IAMService interface {
 	GetUser(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error)
 	ListUsers(accountID string, input *iam.ListUsersInput) (*iam.ListUsersOutput, error)
 	DeleteUser(accountID string, input *iam.DeleteUserInput) (*iam.DeleteUserOutput, error)
+	UpdateUser(accountID string, input *iam.UpdateUserInput) (*iam.UpdateUserOutput, error)
 
 	// Access key lifecycle — account-scoped
 	CreateAccessKey(accountID string, input *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error)

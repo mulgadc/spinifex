@@ -96,6 +96,9 @@ var actions = map[string]action{
 	"DeleteUser": handler(func(accountID string, input *iam.DeleteUserInput, d Deps) (any, error) {
 		return DeleteUser(accountID, input, d.IAM)
 	}),
+	"UpdateUser": handler(func(accountID string, input *iam.UpdateUserInput, d Deps) (any, error) {
+		return UpdateUser(accountID, input, d.IAM)
+	}),
 	"CreateAccessKey": handler(func(accountID string, input *iam.CreateAccessKeyInput, d Deps) (any, error) {
 		return CreateAccessKey(accountID, input, d.IAM)
 	}),

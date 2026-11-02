@@ -48,6 +48,7 @@ var iamScopes = map[string]resourceScope{
 	"CreateUser":               createScope(arn.IAMUser, "UserName"),
 	"GetUser":                  existingScope(arn.IAMUser, "UserName"),
 	"DeleteUser":               existingScope(arn.IAMUser, "UserName"),
+	"UpdateUser":               existingScope(arn.IAMUser, "UserName"),
 	"CreateAccessKey":          existingScope(arn.IAMUser, "UserName"),
 	"ListAccessKeys":           existingScope(arn.IAMUser, "UserName"),
 	"DeleteAccessKey":          existingScope(arn.IAMUser, "UserName"),

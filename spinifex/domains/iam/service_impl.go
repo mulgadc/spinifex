@@ -625,6 +625,133 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 	return &iam.DeleteUserOutput{}, nil
 }
 
+// UpdateUser applies NewPath and NewUserName to a user. A rename moves the
+// record to its new key, keeping its ID, access keys, groups and policies.
+func (s *IAMServiceImpl) UpdateUser(accountID string, input *iam.UpdateUserInput) (*iam.UpdateUserOutput, error) {
+	ctx := context.Background()
+	userName := *input.UserName
+	if input.NewUserName != nil {
+		if err := validateIAMName("newUserName", *input.NewUserName, 64); err != nil {
+			return nil, err
+		}
+	}
+	if input.NewPath != nil {
+		if err := validatePath(*input.NewPath); err != nil {
+			return nil, err
+		}
+	}
+
+	newName := aws.StringValue(input.NewUserName)
+	var err error
+	if newName == "" || newName == userName {
+		err = s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
+			if input.NewPath == nil || *input.NewPath == u.Path {
+				return false, nil
+			}
+			u.Path = *input.NewPath
+			u.ARN = arn.FormatIAMPath(arn.IAMUser, accountID, u.Path, u.UserName)
+			return true, nil
+		})
+	} else {
+		err = s.renameUser(ctx, accountID, userName, newName, input.NewPath)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("IAM user updated", "accountID", accountID, "userName", userName, "newUserName", newName)
+	return &iam.UpdateUserOutput{}, nil
+}
+
+// renameUser writes the user under newName and repoints its access keys before
+// deleting the old record at the revision it read. A racing writer of the old
+// record makes that delete fail, so the rename is undone and retried.
+func (s *IAMServiceImpl) renameUser(ctx context.Context, accountID, oldName, newName string, newPath *string) error {
+	oldKey, newKey := accountID+"."+oldName, accountID+"."+newName
+	first, second := oldKey, newKey
+	if second < first {
+		first, second = second, first
+	}
+	defer s.recordLocks.lock("user/" + first)()
+	defer s.recordLocks.lock("user/" + second)()
+
+	for range roleCASMaxRetries {
+		entry, err := s.usersBucket.Get(ctx, oldKey)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				return errors.New(awserrors.ErrorIAMNoSuchEntity)
+			}
+			return fmt.Errorf("get user: %w", err)
+		}
+		var user User
+		if err := json.Unmarshal(entry.Value(), &user); err != nil {
+			return fmt.Errorf("unmarshal user: %w", err)
+		}
+		user.UserName = newName
+		if newPath != nil {
+			user.Path = *newPath
+		}
+		user.ARN = arn.FormatIAMPath(arn.IAMUser, accountID, user.Path, newName)
+		data, err := json.Marshal(user)
+		if err != nil {
+			return fmt.Errorf("marshal user: %w", err)
+		}
+
+		newRev, err := s.usersBucket.Create(ctx, newKey, data)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
+				return errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+			}
+			return fmt.Errorf("store renamed user: %w", err)
+		}
+		err = s.setAccessKeysOwner(ctx, accountID, user.AccessKeys, newName)
+		if err == nil {
+			err = s.usersBucket.Delete(ctx, oldKey, jetstream.LastRevision(entry.Revision()))
+			if err == nil {
+				return nil
+			}
+		}
+		s.undoRenameUser(ctx, accountID, user.AccessKeys, oldName, newKey, newRev)
+		if !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+			return fmt.Errorf("rename user: %w", err)
+		}
+	}
+	slog.Error("IAM user rename lost every revision race on the old record",
+		"accountID", accountID, "userName", oldName, "attempts", roleCASMaxRetries)
+	return errors.New(awserrors.ErrorServerInternal)
+}
+
+// setAccessKeysOwner points each access key at userName. A listed key with no
+// record is skipped, as ListAccessKeys skips it.
+func (s *IAMServiceImpl) setAccessKeysOwner(ctx context.Context, accountID string, keyIDs []string, userName string) error {
+	for _, keyID := range keyIDs {
+		cfg := iamRecordCASConfig("access key", accountID, keyID)
+		cfg.NotFound = nil
+		_, err := kvutil.Update(ctx, s.accessKeysBucket, keyID, cfg, func(ak *AccessKey) (bool, error) {
+			if ak.UserName == userName {
+				return false, nil
+			}
+			ak.UserName = userName
+			return true, nil
+		})
+		if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+			return fmt.Errorf("repoint access key %s: %w", keyID, err)
+		}
+	}
+	return nil
+}
+
+// undoRenameUser returns the access keys to oldName and drops the record
+// written under the new name, unless a writer has changed it since.
+func (s *IAMServiceImpl) undoRenameUser(ctx context.Context, accountID string, keyIDs []string, oldName, newKey string, newRev uint64) {
+	if err := s.setAccessKeysOwner(ctx, accountID, keyIDs, oldName); err != nil {
+		slog.Error("Rollback failed: access keys left on renamed user", "accountID", accountID, "userName", oldName, "err", err)
+	}
+	if err := s.usersBucket.Delete(ctx, newKey, jetstream.LastRevision(newRev)); err != nil {
+		slog.Error("Rollback failed: renamed user record left behind", "accountID", accountID, "userName", oldName, "key", newKey, "err", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Access Key Lifecycle
 // ---------------------------------------------------------------------------

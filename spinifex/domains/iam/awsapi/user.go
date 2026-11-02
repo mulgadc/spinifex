@@ -78,6 +78,15 @@ func DeleteUser(accountID string, input *iam.DeleteUserInput, svc iamdomain.IAMS
 	return svc.DeleteUser(accountID, input)
 }
 
+// UpdateUser implements the IAM UpdateUser action, renaming a user or changing its path. It
+// returns MissingParameter when UserName is absent, then calls the IAM service for accountID.
+func UpdateUser(accountID string, input *iam.UpdateUserInput, svc iamdomain.IAMService) (*iam.UpdateUserOutput, error) {
+	if input.UserName == nil || *input.UserName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return svc.UpdateUser(accountID, input)
+}
+
 // PutUserPolicy implements the IAM PutUserPolicy action, adding or replacing a user inline
 // policy. It returns MissingParameter when UserName, PolicyName or PolicyDocument is absent, then
 // calls the IAM service for accountID.

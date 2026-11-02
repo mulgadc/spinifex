@@ -344,7 +344,8 @@ func (d Deps) runNetworkTest(parent context.Context, test *NetworkTest, perRun t
 	if failed == len(test.Runs) {
 		test.Status, test.Error = NetworkTestFailed, "every run failed"
 	}
-	d.saveNetworkTest(ctx, test)
+	// The run deadline may have passed, and the final status must still land.
+	d.saveNetworkTest(parent, test)
 	slog.Info("network test finished", "test_id", test.TestID, "status", test.Status, "failed_runs", failed)
 }
 
@@ -360,7 +361,9 @@ func (d Deps) runNetworkTestPair(ctx context.Context, test *NetworkTest, from, t
 	if err != nil {
 		return res, fmt.Errorf("encode serve request: %w", err)
 	}
-	msg, err := d.NATS.RequestWithContext(ctx, clusterv1.NetTestServeSubject(to), serveReq)
+	sctx, scancel := context.WithTimeout(ctx, networkTestServeTimeout)
+	defer scancel()
+	msg, err := d.NATS.RequestWithContext(sctx, clusterv1.NetTestServeSubject(to), serveReq)
 	if err != nil {
 		return res, fmt.Errorf("%s did not start its server: %w", to, err)
 	}

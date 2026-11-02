@@ -183,6 +183,34 @@ func TestNetworkTestRunsEveryDirectionAndRecordsEachResult(t *testing.T) {
 	}, 10*time.Second, 20*time.Millisecond)
 }
 
+func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	ctx := context.Background()
+	d := Deps{NATS: nc, NetworkTests: NewKVNetworkTests(js), NodeIDs: []string{"a", "b"}}
+	fakeNode(t, nc, "a", "10.10.8.4", 23e9, false)
+	silent, err := nc.Subscribe(clusterv1.NetTestServeSubject("b"), func(*nats.Msg) {})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = silent.Unsubscribe() })
+
+	started, err := d.StartNetworkTest(ctx, map[string]string{"Plane": "lan", "Source": "a", "Target": "b", "DurationSeconds": "5"})
+	require.NoError(t, err)
+
+	var done NetworkTest
+	require.Eventually(t, func() bool {
+		out, err := d.DescribeNetworkTests(ctx, map[string]string{"TestId": started.TestID})
+		if err != nil || len(out.Tests) != 1 {
+			return false
+		}
+		done = out.Tests[0]
+		return done.Status != NetworkTestRunning
+	}, networkTestServeTimeout+3*time.Second, 50*time.Millisecond, "the serve request has its own deadline")
+
+	assert.Equal(t, NetworkTestFailed, done.Status)
+	require.NotEmpty(t, done.Runs)
+	assert.Equal(t, [2]string{"a", "b"}, [2]string{done.Runs[0].From, done.Runs[0].To})
+	assert.Contains(t, done.Runs[0].Error, "b did not start its server")
+}
+
 func TestDescribeNetworkTestsUnknownID(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	d := Deps{NetworkTests: NewKVNetworkTests(js)}

@@ -735,6 +735,8 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 					LogicalIP:   pubPrivIP,
 					ArtifactDir: fix.ArtifactDir(t),
 				})
+			// A restarted guest that never reaches IMDS stalls in cloud-init before sshd starts.
+			harness.DumpIMDSDatapathDiagnostics(t, pubSubnetID, pubPrivIP, fix.ArtifactDir(t))
 			t.Fatalf("guest unreachable via %s within %s after restart (see diagnostics above)", newIP, harness.SSHReadyBudget)
 		}
 		out := harness.RunSSH(t, harness.SSHTarget{User: "ubuntu", Host: newIP, Port: 22, KeyPath: keyPath}, "id")
@@ -859,6 +861,8 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 						LogicalIP:   aws.StringValue(started.PrivateIpAddress),
 						ArtifactDir: fix.ArtifactDir(t),
 					})
+				// A restarted guest that never reaches IMDS stalls in cloud-init before sshd starts.
+				harness.DumpIMDSDatapathDiagnostics(t, pubSubnetID, aws.StringValue(started.PrivateIpAddress), fix.ArtifactDir(t))
 				t.Fatalf("guest unreachable via EIP %s within %s after restart (see diagnostics above)", eipIP, harness.SSHReadyBudget)
 			}
 			out := harness.RunSSH(t, harness.SSHTarget{User: "ubuntu", Host: eipIP, Port: 22, KeyPath: keyPath}, "id")

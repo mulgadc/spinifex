@@ -52,6 +52,23 @@ func DumpIMDSDatapathDiagnostics(t *testing.T, subnetID, guestIP, artifactDir st
 			grepFor: []string{guestIP},
 		},
 		{
+			filename: "imds-endpoint-links.txt",
+			label:    "ip -br link (endpoint up, MAC matching the demux flow's mod_dl_dst?)",
+			argv:     []string{"ip", "-br", "link", "show"},
+			grepFor:  []string{"ime-"},
+		},
+		{
+			filename: "imds-endpoint-addrs.txt",
+			label:    "ip -br addr (endpoint owns 169.254.169.254/.253?)",
+			argv:     []string{"ip", "-br", "addr", "show"},
+			grepFor:  []string{"ime-"},
+		},
+		{
+			filename: "imds-endpoint-sysctls.txt",
+			label:    "endpoint rp_filter/accept_local (a strict rp_filter drops guest requests)",
+			argv:     []string{"sysctl", "-a", "-r", `conf\.(all|default|ime-.*)\.(rp_filter|accept_local)$`},
+		},
+		{
 			filename: "imds-reply-rules.txt",
 			label:    "ip rule (per-tap 'oif <endpoint> lookup <table>' reply rule present?)",
 			argv:     []string{"ip", "rule"},

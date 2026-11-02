@@ -591,8 +591,8 @@ func (s *ELBv2ServiceImpl) validateAndConvertRuleActions(ctx context.Context, in
 				return nil, err
 			}
 		case ActionTypeFixedResponse:
-			if action.FixedResponse == nil {
-				return nil, errors.New(awserrors.ErrorMissingParameter)
+			if err := validateFixedResponseAction(action.FixedResponse); err != nil {
+				return nil, err
 			}
 		default:
 			return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)

@@ -1,7 +1,7 @@
 package pipeline
 
 //test:in-package — the status gate is an unexported step of the auth
-// middleware, and its cache is deliberately not part of the package's API.
+// middleware, not part of the package's API.
 
 import (
 	"errors"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // statusGateRouter builds a signed-request harness whose only job is to report
@@ -71,6 +72,35 @@ func TestAuthDeniesATerminatingAccount(t *testing.T) {
 
 	if resp := doRequest(r, req); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 for a TERMINATING account, got %d", resp.StatusCode)
+	}
+}
+
+func TestAuthDeniesASuspendedAccount(t *testing.T) {
+	r, req := statusGateRouter(t, statusGateService(t, "123456789012", iamdomain.AccountStatusSuspended))
+
+	if resp := doRequest(r, req); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for a SUSPENDED account, got %d", resp.StatusCode)
+	}
+}
+
+// missingAccountService answers key lookups but reports every account as absent, as the
+// IAM service does for a deleted account.
+type missingAccountService struct {
+	*gwfix.IAM
+}
+
+func (s *missingAccountService) GetAccount(string) (*iamdomain.Account, error) {
+	return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+}
+
+// A key whose account record is gone is never admitted. The gateway surfaces the failed
+// read as a server error rather than a 403, which is the response it has always given.
+func TestAuthDoesNotAdmitAMissingAccountRecord(t *testing.T) {
+	svc := &missingAccountService{statusGateService(t, "123456789012", iamdomain.AccountStatusActive)}
+	r, req := statusGateRouter(t, svc)
+
+	if resp := doRequest(r, req); resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for a missing account record, got %d", resp.StatusCode)
 	}
 }
 

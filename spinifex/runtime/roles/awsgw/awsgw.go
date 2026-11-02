@@ -70,27 +70,6 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
-// startAdmissionWatch lets the admitter cache ACTIVE answers. If the watch cannot start,
-// the admitter keeps reading every request, which is slower but never stale.
-func startAdmissionWatch(ctx context.Context, js jetstream.JetStream, admission *accountadmission.Admitter) {
-	accounts, err := js.KeyValue(ctx, iamdomain.KVBucketAccounts)
-	if err != nil {
-		slog.Warn("Account admission cache disabled: cannot open accounts bucket", "err", err)
-		return
-	}
-	done, err := admission.Watch(ctx, accounts)
-	if err != nil {
-		slog.Warn("Account admission cache disabled: cannot watch accounts bucket", "err", err)
-		return
-	}
-	go func() {
-		<-done
-		if ctx.Err() == nil {
-			slog.Warn("Account admission watcher stopped; every request now reads account status")
-		}
-	}()
-}
-
 // startInstanceStatus starts the read-only informer over the live instance
 // record space and pairs it with node liveness. The describe path still serves
 // from the fan-out and KV; only status synthesis reads the cache. Without it a
@@ -538,7 +517,6 @@ func launchService(config *config.ClusterConfig) error {
 	ecrVerifier := ecrauth.NewVerifier(verifyKeys, ecrAudience)
 	credentials := credverify.New(iamService, stsService)
 	admission := accountadmission.New(iamService)
-	startAdmissionWatch(janitorCtx, jwksJS, admission)
 	ecrBridge, err := ecrregistry.NewBridge(registryadapt.Config(ecrregistry.BridgeConfig{
 		Registry:  ecrRegistry,
 		Verifier:  ecrVerifier,

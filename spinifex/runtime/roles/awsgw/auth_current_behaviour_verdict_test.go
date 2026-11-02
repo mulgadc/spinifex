@@ -413,44 +413,32 @@ func TestCurrentBehaviour_AntiEnumeration_RejectionShapes(t *testing.T) {
 	}
 }
 
-// Pins CURRENT behaviour: the door caches only an account's ACTIVE status, per
-// gateway, and only while its accounts watcher runs; keys and sessions are re-read on
-// every request. A watched cache drops an entry when the record changes, so an
-// out-of-band status write is seen well before accountadmission.ActiveTTL.
-func TestCurrentBehaviour_Cache_AccountStatusIsTheOnlyAuthCache(t *testing.T) {
-	require.Equal(t, 5*time.Second, accountadmission.ActiveTTL)
-
+// Pins CURRENT behaviour: the door keeps no account-status cache. Every request reads
+// the account through the in-process IAM service, so a status written out of band is
+// seen by the next request; keys and sessions are likewise re-read on every request.
+func TestCurrentBehaviour_NoAccountStatusCache(t *testing.T) {
 	denied := cbOutcome{status: http.StatusForbidden, code: awserrors.ErrorAccessDenied,
 		message: awserrors.ErrorLookup[awserrors.ErrorAccessDenied].Message}
 
 	for _, status := range []string{iamdomain.AccountStatusSuspended, iamdomain.AccountStatusTerminating} {
 		t.Run(status, func(t *testing.T) {
 			e := newCBEnv(t, cbEnvOpts{})
-			accounts, err := e.js.KeyValue(t.Context(), iamdomain.KVBucketAccounts)
-			require.NoError(t, err)
-			admission := accountadmission.New(e.counter)
-			_, err = admission.Watch(t.Context(), accounts)
-			require.NoError(t, err)
-
 			gw := gwfix.WithDeps(&pipeline.Config{
 				DisableLogging: true,
 				Region:         gwfix.Region,
 				Credentials:    credverify.New(e.counter, e.sts),
-				Admission:      admission,
+				Admission:      accountadmission.New(e.counter),
 			}, gwfix.Deps{NATS: e.nc, Nodes: 1, IAM: e.counter, STS: e.sts})
 			withCapabilities(gw)
 			withIAMAndSTS(gw)
 			h := gw.SetupRoutes()
 
 			require.Equal(t, http.StatusOK, e.request(t, h, e.alice, "sts", cbForm("GetCallerIdentity")).Code)
-			start := time.Now()
-			_, err = e.iam.SetAccountStatus(e.accountID, status)
+			_, err := e.iam.SetAccountStatus(e.accountID, status)
 			require.NoError(t, err)
 
-			require.Eventually(t, func() bool {
-				return cbOutcomeOf(e.request(t, h, e.alice, "sts", cbForm("GetCallerIdentity"))) == denied
-			}, accountadmission.ActiveTTL-time.Second, 10*time.Millisecond)
-			assert.Less(t, time.Since(start), accountadmission.ActiveTTL, "the watcher, not the TTL, must have ended the warm entry")
+			assert.Equal(t, denied, cbOutcomeOf(e.request(t, h, e.alice, "sts", cbForm("GetCallerIdentity"))),
+				"the request after the write must be refused, with no wait")
 		})
 	}
 }

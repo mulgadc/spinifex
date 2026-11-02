@@ -130,28 +130,28 @@ func TestNICQueues_ClampedWhenEnabled(t *testing.T) {
 
 func TestBlkDevice_PCI(t *testing.T) {
 	d := BlkDevice("q35", "os", "ioth-os", 4, 1)
-	assert.Equal(t, "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=4,bootindex=1", d.Value)
+	assert.Equal(t, "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=4,bootindex=1,werror=stop,rerror=stop", d.Value)
 }
 
 func TestBlkDevice_PCI_NoBootIdx(t *testing.T) {
 	d := BlkDevice("q35", "data", "ioth-data", 2, 0)
-	assert.Equal(t, "virtio-blk-pci,drive=data,iothread=ioth-data,num-queues=2", d.Value)
+	assert.Equal(t, "virtio-blk-pci,drive=data,iothread=ioth-data,num-queues=2,werror=stop,rerror=stop", d.Value)
 }
 
 func TestBlkDevice_PCI_NoIOThread(t *testing.T) {
 	d := BlkDevice("q35", "data", "", 0, 0)
-	assert.Equal(t, "virtio-blk-pci,drive=data", d.Value)
+	assert.Equal(t, "virtio-blk-pci,drive=data,werror=stop,rerror=stop", d.Value)
 }
 
 func TestBlkDevice_MMIO(t *testing.T) {
 	d := BlkDevice("microvm", "os", "ioth-os", 4, 1)
 	// MMIO has no bootindex
-	assert.Equal(t, "virtio-blk-device,drive=os,iothread=ioth-os,num-queues=4", d.Value)
+	assert.Equal(t, "virtio-blk-device,drive=os,iothread=ioth-os,num-queues=4,werror=stop,rerror=stop", d.Value)
 }
 
 func TestBlkDevice_MMIO_NoIOThread(t *testing.T) {
 	d := BlkDevice("microvm,x-option-roms=off", "data", "", 0, 0)
-	assert.Equal(t, "virtio-blk-device,drive=data", d.Value)
+	assert.Equal(t, "virtio-blk-device,drive=data,werror=stop,rerror=stop", d.Value)
 }
 
 func TestRngDevice_PCI(t *testing.T) {

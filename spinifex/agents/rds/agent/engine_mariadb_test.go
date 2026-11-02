@@ -1209,7 +1209,65 @@ func TestMariaDBEngine_SetPasswordFailsUntouchedWhenTheHoldOutlastsItsWait(t *te
 // The wait has to end before the control plane gives up on the command, or the
 // rotation can still land after the caller was told it failed.
 func TestMariaDBEngine_PasswordHoldWaitFitsInsideTheControlPlaneTimeout(t *testing.T) {
-	if mariadbPasswordHoldWait >= 30*time.Second-5*time.Second {
-		t.Errorf("a %s hold wait leaves no room inside the control plane's 30s set-password budget", mariadbPasswordHoldWait)
+	budget, ok := rdsinstance.CommandBudget(rdsinstance.CommandSetPassword)
+	if !ok {
+		t.Fatal("the control plane has no budget for set-password")
+	}
+	if mariadbPasswordHoldWait >= budget-5*time.Second {
+		t.Errorf("a %s hold wait leaves under 5s of the control plane's %s set-password budget for the statement", mariadbPasswordHoldWait, budget)
+	}
+}
+
+// The statement is bounded by what is left of the command, so the server gives
+// up a lock wait before the client is killed under it.
+func TestMariaDBEngine_SetPasswordBoundsTheStatementByTheRemainingBudget(t *testing.T) {
+	runner := &recordingRunner{}
+	engine := newTestMariaDBEngine(t, runner.run)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := engine.SetPassword(ctx, "mulgamaster", "n3w-pw"); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	sql := runner.calls[0].Stdin
+	at := strings.Index(sql, "SET SESSION lock_wait_timeout = ")
+	if at < 0 || at > strings.Index(sql, "ALTER USER") {
+		t.Fatalf("SQL %q does not bound the statement's lock wait before it runs", sql)
+	}
+	var seconds int
+	if _, err := fmt.Sscanf(sql[at:], "SET SESSION lock_wait_timeout = %d;", &seconds); err != nil {
+		t.Fatalf("parse the lock wait: %v", err)
+	}
+	if seconds < 1 || seconds > 8 {
+		t.Errorf("lock wait = %ds with 10s of budget left, want it inside the budget less the reply margin", seconds)
+	}
+}
+
+// A quiesce that cannot get the hold bookkeeping must give up with its command,
+// not wait on the mutex after its issuer has moved on.
+func TestMariaDBEngine_QuiesceGivesUpWaitingForTheBookkeepingWithItsContext(t *testing.T) {
+	engine := newTestMariaDBEngine(t, (&recordingRunner{}).run)
+	started := 0
+	engine.startSess = func(context.Context, command) (engineSession, error) {
+		started++
+		return &fakeSession{}, nil
+	}
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*holdPollInterval)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- engine.Quiesce(ctx, "orders-db-automated", time.Minute) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Quiesce succeeded without the bookkeeping lock")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Quiesce waited on the bookkeeping past its context")
+	}
+	if started != 0 {
+		t.Errorf("opened %d backup sessions, want none", started)
 	}
 }

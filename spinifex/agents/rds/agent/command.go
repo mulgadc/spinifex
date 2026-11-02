@@ -97,19 +97,46 @@ const pollErrorBackoff = 5 * time.Second
 // while the command ran is not executed a second time.
 const completedCommandMemory = 64
 
+// How many engine commands may wait behind the one running. Past this a command
+// is refused at once rather than queued behind work its issuer will not outlive.
+const serialQueueDepth = 16
+
+// The budget for a type the control plane does not issue. Such a command is
+// answered as unsupported before it could use any of it.
+const fallbackCommandBudget = 30 * time.Second
+
+// The only command that runs beside the serial lane. It releases the backup hold
+// an engine command can be blocked on, so it must never queue behind one.
+func outOfBand(commandType string) bool {
+	return commandType == rdsinstance.CommandUnquiesce
+}
+
+// A command waiting its turn on the serial lane, with the moment its issuer
+// stops waiting for it.
+type queuedCommand struct {
+	cmd      rdsinstance.Command
+	deadline time.Time
+}
+
 // The agent's command channel: a long poll that carries back the replies for
-// whatever earlier polls delivered. Commands run on their own goroutines so one
-// the engine is blocking cannot keep out the command that would unblock it.
+// whatever earlier polls delivered. Engine commands run one at a time on a single
+// lane; the release of a backup hold runs beside it, so it cannot be kept out.
 type commander struct {
 	cp       controlPlane
 	id       identity
 	registry commandRegistry
 	wait     time.Duration
+	// The control plane's budget per type, measured from receipt so the agent never
+	// gives up before its issuer. IssuedAt is not compared: the guest clock is not
+	// trusted against the host's.
+	budget func(commandType string) time.Duration
+	serial chan queuedCommand
 
 	mu sync.Mutex
 	// Cleared only once a poll has carried them, so a failed poll re-delivers
 	// rather than dropping the result of work the guest actually did.
-	pending  []rdsinstance.CommandReply
+	pending []rdsinstance.CommandReply
+	// Queued or running, so a re-published copy is not queued a second time.
 	inFlight map[string]struct{}
 	// Oldest first, bounded by completedCommandMemory.
 	completed []string
@@ -128,12 +155,22 @@ func newCommander(cp controlPlane, registry commandRegistry, wait time.Duration)
 		cp:       cp,
 		registry: registry,
 		wait:     wait,
+		budget:   controlPlaneBudget,
+		serial:   make(chan queuedCommand, serialQueueDepth),
 		inFlight: make(map[string]struct{}),
 	}
 }
 
+func controlPlaneBudget(commandType string) time.Duration {
+	if budget, ok := rdsinstance.CommandBudget(commandType); ok {
+		return budget
+	}
+	return fallbackCommandBudget
+}
+
 func (c *commander) Run(ctx context.Context) {
 	defer c.running.Wait()
+	c.running.Go(func() { c.serveSerial(ctx) })
 	for {
 		if ctx.Err() != nil {
 			return
@@ -194,12 +231,12 @@ func (c *commander) poll(ctx context.Context) ([]rdsinstance.Command, int, error
 	return commands, len(replies), nil
 }
 
-// Starts cmd unless it is already running or already answered: the issuer
-// re-publishes until it has a reply, so the same ID arrives again while it runs.
+// Routes cmd to its lane unless it is already queued, running or answered: the
+// issuer re-publishes until it has a reply, so the same ID arrives again.
 func (c *commander) dispatch(ctx context.Context, cmd rdsinstance.Command) {
 	c.mu.Lock()
-	_, running := c.inFlight[cmd.CommandID]
-	if running || slices.Contains(c.completed, cmd.CommandID) {
+	_, queued := c.inFlight[cmd.CommandID]
+	if queued || slices.Contains(c.completed, cmd.CommandID) {
 		c.mu.Unlock()
 		slog.Debug("rds-agent: duplicate command ignored", "commandID", cmd.CommandID, "type", cmd.Type)
 		return
@@ -207,22 +244,56 @@ func (c *commander) dispatch(ctx context.Context, cmd rdsinstance.Command) {
 	c.inFlight[cmd.CommandID] = struct{}{}
 	c.mu.Unlock()
 
-	c.running.Go(func() {
-		reply := c.execute(ctx, cmd)
+	q := queuedCommand{cmd: cmd, deadline: time.Now().Add(c.budget(cmd.Type))}
+	if outOfBand(cmd.Type) {
+		c.running.Go(func() { c.runQueued(ctx, q) })
+		return
+	}
+	select {
+	case c.serial <- q:
+	default:
+		c.finish(cmd, failedReply(cmd, "the agent is busy; too many commands are waiting"))
+	}
+}
 
-		c.mu.Lock()
-		delete(c.inFlight, cmd.CommandID)
-		c.completed = append(c.completed, cmd.CommandID)
-		if len(c.completed) > completedCommandMemory {
-			c.completed = c.completed[len(c.completed)-completedCommandMemory:]
+func (c *commander) serveSerial(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case q := <-c.serial:
+			c.runQueued(ctx, q)
 		}
-		c.pending = append(c.pending, reply)
-		if c.interruptPoll != nil {
-			c.interruptPoll()
-			c.interrupted = true
-		}
-		c.mu.Unlock()
-	})
+	}
+}
+
+// Runs a command inside what is left of its issuer's budget. One whose budget
+// ran out while it waited is answered as expired and never touches the engine,
+// since its issuer has already reported it failed.
+func (c *commander) runQueued(ctx context.Context, q queuedCommand) {
+	if !time.Now().Before(q.deadline) {
+		slog.Warn("rds-agent: command expired before it ran", "commandID", q.cmd.CommandID, "type", q.cmd.Type)
+		c.finish(q.cmd, failedReply(q.cmd, "the command expired before the agent could run it"))
+		return
+	}
+	cmdCtx, cancel := context.WithDeadline(ctx, q.deadline)
+	defer cancel()
+	c.finish(q.cmd, c.execute(cmdCtx, q.cmd))
+}
+
+func (c *commander) finish(cmd rdsinstance.Command, reply rdsinstance.CommandReply) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.inFlight, cmd.CommandID)
+	c.completed = append(c.completed, cmd.CommandID)
+	if len(c.completed) > completedCommandMemory {
+		c.completed = c.completed[len(c.completed)-completedCommandMemory:]
+	}
+	c.pending = append(c.pending, reply)
+	if c.interruptPoll != nil {
+		c.interruptPoll()
+		c.interrupted = true
+	}
 }
 
 // Every command gets a reply: the issuer is blocked on this command ID, so a

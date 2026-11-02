@@ -384,8 +384,8 @@ SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';
 `
 
 // ALTER USER can take effect in memory and then wait at its commit for a held
-// BACKUP STAGE to end. Waiting before the statement instead, for less than the
-// control plane's budget, means a rotation that cannot finish is never half-applied.
+// BACKUP STAGE to end. Waiting for the agent's own hold before the statement, for
+// less than the control plane's budget, keeps that hold from half-applying it.
 const mariadbPasswordHoldWait = 20 * time.Second
 
 // Rotates the master's password. The statement is built here rather than by the
@@ -403,10 +403,14 @@ func (e *mariadbEngine) SetPassword(ctx context.Context, username, password stri
 		return fmt.Errorf("refusing to set the password of role %q: %w", username, err)
 	}
 
+	// Only the agent's own backup hold is waited out before the statement. A lock
+	// someone else holds, such as a customer FTWRL, is met inside it and ended by
+	// lock_wait_timeout, by which point the password may already have changed.
 	escaped := sqlLiteral(password)
-	sql := fmt.Sprintf("%sALTER USER '%s'@'%s' IDENTIFIED BY '%s';\n",
-		mariadbSessionGuard, username, mariadbMasterHost, escaped)
 	return e.outsideHold(ctx, e.holdWait, func() error {
+		// Computed after the hold wait, so the statement gets only what is left.
+		sql := fmt.Sprintf("%sSET SESSION lock_wait_timeout = %d;\nALTER USER '%s'@'%s' IDENTIFIED BY '%s';\n",
+			mariadbSessionGuard, statementLockWait(ctx), username, mariadbMasterHost, escaped)
 		if _, err := e.clientRun(ctx, sql); err != nil {
 			// The client echoes the failing statement, which carries the escaped form
 			// of the password rather than the raw one — so redacting only the raw one
@@ -415,6 +419,18 @@ func (e *mariadbEngine) SetPassword(ctx context.Context, username, password stri
 		}
 		return nil
 	})
+}
+
+// The server-side lock wait for a statement, in whole seconds: what remains of
+// ctx less a margin for the reply, so the server gives up its wait before the
+// client is killed. A ctx with no deadline gets the full password budget.
+func statementLockWait(ctx context.Context) int {
+	const replyMargin = 2 * time.Second
+	remaining := mariadbPasswordHoldWait
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining = time.Until(deadline) - replyMargin
+	}
+	return max(1, int(remaining.Seconds()))
 }
 
 // Installs the resolved set and applies the half a running server can adopt.
@@ -724,7 +740,9 @@ func (e *mariadbEngine) Quiesce(ctx context.Context, label string, hold time.Dur
 
 	// Held across the whole start, so a second quiesce waits and then finds the
 	// first one's hold rather than opening a concurrent backup alongside it.
-	e.mu.Lock()
+	if err := e.lockWithin(ctx); err != nil {
+		return err
+	}
 	defer e.mu.Unlock()
 	if e.held != nil {
 		return fmt.Errorf("the engine is already quiesced for backup %s", e.held.label)

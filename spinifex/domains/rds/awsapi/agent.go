@@ -201,8 +201,9 @@ type PollDBCommandsInput struct {
 	Replies              []rdsinstance.CommandReply `locationName:"Replies" locationNameList:"member"`
 }
 
-// PollDBCommandsOutput holds at most one command per poll. The agent runs each on its own and keeps
-// polling, so a command the engine is blocking cannot keep out the one that would unblock it.
+// PollDBCommandsOutput holds at most one command per poll. The agent runs engine commands one at a
+// time in arrival order and answers on a later poll; only unquiesce runs beside them, so it can release
+// a backup hold a queued command is waiting on. A command that outlives its type's budget is not run.
 type PollDBCommandsOutput struct {
 	Commands []rdsinstance.Command `locationName:"Commands" locationNameList:"member"`
 }

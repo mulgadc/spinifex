@@ -75,6 +75,24 @@ const (
 	commandRepublishEvery = 2 * time.Second
 )
 
+// How long the control plane waits for each command type by default. The agent
+// reads the same table, so it never starts work its issuer has stopped waiting for.
+var commandBudgets = map[string]time.Duration{
+	CommandSetPassword:    setPasswordTimeout,
+	CommandApplyParams:    defaultApplyParamsTimeout,
+	CommandStopEngine:     stopEngineTimeout,
+	CommandGrowFilesystem: growFilesystemTimeout,
+	CommandQuiesce:        quiesceTimeout,
+	CommandUnquiesce:      unquiesceTimeout,
+}
+
+// CommandBudget returns how long the control plane waits for a reply to a
+// command of this type, and false for a type it never issues.
+func CommandBudget(commandType string) (time.Duration, bool) {
+	budget, ok := commandBudgets[commandType]
+	return budget, ok
+}
+
 // ErrCommandUnreachable means the agent was unreachable or missed the command's
 // budget. Callers that can degrade — the graceful engine stop — check for this;
 // callers that must not, like a password rotation, surface it as retryable.

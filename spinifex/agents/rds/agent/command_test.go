@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -266,4 +267,144 @@ func repliesFor(cp *fakeControlPlane, id string) []rdsinstance.CommandReply {
 		}
 	}
 	return out
+}
+
+// A copy can arrive after the handler has returned but before a poll has
+// carried its reply. The in-flight set has already let go of it then, so only
+// the completed set stops it running a second time.
+func TestCommander_ACopyArrivingBeforeTheReplyIsCarriedDoesNotRunAgain(t *testing.T) {
+	var mu sync.Mutex
+	runs := map[string]int{}
+	handler := func(_ context.Context, cmd rdsinstance.Command) (string, error) {
+		mu.Lock()
+		runs[cmd.CommandID]++
+		mu.Unlock()
+		return "", nil
+	}
+	c := newCommander(nil, commandRegistry{"reload-parameters": handler}, time.Second)
+	ctx := t.Context()
+	go c.serveSerial(ctx)
+
+	first := rdsinstance.Command{CommandID: "cmd-1", Type: "reload-parameters"}
+	c.dispatch(ctx, first)
+	waitFor(t, func() bool { return len(c.pendingReplies()) == 1 }, "the first run's reply to be pending")
+
+	c.dispatch(ctx, first)
+	// The lane is FIFO, so once this one has answered a queued copy would have run.
+	c.dispatch(ctx, rdsinstance.Command{CommandID: "cmd-2", Type: "reload-parameters"})
+	waitFor(t, func() bool {
+		return slices.ContainsFunc(c.pendingReplies(), func(r rdsinstance.CommandReply) bool { return r.CommandID == "cmd-2" })
+	}, "the following command's reply")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, runs["cmd-1"], "a copy arriving before the reply was carried must not run")
+	assert.Len(t, c.pendingReplies(), 2, "the copy must not be answered a second time either")
+}
+
+// A quiesce that waited out its issuer's budget behind another command would
+// put the engine in backup mode for a snapshot nobody is taking.
+func TestCommander_AStaleQuiesceNeverTakesAHold(t *testing.T) {
+	cp := newFakeControlPlane()
+	cp.pollQueue = [][]rdsinstance.Command{
+		{{CommandID: "cmd-apply", Type: rdsinstance.CommandApplyParams}},
+		{{CommandID: "cmd-quiesce", Type: rdsinstance.CommandQuiesce, Parameters: []rdsinstance.Parameter{
+			{Name: rdsinstance.CommandParamQuiesceLabel, Value: "orders-db-automated"},
+			{Name: rdsinstance.CommandParamQuiesceDeadlineSeconds, Value: "360"},
+		}}},
+	}
+	engine := &fakeEngine{}
+	registry := newCommandRegistry(engine, &fakeStorage{})
+	applying, release := make(chan struct{}), make(chan struct{})
+	registry[rdsinstance.CommandApplyParams] = func(ctx context.Context, _ rdsinstance.Command) (string, error) {
+		close(applying)
+		<-release
+		return "", nil
+	}
+	c := newCommander(cp, registry, 10*time.Millisecond)
+	c.budget = func(commandType string) time.Duration {
+		if commandType == rdsinstance.CommandQuiesce {
+			return 50 * time.Millisecond
+		}
+		return controlPlaneBudget(commandType)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { c.Run(ctx); close(done) }()
+
+	<-applying
+	waitFor(t, func() bool { return len(cp.snapshotReplies()) >= 3 }, "the quiesce to be delivered behind the apply")
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	waitFor(t, func() bool { return len(repliesFor(cp, "cmd-quiesce")) > 0 }, "the quiesce to be answered")
+	cancel()
+	<-done
+
+	reply := repliesFor(cp, "cmd-quiesce")[0]
+	assert.Equal(t, rdsinstance.CommandStatusFailed, reply.Status)
+	assert.Contains(t, reply.Message, "expired")
+	assert.Empty(t, engine.label, "an expired quiesce must never reach the engine")
+}
+
+// Engine commands still run one at a time: a parameter apply rewrites the
+// option file a graceful stop would otherwise race.
+func TestCommander_AParameterApplyNeverRunsAlongsideAnEngineStop(t *testing.T) {
+	cp := newFakeControlPlane()
+	cp.pollQueue = [][]rdsinstance.Command{
+		{{CommandID: "cmd-apply", Type: rdsinstance.CommandApplyParams}},
+		{{CommandID: "cmd-stop", Type: rdsinstance.CommandStopEngine}},
+	}
+	var mu sync.Mutex
+	active, most := 0, 0
+	release := make(chan struct{})
+	// Each holds the lane until released, so two running at once are both seen
+	// whichever is scheduled first.
+	engineWork := func(context.Context, rdsinstance.Command) (string, error) {
+		mu.Lock()
+		active++
+		most = max(most, active)
+		mu.Unlock()
+		<-release
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return "", nil
+	}
+	registry := commandRegistry{
+		rdsinstance.CommandApplyParams: engineWork,
+		rdsinstance.CommandStopEngine:  engineWork,
+	}
+	c := newCommander(cp, registry, 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { c.Run(ctx); close(done) }()
+
+	waitFor(t, func() bool { return len(cp.snapshotReplies()) >= 3 }, "the stop to be delivered behind the apply")
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	waitFor(t, func() bool { return len(repliesFor(cp, "cmd-stop")) > 0 }, "the stop to be answered")
+	cancel()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, most, "the engine stop ran while the parameter apply was still running")
+}
+
+// The agent bounds each command by its issuer's budget, so a type the control
+// plane has no budget for would run on a guess.
+func TestCommandRegistry_EveryTypeHasAControlPlaneBudget(t *testing.T) {
+	for commandType := range newCommandRegistry(&fakeEngine{}, &fakeStorage{}) {
+		if _, ok := rdsinstance.CommandBudget(commandType); !ok {
+			t.Errorf("%s has no control-plane budget", commandType)
+		}
+	}
+}
+
+func (c *commander) pendingReplies() []rdsinstance.CommandReply {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.pending)
 }

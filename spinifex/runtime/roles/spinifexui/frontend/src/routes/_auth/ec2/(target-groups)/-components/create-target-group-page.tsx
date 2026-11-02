@@ -1,13 +1,11 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
 import {
   type DeepPartialSkipArrayKey,
   useForm,
   useWatch,
 } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
@@ -17,9 +15,8 @@ import {
   type CommandPart,
 } from "@/components/cli-command-panel"
 import { TargetGroupForm } from "@/components/elbv2/target-group-form"
-import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
 import { useCreateTargetGroup } from "@/mutations/elbv2"
 import { ec2VpcsQueryOptions } from "@/queries/ec2"
 import {
@@ -27,8 +24,13 @@ import {
   createTargetGroupSchema,
 } from "@/types/elbv2"
 
-export function CreateTargetGroupPage() {
-  const navigate = useNavigate()
+interface CreateTargetGroupPageProps {
+  // Called with the new target group's ARN once created, or with nothing on
+  // cancel.
+  onClose: (arn?: string) => void
+}
+
+export function CreateTargetGroupPage({ onClose }: CreateTargetGroupPageProps) {
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const createMutation = useCreateTargetGroup()
 
@@ -65,52 +67,36 @@ export function CreateTargetGroupPage() {
   const onSubmit = async (data: CreateTargetGroupFormData) => {
     try {
       const result = await createMutation.mutateAsync(data)
-      const arn = result.TargetGroups?.[0]?.TargetGroupArn
 
-      if (arn) {
-        navigate({
-          to: "/ec2/describe-target-groups/$id",
-          params: { id: encodeURIComponent(arn) },
-        })
-      } else {
-        navigate({ to: "/ec2/describe-target-groups" })
-      }
+      onClose(result.TargetGroups?.[0]?.TargetGroupArn)
     } catch {
-      // Error surfaced via createMutation.error in the ErrorBanner above.
+      // Surfaced beside the submit button through createMutation.error.
     }
   }
 
   return (
-    <>
-      <BackLink to="/ec2/describe-target-groups">
-        Back to target groups
-      </BackLink>
-
-      <PageHeading title="Create Target Group" />
-
-      {createMutation.error && (
-        <ErrorBanner
-          error={createMutation.error}
-          msg="Failed to create target group"
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={createMutation.isPending || isSubmitting}
+      >
         <TargetGroupForm form={form} vpcs={vpcs} />
 
         <CliCommandPanel commands={buildCreateTargetGroupCommands(values)} />
 
         <FormActions
+          error={createMutation.error}
+          errorMsg="Failed to create target group"
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => {
-            await navigate({ to: "/ec2/describe-target-groups" })
+          onCancel={() => {
+            onClose()
           }}
           pendingLabel="Creating…"
           submitLabel="Create Target Group"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
 }
 

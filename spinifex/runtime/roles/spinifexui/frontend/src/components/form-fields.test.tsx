@@ -53,7 +53,34 @@ function TestForm({
   )
 }
 
+function RoleForm() {
+  const { control } = useForm({
+    defaultValues: { role: "arn:aws:iam::000000000001:role/node" },
+  })
+
+  return (
+    <SelectField
+      control={control}
+      id="role"
+      label="Node role"
+      name="role"
+      options={[
+        { value: "arn:aws:iam::000000000001:role/node", label: "node" },
+      ]}
+    />
+  )
+}
+
 describe("SelectField", () => {
+  it("shows the chosen option's label, not its value", () => {
+    render(<RoleForm />)
+
+    const trigger = screen.getByRole("combobox", { name: "Node role" })
+
+    expect(trigger).toHaveTextContent("node")
+    expect(trigger).not.toHaveTextContent("arn:")
+  })
+
   it("writes the chosen option into the form", async () => {
     const user = userEvent.setup()
     const onSubmit = vi.fn()

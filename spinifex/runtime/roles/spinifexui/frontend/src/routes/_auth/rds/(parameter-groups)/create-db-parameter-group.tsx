@@ -1,24 +1,13 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { rdsEngineVersionsQueryOptions } from "@/queries/rds"
-
-import { CreateDBParameterGroupPage } from "./-components/create-db-parameter-group-page"
-
+// The form opens in the list's side panel; this address is kept for links.
 export const Route = createFileRoute(
   "/_auth/rds/(parameter-groups)/create-db-parameter-group",
 )({
-  loader: async ({ context }) => {
-    await context.queryClient.query({
-      ...rdsEngineVersionsQueryOptions,
-      staleTime: "static",
+  beforeLoad: () => {
+    throw redirect({
+      to: "/rds/describe-db-parameter-groups",
+      search: { create: true },
     })
   },
-  head: () => ({
-    meta: [
-      {
-        title: "Create Parameter Group | RDS | Mulga",
-      },
-    ],
-  }),
-  component: CreateDBParameterGroupPage,
 })

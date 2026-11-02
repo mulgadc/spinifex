@@ -9,8 +9,6 @@ const mockSend = vi.hoisted(() =>
   }),
 )
 
-const mockNavigate = vi.hoisted(() => vi.fn())
-
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
@@ -20,7 +18,7 @@ vi.mock("@/lib/awsClient", async () => {
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
 
-  return await mockRouter(importOriginal, { navigate: mockNavigate })
+  return await mockRouter(importOriginal)
 })
 
 import { foundationModelsQueryOptions } from "@/queries/bedrock"
@@ -46,11 +44,13 @@ const MODELS: ListFoundationModelsCommandOutput = {
   ],
 }
 
-function renderCreate() {
+function renderCreate(onClose = vi.fn()) {
   const queryClient = createTestQueryClient()
   queryClient.setQueryData(foundationModelsQueryOptions.queryKey, MODELS)
 
-  return renderWithClient(<KnowledgeBaseFormPage />, queryClient)
+  renderWithClient(<KnowledgeBaseFormPage onClose={onClose} />, queryClient)
+
+  return onClose
 }
 
 describe("KnowledgeBaseFormPage", () => {
@@ -84,9 +84,9 @@ describe("KnowledgeBaseFormPage", () => {
     ).toBeNull()
   })
 
-  it("submits CreateKnowledgeBaseCommand and navigates to the new knowledge base", async () => {
+  it("submits CreateKnowledgeBaseCommand and opens the new knowledge base", async () => {
     const user = userEvent.setup()
-    renderCreate()
+    const onClose = renderCreate()
 
     await user.type(screen.getByLabelText("Name"), "docs-kb")
     await user.click(screen.getByLabelText("Embedding model"))
@@ -105,10 +105,7 @@ describe("KnowledgeBaseFormPage", () => {
       input.knowledgeBaseConfiguration.vectorKnowledgeBaseConfiguration
         .embeddingModelArn,
     ).toBe("arn:aws:bedrock:local::foundation-model/nomic-embed-text-v1.5")
-    expect(mockNavigate).toHaveBeenCalledWith({
-      params: { knowledgeBaseId: "kb-new" },
-      to: "/bedrock/list-knowledge-bases/$knowledgeBaseId",
-    })
+    expect(onClose).toHaveBeenCalledWith("kb-new")
   })
 
   it("prefills dimensions with the known value for the selected model", async () => {
@@ -123,14 +120,12 @@ describe("KnowledgeBaseFormPage", () => {
     expect(screen.getByLabelText("Dimensions")).toHaveValue(768)
   })
 
-  it("cancels back to the knowledge base list", async () => {
+  it("closes the panel on cancel", async () => {
     const user = userEvent.setup()
-    renderCreate()
+    const onClose = renderCreate()
 
     await user.click(screen.getByRole("button", { name: "Cancel" }))
 
-    expect(mockNavigate).toHaveBeenCalledWith({
-      to: "/bedrock/list-knowledge-bases",
-    })
+    expect(onClose).toHaveBeenCalledWith()
   })
 })

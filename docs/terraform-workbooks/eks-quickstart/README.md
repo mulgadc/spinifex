@@ -153,6 +153,8 @@ kubectl get nodes
 kubectl get pods -o wide
 ```
 
+`kubectl get nodes` lists the worker nodes only, because control-plane hosts are not Kubernetes Nodes.
+
 `kubectl get pods -o wide` shows the demo pods and which node each landed on.
 
 ### Cleanup

@@ -152,35 +152,40 @@ export function useDeregisterContainerInstance() {
   })
 }
 
-// useRegisterTaskDefinition registers a single-container revision. Container
-// CPU/memory, GPU count, and port mappings are optional; an empty/zero value
-// is omitted so the gateway applies its defaults.
+// The one container a registered revision carries. Container CPU/memory, GPU
+// count, and port mappings are optional; an empty/zero value is omitted so the
+// gateway applies its defaults.
+export function buildContainerDefinition(
+  params: RegisterTaskDefinitionFormData,
+): ContainerDefinition {
+  return {
+    name: params.containerName,
+    image: params.image,
+    essential: params.essential,
+    cpu: params.containerCpu ? Number(params.containerCpu) : undefined,
+    memory: params.containerMemory ? Number(params.containerMemory) : undefined,
+    portMappings:
+      params.portMappings.length > 0
+        ? params.portMappings.map((pm) => ({
+            containerPort: pm.containerPort,
+            hostPort: pm.containerPort,
+            protocol: pm.protocol,
+          }))
+        : undefined,
+    resourceRequirements:
+      params.containerGpuCount > 0
+        ? [{ type: "GPU", value: String(params.containerGpuCount) }]
+        : undefined,
+  }
+}
+
+// useRegisterTaskDefinition registers a single-container revision.
 export function useRegisterTaskDefinition() {
   const queryClient = useQueryClient()
 
   return useMutation({
     mutationFn: async (params: RegisterTaskDefinitionFormData) => {
-      const container: ContainerDefinition = {
-        name: params.containerName,
-        image: params.image,
-        essential: params.essential,
-        cpu: params.containerCpu ? Number(params.containerCpu) : undefined,
-        memory: params.containerMemory
-          ? Number(params.containerMemory)
-          : undefined,
-        portMappings:
-          params.portMappings.length > 0
-            ? params.portMappings.map((pm) => ({
-                containerPort: pm.containerPort,
-                hostPort: pm.containerPort,
-                protocol: pm.protocol,
-              }))
-            : undefined,
-        resourceRequirements:
-          params.containerGpuCount > 0
-            ? [{ type: "GPU", value: String(params.containerGpuCount) }]
-            : undefined,
-      }
+      const container = buildContainerDefinition(params)
 
       const command = new RegisterTaskDefinitionCommand({
         family: params.family,

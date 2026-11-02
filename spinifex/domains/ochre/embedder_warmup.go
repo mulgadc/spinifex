@@ -37,6 +37,9 @@ type warmupProbe struct {
 
 	mu    sync.RWMutex
 	ready bool
+
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 // newWarmupProbeWithInterval constructs a warmupProbe for baseURL and starts
@@ -45,7 +48,7 @@ type warmupProbe struct {
 // tests pass a short interval to drive the loop without waiting out the
 // production cadence.
 func newWarmupProbeWithInterval(client *http.Client, baseURL string, pollInterval time.Duration) *warmupProbe {
-	p := &warmupProbe{client: client, baseURL: baseURL}
+	p := &warmupProbe{client: client, baseURL: baseURL, done: make(chan struct{})}
 	go p.run(pollInterval)
 	return p
 }
@@ -57,9 +60,20 @@ func (p *warmupProbe) run(pollInterval time.Duration) {
 	p.probe()
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		p.probe()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+			p.probe()
+		}
 	}
+}
+
+// stop ends the poll loop. Production probes live as long as the process; a
+// test stops its probe so it cannot poll a later test's server on the same port.
+func (p *warmupProbe) stop() {
+	p.stopOnce.Do(func() { close(p.done) })
 }
 
 // probe issues one health check and updates the cached state, logging an

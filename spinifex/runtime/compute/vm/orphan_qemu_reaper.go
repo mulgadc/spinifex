@@ -13,6 +13,11 @@ import (
 // orphan QEMU to disappear before giving up and retrying on the next sweep.
 const orphanQEMUKillTimeout = 10 * time.Second
 
+// vanishedQEMUGrace is how long a shutting-down instance's QEMU may be gone
+// before the reaper calls the terminate wedged. A healthy terminate is still
+// deleting volumes, IPs and its placement for tens of seconds after QEMU exits.
+const vanishedQEMUGrace = 2 * time.Minute
+
 // OrphanQEMUReaper reconciles instances whose QEMU liveness disagrees with their
 // recorded state, in two directions:
 //
@@ -31,9 +36,9 @@ const orphanQEMUKillTimeout = 10 * time.Second
 // This reaper is node-local and conservative: liveness is read from the
 // instance's local PID file, so only the node actually hosting (or having
 // hosted) the process acts; every other node's lookup misses and is a no-op. A
-// live in-progress terminate still has a live QEMU, so the shutting-down
-// reconcile never steals a healthy teardown. Running, pending, and stopped
-// instances are never touched.
+// terminate keeps tearing down after its QEMU exits, so the shutting-down
+// reconcile waits out vanishedQEMUGrace before it takes one over. Running,
+// pending, and stopped instances are never touched.
 type OrphanQEMUReaper struct {
 	m *Manager
 }
@@ -92,6 +97,11 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 			continue
 		}
 		if qemuProcessAlive(v.ID) {
+			continue
+		}
+		// Finalizing early reports terminated while the terminate is still
+		// tearing down, so DeletePlacementGroup and friends see it in use.
+		if !v.ShuttingDownAt.IsZero() && time.Since(v.ShuttingDownAt) < vanishedQEMUGrace {
 			continue
 		}
 		_ = hostprocess.RemovePidFile(v.ID) // clear any stale file for the dead process

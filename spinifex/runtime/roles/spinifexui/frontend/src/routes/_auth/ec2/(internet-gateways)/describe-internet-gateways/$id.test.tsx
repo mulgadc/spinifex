@@ -41,6 +41,7 @@ async function renderPage() {
     ],
   })
   qc.setQueryData(["ec2", "vpcs"], { Vpcs: [] })
+  qc.setQueryData(["ec2", "internetGateways"], { InternetGateways: [] })
   const Detail = Route.options.component
 
   if (!Detail) {

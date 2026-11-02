@@ -1,8 +1,13 @@
 import { useQuery } from "@tanstack/react-query"
+import { useState } from "react"
 
+import {
+  type DataColumn,
+  DataTable,
+  type SortState,
+} from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent } from "@/components/ui/card"
 import { formatVRAMMiB } from "@/lib/utils"
 import {
   adminOchreCatalogQueryOptions,
@@ -97,91 +102,104 @@ function AvailabilityCell({
   )
 }
 
-function CatalogTable({ entries }: { entries: AdminCatalogEntry[] }) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="pr-4 pb-1 font-medium">Model</th>
-            <th className="pr-4 pb-1 font-medium">Modality</th>
-            <th className="pr-4 pb-1 font-medium">Family</th>
-            <th className="pr-4 pb-1 font-medium">Streaming</th>
-            <th className="pr-4 pb-1 font-medium">Price / MTok</th>
-            <th className="pr-4 pb-1 font-medium">VRAM / Instance</th>
-            <th className="pr-4 pb-1 font-medium">Co-serve group</th>
-            <th className="pb-1 font-medium">Availability</th>
-          </tr>
-        </thead>
-        <tbody>
-          {entries.map((entry) => (
-            <tr className="border-b last:border-0" key={entry.modelId}>
-              <td className="py-1.5 pr-4">
-                <div className="font-medium">{entry.modelName}</div>
-                <div className="font-mono text-muted-foreground">
-                  {entry.modelId}
-                </div>
-              </td>
-              <td className="py-1.5 pr-4">
-                <div className="flex flex-wrap gap-1">
-                  {modalityBadges(entry)}
-                </div>
-              </td>
-              <td className="py-1.5 pr-4 font-mono text-muted-foreground">
-                {entry.family}
-              </td>
-              <td className="py-1.5 pr-4">
-                {entry.responseStreamingSupported ? (
-                  <Badge variant="outline">Streaming</Badge>
-                ) : (
-                  <span className="text-muted-foreground">-</span>
-                )}
-              </td>
-              <td className="py-1.5 pr-4">
-                <PriceCell entry={entry} />
-              </td>
-              <td className="py-1.5 pr-4">
-                {isSelfHost(entry) ? (
-                  <span className="font-mono">
-                    {formatVRAMMiB(entry.minVramMib)} · {entry.instanceType}
-                  </span>
-                ) : (
-                  <span className="text-muted-foreground">-</span>
-                )}
-              </td>
-              <td className="py-1.5 pr-4 font-mono text-muted-foreground">
-                {entry.coServeGroup || "-"}
-              </td>
-              <td className="py-1.5">
-                <AvailabilityCell availability={entry.availability} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
+const COLUMNS: DataColumn<AdminCatalogEntry>[] = [
+  {
+    id: "model",
+    header: "Model",
+    sortValue: (entry) => entry.modelName,
+    cell: (entry) => (
+      <div className="min-w-0">
+        <div className="truncate font-medium">{entry.modelName}</div>
+        <div className="truncate font-mono text-xs text-muted-foreground">
+          {entry.modelId}
+        </div>
+      </div>
+    ),
+  },
+  {
+    id: "modality",
+    header: "Modality",
+    hideBelow: "md",
+    cell: (entry) => (
+      <div className="flex flex-wrap gap-1">{modalityBadges(entry)}</div>
+    ),
+  },
+  {
+    id: "family",
+    header: "Family",
+    sortValue: (entry) => entry.family,
+    hideBelow: "lg",
+    cell: (entry) => (
+      <span className="font-mono text-xs text-muted-foreground">
+        {entry.family}
+      </span>
+    ),
+  },
+  {
+    id: "streaming",
+    header: "Streaming",
+    hideBelow: "lg",
+    cell: (entry) =>
+      entry.responseStreamingSupported ? (
+        <Badge variant="outline">Streaming</Badge>
+      ) : (
+        <span className="text-muted-foreground">-</span>
+      ),
+  },
+  {
+    id: "price",
+    header: "Price / MTok",
+    hideBelow: "md",
+    cell: (entry) => <PriceCell entry={entry} />,
+  },
+  {
+    id: "vram",
+    header: "VRAM / Instance",
+    hideBelow: "lg",
+    cell: (entry) =>
+      isSelfHost(entry) ? (
+        <span className="font-mono text-xs">
+          {formatVRAMMiB(entry.minVramMib)} · {entry.instanceType}
+        </span>
+      ) : (
+        <span className="text-muted-foreground">-</span>
+      ),
+  },
+  {
+    id: "coServeGroup",
+    header: "Co-serve group",
+    sortValue: (entry) => entry.coServeGroup,
+    hideBelow: "lg",
+    cell: (entry) => (
+      <span className="font-mono text-xs text-muted-foreground">
+        {entry.coServeGroup || "-"}
+      </span>
+    ),
+  },
+  {
+    id: "availability",
+    header: "Availability",
+    sortValue: (entry) => entry.availability,
+    cell: (entry) => <AvailabilityCell availability={entry.availability} />,
+  },
+]
 
 export function ModelCatalogPage() {
   const { data } = useQuery(adminOchreCatalogQueryOptions)
-
-  const entries = (data?.entries ?? []).toSorted((a, b) =>
-    a.modelName.localeCompare(b.modelName),
-  )
+  const [sort, setSort] = useState<SortState>({ column: "model", desc: false })
 
   return (
     <>
       <PageHeading title="Model Catalog" />
-      <Card>
-        <CardContent>
-          {entries.length > 0 ? (
-            <CatalogTable entries={entries} />
-          ) : (
-            <p className="text-xs text-muted-foreground">No models found.</p>
-          )}
-        </CardContent>
-      </Card>
+      <DataTable
+        caption="Model catalog"
+        columns={COLUMNS}
+        empty="No models found."
+        getRowId={(entry) => entry.modelId}
+        onSortChange={setSort}
+        rows={data?.entries ?? []}
+        sort={sort}
+      />
     </>
   )
 }

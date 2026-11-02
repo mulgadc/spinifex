@@ -45,6 +45,10 @@ const (
 // One cluster fixture is shared across the subtests (create once, delete in
 // Cleanup) — control-plane boot is the slowest step, so re-creating per subtest
 // would blow the suite timeout on dev nodes.
+// noopAddon is the delivery fixture (Namespace + ConfigMap), independent of the
+// CSI and load-balancer bundles.
+const noopAddon = "spinifex-noop"
+
 func TestEKS(t *testing.T) {
 	env := harness.LoadEnv(t)
 	harness.RequireDNSEnabled(t, env)
@@ -136,17 +140,15 @@ func TestEKS(t *testing.T) {
 		kcPath := writeKubeconfig(t, artifacts, fx.Cluster)
 		kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
 
-		// Poll until a Ready node appears. k3s may crash once during bootstrap
-		// (etcd fsync latency under I/O contention) and be respawned; the generous
-		// envelope allows the control plane to stabilise after the first ACTIVE.
+		// Control-plane hosts never register as Nodes, so a cluster without a
+		// nodegroup lists none. A Ready worker is asserted once a nodegroup exists.
 		harness.EventuallyErr(t, func() error {
-			out, err := kc.Run(30*time.Second, "get", "nodes",
-				"-o", `jsonpath={range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`)
+			out, err := kc.Run(30*time.Second, "get", "nodes", "-o", "name")
 			if err != nil {
 				return fmt.Errorf("kubectl get nodes: %v\n%s", err, out)
 			}
-			if !strings.Contains(out, "=True") {
-				return fmt.Errorf("no Ready node yet:\n%s", out)
+			if strings.TrimSpace(out) != "" {
+				return fmt.Errorf("cluster without a nodegroup must list no Nodes:\n%s", out)
 			}
 			return nil
 		}, 6*time.Minute, 5*time.Second)
@@ -162,7 +164,7 @@ func TestEKS(t *testing.T) {
 		// gateway, renders the baked bundle into the K3s auto-deploy dir, and
 		// reports ready, which flips the record to ACTIVE. spinifex-noop is the
 		// fixture (Namespace + ConfigMap) — no dependency on the CSI/LB bundles.
-		const addon = "spinifex-noop"
+		const addon = noopAddon
 		_, err := c.EKS.CreateAddon(&eks.CreateAddonInput{
 			ClusterName: aws.String(fx.ClusterName),
 			AddonName:   aws.String(addon),
@@ -194,41 +196,15 @@ func TestEKS(t *testing.T) {
 		require.NoError(t, err, "addon ConfigMap must exist: %s", out)
 		assert.Contains(t, out, "delivered", "addon ConfigMap must carry the marker")
 
-		// The aggregated metrics API must be Available: apiserver discovery
-		// dials it through the konnectivity tunnel, and on a zero-worker or
-		// GPU-only cluster a konnectivity-agent gap makes it perpetually
-		// Unavailable — which is exactly what wedges namespace GC below, on
-		// every namespace, not just this one.
-		apiSvcOut, err := kc.Run(30*time.Second, "get", "apiservice", "v1beta1.metrics.k8s.io",
-			"-o", `jsonpath={.status.conditions[?(@.type=="Available")].status}`)
-		require.NoError(t, err, "get apiservice v1beta1.metrics.k8s.io: %s", apiSvcOut)
-		assert.Equal(t, "True", strings.TrimSpace(apiSvcOut),
-			"v1beta1.metrics.k8s.io must be Available or namespace GC (below) will never clear the kubernetes finalizer")
-
-		// DeleteAddon unstages the manifest; the agent GCs the rendered file and
-		// k3s' auto-deploy controller removes the objects.
-		_, err = c.EKS.DeleteAddon(&eks.DeleteAddonInput{
-			ClusterName: aws.String(fx.ClusterName),
-			AddonName:   aws.String(addon),
-		})
-		require.NoError(t, err, "delete-addon")
-
-		// Namespace GC enumerates every API group before it can clear the
-		// `kubernetes` finalizer, so a stuck aggregated API (checked above)
-		// leaves this stuck in Terminating forever rather than retrying it
-		// down — proving deletion actually completes, not just that it was
-		// attempted.
-		harness.EventuallyErr(t, func() error {
-			out, runErr := kc.Run(30*time.Second, "get", "namespace", "spinifex-noop",
-				"--ignore-not-found", "-o", `jsonpath={.metadata.name}`)
-			if runErr != nil {
-				return fmt.Errorf("kubectl get namespace: %v\n%s", runErr, out)
-			}
-			if strings.TrimSpace(out) != "" {
-				return fmt.Errorf("namespace still present")
-			}
-			return nil
-		}, 3*time.Minute, 10*time.Second)
+		// The bundled metrics-server objects are delivered with the cluster. They
+		// cannot become Available until a worker exists, so only presence is checked.
+		for _, obj := range [][]string{
+			{"deployment", "metrics-server", "-n", "kube-system"},
+			{"apiservice", "v1beta1.metrics.k8s.io"},
+		} {
+			got, gerr := kc.Run(30*time.Second, append([]string{"get"}, append(obj, "-o", "name")...)...)
+			require.NoErrorf(t, gerr, "bundled %s must be delivered: %s", obj[0], got)
+		}
 	})
 
 	t.Run("IRSAWebIdentity", func(t *testing.T) {
@@ -239,6 +215,21 @@ func TestEKS(t *testing.T) {
 	t.Run("IRSAPod", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		runIRSAPod(t, c, env, artifacts, fx)
+	})
+
+	t.Run("WorkerIMDS", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runWorkerIMDS(t, c, env, artifacts, fx)
+	})
+
+	t.Run("WorkerIMDSLaunchTemplate", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runWorkerIMDSLaunchTemplate(t, c, fx)
+	})
+
+	t.Run("CPIsolation", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runCPIsolation(t, c, env, artifacts, fx)
 	})
 
 	t.Run("EBSCSIVolume", func(t *testing.T) {
@@ -273,7 +264,13 @@ func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, ar
 	// 1) Register the cluster's OIDC provider in the caller account and create a
 	//    role whose trust policy federates it, so the STS handler accepts
 	//    web-identity tokens carrying this issuer.
-	providerArn, roleArn, roleName := registerOIDCRole(t, c, fx, "irsa", "E2E IRSA web-identity role")
+	//    The trust policy is the stock AWS IRSA form: StringEquals on
+	//    <issuer-without-https>:sub and :aud, as Terraform builds it.
+	const defaultSA = "system:serviceaccount:default:default"
+	providerArn := registerOIDCProvider(t, c, fx)
+	issuer := aws.StringValue(fx.Cluster.Identity.Oidc.Issuer)
+	roleArn, roleName := createWebIdentityRole(t, c, fx, providerArn, "irsa", "E2E IRSA web-identity role",
+		stockIRSACondition(issuer, defaultSA))
 	t.Logf("OIDC provider: %s", providerArn)
 	t.Logf("role: %s", roleArn)
 
@@ -292,13 +289,16 @@ func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, ar
 	// 3) Exchange the token. AssumeRoleWithWebIdentity is anonymous (the SDK
 	//    strips SigV4 for this op); the JWT is the identity.
 	const sessionName = "e2e-irsa"
-	var assumeOut *sts.AssumeRoleWithWebIdentityOutput
-	harness.EventuallyErr(t, func() error {
-		out, aerr := c.STS.AssumeRoleWithWebIdentity(&sts.AssumeRoleWithWebIdentityInput{
-			RoleArn:          aws.String(roleArn),
+	assume := func(arn string) (*sts.AssumeRoleWithWebIdentityOutput, error) {
+		return c.STS.AssumeRoleWithWebIdentity(&sts.AssumeRoleWithWebIdentityInput{
+			RoleArn:          aws.String(arn),
 			RoleSessionName:  aws.String(sessionName),
 			WebIdentityToken: aws.String(token),
 		})
+	}
+	var assumeOut *sts.AssumeRoleWithWebIdentityOutput
+	harness.EventuallyErr(t, func() error {
+		out, aerr := assume(roleArn)
 		if aerr != nil {
 			return fmt.Errorf("assume-role-with-web-identity: %w", aerr)
 		}
@@ -323,16 +323,68 @@ func runIRSAWebIdentity(t *testing.T, c *harness.AWSClient, env *harness.Env, ar
 	assert.Contains(t, aws.StringValue(ident.Arn), "assumed-role/"+roleName,
 		"caller ARN must reflect the assumed IRSA role")
 	t.Logf("GetCallerIdentity (web-identity creds): %s", aws.StringValue(ident.Arn))
+
+	// 5) Condition matching against the same token. A role STS cannot resolve
+	//    yet also answers AccessDenied, so a denial only counts when it follows
+	//    a grant on the same role.
+	t.Run("StringLikeSubjectGrants", func(t *testing.T) {
+		prefix := strings.TrimPrefix(issuer, "https://")
+		likeArn, _ := createWebIdentityRole(t, c, fx, providerArn, "irsa-like", "E2E IRSA StringLike role",
+			fmt.Sprintf(`{"StringEquals":{%q:"sts.amazonaws.com"},"StringLike":{%q:"system:serviceaccount:default:*"}}`,
+				prefix+":aud", prefix+":sub"))
+		var out *sts.AssumeRoleWithWebIdentityOutput
+		harness.EventuallyErr(t, func() error {
+			var aerr error
+			out, aerr = assume(likeArn)
+			return aerr
+		}, 60*time.Second, 5*time.Second)
+		assert.Equal(t, defaultSA, aws.StringValue(out.SubjectFromWebIdentityToken))
+	})
+	t.Run("MismatchedSubjectDenied", func(t *testing.T) {
+		// The primary role was just assumed, so it resolves. Rebinding it to another SA turns the
+		// grant into a denial only once the new policy is evaluated.
+		_, err := c.IAM.UpdateAssumeRolePolicy(&iam.UpdateAssumeRolePolicyInput{
+			RoleName: aws.String(roleName),
+			PolicyDocument: aws.String(webIdentityTrustPolicy(providerArn,
+				stockIRSACondition(issuer, "system:serviceaccount:default:other"))),
+		})
+		require.NoError(t, err, "update-assume-role-policy")
+		harness.EventuallyErr(t, func() error {
+			_, aerr := assume(roleArn)
+			if aerr == nil {
+				return errors.New("token for the default SA still assumes a role bound to another SA")
+			}
+			var awsErr awserr.Error
+			if !errors.As(aerr, &awsErr) || awsErr.Code() != "AccessDenied" {
+				return fmt.Errorf("want AccessDenied, got: %w", aerr)
+			}
+			return nil
+		}, 60*time.Second, 5*time.Second)
+	})
+}
+
+// stockIRSACondition is the Condition block of the stock AWS IRSA trust policy: StringEquals on the
+// issuer host-path (https:// stripped, as Terraform builds it) :sub and :aud.
+func stockIRSACondition(issuer, sub string) string {
+	prefix := strings.TrimPrefix(issuer, "https://")
+	return fmt.Sprintf(`{"StringEquals":{%q:%q,%q:"sts.amazonaws.com"}}`, prefix+":sub", sub, prefix+":aud")
 }
 
 // registerOIDCRole registers the cluster's OIDC provider in the caller account
 // and creates a role whose trust policy federates it — the shared setup every
-// IRSA scenario needs before a web-identity token can be exchanged. No
-// Condition block on the trust policy — the Federated principal +
-// AssumeRoleWithWebIdentity action are sufficient to grant, which keeps
-// callers independent of the condition-key issuer-prefix format. Both
-// resources are torn down via t.Cleanup (LIFO: role before provider).
+// IRSA scenario needs before a web-identity token can be exchanged. The trust
+// policy has no Condition block, so the Federated principal and the
+// AssumeRoleWithWebIdentity action are sufficient to grant. Both resources are
+// torn down via t.Cleanup (LIFO: role before provider).
 func registerOIDCRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture, roleNameSuffix, description string) (providerArn, roleArn, roleName string) {
+	t.Helper()
+	providerArn = registerOIDCProvider(t, c, fx)
+	roleArn, roleName = createWebIdentityRole(t, c, fx, providerArn, roleNameSuffix, description, "")
+	return providerArn, roleArn, roleName
+}
+
+// registerOIDCProvider registers the cluster's OIDC issuer as an IAM OIDC provider, deleted via t.Cleanup.
+func registerOIDCProvider(t *testing.T, c *harness.AWSClient, fx *clusterFixture) string {
 	t.Helper()
 	require.NotNil(t, fx.Cluster.Identity, "ACTIVE cluster must expose Identity")
 	require.NotNil(t, fx.Cluster.Identity.Oidc, "ACTIVE cluster must expose Identity.Oidc")
@@ -345,19 +397,33 @@ func registerOIDCRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture, ro
 		ThumbprintList: aws.StringSlice([]string{"0000000000000000000000000000000000000000"}),
 	})
 	require.NoError(t, err, "create-open-id-connect-provider")
-	providerArn = aws.StringValue(oidcOut.OpenIDConnectProviderArn)
+	providerArn := aws.StringValue(oidcOut.OpenIDConnectProviderArn)
 	require.NotEmpty(t, providerArn, "OIDC provider ARN empty")
 	t.Cleanup(func() {
 		_, _ = c.IAM.DeleteOpenIDConnectProvider(&iam.DeleteOpenIDConnectProviderInput{
 			OpenIDConnectProviderArn: aws.String(providerArn),
 		})
 	})
+	return providerArn
+}
 
+// webIdentityTrustPolicy trusts providerArn for AssumeRoleWithWebIdentity, with an optional Condition block (JSON object).
+func webIdentityTrustPolicy(providerArn, condition string) string {
+	conditionJSON := ""
+	if condition != "" {
+		conditionJSON = `,"Condition":` + condition
+	}
+	return fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"%s}]}`, providerArn, conditionJSON)
+}
+
+// createWebIdentityRole creates a role trusting providerArn for AssumeRoleWithWebIdentity,
+// with an optional Condition block (JSON object; empty for none), deleted via t.Cleanup.
+func createWebIdentityRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture, providerArn, roleNameSuffix, description, condition string) (roleArn, roleName string) {
+	t.Helper()
 	roleName = fmt.Sprintf("%s-%s", fx.ClusterName, roleNameSuffix)
-	trustPolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"}]}`, providerArn)
 	roleOut, err := c.IAM.CreateRole(&iam.CreateRoleInput{
 		RoleName:                 aws.String(roleName),
-		AssumeRolePolicyDocument: aws.String(trustPolicy),
+		AssumeRolePolicyDocument: aws.String(webIdentityTrustPolicy(providerArn, condition)),
 		Description:              aws.String(description),
 	})
 	require.NoError(t, err, "create-role")
@@ -366,7 +432,7 @@ func registerOIDCRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture, ro
 	t.Cleanup(func() {
 		_, _ = c.IAM.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(roleName)})
 	})
-	return providerArn, roleArn, roleName
+	return roleArn, roleName
 }
 
 // ensureNodeRole creates the cluster's worker-node IAM role (standard
@@ -421,31 +487,7 @@ func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts 
 	_, roleArn, roleName := registerOIDCRole(t, c, fx, "irsa-pod", "E2E IRSA pod role")
 	t.Logf("IRSA pod role: %s", roleArn)
 
-	// awsgw enforces IAM on assumed-role STS calls, so the role needs a
-	// permission policy allowing GetCallerIdentity — an AWS-managed ARN is
-	// opaque and grants nothing, so use a customer-managed policy with an
-	// explicit allow (same pattern as the EBS CSI role below).
-	const stsPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:GetCallerIdentity","Resource":"*"}]}`
-	polOut, err := c.IAM.CreatePolicy(&iam.CreatePolicyInput{
-		PolicyName:     aws.String(roleName + "-policy"),
-		PolicyDocument: aws.String(stsPolicy),
-	})
-	require.NoError(t, err, "create-policy")
-	policyArn := aws.StringValue(polOut.Policy.Arn)
-	t.Cleanup(func() {
-		_, _ = c.IAM.DeletePolicy(&iam.DeletePolicyInput{PolicyArn: aws.String(policyArn)})
-	})
-	_, err = c.IAM.AttachRolePolicy(&iam.AttachRolePolicyInput{
-		RoleName:  aws.String(roleName),
-		PolicyArn: aws.String(policyArn),
-	})
-	require.NoError(t, err, "attach-role-policy")
-	t.Cleanup(func() {
-		_, _ = c.IAM.DetachRolePolicy(&iam.DetachRolePolicyInput{
-			RoleName:  aws.String(roleName),
-			PolicyArn: aws.String(policyArn),
-		})
-	})
+	// The role carries no permission policy: GetCallerIdentity needs none.
 
 	// gatewayBaseURL is the issuer with its /oidc/eks/<region>/<acct>/<cluster>
 	// path stripped — the customer-facing WAN advertise addr (:9999) in-cluster
@@ -494,12 +536,7 @@ func runIRSAPod(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts 
 		},
 	})
 	require.NoError(t, err, "create-nodegroup")
-	t.Cleanup(func() {
-		_, _ = c.EKS.DeleteNodegroup(&eks.DeleteNodegroupInput{
-			ClusterName:   aws.String(fx.ClusterName),
-			NodegroupName: aws.String(nodegroup),
-		})
-	})
+	t.Cleanup(func() { harness.DeleteEKSNodegroupAndWait(t, c, fx.ClusterName, nodegroup) })
 	harness.EventuallyErr(t, func() error {
 		out, derr := c.EKS.DescribeNodegroup(&eks.DescribeNodegroupInput{
 			ClusterName:   aws.String(fx.ClusterName),
@@ -747,12 +784,7 @@ func runEBSCSIVolume(t *testing.T, c *harness.AWSClient, env *harness.Env, artif
 		},
 	})
 	require.NoError(t, err, "create-nodegroup")
-	t.Cleanup(func() {
-		_, _ = c.EKS.DeleteNodegroup(&eks.DeleteNodegroupInput{
-			ClusterName:   aws.String(fx.ClusterName),
-			NodegroupName: aws.String(nodegroup),
-		})
-	})
+	t.Cleanup(func() { harness.DeleteEKSNodegroupAndWait(t, c, fx.ClusterName, nodegroup) })
 	harness.EventuallyErr(t, func() error {
 		out, derr := c.EKS.DescribeNodegroup(&eks.DescribeNodegroupInput{
 			ClusterName:   aws.String(fx.ClusterName),

@@ -360,6 +360,7 @@ func (s *IAMServiceImpl) updateOIDCProviderCAS(ctx context.Context, accountID, a
 		}
 		return fmt.Errorf("open IAM account bucket: %w", err)
 	}
+	defer s.recordLocks.lock("oidc-provider/" + accountID + "/" + OIDCProviderKey(issuer))()
 	_, err = kvutil.Update(ctx, kv, OIDCProviderKey(issuer), iamRecordCASConfig("oidc-provider", accountID, arn), mutate)
 	return err
 }

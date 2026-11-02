@@ -2,6 +2,7 @@ import type { Subnet } from "@aws-sdk/client-ec2"
 import { useState } from "react"
 
 import { EditorShell } from "@/components/editor-shell"
+import { SwitchList, type SwitchListItem } from "@/components/switch-list"
 import { getNameTag, sameSet } from "@/lib/utils"
 
 interface SubnetsEditorProps {
@@ -15,12 +16,26 @@ interface SubnetsEditorProps {
   isSuccess?: boolean
 }
 
-function subnetLabel(subnet: Subnet): string {
-  const name = getNameTag(subnet.Tags)
-  const az = subnet.AvailabilityZone ? ` · ${subnet.AvailabilityZone}` : ""
-  const cidr = subnet.CidrBlock ? ` (${subnet.CidrBlock})` : ""
-
-  return `${subnet.SubnetId}${name ? ` — ${name}` : ""}${cidr}${az}`
+// Rows for a subnet SwitchList, ordered by zone, with the name, zone and CIDR
+// beneath each ID.
+export function subnetSwitchItems(subnets: Subnet[]): SwitchListItem[] {
+  return subnets
+    .toSorted(
+      (a, b) =>
+        (a.AvailabilityZone ?? "").localeCompare(b.AvailabilityZone ?? "") ||
+        (a.SubnetId ?? "").localeCompare(b.SubnetId ?? ""),
+    )
+    .map((subnet) => ({
+      id: subnet.SubnetId ?? "",
+      label: subnet.SubnetId ?? "",
+      detail: [
+        getNameTag(subnet.Tags),
+        subnet.AvailabilityZone,
+        subnet.CidrBlock,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    }))
 }
 
 export function SubnetsEditor({
@@ -34,12 +49,6 @@ export function SubnetsEditor({
   const initial = [...current]
   const [selected, setSelected] = useState<string[]>(initial)
 
-  const toggle = (id: string) => {
-    setSelected((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    )
-  }
-
   const handleReset = () => {
     setSelected(initial)
   }
@@ -47,7 +56,6 @@ export function SubnetsEditor({
   const dirty = !sameSet(selected, initial)
   // A load balancer must front at least one subnet.
   const isEmpty = selected.length === 0
-  const selectedIds = new Set(selected)
 
   return (
     <EditorShell
@@ -73,29 +81,14 @@ export function SubnetsEditor({
       }}
       successMsg="Subnets updated."
     >
-      <div className="flex flex-col gap-1 p-4">
-        {available.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No subnets in this VPC.
-          </p>
-        ) : (
-          available.map((subnet) => (
-            <label
-              className="flex items-center gap-2 text-sm"
-              key={subnet.SubnetId}
-            >
-              <input
-                aria-label={`Subnet ${subnet.SubnetId}`}
-                checked={selectedIds.has(subnet.SubnetId ?? "")}
-                onChange={() => {
-                  toggle(subnet.SubnetId ?? "")
-                }}
-                type="checkbox"
-              />
-              <span className="font-mono">{subnetLabel(subnet)}</span>
-            </label>
-          ))
-        )}
+      <div className="flex flex-col gap-2 p-4">
+        <SwitchList
+          emptyText="No subnets in this VPC."
+          itemLabel="Subnet"
+          items={subnetSwitchItems(available)}
+          onChange={setSelected}
+          selected={selected}
+        />
         {isEmpty && (
           <p className="text-xs text-destructive">
             At least one subnet is required.

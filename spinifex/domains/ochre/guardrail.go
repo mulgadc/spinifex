@@ -347,7 +347,7 @@ func GetGuardrail(ctx context.Context, accountID string, store *GuardrailStore, 
 	if input == nil || aws.StringValue(input.GuardrailIdentifier) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
-	id, err := resolveGuardrailID(aws.StringValue(input.GuardrailIdentifier), store.region, accountID)
+	id, err := ResolveGuardrailID(aws.StringValue(input.GuardrailIdentifier), store.region, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -413,7 +413,7 @@ func UpdateGuardrail(ctx context.Context, accountID string, store *GuardrailStor
 		aws.StringValue(input.BlockedInputMessaging) == "" || aws.StringValue(input.BlockedOutputsMessaging) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
-	id, err := resolveGuardrailID(aws.StringValue(input.GuardrailIdentifier), store.region, accountID)
+	id, err := ResolveGuardrailID(aws.StringValue(input.GuardrailIdentifier), store.region, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -458,7 +458,7 @@ func DeleteGuardrail(ctx context.Context, accountID string, store *GuardrailStor
 	if input == nil || aws.StringValue(input.GuardrailIdentifier) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
-	id, err := resolveGuardrailID(aws.StringValue(input.GuardrailIdentifier), store.region, accountID)
+	id, err := ResolveGuardrailID(aws.StringValue(input.GuardrailIdentifier), store.region, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -500,7 +500,7 @@ func CreateGuardrailVersion(ctx context.Context, accountID string, store *Guardr
 	if input == nil || aws.StringValue(input.GuardrailIdentifier) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
-	id, err := resolveGuardrailID(aws.StringValue(input.GuardrailIdentifier), store.region, accountID)
+	id, err := ResolveGuardrailID(aws.StringValue(input.GuardrailIdentifier), store.region, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -540,7 +540,7 @@ func ApplyGuardrail(ctx context.Context, accountID string, store *GuardrailStore
 		aws.StringValue(input.GuardrailVersion) == "" || aws.StringValue(input.Source) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
-	id, err := resolveGuardrailID(aws.StringValue(input.GuardrailIdentifier), store.region, accountID)
+	id, err := ResolveGuardrailID(aws.StringValue(input.GuardrailIdentifier), store.region, accountID)
 	if err != nil {
 		return nil, err
 	}

@@ -56,6 +56,9 @@ const (
 	egressOKMarker   = "NAT-E2E-EGRESS-OK"
 	egressFailMarker = "NAT-E2E-EGRESS-FAIL"
 
+	hairpinOKMarker   = "NAT-E2E-HAIRPIN-OK"
+	hairpinFailMarker = "NAT-E2E-HAIRPIN-FAIL"
+
 	secondVPCCIDR    = "10.213.0.0/16"
 	natExemptSetName = "spinifex_nat_exempt"
 )
@@ -653,6 +656,8 @@ func phaseEIPIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egre
 		return sshHandshake(eip)
 	}, 2*time.Minute, 5*time.Second)
 
+	phaseEIPHairpin(t, fix, def, eip)
+
 	harness.Step(t, "vpcd restart replays host EIP bindings (reconcile)")
 	if out, rerr := exec.Command("sudo", "-n", "ip", "route", "del", eip+"/32",
 		"dev", transitHostEnd).CombinedOutput(); rerr != nil {
@@ -676,9 +681,9 @@ func phaseEIPIngress(t *testing.T, fix *fixture, def harness.VPCInfo, probe egre
 		return eipHostPlumbingGone(eip)
 	}, 2*time.Minute, 3*time.Second)
 
-	// The auto-assigned address went back to the pool at associate time, so
-	// disassociating leaves the instance with no public delivery at all. It does
-	// not come back — matching EC2, where a stop/start is what issues a new one.
+	// The auto-assigned address went back to the pool at associate time and does
+	// not come back. EC2 assigns a new public IPv4 on disassociate; Spinifex does
+	// not yet, so this asserts the current divergence, not parity.
 	harness.Step(t, "no public delivery remains after the EIP teardown")
 	require.NoError(t, eipHostPlumbingGone(probe.publicIP))
 }
@@ -1163,4 +1168,65 @@ func consoleOutput(t *testing.T, fix *fixture, instanceID string) string {
 		return encoded
 	}
 	return string(raw)
+}
+
+// hairpinUserData tries a TCP handshake to an EIP from inside a guest and
+// reports the verdict on the serial console, the only channel back.
+func hairpinUserData(eip string) string {
+	return fmt.Sprintf(`#!/bin/bash
+for i in $(seq 1 %d); do
+  if timeout 5 bash -c '</dev/tcp/%s/22' 2>/dev/null; then
+    echo "%s" | tee /dev/console
+    exit 0
+  fi
+  sleep 5
+done
+echo "%s" | tee /dev/console
+`, egressProbeIterations, eip, hairpinOKMarker, hairpinFailMarker)
+}
+
+// phaseEIPHairpin proves a guest reaches an EIP another guest holds on the
+// same node, as an AWS instance reaches a public address in its own VPC; an
+// EKS worker reaches its control plane's endpoint exactly this way.
+func phaseEIPHairpin(t *testing.T, fix *fixture, def harness.VPCInfo, eip string) {
+	t.Helper()
+	harness.Step(t, "a second guest on the node reaches EIP %s:22 (hairpin)", eip)
+
+	instType, arch := harness.DiscoverNanoInstanceType(t, fix.harness)
+	amiID := harness.DiscoverUbuntuAMI(t, fix.harness, arch)
+	runOut, err := fix.aws.EC2.RunInstances(&ec2.RunInstancesInput{
+		ImageId:      aws.String(amiID),
+		InstanceType: aws.String(instType),
+		SubnetId:     aws.String(def.SubnetID),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		UserData:     aws.String(base64.StdEncoding.EncodeToString([]byte(hairpinUserData(eip)))),
+	})
+	require.NoError(t, err, "run-instances (hairpin probe)")
+	require.NotEmpty(t, runOut.Instances, "run-instances returned no Instances")
+	instanceID := aws.StringValue(runOut.Instances[0].InstanceId)
+	t.Cleanup(func() {
+		_, _ = fix.aws.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
+			InstanceIds: []*string{aws.String(instanceID)},
+		})
+		harness.WaitForInstanceTerminated(t, fix.aws, []string{instanceID}, 5*time.Minute)
+	})
+	harness.Detail(t, "hairpin_probe", instanceID)
+	harness.WaitForInstanceState(t, fix.aws, instanceID, "running")
+
+	var console string
+	harness.OnFailure(t, func() {
+		harness.DumpFile(t, fix.artifacts, "hairpin-console-"+instanceID+".log", []byte(console))
+	})
+	harness.EventuallyErr(t, func() error {
+		console = consoleOutput(t, fix, instanceID)
+		if strings.Contains(console, hairpinOKMarker) || strings.Contains(console, hairpinFailMarker) {
+			return nil
+		}
+		return fmt.Errorf("no hairpin marker on console yet (%d bytes)", len(console))
+	}, egressVerdictBudget, 10*time.Second)
+	if strings.Contains(console, hairpinFailMarker) {
+		t.Fatalf("guest %s could not reach EIP %s on its own node; AWS lets an instance reach a public address in its own VPC (console saved to artifacts)",
+			instanceID, eip)
+	}
 }

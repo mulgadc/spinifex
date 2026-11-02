@@ -35,8 +35,7 @@ export function RetrieveTester({ knowledgeBaseId }: RetrieveTesterProps) {
   const results = retrieve.data?.retrievalResults ?? []
 
   return (
-    <div className="rounded-lg border bg-card p-4">
-      <h2 className="mb-2 font-semibold">Retrieve tester</h2>
+    <div>
       <p className="mb-4 text-sm text-muted-foreground">
         Run a similarity query against this knowledge base and inspect the
         returned chunks.

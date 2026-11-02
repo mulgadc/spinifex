@@ -1,24 +1,13 @@
 import type { Listener } from "@aws-sdk/client-elastic-load-balancing-v2"
-import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { Pencil, Trash2 } from "lucide-react"
-import { Fragment, useState } from "react"
-import { useForm } from "react-hook-form"
+import { useState } from "react"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { ListenerForm } from "@/components/elbv2/listener-form"
+import { PanelField, PanelFields } from "@/components/detail-panel"
+import { ListenerEditForm } from "@/components/elbv2/listener-edit-form"
 import { ListenerRulesTab } from "@/components/elbv2/listener-rules-tab"
 import { ErrorBanner } from "@/components/error-banner"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { arnResourceId } from "@/lib/utils"
 import {
@@ -34,11 +23,7 @@ import {
 } from "@/queries/elbv2"
 import {
   type CreateListenerFormData,
-  createListenerSchema,
-  defaultProtocolForType,
-  isSecureProtocol,
   type LbType,
-  type ListenerProtocolValue,
   protocolsForType,
 } from "@/types/elbv2"
 
@@ -46,37 +31,6 @@ interface ListenersTabProps {
   loadBalancerArn: string
   vpcId: string | undefined
   lbType: LbType
-}
-
-// NLB listeners default to TCP, ALB to HTTP — both on port 80.
-function listenerDefaults(lbType: LbType): CreateListenerFormData {
-  return {
-    protocol: defaultProtocolForType(lbType),
-    port: 80,
-    defaultTargetGroupArn: "",
-  }
-}
-
-// Projects an existing listener onto the form shape. TLS fields are dropped for
-// plaintext protocols so a downgrade does not carry a stale certificate.
-function listenerFormValues(
-  listener: Listener,
-  protocols: readonly ListenerProtocolValue[],
-): CreateListenerFormData {
-  const protocol: ListenerProtocolValue =
-    protocols.find((p) => p === listener.Protocol) ?? protocols[0] ?? "HTTP"
-
-  const secure = isSecureProtocol(protocol)
-
-  return {
-    protocol,
-    port: listener.Port ?? 80,
-    defaultTargetGroupArn: listener.DefaultActions?.[0]?.TargetGroupArn ?? "",
-    certificateArn: secure
-      ? listener.Certificates?.[0]?.CertificateArn
-      : undefined,
-    sslPolicy: protocol === "HTTPS" ? listener.SslPolicy : undefined,
-  }
 }
 
 function formatTls(listener: Listener): string {
@@ -202,18 +156,6 @@ export function ListenersTab({
 
   return (
     <div className="space-y-3">
-      {createMutation.error && (
-        <ErrorBanner
-          error={createMutation.error}
-          msg="Failed to create listener"
-        />
-      )}
-      {modifyMutation.error && (
-        <ErrorBanner
-          error={modifyMutation.error}
-          msg="Failed to modify listener"
-        />
-      )}
       {deleteMutation.error && (
         <ErrorBanner
           error={deleteMutation.error}
@@ -236,125 +178,115 @@ export function ListenersTab({
       </div>
 
       {listeners.length === 0 ? (
-        <p className="text-muted-foreground">No listeners configured.</p>
+        <p className="text-sm text-muted-foreground">
+          No listeners configured.
+        </p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-2 font-medium">Protocol</th>
-                <th className="px-4 py-2 font-medium">Port</th>
-                <th className="px-4 py-2 font-medium">TLS</th>
-                <th className="px-4 py-2 font-medium">Default action</th>
-                <th className="px-4 py-2 font-medium">Listener ARN</th>
-                <th className="px-4 py-2 font-medium">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {listeners.map((listener) => {
-                const arn = listener.ListenerArn ?? ""
-                const rulesOpen = rulesOpenArn === arn
+        <ul className="flex flex-col gap-2">
+          {listeners.map((listener) => {
+            const arn = listener.ListenerArn ?? ""
+            const rulesOpen = rulesOpenArn === arn
+            const name = `${listener.Protocol}:${listener.Port}`
 
-                return (
-                  <Fragment key={arn}>
-                    <tr className="border-b last:border-0">
-                      <td className="px-4 py-2">{listener.Protocol}</td>
-                      <td className="px-4 py-2">{listener.Port}</td>
-                      <td className="px-4 py-2 text-xs">
-                        {formatTls(listener)}
-                      </td>
-                      <td className="px-4 py-2 text-xs">
-                        {formatDefaultAction(listener)}
-                      </td>
-                      <td className="px-4 py-2 font-mono text-xs">{arn}</td>
-                      <td className="px-4 py-2 text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            aria-label={`${rulesOpen ? "Hide" : "Show"} rules for listener ${listener.Protocol}:${listener.Port}`}
-                            onClick={() => {
-                              setRulesOpenArn(rulesOpen ? undefined : arn)
-                            }}
-                            size="sm"
-                            variant="ghost"
-                          >
-                            {rulesOpen ? "Hide rules" : "Rules"}
-                          </Button>
-                          <Button
-                            aria-label={`Edit listener ${listener.Protocol}:${listener.Port}`}
-                            onClick={() => {
-                              setEditTarget(listener)
-                            }}
-                            size="sm"
-                            variant="ghost"
-                          >
-                            <Pencil className="size-4" />
-                          </Button>
-                          <Button
-                            aria-label={`Delete listener ${listener.Protocol}:${listener.Port}`}
-                            onClick={() => {
-                              setDeleteTarget(listener)
-                            }}
-                            size="sm"
-                            variant="ghost"
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                    {rulesOpen && arn && (
-                      <tr className="border-b bg-muted/30 last:border-0">
-                        <td className="px-4 py-3" colSpan={6}>
-                          <ListenerRulesTab
-                            listenerArn={arn}
-                            targetGroups={vpcTgs}
-                          />
-                        </td>
-                      </tr>
+            return (
+              <li className="rounded-md border bg-card" key={arn}>
+                <div className="flex items-center justify-between gap-2 py-1 pr-1 pl-3">
+                  <span className="text-sm font-medium">{name}</span>
+                  <div className="flex gap-1">
+                    <Button
+                      aria-label={`${rulesOpen ? "Hide" : "Show"} rules for listener ${name}`}
+                      onClick={() => {
+                        setRulesOpenArn(rulesOpen ? undefined : arn)
+                      }}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      {rulesOpen ? "Hide rules" : "Rules"}
+                    </Button>
+                    <Button
+                      aria-label={`Edit listener ${name}`}
+                      onClick={() => {
+                        setEditTarget(listener)
+                      }}
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      <Pencil />
+                    </Button>
+                    <Button
+                      aria-label={`Delete listener ${name}`}
+                      onClick={() => {
+                        setDeleteTarget(listener)
+                      }}
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
+                </div>
+                <div className="border-t px-3">
+                  <PanelFields>
+                    {listener.Protocol === "HTTPS" && (
+                      <PanelField label="TLS">{formatTls(listener)}</PanelField>
                     )}
-                  </Fragment>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                    <PanelField label="Default action">
+                      {formatDefaultAction(listener)}
+                    </PanelField>
+                    <PanelField copy={arn} label="Listener ARN" mono>
+                      {arn}
+                    </PanelField>
+                  </PanelFields>
+                </div>
+                {rulesOpen && arn && (
+                  <div className="border-t bg-muted/30 p-3">
+                    <ListenerRulesTab listenerArn={arn} targetGroups={vpcTgs} />
+                  </div>
+                )}
+              </li>
+            )
+          })}
+        </ul>
       )}
 
-      {/* Mounted only while open so every session starts from blank defaults. */}
+      {/* Mounted only while open so every session starts from fresh values. */}
       {addOpen && (
-        <ListenerDialog
+        <ListenerEditForm
           certificates={certificates}
+          error={createMutation.error}
           isPending={createMutation.isPending}
           lbType={lbType}
-          mode="add"
-          onOpenChange={setAddOpen}
+          loadBalancerArn={loadBalancerArn}
+          onClose={() => {
+            createMutation.reset()
+            setAddOpen(false)
+          }}
           onSubmit={handleCreate}
-          open={addOpen}
           protocols={protocols}
           sslPolicies={sslPolicies}
           targetGroups={vpcTgs}
         />
       )}
 
-      <ListenerDialog
-        certificates={certificates}
-        initialListener={editTarget}
-        isPending={modifyMutation.isPending}
-        lbType={lbType}
-        mode="edit"
-        onOpenChange={(open) => {
-          if (!open) {
+      {editTarget && (
+        <ListenerEditForm
+          certificates={certificates}
+          error={modifyMutation.error}
+          isPending={modifyMutation.isPending}
+          key={editTarget.ListenerArn}
+          lbType={lbType}
+          listener={editTarget}
+          loadBalancerArn={loadBalancerArn}
+          onClose={() => {
+            modifyMutation.reset()
             setEditTarget(undefined)
-          }
-        }}
-        onSubmit={handleEdit}
-        open={editTarget !== undefined}
-        protocols={protocols}
-        sslPolicies={sslPolicies}
-        targetGroups={vpcTgs}
-      />
+          }}
+          onSubmit={handleEdit}
+          protocols={protocols}
+          sslPolicies={sslPolicies}
+          targetGroups={vpcTgs}
+        />
+      )}
 
       <DeleteConfirmationDialog
         description={
@@ -374,92 +306,4 @@ export function ListenersTab({
       />
     </div>
   )
-}
-
-interface ListenerDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  lbType: LbType
-  protocols: readonly ListenerProtocolValue[]
-  targetGroups: React.ComponentProps<typeof ListenerForm>["targetGroups"]
-  certificates: React.ComponentProps<typeof ListenerForm>["certificates"]
-  sslPolicies: React.ComponentProps<typeof ListenerForm>["sslPolicies"]
-  isPending: boolean
-  onSubmit: (data: CreateListenerFormData) => void
-  mode: "add" | "edit"
-  initialListener?: Listener
-}
-
-function ListenerDialog({
-  open,
-  onOpenChange,
-  lbType,
-  protocols,
-  targetGroups,
-  certificates,
-  sslPolicies,
-  isPending,
-  onSubmit,
-  mode,
-  initialListener,
-}: ListenerDialogProps) {
-  const form = useForm<CreateListenerFormData>({
-    resolver: zodResolver(createListenerSchema),
-    defaultValues: listenerDefaults(lbType),
-    // Re-seeds the form whenever a different listener is selected. Left
-    // undefined while closing so the fields do not visibly reset mid-animation.
-    values: initialListener
-      ? listenerFormValues(initialListener, protocols)
-      : undefined,
-  })
-
-  const handleConfirm = form.handleSubmit(onSubmit)
-
-  return (
-    <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent width="md">
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            {mode === "add" ? "Add listener" : "Edit listener"}
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            {mode === "add"
-              ? "Listeners forward incoming traffic to a default target group."
-              : "Update port, protocol, or default target group. Changes apply without dropping the listener."}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-
-        <form
-          className="min-w-0 space-y-4"
-          onSubmit={(e) => {
-            e.preventDefault()
-            void handleConfirm()
-          }}
-        >
-          <ListenerForm
-            certificates={certificates}
-            form={form}
-            protocols={protocols}
-            sslPolicies={sslPolicies}
-            targetGroups={targetGroups}
-          />
-        </form>
-
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
-          <AlertDialogAction disabled={isPending} onClick={handleConfirm}>
-            {actionLabel(mode, isPending)}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
-
-function actionLabel(mode: "add" | "edit", isPending: boolean): string {
-  if (isPending) {
-    return mode === "add" ? "Adding…" : "Saving…"
-  }
-
-  return mode === "add" ? "Add listener" : "Save changes"
 }

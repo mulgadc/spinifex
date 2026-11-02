@@ -1,19 +1,17 @@
 import type { Subnet } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
 import { useForm, useWatch } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   cliPlaceholder,
   commandFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
-import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
+import { SwitchList } from "@/components/switch-list"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import {
   Field,
@@ -31,18 +29,20 @@ import {
   MAX_SUBNETS_PER_GROUP,
 } from "@/types/rds"
 
-function subnetLabel(subnet: Subnet): string {
-  const name = getNameTag(subnet.Tags)
-
-  const parts = [subnet.CidrBlock, subnet.AvailabilityZone, name].filter(
-    Boolean,
-  )
-
-  return `${subnet.SubnetId} (${parts.join(", ")})`
+function subnetDetail(subnet: Subnet): string {
+  return [subnet.CidrBlock, subnet.AvailabilityZone, getNameTag(subnet.Tags)]
+    .filter(Boolean)
+    .join(" · ")
 }
 
-export function CreateDBSubnetGroupPage() {
-  const navigate = useNavigate()
+interface CreateDBSubnetGroupPageProps {
+  // Called with the new group's name once created, or with nothing on cancel.
+  onClose: (name?: string) => void
+}
+
+export function CreateDBSubnetGroupPage({
+  onClose,
+}: CreateDBSubnetGroupPageProps) {
   const createGroup = useCreateDBSubnetGroup()
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
@@ -65,7 +65,6 @@ export function CreateDBSubnetGroupPage() {
 
   const values = useWatch({ control })
   const selectedSubnets = values.subnetIds ?? []
-  const selectedSubnetSet = new Set(selectedSubnets)
 
   const subnets = subnetsData.Subnets ?? []
   const vpcs = vpcsData.Vpcs ?? []
@@ -79,34 +78,23 @@ export function CreateDBSubnetGroupPage() {
 
   const vpcIds = [...new Set(subnets.map((s) => s.VpcId ?? "").filter(Boolean))]
 
-  const toggleSubnet = (subnetId: string) => {
-    const next = selectedSubnets.includes(subnetId)
-      ? selectedSubnets.filter((id) => id !== subnetId)
-      : [...selectedSubnets, subnetId]
-
-    setValue("subnetIds", next, { shouldValidate: true })
-  }
-
   const onSubmit = async (data: CreateDBSubnetGroupFormData) => {
-    await createGroup.mutateAsync(data)
-    await navigate({ to: "/rds/describe-db-subnet-groups" })
+    try {
+      await createGroup.mutateAsync(data)
+    } catch {
+      // Surfaced beside the submit button through the mutation's error.
+      return
+    }
+
+    onClose(data.dbSubnetGroupName)
   }
 
   return (
-    <>
-      <BackLink to="/rds/describe-db-subnet-groups">
-        Back to subnet groups
-      </BackLink>
-      <PageHeading title="Create DB Subnet Group" />
-
-      {createGroup.error && (
-        <ErrorBanner
-          error={createGroup.error}
-          msg="Failed to create the DB subnet group"
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={createGroup.isPending || isSubmitting}
+      >
         <Field>
           <FieldTitle>
             <label htmlFor="subnet-group-name">Name</label>
@@ -159,34 +147,29 @@ export function CreateDBSubnetGroupPage() {
                     <p className="mb-1 font-mono text-xs text-muted-foreground">
                       {vpcId}
                       {vpcName && ` (${vpcName})`}
-                      {unreachable &&
-                        " — a subnet group must span one VPC, so this one is out of reach"}
                     </p>
-                    <div className="space-y-1 pl-3">
-                      {subnets
-                        .filter((s) => s.VpcId === vpcId)
-                        .map((subnet) => (
-                          <label
-                            className="flex items-center gap-2 text-xs"
-                            key={subnet.SubnetId}
-                          >
-                            <input
-                              aria-label={`Subnet ${subnetLabel(subnet)}`}
-                              checked={selectedSubnetSet.has(
-                                subnet.SubnetId ?? "",
-                              )}
-                              disabled={unreachable}
-                              onChange={() => {
-                                toggleSubnet(subnet.SubnetId ?? "")
-                              }}
-                              type="checkbox"
-                            />
-                            <span className="font-mono">
-                              {subnetLabel(subnet)}
-                            </span>
-                          </label>
-                        ))}
-                    </div>
+                    {unreachable ? (
+                      <p className="text-xs text-muted-foreground">
+                        A subnet group must span one VPC, so this one is out of
+                        reach.
+                      </p>
+                    ) : (
+                      <SwitchList
+                        emptyText="No subnets in this VPC."
+                        itemLabel="Subnet"
+                        items={subnets
+                          .filter((s) => s.VpcId === vpcId)
+                          .map((subnet) => ({
+                            id: subnet.SubnetId ?? "",
+                            label: subnet.SubnetId ?? "",
+                            detail: subnetDetail(subnet),
+                          }))}
+                        onChange={(next) => {
+                          setValue("subnetIds", next, { shouldValidate: true })
+                        }}
+                        selected={selectedSubnets}
+                      />
+                    )}
                   </div>
                 )
               })}
@@ -211,16 +194,18 @@ export function CreateDBSubnetGroupPage() {
         />
 
         <FormActions
+          error={createGroup.error}
+          errorMsg="Failed to create the DB subnet group"
           isPending={createGroup.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => {
-            await navigate({ to: "/rds/describe-db-subnet-groups" })
+          onCancel={() => {
+            onClose()
           }}
           pendingLabel="Creating…"
           submitLabel="Create Subnet Group"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
 }
 

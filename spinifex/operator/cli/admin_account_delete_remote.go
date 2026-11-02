@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/gateway"
 	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/spf13/cobra"
 )
 
@@ -86,6 +86,10 @@ func followAccountDeletion(ctx context.Context, target adminTarget, accountID st
 	for {
 		job, err := describeAccountDeletionRemote(ctx, target, accountID)
 		if err != nil {
+			// The deadline often lands mid-poll; the caller still needs the account.
+			if ctx.Err() != nil {
+				return stoppedFollowing(accountID, ctx.Err())
+			}
 			return err
 		}
 
@@ -104,18 +108,22 @@ func followAccountDeletion(ctx context.Context, target adminTarget, accountID st
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("stopped following teardown of %s: %w", accountID, ctx.Err())
+			return stoppedFollowing(accountID, ctx.Err())
 		case <-time.After(accountDeletePollInterval):
 		}
 	}
+}
+
+func stoppedFollowing(accountID string, cause error) error {
+	return fmt.Errorf("stopped following teardown of %s: %w", accountID, cause)
 }
 
 func deleteAccountRemote(
 	ctx context.Context,
 	target adminTarget,
 	req operatorv1.DeleteAccountRequest,
-) (*gateway.DeleteAccountResponse, error) {
-	var out gateway.DeleteAccountResponse
+) (*admin.DeleteAccountResponse, error) {
+	var out admin.DeleteAccountResponse
 	if err := callAdmin(ctx, target, "DeleteAccount", req, &out); err != nil {
 		return nil, err
 	}

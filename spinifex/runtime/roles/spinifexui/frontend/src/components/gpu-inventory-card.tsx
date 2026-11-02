@@ -126,7 +126,7 @@ export function GPUInventoryCard({ nodes }: { nodes: NodeInfo[] }) {
                             {slice.instance_id}
                           </Link>
                         ) : (
-                          <span className="text-positive">free</span>
+                          <span className="text-success-foreground">free</span>
                         )}
                       </td>
                     </tr>

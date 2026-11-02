@@ -112,6 +112,8 @@ export function FieldLabel({
   ...props
 }: React.ComponentProps<typeof Label>) {
   return (
+    // Pass-through primitive: callers supply htmlFor or the wrapped control.
+    // oxlint-disable-next-line jsx-a11y/label-has-associated-control
     <Label
       className={cn(
         "group/field-label peer/field-label flex w-fit gap-2 leading-snug group-data-[disabled=true]/field:opacity-50 has-data-checked:bg-primary/5 has-[>[data-slot=field]]:rounded-md has-[>[data-slot=field]]:border *:data-[slot=field]:p-2 dark:has-data-checked:bg-primary/10",

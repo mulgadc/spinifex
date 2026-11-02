@@ -1772,6 +1772,31 @@ func (s *ELBv2ServiceImpl) reapStuckProvisioningLBs(ctx context.Context, now tim
 			"lbArn", lb.LoadBalancerArn, "lbId", lb.LoadBalancerID,
 			"instanceId", lb.InstanceID, "createdAt", lb.CreatedAt)
 		s.markLBFailed(ctx, lb.LoadBalancerArn, reason)
+		s.releaseFailedLBVM(ctx, lb)
+	}
+}
+
+// releaseFailedLBVM stops the failed LB's own managed VM and detaches its ENIs,
+// so a failed LB holds no running capacity. The ENIs stay on the record for
+// DeleteLoadBalancer to remove. A VM that cannot be stopped keeps its ENIs
+// attached, since detaching under a running guest would only hide the leak.
+func (s *ELBv2ServiceImpl) releaseFailedLBVM(ctx context.Context, lb *LoadBalancerRecord) {
+	if lb.InstanceID == "" || s.InstanceLauncher == nil {
+		return
+	}
+	if err := s.InstanceLauncher.TerminateSystemInstance(lb.InstanceID); err != nil {
+		slog.Error("ELBv2 lifecycle reaper: failed to terminate failed LB VM",
+			"lbId", lb.LoadBalancerID, "instanceId", lb.InstanceID, "err", err)
+		return
+	}
+	if s.VPCService == nil {
+		return
+	}
+	for _, eniID := range lb.ENIs {
+		if err := s.VPCService.DetachENI(ctx, lb.AccountID, eniID); err != nil && !awserrors.IsNotFound(err) {
+			slog.Warn("ELBv2 lifecycle reaper: failed to detach failed LB ENI",
+				"lbId", lb.LoadBalancerID, "eniId", eniID, "err", err)
+		}
 	}
 }
 
@@ -1943,6 +1968,24 @@ func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elb
 			continue
 		}
 		result = append(result, s.lbRecordToSDK(ctx, lb))
+	}
+
+	// AWS fails the whole call when any requested name is unknown.
+	if len(nameFilter) > 0 {
+		for _, lb := range result {
+			delete(nameFilter, aws.StringValue(lb.LoadBalancerName))
+		}
+		var missing []string
+		for _, name := range aws.StringValueSlice(input.Names) {
+			if nameFilter[name] {
+				missing = append(missing, name)
+				delete(nameFilter, name)
+			}
+		}
+		if len(missing) > 0 {
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound,
+				"Load balancers '[%s]' not found", strings.Join(missing, ", "))
+		}
 	}
 
 	return &elbv2.DescribeLoadBalancersOutput{
@@ -2253,6 +2296,12 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(ctx context.Context, input *elbv2.D
 }
 
 func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv2.DescribeTargetGroupsInput, accountID string) (*elbv2.DescribeTargetGroupsOutput, error) {
+	for _, arn := range aws.StringValueSlice(input.TargetGroupArns) {
+		if parsed, ok := resourcearn.ParseELBv2(arn); !ok || parsed.Kind != resourcearn.ELBv2TargetGroup {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationError, "'%s' is not a valid target group ARN", arn)
+		}
+	}
+
 	allTGs, err := s.store.ListTargetGroups(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "DescribeTargetGroups: failed to list TGs", "err", err)
@@ -2302,7 +2351,7 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 			delete(nameFilter, aws.StringValue(tg.TargetGroupName))
 		}
 		if len(arnFilter) > 0 || len(nameFilter) > 0 {
-			return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2TargetGroupNotFound, "One or more target groups not found")
 		}
 	}
 
@@ -3145,8 +3194,21 @@ func (s *ELBv2ServiceImpl) DescribeListeners(ctx context.Context, input *elbv2.D
 	var listeners []*ListenerRecord
 	var err error
 
-	if input.LoadBalancerArn != nil && *input.LoadBalancerArn != "" {
-		listeners, err = s.store.ListListenersByLB(ctx, *input.LoadBalancerArn)
+	if lbArn := aws.StringValue(input.LoadBalancerArn); lbArn != "" {
+		// An unparseable ARN is reported as not found rather than reaching the
+		// KV store, which rejects some characters as an invalid key.
+		var lb *LoadBalancerRecord
+		if parsed, ok := resourcearn.ParseELBv2(lbArn); ok && parsed.Kind == resourcearn.ELBv2LoadBalancer {
+			var lbErr error
+			if lb, lbErr = s.store.GetLoadBalancerByArn(ctx, lbArn); lbErr != nil {
+				slog.ErrorContext(ctx, "DescribeListeners: failed to get LB", "lbArn", lbArn, "err", lbErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+		}
+		if lb == nil || lb.AccountID != accountID {
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound, "Load balancer '%s' not found", lbArn)
+		}
+		listeners, err = s.store.ListListenersByLB(ctx, lbArn)
 	} else {
 		listeners, err = s.store.ListListeners(ctx)
 	}

@@ -1,33 +1,18 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute } from "@tanstack/react-router"
-import { useState } from "react"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
 import { BackLink } from "@/components/back-link"
-import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { DeleteResourceButton } from "@/components/delete-resource-button"
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
-import { ErrorBanner } from "@/components/error-banner"
-import { PageHeading } from "@/components/page-heading"
-import { Button } from "@/components/ui/button"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { getNameTag } from "@/lib/utils"
-import {
-  useAssociateAddress,
-  useDisassociateAddress,
-  useReleaseAddress,
-} from "@/mutations/ec2"
+import { panelSearchFields } from "@/lib/panel-search"
 import { ec2AddressQueryOptions, ec2InstancesQueryOptions } from "@/queries/ec2"
+
+import { ElasticIpDetails } from "../-components/elastic-ip-details"
 
 export const Route = createFileRoute(
   "/_auth/ec2/(elastic-ips)/describe-addresses/$id",
 )({
+  validateSearch: z.object({ tab: panelSearchFields.tab }),
+  search: { middlewares: [stripSearchParams({ tab: "overview" })] },
   loader: async ({ context, params }) => {
     await Promise.all([
       context.queryClient.query({
@@ -50,47 +35,13 @@ export const Route = createFileRoute(
   component: AddressDetail,
 })
 
+// The address's own page: the side panel's tabs, laid out for the full width.
 function AddressDetail() {
   const { id } = Route.useParams()
+  const { tab } = Route.useSearch()
+  const navigate = Route.useNavigate()
   const { data } = useSuspenseQuery(ec2AddressQueryOptions(id))
-  const { data: instancesData } = useSuspenseQuery(ec2InstancesQueryOptions)
-  const associateMutation = useAssociateAddress()
-  const disassociateMutation = useDisassociateAddress()
-  const releaseMutation = useReleaseAddress()
-  const [showDisassociateDialog, setShowDisassociateDialog] = useState(false)
-  const [selectedInstanceId, setSelectedInstanceId] = useState("")
-
   const address = data.Addresses?.[0]
-
-  const instances =
-    instancesData.Reservations?.flatMap((r) => r.Instances ?? []).filter(
-      (i) => i.State?.Name === "running" || i.State?.Name === "stopped",
-    ) ?? []
-
-  const handleAssociate = async () => {
-    if (!selectedInstanceId) {
-      return
-    }
-
-    await associateMutation.mutateAsync({
-      allocationId: id,
-      instanceId: selectedInstanceId,
-    })
-  }
-
-  const handleDisassociate = async () => {
-    if (!address?.AssociationId) {
-      return
-    }
-
-    try {
-      await disassociateMutation.mutateAsync(address.AssociationId)
-    } catch {
-      // Error is stored in disassociateMutation.error and rendered above
-    } finally {
-      setShowDisassociateDialog(false)
-    }
-  }
 
   if (!address?.AllocationId) {
     return (
@@ -101,126 +52,17 @@ function AddressDetail() {
     )
   }
 
-  const isAssociated = !!address.AssociationId
-  const name = getNameTag(address.Tags)
-
   return (
-    <>
-      <BackLink to="/ec2/describe-addresses">Back to Elastic IPs</BackLink>
-
-      {(associateMutation.error ?? disassociateMutation.error) && (
-        <ErrorBanner
-          error={
-            associateMutation.error ?? disassociateMutation.error ?? undefined
-          }
-          msg="Elastic IP action failed"
-        />
-      )}
-
-      <div className="space-y-6">
-        <PageHeading
-          actions={
-            <DeleteResourceButton
-              description={`Are you sure you want to release the Elastic IP "${address.AllocationId}" (${address.PublicIp})? This action cannot be undone.`}
-              disabled={isAssociated}
-              id={id}
-              label="Release"
-              mutation={releaseMutation}
-              title="Release Elastic IP"
-              to="/ec2/describe-addresses"
-            />
-          }
-          subtitle="Elastic IP Details"
-          title={
-            name ? `${address.AllocationId} (${name})` : address.AllocationId
-          }
-        />
-
-        <DetailCard>
-          <DetailCard.Header>Elastic IP Information</DetailCard.Header>
-          <DetailCard.Content>
-            <DetailRow label="Allocation ID" value={address.AllocationId} />
-            <DetailRow label="Public IP" value={address.PublicIp} />
-            <DetailRow label="Domain" value={address.Domain} />
-            <DetailRow
-              label="Association ID"
-              value={address.AssociationId ?? "—"}
-            />
-            <DetailRow label="Instance ID" value={address.InstanceId ?? "—"} />
-            <DetailRow
-              label="Private IP"
-              value={address.PrivateIpAddress ?? "—"}
-            />
-          </DetailCard.Content>
-        </DetailCard>
-
-        <DetailCard>
-          <DetailCard.Header>Association</DetailCard.Header>
-          <DetailCard.Content>
-            {isAssociated ? (
-              <Button
-                disabled={disassociateMutation.isPending}
-                onClick={() => {
-                  setShowDisassociateDialog(true)
-                }}
-                size="sm"
-                variant="outline"
-              >
-                Disassociate
-              </Button>
-            ) : (
-              <div className="flex items-end gap-2">
-                <div className="flex-1">
-                  <Select
-                    onValueChange={(value) => {
-                      setSelectedInstanceId(value ?? "")
-                    }}
-                    value={selectedInstanceId}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select an instance" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {instances.map((instance) => {
-                        const instanceName = getNameTag(instance.Tags)
-
-                        return (
-                          <SelectItem
-                            key={instance.InstanceId}
-                            value={instance.InstanceId ?? ""}
-                          >
-                            {instanceName
-                              ? `${instance.InstanceId} (${instanceName})`
-                              : instance.InstanceId}
-                          </SelectItem>
-                        )
-                      })}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button
-                  disabled={!selectedInstanceId || associateMutation.isPending}
-                  onClick={handleAssociate}
-                  size="sm"
-                >
-                  Associate
-                </Button>
-              </div>
-            )}
-          </DetailCard.Content>
-        </DetailCard>
-      </div>
-
-      <DeleteConfirmationDialog
-        confirmLabel="Disassociate"
-        description={`Disassociate "${address.PublicIp}" from "${address.InstanceId ?? address.AssociationId}"? The instance stops being reachable at this address.`}
-        isPending={disassociateMutation.isPending}
-        onConfirm={handleDisassociate}
-        onOpenChange={setShowDisassociateDialog}
-        open={showDisassociateDialog}
-        pendingLabel="Disassociating…"
-        title="Disassociate Elastic IP"
-      />
-    </>
+    <ElasticIpDetails
+      address={address}
+      layout="page"
+      onClose={() => {
+        void navigate({ to: "/ec2/describe-addresses" })
+      }}
+      onTabChange={(next) => {
+        void navigate({ search: { tab: next }, replace: true })
+      }}
+      tab={tab}
+    />
   )
 }

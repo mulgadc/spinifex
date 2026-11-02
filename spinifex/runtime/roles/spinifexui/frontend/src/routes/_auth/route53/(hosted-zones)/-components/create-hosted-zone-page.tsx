@@ -1,15 +1,24 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery } from "@tanstack/react-query"
-import { Link, useNavigate } from "@tanstack/react-router"
 import { CircleCheck } from "lucide-react"
 import { useState } from "react"
-import { useForm } from "react-hook-form"
+import {
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
-import { ErrorBanner } from "@/components/error-banner"
+import {
+  CliCommandPanel,
+  type CliCommand,
+  cliPlaceholder,
+  commandFlag,
+  optionalFlag,
+  shellSingleQuote,
+} from "@/components/cli-command-panel"
 import { FormActions } from "@/components/form-actions"
 import { TextField } from "@/components/form-fields"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
 import { ActivationPanel } from "@/components/route53/activation-panel"
 import { NameServerList } from "@/components/route53/name-server-list"
 import { Button } from "@/components/ui/button"
@@ -64,18 +73,26 @@ function StepIndicator({ current }: { current: Step }) {
   )
 }
 
-function DomainStep({ onCreated }: { onCreated: (zone: CreatedZone) => void }) {
-  const navigate = useNavigate()
+function DomainStep({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: (zone: CreatedZone) => void
+  onCancel: () => void
+}) {
   const createMutation = useCreateHostedZone()
 
   const {
     register,
     handleSubmit,
+    control,
     formState: { errors, isSubmitting },
   } = useForm<CreateHostedZoneFormData>({
     resolver: zodResolver(createHostedZoneSchema),
     defaultValues: { name: "", comment: "" },
   })
+
+  const values = useWatch({ control })
 
   const onSubmit = async (data: CreateHostedZoneFormData) => {
     try {
@@ -88,41 +105,41 @@ function DomainStep({ onCreated }: { onCreated: (zone: CreatedZone) => void }) {
         nameServers: response.DelegationSet?.NameServers ?? [],
       })
     } catch {
-      // surfaced via mutation.error
+      // Surfaced beside the submit button through createMutation.error.
     }
   }
 
   return (
-    <form className="max-w-2xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
-      {createMutation.error && (
-        <ErrorBanner
-          error={createMutation.error}
-          msg="The domain could not be added"
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={createMutation.isPending || isSubmitting}
+      >
+        <TextField
+          description="The domain you own, such as example.com. Its DNS will be served by this cluster once the registrar points at it."
+          error={errors.name}
+          id="zone-name"
+          label="Domain name"
+          placeholder="example.com"
+          {...register("name")}
         />
-      )}
-      <TextField
-        description="The domain you own, such as example.com. Its DNS will be served by this cluster once the registrar points at it."
-        error={errors.name}
-        id="zone-name"
-        label="Domain name"
-        placeholder="example.com"
-        {...register("name")}
-      />
-      <TextField
-        error={errors.comment}
-        id="zone-comment"
-        label="Comment (optional)"
-        {...register("comment")}
-      />
-      <FormActions
-        isPending={createMutation.isPending}
-        isSubmitting={isSubmitting}
-        onCancel={async () => {
-          await navigate({ to: "/route53/list-hosted-zones" })
-        }}
-        pendingLabel="Adding…"
-        submitLabel="Add domain"
-      />
+        <TextField
+          error={errors.comment}
+          id="zone-comment"
+          label="Comment (optional)"
+          {...register("comment")}
+        />
+        <CliCommandPanel commands={buildCreateHostedZoneCommands(values)} />
+        <FormActions
+          error={createMutation.error}
+          errorMsg="The domain could not be added"
+          isPending={createMutation.isPending}
+          isSubmitting={isSubmitting}
+          onCancel={onCancel}
+          pendingLabel="Adding…"
+          submitLabel="Add domain"
+        />
+      </FormLock>
     </form>
   )
 }
@@ -130,12 +147,14 @@ function DomainStep({ onCreated }: { onCreated: (zone: CreatedZone) => void }) {
 function NameServersStep({
   zone,
   onContinue,
+  onOpenZone,
 }: {
   zone: CreatedZone
   onContinue: () => void
+  onOpenZone: () => void
 }) {
   return (
-    <div className="max-w-2xl space-y-4">
+    <div className="space-y-4">
       <p className="text-sm">
         Set these as the name servers for <strong>{zone.name}</strong> at your
         registrar.
@@ -150,13 +169,9 @@ function NameServersStep({
         <Button onClick={onContinue} type="button">
           I have updated my name servers
         </Button>
-        <Link
-          className="text-sm text-primary hover:underline"
-          params={{ id: zone.id }}
-          to="/route53/list-hosted-zones/$id"
-        >
+        <Button onClick={onOpenZone} type="button" variant="link">
           Skip and add records now
-        </Link>
+        </Button>
       </div>
     </div>
   )
@@ -165,9 +180,11 @@ function NameServersStep({
 function VerificationStep({
   zone,
   onBack,
+  onOpenZone,
 }: {
   zone: CreatedZone
   onBack: () => void
+  onOpenZone: () => void
 }) {
   const { data: activation } = useQuery(
     route53ActivationPollingQueryOptions(zone.id),
@@ -176,7 +193,7 @@ function VerificationStep({
   const isActive = activation?.state === "ACTIVE"
 
   return (
-    <div className="max-w-4xl space-y-4">
+    <div className="space-y-4">
       {isActive ? (
         <div className="flex items-center gap-3 rounded-md border border-success bg-success/10 p-4 text-success-foreground">
           <CircleCheck className="size-5" />
@@ -184,15 +201,16 @@ function VerificationStep({
             <p className="font-medium">Registered</p>
             <p className="text-sm">
               {zone.name} is delegated to this cluster and its records are
-              served.{" "}
-              <Link
-                className="underline"
-                params={{ id: zone.id }}
-                to="/route53/list-hosted-zones/$id"
-              >
-                Go to the zone
-              </Link>
+              served.
             </p>
+            <Button
+              className="mt-2"
+              onClick={onOpenZone}
+              size="sm"
+              type="button"
+            >
+              Go to the zone
+            </Button>
           </div>
         </div>
       ) : (
@@ -212,18 +230,24 @@ function VerificationStep({
   )
 }
 
-export function CreateHostedZonePage() {
+interface CreateHostedZonePageProps {
+  // Called with the new zone's ID to open it, or with nothing on cancel.
+  onClose: (zoneId?: string) => void
+}
+
+export function CreateHostedZonePage({ onClose }: CreateHostedZonePageProps) {
   const [step, setStep] = useState<Step>(1)
   const [zone, setZone] = useState<CreatedZone | undefined>()
 
   return (
     <>
-      <BackLink to="/route53/list-hosted-zones">Back to hosted zones</BackLink>
-      <PageHeading title="Add domain" />
       <StepIndicator current={step} />
 
       {step === 1 && (
         <DomainStep
+          onCancel={() => {
+            onClose()
+          }}
           onCreated={(created) => {
             setZone(created)
             setStep(2)
@@ -235,6 +259,9 @@ export function CreateHostedZonePage() {
           onContinue={() => {
             setStep(3)
           }}
+          onOpenZone={() => {
+            onClose(zone.id)
+          }}
           zone={zone}
         />
       )}
@@ -243,9 +270,37 @@ export function CreateHostedZonePage() {
           onBack={() => {
             setStep(2)
           }}
+          onOpenZone={() => {
+            onClose(zone.id)
+          }}
           zone={zone}
         />
       )}
     </>
   )
+}
+
+function buildCreateHostedZoneCommands(
+  values: DeepPartialSkipArrayKey<CreateHostedZoneFormData>,
+): CliCommand[] {
+  return [
+    {
+      label: "Add domain",
+      parts: [
+        {
+          type: "bin",
+          value: "AWS_PROFILE=spinifex aws route53 create-hosted-zone",
+        },
+        ...commandFlag(
+          "--name",
+          cliPlaceholder(values.name ?? "", "DomainName"),
+        ),
+        ...commandFlag("--caller-reference", '"$(date +%s)"'),
+        ...optionalFlag(
+          "--hosted-zone-config",
+          values.comment ? `Comment=${shellSingleQuote(values.comment)}` : "",
+        ),
+      ],
+    },
+  ]
 }

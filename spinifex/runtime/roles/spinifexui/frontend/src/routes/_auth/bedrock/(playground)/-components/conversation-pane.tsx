@@ -90,7 +90,7 @@ function TurnBubble({
 
       {turn.status === "warming-up" && (
         <div className="space-y-2">
-          <p className="text-tactical-amber">
+          <p className="text-warning-foreground">
             Model is warming up — retry in a moment.
           </p>
           <Button

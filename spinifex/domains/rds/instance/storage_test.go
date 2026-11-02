@@ -28,7 +28,7 @@ type fakeVolumeResizer struct {
 
 	// onModify runs inside the resize, so a test can observe what else has and
 	// has not happened by the time the volume is taken.
-	onModify func()
+	onModify func(context.Context)
 }
 
 var _ volumeResizer = (*fakeVolumeResizer)(nil)
@@ -55,9 +55,9 @@ func (f *fakeVolumeResizer) DescribeVolumes(_ context.Context, in *ec2.DescribeV
 	return out, nil
 }
 
-func (f *fakeVolumeResizer) ModifyVolume(_ context.Context, in *ec2.ModifyVolumeInput, _ string) (*ec2.ModifyVolumeOutput, error) {
+func (f *fakeVolumeResizer) ModifyVolume(ctx context.Context, in *ec2.ModifyVolumeInput, _ string) (*ec2.ModifyVolumeOutput, error) {
 	if f.onModify != nil {
-		f.onModify()
+		f.onModify(ctx)
 	}
 	if f.modifyErr != nil {
 		return nil, f.modifyErr
@@ -136,7 +136,7 @@ func TestGrowInstanceStorage_StopsTheEngineAndTheVMBeforeGrowing(t *testing.T) {
 	rec := modifiableRecord()
 
 	var vmStoppedAtGrow bool
-	h.storage.onModify = func() {
+	h.storage.onModify = func(context.Context) {
 		vmStoppedAtGrow = assert.ObjectsAreEqual([]string{"stop:" + testInstance}, h.cmdr.calls)
 	}
 
@@ -161,7 +161,7 @@ func TestGrowInstanceStorage_WaitsForTheDetachBeforeGrowing(t *testing.T) {
 	rec := modifiableRecord()
 
 	var vmDrainingAtGrow bool
-	h.storage.onModify = func() { vmDrainingAtGrow = h.vmState.detachReads > 0 }
+	h.storage.onModify = func(context.Context) { vmDrainingAtGrow = h.vmState.detachReads > 0 }
 
 	require.NoError(t, h.svc.growInstanceStorage(t.Context(), testAccountID, &rec, 50))
 
@@ -201,7 +201,7 @@ func TestGrowInstanceStorage_ReportsTheGrowAndRestartFailures(t *testing.T) {
 	t.Parallel()
 	h := newModifyHarness(t)
 	h.storage.modifyErr = errors.New("the volume store is unavailable")
-	h.storage.onModify = func() { h.cmdr.err = errors.New("the node did not answer") }
+	h.storage.onModify = func(context.Context) { h.cmdr.err = errors.New("the node did not answer") }
 	rec := modifiableRecord()
 
 	err := h.svc.growInstanceStorage(t.Context(), testAccountID, &rec, 50)
@@ -219,7 +219,7 @@ func TestGrowInstanceStorage_DoesNotRestartAfterLosingTheModifyLease(t *testing.
 	h := newModifyHarness(t)
 	ctx, cancel := context.WithCancelCause(t.Context())
 	h.storage.modifyErr = errors.New("the volume store is unavailable")
-	h.storage.onModify = func() { cancel(errModifyLeaseLost) }
+	h.storage.onModify = func(context.Context) { cancel(errModifyLeaseLost) }
 	rec := modifiableRecord()
 
 	err := h.svc.growInstanceStorage(ctx, testAccountID, &rec, 50)

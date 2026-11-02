@@ -3,6 +3,7 @@ package vm
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
@@ -112,4 +113,56 @@ func TestRLC4_TerminateMarksFailedDependency(t *testing.T) {
 		"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism: a failed teardown step must be stamped Failed, not Done or dropped")
 	assert.Falsef(t, v.TeardownComplete(),
 		"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-003 §1 mechanism: TeardownComplete must be false while any dependency is Failed/Pending so the GC backstop retains the record for retry")
+}
+
+// TestS7_AutomaticFailureNeverTerminatesAnInstanceThatHasRun enforces
+// ADR-0003:S7: a failure that no customer asked to act on must not delete an
+// existing instance's volumes. AWS terminates only a launch that never ran; a
+// start or recovery that fails leaves the instance and its EBS volumes intact.
+func TestS7_AutomaticFailureNeverTerminatesAnInstanceThatHasRun(t *testing.T) {
+	m, _, _, cleaner, rt := shutdownTestManager(t)
+
+	instance := &VM{
+		ID:           "i-has-run",
+		Status:       StatePending,
+		AccountID:    "111122223333",
+		InstanceType: "t3.micro",
+		Instance:     &ec2.Instance{},
+	}
+	m.Insert(instance)
+
+	errored := rt.waitFor(instance.ID, StateError)
+	m.MarkFailed(t.Context(), instance, "launch_timeout")
+	select {
+	case <-errored:
+	case <-time.After(markFailedDeadline):
+		t.Fatalf("ADR-0003:S7: MarkFailed on an instance that has run did not reach error within %s", markFailedDeadline)
+	}
+	m.goroutineWg.Wait()
+
+	assert.Zero(t, cleaner.deleteVolumesCount(),
+		"ADR-0003:S7: automatic failure handling deleted the volumes of an instance that has run; keep them and leave it stopped")
+	assert.NotContains(t, rt.targets(instance.ID), StateTerminated,
+		"ADR-0003:S7: an instance that has run must not be terminated by a failure nobody asked to act on")
+	assert.NotContains(t, rt.targets(instance.ID), StateShuttingDown,
+		"ADR-0003:S7: an instance that has run must not start terminating on an automatic failure")
+}
+
+// TestS7_PendingWatchdogLeavesARelaunchToItsOwner enforces ADR-0003:S7 for the
+// one automatic actor that reaches every pending instance. Starting a stopped
+// instance, recovering one from a failed node and relaunching after a daemon
+// restart all pass through pending, and each is bounded by its own owner.
+func TestS7_PendingWatchdogLeavesARelaunchToItsOwner(t *testing.T) {
+	m, _, rt, _ := crashTestManager(t)
+
+	now := time.Now()
+	launched := now.Add(-PendingWatchdogTimeout - time.Hour)
+	relaunch := &VM{ID: "i-relaunch", Status: StatePending, Instance: &ec2.Instance{LaunchTime: &launched}}
+	m.Insert(relaunch)
+
+	m.scanAndMarkStuckPending(now)
+
+	assert.Empty(t, rt.snapshot(),
+		"ADR-0003:S7: the pending watchdog acted on a relaunch; only a first launch may be marked failed")
+	assert.Equal(t, StatePending, m.Status(relaunch))
 }

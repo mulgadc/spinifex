@@ -52,6 +52,7 @@ func TestRouter_ConverseStream_ProvisionedThroughputARN_ResolvesPinnedEndpointFo
 
 	src, err := rt.ConverseStream(context.Background(), ptCallerAccount, arn, converseStreamInput())
 	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
 	events := drainConverseStream(t, src)
 	assert.NotEmpty(t, events)
 
@@ -75,6 +76,7 @@ func TestRouter_ConverseStream_BareModelID_StillUsesGlobalShorthand(t *testing.T
 
 	src, err := rt.ConverseStream(context.Background(), ptCallerAccount, selfHostTestModel, converseStreamInput())
 	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
 	drainConverseStream(t, src)
 
 	require.Len(t, spy.endpointCalls, 1)
@@ -125,6 +127,7 @@ func TestInvokeStreamRouter_InvokeModelWithResponseStream_ProvisionedThroughputA
 
 	src, err := rt.InvokeModelWithResponseStream(context.Background(), ptCallerAccount, arn, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
 	chunks := drainInvokeStream(t, src)
 	assert.NotEmpty(t, chunks)
 
@@ -146,6 +149,7 @@ func TestInvokeStreamRouter_InvokeModelWithResponseStream_BareModelID_StillUsesG
 
 	src, err := rt.InvokeModelWithResponseStream(context.Background(), ptCallerAccount, selfHostTestModel, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
 	drainInvokeStream(t, src)
 
 	require.Len(t, spy.endpointCalls, 1)

@@ -7,7 +7,7 @@ import { useState } from "react"
 import type { UseFormReturn } from "react-hook-form"
 import { Controller, useWatch } from "react-hook-form"
 
-import { CertificateImportDialog } from "@/components/elbv2/certificate-import-dialog"
+import { CertificateImportForm } from "@/components/elbv2/certificate-import-form"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
@@ -239,13 +239,16 @@ export function ListenerForm({
             </Field>
           )}
 
-          <CertificateImportDialog
-            onImported={(arn) => {
-              setValue("certificateArn", arn, { shouldValidate: true })
-            }}
-            onOpenChange={setImportOpen}
-            open={importOpen}
-          />
+          {importOpen && (
+            <CertificateImportForm
+              onClose={() => {
+                setImportOpen(false)
+              }}
+              onImported={(arn) => {
+                setValue("certificateArn", arn, { shouldValidate: true })
+              }}
+            />
+          )}
         </>
       )}
 

@@ -16,8 +16,7 @@ load_mod() {
     done
     return 1
 }
-# virtio_console provides the host carrier port (/dev/vportNpM).
-load_mod virtio_console || true
+load_mod virtio_net || true
 
 ip link set lo up
 

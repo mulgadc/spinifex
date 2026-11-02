@@ -1,7 +1,7 @@
 #!/bin/bash
 # build-lambda-runtime-microvm-image.sh — build the Lambda runtime microVM kernel
-# + initramfs: a guest running the Lambda guest agent on a virtio-console carrier.
-# The image has no NIC. It is not shipped.
+# + initramfs: a guest running the Lambda guest agent, with virtio-net for its
+# host control connection. It is not shipped.
 #
 # Inputs:
 #   $REPO_ROOT/build/microvm/lambda-runtime/{init.sh,inittab,run-agent}
@@ -28,10 +28,11 @@ ALPINE_MIRROR="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
 # kmod: the image's own depmod/modprobe rebuild module metadata. busybox ships ip.
 ALPINE_PACKAGES="busybox linux-virt kmod ca-certificates"
 # tiny_power_button turns the ACPI power button into a signal busybox init
-# handles as poweroff. virtio_console (the carrier) is kept by the virtio* glob.
+# handles as poweroff.
 MICROVM_EXTRA_MODULES="${MICROVM_EXTRA_MODULES:-tiny_power_button}"
-MICROVM_EXTRA_KEEP_GLOBS=()
-MICROVM_GATE_MODULES="qemu_fw_cfg virtio_console"
+# virtio_net needs failover and net_failover, which the virtio* glob misses.
+MICROVM_EXTRA_KEEP_GLOBS=("*failover*.ko*")
+MICROVM_GATE_MODULES="qemu_fw_cfg virtio_net"
 
 # shellcheck source=lib/microvm-image.sh
 source "$REPO_ROOT/scripts/lib/microvm-image.sh"

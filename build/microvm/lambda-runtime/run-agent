@@ -1,29 +1,6 @@
 #!/bin/sh
-# Runs the Lambda guest agent on the carrier device named by lambda.link=<path>
-# on the kernel command line, then powers the guest off whatever its status.
-link=""
-for arg in $(cat /proc/cmdline); do
-    case "$arg" in
-        lambda.link=*) link="${arg#lambda.link=}" ;;
-    esac
-done
-
-if [ -z "$link" ]; then
-    echo "[run-agent] no lambda.link= on the kernel command line" >/dev/console
-    poweroff -f
-fi
-
-i=0
-while [ ! -e "$link" ] && [ "$i" -lt 50 ]; do
-    usleep 100000
-    i=$((i + 1))
-done
-if [ ! -e "$link" ]; then
-    echo "[run-agent] carrier device $link did not appear" >/dev/console
-    poweroff -f
-fi
-
-LAMBDA_AGENT_LINK="$link" /usr/local/bin/lambda-agent >/dev/console 2>&1
+# Runs the Lambda guest agent, then powers the guest off whatever its status.
+/usr/local/bin/lambda-agent >/dev/console 2>&1
 status=$?
 echo "[run-agent] lambda-agent exited with status $status" >/dev/console
 poweroff -f

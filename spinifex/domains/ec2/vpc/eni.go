@@ -550,7 +550,6 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 
 	enis := make([]*ec2.NetworkInterface, 0)
 	groupNames := make(map[string]string)
-	dnsHostnames := make(map[string]bool)
 
 	eniIDs := make(map[string]bool)
 	for _, id := range input.NetworkInterfaceIds {
@@ -596,12 +595,7 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 		}
 
 		s.fillSGNames(ctx, accountID, record.SecurityGroupIds, groupNames)
-		hostnames, ok := dnsHostnames[record.VpcId]
-		if !ok {
-			hostnames = s.vpcDNSHostnames(ctx, accountID, record.VpcId)
-			dnsHostnames[record.VpcId] = hostnames
-		}
-		enis = append(enis, s.eniRecordToEC2(&record, accountID, groupNames, hostnames))
+		enis = append(enis, s.eniRecordToEC2(&record, accountID, groupNames, s.vpcDNSHostnames(ctx, accountID, record.VpcId)))
 	}
 
 	// If specific ENI IDs were requested but not found, return error

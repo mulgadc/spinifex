@@ -15,6 +15,7 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
@@ -61,7 +62,8 @@ func requireExportTools(t *testing.T) string {
 // would go to a subject nobody serves and time out instead of being refused.
 // Both share the NATS the volume leases live in and the bucket the volumes
 // live in, so a second opener is refused by the lease, not by the harness.
-func inProcessProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider, string, string) {
+// The last return kills a published export's nbdkit behind the handlers' back.
+func inProcessProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider, string, string, func(*testing.T, *ebsprovider.PublishedVolume)) {
 	t.Helper()
 	pluginPath := requireExportTools(t)
 
@@ -98,10 +100,21 @@ func inProcessProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider
 	_, err = js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: clusterv1.ClusterStateBucket})
 	require.NoError(t, err)
 
+	killExport := func(t *testing.T, published *ebsprovider.PublishedVolume) {
+		t.Helper()
+		for _, node := range []*Config{first, second} {
+			if mv, ok := findMountedVolume(node, published.VolumeID); ok && node.NodeName == published.NodeID {
+				require.NoError(t, hostprocess.ForceKillProcess(mv.PID, 5*time.Second))
+				return
+			}
+		}
+		t.Fatalf("no mounted entry for %s on %s", published.VolumeID, published.NodeID)
+	}
+
 	return func(t *testing.T) ebsprovider.EBSProvider {
 		t.Helper()
 		return ebsprovider.NewNATSProvider(nc, 60*time.Second)
-	}, first.NodeName, second.NodeName
+	}, first.NodeName, second.NodeName, killExport
 }
 
 // runPrefix names one run's volumes so it cannot meet an earlier run's
@@ -113,11 +126,12 @@ func runPrefix() string {
 // TestViperblockdConformance judges the provider handlers by the same suite
 // MemoryProvider and qemunbdd answer to.
 func TestViperblockdConformance(t *testing.T) {
-	newProvider, nodeID, otherNodeID := inProcessProvider(t)
+	newProvider, nodeID, otherNodeID, killExport := inProcessProvider(t)
 	conformance.RunSuiteWithConfig(t, newProvider, conformance.SuiteConfig{
 		NamePrefix:  runPrefix(),
 		NodeID:      nodeID,
 		OtherNodeID: otherNodeID,
+		KillExport:  killExport,
 	})
 }
 
@@ -125,7 +139,7 @@ func TestViperblockdConformance(t *testing.T) {
 // cannot: whether the nbdkit export viperblockd publishes is usable by libnbd,
 // which knows nothing about this codebase.
 func TestViperblockdNBDClient(t *testing.T) {
-	newProvider, nodeID, _ := inProcessProvider(t)
+	newProvider, nodeID, _, _ := inProcessProvider(t)
 	conformance.RunNBDClientSuiteWithConfig(t, newProvider, conformance.NBDClientConfig{
 		NodeID:       nodeID,
 		VolumePrefix: "vol-" + runPrefix() + "nbd",

@@ -60,8 +60,9 @@ func MalformedBodyError() error {
 		"The request body is not valid JSON or does not match the input shape of the action")
 }
 
-// ValidateTags refuses a tag list with a missing or empty key. AWS answers a
-// null key as a parameter error and an empty one as a tag error.
+// ValidateTags refuses a tag list with a missing or empty key or a missing
+// value. AWS answers a null member as a parameter error and an empty key as a
+// tag error; an empty value is valid.
 func ValidateTags(tags []*ecr.Tag) error {
 	for i, t := range tags {
 		field := fmt.Sprintf("tags.%d.member.key", i+1)
@@ -70,6 +71,9 @@ func ValidateTags(tags []*ecr.Tag) error {
 		}
 		if aws.StringValue(t.Key) == "" {
 			return awserrors.Errorf(awserrors.ErrorInvalidTagParameter, "Tag parameters are invalid")
+		}
+		if t.Value == nil {
+			return RequiredParameterError(fmt.Sprintf("tags.%d.member.value", i+1))
 		}
 	}
 	return nil

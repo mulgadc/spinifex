@@ -67,6 +67,7 @@ import (
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	lambdafunction "github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/exonet"
@@ -186,6 +187,7 @@ type Daemon struct {
 	ochreAppliance        *ochrevector.Appliance
 	ochreBackupService    *ochrevector.BackupService
 	ecrMetaService        *ecr.MetaServiceImpl
+	lambdaMetaService     *lambdafunction.MetaService
 	routeTableService     *ec2routetable.RouteTableServiceImpl
 	natGatewayService     *ec2natgw.NatGatewayServiceImpl
 	externalIPAM          *ec2vpc.ExternalIPAM
@@ -1308,6 +1310,17 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
+	// Lambda gateway → daemon subscriptions. The daemon owns the per-account
+	// JetStream KV function records; code bytes never traverse these subjects.
+	if d.lambdaMetaService != nil {
+		subs = append(subs,
+			natsSub{lambdafunction.SubjectCreate, handleNATSRequest(d.node, d.lambdaMetaService.Create), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectGet, handleNATSRequest(d.node, d.lambdaMetaService.Get), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectCodeStored, handleNATSRequest(d.node, d.lambdaMetaService.CodeStored), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectRollbackCreate, handleNATSRequest(d.node, d.lambdaMetaService.RollbackCreate), "spinifex-workers"},
+		)
+	}
+
 	// EIP handlers are always registered: without external IPAM d.eipService is
 	// the disabled stub, so reads return empty lists and mutations a clean
 	// UnsupportedOperation instead of a NATS timeout.
@@ -2408,6 +2421,7 @@ func (d *Daemon) startCluster() error {
 		slog.Warn("ECR metadata service disabled: JetStream unavailable", "err", jsErr)
 	} else {
 		d.ecrMetaService = ecr.NewKVMetaService(js)
+		d.lambdaMetaService = lambdafunction.NewMetaService(js)
 	}
 
 	if err := d.eksService.SpawnRegisteredReconcilers(); err != nil {

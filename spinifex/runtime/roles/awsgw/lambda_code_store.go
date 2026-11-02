@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -162,6 +163,8 @@ type codeStoreWiring struct {
 	SigningRegion string
 	RootAccessKey string
 	RootSecretKey string
+	// PresignEndpoint is the off-host Predastore URL download links name.
+	PresignEndpoint string
 }
 
 // newLambdaCodeStore composes the code store. The root client and root keys stay
@@ -186,11 +189,29 @@ func newLambdaCodeStore(w codeStoreWiring, roles codeStoreRoleIAM, assumer codeS
 	}
 	open := func() (*codestore.Store, error) {
 		return codestore.Open(codestore.OpenConfig{
-			Region:        w.Region,
-			Endpoint:      w.Endpoint,
-			SigningRegion: w.SigningRegion,
-			Assume:        func() (*sts.AssumeRoleOutput, error) { return assumer.AssumeCodeStoreRole(w.Region, sessionName) },
+			Region:          w.Region,
+			Endpoint:        w.Endpoint,
+			PresignEndpoint: w.PresignEndpoint,
+			SigningRegion:   w.SigningRegion,
+			Assume:          func() (*sts.AssumeRoleOutput, error) { return assumer.AssumeCodeStoreRole(w.Region, sessionName) },
 		})
 	}
 	return codestore.NewManager(provision, open), nil
+}
+
+// lambdaPresignEndpoint is the Predastore address an off-host client dials.
+// Config loading turns a wildcard listener into loopback, so loopback and
+// wildcard hosts use the advertise IP; empty when no off-host address is known.
+func lambdaPresignEndpoint(predastoreHost, advertiseIP string) string {
+	host, port, err := net.SplitHostPort(predastoreHost)
+	if err != nil {
+		return ""
+	}
+	if ip := net.ParseIP(host); host == "" || host == "localhost" || (ip != nil && (ip.IsLoopback() || ip.IsUnspecified())) {
+		host = advertiseIP
+	}
+	if host == "" {
+		return ""
+	}
+	return "https://" + net.JoinHostPort(host, port)
 }

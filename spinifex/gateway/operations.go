@@ -7,6 +7,7 @@ import (
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/rest"
 )
 
 // ServiceOperationInventory describes the authoritative dispatch state for an
@@ -24,6 +25,12 @@ type ServiceOperationInventory struct {
 // operations and delegates that REST surface to Predastore.
 func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]ServiceOperationInventory {
 	inventory := map[string]ServiceOperationInventory{
+		"bedrock": {
+			Registered: bedrockActionNames(),
+		},
+		"bedrockruntime": {
+			Registered: bedrockRuntimeActionNames(),
+		},
 		"ec2": {
 			Registered: mapKeys(ec2Actions),
 		},
@@ -60,4 +67,16 @@ func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]
 
 func mapKeys[V any](values map[string]V) []string {
 	return slices.Sorted(maps.Keys(values))
+}
+
+// routeActionNames returns the distinct actions in a REST route table in
+// stable order. Deduplicated because an action may be reachable by more than
+// one route.
+func routeActionNames[H any](routes []rest.Route[H]) []string {
+	names := make([]string, 0, len(routes))
+	for _, route := range routes {
+		names = append(names, route.Action)
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
 }

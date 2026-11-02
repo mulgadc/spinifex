@@ -20,6 +20,8 @@ REPO="https://github.com/aws/api-models-aws.git"
 # <api-models-aws sdk-id>/<api version>
 MODELS=(
     acm/2015-12-08
+    bedrock/2023-04-20
+    bedrock-runtime/2023-09-30
     ec2/2016-11-15
     ecr/2015-09-21
     ecs/2014-11-13
@@ -34,7 +36,7 @@ MODELS=(
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# A blobless shallow fetch pulls only the ten files read below.
+# A blobless shallow fetch pulls only the files read below.
 git -C "$TMP" init --quiet repo
 git -C "$TMP/repo" fetch --quiet --depth=1 --filter=blob:none "$REPO" "$COMMIT"
 COMMITTED="$(git -C "$TMP/repo" log -1 --format=%cs "$COMMIT")"

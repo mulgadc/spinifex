@@ -1,6 +1,6 @@
 # AWS models
 
-The `*.json.gz` files are the Smithy JSON AST service models from [`aws/api-models-aws`](https://github.com/aws/api-models-aws), gzipped and embedded into the binary, so loading them needs no network or Go module cache. All ten come from the one commit recorded in `../model_source.go`.
+The `*.json.gz` files are the Smithy JSON AST service models from [`aws/api-models-aws`](https://github.com/aws/api-models-aws), gzipped and embedded into the binary, so loading them needs no network or Go module cache. All of them come from the one commit recorded in `../model_source.go`.
 
 Do not edit them by hand. To move to a newer commit, run `scripts/sync-aws-models.sh <commit-sha>`, then `make generate-aws-model-coverage` and review the regenerated `docs/coverage` and the `awsmodel` test expectations: a newer model can add operations, required members and enum values, and each resulting finding is a real gap to triage rather than a reason to stay on an older commit.
 

@@ -27,6 +27,8 @@ type Service string
 
 const (
 	ACM                    Service = "acm"
+	Bedrock                Service = "bedrock"
+	BedrockRuntime         Service = "bedrockruntime"
 	EC2                    Service = "ec2"
 	ECR                    Service = "ecr"
 	ECS                    Service = "ecs"

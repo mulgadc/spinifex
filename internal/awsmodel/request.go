@@ -322,8 +322,18 @@ func (g *requestGenerator) site(path []pathStep, site constraintSite) {
 }
 
 // value generates a valid value for ref at path, reporting false when none
-// can be generated.
+// can be generated. A value that is not generated is left out of the request,
+// so the sites recorded beneath it are dropped with it.
 func (g *requestGenerator) value(ref ShapeRef, path []pathStep, depth int) (any, bool) {
+	sites := len(g.sites)
+	value, ok := g.generate(ref, path, depth)
+	if !ok {
+		g.sites = g.sites[:sites]
+	}
+	return value, ok
+}
+
+func (g *requestGenerator) generate(ref ShapeRef, path []pathStep, depth int) (any, bool) {
 	shape := g.model.shapes[ref.Shape]
 	if ref.Streaming {
 		g.skip(path, "streaming payload")

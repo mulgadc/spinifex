@@ -10,6 +10,8 @@ var modelFS embed.FS
 
 var modelFiles = map[Service]string{
 	ACM:                    "models/acm-2015-12-08.json.gz",
+	Bedrock:                "models/bedrock-2023-04-20.json.gz",
+	BedrockRuntime:         "models/bedrock-runtime-2023-09-30.json.gz",
 	EC2:                    "models/ec2-2016-11-15.json.gz",
 	ECR:                    "models/ecr-2015-09-21.json.gz",
 	ECS:                    "models/ecs-2014-11-13.json.gz",

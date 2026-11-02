@@ -28,6 +28,11 @@ func TestAWSOperationInventoryClassifiesDispatchers(t *testing.T) {
 	require.Contains(t, inventory["eks"].Registered, "DescribeCluster")
 	require.NotContains(t, inventory["eks"].Stubbed, "DescribeCluster")
 
+	require.Contains(t, inventory["bedrock"].Registered, "ListFoundationModels")
+	require.Contains(t, inventory["bedrockruntime"].Registered, "Converse")
+	// Served by a special case in BedrockRuntime_Request, not a route handler.
+	require.Contains(t, inventory["bedrockruntime"].Registered, "InvokeModel")
+
 	require.Contains(t, inventory["rds"].Registered, "CreateDBInstance")
 	require.NotContains(t, inventory["rds"].Unsupported, "CreateDBInstance")
 	require.Contains(t, inventory["rds"].Unsupported, "CreateDBCluster")
@@ -59,11 +64,38 @@ func TestAWSOperationInventoryMeasuresEKSAgainstTheModel(t *testing.T) {
 	}
 }
 
-func TestEKSActionNamesAreSortedAndDistinct(t *testing.T) {
-	names := eksActionNames()
+// Every Bedrock route answers an operation in the pinned model, so nothing
+// the gateway serves may be reported as outside it.
+func TestAWSOperationInventoryMeasuresBedrockAgainstTheModel(t *testing.T) {
+	inventory := AWSOperationInventory(ecrRegistrationInventory())
 
-	require.True(t, slices.IsSorted(names), "actions are not sorted: %v", names)
-	require.Len(t, slices.Compact(slices.Clone(names)), len(names), "actions contain duplicates: %v", names)
+	for service, model := range map[string]awsmodel.Service{
+		"bedrock":        awsmodel.Bedrock,
+		"bedrockruntime": awsmodel.BedrockRuntime,
+	} {
+		t.Run(service, func(t *testing.T) {
+			coverage, err := awsmodel.CompareOperations(model, awsmodel.DispatchInventory{
+				Registered:  inventory[service].Registered,
+				Stubbed:     inventory[service].Stubbed,
+				Unsupported: inventory[service].Unsupported,
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, coverage.Implemented)
+			require.Empty(t, coverage.Extra)
+			require.ElementsMatch(t, inventory[service].Registered, coverage.Implemented)
+		})
+	}
+}
+
+func TestRouteActionNamesAreSortedAndDistinct(t *testing.T) {
+	for name, names := range map[string][]string{
+		"eks":            eksActionNames(),
+		"bedrock":        bedrockActionNames(),
+		"bedrockruntime": bedrockRuntimeActionNames(),
+	} {
+		require.True(t, slices.IsSorted(names), "%s actions are not sorted: %v", name, names)
+		require.Len(t, slices.Compact(slices.Clone(names)), len(names), "%s actions contain duplicates: %v", name, names)
+	}
 }
 
 func TestAWSOperationInventoryStatusesAreDisjointSubsets(t *testing.T) {

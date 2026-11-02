@@ -299,6 +299,17 @@ func TestGenerateRequestsBreaksMapKeys(t *testing.T) {
 	require.Equal(t, []Constraint{ConstraintLength, ConstraintLength}, keyRejections, "below min and above max")
 }
 
+// A map of documents is left out of the request because document values are
+// not generated, so its key must not be broken in a map that is not there.
+func TestGenerateRequestsDropsSitesUnderAnUngeneratedValue(t *testing.T) {
+	plan, err := GenerateRequests(Bedrock, "CreateAdvancedPromptOptimizationJob", testRequestOptions)
+	require.NoError(t, err)
+	require.Contains(t, plan.Skipped, Skip{Path: "$.modelConfigurations[0].additionalModelRequestFields.spxa", Reason: "document values are not generated"})
+	for _, request := range plan.Cases {
+		require.NotContains(t, request.Path, "additionalModelRequestFields")
+	}
+}
+
 func TestGenerateRequestsRecordsUnbrokenConstraints(t *testing.T) {
 	plan, err := GenerateRequests(EKS, "DescribeCluster", testRequestOptions)
 	require.NoError(t, err)

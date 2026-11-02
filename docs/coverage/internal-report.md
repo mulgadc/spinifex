@@ -44,6 +44,118 @@ Pinned model source: `github.com/aws/api-models-aws@9b1a49292744, 2026-09-25`.
 - `UpdateAcmeEndpoint`
 - `UpdateCertificateOptions`
 
+## bedrock
+
+`2023-04-20` — 16 of 108 modelled operations implemented (14.8%), 0 stubbed, 0 not applicable, 0 registered outside the pinned model.
+
+### Not implemented
+
+- `BatchDeleteAdvancedPromptOptimizationJob`
+- `BatchDeleteEvaluationJob`
+- `CancelAutomatedReasoningPolicyBuildWorkflow`
+- `CreateAdvancedPromptOptimizationJob`
+- `CreateAutomatedReasoningPolicy`
+- `CreateAutomatedReasoningPolicyTestCase`
+- `CreateAutomatedReasoningPolicyVersion`
+- `CreateCustomModel`
+- `CreateCustomModelDeployment`
+- `CreateEvaluationJob`
+- `CreateFoundationModelAgreement`
+- `CreateInferenceProfile`
+- `CreateMarketplaceModelEndpoint`
+- `CreateModelCopyJob`
+- `CreateModelCustomizationJob`
+- `CreateModelImportJob`
+- `CreateModelInvocationJob`
+- `CreatePromptRouter`
+- `DeleteAutomatedReasoningPolicy`
+- `DeleteAutomatedReasoningPolicyBuildWorkflow`
+- `DeleteAutomatedReasoningPolicyTestCase`
+- `DeleteCustomModel`
+- `DeleteCustomModelDeployment`
+- `DeleteEnforcedGuardrailConfiguration`
+- `DeleteFoundationModelAgreement`
+- `DeleteImportedModel`
+- `DeleteInferenceProfile`
+- `DeleteMarketplaceModelEndpoint`
+- `DeletePromptRouter`
+- `DeleteResourcePolicy`
+- `DeregisterMarketplaceModelEndpoint`
+- `ExportAutomatedReasoningPolicyVersion`
+- `GetAccountDataRetention`
+- `GetAdvancedPromptOptimizationJob`
+- `GetAutomatedReasoningPolicy`
+- `GetAutomatedReasoningPolicyAnnotations`
+- `GetAutomatedReasoningPolicyBuildWorkflow`
+- `GetAutomatedReasoningPolicyBuildWorkflowResultAssets`
+- `GetAutomatedReasoningPolicyNextScenario`
+- `GetAutomatedReasoningPolicyTestCase`
+- `GetAutomatedReasoningPolicyTestResult`
+- `GetCustomModel`
+- `GetCustomModelDeployment`
+- `GetEvaluationJob`
+- `GetFoundationModelAvailability`
+- `GetImportedModel`
+- `GetInferenceProfile`
+- `GetMarketplaceModelEndpoint`
+- `GetModelCopyJob`
+- `GetModelCustomizationJob`
+- `GetModelImportJob`
+- `GetModelInvocationJob`
+- `GetPromptRouter`
+- `GetResourcePolicy`
+- `GetUseCaseForModelAccess`
+- `ListAdvancedPromptOptimizationJobs`
+- `ListAutomatedReasoningPolicies`
+- `ListAutomatedReasoningPolicyBuildWorkflows`
+- `ListAutomatedReasoningPolicyTestCases`
+- `ListAutomatedReasoningPolicyTestResults`
+- `ListCustomModelDeployments`
+- `ListCustomModels`
+- `ListEnforcedGuardrailsConfiguration`
+- `ListEvaluationJobs`
+- `ListFoundationModelAgreementOffers`
+- `ListImportedModels`
+- `ListInferenceProfiles`
+- `ListMarketplaceModelEndpoints`
+- `ListModelCopyJobs`
+- `ListModelCustomizationJobs`
+- `ListModelImportJobs`
+- `ListModelInvocationJobs`
+- `ListPromptRouters`
+- `ListTagsForResource`
+- `PutAccountDataRetention`
+- `PutEnforcedGuardrailConfiguration`
+- `PutResourcePolicy`
+- `PutUseCaseForModelAccess`
+- `RegisterMarketplaceModelEndpoint`
+- `StartAutomatedReasoningPolicyBuildWorkflow`
+- `StartAutomatedReasoningPolicyTestWorkflow`
+- `StopAdvancedPromptOptimizationJob`
+- `StopEvaluationJob`
+- `StopModelCustomizationJob`
+- `StopModelInvocationJob`
+- `TagResource`
+- `UntagResource`
+- `UpdateAutomatedReasoningPolicy`
+- `UpdateAutomatedReasoningPolicyAnnotations`
+- `UpdateAutomatedReasoningPolicyTestCase`
+- `UpdateCustomModelDeployment`
+- `UpdateMarketplaceModelEndpoint`
+
+## bedrockruntime
+
+`2023-09-30` — 5 of 11 modelled operations implemented (45.5%), 0 stubbed, 0 not applicable, 0 registered outside the pinned model.
+
+### Not implemented
+
+- `CountTokens`
+- `GetAsyncInvoke`
+- `InvokeGuardrailChecks`
+- `InvokeModelWithBidirectionalStream`
+- `ListAsyncInvokes`
+- `StartAsyncInvoke`
+
 ## ec2
 
 `2016-11-15` — 127 of 804 modelled operations implemented (15.8%), 0 stubbed, 39 not applicable, 0 registered outside the pinned model.

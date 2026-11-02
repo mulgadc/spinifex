@@ -7,7 +7,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/rest"
 	"log/slog"
 	"net/http"
-	"slices"
 
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
@@ -179,14 +178,8 @@ var eksRoutes = []eksRoute{
 }
 
 // eksActionNames returns the distinct actions in eksRoutes in stable order.
-// Deduplicated because an action may be reachable by more than one route.
 func eksActionNames() []string {
-	names := make([]string, 0, len(eksRoutes))
-	for _, route := range eksRoutes {
-		names = append(names, route.Action)
-	}
-	slices.Sort(names)
-	return slices.Compact(names)
+	return routeActionNames(eksRoutes)
 }
 
 // eksRouter matches an escaped request path against eksRoutes.

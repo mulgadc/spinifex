@@ -17,11 +17,13 @@ tags:
 
 ## Overview
 
-The platform serves **392 operations** across the AWS APIs below. Every page names the operations its service implements from the pinned model, generated from the dispatch tables on each build rather than written by hand.
+The platform serves **413 operations** across the AWS APIs below. Every page names the operations its service implements from the pinned model, generated from the dispatch tables on each build rather than written by hand.
 
 | Service | Operations |
 |---|---:|
 | [ACM](/coverage/acm) | 9 |
+| [Bedrock](/coverage/bedrock) | 16 |
+| [Bedrock Runtime](/coverage/bedrock-runtime) | 5 |
 | [EC2](/coverage/ec2) | 127 |
 | [ECR](/coverage/ecr) | 23 |
 | [ECS](/coverage/ecs) | 31 |
@@ -31,4 +33,4 @@ The platform serves **392 operations** across the AWS APIs below. Every page nam
 | [RDS](/coverage/rds) | 27 |
 | [S3](/coverage/s3) | 26 |
 | [STS](/coverage/sts) | 5 |
-| **Total** | **392** |
+| **Total** | **413** |

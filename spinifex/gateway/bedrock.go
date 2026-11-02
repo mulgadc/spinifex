@@ -148,6 +148,11 @@ var bedrockRoutes = []bedrockRoute{
 		}},
 }
 
+// bedrockActionNames returns the distinct actions in bedrockRoutes in stable order.
+func bedrockActionNames() []string {
+	return routeActionNames(bedrockRoutes)
+}
+
 // bedrockRouter matches an escaped request path against bedrockRoutes.
 var bedrockRouter = rest.NewRouter("bedrock", bedrockRoutes)
 

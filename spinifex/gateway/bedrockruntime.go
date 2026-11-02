@@ -66,6 +66,12 @@ var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
 		}},
 }
 
+// bedrockRuntimeActionNames returns the distinct actions in bedrockRuntimeRoutes
+// in stable order.
+func bedrockRuntimeActionNames() []string {
+	return routeActionNames(bedrockRuntimeRoutes)
+}
+
 // bedrockRuntimeRouter matches an escaped request path against bedrockRuntimeRoutes.
 var bedrockRuntimeRouter = rest.NewRouter("bedrock-runtime", bedrockRuntimeRoutes)
 

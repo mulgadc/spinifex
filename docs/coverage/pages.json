@@ -30,6 +30,36 @@
         "tls"
       ]
     },
+    "bedrock": {
+      "slug": "bedrock",
+      "name": "Bedrock",
+      "title": "Bedrock API Coverage",
+      "seoTitle": "Amazon Bedrock API Coverage on Spinifex — Spinifex Docs",
+      "description": "The Amazon Bedrock control-plane API operations Spinifex implements, covering foundation models, guardrails, provisioned throughput and invocation logging.",
+      "tags": [
+        "aws",
+        "compatibility",
+        "coverage",
+        "bedrock",
+        "ai",
+        "models"
+      ]
+    },
+    "bedrockruntime": {
+      "slug": "bedrock-runtime",
+      "name": "Bedrock Runtime",
+      "title": "Bedrock Runtime API Coverage",
+      "seoTitle": "Amazon Bedrock Runtime API Coverage — Spinifex Docs",
+      "description": "The Amazon Bedrock Runtime API operations Spinifex implements, covering model invocation, the Converse API, streamed responses and standalone guardrail checks.",
+      "tags": [
+        "aws",
+        "compatibility",
+        "coverage",
+        "bedrock",
+        "ai",
+        "inference"
+      ]
+    },
     "ec2": {
       "slug": "ec2",
       "name": "EC2",

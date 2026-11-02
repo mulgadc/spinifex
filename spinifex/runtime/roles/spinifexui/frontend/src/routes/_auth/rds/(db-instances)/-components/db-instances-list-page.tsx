@@ -1,202 +1,209 @@
 import type { DBInstance } from "@aws-sdk/client-rds"
-import { useSuspenseQuery } from "@tanstack/react-query"
-import { Link, useNavigate } from "@tanstack/react-router"
-import { useState } from "react"
+import { Link } from "@tanstack/react-router"
+import { Plus } from "lucide-react"
+import { type ReactNode, useState } from "react"
 
-import { ErrorBanner } from "@/components/error-banner"
-import { PageHeading } from "@/components/page-heading"
-import { StateBadge } from "@/components/state-badge"
-import { Button } from "@/components/ui/button"
+import { BulkDelete } from "@/components/bulk-delete"
+import { CreatePanel } from "@/components/create-panel"
 import {
-  useRebootDBInstance,
-  useStartDBInstance,
-  useStopDBInstance,
-} from "@/mutations/rds"
-import { rdsDBInstancesQueryOptions } from "@/queries/rds"
-import { canDelete, canReboot, canStart, canStop } from "@/types/rds"
+  type DataColumn,
+  DataTable,
+  type SortState,
+} from "@/components/data-table"
+import { PageHeading } from "@/components/page-heading"
+import { ResourceView } from "@/components/resource-view"
+import { SelectionBar } from "@/components/selection-bar"
+import { StateBadge } from "@/components/state-badge"
+import { buttonVariants } from "@/components/ui/button"
+import { useRowSelection } from "@/hooks/use-row-selection"
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import { useDeleteDBInstance } from "@/mutations/rds"
 
-import { DeleteDBInstanceDialog } from "./delete-db-instance-dialog"
-
-interface DeleteTarget {
-  identifier: string
-  deletionProtection: boolean
-}
+import { CreateDBInstancePage } from "./create-db-instance-page"
+import { DBInstanceDetails } from "./db-instance-details"
+import { defaultFinalSnapshotIdentifier } from "./delete-db-instance-dialog"
 
 function engineLabel(instance: DBInstance): string {
   return [instance.Engine, instance.EngineVersion].filter(Boolean).join(" ")
 }
 
-export function DBInstancesListPage() {
-  const navigate = useNavigate()
-  const { data } = useSuspenseQuery(rdsDBInstancesQueryOptions)
-  const startInstance = useStartDBInstance()
-  const stopInstance = useStopDBInstance()
-  const rebootInstance = useRebootDBInstance()
-  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
+const COLUMNS: DataColumn<DBInstance>[] = [
+  {
+    id: "identifier",
+    header: "Identifier",
+    sortValue: (instance) => instance.DBInstanceIdentifier,
+    cell: (instance) => (
+      <Link
+        className="block max-w-72 truncate rounded-sm font-medium text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        from="/rds/describe-db-instances/"
+        search={(previous) => ({
+          ...previous,
+          ...CLOSED_PANEL,
+          selected: instance.DBInstanceIdentifier ?? "",
+        })}
+        to="."
+      >
+        {instance.DBInstanceIdentifier}
+      </Link>
+    ),
+  },
+  {
+    id: "status",
+    header: "Status",
+    sortValue: (instance) => instance.DBInstanceStatus,
+    cell: (instance) => <StateBadge state={instance.DBInstanceStatus} />,
+  },
+  {
+    id: "engine",
+    header: "Engine",
+    sortValue: engineLabel,
+    hideBelow: "sm",
+    cell: (instance) => engineLabel(instance) || "—",
+  },
+  {
+    id: "class",
+    header: "Class",
+    sortValue: (instance) => instance.DBInstanceClass,
+    hideBelow: "md",
+    cell: (instance) => instance.DBInstanceClass ?? "—",
+  },
+  {
+    id: "endpoint",
+    header: "Endpoint",
+    sortValue: (instance) => instance.Endpoint?.Address,
+    hideBelow: "lg",
+    cell: (instance) => (
+      <span className="font-mono text-xs">
+        {instance.Endpoint?.Address ?? "—"}
+      </span>
+    ),
+  },
+  {
+    id: "storage",
+    header: "Storage",
+    sortValue: (instance) => instance.AllocatedStorage,
+    hideBelow: "xl",
+    align: "end",
+    cell: (instance) =>
+      instance.AllocatedStorage ? `${instance.AllocatedStorage} GiB` : "—",
+  },
+]
 
-  const instances = data.DBInstances ?? []
+interface DBInstancesListPageProps {
+  instances: readonly DBInstance[]
+  search: PanelSearch
+  onSearchChange: (search: Partial<PanelSearch>) => void
+}
 
-  const lifecycleError =
-    startInstance.error ?? stopInstance.error ?? rebootInstance.error
+export function DBInstancesListPage({
+  instances,
+  search,
+  onSearchChange,
+}: DBInstancesListPageProps) {
+  const [sort, setSort] = useState<SortState>()
+
+  const open = instances.find(
+    (instance) =>
+      search.selected !== "" &&
+      instance.DBInstanceIdentifier === search.selected,
+  )
+
+  function closePanel() {
+    onSearchChange(CLOSED_PANEL)
+  }
+
+  const selection = useRowSelection(
+    instances.map((instance) => instance.DBInstanceIdentifier ?? ""),
+    open !== undefined,
+    closePanel,
+  )
+
+  const deleteInstance = useDeleteDBInstance()
+
+  // The single delete's default: a final snapshot under its suggested name.
+  // Skipping it means typing the instance's name, so that stays per instance.
+  async function deleteWithFinalSnapshot(id: string) {
+    return await deleteInstance.mutateAsync({
+      dbInstanceIdentifier: id,
+      skipFinalSnapshot: false,
+      finalSnapshotIdentifier: defaultFinalSnapshotIdentifier(id),
+    })
+  }
+
+  let panel: ReactNode = null
+
+  if (search.create) {
+    panel = (
+      <CreatePanel onClose={closePanel} title="Create database">
+        <CreateDBInstancePage
+          onClose={(id) => {
+            onSearchChange({ ...CLOSED_PANEL, selected: id ?? "" })
+          }}
+        />
+      </CreatePanel>
+    )
+  } else if (open?.DBInstanceIdentifier) {
+    panel = (
+      <DBInstanceDetails
+        instance={open}
+        key={open.DBInstanceIdentifier}
+        onClose={closePanel}
+        onTabChange={(tab) => {
+          onSearchChange({ tab })
+        }}
+        tab={search.tab}
+      />
+    )
+  }
 
   return (
-    <>
+    <ResourceView panel={panel}>
       <PageHeading
         actions={
-          <Button
-            onClick={async () => {
-              await navigate({ to: "/rds/create-db-instance" })
-            }}
+          <Link
+            className={buttonVariants()}
+            from="/rds/describe-db-instances/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              create: true,
+            })}
+            to="."
           >
-            Create Database
-          </Button>
+            <Plus data-icon="inline-start" />
+            Create database
+          </Link>
         }
+        subtitle="Managed PostgreSQL and MariaDB instances."
         title="Databases"
       />
-
-      {lifecycleError && (
-        <ErrorBanner
-          error={lifecycleError}
-          msg="Failed to change the DB instance state."
-        />
+      {selection.ids.length > 0 && (
+        <SelectionBar count={selection.ids.length} onClear={selection.clear}>
+          <BulkDelete
+            confirmPhrase="delete"
+            deleteOne={deleteWithFinalSnapshot}
+            description="This tears them down, each after taking a final snapshot named after it, which keeps its data until that snapshot is deleted. To delete without a final snapshot, delete an instance on its own."
+            ids={selection.ids}
+            noun={["DB instance", "DB instances"]}
+            onDeleted={selection.drop}
+          />
+        </SelectionBar>
       )}
-
-      {instances.length > 0 ? (
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-2 font-medium">Identifier</th>
-                <th className="px-4 py-2 font-medium">Engine</th>
-                <th className="px-4 py-2 font-medium">Class</th>
-                <th className="px-4 py-2 font-medium">Status</th>
-                <th className="px-4 py-2 font-medium">Endpoint</th>
-                <th className="px-4 py-2 font-medium">Storage</th>
-                <th className="px-4 py-2 font-medium">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {instances.map((instance) => {
-                const id = instance.DBInstanceIdentifier
-
-                if (!id) {
-                  return null
-                }
-
-                const status = instance.DBInstanceStatus
-
-                return (
-                  <tr
-                    className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
-                    key={id}
-                    onClick={async () => {
-                      await navigate({
-                        to: "/rds/describe-db-instances/$id",
-                        params: { id },
-                      })
-                    }}
-                  >
-                    <td className="px-4 py-2 font-medium">
-                      <Link
-                        className="text-primary hover:underline"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                        }}
-                        params={{ id }}
-                        to="/rds/describe-db-instances/$id"
-                      >
-                        {id}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-2">{engineLabel(instance)}</td>
-                    <td className="px-4 py-2">{instance.DBInstanceClass}</td>
-                    <td className="px-4 py-2">
-                      <StateBadge state={status} />
-                    </td>
-                    <td className="px-4 py-2 font-mono text-xs">
-                      {instance.Endpoint?.Address ?? "—"}
-                    </td>
-                    <td className="px-4 py-2">
-                      {instance.AllocatedStorage
-                        ? `${instance.AllocatedStorage} GiB`
-                        : "—"}
-                    </td>
-                    <td className="space-x-2 px-4 py-2 text-right">
-                      <Button
-                        disabled={!canStart(status) || startInstance.isPending}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          startInstance.mutate(id)
-                        }}
-                        size="sm"
-                        variant="outline"
-                      >
-                        Start
-                      </Button>
-                      <Button
-                        disabled={!canStop(status) || stopInstance.isPending}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          stopInstance.mutate(id)
-                        }}
-                        size="sm"
-                        variant="outline"
-                      >
-                        Stop
-                      </Button>
-                      <Button
-                        disabled={
-                          !canReboot(status) || rebootInstance.isPending
-                        }
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          rebootInstance.mutate(id)
-                        }}
-                        size="sm"
-                        variant="outline"
-                      >
-                        Reboot
-                      </Button>
-                      <Button
-                        disabled={!canDelete(status)}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setDeleteTarget({
-                            identifier: id,
-                            deletionProtection:
-                              instance.DeletionProtection ?? false,
-                          })
-                        }}
-                        size="sm"
-                        variant="destructive"
-                      >
-                        Delete
-                      </Button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No DB instances found.</p>
-      )}
-
-      {deleteTarget && (
-        <DeleteDBInstanceDialog
-          dbInstanceIdentifier={deleteTarget.identifier}
-          deletionProtection={deleteTarget.deletionProtection}
-          onOpenChange={(open) => {
-            if (!open) {
-              setDeleteTarget(null)
-            }
-          }}
-          open={true}
-        />
-      )}
-    </>
+      <DataTable
+        activeId={open?.DBInstanceIdentifier}
+        caption="Databases"
+        columns={COLUMNS}
+        empty="No DB instances found."
+        getRowId={(instance) => instance.DBInstanceIdentifier ?? ""}
+        onRowClick={(id) => {
+          onSearchChange({ ...CLOSED_PANEL, selected: id })
+        }}
+        onSelectedChange={selection.onSelectedChange}
+        onSortChange={setSort}
+        rows={instances}
+        selected={selection.selected}
+        sort={sort}
+      />
+    </ResourceView>
   )
 }

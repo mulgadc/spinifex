@@ -107,7 +107,7 @@ func TestECSGPUTaskExposure(t *testing.T) {
 
 	clusterName := fmt.Sprintf("%s-%d", ecsGPUClusterPfx, time.Now().Unix())
 	harness.Phase(t, "Creating ECS cluster %q", clusterName)
-	// e2e:allow-create — the GPU cluster is the subject under test.
+	// The GPU cluster is the subject under test.
 	_, err := fx.AWS.ECS.CreateCluster(&ecs.CreateClusterInput{ClusterName: aws.String(clusterName)})
 	require.NoError(t, err, "create-cluster")
 	t.Cleanup(func() { deleteECSGPUClusterBestEffort(t, fx.AWS, clusterName) })
@@ -201,7 +201,7 @@ func tolerateEntityExists(t *testing.T, err error, what string) {
 func launchECSGPUContainerInstance(t *testing.T, fx *ecsGPUFixture, vpc harness.VPCInfo, clusterName, keyName string) string {
 	t.Helper()
 	userData := ecsGPUUserData(t, fx.Env, clusterName)
-	out, err := fx.AWS.EC2.RunInstances(&ec2.RunInstancesInput{ // e2e:allow-create — the GPU container instance is the subject under test.
+	out, err := fx.AWS.EC2.RunInstances(&ec2.RunInstancesInput{ // The GPU container instance is the subject under test.
 		ImageId:          aws.String(fx.AMIID),
 		InstanceType:     aws.String(fx.InstanceType),
 		KeyName:          aws.String(keyName),

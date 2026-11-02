@@ -1,0 +1,5 @@
+#!/bin/sh
+# The only shutdown action: stop the worker, then the store, and unmount the
+# data disk, then run the generic read-only remount only if both are gone.
+. /usr/local/lib/sqs-worker/sqs-worker-lib.sh
+sqsw_shutdown

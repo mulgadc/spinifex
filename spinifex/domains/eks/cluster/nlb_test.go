@@ -143,9 +143,11 @@ func (f *fakeNLBProvisioner) DescribeLoadBalancers(_ context.Context, input *elb
 		if n == nil {
 			continue
 		}
-		if lb, ok := f.lbByName[*n]; ok {
-			out.LoadBalancers = append(out.LoadBalancers, lb)
+		lb, ok := f.lbByName[*n]
+		if !ok {
+			return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 		}
+		out.LoadBalancers = append(out.LoadBalancers, lb)
 	}
 	return out, nil
 }

@@ -41,7 +41,7 @@ func (s *NATSInstanceService) DescribeInstances(_ context.Context, _ *ec2.Descri
 
 // DescribeInstanceTypes is a fan-out operation; use the gateway's scatter-gather
 // helper instead of this single-node client.
-func (s *NATSInstanceService) DescribeInstanceTypes(_ context.Context, _ *ec2.DescribeInstanceTypesInput, _ string) (*ec2.DescribeInstanceTypesOutput, error) {
+func (s *NATSInstanceService) DescribeInstanceTypes(_ context.Context, _ *ec2.DescribeInstanceTypesInput, _ string) (*DescribeInstanceTypesNodeOutput, error) {
 	return nil, fmt.Errorf("DescribeInstanceTypes is fan-out; use gateway scatter-gather, not NATSInstanceService")
 }
 

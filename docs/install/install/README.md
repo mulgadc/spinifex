@@ -39,7 +39,7 @@ This guide installs Spinifex on a single server using the binary installer. For 
 
 - Ubuntu 26.04
 - Debian 13
-- Oracle Linux 10.2 or a later 10.x, on UEK R8, x86_64 only, as a single node. Open vSwitch and OVN come from the CentOS NFV SIG, a community repository that Oracle does not support. Prepare the host with [Oracle Linux Hosts](/docs/install-oracle-linux) first.
+- Oracle Linux 10.2 or a later 10.x, on UEK R8, x86_64 only, as a single node or, with [Multi-Node Install](/docs/install-multi-node), a cluster. Open vSwitch and OVN come from the CentOS NFV SIG, a community repository that Oracle does not support. Prepare the host with [Oracle Linux Hosts](/docs/install-oracle-linux) first.
 
 **What Gets Installed:**
 

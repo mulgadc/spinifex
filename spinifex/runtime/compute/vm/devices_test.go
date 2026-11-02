@@ -314,3 +314,27 @@ func TestBlkDeviceMapped_EveryQueueMappedOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestNetDevice_MicrovmWithPCIEIsPCI(t *testing.T) {
+	mt := "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on,pcie=on"
+	assert.False(t, IsMMIO(mt), "a microvm with a PCIe bus must not use MMIO transports")
+	d := NetDevice(mt, "net0", "02:00:00:aa:bb:cc", 1, 0)
+	assert.Contains(t, d.Value, "virtio-net-pci,netdev=net0")
+	assert.NotContains(t, d.Value, "virtio-net-device")
+}
+
+func TestNetDevice_PlainMicrovmStaysMMIO(t *testing.T) {
+	assert.True(t, IsMMIO("microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on"))
+	assert.Contains(t, NetDevice("microvm", "net0", "", 0, 0).Value, "virtio-net-device")
+}
+
+func TestNetDevice_Q35Unchanged(t *testing.T) {
+	d := NetDevice("q35", "net0", "02:00:00:aa:bb:cc", 1, 0)
+	assert.Equal(t, "virtio-net-pci,netdev=net0,mac=02:00:00:aa:bb:cc,rx_queue_size=1024", d.Value)
+}
+
+func TestIsMicrovm(t *testing.T) {
+	assert.True(t, IsMicrovm("microvm"))
+	assert.True(t, IsMicrovm("microvm,pcie=on"))
+	assert.False(t, IsMicrovm("q35"))
+}

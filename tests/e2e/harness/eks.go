@@ -71,3 +71,31 @@ func isClusterNotFound(err error) bool {
 	}
 	return false
 }
+
+// DeleteEKSNodegroupAndWait deletes a nodegroup and polls DescribeNodegroup
+// until it returns ResourceNotFoundException, so a later step never runs
+// beside a worker that is still going away.
+func DeleteEKSNodegroupAndWait(t *testing.T, c *AWSClient, cluster, nodegroup string) {
+	t.Helper()
+	_, err := c.EKS.DeleteNodegroup(&eks.DeleteNodegroupInput{
+		ClusterName:   aws.String(cluster),
+		NodegroupName: aws.String(nodegroup),
+	})
+	if err != nil && !isClusterNotFound(err) {
+		t.Errorf("delete-nodegroup %s: %v", nodegroup, err)
+		return
+	}
+	EventuallyErr(t, func() error {
+		_, err := c.EKS.DescribeNodegroup(&eks.DescribeNodegroupInput{
+			ClusterName:   aws.String(cluster),
+			NodegroupName: aws.String(nodegroup),
+		})
+		if err == nil {
+			return fmt.Errorf("nodegroup %s still exists", nodegroup)
+		}
+		if isClusterNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("describe-nodegroup %s: %w", nodegroup, err)
+	}, 5*time.Minute, 5*time.Second)
+}

@@ -321,7 +321,6 @@ func recoveryGuestOnAPeer(t *testing.T, fix *Fixture, userData string) (harness.
 	for attempt := 1; attempt <= 6; attempt++ {
 		// A shared fixture cannot serve this: the guest has to be on a named node
 		// so that node can be taken away, and losing it is what is under test.
-		// e2e:allow-create
 		out, err := fix.AWS.EC2.RunInstances(in)
 		if err != nil {
 			if strings.Contains(err.Error(), "InsufficientInstanceCapacity") {

@@ -1,52 +1,68 @@
+import { useQueryClient } from "@tanstack/react-query"
 import { Upload } from "lucide-react"
 import { useRef } from "react"
 
 import { Button } from "@/components/ui/button"
-
-interface UploadParams {
-  bucket: string
-  key: string
-  file: File
-}
+import { percentOf } from "@/lib/transfer"
+import { uploads, useUploads } from "@/lib/uploads"
 
 interface UploadButtonProps {
   bucket: string
+  // Empty at the bucket root, otherwise ends in "/".
   prefix?: string
-  isPending: boolean
-  // oxlint-disable-next-line anti-slop/no-unknown-returns -- the button awaits the upload and never reads its payload
-  onUpload: (params: UploadParams) => Promise<unknown>
 }
 
-export function UploadButton({
-  bucket,
-  prefix = "",
-  isPending,
-  onUpload,
-}: UploadButtonProps) {
+const RING_RADIUS = 6
+const RING_LENGTH = 2 * Math.PI * RING_RADIUS
+
+// The batch's progress as a ring, so the button keeps its width as it fills.
+function ProgressRing({ percent }: { percent: number }) {
+  return (
+    <svg aria-hidden className="size-4 -rotate-90" viewBox="0 0 16 16">
+      <circle
+        className="stroke-current opacity-25"
+        cx="8"
+        cy="8"
+        fill="none"
+        r={RING_RADIUS}
+        strokeWidth="2"
+      />
+      <circle
+        className="stroke-current"
+        cx="8"
+        cy="8"
+        fill="none"
+        r={RING_RADIUS}
+        strokeDasharray={RING_LENGTH}
+        strokeDashoffset={RING_LENGTH * (1 - percent / 100)}
+        strokeLinecap="round"
+        strokeWidth="2"
+      />
+    </svg>
+  )
+}
+
+// While a batch runs the button shows its progress, and opens the progress
+// dialog; the dialog itself opens on its own for a large or slow batch.
+export function UploadButton({ bucket, prefix = "" }: UploadButtonProps) {
+  const queryClient = useQueryClient()
+  const state = useUploads()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  async function handleFileSelect(event: React.ChangeEvent<HTMLInputElement>) {
-    const { files } = event.target
+  function handleFileSelect(event: React.ChangeEvent<HTMLInputElement>) {
+    const files = [...(event.target.files ?? [])]
 
-    if (!files || files.length === 0) {
-      return
-    }
+    uploads.add(bucket, prefix, files, () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["s3", "buckets", bucket, "objects"],
+      })
+    })
 
-    try {
-      await Promise.all(
-        [...files].map(async (file) => {
-          const key = `${prefix}${file.name}`
-
-          return await onUpload({ bucket, key, file })
-        }),
-      )
-    } finally {
-      // Reset the input so the same file can be uploaded again
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ""
-      }
-    }
+    // Reset the input so the same file can be uploaded again
+    event.target.value = ""
   }
+
+  const percent = percentOf(state.loaded, state.total)
 
   return (
     <>
@@ -59,14 +75,23 @@ export function UploadButton({
         ref={fileInputRef}
         type="file"
       />
-      <Button
-        disabled={isPending}
-        onClick={() => fileInputRef.current?.click()}
-        size="sm"
-      >
-        <Upload className="mr-2 size-4" />
-        {isPending ? "Uploading…" : "Upload Files"}
-      </Button>
+      {state.active ? (
+        <Button
+          aria-label={`Uploading, ${percent}% done. Show progress`}
+          onClick={() => {
+            uploads.show(true)
+          }}
+          variant="outline"
+        >
+          <ProgressRing percent={percent} />
+          <span className="tabular-nums">Uploading {percent}%</span>
+        </Button>
+      ) : (
+        <Button onClick={() => fileInputRef.current?.click()}>
+          <Upload data-icon="inline-start" />
+          Upload
+        </Button>
+      )}
     </>
   )
 }

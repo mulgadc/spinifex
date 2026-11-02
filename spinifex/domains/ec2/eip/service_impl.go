@@ -181,7 +181,7 @@ func (s *EIPServiceImpl) ReleaseAddress(ctx context.Context, input *ec2.ReleaseA
 
 	// Cannot release an EIP that is still associated.
 	if record.State == "associated" {
-		return nil, errors.New(awserrors.ErrorInvalidAddressLocked)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidIPAddressInUse, "Address %s is in use.", record.PublicIp)
 	}
 
 	// Release IP back to IPAM pool. User-driven release of an already-detached
@@ -269,6 +269,7 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 	}
 
 	s.bindPoolOwner(ctx, record.PoolName, record.PublicIp, eniID)
+	s.releaseReplacedPublicIP(ctx, accountID, eniID, record.PublicIp)
 	s.stampENIPublicIP(ctx, accountID, eniID, record.PublicIp, record.PoolName)
 	s.announcePublicIP(ctx, instanceID, eniID, record.PublicIp, record.PoolName)
 
@@ -331,6 +332,55 @@ func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.Dis
 	slog.InfoContext(ctx, "DisassociateAddress completed", "associationId", associationID, "accountID", accountID)
 
 	return &ec2.DisassociateAddressOutput{}, nil
+}
+
+// eniRecordReader is the ENI read releaseReplacedPublicIP needs: the described
+// interface carries no pool name, and a release must name the pool.
+type eniRecordReader interface {
+	GetENIRecord(accountID, eniID string) (ec2vpc.ENIRecord, error)
+}
+
+// releaseReplacedPublicIP returns the auto-assigned address an Elastic IP
+// displaces to its pool, as AWS releases it on associate. Nothing refers to it
+// once the ENI is restamped, so it stayed allocated, and billed by a cloud pool.
+//
+// An address another associated EIP holds is the customer's and is left alone.
+// Logged rather than returned, like bindPoolOwner: the association has landed.
+func (s *EIPServiceImpl) releaseReplacedPublicIP(ctx context.Context, accountID, eniID, eipPublicIP string) {
+	reader, ok := s.vpcService.(eniRecordReader)
+	if !ok || eniID == "" {
+		return
+	}
+	eni, err := reader.GetENIRecord(accountID, eniID)
+	if err != nil {
+		slog.WarnContext(ctx, "could not read the ENI an Elastic IP is replacing the public IP of",
+			"eniId", eniID, "err", err)
+		return
+	}
+	ip, pool := eni.PublicIpAddress, eni.PublicIpPool
+	if ip == "" || pool == "" || ip == eipPublicIP {
+		return
+	}
+	matches, err := s.findByENI(ctx, accountID, eniID)
+	if err != nil {
+		slog.WarnContext(ctx, "could not check the displaced public IP against Elastic IPs; leaving it allocated",
+			"eniId", eniID, "publicIp", ip, "err", err)
+		return
+	}
+	for _, m := range matches {
+		if m.record.PublicIp == ip {
+			return
+		}
+	}
+
+	s.publishNATEvent(networkv1.NATDeleteSubject, eni.VpcId, ip, eni.PrivateIpAddress, eniID, eni.MacAddress)
+	if err := s.externalIPAM.ReleaseIP(ctx, pool, ip, eniID); err != nil {
+		slog.WarnContext(ctx, "failed to release the public IP an Elastic IP displaced",
+			"eniId", eniID, "publicIp", ip, "pool", pool, "err", err)
+		return
+	}
+	slog.InfoContext(ctx, "released the auto-assigned public IP an Elastic IP displaced",
+		"eniId", eniID, "publicIp", ip, "pool", pool)
 }
 
 // bindPoolOwner tells the pool which ENI now holds publicIP, empty for none.
@@ -954,3 +1004,5 @@ func (s *EIPServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID 
 		func(r *EIPRecord) *map[string]string { return &r.Tags },
 		tagmirror.RemoveTagsMut(input))
 }
+
+var _ eniRecordReader = (*ec2vpc.VPCServiceImpl)(nil)

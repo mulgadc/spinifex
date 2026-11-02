@@ -253,7 +253,6 @@ func TestChangeBatchValidation(t *testing.T) {
 		{"bad IPv6", change("CREATE", "v6.example.com", "AAAA", 60, "192.0.2.1"), awserrors.ErrorInvalidChangeBatch, "not a valid IPv6 address"},
 		{"bad MX", change("CREATE", "example.com", "MX", 60, "mail.example.com"), awserrors.ErrorInvalidChangeBatch, "priority host"},
 		{"two CNAME values", change("CREATE", "c.example.com", "CNAME", 60, "a.example.net", "b.example.net"), awserrors.ErrorInvalidChangeBatch, "more than one value"},
-		{"bad action", change("REPLACE", "r.example.com", "A", 60, "192.0.2.1"), awserrors.ErrorInvalidChangeBatch, "Invalid action"},
 		{"alias", alias, awserrors.ErrorInvalidInput, "alias"},
 		{"weighted", weighted, awserrors.ErrorInvalidInput, "simple routing"},
 		{"unsupported type", change("CREATE", "ds.example.com", "DS", 60, "1 2 3 abc"), awserrors.ErrorInvalidInput, "not supported"},
@@ -552,11 +551,114 @@ func TestLookupsOfUnissuableIDsNameNothing(t *testing.T) {
 	// connection every later request shares.
 	_, err := svc.GetChange(ctx, &r53.GetChangeInput{Id: aws.String(strings.Repeat("C", 6500))}, acctA)
 	requireCode(t, err, awserrors.ErrorNoSuchChange)
-	for _, bad := range []string{strings.Repeat("Z", 65), "Z1.*", "Z1 >"} {
+	for _, bad := range []string{"Z1.*", "Z1 >"} {
 		_, err = svc.GetHostedZone(ctx, &r53.GetHostedZoneInput{Id: aws.String(bad)}, acctA)
 		requireCode(t, err, awserrors.ErrorNoSuchHostedZone)
 	}
 
 	_, err = svc.GetHostedZone(ctx, &r53.GetHostedZoneInput{Id: aws.String(id)}, acctA)
 	require.NoError(t, err)
+}
+
+// AWS refuses a value outside the model's bounds with InvalidInput before it
+// looks anything up, whatever the operation's semantic errors would be.
+func TestModelBoundViolationsAreInvalidInput(t *testing.T) {
+	svc := newService(t)
+	id := createZone(t, svc, acctA, "example.com")
+	longID := aws.String(strings.Repeat("Z", 33))
+	longName := strings.Repeat("a", 1025)
+	without := func(edit func(c *r53.Change)) *r53.Change {
+		c := change("CREATE", "x.example.com", "TXT", 60, `"v"`)
+		edit(c)
+		return c
+	}
+
+	cases := map[string]func() error{
+		"zone type outside enum": func() error {
+			_, err := svc.ListHostedZones(ctx, &r53.ListHostedZonesInput{HostedZoneType: aws.String("PublicHostedZone")}, acctA)
+			return err
+		},
+		"marker over 64": func() error {
+			_, err := svc.ListHostedZones(ctx, &r53.ListHostedZonesInput{Marker: aws.String(strings.Repeat("Z", 65))}, acctA)
+			return err
+		},
+		"by-name DNSName over 1024": func() error {
+			_, err := svc.ListHostedZonesByName(ctx, &r53.ListHostedZonesByNameInput{DNSName: aws.String(longName)}, acctA)
+			return err
+		},
+		"by-name zone ID over 32": func() error {
+			_, err := svc.ListHostedZonesByName(ctx, &r53.ListHostedZonesByNameInput{DNSName: aws.String("example.com"), HostedZoneId: longID}, acctA)
+			return err
+		},
+		"start name over 1024": func() error {
+			_, err := svc.ListResourceRecordSets(ctx, &r53.ListResourceRecordSetsInput{HostedZoneId: aws.String(id), StartRecordName: aws.String(longName)}, acctA)
+			return err
+		},
+		"start type outside enum": func() error {
+			_, err := svc.ListResourceRecordSets(ctx, &r53.ListResourceRecordSetsInput{HostedZoneId: aws.String(id), StartRecordName: aws.String("example.com"), StartRecordType: aws.String("BOGUS")}, acctA)
+			return err
+		},
+		"GetHostedZone ID over 32": func() error {
+			_, err := svc.GetHostedZone(ctx, &r53.GetHostedZoneInput{Id: longID}, acctA)
+			return err
+		},
+		"DeleteHostedZone ID over 32": func() error {
+			_, err := svc.DeleteHostedZone(ctx, &r53.DeleteHostedZoneInput{Id: longID}, acctA)
+			return err
+		},
+		"UpdateHostedZoneComment ID over 32": func() error {
+			_, err := svc.UpdateHostedZoneComment(ctx, &r53.UpdateHostedZoneCommentInput{Id: longID, Comment: aws.String("c")}, acctA)
+			return err
+		},
+		"ListResourceRecordSets ID over 32": func() error {
+			_, err := svc.ListResourceRecordSets(ctx, &r53.ListResourceRecordSetsInput{HostedZoneId: longID}, acctA)
+			return err
+		},
+		"ChangeResourceRecordSets ID over 32": func() error {
+			_, err := apply(svc, acctA, *longID, change("CREATE", "x.example.com", "A", 60, "192.0.2.1"))
+			return err
+		},
+		"action outside enum": func() error {
+			_, err := apply(svc, acctA, id, change("REPLACE", "x.example.com", "A", 60, "192.0.2.1"))
+			return err
+		},
+		"action missing": func() error {
+			_, err := apply(svc, acctA, id, without(func(c *r53.Change) { c.Action = nil }))
+			return err
+		},
+		"record name over 1024": func() error {
+			_, err := apply(svc, acctA, id, without(func(c *r53.Change) { c.ResourceRecordSet.Name = aws.String(longName) }))
+			return err
+		},
+		"record name missing": func() error {
+			_, err := apply(svc, acctA, id, without(func(c *r53.Change) { c.ResourceRecordSet.Name = nil }))
+			return err
+		},
+		"value over 4000": func() error {
+			_, err := apply(svc, acctA, id, without(func(c *r53.Change) {
+				c.ResourceRecordSet.ResourceRecords[0].Value = aws.String(strings.Repeat("v", 4001))
+			}))
+			return err
+		},
+		"value missing": func() error {
+			_, err := apply(svc, acctA, id, without(func(c *r53.Change) { c.ResourceRecordSet.ResourceRecords[0].Value = nil }))
+			return err
+		},
+		"zone name over 1024": func() error {
+			_, err := svc.CreateHostedZone(ctx, &r53.CreateHostedZoneInput{Name: aws.String(longName), CallerReference: aws.String("long")}, acctA)
+			return err
+		},
+		"zone name missing": func() error {
+			_, err := svc.CreateHostedZone(ctx, &r53.CreateHostedZoneInput{CallerReference: aws.String("none")}, acctA)
+			return err
+		},
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Contains(t, requireCode(t, call(), awserrors.ErrorInvalidInput), "failed to satisfy constraint")
+		})
+	}
+
+	_, err := svc.ListResourceRecordSets(ctx, &r53.ListResourceRecordSetsInput{HostedZoneId: aws.String(id), StartRecordName: aws.String("example.com"), StartRecordType: aws.String("HTTPS")}, acctA)
+	require.NoError(t, err, "the model's RRType includes types the v1 SDK predates")
 }

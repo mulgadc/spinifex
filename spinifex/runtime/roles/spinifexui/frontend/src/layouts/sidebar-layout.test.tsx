@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { SidebarProvider } from "@/components/ui/sidebar"
@@ -85,5 +86,21 @@ describe("SidebarLayout", () => {
     expect(screen.queryByText("Nodes")).not.toBeInTheDocument()
     expect(screen.queryByText("Service Metrics")).not.toBeInTheDocument()
     expect(screen.queryByText("Docs")).not.toBeInTheDocument()
+  })
+
+  it("folds the group holding the current page when asked", async () => {
+    mockUseAdmin.mockReturnValue({ isAdmin: false })
+    mockIsOchreEnabled.mockReturnValue(false)
+    const user = userEvent.setup()
+
+    renderSidebar()
+
+    const dashboard = screen.getByRole("link", { name: "Dashboard" })
+
+    expect(dashboard).toBeVisible()
+
+    await user.click(screen.getByRole("button", { name: "General" }))
+
+    expect(screen.queryByRole("link", { name: "Dashboard" })).toBeNull()
   })
 })

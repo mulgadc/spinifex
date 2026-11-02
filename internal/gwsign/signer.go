@@ -15,6 +15,8 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/credentials/ec2rolecreds"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 )
 
 // Signer holds a credential provider and signs requests in place.
@@ -40,6 +42,16 @@ func NewIMDS(ctx context.Context, region string) (*Signer, error) {
 		return nil, fmt.Errorf("default credential chain resolved no provider")
 	}
 	return &Signer{provider: cfg.Credentials}, nil
+}
+
+// NewInstanceRole returns a Signer whose credentials come only from the
+// instance metadata service: no environment, profile or static-key fallback.
+func NewInstanceRole() *Signer {
+	return newInstanceRole(imds.New(imds.Options{}))
+}
+
+func newInstanceRole(client *imds.Client) *Signer {
+	return &Signer{provider: aws.NewCredentialsCache(ec2rolecreds.New(func(o *ec2rolecreds.Options) { o.Client = client }))}
 }
 
 // EnsureCredentials retrieves once from the provider, surfacing the error so a

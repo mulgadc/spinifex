@@ -8,6 +8,11 @@ import (
 
 const natEgressComment = "spinifex-nat-egress"
 
+// EIPHairpinChain holds one SNAT per EIP for guest traffic sent back to an EIP
+// on its own node. Its jump sits above the egress MASQUERADE, whose transit
+// source OVN exempts from EIP DNAT, so without it the guest gets no answer.
+const EIPHairpinChain = "SPX-EIP-HAIRPIN"
+
 // maxDuplicateRules caps the drain loop. iptables has no delete-all, and a
 // chain holding more copies than this has a problem no reconcile should paper
 // over.
@@ -30,6 +35,10 @@ var natEgressRules = []struct {
 	{"filter", "FORWARD", []string{
 		"-o", NATTransitHostEnd, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED",
 		"-m", "comment", "--comment", natEgressComment, "-j", "ACCEPT"}},
+	// Last, so it is inserted above the MASQUERADE: first match wins in nat.
+	{"nat", "POSTROUTING", []string{
+		"-s", NATTransitCIDR, "-o", NATTransitHostEnd,
+		"-m", "comment", "--comment", natEgressComment, "-j", EIPHairpinChain}},
 }
 
 func natRuleArgs(op, table, chain string, spec []string) []string {
@@ -53,6 +62,8 @@ func natInsertArgs(table, chain string, spec []string) []string {
 // a broken host broken across an upgrade. Every spec carries our comment, so
 // the drain only ever deletes our own rules.
 func EnsureNATEgressRules(ctx context.Context, r Runner) error {
+	// -N fails when the chain exists, which is the usual case.
+	_, _ = r.Run(ctx, "iptables", "-t", "nat", "-N", EIPHairpinChain)
 	for _, rule := range natEgressRules {
 		for range maxDuplicateRules {
 			if _, err := r.Run(ctx, "iptables", natRuleArgs("-D", rule.table, rule.chain, rule.spec)...); err != nil {
@@ -75,4 +86,6 @@ func RemoveNATEgressRules(ctx context.Context, r Runner) {
 			slog.Debug("host: NAT egress rule not present on delete", "table", rule.table, "chain", rule.chain, "err", err)
 		}
 	}
+	_, _ = r.Run(ctx, "iptables", "-t", "nat", "-F", EIPHairpinChain)
+	_, _ = r.Run(ctx, "iptables", "-t", "nat", "-X", EIPHairpinChain)
 }

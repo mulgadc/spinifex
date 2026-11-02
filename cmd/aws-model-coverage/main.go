@@ -9,9 +9,16 @@ import (
 	"github.com/mulgadc/predastore/s3api"
 	"github.com/mulgadc/spinifex/internal/awsmodel"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
+	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	sqsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 
 	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
@@ -50,10 +57,18 @@ func fail(err error) {
 func compareAll() ([]awsmodel.OperationCoverage, error) {
 	// Registered services contribute their declared inventory, which needs no
 	// live dependencies; nothing here serves a request.
-	inventories := gateway.AWSOperationInventory(map[string]dispatch.Inventory{
+	inventories := dispatch.AWSOperationInventory(map[string]dispatch.Inventory{
 		awsapi.ServiceName:        awsapi.OperationInventory(),
 		acmawsapi.ServiceName:     acmawsapi.OperationInventory(),
 		route53awsapi.ServiceName: route53awsapi.OperationInventory(),
+		elbv2awsapi.InventoryName: elbv2awsapi.OperationInventory(),
+		rdsawsapi.ServiceName:     rdsawsapi.OperationInventory(),
+		ec2awsapi.ServiceName:     ec2awsapi.OperationInventory(),
+		ecsawsapi.ServiceName:     ecsawsapi.OperationInventory(),
+		eksawsapi.ServiceName:     eksawsapi.OperationInventory(),
+		iamawsapi.ServiceName:     iamawsapi.OperationInventory(),
+		sqsawsapi.ServiceName:     sqsawsapi.OperationInventory(),
+		stsawsapi.ServiceName:     stsawsapi.OperationInventory(),
 	})
 	// The loop below walks the embedded models, so a served service with no
 	// model would otherwise drop out of the report without a word.

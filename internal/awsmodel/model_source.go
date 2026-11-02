@@ -5,6 +5,6 @@ package awsmodel
 // ModelCommit is the github.com/aws/api-models-aws commit the embedded
 // models were taken from, and ModelCommitDate the day it was committed.
 const (
-	ModelCommit     = "9b1a4929274443d8671ea8acfda7afbe856e29e9"
-	ModelCommitDate = "2026-09-25"
+	ModelCommit     = "e10d6a1c5ac36af7c0c61d1f67b3c3ebbe41de49"
+	ModelCommitDate = "2026-10-28"
 )

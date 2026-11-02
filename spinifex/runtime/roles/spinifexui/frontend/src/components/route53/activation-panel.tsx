@@ -1,8 +1,11 @@
 import { useQuery } from "@tanstack/react-query"
 import { RefreshCw } from "lucide-react"
 
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
+import {
+  PanelField,
+  PanelFields,
+  PanelSection,
+} from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { ActivationBadge } from "@/components/route53/activation-badge"
 import { NameServerList } from "@/components/route53/name-server-list"
@@ -34,7 +37,7 @@ function ParentAnswer({
 
   return (
     <div className="space-y-2">
-      <ul className="max-w-md divide-y rounded-md border bg-card">
+      <ul className="divide-y rounded-md border bg-card">
         {delegatedTo.map((ns) => (
           <li className="px-3 py-2 font-mono text-sm" key={ns}>
             {ns}
@@ -57,7 +60,7 @@ export function ActivationPanel({
   const activation = activationQuery.data
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-3">
       {activationQuery.error && (
         <ErrorBanner
           error={activationQuery.error}
@@ -85,50 +88,42 @@ export function ActivationPanel({
           type="button"
           variant="outline"
         >
-          <RefreshCw className="size-4" />
+          <RefreshCw data-icon="inline-start" />
           {verifyMutation.isPending ? "Checking…" : "Check now"}
         </Button>
       </div>
 
       {activation && (
         <>
-          <DetailCard>
-            <DetailCard.Header>Activation</DetailCard.Header>
-            <DetailCard.Content>
+          <PanelSection title="Activation">
+            <PanelFields>
               {showZoneId && (
-                <DetailRow label="Hosted zone ID" value={zoneId} />
+                <PanelField copy={zoneId} label="Hosted zone ID" mono>
+                  {zoneId}
+                </PanelField>
               )}
-              <DetailRow
-                label="Last check"
-                value={
-                  activation.checkedAt
-                    ? formatDateTime(activation.checkedAt)
-                    : "Not checked yet"
-                }
-              />
-              <DetailRow label="Reason" value={activation.reason} />
+              <PanelField label="Last check">
+                {activation.checkedAt
+                  ? formatDateTime(activation.checkedAt)
+                  : "Not checked yet"}
+              </PanelField>
+              <PanelField label="Reason">{activation.reason}</PanelField>
               {activation.override && (
-                <DetailRow
-                  label="Operator override"
-                  value={activation.override}
-                />
+                <PanelField label="Operator override">
+                  {activation.override}
+                </PanelField>
               )}
-            </DetailCard.Content>
-          </DetailCard>
-
-          <div className="grid gap-6 md:grid-cols-2">
-            <section className="space-y-2">
-              <h3 className="text-sm font-medium">Expected name servers</h3>
-              <NameServerList nameServers={activation.nameServers} />
-            </section>
-            <section className="space-y-2">
-              <h3 className="text-sm font-medium">What the parent returned</h3>
-              <ParentAnswer
-                delegatedTo={activation.delegatedTo}
-                source={activation.delegationSource}
-              />
-            </section>
-          </div>
+            </PanelFields>
+          </PanelSection>
+          <PanelSection title="Expected name servers">
+            <NameServerList nameServers={activation.nameServers} />
+          </PanelSection>
+          <PanelSection title="What the parent returned">
+            <ParentAnswer
+              delegatedTo={activation.delegatedTo}
+              source={activation.delegationSource}
+            />
+          </PanelSection>
         </>
       )}
     </div>

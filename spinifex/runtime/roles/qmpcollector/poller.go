@@ -98,7 +98,22 @@ func (p *poller) period() time.Duration {
 
 func (p *poller) start(ctx context.Context) {
 	ctx, p.cancel = context.WithCancel(ctx)
+	p.startLive(ctx)
 	go p.run(ctx)
+}
+
+// startLive answers the console's live view for this instance until ctx ends.
+// Live data is optional, so a failure only costs this instance its live view.
+func (p *poller) startLive(ctx context.Context) {
+	sub, err := newLiveSampler(p.cfg, p.nc, p.snapshotMeta).subscribe(ctx)
+	if err != nil {
+		slog.Warn("qmp-collector: live view unavailable", "instanceId", p.snapshotMeta().InstanceID, "err", err)
+		return
+	}
+	go func() {
+		<-ctx.Done()
+		_ = sub.Unsubscribe()
+	}()
 }
 
 func (p *poller) stop() {

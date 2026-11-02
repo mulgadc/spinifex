@@ -129,7 +129,6 @@ func TestRG9_TierConfinement(t *testing.T) {
 	// Storage/control tier: near-zero privilege.
 	lockedDown := []string{
 		"spinifex-nats.service",
-		"spinifex-sqs-store.service",
 		"spinifex-predastore.service",
 		"spinifex-viperblock.service",
 		"spinifex-awsgw.service",
@@ -427,8 +426,11 @@ var unitBodyHashes = map[string]map[int]string{
 		4: "f66e1240cc5655f6a13f3b56ca282c73e2fe289f2e51d0ce624d14b90f12f838",
 		5: "d3d25d7eb0051ccf97f70838ddff763bade38bef934b8f85733e048151ac9319",
 	},
-	"spinifex-firewall.service": {1: "01d0a7a79f47eedca02aaab3ff97a0b6462d61b7834e16c7336a7b96034dc392"},
-	"spinifex-guests.slice":     {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},
+	"spinifex-firewall.service": {
+		1: "01d0a7a79f47eedca02aaab3ff97a0b6462d61b7834e16c7336a7b96034dc392",
+		2: "0786c7312ccf8099910a8545416e859b40116e574a740c0d561b6527e4b38f84",
+	},
+	"spinifex-guests.slice": {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},
 	"spinifex-hostnet.service": {
 		1: "4a110daac63b652aef49e358f22ac8a27a7797261b231d5b1184e171cccb8f87",
 		2: "13fd4231bb850198616ba31f25dfc2ec0aa9edb2c3f170320aa6f7cc6142ba77",
@@ -446,7 +448,6 @@ var unitBodyHashes = map[string]map[int]string{
 		3: "f5448bc2aabd3cf1af9dc74f0f12954a9294069da9f5115f8b95b529a070cbdc",
 	},
 	"spinifex-qmp-collector.service": {1: "beb18e6dd9351901f19d992cb2f757fb0e0e4a4d986402ccdb0ebb0a449f225c"},
-	"spinifex-sqs-store.service":     {1: "999641c2fe2592912445ad9e9a733649db6f324d7d8387fee69caeb4cdcbccb4"},
 	"spinifex-shutdown.service":      {1: "bcdc455916f35aa7494b2fe25e691339e8f1e22f031dfd9fd95203a9aa4bdaa4"},
 	"spinifex-system.slice":          {1: "ca450c2b28a8b13dd767957fa9469bd74bd222d7abed79945e83d564d5ce16dd"},
 	"spinifex-ui.service": {
@@ -467,6 +468,7 @@ var unitBodyHashes = map[string]map[int]string{
 		1: "0ffba9faee5a477f8ff7466a6bccb4dc7e04f5cf92a405553c242e6548402078",
 		2: "16b75e47e6ea724463a7710f3af3705e6cda600df4020ca621e96dad48b150d5",
 		3: "f249a5b8876e08741cd6d78515efa46a1e51f9135c34373f51b0fce9d57d9680",
+		4: "0dc31d0e415277d10e4d90959f40d574f5c2319560299448002f701453737d5b",
 	},
 }
 

@@ -26,6 +26,8 @@ func TestEnsureNATEgressRules_InstallsAllAtTheHeadOfTheChain(t *testing.T) {
 			" -m comment --comment spinifex-nat-egress -j ACCEPT",
 		"iptables -t filter -I FORWARD 1 -o " + NATTransitHostEnd + " -m conntrack --ctstate RELATED,ESTABLISHED" +
 			" -m comment --comment spinifex-nat-egress -j ACCEPT",
+		"iptables -t nat -I POSTROUTING 1 -s " + NATTransitCIDR + " -o " + NATTransitHostEnd +
+			" -m comment --comment spinifex-nat-egress -j " + EIPHairpinChain,
 	}
 	for _, want := range wantInserts {
 		if !r.called(want) {
@@ -86,5 +88,34 @@ func TestRemoveNATEgressRules_IgnoresMissing(t *testing.T) {
 	RemoveNATEgressRules(context.Background(), r)
 	if !r.called("iptables -t nat -D POSTROUTING") {
 		t.Errorf("expected POSTROUTING delete attempt, got %v", r.calls)
+	}
+}
+
+// The hairpin jump must end above the MASQUERADE: both terminate in nat, so
+// whichever is first decides the source, and MASQUERADE's is exempt from DNAT.
+func TestEnsureNATEgressRules_HairpinJumpPrecedesMasquerade(t *testing.T) {
+	r := newStubRunner()
+	r.expect("iptables -t nat -N", nil, nil)
+	r.expect("iptables -t nat -D", nil, fmt.Errorf("no match"))
+	r.expect("iptables -t filter -D", nil, fmt.Errorf("no match"))
+	r.expect("iptables -t nat -I", nil, nil)
+	r.expect("iptables -t filter -I", nil, nil)
+	if err := EnsureNATEgressRules(context.Background(), r); err != nil {
+		t.Fatalf("EnsureNATEgressRules: %v", err)
+	}
+	masq, jump := -1, -1
+	for i, c := range r.calls {
+		if strings.HasPrefix(c, "iptables -t nat -I POSTROUTING 1") && strings.HasSuffix(c, "-j MASQUERADE") {
+			masq = i
+		}
+		if strings.HasPrefix(c, "iptables -t nat -I POSTROUTING 1") && strings.HasSuffix(c, "-j "+EIPHairpinChain) {
+			jump = i
+		}
+	}
+	if masq < 0 || jump < 0 || jump < masq {
+		t.Fatalf("each insert goes to the head, so the jump must be inserted after the MASQUERADE: masq=%d jump=%d calls=%v", masq, jump, r.calls)
+	}
+	if !r.called("iptables -t nat -N " + EIPHairpinChain) {
+		t.Errorf("the hairpin chain was not created: %v", r.calls)
 	}
 }

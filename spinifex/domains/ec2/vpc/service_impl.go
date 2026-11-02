@@ -91,6 +91,7 @@ type VPCServiceImpl struct {
 	defaultsKV jetstream.KeyValue // one default-resource claim per account
 	rtbKV      jetstream.KeyValue // route table bucket for auto-creating main route table
 	igwKV      jetstream.KeyValue // internet gateway bucket for the DeleteVpc dependency check
+	eigwKV     jetstream.KeyValue // egress-only internet gateway bucket for the DeleteVpc dependency check
 	ipam       *IPAM
 
 	// Optional: injected after construction for public IP cleanup in DeleteNetworkInterface.
@@ -224,6 +225,10 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket spinifex-igw: %w", err)
 	}
+	eigwKV, err := kvutil.GetOrCreateBucket(ctx, js, "spinifex-eigw", 10)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KV bucket spinifex-eigw: %w", err)
+	}
 
 	ipam, err := NewIPAM(ctx, js)
 	if err != nil {
@@ -248,6 +253,7 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 		defaultsKV: defaultsKV,
 		rtbKV:      rtbKV,
 		igwKV:      igwKV,
+		eigwKV:     eigwKV,
 		ipam:       ipam,
 	}, nil
 }
@@ -492,10 +498,13 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 		}
 	}
 
-	// Reject if an internet gateway still names this VPC, as AWS does. Without
-	// this the gateway outlives the only VPC id that can detach it, and it can
-	// then never be detached or deleted.
-	if err := s.rejectAttachedIGW(ctx, accountID, vpcID); err != nil {
+	// Reject if an internet gateway or egress-only internet gateway still names
+	// this VPC, as AWS does. Without this the gateway outlives the only VPC id
+	// that can detach it, and it can then never be detached or deleted.
+	if err := rejectAttachedGateway(ctx, s.igwKV, accountID, vpcID); err != nil {
+		return nil, err
+	}
+	if err := rejectAttachedGateway(ctx, s.eigwKV, accountID, vpcID); err != nil {
 		return nil, err
 	}
 
@@ -538,22 +547,22 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	return &ec2.DeleteVpcOutput{}, nil
 }
 
-// rejectAttachedIGW returns DependencyViolation when an internet gateway record
+// rejectAttachedGateway returns DependencyViolation when a gateway record in kv
 // still names vpcID. It reads the raw record rather than a describe projection,
 // because an attachment awaiting confirmation is hidden from the AWS surface but
 // still blocks the delete.
-func (s *VPCServiceImpl) rejectAttachedIGW(ctx context.Context, accountID, vpcID string) error {
-	if s.igwKV == nil {
+func rejectAttachedGateway(ctx context.Context, kv jetstream.KeyValue, accountID, vpcID string) error {
+	if kv == nil {
 		return nil
 	}
 
 	prefix := accountID + "."
-	keys, err := s.igwKV.Keys(ctx)
+	keys, err := kv.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil
 		}
-		slog.WarnContext(ctx, "DeleteVpc: IGW key listing failed", "vpcId", vpcID, "err", err)
+		slog.WarnContext(ctx, "DeleteVpc: gateway key listing failed", "bucket", kv.Bucket(), "vpcId", vpcID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -561,7 +570,7 @@ func (s *VPCServiceImpl) rejectAttachedIGW(ctx context.Context, accountID, vpcID
 		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		entry, err := s.igwKV.Get(ctx, k)
+		entry, err := kv.Get(ctx, k)
 		if err != nil {
 			// Deleted between Keys() and Get() is fine to skip. Any other read
 			// error is fail-closed: an attachment this cannot see must not let
@@ -569,19 +578,18 @@ func (s *VPCServiceImpl) rejectAttachedIGW(ctx context.Context, accountID, vpcID
 			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
-			slog.WarnContext(ctx, "DeleteVpc: IGW read failed", "key", k, "err", err)
+			slog.WarnContext(ctx, "DeleteVpc: gateway read failed", "bucket", kv.Bucket(), "key", k, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		var igw struct {
-			InternetGatewayId string `json:"internet_gateway_id"`
-			VpcId             string `json:"vpc_id"`
+		var gw struct {
+			VpcId string `json:"vpc_id"`
 		}
-		if err := json.Unmarshal(entry.Value(), &igw); err != nil {
-			slog.WarnContext(ctx, "DeleteVpc: IGW unmarshal failed", "key", k, "err", err)
+		if err := json.Unmarshal(entry.Value(), &gw); err != nil {
+			slog.WarnContext(ctx, "DeleteVpc: gateway unmarshal failed", "bucket", kv.Bucket(), "key", k, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		if igw.VpcId == vpcID {
-			slog.WarnContext(ctx, "DeleteVpc: VPC has an attached internet gateway", "vpcId", vpcID, "internetGatewayId", igw.InternetGatewayId)
+		if gw.VpcId == vpcID {
+			slog.WarnContext(ctx, "DeleteVpc: VPC has an attached gateway", "bucket", kv.Bucket(), "vpcId", vpcID, "key", k)
 			return awserrors.HasDependencies("vpc", vpcID)
 		}
 	}

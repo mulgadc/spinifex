@@ -35,6 +35,8 @@ resources:
 
 An EKS cluster on Spinifex has two parts: a **control plane** (the managed Kubernetes API server, provisioned on a Spinifex-managed VM and fronted by a network load balancer) and one or more **managed node groups** of worker VMs that run your pods. You provide the VPC, subnets, and IAM roles; Spinifex creates and reconciles the cluster, its load balancer, and its security groups.
 
+Control-plane hosts are not Kubernetes Nodes, as on AWS: `kubectl get nodes` lists only your node group workers, so a cluster with no node group lists none, and no pod runs on a control-plane host. Add-ons that used to tolerate the control-plane `CriticalAddonsOnly` taint, such as CoreDNS, metrics-server and konnectivity-agent, run on workers, so a Ready worker is required before they become available.
+
 Authentication uses **EKS access entries** (the API authentication mode) — IAM principals are mapped to Kubernetes RBAC groups, and `kubectl` authenticates with `aws eks get-token` exactly as it does on AWS.
 
 <p align="center">
@@ -58,6 +60,10 @@ Authentication uses **EKS access entries** (the API authentication mode) — IAM
 - **Access entries are the only auth path.** `authentication_mode` accepts `API` (the default when unset) and `API_AND_CONFIG_MAP`; bare `CONFIG_MAP` is rejected. Spinifex has no `aws-auth` ConfigMap path, so `API_AND_CONFIG_MAP` behaves as `API`: grant access with access entries.
 - **Security groups are auto-managed.** Spinifex creates the cluster and node-group security groups deterministically (e.g. `eks-cluster-<name>-nodegroup-sg`); `vpc_config.security_group_ids` is ignored. To expose a workload you add an ingress rule to the auto-managed node-group SG.
 - **The worker image is fixed.** Node groups always boot Spinifex's `eks-node` image. `ami_type` is recorded but does not select the image, and the image must be registered on the cluster before you create a node group.
+- **Workers launch with IMDSv2 required and an IMDS hop limit of 2.**
+  This matches AWS managed node groups and lets a pod without IRSA reach the node role through the SDK default credential chain.
+  A node group launch template that sets `metadata_options` overrides each field it sets, and any field it leaves unset keeps the default.
+  Existing workers keep their hop limit until they are replaced or changed with `ModifyInstanceMetadataOptions`.
 - **Default Kubernetes version is `1.32`.**
 
 ### Control plane readiness and kubectl authentication
@@ -167,6 +173,8 @@ aws eks wait nodegroup-active --cluster-name demo --nodegroup-name default
 aws eks update-kubeconfig --name demo
 kubectl get nodes
 ```
+
+The list shows the node group workers only. The control-plane VMs never appear as Nodes.
 
 ### 4. Expose a workload
 
@@ -279,6 +287,12 @@ kubectl get nodes
 The workbooks form a ladder. **eks-quickstart** is a NodePort demo; **eks-https-ingress** adds private subnets, a NAT gateway, and HTTPS via the AWS Load Balancer Controller + ACM; **eks-gitops-argocd** delivers the app from a git repo with the Argo CD addon and persists state on an EBS-CSI (Viperblock-backed) volume. See the full templates linked in Resources.
 
 :::
+
+### Upgrade notes
+
+**Control-plane hosts no longer register as Nodes.** `kubectl get nodes` shows workers only, so node counts drop by the number of control planes, for example 6 to 3 on a three-control-plane cluster with three workers. Add-ons that tolerated `CriticalAddonsOnly` now run on workers.
+
+**Existing clusters keep the old behaviour.** A cluster created before this change keeps registering its control planes as tainted Nodes until it is recreated. Recreate the cluster to adopt the new behaviour: automatic control-plane replacement does not currently work when the replacement reuses the failed member's IP, so it is not a supported way to upgrade.
 
 ## Troubleshooting
 

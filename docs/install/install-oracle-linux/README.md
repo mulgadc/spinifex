@@ -1,12 +1,13 @@
 ---
 title: "Oracle Linux Hosts"
 seoTitle: "Install Spinifex on Oracle Linux 10 — Spinifex Docs"
-description: "Prepare an Oracle Linux 10 host for Spinifex: UEK R8, SELinux, a NetworkManager br-wan bridge, the CentOS NFV SIG repository, firewalld handover and updates."
+description: "Prepare Oracle Linux 10 hosts for Spinifex: UEK R8, SELinux, a NetworkManager br-wan bridge, the NFV SIG repository, IPsec on libreswan and host updates."
 category: "Install"
 tags:
   - install
   - oracle linux
   - single node
+  - multi node
 resources:
   - title: "Oracle Linux 10 Documentation"
     url: "https://docs.oracle.com/en/operating-systems/oracle-linux/10/"
@@ -35,13 +36,12 @@ Follow it alongside [Single-Node Install](/docs/install).
 
 **Supported on Oracle Linux:**
 
-- A single node.
+- A single node, or a cluster in which every node runs Oracle Linux; servers beyond the third join as compute nodes, as on Debian.
 - Guests, VPCs, routed NAT, Elastic IPs, and Application and Network Load Balancers.
 - Whole-GPU passthrough, on x86_64 GPU hosts (see [GPU Passthrough](/docs/gpu-passthrough)).
 
 **Not supported on Oracle Linux yet:**
 
-- Clusters of more than one node. They wait for IPsec on libreswan, so `spx admin init` turns IPsec off on Oracle Linux and refuses `--ipsec=true`.
 - Clusters that mix Oracle Linux with Debian or Ubuntu nodes, on any release.
 - SELinux enforcing, aarch64, Oracle Linux 9 or earlier, the Red Hat Compatible Kernel, a ZFS root, and NVIDIA MIG.
 
@@ -51,7 +51,7 @@ Spinifex installs `openvswitch3.5` and `ovn25.03`, the versions Debian 13 ships,
 QEMU comes from Oracle's KVM Utilities repository, because only that build has the `microvm` machine type Spinifex load balancers boot on.
 
 An Oracle Linux node must be a dedicated Spinifex host.
-Spinifex claims every `tap*` device and stops libreswan's `ipsec.service`, so VPNs, hand-run QEMU guests and libreswan tunnels of your own cannot share the host.
+Spinifex claims every `tap*` device and owns libreswan's `ipsec.service`, which it keeps stopped on a single node and runs for its own tunnels on a cluster node, so VPNs, hand-run QEMU guests and libreswan tunnels of your own cannot share the host.
 Crypto policies other than `DEFAULT` and `FIPS` are untested, and so is Secure Boot.
 
 ## Prerequisites
@@ -134,8 +134,28 @@ Run the installer as a user with `sudo`, exactly as on Debian:
 curl -fsSL https://install.mulgadc.com | bash
 ```
 
-Then continue with [Single-Node Install](/docs/install) from Step 2: `setup-ovn.sh --management`, `spx admin init` and `systemctl start spinifex.target`.
-`spx admin init` prints that IPsec is off on this host; on a single node there is no peer to encrypt traffic to.
+For a single node, continue with [Single-Node Install](/docs/install) from Step 2: `setup-ovn.sh --management`, `spx admin init` and `systemctl start spinifex.target`.
+IPsec stays off on a single node, because there is no peer to encrypt traffic to.
+
+For a cluster, prepare and install every node this way, then continue with [Multi-Node Install](/docs/install-multi-node) from Step 2.
+
+### Clusters
+
+Every node in an Oracle Linux cluster runs Oracle Linux.
+`install-node.sh` refuses a host list that mixes Oracle Linux with Debian or Ubuntu, but `spx admin join` does not check, so keep to one OS yourself when joining by hand.
+
+IPsec encrypts the Geneve tunnels between nodes and is on by default, as on Debian.
+On Oracle Linux it runs on libreswan, the IKE daemon Oracle ships, rather than strongSwan.
+Once the node's IPsec certificate exists, the daemon unmasks and starts `ipsec.service` and `openvswitch-ipsec.service`.
+`ovs-monitor-ipsec` then loads the node certificate, its key and the cluster CA into libreswan's NSS database at `/var/lib/ipsec/nss`, under nicknames that start with `ovs_cert`.
+
+The tunnels are plain ESP (IP protocol 50), as on Debian, negotiated over UDP 500.
+Open UDP 500, UDP 4500 and ESP between nodes: libreswan moves to UDP 4500 if it detects NAT between two nodes.
+The Spinifex host firewall opens all three to cluster peers; a firewall between the nodes must allow them too.
+While IKE to a peer fails, the node drops its Geneve traffic to that peer rather than send it in clear.
+The nft table `inet spinifex_ipsec_guard` drops outbound UDP 6081 from the encap address whose route carries no SA, which also covers the moments pluto flushes the xfrm policy table as it starts and stops.
+It is not persisted: `ipsec.service` puts it back at boot before ovn-controller builds the tunnels, and the daemon re-syncs it every 60 seconds.
+`spx admin init --ipsec=false` leaves the tunnels unencrypted, as on any OS.
 
 ## Step 2. Know What the Installer Changed
 
@@ -144,7 +164,7 @@ On Oracle Linux the installer makes these changes, which Debian hosts do not nee
 - **Repositories.** It enables `ol10_UEKR8` and `ol10_kvm_utils`, and adds `qemu-kvm*` and `qemu-img*` to the `excludepkgs` of `ol10_appstream`, keeping any excludes already set, so a later AppStream build can never replace the KVM Utilities QEMU.
 - **NFV SIG.** It writes `/etc/yum.repos.d/spinifex-nfv-sig.repo` with an `includepkgs=` list of the OVS and OVN packages, and imports the SIG key to `/etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-SIG-NFV` only when its fingerprint is `35154228174901BEFA8E69A621465E289D2A76A7`.
 - **OVS and OVN user.** Both run as root, as on Debian, through `OVS_USER_ID` and `OVN_USER_ID` in `/etc/sysconfig/openvswitch` and `/etc/sysconfig/ovn`.
-- **DNS.** Where systemd-resolved is installed but not running, it saves `/etc/resolv.conf` to `/var/lib/spinifex-reset/resolv.conf.orig`, starts resolved behind NetworkManager and links `/etc/resolv.conf` to the resolved stub. It then checks that names still resolve and stops, printing the commands that put DNS back, if they do not.
+- **DNS.** Where systemd-resolved is installed but not running, it saves `/etc/resolv.conf` to `/var/lib/spinifex-reset/resolv.conf.orig`, starts resolved behind NetworkManager, tells NetworkManager in `/etc/NetworkManager/conf.d/90-spinifex-dns.conf` to leave `/etc/resolv.conf` alone, and links `/etc/resolv.conf` to the resolved stub. It then checks that names still resolve and stops, printing the commands that put DNS back, if they do not.
 - **chrony.** It appends `confdir /etc/chrony.d` to `/etc/chrony.conf` once, and writes its step policy to `/etc/chrony.d/spinifex.conf`.
 - **`spx` under `sudo`.** Oracle Linux's `sudo` path leaves out `/usr/local/bin`, so the installer links `/usr/bin/spx` to `/usr/local/bin/spx`.
 
@@ -182,7 +202,9 @@ Those advisories do not cover the NFV SIG packages, so follow Open vSwitch and O
 
 ## Step 5. Uninstall
 
-`/usr/local/share/spinifex/uninstall-spx.sh` removes Spinifex as on Debian, and lists what it leaves in place on Oracle Linux: the repository changes and the SIG key, `OVS_USER_ID` and `OVN_USER_ID`, the OVS and OVN logrotate edits, the chrony include, `/etc/modules-load.d/spinifex.conf`, the SELinux mode, a masked `ipsec.service`, firewalld disabled, and any GPU passthrough configuration.
+`/usr/local/share/spinifex/uninstall-spx.sh` removes Spinifex as on Debian.
+On a cluster node it also stops `openvswitch-ipsec.service` and deletes the `ovs_cert*` entries from libreswan's NSS database, so the node can join a different cluster; other NSS identities and your connection files in `/etc/ipsec.d` stay.
+It lists what it leaves in place on Oracle Linux: the repository changes and the SIG key, `OVS_USER_ID` and `OVN_USER_ID`, the OVS and OVN logrotate edits, the chrony include, `/etc/modules-load.d/spinifex.conf`, the SELinux mode, a masked `ipsec.service`, firewalld disabled, and any GPU passthrough configuration.
 `--purge-deps` is refused on Oracle Linux, because dnf cannot tell the packages Spinifex installed from the host's own; remove them with `dnf remove` yourself.
 
 ## Troubleshooting
@@ -223,6 +245,20 @@ If it prints `yes`, run `sudo nmcli connection modify br-wan bridge.stp no` and 
 ### `sudo spx` finds no command
 
 Check that `/usr/bin/spx` links to `/usr/local/bin/spx`; run the installer again if it does not, or call `sudo /usr/local/bin/spx` meanwhile.
+
+### Cluster nodes form no IPsec tunnels
+
+Check that both IPsec services run, and that libreswan holds the node's certificate and the cluster CA:
+
+```bash
+systemctl is-active ipsec.service openvswitch-ipsec.service
+sudo certutil -L -d sql:/var/lib/ipsec/nss     # ovs_certkey_<node>, ovs_cert_cacert
+sudo ipsec trafficstatus                       # one line per peer tunnel
+```
+
+If the services are inactive, check the daemon log with `journalctl -u spinifex-daemon` for the IPsec reconcile.
+If the certificates are present but no tunnel is listed, check that UDP 500 and ESP pass between the nodes in both directions, and look for `SEC_ERROR_UNKNOWN_ISSUER` in `journalctl -u ipsec`, which means a peer's certificate is from another CA.
+Until the tunnel forms, guest traffic between those two nodes is dropped, which is the guard in [Clusters](#clusters) working.
 
 ### CA certificate not trusted
 

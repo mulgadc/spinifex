@@ -8,7 +8,8 @@
     "arch": "x86_64",
     "runner": "ci-single",
     "extra": "",
-    "suite": ""
+    "suite": "",
+    "timeout_minutes": 60
   },
   {
     "cell": 2,
@@ -19,7 +20,8 @@
     "arch": "x86_64",
     "runner": "ci-single",
     "extra": "",
-    "suite": ""
+    "suite": "",
+    "timeout_minutes": 60
   },
   {
     "cell": 3,
@@ -30,7 +32,8 @@
     "arch": "x86_64",
     "runner": "ci-single",
     "extra": "",
-    "suite": ""
+    "suite": "",
+    "timeout_minutes": 60
   },
   {
     "cell": 8,
@@ -165,7 +168,7 @@
     "runner": "ci-multi",
     "extra": "",
     "suite": "instancerecovery",
-    "timeout_minutes": 105
+    "timeout_minutes": 125
   },
   {
     "cell": 32,
@@ -200,7 +203,8 @@
     "arch": "x86_64",
     "runner": "ci-single",
     "extra": "",
-    "suite": ""
+    "suite": "",
+    "timeout_minutes": 60
   },
   {
     "cell": 35,
@@ -222,6 +226,28 @@
     "arch": "x86_64",
     "runner": "ci-single",
     "extra": "nat-single",
+    "suite": ""
+  },
+  {
+    "cell": 37,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "dhcp",
+    "host": "oracle-10",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "",
+    "suite": ""
+  },
+  {
+    "cell": 38,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "nat",
+    "host": "oracle-10",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "nat-multi",
     "suite": ""
   }
 ]

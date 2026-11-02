@@ -29,8 +29,9 @@
 #
 # /usr/local/bin/spx, the nbdkit plugin, /usr/local/{share,lib}/spinifex,
 # /usr/share/spinifex, every spinifex systemd unit and slice, the eight
-# spinifex-* service users, the sudoers grant, the sysctl/logrotate/chrony/udev
-# drop-ins, the host firewall policy and its loaded nft table, the OVS bridges
+# spinifex-* service users, the sudoers grant, the sysctl, logrotate, chrony,
+# needrestart and udev drop-ins, the host firewall policy and its loaded nft
+# table, the OVS bridges
 # and OVN databases, the Spinifex resolved drop-in, and the Spinifex CA from the
 # host trust store. Where setup.sh turned on systemd-resolved, it restores
 # /etc/resolv.conf and turns resolved off.
@@ -237,7 +238,7 @@ fi
 log "stopping services"
 run sudo systemctl stop spinifex.target 2>/dev/null || true
 if ! $DRY_RUN; then
-    for unit in spinifex-predastore spinifex-viperblock spinifex-sqs-store spinifex-nats; do
+    for unit in spinifex-predastore spinifex-viperblock spinifex-nats; do
         if systemctl is-active --quiet "$unit"; then
             sudo systemctl stop "$unit" || true
         fi
@@ -292,18 +293,20 @@ fi
 # file behind it is unreachable after the next reboot and unexplainable to
 # whoever inherits it.
 #
-# Only our own table and our own marked rules, never a global flush: setup.sh
-# creates exactly `table inet spinifex_filter`, and vpcd writes iptables rules
-# carrying the comments below. Anything else on this host belongs to someone
-# else.
+# Only our own tables and our own marked rules, never a global flush: setup.sh
+# creates exactly `table inet spinifex_filter` and `table inet
+# spinifex_conntrack`, and vpcd writes iptables rules carrying the comments
+# below. Anything else on this host belongs to someone else.
 # ---------------------------------------------------------------------------
 log "unloading the host firewall policy"
 if command -v nft >/dev/null 2>&1; then
-    if sudo nft list table inet spinifex_filter >/dev/null 2>&1; then
-        run sudo nft delete table inet spinifex_filter
-    else
-        log "  no inet spinifex_filter table loaded"
-    fi
+    for nft_table in spinifex_filter spinifex_conntrack; do
+        if sudo nft list table inet "$nft_table" >/dev/null 2>&1; then
+            run sudo nft delete table inet "$nft_table"
+        else
+            log "  no inet $nft_table table loaded"
+        fi
+    done
 fi
 if command -v iptables-save >/dev/null 2>&1 && ! $DRY_RUN; then
     for marker in spinifex-nat-egress spinifex-eip-ingress spinifex-imds spinifex-imds-remap; do
@@ -362,9 +365,10 @@ rm_path /etc/systemd/system/openvswitch-switch.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-controller.service.d/log-level.conf \
         /etc/systemd/system/openvswitch-ipsec.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-northd.service.d/spinifex-perms.conf \
-        /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf
+        /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf \
+        /etc/systemd/system/ipsec.service.d/spinifex-guard.conf
 # Only if we emptied them — another package may own the same override dir.
-for d in openvswitch-switch ovs-vswitchd ovn-controller openvswitch-ipsec ovn-northd; do
+for d in openvswitch-switch ovs-vswitchd ovn-controller openvswitch-ipsec ovn-northd ipsec; do
     dir="/etc/systemd/system/${d}.service.d"
     if sudo test -d "$dir" && [ -z "$(sudo ls -A "$dir" 2>/dev/null)" ]; then
         rm_path "$dir"
@@ -431,6 +435,11 @@ if [ -z "$PLUGINDIR" ]; then
 fi
 [ -n "$PLUGINDIR" ] && rm_path "$PLUGINDIR/nbdkit-viperblock-plugin.so"
 
+# A leftover guard table drops all Geneve from this host's encap address until
+# reboot, and the helper is the one place that names it.
+if [ -x /usr/local/lib/spinifex/spinifex-set-ipsec-state ]; then
+    run sudo /usr/local/lib/spinifex/spinifex-set-ipsec-state unguard || true
+fi
 rm_path /usr/local/bin/spx \
         /usr/local/share/spinifex \
         /usr/local/lib/spinifex \
@@ -451,6 +460,7 @@ rm_path /etc/sysctl.d/*spinifex* \
         /etc/sudoers.d/spinifex-network \
         /etc/chrony/conf.d/spinifex.conf \
         /etc/chrony.d/spinifex.conf \
+        /etc/needrestart/conf.d/90-spinifex.conf \
         /etc/logrotate.d/spinifex \
         /etc/tmpfiles.d/spinifex.conf \
         /etc/udev/rules.d/*spinifex* \
@@ -493,7 +503,7 @@ fi
 # userdel warns about a missing home. Order here is cosmetic, not correctness.
 # ---------------------------------------------------------------------------
 log "removing service users and groups"
-for svc in nats sqsstore gw daemon storage northstar viperblock vpcd ui; do
+for svc in nats gw daemon storage northstar viperblock vpcd ui; do
     user="spinifex-${svc}"
     if id -u "$user" >/dev/null 2>&1; then
         run sudo userdel "$user" 2>/dev/null || log "  NOTE: could not remove user $user"
@@ -609,6 +619,7 @@ if ! $DRY_RUN; then
              /usr/share/spinifex "$ETC_DIR" "$LOG_DIR" \
              /etc/sudoers.d/spinifex-network /etc/logrotate.d/spinifex /etc/tmpfiles.d/spinifex.conf \
              /etc/chrony/conf.d/spinifex.conf /etc/chrony.d/spinifex.conf "$RESOLV_CONF_SAVED" \
+             /etc/needrestart/conf.d/90-spinifex.conf \
              "$RESOLVED_DROPIN"; do
         exists "$p" && LEFT+=("$p")
     done
@@ -619,6 +630,7 @@ if ! $DRY_RUN; then
              /etc/NetworkManager/conf.d/*spinifex* \
              /etc/systemd/system/*.service.d/spinifex-perms.conf \
              /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf \
+             /etc/systemd/system/ipsec.service.d/spinifex-guard.conf \
              /etc/systemd/system/ovn-controller.service.d/log-level.conf; do
         exists "$p" && LEFT+=("$p")
     done
@@ -628,12 +640,14 @@ if ! $DRY_RUN; then
     for u in "${RESTART_UNITS[@]}"; do
         systemctl is-failed --quiet "$u" 2>/dev/null && LEFT+=("${u%.service}.service is failed")
     done
-    for svc in nats sqsstore gw daemon storage northstar viperblock vpcd ui; do
+    for svc in nats gw daemon storage northstar viperblock vpcd ui; do
         id -u "spinifex-${svc}" >/dev/null 2>&1 && LEFT+=("user spinifex-${svc}")
     done
-    if command -v nft >/dev/null 2>&1 && sudo nft list table inet spinifex_filter >/dev/null 2>&1; then
-        LEFT+=("nft table inet spinifex_filter")
-    fi
+    for nft_table in spinifex_filter spinifex_conntrack; do
+        if command -v nft >/dev/null 2>&1 && sudo nft list table inet "$nft_table" >/dev/null 2>&1; then
+            LEFT+=("nft table inet $nft_table")
+        fi
+    done
     $PURGE_DATA && [ -e "$DATA_DIR" ] && ! mountpoint -q "$DATA_DIR" 2>/dev/null && LEFT+=("$DATA_DIR")
 
     if [ "${#LEFT[@]}" -gt 0 ]; then

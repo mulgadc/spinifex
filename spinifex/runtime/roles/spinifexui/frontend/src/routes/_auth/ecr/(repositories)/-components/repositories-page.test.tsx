@@ -19,7 +19,13 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return await mockRouter(importOriginal, { navigate: routerState.navigate })
 })
 
+import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+
 import { RepositoriesPage } from "./repositories-page"
+
+function Page({ search = CLOSED_PANEL }: { search?: PanelSearch }) {
+  return <RepositoriesPage onSearchChange={vi.fn()} search={search} />
+}
 
 function seed(repositories: unknown[]) {
   const qc = createTestQueryClient()
@@ -37,7 +43,7 @@ const REPO = {
 
 describe("RepositoriesPage", () => {
   it("renders repository rows", () => {
-    renderWithClient(<RepositoriesPage />, seed([REPO]))
+    renderWithClient(<Page />, seed([REPO]))
     expect(screen.getByRole("link", { name: "team/app" })).toHaveAttribute(
       "href",
       "/ecr/list-repositories/team%2Fapp",
@@ -49,20 +55,25 @@ describe("RepositoriesPage", () => {
   })
 
   it("shows empty state with no repositories", () => {
-    renderWithClient(<RepositoriesPage />, seed([]))
+    renderWithClient(<Page />, seed([]))
     expect(screen.getByText("No repositories found.")).toBeInTheDocument()
   })
 
-  it("opens the create dialog", () => {
-    renderWithClient(<RepositoriesPage />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Create Repository" }))
+  it("opens the create form in the panel", async () => {
+    renderWithClient(
+      <Page search={{ ...CLOSED_PANEL, create: true }} />,
+      seed([]),
+    )
+    await expect(
+      screen.findByRole("region", { name: "Create repository" }),
+    ).resolves.toBeInTheDocument()
     expect(
       screen.getByText(/Repository names may include namespaces/),
     ).toBeInTheDocument()
   })
 
   it("opens the delete confirmation for a repo", () => {
-    renderWithClient(<RepositoriesPage />, seed([REPO]))
+    renderWithClient(<Page />, seed([REPO]))
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
     expect(
       screen.getByText(/permanently deletes team\/app/),

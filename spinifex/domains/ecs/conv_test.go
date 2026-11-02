@@ -70,7 +70,7 @@ func TestContainerDefRoundTrip(t *testing.T) {
 	assert.Equal(t, 8080, d.PortMappings[0].HostPort)
 	assert.Equal(t, "http", d.PortMappings[0].Name)
 
-	back := containerToAWS(d)
+	back := containerToAWS(d, "")
 	assert.Equal(t, "registry/web:1", aws.StringValue(back.Image))
 	assert.Equal(t, int64(80), aws.Int64Value(back.PortMappings[0].ContainerPort))
 	assert.Equal(t, "http", aws.StringValue(back.PortMappings[0].Name))
@@ -91,7 +91,7 @@ func TestContainerDefRoundTrip_PortNameOmittedWhenUnset(t *testing.T) {
 	defs := containerDefsFromAWS(in)
 	require.Len(t, defs, 1)
 	assert.Empty(t, defs[0].PortMappings[0].Name)
-	back := containerToAWS(defs[0])
+	back := containerToAWS(defs[0], "")
 	assert.Nil(t, back.PortMappings[0].Name)
 }
 
@@ -113,7 +113,7 @@ func TestContainerDefsFromAWS_GPU(t *testing.T) {
 	require.Len(t, defs, 1)
 	assert.Equal(t, 2, defs[0].GPU)
 
-	back := containerToAWS(defs[0])
+	back := containerToAWS(defs[0], "")
 	require.Len(t, back.ResourceRequirements, 1)
 	assert.Equal(t, ecs.ResourceTypeGpu, aws.StringValue(back.ResourceRequirements[0].Type))
 	assert.Equal(t, "2", aws.StringValue(back.ResourceRequirements[0].Value))
@@ -129,7 +129,7 @@ func TestContainerDefsFromAWS_NoGPU_Regression(t *testing.T) {
 	defs := containerDefsFromAWS(in)
 	require.Len(t, defs, 1)
 	assert.Zero(t, defs[0].GPU)
-	assert.Empty(t, containerToAWS(defs[0]).ResourceRequirements)
+	assert.Empty(t, containerToAWS(defs[0], "").ResourceRequirements)
 	assert.Zero(t, containerToAssign(defs[0]).GPU)
 }
 
@@ -174,9 +174,9 @@ func TestContainerDefsFromAWS_EssentialDefaultsTrue(t *testing.T) {
 	})
 	require.Len(t, defs, 3)
 	assert.True(t, defs[0].Essential)
-	assert.True(t, aws.BoolValue(containerToAWS(defs[0]).Essential))
+	assert.True(t, aws.BoolValue(containerToAWS(defs[0], "").Essential))
 	assert.True(t, containerToAssign(defs[0]).Essential)
 	assert.False(t, defs[1].Essential)
-	assert.False(t, aws.BoolValue(containerToAWS(defs[1]).Essential))
+	assert.False(t, aws.BoolValue(containerToAWS(defs[1], "").Essential))
 	assert.True(t, defs[2].Essential)
 }

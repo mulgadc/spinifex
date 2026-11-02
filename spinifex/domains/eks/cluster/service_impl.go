@@ -95,6 +95,11 @@ type EKSServiceDeps struct {
 	// touches. Nil disables the reclaim step.
 	Volume csiVolumeReclaimer
 
+	// LaunchTemplates resolves a nodegroup's launch template version so a worker
+	// launches with the template's metadata options. Nil rejects a nodegroup
+	// launch that names a template.
+	LaunchTemplates launchTemplateVersionReader
+
 	// IAM backs a nodegroup's node role with an instance profile so workers expose
 	// the role over IMDS for the ECR credential provider. Nil disables the wiring
 	// (workers launch without a profile and cannot pull from the internal ECR).
@@ -1119,10 +1124,7 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 	meta, err := GetClusterMeta(ctx, acctKV, name)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			// Idempotent: a cluster already swept from KV is "deleted". Returning
-			// success lets a tofu destroy retry / double-targeted delete converge
-			// instead of failing the run (Common Resource Lifecycle Contract #1).
-			return &eks.DeleteClusterOutput{}, nil
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
 	}
@@ -2440,4 +2442,10 @@ func deref(p *string, fallback string) string {
 		return fallback
 	}
 	return *p
+}
+
+// launchTemplateVersionReader is the narrow launch-template surface a worker
+// launch needs: the same call EC2 RunInstances uses to expand a template.
+type launchTemplateVersionReader interface {
+	DescribeLaunchTemplateVersions(ctx context.Context, input *ec2.DescribeLaunchTemplateVersionsInput, accountID string) (*ec2.DescribeLaunchTemplateVersionsOutput, error)
 }

@@ -110,7 +110,7 @@ type AWSConfig struct {
 // ExternalPool defines a range of routable IPs that Spinifex manages for public subnets.
 type ExternalPool struct {
 	Name       string   `mapstructure:"name"`        // Pool identifier (e.g., "wan", "dc1-primary")
-	Source     string   `mapstructure:"source"`      // IP source: "static" (default), "dhcp", "oci" or "exoscale"
+	Source     string   `mapstructure:"source"`      // IP source: "static" (default), "dhcp", "oci", "exoscale" or "vultr"
 	BindBridge string   `mapstructure:"bind_bridge"` // Linux bridge for DHCP DORA (source=dhcp only)
 	DHCPMAC    string   `mapstructure:"dhcp_mac"`    // DHCP client MAC strategy: "derived" (default) or "interface" (source=dhcp only)
 	RangeStart string   `mapstructure:"range_start"` // First IP in range (static source only)
@@ -147,6 +147,19 @@ type ExternalPool struct {
 	ExoscaleConfigFile string `mapstructure:"exoscale_config_file"` // exo CLI config holding the API key (optional; see exoscale.DefaultConfigFile)
 	ExoscaleAccount    string `mapstructure:"exoscale_account"`     // Account name within that file (optional; the file's default)
 	ExoscaleBinary     string `mapstructure:"exoscale_binary"`      // Absolute path to exo (optional; see exoscale.DefaultBinary)
+
+	// Vultr names the region the reserved IPs are created in and the API key
+	// file (source=vultr only). Each node's instance ID is provider_host_id
+	// on the node, since the address moves between nodes.
+	VultrRegion  string `mapstructure:"vultr_region"`   // Vultr region ID, e.g. "ord"; never derived from the Spinifex region
+	VultrKeyFile string `mapstructure:"vultr_key_file"` // API key file (optional; see vultr.DefaultKeyFile)
+	LabelPrefix  string `mapstructure:"label_prefix"`   // Marks this deployment's addresses, e.g. "spinifex-prod"
+}
+
+// hasVultrKeys reports whether any vultr_* key, or the label prefix only a
+// floating pool reads, is set.
+func (p ExternalPool) hasVultrKeys() bool {
+	return p.VultrRegion != "" || p.VultrKeyFile != "" || p.LabelPrefix != ""
 }
 
 // hasExoscaleKeys reports whether any exoscale_* key is set.
@@ -235,6 +248,11 @@ type Config struct {
 	DataDir     string   `json:"DataDir" mapstructure:"data_dir"`
 	Services    []string `json:"Services" mapstructure:"services"` // Which services this node runs locally
 
+	// ProviderHostID is this node's instance ID at its cloud provider, which a
+	// floating public address is attached to. Required on every node when a
+	// source="vultr" pool exists.
+	ProviderHostID string `json:"ProviderHostID,omitempty" mapstructure:"provider_host_id"`
+
 	Daemon      DaemonConfig      `json:"Daemon" mapstructure:"daemon"`
 	NATS        NATSConfig        `json:"NATS" mapstructure:"nats"`
 	Predastore  PredastoreConfig  `json:"Predastore" mapstructure:"predastore"`
@@ -247,6 +265,7 @@ type Config struct {
 	ACM         ACMConfig         `json:"ACM" mapstructure:"acm"`
 	Bedrock     BedrockConfig     `json:"Bedrock" mapstructure:"bedrock"`
 	OchreVector OchreVectorConfig `json:"OchreVector" mapstructure:"ochre_vector"`
+	SQS         SQSConfig         `json:"SQS" mapstructure:"sqs"`
 
 	BaseDir string `json:"BaseDir" mapstructure:"base_dir"`
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
@@ -447,6 +466,19 @@ type BedrockConfig struct {
 // (10.248.0.0/14) and EKS control-plane (10.252.0.0/14) supernets.
 const BedrockDefaultSystemVPCSupernet = "10.244.0.0/14"
 
+// SQSConfig is a node's [sqs] section. The SQS worker and store VMs share one
+// private system VPC per region, with no internet or NAT gateway.
+type SQSConfig struct {
+	// The IPv4 /14 the system VPC's /22 is carved from. It must not overlap the
+	// RDS, Bedrock or EKS control-plane supernets or any customer VPC CIDR.
+	SystemVPCSupernet string `json:"SystemVPCSupernet" mapstructure:"system_vpc_supernet"`
+}
+
+// SQSDefaultSystemVPCSupernet anchors the SQS system VPC address space at
+// 10.240.0.0/14, immediately below and disjoint from the Bedrock, RDS and EKS
+// control-plane supernets.
+const SQSDefaultSystemVPCSupernet = "10.240.0.0/14"
+
 // OchreVectorConfig gates the Ochre vector store's platform Postgres
 // appliance and VectorService NATS surface. Disabled by default: an unset
 // section constructs nothing and registers no ochre.vector.* subjects, so an
@@ -592,6 +624,20 @@ func (c Config) HasService(name string) bool {
 	return slices.Contains(services, name)
 }
 
+// NodesRunning returns, sorted, the name of every configured node that runs
+// service. It is the single definition of "which nodes run X" for callers that
+// must reach every process of one kind.
+func (cc *ClusterConfig) NodesRunning(service string) []string {
+	var nodes []string
+	for name, node := range cc.Nodes {
+		if node.HasService(service) {
+			nodes = append(nodes, name)
+		}
+	}
+	slices.Sort(nodes)
+	return nodes
+}
+
 // GetServices returns the configured service list, defaulting to AllServices.
 func (c Config) GetServices() []string {
 	if len(c.Services) == 0 {
@@ -720,6 +766,41 @@ func validateNorthstarCluster(cc *ClusterConfig) error {
 }
 
 // validateClusterConfig rejects legacy DHCP config keys and validates external pool ranges.
+// validateVultrPool checks a source="vultr" pool. Vultr picks each address
+// and routes it to the holder's MAC, so the range, gateway and DHCP keys mean
+// nothing, and every node must name the instance the address attaches to.
+func validateVultrPool(cc *ClusterConfig, p ExternalPool) error {
+	if p.VultrRegion == "" || p.LabelPrefix == "" {
+		return fmt.Errorf("config: [[network.external_pools]] %q: source=\"vultr\" requires vultr_region and label_prefix", p.Name)
+	}
+	if strings.Contains(p.LabelPrefix, ":") {
+		return fmt.Errorf("config: [[network.external_pools]] %q: label_prefix %q must not contain ':', which separates it from the owner in each label", p.Name, p.LabelPrefix)
+	}
+	if p.VultrKeyFile != "" && !filepath.IsAbs(p.VultrKeyFile) {
+		return fmt.Errorf("config: [[network.external_pools]] %q: vultr_key_file must be an absolute path, got %q", p.Name, p.VultrKeyFile)
+	}
+	if p.BindBridge != "" || p.DHCPMAC != "" {
+		return fmt.Errorf("config: [[network.external_pools]] %q: bind_bridge/dhcp_mac are only valid with source=\"dhcp\"", p.Name)
+	}
+	if p.RangeStart != "" || p.RangeEnd != "" || p.Gateway != "" || p.GatewayIP != "" {
+		return fmt.Errorf("config: [[network.external_pools]] %q: range_start/range_end/gateway/gateway_ip not allowed with source=\"vultr\" (Vultr picks the address)", p.Name)
+	}
+	if p.GwLrpRangeStart != "" || p.GwLrpRangeEnd != "" {
+		return fmt.Errorf("config: [[network.external_pools]] %q: gw_lrp_range_start/gw_lrp_range_end not allowed with source=\"vultr\" (a reserved IP per VPC gateway would exhaust the account quota)", p.Name)
+	}
+	// Vultr delivers a reserved IP to the holder's own MAC, so pool mode's
+	// per-VPC gateway MACs never reach the wire.
+	if cc.Network.ExternalMode != "nat" {
+		return fmt.Errorf("config: [[network.external_pools]] %q: source=\"vultr\" requires [network] external_mode = \"nat\" (routed); Vultr routes a reserved IP to the instance's own MAC, so pool mode's per-VPC gateway MACs are dropped", p.Name)
+	}
+	for name, n := range cc.Nodes {
+		if n.ProviderHostID == "" {
+			return fmt.Errorf("config: [nodes.%s] provider_host_id is required with a source=\"vultr\" pool (%q): it is the Vultr instance ID the node's reserved IPs attach to", name, p.Name)
+		}
+	}
+	return nil
+}
+
 func validateClusterConfig(cc *ClusterConfig) error {
 	if viper.IsSet("network.external_dhcp") {
 		return fmt.Errorf("config: [network] external_dhcp is no longer supported; remove the key (static WAN-pool allocation only)")
@@ -774,6 +855,9 @@ func validateClusterConfig(cc *ClusterConfig) error {
 		}
 		if p.Source != "exoscale" && p.hasExoscaleKeys() {
 			return fmt.Errorf("config: [[network.external_pools]] %q: exoscale_* keys are only valid with source=\"exoscale\"", p.Name)
+		}
+		if p.Source != "vultr" && p.hasVultrKeys() {
+			return fmt.Errorf("config: [[network.external_pools]] %q: vultr_* and label_prefix keys are only valid with source=\"vultr\"", p.Name)
 		}
 		switch p.DHCPMAC {
 		case "", "derived", "interface":
@@ -866,8 +950,13 @@ func validateClusterConfig(cc *ClusterConfig) error {
 				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"exoscale\" requires [network] external_mode = \"nat\" (routed); Exoscale instances accept only their own MAC, so pool mode's per-VPC gateway MACs are dropped by the provider", p.Name)
 			}
 			continue
+		case "vultr":
+			if err := validateVultrPool(cc, p); err != nil {
+				return err
+			}
+			continue
 		default:
-			return fmt.Errorf("config: [[network.external_pools]] %q: source=%q unsupported; use \"static\", \"dhcp\", \"oci\" or \"exoscale\"", p.Name, p.Source)
+			return fmt.Errorf("config: [[network.external_pools]] %q: source=%q unsupported; use \"static\", \"dhcp\", \"oci\", \"exoscale\" or \"vultr\"", p.Name, p.Source)
 		}
 		if p.RangeStart == "" || p.RangeEnd == "" {
 			continue

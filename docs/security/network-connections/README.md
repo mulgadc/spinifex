@@ -99,9 +99,6 @@ behavior in other words.
 | 4432 | Formation server | HTTPS | Cluster (bootstrap only) | Cluster join coordination; active only while a join token is valid. Binds the node's `--bind` (lan) address. See *Formation port lifecycle* below. | Short-lived bearer token + TLS¹ |
 | 4222 | spinifex-nats (client) | NATS + TLS | Cluster | Internal service bus for EC2/EBS/VPC/S3 handlers | Token + mutual TLS (cluster CA) |
 | 4248 | spinifex-nats (cluster) | NATS + TLS | Cluster | Inter-node NATS federation | Token + mutual TLS (cluster CA) |
-| 4223 | spinifex-sqs-store (client) | NATS + TLS | Cluster | SQS message data, separate from the control-plane bus | Store-only token + TLS |
-| 4249 | spinifex-sqs-store (cluster) | NATS + TLS | Cluster | Inter-node SQS store replication | Store-only token + mutual TLS (cluster CA) |
-| 8223 | spinifex-sqs-store (monitor) | HTTP | Loopback | varz and jsz for the store | Loopback only |
 | 5300 | northstar | DNS (UDP + TCP) | Cluster | Forward target for every node's per-instance DNS shim, dialled cross-node. Binds the wildcard by design. | None — restrict by firewall |
 | 6660 | predastore (blob node) | QUIC / UDP | Cluster | Erasure-coded object shard transport between hosts. Multi-node clusters only — see *Predastore ports* below. | TLS 1.3, server certificate verified against the cluster CA |
 | 7660 | predastore (meta node) | QUIC / UDP | Cluster | Raft consensus over global state — buckets and the object index — between hosts. Multi-node clusters only. | TLS 1.3, server certificate verified against the cluster CA |
@@ -111,8 +108,8 @@ behavior in other words.
 | 6643 | OVN Northbound DB (RAFT) | OVSDB/TCP | Cluster | NB database RAFT replication between the 3 quorum nodes | Cluster network only; TLS planned |
 | 6644 | OVN Southbound DB (RAFT) | OVSDB/TCP | Cluster | SB database RAFT replication between the 3 quorum nodes | Cluster network only; TLS planned |
 | 6081 | OVN (Geneve) | UDP | Encap | Tenant traffic overlay between chassis. A kernel UDP-tunnel socket, so packets are delivered locally and traverse the host's netfilter input hook before OVS sees them — a host firewall must accept them explicitly. The socket is opened by the kernel tunnel driver and takes no bind address, so it binds the wildcard by design and reach must be restricted by firewall. | None — see 500/4500 |
-| 500, 4500 | strongSwan `charon` | IKEv2 / UDP | Encap | IKE and NAT-T for the IPsec protecting Geneve, managed entirely by `ovs-monitor-ipsec`. Binds the wildcard by design (the upstream strongSwan default, accepted rather than overridden), so reach must be restricted by firewall. | Certificate-based, against the cluster CA |
-| — | ESP | IP proto 50 | Encap | The IPsec payload itself, once IKE has negotiated an SA | Cluster CA |
+| 500, 4500 | strongSwan `charon`, or libreswan `pluto` on Oracle Linux | IKEv2 / UDP | Encap | IKE and NAT-T for the IPsec protecting Geneve, managed entirely by `ovs-monitor-ipsec`; 4500 carries the ESP payload only where IKE detects NAT between two nodes. `charon` binds the wildcard by design (the upstream strongSwan default, accepted rather than overridden); `pluto` binds each host address separately, the WAN address included, which is no narrower. Either way reach must be restricted by firewall. | Certificate-based, against the cluster CA |
+| — | ESP | IP proto 50 | Encap | The IPsec payload itself, once IKE has negotiated an SA, on Oracle Linux as on Debian. | Cluster CA |
 | 8222 | spinifex-nats (monitoring) | HTTP | Localhost | `varz`/`subsz` metrics consumed by the daemon | Loopback only |
 | 323 | chronyd | NTP | Localhost | Time sync client control socket | Loopback only |
 | 169.254.169.254:80 | spinifex-vpcd (IMDS) | HTTP | Guest | Instance metadata service. One socket per instance, bound to that instance's `ime-*` interface. Terminates on the host, so it traverses the netfilter input hook. | Instance identity by interface; IMDSv2 tokens |
@@ -177,7 +174,7 @@ Control-plane and data-plane traffic between Spinifex nodes, for completeness an
 | OVN NB/SB (client) | 6641 / 6642 | Cluster network only (TLS planned) | Network control plane; vpcd and ovn-controller dial the quorum |
 | OVN NB/SB (RAFT) | 6643 / 6644 | Cluster network only (TLS planned) | NB/SB database replication across the 3 quorum nodes |
 | OVN tunnels (Geneve) | UDP 6081 | Encapsulated by IPsec when `network.ipsec_enabled` is true, which is the default on multi-node clusters | Tenant traffic overlay between chassis, on the `vpc` plane |
-| OVN IPsec (IKE / NAT-T / ESP) | UDP 500, UDP 4500, IP proto 50 | Certificate-based against the cluster CA, negotiated by `ovs-monitor-ipsec` | Protects the Geneve tunnels above. OVN-native only — no layer manages strongSwan directly. |
+| OVN IPsec (IKE / NAT-T / ESP) | UDP 500, UDP 4500, IP proto 50 | Certificate-based against the cluster CA, negotiated by `ovs-monitor-ipsec` | Protects the Geneve tunnels above. OVN-native only: no layer configures strongSwan or libreswan directly. On Oracle Linux the daemon also blocks outbound Geneve that no SA covers, so a peer failing IKE gets no plaintext. |
 | Instance DNS forwarding | UDP/TCP 5300 | None | Each node's per-instance DNS shim forwards guest queries to peer nodes' northstar `:5300` |
 
 Nodes **must** sit on a network segment that is not routed to tenant/guest VMs or to the internet. The Predastore blob and meta transports and the OVN DBs are cluster-internal and must not be reachable from anywhere else.
@@ -224,7 +221,7 @@ table inet spinifex_filter {
 
     # Cluster, from peer nodes only. Replace with your nodes' lan-plane
     # addresses — a CIDR does not generalise to nodes on different subnets.
-    ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } tcp dport { 4222, 4223, 4248, 4249, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
+    ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } tcp dport { 4222, 4248, 4432, 5300, 6641, 6642, 6643, 6644, 8660 } accept
     ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } udp dport { 5300, 6660, 7660 } accept
 
     # Encap, from peer chassis only. Replace with your nodes' vpc-plane
@@ -240,6 +237,7 @@ Notes that make the difference between this working and locking you out:
 - **Use a dedicated table and never flush the others.** `vpcd` writes MASQUERADE and per-EIP FORWARD rules into the `ip filter` and `ip nat` tables, and only reinstalls them when the service starts. `iptables -F`, `nft flush ruleset`, `ufw enable` and `firewalld` all destroy them silently, and instance networking stays broken until the next restart.
 - **Do not add a `forward` hook.** nftables evaluates every table registered on a hook and any `drop` is final, so a default-deny forward chain here would override `vpcd`'s accepts in the other table and break every routed-NAT instance and every EIP. Filtering forwarded guest traffic is the security group's job, not the host firewall's.
 - **`vpcd` owns a second table named `spinifex_mss`, separate from `inet spinifex_filter`.** It is a `bridge` table on the veth uplink and an `inet` table on the routed uplink, it has a `forward` hook with policy `accept`, and it only rewrites the MSS option of TCP SYN packets on the host hop to the gateway. It never drops or accepts traffic and does not replace the forward-hook advice above. `vpcd` re-installs it every 30 seconds, so a flush is repaired within that interval, and there is none on a physical uplink.
+- **Keep connection tracking running while the policy is unloaded.** The kernel tracks connections only while some rule uses conntrack, so a node with no ruleset tracks nothing. A connection that opens then, such as an OVN RAFT link, is first seen mid-stream when the policy loads, and if the server's end speaks first its packet looks like a new connection to an ephemeral port and is dropped. Spinifex keeps `table inet spinifex_conntrack`, which accepts everything, loaded on every node for this reason.
 - **`output` is deliberately untouched.** The metadata service's reply path egresses through per-instance policy routing; filtering `output` breaks it in ways that are hard to attribute.
 - **On a single-NIC node the cluster and encap sets are the node's public addresses**, because the planes collapse. The rules are still correct, but they are no longer a boundary — an upstream ACL is the only real control there.
 
@@ -251,7 +249,7 @@ Every listener and outbound destination is controlled by one of these files. Cha
 
 | File | Keys | Controls |
 |------|------|----------|
-| `/etc/spinifex/spinifex.toml` | `nodes.<node>.{awsgw,nats,predastore,daemon}.host`, `nodes.<node>.vpcd.ovn_{nb,sb}_addr`, `nodes.<node>.daemon.dev_networking`, `network.ipsec_enabled` | Per-service bind addresses/ports; dev-mode QEMU port forwarding. `network.ipsec_enabled` (default `true`) decides whether OVN-native IPsec protects the Geneve tunnels, and therefore whether `charon` listens on 500/4500 — single-node clusters never enable it. |
+| `/etc/spinifex/spinifex.toml` | `nodes.<node>.{awsgw,nats,predastore,daemon}.host`, `nodes.<node>.vpcd.ovn_{nb,sb}_addr`, `nodes.<node>.daemon.dev_networking`, `network.ipsec_enabled` | Per-service bind addresses/ports; dev-mode QEMU port forwarding. `network.ipsec_enabled` (default `true`) decides whether OVN-native IPsec protects the Geneve tunnels, and therefore whether the IKE daemon (`charon`, or `pluto` on Oracle Linux) listens on 500/4500 — single-node clusters never enable it. |
 | `/etc/spinifex/nats.conf` | `listen`, `cluster.listen`, `cluster.routes`, `http`, `tls`, `cluster.authorization` | NATS client/cluster/monitoring listeners, peer routes, TLS, cluster token. |
 | `/etc/spinifex/predastore/predastore.toml` | `[[host]].bind_addr`, `[[host]].addr`, `[[host]].tls_cert`, `[[host]].tls_key`, `[[host.node]].role`, `[[host.node]].port` | Predastore host and node layout: `bind_addr` is the address the host's sockets bind, `addr` is the address peer hosts dial it on, and both carry no port — the nodes pinned to the host supply their own. The service's `--host`/`--port` override the bind address and the gate's S3 port. |
 | `/etc/spinifex/northstar/northstar.toml` | `listen`, `forwarders` | DNS listen addresses (`:53` on the advertise address, `:5300` wildcard) and upstream resolvers. |

@@ -98,7 +98,6 @@ func lbrCreateVPC(t *testing.T, c *harness.AWSClient, f *albFixture) {
 	t.Helper()
 	// The ALB needs a public subnet of its own, and a shared fixture VPC cannot
 	// be given one without changing what every other suite sees.
-	// e2e:allow-create
 	out, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(lbrVPCCIDR)})
 	require.NoError(t, err, "create VPC %s", lbrVPCCIDR)
 	f.VPCID = aws.StringValue(out.Vpc.VpcId)
@@ -113,7 +112,6 @@ func lbrCreateVPC(t *testing.T, c *harness.AWSClient, f *albFixture) {
 func lbrCreateIGW(t *testing.T, c *harness.AWSClient, f *albFixture) {
 	t.Helper()
 	// Belongs to this suite's own VPC.
-	// e2e:allow-create
 	out, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{})
 	require.NoError(t, err, "create IGW")
 	f.IGWID = aws.StringValue(out.InternetGateway.InternetGatewayId)
@@ -138,7 +136,6 @@ func lbrCreateIGW(t *testing.T, c *harness.AWSClient, f *albFixture) {
 func lbrCreateSubnet(t *testing.T, c *harness.AWSClient, f *albFixture) {
 	t.Helper()
 	// See lbrCreateVPC.
-	// e2e:allow-create
 	out, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{
 		VpcId:     aws.String(f.VPCID),
 		CidrBlock: aws.String(lbrSubnetCIDR),
@@ -209,7 +206,6 @@ func lbrOpenDefaultSG(t *testing.T, c *harness.AWSClient, f *albFixture) {
 
 	// The ALB's own group, so a rule change on the targets cannot silently
 	// change what reaches the load balancer.
-	// e2e:allow-create
 	sg, err := c.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
 		VpcId:       aws.String(f.VPCID),
 		GroupName:   aws.String("lbrecovery-e2e-lb-sg"),
@@ -250,7 +246,6 @@ func lbrAuthorizeHTTP(t *testing.T, c *harness.AWSClient, sgID string) {
 
 func lbrCreateTargetGroup(t *testing.T, c *harness.AWSClient, f *albFixture) string {
 	t.Helper()
-	// e2e:allow-create
 	out, err := c.ELBv2.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
 		Name:                       aws.String(lbrTGName),
 		Protocol:                   aws.String("HTTP"),
@@ -306,7 +301,6 @@ func lbrCreateLB(t *testing.T, c *harness.AWSClient, f *albFixture) {
 	t.Helper()
 	// The load balancer's own placement and recovery are the subject, so it can
 	// never be one another test is sharing.
-	// e2e:allow-create
 	out, err := c.ELBv2.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
 		Name:           aws.String(lbrLBName),
 		Subnets:        []*string{aws.String(f.SubnetID)},
@@ -337,7 +331,6 @@ func lbrDeleteLB(t *testing.T, c *harness.AWSClient, f *albFixture) {
 
 func lbrCreateListener(t *testing.T, c *harness.AWSClient, f *albFixture) {
 	t.Helper()
-	// e2e:allow-create
 	out, err := c.ELBv2.CreateListener(&elbv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(f.LBArn),
 		Protocol:        aws.String("HTTP"),
@@ -451,7 +444,6 @@ func lbrLaunchTarget(t *testing.T, fix *Fixture, f *albFixture) string {
 	t.Helper()
 	// A backend has to be placed relative to the ALB's node, which a shared
 	// instance fixture cannot express.
-	// e2e:allow-create
 	out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
 		ImageId:          aws.String(f.AMIID),
 		InstanceType:     aws.String(f.InstanceType),

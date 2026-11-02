@@ -158,7 +158,7 @@ func TestEKSGPUPodExposure(t *testing.T) {
 	clusterName := fmt.Sprintf("%s-%d", eksGPUClusterPfx, time.Now().Unix())
 	harness.Phase(t, "Creating cluster %q", clusterName)
 	roleArn := harness.CreateEKSClusterRole(t, c, clusterName+"-role")
-	// e2e:allow-create — the GPU cluster is the subject under test (GPU worker join + device-plugin exposure).
+	// The GPU cluster is the subject under test (GPU worker join + device-plugin exposure).
 	_, err = c.EKS.CreateCluster(&eks.CreateClusterInput{
 		Name:    aws.String(clusterName),
 		RoleArn: aws.String(roleArn),
@@ -192,7 +192,7 @@ func TestEKSGPUPodExposure(t *testing.T) {
 
 	const nodegroup = "gpu-e2e-ng"
 	harness.Phase(t, "Creating GPU nodegroup %s (%s)", nodegroup, eksGPUInstanceType)
-	// e2e:allow-create — the GPU nodegroup is the subject under test (GPU worker join + device-plugin exposure).
+	// The GPU nodegroup is the subject under test (GPU worker join + device-plugin exposure).
 	_, err = c.EKS.CreateNodegroup(&eks.CreateNodegroupInput{
 		ClusterName:   aws.String(clusterName),
 		NodegroupName: aws.String(nodegroup),

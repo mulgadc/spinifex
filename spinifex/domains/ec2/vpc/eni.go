@@ -694,43 +694,39 @@ func eniMatchesFilters(record *ENIRecord, filters map[string][]string) bool {
 // AttachENI marks an ENI as attached to an instance (internal use by RunInstances).
 // accountID scopes the lookup to the correct KV key.
 func (s *VPCServiceImpl) AttachENI(accountID, eniId, instanceId string, deviceIndex int64) (string, error) {
-	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex)
+	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex, "")
 }
 
-func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instanceId string, deviceIndex int64) (string, error) {
-	key := kvutil.AccountKey(accountID, eniId)
-	entry, err := s.eniKV.Get(ctx, key)
-	if err != nil {
-		return "", eniNotFoundError(eniId)
-	}
+// AttachENIWithOwner attaches the ENI and records instanceOwnerID as the owner
+// of the attached instance in the same write, so no later write can lose the
+// stamp. An empty owner leaves the record's owner untouched.
+func (s *VPCServiceImpl) AttachENIWithOwner(accountID, eniId, instanceId string, deviceIndex int64, instanceOwnerID string) (string, error) {
+	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex, instanceOwnerID)
+}
 
-	var record ENIRecord
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return "", errors.New(awserrors.ErrorServerInternal)
-	}
-
-	if record.Status == "in-use" {
-		return "", errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
-	}
-
+func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instanceId string, deviceIndex int64, instanceOwnerID string) (string, error) {
 	attachmentId := awsidentifiers.GenerateResourceID("eni-attach")
-	record.Status = "in-use"
-	record.AttachmentId = attachmentId
-	record.InstanceId = instanceId
-	record.DeviceIndex = deviceIndex
-	// Default DeleteOnTermination to true on first attach, matching what
-	// DescribeNetworkInterfaces already advertises; a record carrying an
-	// explicit value from an earlier attach keeps it across re-attach.
-	if record.DeleteOnTermination == nil {
-		record.DeleteOnTermination = aws.Bool(true)
-	}
-
-	data, err := json.Marshal(record)
+	err := s.casENI(ctx, kvutil.AccountKey(accountID, eniId), eniId, func(record *ENIRecord) error {
+		if record.Status == "in-use" {
+			return errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
+		}
+		record.Status = "in-use"
+		record.AttachmentId = attachmentId
+		record.InstanceId = instanceId
+		record.DeviceIndex = deviceIndex
+		if instanceOwnerID != "" {
+			record.InstanceOwnerId = instanceOwnerID
+		}
+		// Default DeleteOnTermination to true on first attach, matching what
+		// DescribeNetworkInterfaces already advertises; a record carrying an
+		// explicit value from an earlier attach keeps it across re-attach.
+		if record.DeleteOnTermination == nil {
+			record.DeleteOnTermination = aws.Bool(true)
+		}
+		return nil
+	})
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal ENI record: %w", err)
-	}
-	if _, err := s.eniKV.Update(ctx, key, data, entry.Revision()); err != nil {
-		return "", errors.New(awserrors.ErrorServerInternal)
+		return "", err
 	}
 
 	slog.InfoContext(ctx, "ENI attached", "eniId", eniId, "instanceId", instanceId, "attachmentId", attachmentId)
@@ -796,24 +792,69 @@ func (s *VPCServiceImpl) UpdateENI(accountID, eniId string, fn func(*ENIRecord))
 }
 
 func (s *VPCServiceImpl) updateENI(ctx context.Context, accountID, eniId string, fn func(*ENIRecord)) error {
-	key := kvutil.AccountKey(accountID, eniId)
-	entry, err := s.eniKV.Get(ctx, key)
-	if err != nil {
-		return eniNotFoundError(eniId)
+	return s.casENI(ctx, kvutil.AccountKey(accountID, eniId), eniId, func(r *ENIRecord) error {
+		fn(r)
+		return nil
+	})
+}
+
+const (
+	eniCASAttempts = 3
+	eniCASBackoff  = 10 * time.Millisecond
+)
+
+// storeError reports ServerInternal to API callers while keeping the store
+// failure reachable through errors.Is for the caller's log.
+type storeError struct{ cause error }
+
+func (e *storeError) Error() string { return awserrors.ErrorServerInternal }
+func (e *storeError) Unwrap() error { return e.cause }
+
+// casENI reads the ENI record, applies mutate and writes it back under the
+// revision it read. A direct get can be answered by a replica that has not yet
+// applied the caller's own earlier write, so a revision conflict re-reads and
+// re-applies mutate, bounded. mutate may run more than once and must only
+// depend on the record it is given.
+func (s *VPCServiceImpl) casENI(ctx context.Context, key, eniId string, mutate func(*ENIRecord) error) error {
+	var lastErr error
+	attempts := 0
+	for attempt := range eniCASAttempts {
+		attempts = attempt + 1
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return &storeError{ctx.Err()}
+			case <-time.After(time.Duration(attempt) * eniCASBackoff):
+			}
+		}
+		entry, err := s.eniKV.Get(ctx, key)
+		if err != nil {
+			return eniNotFoundError(eniId)
+		}
+		var record ENIRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		if err := mutate(&record); err != nil {
+			return err
+		}
+		data, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("marshal ENI record: %w", err)
+		}
+		if _, err = s.eniKV.Update(ctx, key, data, entry.Revision()); err == nil {
+			if attempt > 0 {
+				slog.InfoContext(ctx, "ENI write succeeded after revision conflict", "eniId", eniId, "attempt", attempt+1)
+			}
+			return nil
+		}
+		lastErr = err
+		if !errors.Is(err, jetstream.ErrKeyExists) {
+			break
+		}
 	}
-	var record ENIRecord
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	fn(&record)
-	data, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("marshal ENI record: %w", err)
-	}
-	if _, err := s.eniKV.Update(ctx, key, data, entry.Revision()); err != nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	return nil
+	slog.ErrorContext(ctx, "ENI write failed", "eniId", eniId, "attempts", attempts, "err", lastErr)
+	return &storeError{lastErr}
 }
 
 // ListInstanceENIs returns every ENIRecord in accountID currently attached to

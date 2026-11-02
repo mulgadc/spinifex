@@ -10,6 +10,7 @@ import (
 	"time"
 
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	"github.com/mulgadc/spinifex/internal/testkit/deadpid"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/viperblock/viperblock/backends/file"
 	"github.com/nats-io/nats.go"
@@ -66,7 +67,7 @@ func TestIntegration_EBSDeleteMountedVolume(t *testing.T) {
 			Name:      "vol-del-test",
 			Port:      10809,
 			Socket:    socketPath,
-			PID:       99999,
+			PID:       deadpid.PID,
 			ConfigSub: configSub,
 		},
 	}
@@ -409,7 +410,7 @@ func TestIntegration_EBSUnmountRemovesSocket(t *testing.T) {
 		{
 			Name:   "vol-unmount-socket",
 			Socket: socketPath,
-			PID:    99999,
+			PID:    deadpid.PID,
 		},
 	}
 
@@ -447,7 +448,7 @@ func TestIntegration_EBSDeleteRemovesSocket(t *testing.T) {
 	require.NoError(t, os.WriteFile(socketPath, []byte("fake"), 0600))
 	cfg := setupTestConfig(t, natsURL)
 	cfg.MountedVolumes = []MountedVolume{
-		{Name: "vol-del-socket", Socket: socketPath, PID: 99999},
+		{Name: "vol-del-socket", Socket: socketPath, PID: deadpid.PID},
 	}
 
 	startTestService(t, cfg)
@@ -557,7 +558,7 @@ func TestIntegration_EBSDeleteWithVBInstance(t *testing.T) {
 		{
 			Name:      "vol-del-vb",
 			Socket:    socketPath,
-			PID:       99999,
+			PID:       deadpid.PID,
 			VB:        vb,
 			ConfigSub: configSub,
 		},
@@ -608,7 +609,7 @@ func TestIntegration_EBSUnmountWithVBInstance(t *testing.T) {
 		{
 			Name:      "vol-unmount-vb",
 			Socket:    socketPath,
-			PID:       99999,
+			PID:       deadpid.PID,
 			VB:        vb,
 			ConfigSub: configSub,
 		},
@@ -644,7 +645,7 @@ func TestIntegration_EBSUnmountDualPublish(t *testing.T) {
 
 	cfg := setupTestConfig(t, natsURL)
 	cfg.MountedVolumes = []MountedVolume{
-		{Name: "vol-dual-pub", PID: 99999},
+		{Name: "vol-dual-pub", PID: deadpid.PID},
 	}
 
 	startTestService(t, cfg)

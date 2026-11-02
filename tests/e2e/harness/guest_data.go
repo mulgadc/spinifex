@@ -4,6 +4,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os/exec"
@@ -59,6 +60,38 @@ func GuestExecTimeout(tgt SSHTarget, cmd string, timeout time.Duration) (string,
 		return string(out), fmt.Errorf("guest command exceeded its %s timeout (still running when the deadline hit): %w: %w", timeout, context.DeadlineExceeded, err)
 	}
 	return string(out), err
+}
+
+// sshExitUnreachable is the status ssh(1) exits with when it fails itself,
+// rather than passing on the remote command's status.
+const sshExitUnreachable = 255
+
+// GuestUnreachable reports whether a GuestExec error means the guest did not
+// answer (ssh could not connect, or the command never finished in time), as
+// opposed to a command that ran in the guest and exited non-zero.
+func GuestUnreachable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == sshExitUnreachable
+}
+
+// GuestExecRetrying runs cmd as GuestExecTimeout does, re-running it while the
+// guest is unreachable until bound has passed. A command that ran and failed is
+// returned at once: only the guest's silence is worth waiting out.
+func GuestExecRetrying(tgt SSHTarget, cmd string, perAttempt, bound, interval time.Duration) (string, error) {
+	deadline := time.Now().Add(bound)
+	for {
+		out, err := GuestExecTimeout(tgt, cmd, perAttempt)
+		if !GuestUnreachable(err) || !time.Now().Add(interval).Before(deadline) {
+			return out, err
+		}
+		time.Sleep(interval)
+	}
 }
 
 // guestDiskSet returns the set of whole-disk device names (lsblk TYPE=disk)

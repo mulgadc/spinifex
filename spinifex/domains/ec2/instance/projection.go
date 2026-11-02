@@ -11,6 +11,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
+// instanceEnaSupport is what every instance reports for ENA. Guests use virtio
+// NICs, and DescribeInstances, RunInstances and DescribeInstanceAttribute all
+// answer from this one value.
+const instanceEnaSupport = true
+
 // InstanceProjection carries the caller-scoped values ProjectInstance needs.
 // All fields are plain data so the projection stays pure and table-testable.
 type InstanceProjection struct {
@@ -169,6 +174,7 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 	// aws_instance ever settled. Interfaces are copied rather than mutated
 	// because instanceCopy shares their pointers with the stored instance.
 	instanceCopy.SourceDestCheck = aws.Bool(true)
+	instanceCopy.EnaSupport = aws.Bool(instanceEnaSupport)
 	if len(instanceCopy.NetworkInterfaces) > 0 {
 		nics := make([]*ec2.InstanceNetworkInterface, 0, len(instanceCopy.NetworkInterfaces))
 		for _, nic := range instanceCopy.NetworkInterfaces {

@@ -7,6 +7,7 @@ package instance
 
 import (
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -78,4 +79,41 @@ func TestLaunchClaimedInstance_RefusesWhenTheBootStateCannotBeRebuilt(t *testing
 	assert.Len(t, resources.deallocated, 1, "the capacity the attempt took has to be returned")
 	_, present := svc.vmMgr.Get("i-moved")
 	assert.False(t, present, "a refused launch must not leave the instance in this node's view")
+}
+
+// A claimed instance was launched long before this node runs it: a stopped
+// instance can be started a day later, and a recovery waits out its old
+// node's heartbeat and volume lease first. The pending watchdog times the
+// launch from LaunchTime, so the old one has it terminated while it boots.
+func TestLaunchClaimedInstance_RestampsLaunchTime(t *testing.T) {
+	var launchedAt time.Time
+	svc, _ := claimedRelaunchService(t, func(v *vm.VM) error {
+		launchedAt = aws.TimeValue(v.Instance.LaunchTime)
+		return nil
+	})
+
+	before := time.Now()
+	instance := &vm.VM{ID: "i-moved", AccountID: "acc", InstanceType: "t3.micro",
+		Instance: &ec2.Instance{LaunchTime: aws.Time(before.Add(-24 * time.Hour))}}
+	_ = svc.launchClaimedInstance(t.Context(), instance, func() {})
+
+	assert.False(t, launchedAt.Before(before),
+		"the relaunch must start the pending watchdog's clock again, or a launch older than %s is terminated as stuck", vm.PendingWatchdogTimeout)
+}
+
+// A claimed instance has run before: it was started and stopped, or recovered
+// from a failed node. A failure of this launch must never be allowed to
+// terminate it and delete its volumes (ADR-0003:S7).
+func TestLaunchClaimedInstance_NeverAFirstLaunch(t *testing.T) {
+	var firstLaunch []bool
+	svc, _ := claimedRelaunchService(t, func(v *vm.VM) error {
+		firstLaunch = append(firstLaunch, v.FirstLaunch)
+		return nil
+	})
+
+	instance := &vm.VM{ID: "i-moved", AccountID: "acc", InstanceType: "t3.micro", FirstLaunch: true}
+	_ = svc.launchClaimedInstance(t.Context(), instance, func() {})
+
+	assert.Equal(t, []bool{false}, firstLaunch,
+		"ADR-0003:S7: a claimed relaunch reached launch still marked as a first launch, so its failure could terminate it")
 }

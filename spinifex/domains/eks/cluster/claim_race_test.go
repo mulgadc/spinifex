@@ -100,6 +100,9 @@ func TestCreateNodegroup_ConcurrentSameNameSingleOwner(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
+	// The single winning owner launches one worker; its Ready-gate resolves.
+	markWorkersReady(t, f, "c1", "ng1", 1)
+
 	const n = 2
 	errs := make([]error, n)
 	var wg sync.WaitGroup
@@ -111,8 +114,6 @@ func TestCreateNodegroup_ConcurrentSameNameSingleOwner(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	// The single winning owner launches one worker; let its Ready-gate resolve.
-	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 
 	ok, inUse := classifyCreateErrs(t, errs)

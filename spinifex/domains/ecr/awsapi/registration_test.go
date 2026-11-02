@@ -310,8 +310,9 @@ func TestDispatch_GetAuthorizationTokenMintsForTheVerifiedActor(t *testing.T) {
 	actor := dispatch.Actor{
 		AccountID:     regAccount,
 		CallerARN:     "arn:aws:sts::" + regAccount + ":assumed-role/builder/session",
-		PrincipalType: "AssumedRole",
+		PrincipalType: dispatch.PrincipalTypeAssumedRole,
 		AccessKeyID:   "ASIAREGISTRATIONTEST",
+		UserID:        "AROAROLEID0000000001:session",
 	}
 	f := &fakeInvocation{actor: actor}
 	be := &backend{log: &f.log}
@@ -326,9 +327,47 @@ func TestDispatch_GetAuthorizationTokenMintsForTheVerifiedActor(t *testing.T) {
 		ARN:         actor.CallerARN,
 		Type:        actor.PrincipalType,
 		AccessKeyID: actor.AccessKeyID,
+		RoleID:      "AROAROLEID0000000001",
 	}, be.minted[0])
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
+}
+
+// Only a role session names a role, and the ID is the part of aws:userid before the
+// session name. Every other caller gets a token without the claim.
+func TestDispatch_GetAuthorizationTokenCarriesTheRoleIDOfARoleSessionOnly(t *testing.T) {
+	const roleARN = "arn:aws:sts::" + regAccount + ":assumed-role/builder/session"
+	cases := map[string]struct {
+		actor dispatch.Actor
+		want  string
+	}{
+		"role session": {dispatch.Actor{
+			AccountID: regAccount, CallerARN: roleARN, PrincipalType: "assumed-role",
+			AccessKeyID: "ASIAREGISTRATIONTEST", UserID: "AROAROLEID0000000001:session",
+		}, "AROAROLEID0000000001"},
+		"user": {dispatch.Actor{
+			AccountID: regAccount, CallerARN: "arn:aws:iam::" + regAccount + ":user/dev",
+			PrincipalType: "user", AccessKeyID: "AKIAREGISTRATIONTEST", UserID: "AIDAUSERID:with:colons",
+		}, ""},
+		"root": {dispatch.Actor{
+			AccountID: regAccount, CallerARN: "arn:aws:iam::" + regAccount + ":root",
+			PrincipalType: "root", AccessKeyID: "AKIAREGISTRATIONTEST", UserID: regAccount,
+		}, ""},
+		"role session without a session part in aws:userid": {dispatch.Actor{
+			AccountID: regAccount, CallerARN: roleARN, PrincipalType: "assumed-role",
+			AccessKeyID: "ASIAREGISTRATIONTEST", UserID: "AROAROLEID0000000001",
+		}, ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeInvocation{actor: tc.actor}
+			be := &backend{log: &f.log}
+			_, err := dispatchWith(t, be.deps(), f.invocation(TargetPrefix+".GetAuthorizationToken", "{}"))
+			require.NoError(t, err)
+			require.Len(t, be.minted, 1)
+			assert.Equal(t, tc.want, be.minted[0].RoleID)
+		})
+	}
 }
 
 // An actor ingress cannot build is a server fault, and nothing is minted.

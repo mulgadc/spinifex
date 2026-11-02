@@ -605,7 +605,7 @@ func (reg *Registry) putManifest(w http.ResponseWriter, r *http.Request, name, r
 	w.Header().Set("Docker-Content-Digest", digest)
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/manifests/%s", name, digest))
 	if subject != "" {
-		w.Header().Set("OCI-Subject", subject)
+		w.Header().Set("Oci-Subject", subject)
 	}
 	w.WriteHeader(http.StatusCreated)
 }
@@ -765,7 +765,7 @@ func (reg *Registry) getReferrers(w http.ResponseWriter, r *http.Request, name, 
 	}
 	if want := r.URL.Query().Get("artifactType"); want != "" {
 		referrers = slices.DeleteFunc(referrers, func(d ecr.ReferrerDescriptor) bool { return d.ArtifactType != want })
-		w.Header().Set("OCI-Filters-Applied", "artifactType")
+		w.Header().Set("Oci-Filters-Applied", "artifactType")
 	}
 	if referrers == nil {
 		referrers = []ecr.ReferrerDescriptor{}

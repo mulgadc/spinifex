@@ -173,3 +173,31 @@ func TestUpdateUser_RenameRetriesAfterRacingWrite(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "franklin", ak.UserName)
 }
+
+// UpdateUser names its user by bare name, so the caller's account is the only
+// scope: a rename must never reach a same-named user in another account.
+func TestUpdateUser_ScopedToCallerAccount(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	const other = "999988887777"
+	mine := createTestUser(t, svc, "bob")
+	theirs, err := svc.CreateUser(other, &iam.CreateUserInput{UserName: aws.String("bob")})
+	require.NoError(t, err)
+	_, err = svc.CreateUser(other, &iam.CreateUserInput{UserName: aws.String("carol")})
+	require.NoError(t, err)
+
+	_, err = svc.UpdateUser(testAccountID, &iam.UpdateUserInput{UserName: aws.String("bob"), NewUserName: aws.String("robert")})
+	require.NoError(t, err)
+	got, err := svc.GetUser(other, &iam.GetUserInput{UserName: aws.String("bob")})
+	require.NoError(t, err)
+	assert.Equal(t, *theirs.User.UserId, *got.User.UserId)
+	assert.NotEqual(t, *mine.UserId, *got.User.UserId)
+
+	_, err = svc.UpdateUser(testAccountID, &iam.UpdateUserInput{UserName: aws.String("carol"), NewUserName: aws.String("caroline")})
+	require.Error(t, err)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok, "no AWS code on %v", err)
+	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, code)
+	_, err = svc.GetUser(other, &iam.GetUserInput{UserName: aws.String("carol")})
+	require.NoError(t, err)
+}

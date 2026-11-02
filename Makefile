@@ -255,7 +255,8 @@ test-build-scripts:
 		echo "-- $$t"; \
 		sh "$$t" || exit 1; \
 	done
-	shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh .github/scripts/hypervisor-disk-preflight_test.sh
+	shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh .github/scripts/hypervisor-disk-preflight_test.sh \
+		.github/scripts/wait-for-memory.sh .github/scripts/wait-for-memory_test.sh
 	@echo -e "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
 	shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
 	shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)

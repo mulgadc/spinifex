@@ -78,10 +78,7 @@ func Run(t *testing.T, newHarness Factory) {
 		{"CountAndEnumerate", testCountAndEnumerate},
 		{"EnumerateStateOnlyNamespace", testEnumerateStateOnly},
 		{"DeleteNamespace", testDeleteNamespace},
-		{"CrashBetweenAppendAndStateWrite", testCrashAfterAppend},
-		{"CrashBetweenTombstoneAndBodyDelete", testCrashAfterTombstone},
-		{"IdempotentAppendReplayAfterCrash", testIdempotentReplayAfterCrash},
-		{"PositionsSurviveCrash", testPositionsSurviveCrash},
+		{"CrashRecovery", testCrashRecovery},
 		{"RetentionBackstop", testRetentionBackstop},
 	}
 	for _, c := range cases {
@@ -579,77 +576,97 @@ func testDeleteNamespace(t *testing.T, h Harness) {
 	require.NoError(t, h.Store.DeleteNamespace(ctx, ns), "namespace deletion is idempotent")
 }
 
-func requireReopen(t *testing.T, h Harness) message.Store {
-	t.Helper()
+// crashCase writes its pre-crash state through one store and returns the
+// checks to run on the store reopened after the crash.
+type crashCase func(t *testing.T, before message.Store) func(t *testing.T, s message.Store)
+
+// testCrashRecovery sets up every crash case in its own namespace, crashes
+// once, then checks each case on the reopened store.
+func testCrashRecovery(t *testing.T, h Harness) {
 	if h.Reopen == nil {
 		t.Skip("harness cannot simulate a crash")
 	}
+	cases := []struct {
+		name string
+		run  crashCase
+	}{
+		{"CrashBetweenAppendAndStateWrite", crashAfterAppend},
+		{"CrashBetweenTombstoneAndBodyDelete", crashAfterTombstone},
+		{"IdempotentAppendReplayAfterCrash", idempotentReplayAfterCrash},
+		{"PositionsSurviveCrash", positionsSurviveCrash},
+	}
+	checks := make([]func(*testing.T, message.Store), len(cases))
+	for i, c := range cases {
+		checks[i] = c.run(t, h.Store)
+	}
 	s := h.Reopen(t)
 	require.NotNil(t, s)
-	return s
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) { checks[i](t, s) })
+	}
 }
 
-// testCrashAfterAppend: the domain appends, then writes the message's state;
+// crashAfterAppend: the domain appends, then writes the message's state;
 // a crash between them leaves a durable message with no state, which the
 // feed still offers so the domain can recover it.
-func testCrashAfterAppend(t *testing.T, h Harness) {
-	ctx := context.Background()
+func crashAfterAppend(t *testing.T, before message.Store) func(*testing.T, message.Store) {
 	ns := newNamespace(t, 0)
-	pos := appendBody(t, h.Store, ns, "orphan")
-	s := requireReopen(t, h)
-
-	got, err := s.Get(ctx, ns, pos)
-	require.NoError(t, err, "an acknowledged append survives a crash")
-	assert.Equal(t, []byte("orphan"), got.Body)
-	_, err = s.GetState(ctx, ns, pos)
-	require.ErrorIs(t, err, message.ErrNotFound)
-	assert.Equal(t, pos, nextIn(t, openFeed(t, s, 0, 0), ns).Position, "the feed replays the stateless message")
-	_, err = s.PutState(ctx, ns, pos, []byte("recovered"), 0)
-	require.NoError(t, err, "recovery creates the missing state")
+	pos := appendBody(t, before, ns, "orphan")
+	return func(t *testing.T, s message.Store) {
+		ctx := context.Background()
+		got, err := s.Get(ctx, ns, pos)
+		require.NoError(t, err, "an acknowledged append survives a crash")
+		assert.Equal(t, []byte("orphan"), got.Body)
+		_, err = s.GetState(ctx, ns, pos)
+		require.ErrorIs(t, err, message.ErrNotFound)
+		assert.Equal(t, pos, nextIn(t, openFeed(t, s, 0, 0), ns).Position, "the feed replays the stateless message")
+		_, err = s.PutState(ctx, ns, pos, []byte("recovered"), 0)
+		require.NoError(t, err, "recovery creates the missing state")
+	}
 }
 
-// testCrashAfterTombstone: the domain tombstones, then deletes the body; a
+// crashAfterTombstone: the domain tombstones, then deletes the body; a
 // crash between them must leave the tombstone and allow the delete to replay.
-func testCrashAfterTombstone(t *testing.T, h Harness) {
-	ctx := context.Background()
+func crashAfterTombstone(t *testing.T, before message.Store) func(*testing.T, message.Store) {
 	ns := newNamespace(t, 0)
-	pos := appendBody(t, h.Store, ns, "m")
-	rev, err := h.Store.PutState(ctx, ns, pos, []byte("tombstone"), 0)
+	pos := appendBody(t, before, ns, "m")
+	rev, err := before.PutState(context.Background(), ns, pos, []byte("tombstone"), 0)
 	require.NoError(t, err)
-	s := requireReopen(t, h)
+	return func(t *testing.T, s message.Store) {
+		ctx := context.Background()
+		st, err := s.GetState(ctx, ns, pos)
+		require.NoError(t, err, "an acknowledged state write survives a crash")
+		assert.Equal(t, message.State{Value: []byte("tombstone"), Revision: rev}, st)
+		_, err = s.Get(ctx, ns, pos)
+		require.NoError(t, err, "the body is still there to delete")
 
-	st, err := s.GetState(ctx, ns, pos)
-	require.NoError(t, err, "an acknowledged state write survives a crash")
-	assert.Equal(t, message.State{Value: []byte("tombstone"), Revision: rev}, st)
-	_, err = s.Get(ctx, ns, pos)
-	require.NoError(t, err, "the body is still there to delete")
-
-	require.NoError(t, s.Delete(ctx, ns, pos))
-	require.NoError(t, s.Delete(ctx, ns, pos), "a replayed body delete succeeds")
-	require.NoError(t, s.DeleteState(ctx, ns, pos, rev))
-	requireCount(t, s, ns, message.Usage{})
+		require.NoError(t, s.Delete(ctx, ns, pos))
+		require.NoError(t, s.Delete(ctx, ns, pos), "a replayed body delete succeeds")
+		require.NoError(t, s.DeleteState(ctx, ns, pos, rev))
+		requireCount(t, s, ns, message.Usage{})
+	}
 }
 
-func testIdempotentReplayAfterCrash(t *testing.T, h Harness) {
-	ctx := context.Background()
+func idempotentReplayAfterCrash(t *testing.T, before message.Store) func(*testing.T, message.Store) {
 	ns := newNamespace(t, 0)
-	first, err := h.Store.Append(ctx, ns, message.AppendInput{Body: []byte("copy"), IdempotencyKey: "redrive-7"})
+	first, err := before.Append(context.Background(), ns, message.AppendInput{Body: []byte("copy"), IdempotencyKey: "redrive-7"})
 	require.NoError(t, err)
-	s := requireReopen(t, h)
-
-	again, err := s.Append(ctx, ns, message.AppendInput{Body: []byte("copy"), IdempotencyKey: "redrive-7"})
-	require.NoError(t, err)
-	assert.True(t, again.Duplicate, "an idempotency key survives a crash")
-	assert.Equal(t, first.Position, again.Position)
-	requireCount(t, s, ns, message.Usage{Messages: 1})
+	return func(t *testing.T, s message.Store) {
+		again, err := s.Append(context.Background(), ns, message.AppendInput{Body: []byte("copy"), IdempotencyKey: "redrive-7"})
+		require.NoError(t, err)
+		assert.True(t, again.Duplicate, "an idempotency key survives a crash")
+		assert.Equal(t, first.Position, again.Position)
+		requireCount(t, s, ns, message.Usage{Messages: 1})
+	}
 }
 
-func testPositionsSurviveCrash(t *testing.T, h Harness) {
+func positionsSurviveCrash(t *testing.T, before message.Store) func(*testing.T, message.Store) {
 	ns := newNamespace(t, 0)
-	before := appendBody(t, h.Store, ns, "before")
-	s := requireReopen(t, h)
-	after := appendBody(t, s, ns, "after")
-	require.Greater(t, after, before, "positions keep increasing across a crash")
+	pos := appendBody(t, before, ns, "before")
+	return func(t *testing.T, s message.Store) {
+		after := appendBody(t, s, ns, "after")
+		require.Greater(t, after, pos, "positions keep increasing across a crash")
+	}
 }
 
 func testRetentionBackstop(t *testing.T, h Harness) {

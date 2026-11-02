@@ -443,3 +443,15 @@ func TestLogGuestDeviceMap_LeavesBlockDeviceMappingsAlone(t *testing.T) {
 	assert.Equal(t, "/dev/sdf", aws.StringValue(v.Instance.BlockDeviceMappings[1].DeviceName),
 		"a data mapping must still name the device the caller asked for, not /dev/vdb")
 }
+
+// TestBuildDeviceMap_UnnamedBootDeviceWithoutMedium covers an unnamed
+// boot-time BlockBackend that reports no inserted medium.
+func TestBuildDeviceMap_UnnamedBootDeviceWithoutMedium(t *testing.T) {
+	devices := []qmp.BlockDevice{
+		{Device: "", Inserted: nil, QDev: "/machine/peripheral-anon/device[0]/virtio-backend"},
+		{Device: "cloudinit", Inserted: &qmp.BlockInserted{}, QDev: "/machine/peripheral-anon/device[3]/virtio-backend"},
+	}
+	var got map[string]string
+	require.NotPanics(t, func() { got = buildDeviceMap(devices) })
+	assert.Equal(t, "/dev/vdb", got["cloudinit"], "the unnamed device still holds its PCI slot")
+}

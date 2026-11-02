@@ -131,7 +131,7 @@ func hasPinnedPrivateIP(input *ec2.RunInstancesInput) bool {
 // passRoleCheck may be nil to skip PassRole enforcement.
 // launchQuotaCheck may be nil to skip quota enforcement; when present it runs
 // after validation and PassRole authorization, but before any launch dispatch.
-func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc iamdomain.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
+func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc InstanceProfiles, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	// Expand a referenced launch template before validation so validation, quota,
 	// and downstream routing all see the effective (post-merge) parameters.
 	if err = ExpandLaunchTemplate(ctx, natsConn, input, accountID); err != nil {
@@ -163,7 +163,7 @@ func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *n
 
 // runInstancesInner performs the actual launch: profile resolution, placement
 // routing, and capacity-aware distribution. Wrapped by RunInstances for idempotency.
-func runInstancesInner(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc iamdomain.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
+func runInstancesInner(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc InstanceProfiles, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	resolvedProfile, err := resolveAndAuthorizeInstanceProfile(input, iamSvc, accountID, passRoleCheck)
 	if err != nil {
 		return reservation, err
@@ -236,7 +236,7 @@ func runInstancesInner(ctx context.Context, input *ec2.RunInstancesInput, natsCo
 
 // resolveAndAuthorizeInstanceProfile resolves an optional instance profile,
 // enforces PassRole, and normalises input to the canonical ARN only.
-func resolveAndAuthorizeInstanceProfile(input *ec2.RunInstancesInput, iamSvc iamdomain.IAMService, accountID string, passRoleCheck PassRoleChecker) (*iamdomain.InstanceProfile, error) {
+func resolveAndAuthorizeInstanceProfile(input *ec2.RunInstancesInput, iamSvc InstanceProfiles, accountID string, passRoleCheck PassRoleChecker) (*iamdomain.InstanceProfile, error) {
 	if input.IamInstanceProfile == nil {
 		return nil, nil
 	}

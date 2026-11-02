@@ -38,9 +38,13 @@ func (m *Manager) StartPendingWatchdog(ctx context.Context) {
 // scanAndMarkStuckPending runs one pass of the watchdog body with a
 // caller-supplied "now". Extracted so tests can drive the body
 // deterministically without waiting for the production tick interval.
+//
+// Only a first launch is marked failed. A relaunch of an instance that has run
+// is bounded by its own owner, which ends it stopped with its data kept.
 func (m *Manager) scanAndMarkStuckPending(now time.Time) {
 	stuck := m.Filter(func(v *VM) bool {
-		return (v.Status == StatePending || v.Status == StateProvisioning) &&
+		return v.FirstLaunch &&
+			(v.Status == StatePending || v.Status == StateProvisioning) &&
 			v.Instance != nil && v.Instance.LaunchTime != nil &&
 			now.Sub(*v.Instance.LaunchTime) > PendingWatchdogTimeout
 	})

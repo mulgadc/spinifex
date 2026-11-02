@@ -10,6 +10,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { useModifyDBParameterGroup } from "@/mutations/rds"
 import {
   APPLY_METHOD_PENDING_REBOOT,
@@ -270,21 +279,22 @@ export function ParametersEditor({
       )}
 
       {visible.length > 0 ? (
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-2 font-medium">Name</th>
-                <th className="px-4 py-2 font-medium">Value</th>
-                <th className="px-4 py-2 font-medium">Allowed</th>
-                <th className="px-4 py-2 font-medium">Source</th>
-                <th className="px-4 py-2 font-medium">Apply</th>
-                <th className="px-4 py-2 font-medium">
+        <div className="overflow-hidden rounded-lg border bg-card">
+          <Table>
+            <TableCaption className="sr-only">Parameters</TableCaption>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Value</TableHead>
+                <TableHead>Allowed</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Apply</TableHead>
+                <TableHead>
                   <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {visible.map((parameter) => {
                 const name = parameter.ParameterName ?? ""
                 const edit = edits[name]
@@ -298,14 +308,14 @@ export function ParametersEditor({
                 const methods = applyMethodsFor(parameter.ApplyType)
 
                 return (
-                  <tr className="border-b align-top last:border-0" key={name}>
-                    <td className="px-4 py-2 font-mono text-xs">
-                      {name}
-                      <span className="mt-0.5 block font-sans text-muted-foreground">
+                  <TableRow key={name}>
+                    <TableCell className="align-top whitespace-normal">
+                      <span className="block font-mono text-xs">{name}</span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">
                         {parameter.Description}
                       </span>
-                    </td>
-                    <td className="px-4 py-2">
+                    </TableCell>
+                    <TableCell className="align-top">
                       <ParameterValueCell
                         editable={editable ?? false}
                         onChange={(next) => {
@@ -315,16 +325,20 @@ export function ParametersEditor({
                         parameter={parameter}
                         value={value}
                       />
-                    </td>
-                    <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
-                      {parameter.AllowedValues ?? "—"}
-                      <span className="mt-0.5 block font-sans">
+                    </TableCell>
+                    <TableCell className="align-top whitespace-normal">
+                      <span className="block font-mono text-xs text-muted-foreground">
+                        {parameter.AllowedValues ?? "—"}
+                      </span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">
                         {parameter.DataType}
                         {!parameter.IsModifiable && " · fixed by the platform"}
                       </span>
-                    </td>
-                    <td className="px-4 py-2 text-xs">{parameter.Source}</td>
-                    <td className="px-4 py-2">
+                    </TableCell>
+                    <TableCell className="align-top">
+                      <span className="text-xs">{parameter.Source}</span>
+                    </TableCell>
+                    <TableCell className="align-top">
                       {editable && edit && methods.length > 1 ? (
                         <Select
                           onValueChange={(next) => {
@@ -358,8 +372,8 @@ export function ParametersEditor({
                           )}
                         </span>
                       )}
-                    </td>
-                    <td className="px-4 py-2 text-right">
+                    </TableCell>
+                    <TableCell className="text-right align-top">
                       {edit && (
                         <Button
                           onClick={() => {
@@ -371,12 +385,12 @@ export function ParametersEditor({
                           Reset
                         </Button>
                       )}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 )
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       ) : (
         <p className="text-muted-foreground">

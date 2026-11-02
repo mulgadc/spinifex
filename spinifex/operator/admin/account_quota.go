@@ -1,0 +1,141 @@
+package admin
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+)
+
+// AccountQuotaRequest addresses one account. PutAccountQuota also carries the
+// overrides; GetAccountQuota ignores them.
+type AccountQuotaRequest struct {
+	AccountID string          `json:"accountId"`
+	Overrides quota.Overrides `json:"overrides,omitzero"`
+}
+
+// AccountQuotaResponse reports the limits in force for an account and where
+// each came from. The source map is what makes a surprising number debuggable:
+// a bare limit cannot say whether it was inherited or set.
+type AccountQuotaResponse struct {
+	AccountID string            `json:"accountId"`
+	Limits    map[string]int    `json:"limits"`
+	Source    map[string]string `json:"source"`
+	Overrides quota.Overrides   `json:"overrides"`
+}
+
+// sourceConfig and sourceOverride name where a resolved limit came from.
+const (
+	sourceConfig   = "config"
+	sourceOverride = "override"
+)
+
+// getAccountQuota reports one account's effective limits, its stored
+// overrides, and which layer each dimension resolved from.
+func (d Deps) getAccountQuota(ctx context.Context, body []byte) (any, error) {
+	accountID, _, err := d.parseAccountQuotaRequest(body)
+	if err != nil {
+		return nil, err
+	}
+
+	over, limits, err := d.Quota.GetAccountQuota(ctx, accountID)
+	if err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
+			return nil, err
+		}
+		slog.ErrorContext(ctx, "GetAccountQuota: failed to read override", "accountID", accountID, "err", err)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+	return accountQuotaResponse(accountID, over, limits), nil
+}
+
+// putAccountQuota stores one account's overrides and returns the limits
+// they resolve to, so a caller never has to guess what it just applied. An
+// empty override set clears the record.
+func (d Deps) putAccountQuota(ctx context.Context, caller dispatch.Actor, body []byte) (any, error) {
+	accountID, over, err := d.parseAccountQuotaRequest(body)
+	if err != nil {
+		return nil, err
+	}
+
+	// The caller's own identity, so a quota change names who made it.
+	updatedBy := actorName(caller)
+	if err := d.Quota.PutAccountQuota(ctx, accountID, over, updatedBy); err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
+			return nil, err
+		}
+		slog.ErrorContext(ctx, "PutAccountQuota: failed to store override", "accountID", accountID, "err", err)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+	slog.InfoContext(ctx, "Account quota override updated",
+		"accountID", accountID, "updatedBy", updatedBy, "cleared", over.Empty())
+
+	stored, limits, err := d.Quota.GetAccountQuota(ctx, accountID)
+	if err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
+			return nil, err
+		}
+		slog.ErrorContext(ctx, "PutAccountQuota: failed to read back override", "accountID", accountID, "err", err)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+	return accountQuotaResponse(accountID, stored, limits), nil
+}
+
+// parseAccountQuotaRequest decodes and validates a quota request. The account
+// must exist: silently accepting an override for a typo'd ID would store a
+// record that never applies to anything.
+func (d Deps) parseAccountQuotaRequest(body []byte) (string, quota.Overrides, error) {
+	if d.Quota == nil || d.IAM == nil {
+		slog.Error("AccountQuota: quota or IAM service not available")
+		return "", quota.Overrides{}, errors.New(awserrors.ErrorInternalError)
+	}
+
+	var req AccountQuotaRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return "", quota.Overrides{}, errors.New(awserrors.ErrorInvalidRequest)
+	}
+	if !accountIDRE.MatchString(req.AccountID) {
+		return "", quota.Overrides{}, errors.New(awserrors.ErrorInvalidRequest)
+	}
+	if _, err := d.IAM.GetAccount(req.AccountID); err != nil {
+		return "", quota.Overrides{}, errors.New(awserrors.ErrorInvalidRequest)
+	}
+	return req.AccountID, req.Overrides, nil
+}
+
+// accountQuotaResponse pairs each resolved limit with the layer it came from.
+func accountQuotaResponse(accountID string, over quota.Overrides, limits quota.Limits) *AccountQuotaResponse {
+	dimensions := []struct {
+		name     string
+		value    int
+		override *int
+	}{
+		{"vcpus", limits.VCPUs, over.VCPUs},
+		{"vpcs", limits.VPCs, over.VPCs},
+		{"subnets", limits.Subnets, over.Subnets},
+		{"eips", limits.EIPs, over.EIPs},
+		{"volumes", limits.Volumes, over.Volumes},
+		{"volumes_gib", limits.VolumesGiB, over.VolumesGiB},
+		{"rds_instances", limits.RDSInstances, over.RDSInstances},
+		{"load_balancers", limits.LoadBalancers, over.LoadBalancers},
+	}
+
+	resp := &AccountQuotaResponse{
+		AccountID: accountID,
+		Limits:    make(map[string]int, len(dimensions)),
+		Source:    make(map[string]string, len(dimensions)),
+		Overrides: over,
+	}
+	for _, d := range dimensions {
+		resp.Limits[d.name] = d.value
+		resp.Source[d.name] = sourceConfig
+		if d.override != nil {
+			resp.Source[d.name] = sourceOverride
+		}
+	}
+	return resp
+}

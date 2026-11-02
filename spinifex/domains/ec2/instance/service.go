@@ -17,7 +17,7 @@ type InstanceService interface {
 	RunInstances(ctx context.Context, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
 	DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
 	DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, accountID string) (*ec2.DescribeInstanceStatusOutput, error)
-	DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypesInput, accountID string) (*ec2.DescribeInstanceTypesOutput, error)
+	DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypesInput, accountID string) (*DescribeInstanceTypesNodeOutput, error)
 	DescribeInstanceAttribute(ctx context.Context, input *ec2.DescribeInstanceAttributeInput, accountID string) (*ec2.DescribeInstanceAttributeOutput, error)
 	DescribeStoppedInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
 	DescribeTerminatedInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
@@ -49,11 +49,30 @@ type TerminateStoppedInstanceOutput struct {
 	InstanceID string `json:"instanceId"`
 }
 
+// DescribeInstanceTypesNodeOutput is one node's reply to the describe fan-out.
+// Availability is a count per instance type, so the reply is bounded by the
+// number of types and never by how much capacity is free.
+type DescribeInstanceTypesNodeOutput struct {
+	InstanceTypes []*ec2.InstanceTypeInfo `json:"InstanceTypes"`
+
+	// Set only for the capacity request, keyed by instance type name. A type
+	// present in InstanceTypes with no entry here has no free slot on the node.
+	Availability map[string]int64 `json:"Availability,omitempty"`
+}
+
+// InstanceTypeAvailability pairs an instance type with the number of instances
+// of it the node can currently admit.
+type InstanceTypeAvailability struct {
+	Info      *ec2.InstanceTypeInfo
+	Available int64
+}
+
 // ResourceCapacityProvider exposes per-node instance-type availability.
-// GetAvailableInstanceTypeInfos gates on free capacity; GetSupportedInstanceTypeInfos
-// returns all configured types regardless of allocation.
+// GetInstanceTypeAvailability counts the free slots per type;
+// GetSupportedInstanceTypeInfos returns all configured types regardless of
+// allocation.
 type ResourceCapacityProvider interface {
-	GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo
+	GetInstanceTypeAvailability() []InstanceTypeAvailability
 	GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeInfo
 }
 

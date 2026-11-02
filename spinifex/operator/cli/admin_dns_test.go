@@ -65,10 +65,16 @@ func dnsClusterToml(t *testing.T, nodes int, extra string) string {
 func runNameservers(t *testing.T, path string) (string, error) {
 	t.Helper()
 	resetGlobalViper(t)
-	// LoadConfig declares the process-wide cluster size; undo it so later
-	// tests in this package can declare their own.
+	// LoadConfig declares the process-wide cluster size; clear it for this
+	// load and put the package's count back afterwards.
+	was := clustersize.Nodes()
 	clustersize.ResetForTest()
-	t.Cleanup(clustersize.ResetForTest)
+	t.Cleanup(func() {
+		clustersize.ResetForTest()
+		if was > 0 {
+			_ = clustersize.Declare(was)
+		}
+	})
 	viper.Set("config", path)
 	var out bytes.Buffer
 	cmd := &cobra.Command{}

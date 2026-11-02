@@ -1,20 +1,13 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { foundationModelsQueryOptions } from "@/queries/bedrock"
-
-import { KnowledgeBaseFormPage } from "../-components/knowledge-base-form-page"
-
+// The form opens in the list's side panel; this address is kept for links.
 export const Route = createFileRoute(
   "/_auth/bedrock/(knowledge-bases)/list-knowledge-bases/create",
 )({
-  loader: async ({ context }) => {
-    await context.queryClient.query({
-      ...foundationModelsQueryOptions,
-      staleTime: "static",
+  beforeLoad: () => {
+    throw redirect({
+      to: "/bedrock/list-knowledge-bases",
+      search: { create: true },
     })
   },
-  head: () => ({
-    meta: [{ title: "Create Knowledge Base | Ochre | Mulga" }],
-  }),
-  component: KnowledgeBaseFormPage,
 })

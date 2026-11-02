@@ -33,6 +33,14 @@ import (
 // when the caller omits instanceTypes.
 const defaultNodegroupInstanceType = "t3.medium"
 
+// workerMetadataHopLimit is the IMDS hop limit managed nodegroups launch workers
+// with, one more than the EC2 default so pods behind the node reach IMDS.
+const workerMetadataHopLimit = int64(2)
+
+// launchTemplateDefaultVersion is the alias EC2 resolves when a template
+// reference names no version.
+const launchTemplateDefaultVersion = "$Default"
+
 // defaultNodegroupDiskSizeGiB mirrors the AWS EKS managed-nodegroup default when
 // the caller omits diskSize. Without it the record stores 0, the launch skips
 // its block device mapping entirely, and the node silently inherits the AMI's
@@ -699,6 +707,12 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 		}}
 	}
 
+	metadataOptions, err := s.workerMetadataOptions(ctx, rec, accountID)
+	if err != nil {
+		return "", err
+	}
+	runInput.MetadataOptions = metadataOptions
+
 	// Attach the node role's instance profile so IMDS serves the role to the ECR
 	// credential provider; without it worker pulls from the internal ECR get 401.
 	if s.iamEnsurer() != nil && rec.NodeRole != "" {
@@ -727,6 +741,62 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 		}
 	}
 	return "", errors.New("run worker returned no instance id")
+}
+
+// workerMetadataOptions chooses a worker's IMDS options: fields a launch template
+// version sets win as given, and every unset field gets the managed nodegroup
+// default (IMDSv2 required, hop limit 2) so pods behind the node can reach IMDS.
+func (s *EKSServiceImpl) workerMetadataOptions(ctx context.Context, rec *NodegroupRecord, accountID string) (*ec2.InstanceMetadataOptionsRequest, error) {
+	managedDefault := &ec2.InstanceMetadataOptionsRequest{
+		HttpTokens:              aws.String(ec2.HttpTokensStateRequired),
+		HttpPutResponseHopLimit: aws.Int64(workerMetadataHopLimit),
+	}
+	if rec.LaunchTemplate == nil {
+		return managedDefault, nil
+	}
+	if s.deps.LaunchTemplates == nil {
+		slog.ErrorContext(ctx, "EKS nodegroup: launch template named but no launch template service wired",
+			"nodegroup", rec.Name, "launchTemplate", rec.LaunchTemplate.ID+rec.LaunchTemplate.Name)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	version := rec.LaunchTemplate.Version
+	if version == "" {
+		version = launchTemplateDefaultVersion
+	}
+	in := &ec2.DescribeLaunchTemplateVersionsInput{Versions: aws.StringSlice([]string{version})}
+	if rec.LaunchTemplate.ID != "" {
+		in.LaunchTemplateId = aws.String(rec.LaunchTemplate.ID)
+	} else {
+		in.LaunchTemplateName = aws.String(rec.LaunchTemplate.Name)
+	}
+	out, err := s.deps.LaunchTemplates.DescribeLaunchTemplateVersions(ctx, in, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if len(out.LaunchTemplateVersions) == 0 || out.LaunchTemplateVersions[0].LaunchTemplateData == nil {
+		return nil, errors.New(awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound)
+	}
+	opts := out.LaunchTemplateVersions[0].LaunchTemplateData.MetadataOptions
+	if opts == nil {
+		return managedDefault, nil
+	}
+	req := &ec2.InstanceMetadataOptionsRequest{
+		HttpTokens:              opts.HttpTokens,
+		HttpPutResponseHopLimit: opts.HttpPutResponseHopLimit,
+		HttpEndpoint:            opts.HttpEndpoint,
+		HttpProtocolIpv6:        opts.HttpProtocolIpv6,
+		InstanceMetadataTags:    opts.InstanceMetadataTags,
+	}
+	// EKS node AMIs launch with IMDSv2 required and hop limit 2 when a template
+	// leaves them unset, so only fields the template sets override the default.
+	if req.HttpTokens == nil {
+		req.HttpTokens = managedDefault.HttpTokens
+	}
+	if req.HttpPutResponseHopLimit == nil {
+		req.HttpPutResponseHopLimit = managedDefault.HttpPutResponseHopLimit
+	}
+	return req, nil
 }
 
 // selectWorkerHost picks the host for the next worker: the eligible host (one

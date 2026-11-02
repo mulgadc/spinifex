@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -176,7 +177,7 @@ func TestUserWriters_DoNotUndoConcurrentDetach(t *testing.T) {
 			go func() { done <- tc.write(svc, *user.UserName, arg) }()
 			<-gate.reached
 
-			_, err = svc.DetachUserPolicy(testAccountID, &iam.DetachUserPolicyInput{UserName: user.UserName, PolicyArn: policy.Arn})
+			_, err = peerIAMService(t, svc).DetachUserPolicy(testAccountID, &iam.DetachUserPolicyInput{UserName: user.UserName, PolicyArn: policy.Arn})
 			require.NoError(t, err)
 
 			close(gate.release)
@@ -292,7 +293,7 @@ func TestGroupWriters_DoNotUndoConcurrentDetach(t *testing.T) {
 			go func() { done <- tc.write(svc, *group.GroupName, *other.Arn) }()
 			<-gate.reached
 
-			_, err = svc.DetachGroupPolicy(testAccountID, &iam.DetachGroupPolicyInput{GroupName: group.GroupName, PolicyArn: policy.Arn})
+			_, err = peerIAMService(t, svc).DetachGroupPolicy(testAccountID, &iam.DetachGroupPolicyInput{GroupName: group.GroupName, PolicyArn: policy.Arn})
 			require.NoError(t, err)
 
 			close(gate.release)
@@ -381,4 +382,79 @@ func TestOIDCProviderTagWriters_DoNotRecreateDeletedProvider(t *testing.T) {
 			assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "the deleted provider must stay deleted")
 		})
 	}
+}
+
+// contendedKV lands a competing write ahead of each of the first budget record
+// updates it forwards, the order a caller looping TagUser wins every race in.
+type contendedKV struct {
+	jetstream.KeyValue
+
+	svc     *IAMServiceImpl
+	user    string
+	budget  atomic.Int32
+	armed   atomic.Bool
+	pending sync.WaitGroup
+	errs    chan error
+}
+
+func (c *contendedKV) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
+	if c.armed.CompareAndSwap(true, false) && c.budget.Add(-1) >= 0 {
+		done := make(chan struct{})
+		c.pending.Go(func() {
+			defer close(done)
+			_, err := c.svc.TagUser(testAccountID, &iam.TagUserInput{
+				UserName: aws.String(c.user),
+				Tags:     []*iam.Tag{{Key: aws.String("k"), Value: aws.String(key)}},
+			})
+			c.errs <- err
+		})
+		// Either the competing write lands first or it queues behind this one.
+		for c.svc.recordLocks.holders("user/"+key) < 2 {
+			select {
+			case <-done:
+			case <-time.After(time.Millisecond):
+				continue
+			}
+			break
+		}
+		c.armed.Store(true)
+	}
+	return c.KeyValue.Update(ctx, key, value, last)
+}
+
+func (l *recordLocks) holders(key string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if rl := l.locks[key]; rl != nil {
+		return rl.refs
+	}
+	return 0
+}
+
+// A self-scoped write that wins every revision race on this node must queue
+// behind an administrator's DetachUserPolicy rather than exhaust its retries.
+func TestDetachUserPolicy_IsNotStarvedByALoopingSelfWrite(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	user := createTestUser(t, svc, "self-tagger")
+	policy := createTestPolicy(t, svc, "RevokedPolicy")
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: user.UserName, PolicyArn: policy.Arn})
+	require.NoError(t, err)
+
+	kv := &contendedKV{KeyValue: svc.usersBucket, svc: svc, user: *user.UserName, errs: make(chan error, roleCASMaxRetries)}
+	kv.budget.Store(roleCASMaxRetries)
+	kv.armed.Store(true)
+	svc.usersBucket = kv
+
+	_, err = svc.DetachUserPolicy(testAccountID, &iam.DetachUserPolicyInput{UserName: user.UserName, PolicyArn: policy.Arn})
+	require.NoError(t, err, "a contending self-write starved the detach")
+	kv.pending.Wait()
+	close(kv.errs)
+	for werr := range kv.errs {
+		require.NoError(t, werr)
+	}
+
+	got, err := svc.getUser(t.Context(), testAccountID, *user.UserName)
+	require.NoError(t, err)
+	assert.Empty(t, got.AttachedPolicies)
 }

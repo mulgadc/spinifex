@@ -7,7 +7,8 @@ import { Trash2 } from "lucide-react"
 import { useState } from "react"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { RegisterTargetsDialog } from "@/components/elbv2/register-targets-dialog"
+import { PanelField, PanelFields } from "@/components/detail-panel"
+import { RegisterTargetsForm } from "@/components/elbv2/register-targets-form"
 import { ErrorBanner } from "@/components/error-banner"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
@@ -68,7 +69,7 @@ export function TargetsTab({
       await registerMutation.mutateAsync({ targetGroupArn, targets })
       setRegisterOpen(false)
     } catch {
-      // error surfaced below via mutation state
+      // surfaced beside the submit button via mutation.error
     }
   }
 
@@ -94,12 +95,6 @@ export function TargetsTab({
 
   return (
     <div className="space-y-3">
-      {registerMutation.error && (
-        <ErrorBanner
-          error={registerMutation.error}
-          msg="Failed to register targets"
-        />
-      )}
       {deregisterMutation.error && (
         <ErrorBanner
           error={deregisterMutation.error}
@@ -129,76 +124,69 @@ export function TargetsTab({
       </div>
 
       {descriptions.length === 0 ? (
-        <p className="text-muted-foreground">No targets registered.</p>
+        <p className="text-sm text-muted-foreground">No targets registered.</p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-muted-foreground">
-                <th className="px-4 py-2 font-medium">Target</th>
-                <th className="px-4 py-2 font-medium">Port</th>
-                <th className="px-4 py-2 font-medium">AZ</th>
-                <th className="px-4 py-2 font-medium">Health</th>
-                <th className="px-4 py-2 font-medium">Reason</th>
-                <th className="px-4 py-2 font-medium">Description</th>
-                <th className="px-4 py-2 font-medium">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {descriptions.map((desc) => {
-                const target: TargetDescription = desc.Target ?? { Id: "" }
-                const state = desc.TargetHealth?.State
+        <ul className="flex flex-col gap-2">
+          {descriptions.map((desc) => {
+            const target: TargetDescription = desc.Target ?? { Id: "" }
+            const state = desc.TargetHealth?.State
 
-                return (
-                  <tr
-                    className="border-b last:border-0"
-                    key={targetKey(target)}
-                  >
-                    <td className="px-4 py-2 font-mono text-xs">
-                      {target.Id ?? ""}
-                    </td>
-                    <td className="px-4 py-2">{target.Port ?? ""}</td>
-                    <td className="px-4 py-2 text-xs">
-                      {target.AvailabilityZone ?? ""}
-                    </td>
-                    <td className="px-4 py-2">
-                      <StateBadge state={state ?? "unknown"} />
-                    </td>
-                    <td className="px-4 py-2 text-xs">
-                      {desc.TargetHealth?.Reason ?? ""}
-                    </td>
-                    <td className="px-4 py-2 text-xs">
-                      {desc.TargetHealth?.Description ?? ""}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <Button
-                        aria-label={`Deregister ${target.Id}`}
-                        onClick={() => {
-                          setDeregisterTarget(target)
-                        }}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+            return (
+              <li className="rounded-md border bg-card" key={targetKey(target)}>
+                <div className="flex items-center justify-between gap-2 py-1 pr-1 pl-3">
+                  <span className="truncate font-mono text-xs">
+                    {target.Id ?? ""}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <StateBadge state={state ?? "unknown"} />
+                    <Button
+                      aria-label={`Deregister ${target.Id}`}
+                      onClick={() => {
+                        setDeregisterTarget(target)
+                      }}
+                      size="icon-sm"
+                      variant="ghost"
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
+                </div>
+                <div className="border-t px-3">
+                  <PanelFields>
+                    <PanelField label="Port">{target.Port}</PanelField>
+                    <PanelField label="Availability zone">
+                      {target.AvailabilityZone}
+                    </PanelField>
+                    {desc.TargetHealth?.Reason && (
+                      <PanelField label="Reason">
+                        {desc.TargetHealth.Reason}
+                      </PanelField>
+                    )}
+                  </PanelFields>
+                  {desc.TargetHealth?.Description && (
+                    <p className="border-t py-1.5 text-xs break-words text-muted-foreground">
+                      {desc.TargetHealth.Description}
+                    </p>
+                  )}
+                </div>
+              </li>
+            )
+          })}
+        </ul>
       )}
 
       {registerOpen && (
-        <RegisterTargetsDialog
+        <RegisterTargetsForm
           defaultPort={defaultPort}
+          error={registerMutation.error}
           instances={vpcInstances}
           isPending={registerMutation.isPending}
-          onConfirm={handleRegister}
-          onOpenChange={setRegisterOpen}
+          onClose={() => {
+            registerMutation.reset()
+            setRegisterOpen(false)
+          }}
+          onSubmit={handleRegister}
+          targetGroupArn={targetGroupArn}
         />
       )}
 

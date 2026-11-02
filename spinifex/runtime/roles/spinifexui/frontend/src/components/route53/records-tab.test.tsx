@@ -149,20 +149,20 @@ describe("RecordsTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Add record" }))
 
-    const dialog = await screen.findByRole("alertdialog", {
+    const panel = await screen.findByRole("region", {
       name: "Add record",
     })
 
-    await user.type(within(dialog).getByLabelText("Record name"), "_dmarc")
+    await user.type(within(panel).getByLabelText("Record name"), "_dmarc")
     await user.click(
-      within(dialog).getByRole("combobox", { name: "Record type" }),
+      within(panel).getByRole("combobox", { name: "Record type" }),
     )
     await user.click(await screen.findByRole("option", { name: "TXT" }))
     await user.type(
-      within(dialog).getByLabelText("Value"),
+      within(panel).getByLabelText("Value"),
       'v=DMARC1; p=none; say "hi"',
     )
-    await user.click(within(dialog).getByRole("button", { name: "Add record" }))
+    await user.click(within(panel).getByRole("button", { name: "Add record" }))
 
     await expect(submittedChanges()).resolves.toStrictEqual([
       {
@@ -185,15 +185,15 @@ describe("RecordsTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Add record" }))
 
-    const dialog = await screen.findByRole("alertdialog", {
+    const panel = await screen.findByRole("region", {
       name: "Add record",
     })
 
-    await user.type(within(dialog).getByLabelText("Value"), "not-an-ip")
-    await user.click(within(dialog).getByRole("button", { name: "Add record" }))
+    await user.type(within(panel).getByLabelText("Value"), "not-an-ip")
+    await user.click(within(panel).getByRole("button", { name: "Add record" }))
 
     await expect(
-      within(dialog).findByText('"not-an-ip" is not an IPv4 address'),
+      within(panel).findByText('"not-an-ip" is not an IPv4 address'),
     ).resolves.toBeInTheDocument()
     expect(sdk.send).not.toHaveBeenCalled()
   })
@@ -204,16 +204,16 @@ describe("RecordsTab", () => {
 
     await user.click(screen.getByLabelText("Edit record www.example.com. A"))
 
-    const dialog = await screen.findByRole("alertdialog", {
+    const panel = await screen.findByRole("region", {
       name: "Edit record",
     })
 
-    const values = within(dialog).getByLabelText("Value")
+    const values = within(panel).getByLabelText("Value")
     expect(values).toHaveValue("192.0.2.10")
     await user.clear(values)
     await user.type(values, "192.0.2.20{enter}192.0.2.21")
     await user.click(
-      within(dialog).getByRole("button", { name: "Save changes" }),
+      within(panel).getByRole("button", { name: "Save changes" }),
     )
 
     await expect(submittedChanges()).resolves.toStrictEqual([
@@ -235,15 +235,15 @@ describe("RecordsTab", () => {
 
     await user.click(screen.getByLabelText("Edit record www.example.com. A"))
 
-    const dialog = await screen.findByRole("alertdialog", {
+    const panel = await screen.findByRole("region", {
       name: "Edit record",
     })
 
-    const name = within(dialog).getByLabelText("Record name")
+    const name = within(panel).getByLabelText("Record name")
     await user.clear(name)
     await user.type(name, "web")
     await user.click(
-      within(dialog).getByRole("button", { name: "Save changes" }),
+      within(panel).getByRole("button", { name: "Save changes" }),
     )
 
     await expect(submittedChanges()).resolves.toStrictEqual([
@@ -266,12 +266,12 @@ describe("RecordsTab", () => {
 
     await user.click(screen.getByLabelText(`Edit record ${ZONE} TXT`))
 
-    const dialog = await screen.findByRole("alertdialog", {
+    const panel = await screen.findByRole("region", {
       name: "Edit record",
     })
 
-    expect(within(dialog).getByLabelText("Value")).toHaveValue('hello "world"')
-    expect(within(dialog).getByLabelText("Record name")).toHaveValue("")
+    expect(within(panel).getByLabelText("Value")).toHaveValue('hello "world"')
+    expect(within(panel).getByLabelText("Record name")).toHaveValue("")
   })
 
   it("deletes a record set with the exact set the API returned", async () => {
@@ -286,7 +286,7 @@ describe("RecordsTab", () => {
     ])
   })
 
-  it("shows the API's refusal in the dialog and keeps it open", async () => {
+  it("shows the API's refusal in the form and keeps it open", async () => {
     sdk.setHandler("ChangeResourceRecordSetsCommand", () => {
       throw Object.assign(
         new Error("Tried to create resource record set but it already exists"),
@@ -300,19 +300,19 @@ describe("RecordsTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Add record" }))
 
-    const dialog = await screen.findByRole("alertdialog", {
+    const panel = await screen.findByRole("region", {
       name: "Add record",
     })
 
-    await user.type(within(dialog).getByLabelText("Record name"), "www")
-    await user.type(within(dialog).getByLabelText("Value"), "192.0.2.10")
-    await user.click(within(dialog).getByRole("button", { name: "Add record" }))
+    await user.type(within(panel).getByLabelText("Record name"), "www")
+    await user.type(within(panel).getByLabelText("Value"), "192.0.2.10")
+    await user.click(within(panel).getByRole("button", { name: "Add record" }))
 
     await expect(
-      within(dialog).findByText(/InvalidChangeBatch: Tried to create/),
+      within(panel).findByText(/InvalidChangeBatch: Tried to create/),
     ).resolves.toBeInTheDocument()
     expect(
-      screen.getByRole("alertdialog", { name: "Add record" }),
+      screen.getByRole("region", { name: "Add record" }),
     ).toBeInTheDocument()
   })
 })

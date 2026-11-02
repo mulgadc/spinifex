@@ -88,7 +88,11 @@ export function SelectField<T extends FieldValues>({
             {notice ? (
               <PickerNoticeText notice={notice} />
             ) : (
-              <Select onValueChange={handleChange} value={selected}>
+              <Select
+                items={options}
+                onValueChange={handleChange}
+                value={selected}
+              >
                 <SelectTrigger
                   aria-invalid={!!fieldState.error}
                   className="w-full"
@@ -107,7 +111,7 @@ export function SelectField<T extends FieldValues>({
             )}
             {description && <FieldDescription>{description}</FieldDescription>}
             {warning && (
-              <p className="text-xs text-tactical-amber">{warning}</p>
+              <p className="text-xs text-warning-foreground">{warning}</p>
             )}
             <FieldError errors={[fieldState.error]} />
           </Field>
@@ -142,7 +146,7 @@ export function TextField({
       </FieldTitle>
       <Input aria-invalid={!!error} id={id} {...inputProps} />
       {description && <FieldDescription>{description}</FieldDescription>}
-      {warning && <p className="text-xs text-tactical-amber">{warning}</p>}
+      {warning && <p className="text-xs text-warning-foreground">{warning}</p>}
       <FieldError errors={[error]} />
     </Field>
   )

@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
@@ -23,7 +24,7 @@ const (
 	// InstanceStateBucket is the name of the KV bucket for storing instance state.
 	InstanceStateBucket = "spinifex-instance-state"
 	// ClusterStateBucket is the name of the KV bucket for cluster state (heartbeats, shutdown markers, service maps).
-	ClusterStateBucket = "spinifex-cluster-state"
+	ClusterStateBucket = clusterv1.ClusterStateBucket
 	// InstanceStatePrefix is the key prefix for the per-node running-set blobs
 	// the record space replaces. Nothing writes it after the cutover; the
 	// migration reads it and a rolled-back node still finds what it left.
@@ -244,7 +245,7 @@ func (m *JetStreamManager) WriteHeartbeat(h *Heartbeat) error {
 	if err != nil {
 		return err
 	}
-	_, err = m.clusterKV.Put(context.Background(), "heartbeat."+h.Node, data)
+	_, err = m.clusterKV.Put(context.Background(), clusterv1.HeartbeatKey(h.Node), data)
 	return err
 }
 
@@ -253,7 +254,7 @@ func (m *JetStreamManager) ReadHeartbeat(nodeID string) (*Heartbeat, error) {
 	if m.clusterKV == nil {
 		return nil, errors.New("cluster state KV not initialized")
 	}
-	entry, err := m.clusterKV.Get(context.Background(), "heartbeat."+nodeID)
+	entry, err := m.clusterKV.Get(context.Background(), clusterv1.HeartbeatKey(nodeID))
 	if err != nil {
 		return nil, err
 	}

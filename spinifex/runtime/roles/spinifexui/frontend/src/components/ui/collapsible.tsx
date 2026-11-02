@@ -16,6 +16,9 @@ export const collapsibleTriggerVariants = cva("", {
       link: "cursor-pointer text-xs text-muted-foreground underline-offset-4 hover:underline",
       subtle:
         "text-left text-sm font-medium text-muted-foreground hover:text-foreground",
+      // A detail panel's section heading, which folds the section away.
+      section:
+        "group/section flex h-10 w-full items-center justify-between gap-2 px-4 text-left text-xs font-semibold tracking-wide text-muted-foreground uppercase outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30",
     },
   },
   defaultVariants: {
@@ -44,6 +47,7 @@ export const collapsibleContentVariants = cva("", {
       default: "",
       panel: "space-y-4 rounded-md border border-border p-4",
       indented: "space-y-4 border-l-2 border-muted pl-4",
+      section: "px-4 pb-4",
     },
   },
   defaultVariants: {

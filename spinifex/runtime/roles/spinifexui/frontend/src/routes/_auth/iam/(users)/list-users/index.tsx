@@ -1,14 +1,20 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { ListCard } from "@/components/list-card"
-import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
-import { Button } from "@/components/ui/button"
-import { byName } from "@/lib/utils"
+import {
+  CLOSED_PANEL,
+  type PanelSearch,
+  panelSearchFields,
+} from "@/lib/panel-search"
 import { iamUsersQueryOptions } from "@/queries/iam"
 
+import { UsersPage } from "../-components/users-page"
+
 export const Route = createFileRoute("/_auth/iam/(users)/list-users/")({
+  validateSearch: z.object(panelSearchFields),
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...iamUsersQueryOptions,
@@ -23,33 +29,22 @@ export const Route = createFileRoute("/_auth/iam/(users)/list-users/")({
 
 function Users() {
   const { data } = useSuspenseQuery(iamUsersQueryOptions)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
 
-  const users = (data.Users ?? []).toSorted(byName((u) => u.UserName))
+  // Opening or closing a panel adds a history entry, so Back closes it.
+  function onSearchChange(next: Partial<PanelSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next || "create" in next),
+    })
+  }
 
   return (
-    <>
-      <PageHeading
-        actions={
-          <Link to="/iam/create-user">
-            <Button>Create User</Button>
-          </Link>
-        }
-        title="Users"
-      />
-
-      <ResourceList
-        empty="No IAM users found."
-        getKey={(user) => user.UserName}
-        items={users}
-        renderItem={(user, userName) => (
-          <ListCard
-            params={{ userName }}
-            subtitle={user.UserId ?? ""}
-            title={userName}
-            to="/iam/list-users/$userName"
-          />
-        )}
-      />
-    </>
+    <UsersPage
+      onSearchChange={onSearchChange}
+      search={search}
+      users={data.Users ?? []}
+    />
   )
 }

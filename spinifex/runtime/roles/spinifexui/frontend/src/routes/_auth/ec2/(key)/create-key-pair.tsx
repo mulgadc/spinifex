@@ -1,14 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { CreateKeyPairPage } from "./-components/create-key-pair-page"
-
+// The form opens in the list's side panel; this address is kept for links.
 export const Route = createFileRoute("/_auth/ec2/(key)/create-key-pair")({
-  head: () => ({
-    meta: [
-      {
-        title: "Create Key Pair | EC2 | Mulga",
-      },
-    ],
-  }),
-  component: CreateKeyPairPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/ec2/describe-key-pairs", search: { create: true } })
+  },
 })

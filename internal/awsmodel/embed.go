@@ -19,5 +19,6 @@ var modelFiles = map[Service]string{
 	RDS:                    "models/rds-2014-10-31.json.gz",
 	Route53:                "models/route-53-2013-04-01.json.gz",
 	S3:                     "models/s3-2006-03-01.json.gz",
+	SQS:                    "models/sqs-2012-11-05.json.gz",
 	STS:                    "models/sts-2011-06-15.json.gz",
 }

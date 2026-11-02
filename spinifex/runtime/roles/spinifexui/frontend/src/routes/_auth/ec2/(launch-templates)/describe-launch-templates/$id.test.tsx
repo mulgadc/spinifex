@@ -47,7 +47,7 @@ async function renderPage() {
       { VersionNumber: 1, DefaultVersion: true, LaunchTemplateData: {} },
     ],
   })
-  // The new-version form below the table reads these.
+  // The new-version form in the Settings tab reads these.
   qc.setQueryData(["ec2", "images"], { Images: [] })
   qc.setQueryData(["ec2", "instances", "types"], { InstanceTypes: [] })
   qc.setQueryData(["ec2", "keypairs"], { KeyPairs: [] })
@@ -78,6 +78,25 @@ describe("launch template detail", () => {
     })
     expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
       input: { LaunchTemplateId: "lt-1", Versions: ["2"] },
+    })
+  })
+
+  it("makes another version the default", async () => {
+    const user = userEvent.setup()
+    await renderPage()
+
+    expect(
+      screen.getByRole("button", { name: "Set version 1 as default" }),
+    ).toBeDisabled()
+    await user.click(
+      screen.getByRole("button", { name: "Set version 2 as default" }),
+    )
+
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalled()
+    })
+    expect(sdk.send.mock.calls[0]?.[0]).toMatchObject({
+      input: { LaunchTemplateId: "lt-1", DefaultVersion: "2" },
     })
   })
 

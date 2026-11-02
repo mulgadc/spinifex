@@ -44,6 +44,14 @@ func (s *Selector) Lookup(service string) (*Entry, bool) {
 	return s.registry.Lookup(service)
 }
 
+// Traits returns the traits declared for a credential scope, served or not.
+func (s *Selector) Traits(service string) (ServiceTraits, bool) {
+	if s.registry == nil {
+		return ServiceTraits{}, false
+	}
+	return s.registry.Traits(service)
+}
+
 // Served reports whether either dispatch path serves service.
 func (s *Selector) Served(service string) bool {
 	if _, ok := s.Lookup(service); ok {

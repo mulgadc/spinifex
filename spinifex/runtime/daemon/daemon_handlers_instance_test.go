@@ -606,6 +606,24 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 		assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"])
 	})
 
+	t.Run("owner at capacity holding unsealed writes is relayed", func(t *testing.T) {
+		d, store, body := newFixture(t, "i-p1-fwd-dirty", "node-p1-dirty")
+		// Same shape as the fallback case above, so the reply code tells the
+		// two apart: the owner claims the record, a local attempt would answer
+		// NotFound, and only a relay answers InsufficientInstanceCapacity.
+		owner(t, d, "node-p1-dirty", func(m *nats.Msg) {
+			_, _ = store.ClaimStoppedInstance("i-p1-fwd-dirty")
+			resp := nats.NewMsg(m.Reply)
+			resp.Data = awserrors.GenerateErrorPayload(awserrors.ErrorInsufficientInstanceCapacity)
+			resp.Header.Set(natsmsg.UnsealedWritesHeader, "true")
+			_ = m.RespondMsg(resp)
+		})
+
+		reply := requestHandler(t, d.natsConn, "ec2.start.p1-dirty", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
+		assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"],
+			"an owner that still holds unsealed writes must not be bypassed by a local start")
+	})
+
 	t.Run("owner not subscribed falls back locally", func(t *testing.T) {
 		d, _, body := newFixture(t, "i-p1-fwd-gone", "node-p1-gone")
 		reply := requestHandler(t, d.natsConn, "ec2.start.p1-gone", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)

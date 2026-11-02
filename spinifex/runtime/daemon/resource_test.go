@@ -257,7 +257,7 @@ func TestApplyHostReserve(t *testing.T) {
 	}{
 		{
 			name:       "normal host with default reserve",
-			host:       defaultHostReserve,
+			host:       hostReserve{vCPU: 2, memGB: 2.0},
 			totalVCPU:  16,
 			totalMemGB: 64.0,
 			wantVCPU:   2,
@@ -265,7 +265,7 @@ func TestApplyHostReserve(t *testing.T) {
 		},
 		{
 			name:       "boundary host (3 vCPU, 2.5 GB)",
-			host:       defaultHostReserve,
+			host:       hostReserve{vCPU: 2, memGB: 2.0},
 			totalVCPU:  3,
 			totalMemGB: 2.5,
 			wantVCPU:   2,
@@ -273,28 +273,28 @@ func TestApplyHostReserve(t *testing.T) {
 		},
 		{
 			name:       "too small: vCPU equals reserve",
-			host:       defaultHostReserve,
+			host:       hostReserve{vCPU: 2, memGB: 2.0},
 			totalVCPU:  2,
 			totalMemGB: 8.0,
 			wantErr:    true,
 		},
 		{
 			name:       "too small: vCPU below reserve",
-			host:       defaultHostReserve,
+			host:       hostReserve{vCPU: 2, memGB: 2.0},
 			totalVCPU:  1,
 			totalMemGB: 8.0,
 			wantErr:    true,
 		},
 		{
 			name:       "too small: mem at reserve threshold (no headroom)",
-			host:       defaultHostReserve,
+			host:       hostReserve{vCPU: 2, memGB: 2.0},
 			totalVCPU:  8,
 			totalMemGB: 2.0,
 			wantErr:    true,
 		},
 		{
 			name:       "too small: mem just under reserve+headroom",
-			host:       defaultHostReserve,
+			host:       hostReserve{vCPU: 2, memGB: 2.0},
 			totalVCPU:  8,
 			totalMemGB: 2.49,
 			wantErr:    true,
@@ -501,19 +501,19 @@ func TestResolveHostReserve(t *testing.T) {
 		{
 			name:     "no env returns default",
 			env:      map[string]string{},
-			wantVCPU: defaultHostReserve.vCPU,
-			wantMem:  defaultHostReserve.memGB,
+			wantVCPU: reservedVCPUFor(16),
+			wantMem:  defaultHostReserveMemGB,
 		},
 		{
 			name:     "vCPU override",
 			env:      map[string]string{"SPINIFEX_RESERVED_VCPU": "1"},
 			wantVCPU: 1,
-			wantMem:  defaultHostReserve.memGB,
+			wantMem:  defaultHostReserveMemGB,
 		},
 		{
 			name:     "memory override",
 			env:      map[string]string{"SPINIFEX_RESERVED_MEM_GB": "0.5"},
-			wantVCPU: defaultHostReserve.vCPU,
+			wantVCPU: reservedVCPUFor(16),
 			wantMem:  0.5,
 		},
 		{
@@ -528,32 +528,32 @@ func TestResolveHostReserve(t *testing.T) {
 		{
 			name:     "invalid vCPU falls back to default",
 			env:      map[string]string{"SPINIFEX_RESERVED_VCPU": "garbage"},
-			wantVCPU: defaultHostReserve.vCPU,
-			wantMem:  defaultHostReserve.memGB,
+			wantVCPU: reservedVCPUFor(16),
+			wantMem:  defaultHostReserveMemGB,
 		},
 		{
 			name:     "negative vCPU falls back to default",
 			env:      map[string]string{"SPINIFEX_RESERVED_VCPU": "-1"},
-			wantVCPU: defaultHostReserve.vCPU,
-			wantMem:  defaultHostReserve.memGB,
+			wantVCPU: reservedVCPUFor(16),
+			wantMem:  defaultHostReserveMemGB,
 		},
 		{
 			name:     "invalid memory falls back to default",
 			env:      map[string]string{"SPINIFEX_RESERVED_MEM_GB": "not-a-number"},
-			wantVCPU: defaultHostReserve.vCPU,
-			wantMem:  defaultHostReserve.memGB,
+			wantVCPU: reservedVCPUFor(16),
+			wantMem:  defaultHostReserveMemGB,
 		},
 		{
 			name:     "negative memory falls back to default",
 			env:      map[string]string{"SPINIFEX_RESERVED_MEM_GB": "-0.5"},
-			wantVCPU: defaultHostReserve.vCPU,
-			wantMem:  defaultHostReserve.memGB,
+			wantVCPU: reservedVCPUFor(16),
+			wantMem:  defaultHostReserveMemGB,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := resolveHostReserve(func(k string) string { return tc.env[k] })
+			got := resolveHostReserve(func(k string) string { return tc.env[k] }, 16)
 			assert.Equal(t, tc.wantVCPU, got.vCPU)
 			assert.InDelta(t, tc.wantMem, got.memGB, 0.001)
 		})

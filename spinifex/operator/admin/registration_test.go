@@ -64,7 +64,7 @@ func TestRegistration_GetVersion_Admin(t *testing.T) {
 }
 
 func TestRegistration_EveryActionDeniesNonAdminAccount(t *testing.T) {
-	for _, name := range ActionNames() {
+	for _, name := range AdminActionNames() {
 		t.Run(name, func(t *testing.T) {
 			_, err := serve(t, Deps{}, "000000000002", action(name), nil)
 			requireCode(t, err, awserrors.ErrorAccessDenied)
@@ -245,6 +245,10 @@ func TestNewRegistration_DeclaresTheAdminActionsAsItsInventory(t *testing.T) {
 	assert.ElementsMatch(t, []string{
 		"GetVersion", "GetNodes", "GetVMs", "GetStorageStatus", "PromoteImage",
 		"GrantModelAccess", "RevokeModelAccess", "ListModelAccess", "ListOchreCatalog",
+		"EnableSQS", "DescribeSQS",
+		"EnsureSQSWorker",
+		"GetInstanceMetrics",
+		"GetInstanceTypeCapacity",
 	}, reg.Inventory.Registered)
 	assert.NoError(t, dispatch.NewBuilder().Register(reg))
 }

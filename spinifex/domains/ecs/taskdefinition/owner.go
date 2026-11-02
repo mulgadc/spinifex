@@ -95,6 +95,10 @@ func (o *Owner) Deregister(ctx context.Context, kv jetstream.KeyValue, family st
 	if !found {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
+	if rec.Status != StatusInactive {
+		now := time.Now().UTC()
+		rec.DeregisteredAt = &now
+	}
 	rec.Status = StatusInactive
 	if err := putJSON(ctx, kv, RevKey(family, rev), &rec); err != nil {
 		return nil, err

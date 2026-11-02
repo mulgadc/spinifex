@@ -54,8 +54,11 @@ describe("defaultFinalSnapshotIdentifier", () => {
 describe("DeleteDBInstanceDialog", () => {
   it("defaults to taking a final snapshot with a pre-filled name", () => {
     render()
-    const checkbox = screen.getByRole("checkbox")
-    expect(checkbox).toBeChecked()
+    expect(
+      screen.getByRole("switch", {
+        name: "Take a final snapshot before deleting",
+      }),
+    ).toBeChecked()
     const field = screen.getByLabelText("Final snapshot name")
     expect((field as HTMLInputElement).value).toMatch(/^orders-db-final-/)
   })
@@ -69,6 +72,9 @@ describe("DeleteDBInstanceDialog", () => {
 
   it("sends a FinalDBSnapshotIdentifier on the default path", async () => {
     render()
+    fireEvent.change(screen.getByLabelText(/^To confirm, type/u), {
+      target: { value: "delete" },
+    })
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
     await waitFor(() => {
       expect(mockSend).toHaveBeenCalled()
@@ -80,7 +86,7 @@ describe("DeleteDBInstanceDialog", () => {
 
   it("requires the identifier to be typed before skipping the snapshot", () => {
     render()
-    fireEvent.click(screen.getByRole("checkbox"))
+    fireEvent.click(screen.getByRole("switch"))
     expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled()
 
     fireEvent.change(screen.getByLabelText("Type orders-db to confirm"), {
@@ -96,7 +102,7 @@ describe("DeleteDBInstanceDialog", () => {
 
   it("sends SkipFinalSnapshot once the identifier is confirmed", async () => {
     render()
-    fireEvent.click(screen.getByRole("checkbox"))
+    fireEvent.click(screen.getByRole("switch"))
     fireEvent.change(screen.getByLabelText("Type orders-db to confirm"), {
       target: { value: "orders-db" },
     })

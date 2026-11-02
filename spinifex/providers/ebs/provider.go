@@ -179,8 +179,14 @@ type CapacityRange struct {
 type VolumeState string
 
 const (
+	VolumeStateCreating  VolumeState = "creating"
 	VolumeStateAvailable VolumeState = "available"
 	VolumeStateInUse     VolumeState = "in-use"
+	// VolumeStateDeleting is a volume whose teardown is owed but not finished.
+	// AWS documents a volume remaining here for several minutes, because the
+	// object removal behind it scales with the volume and no request can carry
+	// that. Every dependant path refuses it.
+	VolumeStateDeleting VolumeState = "deleting"
 )
 
 // Volume contains only facts the control plane can rely on across providers.
@@ -618,5 +624,31 @@ type UnpublishVolumeRequest struct {
 type UnpublishVolumeResponse struct {
 	Versioned
 
+	Error *ProviderError `json:"error,omitempty"`
+}
+
+// UnsealedWritesChecker answers, for one node, which of a set of volumes it
+// still holds writes for that the backend may not have. It is separate from
+// EBSProvider because only the instance start path asks, and only of the node
+// that last ran the instance.
+type UnsealedWritesChecker interface {
+	HoldsUnsealedWrites(ctx context.Context, nodeID string, volumeIDs []string) ([]string, error)
+}
+
+// HoldsUnsealedWritesRequest asks NodeID, over its UnsealedWritesSubject, which
+// of VolumeIDs it holds unsealed writes for.
+type HoldsUnsealedWritesRequest struct {
+	Versioned
+
+	NodeID    string   `json:"node_id"`
+	VolumeIDs []string `json:"volume_ids"`
+}
+
+// HoldsUnsealedWritesResponse lists the requested volumes the node holds
+// unsealed writes for. A nil Error with an empty Held means it holds none.
+type HoldsUnsealedWritesResponse struct {
+	Versioned
+
+	Held  []string       `json:"held,omitempty"`
 	Error *ProviderError `json:"error,omitempty"`
 }

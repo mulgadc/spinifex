@@ -50,10 +50,11 @@ var eksScopes = map[string][]resourceSource{
 	"ListClusters":    {sourceAny},
 
 	// Internal control-plane routes. The cluster's owning account is a path
-	// segment on these two, and the ARN names that account rather than the
+	// segment on these three, and the ARN names that account rather than the
 	// system caller's, because that is the account the handler reads.
 	"ListInternalAddons":   {sourceInternalCluster},
 	"GetRecoveryDirective": {sourceInternalCluster},
+	"ListInternalWorkers":  {sourceInternalCluster},
 	// The owning account arrives in the body on these two, and the ARN names
 	// that account for the same reason: it is the account the handler acts in.
 	"PublishInternal":    {sourceInternalBodyCluster},

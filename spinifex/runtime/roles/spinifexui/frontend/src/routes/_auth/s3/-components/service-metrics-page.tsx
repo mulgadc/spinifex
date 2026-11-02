@@ -1,5 +1,11 @@
 import { useQuery } from "@tanstack/react-query"
+import { useState } from "react"
 
+import {
+  type DataColumn,
+  DataTable,
+  type SortState,
+} from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -86,11 +92,7 @@ export function ServiceMetricsPage() {
             <CardTitle>Meta Consensus Nodes (Raft)</CardTitle>
           </CardHeader>
           <CardContent>
-            {metaNodes.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No data</p>
-            ) : (
-              <MetaNodesTable nodes={metaNodes} />
-            )}
+            <MetaNodesTable nodes={metaNodes} />
           </CardContent>
         </Card>
 
@@ -100,11 +102,7 @@ export function ServiceMetricsPage() {
             <CardTitle>Object Storage Blob Nodes</CardTitle>
           </CardHeader>
           <CardContent>
-            {blobNodes.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No data</p>
-            ) : (
-              <BlobNodesTable nodes={blobNodes} />
-            )}
+            <BlobNodesTable nodes={blobNodes} />
           </CardContent>
         </Card>
       </div>
@@ -143,80 +141,145 @@ function ClusterHealthBadge({
   return <Badge variant="destructive">Degraded</Badge>
 }
 
+const DASH = <span className="text-muted-foreground">-</span>
+
+const META_COLUMNS: DataColumn<MetaNodeStatus>[] = [
+  {
+    id: "node",
+    header: "Node",
+    sortValue: (node) => node.id,
+    cell: (node) => (
+      <span className="font-mono text-xs font-medium">{node.id}</span>
+    ),
+  },
+  {
+    id: "host",
+    header: "Host",
+    sortValue: (node) => node.host,
+    cell: (node) => <span className="font-mono text-xs">{node.host}</span>,
+  },
+  {
+    id: "port",
+    header: "Port",
+    sortValue: (node) => node.port,
+    hideBelow: "lg",
+    cell: (node) => <span className="font-mono text-xs">{node.port}</span>,
+  },
+  {
+    id: "health",
+    header: "Health",
+    sortValue: (node) => (node.healthy ? 0 : 1),
+    cell: (node) => (
+      <Badge variant={node.healthy ? "default" : "destructive"}>
+        {node.healthy ? "Healthy" : "Unreachable"}
+      </Badge>
+    ),
+  },
+  {
+    id: "state",
+    header: "State",
+    sortValue: (node) => node.state || undefined,
+    cell: (node) =>
+      node.state ? (
+        <Badge variant={node.state === "Leader" ? "default" : "secondary"}>
+          {node.state}
+        </Badge>
+      ) : (
+        DASH
+      ),
+  },
+  {
+    id: "leader",
+    header: "Leader",
+    sortValue: (node) => node.leader || undefined,
+    hideBelow: "sm",
+    cell: (node) => (
+      <span className="font-mono text-xs">{node.leader ?? DASH}</span>
+    ),
+  },
+  {
+    id: "term",
+    header: "Term",
+    sortValue: (node) => node.term,
+    align: "end",
+    hideBelow: "md",
+    cell: (node) => (
+      <span className="font-mono text-xs">{node.term ?? DASH}</span>
+    ),
+  },
+  {
+    id: "commit",
+    header: "Commit Index",
+    sortValue: (node) => node.commit_index,
+    align: "end",
+    hideBelow: "xl",
+    cell: (node) => (
+      <span className="font-mono text-xs">{node.commit_index ?? DASH}</span>
+    ),
+  },
+  {
+    id: "applied",
+    header: "Applied Index",
+    sortValue: (node) => node.applied_index,
+    align: "end",
+    hideBelow: "xl",
+    cell: (node) => (
+      <span className="font-mono text-xs">{node.applied_index ?? DASH}</span>
+    ),
+  },
+]
+
 function MetaNodesTable({ nodes }: { nodes: MetaNodeStatus[] }) {
+  const [sort, setSort] = useState<SortState>()
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="pr-4 pb-1 font-medium">Node</th>
-            <th className="pr-4 pb-1 font-medium">Host</th>
-            <th className="pr-4 pb-1 font-medium">Port</th>
-            <th className="pr-4 pb-1 font-medium">Health</th>
-            <th className="pr-4 pb-1 font-medium">State</th>
-            <th className="pr-4 pb-1 font-medium">Leader</th>
-            <th className="pr-4 pb-1 font-medium">Term</th>
-            <th className="pr-4 pb-1 font-medium">Commit Index</th>
-            <th className="pb-1 font-medium">Applied Index</th>
-          </tr>
-        </thead>
-        <tbody>
-          {nodes.map((node) => (
-            <tr key={node.id} className="border-b last:border-0">
-              <td className="py-1.5 pr-4 font-mono font-medium">{node.id}</td>
-              <td className="py-1.5 pr-4 font-mono">{node.host}</td>
-              <td className="py-1.5 pr-4 font-mono">{node.port}</td>
-              <td className="py-1.5 pr-4">
-                <Badge variant={node.healthy ? "default" : "destructive"}>
-                  {node.healthy ? "Healthy" : "Unreachable"}
-                </Badge>
-              </td>
-              <td className="py-1.5 pr-4">
-                {node.state ? (
-                  <Badge
-                    variant={node.state === "Leader" ? "default" : "secondary"}
-                  >
-                    {node.state}
-                  </Badge>
-                ) : (
-                  <span className="text-muted-foreground">-</span>
-                )}
-              </td>
-              <td className="py-1.5 pr-4 font-mono">{node.leader ?? "-"}</td>
-              <td className="py-1.5 pr-4 font-mono">{node.term ?? "-"}</td>
-              <td className="py-1.5 pr-4 font-mono">
-                {node.commit_index ?? "-"}
-              </td>
-              <td className="py-1.5 font-mono">{node.applied_index ?? "-"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      caption="Meta consensus nodes"
+      columns={META_COLUMNS}
+      empty="No meta nodes found."
+      getRowId={(node) => String(node.id)}
+      onSortChange={setSort}
+      rows={nodes}
+      sort={sort}
+    />
   )
 }
 
+const BLOB_COLUMNS: DataColumn<BlobNode>[] = [
+  {
+    id: "node",
+    header: "Node",
+    sortValue: (node) => node.id,
+    cell: (node) => (
+      <span className="font-mono text-xs font-medium">{node.id}</span>
+    ),
+  },
+  {
+    id: "host",
+    header: "Host",
+    sortValue: (node) => node.host,
+    cell: (node) => <span className="font-mono text-xs">{node.host}</span>,
+  },
+  {
+    id: "port",
+    header: "Port",
+    sortValue: (node) => node.port,
+    cell: (node) => <span className="font-mono text-xs">{node.port}</span>,
+  },
+]
+
 function BlobNodesTable({ nodes }: { nodes: BlobNode[] }) {
+  const [sort, setSort] = useState<SortState>()
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="pr-4 pb-1 font-medium">Node</th>
-            <th className="pr-4 pb-1 font-medium">Host</th>
-            <th className="pb-1 font-medium">Port</th>
-          </tr>
-        </thead>
-        <tbody>
-          {nodes.map((node) => (
-            <tr key={node.id} className="border-b last:border-0">
-              <td className="py-1.5 pr-4 font-mono font-medium">{node.id}</td>
-              <td className="py-1.5 pr-4 font-mono">{node.host}</td>
-              <td className="py-1.5 font-mono">{node.port}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      caption="Blob nodes"
+      columns={BLOB_COLUMNS}
+      empty="No blob nodes found."
+      getRowId={(node) => String(node.id)}
+      onSortChange={setSort}
+      rows={nodes}
+      sort={sort}
+    />
   )
 }

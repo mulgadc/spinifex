@@ -103,6 +103,12 @@ func TestEarlyRebootLiveness(t *testing.T) {
 	runEarlyRebootLiveness(t, requireSingleNodeFixture(t))
 }
 
+// TestRebootLoop is opt-in: it reboots one guest repeatedly, through the API
+// and from inside, and is skipped unless named or given a round count.
+func TestRebootLoop(t *testing.T) {
+	runRebootLoop(t, requireSingleNodeFixture(t))
+}
+
 // TestGuestChurnDurability merges guest churn around one shared instance and
 // data-integrity sentinel. Sequential: it leaves the singleton running.
 func TestGuestChurnDurability(t *testing.T) {

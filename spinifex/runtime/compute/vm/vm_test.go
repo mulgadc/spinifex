@@ -694,3 +694,55 @@ func TestExecute_MicrovmWithPCIEFileChardev(t *testing.T) {
 	assert.Equal(t, "file,id=console0,path=/var/log/console.log", argValue(args, "-chardev"))
 	assert.Equal(t, "chardev:console0", argValue(args, "-serial"))
 }
+
+func TestExecute_SerialPortsRenderListeningSocketsAndPorts(t *testing.T) {
+	cfg := NewMicroVMConfig(MicroVMSpec{
+		Name: "lambda", Architecture: "x86_64", VCPUs: 1, MemoryMiB: 256,
+		ImageDir: "/img",
+		SerialPorts: []SerialPort{
+			{Name: "lambda.ctl", Socket: "/run/env/ctl.sock"},
+			{Name: "second", Socket: "/run/env/second.sock"},
+		},
+	})
+	cmd, err := cfg.Execute()
+	require.NoError(t, err)
+	args := cmd.Args[1:]
+
+	assert.Equal(t, []string{
+		"socket,id=vport0,path=/run/env/ctl.sock,server=on,wait=off",
+		"socket,id=vport1,path=/run/env/second.sock,server=on,wait=off",
+	}, allArgValues(args, "-chardev"))
+	devs := allArgValues(args, "-device")
+	assert.Equal(t, 1, strings.Count(strings.Join(devs, " "), "virtio-serial-pci"))
+	assert.Contains(t, devs, "virtio-serial-pci,id=vserial0")
+	assert.Contains(t, devs, "virtserialport,bus=vserial0.0,chardev=vport0,name=lambda.ctl")
+	assert.Contains(t, devs, "virtserialport,bus=vserial0.0,chardev=vport1,name=second")
+}
+
+func TestExecute_NoSerialPortsAddsNoVirtioSerial(t *testing.T) {
+	cfg := NewMicroVMConfig(MicroVMSpec{Name: "lb", Architecture: "x86_64", VCPUs: 1, MemoryMiB: 256, ImageDir: "/img"})
+	cmd, err := cfg.Execute()
+	require.NoError(t, err)
+	assert.NotContains(t, strings.Join(cmd.Args, " "), "virtio-serial")
+	assert.NotContains(t, strings.Join(cmd.Args, " "), "virtserialport")
+}
+
+func TestExecute_SerialPortRefusesOptionInjection(t *testing.T) {
+	for _, tc := range []struct {
+		port SerialPort
+		want string
+	}{
+		{SerialPort{Name: "ctl,id=x", Socket: "/run/ctl.sock"}, "must not contain a comma"},
+		{SerialPort{Name: "ctl", Socket: "/run/ctl.sock,server=off"}, "must not contain a comma"},
+		{SerialPort{Name: "", Socket: "/run/ctl.sock"}, "name and socket are required"},
+		{SerialPort{Name: "ctl", Socket: ""}, "name and socket are required"},
+	} {
+		cfg := NewMicroVMConfig(MicroVMSpec{
+			Name: "lambda", Architecture: "x86_64", VCPUs: 1, MemoryMiB: 256,
+			ImageDir: "/img", SerialPorts: []SerialPort{tc.port},
+		})
+		_, err := cfg.Execute()
+		require.Error(t, err, "port %+v", tc.port)
+		assert.Contains(t, err.Error(), tc.want, "port %+v", tc.port)
+	}
+}

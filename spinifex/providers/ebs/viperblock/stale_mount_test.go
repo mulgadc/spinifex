@@ -79,8 +79,7 @@ func orphanedConfig(t *testing.T, volumeName string, pid int) *Config {
 	t.Helper()
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
-	cfg.BaseDir = t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(cfg.BaseDir, volumeName), 0o750))
+	withLocalState(t, cfg, volumeName)
 	cfg.MountedVolumes[0].Socket = filepath.Join(t.TempDir(), "gone.sock")
 	if pid != 0 {
 		cfg.MountedVolumes[0].PID = pid

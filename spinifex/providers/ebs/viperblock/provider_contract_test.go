@@ -53,6 +53,7 @@ func TestProviderHandlers_UnpublishNoSealNeverSeals(t *testing.T) {
 	const volumeName = "vol-unpubnoseal01"
 	sealed := false
 	cfg := fencedConfig(t, natsURL, "test-node", volumeName)
+	withLocalState(t, cfg, volumeName)
 	cfg.sealVolume = func(context.Context, string) error { sealed = true; return nil }
 	nc := startProviderSubjects(t, cfg, natsURL)
 

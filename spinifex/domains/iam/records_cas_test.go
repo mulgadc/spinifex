@@ -224,11 +224,11 @@ func TestTagUser_DoesNotRecreateConcurrentlyDeletedUser(t *testing.T) {
 	close(gate.release)
 	err = <-done
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, awserrors.ValidErrorCodeFromError(err))
 
 	_, err = svc.getUser(t.Context(), testAccountID, *user.UserName)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error(), "the deleted user must stay deleted")
+	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, awserrors.ValidErrorCodeFromError(err), "the deleted user must stay deleted")
 }
 
 // Every group writer that read the record before a DetachGroupPolicy and writes
@@ -376,7 +376,7 @@ func TestOIDCProviderTagWriters_DoNotRecreateDeletedProvider(t *testing.T) {
 			close(gate.release)
 			err = <-done
 			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+			assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, awserrors.ValidErrorCodeFromError(err))
 
 			_, err = kv.Get(t.Context(), OIDCProviderKey(testIssuer))
 			assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "the deleted provider must stay deleted")

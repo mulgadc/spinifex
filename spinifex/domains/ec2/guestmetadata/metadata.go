@@ -738,7 +738,7 @@ func (s *IMDSServiceImpl) profileFor(ctx context.Context, eni *eniFacts) (*resol
 	}
 	profile, err := s.iam.ResolveInstanceProfile(ctx, eni.iamAccountID(), inst.iamInstanceProfileArn)
 	if err != nil {
-		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+		if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorIAMNoSuchEntity {
 			return nil, roleMissProfileDeleted, nil // profile deleted; treat as no role
 		}
 		slog.ErrorContext(ctx, "IMDS: resolve instance profile failed", "account_id", eni.iamAccountID(), "arn", inst.iamInstanceProfileArn, "err", err)

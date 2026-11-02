@@ -35,7 +35,7 @@ func resolveAndAuthorizeProfile(spec *ec2.IamInstanceProfileSpecification, iamSv
 	}
 	profile, err := iamSvc.ResolveInstanceProfile(accountID, nameOrARN)
 	if err != nil {
-		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+		if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorIAMNoSuchEntity {
 			return nil, errors.New(awserrors.ErrorInvalidIamInstanceProfileNotFound)
 		}
 		return nil, err

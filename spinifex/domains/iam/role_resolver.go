@@ -33,7 +33,7 @@ func (r *RoleResolver) ResolveRole(accountID, roleARN string) (passrole.Role, er
 	}
 	role, err := r.svc.getRole(context.Background(), accountID, name)
 	if err != nil {
-		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+		if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorIAMNoSuchEntity {
 			return passrole.Role{}, passrole.ErrNotFound
 		}
 		return passrole.Role{}, err

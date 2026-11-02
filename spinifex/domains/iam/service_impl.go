@@ -467,7 +467,7 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 	// Atomic create — fails if key already exists (race-safe)
 	if _, err := s.usersBucket.Create(ctx, kvKey, data); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+			return nil, awserrors.Errorf(awserrors.ErrorIAMEntityAlreadyExists, "User with name %s already exists.", userName)
 		}
 		return nil, fmt.Errorf("store user: %w", err)
 	}
@@ -587,7 +587,7 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 	// block the delete either; removing the user record drops it.
 	for _, keyID := range user.AccessKeys {
 		if _, err := s.accessKeysBucket.Get(ctx, keyID); err == nil {
-			return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+			return nil, awserrors.Errorf(awserrors.ErrorIAMDeleteConflict, "Cannot delete entity, must delete access keys first.")
 		} else if !errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, fmt.Errorf("get access key: %w", err)
 		}
@@ -595,13 +595,13 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 			"accountID", accountID, "userName", userName, "accessKeyID", keyID)
 	}
 	if len(user.AttachedPolicies) > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+		return nil, errDetachPoliciesFirst
 	}
 	if len(user.Groups) > 0 {
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
 	}
 	if len(user.InlinePolicies) > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+		return nil, errDeletePoliciesFirst
 	}
 
 	if err := s.usersBucket.Delete(ctx, kvKey); err != nil {
@@ -880,7 +880,7 @@ func (s *IAMServiceImpl) DeleteAccessKey(accountID string, input *iam.DeleteAcce
 	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
 		idx := slices.Index(u.AccessKeys, accessKeyID)
 		if idx < 0 {
-			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return false, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "The Access Key with id %s cannot be found.", accessKeyID)
 		}
 		u.AccessKeys = slices.Delete(u.AccessKeys, idx, idx+1)
 		return true, nil
@@ -1482,7 +1482,8 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 
 	if _, err := s.policiesBucket.Create(ctx, kvKey, data); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+			return nil, awserrors.Errorf(awserrors.ErrorIAMEntityAlreadyExists,
+				"A policy called %s already exists. Duplicate names are not allowed.", policyName)
 		}
 		return nil, fmt.Errorf("store policy: %w", err)
 	}
@@ -1629,7 +1630,7 @@ func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyI
 	// Revision-guarded, so a version created after the checks cannot be deleted unseen.
 	policy, err := kvutil.DeleteIf(ctx, s.policiesBucket, key, cfg, func(p *Policy) error {
 		if p.ARN != policyARN {
-			return errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return policyNotFound(policyARN)
 		}
 		if len(p.OtherVersions) > 0 {
 			return awserrors.Errorf(awserrors.ErrorIAMDeleteConflict,
@@ -1640,7 +1641,7 @@ func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyI
 			return fmt.Errorf("check policy attachments: %w", err)
 		}
 		if counts[p.ARN] > 0 {
-			return errors.New(awserrors.ErrorIAMDeleteConflict)
+			return awserrors.Errorf(awserrors.ErrorIAMDeleteConflict, "Cannot delete a policy attached to entities.")
 		}
 		return nil
 	})
@@ -1739,7 +1740,7 @@ func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUse
 	// grant document is modeled in builtinManagedPolicyDoc and resolved at
 	// evaluation time. Customer-managed ARNs must still exist.
 	if !iamarn.IsAWSManagedPolicyARN(policyARN) {
-		if _, err := s.getPolicyByARN(ctx, accountID, policyARN); err != nil {
+		if err := s.attachablePolicy(ctx, accountID, policyARN); err != nil {
 			return nil, err
 		}
 	}
@@ -1767,7 +1768,7 @@ func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUse
 	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
 		idx := slices.Index(u.AttachedPolicies, policyARN)
 		if idx < 0 {
-			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return false, policyNotFound(policyARN)
 		}
 		u.AttachedPolicies = slices.Delete(u.AttachedPolicies, idx, idx+1)
 		return true, nil
@@ -1901,7 +1902,7 @@ func (s *IAMServiceImpl) GetUserPolicy(accountID string, input *iam.GetUserPolic
 
 	doc, ok := user.InlinePolicies[policyName]
 	if !ok {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		return nil, noSuchEntity("user policy", policyName)
 	}
 
 	return &iam.GetUserPolicyOutput{
@@ -1920,7 +1921,7 @@ func (s *IAMServiceImpl) DeleteUserPolicy(accountID string, input *iam.DeleteUse
 
 	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
 		if _, ok := u.InlinePolicies[policyName]; !ok {
-			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return false, noSuchEntity("user policy", policyName)
 		}
 		delete(u.InlinePolicies, policyName)
 		return true, nil
@@ -2111,7 +2112,7 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 	for _, groupName := range user.Groups {
 		group, err := s.getGroup(ctx, accountID, groupName)
 		if err != nil {
-			if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+			if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorIAMNoSuchEntity {
 				slog.Warn("GetUserPolicies: member references missing group; skipping",
 					"accountID", accountID, "user", userName, "group", groupName)
 				continue
@@ -2152,7 +2153,7 @@ func (s *IAMServiceImpl) getPolicyByARN(ctx context.Context, accountID, policyAR
 		entry, err := s.policiesBucket.Get(ctx, kvKey)
 		if err != nil {
 			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
+				return "", policyNotFound(policyARN)
 			}
 			return "", fmt.Errorf("get policy: %w", err)
 		}
@@ -2169,9 +2170,9 @@ func (s *IAMServiceImpl) getPolicyByARN(ctx context.Context, accountID, policyAR
 		// otherwise a malformed ARN is indistinguishable from a missing policy.
 		slog.Debug("getPolicyByARN: unparseable policy ARN",
 			"accountID", accountID, "policyArn", policyARN, "err", err)
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		return nil, policyNotFound(policyARN)
 	case errors.Is(err, iamarn.ErrPolicyARNMismatch):
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		return nil, policyNotFound(policyARN)
 	case err != nil:
 		return nil, err
 	}
@@ -2293,12 +2294,45 @@ func (s *IAMServiceImpl) buildAttachmentCounts(ctx context.Context, accountID st
 	return counts, nil
 }
 
+// noSuchEntity is NoSuchEntity with AWS's message naming the missing user,
+// role, group or inline policy, e.g. "The role with name X cannot be found.".
+func noSuchEntity(kind, name string) error {
+	return awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "The %s with name %s cannot be found.", kind, name)
+}
+
+// policyNotFound is NoSuchEntity with AWS's message for a managed policy ARN
+// that names no stored policy, or none attached to the entity.
+func policyNotFound(policyARN string) error {
+	return awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Policy %s was not found.", policyARN)
+}
+
+// oidcProviderNotFound is NoSuchEntity with AWS's message for a missing OIDC provider.
+func oidcProviderNotFound(providerARN string) error {
+	return awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "OpenIDConnect Provider not found for arn %s", providerARN)
+}
+
+// The DeleteConflict messages AWS shares across users, roles and groups.
+var (
+	errDetachPoliciesFirst = awserrors.Errorf(awserrors.ErrorIAMDeleteConflict, "Cannot delete entity, must detach all policies first.")
+	errDeletePoliciesFirst = awserrors.Errorf(awserrors.ErrorIAMDeleteConflict, "Cannot delete entity, must delete policies first.")
+)
+
+// attachablePolicy refuses a customer-managed policy ARN that names no stored
+// policy, with the message AWS gives on attach.
+func (s *IAMServiceImpl) attachablePolicy(ctx context.Context, accountID, policyARN string) error {
+	_, err := s.getPolicyByARN(ctx, accountID, policyARN)
+	if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorIAMNoSuchEntity {
+		return awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Policy %s does not exist or is not attachable.", policyARN)
+	}
+	return err
+}
+
 func (s *IAMServiceImpl) getUser(ctx context.Context, accountID, userName string) (*User, error) {
 	kvKey := accountID + "." + userName
 	entry, err := s.usersBucket.Get(ctx, kvKey)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return nil, noSuchEntity("user", userName)
 		}
 		return nil, fmt.Errorf("get user: %w", err)
 	}
@@ -2322,9 +2356,13 @@ func (s *IAMServiceImpl) updateUserCAS(ctx context.Context, accountID, userName 
 // iamRecordCASConfig is the CAS policy for an IAM user, group or OIDC provider
 // record: a missing record is NoSuchEntity and exhausted retries are logged.
 func iamRecordCASConfig(kind, accountID, name string) kvutil.CASConfig {
+	notFound := noSuchEntity(kind, name)
+	if kind == "oidc-provider" {
+		notFound = oidcProviderNotFound(name)
+	}
 	return kvutil.CASConfig{
 		Attempts: roleCASMaxRetries,
-		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),
+		NotFound: notFound,
 		Exhausted: func(string, int) error {
 			slog.Error("IAM record CAS retries exhausted under contention",
 				"kind", kind, "accountID", accountID, "name", name, "attempts", roleCASMaxRetries)

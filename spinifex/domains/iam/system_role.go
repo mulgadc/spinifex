@@ -48,7 +48,7 @@ func EnsureSystemInstanceProfile(e SystemInstanceRoleEnsurer, accountID, roleNam
 // there draws credentials from it, so provisioning one would be unasked-for.
 func ConvergeSystemRolePolicy(e SystemInstanceRoleEnsurer, accountID, roleName, policyName, policyDoc string) error {
 	if _, err := e.GetRole(accountID, &iam.GetRoleInput{RoleName: aws.String(roleName)}); err != nil {
-		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+		if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorIAMNoSuchEntity {
 			return nil
 		}
 		return fmt.Errorf("get role %q: %w", roleName, err)
@@ -68,7 +68,7 @@ func ConvergeSystemRolePolicy(e SystemInstanceRoleEnsurer, accountID, roleName, 
 func ensureSystemRole(e SystemInstanceRoleEnsurer, accountID, roleName string) error {
 	if _, err := e.GetRole(accountID, &iam.GetRoleInput{RoleName: aws.String(roleName)}); err == nil {
 		return nil
-	} else if err.Error() != awserrors.ErrorIAMNoSuchEntity {
+	} else if code, _ := awserrors.ResolveErrorCode(err); code != awserrors.ErrorIAMNoSuchEntity {
 		return fmt.Errorf("get role %q: %w", roleName, err)
 	}
 
@@ -77,7 +77,7 @@ func ensureSystemRole(e SystemInstanceRoleEnsurer, accountID, roleName string) e
 		AssumeRolePolicyDocument: aws.String(EC2InstanceTrustPolicy),
 		Description:              aws.String("Spinifex-managed system instance role"),
 	})
-	if err == nil || err.Error() == awserrors.ErrorIAMEntityAlreadyExists {
+	if code, _ := awserrors.ResolveErrorCode(err); err == nil || code == awserrors.ErrorIAMEntityAlreadyExists {
 		return nil
 	}
 	return fmt.Errorf("create role %q: %w", roleName, err)
@@ -94,7 +94,7 @@ func ensureSystemInstanceProfile(e SystemInstanceRoleEnsurer, accountID, roleNam
 		return attachSystemRole(e, accountID, roleName,
 			aws.StringValue(out.InstanceProfile.Arn), len(out.InstanceProfile.Roles) > 0)
 	}
-	if err.Error() != awserrors.ErrorIAMNoSuchEntity {
+	if code, _ := awserrors.ResolveErrorCode(err); code != awserrors.ErrorIAMNoSuchEntity {
 		return "", fmt.Errorf("get instance profile %q: %w", roleName, err)
 	}
 
@@ -102,7 +102,7 @@ func ensureSystemInstanceProfile(e SystemInstanceRoleEnsurer, accountID, roleNam
 		InstanceProfileName: aws.String(roleName),
 	})
 	if err != nil {
-		if err.Error() != awserrors.ErrorIAMEntityAlreadyExists {
+		if code, _ := awserrors.ResolveErrorCode(err); code != awserrors.ErrorIAMEntityAlreadyExists {
 			return "", fmt.Errorf("create instance profile %q: %w", roleName, err)
 		}
 		got, gerr := e.GetInstanceProfile(accountID, &iam.GetInstanceProfileInput{
@@ -128,7 +128,7 @@ func attachSystemRole(e SystemInstanceRoleEnsurer, accountID, roleName, profileA
 		InstanceProfileName: aws.String(roleName),
 		RoleName:            aws.String(roleName),
 	})
-	if err != nil && err.Error() != awserrors.ErrorIAMLimitExceeded {
+	if code, _ := awserrors.ResolveErrorCode(err); err != nil && code != awserrors.ErrorIAMLimitExceeded {
 		return "", fmt.Errorf("add role %q to instance profile %q: %w", roleName, roleName, err)
 	}
 	return profileARN, nil

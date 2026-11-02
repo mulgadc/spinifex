@@ -111,11 +111,11 @@ func policyCASTarget(accountID, policyARN string) (string, kvutil.CASConfig, err
 	if err != nil {
 		slog.Debug("policyCASTarget: unparseable policy ARN",
 			"accountID", accountID, "policyArn", policyARN, "err", err)
-		return "", kvutil.CASConfig{}, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		return "", kvutil.CASConfig{}, policyNotFound(policyARN)
 	}
 	return accountID + "." + policyName, kvutil.CASConfig{
 		Attempts: policyCASMaxRetries,
-		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),
+		NotFound: policyNotFound(policyARN),
 		Exhausted: func(string, int) error {
 			slog.Error("IAM policy CAS retries exhausted under contention",
 				"accountID", accountID, "policyName", policyName, "attempts", policyCASMaxRetries)

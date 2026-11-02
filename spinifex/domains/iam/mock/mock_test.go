@@ -13,7 +13,7 @@ import (
 func TestGetRole_MissingReturnsNoSuchEntity(t *testing.T) {
 	e := mock.New()
 	_, err := e.GetRole("acct", &iam.GetRoleInput{RoleName: aws.String("r1")})
-	if err == nil || err.Error() != awserrors.ErrorIAMNoSuchEntity {
+	if err == nil || awserrors.ValidErrorCodeFromError(err) != awserrors.ErrorIAMNoSuchEntity {
 		t.Fatalf("err = %v, want ErrorIAMNoSuchEntity", err)
 	}
 }
@@ -24,7 +24,7 @@ func TestCreateRole_DuplicateReturnsEntityAlreadyExists(t *testing.T) {
 	if _, err := e.CreateRole("acct", in); err != nil {
 		t.Fatalf("first CreateRole: %v", err)
 	}
-	if _, err := e.CreateRole("acct", in); err == nil || err.Error() != awserrors.ErrorIAMEntityAlreadyExists {
+	if _, err := e.CreateRole("acct", in); err == nil || awserrors.ValidErrorCodeFromError(err) != awserrors.ErrorIAMEntityAlreadyExists {
 		t.Fatalf("second CreateRole err = %v, want EntityAlreadyExists", err)
 	}
 	if e.CreateRoleCalls != 2 {
@@ -48,7 +48,7 @@ func TestAddRoleToInstanceProfile_SecondAttachIsLimitExceeded(t *testing.T) {
 	if _, err := e.AddRoleToInstanceProfile("acct", in); err != nil {
 		t.Fatalf("first AddRoleToInstanceProfile: %v", err)
 	}
-	if _, err := e.AddRoleToInstanceProfile("acct", in); err == nil || err.Error() != awserrors.ErrorIAMLimitExceeded {
+	if _, err := e.AddRoleToInstanceProfile("acct", in); err == nil || awserrors.ValidErrorCodeFromError(err) != awserrors.ErrorIAMLimitExceeded {
 		t.Fatalf("second AddRoleToInstanceProfile err = %v, want LimitExceeded", err)
 	}
 }

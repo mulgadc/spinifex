@@ -285,7 +285,7 @@ func lookupResult(t lookupTarget, resource string, err error) (string, error) {
 		}
 		return resource, nil
 	}
-	if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+	if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorIAMNoSuchEntity {
 		// Authorization widens to "*", so a Deny scoped to the real target
 		// will not fire. Without this line that widening leaves no trace.
 		slog.Warn("IAM authz: target not found, authorizing account-wide",

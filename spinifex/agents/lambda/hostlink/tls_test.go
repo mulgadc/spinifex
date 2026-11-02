@@ -17,13 +17,15 @@ import (
 	"testing"
 	"time"
 
+	lambdav1 "github.com/mulgadc/spinifex/contracts/lambda/v1"
+	"github.com/mulgadc/spinifex/spinifex/foundation/pki"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const (
-	gen1 Scope = "ap-southeast-2/000000000001/fn-1/env-1/gen-1"
-	gen2 Scope = "ap-southeast-2/000000000001/fn-1/env-1/gen-2"
+	gen1 lambdav1.Scope = "ap-southeast-2/000000000001/fn-1/env-1/gen-1"
+	gen2 lambdav1.Scope = "ap-southeast-2/000000000001/fn-1/env-1/gen-2"
 )
 
 type testIdent struct {
@@ -33,14 +35,14 @@ type testIdent struct {
 	keyPEM  []byte
 }
 
-func newTestIdent(t *testing.T, scope Scope, role string) testIdent {
+func newTestIdent(t *testing.T, scope lambdav1.Scope, role string) testIdent {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	u, err := url.Parse(scope.URI(role))
 	require.NoError(t, err)
 	usage := x509.ExtKeyUsageServerAuth
-	if role == RoleGuest {
+	if role == lambdav1.RoleGuest {
 		usage = x509.ExtKeyUsageClientAuth
 	}
 	tmpl := &x509.Certificate{
@@ -63,13 +65,13 @@ func newTestIdent(t *testing.T, scope Scope, role string) testIdent {
 }
 
 // hostConfig is the host end as the executor will run it: it pins one guest
-// certificate and checks its URI SAN with the same VerifyPeer.
-func hostConfig(host testIdent, pinGuest *x509.Certificate, scope Scope) *tls.Config {
+// certificate and checks its URI SAN with the shared pki.VerifyPinned.
+func hostConfig(host testIdent, pinGuest *x509.Certificate, scope lambdav1.Scope) *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{host.cert},
-		ClientAuth: tls.RequireAnyClientCert, NextProtos: []string{ALPNv1},
+		ClientAuth: tls.RequireAnyClientCert, NextProtos: []string{lambdav1.ALPNv1},
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			return VerifyPeer(cs, pinGuest, x509.ExtKeyUsageClientAuth, scope.URI(RoleGuest))
+			return pki.VerifyPinned(cs.PeerCertificates, pinGuest, x509.ExtKeyUsageClientAuth, scope.URI(lambdav1.RoleGuest))
 		},
 	}
 }
@@ -100,7 +102,7 @@ func serve(t *testing.T, cfg *tls.Config) (string, <-chan error) {
 	return ln.Addr().String(), done
 }
 
-func guestIdentity(guest, pinHost testIdent, scope Scope, addr string) Identity {
+func guestIdentity(guest, pinHost testIdent, scope lambdav1.Scope, addr string) Identity {
 	return Identity{Cert: guest.cert, HostCert: pinHost.leaf, Scope: scope, HostAddr: addr}
 }
 
@@ -120,7 +122,7 @@ func dialAndRead(t *testing.T, id Identity) (string, error) {
 }
 
 func TestDialMutualAuthentication(t *testing.T) {
-	host, guest := newTestIdent(t, gen1, RoleHost), newTestIdent(t, gen1, RoleGuest)
+	host, guest := newTestIdent(t, gen1, lambdav1.RoleHost), newTestIdent(t, gen1, lambdav1.RoleGuest)
 	addr, hostErr := serve(t, hostConfig(host, guest.leaf, gen1))
 
 	got, err := dialAndRead(t, guestIdentity(guest, host, gen1, addr))
@@ -130,8 +132,8 @@ func TestDialMutualAuthentication(t *testing.T) {
 }
 
 func TestDialRefusesHost(t *testing.T) {
-	guest := newTestIdent(t, gen1, RoleGuest)
-	pinned := newTestIdent(t, gen1, RoleHost)
+	guest := newTestIdent(t, gen1, lambdav1.RoleGuest)
+	pinned := newTestIdent(t, gen1, lambdav1.RoleHost)
 	cases := []struct {
 		name    string
 		host    testIdent
@@ -139,9 +141,9 @@ func TestDialRefusesHost(t *testing.T) {
 		mutate  func(*tls.Config)
 		wantErr string
 	}{
-		{"unpinned host certificate", newTestIdent(t, gen1, RoleHost), pinned, nil, "peer certificate"},
-		{"pinned certificate of a later generation", newTestIdent(t, gen2, RoleHost), testIdent{}, nil, "peer identity mismatch"},
-		{"guest role presented as host", newTestIdent(t, gen1, RoleGuest), testIdent{}, nil, "peer certificate"},
+		{"unpinned host certificate", newTestIdent(t, gen1, lambdav1.RoleHost), pinned, nil, "peer certificate"},
+		{"pinned certificate of a later generation", newTestIdent(t, gen2, lambdav1.RoleHost), testIdent{}, nil, "peer identity mismatch"},
+		{"guest role presented as host", newTestIdent(t, gen1, lambdav1.RoleGuest), testIdent{}, nil, "peer certificate"},
 		{"no application protocol", pinned, pinned, func(c *tls.Config) { c.NextProtos = nil }, "application protocol"},
 		{"TLS 1.2 only", pinned, pinned, func(c *tls.Config) { c.MinVersion, c.MaxVersion = tls.VersionTLS12, tls.VersionTLS12 }, "protocol version"},
 	}
@@ -165,11 +167,11 @@ func TestDialRefusesHost(t *testing.T) {
 
 // newCASignedHost returns a CA and a host leaf it signed carrying the same URI
 // SAN as a legitimate host certificate.
-func newCASignedHost(t *testing.T, scope Scope) (ca testIdent, leaf tls.Certificate) {
+func newCASignedHost(t *testing.T, scope lambdav1.Scope) (ca testIdent, leaf tls.Certificate) {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	u, err := url.Parse(scope.URI(RoleHost))
+	u, err := url.Parse(scope.URI(lambdav1.RoleHost))
 	require.NoError(t, err)
 	caTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "ca"},
@@ -198,7 +200,7 @@ func newCASignedHost(t *testing.T, scope Scope) (ca testIdent, leaf tls.Certific
 // Trusting the pin as a root is not enough: a different leaf it signed, with
 // the right URI SAN, must still be refused.
 func TestDialRefusesLeafSignedByPin(t *testing.T) {
-	guest := newTestIdent(t, gen1, RoleGuest)
+	guest := newTestIdent(t, gen1, lambdav1.RoleGuest)
 	ca, leaf := newCASignedHost(t, gen1)
 	for name, chain := range map[string][][]byte{
 		"leaf only":    leaf.Certificate,
@@ -215,18 +217,9 @@ func TestDialRefusesLeafSignedByPin(t *testing.T) {
 	}
 }
 
-func TestVerifyPeerFailsClosedWithoutPin(t *testing.T) {
-	host := newTestIdent(t, gen1, RoleHost)
-	cs := tls.ConnectionState{Version: tls.VersionTLS13, NegotiatedProtocol: ALPNv1, PeerCertificates: []*x509.Certificate{host.leaf}}
-	assert.ErrorContains(t, VerifyPeer(cs, nil, x509.ExtKeyUsageServerAuth, gen1.URI(RoleHost)), "no pinned peer certificate")
-	require.NoError(t, VerifyPeer(cs, host.leaf, x509.ExtKeyUsageServerAuth, gen1.URI(RoleHost)))
-}
-
-// Under TLS 1.3 the guest's handshake completes before the host checks the
-// guest certificate, so the host's refusal surfaces on the first read.
 func TestHostRefusalSurfacesOnFirstRead(t *testing.T) {
-	host, guest := newTestIdent(t, gen1, RoleHost), newTestIdent(t, gen1, RoleGuest)
-	other := newTestIdent(t, gen1, RoleGuest)
+	host, guest := newTestIdent(t, gen1, lambdav1.RoleHost), newTestIdent(t, gen1, lambdav1.RoleGuest)
+	other := newTestIdent(t, gen1, lambdav1.RoleGuest)
 	addr, hostErr := serve(t, hostConfig(host, other.leaf, gen1))
 
 	_, err := dialAndRead(t, guestIdentity(guest, host, gen1, addr))
@@ -236,12 +229,12 @@ func TestHostRefusalSurfacesOnFirstRead(t *testing.T) {
 }
 
 func TestHostRefusesGuestOfAnotherGeneration(t *testing.T) {
-	host, guest := newTestIdent(t, gen1, RoleHost), newTestIdent(t, gen2, RoleGuest)
+	host, guest := newTestIdent(t, gen1, lambdav1.RoleHost), newTestIdent(t, gen2, lambdav1.RoleGuest)
 	addr, hostErr := serve(t, hostConfig(host, guest.leaf, gen1))
 
 	_, err := dialAndRead(t, guestIdentity(guest, host, gen1, addr))
 	require.Error(t, err)
-	assert.ErrorIs(t, <-hostErr, ErrPeerIdentity)
+	assert.ErrorIs(t, <-hostErr, pki.ErrPeerIdentity)
 }
 
 func writeEntries(t *testing.T, entries map[string][]byte) string {
@@ -255,10 +248,10 @@ func writeEntries(t *testing.T, entries map[string][]byte) string {
 }
 
 func validEntries(t *testing.T) map[string][]byte {
-	host, guest := newTestIdent(t, gen1, RoleHost), newTestIdent(t, gen1, RoleGuest)
+	host, guest := newTestIdent(t, gen1, lambdav1.RoleHost), newTestIdent(t, gen1, lambdav1.RoleGuest)
 	return map[string][]byte{
-		EntryGuestKey: guest.keyPEM, EntryGuestCert: guest.certPEM, EntryHostCert: host.certPEM,
-		EntryScope: []byte(string(gen1) + "\n"), EntryHostAddr: []byte("10.15.8.1:18443\n"),
+		lambdav1.EntryGuestKey: guest.keyPEM, lambdav1.EntryGuestCert: guest.certPEM, lambdav1.EntryHostCert: host.certPEM,
+		lambdav1.EntryScope: []byte(string(gen1) + "\n"), lambdav1.EntryHostAddr: []byte("10.15.8.1:18443\n"),
 	}
 }
 
@@ -268,22 +261,24 @@ func TestLoadIdentity(t *testing.T) {
 	assert.Equal(t, gen1, id.Scope)
 	assert.Equal(t, "10.15.8.1:18443", id.HostAddr)
 	require.Len(t, id.HostCert.URIs, 1)
-	assert.Equal(t, gen1.URI(RoleHost), id.HostCert.URIs[0].String())
+	assert.Equal(t, gen1.URI(lambdav1.RoleHost), id.HostCert.URIs[0].String())
 }
 
 func TestLoadIdentityRejects(t *testing.T) {
-	other := newTestIdent(t, gen1, RoleGuest)
+	other := newTestIdent(t, gen1, lambdav1.RoleGuest)
 	cases := []struct {
 		name    string
 		edit    func(map[string][]byte)
 		wantErr string
 	}{
-		{"missing entry", func(e map[string][]byte) { delete(e, EntryHostCert) }, "read host-cert"},
-		{"key does not match certificate", func(e map[string][]byte) { e[EntryGuestKey] = other.keyPEM }, "guest key pair"},
-		{"two host certificates", func(e map[string][]byte) { e[EntryHostCert] = append(e[EntryHostCert], e[EntryHostCert]...) }, "exactly one PEM"},
-		{"host certificate not PEM", func(e map[string][]byte) { e[EntryHostCert] = []byte("nope") }, "exactly one PEM"},
-		{"short scope", func(e map[string][]byte) { e[EntryScope] = []byte("ap-southeast-2/000000000001/fn-1") }, "want 5 segments"},
-		{"address without port", func(e map[string][]byte) { e[EntryHostAddr] = []byte("10.15.8.1") }, "host address"},
+		{"missing entry", func(e map[string][]byte) { delete(e, lambdav1.EntryHostCert) }, "read host-cert"},
+		{"key does not match certificate", func(e map[string][]byte) { e[lambdav1.EntryGuestKey] = other.keyPEM }, "guest key pair"},
+		{"two host certificates", func(e map[string][]byte) {
+			e[lambdav1.EntryHostCert] = append(e[lambdav1.EntryHostCert], e[lambdav1.EntryHostCert]...)
+		}, "exactly one PEM"},
+		{"host certificate not PEM", func(e map[string][]byte) { e[lambdav1.EntryHostCert] = []byte("nope") }, "exactly one PEM"},
+		{"short scope", func(e map[string][]byte) { e[lambdav1.EntryScope] = []byte("ap-southeast-2/000000000001/fn-1") }, "want 5 segments"},
+		{"address without port", func(e map[string][]byte) { e[lambdav1.EntryHostAddr] = []byte("10.15.8.1") }, "host address"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -292,16 +287,5 @@ func TestLoadIdentityRejects(t *testing.T) {
 			_, err := LoadIdentity(writeEntries(t, e))
 			assert.ErrorContains(t, err, tc.wantErr)
 		})
-	}
-}
-
-func TestParseScope(t *testing.T) {
-	_, err := ParseScope(string(gen1))
-	require.NoError(t, err)
-	for _, bad := range []string{
-		"", "a/b/c/d", "a/b/c/d/e/f", "a//c/d/e", "a/b/c/d/e/", "a/b/c/d/e?x", "a/b/c/d/e#x", "a b/b/c/d/e",
-	} {
-		_, err := ParseScope(bad)
-		assert.Error(t, err, bad)
 	}
 }

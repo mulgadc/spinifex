@@ -6,11 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit/deadpid"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -132,12 +136,93 @@ func TestProviderHandlers_PublishVolume_DeadEntryIsNotHandedBack(t *testing.T) {
 
 	var resp ebsprovider.PublishVolumeResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
-	if resp.Published != nil {
-		assert.NotEqual(t, ebsprovider.NewNBDExport(deadURI), resp.Published.Export, "the dead entry's URI was handed back")
+	assert.True(t, resp.Error != nil || resp.Published != nil, "the reply must be a refusal or an export")
+	assert.NotContains(t, string(msg.Data), deadURI, "the dead entry's URI was handed back")
+	mv, _ := findMountedVolume(cfg, volumeName)
+	assert.NotEqual(t, deadURI, mv.NBDURI, "the dead entry must not survive the republish")
+}
+
+// TestProviderHandlers_PublishVolume_RepublishRepliesInRequestVersion checks a
+// successful publish reply, not only refusals, at every served version: a
+// republish of a live export is the success path that needs no nbdkit.
+func TestProviderHandlers_PublishVolume_RepublishRepliesInRequestVersion(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-republishver1"
+	socket := filepath.Join(t.TempDir(), "nbd.sock")
+	require.NoError(t, os.WriteFile(socket, nil, 0o600))
+	liveURI := nbd.FormatNBDSocketURI(socket)
+	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
+		Name: volumeName, VB: createTestVBWithState(t, volumeName), PID: os.Getpid(), Socket: socket, NBDURI: liveURI,
+	})
+
+	subject, err := ebsprovider.PublishSubject(cfg.NodeName)
+	require.NoError(t, err)
+	for _, version := range ebsprovider.SupportedSchemaVersions() {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			msg := requestProvider(t, nc, subject, marshalRequest(t, map[string]any{
+				"schema_version": version,
+				"volume_id":      volumeName,
+				"node_id":        cfg.NodeName,
+			}))
+			var resp versionedErrorResponse
+			require.NoError(t, json.Unmarshal(msg.Data, &resp))
+			require.Nil(t, resp.Error, "the republish must succeed for this to check a success reply")
+			assert.Equal(t, version, resp.SchemaVersion)
+			assert.Contains(t, string(msg.Data), socket, "the live export is handed back")
+		})
 	}
-	if mv, ok := findMountedVolume(cfg, volumeName); ok {
-		assert.NotEqual(t, deadURI, mv.NBDURI, "the dead entry must not survive the republish")
-	}
+}
+
+// TestProviderHandlers_NodeCapabilitiesListsServedVersions pins the per-node
+// subject to the same contract versions this build serves.
+func TestProviderHandlers_NodeCapabilitiesListsServedVersions(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	subject, err := ebsprovider.NodeCapabilitiesSubject(cfg.NodeName)
+	require.NoError(t, err)
+	msg := requestProvider(t, nc, subject, marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion}))
+
+	var resp ebsprovider.GetCapabilitiesResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.Nil(t, resp.Error)
+	assert.Equal(t, ebsprovider.SupportedSchemaVersions(), resp.ContractVersions)
+}
+
+// TestProviderHandlers_UnpublishNoSealAboveServedVersionRefused covers a caller
+// newer than this build: a no_seal it cannot vouch for is refused, and the
+// export is neither torn down nor sealed.
+func TestProviderHandlers_UnpublishNoSealAboveServedVersionRefused(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+
+	const volumeName = "vol-unpubnosealv4"
+	sealed := false
+	cfg := fencedConfig(t, natsURL, "test-node", volumeName)
+	withLocalState(t, cfg, volumeName)
+	cfg.sealVolume = func(context.Context, string) error { sealed = true; return nil }
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	subject, err := ebsprovider.UnpublishSubject(cfg.NodeName)
+	require.NoError(t, err)
+	msg := requestProvider(t, nc, subject, marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.SchemaVersion + 1,
+		"volume_id":      volumeName,
+		"node_id":        cfg.NodeName,
+		"no_seal":        true,
+	}))
+
+	var resp ebsprovider.UnpublishVolumeResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, ebsprovider.ErrorCodeUnsupportedVersion, resp.Error.Code)
+	assert.False(t, resp.TornDown)
+	assert.False(t, sealed, "a refused unpublish must not seal")
+	_, mounted := findMountedVolume(cfg, volumeName)
+	assert.True(t, mounted, "a refused unpublish must leave the export running")
 }
 
 // TestPublishError_Codes pins the code each mount failure reaches a caller as.
@@ -170,16 +255,53 @@ func TestPublishError_Codes(t *testing.T) {
 	assert.True(t, ebsprovider.ErrorCodeUnavailable.Retryable(), "a backing store that is not ready must read as retry-later")
 }
 
+// TestProviderHandlers_PublishVolume_StoreNotReadyIsUnavailable carries a mount
+// refused because a store is not ready yet to the wire as retry-later, so a
+// caller waits for the store instead of giving up on the volume.
+func TestProviderHandlers_PublishVolume_StoreNotReadyIsUnavailable(t *testing.T) {
+	for _, cause := range []error{ErrLeaseStoreUnavailable, viperblock.ErrStateBackendUnavailable} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			_, natsURL := setupEmbeddedNATS(t)
+			cfg := setupTestConfig(t, natsURL)
+			cfg.constructVB = func(context.Context, string) (*viperblock.VB, int, error) {
+				return nil, 0, fmt.Errorf("open: %w", cause)
+			}
+			nc := startProviderSubjects(t, cfg, natsURL)
+
+			subject, err := ebsprovider.PublishSubject(cfg.NodeName)
+			require.NoError(t, err)
+			msg := requestProvider(t, nc, subject, marshalRequest(t, map[string]any{
+				"schema_version": ebsprovider.SchemaVersion,
+				"volume_id":      "vol-storenotready",
+				"node_id":        cfg.NodeName,
+			}))
+
+			var resp ebsprovider.PublishVolumeResponse
+			require.NoError(t, json.Unmarshal(msg.Data, &resp))
+			require.NotNil(t, resp.Error)
+			assert.Equal(t, ebsprovider.ErrorCodeUnavailable, resp.Error.Code)
+			assert.Nil(t, resp.Published)
+		})
+	}
+}
+
 // TestProviderHandlers_CreateSnapshot_QueueRefusesWhileLeaseHeldElsewhere is
 // what makes a snapshot from a non-owner safe: whichever node answers the queue
 // subject must not snapshot a checkpoint the holder may still be writing.
 func TestProviderHandlers_CreateSnapshot_QueueRefusesWhileLeaseHeldElsewhere(t *testing.T) {
-	_, natsURL := setupEmbeddedNATS(t)
-	cfg := setupTestConfig(t, natsURL)
-	nc := startProviderSubjects(t, cfg, natsURL)
-
 	const volumeName = "vol-snapqueueheld1"
 	const snapshotID = "snap-queueheld00001"
+
+	// The volume really exists in the backend, so only the lease stands
+	// between this request and a snapshot written beside the holder's writes.
+	key := testMasterKey(t)
+	backend := newRecordingS3(t, "/"+volumeName+"/config.json", seedVolumeConfig(t, volumeName, key))
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	cfg.S3Host = backend.URL
+	cfg.masterKey = key
+	nc := startProviderSubjects(t, cfg, natsURL)
+
 	holder := newTestLeases(t, natsURL, "node-other")
 	_, err := holder.acquire(t.Context(), volumeName)
 	require.NoError(t, err)
@@ -212,4 +334,6 @@ func TestProviderHandlers_CreateSnapshot_QueueRefusesWhileLeaseHeldElsewhere(t *
 	case <-time.After(10 * time.Second):
 		t.Fatal("no completion published")
 	}
+	assert.Empty(t, backend.matching(func(r string) bool { return strings.HasPrefix(r, "PUT ") && strings.Contains(r, snapshotID) }),
+		"no snapshot may be written while another node holds the volume")
 }

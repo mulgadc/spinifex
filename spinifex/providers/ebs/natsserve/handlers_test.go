@@ -179,36 +179,65 @@ func withVersion(t *testing.T, request any, version uint16) []byte {
 // v1.23.0 caller: every reply, success or provider failure, carries the
 // version the request was sent at, never the server's newest.
 func TestHandlersReplyInRequestVersion(t *testing.T) {
-	providers := map[string]ebsprovider.EBSProvider{
-		"success": ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}),
-		"failure": &failingProvider{err: fmt.Errorf("vol-1: %w", ebsprovider.ErrUnavailable)},
-	}
-	for outcome, provider := range providers {
-		conn := serveProvider(t, provider, natsserve.Options{NoQueueGroup: true})
-		for _, version := range ebsprovider.SupportedSchemaVersions() {
-			for _, verb := range wireVerbs(t) {
-				t.Run(fmt.Sprintf("%s/v%d/%s", outcome, version, verb.name), func(t *testing.T) {
-					var completionSub *nats.Subscription
-					var err error
-					if verb.completionSubject != "" {
-						completionSub, err = conn.SubscribeSync(verb.completionSubject)
-						require.NoError(t, err)
-						t.Cleanup(func() { _ = completionSub.Unsubscribe() })
-						require.NoError(t, conn.Flush())
-					}
-
-					msg, err := conn.Request(verb.subject, withVersion(t, verb.request, version), requestTimeout)
-					require.NoError(t, err)
-					assert.Equal(t, version, decodeEnvelope(t, msg.Data).SchemaVersion)
-					if completionSub != nil {
-						msg, err = completionSub.NextMsg(requestTimeout)
-						require.NoError(t, err)
-						assert.Equal(t, version, decodeEnvelope(t, msg.Data).SchemaVersion, "the completion must carry the request's version too")
-					}
-				})
-			}
+	failing := serveProvider(t, &failingProvider{err: fmt.Errorf("vol-1: %w", ebsprovider.ErrUnavailable)}, natsserve.Options{NoQueueGroup: true})
+	for _, version := range ebsprovider.SupportedSchemaVersions() {
+		for _, verb := range wireVerbs(t) {
+			// Each success case gets its own seeded provider, so none relies on
+			// an earlier case having created or deleted something.
+			t.Run(fmt.Sprintf("success/v%d/%s", version, verb.name), func(t *testing.T) {
+				conn := serveProvider(t, seededProvider(t), natsserve.Options{NoQueueGroup: true})
+				for _, envelope := range requestAt(t, conn, verb, version) {
+					require.Nil(t, envelope.Error, "the case must succeed for it to check a success reply")
+					assert.Equal(t, version, envelope.SchemaVersion)
+				}
+			})
+			t.Run(fmt.Sprintf("failure/v%d/%s", version, verb.name), func(t *testing.T) {
+				envelopes := requestAt(t, failing, verb, version)
+				// A snapshot create is accepted first; the failure is in its completion.
+				require.NotNil(t, envelopes[len(envelopes)-1].Error, "the case must fail for it to check a failure reply")
+				for _, envelope := range envelopes {
+					assert.Equal(t, version, envelope.SchemaVersion)
+				}
+			})
 		}
 	}
+}
+
+// seededProvider holds what every wireVerbs request needs to succeed: vol-1
+// and snap-1 taken from it, with enumeration advertised so listing succeeds.
+func seededProvider(t *testing.T) ebsprovider.EBSProvider {
+	t.Helper()
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{VolumeEnumeration: true, SnapshotEnumeration: true})
+	ctx := context.Background()
+	_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+	require.NoError(t, err)
+	_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol-1"})
+	require.NoError(t, err)
+	return provider
+}
+
+// requestAt sends verb at version and returns the reply envelope, followed by
+// the completion's for a verb that publishes one.
+func requestAt(t *testing.T, conn *nats.Conn, verb wireVerb, version uint16) []wireEnvelope {
+	t.Helper()
+	var completionSub *nats.Subscription
+	if verb.completionSubject != "" {
+		var err error
+		completionSub, err = conn.SubscribeSync(verb.completionSubject)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = completionSub.Unsubscribe() })
+		require.NoError(t, conn.Flush())
+	}
+
+	msg, err := conn.Request(verb.subject, withVersion(t, verb.request, version), requestTimeout)
+	require.NoError(t, err)
+	envelopes := []wireEnvelope{decodeEnvelope(t, msg.Data)}
+	if completionSub != nil {
+		msg, err = completionSub.NextMsg(requestTimeout)
+		require.NoError(t, err)
+		envelopes = append(envelopes, decodeEnvelope(t, msg.Data))
+	}
+	return envelopes
 }
 
 // TestUnpublishNoSealOnTheWire pins the server half of no_seal: refused below

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -846,16 +847,23 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			}
 		})
 
+		// A republish succeeds at every listed version, so a caller at any of
+		// them gets the running export back rather than a refusal.
 		t.Run("idempotent republish to the same node", func(t *testing.T) {
-			provider := newProvider(t)
-			ctx := context.Background()
-			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-idem"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
-			require.NoError(t, err)
-			first, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-idem"), NodeID: cfg.node()})
-			require.NoError(t, err)
-			second, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-idem"), NodeID: cfg.node()})
-			require.NoError(t, err)
-			assert.Equal(t, first, second)
+			for _, version := range contractVersions {
+				t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+					provider := newProvider(t)
+					ctx := context.Background()
+					volumeID := cfg.id(fmt.Sprintf("vol-pub-idem-v%d", version))
+					_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+					require.NoError(t, err)
+					first, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+					require.NoError(t, err)
+					second, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.Versioned{SchemaVersion: version}, VolumeID: volumeID, NodeID: cfg.node()})
+					require.NoError(t, err)
+					assert.Equal(t, first, second)
+				})
+			}
 		})
 
 		t.Run("volume_in_use when published to a different node", func(t *testing.T) {
@@ -972,6 +980,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("torn down reports whether an export was removed", func(t *testing.T) {
+			if !slices.Contains(contractVersions, ebsprovider.NoSealSchemaVersion) {
+				t.Skipf("torn_down is defined from version %d, which the provider does not list", ebsprovider.NoSealSchemaVersion)
+			}
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID := cfg.id("vol-unpub-torn")

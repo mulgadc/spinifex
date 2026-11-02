@@ -440,7 +440,11 @@ func TestCurrentBehaviour_NoAccountStatusCache(t *testing.T) {
 			h := gw.SetupRoutes()
 
 			require.Equal(t, http.StatusOK, e.request(t, h, e.alice, "sts", cbForm("GetCallerIdentity")).Code)
-			_, err = e.iam.SetAccountStatus(e.accountID, status)
+			if status == iamdomain.AccountStatusTerminating {
+				_, err = e.iam.QuiesceAccount(e.accountID, "op-1", 1)
+			} else {
+				_, err = e.iam.SetAccountStatus(e.accountID, status)
+			}
 			require.NoError(t, err)
 
 			assert.Equal(t, denied, cbOutcomeOf(e.request(t, h, e.alice, "sts", cbForm("GetCallerIdentity"))),

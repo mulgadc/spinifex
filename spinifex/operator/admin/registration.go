@@ -55,7 +55,10 @@ type Deps struct {
 
 	// The /admin methods run against these. A nil IAM or Quota answers the
 	// methods that need it with InternalError.
-	IAM               iamdomain.IAMService
+	IAM iamdomain.IAMService
+	// Termination is the concrete IAM service, the only holder of the capability
+	// to quiesce and remove an account. DeleteAccount needs it.
+	Termination       accountteardown.IAMBackend
 	Quota             *quota.Service
 	ExpectedNodes     int
 	NodeIDs           []string

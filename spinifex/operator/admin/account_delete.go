@@ -110,12 +110,12 @@ func (d Deps) deleteAccount(ctx context.Context, body []byte) (any, error) {
 	if err := validateDeleteAccountRequest(&req); err != nil {
 		return nil, err
 	}
-	if d.IAM == nil {
+	if d.Termination == nil {
 		slog.Error("DeleteAccount: IAM service not available")
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.IAM, d.BucketStore)
+	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore)
 	if err != nil {
 		slog.Error("DeleteAccount: failed to build teardown engine", "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)
@@ -269,6 +269,8 @@ func (d Deps) runAccountDeletion(
 			AccountID:   job.AccountID,
 			AccountName: job.AccountName,
 			Force:       job.Force,
+			OperationID: job.OperationID,
+			Fence:       job.Fence,
 		})
 		tracker.finished(ctx, result, err)
 	}()

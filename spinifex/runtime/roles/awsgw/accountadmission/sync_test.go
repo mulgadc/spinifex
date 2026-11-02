@@ -34,7 +34,7 @@ func TestAdmit_SeesAStatusWrittenByAnotherClientOnTheNextRequest(t *testing.T) {
 	require.NoError(t, admitter.Admit(account.AccountID, ""))
 	require.NoError(t, admitter.Admit(bystander.AccountID, ""))
 
-	_, err = writer.SetAccountStatus(account.AccountID, iamdomain.AccountStatusTerminating)
+	_, err = writer.QuiesceAccount(account.AccountID, "op-1", 1)
 	require.NoError(t, err)
 
 	assert.ErrorIs(t, admitter.Admit(account.AccountID, ""), ErrNotActive, "the next request must see TERMINATING")

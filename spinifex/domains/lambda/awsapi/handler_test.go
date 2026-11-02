@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/lambda"
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
@@ -369,9 +370,41 @@ func TestCreateFunction_AcceptsDefaultsEquivalentToAbsent(t *testing.T) {
 		b["PackageType"] = "Zip"
 		b["Layers"] = []string{}
 		b["Tags"] = map[string]string{}
+		b["LoggingConfig"] = map[string]any{"LogFormat": "Text", "LogGroup": "/aws/lambda/hello"}
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusCreated, rec.Code)
+}
+
+func TestCreateFunction_RefusesNonDefaultLoggingConfig(t *testing.T) {
+	for _, cfg := range []map[string]any{
+		{"LogGroup": "/custom/group"},
+		{"LogFormat": "Text", "LogGroup": "/aws/lambda/other"},
+		{"LogFormat": "Text", "ApplicationLogLevel": "DEBUG"},
+		{"SystemLogLevel": "WARN"},
+	} {
+		e := newEnv(t)
+		_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) { b["LoggingConfig"] = cfg }))
+		requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+		_, _, getErr := e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
+		require.ErrorIs(t, getErr, function.ErrNotFound, "%v claims nothing", cfg)
+	}
+}
+
+func TestFunctionResponses_CarryTheDefaultLoggingConfig(t *testing.T) {
+	e := newEnv(t)
+	rec, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
+	require.NoError(t, err)
+	var created lambda.FunctionConfiguration
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	want := &lambda.LoggingConfig{LogFormat: aws.String("Text"), LogGroup: aws.String("/aws/lambda/hello")}
+	assert.Equal(t, want, created.LoggingConfig)
+
+	rec, err = e.do(http.MethodGet, "/2015-03-31/functions/hello", nil)
+	require.NoError(t, err)
+	var got lambda.GetFunctionOutput
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, want, got.Configuration.LoggingConfig)
 }
 
 func TestCreateFunction_ParameterValidation(t *testing.T) {

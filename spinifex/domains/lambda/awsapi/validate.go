@@ -111,7 +111,6 @@ func refuseUnsupported(in *lambda.CreateFunctionInput) error {
 		{"SnapStart", in.SnapStart != nil && aws.StringValue(in.SnapStart.ApplyOn) != "" && aws.StringValue(in.SnapStart.ApplyOn) != lambda.SnapStartApplyOnNone},
 		{"EphemeralStorage", in.EphemeralStorage != nil && in.EphemeralStorage.Size != nil && aws.Int64Value(in.EphemeralStorage.Size) != 512},
 		{"CodeSigningConfigArn", isSet(in.CodeSigningConfigArn)},
-		{"LoggingConfig", isSet(in.LoggingConfig)},
 		{"Tags", isSet(in.Tags)},
 	}
 	for _, c := range checks {
@@ -165,6 +164,20 @@ func invalidFunctionName() error {
 	return invalid("1 validation error detected: Value at 'functionName' failed to satisfy constraint: Member must satisfy regular expression pattern: (arn:(aws[a-zA-Z-]*)?:lambda:)?([a-z]{2}(-gov)?-[a-z]+-\\d{1}:)?(\\d{12}:)?(function:)?([a-zA-Z0-9-_]+)(:(\\$LATEST|[a-zA-Z0-9-_]+))?")
 }
 
+// logGroup is the log group AWS names for a function by default.
+func logGroup(name string) string { return "/aws/lambda/" + name }
+
+// defaultLogging reports whether c is absent or spells AWS's default exactly;
+// without a logs capability any other value would be inert.
+func defaultLogging(c *lambda.LoggingConfig, name string) bool {
+	if c == nil {
+		return true
+	}
+	format, group := aws.StringValue(c.LogFormat), aws.StringValue(c.LogGroup)
+	return (format == "" || format == lambda.LogFormatText) && (group == "" || group == logGroup(name)) &&
+		c.ApplicationLogLevel == nil && c.SystemLogLevel == nil
+}
+
 func validateCreate(in *lambda.CreateFunctionInput) (*createParams, error) {
 	if err := refuseUnsupported(in); err != nil {
 		return nil, err
@@ -172,6 +185,9 @@ func validateCreate(in *lambda.CreateFunctionInput) (*createParams, error) {
 	name := aws.StringValue(in.FunctionName)
 	if strings.HasPrefix(name, "arn:") || !nameRE.MatchString(name) {
 		return nil, invalid("1 validation error detected: Value at 'functionName' failed to satisfy constraint: Member must satisfy regular expression pattern: [a-zA-Z0-9-_]+ and have length 1 to 64")
+	}
+	if !defaultLogging(in.LoggingConfig, name) {
+		return nil, unsupported("A LoggingConfig other than LogFormat Text with log group " + logGroup(name))
 	}
 	if aws.StringValue(in.Runtime) != supportedRuntime {
 		return nil, invalid("Runtime must be %s", supportedRuntime)

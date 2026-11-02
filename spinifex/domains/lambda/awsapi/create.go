@@ -147,6 +147,7 @@ func configuration(rec function.Record, revision uint64, env map[string]string) 
 		RevisionId:       aws.String(strconv.FormatUint(revision, 10)),
 		LastUpdateStatus: aws.String(lambda.LastUpdateStatusSuccessful),
 		EphemeralStorage: &lambda.EphemeralStorage{Size: aws.Int64(512)},
+		LoggingConfig:    &lambda.LoggingConfig{LogFormat: aws.String(lambda.LogFormatText), LogGroup: aws.String(logGroup(rec.FunctionName))},
 	}
 	if rec.StateReason != "" {
 		cfg.StateReason = aws.String(rec.StateReason)

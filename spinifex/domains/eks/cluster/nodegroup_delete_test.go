@@ -621,3 +621,42 @@ func TestDeleteNodegroup_KickFinishesTheDeleteWithoutAReaperSweep(t *testing.T) 
 	requireErrorCode(t, err, awserrors.ErrorEKSResourceNotFound)
 	assert.NotContains(t, fixtureIAM(t, f).Profiles, rec.InstanceProfileName)
 }
+
+func TestDeleteNodegroup_WorkerStuckPastDeadlineEndsDeleteFailedKeepingProfile(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	createReadyNodegroup(t, f, "c1", "ng1", 2)
+	rec, _ := ownedProfile(t, f, "c1", "ng1")
+	stuck := rec.InstanceIDs[0]
+	f.worker.stillLive = []string{stuck}
+	_, err := deleteNodegroupCall(f, "c1", "ng1")
+	require.NoError(t, err)
+
+	sweepNodegroups(t, f)
+	cur, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	require.Equal(t, eks.NodegroupStatusDeleting, cur.Status, "within the deadline the group keeps waiting")
+
+	backdateNodegroupReap(t, f, "c1", "ng1")
+	sweepNodegroups(t, f)
+
+	desc, err := describeNodegroupCall(f, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusDeleteFailed, aws.StringValue(desc.Nodegroup.Status))
+	require.NotEmpty(t, desc.Nodegroup.Health.Issues)
+	issue := desc.Nodegroup.Health.Issues[0]
+	assert.Equal(t, eks.NodegroupIssueCodeNodeTerminationFailure, aws.StringValue(issue.Code))
+	assert.Contains(t, aws.StringValue(issue.Message), stuck)
+	assert.Contains(t, fixtureIAM(t, f).Profiles, rec.InstanceProfileName)
+
+	f.worker.mu.Lock()
+	f.worker.stillLive = nil
+	f.worker.mu.Unlock()
+	_, err = deleteNodegroupCall(f, "c1", "ng1")
+	require.NoError(t, err)
+	sweepNodegroups(t, f)
+	_, err = describeNodegroupCall(f, "c1", "ng1")
+	requireErrorCode(t, err, awserrors.ErrorEKSResourceNotFound)
+	assert.NotContains(t, fixtureIAM(t, f).Profiles, rec.InstanceProfileName)
+}

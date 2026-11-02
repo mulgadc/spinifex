@@ -171,12 +171,7 @@ func (s *EKSServiceImpl) convergeNodegroupDeletion(ctx context.Context, accountI
 
 	if err := s.releaseNodegroupResources(ctx, accountID, kv, rec); err != nil {
 		if errors.Is(err, errWorkersEnding) {
-			// Not a failure: the next sweep checks again without backoff.
-			_, _ = s.mutateNodegroup(ctx, kv, cluster, ng, func(r *NodegroupRecord) bool {
-				r.DeleteReapAttempts--
-				r.LastDeleteReapAttempt = time.Time{}
-				return r.Status == eks.NodegroupStatusDeleting
-			})
+			s.noteWorkersEnding(ctx, kv, cluster, ng, err)
 			return err
 		}
 		s.noteNodegroupDeleteFailure(ctx, kv, rec, err)
@@ -242,6 +237,30 @@ func (s *EKSServiceImpl) awaitWorkersGone(ctx context.Context, ids []string, acc
 			return ctx.Err()
 		case <-time.After(poll):
 		}
+	}
+}
+
+// noteWorkersEnding handles workers that are not yet gone. Early on that is no
+// failed attempt: the next sweep checks again without backoff. Once the group
+// has been deleting past nodegroupDeleteFailAfter it settles DELETE_FAILED
+// naming the instances, keeping the profile and record for a customer retry.
+func (s *EKSServiceImpl) noteWorkersEnding(ctx context.Context, kv jetstream.KeyValue, cluster, ng string, cause error) {
+	_, err := s.mutateNodegroup(ctx, kv, cluster, ng, func(r *NodegroupRecord) bool {
+		if r.Status != eks.NodegroupStatusDeleting {
+			return false
+		}
+		if time.Since(r.DeletingSince) >= nodegroupDeleteFailAfter {
+			r.Status = eks.NodegroupStatusDeleteFailed
+			r.StatusReason = "delete: " + cause.Error()
+			r.ModifiedAt = time.Now().UTC()
+			return true
+		}
+		r.DeleteReapAttempts--
+		r.LastDeleteReapAttempt = time.Time{}
+		return true
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "eks: record workers still ending", "cluster", cluster, "nodegroup", ng, "err", err)
 	}
 }
 

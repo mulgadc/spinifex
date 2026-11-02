@@ -1,1 +1,0 @@
-import{O as e,j as t}from"./schemas-4652h2I4.js";import{t as n}from"./useRouter-CN8SiXFR.js";var r=t(e(),1);function i(e){let t=n();return r.useCallback(n=>t.navigate({...n,from:n.from??e?.from}),[e?.from,t])}export{i as t};

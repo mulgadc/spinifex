@@ -1,0 +1,1 @@
+import{Ct as e,Et as t,Tt as n}from"./schemas-DCQXG11d.js";import{r}from"./CompositeRoot-CmHoR-Tk.js";function i(i){let{render:a,className:o,style:s,state:c=t,props:l=n,refs:u=n,metadata:d,stateAttributesMapping:f,tag:p=`div`,...m}=i,{compositeProps:h,compositeRef:g}=r({metadata:d});return e(p,i,{state:c,ref:[g,...u],props:[h,...l,m],stateAttributesMapping:f})}export{i as t};

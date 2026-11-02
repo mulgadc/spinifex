@@ -1,0 +1,1 @@
+import{l as e,s as t}from"./schemas-DCQXG11d.js";var n=128,r=256,i=t({key:e().min(1,`Tag key is required`).max(n,`Tag key must be ${n} characters or less`),value:e().max(r,`Tag value must be ${r} characters or less`)});function a(e){let t=e.flatMap(e=>e.key.length>0?[{Key:e.key,Value:e.value}]:[]);return t.length>0?t:void 0}export{a as n,i as t};

@@ -84,12 +84,12 @@ type JetStreamManager struct {
 	// The per-resource key space the three views above are moving onto. Each
 	// is a third view over a bucket one of them already holds, so the two
 	// spaces share a handle and a recovery driven through either repairs both.
-	records     *kvstore.Store[vm.InstanceRecord] // i.<id>, instance-state bucket
-	termRecords *kvstore.Store[vm.InstanceRecord] // i.<id>, terminated bucket
-	clusterKV   jetstream.KeyValue                // spinifex-cluster-state
-	clusterConfig *kvstore.Bucket // spinifex-cluster-config
-	obs         KVSyncObserver
-	running     runningSetState
+	records       *kvstore.Store[vm.InstanceRecord] // i.<id>, instance-state bucket
+	termRecords   *kvstore.Store[vm.InstanceRecord] // i.<id>, terminated bucket
+	clusterKV     jetstream.KeyValue                // spinifex-cluster-state
+	clusterConfig *kvstore.Bucket                   // spinifex-cluster-config
+	obs           KVSyncObserver
+	running       runningSetState
 }
 
 // checkNodeStateVersion reports whether a node record read from KV is one this

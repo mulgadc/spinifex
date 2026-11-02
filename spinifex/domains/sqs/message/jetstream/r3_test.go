@@ -155,9 +155,15 @@ func (c *cluster) store(t *testing.T) *sqsjs.Store {
 	return s
 }
 
+// r3Env enables TestR3; CI's race tier sets it, local preflight does not.
+const r3Env = "SPINIFEX_SQS_R3"
+
 // TestR3 owns the process-wide topology until all parallel scenarios and
 // their server cleanups finish. Limit concurrency to three isolated clusters.
 func TestR3(t *testing.T) { //nolint:tparallel // The parent must exclude R1 tests while it owns the global topology.
+	if os.Getenv(r3Env) == "" {
+		t.Skipf("three-node restart scenarios take ~40s; set %s=1 to run them (make test-race does)", r3Env)
+	}
 	clustersize.RedeclareForTest(t, 3)
 	slots := make(chan struct{}, 3)
 	for _, tc := range []struct {

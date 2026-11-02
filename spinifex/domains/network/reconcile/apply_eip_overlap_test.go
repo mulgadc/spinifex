@@ -9,6 +9,7 @@ import (
 
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/nats-io/nats.go/jetstream"
@@ -114,7 +115,7 @@ func TestReconcile_OverlappingVPCsKeepEachTenantsPublicIP(t *testing.T) {
 				return LoadIntentFromKV(ctx, js, "us-east-1a")
 			}
 
-			pass := func() {
+			pass := func() IntentState {
 				t.Helper()
 				intent, err := r.reloadIntent(ctx)
 				if err != nil {
@@ -126,6 +127,7 @@ func TestReconcile_OverlappingVPCsKeepEachTenantsPublicIP(t *testing.T) {
 				if err := r.ReconcileHostEIPs(ctx); err != nil {
 					t.Fatalf("ReconcileHostEIPs: %v", err)
 				}
+				return intent
 			}
 			assertPublic := func(stage, externalIP, port string) {
 				t.Helper()
@@ -146,7 +148,21 @@ func TestReconcile_OverlappingVPCsKeepEachTenantsPublicIP(t *testing.T) {
 
 			seedAssociatedEIP(t, js, "222222222222", "b", "203.0.113.20", "02:00:00:00:0b:04")
 			for _, stage := range []string{"after tenant B associates", "on the next pass"} {
-				pass()
+				intent := pass()
+				// eni-a's stamp alone would keep A's row alive, so check that
+				// intent itself holds every tenant's association.
+				wantEIPs := map[string]string{eipIntentKey("vpc-b", "172.31.0.4"): "203.0.113.20"}
+				if tc.eipA {
+					wantEIPs[eipIntentKey("vpc-a", "172.31.0.4")] = tc.publicA
+				}
+				if len(intent.EIPs) != len(wantEIPs) {
+					t.Errorf("%s: intent holds %d EIPs, want %d: %+v", stage, len(intent.EIPs), len(wantEIPs), intent.EIPs)
+				}
+				for key, externalIP := range wantEIPs {
+					if got := intent.EIPs[key].ExternalIP; got != externalIP {
+						t.Errorf("%s: intent EIP %s = %q, want %q", stage, key, got, externalIP)
+					}
+				}
 				assertPublic(stage, tc.publicA, "eni-a")
 				assertPublic(stage, "203.0.113.20", "eni-b")
 			}
@@ -171,5 +187,56 @@ func TestSubnetIDForIP_ScopedToVPC(t *testing.T) {
 	}
 	if got := subnetIDForIP(subnets, "vpc-c", "172.31.0.4"); got != "" {
 		t.Errorf("lookup in a VPC with no subnets = %q, want empty", got)
+	}
+}
+
+// egressCall is one EnsureEIPInstanceEgress invocation.
+type egressCall struct{ vpcID, subnetID, instanceIP string }
+
+// recordingIGW records EnsureEIPInstanceEgress calls instead of writing OVN.
+type recordingIGW struct {
+	external.IGWManager
+
+	calls []egressCall
+}
+
+func (g *recordingIGW) EnsureEIPInstanceEgress(_ context.Context, vpcID, subnetID, instanceIP string) error {
+	g.calls = append(g.calls, egressCall{vpcID, subnetID, instanceIP})
+	return nil
+}
+
+// An EIP's drop-gate exemption goes to its own VPC's subnet even when another
+// tenant's gated subnet has the same CIDR.
+func TestApplyPublicInstanceEgress_EIPExemptsOwnVPCSubnet(t *testing.T) {
+	cidr := netip.MustParsePrefix("172.31.0.0/20")
+	intent := IntentState{
+		Subnets: map[string]topology.SubnetSpec{
+			"subnet-a": {SubnetID: "subnet-a", VPCID: "vpc-a", CIDR: cidr},
+			"subnet-b": {SubnetID: "subnet-b", VPCID: "vpc-b", CIDR: cidr},
+		},
+		EIPs: map[string]policy.EIPSpec{
+			eipIntentKey("vpc-b", "172.31.0.4"): {VPCID: "vpc-b", ExternalIP: "203.0.113.20", LogicalIP: "172.31.0.4"},
+		},
+		DropGates: map[string]SubnetEgressIntent{},
+	}
+	for _, s := range intent.Subnets {
+		intent.DropGates[subnetEgressKey(s.SubnetID, netip.MustParsePrefix("0.0.0.0/0"))] = SubnetEgressIntent{
+			VPCID: s.VPCID, SubnetID: s.SubnetID, DestCIDR: netip.MustParsePrefix("0.0.0.0/0"),
+		}
+	}
+
+	for range 20 {
+		r, _ := newTestReconciler(t)
+		igw := new(recordingIGW)
+		r.igw = igw
+		res := new(passResult)
+		r.applyPublicInstanceEgress(context.Background(), intent, ActualState{}, res)
+		want := []egressCall{{"vpc-b", "subnet-b", "172.31.0.4"}}
+		if !slices.Equal(igw.calls, want) {
+			t.Fatalf("EnsureEIPInstanceEgress calls = %+v, want %+v", igw.calls, want)
+		}
+		if len(res.failures) != 0 {
+			t.Fatalf("pass failures = %+v, want none", res.failures)
+		}
 	}
 }

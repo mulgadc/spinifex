@@ -105,8 +105,8 @@ func TestNetworkTestClaimIsClusterWide(t *testing.T) {
 }
 
 // fakeNode answers the serve and run halves as a daemon would, reporting a
-// fixed throughput, or failing the serve when broken.
-func fakeNode(t *testing.T, nc *nats.Conn, node, addr string, bps float64, broken bool) {
+// fixed throughput, or failing the serve when broken. A run waits for gate.
+func fakeNode(t *testing.T, nc *nats.Conn, node, addr string, bps float64, broken bool, gate <-chan struct{}) {
 	t.Helper()
 	serveSub, err := nc.Subscribe(clusterv1.NetTestServeSubject(node), func(m *nats.Msg) {
 		resp := clusterv1.NetTestServeResponse{Address: addr, Port: clusterv1.NetTestPort}
@@ -118,6 +118,9 @@ func fakeNode(t *testing.T, nc *nats.Conn, node, addr string, bps float64, broke
 	})
 	require.NoError(t, err)
 	runSub, err := nc.Subscribe(clusterv1.NetTestRunSubject(node), func(m *nats.Msg) {
+		if gate != nil {
+			<-gate
+		}
 		var req clusterv1.NetTestRunRequest
 		_ = json.Unmarshal(m.Data, &req)
 		data, _ := json.Marshal(clusterv1.NetTestRunResponse{
@@ -133,9 +136,10 @@ func TestNetworkTestRunsEveryDirectionAndRecordsEachResult(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	d := Deps{NATS: nc, NetworkTests: NewKVNetworkTests(js), NodeIDs: []string{"a", "b", "c"}}
-	fakeNode(t, nc, "a", "10.10.8.4", 23e9, false)
-	fakeNode(t, nc, "b", "10.10.8.5", 22e9, false)
-	fakeNode(t, nc, "c", "10.10.8.6", 0, true)
+	gate := make(chan struct{})
+	fakeNode(t, nc, "a", "10.10.8.4", 23e9, false, gate)
+	fakeNode(t, nc, "b", "10.10.8.5", 22e9, false, gate)
+	fakeNode(t, nc, "c", "10.10.8.6", 0, true, gate)
 
 	started, err := d.StartNetworkTest(ctx, map[string]string{"Plane": "lan", "DurationSeconds": "5", "Streams": "2"})
 	require.NoError(t, err)
@@ -145,6 +149,7 @@ func TestNetworkTestRunsEveryDirectionAndRecordsEachResult(t *testing.T) {
 	_, err = d.StartNetworkTest(ctx, map[string]string{"Plane": "lan"})
 	code, _ := awserrors.ResolveErrorCode(err)
 	assert.Equal(t, awserrors.ErrorIncorrectState, code, "one test at a time across the cluster")
+	close(gate)
 
 	var done NetworkTest
 	require.Eventually(t, func() bool {
@@ -187,7 +192,7 @@ func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	d := Deps{NATS: nc, NetworkTests: NewKVNetworkTests(js), NodeIDs: []string{"a", "b"}}
-	fakeNode(t, nc, "a", "10.10.8.4", 23e9, false)
+	fakeNode(t, nc, "a", "10.10.8.4", 23e9, false, nil)
 	silent, err := nc.Subscribe(clusterv1.NetTestServeSubject("b"), func(*nats.Msg) {})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = silent.Unsubscribe() })

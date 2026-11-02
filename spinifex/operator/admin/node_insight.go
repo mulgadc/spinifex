@@ -145,13 +145,22 @@ func NewKVNetworkTests(js jetstream.JetStream) *KVNetworkTests {
 // mid-test, is replaced under its revision so two takers cannot both win.
 func (s *KVNetworkTests) Claim(ctx context.Context, testID string, until time.Time) error {
 	claim := &networkTestClaim{TestID: testID, Until: until}
-	_, err := s.claims.Create(ctx, networkTestClaimKey, claim)
-	if !errors.Is(err, kvstore.ErrExists) {
-		return err
-	}
-	held, rev, err := s.claims.Get(ctx, networkTestClaimKey)
-	if err != nil {
-		return err
+	var held *networkTestClaim
+	var rev uint64
+	// A holder releasing between the create and the read leaves nothing to
+	// read, so the create is tried again rather than failing the request.
+	for attempt := 0; ; attempt++ {
+		_, err := s.claims.Create(ctx, networkTestClaimKey, claim)
+		if !errors.Is(err, kvstore.ErrExists) {
+			return err
+		}
+		held, rev, err = s.claims.Get(ctx, networkTestClaimKey)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, kvstore.ErrNotFound) || attempt == 2 {
+			return err
+		}
 	}
 	if time.Now().Before(held.Until) {
 		return ErrNetworkTestBusy

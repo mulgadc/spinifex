@@ -2067,6 +2067,12 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroup(ctx context.Context, input *elbv2.M
 		return nil, err
 	}
 
+	// Health-check settings are rendered into the data-plane config.
+	if err := s.updateStoredConfigForTargetGroup(ctx, tg.TargetGroupArn); err != nil {
+		slog.ErrorContext(ctx, "ModifyTargetGroup: failed to update config", "arn", tg.TargetGroupArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	slog.InfoContext(ctx, "ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
 
 	return &elbv2.ModifyTargetGroupOutput{

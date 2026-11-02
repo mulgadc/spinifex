@@ -2524,6 +2524,62 @@ func TestUpdateStoredConfig_StoresConfigAndHash(t *testing.T) {
 	assert.Len(t, stored.ConfigHash, 64) // SHA256 hex
 }
 
+// A health-check change alone, with no target churn, must re-render the
+// config of every LB forwarding to the group so the agent sees a new hash.
+func TestModifyTargetGroup_RerendersReferencingLBConfig(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	ctx := t.Context()
+
+	lb := &LoadBalancerRecord{
+		LoadBalancerArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/mtg-lb/lb-mtg1",
+		LoadBalancerID:  "lb-mtg1",
+		Name:            "mtg-lb",
+		State:           StateActive,
+		InstanceID:      "i-sys-mtg1",
+		AccountID:       testAccountID,
+	}
+	require.NoError(t, svc.store.PutLoadBalancer(ctx, lb))
+
+	tg := &TargetGroupRecord{
+		TargetGroupArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/mtg-tg/tg-mtg1",
+		TargetGroupID:  "tg-mtg1",
+		Port:           80,
+		HealthCheck:    DefaultHealthCheck(),
+		Targets: []Target{
+			{Id: "i-srv1", Port: 80, HealthState: TargetHealthHealthy, PrivateIP: "10.0.1.30"},
+		},
+		AccountID: testAccountID,
+	}
+	require.NoError(t, svc.store.PutTargetGroup(ctx, tg))
+
+	require.NoError(t, svc.store.PutListener(ctx, &ListenerRecord{
+		ListenerArn:     "arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/mtg-lb/lb-mtg1/lst-mtg1",
+		ListenerID:      "lst-mtg1",
+		LoadBalancerArn: lb.LoadBalancerArn,
+		Protocol:        ProtocolHTTP,
+		Port:            80,
+		DefaultActions:  []ListenerAction{{Type: ActionTypeForward, TargetGroupArn: tg.TargetGroupArn}},
+		AccountID:       testAccountID,
+	}))
+	require.NoError(t, svc.updateStoredConfig(ctx, lb))
+
+	before, err := svc.store.GetLoadBalancer(ctx, "lb-mtg1")
+	require.NoError(t, err)
+	require.Contains(t, before.ConfigText, "http-check expect status 200\n")
+
+	_, err = svc.ModifyTargetGroup(ctx, &elbv2.ModifyTargetGroupInput{
+		TargetGroupArn: aws.String(tg.TargetGroupArn),
+		Matcher:        &elbv2.Matcher{HttpCode: aws.String("200-499")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	after, err := svc.store.GetLoadBalancer(ctx, "lb-mtg1")
+	require.NoError(t, err)
+	assert.Contains(t, after.ConfigText, "http-check expect status 200-499")
+	assert.NotEqual(t, before.ConfigHash, after.ConfigHash, "the agent reloads only on a hash change")
+}
+
 func TestUpdateStoredConfig_SkipsWhenNoInstance(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)

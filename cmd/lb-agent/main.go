@@ -19,7 +19,7 @@ import (
 	"syscall"
 
 	"github.com/mulgadc/bluebottle/pkg/otelsetup"
-	"github.com/mulgadc/spinifex/spinifex/lbagent"
+	lbagent "github.com/mulgadc/spinifex/spinifex/agents/elbv2"
 
 	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )

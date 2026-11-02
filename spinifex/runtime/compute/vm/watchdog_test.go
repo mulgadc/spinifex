@@ -11,13 +11,14 @@ import (
 	"go.uber.org/goleak"
 )
 
-// pendingInstance returns a VM in the supplied state with LaunchTime set
-// to launchedAgo before now. now is the synthetic clock used by
-// scanAndMarkStuckPending in tests.
+// pendingInstance returns a first launch in the supplied state with LaunchTime
+// set to launched. now is the synthetic clock used by scanAndMarkStuckPending
+// in tests.
 func pendingInstance(id string, state InstanceState, launched time.Time) *VM {
 	return &VM{
-		ID:     id,
-		Status: state,
+		ID:          id,
+		Status:      state,
+		FirstLaunch: true,
 		Instance: &ec2.Instance{
 			LaunchTime: &launched,
 		},

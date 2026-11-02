@@ -3,8 +3,6 @@ package ochre
 import (
 	"fmt"
 	"strings"
-
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
 // bundleAgentEnvDir is where each bundle member's env file is written, one
@@ -25,10 +23,10 @@ var memberInstanceNameReplacer = strings.NewReplacer(":", "_", "/", "_", ".", "_
 
 // engineForFamily selects which serving engine a family runs under: familyMeta
 // always runs vLLM, every other family (familyTEI included) runs TEI. Mirrors
-// the invoke-side dispatch in gateway_bedrock, so a family unknown there is
+// the invoke-side family dispatch, so a family unknown there is
 // unknown here too rather than silently defaulting to one engine.
 func engineForFamily(family string) string {
-	if family == gateway_bedrock.FamilyMeta {
+	if family == FamilyMeta {
 		return "vllm"
 	}
 	return "tei"

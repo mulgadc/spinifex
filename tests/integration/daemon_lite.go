@@ -85,8 +85,8 @@ func WithRealVPCD() DaemonLiteOption {
 // StartDaemonLite constructs the in-scope service impls against gw.NATSConn
 // (memory-backed for key/tags, embedded-JetStream-backed for VPC/route
 // table/IGW — the same wiring pattern as
-// daemon/daemon_handlers_test.go:createFullTestDaemonWithStore and
-// daemon/daemon_wire_lb_test.go:newSubscribeTestDaemon) and subscribes them to
+// runtime/daemon/daemon_handlers_test.go:createFullTestDaemonWithStore and
+// runtime/daemon/daemon_wire_lb_test.go:newSubscribeTestDaemon) and subscribes them to
 // every subject those five resources answer on a live daemon. Every
 // subscription is torn down via t.Cleanup.
 //
@@ -167,7 +167,7 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 
 	// A live daemon creates the account's default VPC by reacting to the
 	// "iam.account.created" event SeedBootstrap publishes at gateway startup
-	// (daemon/daemon_handlers_vpc.go handleAccountCreated). StartGateway has
+	// (runtime/daemon/daemon_handlers_vpc.go handleAccountCreated). StartGateway has
 	// already published that event by the time this function runs, so
 	// subscribing to it here would never fire — call the same idempotent
 	// EnsureDefaultVPC the handler calls directly instead. IGW auto-attach

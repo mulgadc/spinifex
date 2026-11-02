@@ -16,7 +16,7 @@ import (
 const testImageBucket = "integration-test-images"
 
 // StartImageDaemonLite subscribes a real ec2image.ImageServiceImpl
-// — the same production code a live daemon runs (daemon/daemon_handlers_image.go)
+// — the same production code a live daemon runs (runtime/daemon/daemon_handlers_image.go)
 // — to its ec2.* subjects, backed by a memory
 // object store rather than a real Predastore. The store itself is returned
 // too, so a test can seed fixture data (e.g. snapshot metadata RegisterImage

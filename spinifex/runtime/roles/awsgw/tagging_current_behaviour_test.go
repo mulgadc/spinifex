@@ -121,19 +121,23 @@ func pageARNs(p getResourcesPage) []string {
 	return out
 }
 
-// GetResources lists whatever the central index holds: an ID with no
-// recognised prefix is reported with resource type "unknown", and a
-// well-formed ID naming no resource is reported as that resource.
+// GetResources lists whatever the central index holds: a well-formed ID naming
+// no resource is reported as that resource. An ID with no recognised prefix
+// never reaches the index, because CreateTags rejects it as InvalidID.
 func TestCurrentBehaviour_Tagging_GetResourcesListsUnresolvedEC2IDs(t *testing.T) {
 	agg, tags := newTaggingCBAggregator(t)
 
-	createTags(t, tags, []string{"not-a-real-id", "vol-00000000000000000"}, map[string]string{"env": "prod"})
+	_, err := tags.CreateTags(t.Context(), &ec2.CreateTagsInput{
+		Resources: aws.StringSlice([]string{"not-a-real-id"}),
+		Tags:      []*ec2.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+	}, authzAccountID)
+	require.EqualError(t, err, awserrors.ErrorInvalidID)
+	createTags(t, tags, []string{"vol-00000000000000000"}, map[string]string{"env": "prod"})
 
 	page, err := getResources(t, agg, `{"ResourceTypeFilters":["ec2"]}`)
 	require.NoError(t, err)
 	prefix := "arn:aws:ec2:" + authzRegion + ":" + authzAccountID + ":"
 	assert.ElementsMatch(t, []string{
-		prefix + "unknown/not-a-real-id",
 		prefix + "volume/vol-00000000000000000",
 	}, pageARNs(page))
 }
@@ -176,17 +180,25 @@ func TestCurrentBehaviour_Tagging_GetResourcesOffsetTokenRepeatsAfterInterleaved
 	assert.Equal(t, pageARNs(first), pageARNs(second), "the second page repeats the first")
 }
 
-// A token that is not a non-negative integer is InvalidParameterValue, and a
-// page size above 100 is accepted rather than refused.
+// A token that is not a non-negative integer, and a page size outside 1 to
+// 100, are both refused with InvalidParameterException, as AWS does.
 func TestCurrentBehaviour_Tagging_GetResourcesPaginationValidation(t *testing.T) {
 	agg, tags := newTaggingCBAggregator(t)
 	createTags(t, tags, []string{"sg-0000000000000000a"}, map[string]string{"env": "prod"})
 
-	_, err := getResources(t, agg, `{"PaginationToken":"not-a-token","ResourceTypeFilters":["ec2"]}`)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	for _, body := range []string{
+		`{"PaginationToken":"not-a-token","ResourceTypeFilters":["ec2"]}`,
+		`{"ResourcesPerPage":500,"ResourceTypeFilters":["ec2"]}`,
+		`{"ResourcesPerPage":0,"ResourceTypeFilters":["ec2"]}`,
+		`{"ResourcesPerPage":9223372036854775807,"PaginationToken":"1","ResourceTypeFilters":["ec2"]}`,
+	} {
+		_, err := getResources(t, agg, body)
+		code, ok := awserrors.ResolveErrorCode(err)
+		require.True(t, ok, "%s: error %v carries no AWS code", body, err)
+		assert.Equal(t, "InvalidParameterException", code, body)
+	}
 
-	page, err := getResources(t, agg, `{"ResourcesPerPage":500,"ResourceTypeFilters":["ec2"]}`)
+	page, err := getResources(t, agg, `{"ResourcesPerPage":100,"ResourceTypeFilters":["ec2"]}`)
 	require.NoError(t, err)
 	assert.Len(t, page.ResourceTagMappingList, 1)
 }

@@ -21,7 +21,7 @@ const (
 	sourceAny resourceSource = iota
 )
 
-// Every action Tagging_Request serves, with the resource AWS evaluates it
+// Every action the Tagging registration serves, with the resource AWS evaluates it
 // against. Exhaustive by contract: a completeness test compares this table with
 // the dispatch table in both directions, so an action cannot be added with a
 // silent account-wide grant.
@@ -33,8 +33,7 @@ var taggingScopes = map[string]resourceSource{
 }
 
 // HasScope reports whether action has an explicit tagging scope-table entry.
-// taggingActions lives in package gateway, so the completeness test calls this
-// rather than reaching into the table.
+// The awsapi completeness test calls this rather than reaching into the table.
 func HasScope(action string) bool {
 	_, ok := taggingScopes[action]
 	return ok

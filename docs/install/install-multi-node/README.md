@@ -163,10 +163,13 @@ Open between all hosts:
 | Protocol and port | Used by |
 |---|---|
 | UDP 6081 | Geneve tunnels |
+| UDP 500, 4500 and IP protocol 50 (ESP) | IPsec for the Geneve tunnels, while IPsec is on |
 | TCP 4222, 4248 | NATS |
 | TCP 6641, 6642 | OVN northbound and southbound |
 | TCP 8443 | Predastore S3 gate |
 | UDP 6660, 7660 | Object shards, metadata consensus |
+
+UDP 4500 carries the tunnel traffic only where IKE detects NAT between two nodes; otherwise it travels as ESP, on Oracle Linux as on Debian.
 
 Open between the three OVN database servers (servers 1 to 3) only:
 
@@ -207,7 +210,10 @@ Spinifex's own **host** firewall is separate, and already carries this policy �
 
 Choose one method and apply it to **every** server in the cluster.
 
-**Option A — existing OS.** On a server already running Ubuntu 26.04 or Debian 13:
+**Option A — existing OS.** Use this on servers already running Ubuntu 26.04, Debian 13 or Oracle Linux 10, and prepare an Oracle Linux server with [Oracle Linux Hosts](/docs/install-oracle-linux) first.
+Every server in a cluster must run the same OS: Oracle Linux never shares a cluster with Debian or Ubuntu, and `spx admin join` does not check this for you.
+
+Run the installer on each server:
 
 ```bash
 curl -fsSL https://install.mulgadc.com | bash

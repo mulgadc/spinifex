@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/daemon"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 

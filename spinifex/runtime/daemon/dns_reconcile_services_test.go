@@ -1,0 +1,53 @@
+package daemon
+
+import (
+	"bytes"
+	"testing"
+
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// Without a base domain no service can name its records, so none of them may
+// claim prune authority over the zone.
+func TestDNSDesiredSet_ServicesWithoutBaseDomain(t *testing.T) {
+	d := &Daemon{
+		elbv2Service: &elbv2domain.ELBv2ServiceImpl{},
+		eksService:   &ekscluster.EKSServiceImpl{},
+		rdsService:   &rdsinstance.Service{},
+	}
+
+	ds := d.dnsDesiredSet()
+	assert.False(t, ds.Prunable.ELB)
+	assert.False(t, ds.Prunable.EKS)
+	assert.False(t, ds.Prunable.RDS)
+	assert.Empty(t, ds.Changes)
+}
+
+func TestDNSDesiredSet_ServicesEnumerateCompletely(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	cfg := &config.Config{Region: "ap-southeast-2"}
+	cfg.Northstar.DefaultDomain = "example.internal"
+
+	elb, err := elbv2domain.NewELBv2ServiceImplWithNATS(cfg, nc, bytes.Repeat([]byte{0x42}, masterkey.MasterKeySize))
+	require.NoError(t, err)
+	t.Cleanup(elb.Close)
+	eks, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Config: cfg})
+	require.NoError(t, err)
+	t.Cleanup(eks.Shutdown)
+	rds := rdsinstance.NewService(nc, cfg.Region).WithDeps(rdsinstance.Deps{BaseDomain: "example.internal"})
+
+	d := &Daemon{elbv2Service: elb, eksService: eks, rdsService: rds}
+	ds := d.dnsDesiredSet()
+	assert.True(t, ds.Prunable.ELB, "an empty load balancer store is a complete view")
+	assert.True(t, ds.Prunable.EKS)
+	assert.True(t, ds.Prunable.RDS)
+	assert.False(t, ds.Prunable.EC2, "no instance store was configured")
+	assert.Empty(t, ds.Changes)
+}

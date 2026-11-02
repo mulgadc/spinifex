@@ -127,8 +127,8 @@ Operators own remediation for layers Spinifex does not ship:
 | Layer | Responsibility |
 |-------|----------------|
 | Spinifex releases | Apply released patches within the correct-SLA above. |
-| Host OS + kernel | Track distribution advisories (Debian DSA, Ubuntu USN) at matching cadence. |
-| OVN / OVS | Patched via the operator's package channel alongside the OS. |
+| Host OS + kernel | Track distribution advisories (Debian DSA, Ubuntu USN, Oracle Linux ELSA) at matching cadence. |
+| OVN / OVS | Patched via the operator's package channel alongside the OS. On Oracle Linux they come from the CentOS NFV SIG, which ELSA does not cover, so track upstream Open vSwitch and OVN security announcements. |
 | QEMU / KVM / libvirt | As above — hypervisor CVEs affect tenant isolation. |
 | Host AV / EDR agent | See [Malware Protection §2](/docs/malware-protection#2-update-requirements-sil1-3144). |
 

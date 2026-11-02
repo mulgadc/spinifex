@@ -18,7 +18,7 @@ func TestNATSProviderCreateVolumeUsesVersionedContract(t *testing.T) {
 	sub, err := conn.Subscribe(CreateVolumeSubject, func(msg *nats.Msg) {
 		var request CreateVolumeRequest
 		require.NoError(t, json.Unmarshal(msg.Data, &request))
-		assert.Equal(t, SchemaVersion, request.SchemaVersion)
+		assert.Equal(t, LegacySchemaVersion, request.SchemaVersion)
 		assert.Equal(t, "vol-1", request.VolumeID)
 		response, marshalErr := json.Marshal(CreateVolumeResponse{
 			Versioned: NewVersioned(),
@@ -37,6 +37,60 @@ func TestNATSProviderCreateVolumeUsesVersionedContract(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "vb://vol-1", volume.Handle)
+}
+
+func TestNATSProviderPublishVolumeUsesLegacyWireByDefault(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+	subject, err := PublishSubject("node-v1")
+	require.NoError(t, err)
+	sub, err := conn.Subscribe(subject, func(msg *nats.Msg) {
+		var request PublishVolumeRequest
+		require.NoError(t, json.Unmarshal(msg.Data, &request))
+		assert.Equal(t, LegacySchemaVersion, request.SchemaVersion)
+		response, marshalErr := json.Marshal(PublishVolumeResponseV1{
+			Versioned: NewVersioned(),
+			Published: &PublishedVolumeV1{VolumeID: request.VolumeID, NodeID: request.NodeID, NBDURI: "nbd+unix:///?socket=/run/vol-v1.sock"},
+		})
+		require.NoError(t, marshalErr)
+		require.NoError(t, msg.Respond(response))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, conn.Flush())
+
+	published, err := NewNATSProvider(conn, time.Second).PublishVolume(t.Context(), PublishVolumeRequest{
+		Versioned: NewVersioned(), VolumeID: "vol-v1", NodeID: "node-v1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, NewNBDExport("nbd+unix:///?socket=/run/vol-v1.sock"), published.Export)
+}
+
+func TestNATSProviderPublishVolumeUsesV2OnlyWhenRequested(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+	subject, err := PublishSubject("node-v2")
+	require.NoError(t, err)
+	sub, err := conn.Subscribe(subject, func(msg *nats.Msg) {
+		var request PublishVolumeRequest
+		require.NoError(t, json.Unmarshal(msg.Data, &request))
+		assert.Equal(t, SchemaVersion, request.SchemaVersion)
+		response, marshalErr := json.Marshal(PublishVolumeResponse{
+			Versioned: NewLatestVersioned(),
+			Published: &PublishedVolume{VolumeID: request.VolumeID, NodeID: request.NodeID, Export: VolumeExport{
+				Kind: ExportKindBlock, Block: &BlockExport{DevicePath: "/dev/sdb", SizeBytes: 1 << 30},
+			}},
+		})
+		require.NoError(t, marshalErr)
+		require.NoError(t, msg.Respond(response))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, conn.Flush())
+
+	published, err := NewNATSProvider(conn, time.Second).PublishVolume(t.Context(), PublishVolumeRequest{
+		Versioned: NewLatestVersioned(), VolumeID: "vol-v2", NodeID: "node-v2",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ExportKindBlock, published.Export.Kind)
 }
 
 func TestNATSProviderRejectsResponseVersionSkew(t *testing.T) {
@@ -419,7 +473,7 @@ func TestNATSProviderRejectsEmptySuccessResponse(t *testing.T) {
 		subject, err := PublishSubject("node-empty")
 		require.NoError(t, err)
 		respondWith(t, conn, subject, PublishVolumeResponse{Versioned: empty})
-		_, err = provider.PublishVolume(ctx, PublishVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-empty", NodeID: "node-empty"})
+		_, err = provider.PublishVolume(ctx, PublishVolumeRequest{Versioned: NewLatestVersioned(), VolumeID: "vol-empty", NodeID: "node-empty"})
 		require.EqualError(t, err, subject+" returned no published volume")
 	})
 
@@ -429,6 +483,50 @@ func TestNATSProviderRejectsEmptySuccessResponse(t *testing.T) {
 		respondWith(t, conn, subject, CreateSnapshotResponse{Versioned: empty})
 		_, err = provider.CreateSnapshot(ctx, CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-empty", VolumeID: "vol-empty"})
 		require.EqualError(t, err, subject+" returned no operation ID")
+	})
+}
+
+// TestNATSProviderRejectsInvalidExport covers the client-side export check: a
+// reply the server marks successful but whose export cannot be attached must
+// fail here, not later when QEMU is handed it.
+func TestNATSProviderRejectsInvalidExport(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+	provider := NewNATSProvider(conn, time.Second)
+
+	tests := []struct {
+		node    string
+		export  VolumeExport
+		wantErr string
+	}{
+		{node: "node-nokind", export: VolumeExport{NBD: &NBDExport{NBDURI: "nbd://10.0.0.1:10809"}}, wantErr: `unknown export kind ""`},
+		{node: "node-noblock", export: VolumeExport{Kind: ExportKindBlock}, wantErr: "block export has no block details"},
+		{node: "node-emptyuri", export: VolumeExport{Kind: ExportKindNBD, NBD: &NBDExport{}}, wantErr: "nbd export has an empty NBD URI"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.node, func(t *testing.T) {
+			subject, err := PublishSubject(tt.node)
+			require.NoError(t, err)
+			respondWith(t, conn, subject, PublishVolumeResponse{
+				Versioned: NewLatestVersioned(),
+				Published: &PublishedVolume{VolumeID: "vol-1", NodeID: tt.node, Export: tt.export},
+			})
+			published, err := provider.PublishVolume(t.Context(), PublishVolumeRequest{Versioned: NewLatestVersioned(), VolumeID: "vol-1", NodeID: tt.node})
+			require.EqualError(t, err, subject+" returned an invalid export: "+tt.wantErr)
+			assert.Nil(t, published)
+		})
+	}
+
+	t.Run("valid block export passes", func(t *testing.T) {
+		subject, err := PublishSubject("node-block")
+		require.NoError(t, err)
+		export := VolumeExport{Kind: ExportKindBlock, Block: &BlockExport{DevicePath: "/dev/sdb", SizeBytes: 10 << 30}}
+		respondWith(t, conn, subject, PublishVolumeResponse{
+			Versioned: NewLatestVersioned(),
+			Published: &PublishedVolume{VolumeID: "vol-1", NodeID: "node-block", Export: export},
+		})
+		published, err := provider.PublishVolume(t.Context(), PublishVolumeRequest{Versioned: NewLatestVersioned(), VolumeID: "vol-1", NodeID: "node-block"})
+		require.NoError(t, err)
+		assert.Equal(t, export, published.Export)
 	})
 }
 
@@ -615,8 +713,13 @@ func TestTimeoutForSizesEachSubjectToItsWork(t *testing.T) {
 	ownerDescribe, err := GetVolumeOwnerSubject("vol-1")
 	require.NoError(t, err)
 
+	// A delete costs one round trip per object, so its duration is a function
+	// of the volume. On prod a 100 GiB volume's delete took 52 s against a 30 s
+	// budget, and the overrun was reported to the tenant as a 500 for a delete
+	// that was working.
 	slow := []string{
 		CreateVolumeSubject, ExpandVolumeSubject, CopySnapshotSubject,
+		DeleteVolumeSubject, DeleteSnapshotSubject,
 		snapshotCreate, ownerCopy, ownerExpand, ownerCreate,
 	}
 	for _, subject := range slow {
@@ -626,8 +729,7 @@ func TestTimeoutForSizesEachSubjectToItsWork(t *testing.T) {
 
 	fast := []string{
 		CapabilitiesSubject, GetVolumeSubject, ListVolumesSubject,
-		DeleteVolumeSubject, DeleteSnapshotSubject, ListSnapshotsSubject,
-		ownerDescribe,
+		ListSnapshotsSubject, ownerDescribe,
 	}
 	for _, subject := range fast {
 		assert.Equal(t, callerTimeout, p.timeoutFor(subject),

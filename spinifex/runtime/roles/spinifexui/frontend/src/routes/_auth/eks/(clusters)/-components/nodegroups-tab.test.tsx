@@ -1,14 +1,16 @@
 import type { InstanceTypeInfo } from "@aws-sdk/client-ec2"
-import { fireEvent, screen } from "@testing-library/react"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
+const send = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
 vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(vi.fn().mockResolvedValue({}))
+  return mockAwsClients(send)
 })
 
 import { NodegroupsTab } from "./nodegroups-tab"
@@ -94,7 +96,8 @@ describe("NodegroupsTab", () => {
     expect(screen.getByText("No node groups.")).toBeInTheDocument()
   })
 
-  it("opens the add node group dialog", () => {
+  it("opens the add node group form in a panel", async () => {
+    const user = userEvent.setup()
     renderWithClient(
       <NodegroupsTab
         clusterName={CLUSTER}
@@ -104,11 +107,13 @@ describe("NodegroupsTab", () => {
       seed(),
     )
     fireEvent.click(screen.getByRole("button", { name: "Add node group" }))
-    expect(screen.getByLabelText("Subnet subnet-a")).toBeInTheDocument()
+    const panel = screen.getByRole("region", { name: "Add node group" })
+    expect(within(panel).getByLabelText("Subnet subnet-a")).toBeInTheDocument()
+    await user.click(within(panel).getByLabelText("Node IAM role"))
     expect(screen.getByRole("option", { name: "node" })).toBeInTheDocument()
   })
 
-  it("opens the scale dialog seeded with current sizes", () => {
+  it("opens the scale form seeded with current sizes", () => {
     renderWithClient(
       <NodegroupsTab
         clusterName={CLUSTER}
@@ -118,9 +123,9 @@ describe("NodegroupsTab", () => {
       seed(),
     )
     fireEvent.click(screen.getByRole("button", { name: "Scale node group" }))
-    expect(screen.getByText("Scale ng-1")).toBeInTheDocument()
-    expect(screen.getByLabelText("Min")).toHaveValue(1)
-    expect(screen.getByLabelText("Max")).toHaveValue(3)
+    const panel = screen.getByRole("region", { name: "Scale ng-1" })
+    expect(within(panel).getByLabelText("Min")).toHaveValue(1)
+    expect(within(panel).getByLabelText("Max")).toHaveValue(3)
   })
 
   it("validates scale sizes before submitting", () => {
@@ -133,11 +138,44 @@ describe("NodegroupsTab", () => {
       seed(),
     )
     fireEvent.click(screen.getByRole("button", { name: "Scale node group" }))
-    fireEvent.change(screen.getByLabelText("Min"), { target: { value: "5" } })
-    fireEvent.click(screen.getByRole("button", { name: "Scale" }))
+    const panel = screen.getByRole("region", { name: "Scale ng-1" })
+    fireEvent.change(within(panel).getByLabelText("Min"), {
+      target: { value: "5" },
+    })
+    fireEvent.click(within(panel).getByRole("button", { name: "Scale" }))
     expect(
-      screen.getByText("Sizes must satisfy min ≤ desired ≤ max"),
+      within(panel).getByText("Sizes must satisfy min ≤ desired ≤ max"),
     ).toBeInTheDocument()
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it("scales the node group and closes the panel", async () => {
+    send.mockClear()
+    renderWithClient(
+      <NodegroupsTab
+        clusterName={CLUSTER}
+        clusterVersion="1.29"
+        vpcId="vpc-1"
+      />,
+      seed(),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Scale node group" }))
+    const panel = screen.getByRole("region", { name: "Scale ng-1" })
+    fireEvent.change(within(panel).getByLabelText("Max"), {
+      target: { value: "5" },
+    })
+    fireEvent.click(within(panel).getByRole("button", { name: "Scale" }))
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("region", { name: "Scale ng-1" }),
+      ).not.toBeInTheDocument()
+    })
+    expect(send.mock.calls[0]?.[0].input).toMatchObject({
+      clusterName: CLUSTER,
+      nodegroupName: "ng-1",
+      scalingConfig: { minSize: 1, desiredSize: 2, maxSize: 5 },
+    })
   })
 
   it("shows the version lag without an upgrade action when the node group lags the cluster", () => {
@@ -236,5 +274,44 @@ describe("NodegroupsTab", () => {
     expect(
       screen.getByText("nvidia.com/gpu=present:NoSchedule"),
     ).toBeInTheDocument()
+  })
+
+  it("shows a refused create in the panel and keeps it open", async () => {
+    send.mockRejectedValueOnce(
+      Object.assign(new Error("Nodegroup already exists with name ng-2"), {
+        name: "ResourceInUseException",
+      }),
+    )
+    renderWithClient(
+      <NodegroupsTab
+        clusterName={CLUSTER}
+        clusterVersion="1.29"
+        vpcId="vpc-1"
+      />,
+      seed(),
+    )
+    const user = userEvent.setup()
+    fireEvent.click(screen.getByRole("button", { name: "Add node group" }))
+    const dialog = screen.getByRole("region", { name: "Add node group" })
+    fireEvent.change(within(dialog).getByLabelText("Name"), {
+      target: { value: "ng-2" },
+    })
+    await user.click(within(dialog).getByLabelText("Node IAM role"))
+    await user.click(screen.getByRole("option", { name: "node" }))
+    await user.click(within(dialog).getByLabelText("Subnet subnet-a"))
+    await user.click(within(dialog).getByRole("button", { name: "Create" }))
+
+    await expect(
+      within(dialog).findByText(
+        "ResourceInUseException: Nodegroup already exists with name ng-2",
+      ),
+    ).resolves.toBeInTheDocument()
+    expect(send.mock.calls[0]?.[0].input).toMatchObject({
+      nodegroupName: "ng-2",
+      nodeRole: "arn:aws:iam::0:role/node",
+      subnets: ["subnet-a"],
+    })
+    expect(screen.getByLabelText("Name")).toHaveValue("ng-2")
+    expect(within(dialog).getByRole("button", { name: "Create" })).toBeEnabled()
   })
 })

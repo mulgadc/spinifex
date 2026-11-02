@@ -11,6 +11,11 @@ email = "{{.OperatorEmail}}"
 [aws]
 region = "{{.Region}}"
 services_domain = "services.internal"
+{{- if .NameserverNodes}}
+
+[northstar]
+nameserver_nodes = [{{range $i, $s := .NameserverNodes}}{{if $i}}, {{end}}"{{$s}}"{{end}}]
+{{- end}}
 
 [network]
 ipsec_enabled = {{.IPSecEnabled}}

@@ -176,6 +176,24 @@ func TestResolveRetryAfter_WrappedAndResolvable(t *testing.T) {
 	}
 }
 
+// WithRetryAfter keeps the coded error's text and message while still
+// carrying the hint: a joined RetryAfter would log the code twice.
+func TestWithRetryAfter_KeepsTextAndResolves(t *testing.T) {
+	inner := Errorf(ErrorServiceUnavailable, "probe incomplete")
+	err := WithRetryAfter(inner, 5*time.Second)
+
+	if err.Error() != inner.Error() {
+		t.Fatalf("Error() = %q, want %q", err.Error(), inner.Error())
+	}
+	if d, ok := ResolveRetryAfter(fmt.Errorf("wrapped: %w", err)); !ok || d != 5*time.Second {
+		t.Fatalf("ResolveRetryAfter() = (%v, %v), want (5s, true)", d, ok)
+	}
+	code, msg, ok := ResolveErrorDetail(err)
+	if !ok || code != ErrorServiceUnavailable || msg != "probe incomplete" {
+		t.Fatalf("ResolveErrorDetail() = (%q, %q, %v), want (%q, %q, true)", code, msg, ok, ErrorServiceUnavailable, "probe incomplete")
+	}
+}
+
 // TestResolveRetryAfter_PlainErrorNotFound is the compatibility case: an
 // ordinary errors.New(code) -- the overwhelming majority of call sites --
 // carries no Retry-After hint.
@@ -315,5 +333,23 @@ func TestIsNotFound(t *testing.T) {
 				t.Errorf("IsNotFound(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWithFields_SurvivesWrappingAndKeepsTheCode(t *testing.T) {
+	err := fmt.Errorf("handler: %w", WithFields(Errorf(ErrorInvalidParameterValue, "bad"), map[string]string{"Reason": "R"}))
+
+	code, message, ok := ResolveErrorDetail(err)
+	if !ok || code != ErrorInvalidParameterValue || message != "bad" {
+		t.Errorf("ResolveErrorDetail = %q, %q, %v", code, message, ok)
+	}
+	if got := ResolveFields(err); len(got) != 1 || got["Reason"] != "R" {
+		t.Errorf("ResolveFields = %v", got)
+	}
+	if got := ResolveFields(errors.New(ErrorInvalidParameterValue)); got != nil {
+		t.Errorf("unattached ResolveFields = %v", got)
+	}
+	if WithFields(nil, map[string]string{"a": "b"}) != nil {
+		t.Error("WithFields(nil) must stay nil")
 	}
 }

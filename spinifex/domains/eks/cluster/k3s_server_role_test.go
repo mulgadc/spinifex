@@ -1,0 +1,107 @@
+package cluster
+
+import (
+	"testing"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const testSysAcct = "000000000000"
+
+// TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile asserts the CP
+// role is created with the EC2 trust policy, carries the internal gateway
+// permissions, and its instance profile is returned for launch attachment.
+func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
+	t.Parallel()
+	f := newFakeEnsurer()
+	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
+
+	arn := s.ensureCPInstanceProfile(testSysAcct)
+	assert.Equal(t, "arn:aws:iam::"+testSysAcct+":instance-profile/"+CPInstanceRoleName, arn)
+
+	assert.Equal(t, 1, f.CreateRoleCalls)
+	assert.Contains(t, f.LastTrustDoc, "ec2.amazonaws.com")
+	assert.Contains(t, f.LastTrustDoc, "sts:AssumeRole")
+
+	policy := f.RolePolicies[CPInstanceRoleName]
+	assert.Contains(t, policy, "eks:PublishInternal")
+	assert.Contains(t, policy, "eks:ListInternalAddons")
+	// The eks-token-webhook relays get-token bearer tokens to the token-review
+	// broker with these IMDS creds; without this action the gateway 403s the
+	// relay and every external `kubectl` gets 401.
+	assert.Contains(t, policy, "eks:WebhookTokenReview")
+	// The k3s-recovery agent pulls its per-member etcd recovery directive with
+	// these IMDS creds; without this action the gateway 403s the boot-time fetch
+	// and a wedged control plane can never be auto-reset.
+	assert.Contains(t, policy, "eks:GetRecoveryDirective")
+	// The node-gc agent pulls the live nodegroup workers with these IMDS creds;
+	// without this action a terminated worker's Node is never deleted.
+	assert.Contains(t, policy, "eks:ListInternalWorkers")
+
+	require.NotNil(t, f.Profiles[CPInstanceRoleName])
+	assert.Len(t, f.Profiles[CPInstanceRoleName].Roles, 1)
+}
+
+// TestEnsureK3sServerInstanceProfile_ExistingRoleConverges asserts a re-launch
+// against a pre-existing role does not re-create it but still re-asserts the
+// inline policy so a stale role converges onto the current permissions.
+func TestEnsureK3sServerInstanceProfile_ExistingRoleConverges(t *testing.T) {
+	t.Parallel()
+	f := newFakeEnsurer()
+	f.Roles[CPInstanceRoleName] = &iam.Role{
+		RoleName: aws.String(CPInstanceRoleName),
+		Arn:      aws.String("arn:aws:iam::" + testSysAcct + ":role/" + CPInstanceRoleName),
+	}
+	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
+
+	arn := s.ensureCPInstanceProfile(testSysAcct)
+	assert.NotEmpty(t, arn)
+	assert.Zero(t, f.CreateRoleCalls)
+	assert.Contains(t, f.RolePolicies[CPInstanceRoleName], "eks:PublishInternal")
+}
+
+// TestEnsureCPInstanceProfile_NilIAMFallsBack asserts an unwired IAM service
+// yields "" so the caller falls back to baked static creds rather than failing.
+func TestEnsureCPInstanceProfile_NilIAMFallsBack(t *testing.T) {
+	t.Parallel()
+	s := &EKSServiceImpl{deps: EKSServiceDeps{}}
+	assert.Empty(t, s.ensureCPInstanceProfile(testSysAcct))
+}
+
+// TestEnsureCPInstanceProfile_UsesLazyProvider asserts the CP profile is created
+// via the lazily-resolved IAMProvider when the eager deps.IAM is unset — the
+// daemon wires only the provider so the build cannot race the NATS KV backend.
+func TestEnsureCPInstanceProfile_UsesLazyProvider(t *testing.T) {
+	t.Parallel()
+	f := newFakeEnsurer()
+	s := &EKSServiceImpl{deps: EKSServiceDeps{
+		IAMProvider: func() iamdomain.SystemInstanceRoleEnsurer { return f },
+	}}
+	arn := s.ensureCPInstanceProfile(testSysAcct)
+	assert.Equal(t, "arn:aws:iam::"+testSysAcct+":instance-profile/"+CPInstanceRoleName, arn)
+	assert.Equal(t, 1, f.CreateRoleCalls)
+}
+
+// TestEnsureCPInstanceProfile_ProviderNotReadyFallsBack asserts a provider that
+// returns nil (NATS KV backend not yet up) yields "" so the launch falls back to
+// static creds and retries on the next call rather than bricking the cluster.
+func TestEnsureCPInstanceProfile_ProviderNotReadyFallsBack(t *testing.T) {
+	t.Parallel()
+	s := &EKSServiceImpl{deps: EKSServiceDeps{
+		IAMProvider: func() iamdomain.SystemInstanceRoleEnsurer { return nil },
+	}}
+	assert.Empty(t, s.ensureCPInstanceProfile(testSysAcct))
+}
+
+// TestEKSServerTrustPolicyIsAssumable guards that the trust doc the CP role
+// ships with is exactly the EC2 service-principal shape AssumeRoleForInstance
+// matches; a drift here silently breaks IMDS credential minting.
+func TestEKSServerTrustPolicyIsAssumable(t *testing.T) {
+	t.Parallel()
+	assert.Contains(t, iamdomain.EC2InstanceTrustPolicy, `"Service":"ec2.amazonaws.com"`)
+	assert.Contains(t, iamdomain.EC2InstanceTrustPolicy, `"Action":"sts:AssumeRole"`)
+}

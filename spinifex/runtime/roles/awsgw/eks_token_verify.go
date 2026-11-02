@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/nats-io/nats.go"
 )
 
@@ -18,21 +18,21 @@ const eksTokenVerifyQueue = "awsgw-eks-token-verify" //nolint:gosec // queue-gro
 // needs: resolve an `aws eks get-token` presigned URL into a caller principal,
 // binding the signature to the expected cluster name (anti-replay, Q10).
 type presignedVerifier interface {
-	VerifyPresignedGetCallerIdentity(presignedURL, expectedClusterName string) (*handlers_sts.PresignedCallerIdentity, error)
+	VerifyPresignedGetCallerIdentity(presignedURL, expectedClusterName string) (*stsdomain.PresignedCallerIdentity, error)
 }
 
-var _ presignedVerifier = (*handlers_sts.STSServiceImpl)(nil)
+var _ presignedVerifier = (*stsdomain.STSServiceImpl)(nil)
 
 // registerEKSTokenVerify subscribes the awsgw service to TokenVerifySubject so
 // the in-cluster eks-token-webhook can resolve get-token presigned URLs over
 // NATS (STS is hosted in-process here and is not otherwise on the bus).
 func registerEKSTokenVerify(nc *nats.Conn, verifier presignedVerifier) (*nats.Subscription, error) {
-	return nc.QueueSubscribe(handlers_eks.TokenVerifySubject, eksTokenVerifyQueue, handleEKSTokenVerify(verifier))
+	return nc.QueueSubscribe(ekscluster.TokenVerifySubject, eksTokenVerifyQueue, handleEKSTokenVerify(verifier))
 }
 
 func handleEKSTokenVerify(verifier presignedVerifier) nats.MsgHandler {
 	return func(msg *nats.Msg) {
-		var req handlers_eks.TokenVerifyRequest
+		var req ekscluster.TokenVerifyRequest
 		if err := json.Unmarshal(msg.Data, &req); err != nil {
 			respondTokenVerifyErr(msg, awserrors.ErrorInvalidParameterValue)
 			return
@@ -51,7 +51,7 @@ func handleEKSTokenVerify(verifier presignedVerifier) nats.MsgHandler {
 			return
 		}
 
-		resp := handlers_eks.TokenVerifyResponse{
+		resp := ekscluster.TokenVerifyResponse{
 			AccountID:     ident.AccountID,
 			ARN:           ident.ARN,
 			UserID:        ident.UserID,

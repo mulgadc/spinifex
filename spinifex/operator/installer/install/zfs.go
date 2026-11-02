@@ -310,7 +310,7 @@ func writeZFSSystemConfig(opts ZFSOpts) error {
 	}
 
 	// The daemon computes schedulable memory as host total minus this reserve
-	// (defaultHostReserve in daemon/resource.go). ARC is invisible to it, so
+	// (defaultHostReserveMemGB in runtime/daemon/resource.go). ARC is invisible to it, so
 	// the ceiling has to be declared or instances get admitted into memory the
 	// ARC already owns.
 	reserve := defaultHostReserveGB + float64(opts.ARCMaxMiB)/1024.0
@@ -325,8 +325,8 @@ func writeZFSSystemConfig(opts ZFSOpts) error {
 	return os.WriteFile(filepath.Join(confDir, "host.env"), []byte(env), 0o644) //nolint:gosec // G306: /etc/spinifex/host.env holds the memory reserve, read by non-root Spinifex services (0644). Contains no secret material.
 }
 
-// defaultHostReserveGB mirrors defaultHostReserve.memGB in
-// spinifex/daemon/resource.go. Changing one without the other silently
+// defaultHostReserveGB mirrors defaultHostReserveMemGB in
+// spinifex/runtime/daemon/resource.go. Changing one without the other silently
 // misreports how much memory a ZFS node can schedule.
 const defaultHostReserveGB = 2.0
 

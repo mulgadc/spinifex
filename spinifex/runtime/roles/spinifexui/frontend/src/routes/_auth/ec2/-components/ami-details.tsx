@@ -1,8 +1,11 @@
 import type { Image } from "@aws-sdk/client-ec2"
 import { Link } from "@tanstack/react-router"
 
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
+import {
+  PanelField,
+  PanelFields,
+  PanelSection,
+} from "@/components/detail-panel"
 import { formatDateTime } from "@/lib/utils"
 
 interface AmiDetailsProps {
@@ -10,113 +13,116 @@ interface AmiDetailsProps {
   showExtendedDetails?: boolean
 }
 
+function yesNo(value: boolean | undefined): string {
+  return value ? "Yes" : "No"
+}
+
 export function AmiDetails({
   image,
   showExtendedDetails = false,
 }: AmiDetailsProps) {
-  const creationDate = formatDateTime(image.CreationDate)
-
   return (
     <>
-      {/* AMI Details */}
-      <DetailCard>
-        <DetailCard.Header>
-          {showExtendedDetails ? "AMI Information" : "AMI Details"}
-        </DetailCard.Header>
-        <DetailCard.Content>
-          <DetailRow
-            label="AMI ID"
-            value={
-              image.ImageId && !showExtendedDetails ? (
-                <Link
-                  className="text-primary hover:underline"
-                  params={{ id: image.ImageId }}
-                  to="/ec2/describe-images/$id"
-                >
-                  {image.ImageId}
-                </Link>
-              ) : (
-                image.ImageId
-              )
-            }
-          />
-          <DetailRow label="AMI Name" value={image.Name} />
-          <DetailRow label="Description" value={image.Description} />
-          <DetailRow label="Architecture" value={image.Architecture} />
-          <DetailRow
-            label="Virtualization Type"
-            value={image.VirtualizationType}
-          />
-          <DetailRow label="Platform" value={image.Platform ?? "Linux"} />
-          <DetailRow label="Platform Details" value={image.PlatformDetails} />
-          <DetailRow label="Image Type" value={image.ImageType} />
-          <DetailRow label="Root Device Type" value={image.RootDeviceType} />
-          <DetailRow label="Root Device Name" value={image.RootDeviceName} />
-          <DetailRow label="Owner" value={image.OwnerId} />
-          <DetailRow label="State" value={image.State} />
+      <PanelSection
+        title={showExtendedDetails ? "AMI information" : "AMI details"}
+      >
+        <PanelFields>
+          <PanelField copy={image.ImageId} label="AMI ID" mono>
+            {image.ImageId && !showExtendedDetails ? (
+              <Link
+                className="text-primary hover:underline"
+                params={{ id: image.ImageId }}
+                to="/ec2/describe-images/$id"
+              >
+                {image.ImageId}
+              </Link>
+            ) : (
+              image.ImageId
+            )}
+          </PanelField>
+          <PanelField label="AMI name">{image.Name}</PanelField>
+          <PanelField label="Description">{image.Description}</PanelField>
+          <PanelField label="Architecture">{image.Architecture}</PanelField>
+          <PanelField label="Virtualization type">
+            {image.VirtualizationType}
+          </PanelField>
+          <PanelField label="Boot mode">{image.BootMode}</PanelField>
+          <PanelField label="Platform">{image.Platform ?? "Linux"}</PanelField>
+          <PanelField label="Platform details">
+            {image.PlatformDetails}
+          </PanelField>
+          <PanelField label="Image type">{image.ImageType}</PanelField>
+          <PanelField label="Root device type">
+            {image.RootDeviceType}
+          </PanelField>
+          <PanelField label="Root device name" mono>
+            {image.RootDeviceName}
+          </PanelField>
+          <PanelField label="Owner" mono>
+            {image.OwnerId}
+          </PanelField>
+          <PanelField label="State">{image.State}</PanelField>
           {showExtendedDetails && (
             <>
-              <DetailRow label="Creation Date" value={creationDate} />
-              <DetailRow label="Public" value={image.Public ? "Yes" : "No"} />
+              <PanelField label="Creation date">
+                {formatDateTime(image.CreationDate)}
+              </PanelField>
+              <PanelField label="Public">{yesNo(image.Public)}</PanelField>
             </>
           )}
-        </DetailCard.Content>
-      </DetailCard>
+        </PanelFields>
+      </PanelSection>
 
-      {/* Block Device Mappings */}
       {showExtendedDetails &&
-        image.BlockDeviceMappings &&
-        image.BlockDeviceMappings.length > 0 &&
-        image.BlockDeviceMappings.map((mapping) => (
-          <DetailCard key={mapping.DeviceName}>
-            <DetailCard.Header>
-              Block Device: {mapping.DeviceName}
-            </DetailCard.Header>
-            <DetailCard.Content>
-              <DetailRow label="Device Name" value={mapping.DeviceName} />
+        image.BlockDeviceMappings?.map((mapping) => (
+          <PanelSection
+            key={mapping.DeviceName}
+            title={`Block device: ${mapping.DeviceName ?? ""}`}
+          >
+            <PanelFields>
+              <PanelField label="Device name" mono>
+                {mapping.DeviceName}
+              </PanelField>
               {mapping.Ebs && (
                 <>
-                  <DetailRow
-                    label="Volume Size"
-                    value={
-                      mapping.Ebs.VolumeSize
-                        ? `${mapping.Ebs.VolumeSize} GB`
-                        : undefined
-                    }
-                  />
-                  <DetailRow
-                    label="Volume Type"
-                    value={mapping.Ebs.VolumeType}
-                  />
-                  <DetailRow
-                    label="Delete On Termination"
-                    value={mapping.Ebs.DeleteOnTermination ? "Yes" : "No"}
-                  />
-                  <DetailRow
-                    label="Encrypted"
-                    value={mapping.Ebs.Encrypted ? "Yes" : "No"}
-                  />
+                  <PanelField label="Volume size">
+                    {mapping.Ebs.VolumeSize
+                      ? `${mapping.Ebs.VolumeSize} GB`
+                      : undefined}
+                  </PanelField>
+                  <PanelField label="Volume type">
+                    {mapping.Ebs.VolumeType}
+                  </PanelField>
+                  <PanelField label="Delete on termination">
+                    {yesNo(mapping.Ebs.DeleteOnTermination)}
+                  </PanelField>
+                  <PanelField label="Encrypted">
+                    {yesNo(mapping.Ebs.Encrypted)}
+                  </PanelField>
                   {mapping.Ebs.SnapshotId && (
-                    <DetailRow
+                    <PanelField
+                      copy={mapping.Ebs.SnapshotId}
                       label="Snapshot ID"
-                      value={
-                        <Link
-                          className="text-primary hover:underline"
-                          params={{ id: mapping.Ebs.SnapshotId }}
-                          to="/ec2/describe-snapshots/$id"
-                        >
-                          {mapping.Ebs.SnapshotId}
-                        </Link>
-                      }
-                    />
+                      mono
+                    >
+                      <Link
+                        className="text-primary hover:underline"
+                        params={{ id: mapping.Ebs.SnapshotId }}
+                        to="/ec2/describe-snapshots/$id"
+                      >
+                        {mapping.Ebs.SnapshotId}
+                      </Link>
+                    </PanelField>
                   )}
                 </>
               )}
               {mapping.VirtualName && (
-                <DetailRow label="Virtual Name" value={mapping.VirtualName} />
+                <PanelField label="Virtual name">
+                  {mapping.VirtualName}
+                </PanelField>
               )}
-            </DetailCard.Content>
-          </DetailCard>
+            </PanelFields>
+          </PanelSection>
         ))}
     </>
   )

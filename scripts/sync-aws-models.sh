@@ -27,14 +27,16 @@ MODELS=(
     elastic-load-balancing-v2/2015-12-01
     iam/2010-05-08
     rds/2014-10-31
+    route-53/2013-04-01
     s3/2006-03-01
+    sqs/2012-11-05
     sts/2011-06-15
 )
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# A blobless shallow fetch pulls only the ten files read below.
+# A blobless shallow fetch pulls only the files read below.
 git -C "$TMP" init --quiet repo
 git -C "$TMP/repo" fetch --quiet --depth=1 --filter=blob:none "$REPO" "$COMMIT"
 COMMITTED="$(git -C "$TMP/repo" log -1 --format=%cs "$COMMIT")"

@@ -27,6 +27,7 @@ const CLIENT_GETTERS: Record<ClientGetter, true> = {
   getElbv2Client: true,
   getIamClient: true,
   getRdsClient: true,
+  getRoute53Client: true,
   getS3Client: true,
 }
 

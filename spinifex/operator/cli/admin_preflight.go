@@ -24,8 +24,24 @@ Overwriting /usr/local/bin/spx while spinifex.target is up does not move the
 services onto it: each keeps executing the replaced inode until it restarts,
 so a node can serve a mixture of two builds indefinitely.
 
+On x86_64 it checks that the QEMU binary the daemon will run has the microvm
+machine type, and that the microvm firmware is installed: load balancers boot
+on both.
+
+It runs the host network check spinifex-daemon and spinifex-vpcd run before they
+start, so a failed spinifex-hostnet apply shows here.
+
+It fails while firewalld or ufw is active: the Spinifex nftables policy is the
+only supported node firewall, and a second ruleset silently drops routed NAT,
+elastic IP and IMDS traffic.
+
+It warns, without failing, when systemd-resolved is active but /etc/resolv.conf
+is not its stub: lookups then bypass the route that sends Spinifex names to
+northstar.
+
 Checks compare content, not mere existence, so a present-but-stale asset is
-caught too. Exits non-zero if any asset is Missing, Stale, or Ungranted.`,
+caught too. Exits non-zero if any asset is Missing, Stale, Ungranted, Unsupported or
+Failed.`,
 	RunE:         runAdminPreflight,
 	SilenceUsage: true,
 }

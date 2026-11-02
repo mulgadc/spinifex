@@ -33,6 +33,11 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// volumeStateDeleting is the state a delete records as its durable obligation.
+// The record carries it until the teardown is complete, which is what makes a
+// delete survive a restart and what prevents a second one repeating the work.
+const volumeStateDeleting = string(ebsprovider.VolumeStateDeleting)
+
 // Ensure VolumeServiceImpl implements VolumeService.
 var _ VolumeService = (*VolumeServiceImpl)(nil)
 
@@ -118,6 +123,70 @@ func NewVolumeServiceImplWithStore(cfg *config.Config, store objectstore.ObjectS
 // CreateVolume allocates a new EBS volume through the EBS provider and records
 // its control-plane metadata document.
 func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateVolumeInput, accountID string) (*ec2.Volume, error) {
+	return s.createVolume(ctx, input, accountID, ebsprovider.VolumeStateAvailable)
+}
+
+// CreateVolumeForPreparation is CreateVolume for an internal caller that must
+// write the volume's first contents before anyone else can use it. The record
+// is born "creating", which attach, delete, modify, force-detach and snapshot
+// all refuse, until CompleteVolumePreparation makes it available.
+func (s *VolumeServiceImpl) CreateVolumeForPreparation(ctx context.Context, input *ec2.CreateVolumeInput, accountID string) (*ec2.Volume, error) {
+	return s.createVolume(ctx, input, accountID, ebsprovider.VolumeStateCreating)
+}
+
+// CompleteVolumePreparation moves a volume made by CreateVolumeForPreparation
+// to available. Anything other than an unattached "creating" volume is
+// refused, so it cannot release a volume some other path is using.
+func (s *VolumeServiceImpl) CompleteVolumePreparation(ctx context.Context, accountID, volumeID string) error {
+	meta, err := s.getVolumeMetadata(ctx, accountID, volumeID)
+	if err != nil {
+		return err
+	}
+	if meta.TenantID != accountID {
+		return errors.New(awserrors.ErrorInvalidVolumeNotFound)
+	}
+	if meta.State != string(ebsprovider.VolumeStateCreating) || meta.AttachedInstance != "" {
+		return awserrors.Errorf(awserrors.ErrorIncorrectState, "volume %s is %q, not an unattached creating volume", volumeID, meta.State)
+	}
+	meta.State = string(ebsprovider.VolumeStateAvailable)
+	if err := s.metadata.PutVolume(ctx, meta); err != nil {
+		return awserrors.Errorf(awserrors.ErrorServerInternal, "write volume metadata %s: %v", volumeID, err)
+	}
+	slog.InfoContext(ctx, "Volume preparation completed", "volumeId", volumeID)
+	return nil
+}
+
+// DiscardVolumePreparation deletes a volume whose preparation failed. Only an
+// unattached "creating" volume in the caller's account qualifies; the caller
+// must already know no export of it can still be live.
+func (s *VolumeServiceImpl) DiscardVolumePreparation(ctx context.Context, accountID, volumeID string) error {
+	if err := s.requireProvider(ctx, "DiscardVolumePreparation"); err != nil {
+		return err
+	}
+	meta, err := s.getVolumeMetadata(ctx, accountID, volumeID)
+	if err != nil {
+		return err
+	}
+	if meta.TenantID != accountID {
+		return errors.New(awserrors.ErrorInvalidVolumeNotFound)
+	}
+	if meta.State != string(ebsprovider.VolumeStateCreating) || meta.AttachedInstance != "" {
+		return awserrors.Errorf(awserrors.ErrorIncorrectState, "volume %s is %q, not an unattached creating volume", volumeID, meta.State)
+	}
+	// Snapshots refuse a creating volume, so none can depend on this one.
+	if err := s.provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: meta.ProviderHandle,
+	}); err != nil {
+		return awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume %s: %v", volumeID, err)
+	}
+	if err := s.metadata.DeleteVolume(ctx, accountID, volumeID); err != nil && !objectstore.IsNoSuchKeyError(err) {
+		return awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume metadata %s: %v", volumeID, err)
+	}
+	slog.InfoContext(ctx, "Volume preparation discarded", "volumeId", volumeID)
+	return nil
+}
+
+func (s *VolumeServiceImpl) createVolume(ctx context.Context, input *ec2.CreateVolumeInput, accountID string, initialState ebsprovider.VolumeState) (*ec2.Volume, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -241,7 +310,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if err := s.metadata.PutVolume(ctx, ebsmetadata.Volume{
-		VolumeID: volumeID, TenantID: accountID, CapacityGiB: uint64(size), State: string(ebsprovider.VolumeStateAvailable),
+		VolumeID: volumeID, TenantID: accountID, CapacityGiB: uint64(size), State: string(initialState),
 		CreatedAt: now, AvailabilityZone: *input.AvailabilityZone, VolumeType: volumeType,
 		IOPS: iops, Throughput: throughput, SnapshotID: snapshotID, Tags: tags, ProviderHandle: created.Handle,
 		Encrypted: encrypted,
@@ -254,7 +323,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	slog.InfoContext(ctx, "CreateVolume completed", "volumeId", volumeID, "size", size, "type", volumeType)
 
 	return &ec2.Volume{VolumeId: aws.String(volumeID), Size: aws.Int64(size), VolumeType: aws.String(volumeType),
-		State: aws.String("available"), AvailabilityZone: input.AvailabilityZone, CreateTime: aws.Time(now),
+		State: aws.String(string(initialState)), AvailabilityZone: input.AvailabilityZone, CreateTime: aws.Time(now),
 		Iops: aws.Int64(int64(iops)), Throughput: aws.Int64(int64(throughput)), Encrypted: aws.Bool(encrypted),
 		SnapshotId: snapshotIDOrNil(snapshotID), Tags: awstags.MapToEC2(tags)}, nil
 }
@@ -947,7 +1016,7 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 	if input.Size == nil || *input.Size <= originalSize {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if meta.AttachedInstance != "" && meta.State == "in-use" {
+	if (meta.AttachedInstance != "" && meta.State == "in-use") || meta.State == string(ebsprovider.VolumeStateCreating) {
 		return nil, errors.New(awserrors.ErrorIncorrectState)
 	}
 	originalType := meta.VolumeType
@@ -1014,6 +1083,14 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 // is always a metadata-only clear, never a QMP call. Errors from either step
 // are returned, not swallowed.
 func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error {
+	// Clearing the attachment would overwrite a recorded deletion, so a volume
+	// already owed is left alone: the reclaimer owns it from here, and resetting
+	// it to available would let a second teardown run against the same data.
+	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
+	if err == nil && meta.State == volumeStateDeleting {
+		return nil
+	}
+
 	if err := s.UpdateVolumeState(accountID, volumeID, "available", "", ""); err != nil {
 		// No metadata doc means the volume is already gone, per GetVolume's own
 		// contract, so absence here is success, not a teardown failure.
@@ -1022,7 +1099,7 @@ func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeI
 		}
 		return fmt.Errorf("clear attachment before terminate delete: %w", err)
 	}
-	_, err := s.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: &volumeID}, accountID)
+	_, err = s.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: &volumeID}, accountID)
 	return err
 }
 
@@ -1070,6 +1147,11 @@ func (s *VolumeServiceImpl) ForceDetachVolume(ctx context.Context, input *ec2.De
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}
 
+	// Clearing would also make a volume still being prepared available.
+	if meta.State == string(ebsprovider.VolumeStateCreating) {
+		return nil, errors.New(awserrors.ErrorIncorrectState)
+	}
+
 	previous := meta.AttachedInstance
 	if err := s.UpdateVolumeState(accountID, volumeID, "available", "", ""); err != nil {
 		slog.ErrorContext(ctx, "ForceDetachVolume: failed to clear attachment", "volumeId", volumeID, "err", err)
@@ -1085,8 +1167,17 @@ func (s *VolumeServiceImpl) ForceDetachVolume(ctx context.Context, input *ec2.De
 	}, nil
 }
 
-// DeleteVolume deletes an EBS volume: validates state, asks the EBS provider to
-// destroy the backing data, then removes the control-plane metadata document.
+// DeleteVolume records a durable obligation to destroy an EBS volume and
+// returns, matching AWS: DeleteVolume's output is an empty shape and the
+// documented state machine has the volume "remain in the deleting state for
+// several minutes". It validates, decides every AWS-returnable error, moves the
+// volume to "deleting", and leaves the object teardown to VolumeReclaimReaper.
+//
+// The caller never waits on data. Object deletion costs one round trip per
+// object, so the old synchronous form made this call's latency a function of
+// the volume's size: no timeout can be both short enough for a control-plane
+// request and long enough for a large volume, and the overrun contributed no
+// error a caller could act on.
 func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, accountID string) (*ec2.DeleteVolumeOutput, error) {
 	if input == nil || input.VolumeId == nil || *input.VolumeId == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -1113,6 +1204,14 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 	}
 
+	// The obligation is already recorded, so this request has nothing to add.
+	// That makes a tenant's retry and DeleteOnTermination's own delete for the
+	// same volume collapse into one, rather than racing each other's teardown.
+	if meta.State == volumeStateDeleting {
+		slog.InfoContext(ctx, "DeleteVolume: already deleting", "volumeId", volumeID)
+		return &ec2.DeleteVolumeOutput{}, nil
+	}
+
 	// An unattached volume is deletable. State must be "available" OR empty: a
 	// detach/terminate that failed to write back "available" leaves the State
 	// drifted to empty with no attachment, and gating on State=="available"
@@ -1127,19 +1226,16 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 	if err := s.checkVolumeHasNoSnapshots(ctx, volumeID); err != nil {
 		return nil, err
 	}
-	if err := s.provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{
-		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: meta.ProviderHandle,
-	}); err != nil {
-		slog.ErrorContext(ctx, "DeleteVolume: provider deletion failed", "volumeId", volumeID, "err", err)
-		// The terminate reaper retries this every two minutes and logs whatever
-		// it gets back, so a bare code makes a persistent fault unreadable.
-		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume %s: %v", volumeID, err)
-	}
-	if err := s.metadata.DeleteVolume(ctx, accountID, volumeID); err != nil {
-		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "delete volume metadata %s: %v", volumeID, err)
+
+	// Last write of the request, and the only one that can fail from here: the
+	// record is the obligation, so until this lands nothing is owed and the
+	// caller must not be told otherwise.
+	if err := s.UpdateVolumeState(accountID, volumeID, volumeStateDeleting, "", ""); err != nil {
+		slog.ErrorContext(ctx, "DeleteVolume: failed to record the deletion", "volumeId", volumeID, "err", err)
+		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "mark volume %s deleting: %v", volumeID, err)
 	}
 
-	slog.InfoContext(ctx, "DeleteVolume completed", "volumeId", volumeID)
+	slog.InfoContext(ctx, "DeleteVolume accepted", "volumeId", volumeID)
 
 	return &ec2.DeleteVolumeOutput{}, nil
 }

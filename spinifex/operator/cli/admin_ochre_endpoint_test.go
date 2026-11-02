@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
 )
 
@@ -271,6 +273,29 @@ func TestFormatEndpointRecord_AbsentIsMinimal(t *testing.T) {
 	require.Equal(t, 2, strings.Count(strings.TrimSpace(out), "\n")+1)
 }
 
+// copyCmd returns a copy of a package-level command for one test. The copy
+// still shares the original's flag set, so every flag is put back on cleanup;
+// otherwise a flag one test sets leaks into the next test, or the next -count.
+func copyCmd(t *testing.T, src *cobra.Command) cobra.Command {
+	t.Helper()
+	type saved struct {
+		value   string
+		changed bool
+	}
+	before := map[string]saved{}
+	src.Flags().VisitAll(func(f *pflag.Flag) { before[f.Name] = saved{f.Value.String(), f.Changed} })
+	t.Cleanup(func() {
+		src.Flags().VisitAll(func(f *pflag.Flag) {
+			b := before[f.Name]
+			if f.Value.String() != b.value {
+				require.NoError(t, f.Value.Set(b.value), "restore flag %s", f.Name)
+			}
+			f.Changed = b.changed
+		})
+	})
+	return *src
+}
+
 // withEndpointService swaps endpointServiceFn for one returning svc, so a Run
 // wrapper's real connect/validate/exit control flow runs without a daemon.
 func withEndpointService(t *testing.T, svc ochre.EndpointService, connErr error) {
@@ -290,7 +315,7 @@ func TestRunOchreEndpointEnsure_PrintsRecord(t *testing.T) {
 		ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting},
 	}, nil)
 
-	cmd := *ochreEndpointEnsureCmd
+	cmd := copyCmd(t, ochreEndpointEnsureCmd)
 	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
 
 	var out string
@@ -304,7 +329,7 @@ func TestRunOchreEndpointEnsure_PrintsRecord(t *testing.T) {
 func TestRunOchreEndpointEnsure_ConnectFailureExits1(t *testing.T) {
 	withEndpointService(t, nil, errors.New("dial nats: connection refused"))
 
-	cmd := *ochreEndpointEnsureCmd
+	cmd := copyCmd(t, ochreEndpointEnsureCmd)
 	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
 
 	code := withOchreExitCapture(t, func() { runOchreEndpointEnsure(&cmd, nil) })
@@ -314,7 +339,7 @@ func TestRunOchreEndpointEnsure_ConnectFailureExits1(t *testing.T) {
 func TestRunOchreEndpointEnsure_ServiceErrorExits1(t *testing.T) {
 	withEndpointService(t, &fakeEndpointService{ensureErr: errors.New("ResourceNotFoundException")}, nil)
 
-	cmd := *ochreEndpointEnsureCmd
+	cmd := copyCmd(t, ochreEndpointEnsureCmd)
 	require.NoError(t, cmd.Flags().Set("model-id", "no.such.model"))
 
 	code := withOchreExitCapture(t, func() { runOchreEndpointEnsure(&cmd, nil) })
@@ -326,7 +351,7 @@ func TestRunOchreEndpointDescribe_PrintsRecord(t *testing.T) {
 		{ModelID: testModelID, State: ochre.StateReady, InstanceID: "i-abc"},
 	}}, nil)
 
-	cmd := *ochreEndpointDescribeCmd
+	cmd := copyCmd(t, ochreEndpointDescribeCmd)
 	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
 
 	var out string
@@ -347,7 +372,7 @@ func TestRunOchreEndpointDescribe_DefaultAccountIsEmpty(t *testing.T) {
 	}}
 	withEndpointService(t, svc, nil)
 
-	cmd := *ochreEndpointDescribeCmd
+	cmd := copyCmd(t, ochreEndpointDescribeCmd)
 	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
 
 	withOchreExitCapture(t, func() {
@@ -367,7 +392,7 @@ func TestRunOchreEndpointDescribe_AccountFlagScopesLookup(t *testing.T) {
 	}}
 	withEndpointService(t, svc, nil)
 
-	cmd := *ochreEndpointDescribeCmd
+	cmd := copyCmd(t, ochreEndpointDescribeCmd)
 	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
 	require.NoError(t, cmd.Flags().Set("account", testAccountID))
 
@@ -384,7 +409,7 @@ func TestRunOchreEndpointDescribe_AccountFlagScopesLookup(t *testing.T) {
 func TestRunOchreEndpointDescribe_ErrorExits1(t *testing.T) {
 	withEndpointService(t, &fakeEndpointService{describeErr: errors.New("nats: timeout")}, nil)
 
-	cmd := *ochreEndpointDescribeCmd
+	cmd := copyCmd(t, ochreEndpointDescribeCmd)
 	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
 
 	code := withOchreExitCapture(t, func() { runOchreEndpointDescribe(&cmd, nil) })
@@ -415,7 +440,7 @@ func TestRunOchreEndpointDelete_ReportsTeardown(t *testing.T) {
 	svc := &fakeEndpointService{deleteRemoved: true}
 	withEndpointService(t, svc, nil)
 
-	cmd := *ochreEndpointDeleteCmd
+	cmd := copyCmd(t, ochreEndpointDeleteCmd)
 	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
 
 	var out string
@@ -435,7 +460,7 @@ func TestRunOchreEndpointDelete_NoRecordDoesNotClaimTeardown(t *testing.T) {
 	svc := &fakeEndpointService{deleteRemoved: false}
 	withEndpointService(t, svc, nil)
 
-	cmd := *ochreEndpointDeleteCmd
+	cmd := copyCmd(t, ochreEndpointDeleteCmd)
 	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
 
 	var out string
@@ -454,7 +479,7 @@ func TestRunOchreEndpointDelete_AccountFlagReachesInput(t *testing.T) {
 	svc := &fakeEndpointService{deleteRemoved: true}
 	withEndpointService(t, svc, nil)
 
-	cmd := *ochreEndpointDeleteCmd
+	cmd := copyCmd(t, ochreEndpointDeleteCmd)
 	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
 	require.NoError(t, cmd.Flags().Set("account", testAccountID))
 
@@ -469,7 +494,7 @@ func TestRunOchreEndpointDelete_AccountFlagReachesInput(t *testing.T) {
 func TestRunOchreEndpointDelete_ErrorExits1(t *testing.T) {
 	withEndpointService(t, &fakeEndpointService{deleteErr: errors.New("ModelNotReadyException")}, nil)
 
-	cmd := *ochreEndpointDeleteCmd
+	cmd := copyCmd(t, ochreEndpointDeleteCmd)
 	require.NoError(t, cmd.Flags().Set("model-id", testModelID))
 
 	code := withOchreExitCapture(t, func() { runOchreEndpointDelete(&cmd, nil) })

@@ -707,7 +707,6 @@ func imagePullInstanceType(t *testing.T, fix *Fixture) (instanceType, arch strin
 func createImagePullVolume(t *testing.T, fix *Fixture, az string, sizeGiB int, retain bool) string {
 	t.Helper()
 
-	// e2e:allow-create
 	out, err := fix.AWS.EC2.CreateVolume(&ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String(az),
 		Size:             aws.Int64(int64(sizeGiB)),
@@ -763,7 +762,6 @@ func createImagePullVolume(t *testing.T, fix *Fixture, az string, sizeGiB int, r
 func launchImagePullRootInstance(t *testing.T, fix *Fixture, ami, instType, keyName, subnetID, sgID string, rootGiB int, retain bool) string {
 	t.Helper()
 
-	// e2e:allow-create
 	out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
 		ImageId:          aws.String(ami),
 		InstanceType:     aws.String(instType),

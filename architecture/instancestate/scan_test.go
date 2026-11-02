@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	daemonPath = "github.com/mulgadc/spinifex/spinifex/daemon"
+	daemonPath = "github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	vmPath     = "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	daemonDir  = "spinifex/daemon"
+	daemonDir  = "spinifex/runtime/daemon"
 	vmDir      = "spinifex/runtime/compute/vm"
 )
 
@@ -69,12 +69,12 @@ var literals = set(`"spinifex-instance-state"`, `"spinifex-terminated-instances"
 // ownerFiles define the symbols above. They are the implementation being
 // migrated, not consumers of it, and are listed so a deleted one is noticed.
 var ownerFiles = []string{
-	"spinifex/daemon/instance_membership.go",
-	"spinifex/daemon/instance_records.go",
-	"spinifex/daemon/instance_records_migrate.go",
-	"spinifex/daemon/instance_running_set.go",
-	"spinifex/daemon/jetstream.go",
-	"spinifex/daemon/local_state.go",
+	"spinifex/runtime/daemon/instance_membership.go",
+	"spinifex/runtime/daemon/instance_records.go",
+	"spinifex/runtime/daemon/instance_records_migrate.go",
+	"spinifex/runtime/daemon/instance_running_set.go",
+	"spinifex/runtime/daemon/jetstream.go",
+	"spinifex/runtime/daemon/local_state.go",
 	"spinifex/runtime/compute/vm/record.go",
 }
 

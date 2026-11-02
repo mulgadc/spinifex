@@ -34,10 +34,10 @@ func (k *interleavingKV) Get(ctx context.Context, key string) (jetstream.KeyValu
 	return entry, err
 }
 
-// UpdateKVRecordTags reads the record and puts it back without a revision
-// check. A second tag write and a non-tag record change that both commit
-// between that read and that write are reverted, and every call reports success.
-func TestCurrentBehaviour_Tagging_RecordMirrorRevertsInterleavedWrites(t *testing.T) {
+// UpdateKVRecordTags commits at the revision it read and retries on conflict,
+// so a tag write and a non-tag record change that commit between its read and
+// its write both survive alongside its own tag.
+func TestCurrentBehaviour_Tagging_RecordMirrorKeepsInterleavedWrites(t *testing.T) {
 	const acct, id = "123456789012", "sg-0123456789abcdef0"
 	key := kvutil.AccountKey(acct, id)
 	seed, err := json.Marshal(tagMirrorRecord{Name: "original", Tags: map[string]string{}})
@@ -60,6 +60,6 @@ func TestCurrentBehaviour_Tagging_RecordMirrorRevertsInterleavedWrites(t *testin
 	require.NoError(t, err)
 	var final tagMirrorRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &final))
-	assert.Equal(t, map[string]string{"a": "1"}, final.Tags, "the interleaved tag b is lost")
-	assert.Equal(t, "original", final.Name, "the interleaved rename is reverted")
+	assert.Equal(t, map[string]string{"a": "1", "b": "2"}, final.Tags, "both tag writes survive")
+	assert.Equal(t, "renamed", final.Name, "the interleaved rename survives")
 }

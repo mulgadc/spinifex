@@ -78,6 +78,31 @@ type ManifestMeta struct {
 	Size         int64     `json:"size"`
 	PushedAt     time.Time `json:"pushedAt"`
 	ChildDigests []string  `json:"childDigests,omitempty"`
+	// SubjectDigest and ArtifactType are set only for manifests that declare a
+	// subject, and feed the OCI referrers listing for that subject.
+	SubjectDigest string            `json:"subjectDigest,omitempty"`
+	ArtifactType  string            `json:"artifactType,omitempty"`
+	Annotations   map[string]string `json:"annotations,omitempty"`
+}
+
+// ReferrerDescriptor is one entry of a subject's referrers listing: the OCI
+// descriptor of a manifest that names the subject.
+type ReferrerDescriptor struct {
+	MediaType    string            `json:"mediaType"`
+	Digest       string            `json:"digest"`
+	Size         int64             `json:"size"`
+	ArtifactType string            `json:"artifactType,omitempty"`
+	Annotations  map[string]string `json:"annotations,omitempty"`
+}
+
+func (m ManifestMeta) referrerDescriptor() ReferrerDescriptor {
+	return ReferrerDescriptor{
+		MediaType:    m.MediaType,
+		Digest:       m.Digest,
+		Size:         m.Size,
+		ArtifactType: m.ArtifactType,
+		Annotations:  m.Annotations,
+	}
 }
 
 // UploadState tracks an in-progress chunked blob upload. The sha256 hash state
@@ -123,6 +148,10 @@ type MetaStore interface {
 	PutManifestMeta(ctx context.Context, accountID, repo string, meta ManifestMeta) error
 	GetManifestMeta(ctx context.Context, accountID, repo, digest string) (ManifestMeta, error)
 	DeleteManifestMeta(ctx context.Context, accountID, repo, digest string) error
+
+	// ListReferrers returns the manifests in repo that declare subjectDigest as
+	// their subject, ordered by digest. A subject with none yields an empty slice.
+	ListReferrers(ctx context.Context, accountID, repo, subjectDigest string) ([]ReferrerDescriptor, error)
 
 	PutUpload(ctx context.Context, accountID, uploadID string, state UploadState) (uint64, error)
 	GetUpload(ctx context.Context, accountID, uploadID string) (UploadState, uint64, error)
@@ -234,11 +263,11 @@ func (s *KVMetaStore) DeleteRepo(ctx context.Context, accountID, repo string) er
 		}
 		return err
 	}
-	tagsPrefix, manifestsPrefix := KVTagsPrefix(repo), KVManifestsPrefix(repo)
+	tagsPrefix, manifestsPrefix, referrersPrefix := KVTagsPrefix(repo), KVManifestsPrefix(repo), KVReferrersPrefix(repo)
 	metaKey, policyKey, lifecycleKey := KVRepoMetaKey(repo), KVRepoPolicyKey(repo), KVLifecyclePolicyKey(repo)
 	for _, k := range keys {
 		if k == metaKey || k == policyKey || k == lifecycleKey ||
-			strings.HasPrefix(k, tagsPrefix) || strings.HasPrefix(k, manifestsPrefix) {
+			strings.HasPrefix(k, tagsPrefix) || strings.HasPrefix(k, manifestsPrefix) || strings.HasPrefix(k, referrersPrefix) {
 			if err := kv.Delete(ctx, k); err != nil {
 				return mapKVErr(err)
 			}
@@ -415,8 +444,53 @@ func (s *KVMetaStore) PutManifestMeta(ctx context.Context, accountID, repo strin
 	if err != nil {
 		return err
 	}
-	_, err = kv.Put(ctx, KVManifestKey(repo, meta.Digest), data)
+	if _, err = kv.Put(ctx, KVManifestKey(repo, meta.Digest), data); err != nil {
+		return err
+	}
+	if meta.SubjectDigest == "" {
+		return nil
+	}
+	entry, err := json.Marshal(meta.referrerDescriptor())
+	if err != nil {
+		return err
+	}
+	_, err = kv.Put(ctx, KVReferrerKey(repo, meta.SubjectDigest, meta.Digest), entry)
 	return err
+}
+
+func (s *KVMetaStore) ListReferrers(ctx context.Context, accountID, repo, subjectDigest string) ([]ReferrerDescriptor, error) {
+	kv, err := s.bucket(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return []ReferrerDescriptor{}, nil
+		}
+		return nil, err
+	}
+	prefix := KVSubjectReferrersPrefix(repo, subjectDigest)
+	out := []ReferrerDescriptor{}
+	for _, k := range keys {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := kv.Get(ctx, k)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		var d ReferrerDescriptor
+		if err := json.Unmarshal(entry.Value(), &d); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Digest < out[j].Digest })
+	return out, nil
 }
 
 func (s *KVMetaStore) GetManifestMeta(ctx context.Context, accountID, repo, digest string) (ManifestMeta, error) {
@@ -440,8 +514,18 @@ func (s *KVMetaStore) DeleteManifestMeta(ctx context.Context, accountID, repo, d
 	if err != nil {
 		return err
 	}
-	if _, err := kv.Get(ctx, KVManifestKey(repo, digest)); err != nil {
+	entry, err := kv.Get(ctx, KVManifestKey(repo, digest))
+	if err != nil {
 		return mapKVErr(err)
+	}
+	var m ManifestMeta
+	if err := json.Unmarshal(entry.Value(), &m); err != nil {
+		return err
+	}
+	if m.SubjectDigest != "" {
+		if err := kv.Delete(ctx, KVReferrerKey(repo, m.SubjectDigest, digest)); err != nil {
+			return mapKVErr(err)
+		}
 	}
 	return kv.Delete(ctx, KVManifestKey(repo, digest))
 }
@@ -736,6 +820,19 @@ func (m *MemoryMetaStore) DeleteManifestMeta(_ context.Context, accountID, repo,
 	}
 	delete(m.manifests[accountID], key)
 	return nil
+}
+
+func (m *MemoryMetaStore) ListReferrers(_ context.Context, accountID, repo, subjectDigest string) ([]ReferrerDescriptor, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []ReferrerDescriptor{}
+	for k, meta := range m.manifests[accountID] {
+		if r, _, ok := strings.Cut(k, "|"); ok && r == repo && meta.SubjectDigest == subjectDigest {
+			out = append(out, meta.referrerDescriptor())
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Digest < out[j].Digest })
+	return out, nil
 }
 
 func (m *MemoryMetaStore) PutUpload(_ context.Context, accountID, uploadID string, state UploadState) (uint64, error) {

@@ -1,8 +1,10 @@
 package viperblock
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -27,7 +29,9 @@ func TestProviderHandlers_CreateVolume_LeavesNoLocalState(t *testing.T) {
 	cfg.SecretKey = fixture.SecretKey
 	nc := startProviderSubjects(t, cfg, natsURL)
 
-	const volumeName = "vol-createlocalstate01"
+	// The predastore fixture outlives the test, so a fixed name would make a
+	// repeat run (-count) take the already-exists path instead of creating.
+	volumeName := "vol-createlocalstate-" + strings.ToLower(rand.Text())
 	body := marshalRequest(t, map[string]any{
 		"schema_version": ebsprovider.SchemaVersion,
 		"volume_id":      volumeName,

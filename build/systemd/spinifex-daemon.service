@@ -1,10 +1,10 @@
-# spinifex-unit-version: 3
+# spinifex-unit-version: 5
 [Unit]
 Description=Spinifex Daemon (VM Orchestration)
 PartOf=spinifex.target
-After=spinifex-nats.service spinifex-viperblock.service openvswitch-switch.service ovn-controller.service openvswitch-ipsec.service
-# Wants (not Requires): stay bootable when openvswitch-ipsec is absent
-Wants=openvswitch-ipsec.service
+After=spinifex-nats.service spinifex-viperblock.service ovsdb-server.service ovs-vswitchd.service ovn-controller.service openvswitch-ipsec.service spinifex-hostnet.service
+# Wants (not Requires): boot without openvswitch-ipsec, survive OVS restarts via hostnet
+Wants=openvswitch-ipsec.service spinifex-hostnet.service
 
 [Service]
 EnvironmentFile=-/etc/spinifex/telemetry.env
@@ -14,6 +14,7 @@ Type=simple
 Slice=spinifex-system.slice
 User=spinifex-daemon
 Group=spinifex
+ExecStartPre=/usr/local/bin/spx admin hostnet check
 ExecStart=/usr/local/bin/spx service spinifex start
 Restart=on-failure
 RestartSec=5

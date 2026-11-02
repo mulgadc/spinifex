@@ -3,10 +3,10 @@ package cli
 import (
 	"context"
 	"fmt"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/gateway"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/spf13/cobra"
 )
 
@@ -22,7 +22,7 @@ func runAccountListRemote(cmd *cobra.Command) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), adminRequestTimeout)
 	defer cancel()
 
-	var out gateway.ListAccountsResponse
+	var out operatorv1.ListAccountsResponse
 	if err := callAdmin(ctx, target, "ListAccounts", struct{}{}, &out); err != nil {
 		return err
 	}
@@ -33,13 +33,13 @@ func runAccountListRemote(cmd *cobra.Command) error {
 
 // accountSummaries adapts the local listing to the shape the remote one
 // returns, so both paths print through one function and cannot drift.
-func accountSummaries(accounts []*handlers_iam.Account) []gateway.AccountSummary {
-	summaries := make([]gateway.AccountSummary, 0, len(accounts))
+func accountSummaries(accounts []*iamdomain.Account) []operatorv1.AccountSummary {
+	summaries := make([]operatorv1.AccountSummary, 0, len(accounts))
 	for _, account := range accounts {
 		if account == nil {
 			continue
 		}
-		summaries = append(summaries, gateway.AccountSummary{
+		summaries = append(summaries, operatorv1.AccountSummary{
 			AccountID:   account.AccountID,
 			AccountName: account.AccountName,
 			Status:      account.Status,
@@ -49,7 +49,7 @@ func accountSummaries(accounts []*handlers_iam.Account) []gateway.AccountSummary
 	return summaries
 }
 
-func printAccountTable(accounts []gateway.AccountSummary) {
+func printAccountTable(accounts []operatorv1.AccountSummary) {
 	if len(accounts) == 0 {
 		fmt.Println("No accounts found.")
 		return

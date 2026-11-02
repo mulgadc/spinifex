@@ -48,7 +48,7 @@ func IPSecCertPaths(configDir string) (certPath, keyPath string) {
 // GenerateIPSecPeerCert issues an IKEv2 peer certificate for this node signed
 // by the existing cluster CA. The cert carries the IPSec-IKE EKU so strongSwan
 // accepts it. The dnsName SAN must equal the OVS chassis-id (system-id).
-func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP string) error {
+func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP string, libreswan bool) error {
 	if hostname == "" {
 		return fmt.Errorf("ipsec peer cert: hostname required")
 	}
@@ -115,8 +115,11 @@ func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP st
 		return fmt.Errorf("ipsec peer cert: write key: %w", err)
 	}
 
-	// strongSwan 6.0 only loads CAs placed in /etc/ipsec.d/cacerts at startup;
-	// per-conn cacert= references are insufficient. Install the cluster CA there.
+	// strongSwan 6.0 only loads CAs placed in /etc/ipsec.d/cacerts at startup.
+	// On libreswan ovs-monitor-ipsec imports the CA into NSS from other_config.
+	if libreswan {
+		return nil
+	}
 	if err := installCAIntoCharonTrustStore(caCertPath); err != nil {
 		return fmt.Errorf("ipsec peer cert: install CA into charon trust store: %w", err)
 	}

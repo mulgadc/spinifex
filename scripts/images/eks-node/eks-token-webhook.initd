@@ -25,7 +25,7 @@ error_log="/dev/console"
 if [ -f /etc/spinifex-eks/first-boot.env ]; then
     # shellcheck disable=SC1091
     . /etc/spinifex-eks/first-boot.env
-    export EKS_GATEWAY_URL EKS_GATEWAY_CA EKS_ACCESS_KEY EKS_SECRET_KEY EKS_REGION EKS_ACCOUNT_ID EKS_CLUSTER_NAME
+    export EKS_GATEWAY_URL EKS_GATEWAY_CA EKS_ACCESS_KEY EKS_SECRET_KEY EKS_REGION EKS_ACCOUNT_ID EKS_CLUSTER_NAME EKS_WEBHOOK_READY_ADDR
 fi
 
 depend() {

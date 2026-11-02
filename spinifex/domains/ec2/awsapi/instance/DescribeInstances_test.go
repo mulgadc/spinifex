@@ -11,8 +11,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -751,9 +751,9 @@ func TestEnrichInstanceProfileIDs_CachesPerARN(t *testing.T) {
 	arn := "arn:aws:iam::123456789012:instance-profile/shared"
 	var calls int
 	svc := &fakeIAMService{
-		resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
+		resolveFn: func(_, nameOrARN string) (*iamdomain.InstanceProfile, error) {
 			calls++
-			return &handlers_iam.InstanceProfile{ARN: nameOrARN, InstanceProfileID: "AIPAEXAMPLE"}, nil
+			return &iamdomain.InstanceProfile{ARN: nameOrARN, InstanceProfileID: "AIPAEXAMPLE"}, nil
 		},
 	}
 
@@ -771,11 +771,11 @@ func TestEnrichInstanceProfileIDs_ResolveErrorLeavesIdEmpty(t *testing.T) {
 	failingARN := "arn:aws:iam::123456789012:instance-profile/missing"
 	okARN := "arn:aws:iam::123456789012:instance-profile/present"
 	svc := &fakeIAMService{
-		resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
+		resolveFn: func(_, nameOrARN string) (*iamdomain.InstanceProfile, error) {
 			if nameOrARN == failingARN {
 				return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 			}
-			return &handlers_iam.InstanceProfile{ARN: nameOrARN, InstanceProfileID: "AIPAOK"}, nil
+			return &iamdomain.InstanceProfile{ARN: nameOrARN, InstanceProfileID: "AIPAOK"}, nil
 		},
 	}
 

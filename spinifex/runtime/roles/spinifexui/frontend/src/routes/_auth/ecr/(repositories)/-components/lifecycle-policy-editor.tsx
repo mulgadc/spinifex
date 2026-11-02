@@ -2,6 +2,11 @@ import type { LifecyclePolicyPreviewResult } from "@aws-sdk/client-ecr"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useState } from "react"
 
+import {
+  type DataColumn,
+  DataTable,
+  type SortState,
+} from "@/components/data-table"
 import { Button } from "@/components/ui/button"
 import { JsonEditor } from "@/components/ui/json-editor"
 import { formatJson, isValidJson } from "@/lib/json"
@@ -12,6 +17,49 @@ import {
   usePutLifecyclePolicy,
 } from "@/mutations/ecr"
 import { ecrLifecyclePolicyQueryOptions } from "@/queries/ecr"
+
+const PREVIEW_COLUMNS: DataColumn<LifecyclePolicyPreviewResult>[] = [
+  {
+    id: "tags",
+    header: "Tags",
+    sortValue: (result) => result.imageTags?.join(", "),
+    cell: (result) =>
+      result.imageTags && result.imageTags.length > 0
+        ? result.imageTags.join(", ")
+        : "<untagged>",
+  },
+  {
+    id: "digest",
+    header: "Digest",
+    sortValue: (result) => result.imageDigest,
+    hideBelow: "sm",
+    cell: (result) => (
+      <span className="font-mono text-xs" title={result.imageDigest}>
+        {result.imageDigest?.slice(0, 19)}…
+      </span>
+    ),
+  },
+  {
+    id: "pushed",
+    header: "Pushed",
+    sortValue: (result) => result.imagePushedAt?.getTime(),
+    hideBelow: "md",
+    cell: (result) => (
+      <span className="tabular-nums">
+        {formatDateTime(result.imagePushedAt)}
+      </span>
+    ),
+  },
+  {
+    id: "rule",
+    header: "Rule",
+    sortValue: (result) => result.appliedRulePriority,
+    align: "end",
+    cell: (result) => (
+      <span className="tabular-nums">{result.appliedRulePriority}</span>
+    ),
+  },
+]
 
 interface LifecyclePolicyEditorProps {
   repositoryName: string
@@ -54,6 +102,7 @@ export function LifecyclePolicyEditor({
   const deletePolicy = useDeleteLifecyclePolicy()
   const preview = usePreviewLifecyclePolicy()
   const [draft, setDraft] = useState(() => toDraft(policyText))
+  const [sort, setSort] = useState<SortState>()
 
   // Re-seed the editor when the stored policy changes (save/delete invalidates
   // the query), so the textarea tracks the server document.
@@ -153,42 +202,15 @@ export function LifecyclePolicyEditor({
             Preview: {results.length} image
             {results.length === 1 ? "" : "s"} would expire
           </h3>
-          {results.length > 0 ? (
-            <div className="overflow-x-auto rounded-lg border">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-muted-foreground">
-                    <th className="px-4 py-2 font-medium">Tags</th>
-                    <th className="px-4 py-2 font-medium">Digest</th>
-                    <th className="px-4 py-2 font-medium">Pushed</th>
-                    <th className="px-4 py-2 font-medium">Rule</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {results.map((r: LifecyclePolicyPreviewResult) => (
-                    <tr className="border-b last:border-0" key={r.imageDigest}>
-                      <td className="px-4 py-2">
-                        {r.imageTags && r.imageTags.length > 0
-                          ? r.imageTags.join(", ")
-                          : "<untagged>"}
-                      </td>
-                      <td className="px-4 py-2 font-mono text-xs">
-                        {r.imageDigest?.slice(0, 19)}…
-                      </td>
-                      <td className="px-4 py-2 text-xs">
-                        {formatDateTime(r.imagePushedAt)}
-                      </td>
-                      <td className="px-4 py-2">{r.appliedRulePriority}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="text-muted-foreground">
-              No images match this policy.
-            </p>
-          )}
+          <DataTable
+            caption="Images the policy would expire"
+            columns={PREVIEW_COLUMNS}
+            empty="No images match this policy."
+            getRowId={(result) => result.imageDigest ?? ""}
+            onSortChange={setSort}
+            rows={results}
+            sort={sort}
+          />
         </div>
       )}
     </div>

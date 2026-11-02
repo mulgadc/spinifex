@@ -48,7 +48,7 @@ func newLeaderBucket(js jetstream.JetStream) *kvstore.Bucket {
 // EndpointKey returns the KV key for accountID's modelID endpoint record.
 // Model IDs contain ':' (e.g. "meta.llama3-2-1b-instruct-v1:0"), which NATS
 // rejects in a KV key, so the segment is base64url-encoded, mirroring
-// gateway_bedrock's weightsKey.
+// weightsKey.
 func EndpointKey(accountID, modelID string) string {
 	return accountID + "/" + base64.RawURLEncoding.EncodeToString([]byte(modelID))
 }

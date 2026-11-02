@@ -155,8 +155,11 @@ Restarting the daemon is what re-arms it: the node rebuilds its peer list from t
 
 `disable` removes Spinifex's own table and the peer file and leaves every other nftables table alone. It is idempotent, and it is the recovery path — it runs even on a node with no policy installed, so it cannot leave you with a node you can neither arm nor disarm.
 
+`disable` leaves `table inet spinifex_conntrack` loaded, and the boot-time unit loads it on every node whether or not the policy is armed. It accepts everything and exists only to keep connection tracking running. Without it, a connection opened while the policy is off, such as an OVN RAFT link formed during that window, is first seen mid-stream when the policy comes back, and its replies are dropped as new connections. Do not delete it.
+
 > [!WARNING]
 > Do not flush the whole nftables ruleset to clear the policy. The VPC daemon writes SNAT and per-elastic-IP forward rules into the `ip nat` and `ip filter` tables and reinstalls them only when it starts, so `nft flush ruleset` breaks elastic IPs silently until the next `systemctl restart spinifex-vpcd`. Use `disable`, which only ever touches `inet spinifex_filter`.
+> On Oracle Linux with IPsec on, a flush also removes `inet spinifex_ipsec_guard`, so Geneve to a peer without an SA goes out in clear until the daemon puts the table back, within 60 seconds.
 
 ## The Files
 
@@ -170,6 +173,7 @@ Everything lives under `/etc/spinifex/firewall/`. Which files are safe to edit f
 | `open-ports.nft` | The apply helper — the formation window only | No. Reset closed on install and upgrade |
 | `custom.nft` | **You** — `trusted_ssh_peers` and anything else you add | **Yes.** Created once, never rewritten |
 | `mode` | `setup.sh` — whether the install path armed the policy | No |
+| `conntrack.nft` | `setup.sh` — the tracking table, loaded armed or not | No. Edits are overwritten |
 
 The daemon cannot write `/etc` itself, and a blanket `nft` grant would be root-equivalent, so changes go through `/usr/local/lib/spinifex/spinifex-firewall-apply` — a root helper that accepts a fixed set of verbs and re-validates every address handed to it.
 
@@ -189,10 +193,10 @@ Dropped packets are logged, rate-limited to five a minute, so this tells you whe
 sudo journalctl -k | grep 'spinifex-fw drop'
 ```
 
-An empty log with a connection still failing means the policy is not the cause. A node with no table loaded at all is not armed:
+An empty log with a connection still failing means the policy is not the cause. A node with no peer file is not armed, and its boot-time unit loads only the tracking table:
 
 ```bash
-systemctl is-enabled spinifex-firewall.service
+sudo test -e /etc/spinifex/firewall/peers.nft && echo armed || echo not armed
 ```
 
 ## Troubleshooting

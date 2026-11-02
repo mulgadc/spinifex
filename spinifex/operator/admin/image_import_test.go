@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -22,6 +21,10 @@ type recordingProvider struct {
 	publishes  []ebsprovider.PublishVolumeRequest
 	snapshots  []ebsprovider.CreateSnapshotRequest
 	publishURI string
+
+	// publishExport, when its Kind is set, replaces the nbd export built
+	// from publishURI.
+	publishExport ebsprovider.VolumeExport
 }
 
 func newRecordingProvider() *recordingProvider {
@@ -39,7 +42,11 @@ func (p *recordingProvider) PublishVolume(ctx context.Context, req ebsprovider.P
 	if _, err := p.MemoryProvider.PublishVolume(ctx, req); err != nil {
 		return nil, err
 	}
-	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, NBDURI: p.publishURI}, nil
+	export := ebsprovider.NewNBDExport(p.publishURI)
+	if p.publishExport.Kind != "" {
+		export = p.publishExport
+	}
+	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, Export: export}, nil
 }
 
 func (p *recordingProvider) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) error {
@@ -117,6 +124,32 @@ func TestImportImage_WriteFailureStillUnpublishes(t *testing.T) {
 		"a failed copy must not be snapshotted, and must still be unpublished")
 }
 
+// TestImportImage_BlockExportIsRefused covers a provider that publishes a host
+// block device: the import writes only through NBD, so it must fail without
+// copying and still release the export.
+func TestImportImage_BlockExportIsRefused(t *testing.T) {
+	var wroteTo string
+	stubWriteImage(t, nil, &wroteTo)
+	provider := newRecordingProvider()
+	provider.publishExport = ebsprovider.VolumeExport{
+		Kind:  ebsprovider.ExportKindBlock,
+		Block: &ebsprovider.BlockExport{DevicePath: "/dev/sdx", SizeBytes: 1 << 30},
+	}
+
+	err := ImportImage(context.Background(), provider, ImportOpts{
+		VolumeID:   "ami-import005",
+		NodeID:     "node-a",
+		SizeBytes:  1 << 30,
+		SourcePath: "/dev/null",
+		Snapshot:   true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"block" export`)
+	assert.Empty(t, wroteTo, "a block export must not reach the NBD writer")
+	assert.Equal(t, []string{"create", "publish", "unpublish"}, provider.calls,
+		"a refused export must not be snapshotted, and must still be unpublished")
+}
+
 // TestImportImage_NoSnapshotWhenNotAsked covers the weights-style import that
 // wants the volume but not an AMI snapshot.
 func TestImportImage_NoSnapshotWhenNotAsked(t *testing.T) {
@@ -150,23 +183,4 @@ func TestImportImage_RejectsIncompleteOpts(t *testing.T) {
 			assert.Empty(t, provider.calls, "nothing may be created before the options are checked")
 		})
 	}
-}
-
-// TestQemuNBDTarget_RewritesUnixForm locks the translation: the contract's
-// unix URI is not a form qemu accepts, so passing it through unchanged would
-// fail at the copy rather than here.
-func TestQemuNBDTarget_RewritesUnixForm(t *testing.T) {
-	socket := t.TempDir() + "/export.sock"
-	require.NoError(t, os.WriteFile(socket, nil, 0o600))
-
-	got, err := qemuNBDTarget("nbd:unix:" + socket)
-	require.NoError(t, err)
-	assert.Equal(t, "nbd+unix:///?socket="+socket, got)
-
-	got, err = qemuNBDTarget("nbd://10.0.0.5:10809")
-	require.NoError(t, err)
-	assert.Equal(t, "nbd://10.0.0.5:10809", got)
-
-	_, err = qemuNBDTarget("nbd:unix:" + t.TempDir() + "/absent.sock")
-	require.Error(t, err, "a socket that is not there must fail before qemu-img is run")
 }

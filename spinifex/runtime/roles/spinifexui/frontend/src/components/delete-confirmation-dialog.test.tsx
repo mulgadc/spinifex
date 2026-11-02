@@ -82,4 +82,55 @@ describe("DeleteConfirmationDialog", () => {
     )
     expect(screen.getByText("i-abc123")).toBeInTheDocument()
   })
+
+  it("waits for the typed phrase before it confirms", async () => {
+    const onConfirm = vi.fn()
+    const user = userEvent.setup()
+
+    render(
+      <DeleteConfirmationDialog
+        {...defaultProps}
+        confirmPhrase="delete"
+        onConfirm={onConfirm}
+      />,
+    )
+
+    const confirm = screen.getByRole("button", { name: "Delete" })
+
+    const field = screen.getByLabelText(
+      "To confirm, type “delete” in this field.",
+    )
+
+    expect(confirm).toBeDisabled()
+
+    await user.type(field, "delet")
+    await user.keyboard("{Enter}")
+    expect(onConfirm).not.toHaveBeenCalled()
+
+    await user.type(field, "e")
+    expect(confirm).toBeEnabled()
+
+    await user.keyboard("{Enter}")
+    expect(onConfirm).toHaveBeenCalledOnce()
+  })
+
+  it("confirms on Ctrl+Enter and cancels on Escape", async () => {
+    const onConfirm = vi.fn()
+    const onOpenChange = vi.fn()
+    const user = userEvent.setup()
+
+    render(
+      <DeleteConfirmationDialog
+        {...defaultProps}
+        onConfirm={onConfirm}
+        onOpenChange={onOpenChange}
+      />,
+    )
+
+    await user.keyboard("{Control>}{Enter}{/Control}")
+    expect(onConfirm).toHaveBeenCalledOnce()
+
+    await user.keyboard("{Escape}")
+    expect(onOpenChange).toHaveBeenCalledWith(false, expect.anything())
+  })
 })

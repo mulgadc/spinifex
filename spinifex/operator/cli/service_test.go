@@ -106,6 +106,7 @@ func TestRunNorthstarStartActivation(t *testing.T) {
 			assert.Equal(t, 1, stub.starts)
 			require.NotNil(t, startedConfig)
 			assert.Equal(t, tt.wantPath, startedConfig.ConfigPath)
+			assert.Equal(t, "node1", startedConfig.NodeName)
 		})
 	}
 }

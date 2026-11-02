@@ -314,7 +314,7 @@ func TestAPIMatrix(t *testing.T) {
 	probe.MonitoringInterval = aws.Int64(60)
 	probe.CopyTagsToSnapshot = aws.Bool(true)
 
-	created, err := f.AWS.RDS.CreateDBInstance(probe) //nolint:staticcheck // e2e:allow-create — the record the rejections below need
+	created, err := f.AWS.RDS.CreateDBInstance(probe) //nolint:staticcheck // The record the rejections below need.
 	require.NoError(t, err, "create-db-instance")
 	require.NotNil(t, created.DBInstance)
 	t.Cleanup(func() { deleteInstance(t, f, probeID) })

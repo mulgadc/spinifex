@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query"
-import { fireEvent, screen, waitFor } from "@testing-library/react"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
@@ -10,6 +10,12 @@ vi.mock("@/lib/awsClient", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(send)
+})
+
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal)
 })
 
 import {
@@ -54,13 +60,26 @@ function seed(
   return qc
 }
 
+// Detaching takes a policy's permissions away, so it waits for a confirm.
+async function detachConfirmed() {
+  fireEvent.click(screen.getByRole("button", { name: "Detach" }))
+  const dialog = await screen.findByRole("alertdialog")
+  fireEvent.click(within(dialog).getByRole("button", { name: "Detach" }))
+}
+
 describe("AttachedPoliciesPanel", () => {
-  it("lists the attached policies", () => {
+  it("lists the attached policies, each linking to its page", () => {
     renderWithClient(
       <AttachedPoliciesPanel kind="user" name={NAME} />,
       seed("user", [ATTACHED_ARN]),
     )
     expect(screen.getByText(ATTACHED_ARN)).toBeInTheDocument()
+    expect(
+      screen.getByRole("link", { name: "AttachedPolicy" }),
+    ).toHaveAttribute(
+      "href",
+      `/iam/list-policies/${encodeURIComponent(ATTACHED_ARN)}`,
+    )
   })
 
   it("shows an empty state with no attached policies", () => {
@@ -76,7 +95,7 @@ describe("AttachedPoliciesPanel", () => {
       <AttachedPoliciesPanel kind="user" name={NAME} />,
       seed("user", [ATTACHED_ARN]),
     )
-    fireEvent.click(screen.getByRole("button", { name: "Attach Policy" }))
+    fireEvent.click(screen.getByRole("button", { name: "Attach policy" }))
 
     expect(
       screen.getByRole("button", { name: /AvailablePolicy/ }),
@@ -91,7 +110,7 @@ describe("AttachedPoliciesPanel", () => {
       <AttachedPoliciesPanel kind="user" name={NAME} />,
       seed("user", [ATTACHED_ARN, AVAILABLE_ARN]),
     )
-    fireEvent.click(screen.getByRole("button", { name: "Attach Policy" }))
+    fireEvent.click(screen.getByRole("button", { name: "Attach policy" }))
 
     expect(
       screen.getByText("No policies available to attach."),
@@ -104,7 +123,7 @@ describe("AttachedPoliciesPanel", () => {
       <AttachedPoliciesPanel kind="user" name={NAME} />,
       seed("user", []),
     )
-    fireEvent.click(screen.getByRole("button", { name: "Attach Policy" }))
+    fireEvent.click(screen.getByRole("button", { name: "Attach policy" }))
     fireEvent.click(screen.getByRole("button", { name: /AvailablePolicy/ }))
 
     await waitFor(() => {
@@ -127,7 +146,7 @@ describe("AttachedPoliciesPanel", () => {
       <AttachedPoliciesPanel kind="user" name={NAME} />,
       seed("user", [ATTACHED_ARN]),
     )
-    fireEvent.click(screen.getByRole("button", { name: "Detach" }))
+    await detachConfirmed()
 
     await waitFor(() => {
       expect(send).toHaveBeenCalled()
@@ -138,6 +157,21 @@ describe("AttachedPoliciesPanel", () => {
     })
   })
 
+  it("does not detach when the confirm is cancelled", async () => {
+    renderWithClient(
+      <AttachedPoliciesPanel kind="user" name={NAME} />,
+      seed("user", [ATTACHED_ARN]),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Detach" }))
+    const dialog = await screen.findByRole("alertdialog")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    })
+    expect(send).not.toHaveBeenCalled()
+  })
+
   // A failed attach used to reject unhandled and collapse the select regardless.
   it("surfaces a failed attach and leaves the select open to retry", async () => {
     send.mockRejectedValue(new Error("Boom"))
@@ -145,7 +179,7 @@ describe("AttachedPoliciesPanel", () => {
       <AttachedPoliciesPanel kind="user" name={NAME} />,
       seed("user", []),
     )
-    fireEvent.click(screen.getByRole("button", { name: "Attach Policy" }))
+    fireEvent.click(screen.getByRole("button", { name: "Attach policy" }))
     fireEvent.click(screen.getByRole("button", { name: /AvailablePolicy/ }))
 
     await expect(
@@ -163,7 +197,7 @@ describe("AttachedPoliciesPanel", () => {
       <AttachedPoliciesPanel kind="user" name={NAME} />,
       seed("user", [ATTACHED_ARN]),
     )
-    fireEvent.click(screen.getByRole("button", { name: "Detach" }))
+    await detachConfirmed()
 
     await expect(
       screen.findByText("Failed to detach policy"),
@@ -179,7 +213,7 @@ describe("AttachedPoliciesPanel", () => {
       <AttachedPoliciesPanel kind="role" name={NAME} />,
       seed("role", []),
     )
-    fireEvent.click(screen.getByRole("button", { name: "Attach Policy" }))
+    fireEvent.click(screen.getByRole("button", { name: "Attach policy" }))
     fireEvent.click(screen.getByRole("button", { name: /AvailablePolicy/ }))
 
     await waitFor(() => {
@@ -197,7 +231,7 @@ describe("AttachedPoliciesPanel", () => {
       <AttachedPoliciesPanel kind="group" name={NAME} />,
       seed("group", [ATTACHED_ARN]),
     )
-    fireEvent.click(screen.getByRole("button", { name: "Detach" }))
+    await detachConfirmed()
 
     await waitFor(() => {
       expect(send).toHaveBeenCalled()

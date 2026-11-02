@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -65,26 +66,26 @@ const adminAccessPolicyDocument = `{"Version":"2012-10-17","Statement":[{"Effect
 func createTenantAccount(t *testing.T, gw *Gateway, name string) *PrincipalClients {
 	t.Helper()
 
-	acct, err := gw.Config.IAMService.CreateAccount(name)
+	acct, err := gwfix.DepsOf(gw.Config).IAM.CreateAccount(name)
 	require.NoError(t, err, "create account %s", name)
 
-	_, err = gw.Config.IAMService.CreateUser(acct.AccountID, &iam.CreateUserInput{
+	_, err = gwfix.DepsOf(gw.Config).IAM.CreateUser(acct.AccountID, &iam.CreateUserInput{
 		UserName: aws.String("root"),
 	})
 	require.NoError(t, err, "create user for account %s", name)
 
-	key, err := gw.Config.IAMService.CreateAccessKey(acct.AccountID, &iam.CreateAccessKeyInput{
+	key, err := gwfix.DepsOf(gw.Config).IAM.CreateAccessKey(acct.AccountID, &iam.CreateAccessKeyInput{
 		UserName: aws.String("root"),
 	})
 	require.NoError(t, err, "create access key for account %s", name)
 
-	policyOut, err := gw.Config.IAMService.CreatePolicy(acct.AccountID, &iam.CreatePolicyInput{
+	policyOut, err := gwfix.DepsOf(gw.Config).IAM.CreatePolicy(acct.AccountID, &iam.CreatePolicyInput{
 		PolicyName:     aws.String("AdministratorAccess"),
 		PolicyDocument: aws.String(adminAccessPolicyDocument),
 	})
 	require.NoError(t, err, "create policy for account %s", name)
 
-	_, err = gw.Config.IAMService.AttachUserPolicy(acct.AccountID, &iam.AttachUserPolicyInput{
+	_, err = gwfix.DepsOf(gw.Config).IAM.AttachUserPolicy(acct.AccountID, &iam.AttachUserPolicyInput{
 		UserName:  aws.String("root"),
 		PolicyArn: policyOut.Policy.Arn,
 	})
@@ -106,7 +107,7 @@ func createTenantAccount(t *testing.T, gw *Gateway, name string) *PrincipalClien
 // Left live in account_test.go: Step2 (instance scoping) and Step3 (volume
 // scoping) — checkInstanceOwnership, the actual cross-account gate for
 // stop/start/reboot/terminate/attach-volume/etc., runs daemon-side only after
-// a real vm.Manager lookup (daemon/daemon_handlers.go handleEC2Events), so it
+// a real vm.Manager lookup (runtime/daemon/daemon_handlers.go handleEC2Events), so it
 // cannot be exercised without a live guest. Step5 (snapshot scoping) needs a
 // real backing volume for CreateSnapshot (viperblock, out of DaemonLite's
 // scope) — only its cross-account DeleteSnapshot/CreateSnapshot-of-foreign-
@@ -296,23 +297,31 @@ func TestAccountScoping_Settings(t *testing.T) {
 	alpha := createTenantAccount(t, gw, "scoping-alpha")
 	beta := createTenantAccount(t, gw, "scoping-beta")
 
-	_, err := alpha.EC2.EnableEbsEncryptionByDefault(&ec2.EnableEbsEncryptionByDefaultInput{})
-	require.NoError(t, err, "alpha enable-ebs-encryption")
+	_, err := alpha.EC2.EnableSerialConsoleAccess(&ec2.EnableSerialConsoleAccessInput{})
+	require.NoError(t, err, "alpha enable-serial-console-access")
 
-	betaEnc, err := beta.EC2.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{})
-	require.NoError(t, err, "beta get-ebs-encryption")
-	assert.False(t, aws.BoolValue(betaEnc.EbsEncryptionByDefault), "alpha's encryption setting leaked to beta")
+	betaSerial, err := beta.EC2.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{})
+	require.NoError(t, err, "beta get-serial-console-access-status")
+	assert.False(t, aws.BoolValue(betaSerial.SerialConsoleAccessEnabled), "alpha's serial console setting leaked to beta")
 
 	// Independent toggle: enable beta, disable alpha.
-	_, err = beta.EC2.EnableEbsEncryptionByDefault(&ec2.EnableEbsEncryptionByDefaultInput{})
-	require.NoError(t, err, "beta enable-ebs-encryption")
-	_, err = alpha.EC2.DisableEbsEncryptionByDefault(&ec2.DisableEbsEncryptionByDefaultInput{})
-	require.NoError(t, err, "alpha disable-ebs-encryption")
+	_, err = beta.EC2.EnableSerialConsoleAccess(&ec2.EnableSerialConsoleAccessInput{})
+	require.NoError(t, err, "beta enable-serial-console-access")
+	_, err = alpha.EC2.DisableSerialConsoleAccess(&ec2.DisableSerialConsoleAccessInput{})
+	require.NoError(t, err, "alpha disable-serial-console-access")
 
-	alphaEnc, err := alpha.EC2.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{})
-	require.NoError(t, err, "alpha get-ebs-encryption")
-	betaEnc, err = beta.EC2.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{})
+	alphaSerial, err := alpha.EC2.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{})
+	require.NoError(t, err, "alpha get-serial-console-access-status")
+	betaSerial, err = beta.EC2.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{})
+	require.NoError(t, err, "beta get-serial-console-access-status")
+	assert.False(t, aws.BoolValue(alphaSerial.SerialConsoleAccessEnabled), "alpha serial console should be off")
+	assert.True(t, aws.BoolValue(betaSerial.SerialConsoleAccessEnabled), "beta serial console should be on")
+
+	// EBS encryption by default is the platform's posture, not an account
+	// setting: with no master key configured it reads false whatever alpha enabled.
+	_, err = alpha.EC2.EnableEbsEncryptionByDefault(&ec2.EnableEbsEncryptionByDefaultInput{})
+	require.NoError(t, err, "alpha enable-ebs-encryption")
+	betaEnc, err := beta.EC2.GetEbsEncryptionByDefault(&ec2.GetEbsEncryptionByDefaultInput{})
 	require.NoError(t, err, "beta get-ebs-encryption")
-	assert.False(t, aws.BoolValue(alphaEnc.EbsEncryptionByDefault), "alpha encryption should be off")
-	assert.True(t, aws.BoolValue(betaEnc.EbsEncryptionByDefault), "beta encryption should be on")
+	assert.False(t, aws.BoolValue(betaEnc.EbsEncryptionByDefault), "no key configured, so no volume is encrypted")
 }

@@ -175,7 +175,7 @@ func runGuestChurnDurability(t *testing.T, fix *Fixture) {
 		tgt := resolveGuestSSHTarget(t, fix, instanceID, keyPath)
 
 		harness.Step(t, "create-volume size=1 az=%s", az)
-		// e2e:allow-create — the sentinel volume is the subject under test.
+		// The sentinel volume is the subject under test.
 		createOut, err := fix.AWS.EC2.CreateVolume(&ec2.CreateVolumeInput{
 			AvailabilityZone: aws.String(az),
 			Size:             aws.Int64(1),
@@ -265,7 +265,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		harness.Detail(t, "guest_macs_before", strings.Join(setKeys(before), ","))
 
 		harness.Step(t, "create-network-interface subnet=%s", def.SubnetID)
-		// e2e:allow-create — the secondary ENI is the subject hot-plugged under test.
+		// The secondary ENI is the subject hot-plugged under test.
 		cniOut, err := c.EC2.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
 			SubnetId:    aws.String(def.SubnetID),
 			Groups:      []*string{aws.String(def.SGID)},

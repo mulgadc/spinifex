@@ -11,10 +11,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,13 +35,13 @@ const (
 // fakeIAMService implements profile and canonical role lookups.
 // Other methods nil-panic to surface unexpected calls.
 type fakeIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
-	resolveFn   func(accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error)
+	resolveFn   func(accountID, nameOrARN string) (*iamdomain.InstanceProfile, error)
 	canonicalFn func(accountID string, kind arn.IAMResourceType, name string) (string, error)
 }
 
-func (f *fakeIAMService) ResolveInstanceProfile(accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
+func (f *fakeIAMService) ResolveInstanceProfile(accountID, nameOrARN string) (*iamdomain.InstanceProfile, error) {
 	if f.resolveFn != nil {
 		return f.resolveFn(accountID, nameOrARN)
 	}
@@ -58,11 +58,11 @@ func (f *fakeIAMService) CanonicalResourceARN(accountID string, kind arn.IAMReso
 	return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
 }
 
-var _ handlers_iam.IAMService = (*fakeIAMService)(nil)
+var _ iamdomain.IAMService = (*fakeIAMService)(nil)
 
 // profileWithRole builds a resolved profile fixture pointing at the test role.
-func profileWithRole() *handlers_iam.InstanceProfile {
-	return &handlers_iam.InstanceProfile{
+func profileWithRole() *iamdomain.InstanceProfile {
+	return &iamdomain.InstanceProfile{
 		InstanceProfileName: testProfileNameApp,
 		InstanceProfileID:   testProfileIDApp,
 		AccountID:           testGwAccountID,
@@ -73,8 +73,8 @@ func profileWithRole() *handlers_iam.InstanceProfile {
 
 // profileNoRole builds a resolved profile fixture with no role attached.
 // resolveAndAuthorizeProfile must NOT invoke PassRole for this profile.
-func profileNoRole() *handlers_iam.InstanceProfile {
-	return &handlers_iam.InstanceProfile{
+func profileNoRole() *iamdomain.InstanceProfile {
+	return &iamdomain.InstanceProfile{
 		InstanceProfileName: testProfileNameOther,
 		InstanceProfileID:   testProfileIDOther,
 		AccountID:           testGwAccountID,
@@ -88,7 +88,7 @@ func profileNoRole() *handlers_iam.InstanceProfile {
 func TestResolveAndAuthorizeProfile_NameForm(t *testing.T) {
 	t.Parallel()
 	gotNameOrARN := ""
-	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*iamdomain.InstanceProfile, error) {
 		gotNameOrARN = nameOrARN
 		return profileWithRole(), nil
 	}}
@@ -112,7 +112,7 @@ func TestResolveAndAuthorizeProfile_NameForm(t *testing.T) {
 func TestResolveAndAuthorizeProfile_ArnForm(t *testing.T) {
 	t.Parallel()
 	gotNameOrARN := ""
-	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*iamdomain.InstanceProfile, error) {
 		gotNameOrARN = nameOrARN
 		return profileWithRole(), nil
 	}}
@@ -144,7 +144,7 @@ func TestResolveAndAuthorizeProfile_NilIAMService(t *testing.T) {
 
 func TestResolveAndAuthorizeProfile_NotFoundMapsToEC2Error(t *testing.T) {
 	t.Parallel()
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}}
 	_, err := resolveAndAuthorizeProfile(
@@ -157,7 +157,7 @@ func TestResolveAndAuthorizeProfile_NotFoundMapsToEC2Error(t *testing.T) {
 
 func TestResolveAndAuthorizeProfile_PassthroughOtherIAMError(t *testing.T) {
 	t.Parallel()
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}}
 	_, err := resolveAndAuthorizeProfile(
@@ -170,7 +170,7 @@ func TestResolveAndAuthorizeProfile_PassthroughOtherIAMError(t *testing.T) {
 
 func TestResolveAndAuthorizeProfile_PassRoleDenied(t *testing.T) {
 	t.Parallel()
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return profileWithRole(), nil
 	}}
 	check := func(string) error { return errors.New(awserrors.ErrorAccessDenied) }
@@ -183,7 +183,7 @@ func TestResolveAndAuthorizeProfile_PassRoleDenied(t *testing.T) {
 
 func TestResolveAndAuthorizeProfile_NoRoleSkipsPassRole(t *testing.T) {
 	t.Parallel()
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return profileNoRole(), nil
 	}}
 	checkCalled := false
@@ -265,7 +265,7 @@ func TestAssociateIamInstanceProfile_ProfileNotFound(t *testing.T) {
 
 func TestAssociateIamInstanceProfile_PassRoleDenied(t *testing.T) {
 	t.Parallel()
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return profileWithRole(), nil
 	}}
 	in := &ec2.AssociateIamInstanceProfileInput{
@@ -281,7 +281,7 @@ func TestAssociateIamInstanceProfile_PassRoleDenied(t *testing.T) {
 func TestAssociateIamInstanceProfile_NoResponders(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return profileNoRole(), nil
 	}}
 	in := &ec2.AssociateIamInstanceProfileInput{
@@ -299,7 +299,7 @@ func TestAssociateIamInstanceProfile_NoResponders(t *testing.T) {
 func TestAssociateIamInstanceProfile_Success(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return profileWithRole(), nil
 	}}
 	const instanceID = "i-assoc-success"
@@ -345,7 +345,7 @@ func TestAssociateIamInstanceProfile_Success(t *testing.T) {
 func TestAssociateIamInstanceProfile_DaemonAlreadyAssociated(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return profileNoRole(), nil
 	}}
 	const instanceID = "i-already-bound"
@@ -474,7 +474,7 @@ func TestReplaceIamInstanceProfileAssociation_MissingProfileSpec(t *testing.T) {
 func TestReplaceIamInstanceProfileAssociation_PassRoleDeniedBeforeBroadcast(t *testing.T) {
 	t.Parallel()
 	// nc=nil proves the call is rejected before any NATS dispatch.
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return profileWithRole(), nil
 	}}
 	check := func(string) error { return errors.New(awserrors.ErrorAccessDenied) }
@@ -489,7 +489,7 @@ func TestReplaceIamInstanceProfileAssociation_PassRoleDeniedBeforeBroadcast(t *t
 func TestReplaceIamInstanceProfileAssociation_Success(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return profileWithRole(), nil
 	}}
 	const oldID = "iip-assoc-old00000000001"
@@ -530,7 +530,7 @@ func TestReplaceIamInstanceProfileAssociation_Success(t *testing.T) {
 func TestReplaceIamInstanceProfileAssociation_NoSuchAssociation(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return profileNoRole(), nil
 	}}
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.replace", func(msg *nats.Msg) {
@@ -700,7 +700,7 @@ func TestResolveAndAuthorizeProfile_CanonicalRoleARN(t *testing.T) {
 			t.Parallel()
 			storedARN := "arn:aws:iam::111122223333:role" + path + "app-role"
 			svc := &fakeIAMService{
-				resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+				resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 					return profileWithRole(), nil
 				},
 				canonicalFn: func(accountID string, kind arn.IAMResourceType, name string) (string, error) {
@@ -729,7 +729,7 @@ func TestResolveAndAuthorizeProfile_CanonicalLookupError(t *testing.T) {
 		t.Run(lookupErr.Error(), func(t *testing.T) {
 			t.Parallel()
 			svc := &fakeIAMService{
-				resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+				resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 					return profileWithRole(), nil
 				},
 				canonicalFn: func(string, arn.IAMResourceType, string) (string, error) {
@@ -746,4 +746,28 @@ func TestResolveAndAuthorizeProfile_CanonicalLookupError(t *testing.T) {
 			require.Nil(t, profile)
 		})
 	}
+}
+
+// Current behaviour, not a statement of what AWS does: a profile whose role no
+// longer exists surfaces the store's NoSuchEntity unchanged and PassRole is
+// never evaluated.
+func TestResolveAndAuthorizeProfile_DanglingRoleSurfacesNoSuchEntityBeforePassRole(t *testing.T) {
+	t.Parallel()
+	svc := &fakeIAMService{
+		resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) { return profileWithRole(), nil },
+		canonicalFn: func(string, arn.IAMResourceType, string) (string, error) {
+			return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
+		},
+	}
+	checkCalled := false
+	check := func(string) error {
+		checkCalled = true
+		return nil
+	}
+	_, err := resolveAndAuthorizeProfile(
+		&ec2.IamInstanceProfileSpecification{Name: aws.String(testProfileNameApp)},
+		svc, testGwAccountID, check)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+	assert.False(t, checkCalled, "a dangling role is reported without evaluating iam:PassRole")
 }

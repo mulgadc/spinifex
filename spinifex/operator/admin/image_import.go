@@ -5,10 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"os"
-	"os/exec"
-	"strconv"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
@@ -71,7 +67,12 @@ func ImportImage(ctx context.Context, provider ebsprovider.EBSProvider, opts Imp
 		return fmt.Errorf("import: publish volume %s: %w", opts.VolumeID, err)
 	}
 
-	writeErr := writeImage(ctx, opts.SourcePath, published.NBDURI, opts.Progress)
+	var writeErr error
+	if published.Export.Kind == ebsprovider.ExportKindNBD && published.Export.NBD != nil {
+		writeErr = writeImage(ctx, opts.SourcePath, published.Export.NBD.NBDURI, opts.Progress)
+	} else {
+		writeErr = fmt.Errorf("volume is published as a %q export; image import writes only through nbd", published.Export.Kind)
+	}
 
 	// Unpublish regardless: a volume left published cannot be snapshotted or
 	// attached, and on the failure path it would strand the export too.
@@ -104,58 +105,4 @@ func ImportImage(ctx context.Context, provider ebsprovider.EBSProvider, opts Imp
 
 // writeImage is the bulk copy step, indirected so a test can drive the verb
 // sequence around it without a live NBD export to write to.
-var writeImage = writeImageToNBD
-
-// writeImageToNBD copies a raw image onto a published export with qemu-img,
-// which speaks NBD as a target and is already a runtime dependency. Passing
-// the export as the target rather than a file is what keeps the bulk data off
-// NATS, whose request size the provider contract caps far below an image.
-func writeImageToNBD(ctx context.Context, sourcePath, nbdURI string, progress io.Writer) error {
-	target, err := qemuNBDTarget(nbdURI)
-	if err != nil {
-		return err
-	}
-
-	// -n keeps qemu-img from trying to create a target that already exists,
-	// and --target-is-zero lets it skip the source's holes: the volume was
-	// created moments ago and has never been written.
-	cmd := exec.CommandContext(ctx, "qemu-img", "convert",
-		"-f", "raw", "-O", "raw", "-n", "--target-is-zero", "-p",
-		sourcePath, target)
-	if progress != nil {
-		cmd.Stdout = progress
-	}
-	var stderr []byte
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("qemu-img stderr: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start qemu-img: %w", err)
-	}
-	stderr, _ = io.ReadAll(stderrPipe)
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("qemu-img convert: %w: %s", err, stderr)
-	}
-	return nil
-}
-
-// qemuNBDTarget renders a provider NBD URI in the form qemu-img accepts. The
-// contract's unix form is not qemu's, so it is rebuilt rather than passed on.
-func qemuNBDTarget(nbdURI string) (string, error) {
-	serverType, socketPath, host, port, err := nbd.ParseNBDURI(nbdURI)
-	if err != nil {
-		return "", fmt.Errorf("parse NBD URI %q: %w", nbdURI, err)
-	}
-	switch serverType {
-	case "unix":
-		if _, err := os.Stat(socketPath); err != nil {
-			return "", fmt.Errorf("NBD socket %s: %w", socketPath, err)
-		}
-		return "nbd+unix:///?socket=" + socketPath, nil
-	case "inet":
-		return "nbd://" + net.JoinHostPort(host, strconv.Itoa(port)), nil
-	default:
-		return "", fmt.Errorf("unsupported NBD server type %q in %q", serverType, nbdURI)
-	}
-}
+var writeImage = nbd.WriteRawImage

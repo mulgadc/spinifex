@@ -221,20 +221,48 @@ type runResult struct {
 	Aggregate fioJob
 }
 
+// fioInstallAttempts and fioInstallBackoff bound the apt retries. A guest a
+// minute out of boot races cloud-init for the dpkg lock and a mirror can drop a
+// fetch, so one failed attempt is not yet an infra verdict.
+const (
+	fioInstallAttempts = 4
+	fioInstallBackoff  = 15 * time.Second
+)
+
 // installFio makes fio available in the guest. Distinct exit codes keep an apt
 // failure -- a network or mirror fault, not a storage one -- out of the
 // performance verdict.
 func installFio(tgt harness.SSHTarget) error {
+	return installFioWith(func(script string) (string, error) {
+		return harness.GuestExecTimeout(tgt, script, 10*time.Minute)
+	}, time.Sleep)
+}
+
+// installFioWith retries the install with doubling backoff, so a test can drive
+// the attempts without a guest or the real waits.
+func installFioWith(run func(script string) (string, error), sleep func(time.Duration)) error {
 	script := strings.Join([]string{
 		"set -e",
 		"if command -v fio >/dev/null 2>&1; then exit 0; fi",
-		fmt.Sprintf("sudo apt-get update -y || exit %d", exitAptUpdate),
-		fmt.Sprintf("sudo DEBIAN_FRONTEND=noninteractive apt-get install -y fio || exit %d", exitAptInstall),
+		fmt.Sprintf("sudo apt-get -o DPkg::Lock::Timeout=120 update -y || exit %d", exitAptUpdate),
+		fmt.Sprintf("sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y fio || exit %d", exitAptInstall),
 	}, "\n")
-	if out, err := harness.GuestExecTimeout(tgt, script, 10*time.Minute); err != nil {
-		return fmt.Errorf("installing fio in the guest failed — this is an infra fault, not a performance result: %w\n%s", err, out)
+	var (
+		out string
+		err error
+	)
+	backoff := fioInstallBackoff
+	for attempt := 1; attempt <= fioInstallAttempts; attempt++ {
+		if out, err = run(script); err == nil {
+			return nil
+		}
+		if attempt < fioInstallAttempts {
+			sleep(backoff)
+			backoff *= 2
+		}
 	}
-	return nil
+	return fmt.Errorf("installing fio in the guest failed after %d attempts — this is an infra fault, not a performance result: %w\n%s",
+		fioInstallAttempts, err, out)
 }
 
 // runFio drives one job to completion and returns its parsed report. The JSON

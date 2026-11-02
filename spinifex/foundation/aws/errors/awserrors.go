@@ -396,6 +396,10 @@ var (
 	// ErrorECRInvalidParameter aliases ErrorECSInvalidParameter: every ECR
 	// operation declares the AWS JSON 1.1 wire code "InvalidParameterException".
 	ErrorECRInvalidParameter = ErrorECSInvalidParameter
+	// ErrorTaggingInvalidParameter aliases ErrorECSInvalidParameter: the Resource
+	// Groups Tagging API reports out-of-range and malformed input as the AWS JSON
+	// 1.1 wire code "InvalidParameterException".
+	ErrorTaggingInvalidParameter = ErrorECSInvalidParameter
 	// ErrorACMResourceInUse aliases ErrorEKSResourceInUse: real ACM's
 	// DeleteCertificate and real EKS's CreateCluster both legitimately use the
 	// wire code "ResourceInUseException", so this is a distinct, self-documenting
@@ -409,8 +413,22 @@ var (
 	// that exists but has not been issued yet (still PENDING_VALIDATION), so a
 	// client polling for the body can tell "not ready" apart from "not mine".
 	ErrorACMRequestInProgress = "RequestInProgressException"
+	// Route 53 REST-XML error codes, from the 2013-04-01 API reference.
+	ErrorNoSuchHostedZone          = "NoSuchHostedZone"
+	ErrorHostedZoneAlreadyExists   = "HostedZoneAlreadyExists"
+	ErrorHostedZoneNotEmpty        = "HostedZoneNotEmpty"
+	ErrorInvalidChangeBatch        = "InvalidChangeBatch"
+	ErrorNoSuchChange              = "NoSuchChange"
+	ErrorTooManyHostedZones        = "TooManyHostedZones"
+	ErrorInvalidDomainName         = "InvalidDomainName"
+	ErrorConflictingDomainExists   = "ConflictingDomainExists"
+	ErrorPriorRequestNotComplete   = "PriorRequestNotComplete"
+	ErrorRoute53InvalidArgument    = "InvalidArgument"
+	ErrorRoute53NoSuchHealthCheck  = "NoSuchHealthCheck"
+	ErrorRoute53TooManyTagsForZone = "TooManyTags"
 	// ECS JSON-1.1 exception codes. ECS clients key on the "Exception"-suffixed
 	// __type; do not cross-wire with the EC2/ACM not-found codes above.
+	ErrorECSClientException                             = "ClientException"
 	ErrorECSClusterNotFound                             = "ClusterNotFoundException"
 	ErrorECSInvalidParameter                            = "InvalidParameterException"
 	ErrorECSServiceNotFound                             = "ServiceNotFoundException"
@@ -572,6 +590,27 @@ var (
 	// (e.g. Ochre's tokens-per-month cap) — unlike ErrorModelNotReadyException,
 	// which is reserved for transient capacity conditions that breach no quota.
 	ErrorServiceQuotaExceededException = "ServiceQuotaExceededException"
+
+	// SQS error codes as the 2012-11-05 model names them. The framework codes
+	// are the Coral errors SQS's JSON 1.0 endpoint sends for invalid input.
+	ErrorSQSQueueDoesNotExist              = "QueueDoesNotExist"
+	ErrorSQSQueueNameExists                = "QueueNameExists"
+	ErrorSQSQueueDeletedRecently           = "QueueDeletedRecently"
+	ErrorSQSInvalidAttributeName           = "InvalidAttributeName"
+	ErrorSQSInvalidAttributeValue          = "InvalidAttributeValue"
+	ErrorSQSInvalidAddress                 = "InvalidAddress"
+	ErrorSQSInvalidMessageContents         = "InvalidMessageContents"
+	ErrorSQSReceiptHandleIsInvalid         = "ReceiptHandleIsInvalid"
+	ErrorSQSMessageNotInflight             = "MessageNotInflight"
+	ErrorSQSEmptyBatchRequest              = "EmptyBatchRequest"
+	ErrorSQSTooManyEntriesInBatchRequest   = "TooManyEntriesInBatchRequest"
+	ErrorSQSBatchEntryIdsNotDistinct       = "BatchEntryIdsNotDistinct"
+	ErrorSQSInvalidBatchEntryId            = "InvalidBatchEntryId"
+	ErrorSQSBatchRequestTooLong            = "BatchRequestTooLong"
+	ErrorInvalidParameterValueException    = "InvalidParameterValueException"
+	ErrorMissingRequiredParameterException = "MissingRequiredParameterException"
+	ErrorSerializationException            = "SerializationException"
+	ErrorUnknownOperationException         = "UnknownOperationException"
 )
 
 // ValidErrorCode returns the error code if it exists in ErrorLookup,
@@ -658,18 +697,34 @@ func HasDependencies(kind, id string) error {
 // retryableError wraps a registered code with a suggested Retry-After
 // duration, for a 503 that a client can expect to clear on its own within a
 // bounded window (e.g. a warm-up race) rather than an open-ended outage.
-// Error() returns only the code, so code resolution is unaffected.
+// Error() returns only the code, or the wrapped error's text, so code
+// resolution is unaffected.
 type retryableError struct {
 	code       string
+	err        error
 	retryAfter time.Duration
 }
 
-func (e *retryableError) Error() string { return e.code }
+func (e *retryableError) Error() string {
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return e.code
+}
+
+func (e *retryableError) Unwrap() error { return e.err }
 
 // RetryAfter wraps code (a registered ErrorLookup key) with a suggested
 // Retry-After duration for ErrorHandler to surface as a response header.
 func RetryAfter(code string, d time.Duration) error {
 	return &retryableError{code: code, retryAfter: d}
+}
+
+// WithRetryAfter attaches a suggested Retry-After duration to err without
+// changing its text, unlike joining err with RetryAfter, which appends the
+// bare code on a second line.
+func WithRetryAfter(err error, d time.Duration) error {
+	return &retryableError{err: err, retryAfter: d}
 }
 
 // ResolveRetryAfter returns the Retry-After duration attached to err via
@@ -693,6 +748,33 @@ func ResolveRetryAfter(err error) (time.Duration, bool) {
 		return ResolveRetryAfter(wrapped.Unwrap())
 	}
 	return 0, false
+}
+
+// fieldsError attaches extra response-body fields to an error without changing
+// its text, for protocols that carry them (e.g. a REST-JSON throttle Reason).
+type fieldsError struct {
+	err    error
+	fields map[string]string
+}
+
+func (e *fieldsError) Error() string { return e.err.Error() }
+func (e *fieldsError) Unwrap() error { return e.err }
+
+// WithFields attaches extra top-level response-body fields to err. Protocols
+// without extra fields ignore them.
+func WithFields(err error, fields map[string]string) error {
+	if err == nil || len(fields) == 0 {
+		return err
+	}
+	return &fieldsError{err: err, fields: fields}
+}
+
+// ResolveFields returns the fields attached to err via WithFields, if any.
+func ResolveFields(err error) map[string]string {
+	if fe, ok := errors.AsType[*fieldsError](err); ok {
+		return fe.fields
+	}
+	return nil
 }
 
 // errorLookupByService overrides ErrorLookup's message and HTTP status for a
@@ -726,13 +808,17 @@ var errorLookupByService = withNeutralValidationMessages(map[string]map[string]E
 	"rds": {
 		ErrorOperationNotSupported: {HTTPCode: 400, Message: "The specified RDS action is not supported in the RDS v1 API."},
 	},
+	// Route 53 throttles with a 400, not the 503 the shared entry carries.
+	"route53": {
+		ErrorThrottling: {HTTPCode: 400, Message: "Rate exceeded."},
+	},
 })
 
 // nonEC2Services are the gateway's services other than EC2, whose validation
 // errors must not fall back to ErrorLookup's EC2 wording.
 var nonEC2Services = []string{
-	"iam", "sts", "elasticloadbalancing", "eks", "ecs", "ecr", "acm", "rds", "tagging", "spinifex",
-	"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime",
+	"iam", "sts", "elasticloadbalancing", "eks", "ecs", "ecr", "acm", "rds", "route53", "tagging", "spinifex",
+	"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime", "sqs",
 }
 
 // withNeutralValidationMessages gives every non-EC2 service a service-neutral
@@ -1181,7 +1267,8 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorResourceNotFound:                                      {HTTPCode: 404, Message: "The specified resource was not found."},
 	ErrorEKSResourceInUse:                                      {HTTPCode: 409, Message: "A cluster with this name already exists in this account and Region. Delete the existing cluster, or choose a different name."},
 	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified cluster could not be found. You can view your available clusters with ListClusters. Amazon EKS clusters are Region specific."},
-	ErrorECSClusterNotFound:                                    {HTTPCode: 400, Message: "The specified cluster was not found. You can view your available clusters with ListClusters. Amazon ECS clusters are Region specific."},
+	ErrorECSClientException:                                    {HTTPCode: 400, Message: "Unable to describe task definition."},
+	ErrorECSClusterNotFound:                                    {HTTPCode: 400, Message: "Cluster not found."},
 	ErrorECSInvalidParameter:                                   {HTTPCode: 400, Message: "The specified parameter is not valid. Review the available parameters for the API request."},
 	ErrorECSServiceNotFound:                                    {HTTPCode: 400, Message: "The specified service was not found. You can view your available services with ListServices. Amazon ECS services are cluster specific and Region specific."},
 	ErrorRetryableError:                                        {HTTPCode: 400, Message: "A request submitted by an AWS service on your behalf could not be completed. The requesting service might automatically retry the request."},
@@ -1333,4 +1420,39 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorModelErrorException:           {HTTPCode: 424, Message: "The request failed because of an error while running the model."},
 	ErrorServiceQuotaExceededException: {HTTPCode: 400, Message: "The number of requests exceeds the service quota. Resubmit your request later."},
 	ErrorConflictException:             {HTTPCode: 409, Message: "There was a conflict performing an operation."},
+
+	// SQS. Statuses are the captured AWS responses; QueueNameExists and
+	// QueueDeletedRecently are not yet captured and take the model's 400.
+	ErrorSQSQueueDoesNotExist:              {HTTPCode: 400, Message: "The specified queue does not exist."},
+	ErrorSQSQueueNameExists:                {HTTPCode: 400, Message: "A queue already exists with the same name and a different value for attribute(s)."},
+	ErrorSQSQueueDeletedRecently:           {HTTPCode: 400, Message: "You must wait 60 seconds after deleting a queue before you can create another with the same name."},
+	ErrorSQSInvalidAttributeName:           {HTTPCode: 400, Message: "The specified attribute doesn't exist."},
+	ErrorSQSInvalidAttributeValue:          {HTTPCode: 400, Message: "A queue attribute value is invalid."},
+	ErrorSQSInvalidAddress:                 {HTTPCode: 404, Message: "The address is not valid for this endpoint."},
+	ErrorSQSInvalidMessageContents:         {HTTPCode: 400, Message: "The message contains characters outside the allowed set."},
+	ErrorSQSReceiptHandleIsInvalid:         {HTTPCode: 400, Message: "The specified receipt handle isn't valid."},
+	ErrorSQSMessageNotInflight:             {HTTPCode: 400, Message: "The specified message isn't in flight."},
+	ErrorSQSEmptyBatchRequest:              {HTTPCode: 400, Message: "The batch request doesn't contain any entries."},
+	ErrorSQSTooManyEntriesInBatchRequest:   {HTTPCode: 400, Message: "The batch request contains more entries than permissible."},
+	ErrorSQSBatchEntryIdsNotDistinct:       {HTTPCode: 400, Message: "Two or more batch entries in the request have the same Id."},
+	ErrorSQSInvalidBatchEntryId:            {HTTPCode: 400, Message: "The Id of a batch entry in a batch request doesn't abide by the specification."},
+	ErrorSQSBatchRequestTooLong:            {HTTPCode: 400, Message: "The length of all the messages put together is more than the limit."},
+	ErrorInvalidParameterValueException:    {HTTPCode: 400, Message: "One or more parameters are invalid."},
+	ErrorMissingRequiredParameterException: {HTTPCode: 400, Message: "The request is missing a required parameter."},
+	ErrorSerializationException:            {HTTPCode: 400, Message: "The request body could not be deserialized."},
+	ErrorUnknownOperationException:         {HTTPCode: 400, Message: "The requested operation is not recognized."},
+
+	// Route 53.
+	ErrorNoSuchHostedZone:          {HTTPCode: 404, Message: "No hosted zone exists with the ID that you specified."},
+	ErrorHostedZoneAlreadyExists:   {HTTPCode: 409, Message: "The hosted zone you're trying to create already exists."},
+	ErrorHostedZoneNotEmpty:        {HTTPCode: 400, Message: "The hosted zone contains resource records that are not SOA or NS records."},
+	ErrorInvalidChangeBatch:        {HTTPCode: 400, Message: "This exception contains a list of messages that might contain one or more error messages."},
+	ErrorNoSuchChange:              {HTTPCode: 404, Message: "A change with the specified change ID does not exist."},
+	ErrorTooManyHostedZones:        {HTTPCode: 400, Message: "This operation can't be completed because the current account has reached the limit on the number of hosted zones."},
+	ErrorInvalidDomainName:         {HTTPCode: 400, Message: "The specified domain name is not valid."},
+	ErrorConflictingDomainExists:   {HTTPCode: 400, Message: "The domain name is already in use by another hosted zone."},
+	ErrorPriorRequestNotComplete:   {HTTPCode: 400, Message: "Route 53 is still processing a previous request for this hosted zone. Try again later."},
+	ErrorRoute53InvalidArgument:    {HTTPCode: 400, Message: "Parameter name is not valid."},
+	ErrorRoute53NoSuchHealthCheck:  {HTTPCode: 404, Message: "No health check exists with the specified ID."},
+	ErrorRoute53TooManyTagsForZone: {HTTPCode: 400, Message: "The resource has too many tags."},
 }

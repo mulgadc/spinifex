@@ -11,7 +11,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
 // Sweep and lease timing. The holder refreshes well inside the bucket's TTL,
@@ -155,7 +154,7 @@ func reaperScrapesMetrics(rec EndpointRecord) bool {
 		return true
 	}
 	for _, m := range rec.Members {
-		if m.Family == gateway_bedrock.FamilyMeta {
+		if m.Family == FamilyMeta {
 			return true
 		}
 	}

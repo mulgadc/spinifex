@@ -1,0 +1,656 @@
+package sts
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"log/slog"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/sts"
+
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+)
+
+const (
+	stsActionAssumeRole = "sts:AssumeRole"
+	stsActionWildcard   = "sts:*"
+	globalWildcard      = "*"
+
+	// principalTypeAssumedRole is the SessionCredential.PrincipalType for a role session;
+	// empty stored values are also treated as this type.
+	principalTypeAssumedRole = "assumed-role"
+
+	// principalTypeUser is the SessionCredential.PrincipalType for sessions minted by
+	// GetSessionToken, which resolve back to the calling IAM user.
+	principalTypeUser = "user"
+
+	// ec2ServicePrincipal is the synthetic caller used by AssumeRoleForInstance.
+	// It is attributed only on the in-process IMDS path, never over HTTPS.
+	ec2ServicePrincipal = "ec2.amazonaws.com"
+
+	// ecsTasksServicePrincipal is the trust-policy principal AWS documents for ECS
+	// task and execution roles. It is attributed to a container-instance caller,
+	// the only identity the in-guest ECS agent can sign an AssumeRole with.
+	ecsTasksServicePrincipal = "ecs-tasks.amazonaws.com"
+
+	// ecsInstanceRoleName is the fixed role the ECS control plane attaches to every
+	// container instance. Duplicated from domains/ecs, which cannot be imported
+	// here: it lives on the daemon side of the awsgw trust boundary.
+	ecsInstanceRoleName = "ecsInstanceRole"
+
+	minDurationSeconds     int64 = 900
+	maxDurationSeconds     int64 = 43200
+	defaultDurationSeconds int64 = 3600
+
+	minRoleSessionNameLength = 2
+	maxRoleSessionNameLength = 64
+
+	// sessionAKIDRandomBytes hex-encodes to 16 chars; with the ASIA prefix the
+	// AKID is 20 chars total, matching the AWS public format.
+	sessionAKIDRandomBytes = 8
+	sessionSecretBytes     = 30 // base64 → 40 chars
+	sessionTokenBytes      = 32 // base64 → 44 chars
+
+	mintMaxAttempts = 3
+)
+
+// roleSessionNameRegex enforces AWS's documented session-name character set as a literal
+// ASCII range. `:` and `/` are excluded so the assumed-role ARN stays unambiguously parseable.
+var roleSessionNameRegex = regexp.MustCompile(`^[A-Za-z0-9_+=,.@-]{2,64}$`)
+
+// AssumeRole mints temporary credentials after evaluating the target role's
+// trust policy against the caller.
+func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
+	ctx := context.Background()
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if aws.StringValue(input.RoleArn) == "" || aws.StringValue(input.RoleSessionName) == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	sessionName := *input.RoleSessionName
+
+	// AWS reports every failed constraint at once, durationSeconds first, and before
+	// resolving the role, so a bad value against a missing role is not AccessDenied.
+	violations := durationViolations(input.DurationSeconds, maxDurationSeconds)
+	violations = append(violations, roleSessionNameConstraint.check("roleSessionName", sessionName)...)
+	violations = append(violations, mfaViolations(input.SerialNumber, input.TokenCode)...)
+	if err := validationError(violations); err != nil {
+		return nil, err
+	}
+
+	if aws.StringValue(input.Policy) != "" || len(input.PolicyArns) > 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError,
+			"Session policies are not supported in this release; omit Policy and PolicyArns")
+	}
+	if len(input.Tags) > 0 || len(input.TransitiveTagKeys) > 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError,
+			"Session tags are not supported in this release; omit Tags and TransitiveTagKeys")
+	}
+	if input.SerialNumber != nil || input.TokenCode != nil {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"MFA is not supported in this release; omit SerialNumber and TokenCode")
+	}
+
+	duration := int64(0)
+	if input.DurationSeconds != nil {
+		duration = *input.DurationSeconds
+	}
+
+	out, err := s.assumeRoleForCaller(ctx, callerARN, "", *input.RoleArn, sessionName, aws.StringValue(input.SourceIdentity), duration)
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("AssumeRole success",
+		"caller_arn", callerARN,
+		"caller_identity", callerIdentity,
+		"role_arn", aws.StringValue(input.RoleArn),
+		"session_name", sessionName,
+		"akid", aws.StringValue(out.Credentials.AccessKeyId),
+		"expires_at", aws.TimeValue(out.Credentials.Expiration),
+		"source_identity", aws.StringValue(input.SourceIdentity),
+		"external_id", aws.StringValue(input.ExternalId),
+	)
+
+	return out, nil
+}
+
+// AssumeRoleForInstance is the in-process IMDS entry point, not reachable over HTTPS.
+// Caller is synthesised as ec2.amazonaws.com; the session name is the instanceID.
+func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error) {
+	ctx := context.Background()
+	if accountID == "" || roleARN == "" || instanceID == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if !roleSessionNameRegex.MatchString(instanceID) {
+		return nil, errors.New(awserrors.ErrorValidationError)
+	}
+
+	out, err := s.assumeRoleForCaller(ctx, "", ec2ServicePrincipal, roleARN, instanceID, "", durationSeconds)
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("AssumeRoleForInstance success",
+		"account_id", accountID,
+		"instance_id", instanceID,
+		"role_arn", roleARN,
+		"akid", aws.StringValue(out.Credentials.AccessKeyId),
+		"expires_at", aws.TimeValue(out.Credentials.Expiration),
+	)
+
+	return out, nil
+}
+
+// assumeRoleForCaller is the shared core of AssumeRole and AssumeRoleForInstance:
+// resolves the role, clamps the duration, evaluates the trust policy, and mints credentials.
+// principalSource is "" for HTTPS (derived from callerARN), ec2.amazonaws.com for IMDS.
+func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
+	roleAccountID, role, err := ResolveRoleByARN(s.iamSvc, roleARN)
+	if err != nil {
+		// A miss and a non-canonical ARN are both masked to AccessDenied, with the
+		// same text as a trust-policy refusal, preventing role enumeration. IMDS
+		// has no caller ARN and keeps the bare code.
+		if errors.Is(err, ErrRoleUnresolved) {
+			return nil, assumeRoleDenied(callerARN, roleARN)
+		}
+		return nil, err
+	}
+
+	duration := requestedDuration
+	if duration == 0 {
+		duration = defaultDurationSeconds
+	}
+	effectiveMax := aws.Int64Value(role.MaxSessionDuration)
+	if effectiveMax == 0 {
+		effectiveMax = defaultDurationSeconds
+	}
+	effectiveMax = min(effectiveMax, maxDurationSeconds)
+	if duration > effectiveMax && duration <= maxDurationSeconds {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError,
+			"The requested DurationSeconds exceeds the MaxSessionDuration set for this role.")
+	}
+	if duration < minDurationSeconds || duration > effectiveMax {
+		return nil, errors.New(awserrors.ErrorValidationError)
+	}
+
+	// IMDS supplies its own synthesised principal; HTTPS derives one from the
+	// authenticated SigV4 caller, never from the request body.
+	sources := []string{principalSource}
+	if principalSource == "" {
+		sources = serviceSourcesForCaller(callerARN, roleAccountID)
+	}
+
+	if err := evalTrustPolicy(aws.StringValue(role.AssumeRolePolicyDocument), callerARN, sources); err != nil {
+		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorAccessDenied {
+			return nil, assumeRoleDenied(callerARN, roleARN)
+		}
+		return nil, err
+	}
+
+	env := assumedRoleEnvelope(role, roleAccountID, sessionName, sourceIdentity)
+	cred, plainSecret, plainToken, err := s.mintSession(ctx, env, duration)
+	if err != nil {
+		if errors.Is(err, errAccountNotActive) {
+			return nil, assumeRoleDenied(callerARN, roleARN)
+		}
+		return nil, err
+	}
+
+	out := &sts.AssumeRoleOutput{
+		Credentials: &sts.Credentials{
+			AccessKeyId:     aws.String(cred.AccessKeyID),
+			SecretAccessKey: aws.String(plainSecret),
+			SessionToken:    aws.String(plainToken),
+			Expiration:      aws.Time(cred.ExpiresAt),
+		},
+		AssumedRoleUser: &sts.AssumedRoleUser{
+			AssumedRoleId: aws.String(cred.AssumedRoleID),
+			Arn:           aws.String(cred.AssumedRoleARN),
+		},
+		PackedPolicySize: aws.Int64(0),
+	}
+	if cred.SourceIdentity != "" {
+		out.SourceIdentity = aws.String(cred.SourceIdentity)
+	}
+	return out, nil
+}
+
+// assumeRoleDenied is the one refusal AssumeRole returns for a missing role, a
+// trust-policy denial and a role in an account that is not ACTIVE, so a caller
+// cannot tell them apart. IMDS has no caller ARN and keeps the bare code.
+func assumeRoleDenied(callerARN, roleARN string) error {
+	if callerARN == "" {
+		return errors.New(awserrors.ErrorAccessDenied)
+	}
+	return awserrors.Errorf(awserrors.ErrorAccessDenied,
+		"User: %s is not authorized to perform: %s on resource: %s", callerARN, stsActionAssumeRole, roleARN)
+}
+
+// assumeRoleConditionKeySourceAccount is the only condition key evaluated on the
+// sts:AssumeRole trust-policy path. validateWebIdentityCondition (domains/iam)
+// is the write-time gate that must accept exactly this key for this action.
+const assumeRoleConditionKeySourceAccount = "aws:SourceAccount"
+
+// evalTrustPolicy implements AWS's explicit-deny-wins semantics: first pass scans all
+// Deny statements, second pass scans all Allows. A single-pass loop would skip a later
+// Deny and silently grant access.
+func evalTrustPolicy(docJSON, callerARN string, principalSources []string) error {
+	doc, err := iamdomain.ValidateTrustPolicyDocument(docJSON)
+	if err != nil {
+		// Docs are validated at write time; reaching here implies on-disk corruption.
+		return fmt.Errorf("stored trust policy invalid: %w", err)
+	}
+
+	// sourceAccount is the caller ARN's own account — available whenever the
+	// caller is an authenticated HTTPS SigV4 identity, and not caller-asserted.
+	// It is empty on the IMDS path, where principalSource is synthesised and
+	// there is no caller ARN to parse.
+	sourceAccount := ""
+	if caller, ok := parsePrincipalARN(callerARN); ok {
+		sourceAccount = caller.account
+	}
+
+	for _, stmt := range doc.Statement {
+		if stmt.Effect != iamdomain.PolicyEffectDeny {
+			continue
+		}
+		if !matchTrustAction(stmt.Action) {
+			continue
+		}
+		match, err := matchTrustPrincipal(stmt.Principal, callerARN, principalSources)
+		if err != nil {
+			return err
+		}
+		if match && assumeRoleConditionsHold(stmt.Condition, sourceAccount) {
+			return errors.New(awserrors.ErrorAccessDenied)
+		}
+	}
+
+	for _, stmt := range doc.Statement {
+		if stmt.Effect != iamdomain.PolicyEffectAllow {
+			continue
+		}
+		if !matchTrustAction(stmt.Action) {
+			continue
+		}
+		match, err := matchTrustPrincipal(stmt.Principal, callerARN, principalSources)
+		if err != nil {
+			return err
+		}
+		if match && assumeRoleConditionsHold(stmt.Condition, sourceAccount) {
+			return nil
+		}
+	}
+
+	return errors.New(awserrors.ErrorAccessDenied)
+}
+
+// assumeRoleConditionsHold evaluates a trust-policy Condition block on the
+// sts:AssumeRole path. Only StringEquals on aws:SourceAccount is supported —
+// the write-time gate accepts nothing wider for this action — and an unknown
+// key or operator fails closed rather than being silently ignored, the same
+// shape conditionsHold uses for AssumeRoleWithWebIdentity. No Condition holds
+// trivially, matching the pre-existing no-condition-arm behaviour.
+func assumeRoleConditionsHold(raw json.RawMessage, sourceAccount string) bool {
+	if !isCondRawNonEmpty(raw) {
+		return true
+	}
+	var ops map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &ops); err != nil {
+		return false
+	}
+	for op, kv := range ops {
+		if op != "StringEquals" {
+			// Validator rejects other operators at write time; reaching here means tampering.
+			return false
+		}
+		for key, expectedRaw := range kv {
+			if key != assumeRoleConditionKeySourceAccount {
+				// Unknown condition key — fail closed rather than silently ignore a stricter check.
+				return false
+			}
+			expected, ok := unmarshalStringOrArray(expectedRaw)
+			if !ok || sourceAccount == "" || !anyEquals(expected, []string{sourceAccount}) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func matchTrustAction(actions []string) bool {
+	return slices.ContainsFunc(actions, func(a string) bool {
+		return a == stsActionAssumeRole || a == stsActionWildcard || a == globalWildcard
+	})
+}
+
+// serviceSourcesForCaller returns the service principals an authenticated HTTPS
+// caller may be attributed to. Attribution comes from the SigV4 identity alone, so
+// a caller cannot name its own service; an unrecognised caller gets none.
+func serviceSourcesForCaller(callerARN, roleAccountID string) []string {
+	caller, ok := parsePrincipalARN(callerARN)
+	if !ok || caller.service != "sts" || caller.account != roleAccountID {
+		return nil
+	}
+	tail, ok := strings.CutPrefix(caller.resource, "assumed-role/")
+	if !ok {
+		return nil
+	}
+	roleName, _, ok := strings.Cut(tail, "/")
+	if !ok || roleName != ecsInstanceRoleName {
+		return nil
+	}
+	// The ECS agent holds only its container-instance role, and the roles it asks
+	// for are the task/execution roles the control plane placed on that instance.
+	return []string{ecsTasksServicePrincipal}
+}
+
+// matchTrustPrincipal evaluates each Principal key as an OR. AWS matches callerARN;
+// Service matches the caller's attributed principals; unsupported keys (Federated) skip.
+func matchTrustPrincipal(raw json.RawMessage, callerARN string, principalSources []string) (bool, error) {
+	if len(raw) == 0 {
+		return false, nil
+	}
+	// Principal: "*" form (a bare string, not a map).
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString == globalWildcard, nil
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return false, fmt.Errorf("unmarshal Principal: %w", err)
+	}
+	if awsRaw, ok := m["AWS"]; ok {
+		match, err := matchAWSPrincipal(awsRaw, callerARN)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			return true, nil
+		}
+	}
+	if svcRaw, ok := m["Service"]; ok {
+		match, err := matchServicePrincipal(svcRaw, principalSources)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// matchServicePrincipal matches a Service clause against the principals the caller
+// was attributed. A caller with no attributed principals never matches, so naming a
+// service in the policy is not on its own enough to be assumable.
+func matchServicePrincipal(raw json.RawMessage, principalSources []string) (bool, error) {
+	if len(principalSources) == 0 {
+		return false, nil
+	}
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		return slices.Contains(principalSources, single), nil
+	}
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return false, fmt.Errorf("Principal.Service must be string or array: %w", err)
+	}
+	for _, svc := range arr {
+		if slices.Contains(principalSources, svc) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func matchAWSPrincipal(raw json.RawMessage, callerARN string) (bool, error) {
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		return matchAWSPrincipalEntry(single, callerARN), nil
+	}
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return false, fmt.Errorf("Principal.AWS must be string or array: %w", err)
+	}
+	for _, entry := range arr {
+		if matchAWSPrincipalEntry(entry, callerARN) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// matchAWSPrincipalEntry resolves one principal clause: wildcard, bare account ID
+// (treated as :root), exact ARN, :root shorthand, and role-ARN session expansion.
+func matchAWSPrincipalEntry(clause, callerARN string) bool {
+	if clause == globalWildcard {
+		return true
+	}
+	if awsidentifiers.IsAccountID(clause) {
+		clause = arn.FormatIAMRoot(clause)
+	}
+	if clause == callerARN {
+		return true
+	}
+
+	clauseARN, ok := parsePrincipalARN(clause)
+	if !ok {
+		return false
+	}
+	callerParts, ok := parsePrincipalARN(callerARN)
+	if !ok {
+		return false
+	}
+
+	// :root matches any principal in the same account; scoped to the IAM service
+	// segment so arn:aws:s3::A:root (or any other service) does not match.
+	if clauseARN.service == "iam" && clauseARN.resource == "root" &&
+		clauseARN.account == callerParts.account {
+		return true
+	}
+
+	// Role-ARN auto-expansion: arn:aws:iam::A:role/X matches any assumed-role session of X.
+	if clauseARN.service == "iam" && strings.HasPrefix(clauseARN.resource, "role/") &&
+		callerParts.service == "sts" && strings.HasPrefix(callerParts.resource, "assumed-role/") &&
+		clauseARN.account == callerParts.account {
+		clauseRoleName := lastPathSegment(clauseARN.resource[len("role/"):])
+		sessionTail := callerParts.resource[len("assumed-role/"):]
+		callerRoleName, _, ok := strings.Cut(sessionTail, "/")
+		if !ok {
+			return false
+		}
+		if clauseRoleName != "" && clauseRoleName == callerRoleName {
+			return true
+		}
+	}
+
+	return false
+}
+
+type principalARN struct {
+	service  string
+	account  string
+	resource string
+}
+
+func parsePrincipalARN(arnStr string) (principalARN, bool) {
+	service, region, account, resource, ok := arn.Split(arnStr)
+	if !ok || region != "" {
+		return principalARN{}, false
+	}
+	return principalARN{service: service, account: account, resource: resource}, true
+}
+
+func lastPathSegment(s string) string {
+	if _, after, ok := strings.CutLast(s, "/"); ok {
+		return after
+	}
+	return s
+}
+
+// sessionEnvelope is the resolved identity a session credential is minted for.
+// Role paths fill the assumed-role fields; GetSessionToken sets PrincipalType "user"
+// and leaves the assumed-role fields empty.
+type sessionEnvelope struct {
+	PrincipalType  string
+	AccountID      string
+	SessionName    string
+	SourceIdentity string
+
+	// UserID is the immutable IAM UserId; set only on a user envelope, as RoleID
+	// is set only on a role one. Both are what a session is bound to, so a
+	// same-name replacement of the principal cannot inherit it.
+	UserID string
+
+	// Assumed-role-only; empty for a user (GetSessionToken) envelope.
+	AssumedRoleARN    string
+	UnderlyingRoleARN string
+	RoleID            string
+	AssumedRoleID     string
+}
+
+// assumedRoleEnvelope derives the session envelope for a role session, shared by all
+// AssumeRole variants. It centralises assumed-role ARN and AssumedRoleId construction.
+func assumedRoleEnvelope(role *iam.Role, roleAccountID, sessionName, sourceIdentity string) sessionEnvelope {
+	roleID := aws.StringValue(role.RoleId)
+	roleName := aws.StringValue(role.RoleName)
+	return sessionEnvelope{
+		PrincipalType:     principalTypeAssumedRole,
+		AccountID:         roleAccountID,
+		SessionName:       sessionName,
+		SourceIdentity:    sourceIdentity,
+		AssumedRoleARN:    fmt.Sprintf("arn:aws:sts::%s:assumed-role/%s/%s", roleAccountID, roleName, sessionName),
+		UnderlyingRoleARN: aws.StringValue(role.Arn),
+		RoleID:            roleID,
+		AssumedRoleID:     fmt.Sprintf("%s:%s", roleID, sessionName),
+	}
+}
+
+// errAccountNotActive is returned by mintSession for an account whose record is
+// missing or whose status is not ACTIVE. Callers map it to their own denial.
+var errAccountNotActive = errors.New("account is not active")
+
+// requireActiveAccount reads the account record and refuses unless it is ACTIVE.
+// A missing record counts as not ACTIVE; any other read failure is an internal error.
+func (s *STSServiceImpl) requireActiveAccount(accountID string) error {
+	acct, err := s.iamSvc.GetAccount(accountID)
+	if err != nil {
+		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorIAMNoSuchEntity {
+			slog.Warn("STS mint refused: account is not active", "account_id", accountID, "missing", true)
+			return errAccountNotActive
+		}
+		slog.Error("STS mint: cannot read account record", "account_id", accountID, "err", err)
+		return errors.New(awserrors.ErrorInternalError)
+	}
+	if acct == nil || acct.Status != iamdomain.AccountStatusActive {
+		status := ""
+		if acct != nil {
+			status = acct.Status
+		}
+		slog.Warn("STS mint refused: account is not active", "account_id", accountID, "status", status)
+		return errAccountNotActive
+	}
+	return nil
+}
+
+// mintSession generates a fresh ASIA AKID, encrypts the secret, HMACs the token,
+// and persists the credential. Retries up to mintMaxAttempts on AKID collision.
+func (s *STSServiceImpl) mintSession(ctx context.Context, env sessionEnvelope, duration int64) (*SessionCredential, string, string, error) {
+	if err := s.requireActiveAccount(env.AccountID); err != nil {
+		return nil, "", "", err
+	}
+	plainSecret, err := generateRandomBase64(sessionSecretBytes)
+	if err != nil {
+		return nil, "", "", err
+	}
+	secretEncrypted, err := iamdomain.EncryptSecret(plainSecret, s.masterKey)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("encrypt session secret: %w", err)
+	}
+
+	plainToken, err := generateRandomBase64(sessionTokenBytes)
+	if err != nil {
+		return nil, "", "", err
+	}
+	tokenHMAC := computeTokenHMAC(s.masterKey, plainToken)
+
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Duration(duration) * time.Second)
+
+	for range mintMaxAttempts {
+		akid, err := generateSessionAKID()
+		if err != nil {
+			return nil, "", "", err
+		}
+		cred := &SessionCredential{
+			AccessKeyID:       akid,
+			SecretEncrypted:   secretEncrypted,
+			SessionTokenHMAC:  tokenHMAC,
+			AccountID:         env.AccountID,
+			PrincipalType:     env.PrincipalType,
+			AssumedRoleARN:    env.AssumedRoleARN,
+			UnderlyingRoleARN: env.UnderlyingRoleARN,
+			RoleID:            env.RoleID,
+			AssumedRoleID:     env.AssumedRoleID,
+			SessionName:       env.SessionName,
+			UserID:            env.UserID,
+			SourceIdentity:    env.SourceIdentity,
+			ExpiresAt:         expiresAt,
+			CreatedAt:         now,
+		}
+		if err := putSessionCredential(ctx, s.sessions, cred); err != nil {
+			if errors.Is(err, kvstore.ErrExists) {
+				continue
+			}
+			return nil, "", "", fmt.Errorf("persist session credential: %w", err)
+		}
+		return cred, plainSecret, plainToken, nil
+	}
+	return nil, "", "", errors.New(awserrors.ErrorInternalError)
+}
+
+func generateSessionAKID() (string, error) {
+	b := make([]byte, sessionAKIDRandomBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("crypto/rand failure: %w", err)
+	}
+	return SessionAccessKeyIDPrefix + strings.ToUpper(hex.EncodeToString(b)), nil
+}
+
+func generateRandomBase64(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("crypto/rand failure: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
+}
+
+// computeTokenHMAC HMACs the wire-form session token with the master key.
+// The SigV4 verifier recomputes and constant-time-compares; a bucket read without
+// the master key cannot recover a valid token.
+func computeTokenHMAC(key []byte, token string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(token))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}

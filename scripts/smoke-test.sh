@@ -60,7 +60,12 @@ export AWS_PROFILE=spinifex
 # + CA bundle) is used when the script is called via sudo.
 INVOKING_USER="${SUDO_USER:-$(id -un)}"
 INVOKING_HOME=$(getent passwd "$INVOKING_USER" | cut -d: -f6)
-aws_as_user() { sudo -u "$INVOKING_USER" env HOME="$INVOKING_HOME" AWS_PROFILE=spinifex aws "$@"; }
+# By absolute path: sudo's secure_path leaves out /usr/local/bin on some hosts,
+# Oracle Linux among them, and setup.sh installs the AWS CLI there.
+AWS_BIN=$(command -v aws || true)
+[ -z "$AWS_BIN" ] && [ -x /usr/local/bin/aws ] && AWS_BIN=/usr/local/bin/aws
+[ -n "$AWS_BIN" ] || { echo "❌ aws CLI not found on PATH or at /usr/local/bin/aws" >&2; exit 1; }
+aws_as_user() { sudo -u "$INVOKING_USER" env HOME="$INVOKING_HOME" AWS_PROFILE=spinifex "$AWS_BIN" "$@"; }
 
 # --- Wait for EC2 daemon to subscribe to NATS ---
 # Port 3000 (UI) becomes ready before the daemon finishes initialising.

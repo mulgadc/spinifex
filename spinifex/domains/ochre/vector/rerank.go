@@ -6,7 +6,7 @@ import (
 )
 
 // Reranker is the local seam for cross-encoder reranking: the same method
-// set as gateway_bedrock.Reranker, restated here so this package never
+// set as ochre.Reranker, restated here so this package never
 // depends on the gateway (mirrors Embedder/TokenCounter).
 type Reranker interface {
 	Rerank(ctx context.Context, query string, docs []string) ([]int, error)

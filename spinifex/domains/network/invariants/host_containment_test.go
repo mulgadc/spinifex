@@ -33,7 +33,7 @@ func TestS2_BridgeModeContainedInL0(t *testing.T) {
 
 	roots := []string{
 		filepath.Join(repoRoot(t), "spinifex", "domains", "network"),
-		filepath.Join(repoRoot(t), "spinifex", "daemon"),
+		filepath.Join(repoRoot(t), "spinifex", "runtime", "daemon"),
 		filepath.Join(repoRoot(t), "spinifex", "runtime", "compute", "vm"),
 	}
 	type hit struct {

@@ -9,31 +9,11 @@ import (
 // frozenLegacyPackages is every production package still under a legacy root.
 // It only shrinks: a new entry is a new legacy package, a missing one is a
 // completed move whose line must be deleted.
-var frozenLegacyPackages = []string{
-	"accountteardown",
-	"daemon",
-	"gateway",
-	"gateway/bedrock",
-	"gateway/ecs",
-	"gateway/eks",
-	"gateway/elbv2",
-	"gateway/iam",
-	"gateway/rds",
-	"gateway/spx",
-	"gateway/sts",
-	"handlers/ecs",
-	"handlers/eks",
-	"handlers/elbv2",
-	"handlers/iam",
-	"handlers/iam/mock",
-	"handlers/rds",
-	"handlers/sts",
-	"lbagent",
-}
+var frozenLegacyPackages = []string{}
 
 // retiredLegacyRoots were legacy roots whose every package has moved to its
 // ADR-0001 target; recreating one would reopen a closed migration row.
-var retiredLegacyRoots = []string{"admin", "services", "utils", "vpcd"}
+var retiredLegacyRoots = []string{"accountteardown", "admin", "daemon", "gateway", "handlers", "lbagent", "services", "utils", "vpcd"}
 
 // TestADR0001_LegacyRootsFrozen: the current-to-target map gives every legacy
 // root a destination, so none may gain a package and no retired root may return.
@@ -52,9 +32,6 @@ func TestADR0001_LegacyRootsFrozen(t *testing.T) {
 		if c, ok := classify(dir); ok && c.layer == layerLegacy {
 			present[name] = true
 		}
-	}
-	if len(present) == 0 {
-		t.Fatal("found no legacy packages; the freeze would pass vacuously")
 	}
 	frozen := map[string]bool{}
 	for _, p := range frozenLegacyPackages {

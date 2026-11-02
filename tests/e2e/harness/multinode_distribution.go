@@ -10,10 +10,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
 )
 
 // InstanceHostingNode returns the cluster node running the named instance's
-// qemu process (ps auxw | grep qemu-system). Returns nil if no node owns it.
+// QEMU process (ps auxw | grep -E hostos.QEMUProcessPattern). Returns nil if no node owns it.
 func InstanceHostingNode(t *testing.T, c *Cluster, instanceID string) *Node {
 	t.Helper()
 	hosting := InstanceHostingNodes(t, c, instanceID, nil)
@@ -56,7 +58,7 @@ func InstanceHostingNodes(t *testing.T, c *Cluster, instanceID string, skip []st
 
 // runPSGrep runs the ps+grep pipeline on a node and returns combined output.
 func runPSGrep(ctx context.Context, ssh *PeerSSH, n Node, instanceID string) (string, error) {
-	cmd := fmt.Sprintf("ps auxw | grep %q | grep qemu-system | grep -v grep", instanceID)
+	cmd := fmt.Sprintf("ps auxw | grep %q | grep -E %s | grep -v grep", instanceID, ShellQuote(hostos.QEMUProcessPattern))
 	out, err := ssh.Run(ctx, n.Addr, cmd)
 	if err != nil {
 		// exit 1 from grep means no match, not a transport error.

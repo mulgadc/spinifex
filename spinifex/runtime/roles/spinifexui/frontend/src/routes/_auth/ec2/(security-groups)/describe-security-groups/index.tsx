@@ -1,16 +1,24 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
-import { ListCard } from "@/components/list-card"
-import { PageHeading } from "@/components/page-heading"
-import { ResourceList } from "@/components/resource-list"
-import { Button } from "@/components/ui/button"
-import { securityGroupLabel } from "@/lib/utils"
+import {
+  CLOSED_PANEL,
+  type PanelSearch,
+  panelSearchFields,
+} from "@/lib/panel-search"
 import { ec2SecurityGroupsQueryOptions } from "@/queries/ec2"
+
+import { SecurityGroupsPage } from "../-components/security-groups-page"
+
+const searchSchema = z.object(panelSearchFields)
 
 export const Route = createFileRoute(
   "/_auth/ec2/(security-groups)/describe-security-groups/",
 )({
+  validateSearch: searchSchema,
+  // Defaults stay out of the URL, so the plain list keeps its plain address.
+  search: { middlewares: [stripSearchParams(CLOSED_PANEL)] },
   loader: async ({ context }) => {
     await context.queryClient.query({
       ...ec2SecurityGroupsQueryOptions,
@@ -29,33 +37,22 @@ export const Route = createFileRoute(
 
 function SecurityGroups() {
   const { data } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
 
-  const securityGroups = data.SecurityGroups ?? []
+  // Opening or closing a panel adds a history entry, so Back closes it.
+  function onSearchChange(next: Partial<PanelSearch>) {
+    void navigate({
+      search: (previous) => ({ ...previous, ...next }),
+      replace: !("selected" in next || "create" in next),
+    })
+  }
 
   return (
-    <>
-      <PageHeading
-        actions={
-          <Link to="/ec2/create-security-group">
-            <Button>Create Security Group</Button>
-          </Link>
-        }
-        title="Security Groups"
-      />
-
-      <ResourceList
-        empty="No security groups found."
-        getKey={(sg) => sg.GroupId}
-        items={securityGroups}
-        renderItem={(sg, id) => (
-          <ListCard
-            params={{ id }}
-            subtitle={sg.VpcId ?? ""}
-            title={securityGroupLabel(sg)}
-            to="/ec2/describe-security-groups/$id"
-          />
-        )}
-      />
-    </>
+    <SecurityGroupsPage
+      onSearchChange={onSearchChange}
+      search={search}
+      securityGroups={data.SecurityGroups ?? []}
+    />
   )
 }

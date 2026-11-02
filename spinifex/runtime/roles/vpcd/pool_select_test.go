@@ -42,3 +42,27 @@ func TestSelectExternalPools(t *testing.T) {
 		assert.Nil(t, public)
 	})
 }
+
+// Vultr bare metal ARPs for a reserved IP, so a Vultr pool must name an
+// uplink even though it has neither a gateway nor a bind bridge.
+func TestEIPUplinkLocator(t *testing.T) {
+	cases := []struct {
+		name       string
+		pool       external.ExternalPoolConfig
+		gateway    string
+		uplinkHint string
+	}{
+		{"static pool routes toward its gateway", external.ExternalPoolConfig{Source: external.SourceStatic, Gateway: "192.168.1.1"}, "192.168.1.1", ""},
+		{"dhcp pool names its bind bridge", external.ExternalPoolConfig{Source: external.SourceDHCP, BindBridge: "br-wan"}, "", "br-wan"},
+		{"vultr pool follows the internet route", external.ExternalPoolConfig{Source: external.SourceVultr}, host.InternetRouteProbe, ""},
+		{"exoscale pool gets no proxy-ARP", external.ExternalPoolConfig{Source: external.SourceExoscale}, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gw, hint := eipUplinkLocator(&tc.pool)
+			if gw != tc.gateway || hint != tc.uplinkHint {
+				t.Fatalf("eipUplinkLocator() = (%q, %q), want (%q, %q)", gw, hint, tc.gateway, tc.uplinkHint)
+			}
+		})
+	}
+}

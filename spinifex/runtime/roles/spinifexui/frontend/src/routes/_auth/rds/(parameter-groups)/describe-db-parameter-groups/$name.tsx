@@ -1,5 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { useSuspenseQuery } from "@tanstack/react-query"
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router"
+import { z } from "zod"
 
+import { BackLink } from "@/components/back-link"
+import { panelSearchFields } from "@/lib/panel-search"
 import { safeDecodeURIComponent } from "@/lib/utils"
 import {
   rdsParameterGroupQueryOptions,
@@ -8,11 +12,13 @@ import {
 } from "@/queries/rds"
 import { isDefaultParameterGroupName } from "@/types/rds"
 
-import { DBParameterGroupDetailPage } from "../-components/db-parameter-group-detail-page"
+import { DBParameterGroupDetails } from "../-components/db-parameter-group-details"
 
 export const Route = createFileRoute(
   "/_auth/rds/(parameter-groups)/describe-db-parameter-groups/$name",
 )({
+  validateSearch: z.object({ tab: panelSearchFields.tab }),
+  search: { middlewares: [stripSearchParams({ tab: "overview" })] },
   loader: async ({ context, params }) => {
     const name = safeDecodeURIComponent(params.name)
 
@@ -48,15 +54,43 @@ export const Route = createFileRoute(
       },
     ],
   }),
-  component: RouteComponent,
+  component: DBParameterGroupDetail,
 })
 
-function RouteComponent() {
+// The group's own page: the side panel's tabs, with room for the editor.
+function DBParameterGroupDetail() {
   const { name } = Route.useParams()
+  const { tab } = Route.useSearch()
+  const navigate = Route.useNavigate()
+
+  const { data } = useSuspenseQuery(
+    rdsParameterGroupQueryOptions(safeDecodeURIComponent(name)),
+  )
+
+  const group = data.DBParameterGroups?.[0]
+
+  if (!group?.DBParameterGroupName) {
+    return (
+      <>
+        <BackLink to="/rds/describe-db-parameter-groups">
+          Back to parameter groups
+        </BackLink>
+        <p className="text-muted-foreground">DB parameter group not found.</p>
+      </>
+    )
+  }
 
   return (
-    <DBParameterGroupDetailPage
-      dbParameterGroupName={safeDecodeURIComponent(name)}
+    <DBParameterGroupDetails
+      group={group}
+      layout="page"
+      onClose={() => {
+        void navigate({ to: "/rds/describe-db-parameter-groups" })
+      }}
+      onTabChange={(next) => {
+        void navigate({ search: { tab: next }, replace: true })
+      }}
+      tab={tab}
     />
   )
 }

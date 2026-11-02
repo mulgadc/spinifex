@@ -34,7 +34,8 @@ func ValidateRebootInstancesInput(input *ec2.RebootInstancesInput) error {
 }
 
 // RebootInstances sends reboot commands to specified instances via NATS.
-// Unlike stop+start, reboot keeps the instance running and sends a QMP system_reset.
+// Unlike stop+start, reboot keeps the instance running, on its node and volumes,
+// while the guest is shut down and started on a fresh QEMU.
 // Returns an empty response on success (AWS returns no state-change data).
 func RebootInstances(ctx context.Context, input *ec2.RebootInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.RebootInstancesOutput, error) {
 	if err := ValidateRebootInstancesInput(input); err != nil {

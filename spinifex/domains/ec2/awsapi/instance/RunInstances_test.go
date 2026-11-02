@@ -9,8 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -385,7 +385,7 @@ func TestResolveAndAuthorizeInstanceProfile_Absent(t *testing.T) {
 
 func TestResolveAndAuthorizeInstanceProfile_NameForm_NormalisesToARN(t *testing.T) {
 	t.Parallel()
-	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*iamdomain.InstanceProfile, error) {
 		assert.Equal(t, testProfileNameApp, nameOrARN)
 		return profileWithRole(), nil
 	}}
@@ -404,7 +404,7 @@ func TestResolveAndAuthorizeInstanceProfile_NameForm_NormalisesToARN(t *testing.
 
 func TestResolveAndAuthorizeInstanceProfile_ArnForm(t *testing.T) {
 	t.Parallel()
-	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(_, nameOrARN string) (*iamdomain.InstanceProfile, error) {
 		assert.Equal(t, testProfileARNApp, nameOrARN)
 		return profileWithRole(), nil
 	}}
@@ -433,7 +433,7 @@ func TestResolveAndAuthorizeInstanceProfile_NilIAMService(t *testing.T) {
 
 func TestResolveAndAuthorizeInstanceProfile_NotFoundMapsToEC2Error(t *testing.T) {
 	t.Parallel()
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}}
 	in := runValidInputWithProfile(&ec2.IamInstanceProfileSpecification{Name: aws.String("ghost")})
@@ -445,7 +445,7 @@ func TestResolveAndAuthorizeInstanceProfile_NotFoundMapsToEC2Error(t *testing.T)
 func TestResolveAndAuthorizeInstanceProfile_CrossAccountARNPassthrough(t *testing.T) {
 	t.Parallel()
 	// IAM service rejects cross-account; gateway surfaces the AccessDenied verbatim.
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}}
 	in := runValidInputWithProfile(&ec2.IamInstanceProfileSpecification{Arn: aws.String(testCrossAccountARN)})
@@ -456,7 +456,7 @@ func TestResolveAndAuthorizeInstanceProfile_CrossAccountARNPassthrough(t *testin
 
 func TestResolveAndAuthorizeInstanceProfile_PassRoleDenied(t *testing.T) {
 	t.Parallel()
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return profileWithRole(), nil
 	}}
 	check := func(roleARN string) error {
@@ -471,7 +471,7 @@ func TestResolveAndAuthorizeInstanceProfile_PassRoleDenied(t *testing.T) {
 
 func TestResolveAndAuthorizeInstanceProfile_NoRoleSkipsPassRole(t *testing.T) {
 	t.Parallel()
-	svc := &fakeIAMService{resolveFn: func(string, string) (*handlers_iam.InstanceProfile, error) {
+	svc := &fakeIAMService{resolveFn: func(string, string) (*iamdomain.InstanceProfile, error) {
 		return profileNoRole(), nil
 	}}
 	checkCalled := false

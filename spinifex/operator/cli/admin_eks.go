@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/spf13/cobra"
 )
 
@@ -56,14 +56,14 @@ func runAdminEksRestoreSnapshot(cmd *cobra.Command, _ []string) {
 	}
 	defer nc.Close()
 
-	svc := handlers_eks.NewNATSEKSService(nc)
+	svc := ekscluster.NewNATSEKSService(nc)
 	// The server side launches a VM (30-60s) then fences the old CP with retries,
 	// so the RPC needs generous headroom over a bare launch.
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	fmt.Printf("Restoring control plane for cluster %q (account %s)...\n", clusterName, accountID)
-	out, err := svc.RestoreSnapshot(ctx, &handlers_eks.RestoreSnapshotInput{
+	out, err := svc.RestoreSnapshot(ctx, &ekscluster.RestoreSnapshotInput{
 		ClusterName: clusterName,
 		Snapshot:    snapshot,
 	}, accountID)

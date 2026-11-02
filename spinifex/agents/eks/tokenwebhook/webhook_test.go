@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,8 +43,8 @@ func TestHandle_GrantsAndStampsAudiences(t *testing.T) {
 	a := &authenticator{
 		accountID:   "111122223333",
 		clusterName: "alpha",
-		review: func(string) (handlers_eks.WebhookTokenReviewResult, error) {
-			return handlers_eks.WebhookTokenReviewResult{
+		review: func(string) (ekscluster.WebhookTokenReviewResult, error) {
+			return ekscluster.WebhookTokenReviewResult{
 				Authenticated: true,
 				Username:      "arn:aws:iam::111122223333:role/admin",
 				UID:           "AROAEXAMPLE:session",
@@ -65,8 +65,8 @@ func TestHandle_GrantsAndStampsAudiences(t *testing.T) {
 func TestHandle_DeniesWithoutStampingAudiences(t *testing.T) {
 	a := &authenticator{
 		clusterName: "alpha",
-		review: func(string) (handlers_eks.WebhookTokenReviewResult, error) {
-			return handlers_eks.WebhookTokenReviewResult{Authenticated: false}, nil
+		review: func(string) (ekscluster.WebhookTokenReviewResult, error) {
+			return ekscluster.WebhookTokenReviewResult{Authenticated: false}, nil
 		},
 	}
 
@@ -82,8 +82,8 @@ func TestHandle_DeniesWithoutStampingAudiences(t *testing.T) {
 func TestHandle_BrokerFaultReturns5xx(t *testing.T) {
 	a := &authenticator{
 		clusterName: "alpha",
-		review: func(string) (handlers_eks.WebhookTokenReviewResult, error) {
-			return handlers_eks.WebhookTokenReviewResult{}, errors.New("gateway returned 503")
+		review: func(string) (ekscluster.WebhookTokenReviewResult, error) {
+			return ekscluster.WebhookTokenReviewResult{}, errors.New("gateway returned 503")
 		},
 	}
 

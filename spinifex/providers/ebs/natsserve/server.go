@@ -188,7 +188,7 @@ func badRequestError(err error) *ebsprovider.ProviderError {
 }
 
 func versionError(got uint16) *ebsprovider.ProviderError {
-	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedVersion, Message: fmt.Sprintf("unsupported schema version %d, want %d", got, ebsprovider.SchemaVersion)}
+	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedVersion, Message: fmt.Sprintf("unsupported schema version %d; supported versions are %d and %d", got, ebsprovider.LegacySchemaVersion, ebsprovider.SchemaVersion)}
 }
 
 func invalidArgumentError(format string, args ...any) *ebsprovider.ProviderError {
@@ -230,7 +230,7 @@ func handleCapabilities(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}
@@ -250,7 +250,7 @@ func handleCreateVolume(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}
@@ -270,7 +270,7 @@ func handleGetVolume(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}
@@ -290,7 +290,7 @@ func handleListVolumes(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}
@@ -310,7 +310,7 @@ func handleListSnapshots(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}
@@ -330,7 +330,7 @@ func handleExpandVolume(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}
@@ -350,7 +350,7 @@ func handleDeleteVolume(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}
@@ -369,7 +369,7 @@ func handleDeleteSnapshot(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}
@@ -388,7 +388,7 @@ func handleCopySnapshot(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}
@@ -411,7 +411,7 @@ func handleCreateSnapshot(nc *nats.Conn, provider ebsprovider.EBSProvider) msgHa
 			respond(ctx, msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}
@@ -492,7 +492,7 @@ func handlePublishVolume(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}
@@ -501,7 +501,34 @@ func handlePublishVolume(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: classifyError(err)})
 			return
 		}
-		respond(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Published: pub})
+		if pub == nil {
+			respond(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("provider returned no published volume for %s", req.VolumeID)})
+			return
+		}
+		// An unattachable export is the provider's fault, so it is reported as
+		// internal rather than relayed for the client to reject.
+		if err := pub.Export.Validate(); err != nil {
+			respond(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("provider returned an invalid export for %s: %v", req.VolumeID, err)})
+			return
+		}
+		if req.SchemaVersion == ebsprovider.LegacySchemaVersion {
+			legacy, err := pub.AsV1()
+			if err != nil {
+				// A v1 caller cannot safely consume a block export. Do not emit an
+				// empty legacy URI and leave the old client to misattach it.
+				respond(ctx, msg, ebsprovider.PublishVolumeResponseV1{
+					Versioned: ebsprovider.NewVersioned(),
+					Error:     &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedVersion, Message: err.Error()},
+				})
+				return
+			}
+			respond(ctx, msg, ebsprovider.PublishVolumeResponseV1{
+				Versioned: ebsprovider.NewVersioned(),
+				Published: legacy,
+			})
+			return
+		}
+		respond(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewLatestVersioned(), Published: pub})
 	}
 }
 
@@ -512,7 +539,7 @@ func handleUnpublishVolume(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 			return
 		}
-		if req.SchemaVersion != ebsprovider.SchemaVersion {
+		if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 			respond(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: versionError(req.SchemaVersion)})
 			return
 		}

@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // The in-guest half of the engine seam. Everything engine-shaped that a
@@ -26,7 +26,7 @@ type engineOps interface {
 	SetPassword(ctx context.Context, username, password string) error
 	// Installs the resolved parameter set and reloads. Returns the settings the
 	// engine accepted but will not honour until it restarts.
-	ApplyParameters(ctx context.Context, params []handlers_rds.Parameter) ([]string, error)
+	ApplyParameters(ctx context.Context, params []rdsinstance.Parameter) ([]string, error)
 	// Shuts the engine down cleanly, so the data volume is checkpointed before
 	// the VM is stopped or snapshotted.
 	Stop(ctx context.Context) error

@@ -28,6 +28,9 @@
 # that runs identically on either, and because a quota left switched on would
 # cap every suite sharing the environment — so it must be proved to restore
 # itself wherever it runs, not only on one node.
+# route53 belongs to both topologies because every node serves every hosted
+# zone from one shared bucket: on one node it proves the zone loads at all, on
+# three that each node's sync reaches the same set.
 # storagefault runs last in both lists and belongs to both topologies, for
 # different reasons. On one node it is RS(1,0), so freezing the only predastore
 # is a total outage and the guest-survival assertion is unambiguous. On three it
@@ -37,7 +40,7 @@
 # received. It is last because it SIGSTOPs a cluster-wide
 # service: anything sharing the environment would see the same outage and report
 # a failure that says nothing about itself.
-E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota storagefault"
+E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota route53 storagefault"
 
 # Suites runnable against a multi-node environment.
 #
@@ -57,7 +60,7 @@ E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota 
 # replicated rather than sitting on one node, so it runs before the pair that
 # take a node away — a cluster whose buckets are already wrong should report
 # that, not report a recovery failing.
-E2E_SUITES_MULTI="multinode lb cert quota kvquorum lbrecovery instancerecovery storagefault"
+E2E_SUITES_MULTI="multinode lb cert quota route53 kvquorum lbrecovery instancerecovery storagefault"
 
 # grep -xE alternation form, for narrowing a requested set to the eligible one.
 E2E_SUITES_SINGLE_RE="$(printf '%s' "${E2E_SUITES_SINGLE}" | tr ' ' '|')"
@@ -114,8 +117,9 @@ e2e_suite_timeout() {
     # storage case waits for a pause measured at 4m47s and then holds four
     # minutes to prove nothing moved. Three tests, each taking a node away and
     # bringing it back, and the partition case adds a lease validity, a lease
-    # TTL and a boot on top of everything the other two wait for.
-    instancerecovery) echo "90m" ;;
+    # TTL and a boot on top of everything the other two wait for. The data
+    # test lets its guest age past the pending watchdog twice, about 20 more.
+    instancerecovery) echo "110m" ;;
     # lbrecovery pays for a load balancer twice: once to stand one up with two
     # backends placed around it, and once for the recovery itself — a stale
     # owner, a lease, a boot, HAProxy's own start, and its health checks against
@@ -126,6 +130,10 @@ e2e_suite_timeout() {
     # budget on a node stopping and starting: seven units down, a raft election,
     # and the whole service stack back up with every stream caught up.
     kvquorum) echo "40m" ;;
+    # single is the broadest suite and finishes, it does not hang: passing runs
+    # took 24-29m, and an Oracle host ran out at 30m inside the last test's
+    # cleanup. The default left it no headroom at all.
+    single) echo "40m" ;;
     *) echo "30m" ;;
   esac
 }

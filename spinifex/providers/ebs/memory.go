@@ -375,7 +375,7 @@ func (m *MemoryProvider) PublishVolume(_ context.Context, req PublishVolumeReque
 	volume.published = &PublishedVolume{
 		VolumeID: req.VolumeID,
 		NodeID:   req.NodeID,
-		NBDURI:   "nbd+unix:///?socket=/memory/" + req.VolumeID + ".sock",
+		Export:   NewNBDExport("nbd+unix:///?socket=/memory/" + req.VolumeID + ".sock"),
 	}
 	volume.volume.State = VolumeStateInUse
 	return clonePublished(volume.published), nil
@@ -421,5 +421,13 @@ func clonePublished(published *PublishedVolume) *PublishedVolume {
 		return nil
 	}
 	clone := *published
+	if published.Export.NBD != nil {
+		nbd := *published.Export.NBD
+		clone.Export.NBD = &nbd
+	}
+	if published.Export.Block != nil {
+		block := *published.Export.Block
+		clone.Export.Block = &block
+	}
 	return &clone
 }

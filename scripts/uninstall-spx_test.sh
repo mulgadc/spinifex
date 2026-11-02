@@ -56,6 +56,17 @@ grep -q "unknown option" "$TMP/err" \
     && pass "unknown option explains itself on stderr" \
     || fail "unknown option wrote nothing useful to stderr"
 
+# --purge-deps on a dnf host stops before anything is touched. PATH holds only
+# the tools the script needs up to that check, with dnf and no apt-get.
+mkdir -p "$TMP/dnfbin"
+for tool in bash dirname; do ln -s "$(command -v "$tool")" "$TMP/dnfbin/$tool"; done
+printf '#!/bin/sh\nexit 0\n' >"$TMP/dnfbin/dnf"
+chmod +x "$TMP/dnfbin/dnf"
+PATH="$TMP/dnfbin" "$TMP/dnfbin/bash" "$UNINSTALL" --purge-deps --yes >"$TMP/out" 2>"$TMP/err" && rc=0 || rc=$?
+[ "$rc" = 1 ] && grep -q "not supported on dnf hosts" "$TMP/err" \
+    && pass "--purge-deps is refused on a dnf host, saying why" \
+    || fail "--purge-deps on a dnf host: rc=$rc: $(cat "$TMP/err")"
+
 # --------------------------------------------------------------------------
 # The multi-node refusal.
 #
@@ -147,9 +158,10 @@ fi
 
 # The nft teardown must name our own table. A global flush would take the
 # host's other rules with it.
-grep -q 'nft delete table inet spinifex_filter' "$UNINSTALL" \
-    && pass "nft teardown deletes only inet spinifex_filter" \
-    || fail "nft teardown does not delete inet spinifex_filter by name"
+grep -q 'nft delete table inet "$nft_table"' "$UNINSTALL" \
+    && grep -q 'for nft_table in spinifex_filter spinifex_conntrack; do' "$UNINSTALL" \
+    && pass "nft teardown deletes only inet spinifex_filter and spinifex_conntrack" \
+    || fail "nft teardown does not delete inet spinifex_filter and spinifex_conntrack by name"
 grep -qE 'nft[[:space:]]+(-[a-z][[:space:]]+)*flush ruleset' "$UNINSTALL" \
     && fail "nft teardown flushes the whole ruleset" \
     || pass "nft teardown never flushes the whole ruleset"

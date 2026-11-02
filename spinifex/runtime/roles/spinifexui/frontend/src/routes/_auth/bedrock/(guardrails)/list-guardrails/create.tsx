@@ -1,23 +1,10 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { EMPTY_GUARDRAIL_FORM_DEFAULTS } from "@/types/bedrock"
-
-import { GuardrailFormPage } from "../-components/guardrail-form-page"
-
+// The form opens in the list's side panel; this address is kept for links.
 export const Route = createFileRoute(
   "/_auth/bedrock/(guardrails)/list-guardrails/create",
 )({
-  head: () => ({
-    meta: [{ title: "Create Guardrail | Ochre | Mulga" }],
-  }),
-  component: RouteComponent,
+  beforeLoad: () => {
+    throw redirect({ to: "/bedrock/list-guardrails", search: { create: true } })
+  },
 })
-
-function RouteComponent() {
-  return (
-    <GuardrailFormPage
-      defaultValues={EMPTY_GUARDRAIL_FORM_DEFAULTS}
-      mode="create"
-    />
-  )
-}

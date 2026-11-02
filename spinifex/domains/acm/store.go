@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -106,7 +106,7 @@ type CertRecord struct {
 	ImportedAt       time.Time         `json:"imported_at"`
 	Tags             map[string]string `json:"tags,omitempty"`
 	// InUseBy is the set of load balancer ARNs whose listeners currently
-	// reference this certificate. Maintained by handlers/elbv2 as listeners are
+	// reference this certificate. Maintained by domains/elbv2 as listeners are
 	// created, modified and deleted; also surfaces as the public
 	// CertificateDetail.InUseBy field.
 	InUseBy []string `json:"in_use_by,omitempty"`
@@ -150,7 +150,7 @@ type CertRecord struct {
 	ACMEAttemptCount   int       `json:"acme_attempt_count,omitempty"`
 	ACMENextAttemptAt  time.Time `json:"acme_next_attempt_at"`
 
-	// --- Per-certificate issuance lease (see handlers/eks/cluster_reconciler.go
+	// --- Per-certificate issuance lease (see domains/eks/cluster/cluster_reconciler.go
 	// for the pattern this follows). Only the holder may drive this
 	// certificate's order; empty/zero when unleased.
 	LeaseHolder    string    `json:"lease_holder,omitempty"`
@@ -161,7 +161,7 @@ type CertRecord struct {
 type Store struct {
 	store *kvstore.Store[CertRecord]
 	// masterKey encrypts/decrypts CertRecord.PrivateKey at rest (AES-256-GCM via
-	// handlers_iam.EncryptSecret/DecryptSecret). Every Store over the ACM bucket
+	// iamdomain.EncryptSecret/DecryptSecret). Every Store over the ACM bucket
 	// — the ACM service and ELBv2's independent read-only Store alike — must be
 	// constructed with the same deployment key: a keyed writer and an unkeyed (or
 	// differently keyed) reader of the same bucket disagree silently, with the
@@ -221,7 +221,7 @@ func certKey(certArn string) string {
 // via the legacy-passthrough path in decryptPrivateKey is therefore
 // re-encrypted the next time it is put.
 func (s *Store) PutCert(ctx context.Context, rec *CertRecord) error {
-	ciphertext, err := handlers_iam.EncryptSecret(rec.PrivateKey, s.masterKey)
+	ciphertext, err := iamdomain.EncryptSecret(rec.PrivateKey, s.masterKey)
 	if err != nil {
 		return fmt.Errorf("encrypt private key: %w", err)
 	}
@@ -324,7 +324,7 @@ func isPlaintextPrivateKeyPEM(raw string) bool {
 // ciphertext, garbage) is a hard error rather than a silent plaintext
 // fallback.
 func (s *Store) decryptPrivateKey(rec *CertRecord) error {
-	if plaintext, err := handlers_iam.DecryptSecret(rec.PrivateKey, s.masterKey); err == nil {
+	if plaintext, err := iamdomain.DecryptSecret(rec.PrivateKey, s.masterKey); err == nil {
 		rec.PrivateKey = plaintext
 		return nil
 	}
@@ -443,7 +443,7 @@ const maxInUseByCASAttempts = 50
 // No-op if the certificate does not exist or already lists resourceArn.
 //
 // InUseBy is the sole mechanism by which a re-imported certificate reaches
-// the data plane (see UpdateStoredConfigForCert in handlers/elbv2), so a lost
+// the data plane (see UpdateStoredConfigForCert in domains/elbv2), so a lost
 // update here is not a cosmetic race: it silently drops a load balancer from
 // fan-out, and that load balancer's certificate expires in HAProxy while ACM
 // still reports it as renewed. Two listeners on different load balancers can
@@ -513,7 +513,7 @@ func (s *Store) UpdateTags(ctx context.Context, certArn string, mutate func(tags
 // AcquireLease attempts to take the per-certificate issuance/renewal lease on
 // certArn for holderID, valid until now+ttl. The lease lives on the record
 // itself (CertRecord.LeaseHolder/LeaseExpiresAt) rather than in a separate
-// leader-election bucket — contrast handlers/eks/cluster_reconciler.go, which
+// leader-election bucket — contrast domains/eks/cluster/cluster_reconciler.go, which
 // leases a whole cluster for the life of a Run loop — because the unit of
 // work here is one certificate, reissued and released in a single pass.
 //

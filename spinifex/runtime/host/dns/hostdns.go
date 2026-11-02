@@ -100,10 +100,7 @@ func newConfigurator() *configurator {
 			_, err := hostcommand.RunCommandWithTimeout(resolverCommandTimeout, "systemctl", "is-active", "--quiet", "systemd-resolved")
 			return err == nil
 		},
-		hasResolvconf: func() bool {
-			_, err := exec.LookPath("resolvconf")
-			return err == nil
-		},
+		hasResolvconf: func() bool { return resolvconfOnPath(exec.LookPath) },
 		restartResolved: func() error {
 			_, err := hostcommand.RunCommandWithTimeout(resolverCommandTimeout, "systemctl", "restart", "systemd-resolved")
 			return err
@@ -116,6 +113,18 @@ func newConfigurator() *configurator {
 			return hostcommand.RunCommandWithTimeout(resolverCommandTimeout, "resolvectl", "status")
 		},
 	}
+}
+
+// resolvconfOnPath reports whether a real resolvconf is on PATH. systemd-resolved
+// ships resolvconf as a link to resolvectl, which only works while resolved runs,
+// so that one is not a resolvconf backend.
+func resolvconfOnPath(lookPath func(string) (string, error)) bool {
+	path, err := lookPath("resolvconf")
+	if err != nil {
+		return false
+	}
+	target, err := filepath.EvalSymlinks(path)
+	return err == nil && filepath.Base(target) != "resolvectl"
 }
 
 // configure selects the host's resolver manager and applies the northstar route.
@@ -132,7 +141,7 @@ func (c *configurator) configure(p Params) error {
 		return c.configureResolvconf(p)
 	default:
 		return fmt.Errorf(
-			"no supported resolver manager (systemd-resolved or resolvconf) is present; "+
+			"no supported resolver manager: systemd-resolved is not active and resolvconf is not installed; "+
 				"manually forward the Spinifex zones %s and %s to %s:53",
 			p.BaseDomain, p.InternalDomain, p.ResolverIP)
 	}

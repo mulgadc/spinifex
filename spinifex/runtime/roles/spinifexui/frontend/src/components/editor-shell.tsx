@@ -58,7 +58,8 @@ export function EditorShell({
           {successMsg}
         </output>
       )}
-      <div className="rounded-lg border bg-card">
+      {/* Editors sit inside a panel section, which draws the card. */}
+      <div>
         {children}
         <div className="flex items-center justify-end gap-2 border-t p-4">
           <span className="mr-auto text-xs text-muted-foreground">

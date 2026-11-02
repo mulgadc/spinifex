@@ -3,3 +3,5 @@ node_modules
 *.tsbuildinfo
 .pnpm-store
 coverage
+test-results
+playwright-report

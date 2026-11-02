@@ -4,15 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/spf13/cobra"
 )
 
@@ -151,7 +151,7 @@ type principalRow struct {
 // describePrincipal resolves what a user in the super-admin account may call.
 // An attached wildcard policy is reported as such rather than expanded: the
 // point of the listing is to show which principals are unscoped.
-func describePrincipal(svc handlers_iam.IAMService, accountID, userName string) (principalRow, error) {
+func describePrincipal(svc iamdomain.IAMService, accountID, userName string) (principalRow, error) {
 	row := principalRow{UserName: userName}
 
 	attached, err := svc.ListAttachedUserPolicies(accountID, &iam.ListAttachedUserPoliciesInput{
@@ -193,9 +193,9 @@ func describePrincipal(svc handlers_iam.IAMService, accountID, userName string) 
 func principalPolicyActions(document string) []string {
 	var doc struct {
 		Statement []struct {
-			Effect    string                   `json:"Effect"`
-			Action    handlers_iam.StringOrArr `json:"Action"`
-			NotAction handlers_iam.StringOrArr `json:"NotAction"`
+			Effect    string                `json:"Effect"`
+			Action    iamdomain.StringOrArr `json:"Action"`
+			NotAction iamdomain.StringOrArr `json:"NotAction"`
 		} `json:"Statement"`
 	}
 	if err := json.Unmarshal([]byte(document), &doc); err != nil {
@@ -273,7 +273,7 @@ func runAdminPrincipalRevoke(_ *cobra.Command, args []string) error {
 // dropStalePrincipalPolicies removes every inline policy on the principal that
 // this command did not write. A principal's grants are exactly one policy, so
 // re-creating one with narrower grants cannot leave a wider policy behind.
-func dropStalePrincipalPolicies(svc handlers_iam.IAMService, accountID, userName string) ([]string, error) {
+func dropStalePrincipalPolicies(svc iamdomain.IAMService, accountID, userName string) ([]string, error) {
 	listed, err := svc.ListUserPolicies(accountID, &iam.ListUserPoliciesInput{
 		UserName: aws.String(userName),
 	})
@@ -361,7 +361,7 @@ func runAdminPrincipalDelete(_ *cobra.Command, args []string) error {
 // revokePrincipalKeys deletes every access key the user holds and returns the
 // IDs. A key from an earlier run is unrecoverable to its holder but still
 // authenticates, so it is removed rather than left live alongside a new one.
-func revokePrincipalKeys(svc handlers_iam.IAMService, accountID, userName string) ([]string, error) {
+func revokePrincipalKeys(svc iamdomain.IAMService, accountID, userName string) ([]string, error) {
 	listed, err := svc.ListAccessKeys(accountID, &iam.ListAccessKeysInput{
 		UserName: aws.String(userName),
 	})
@@ -392,7 +392,7 @@ func revokePrincipalKeys(svc handlers_iam.IAMService, accountID, userName string
 // policy allows. An empty request means every admin method: a principal minted
 // without a --grant is the operator credential.
 func resolvePrincipalGrants(requested []string) ([]string, error) {
-	known := gateway.AdminMethodNames()
+	known := operatorv1.AdminMethodNames()
 	if len(requested) == 0 {
 		return prefixGrants(known), nil
 	}
@@ -451,10 +451,10 @@ func validatePrincipalName(name string) error {
 	if name == "" {
 		return errors.New("principal name is required")
 	}
-	if name == handlers_iam.AdminUserName {
+	if name == iamdomain.AdminUserName {
 		return fmt.Errorf("%q is the super-admin account's own administrator — "+
 			"rotating its key would lock out the bootstrap credential; choose another name",
-			handlers_iam.AdminUserName)
+			iamdomain.AdminUserName)
 	}
 	if len(name) > 64 {
 		return errors.New("principal name must be 64 characters or fewer")
@@ -511,7 +511,7 @@ func runAdminPrincipalAudit(_ *cobra.Command, _ []string) error {
 // principal in accountID. A malformed document is reported as trusting, since
 // a document nobody can parse is not a document anybody has verified.
 func trustsWholeAccount(document, accountID string) bool {
-	doc, err := handlers_iam.ValidateTrustPolicyDocument(document)
+	doc, err := iamdomain.ValidateTrustPolicyDocument(document)
 	if err != nil {
 		return true
 	}
@@ -520,7 +520,7 @@ func trustsWholeAccount(document, accountID string) bool {
 			continue
 		}
 		var principal struct {
-			AWS handlers_iam.StringOrArr `json:"AWS"`
+			AWS iamdomain.StringOrArr `json:"AWS"`
 		}
 		if err := json.Unmarshal(stmt.Principal, &principal); err != nil {
 			continue
@@ -632,5 +632,5 @@ func init() {
 
 	adminPrincipalCreateCmd.Flags().StringSlice("grant", nil,
 		"Admin methods this principal may call (default: all of "+
-			strings.Join(gateway.AdminMethodNames(), ", ")+")")
+			strings.Join(operatorv1.AdminMethodNames(), ", ")+")")
 }

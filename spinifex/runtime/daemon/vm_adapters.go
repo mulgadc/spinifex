@@ -1,0 +1,1083 @@
+package daemon
+
+import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"log/slog"
+	"time"
+
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+)
+
+// stateStoreAdapter satisfies vm.StateStore by delegating to JetStreamManager.
+// Tolerates nil JetStreamManager during early boot. The running set is the one
+// exception: it goes through the daemon's persist path so that the local file,
+// not just KV, sees every change the vm package makes.
+type stateStoreAdapter struct {
+	js      *JetStreamManager
+	persist func(nodeID string, vms map[string]*vm.VM) error
+}
+
+var _ vm.StateStore = (*stateStoreAdapter)(nil)
+
+func newStateStoreAdapter(js *JetStreamManager, persist func(string, map[string]*vm.VM) error) *stateStoreAdapter {
+	return &stateStoreAdapter{js: js, persist: persist}
+}
+
+func (a *stateStoreAdapter) SaveRunningState(nodeID string, snapshot map[string]*vm.VM) error {
+	return a.persist(nodeID, snapshot)
+}
+
+func (a *stateStoreAdapter) LoadRunningState(nodeID string) (map[string]*vm.VM, bool, error) {
+	return a.js.LoadState(nodeID)
+}
+
+func (a *stateStoreAdapter) WriteStoppedInstance(id string, v *vm.VM) error {
+	return a.js.WriteStoppedInstance(id, v)
+}
+
+func (a *stateStoreAdapter) LoadStoppedInstance(id string) (*vm.VM, error) {
+	return a.js.LoadStoppedInstance(id)
+}
+
+func (a *stateStoreAdapter) DeleteStoppedInstance(id string) error {
+	return a.js.DeleteStoppedInstance(id)
+}
+
+func (a *stateStoreAdapter) UpdateStoppedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
+	return a.js.UpdateStoppedInstance(id, mutate)
+}
+
+func (a *stateStoreAdapter) ClaimStoppedInstance(id string) (*vm.VM, error) {
+	return a.js.ClaimStoppedInstance(id)
+}
+
+func (a *stateStoreAdapter) ListStoppedInstances() ([]*vm.VM, error) {
+	return a.js.ListStoppedInstances()
+}
+
+func (a *stateStoreAdapter) WriteTerminatedInstance(id string, v *vm.VM) error {
+	return a.js.WriteTerminatedInstance(id, v)
+}
+
+func (a *stateStoreAdapter) UpdateTerminatedInstance(id string, mutate func(*vm.VM)) (*vm.VM, error) {
+	return a.js.UpdateTerminatedInstance(id, mutate)
+}
+
+func (a *stateStoreAdapter) ListTerminatedInstances() ([]*vm.VM, error) {
+	return a.js.ListTerminatedInstances()
+}
+
+func (a *stateStoreAdapter) DeleteTerminatedInstance(id string) error {
+	return a.js.DeleteTerminatedInstance(id)
+}
+
+// volumeMounterAdapter satisfies vm.VolumeMounter by routing ebs.mount /
+// ebs.unmount NATS requests. Unmount also updates volume state via VolumeStateUpdater.
+type volumeMounterAdapter struct {
+	nc       *nats.Conn
+	node     string
+	volState vm.VolumeStateUpdater
+}
+
+var _ vm.VolumeMounter = (*volumeMounterAdapter)(nil)
+
+// unmountSealTimeout bounds the ebs.unmount NATS request. The handler now drives
+// a synchronous block-map seal to predastore (S3 I/O), which runs AFTER
+// viperblockd's SIGKILL once its 120s KillProcess grace elapses — so this
+// must strictly exceed that grace plus a seal allowance, never merely match
+// it: an unmount that consumes the whole grace could otherwise never be
+// observed as successful.
+const unmountSealTimeout = 180 * time.Second
+
+func newVolumeMounterAdapter(nc *nats.Conn, node string, volState vm.VolumeStateUpdater) *volumeMounterAdapter {
+	return &volumeMounterAdapter{nc: nc, node: node, volState: volState}
+}
+
+// ebsRequestWithTrace sends an ebs.* NATS request, opening a client span under
+// ctx and injecting it into the message headers so viperblockd's consumer span
+// (natsmsg.StartConsumerSpan) joins this trace instead of rooting a new one.
+//
+// accountID names the owner on the span and on the header viperblockd reads,
+// so block-storage work is attributable to a tenant. Empty is left off: a
+// sweep or a recovery belongs to nobody, and crediting it to whoever happens
+// to be admin would be worse than leaving it blank.
+func ebsRequestWithTrace(ctx context.Context, nc *nats.Conn, accountID, subject string, data []byte, timeout time.Duration) (msg *nats.Msg, err error) {
+	attrs := []attribute.KeyValue{
+		attribute.String("messaging.system", "nats"),
+		attribute.String("messaging.destination.name", subject),
+	}
+	if accountID != "" {
+		attrs = append(attrs, attribute.String(natsmsg.AttrAccountID, accountID))
+	}
+
+	ctx, span := otel.Tracer(daemonTracerName).Start(ctx, "NATS "+subject,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
+	reqMsg := nats.NewMsg(subject)
+	reqMsg.Data = data
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
+	if accountID != "" {
+		reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	}
+
+	msg, err = nc.RequestMsg(reqMsg, timeout)
+	return msg, err
+}
+
+func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error {
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+
+	mounted := make([]int, 0, len(instance.EBSRequests.Requests))
+	rollback := func(origErr error) error {
+		var rbErrs []error
+		for _, idx := range mounted {
+			req := instance.EBSRequests.Requests[idx]
+			if err := a.unmountOne(ctx, instance.AccountID, req); err != nil {
+				slog.Error("Mount rollback: unmount failed",
+					"volume", req.Name, "err", err)
+				rbErrs = append(rbErrs, fmt.Errorf("unmount %s: %w", req.Name, err))
+			}
+		}
+		if len(rbErrs) > 0 {
+			return fmt.Errorf("%w; rollback also failed: %w", origErr, errors.Join(rbErrs...))
+		}
+		return origErr
+	}
+
+	for k, v := range instance.EBSRequests.Requests {
+		ebsMountRequest, err := json.Marshal(v)
+		if err != nil {
+			slog.Error("Failed to marshal volume payload", "err", err)
+			return rollback(err)
+		}
+
+		reply, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, viperblocklegacyv1.MountSubject(a.node), ebsMountRequest, 30*time.Second)
+
+		slog.Info("Mounting volume", "Vol", v.Name, "NBDURI", v.NBDURI)
+
+		if err != nil {
+			slog.Error("Failed to request EBS mount", "err", err)
+			// A missing responder means viperblockd has not finished starting;
+			// during recovery that is transient, so let the caller retry.
+			if errors.Is(err, nats.ErrNoResponders) {
+				return rollback(fmt.Errorf("ebs mount had no responder: %w", vm.ErrMountRetryable))
+			}
+			return rollback(err)
+		}
+
+		var ebsMountResponse viperblocklegacyv1.EBSMountResponse
+		if err := json.Unmarshal(reply.Data, &ebsMountResponse); err != nil {
+			slog.Error("Failed to unmarshal volume response:", "err", err)
+			return rollback(err)
+		}
+
+		if ebsMountResponse.Error != "" {
+			slog.Error("Failed to mount volume", "error", ebsMountResponse.Error, "retryable", ebsMountResponse.Retryable)
+			if ebsMountResponse.Retryable {
+				return rollback(fmt.Errorf("failed to mount volume: %s: %w", ebsMountResponse.Error, vm.ErrMountRetryable))
+			}
+			return rollback(fmt.Errorf("failed to mount volume: %s", ebsMountResponse.Error))
+		}
+
+		slog.Debug("Mounted volume successfully", "response", ebsMountResponse.URI)
+		instance.EBSRequests.Requests[k].NBDURI = ebsMountResponse.URI
+		mounted = append(mounted, k)
+	}
+
+	return nil
+}
+
+func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) error {
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+
+	var sealErrs []error
+	for _, ebsRequest := range instance.EBSRequests.Requests {
+		ebsUnMountRequest, err := json.Marshal(ebsRequest)
+		if err != nil {
+			slog.Error("Failed to marshal volume payload for unmount", "err", err)
+			sealErrs = append(sealErrs, fmt.Errorf("marshal unmount request for %s: %w", ebsRequest.Name, err))
+			continue
+		}
+
+		// ebs.unmount seals the block map to predastore. Every volume is
+		// attempted, and the failures are aggregated for the caller: the
+		// volume must NOT go available, because a reattach on a node without
+		// the local WAL would find no checkpoint (bad superblock).
+		sealed := true
+		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, viperblocklegacyv1.UnmountSubject(a.node), ebsUnMountRequest, unmountSealTimeout)
+		if err != nil {
+			slog.Error("Failed to unmount volume",
+				"name", ebsRequest.Name, "instance", instance.ID, "err", err)
+			sealErrs = append(sealErrs, fmt.Errorf("unmount %s: %w", ebsRequest.Name, err))
+			sealed = false
+		} else if sealErr := unmountResponseError(msg.Data); sealErr != nil {
+			slog.Error("Volume unmount seal failed, leaving volume non-available",
+				"instance", instance.ID, "volume", ebsRequest.Name, "err", sealErr)
+			sealErrs = append(sealErrs, fmt.Errorf("seal %s: %w", ebsRequest.Name, sealErr))
+			sealed = false
+		} else {
+			slog.Info("Unmounted volume",
+				"instance", instance.ID, "volume", ebsRequest.Name, "data", string(msg.Data))
+		}
+
+		// Boot/root volumes must stay attached across stop/crash unmount: EFI is
+		// the wrong proxy for "boot" (BIOS-boot roots are Boot && !EFI), so gate on
+		// Boot too. Only DetachVolume and terminate release a boot volume; flipping
+		// it available here while the instance restarts splits the state record.
+		if sealed && !ebsRequest.EFI && !ebsRequest.Boot && a.volState != nil {
+			if err := a.volState.UpdateVolumeState(instance.AccountID, ebsRequest.Name, "available", "", ""); err != nil {
+				slog.Error("Failed to update volume state to available after unmount",
+					"volumeId", ebsRequest.Name, "err", err)
+			}
+		}
+	}
+
+	return errors.Join(sealErrs...)
+}
+
+// abandonTimeout bounds one ebs.abandon request. Generous enough to cover
+// viperblockd's SIGKILL wait for an nbdkit stuck in the storage path, and far
+// short of the unmount's budget because nothing here seals.
+const abandonTimeout = 45 * time.Second
+
+// Abandon tears down this node's export of every volume the instance had open,
+// without sealing any of them.
+//
+// Every volume is attempted and the failures are aggregated, because a volume
+// left exported is one the new owner cannot open — the caller is dropping a
+// superseded instance and needs to know whether it actually let go.
+func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, reason string) error {
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+
+	var errs []error
+	for _, ebsRequest := range instance.EBSRequests.Requests {
+		payload, err := json.Marshal(viperblocklegacyv1.VolumeAbandonRequest{Volume: ebsRequest.Name, Reason: reason})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("marshal abandon request for %s: %w", ebsRequest.Name, err))
+			continue
+		}
+
+		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID,
+			viperblocklegacyv1.VolumeAbandonSubject(a.node), payload, abandonTimeout)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("abandon %s: %w", ebsRequest.Name, err))
+			continue
+		}
+
+		var resp viperblocklegacyv1.VolumeAbandonResponse
+		if err := json.Unmarshal(msg.Data, &resp); err != nil {
+			errs = append(errs, fmt.Errorf("unmarshal abandon response for %s: %w", ebsRequest.Name, err))
+			continue
+		}
+		if resp.Error != "" {
+			errs = append(errs, fmt.Errorf("abandon %s: %s", ebsRequest.Name, resp.Error))
+			continue
+		}
+		if resp.Abandoned {
+			slog.WarnContext(ctx, "Gave up a volume export to the node that owns the instance now",
+				"instance", instance.ID, "volume", ebsRequest.Name, "reason", reason)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// MountOne sends ebs.mount for a single request and writes the resolved
+// NBDURI back into req.NBDURI. Used by hot-attach (Manager.AttachVolume).
+func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal ebs.mount request: %w", err)
+	}
+
+	reply, err := ebsRequestWithTrace(ctx, a.nc, accountID, viperblocklegacyv1.MountSubject(a.node), payload, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("ebs.mount NATS request: %w", err)
+	}
+
+	var resp viperblocklegacyv1.EBSMountResponse
+	if err := json.Unmarshal(reply.Data, &resp); err != nil {
+		return fmt.Errorf("unmarshal ebs.mount response: %w", err)
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("ebs.mount returned error: %s", resp.Error)
+	}
+	if resp.URI == "" {
+		return vm.ErrMountAmbiguous
+	}
+
+	req.NBDURI = resp.URI
+	return nil
+}
+
+// UnmountOne sends ebs.unmount and returns any error. The handler seals the
+// volume's block map to predastore, so the caller decides whether a failure
+// blocks the volume's available transition.
+func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
+	if err := a.unmountOne(ctx, accountID, req); err != nil {
+		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
+		return err
+	}
+	slog.Info("UnmountOne: volume unmounted successfully", "volume", req.Name)
+	return nil
+}
+
+// unmountOne sends ebs.unmount and returns any error.
+func (a *volumeMounterAdapter) unmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal unmount request: %w", err)
+	}
+	msg, err := ebsRequestWithTrace(ctx, a.nc, accountID, viperblocklegacyv1.UnmountSubject(a.node), payload, unmountSealTimeout)
+	if err != nil {
+		return fmt.Errorf("ebs.unmount NATS request: %w", err)
+	}
+	return unmountResponseError(msg.Data)
+}
+
+// unmountResponseError reports a seal/unmount failure from an ebs.unmount
+// response payload: a non-empty Error, or a volume still reported mounted.
+// Returns nil when the unmount and its block-map seal succeeded, or when the
+// volume was already unmounted and sealed (NotFound) — viperblockd only
+// reports NotFound once the seal itself has completed, so a retry landing
+// here is an idempotent success, not a failure.
+func unmountResponseError(data []byte) error {
+	var resp viperblocklegacyv1.EBSUnMountResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("unmarshal unmount response: %w", err)
+	}
+	if resp.NotFound {
+		return nil
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("ebs.unmount returned error: %s", resp.Error)
+	}
+	if resp.Mounted {
+		return fmt.Errorf("volume still mounted after unmount")
+	}
+	return nil
+}
+
+// instanceTypeResolverAdapter satisfies vm.InstanceTypeResolver by projecting
+// EC2 instance type info into the SDK-agnostic vm.InstanceTypeSpec.
+type instanceTypeResolverAdapter struct {
+	rm *ResourceManager
+}
+
+var _ vm.InstanceTypeResolver = (*instanceTypeResolverAdapter)(nil)
+
+func newInstanceTypeResolverAdapter(rm *ResourceManager) *instanceTypeResolverAdapter {
+	return &instanceTypeResolverAdapter{rm: rm}
+}
+
+func (a *instanceTypeResolverAdapter) Resolve(name string) (vm.InstanceTypeSpec, bool) {
+	it := a.rm.instanceTypes[name]
+	if it == nil {
+		return vm.InstanceTypeSpec{}, false
+	}
+	architecture := "x86_64"
+	if it.ProcessorInfo != nil && len(it.ProcessorInfo.SupportedArchitectures) > 0 && it.ProcessorInfo.SupportedArchitectures[0] != nil {
+		architecture = *it.ProcessorInfo.SupportedArchitectures[0]
+	}
+	return vm.InstanceTypeSpec{
+		VCPUs:        int(instanceTypeVCPUs(it)),
+		MemoryMiB:    int(instanceTypeMemoryMiB(it)),
+		Architecture: architecture,
+	}, true
+}
+
+// resourceControllerAdapter satisfies vm.ResourceController.
+type resourceControllerAdapter struct {
+	rm *ResourceManager
+}
+
+var _ vm.ResourceController = (*resourceControllerAdapter)(nil)
+
+func newResourceControllerAdapter(rm *ResourceManager) *resourceControllerAdapter {
+	return &resourceControllerAdapter{rm: rm}
+}
+
+func (a *resourceControllerAdapter) Allocate(instanceType string) error {
+	it := a.rm.instanceTypes[instanceType]
+	if it == nil {
+		return fmt.Errorf("instance type %s not found", instanceType)
+	}
+	return a.rm.allocate(it)
+}
+
+func (a *resourceControllerAdapter) Deallocate(instanceType string) {
+	it := a.rm.instanceTypes[instanceType]
+	if it == nil {
+		return
+	}
+	a.rm.deallocate(it)
+}
+
+func (a *resourceControllerAdapter) ReleaseToReservation(reservationID, instanceType string) {
+	it := a.rm.instanceTypes[instanceType]
+	if it == nil {
+		return
+	}
+	a.rm.ReleaseToReservation(reservationID, it)
+}
+
+func (a *resourceControllerAdapter) CanAllocate(instanceType string, count int) int {
+	it := a.rm.instanceTypes[instanceType]
+	if it == nil {
+		return 0
+	}
+	return a.rm.canAllocate(it, count)
+}
+
+// onInstanceRecoveringHook subscribes ec2.cmd.<id> early during Restore so
+// terminate commands can land before the relaunch completes.
+func (d *Daemon) onInstanceRecoveringHook() func(*vm.VM) {
+	return func(instance *vm.VM) {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+
+		if _, ok := d.natsSubscriptions[instance.ID]; ok {
+			return
+		}
+		sub, err := d.natsConn.Subscribe(ec2v1.InstanceCommandSubject(instance.ID), d.handleEC2Events)
+		if err != nil {
+			slog.Error("OnInstanceRecovering: failed to early-subscribe per-instance topic",
+				"instanceId", instance.ID, "err", err)
+			return
+		}
+		d.natsSubscriptions[instance.ID] = sub
+	}
+}
+
+// consumeCleanShutdownMarker returns the ConsumeCleanShutdownMarker callback.
+// Returns true and deletes the marker when a clean shutdown was recorded.
+func (d *Daemon) consumeCleanShutdownMarker() func() bool {
+	return func() bool {
+		if d.jsManager == nil {
+			return false
+		}
+		marker, err := d.jsManager.ReadShutdownMarker(d.node)
+		if err != nil || !marker {
+			return false
+		}
+		slog.Info("Clean shutdown marker found, trusting KV state")
+		_ = d.jsManager.DeleteShutdownMarker(d.node)
+		return true
+	}
+}
+
+// onInstanceUpHook subscribes per-instance NATS topics after Pending→Running.
+// Returns the first subscribe error so the manager can roll back QMP.
+func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
+	return func(instance *vm.VM) error {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+
+		consoleSubKey := instance.ID + ".console"
+		passwordSubKey := instance.ID + ".password"
+		for _, key := range []string{instance.ID, consoleSubKey, passwordSubKey} {
+			if existing, ok := d.natsSubscriptions[key]; ok {
+				_ = existing.Unsubscribe()
+			}
+		}
+
+		// Bind the whole per-instance topic set as one unit: if any subscribe
+		// fails partway through, every topic already bound in this call is
+		// unwound so the instance never comes up Running with only some of
+		// its topics reachable.
+		topics := []struct {
+			key     string
+			subject string
+			handler nats.MsgHandler
+		}{
+			{instance.ID, ec2v1.InstanceCommandSubject(instance.ID), d.handleEC2Events},
+			{consoleSubKey, fmt.Sprintf("ec2.%s.GetConsoleOutput", instance.ID), d.handleEC2GetConsoleOutput},
+			{passwordSubKey, fmt.Sprintf("ec2.%s.GetPasswordData", instance.ID), d.handleEC2GetPasswordData},
+		}
+
+		bound := make([]string, 0, len(topics))
+		for _, t := range topics {
+			sub, err := d.natsConn.Subscribe(t.subject, t.handler)
+			if err != nil {
+				slog.Error("OnInstanceUp: failed to subscribe to per-instance topic",
+					"instanceId", instance.ID, "subject", t.subject, "err", err)
+				for _, key := range bound {
+					if unsubErr := d.natsSubscriptions[key].Unsubscribe(); unsubErr != nil {
+						slog.Warn("OnInstanceUp: failed to unsubscribe during rollback",
+							"instanceId", instance.ID, "key", key, "err", unsubErr)
+					}
+					delete(d.natsSubscriptions, key)
+				}
+				return fmt.Errorf("subscribe %s: %w", t.subject, err)
+			}
+			d.natsSubscriptions[t.key] = sub
+			bound = append(bound, t.key)
+		}
+
+		// Bind the per-instance terminate subscription for any system-managed VM
+		// (ELBv2 load balancers, EKS K3s control-plane VMs). OnInstanceUp is the
+		// one funnel every launch path crosses — local placement on the
+		// coordinator node, the remote-launch handler, and the
+		// reconnect-to-surviving-QEMU recovery after a daemon restart. Without it
+		// system.TerminateInstance.{id} has no responder, so a cluster-wide
+		// teardown invoked on another node cannot stop this VM and deletes its
+		// still-attached ENI (InvalidNetworkInterface.InUse).
+		if tags.IsSystemManaged(instance.ManagedBy) {
+			if subErr := d.subscribeSystemTerminateLocked(instance.ID); subErr != nil {
+				slog.Error("OnInstanceUp: failed to re-arm system terminate subscription",
+					"instanceId", instance.ID, "err", subErr)
+			}
+		}
+
+		// Re-claim GPU(s) after a daemon restart with a still-running QEMU
+		// process: the manager's reconnect path fires OnInstanceUp without
+		// going through the handler-side Claim, so the GPU pool would
+		// otherwise treat the slot as free. ReclaimByAddress is a no-op
+		// when the same instance already owns the slot, so the launch and
+		// start-stopped paths (which Claim before Run) are unaffected.
+		if d.gpuManager != nil {
+			for _, att := range instance.GPUAttachments {
+				if att.MdevPath != "" {
+					if err := d.gpuManager.ReclaimByMdev(att.MdevPath, instance.ID); err != nil {
+						slog.Warn("Failed to re-claim MIG instance on restart",
+							"mdev", att.MdevPath, "instanceId", instance.ID, "err", err)
+					}
+				} else if att.PCIAddress != "" {
+					if err := d.gpuManager.ReclaimByAddress(att.PCIAddress, instance.ID); err != nil {
+						slog.Warn("Failed to re-claim GPU on instance up",
+							"gpu", att.PCIAddress, "instanceId", instance.ID, "err", err)
+					}
+				}
+			}
+		}
+
+		// Republish vpc.add-nat so vpcd re-establishes the dnat_and_snat
+		// rule on host-reboot recovery. The OVN NB entry doesn't always
+		// survive the reboot, and vpcd's reconcile loop only re-creates
+		// EIP-allocated NATs (reconcile.go:391) — direct-add NATs from
+		// LaunchInstance / LaunchSystemInstance are otherwise unrecoverable.
+		// Idempotent: vpcd's handler deletes-then-adds (topology.go:1297),
+		// so this is a no-op on fresh launches where the initial publish
+		// already fired.
+		//
+		// instance.PublicIP only carries auto-assigned public IPs; an
+		// associated Elastic IP lives in the EIP store, so resolve it from
+		// there when the instance field is empty — otherwise a rebooted host
+		// never re-announces the EIP's NAT and the VM loses connectivity.
+		if d.natsConn != nil && instance.ENIId != "" && instance.Instance != nil {
+			publicIP := instance.PublicIP
+			if resolver, ok := d.eipService.(interface {
+				AssociatedPublicIPForInstance(context.Context, string, string) (string, bool)
+			}); ok && publicIP == "" {
+				if eipIP, ok := resolver.AssociatedPublicIPForInstance(context.Background(), instance.AccountID, instance.ID); ok {
+					publicIP = eipIP
+				}
+			}
+			vpcID := ""
+			privateIP := ""
+			if instance.Instance.VpcId != nil {
+				vpcID = *instance.Instance.VpcId
+			}
+			if instance.Instance.PrivateIpAddress != nil {
+				privateIP = *instance.Instance.PrivateIpAddress
+			}
+			if publicIP != "" && vpcID != "" && privateIP != "" {
+				portName := topology.Port(instance.ENIId)
+				projection.New(d.natsConn).AddNATBestEffort(vpcID, publicIP, privateIP, portName, instance.ENIMac)
+			}
+		}
+		return nil
+	}
+}
+
+// onInstanceDownHook returns the daemon's OnInstanceDown callback. It
+// unsubscribes the per-instance NATS topics that onInstanceUpHook
+// registered.
+func (d *Daemon) onInstanceDownHook() func(string) {
+	return func(instanceID string) {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+
+		if sub, ok := d.natsSubscriptions[instanceID]; ok {
+			if err := sub.Unsubscribe(); err != nil {
+				slog.Error("OnInstanceDown: failed to unsubscribe instance topic",
+					"instanceId", instanceID, "err", err)
+			}
+			delete(d.natsSubscriptions, instanceID)
+		}
+		consoleSubKey := instanceID + ".console"
+		if sub, ok := d.natsSubscriptions[consoleSubKey]; ok {
+			if err := sub.Unsubscribe(); err != nil {
+				slog.Error("OnInstanceDown: failed to unsubscribe console topic",
+					"instanceId", instanceID, "err", err)
+			}
+			delete(d.natsSubscriptions, consoleSubKey)
+		}
+		passwordSubKey := instanceID + ".password"
+		if sub, ok := d.natsSubscriptions[passwordSubKey]; ok {
+			if err := sub.Unsubscribe(); err != nil {
+				slog.Error("OnInstanceDown: failed to unsubscribe password topic",
+					"instanceId", instanceID, "err", err)
+			}
+			delete(d.natsSubscriptions, passwordSubKey)
+		}
+		// Drop the system terminate subscription (system VMs only; a no-op for
+		// regular instances that never registered one).
+		terminateSubKey := fmt.Sprintf("system.TerminateInstance.%s", instanceID)
+		if sub, ok := d.natsSubscriptions[terminateSubKey]; ok {
+			if err := sub.Unsubscribe(); err != nil {
+				slog.Error("OnInstanceDown: failed to unsubscribe system terminate topic",
+					"instanceId", instanceID, "err", err)
+			}
+			delete(d.natsSubscriptions, terminateSubKey)
+		}
+	}
+}
+
+// buildVMManagerDeps assembles the vm.Deps struct for the running daemon.
+// All collaborators must already be initialized; callers are expected to
+// invoke this from Daemon.Start after services and JetStream are ready.
+func (d *Daemon) buildVMManagerDeps() vm.Deps {
+	return vm.Deps{
+		NodeID:             d.node,
+		StateStore:         d.stateStore,
+		VolumeMounter:      newVolumeMounterAdapter(d.natsConn, d.node, d.volumeService),
+		NetworkPlumber:     d.networkPlumber,
+		InstanceTypes:      newInstanceTypeResolverAdapter(d.resourceMgr),
+		Resources:          newResourceControllerAdapter(d.resourceMgr),
+		VolumeStateUpdater: d.volumeService,
+		InstanceCleaner:    newInstanceCleanerAdapter(d),
+		Hooks: vm.ManagerHooks{
+			OnInstanceUp:           d.onInstanceUpHook(),
+			OnInstanceDown:         d.onInstanceDownHook(),
+			OnInstanceRecovering:   d.onInstanceRecoveringHook(),
+			BeforeInstanceRelaunch: d.prepareInstanceRelaunch,
+		},
+		ShutdownSignal:             d.shuttingDown.Load,
+		CrashHandler:               d.vmMgr.HandleCrash,
+		TransitionState:            d.TransitionState,
+		MultiqueueNICs:             d.clusterConfig != nil && !d.clusterConfig.Network.IPSecEnabled,
+		GuestMTU:                   d.guestOverlayMTU(),
+		DevNetworking:              d.config.Daemon.DevNetworking,
+		BindHost:                   d.config.Host,
+		DetachDelay:                d.detachDelay,
+		DeviceDeletedTimeout:       d.deviceDeletedTimeout,
+		ConsumeCleanShutdownMarker: d.consumeCleanShutdownMarker(),
+		BackingStoreReady:          func() bool { return d.checkPredastoreReady() && d.checkViperblockReady() },
+	}
+}
+
+// instanceCleanerAdapter satisfies vm.InstanceCleaner by delegating to the
+// daemon's existing volume/VPC/EIP/placement-group services. The manager
+// owns the QMP and tap teardown directly; this adapter covers the
+// AWS-resource cleanup steps that require service access.
+type instanceCleanerAdapter struct {
+	d *Daemon
+}
+
+var _ vm.InstanceCleaner = (*instanceCleanerAdapter)(nil)
+
+func newInstanceCleanerAdapter(d *Daemon) *instanceCleanerAdapter {
+	return &instanceCleanerAdapter{d: d}
+}
+
+// DeleteVolumes deletes EFI internal volumes via ebs.delete and user volumes
+// flagged DeleteOnTermination via the volume service.
+// Errors are logged per volume; partial failure is tolerated.
+func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+
+	var firstErr error
+	for _, ebsRequest := range instance.EBSRequests.Requests {
+		// Internal volumes (EFI) always go through ebs.delete to stop their
+		// viperblockd processes. S3 data is cleaned up via the parent root
+		// volume's DeleteVolume (which removes the -efi/ prefix).
+		if ebsRequest.EFI {
+			ebsDeleteData, err := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: ebsRequest.Name})
+			if err != nil {
+				slog.Error("Failed to marshal ebs.delete request for internal volume",
+					"name", ebsRequest.Name, "err", err)
+				firstErr = cmp.Or(firstErr, err)
+				continue
+			}
+			// Teardown runs from the reaper and from terminate cleanup, neither
+			// of which has a caller to inherit a trace from. The account still
+			// comes off the instance, so the work stays attributable.
+			deleteMsg, err := ebsRequestWithTrace(context.Background(), a.d.natsConn, instance.AccountID,
+				viperblocklegacyv1.DeleteSubject, ebsDeleteData, 30*time.Second)
+			if err != nil {
+				slog.Warn("Failed to send ebs.delete for internal volume",
+					"name", ebsRequest.Name, "id", instance.ID, "err", err)
+				firstErr = cmp.Or(firstErr, err)
+			} else {
+				slog.Info("Sent ebs.delete for internal volume",
+					"name", ebsRequest.Name, "id", instance.ID, "data", string(deleteMsg.Data))
+			}
+			continue
+		}
+
+		// User-visible volumes: DeleteOnTermination=false survives terminate, but
+		// terminate still implies detach (AWS semantics) for every volume, Boot or
+		// not. Unmount's own clear is best-effort and skipped entirely on the force-complete path, so this call is the explicit guarantee.
+		if !ebsRequest.DeleteOnTermination {
+			slog.Info("Volume has DeleteOnTermination=false, detaching without deleting",
+				"name", ebsRequest.Name, "id", instance.ID)
+			if a.d.volumeService == nil {
+				slog.Warn("Volume service not configured, cannot detach volume",
+					"name", ebsRequest.Name, "id", instance.ID)
+				continue
+			}
+			if err := a.d.volumeService.DetachVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
+				slog.Error("Failed to detach volume on termination",
+					"name", ebsRequest.Name, "id", instance.ID, "err", err)
+				firstErr = cmp.Or(firstErr, err)
+			} else {
+				slog.Info("Detached volume on termination",
+					"name", ebsRequest.Name, "id", instance.ID)
+			}
+			continue
+		}
+
+		slog.Info("Deleting volume with DeleteOnTermination=true",
+			"name", ebsRequest.Name, "id", instance.ID)
+		if a.d.volumeService == nil {
+			slog.Warn("Volume service not configured, cannot delete volume",
+				"name", ebsRequest.Name, "id", instance.ID)
+			continue
+		}
+		// Terminate implies detach: DeleteVolumeOnTerminate clears the stale
+		// AttachedInstance before deleting. shutdownAndUnmount's Unmount
+		// (above, via terminateCleanup) deliberately never clears a Boot
+		// volume's attachment, so without this the root volume still hits
+		// DeleteVolume's in-use guard here.
+		if err := a.d.volumeService.DeleteVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
+			slog.Error("Failed to delete volume on termination",
+				"name", ebsRequest.Name, "id", instance.ID, "err", err)
+			firstErr = cmp.Or(firstErr, err)
+		} else {
+			slog.Info("Deleted volume on termination",
+				"name", ebsRequest.Name, "id", instance.ID)
+		}
+	}
+	return firstErr
+}
+
+// CleanupMgmtNetwork tears down the management TAP device (derived from
+// instance.ID so unsetup instances are tolerated), invalidates the host ARP
+// entry for the address, and releases the management IP allocation.
+func (a *instanceCleanerAdapter) CleanupMgmtNetwork(instance *vm.VM) {
+	mgmtTap := vm.MgmtTapName(instance.ID)
+	if err := a.d.networkPlumber.CleanupTap(mgmtTap); err != nil {
+		slog.Warn("Failed to clean up mgmt tap device",
+			"tap", mgmtTap, "instanceId", instance.ID, "err", err)
+	}
+	// Before Release: once the address is back in the pool the next launch can
+	// take it, and it must not find the terminated instance's MAC still cached.
+	a.d.invalidateMgmtNeigh(instance.ID, instance.MgmtIP)
+	if a.d.mgmtIPAllocator != nil {
+		a.d.mgmtIPAllocator.Release(instance.ID)
+	}
+}
+
+// ReleasePublicIP publishes vpc.delete-nat for the OVN dnat_and_snat rule
+// and releases the public IP back to the external IPAM pool. No-op when
+// the instance has no public IP. Terminate calls it for whatever the instance
+// holds; the stop path calls it only once it has established the address is
+// not an Elastic IP.
+func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) error {
+	if instance.PublicIP == "" || instance.PublicIPPool == "" || a.d.externalIPAM == nil {
+		return nil
+	}
+
+	portName := topology.Port(instance.ENIId)
+	vpcId := ""
+	logicalIP := ""
+	if instance.Instance != nil {
+		if instance.Instance.VpcId != nil {
+			vpcId = *instance.Instance.VpcId
+		}
+		if instance.Instance.PrivateIpAddress != nil {
+			logicalIP = *instance.Instance.PrivateIpAddress
+		}
+	}
+	projection.New(a.d.natsConn).RemoveNAT(vpcId, instance.PublicIP, logicalIP, portName, "")
+
+	if err := a.d.externalIPAM.ReleaseIP(context.Background(), instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
+		// An untracked lease is terminal: the local pool slot is already free and
+		// no retry can make a deleted lease reappear. Returning the error leaves
+		// this dependent permanently not-done, so the teardown reaper re-drives it
+		// every sweep and its KV write keeps refreshing the record's TTL. Record
+		// the strand and report success so teardown completes.
+		if errors.Is(err, dhcp.ErrLeaseNotTracked) {
+			otelsetup.RecordResourceLeak(context.Background(), "public_ip")
+			slog.Error("Public IP lease stranded; address will not be reclaimed automatically",
+				"ip", instance.PublicIP, "pool", instance.PublicIPPool,
+				"instanceId", instance.ID, "err", err)
+			return nil
+		}
+		slog.Warn("Failed to release public IP",
+			"ip", instance.PublicIP, "pool", instance.PublicIPPool, "err", err)
+		return err
+	}
+	slog.Info("Released public IP",
+		"ip", instance.PublicIP, "instanceId", instance.ID)
+	return nil
+}
+
+// ReleaseAutoAssignedPublicIP returns an auto-assigned address to its pool when
+// the instance stops, as AWS does. Three things can be holding the address and
+// only one of them may be reclaimed here: an EIP allocated through the EIP
+// service (PublicIPAllocID), an EIP associated to this ENI after the fact, or
+// the address the launch borrowed. The first two are the customer's and stay.
+func (a *instanceCleanerAdapter) ReleaseAutoAssignedPublicIP(instance *vm.VM) (bool, error) {
+	if instance.PublicIP == "" || instance.PublicIPPool == "" || a.d.externalIPAM == nil {
+		return false, nil
+	}
+	if instance.PublicIPAllocID != "" {
+		return false, nil
+	}
+	ctx := context.Background()
+	if instance.ENIId != "" && a.d.vpcService != nil {
+		owned, err := a.d.vpcService.ENIHasEIP(ctx, instance.AccountID, instance.ENIId)
+		if err != nil {
+			// Keeping the address costs a pool slot until terminate; releasing one
+			// we could not prove is ours destroys a customer's Elastic IP.
+			return false, fmt.Errorf("check EIP association for %s: %w", instance.ENIId, err)
+		}
+		if owned {
+			slog.Info("Stop kept the public address — it belongs to an Elastic IP",
+				"instanceId", instance.ID, "ip", instance.PublicIP, "eni", instance.ENIId)
+			return false, nil
+		}
+	}
+
+	if err := a.ReleasePublicIP(instance); err != nil {
+		return false, err
+	}
+
+	// The reconciler rebuilds the NAT rule from the ENI record, so leaving the
+	// address on it puts back the rule the release just took down.
+	if instance.ENIId != "" && a.d.vpcService != nil {
+		if err := a.d.vpcService.UpdateENIPublicIP(instance.AccountID, instance.ENIId, "", ""); err != nil {
+			slog.Warn("Failed to clear ENI public IP on stop",
+				"instanceId", instance.ID, "eni", instance.ENIId, "err", err)
+		}
+	}
+	slog.Info("Released auto-assigned public IP on stop",
+		"instanceId", instance.ID, "ip", instance.PublicIP, "pool", instance.PublicIPPool)
+	return true, nil
+}
+
+// DetachAndDeleteENI detaches the auto-created ENI from the instance and
+// deletes it via the VPC service. NotFound is tolerated. It then sweeps every
+// other ENI the KV records against this instance — post-launch attaches
+// (e.g. ECS awsvpc, direct AttachNetworkInterface) never update instance.ENIId,
+// so relying on the scalar alone leaves them attached forever, pinning their
+// SG/subnet/VPC behind DependencyViolation.
+func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
+	if a.d.vpcService == nil {
+		return nil
+	}
+
+	var primaryErr error
+	if instance.ENIId != "" {
+		// force=true bypasses the in-use guard for the owning instance,
+		// breaking the un-terminable-ENI deadlock (historic PROP-LIFECYCLE-003 §2). One call
+		// carries the detach's revision into the delete, so a lagging KV
+		// replica can never decide the outcome.
+		deleted, err := a.d.vpcService.DetachAndDeleteENI(context.Background(), instance.AccountID, instance.ENIId, true)
+		if err != nil {
+			slog.Error("Failed to delete ENI on termination",
+				"eni", instance.ENIId, "instanceId", instance.ID, "err", err)
+			primaryErr = err
+		} else if deleted {
+			slog.Info("Deleted ENI on termination",
+				"eni", instance.ENIId, "instanceId", instance.ID)
+		} else {
+			slog.Info("ENI already absent on termination",
+				"eni", instance.ENIId, "instanceId", instance.ID)
+		}
+		if err == nil {
+			a.disassociateENIEIP(instance.AccountID, instance.ENIId)
+		}
+	}
+
+	a.releaseAttachedENIs(instance)
+
+	return primaryErr
+}
+
+// releaseAttachedENIs enumerates the spinifex-vpc-enis KV for every record
+// still carrying this instance's ID and releases each one, independent of
+// instance.ENIId. Best-effort and idempotent per ENI: one failure is logged
+// and the sweep continues, so a partial failure never blocks the rest and a
+// re-run of terminate converges. DeleteOnTermination=false detaches only.
+func (a *instanceCleanerAdapter) releaseAttachedENIs(instance *vm.VM) {
+	records, err := a.d.vpcService.ListInstanceENIs(instance.AccountID, instance.ID)
+	if err != nil {
+		slog.Warn("Failed to enumerate attached ENIs on termination",
+			"instanceId", instance.ID, "err", err)
+		return
+	}
+
+	for _, record := range records {
+		eniId := record.NetworkInterfaceId
+
+		// DeleteOnTermination=false detaches only; there is no subsequent
+		// delete to race against, so a plain DetachENI is sufficient here.
+		if record.DeleteOnTermination != nil && !*record.DeleteOnTermination {
+			if detachErr := a.d.vpcService.DetachENI(context.Background(), instance.AccountID, eniId); detachErr != nil {
+				slog.Warn("Failed to detach attached ENI on termination",
+					"eni", eniId, "instanceId", instance.ID, "err", detachErr)
+			}
+			slog.Info("Detached attached ENI on termination, DeleteOnTermination=false",
+				"eni", eniId, "instanceId", instance.ID)
+			continue
+		}
+
+		// One call carries the detach's revision into the delete so a
+		// lagging KV replica can never decide the outcome (mirrors the
+		// primary ENI path above).
+		deleted, err := a.d.vpcService.DetachAndDeleteENI(context.Background(), instance.AccountID, eniId, true)
+		if err != nil {
+			slog.Error("Failed to delete attached ENI on termination",
+				"eni", eniId, "instanceId", instance.ID, "err", err)
+			continue
+		}
+		a.disassociateENIEIP(instance.AccountID, eniId)
+		if deleted {
+			slog.Info("Deleted attached ENI on termination",
+				"eni", eniId, "instanceId", instance.ID)
+		} else {
+			slog.Info("Attached ENI already absent on termination",
+				"eni", eniId, "instanceId", instance.ID)
+		}
+	}
+}
+
+// disassociateENIEIP releases any Elastic IP associated with an ENI that has
+// just been deleted. Nothing else did: the ENI delete deliberately leaves an
+// EIP-owned public address alone, since the allocation outlives the interface,
+// but the association is the interface's and has to go with it. Left behind, the
+// EIP record stays "associated" and the network reconciler keeps re-asserting a
+// NAT rule for a guest that no longer exists.
+//
+// Called after the delete, never before: the delete decides whether the ENI's
+// public address may return to the pool by looking for an EIP that names it.
+func (a *instanceCleanerAdapter) disassociateENIEIP(accountID, eniID string) {
+	eip, ok := a.d.eipService.(eipDisassociator)
+	if !ok {
+		return
+	}
+	found, err := eip.DisassociateByENI(context.Background(), accountID, eniID)
+	if err != nil {
+		slog.Warn("Failed to disassociate EIP on termination", "eni", eniID, "accountId", accountID, "err", err)
+		return
+	}
+	if found {
+		slog.Info("Disassociated EIP on termination", "eni", eniID, "accountId", accountID)
+	}
+}
+
+// RemoveFromPlacementGroup unbinds the instance from its placement group
+// if one is set. No-op for ungrouped instances and when the placement
+// group service is not configured.
+func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) error {
+	if instance.PlacementGroupName == "" || a.d.placementGroupService == nil {
+		return nil
+	}
+	if _, err := a.d.placementGroupService.RemoveInstance(context.Background(), &ec2placementgroup.RemoveInstanceInput{
+		GroupName:  instance.PlacementGroupName,
+		NodeName:   instance.PlacementGroupNode,
+		InstanceID: instance.ID,
+	}, instance.AccountID); err != nil {
+		slog.Error("Failed to remove instance from placement group",
+			"instanceId", instance.ID, "groupName", instance.PlacementGroupName, "err", err)
+		return err
+	}
+	return nil
+}
+
+// RemoveFromSpotRequest closes the Spot Instance Request fulfilled by this
+// instance, if any. The VM carries no spot marker, so the service scans the
+// active bucket by instance ID; a non-spot instance is a cheap no-op. No-op
+// when the spot instance service is not configured.
+func (a *instanceCleanerAdapter) RemoveFromSpotRequest(instance *vm.VM) error {
+	if a.d.spotInstanceService == nil {
+		return nil
+	}
+	if err := a.d.spotInstanceService.CloseForInstance(context.Background(), instance.ID, instance.AccountID); err != nil {
+		slog.Error("Failed to close spot request for instance",
+			"instanceId", instance.ID, "err", err)
+		return err
+	}
+	return nil
+}
+
+// ReleaseGPU unbinds the instance's GPU from vfio-pci and rebinds to its
+// original host driver. No-op for instances without a GPU allocation or
+// when GPU passthrough is disabled.
+//
+// Holding no device is success, not failure: teardown re-drives this until it
+// reports done, and a stop that already released leaves nothing for the later
+// terminate to do. Returning an error there wedges the record forever.
+func (a *instanceCleanerAdapter) ReleaseGPU(instance *vm.VM) error {
+	if a.d.gpuManager == nil || len(instance.GPUAttachments) == 0 {
+		return nil
+	}
+	err := a.d.gpuManager.Release(instance.ID)
+	switch {
+	case errors.Is(err, gpu.ErrNoGPUClaimed):
+		slog.Info("GPU already released, nothing to do",
+			"gpus", instance.GPUAttachments, "instanceId", instance.ID)
+		return nil
+	case err != nil:
+		slog.Error("Failed to release GPU on stop, device may need manual rebind",
+			"gpus", instance.GPUAttachments, "instanceId", instance.ID, "err", err)
+		return err
+	}
+	slog.Info("GPU released", "gpus", instance.GPUAttachments, "instanceId", instance.ID)
+	return nil
+}
+
+// guestOverlayMTU is the MTU a guest NIC advertises via VIRTIO_NET_F_MTU. Same
+// derivation as the DHCP option, so the two cannot disagree.
+func (d *Daemon) guestOverlayMTU() int {
+	if d.clusterConfig == nil {
+		return 0
+	}
+	return topology.SubnetMTU(d.clusterConfig.Network.UnderlayMTU, d.clusterConfig.Network.IPSecEnabled)
+}

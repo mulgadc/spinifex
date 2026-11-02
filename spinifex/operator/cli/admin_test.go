@@ -18,13 +18,14 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -470,7 +471,7 @@ func TestEnsureMasterKey(t *testing.T) {
 		for i := range seed {
 			seed[i] = byte(200 - i)
 		}
-		require.NoError(t, handlers_iam.SaveMasterKey(filepath.Join(configDir, "master.key"), seed))
+		require.NoError(t, iamdomain.SaveMasterKey(filepath.Join(configDir, "master.key"), seed))
 
 		key, existed, err := ensureMasterKey(configDir)
 		require.NoError(t, err)
@@ -502,7 +503,7 @@ func TestPreservedIdentityBundle(t *testing.T) {
 	configDir := t.TempDir()
 	bootstrapDir := filepath.Join(configDir, "awsgw")
 
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 	const (
 		sysAccess   = "AKIASYSTEM0000000000"
@@ -1671,4 +1672,79 @@ func TestGenerateAndWriteConfigs_NorthstarRecursionIsClosedButServesTheCluster(t
 	// The internet does not.
 	assert.False(t, policy.Allows(netip.MustParseAddr("198.51.100.7")))
 	assert.False(t, policy.Allows(netip.MustParseAddr("8.8.8.8")))
+}
+
+func TestResolvePoolDNSServers(t *testing.T) {
+	detected := []string{"10.20.0.53"}
+	detectCalls := 0
+	detect := func() []string {
+		detectCalls++
+		return detected
+	}
+
+	t.Run("explicit servers are used verbatim without detection", func(t *testing.T) {
+		detectCalls = 0
+		got, err := resolvePoolDNSServers([]string{"1.1.1.1", " 8.8.8.8"}, detect, "10.0.0.5")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"1.1.1.1", "8.8.8.8"}, got)
+		assert.Zero(t, detectCalls)
+	})
+
+	t.Run("omitted flag falls back to detection", func(t *testing.T) {
+		detectCalls = 0
+		got, err := resolvePoolDNSServers(nil, detect, "10.0.0.5")
+		require.NoError(t, err)
+		assert.Equal(t, detected, got)
+		assert.Equal(t, 1, detectCalls)
+	})
+
+	for name, explicit := range map[string][]string{
+		"invalid IP":           {"1.1.1.1", "dns.example"},
+		"IPv6 resolver":        {"2606:4700:4700::1111"},
+		"unspecified address":  {"0.0.0.0"},
+		"too many servers":     {"1.1.1.1", "8.8.8.8", "9.9.9.9", "4.4.4.4"},
+		"loopback resolver":    {"127.0.0.53"},
+		"local northstar loop": {"10.0.0.5"},
+	} {
+		t.Run(name+" is rejected", func(t *testing.T) {
+			_, err := resolvePoolDNSServers(explicit, detect, "10.0.0.5")
+			assert.Error(t, err)
+		})
+	}
+}
+
+// The flag value reaches the resolver as the separate entries the operator typed.
+func TestAdminInitCmd_ExternalDNSFlagSplitsCommaList(t *testing.T) {
+	flags := adminInitCmd.Flags()
+	flag := flags.Lookup("external-dns")
+	require.NotNil(t, flag)
+	t.Cleanup(func() {
+		_ = flag.Value.(pflag.SliceValue).Replace(nil)
+		flag.Changed = false
+	})
+	require.NoError(t, flags.Set("external-dns", "1.1.1.1,8.8.8.8"))
+
+	explicit, err := flags.GetStringSlice("external-dns")
+	require.NoError(t, err)
+	got, err := resolvePoolDNSServers(explicit, func() []string { return []string{"10.20.0.53"} }, "10.0.0.5")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1.1.1.1", "8.8.8.8"}, got)
+}
+
+// Joiners take the init node's DNS servers, except their own address, which is
+// their northstar and would forward recursive queries back to itself.
+func TestApplyNetworkConfig_PropagatesPoolDNSServersWithoutSelf(t *testing.T) {
+	settings := &admin.ConfigSettings{AdvertiseIP: "10.0.0.6", BindIP: "10.0.0.6"}
+	nc := &formation.NetworkConfig{
+		ExternalMode:   "pool",
+		PoolDNSServers: []string{"1.1.1.1", "10.0.0.6", "8.8.8.8"},
+		Pools: []formation.PoolData{{
+			Name: "wan", Source: "static", PrefixLen: 24,
+			DNSServers: []string{"1.1.1.1", "10.0.0.6", "8.8.8.8"},
+		}},
+	}
+	applyNetworkConfig(settings, nc)
+	assert.Equal(t, []string{"1.1.1.1", "8.8.8.8"}, settings.PoolDNSServers)
+	require.Len(t, settings.Pools, 1)
+	assert.Equal(t, []string{"1.1.1.1", "10.0.0.6", "8.8.8.8"}, settings.Pools[0].DNSServers)
 }

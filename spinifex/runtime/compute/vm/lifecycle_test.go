@@ -1,12 +1,15 @@
 package vm
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -272,6 +275,134 @@ func TestBuildDrives(t *testing.T) {
 				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{0, 0, 3},
+		},
+		{
+			name: "block data volume emits a raw node over host_device with the same device wiring",
+			requests: []EBSRequest{
+				{Name: "vol-blk", BlockDevice: "/dev/sdx", BlockSizeBytes: 10 << 30, HotplugPort: 2},
+			},
+			cpuCount:      2,
+			wantIOThreads: []IOThread{{ID: "ioth-vol-blk"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=nbd-vol-blk,size=10737418240,file.driver=host_device,file.filename=/dev/sdx,file.aio=native,file.cache.direct=on"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,id=vdisk-vol-blk,drive=nbd-vol-blk,iothread=ioth-vol-blk,serial=volblk,bus=hotplug-ebs2,werror=stop,rerror=stop"},
+			},
+			wantHotplugPorts: []int{2},
+		},
+		{
+			// microvm has no PCIe root ports, so an unset port stays unset
+			// rather than naming a bus the machine does not have.
+			name: "microvm NBD data volume renders an MMIO device and allocates no hot-plug port",
+			requests: []EBSRequest{
+				{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock"},
+			},
+			cpuCount:      2,
+			machineType:   "microvm,x-option-roms=off,pic=off",
+			wantIOThreads: []IOThread{{ID: "ioth-vol-data-a"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-device,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,werror=stop,rerror=stop"},
+			},
+			wantHotplugPorts: []int{0},
+		},
+		{
+			name: "microvm block data volume keeps its recorded port and host_device node on an MMIO device",
+			requests: []EBSRequest{
+				{Name: "vol-blk", BlockDevice: "/dev/sdx", BlockSizeBytes: 10 << 30, HotplugPort: 2},
+			},
+			cpuCount:      2,
+			machineType:   "microvm",
+			wantIOThreads: []IOThread{{ID: "ioth-vol-blk"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=nbd-vol-blk,size=10737418240,file.driver=host_device,file.filename=/dev/sdx,file.aio=native,file.cache.direct=on"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-device,id=vdisk-vol-blk,drive=nbd-vol-blk,iothread=ioth-vol-blk,serial=volblk,werror=stop,rerror=stop"},
+			},
+			wantHotplugPorts: []int{2},
+		},
+		{
+			// q35 is not a microvm: the boundary must stay on PCI allocation.
+			name: "q35 data volume with HotplugPort unset still gets a PCI hot-plug port",
+			requests: []EBSRequest{
+				{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock"},
+			},
+			cpuCount:      2,
+			machineType:   "q35",
+			wantIOThreads: []IOThread{{ID: "ioth-vol-data-a"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs1,werror=stop,rerror=stop"},
+			},
+			wantHotplugPorts: []int{1},
+		},
+		{
+			name: "NBD boot volume alongside a block data volume",
+			requests: []EBSRequest{
+				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
+				{Name: "vol-blk", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20},
+			},
+			cpuCount: 2,
+			wantDrives: []Drive{
+				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
+			},
+			wantIOThreads: []IOThread{{ID: "ioth-os"}, {ID: "ioth-vol-blk"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=nbd-vol-blk,size=1048576,file.driver=host_device,file.filename=/dev/sdx,file.aio=native,file.cache.direct=on"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1"},
+				{Value: "virtio-blk-pci,id=vdisk-vol-blk,drive=nbd-vol-blk,iothread=ioth-vol-blk,serial=volblk,bus=hotplug-ebs1,werror=stop,rerror=stop"},
+			},
+			wantHotplugPorts: []int{0, 1},
+		},
+		{
+			name:     "block boot volume is rejected",
+			requests: []EBSRequest{{Name: "vol-boot", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20, Boot: true}},
+			cpuCount: 2,
+			wantErr:  "volume vol-boot: block device export is only supported for data volumes",
+		},
+		{
+			name:     "block EFI volume is rejected",
+			requests: []EBSRequest{{Name: "vol-efi", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20, EFI: true}},
+			cpuCount: 2,
+			wantErr:  "volume vol-efi: block device export is only supported for data volumes",
+		},
+		{
+			name:     "both NBDURI and BlockDevice set is rejected",
+			requests: []EBSRequest{{Name: "vol-both", NBDURI: "nbd:unix:/tmp/x.sock", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20}},
+			cpuCount: 2,
+			wantErr:  "volume vol-both has both NBDURI and BlockDevice set",
+		},
+		{
+			name:     "NBDURI with a stray BlockSizeBytes is rejected",
+			requests: []EBSRequest{{Name: "vol-stray", NBDURI: "nbd:unix:/tmp/x.sock", BlockSizeBytes: 1 << 20}},
+			cpuCount: 2,
+			wantErr:  "volume vol-stray has BlockSizeBytes set without BlockDevice",
+		},
+		{
+			name:     "block device with zero size is rejected",
+			requests: []EBSRequest{{Name: "vol-nosize", BlockDevice: "/dev/sdx"}},
+			cpuCount: 2,
+			wantErr:  `volume vol-nosize BlockDevice "/dev/sdx" has zero BlockSizeBytes`,
+		},
+		{
+			name:     "relative block device path is rejected",
+			requests: []EBSRequest{{Name: "vol-rel", BlockDevice: "dev/sdx", BlockSizeBytes: 1 << 20}},
+			cpuCount: 2,
+			wantErr:  `volume vol-rel BlockDevice "dev/sdx" is not an absolute path`,
+		},
+		{
+			name:     "block device path with a comma is rejected",
+			requests: []EBSRequest{{Name: "vol-comma", BlockDevice: "/dev/sdx,file.locking=off", BlockSizeBytes: 1 << 20}},
+			cpuCount: 2,
+			wantErr:  `volume vol-comma BlockDevice "/dev/sdx,file.locking=off" contains a comma`,
 		},
 		{
 			name:     "empty requests",
@@ -870,7 +1001,7 @@ func TestStartQEMU_DirectBoot_PrimaryTapError(t *testing.T) {
 		ENIMac:       "02:aa:bb:cc:dd:01",
 	}
 
-	err := m.startQEMU(instance)
+	err := m.startQEMU(instance, false)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "setup tap device")
@@ -898,7 +1029,7 @@ func TestStartQEMU_DirectBoot_BridgeEnsureError(t *testing.T) {
 		ENIMac:       "02:aa:bb:cc:dd:04",
 	}
 
-	err := m.startQEMU(instance)
+	err := m.startQEMU(instance, false)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ensure IMDS bridge")
@@ -933,7 +1064,7 @@ func TestStartQEMU_DirectBoot_ExtraENITapError(t *testing.T) {
 		},
 	}
 
-	err := m.startQEMU(instance)
+	err := m.startQEMU(instance, false)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "extra ENI")
@@ -954,7 +1085,7 @@ func TestStartQEMU_DirectBoot_MgmtTapError(t *testing.T) {
 		MgmtMAC:      "02:aa:bb:cc:dd:ff",
 	}
 
-	err := m.startQEMU(instance)
+	err := m.startQEMU(instance, false)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mgmt tap")
@@ -979,7 +1110,7 @@ func TestStartQEMU_DiskBoot_MgmtTapCreated(t *testing.T) {
 		MgmtMAC:      "02:aa:bb:cc:dd:ee",
 	}
 
-	err := m.startQEMU(instance)
+	err := m.startQEMU(instance, false)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mgmt tap")
@@ -1001,11 +1132,27 @@ func TestStartQEMU_DirectBoot_InstanceTypeNotFound(t *testing.T) {
 		DirectBoot:   true,
 	}
 
-	err := m.startQEMU(instance)
+	err := m.startQEMU(instance, false)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "x9.enormous")
 	assert.Empty(t, plumber.setupCalls)
+}
+
+// TestStartQEMU_BlockDeviceMissing verifies a block volume's launch readiness
+// is the device's presence, not an NBD connect.
+func TestStartQEMU_BlockDeviceMissing(t *testing.T) {
+	m := directBootManager(t, &fakeNetworkPlumber{})
+	missing := filepath.Join(t.TempDir(), "missing-dev")
+
+	instance := directBootInstance("i-blk-missing",
+		EBSRequest{Name: "vol-blk", BlockDevice: missing, BlockSizeBytes: 1 << 20})
+
+	err := m.startQEMU(instance, false)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "block device not present for vol-blk")
+	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
 // scriptedNetworkPlumber returns errors from a pre-loaded slice, one per call.
@@ -1030,6 +1177,14 @@ func (p *scriptedNetworkPlumber) CleanupTap(_ string) error { return nil }
 func (p *scriptedNetworkPlumber) AttachIMDSDatapath(_, _, _ string) error { return nil }
 
 func (p *scriptedNetworkPlumber) DetachIMDSDatapath(_ string) error { return nil }
+
+func (p *scriptedNetworkPlumber) IMDSDatapathStates(_ context.Context, _ []string) (map[string]IMDSDatapathState, error) {
+	return nil, nil
+}
+
+func (p *scriptedNetworkPlumber) RepairIMDSDatapath(_ context.Context, _, _, _ string) error {
+	return nil
+}
 
 func (p *scriptedNetworkPlumber) EnsureIMDSDatapathBridge() error { return nil }
 
@@ -1270,6 +1425,12 @@ func TestQMPGreetingTimeout(t *testing.T) {
 		"a guest with an NBD drive waits for the volume open, not the plain default")
 	assert.Greater(t, qmpNBDGreetingTimeout, 35*time.Second,
 		"the deadline must exceed the 35s cold open measured with one node of three away")
+
+	block := &VM{EBSRequests: EBSRequests{Requests: []EBSRequest{
+		{Name: "vol-data", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20},
+	}}}
+	assert.Equal(t, qmp.DefaultGreetingTimeout, qmpGreetingTimeout(block),
+		"a host block device opens locally, so it keeps the plain default")
 
 	// A small GPU guest (<1 GiB scaling contribution) sits at the floor.
 	smallGPU := &VM{
@@ -1578,4 +1739,455 @@ func TestQMPSuccessClearsTheIOErrorBudget(t *testing.T) {
 
 	assert.Zero(t, instance.Health.IOErrorResumes)
 	assert.True(t, instance.Health.IOErrorSince.IsZero())
+}
+
+// directBootBase is a launcher-built microvm Config with one NIC and spare
+// capacity in every slice, so an append that aliased it would be caught.
+func directBootBase() Config {
+	devices := make([]Device, 1, 8)
+	devices[0] = Device{Value: "virtio-net-device,netdev=net0,mac=02:00:00:aa:bb:01"}
+	netdevs := make([]NetDev, 1, 8)
+	netdevs[0] = NetDev{Value: "tap,id=net0,ifname=tap0,script=no,downscript=no"}
+	fwcfg := make([]FwCfgEntry, 1, 8)
+	fwcfg[0] = FwCfgEntry{Name: "opt/spinifex/netcfg", File: "/run/netcfg"}
+	return Config{
+		Name:          "i-sys",
+		EnableKVM:     true,
+		NoGraphic:     true,
+		MachineType:   "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on",
+		CPUType:       "host,-pmu",
+		CPUCount:      2,
+		Memory:        512,
+		BIOS:          "/usr/share/spinifex/microvm/qboot.rom",
+		KernelImage:   "/usr/share/spinifex/microvm/vmlinuz",
+		Initrd:        "/usr/share/spinifex/microvm/initramfs.cpio.gz",
+		KernelCmdline: "console=ttyS0 quiet",
+		Drives:        make([]Drive, 0, 8),
+		IOThreads:     make([]IOThread, 0, 8),
+		Blockdevs:     make([]Blockdev, 0, 8),
+		Devices:       devices,
+		NetDevs:       netdevs,
+		FwCfg:         fwcfg,
+	}
+}
+
+func directBootRequests() []EBSRequest {
+	return []EBSRequest{
+		{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock"},
+		{Name: "vol-blk", BlockDevice: "/dev/sdx", BlockSizeBytes: 10 << 30, HotplugPort: 2},
+	}
+}
+
+// deepCopyConfig snapshots every slice so a later write through an alias
+// shows up as a difference.
+func deepCopyConfig(c Config) Config {
+	c.Drives = slices.Clone(c.Drives)
+	c.IOThreads = slices.Clone(c.IOThreads)
+	c.Blockdevs = slices.Clone(c.Blockdevs)
+	c.Devices = slices.Clone(c.Devices)
+	c.NetDevs = slices.Clone(c.NetDevs)
+	c.FwCfg = slices.Clone(c.FwCfg)
+	return c
+}
+
+func TestDirectBootLaunchConfig_AppendsDataVolumesAfterExistingDevices(t *testing.T) {
+	base := directBootBase()
+	got, err := directBootLaunchConfig(base, directBootRequests(), 2)
+	require.NoError(t, err)
+
+	assert.Equal(t, []IOThread{{ID: "ioth-vol-data-a"}, {ID: "ioth-vol-blk"}}, got.IOThreads)
+	assert.Equal(t, []Blockdev{
+		{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
+		{Value: "driver=raw,node-name=nbd-vol-blk,size=10737418240,file.driver=host_device,file.filename=/dev/sdx,file.aio=native,file.cache.direct=on"},
+	}, got.Blockdevs)
+	assert.Equal(t, []Device{
+		{Value: "virtio-net-device,netdev=net0,mac=02:00:00:aa:bb:01"},
+		{Value: "virtio-blk-device,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,werror=stop,rerror=stop"},
+		{Value: "virtio-blk-device,id=vdisk-vol-blk,drive=nbd-vol-blk,iothread=ioth-vol-blk,serial=volblk,werror=stop,rerror=stop"},
+	}, got.Devices, "the NIC keeps its MMIO slot ahead of the volumes")
+	assert.Empty(t, got.Drives, "data volumes are blockdevs, never -drive")
+
+	// Only the three volume fields differ; the kernel args and every
+	// unrelated field are the base's.
+	want := deepCopyConfig(base)
+	want.IOThreads, want.Blockdevs, want.Devices = got.IOThreads, got.Blockdevs, got.Devices
+	assert.Equal(t, want, got)
+}
+
+func TestDirectBootLaunchConfig_DoesNotMutateInputs(t *testing.T) {
+	base := directBootBase()
+	baseBefore := deepCopyConfig(base)
+	requests := directBootRequests()
+	requestsBefore := append([]EBSRequest(nil), requests...)
+
+	got, err := directBootLaunchConfig(base, requests, 2)
+	require.NoError(t, err)
+	assert.Equal(t, baseBefore, deepCopyConfig(base), "base fields are unchanged")
+	assert.Equal(t, requestsBefore, requests, "requests are unchanged")
+
+	// Spare capacity: the composition must not have written into the base's
+	// backing arrays, and neither result may see the other's later appends.
+	assert.Equal(t, Device{}, base.Devices[:2][1], "nothing was written past the base's length")
+	assert.Equal(t, IOThread{}, base.IOThreads[:1][0])
+	assert.Equal(t, Blockdev{}, base.Blockdevs[:1][0])
+
+	base.Devices = append(base.Devices, Device{Value: "virtio-rng-device"})
+	base.NetDevs = append(base.NetDevs, NetDev{Value: "tap,id=net9"})
+	base.FwCfg = append(base.FwCfg, FwCfgEntry{Name: "x"})
+	assert.Equal(t, "virtio-blk-device,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,werror=stop,rerror=stop", got.Devices[1].Value)
+	assert.Len(t, got.NetDevs, 1)
+	assert.Len(t, got.FwCfg, 1)
+
+	got.Devices[0].Value = "changed"
+	got.NetDevs = append(got.NetDevs, NetDev{Value: "tap,id=net8"})
+	got.FwCfg[0].File = "changed"
+	assert.Equal(t, baseBefore.Devices[0], base.Devices[0])
+	assert.Equal(t, NetDev{Value: "tap,id=net9"}, base.NetDevs[1])
+	assert.Equal(t, baseBefore.FwCfg[0], base.FwCfg[0])
+}
+
+func TestDirectBootLaunchConfig_RepeatedCompositionFromTheSameBase(t *testing.T) {
+	base := directBootBase()
+	first, err := directBootLaunchConfig(base, directBootRequests(), 2)
+	require.NoError(t, err)
+	second, err := directBootLaunchConfig(base, directBootRequests(), 2)
+	require.NoError(t, err)
+
+	assert.Equal(t, first, second)
+	assert.Len(t, second.Devices, 3, "one NIC and one device per volume, never accumulated")
+	assert.Len(t, second.Blockdevs, 2)
+	assert.Len(t, second.IOThreads, 2)
+}
+
+func TestDirectBootLaunchConfig_ChangedNBDURIOnALaterLaunch(t *testing.T) {
+	base := directBootBase()
+	requests := []EBSRequest{{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock"}}
+	_, err := directBootLaunchConfig(base, requests, 2)
+	require.NoError(t, err)
+
+	// A remount publishes a new export; the next launch must use only it.
+	requests[0].NBDURI = "nbd://10.0.0.7:10809"
+	got, err := directBootLaunchConfig(base, requests, 2)
+	require.NoError(t, err)
+	require.Len(t, got.Blockdevs, 1)
+	assert.Contains(t, got.Blockdevs[0].Value, "server.type=inet,server.host=10.0.0.7,server.port=10809")
+	assert.NotContains(t, got.Blockdevs[0].Value, "/tmp/data-a.sock")
+}
+
+func TestDirectBootLaunchConfig_Rejects(t *testing.T) {
+	tests := []struct {
+		name     string
+		base     func() Config
+		requests []EBSRequest
+		wantErr  string
+	}{
+		{
+			name:     "boot volume",
+			base:     directBootBase,
+			requests: []EBSRequest{{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true}},
+			wantErr:  "vol-boot",
+		},
+		{
+			name:     "EFI volume",
+			base:     directBootBase,
+			requests: []EBSRequest{{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true}},
+			wantErr:  "vol-efi",
+		},
+		{
+			name:     "unmounted data volume",
+			base:     directBootBase,
+			requests: []EBSRequest{{Name: "vol-bad"}},
+			wantErr:  "NBDURI not set for volume vol-bad",
+		},
+		{
+			name:     "both NBD and block exports",
+			base:     directBootBase,
+			requests: []EBSRequest{{Name: "vol-both", NBDURI: "nbd:unix:/tmp/x.sock", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20}},
+			wantErr:  "vol-both",
+		},
+		{
+			name: "non-microvm base",
+			base: func() Config {
+				c := directBootBase()
+				c.MachineType = "q35"
+				return c
+			},
+			requests: []EBSRequest{{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock"}},
+			wantErr:  "microvm",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := tt.base()
+			before := deepCopyConfig(base)
+			_, err := directBootLaunchConfig(base, tt.requests, 2)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Equal(t, before, deepCopyConfig(base))
+		})
+	}
+}
+
+// fakeQEMUScript is a stand-in QEMU that records each launch's argv, writes the
+// pidfile and creates the QMP socket path startQEMU waits on.
+const fakeQEMUScript = `#!/bin/sh
+pidfile=""
+qmp=""
+prev=""
+for a in "$@"; do
+	case "$prev" in
+	-pidfile) pidfile="$a" ;;
+	-qmp)
+		if [ -z "$qmp" ]; then
+			q="${a#unix:}"
+			qmp="${q%%,*}"
+		fi
+		;;
+	esac
+	prev="$a"
+done
+{
+	echo "--- launch"
+	for a in "$@"; do printf '%s\n' "$a"; done
+} >>"$0.log"
+echo $$ >"$pidfile"
+: >"$qmp"
+# Stay up like a running guest until the socket goes: a relaunch unlinks it,
+# and test cleanup removes its directory.
+while [ -e "$qmp" ]; do sleep 0.05; done
+`
+
+// withFakeQEMU points QEMU resolution at fakeQEMUScript and returns a reader
+// for the argv of every launch so far.
+func withFakeQEMU(t *testing.T) func() [][]string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "qemu-system-x86_64")
+	require.NoError(t, os.WriteFile(path, []byte(fakeQEMUScript), 0o755))
+	withQEMUResolver(t, func(string) (string, error) { return path, nil })
+	return func() [][]string {
+		data, err := os.ReadFile(path + ".log")
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		require.NoError(t, err)
+		var launches [][]string
+		for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
+			if line == "--- launch" {
+				launches = append(launches, nil)
+				continue
+			}
+			launches[len(launches)-1] = append(launches[len(launches)-1], line)
+		}
+		return launches
+	}
+}
+
+// nbdListener stands in for a mounted NBD export: startQEMU only needs it to
+// accept a connection.
+func nbdListener(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	return "nbd://" + l.Addr().String()
+}
+
+// argsContaining returns the argv entries that contain sub.
+func argsContaining(args []string, sub string) []string {
+	var out []string
+	for _, a := range args {
+		if strings.Contains(a, sub) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func directBootInstance(id string, requests ...EBSRequest) *VM {
+	instance := &VM{
+		ID:           id,
+		InstanceType: "t3.nano",
+		DirectBoot:   true,
+		Config:       directBootBase(),
+	}
+	instance.Config.Architecture = "x86_64"
+	instance.EBSRequests.Requests = requests
+	return instance
+}
+
+// assertCleanBase checks the instance's saved Config carries none of the
+// launch-only volume entries and no NBD endpoint.
+func assertCleanBase(t *testing.T, cfg Config, endpoints ...string) {
+	t.Helper()
+	base := directBootBase()
+	assert.Equal(t, base.Devices, cfg.Devices)
+	assert.Equal(t, base.Blockdevs, cfg.Blockdevs)
+	assert.Equal(t, base.IOThreads, cfg.IOThreads)
+	assert.Equal(t, base.Drives, cfg.Drives)
+	saved, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	for _, ep := range endpoints {
+		assert.NotContains(t, string(saved), strings.TrimPrefix(ep, "nbd://"))
+	}
+}
+
+func TestStartQEMU_DirectBoot_LaunchesMountedDataVolumeWithoutSavingIt(t *testing.T) {
+	m := directBootManager(t, &fakeNetworkPlumber{})
+	launches := withFakeQEMU(t)
+	first := nbdListener(t)
+	second := nbdListener(t)
+
+	instance := directBootInstance("i-db-vol", EBSRequest{Name: "vol-data-a", NBDURI: first})
+	require.NoError(t, m.startQEMU(instance, false))
+
+	// A later launch from the same saved base, after the volume was remounted
+	// on a different endpoint.
+	instance.EBSRequests.Requests[0].NBDURI = second
+	require.NoError(t, m.startQEMU(instance, false))
+
+	got := launches()
+	require.Len(t, got, 2)
+	for i, ep := range []string{first, second} {
+		args := got[i]
+		require.Len(t, argsContaining(args, "virtio-blk-device"), 1, "launch %d", i+1)
+		assert.Empty(t, argsContaining(args, "virtio-blk-pci"), "launch %d", i+1)
+		assert.Len(t, argsContaining(args, "ioth-vol-data-a"), 2, "launch %d: one iothread object and its device", i+1)
+		port := ep[strings.LastIndex(ep, ":")+1:]
+		assert.NotEmpty(t, argsContaining(args, port), "launch %d uses its current endpoint", i+1)
+		// The NIC stays ahead of the data disk.
+		nic := slices.IndexFunc(args, func(a string) bool { return strings.HasPrefix(a, "virtio-net-device") })
+		disk := slices.IndexFunc(args, func(a string) bool { return strings.HasPrefix(a, "virtio-blk-device") })
+		assert.Less(t, nic, disk, "launch %d", i+1)
+	}
+	firstPort := first[strings.LastIndex(first, ":")+1:]
+	assert.Empty(t, argsContaining(got[1], firstPort), "second launch must not carry the stale endpoint")
+
+	assertCleanBase(t, instance.Config, first, second)
+}
+
+// TestStartQEMU_DirectBoot_LaunchesTheEndpointItProbed remounts the volume
+// while its endpoint is being probed: the command must carry the endpoint that
+// was checked, not one read from the requests afterwards.
+func TestStartQEMU_DirectBoot_LaunchesTheEndpointItProbed(t *testing.T) {
+	m := directBootManager(t, &fakeNetworkPlumber{})
+	launches := withFakeQEMU(t)
+	probedEP := nbdListener(t)
+	remountedEP := nbdListener(t)
+
+	instance := directBootInstance("i-db-snap", EBSRequest{Name: "vol-data-a", NBDURI: probedEP})
+	var probed []string
+	orig := waitForNBDReady
+	t.Cleanup(func() { waitForNBDReady = orig })
+	waitForNBDReady = func(uri string, timeout time.Duration) error {
+		probed = append(probed, uri)
+		instance.EBSRequests.Mu.Lock()
+		instance.EBSRequests.Requests[0].NBDURI = remountedEP
+		instance.EBSRequests.Mu.Unlock()
+		return orig(uri, timeout)
+	}
+	require.NoError(t, m.startQEMU(instance, false))
+
+	assert.Equal(t, []string{probedEP}, probed)
+	got := launches()
+	require.Len(t, got, 1)
+	port := func(ep string) string { return ep[strings.LastIndex(ep, ":")+1:] }
+	assert.NotEmpty(t, argsContaining(got[0], port(probedEP)), "the probed endpoint is launched")
+	assert.Empty(t, argsContaining(got[0], port(remountedEP)), "an endpoint nobody probed is not launched")
+}
+
+func TestStartQEMU_DirectBoot_NoVolumesLaunchesTheBase(t *testing.T) {
+	m := directBootManager(t, &fakeNetworkPlumber{})
+	launches := withFakeQEMU(t)
+
+	instance := directBootInstance("i-db-novol")
+	require.NoError(t, m.startQEMU(instance, false))
+
+	got := launches()
+	require.Len(t, got, 1)
+	assert.Empty(t, argsContaining(got[0], "virtio-blk"))
+	assert.Len(t, argsContaining(got[0], "virtio-net-device"), 1)
+	assertCleanBase(t, instance.Config)
+}
+
+func TestStartQEMU_DirectBoot_InvalidDataRequestIsNotLaunched(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     EBSRequest
+		wantErr string
+	}{
+		{name: "no export", req: EBSRequest{Name: "vol-none"}, wantErr: "vol-none"},
+		{name: "boot volume", req: EBSRequest{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true}, wantErr: "data volumes only"},
+		{name: "efi volume", req: EBSRequest{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true}, wantErr: "data volumes only"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := directBootManager(t, &fakeNetworkPlumber{})
+			launches := withFakeQEMU(t)
+
+			instance := directBootInstance("i-db-bad", tt.req)
+			err := m.startQEMU(instance, false)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Empty(t, launches(), "QEMU must not start")
+			assertCleanBase(t, instance.Config)
+		})
+	}
+}
+
+func TestStartQEMU_DiskBoot_DataVolumeStaysOnThePCIPath(t *testing.T) {
+	m := directBootManager(t, &fakeNetworkPlumber{})
+	launches := withFakeQEMU(t)
+	ep := nbdListener(t)
+
+	instance := &VM{ID: "i-disk-vol", InstanceType: "t3.nano"}
+	instance.EBSRequests.Requests = []EBSRequest{
+		{Name: "vol-root", NBDURI: "nbd:unix:" + filepath.Join(t.TempDir(), "root.sock"), Boot: true},
+		{Name: "vol-data-a", NBDURI: ep},
+	}
+	require.NoError(t, os.WriteFile(strings.TrimPrefix(instance.EBSRequests.Requests[0].NBDURI, "nbd:unix:"), nil, 0o600))
+	require.NoError(t, m.startQEMU(instance, false))
+
+	got := launches()
+	require.Len(t, got, 1)
+	data := argsContaining(got[0], "id=vdisk-vol-data-a")
+	require.Len(t, data, 1)
+	assert.True(t, strings.HasPrefix(data[0], "virtio-blk-pci,"), data[0])
+	assert.Empty(t, argsContaining(got[0], "virtio-blk-device"))
+	// The disk-boot path keeps building the volume into the instance Config.
+	assert.Len(t, argsContaining(deviceValues(instance.Config.Devices), "id=vdisk-vol-data-a"), 1)
+	assert.Equal(t, 1, instance.EBSRequests.Requests[1].HotplugPort)
+}
+
+func deviceValues(devs []Device) []string {
+	out := make([]string, len(devs))
+	for i, d := range devs {
+		out[i] = d.Value
+	}
+	return out
+}
+
+func TestDirectBootLaunchConfig_PCIEDataVolumesKeepSerialAndID(t *testing.T) {
+	base := directBootBase()
+	base.MachineType = "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on,pcie=on"
+	got, err := directBootLaunchConfig(base, directBootRequests(), 2)
+	require.NoError(t, err)
+
+	require.Len(t, got.Devices, 3)
+	assert.Equal(t, base.Devices[0], got.Devices[0])
+	assert.Equal(t, Device{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,werror=stop,rerror=stop"}, got.Devices[1])
+	assert.Equal(t, Device{Value: "virtio-blk-pci,id=vdisk-vol-blk,drive=nbd-vol-blk,iothread=ioth-vol-blk,serial=volblk,werror=stop,rerror=stop"}, got.Devices[2])
+	for _, d := range got.Devices[1:] {
+		assert.NotContains(t, d.Value, "bus=", "microvm has no hot-plug root port to name")
+	}
+	assert.Empty(t, got.Drives)
 }

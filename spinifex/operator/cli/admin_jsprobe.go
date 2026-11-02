@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/cobra"
 
-	"github.com/mulgadc/spinifex/spinifex/daemon"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 )
 
 // canaryKey is written and read back by the JetStream write probe. It lives in

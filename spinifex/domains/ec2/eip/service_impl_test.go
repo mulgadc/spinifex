@@ -169,8 +169,11 @@ func TestEIP_ReleaseWhileAssociated(t *testing.T) {
 	_, err = svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{
 		AllocationId: aws.String(allocID),
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidAddress.Locked")
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidIPAddressInUse, code)
+	assert.Equal(t, "Address "+record.PublicIp+" is in use.", message)
 }
 
 func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {

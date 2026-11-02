@@ -620,6 +620,8 @@ func TestRegisterTaskDefinition_RequiresImageAndMemory(t *testing.T) {
 	}{
 		{"no image or memory", nil, &ecs.ContainerDefinition{Name: aws.String("web")},
 			"Container.image should not be null or empty."},
+		{"empty image", aws.String("512"), &ecs.ContainerDefinition{Name: aws.String("web"), Image: aws.String("")},
+			"Container.image should not be null or empty."},
 		{"no memory", nil, &ecs.ContainerDefinition{Name: aws.String("web"), Image: aws.String("registry/web:1")},
 			"Invalid setting for container 'web'. At least one of 'memory' or 'memoryReservation' must be specified."},
 		{"memoryReservation only", nil, &ecs.ContainerDefinition{

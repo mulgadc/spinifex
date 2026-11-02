@@ -1,0 +1,1 @@
+import{l as e,r as t,t as n}from"./schemas-DCQXG11d.js";var r=[`overview`,`listeners`,`attributes`,`monitoring`,`settings`,`network`,`speedtest`],i={selected:e().default(``).catch(``),tab:n(r).default(`overview`).catch(`overview`),create:t().default(!1).catch(!1)},a={selected:``,tab:`overview`,create:!1};export{r as n,i as r,a as t};

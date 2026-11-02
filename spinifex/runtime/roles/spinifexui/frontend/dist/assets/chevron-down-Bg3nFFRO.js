@@ -1,1 +1,0 @@
-import{r as e}from"./visuallyHidden-CAa_vbTR.js";var t={name:`chevron-down`,size:24,node:[[`path`,{d:`m6 9 6 6 6-6`,key:`qrunsl`}]]};t.node;var n=e(t);export{n as t};

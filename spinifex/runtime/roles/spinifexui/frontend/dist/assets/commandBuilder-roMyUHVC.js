@@ -1,1 +1,0 @@
-import{ma as e}from"./awsClient-DnVosvUa.js";import{Y as t,mt as n}from"./fetch-http-handler-B8EMVyH8.js";var r=n(e,`AmazonBedrockFrontendService`,`BedrockRuntimeClient`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

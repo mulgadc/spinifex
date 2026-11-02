@@ -1,0 +1,6 @@
+#!/bin/sh
+# Runs the Lambda guest agent, then powers the guest off whatever its status.
+/usr/local/bin/lambda-agent >/dev/console 2>&1
+status=$?
+echo "[run-agent] lambda-agent exited with status $status" >/dev/console
+poweroff -f

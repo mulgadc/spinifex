@@ -114,6 +114,48 @@ func (q *quiesceState) releaseHold(ctx context.Context, releaseSQL string) error
 	return nil
 }
 
+// Takes mu, giving up when ctx ends. A quiesce that cannot get the bookkeeping
+// inside its budget must fail rather than start a backup its issuer abandoned.
+func (q *quiesceState) lockWithin(ctx context.Context) error {
+	for !q.mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for the backup bookkeeping: %w", ctx.Err())
+		case <-time.After(holdPollInterval):
+		}
+	}
+	return nil
+}
+
+// How often a statement waiting for a backup hold to end looks again.
+const holdPollInterval = 100 * time.Millisecond
+
+// Runs fn while no backup hold is on the engine, and keeps a new one from
+// starting until it returns. A hold that outlasts wait fails the call before fn
+// has touched the engine.
+func (q *quiesceState) outsideHold(ctx context.Context, wait time.Duration, fn func() error) error {
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	for {
+		// Not Lock: a quiesce holds mu while its stages wait on their own locks,
+		// and this wait has to stay bounded by ctx and wait.
+		if q.mu.TryLock() {
+			if q.held == nil {
+				defer q.mu.Unlock()
+				return fn()
+			}
+			q.mu.Unlock()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("the engine is still held for a backup after %s", wait)
+		case <-time.After(holdPollInterval):
+		}
+	}
+}
+
 // The deadline. Ending the session is enough — both engines release the hold
 // with it — so this never has to reach the engine itself.
 func (q *quiesceState) expire(label string) {

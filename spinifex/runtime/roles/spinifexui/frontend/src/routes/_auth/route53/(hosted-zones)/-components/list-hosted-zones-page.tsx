@@ -33,7 +33,7 @@ function ZoneActivation({ zone }: { zone: HostedZone }) {
 
   return (
     <ActivationBadge
-      fallback={isPending ? "Loading…" : "Unknown"}
+      fallback={isPending ? "loading…" : "unknown"}
       state={data?.state}
     />
   )

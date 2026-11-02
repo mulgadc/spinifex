@@ -52,7 +52,7 @@ describe("ClustersListPage", () => {
     renderPage(["zebra", "alpha"])
     const links = screen.getAllByRole("link", { name: /zebra|alpha/u })
     expect(links.map((l) => l.textContent)).toStrictEqual(["alpha", "zebra"])
-    expect(screen.getAllByText("ACTIVE")).toHaveLength(2)
+    expect(screen.getAllByText("active")).toHaveLength(2)
     expect(screen.getAllByText("1.30")).toHaveLength(2)
   })
 
@@ -63,7 +63,7 @@ describe("ClustersListPage", () => {
 
   it("selects a cluster when its row is clicked", () => {
     const onSearchChange = renderPage(["c1"])
-    fireEvent.click(screen.getByRole("cell", { name: "ACTIVE" }))
+    fireEvent.click(screen.getByRole("cell", { name: "active" }))
     expect(onSearchChange).toHaveBeenCalledWith({
       ...CLOSED_PANEL,
       selected: "c1",

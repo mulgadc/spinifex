@@ -328,6 +328,7 @@ export function GuardrailDetails({
             aria-label="Open guardrail page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ guardrailId }}
+            search={{ tab }}
             to="/bedrock/list-guardrails/$guardrailId"
           >
             <Maximize2 />

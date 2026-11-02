@@ -9,9 +9,10 @@ import {
 } from "lucide-react"
 import { useState } from "react"
 
-import { DetailPanel, PanelSection, PanelTags } from "@/components/detail-panel"
+import { DetailPanel, PanelSection } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
 import {
   AlertDialog,
@@ -59,7 +60,12 @@ function Settings({
 
   return (
     <>
-      <PanelTags tags={image.Tags} />
+      <Ec2Tags
+        id={image.ImageId}
+        invalidate={["ec2", "images"]}
+        readOnly={isSystemImage}
+        tags={image.Tags}
+      />
       <PanelSection title="Manage">
         <div className="flex flex-col items-start gap-3">
           {promote.error && (
@@ -154,6 +160,7 @@ export function ImageDetails({
             aria-label="Open image page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ id }}
+            search={{ tab }}
             to="/ec2/describe-images/$id"
           >
             <Maximize2 />

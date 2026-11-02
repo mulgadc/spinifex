@@ -1,5 +1,10 @@
 import { Plus, Trash2 } from "lucide-react"
+import { useState } from "react"
 
+import mariadbMark from "@/assets/engines/mariadb.svg?no-inline"
+import postgresMark from "@/assets/engines/postgresql.svg?no-inline"
+import { ChoiceTile, ChoiceTiles } from "@/components/choice-tile"
+import { FilterBar } from "@/components/filter-bar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -150,6 +155,73 @@ export function ControlsSection() {
           <Slider defaultValue={[20, 80]} />
         </div>
       </Specimen>
+      <EngineTilesSpecimen />
+      <FilterBarSpecimen />
     </CatalogueSection>
+  )
+}
+
+function EngineTilesSpecimen() {
+  const [engine, setEngine] = useState("mariadb")
+
+  return (
+    <Specimen label="Choice tiles: a few named products, each with its own mark; one that cannot be used stays visible, disabled, saying why">
+      <div className="w-full max-w-md">
+        <ChoiceTiles columns={3} label="Engine">
+          <ChoiceTile
+            checked={engine === "mariadb"}
+            icon={<img alt="" className="size-8" src={mariadbMark} />}
+            label="MariaDB"
+            onSelect={() => {
+              setEngine("mariadb")
+            }}
+          />
+          <ChoiceTile
+            checked={engine === "postgres"}
+            icon={<img alt="" className="size-8" src={postgresMark} />}
+            label="PostgreSQL"
+            onSelect={() => {
+              setEngine("postgres")
+            }}
+          />
+          <ChoiceTile
+            checked={false}
+            description="Image not imported"
+            icon={
+              <img alt="" className="size-8 opacity-40" src={postgresMark} />
+            }
+            label="Unavailable"
+          />
+        </ChoiceTiles>
+      </div>
+    </Specimen>
+  )
+}
+
+const FILTER_CHOICES = [
+  { value: "all", label: "All", count: 12 },
+  { value: "running", label: "Running", count: 9 },
+  { value: "stopped", label: "Stopped", count: 3 },
+] as const
+
+type FilterChoiceValue = (typeof FILTER_CHOICES)[number]["value"]
+
+function FilterBarSpecimen() {
+  const [query, setQuery] = useState("")
+  const [choice, setChoice] = useState<FilterChoiceValue>("all")
+
+  return (
+    <Specimen label="Filter bar: every list searches and filters with it; Clear filters shows only while something is filtered">
+      <FilterBar
+        choice={choice}
+        choices={FILTER_CHOICES}
+        choicesLabel="Instance state"
+        onChoiceChange={setChoice}
+        onQueryChange={setQuery}
+        placeholder="Filter by name, ID, type or IP"
+        query={query}
+        searchLabel="Filter instances"
+      />
+    </Specimen>
   )
 }

@@ -8,9 +8,9 @@ import {
   PanelField,
   PanelFields,
   PanelSection,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
@@ -71,7 +71,11 @@ function Settings({
 
   return (
     <>
-      <PanelTags tags={subnet.Tags} />
+      <Ec2Tags
+        id={subnet.SubnetId}
+        invalidate={["ec2", "subnets"]}
+        tags={subnet.Tags}
+      />
       <PanelSection title="Manage">
         <div className="flex flex-col items-start gap-3">
           <Button
@@ -131,6 +135,7 @@ export function SubnetDetails({
             aria-label="Open subnet page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ id }}
+            search={{ tab }}
             to="/ec2/describe-subnets/$id"
           >
             <Maximize2 />

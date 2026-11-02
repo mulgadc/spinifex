@@ -10,9 +10,9 @@ import {
   PanelFields,
   PanelSection,
   PanelSpinner,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { IamTags } from "@/components/resource-tags"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { decodePolicyDocument } from "@/lib/json"
 import type { PanelTab } from "@/lib/panel-search"
@@ -51,7 +51,15 @@ function PolicyDocument({ policy }: { policy: Policy }) {
 function Tags({ policyArn }: { policyArn: string }) {
   const { data } = useSuspenseQuery(iamPolicyQueryOptions(policyArn))
 
-  return <PanelTags tags={data.Policy?.Tags} />
+  // AWS-managed policies belong to no account, so their tags cannot change.
+  return (
+    <IamTags
+      id={policyArn}
+      kind="policy"
+      readOnly={policyArn.includes(":aws:policy/")}
+      tags={data.Policy?.Tags}
+    />
+  )
 }
 
 function Overview({ policy }: { policy: Policy }) {
@@ -168,6 +176,7 @@ export function PolicyDetails({
             aria-label="Open policy page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ policyArn: encodeURIComponent(policyArn) }}
+            search={{ tab }}
             to="/iam/list-policies/$policyArn"
           >
             <Maximize2 />

@@ -34,9 +34,15 @@ type sessionProvider struct {
 	value     credentials.Value
 	expires   time.Time
 	lastError time.Time
+	// minRemaining makes the next Retrieve re-assume unless the session has at
+	// least this long left; it is cleared by that Retrieve.
+	minRemaining time.Duration
 }
 
-var _ credentials.Provider = (*sessionProvider)(nil)
+var (
+	_ credentials.Provider = (*sessionProvider)(nil)
+	_ credentials.Expirer  = (*sessionProvider)(nil)
+)
 
 func newSessionProvider(assume AssumeFunc, now func() time.Time) *sessionProvider {
 	return &sessionProvider{assume: assume, now: now}
@@ -48,7 +54,13 @@ func (p *sessionProvider) Retrieve() (credentials.Value, error) {
 
 	now := p.now()
 	valid := p.value.AccessKeyID != "" && now.Before(p.expires)
-	if valid && (now.Before(p.expires.Add(-refreshMargin)) || now.Before(p.lastError.Add(retryInterval))) {
+	need := p.minRemaining
+	p.minRemaining = 0
+	if need > 0 {
+		if valid && p.expires.Sub(now) >= need {
+			return p.value, nil
+		}
+	} else if valid && (now.Before(p.expires.Add(-refreshMargin)) || now.Before(p.lastError.Add(retryInterval))) {
 		return p.value, nil
 	}
 
@@ -83,4 +95,19 @@ func (p *sessionProvider) IsExpired() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.value.AccessKeyID == "" || !p.now().Before(p.expires.Add(-refreshMargin))
+}
+
+// ExpiresAt is when the current session stops working.
+func (p *sessionProvider) ExpiresAt() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.expires
+}
+
+// requireRemaining makes the next Retrieve draw a new session unless the
+// current one outlasts d.
+func (p *sessionProvider) requireRemaining(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.minRemaining = d
 }

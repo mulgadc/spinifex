@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 // Stage groups resources that must all be gone before the next group is
@@ -108,9 +110,24 @@ type Reaper interface {
 // AccountStore is the slice of the IAM service teardown needs. Narrow on
 // purpose: this package must not be able to create anything.
 type AccountStore interface {
+	AccountQuiescer
 	GetAccount(accountID string) (*Account, error)
-	SetAccountStatus(accountID, status string) (*Account, error)
-	DeleteAccount(accountID string) error
+	DeleteAccount(accountID, operationID string, fence uint64) error
+}
+
+// IAMBackend is the IAM service the cluster engine runs against: the broad
+// service plus the two narrow termination capabilities, which the broad
+// interface deliberately does not carry so that not every holder can use them.
+type IAMBackend interface {
+	iamdomain.IAMService
+	AccountQuiescer
+	DeleteAccount(accountID, operationID string, fence uint64) error
+}
+
+// AccountQuiescer moves an account to TERMINATING for one deletion operation.
+// It refuses when another operation or a newer fence owns the termination.
+type AccountQuiescer interface {
+	QuiesceAccount(accountID, operationID string, fence uint64) (generation uint64, err error)
 }
 
 // Account mirrors the IAM account record. Redeclared rather than imported so
@@ -119,6 +136,16 @@ type Account struct {
 	AccountID   string
 	AccountName string
 	Status      string
+
+	// Generation and TerminationOp are what a quiesce read-back compares.
+	Generation    uint64
+	TerminationOp *TerminationOp
+}
+
+// TerminationOp mirrors the operation and fence IAM holds on a terminating account.
+type TerminationOp struct {
+	OperationID string
+	Fence       uint64
 }
 
 // Request is one teardown.
@@ -136,6 +163,11 @@ type Request struct {
 
 	// DryRun reports what would be deleted and touches nothing.
 	DryRun bool
+
+	// OperationID and Fence identify the deletion job acting. The account is
+	// quiesced under them, so a holder that has been superseded stops here.
+	OperationID string
+	Fence       uint64
 }
 
 // StageResult is what happened in one stage.

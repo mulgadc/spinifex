@@ -45,7 +45,7 @@ Under the hood it keeps things minimal: a VPC with two public subnets, an IAM ro
 - Creating the EKS cluster and worker IAM roles with faithful managed-policy attachments
 - Provisioning an `aws_eks_cluster` and a managed `aws_eks_node_group`
 - Pointing the Kubernetes provider at the new cluster and deploying a workload from the same `apply`
-- Opening one rule on the auto-managed worker security group to expose a NodePort
+- Opening one rule on the cluster security group to expose a NodePort
 
 **What gets created**
 
@@ -58,13 +58,13 @@ Under the hood it keeps things minimal: a VPC with two public subnets, an IAM ro
 | ECR Repository | `spinifex-demo` | Holds the demo image the workers pull |
 | EKS Cluster | `eks-quickstart` | Public API endpoint, API auth mode, Kubernetes 1.32 |
 | Node Group | `default` | `node_desired_size` `t3.medium` worker(s) — 1 or 3 |
-| SG Ingress Rule | `eks-quickstart-demo-nodeport` | Opens the demo NodePort on the auto-managed worker SG |
+| SG Ingress Rule | `eks-quickstart-demo-nodeport` | Opens the demo NodePort on the cluster security group |
 | K8s Deployment | `spinifex-demo` | The themed demo image from ECR, 2 replicas |
 | K8s Service | `spinifex-demo` | NodePort publishing the demo on the worker |
 
 **Spinifex specifics**
 
-- The cluster's security groups are **auto-managed** — `vpc_config.security_group_ids` is ignored. To reach a NodePort, this workbook looks the worker SG up by its deterministic name (`eks-cluster-<name>-nodegroup-sg`) and adds a single ingress rule.
+- The cluster security group is **auto-managed**, as on EKS: Spinifex creates `eks-cluster-sg-<name>-<id>`, attaches it to the workers, and reports it as `vpc_config[0].cluster_security_group_id`. `vpc_config.security_group_ids` is ignored. To reach a NodePort, this workbook adds a single ingress rule to that security group.
 - The worker AMI is always Spinifex's `eks-node` image; `ami_type` is recorded but does **not** select the image.
 - `authentication_mode` can be `"API"` or `"API_AND_CONFIG_MAP"`, and bare `"CONFIG_MAP"` is rejected. Access is granted through access entries, as there is no `aws-auth` ConfigMap path.
 - The workers need outbound internet (here via the IGW) to pull the demo container image.
@@ -182,8 +182,9 @@ aws ec2 describe-instances --filters "Name=tag:spinifex:eks-cluster,Values=eks-q
 # Did the demo pods roll out?
 kubectl get pods -o wide
 
-# Is the NodePort rule on the worker SG?
-aws ec2 describe-security-groups --filters "Name=group-name,Values=eks-cluster-eks-quickstart-nodegroup-sg" \
+# Is the NodePort rule on the cluster security group?
+SG=$(tofu output -raw cluster_security_group_id)
+aws ec2 describe-security-groups --group-ids "$SG" \
   --query 'SecurityGroups[0].IpPermissions'
 ```
 

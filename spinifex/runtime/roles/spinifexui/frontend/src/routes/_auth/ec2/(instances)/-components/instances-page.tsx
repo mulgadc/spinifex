@@ -1,26 +1,21 @@
 import type { Instance } from "@aws-sdk/client-ec2"
 import { Link } from "@tanstack/react-router"
-import { Pause, Play, Plus, RotateCw, Search, Trash2 } from "lucide-react"
+import { Pause, Play, Plus, RotateCw, Trash2 } from "lucide-react"
 import { type ReactNode, useState } from "react"
 
 import { CreatePanel } from "@/components/create-panel"
 import { type DataColumn, DataTable } from "@/components/data-table"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { ErrorBanner } from "@/components/error-banner"
+import { FilterBar } from "@/components/filter-bar"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceView } from "@/components/resource-view"
 import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
+import { RelativeTime, TagPills, TruncatedText } from "@/components/table-cells"
 import { Button, buttonVariants } from "@/components/ui/button"
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@/components/ui/input-group"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
-import { formatDateTime } from "@/lib/utils"
 import {
   useRebootInstance,
   useStartInstance,
@@ -98,18 +93,21 @@ function Mono({ children }: { children: string | undefined }) {
   )
 }
 
+const NAME_TAG = ["Name"]
+
+// Instance ID, Name and State stay on a phone; the rest drop out as the table
+// narrows, as they do beside an open panel.
 const COLUMNS: DataColumn<Instance>[] = [
   {
     id: "instance",
-    header: "Instance",
-    sortValue: (instance) => instanceName(instance) ?? instance.InstanceId,
+    header: "Instance ID",
+    sortValue: (instance) => instance.InstanceId,
     cell: (instance) => {
-      const name = instanceName(instance)
       const id = instance.InstanceId ?? ""
 
       return (
         <Link
-          className="group block max-w-72 min-w-0 rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          className="rounded-sm font-mono text-xs font-medium whitespace-nowrap text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
           from="/ec2/describe-instances/"
           search={(previous) => ({
             ...previous,
@@ -118,17 +116,16 @@ const COLUMNS: DataColumn<Instance>[] = [
           })}
           to="."
         >
-          <span className="block truncate font-medium text-primary group-hover:underline">
-            {name ?? id}
-          </span>
-          {name && (
-            <span className="block truncate font-mono text-xs text-muted-foreground">
-              {id}
-            </span>
-          )}
+          {id}
         </Link>
       )
     },
+  },
+  {
+    id: "name",
+    header: "Name",
+    sortValue: instanceName,
+    cell: (instance) => <TruncatedText text={instanceName(instance)} />,
   },
   {
     id: "state",
@@ -140,15 +137,8 @@ const COLUMNS: DataColumn<Instance>[] = [
     id: "type",
     header: "Type",
     sortValue: (instance) => instance.InstanceType,
-    hideBelow: "sm",
+    hideBelow: "md",
     cell: (instance) => <Mono>{instance.InstanceType}</Mono>,
-  },
-  {
-    id: "az",
-    header: "Zone",
-    sortValue: (instance) => instance.Placement?.AvailabilityZone,
-    hideBelow: "lg",
-    cell: (instance) => instance.Placement?.AvailabilityZone ?? "—",
   },
   {
     id: "private-ip",
@@ -169,12 +159,18 @@ const COLUMNS: DataColumn<Instance>[] = [
     header: "Launched",
     sortValue: (instance) =>
       instance.LaunchTime ? new Date(instance.LaunchTime).getTime() : undefined,
-    hideBelow: "xl",
+    hideBelow: "lg",
     cell: (instance) => (
       <span className="text-muted-foreground">
-        {formatDateTime(instance.LaunchTime)}
+        <RelativeTime date={instance.LaunchTime} />
       </span>
     ),
+  },
+  {
+    id: "tags",
+    header: "Tags",
+    hideBelow: "lg",
+    cell: (instance) => <TagPills omit={NAME_TAG} tags={instance.Tags} />,
   },
 ]
 
@@ -410,56 +406,27 @@ export function InstancesPage({
       />
 
       <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <InputGroup className="w-full sm:w-72">
-            <InputGroupAddon>
-              <Search />
-            </InputGroupAddon>
-            <InputGroupInput
-              aria-label="Filter instances"
-              onChange={(event) => {
-                onSearchChange({ q: event.target.value })
-              }}
-              placeholder="Filter by name, ID, type or IP"
-              type="search"
-              value={search.q}
-            />
-          </InputGroup>
-          <ToggleGroup
-            aria-label="Instance state"
-            onValueChange={(values) => {
-              const next = STATE_FILTERS.find(
-                (filter) => filter === values.at(-1),
-              )
-
-              if (next) {
-                onSearchChange({ state: next })
-              }
-            }}
-            value={[search.state]}
-            variant="outline"
-          >
-            {STATE_FILTERS.map((filter) => (
-              <ToggleGroupItem key={filter} value={filter}>
-                <span className="capitalize">{filter}</span>
-                <span className="text-muted-foreground tabular-nums">
-                  {counts[filter]}
-                </span>
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-          {filtered && (
-            <Button
-              onClick={() => {
-                onSearchChange({ q: "", state: "all" })
-              }}
-              size="sm"
-              variant="ghost"
-            >
-              Clear filters
-            </Button>
-          )}
-        </div>
+        <FilterBar
+          choice={search.state}
+          choices={STATE_FILTERS.map((filter) => ({
+            value: filter,
+            label: filter.charAt(0).toUpperCase() + filter.slice(1),
+            count: counts[filter],
+          }))}
+          choicesLabel="Instance state"
+          onChoiceChange={(state) => {
+            onSearchChange({ state })
+          }}
+          onClear={() => {
+            onSearchChange({ q: "", state: "all" })
+          }}
+          onQueryChange={(q) => {
+            onSearchChange({ q })
+          }}
+          placeholder="Filter by name, ID, type or IP"
+          query={search.q}
+          searchLabel="Filter instances"
+        />
 
         <div>
           {selectedVisible.length > 0 && (

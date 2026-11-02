@@ -41,6 +41,8 @@ import (
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
+	lambdaawsapi "github.com/mulgadc/spinifex/spinifex/domains/lambda/awsapi"
+	lambdafunction "github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
@@ -59,6 +61,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
+	accountlifecycle "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	instancecache "github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
@@ -93,6 +96,10 @@ var serviceName = "awsgw"
 
 // OIDCJWKSReader is wired into STS here, not beside its own definition in
 // domains/eks/cluster, because domains/eks/cluster must not import domains/sts.
+// The concrete IAM service is the one holder of the quiesce and fenced-delete
+// capabilities; the shared IAMService interface carries neither.
+var _ accountlifecycle.IAMBackend = (*iamdomain.IAMServiceImpl)(nil)
+
 var _ stsdomain.ClusterJWKSResolver = (*ekscluster.OIDCJWKSReader)(nil)
 
 // AccountStatusReader also serves as the quota override seal's TERMINATING
@@ -368,17 +375,35 @@ func launchService(config *config.ClusterConfig) error {
 	// Lambda code copies live in a Regional system bucket reached through a
 	// scoped role session. Nothing is provisioned until the store is first used.
 	lambdaCodeStore, err := newLambdaCodeStore(codeStoreWiring{
-		Region:        nodeConfig.Region,
-		Node:          config.Node,
-		Endpoint:      netaddr.DialTarget(nodeConfig.Predastore.Host),
-		SigningRegion: nodeConfig.Predastore.Region,
-		RootAccessKey: nodeConfig.Predastore.AccessKey,
-		RootSecretKey: nodeConfig.Predastore.SecretKey,
+		Region:          nodeConfig.Region,
+		Node:            config.Node,
+		Endpoint:        netaddr.DialTarget(nodeConfig.Predastore.Host),
+		PresignEndpoint: lambdaPresignEndpoint(nodeConfig.Predastore.Host, nodeConfig.AdvertiseIP),
+		SigningRegion:   nodeConfig.Predastore.Region,
+		RootAccessKey:   nodeConfig.Predastore.AccessKey,
+		RootSecretKey:   nodeConfig.Predastore.SecretKey,
 	}, iamService, stsService)
 	if err != nil {
 		return err
 	}
-	_ = lambdaCodeStore // no Lambda handler is registered to use it yet
+	lambdaKey, err := masterkey.New(masterKey)
+	if err != nil {
+		return fmt.Errorf("lambda environment key: %w", err)
+	}
+	// Built but not routed: Lambda stays out of the public router until its runtime image exists.
+	_ = lambdaawsapi.NewRegistration(lambdaawsapi.Deps{
+		Meta: lambdafunction.NewNATSClient(natsConn),
+		Codes: func(ctx context.Context) (lambdaawsapi.CodeStore, error) {
+			store, err := lambdaCodeStore.Store(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return store, nil
+		},
+		Roles:  iamdomain.NewRoleResolver(iamService),
+		Trusts: lambdaRoleTrusts(iamService),
+		AEAD:   lambdaKey.AEAD,
+	})
 
 	// ECR auth bridge: load (or first-run create) the ES256 signing key from the
 	// cluster-replicated awsgw-keys KV bucket, then build the token issuer
@@ -682,7 +707,7 @@ func launchService(config *config.ClusterConfig) error {
 	sqsControlPlane := sqsRegistrations(sqsRelay, registryHost, registryPort)
 	// Set once the gateway is composed, so status reports the registry it serves.
 	var composedServices *dispatch.Registry
-	operatorControlPlane := operatoradmin.NewRegistration(withClusterNodes(operatoradmin.Deps{
+	operatorAdminDeps := operatorDeps(iamService, config, operatoradmin.Deps{
 		Version:     version,
 		Commit:      commit,
 		NATS:        natsConn,
@@ -692,14 +717,18 @@ func launchService(config *config.ClusterConfig) error {
 		Credentials: bedrockCredentials,
 		Access:      bedrockAccess,
 
-		IAM:                    iamService,
+		NetworkTests:           operatoradmin.NewKVNetworkTests(js),
 		Quota:                  quotaSvc,
 		BucketStore:            objStore,
 		SignupMaxAccounts:      signupMaxAccounts,
 		Region:                 nodeConfig.Region,
 		SQSWorkerPolling:       sqsRelay.WorkerPresent,
 		SQSTenantAPIRegistered: func() bool { return sqsServed(composedServices) },
-	}, config))
+	})
+	operatorControlPlane := operatoradmin.NewRegistration(operatorAdminDeps)
+	// Every gateway scans for account deletions whose holder died; the fenced
+	// takeover makes any number of them safe.
+	defer operatorAdminDeps.StartDeletionResumer(janitorCtx)()
 	// The SQS worker's internal surface binds its buckets per request and never
 	// creates them, so it refuses every caller until a worker launch has.
 	sqsWorkerDeps := sqsworkerapi.JetStreamDeps(js)
@@ -903,6 +932,16 @@ func parseBedrockEndpoints(raw string) map[string]string {
 		return nil
 	}
 	return endpoints
+}
+
+// operatorDeps binds the concrete IAM service, the only holder of the quiesce
+// and fenced-delete capabilities, and the configured node sets onto the /admin
+// dependencies. A missing Termination would answer every account deletion with
+// InternalError.
+func operatorDeps(iamService *iamdomain.IAMServiceImpl, config *config.ClusterConfig, d operatoradmin.Deps) operatoradmin.Deps {
+	d.IAM = iamService
+	d.Termination = iamService
+	return withClusterNodes(d, config)
 }
 
 // withClusterNodes sets the configured node sets teardown reaches: the

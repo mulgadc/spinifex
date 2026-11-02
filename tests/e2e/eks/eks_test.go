@@ -244,6 +244,8 @@ func TestEKS(t *testing.T) {
 
 	t.Run("DeleteCluster", func(t *testing.T) {
 		requireClusterReady(t, fx)
+		clusterSG := clusterSecurityGroupID(t, fx)
+		bystander := createSecondSecurityGroup(t, c, fx, clusterSG)
 		started := time.Now()
 		out, err := c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(fx.ClusterName)})
 		elapsed := time.Since(started)
@@ -253,6 +255,7 @@ func TestEKS(t *testing.T) {
 		assert.Equal(t, eks.ClusterStatusDeleting, aws.StringValue(out.Cluster.Status), "delete-cluster response status")
 		waitClusterGoneWhileDeleting(t, c, fx.ClusterName)
 		fx.Deleted = true
+		assertBystanderRulesAfterDelete(t, c, bystander, clusterSG)
 
 		_, err = c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(fx.ClusterName)})
 		var aerr awserr.Error

@@ -1057,9 +1057,6 @@ jobs:
             { echo "::error::br-wan not permitted in /etc/qemu/bridge.conf"; exit 1; }
           command -v sshpass >/dev/null ||
             { echo "::error::sshpass not installed"; exit 1; }
-          free_mb=$(free -m | awk '/^Mem:/ {print $7}')
-          [ "$free_mb" -ge 8192 ] ||
-            { echo "::error::need 8 GiB available, have ${free_mb} MiB"; exit 1; }
           # A 40G image on tmpfs competes with the 8 GiB the VM itself needs.
           fstype=$(df --output=fstype "$TMPDIR" | tail -1 | tr -d ' ')
           [ "$fstype" != tmpfs ] ||
@@ -1089,6 +1086,10 @@ jobs:
             [ -f "$HOME/.ssh/$k" ] ||
               ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/$k" -C "$k-ci"
           done
+
+      # The node's 8 GiB, claimed when the VM boots rather than at preflight.
+      - name: Wait for memory
+        run: mulga/spinifex/.github/scripts/wait-for-memory.sh 8192
 
       # Boots the ISO, installs unattended, reads the lease off the serial
       # console, runs the in-guest smoke test, and installs the key for the
@@ -1301,15 +1302,10 @@ jobs:
           ref: ${{ steps.siblings.outputs.bluebottle }}
           path: mulga/bluebottle
 
-      # 3 x 8 GiB plus 9 sparse 40G disks, before the instances the cluster
-      # launches on top.
       - name: Preflight
         run: |
           set -euo pipefail
           mkdir -p "$TMPDIR"
-          free_mb=$(free -m | awk '/^Mem:/ {print $7}')
-          [ "$free_mb" -ge 26624 ] ||
-            { echo "::error::need 26 GiB available, have ${free_mb} MiB"; exit 1; }
           fstype=$(df --output=fstype "$TMPDIR" | tail -1 | tr -d ' ')
           [ "$fstype" != tmpfs ] ||
             { echo "::error::$TMPDIR is tmpfs — nine node disks would be in RAM"; exit 1; }
@@ -1332,6 +1328,11 @@ jobs:
       # formation port. Both land with mulga-yxtda and the bridged WAN mode;
       # until then this cell proves the cluster forms and survives, not that a
       # customer can use it.
+      # 3 x 8 GiB plus headroom for the instances the cluster launches on top,
+      # claimed when the nodes boot rather than at preflight.
+      - name: Wait for memory
+        run: mulga/spinifex/.github/scripts/wait-for-memory.sh 26624
+
       - name: Install, form and verify the cluster
         working-directory: mulga/scripts/iso-builder
         run: |

@@ -40,6 +40,7 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
@@ -67,6 +68,7 @@ import (
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	lambdafunction "github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/exonet"
@@ -169,6 +171,7 @@ type Daemon struct {
 	spotInstanceService   *ec2spotinstance.SpotInstanceServiceImpl
 	vpcService            *ec2vpc.VPCServiceImpl
 	sqsWorker             *sqsWorkerEnsurer
+	insight               *nodeInsight
 	eipService            ec2eip.EIPService
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
 	eksService            *ekscluster.EKSServiceImpl
@@ -186,6 +189,7 @@ type Daemon struct {
 	ochreAppliance        *ochrevector.Appliance
 	ochreBackupService    *ochrevector.BackupService
 	ecrMetaService        *ecr.MetaServiceImpl
+	lambdaMetaService     *lambdafunction.MetaService
 	routeTableService     *ec2routetable.RouteTableServiceImpl
 	natGatewayService     *ec2natgw.NatGatewayServiceImpl
 	externalIPAM          *ec2vpc.ExternalIPAM
@@ -905,6 +909,10 @@ func (d *Daemon) subscribeAll() error {
 	if d.sqsWorker == nil {
 		d.sqsWorker = newSQSWorkerEnsurer(d.buildSQSWorkerLauncher)
 	}
+	if d.insight == nil {
+		d.insight = newNodeInsight(d.node, d.config.Host, d.config.VPCD.ExternalInterface)
+		d.insight.live = &nodeLiveSampler{insight: d.insight, nc: d.natsConn, subject: telemetryv1.NodeLiveSampleSubject(d.node)}
+	}
 	subs := []natsSub{
 		// ec2.RunInstances is handled by dynamic per-instance-type subscriptions
 		// managed by ResourceManager.initSubscriptions()
@@ -1044,6 +1052,7 @@ func (d *Daemon) subscribeAll() error {
 		{clusterv1.NodeHealthSubject(d.node), d.handleHealthCheck, ""},
 		{clusterv1.NodesDiscoverSubject, d.handleNodeDiscover, ""},
 		{clusterv1.NodeStatusSubject, d.handleNodeStatus, ""},
+		{clusterv1.NodeFactsSubject, d.handleNodeFacts, ""},
 		{clusterv1.NodeVMsSubject, d.handleNodeVMs, ""},
 		{operatorv1.StorageConfigSubject, d.handleStorageConfig, ""},
 		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
@@ -1056,6 +1065,14 @@ func (d *Daemon) subscribeAll() error {
 		{"spinifex.cluster.shutdown.storage", d.handleShutdownStorage, ""},
 		{"spinifex.cluster.shutdown.persist", d.handleShutdownPersist, ""},
 		{"spinifex.cluster.shutdown.infra", d.handleShutdownInfra, ""},
+	}
+	if clusterv1.ValidNodeID(d.node) {
+		subs = append(subs,
+			natsSub{clusterv1.NodeFactsOfSubject(d.node), d.handleNodeFacts, ""},
+			natsSub{clusterv1.NetTestServeSubject(d.node), d.handleNetTestServe, ""},
+			natsSub{clusterv1.NetTestRunSubject(d.node), d.handleNetTestRun, ""},
+			natsSub{telemetryv1.NodeLiveWatchSubject(d.node), d.handleNodeLiveWatch, ""},
+		)
 	}
 
 	// ELBv2 operations require a resolved gateway URL.
@@ -1305,6 +1322,17 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{ecr.SubjectUploadGet, handleNATSRequest(d.node, d.ecrMetaService.UploadGet), "spinifex-workers"},
 			natsSub{ecr.SubjectUploadUpdate, handleNATSRequest(d.node, d.ecrMetaService.UploadUpdate), "spinifex-workers"},
 			natsSub{ecr.SubjectUploadDelete, handleNATSRequest(d.node, d.ecrMetaService.UploadDelete), "spinifex-workers"},
+		)
+	}
+
+	// Lambda gateway → daemon subscriptions. The daemon owns the per-account
+	// JetStream KV function records; code bytes never traverse these subjects.
+	if d.lambdaMetaService != nil {
+		subs = append(subs,
+			natsSub{lambdafunction.SubjectCreate, handleNATSRequest(d.node, d.lambdaMetaService.Create), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectGet, handleNATSRequest(d.node, d.lambdaMetaService.Get), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectCodeStored, handleNATSRequest(d.node, d.lambdaMetaService.CodeStored), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectRollbackCreate, handleNATSRequest(d.node, d.lambdaMetaService.RollbackCreate), "spinifex-workers"},
 		)
 	}
 
@@ -2408,6 +2436,7 @@ func (d *Daemon) startCluster() error {
 		slog.Warn("ECR metadata service disabled: JetStream unavailable", "err", jsErr)
 	} else {
 		d.ecrMetaService = ecr.NewKVMetaService(js)
+		d.lambdaMetaService = lambdafunction.NewMetaService(js)
 	}
 
 	if err := d.eksService.SpawnRegisteredReconcilers(); err != nil {

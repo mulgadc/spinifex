@@ -1,4 +1,5 @@
 import type { Image } from "@aws-sdk/client-ec2"
+import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 
 import {
@@ -7,6 +8,7 @@ import {
   PanelSection,
 } from "@/components/detail-panel"
 import { formatDateTime } from "@/lib/utils"
+import { callerIdentityQueryOptions } from "@/queries/sts"
 
 interface AmiDetailsProps {
   image: Image
@@ -21,6 +23,13 @@ export function AmiDetails({
   image,
   showExtendedDetails = false,
 }: AmiDetailsProps) {
+  const { data: identity } = useQuery(callerIdentityQueryOptions)
+
+  // Another account's snapshot, such as a system image's, cannot be described
+  // by this one, so its ID would only lead to a not-found page.
+  const ownsImage =
+    identity?.Account !== undefined && identity.Account === image.OwnerId
+
   return (
     <>
       <PanelSection
@@ -99,7 +108,7 @@ export function AmiDetails({
                   <PanelField label="Encrypted">
                     {yesNo(mapping.Ebs.Encrypted)}
                   </PanelField>
-                  {mapping.Ebs.SnapshotId && (
+                  {ownsImage && mapping.Ebs.SnapshotId && (
                     <PanelField
                       copy={mapping.Ebs.SnapshotId}
                       label="Snapshot ID"

@@ -169,7 +169,7 @@ func TestValidateParameterValue_RejectsBadInput(t *testing.T) {
 	cases := []struct {
 		name, param, value, want string
 	}{
-		{"UnknownName", "not_a_setting", "1", "is not a parameter this engine exposes"},
+		{"UnknownName", "not_a_setting", "1", "Could not find parameter with name: "},
 		{"NotAnInteger", "max_connections", "many", "takes an integer"},
 		{"BelowRange", "max_connections", "1", "outside its allowed range"},
 		{"AboveRange", "max_connections", "500000", "outside its allowed range"},

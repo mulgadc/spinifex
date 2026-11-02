@@ -75,6 +75,24 @@ const (
 	commandRepublishEvery = 2 * time.Second
 )
 
+// How long the control plane waits for each command type by default. The agent
+// reads the same table, so it never starts work its issuer has stopped waiting for.
+var commandBudgets = map[string]time.Duration{
+	CommandSetPassword:    setPasswordTimeout,
+	CommandApplyParams:    defaultApplyParamsTimeout,
+	CommandStopEngine:     stopEngineTimeout,
+	CommandGrowFilesystem: growFilesystemTimeout,
+	CommandQuiesce:        quiesceTimeout,
+	CommandUnquiesce:      unquiesceTimeout,
+}
+
+// CommandBudget returns how long the control plane waits for a reply to a
+// command of this type, and false for a type it never issues.
+func CommandBudget(commandType string) (time.Duration, bool) {
+	budget, ok := commandBudgets[commandType]
+	return budget, ok
+}
+
 // ErrCommandUnreachable means the agent was unreachable or missed the command's
 // budget. Callers that can degrade — the graceful engine stop — check for this;
 // callers that must not, like a password rotation, surface it as retryable.
@@ -152,10 +170,6 @@ func (s *Service) issueCommand(ctx context.Context, accountID, dbInstanceIdentif
 		Parameters: params,
 		IssuedAt:   &issuedAt,
 	}
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		return nil, err
-	}
 
 	// Subscribed before the first publish, so a reply cannot land in the gap
 	// between the command going out and the issuer starting to listen.
@@ -173,7 +187,15 @@ func (s *Service) issueCommand(ctx context.Context, accountID, dbInstanceIdentif
 	defer cancel()
 	subject := BusCommandSubject(accountID, dbInstanceIdentifier)
 
+	deadline, _ := deadlineCtx.Deadline()
 	for {
+		// Stamped per copy, so a copy that reaches the agent late carries only what
+		// its issuer has left rather than a whole fresh budget.
+		cmd.RemainingBudgetMs = max(time.Until(deadline).Milliseconds(), 1)
+		data, err := json.Marshal(cmd)
+		if err != nil {
+			return nil, err
+		}
 		if err := s.nc.Publish(subject, data); err != nil {
 			return nil, fmt.Errorf("rds: publish %s command to %s: %w", commandType, dbInstanceIdentifier, err)
 		}

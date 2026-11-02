@@ -1,3 +1,8 @@
+// Left out of -race builds: go/packages loads export data concurrently and
+// go/types races on it (golang/go#81122). The lint is static, so the plain
+// test run covers it.
+//go:build !race
+
 package otelsetup_test
 
 import (

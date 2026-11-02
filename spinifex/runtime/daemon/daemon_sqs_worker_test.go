@@ -258,7 +258,7 @@ type fakeRoleIAM struct {
 
 func (f *fakeRoleIAM) GetRole(_ string, in *awsiam.GetRoleInput) (*awsiam.GetRoleOutput, error) {
 	if f.trust == "" {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "The role with name %s cannot be found.", aws.StringValue(in.RoleName))
 	}
 	return &awsiam.GetRoleOutput{Role: &awsiam.Role{RoleName: in.RoleName, AssumeRolePolicyDocument: aws.String(f.trust)}}, nil
 }
@@ -267,7 +267,7 @@ func (f *fakeRoleIAM) CreateRole(_ string, in *awsiam.CreateRoleInput) (*awsiam.
 	f.writes = append(f.writes, "CreateRole")
 	if f.createdTrust != "" {
 		f.trust = f.createdTrust
-		return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMEntityAlreadyExists, "Role with name %s already exists.", aws.StringValue(in.RoleName))
 	}
 	f.trust = aws.StringValue(in.AssumeRolePolicyDocument)
 	return &awsiam.CreateRoleOutput{}, nil
@@ -279,9 +279,9 @@ func (f *fakeRoleIAM) PutRolePolicy(_ string, in *awsiam.PutRolePolicyInput) (*a
 	return &awsiam.PutRolePolicyOutput{}, nil
 }
 
-func (f *fakeRoleIAM) GetInstanceProfile(string, *awsiam.GetInstanceProfileInput) (*awsiam.GetInstanceProfileOutput, error) {
+func (f *fakeRoleIAM) GetInstanceProfile(_ string, in *awsiam.GetInstanceProfileInput) (*awsiam.GetInstanceProfileOutput, error) {
 	if f.profile == nil {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile %s cannot be found.", aws.StringValue(in.InstanceProfileName))
 	}
 	p := *f.profile
 	p.Roles = slices.Clone(f.profile.Roles)

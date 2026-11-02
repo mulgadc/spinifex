@@ -45,7 +45,7 @@ func (f *fakeIAMService) ResolveInstanceProfile(accountID, nameOrARN string) (*i
 	if f.resolveFn != nil {
 		return f.resolveFn(accountID, nameOrARN)
 	}
-	return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile %s cannot be found.", nameOrARN)
 }
 
 func (f *fakeIAMService) CanonicalResourceARN(accountID string, kind arn.IAMResourceType, name string) (string, error) {

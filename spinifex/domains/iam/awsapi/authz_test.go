@@ -33,7 +33,7 @@ func (s *resolverService) CanonicalResourceARN(_ string, kind arn.IAMResourceTyp
 			return resource, nil
 		}
 	}
-	return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
+	return "", awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "The %s with name %s cannot be found.", kind, name)
 }
 
 func (s *resolverService) LookupAccessKey(_ string) (*iamdomain.AccessKey, error) {

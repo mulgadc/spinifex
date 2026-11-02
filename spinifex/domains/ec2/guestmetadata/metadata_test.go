@@ -1152,7 +1152,7 @@ func TestHTTP_SecurityCredentialsListBackendError500(t *testing.T) {
 // genuine backend error (TestHTTP_*BackendError500) is a 500.
 func TestHTTP_IAMInfoDeletedProfile404(t *testing.T) {
 	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/gone"}}
-	svc, _ := newTestService(res, &fakeIAM{profileErr: errors.New(awserrors.ErrorIAMNoSuchEntity)}, &fakeAssumer{})
+	svc, _ := newTestService(res, &fakeIAM{profileErr: awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile gone cannot be found.")}, &fakeAssumer{})
 	h := withTapENI(svc.httpHandler(), testENI())
 	token := issueToken(t, h)
 	rec := get(t, h, prefixMetaData+"iam/info", token)

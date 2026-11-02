@@ -90,7 +90,7 @@ func (e *SystemInstanceRoleEnsurer) GetRole(_ string, in *iam.GetRoleInput) (*ia
 
 	r, ok := e.Roles[aws.StringValue(in.RoleName)]
 	if !ok {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "The role with name %s cannot be found.", aws.StringValue(in.RoleName))
 	}
 	return &iam.GetRoleOutput{Role: copyRole(r)}, nil
 }
@@ -104,7 +104,7 @@ func (e *SystemInstanceRoleEnsurer) CreateRole(accountID string, in *iam.CreateR
 	e.LastRoleAcct = accountID
 	name := aws.StringValue(in.RoleName)
 	if _, ok := e.Roles[name]; ok {
-		return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMEntityAlreadyExists, "Role with name %s already exists.", name)
 	}
 	r := &iam.Role{
 		RoleName: aws.String(name),
@@ -132,7 +132,7 @@ func (e *SystemInstanceRoleEnsurer) GetInstanceProfile(_ string, in *iam.GetInst
 
 	p, ok := e.Profiles[aws.StringValue(in.InstanceProfileName)]
 	if !ok {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile %s cannot be found.", aws.StringValue(in.InstanceProfileName))
 	}
 	return &iam.GetInstanceProfileOutput{InstanceProfile: copyProfile(p)}, nil
 }
@@ -148,7 +148,7 @@ func (e *SystemInstanceRoleEnsurer) CreateInstanceProfile(accountID string, in *
 	}
 	name := aws.StringValue(in.InstanceProfileName)
 	if _, ok := e.Profiles[name]; ok {
-		return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMEntityAlreadyExists, "Instance Profile %s already exists.", name)
 	}
 	arn := "arn:aws:iam::" + accountID + ":instance-profile/" + name
 	if e.EmptyInstanceProfileARN {
@@ -176,7 +176,7 @@ func (e *SystemInstanceRoleEnsurer) AddRoleToInstanceProfile(_ string, in *iam.A
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
 	if len(p.Roles) > 0 {
-		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMLimitExceeded, "Cannot exceed quota for InstanceSessionsPerInstanceProfile: 1")
 	}
 	p.Roles = []*iam.Role{{RoleName: in.RoleName}}
 	return &iam.AddRoleToInstanceProfileOutput{}, nil

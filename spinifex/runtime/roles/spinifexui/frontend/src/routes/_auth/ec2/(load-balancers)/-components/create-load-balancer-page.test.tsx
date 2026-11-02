@@ -365,4 +365,49 @@ describe("CreateLoadBalancerPage", () => {
     expect(screen.getByText(/arn:tg:new/)).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
   })
+
+  it("says beside the button that a target group field needs fixing", async () => {
+    const user = userEvent.setup()
+
+    renderWithClient(<CreateLoadBalancerPage onClose={onClose} />, seedClient())
+
+    await user.type(
+      screen.getByLabelText("Name", { selector: "#lb-name" }),
+      "my-alb",
+    )
+    await selectSubnets(user)
+
+    await user.click(
+      screen.getByRole("button", { name: "Create Load Balancer" }),
+    )
+
+    await expect(
+      screen.findByText("Fix the highlighted fields above."),
+    ).resolves.toBeInTheDocument()
+    expect(screen.getByText("Name is required")).toBeInTheDocument()
+    expect(sdk.send).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        constructor: expect.objectContaining({
+          name: "CreateTargetGroupCommand",
+        }),
+      }),
+    )
+  })
+
+  it("checks the target group too when the load balancer fields are invalid", async () => {
+    const user = userEvent.setup()
+
+    renderWithClient(<CreateLoadBalancerPage onClose={onClose} />, seedClient())
+
+    await user.click(
+      screen.getByRole("button", { name: "Create Load Balancer" }),
+    )
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Name is required")).toHaveLength(2)
+    })
+    expect(
+      screen.getByText("Fix the highlighted fields above."),
+    ).toBeInTheDocument()
+  })
 })

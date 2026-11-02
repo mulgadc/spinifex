@@ -334,8 +334,11 @@ describe("DBInstanceDetails", () => {
       <Details tab="settings" />,
       seed({ tags: [{ Key: "env", Value: "prod" }] }),
     )
-    expect(screen.getByDisplayValue("env")).toBeInTheDocument()
-    expect(screen.getByDisplayValue("prod")).toBeInTheDocument()
+    expect(screen.getByText("env")).toBeInTheDocument()
+    expect(screen.getByText("prod")).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Edit tag env" }),
+    ).toBeInTheDocument()
   })
 
   it("shows the empty state when the instance has no snapshots", () => {

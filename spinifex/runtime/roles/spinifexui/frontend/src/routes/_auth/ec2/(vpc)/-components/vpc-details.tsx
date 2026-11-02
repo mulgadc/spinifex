@@ -9,9 +9,9 @@ import {
   PanelField,
   PanelFields,
   PanelSection,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
@@ -79,7 +79,7 @@ function Settings({ vpc, onDeleted }: { vpc: Vpc; onDeleted: () => void }) {
 
   return (
     <>
-      <PanelTags tags={vpc.Tags} />
+      <Ec2Tags id={vpc.VpcId} invalidate={["ec2", "vpcs"]} tags={vpc.Tags} />
       <PanelSection title="Manage">
         <div className="flex flex-col items-start gap-3">
           <Button
@@ -137,6 +137,7 @@ export function VpcDetails({
             aria-label="Open VPC page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ id }}
+            search={{ tab }}
             to="/ec2/describe-vpcs/$id"
           >
             <Maximize2 />

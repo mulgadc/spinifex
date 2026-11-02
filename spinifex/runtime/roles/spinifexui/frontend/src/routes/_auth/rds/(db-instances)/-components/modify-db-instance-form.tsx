@@ -12,7 +12,7 @@ import {
   variableFlag,
 } from "@/components/cli-command-panel"
 import { FormActions } from "@/components/form-actions"
-import { SelectField, selectOptions, TextField } from "@/components/form-fields"
+import { SelectField, TextField } from "@/components/form-fields"
 import { FormLock } from "@/components/form-lock"
 import { FormPanel } from "@/components/form-panel"
 import { pickerNotice } from "@/components/picker-notice"
@@ -33,10 +33,14 @@ import {
 import {
   DeletionProtectionField,
   FieldNotes,
-  instanceClassOptions,
+  useInstanceClassOptions,
   parameterGroupOptions,
   parameterGroupsForEngine,
 } from "../../-components/rds-form-fields"
+import {
+  BackupWindowField,
+  MaintenanceWindowField,
+} from "../../-components/window-fields"
 import {
   ApplyImmediatelyField,
   currentSecurityGroupIds,
@@ -105,7 +109,7 @@ export function ModifyDBInstanceForm({
   const selectedStorage = values.allocatedStorage ?? currentStorage
   const selectedGroups = values.vpcSecurityGroupIds ?? []
 
-  const { instanceClasses, classNotice } = instanceClassOptions(
+  const { classOptions, classSize, classNotice } = useInstanceClassOptions(
     orderableQuery,
     instance.Engine ?? "",
   )
@@ -182,7 +186,8 @@ export function ModifyDBInstanceForm({
             label="DB instance class"
             name="dbInstanceClass"
             notice={classNotice}
-            options={selectOptions(instanceClasses)}
+            options={classOptions}
+            description={classSize(values.dbInstanceClass)}
             placeholder="Select an instance class"
             warning={
               classChanged &&
@@ -231,20 +236,16 @@ export function ModifyDBInstanceForm({
             {...register("backupRetentionPeriod", { valueAsNumber: true })}
           />
 
-          <TextField
-            error={errors.preferredBackupWindow}
+          <BackupWindowField
+            control={control}
             id="modify-backup-window"
-            label="Preferred backup window"
-            placeholder="hh24:mi-hh24:mi in UTC"
-            {...register("preferredBackupWindow")}
+            name="preferredBackupWindow"
           />
 
-          <TextField
-            error={errors.preferredMaintenanceWindow}
+          <MaintenanceWindowField
+            control={control}
             id="modify-maintenance-window"
-            label="Preferred maintenance window"
-            placeholder="ddd:hh24:mi-ddd:hh24:mi in UTC"
-            {...register("preferredMaintenanceWindow")}
+            name="preferredMaintenanceWindow"
           />
 
           <TextField

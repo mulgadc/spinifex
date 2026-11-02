@@ -10,8 +10,9 @@ import {
 } from "lucide-react"
 
 import { ConsoleOutput } from "@/components/console-output"
-import { DetailPanel, PanelSection, PanelTags } from "@/components/detail-panel"
+import { DetailPanel, PanelSection } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
+import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
@@ -139,7 +140,11 @@ export function InstanceDetails({
           icon: SlidersHorizontal,
           content: (
             <>
-              <PanelTags tags={instance.Tags} />
+              <Ec2Tags
+                id={instance.InstanceId}
+                invalidate={["ec2", "instances"]}
+                tags={instance.Tags}
+              />
               <ConsoleSection instance={instance} />
             </>
           ),

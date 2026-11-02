@@ -1,0 +1,1 @@
+import{X as e}from"./awsClient-BvDfQdL8.js";import{Y as t,mt as n}from"./fetch-http-handler-B--F8e2N.js";var r=n(e,`AmazonRDSv19`,`RDSClient`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

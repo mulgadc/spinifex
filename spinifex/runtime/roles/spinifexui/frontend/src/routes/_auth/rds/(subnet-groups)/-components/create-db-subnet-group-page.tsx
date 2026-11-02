@@ -9,6 +9,7 @@ import {
   commandFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
+import { PanelSection } from "@/components/detail-panel"
 import { FormActions } from "@/components/form-actions"
 import { FormLock } from "@/components/form-lock"
 import { SwitchList } from "@/components/switch-list"
@@ -95,95 +96,104 @@ export function CreateDBSubnetGroupPage({
         className="space-y-6"
         locked={createGroup.isPending || isSubmitting}
       >
-        <Field>
-          <FieldTitle>
-            <label htmlFor="subnet-group-name">Name</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.dbSubnetGroupName}
-            id="subnet-group-name"
-            placeholder="orders-db-subnets"
-            {...register("dbSubnetGroupName")}
-          />
-          <FieldDescription>
-            Letters, digits and hyphens, starting with a letter. The name cannot
-            be changed later.
-          </FieldDescription>
-          <FieldError errors={[errors.dbSubnetGroupName]} />
-        </Field>
+        <PanelSection title="Details">
+          <div className="space-y-6">
+            <Field>
+              <FieldTitle>
+                <label htmlFor="subnet-group-name">Name</label>
+              </FieldTitle>
+              <Input
+                aria-invalid={!!errors.dbSubnetGroupName}
+                id="subnet-group-name"
+                placeholder="orders-db-subnets"
+                {...register("dbSubnetGroupName")}
+              />
+              <FieldDescription>
+                Letters, digits and hyphens, starting with a letter. The name
+                cannot be changed later.
+              </FieldDescription>
+              <FieldError errors={[errors.dbSubnetGroupName]} />
+            </Field>
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="subnet-group-description">Description</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.dbSubnetGroupDescription}
-            id="subnet-group-description"
-            placeholder="Private subnets for the orders database"
-            {...register("dbSubnetGroupDescription")}
-          />
-          <FieldError errors={[errors.dbSubnetGroupDescription]} />
-        </Field>
+            <Field>
+              <FieldTitle>
+                <label htmlFor="subnet-group-description">Description</label>
+              </FieldTitle>
+              <Input
+                aria-invalid={!!errors.dbSubnetGroupDescription}
+                id="subnet-group-description"
+                placeholder="Private subnets for the orders database"
+                {...register("dbSubnetGroupDescription")}
+              />
+              <FieldError errors={[errors.dbSubnetGroupDescription]} />
+            </Field>
+          </div>
+        </PanelSection>
 
-        <Field>
-          <FieldTitle>Subnets</FieldTitle>
-          {subnets.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No subnets in this account. Create one before creating a subnet
-              group.
-            </p>
-          ) : (
-            <div className="space-y-4">
-              {vpcIds.map((vpcId) => {
-                const vpcName = getNameTag(
-                  vpcs.find((v) => v.VpcId === vpcId)?.Tags,
-                )
+        <PanelSection title="Subnets">
+          <Field>
+            {subnets.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No subnets in this account. Create one before creating a subnet
+                group.
+              </p>
+            ) : (
+              <div className="space-y-4">
+                {vpcIds.map((vpcId) => {
+                  const vpcName = getNameTag(
+                    vpcs.find((v) => v.VpcId === vpcId)?.Tags,
+                  )
 
-                const unreachable =
-                  pinnedVpc !== undefined && pinnedVpc !== vpcId
+                  const unreachable =
+                    pinnedVpc !== undefined && pinnedVpc !== vpcId
 
-                return (
-                  <div key={vpcId}>
-                    <p className="mb-1 font-mono text-xs text-muted-foreground">
-                      {vpcId}
-                      {vpcName && ` (${vpcName})`}
-                    </p>
-                    {unreachable ? (
-                      <p className="text-xs text-muted-foreground">
-                        A subnet group must span one VPC, so this one is out of
-                        reach.
+                  return (
+                    <div key={vpcId}>
+                      <p className="mb-1 font-mono text-xs text-muted-foreground">
+                        {vpcId}
+                        {vpcName && ` (${vpcName})`}
                       </p>
-                    ) : (
-                      <SwitchList
-                        emptyText="No subnets in this VPC."
-                        itemLabel="Subnet"
-                        items={subnets
-                          .filter((s) => s.VpcId === vpcId)
-                          .map((subnet) => ({
-                            id: subnet.SubnetId ?? "",
-                            label: subnet.SubnetId ?? "",
-                            detail: subnetDetail(subnet),
-                          }))}
-                        onChange={(next) => {
-                          setValue("subnetIds", next, { shouldValidate: true })
-                        }}
-                        selected={selectedSubnets}
-                      />
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-          <FieldDescription>
-            At most {MAX_SUBNETS_PER_GROUP} subnets, all in one VPC. This
-            platform is single-AZ, so the two-AZ rule AWS enforces does not
-            apply here.
-          </FieldDescription>
-          <FieldError errors={[errors.subnetIds]} />
-        </Field>
+                      {unreachable ? (
+                        <p className="text-xs text-muted-foreground">
+                          A subnet group must span one VPC, so this one is out
+                          of reach.
+                        </p>
+                      ) : (
+                        <SwitchList
+                          emptyText="No subnets in this VPC."
+                          itemLabel="Subnet"
+                          items={subnets
+                            .filter((s) => s.VpcId === vpcId)
+                            .map((subnet) => ({
+                              id: subnet.SubnetId ?? "",
+                              label: subnet.SubnetId ?? "",
+                              detail: subnetDetail(subnet),
+                            }))}
+                          onChange={(next) => {
+                            setValue("subnetIds", next, {
+                              shouldValidate: true,
+                            })
+                          }}
+                          selected={selectedSubnets}
+                        />
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            <FieldDescription>
+              At most {MAX_SUBNETS_PER_GROUP} subnets, all in one VPC. This
+              platform is single-AZ, so the two-AZ rule AWS enforces does not
+              apply here.
+            </FieldDescription>
+            <FieldError errors={[errors.subnetIds]} />
+          </Field>
+        </PanelSection>
 
-        <TagsFieldArray control={control} name="tags" />
+        <PanelSection title="Tags">
+          <TagsFieldArray control={control} name="tags" />
+        </PanelSection>
 
         <CliCommandPanel
           commands={buildCreateSubnetGroupCommands({

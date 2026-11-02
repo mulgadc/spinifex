@@ -1,5 +1,6 @@
 import type { Image } from "@aws-sdk/client-ec2"
 
+import { ChoiceTile, ChoiceTiles } from "@/components/choice-tile"
 import { Field, FieldDescription, FieldTitle } from "@/components/ui/field"
 import {
   Select,
@@ -15,7 +16,6 @@ import {
   parseImageName,
 } from "@/lib/os-images"
 
-import { ChoiceTile, ChoiceTiles } from "./choice-tile"
 import { OsMark } from "./os-mark"
 
 const OTHER = "other"

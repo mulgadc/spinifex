@@ -1,6 +1,7 @@
 import type { ApplyMethod } from "@aws-sdk/client-rds"
 import { z } from "zod"
 
+import { windowsOverlap } from "@/lib/rds-windows"
 import { tagSchema } from "@/types/tags"
 
 // Mirrors handlers/rds/validate.go and domains/rds/engine/engine.go so the form
@@ -304,6 +305,23 @@ function checkMasterUsername(
   }
 }
 
+// The backend refuses the pair rather than moving either, so the form refuses
+// it first, beside the maintenance window.
+function checkWindowOverlap(
+  ctx: z.RefinementCtx,
+  backup: string,
+  maintenance: string,
+) {
+  if (windowsOverlap(backup, maintenance)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["preferredMaintenanceWindow"],
+      message:
+        "The maintenance window overlaps the backup window at that time of day",
+    })
+  }
+}
+
 export const createDBInstanceSchema = z
   .object({
     dbInstanceIdentifier: dbInstanceIdentifierField,
@@ -327,6 +345,11 @@ export const createDBInstanceSchema = z
   })
   .superRefine((data, ctx) => {
     checkMasterUsername(ctx, data.engine, data.masterUsername)
+    checkWindowOverlap(
+      ctx,
+      data.preferredBackupWindow,
+      data.preferredMaintenanceWindow,
+    )
 
     if (data.dbName !== "") {
       checkEngineIdentifier(
@@ -366,6 +389,12 @@ export const modifyDBInstanceSchema = z
     applyImmediately: z.boolean(),
   })
   .superRefine((data, ctx) => {
+    checkWindowOverlap(
+      ctx,
+      data.preferredBackupWindow,
+      data.preferredMaintenanceWindow,
+    )
+
     if (data.allocatedStorage < data.currentAllocatedStorage) {
       ctx.addIssue({
         code: "custom",

@@ -11,6 +11,7 @@ import {
   Controller,
   useFieldArray,
   useForm,
+  useFormState,
   useWatch,
 } from "react-hook-form"
 
@@ -373,8 +374,14 @@ interface ConditionRowProps {
 }
 
 function ConditionRow({ form, index, onRemove }: ConditionRowProps) {
-  const fieldName = form.watch(`conditions.${index}.field`)
-  const errors = form.formState.errors.conditions?.[index]
+  const fieldName = useWatch({
+    control: form.control,
+    name: `conditions.${index}.field`,
+  })
+
+  const errors = useFormState({ control: form.control }).errors.conditions?.[
+    index
+  ]
 
   return (
     <div className="space-y-2 rounded-md border p-3">

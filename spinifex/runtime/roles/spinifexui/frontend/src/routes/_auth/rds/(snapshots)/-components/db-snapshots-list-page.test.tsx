@@ -86,13 +86,63 @@ describe("DBSnapshotsListPage", () => {
 
   it("narrows the table to the chosen snapshot type", () => {
     renderList([MANUAL, AUTOMATED])
-    fireEvent.click(screen.getByRole("button", { name: "Manual" }))
+    fireEvent.click(screen.getByRole("button", { name: /^Manual/ }))
     expect(
       screen.getByRole("link", { name: "orders-db-snapshot-20260817-1432" }),
     ).toBeInTheDocument()
     expect(
       screen.queryByRole("link", { name: "rds:orders-db-2026-08-17-03-00" }),
     ).toBeNull()
+  })
+
+  it("counts each type beside its filter", () => {
+    renderList([MANUAL, AUTOMATED])
+    expect(screen.getByRole("group", { name: "Snapshot type" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "All 2" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    )
+    expect(screen.getByRole("button", { name: "Manual 1" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Automated 1" })).toBeVisible()
+  })
+
+  it("searches by identifier and DB instance", () => {
+    renderList([
+      MANUAL,
+      {
+        ...MANUAL,
+        DBSnapshotIdentifier: "billing-final",
+        DBInstanceIdentifier: "billing-db",
+      },
+    ])
+    fireEvent.change(screen.getByLabelText("Filter snapshots"), {
+      target: { value: "billing-db" },
+    })
+    expect(screen.getByRole("link", { name: "billing-final" })).toBeVisible()
+    expect(
+      screen.queryByRole("link", { name: "orders-db-snapshot-20260817-1432" }),
+    ).toBeNull()
+  })
+
+  it("clears the search and the type together", () => {
+    renderList([MANUAL, AUTOMATED])
+    expect(screen.queryByRole("button", { name: "Clear filters" })).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: /^Manual/ }))
+    fireEvent.change(screen.getByLabelText("Filter snapshots"), {
+      target: { value: "nothing" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }))
+
+    expect(screen.getByLabelText("Filter snapshots")).toHaveValue("")
+    expect(
+      screen.getByRole("link", { name: "rds:orders-db-2026-08-17-03-00" }),
+    ).toBeInTheDocument()
+  })
+
+  it("leaves the reserved namespace out of the page", () => {
+    renderList([MANUAL, AUTOMATED])
+    expect(screen.queryByText(/reserved rds: namespace/)).toBeNull()
   })
 
   it("selects the snapshot a row click opens", () => {
@@ -108,7 +158,7 @@ describe("DBSnapshotsListPage", () => {
     renderList([MANUAL, AUTOMATED], {
       selected: "rds:orders-db-2026-08-17-03-00",
     })
-    fireEvent.click(screen.getByRole("button", { name: "Manual" }))
+    fireEvent.click(screen.getByRole("button", { name: /^Manual/ }))
     expect(
       screen.getByRole("region", { name: "Snapshot details" }),
     ).toBeInTheDocument()
@@ -137,11 +187,6 @@ describe("DBSnapshotsListPage", () => {
     expect(
       screen.getByLabelText<HTMLInputElement>("Snapshot identifier").value,
     ).toMatch(/^orders-db-snapshot-/)
-  })
-
-  it("says why an automated backup cannot be removed by hand", () => {
-    renderList([AUTOMATED])
-    expect(screen.getByText(/cannot be\s+deleted by hand/u)).toBeInTheDocument()
   })
 
   it("deletes each selected DB snapshot with its own call", async () => {

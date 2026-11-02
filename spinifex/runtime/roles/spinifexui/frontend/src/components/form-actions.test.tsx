@@ -79,3 +79,39 @@ describe("FormActions", () => {
     expect(onCancel).toHaveBeenCalledOnce()
   })
 })
+
+// Both labels stay rendered, so the button keeps one width through the swap.
+function labels(isPending: boolean) {
+  render(
+    <FormActions
+      isPending={isPending}
+      isSubmitting={false}
+      onCancel={vi.fn()}
+      pendingLabel="Creating..."
+      submitLabel="Create"
+    />,
+  )
+
+  const button = screen.getByRole("button", { name: /Creat/u })
+
+  return {
+    submit: button.querySelector('[data-label="submit"]'),
+    pending: button.querySelector('[data-label="pending"]'),
+  }
+}
+
+describe("FormActions pending transition", () => {
+  it("keeps both labels in the button and fades the idle one out", () => {
+    const { submit, pending } = labels(false)
+    expect(submit).not.toHaveClass("opacity-0")
+    expect(pending).toHaveClass("opacity-0")
+    expect(pending).toHaveAttribute("aria-hidden", "true")
+  })
+
+  it("fades the submit label out while pending", () => {
+    const { submit, pending } = labels(true)
+    expect(submit).toHaveClass("opacity-0")
+    expect(submit).toHaveAttribute("aria-hidden", "true")
+    expect(pending).not.toHaveClass("opacity-0")
+  })
+})

@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/state"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/northstar"
@@ -535,6 +536,7 @@ var spinifexStartCmd = &cobra.Command{
 
 		defer initTelemetry("spinifex-daemon", false)()
 
+		daemon.SetBuildInfo(Version, Commit)
 		svc, err := service.New("spinifex", clusterConfig)
 
 		if err != nil {

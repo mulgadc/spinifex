@@ -1,0 +1,59 @@
+Settings for enp193s0f1np1:
+	Supported ports: [ Backplane ]
+	Supported link modes:   1000baseT/Full
+	                        10000baseT/Full
+	                        1000baseKX/Full
+	                        10000baseKR/Full
+	                        10000baseR_FEC
+	                        25000baseCR/Full
+	                        25000baseKR/Full
+	                        25000baseSR/Full
+	                        1000baseX/Full
+	                        10000baseCR/Full
+	                        10000baseSR/Full
+	                        10000baseLR/Full
+	                        10000baseER/Full
+	Supported pause frame use: Symmetric
+	Supports auto-negotiation: Yes
+	Supported FEC modes: None	 RS	 BASER
+	Advertised link modes:  1000baseT/Full
+	                        10000baseT/Full
+	                        1000baseKX/Full
+	                        10000baseKR/Full
+	                        10000baseR_FEC
+	                        25000baseCR/Full
+	                        25000baseKR/Full
+	                        25000baseSR/Full
+	                        1000baseX/Full
+	                        10000baseCR/Full
+	                        10000baseSR/Full
+	                        10000baseLR/Full
+	                        10000baseER/Full
+	Advertised pause frame use: Symmetric
+	Advertised auto-negotiation: Yes
+	Advertised FEC modes: None
+	Speed: 25000Mb/s
+	Duplex: Full
+	Auto-negotiation: on
+	Port: Direct Attach Copper
+	PHYAD: 0
+	Transceiver: internal
+	Link detected: yes
+netlink error: Operation not permitted
+===
+driver: mlx5_core
+version: 6.12.73+deb13-amd64
+firmware-version: 24.47.1088 (MT_0000000541)
+expansion-rom-version: 
+bus-info: 0000:c1:00.1
+supports-statistics: yes
+supports-test: yes
+supports-eeprom-access: no
+supports-register-dump: no
+supports-priv-flags: yes
+===
+ID_VENDOR_FROM_DATABASE=Mellanox Technologies
+ID_MODEL_FROM_DATABASE=MT42822 BlueField-2 integrated ConnectX-6 Dx network controller
+ID_NET_NAME_MAC=enx000000000002
+ID_NET_NAME_PATH=enp193s0f1np1
+ID_NET_NAME=enp193s0f1np1

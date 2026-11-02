@@ -50,7 +50,7 @@ export function RepositorySummary({
                 : "Tags can be overwritten by a new push."}
             </p>
           </div>
-          <Badge variant={isImmutable ? "default" : "outline"}>
+          <Badge variant={isImmutable ? "secondary" : "outline"}>
             {isImmutable ? "Immutable" : "Mutable"}
           </Badge>
         </div>

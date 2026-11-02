@@ -116,7 +116,7 @@ The Go console serves `script-src 'self'; style-src 'self'`.
 ## Primitives
 
 `src/components/ui/` holds the shadcn primitives on Base UI.
-Added in Phase 1: breadcrumb, checkbox, command (`cmdk`), dialog, hover-card, popover, resizable (`react-resizable-panels`), scroll-area, slider, switch, table, toggle and toggle-group.
+Added in Phase 1: breadcrumb, checkbox, command (Base UI Autocomplete), dialog, hover-card, popover, resizable (`react-resizable-panels`), scroll-area, slider, switch, table, toggle and toggle-group.
 `button-group` joins buttons edge to edge, as the instance power buttons are.
 `radio-group` is one of a few exclusive choices inside a form, such as a load balancer's type; a raw `<input type="radio">` is not used.
 

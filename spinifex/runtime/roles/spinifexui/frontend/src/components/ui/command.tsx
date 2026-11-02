@@ -1,4 +1,4 @@
-import { Command as CommandPrimitive } from "cmdk"
+import { Autocomplete as CommandPrimitive } from "@base-ui/react"
 import { SearchIcon, CheckIcon } from "lucide-react"
 import * as React from "react"
 
@@ -12,21 +12,35 @@ import {
 import { InputGroup, InputGroupAddon } from "@/components/ui/input-group"
 import { cn } from "@/lib/utils"
 
-function Command({
+function Command<Item>({
   className,
+  children,
   ...props
-}: React.ComponentProps<typeof CommandPrimitive>) {
+}: Omit<CommandPrimitive.Root.Props<Item>, "items"> & {
+  className?: string
+  items: readonly { items: readonly Item[] }[]
+}) {
   return (
-    <CommandPrimitive
-      data-slot="command"
-      className={cn(
-        "flex size-full flex-col overflow-hidden rounded-xl bg-popover p-1 text-popover-foreground",
-        className,
-      )}
+    <CommandPrimitive.Root<readonly { items: readonly Item[] }[]>
+      autoHighlight="always"
+      inline
+      open
       {...props}
-    />
+    >
+      <div
+        data-slot="command"
+        className={cn(
+          "flex size-full flex-col overflow-hidden rounded-xl bg-popover p-1 text-popover-foreground",
+          className,
+        )}
+      >
+        {children}
+      </div>
+    </CommandPrimitive.Root>
   )
 }
+
+const CommandCollection = CommandPrimitive.Collection
 
 function CommandDialog({
   title = "Command Palette",
@@ -105,7 +119,7 @@ function CommandEmpty({
   return (
     <CommandPrimitive.Empty
       data-slot="command-empty"
-      className={cn("py-6 text-center text-xs/relaxed", className)}
+      className={cn("py-6 text-center text-xs/relaxed empty:py-0", className)}
       {...props}
     />
   )
@@ -113,17 +127,23 @@ function CommandEmpty({
 
 function CommandGroup({
   className,
+  heading,
+  children,
   ...props
-}: React.ComponentProps<typeof CommandPrimitive.Group>) {
+}: React.ComponentProps<typeof CommandPrimitive.Group> & { heading?: string }) {
   return (
     <CommandPrimitive.Group
       data-slot="command-group"
-      className={cn(
-        "overflow-hidden p-1 text-foreground **:[[cmdk-group-heading]]:px-2.5 **:[[cmdk-group-heading]]:py-1.5 **:[[cmdk-group-heading]]:text-xs **:[[cmdk-group-heading]]:font-medium **:[[cmdk-group-heading]]:text-muted-foreground",
-        className,
-      )}
+      className={cn("overflow-hidden p-1 text-foreground", className)}
       {...props}
-    />
+    >
+      {heading && (
+        <CommandPrimitive.GroupLabel className="px-2.5 py-1.5 text-xs font-medium text-muted-foreground">
+          {heading}
+        </CommandPrimitive.GroupLabel>
+      )}
+      {children}
+    </CommandPrimitive.Group>
   )
 }
 
@@ -149,7 +169,7 @@ function CommandItem({
     <CommandPrimitive.Item
       data-slot="command-item"
       className={cn(
-        "group/command-item relative flex min-h-7 cursor-default items-center gap-2 rounded-md px-2.5 py-1.5 text-xs/relaxed outline-hidden select-none in-data-[slot=dialog-content]:rounded-md data-selected:bg-muted data-selected:text-foreground data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5 data-selected:*:[svg]:text-foreground",
+        "group/command-item relative flex min-h-7 cursor-default items-center gap-2 rounded-md px-2.5 py-1.5 text-xs/relaxed outline-hidden select-none in-data-[slot=dialog-content]:rounded-md data-disabled:pointer-events-none data-disabled:opacity-50 data-highlighted:bg-muted data-highlighted:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5 data-highlighted:*:[svg]:text-foreground",
         className,
       )}
       {...props}
@@ -168,7 +188,7 @@ function CommandShortcut({
     <span
       data-slot="command-shortcut"
       className={cn(
-        "ml-auto text-[0.625rem] tracking-widest text-muted-foreground group-data-selected/command-item:text-foreground",
+        "ml-auto text-[0.625rem] tracking-widest text-muted-foreground group-data-highlighted/command-item:text-foreground",
         className,
       )}
       {...props}
@@ -179,6 +199,7 @@ function CommandShortcut({
 export {
   Command,
   CommandDialog,
+  CommandCollection,
   CommandInput,
   CommandList,
   CommandEmpty,

@@ -32,6 +32,73 @@ test.describe("command palette", () => {
     await expect(page).toHaveURL(/\/rds\/describe-db-instances$/u)
   })
 
+  for (const term of ["compute", "ec2"]) {
+    test(`ranks the exact ${term} group first`, async ({ page }) => {
+      await page.goto("/")
+      await page.getByRole("button", { name: /search/iu }).click()
+      const palette = page.getByRole("dialog", { name: "Command palette" })
+      await palette.getByRole("combobox").fill(term)
+      await expect(
+        palette.getByRole("listbox").getByRole("group").first(),
+      ).toHaveAccessibleName("Compute")
+      await expect(palette.getByRole("option").first()).toHaveText("Instances")
+      await page.keyboard.press("ArrowDown")
+      await page.keyboard.press("Enter")
+      await expect(palette).toBeHidden()
+      await expect(page).toHaveURL(/\/ec2\/describe-launch-templates$/u)
+    })
+  }
+
+  for (const term of ["new", "create"]) {
+    test(`finds create flows with ${term}`, async ({ page }) => {
+      await page.goto("/")
+      await page.getByRole("button", { name: /search/iu }).click()
+      const palette = page.getByRole("dialog", { name: "Command palette" })
+      await palette.getByRole("combobox").fill(term)
+      await expect(
+        palette.getByRole("option", { name: /Launch instance/u }),
+      ).toBeVisible()
+      await expect(
+        palette.getByRole("option", { name: "Instances", exact: true }),
+      ).toHaveCount(0)
+    })
+  }
+
+  for (const term of ["dark", "light"]) {
+    test(`finds and runs Toggle theme with ${term}`, async ({ page }) => {
+      await page.goto("/")
+      await page.getByRole("button", { name: /search/iu }).click()
+      const palette = page.getByRole("dialog", { name: "Command palette" })
+      await palette.getByRole("combobox").fill(term)
+      await expect(palette.getByRole("option")).toHaveCount(1)
+      await palette.getByRole("option", { name: "Toggle theme" }).click()
+      await expect(palette).toBeHidden()
+      await expect(page.locator("html")).toHaveClass(/light/u)
+      await page.getByRole("button", { name: /search/iu }).click()
+      await expect(palette.getByRole("combobox")).toHaveValue("")
+    })
+  }
+
+  for (const closeKey of ["Escape", "ControlOrMeta+k"]) {
+    test(`shows empty results and reopens empty after ${closeKey}`, async ({
+      page,
+    }) => {
+      await page.goto("/")
+      await page.getByRole("button", { name: /search/iu }).click()
+      const palette = page.getByRole("dialog", { name: "Command palette" })
+      const input = palette.getByRole("combobox")
+      await input.fill("no-such-command")
+      await expect(palette.getByText("No matches.")).toBeVisible()
+      await expect(palette.getByRole("option")).toHaveCount(0)
+      await page.keyboard.press(closeKey)
+      await expect(palette).toBeHidden()
+      await page.getByRole("button", { name: /search/iu }).click()
+      await expect(input).toHaveValue("")
+      await expect(palette.getByText("No matches.")).toBeHidden()
+      await expect(palette.getByRole("option").first()).toBeVisible()
+    })
+  }
+
   test("offers create flows", async ({ page }) => {
     await page.goto("/")
     await page.getByRole("button", { name: /search/iu }).click()

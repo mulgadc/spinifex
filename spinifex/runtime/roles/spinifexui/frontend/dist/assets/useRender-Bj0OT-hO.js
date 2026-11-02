@@ -1,1 +1,0 @@
-import{kt as e}from"./schemas-BGv4hnp9.js";function t(t){return e(t.defaultTagName??`div`,t,t)}export{t};

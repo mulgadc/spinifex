@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button"
 import {
   Command,
+  CommandCollection,
   CommandEmpty,
   CommandGroup,
   CommandInput,
@@ -53,6 +54,25 @@ import {
 } from "@/components/ui/tooltip"
 
 import { CatalogueSection, Specimen } from "./catalogue-section"
+
+const specimenCommands = [
+  {
+    label: "Go to",
+    items: [
+      { label: "Instances", shortcut: "G I" },
+      { label: "VPCs", shortcut: "G V" },
+    ],
+  },
+  {
+    label: "Actions",
+    items: [
+      { label: "Launch instance", shortcut: "" },
+      { label: "Create VPC", shortcut: "" },
+    ],
+  },
+]
+
+type SpecimenCommand = (typeof specimenCommands)[number]["items"][number]
 
 export function OverlaysSection() {
   return (
@@ -133,24 +153,31 @@ export function OverlaysSection() {
       </Specimen>
       <Specimen label="Command palette">
         <div className="w-full max-w-md rounded-xl border">
-          <Command>
-            <CommandInput placeholder="Search resources and commands" />
+          <Command<SpecimenCommand> items={specimenCommands}>
+            <CommandInput
+              aria-label="Search resources and commands"
+              placeholder="Search resources and commands"
+            />
+            <CommandEmpty>No results.</CommandEmpty>
             <CommandList>
-              <CommandEmpty>No results.</CommandEmpty>
-              <CommandGroup heading="Go to">
-                <CommandItem>
-                  Instances
-                  <CommandShortcut>G I</CommandShortcut>
-                </CommandItem>
-                <CommandItem>
-                  VPCs
-                  <CommandShortcut>G V</CommandShortcut>
-                </CommandItem>
-              </CommandGroup>
-              <CommandGroup heading="Actions">
-                <CommandItem>Launch instance</CommandItem>
-                <CommandItem>Create VPC</CommandItem>
-              </CommandGroup>
+              {(group: (typeof specimenCommands)[number]) => (
+                <CommandGroup
+                  heading={group.label}
+                  items={group.items}
+                  key={group.label}
+                >
+                  <CommandCollection>
+                    {(item: SpecimenCommand) => (
+                      <CommandItem key={item.label} value={item}>
+                        {item.label}
+                        {item.shortcut && (
+                          <CommandShortcut>{item.shortcut}</CommandShortcut>
+                        )}
+                      </CommandItem>
+                    )}
+                  </CommandCollection>
+                </CommandGroup>
+              )}
             </CommandList>
           </Command>
         </div>

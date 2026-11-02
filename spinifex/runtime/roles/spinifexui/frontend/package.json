@@ -45,7 +45,6 @@
     "@tanstack/react-router": "^1.170.46",
     "@tanstack/react-table": "^9.3.1",
     "class-variance-authority": "^0.7.1",
-    "cmdk": "^1.1.1",
     "cn": "^0.5.0",
     "lucide-react": "^1.63.0",
     "react": "^19.3.1",

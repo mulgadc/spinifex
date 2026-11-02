@@ -1,11 +1,12 @@
 import { useNavigate } from "@tanstack/react-router"
-import { Moon, Plus, Search } from "lucide-react"
+import { Moon, Plus, Search, type LucideIcon } from "lucide-react"
 import { useEffect, useState } from "react"
 
 import { useTheme } from "@/components/theme-provider"
 import { Button } from "@/components/ui/button"
 import {
   Command,
+  CommandCollection,
   CommandDialog,
   CommandEmpty,
   CommandGroup,
@@ -53,13 +54,37 @@ function namedFirst<T extends { label: string; service?: string }>(
   return [...groups.filter(named), ...groups.filter((group) => !named(group))]
 }
 
+interface PaletteItem {
+  label: string
+  keywords: string[]
+  icon: LucideIcon
+  to?: string
+  group?: string
+}
+
+interface PaletteGroup {
+  label: string
+  items: PaletteItem[]
+}
+
+function matchesCommand(item: PaletteItem, query: string) {
+  const term = query.trim().toLowerCase()
+
+  return [item.label, ...item.keywords].some((text) =>
+    text.toLowerCase().includes(term),
+  )
+}
+
 export function CommandPalette() {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState("")
 
-  // However the palette closes, it opens empty next time.
-  if (!open && search !== "") {
-    setSearch("")
+  function changeOpen(nextOpen: boolean) {
+    setOpen(nextOpen)
+
+    if (!nextOpen) {
+      setSearch("")
+    }
   }
 
   const navigate = useNavigate()
@@ -74,13 +99,50 @@ export function CommandPalette() {
     ),
   )
 
+  const commandGroups: PaletteGroup[] = [
+    ...namedFirst(groups, search).map((group) => ({
+      label: group.label,
+      items: group.items.map((item) => ({
+        label: item.label,
+        keywords: [group.label, group.service ?? ""],
+        icon: item.icon,
+        to: item.to,
+      })),
+    })),
+    {
+      label: "Create",
+      items: creates.map((create) => ({
+        label: create.label,
+        keywords: [create.group, "new", "create"],
+        icon: Plus,
+        to: create.to,
+        group: create.group,
+      })),
+    },
+    {
+      label: "Preferences",
+      items: [
+        {
+          label: "Toggle theme",
+          keywords: ["Preferences", "dark", "light", "appearance"],
+          icon: Moon,
+        },
+      ],
+    },
+  ]
+
   usePaletteShortcut(() => {
-    setOpen((current) => !current)
+    changeOpen(!open)
   })
 
-  function go(to: string) {
-    setOpen(false)
-    void navigate({ to })
+  function select(item: PaletteItem) {
+    changeOpen(false)
+
+    if (item.to) {
+      void navigate({ to: item.to })
+    } else {
+      setTheme(theme === "light" ? "dark" : "light")
+    }
   }
 
   return (
@@ -101,68 +163,47 @@ export function CommandPalette() {
       </Button>
       <CommandDialog
         description="Jump to a service or start a create flow."
-        onOpenChange={setOpen}
+        onOpenChange={changeOpen}
         open={open}
         title="Command palette"
       >
-        <Command>
+        <Command<PaletteItem>
+          filter={matchesCommand}
+          items={commandGroups}
+          onValueChange={setSearch}
+          value={search}
+        >
           <CommandInput
-            onValueChange={setSearch}
+            aria-label="Search commands"
             placeholder="Go to a service or run a command"
-            value={search}
           />
+          <CommandEmpty>No matches.</CommandEmpty>
           <CommandList>
-            <CommandEmpty>No matches.</CommandEmpty>
-            {namedFirst(groups, search).map((group) => (
+            {(group: PaletteGroup) => (
               <CommandGroup
                 heading={group.label}
+                items={group.items}
                 key={group.label}
-                value={group.label}
               >
-                {group.items.map((item) => (
-                  <CommandItem
-                    keywords={[group.label, group.service ?? ""]}
-                    key={item.to}
-                    onSelect={() => {
-                      go(item.to)
-                    }}
-                    value={`${group.label} ${item.label}`}
-                  >
-                    <item.icon />
-                    {item.label}
-                  </CommandItem>
-                ))}
+                <CommandCollection>
+                  {(item: PaletteItem) => (
+                    <CommandItem
+                      key={item.to ?? item.label}
+                      onClick={() => {
+                        select(item)
+                      }}
+                      value={item}
+                    >
+                      <item.icon />
+                      {item.label}
+                      {item.group && (
+                        <CommandShortcut>{item.group}</CommandShortcut>
+                      )}
+                    </CommandItem>
+                  )}
+                </CommandCollection>
               </CommandGroup>
-            ))}
-            <CommandGroup heading="Create">
-              {creates.map((create) => (
-                <CommandItem
-                  keywords={[create.group, "new", "create"]}
-                  key={create.to}
-                  onSelect={() => {
-                    go(create.to)
-                  }}
-                  value={create.label}
-                >
-                  <Plus />
-                  {create.label}
-                  <CommandShortcut>{create.group}</CommandShortcut>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-            <CommandGroup heading="Preferences">
-              <CommandItem
-                keywords={["dark", "light", "appearance"]}
-                onSelect={() => {
-                  setTheme(theme === "light" ? "dark" : "light")
-                  setOpen(false)
-                }}
-                value="Toggle theme"
-              >
-                <Moon />
-                Toggle theme
-              </CommandItem>
-            </CommandGroup>
+            )}
           </CommandList>
         </Command>
       </CommandDialog>

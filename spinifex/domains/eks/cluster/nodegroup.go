@@ -1249,6 +1249,9 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.K
 	if err != nil {
 		return nil, err
 	}
+	if !s.noDeleteKick {
+		s.startNodegroupDelete(accountID, acctKV, cluster, ng)
+	}
 	return &eks.DeleteNodegroupOutput{Nodegroup: nodegroupRecordToAWS(rec)}, nil
 }
 

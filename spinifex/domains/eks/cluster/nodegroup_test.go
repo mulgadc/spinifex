@@ -89,6 +89,9 @@ type fakeWorkerLauncher struct {
 	// beforeRun, when set, runs at the start of every launch, before it is
 	// recorded, so a test can inspect durable state at launch time.
 	beforeRun func(*ec2.RunInstancesInput)
+	// stillLive lists instances LiveWorkerInstances keeps reporting as live.
+	stillLive []string
+	liveErr   error
 }
 
 var _ WorkerLauncher = (*fakeWorkerLauncher)(nil)
@@ -133,6 +136,21 @@ func (f *fakeWorkerLauncher) TerminateWorkerInstances(_ context.Context, ids []s
 	defer f.mu.Unlock()
 	f.terminateCalls = append(f.terminateCalls, ids)
 	return f.termErr
+}
+
+func (f *fakeWorkerLauncher) LiveWorkerInstances(_ context.Context, ids []string, _ string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.liveErr != nil {
+		return nil, f.liveErr
+	}
+	var live []string
+	for _, id := range ids {
+		if slices.Contains(f.stillLive, id) {
+			live = append(live, id)
+		}
+	}
+	return live, nil
 }
 
 // runCount / terminatedCount return the recorded call totals under the lock so

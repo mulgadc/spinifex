@@ -105,6 +105,9 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 	require.NoError(t, err)
 	// Tight Ready-gating knobs so nodegroup launches resolve in tests without the
 	// production 10m timeout; tests drive meta.NodeCount to simulate the reconciler.
+	svc.noDeleteKick = true
+	svc.workersEndWait = 20 * time.Millisecond
+	svc.workersEndPoll = time.Millisecond
 	svc.nodegroupReadyTimeout = 50 * time.Millisecond
 	svc.nodegroupReadyPoll = 2 * time.Millisecond
 	// Tight worker-launch-retry knobs so a launch-failure retry test resolves

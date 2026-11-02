@@ -554,3 +554,70 @@ func TestInvariant_NodegroupDeleteNeverRemovesAProfileItDoesNotOwn(t *testing.T)
 		assert.Zero(t, m.DeleteInstanceProfileCalls)
 	})
 }
+
+func TestDeleteNodegroup_ProfileAndRecordKeptUntilWorkersProvenGone(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	createReadyNodegroup(t, f, "c1", "ng1", 2)
+	rec, _ := ownedProfile(t, f, "c1", "ng1")
+	f.worker.stillLive = []string{rec.InstanceIDs[0]}
+	_, err := deleteNodegroupCall(f, "c1", "ng1")
+	require.NoError(t, err)
+
+	sweepNodegroups(t, f)
+
+	m := fixtureIAM(t, f)
+	assert.Contains(t, m.Profiles, rec.InstanceProfileName)
+	assert.Zero(t, m.RemoveRoleCalls)
+	assert.Zero(t, m.DeleteInstanceProfileCalls)
+	got, err := describeNodegroupCall(f, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusDeleting, aws.StringValue(got.Nodegroup.Status))
+	cur, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Equal(t, rec.InstanceIDs, cur.InstanceIDs, "worker ids stay recorded until they are proven gone")
+	assert.Zero(t, cur.DeleteReapAttempts, "workers still ending is not a failed pass")
+
+	f.worker.mu.Lock()
+	f.worker.stillLive = nil
+	f.worker.mu.Unlock()
+	sweepNodegroups(t, f)
+	_, err = describeNodegroupCall(f, "c1", "ng1")
+	requireErrorCode(t, err, awserrors.ErrorEKSResourceNotFound)
+	assert.NotContains(t, m.Profiles, rec.InstanceProfileName)
+}
+
+func TestDeleteNodegroup_UndecidableWorkerStateKeepsProfile(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	createReadyNodegroup(t, f, "c1", "ng1", 1)
+	rec, _ := ownedProfile(t, f, "c1", "ng1")
+	f.worker.liveErr = errors.New("describe fan-out did not complete")
+	_, err := deleteNodegroupCall(f, "c1", "ng1")
+	require.NoError(t, err)
+
+	sweepNodegroups(t, f)
+
+	m := fixtureIAM(t, f)
+	assert.Contains(t, m.Profiles, rec.InstanceProfileName)
+	assert.Zero(t, m.DeleteInstanceProfileCalls)
+}
+
+func TestDeleteNodegroup_KickFinishesTheDeleteWithoutAReaperSweep(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	createReadyNodegroup(t, f, "c1", "ng1", 1)
+	rec, _ := ownedProfile(t, f, "c1", "ng1")
+	f.svc.noDeleteKick = false
+
+	_, err := deleteNodegroupCall(f, "c1", "ng1")
+	require.NoError(t, err)
+	f.svc.WaitNodegroupDeletes()
+
+	_, err = describeNodegroupCall(f, "c1", "ng1")
+	requireErrorCode(t, err, awserrors.ErrorEKSResourceNotFound)
+	assert.NotContains(t, fixtureIAM(t, f).Profiles, rec.InstanceProfileName)
+}

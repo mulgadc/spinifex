@@ -20,6 +20,15 @@ var (
 	nodegroupDeleteFailAttempts = 5
 )
 
+// A pass waits this long, polling, for ended workers to be proven gone.
+const (
+	defaultWorkersEndWait = 90 * time.Second
+	defaultWorkersEndPoll = 3 * time.Second
+)
+
+// errWorkersEnding means workers were told to end but are not yet proven gone.
+var errWorkersEnding = errors.New("workers still ending")
+
 // EKSNodegroupDeletingReaper finishes recorded nodegroup deletes: it ends the
 // workers, removes the nodegroup's own instance profile and only then the
 // record, so a nodegroup is never gone while something it made still is.
@@ -161,6 +170,15 @@ func (s *EKSServiceImpl) convergeNodegroupDeletion(ctx context.Context, accountI
 	}
 
 	if err := s.releaseNodegroupResources(ctx, accountID, kv, rec); err != nil {
+		if errors.Is(err, errWorkersEnding) {
+			// Not a failure: the next sweep checks again without backoff.
+			_, _ = s.mutateNodegroup(ctx, kv, cluster, ng, func(r *NodegroupRecord) bool {
+				r.DeleteReapAttempts--
+				r.LastDeleteReapAttempt = time.Time{}
+				return r.Status == eks.NodegroupStatusDeleting
+			})
+			return err
+		}
 		s.noteNodegroupDeleteFailure(ctx, kv, rec, err)
 		return err
 	}
@@ -177,11 +195,15 @@ func (s *EKSServiceImpl) convergeNodegroupDeletion(ctx context.Context, accountI
 }
 
 // releaseNodegroupResources ends the workers, then removes the profile. The
-// profile is only touched once no worker can still be using it.
+// profile and the recorded worker ids go only once every worker is proven
+// terminated or absent, since an accepted terminate is only a request.
 func (s *EKSServiceImpl) releaseNodegroupResources(ctx context.Context, accountID string, kv jetstream.KeyValue, rec *NodegroupRecord) error {
 	if len(rec.InstanceIDs) > 0 {
 		if err := s.deps.Worker.TerminateWorkerInstances(ctx, rec.InstanceIDs, accountID); err != nil {
 			return fmt.Errorf("terminate workers: %w", err)
+		}
+		if err := s.awaitWorkersGone(ctx, rec.InstanceIDs, accountID); err != nil {
+			return err
 		}
 		if _, err := s.mutateNodegroup(ctx, kv, rec.ClusterName, rec.Name, func(r *NodegroupRecord) bool {
 			r.InstanceIDs = nil
@@ -191,6 +213,36 @@ func (s *EKSServiceImpl) releaseNodegroupResources(ctx context.Context, accountI
 		}
 	}
 	return s.deleteNodegroupProfile(ctx, accountID, kv, rec)
+}
+
+// awaitWorkersGone polls until no worker is live, up to the end wait,
+// and returns errWorkersEnding if some still are.
+func (s *EKSServiceImpl) awaitWorkersGone(ctx context.Context, ids []string, accountID string) error {
+	wait, poll := s.workersEndWait, s.workersEndPoll
+	if wait <= 0 {
+		wait = defaultWorkersEndWait
+	}
+	if poll <= 0 {
+		poll = defaultWorkersEndPoll
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		live, err := s.deps.Worker.LiveWorkerInstances(ctx, ids, accountID)
+		if err != nil {
+			return fmt.Errorf("confirm workers ended: %w", err)
+		}
+		if len(live) == 0 {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%w: %s", errWorkersEnding, strings.Join(live, ","))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+	}
 }
 
 // noteNodegroupDeleteFailure records why a pass failed and, once the group has

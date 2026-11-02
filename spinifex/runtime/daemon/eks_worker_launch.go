@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
+	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -82,6 +86,55 @@ func (d *Daemon) TerminateWorkerInstances(ctx context.Context, instanceIDs []str
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+// LiveWorkerInstances returns the workers that are not yet proven gone: any
+// instance that is not terminated and not absent. Absence is only accepted from
+// a describe that heard every configured node; an unresolved describe is an
+// error, never an empty answer.
+func (d *Daemon) LiveWorkerInstances(ctx context.Context, instanceIDs []string, accountID string) ([]string, error) {
+	if d.natsConn == nil {
+		return nil, errors.New("eks worker: NATS connection not initialized")
+	}
+	var nodeIDs []string
+	if d.clusterConfig != nil {
+		nodeIDs = slices.Sorted(maps.Keys(d.clusterConfig.Nodes))
+	}
+	var live []string
+	for _, id := range instanceIDs {
+		if id == "" {
+			continue
+		}
+		out, err := ec2instanceapi.DescribeInstancesChecked(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []*string{aws.String(id)},
+		}, d.natsConn, 0, nodeIDs, accountID)
+		if err != nil {
+			if strings.Contains(err.Error(), awserrors.ErrorInvalidInstanceIDNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("describe worker %s: %w", id, err)
+		}
+		if workerStillPresent(out) {
+			live = append(live, id)
+		}
+	}
+	return live, nil
+}
+
+// workerStillPresent reports whether the describe output holds an instance that
+// has not reached terminated.
+func workerStillPresent(out *ec2.DescribeInstancesOutput) bool {
+	for _, res := range out.Reservations {
+		for _, inst := range res.Instances {
+			if inst == nil {
+				continue
+			}
+			if inst.State == nil || aws.StringValue(inst.State.Name) != ec2.InstanceStateNameTerminated {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // terminateWorkerInstance routes a single worker terminate to its owning node.

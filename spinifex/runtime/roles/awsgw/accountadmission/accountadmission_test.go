@@ -54,30 +54,53 @@ func TestAdmit(t *testing.T) {
 func TestAdmit_CachesOnlyActive(t *testing.T) {
 	svc := &fakeIAM{status: iamdomain.AccountStatusActive}
 	a := New(svc)
+	a.watching.Store(true)
 	require.NoError(t, a.Admit("1", ""))
 	require.NoError(t, a.Admit("1", ""))
 	assert.Equal(t, 1, svc.reads, "a warm ACTIVE entry is not re-read")
 
-	a.Forget("1")
 	svc.status = iamdomain.AccountStatusSuspended
-	assert.ErrorIs(t, a.Admit("1", ""), ErrNotActive, "forget makes a status change take effect at once")
+	a.evictForTest("1")
+	assert.ErrorIs(t, a.Admit("1", ""), ErrNotActive)
 	assert.ErrorIs(t, a.Admit("1", ""), ErrNotActive)
 	assert.Equal(t, 3, svc.reads, "a non-active answer is never cached")
+}
+
+func TestAdmit_WithoutAWatcherEveryRequestReads(t *testing.T) {
+	svc := &fakeIAM{status: iamdomain.AccountStatusActive}
+	a := New(svc)
+	require.NoError(t, a.Admit("1", ""))
+	require.NoError(t, a.Admit("1", ""))
+	assert.Equal(t, 2, svc.reads, "an unwatched cache could hold a stale ACTIVE for the whole TTL")
 }
 
 func TestActiveEntryExpires(t *testing.T) {
 	a := New(&fakeIAM{status: iamdomain.AccountStatusActive})
 	now := time.Now()
 	assert.False(t, a.activeUntil("1", now), "an unseen account must not read as active")
-	a.markActive("1", now)
+	a.markActive("1", 0, now)
 	assert.True(t, a.activeUntil("1", now))
 	assert.False(t, a.activeUntil("1", now.Add(ActiveTTL+time.Second)), "the entry must expire with the TTL")
 }
 
-func TestNilAdmitterForgetsAndReadsNothing(t *testing.T) {
+func TestMarkActiveSkipsARecordTheWatcherHasAlreadySupersededAfterTheRead(t *testing.T) {
+	a := New(&fakeIAM{status: iamdomain.AccountStatusActive})
+	a.latest["1"] = 2
+	a.markActive("1", 1, time.Now())
+	assert.False(t, a.activeUntil("1", time.Now()), "a read older than the newest watched record must not be cached")
+	a.markActive("1", 2, time.Now())
+	assert.True(t, a.activeUntil("1", time.Now()))
+}
+
+func TestNilAdmitterReadsNothing(t *testing.T) {
 	var a *Admitter
-	a.Forget("1")
 	assert.False(t, a.activeUntil("1", time.Now()))
+}
+
+func (a *Admitter) evictForTest(accountID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.active, accountID)
 }
 
 func TestActive(t *testing.T) {

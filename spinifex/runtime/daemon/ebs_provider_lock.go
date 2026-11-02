@@ -2,21 +2,18 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-const (
-	// ClusterConfigBucket holds settings fixed when a cluster forms. Unlike
-	// ClusterStateBucket it has no TTL, so a key written once stays written.
-	ClusterConfigBucket = "spinifex-cluster-config"
-	// EBSProviderKey records the one EBS provider the cluster runs.
-	EBSProviderKey = "ebs-provider"
-)
+// EBSProviderKey is the ClusterConfigBucket key recording the one EBS
+// provider the cluster runs.
+const EBSProviderKey = "ebs-provider"
 
 // EBSProviderRecord is the value at EBSProviderKey.
 type EBSProviderRecord struct {
@@ -39,54 +36,68 @@ func (e *EBSProviderMismatchError) Error() string {
 		e.Node, e.Configured, e.Recorded.Provider, e.Recorded.RecordedBy, ClusterConfigBucket, EBSProviderKey, e.Node, e.Recorded.Provider)
 }
 
-// Permanent marks the mismatch as one startup retries must not wait out.
-func (e *EBSProviderMismatchError) Permanent() bool { return true }
+func (e *EBSProviderMismatchError) Unwrap() error { return errStartupPermanent }
 
-var _ permanentError = (*EBSProviderMismatchError)(nil)
-
-// clusterConfigConfig describes the cluster-config bucket. RecreateIfMissing
-// stays false: a lost lock is not reconstructible by recovery, only by the
-// next daemon start, which claims it again.
-func clusterConfigConfig() kvstore.Config {
-	return kvstore.Config{
-		Name:        ClusterConfigBucket,
-		Description: "Spinifex cluster configuration fixed at formation (EBS provider)",
-		History:     1,
-		OnOpen: func(ctx context.Context, kv jetstream.KeyValue) error {
-			return migrate.DefaultRegistry.RunKV(ctx, ClusterConfigBucket, kv, ClusterConfigBucketVersion)
-		},
-		Missing: "cluster config KV bucket not initialized",
-	}
+// EBSProviderRecordInvalidError reports a recorded value that does not decode
+// or names no supported provider, so there is nothing to compare against.
+type EBSProviderRecordInvalidError struct {
+	Raw    []byte
+	Reason string
 }
 
-// InitClusterConfigBucket initializes the cluster-config KV bucket, creating it
-// if it doesn't exist.
-func (m *JetStreamManager) InitClusterConfigBucket() error {
-	m.ebsLock = kvstore.New[EBSProviderRecord](m.js, clusterConfigConfig())
-	_, err := m.ebsLock.KV(context.Background())
-	return err
+func (e *EBSProviderRecordInvalidError) Error() string {
+	return fmt.Sprintf("EBS provider lock unreadable: KV bucket %s, key %s holds %q (%s); "+
+		"correct the value to {\"provider\":\"<provider>\"} naming the provider the cluster's volumes were created on, or delete the key so the next daemon records its own",
+		ClusterConfigBucket, EBSProviderKey, e.Raw, e.Reason)
 }
+
+func (e *EBSProviderRecordInvalidError) Unwrap() error { return errStartupPermanent }
 
 // ClaimEBSProvider records provider as the cluster's EBS provider if none is
 // recorded, and otherwise checks it against the recorded one. Create decides
-// a race between nodes, so exactly one provider is ever recorded.
-func (m *JetStreamManager) ClaimEBSProvider(ctx context.Context, node, provider string) error {
-	if m.ebsLock == nil {
-		return errors.New("cluster config KV not initialized")
+// a race, so one provider is ever recorded; it returns that record's revision.
+func (m *JetStreamManager) ClaimEBSProvider(ctx context.Context, node, provider string) (uint64, error) {
+	if m.clusterConfig == nil {
+		return 0, errors.New("cluster config KV not initialized")
 	}
-	_, err := m.ebsLock.Create(ctx, EBSProviderKey, &EBSProviderRecord{Provider: provider, RecordedBy: node})
+	claim := &EBSProviderRecord{Provider: provider, RecordedBy: node}
+	rev, err := kvstore.On[EBSProviderRecord](m.clusterConfig).Create(ctx, EBSProviderKey, claim)
 	if err == nil {
-		return nil
+		return rev, nil
 	}
 	if !errors.Is(err, kvstore.ErrExists) {
-		return fmt.Errorf("record EBS provider: %w", err)
+		return 0, fmt.Errorf("record EBS provider: %w", err)
 	}
-	recorded, _, err := m.ebsLock.Get(ctx, EBSProviderKey)
+	recorded, rev, err := m.readEBSProvider(ctx)
 	if err != nil {
-		return fmt.Errorf("read recorded EBS provider: %w", err)
+		return 0, err
 	}
 	if recorded.Provider != provider {
-		return &EBSProviderMismatchError{Node: node, Configured: provider, Recorded: *recorded}
+		return 0, &EBSProviderMismatchError{Node: node, Configured: provider, Recorded: *recorded}
 	}
-	return nil
+	return rev, nil
+}
+
+// readEBSProvider reads the raw value rather than through the store's codec,
+// so a malformed one can be quoted in the refusal.
+func (m *JetStreamManager) readEBSProvider(ctx context.Context) (*EBSProviderRecord, uint64, error) {
+	kv, err := m.clusterConfig.KV(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	entry, err := kv.Get(ctx, EBSProviderKey)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, 0, fmt.Errorf("recorded EBS provider vanished after Create lost: %w", err)
+		}
+		return nil, 0, fmt.Errorf("read recorded EBS provider: %w", err)
+	}
+	var rec EBSProviderRecord
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		return nil, 0, &EBSProviderRecordInvalidError{Raw: entry.Value(), Reason: "not a JSON record: " + err.Error()}
+	}
+	if !config.SupportedEBSProvider(rec.Provider) {
+		return nil, 0, &EBSProviderRecordInvalidError{Raw: entry.Value(), Reason: fmt.Sprintf("provider %q is not a supported provider", rec.Provider)}
+	}
+	return &rec, entry.Revision(), nil
 }

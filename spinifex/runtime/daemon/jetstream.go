@@ -25,6 +25,9 @@ const (
 	InstanceStateBucket = "spinifex-instance-state"
 	// ClusterStateBucket is the name of the KV bucket for cluster state (heartbeats, shutdown markers, service maps).
 	ClusterStateBucket = clusterv1.ClusterStateBucket
+	// ClusterConfigBucket holds settings fixed when a cluster forms. Unlike
+	// ClusterStateBucket it has no TTL, so a key written once stays written.
+	ClusterConfigBucket = "spinifex-cluster-config"
 	// InstanceStatePrefix is the key prefix for the per-node running-set blobs
 	// the record space replaces. Nothing writes it after the cutover; the
 	// migration reads it and a rolled-back node still finds what it left.
@@ -84,7 +87,7 @@ type JetStreamManager struct {
 	records     *kvstore.Store[vm.InstanceRecord] // i.<id>, instance-state bucket
 	termRecords *kvstore.Store[vm.InstanceRecord] // i.<id>, terminated bucket
 	clusterKV   jetstream.KeyValue                // spinifex-cluster-state
-	ebsLock     *kvstore.Store[EBSProviderRecord] // spinifex-cluster-config
+	clusterConfig *kvstore.Bucket // spinifex-cluster-config
 	obs         KVSyncObserver
 	running     runningSetState
 }
@@ -204,6 +207,29 @@ func (m *JetStreamManager) InitClusterStateBucket() error {
 	}
 	m.clusterKV = kv
 	return nil
+}
+
+// clusterConfigConfig describes the cluster-config bucket. RecreateIfMissing
+// stays false: a lost lock is not reconstructible by recovery, only by the
+// next daemon start, which claims it again.
+func clusterConfigConfig() kvstore.Config {
+	return kvstore.Config{
+		Name:        ClusterConfigBucket,
+		Description: "Spinifex cluster configuration fixed at formation (EBS provider)",
+		History:     1,
+		OnOpen: func(ctx context.Context, kv jetstream.KeyValue) error {
+			return migrate.DefaultRegistry.RunKV(ctx, ClusterConfigBucket, kv, ClusterConfigBucketVersion)
+		},
+		Missing: "cluster config KV bucket not initialized",
+	}
+}
+
+// InitClusterConfigBucket initializes the cluster-config KV bucket, creating it
+// if it doesn't exist.
+func (m *JetStreamManager) InitClusterConfigBucket() error {
+	m.clusterConfig = kvstore.NewBucket(m.js, clusterConfigConfig())
+	_, err := m.clusterConfig.KV(context.Background())
+	return err
 }
 
 // InitTerminatedInstanceBucket initializes the terminated-instances KV bucket with a 1-hour TTL.

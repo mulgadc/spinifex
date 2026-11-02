@@ -356,6 +356,11 @@ type EBSConfig struct {
 	CacheSizeMB *int `json:"CacheSizeMB" mapstructure:"cache_size_mb"`
 }
 
+// SupportedEBSProvider reports whether name is a provider a node may run.
+func SupportedEBSProvider(name string) bool {
+	return name == EBSProviderViperblockd || name == EBSProviderQEMUNBD
+}
+
 // ResolvedProvider normalizes an empty Provider to EBSProviderViperblockd,
 // the default provider.
 func (c EBSConfig) ResolvedProvider() string {
@@ -831,9 +836,9 @@ func validateClusterConfig(cc *ClusterConfig) error {
 		if viper.IsSet("nodes." + nodeName + ".vpcd.dhcp_bind_bridge") {
 			return fmt.Errorf("config: [nodes.%s.vpcd] dhcp_bind_bridge is no longer supported; remove the key (vpcd no longer runs a DHCP client)", nodeName)
 		}
-		switch nodeCfg.EBS.Provider {
-		case "", EBSProviderViperblockd, EBSProviderQEMUNBD:
-		case EBSProviderEmbedded:
+		switch {
+		case nodeCfg.EBS.Provider == "", SupportedEBSProvider(nodeCfg.EBS.Provider):
+		case nodeCfg.EBS.Provider == EBSProviderEmbedded:
 			// Refuse rather than silently upgrade: the embedded engine is gone,
 			// and starting anyway would migrate this node's volumes to
 			// ebsmetadata one-way without the operator ever asking for it.

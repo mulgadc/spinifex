@@ -1945,8 +1945,12 @@ func (d *Daemon) startCluster() error {
 
 	// Before any service is built: a node on a different provider from the
 	// cluster's would address existing volumes through the wrong implementation.
+	// A refusal exits so the unit shows failed rather than a healthy idle daemon.
 	if err := d.claimEBSProvider(); err != nil {
-		slog.Error("Refusing to start: EBS provider lock", "err", err)
+		if errors.Is(err, errStartupPermanent) {
+			slog.Error("Refusing to start: EBS provider lock", "err", err)
+			d.exitFunc(1)
+		}
 		return fmt.Errorf("EBS provider lock: %w", err)
 	}
 
@@ -2772,27 +2776,24 @@ func (d *Daemon) upgradeJetStreamReplicas() {
 // refuses when the cluster already records a different one.
 func (d *Daemon) claimEBSProvider() error {
 	provider := d.config.EBS.ResolvedProvider()
-	_, err := initServiceWithRetry("EBS provider lock", func() (struct{}, error) {
+	rev, err := initServiceWithRetry("EBS provider lock", func() (uint64, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), ebsProviderClaimTimeout)
 		defer cancel()
-		return struct{}{}, d.jsManager.ClaimEBSProvider(ctx, d.node, provider)
+		return d.jsManager.ClaimEBSProvider(ctx, d.node, provider)
 	})
 	if err != nil {
 		return err
 	}
-	slog.Info("EBS provider matches the cluster's", "provider", provider)
+	slog.Info("EBS provider matches the cluster's", "provider", provider, "revision", rev)
 	return nil
 }
 
 // ebsProviderClaimTimeout bounds one attempt at the provider lock's KV calls.
 const ebsProviderClaimTimeout = 10 * time.Second
 
-// permanentError marks an error that a startup retry loop cannot clear, so
-// the loop returns it at once rather than waiting out its budget.
-type permanentError interface {
-	error
-	Permanent() bool
-}
+// errStartupPermanent marks an error that a startup retry loop cannot clear,
+// so the loop returns it at once rather than waiting out its budget.
+var errStartupPermanent = errors.New("permanent startup refusal")
 
 // initRetrySleep is the sleep seam used by initServiceWithRetry; tests override it.
 var initRetrySleep = time.Sleep
@@ -2814,7 +2815,7 @@ func initServiceWithRetry[T any](name string, initFn func() (T, error)) (T, erro
 			}
 			return result, nil
 		}
-		if perm, ok := errors.AsType[permanentError](err); ok && perm.Permanent() {
+		if errors.Is(err, errStartupPermanent) {
 			var zero T
 			return zero, err
 		}

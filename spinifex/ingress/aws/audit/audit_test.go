@@ -61,7 +61,7 @@ func TestRequestAuditCarriesNoSecret(t *testing.T) {
 	}
 	assert.Equal(t, []string{
 		"sourceIP", "accessKeyID", "accountID", "region", "service", "action",
-		"principalType", "authError", "requestID",
+		"principalType", "authError", "requestID", "awsRequestID",
 	}, keys)
 }
 

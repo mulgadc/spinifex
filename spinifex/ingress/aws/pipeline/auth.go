@@ -290,6 +290,7 @@ func (gw *Config) recordCredentialFailure(src authSource, f *credential.Failure)
 func (gw *Config) writeSigV4Error(w http.ResponseWriter, r *http.Request, errorCode, message string) {
 	requestID := uuid.NewV4().String()
 	audit.From(r.Context()).SetAuthError(errorCode)
+	audit.From(r.Context()).SetAWSRequestID(requestID)
 
 	errorMsg, exists := awserrors.ErrorLookup[errorCode]
 	if !exists {
@@ -324,7 +325,7 @@ func (gw *Config) writeSigV4Error(w http.ResponseWriter, r *http.Request, errorC
 			envelope.WriteTooLargeText(w, int64(sigv4.MaxPayloadLen))
 			return
 		}
-		gw.writeJSONError(w, p, svc, envelope.JSONError{Code: errorCode, Message: errorMsg.Message, Status: errorMsg.HTTPCode})
+		gw.writeJSONError(w, p, svc, envelope.JSONError{Code: errorCode, Message: errorMsg.Message, Status: errorMsg.HTTPCode, RequestID: requestID})
 		return
 	}
 

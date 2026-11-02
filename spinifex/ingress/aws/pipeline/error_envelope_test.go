@@ -12,11 +12,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/audit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
@@ -85,6 +88,7 @@ func TestErrorEnvelope_Throttle(t *testing.T) {
 		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 		assert.Equal(t, "TooManyRequestsException", resp.Header.Get("X-Amzn-Errortype"))
 		assert.Empty(t, resp.Header.Get("Retry-After"))
+		assert.NotEmpty(t, resp.Header.Get("X-Amzn-Requestid"))
 		assert.JSONEq(t, `{"Reason":"CallerRateLimitExceeded","Type":"User","message":"Rate Exceeded."}`, bodyString(t, resp))
 	})
 
@@ -251,6 +255,7 @@ func TestErrorEnvelope_ClusterUnavailable(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 	assert.Equal(t, "ServiceUnavailableException", resp.Header.Get("X-Amzn-Errortype"))
+	assert.NotEmpty(t, resp.Header.Get("X-Amzn-Requestid"))
 	assert.JSONEq(t, `{"Type":"Service","message":"`+clusterUnavailableMsg+`"}`, bodyString(t, resp))
 
 	resp = call(json10Service)
@@ -300,6 +305,44 @@ func TestCredentialScopeService(t *testing.T) {
 				req.Header.Set("Authorization", tc.header)
 			}
 			assert.Equal(t, tc.want, credentialScopeService(req))
+		})
+	}
+}
+
+// A dispatcher error on every JSON protocol carries x-amzn-RequestId, and it is
+// the ID the request's access log line records.
+func TestJSONErrorRequestIDMatchesAudit(t *testing.T) {
+	for svc, env := range map[string]dispatch.ErrorEnvelope{
+		json11Service:   dispatch.ErrorEnvelopeJSON,
+		restJSONService: dispatch.ErrorEnvelopeRESTJSON,
+		json10Service:   dispatch.ErrorEnvelopeJSON10Query,
+	} {
+		t.Run(svc, func(t *testing.T) {
+			c := &dispatchCapture{dispatchErr: errors.New("boom")}
+			gw, _ := dispatchSeamApp(t, allowAllECRDocs(), envelopeRegistration(svc, env, c, nil))
+
+			var rec *audit.Record
+			r := chi.NewRouter()
+			r.Use(audit.Middleware)
+			r.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					rec = audit.From(r.Context())
+					next.ServeHTTP(w, r)
+				})
+			})
+			r.Use(gw.SigV4AuthMiddleware())
+			r.HandleFunc("/*", gw.Request)
+
+			badSig := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
+			badSig.Host = "localhost:9999"
+			signTestRequestAs(t, badSig, []byte("{}"), testAccessKey, "wrong-secret", svc, time.Now().UTC())
+
+			for _, req := range []*http.Request{signDispatchRequest(t, svc, []byte("{}")), badSig} {
+				resp := doRequest(r, req)
+				id := resp.Header.Get("X-Amzn-Requestid")
+				require.NotEmpty(t, id)
+				assert.Equal(t, id, auditField(rec, "awsRequestID"))
+			}
 		})
 	}
 }

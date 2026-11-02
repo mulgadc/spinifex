@@ -295,17 +295,17 @@ func TestWriteJSON_WireBytesPerProtocol(t *testing.T) {
 		{
 			name:        "JSON 1.1 appends Exception",
 			p:           ProtocolJSON11,
-			e:           JSONError{Code: "Throttling", Message: "slow", Status: 400},
+			e:           JSONError{Code: "Throttling", Message: "slow", Status: 400, RequestID: "req-json11"},
 			contentType: "application/x-amz-json-1.1",
-			headers:     map[string]string{"X-Amzn-Errortype": "ThrottlingException"},
+			headers:     map[string]string{"X-Amzn-Errortype": "ThrottlingException", "x-amzn-RequestId": "req-json11"},
 			body:        `{"__type":"ThrottlingException","message":"slow"}`,
 		},
 		{
 			name:        "REST-JSON keeps a verbatim type and sorts extra fields",
 			p:           ProtocolRESTJSON,
-			e:           JSONError{Code: "TooManyRequestsException", Verbatim: true, Message: "Rate Exceeded.", Status: 429, Fields: map[string]string{"Reason": "CallerRateLimitExceeded"}},
+			e:           JSONError{Code: "TooManyRequestsException", Verbatim: true, Message: "Rate Exceeded.", Status: 429, Fields: map[string]string{"Reason": "CallerRateLimitExceeded"}, RequestID: "req-restjson"},
 			contentType: "application/json",
-			headers:     map[string]string{"X-Amzn-Errortype": "TooManyRequestsException"},
+			headers:     map[string]string{"X-Amzn-Errortype": "TooManyRequestsException", "x-amzn-RequestId": "req-restjson"},
 			body:        `{"Reason":"CallerRateLimitExceeded","Type":"User","message":"Rate Exceeded."}`,
 		},
 		{
@@ -326,9 +326,9 @@ func TestWriteJSON_WireBytesPerProtocol(t *testing.T) {
 		{
 			name:         "JSON 1.0 never suffixes and sends the query header",
 			p:            ProtocolJSON10Query,
-			e:            JSONError{Code: "QueueDoesNotExist", Verbatim: true, Message: "gone", Status: 400, QueryCode: "AWS.SimpleQueueService.NonExistentQueue"},
+			e:            JSONError{Code: "QueueDoesNotExist", Verbatim: true, Message: "gone", Status: 400, QueryCode: "AWS.SimpleQueueService.NonExistentQueue", RequestID: "req-json10"},
 			contentType:  "application/x-amz-json-1.0",
-			headers:      map[string]string{"X-Amzn-Query-Error": "AWS.SimpleQueueService.NonExistentQueue;Sender"},
+			headers:      map[string]string{"X-Amzn-Query-Error": "AWS.SimpleQueueService.NonExistentQueue;Sender", "x-amzn-RequestId": "req-json10"},
 			absentHeader: "X-Amzn-Errortype",
 			body:         `{"__type":"QueueDoesNotExist","message":"gone"}`,
 		},

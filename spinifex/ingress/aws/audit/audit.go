@@ -40,6 +40,7 @@ type Record struct {
 	action        string
 	principalType string
 	authError     string
+	awsRequestID  string
 }
 
 // Middleware attaches an audit record to every request. It is
@@ -117,6 +118,17 @@ func (a *Record) SetAuthError(errorCode string) {
 	a.authError = errorCode
 }
 
+// SetAWSRequestID records the request ID an error response was answered with,
+// so a client-reported x-amzn-RequestId joins to this request's log line.
+func (a *Record) SetAWSRequestID(id string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.awsRequestID = id
+}
+
 // SetAccessKeyID records the key a request presented even when authentication
 // failed, so a rejected caller is still identifiable.
 func (a *Record) SetAccessKeyID(accessKeyID string) {
@@ -186,6 +198,7 @@ func (a *Record) pairs() []auditField {
 		{"principalType", "aws.principal_type", a.principalType},
 		{"authError", "aws.auth_error", a.authError},
 		{"requestID", "http.request.header.x-request-id", a.requestID},
+		{"awsRequestID", "aws.request_id", a.awsRequestID},
 	}
 }
 

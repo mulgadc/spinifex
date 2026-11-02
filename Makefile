@@ -169,7 +169,7 @@ go_local_srcs = $(shell GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go list
 # worker as separate processes. A separate artifact from the LB image above.
 SQS_WORKER_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/sqs-worker
 SQS_WORKER_MICROVM_ARTIFACTS := $(SQS_WORKER_MICROVM_OUT_DIR)/vmlinuz $(SQS_WORKER_MICROVM_OUT_DIR)/initramfs.cpio.gz
-SQS_WORKER_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_WORKER_MICROVM_OUT_DIR)/init.sh $(SQS_WORKER_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_WORKER_MICROVM_OUT_DIR)/,sqs-worker-lib.sh sqs-worker-prepare sqs-worker-store sqs-worker-ready sqs-worker-stop) bin/nats-server bin/sqs-worker
+SQS_WORKER_MICROVM_INPUTS := scripts/build-sqs-store-microvm-image.sh scripts/lib/microvm-image.sh scripts/lib/sqs-store-microvm-publish.sh $(SQS_WORKER_MICROVM_OUT_DIR)/init.sh $(SQS_WORKER_MICROVM_OUT_DIR)/inittab $(addprefix $(SQS_WORKER_MICROVM_OUT_DIR)/,sqs-worker-lib.sh sqs-worker-prepare sqs-worker-store sqs-worker-ready sqs-worker-stop) bin/nats-server bin/sqs-worker
 
 $(SQS_WORKER_MICROVM_ARTIFACTS) &: $(SQS_WORKER_MICROVM_INPUTS)
 	./scripts/build-sqs-store-microvm-image.sh
@@ -179,6 +179,20 @@ bin/sqs-worker: go.mod go.sum $$(call go_local_srcs,./cmd/sqs-worker)
 	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/sqs-worker
 
 build-sqs-worker-microvm-image: $(SQS_WORKER_MICROVM_ARTIFACTS) ## Build the SQS microVM kernel and initramfs
+
+# The Lambda runtime microVM image. Built on demand; not shipped or installed.
+LAMBDA_RUNTIME_MICROVM_OUT_DIR := $(MICROVM_OUT_DIR)/lambda-runtime
+LAMBDA_RUNTIME_MICROVM_ARTIFACTS := $(LAMBDA_RUNTIME_MICROVM_OUT_DIR)/vmlinuz $(LAMBDA_RUNTIME_MICROVM_OUT_DIR)/initramfs.cpio.gz
+LAMBDA_RUNTIME_MICROVM_INPUTS := scripts/build-lambda-runtime-microvm-image.sh scripts/lib/microvm-image.sh $(addprefix $(LAMBDA_RUNTIME_MICROVM_OUT_DIR)/,init.sh inittab run-agent) bin/lambda-agent
+
+$(LAMBDA_RUNTIME_MICROVM_ARTIFACTS) &: $(LAMBDA_RUNTIME_MICROVM_INPUTS)
+	./scripts/build-lambda-runtime-microvm-image.sh
+
+bin/lambda-agent: go.mod go.sum $$(call go_local_srcs,./cmd/lambda-agent)
+	@mkdir -p bin
+	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/lambda-agent
+
+build-lambda-runtime-microvm-image: $(LAMBDA_RUNTIME_MICROVM_ARTIFACTS) ## Build the Lambda runtime microVM kernel and initramfs (not shipped)
 
 # qboot is the microvm firmware. The source tarball ships with each release
 # because qboot is GPL-2.0.
@@ -522,7 +536,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

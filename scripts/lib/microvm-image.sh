@@ -1,0 +1,391 @@
+#!/bin/bash
+# microvm-image.sh — shared steps for the microVM image builders, sourced by
+# build-sqs-store-microvm-image.sh and build-lambda-runtime-microvm-image.sh.
+#
+# The caller sets before use:
+#   TAG                      log prefix
+#   BUILD_DIR                output directory; STAGE_DIR is created beside it
+#   ALPINE_VERSION, ALPINE_MIRROR, ALPINE_PACKAGES
+#   MICROVM_EXTRA_MODULES    modules kept by name, with their dependency closure
+#   MICROVM_GATE_MODULES     modules the image modprobe must resolve, beyond the extras
+#   MICROVM_EXTRA_KEEP_GLOBS bash array of module file globs kept on top of virtio*/*fw_cfg*
+# Functions set CHROOT_DIR, STAGE_DIR, KERNEL_IMG and KERNEL_VER for the caller.
+
+
+microvm_check_tools() {
+    # --- Verify non-negotiable tools ---
+    # fakeroot is mandatory: device nodes are written into the cpio archive inside a
+    # faked-root environment so no real device node is ever created on the host
+    # filesystem (which previously required sudo mknod and risked clobbering host
+    # /dev/null on cleanup).
+    for tool in cpio gzip find fakeroot; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "ERROR: required tool not found: $tool" >&2
+            exit 1
+        fi
+    done
+}
+
+microvm_init_dirs() {
+    # --- Create chroot ---
+    CHROOT_DIR=$(mktemp -d)
+    # Guard: every destructive op below targets "$CHROOT_DIR/...". An empty or
+    # unexpected value would aim rm -rf at the host (e.g. /dev). Refuse anything that
+    # is not a freshly-created temp dir.
+    case "${CHROOT_DIR:?mktemp -d returned empty}" in
+        /tmp/*|/var/tmp/*|"${TMPDIR:-/nonexistent}"/*) ;;
+        *) echo "ERROR: refusing to use unexpected CHROOT_DIR: $CHROOT_DIR" >&2; exit 1 ;;
+    esac
+    # Outputs are written here first, beside $BUILD_DIR so publishing is a rename.
+    STAGE_DIR=$(mktemp -d "$BUILD_DIR/.stage.XXXXXX")
+    CONTAINER_TOOL=""
+    CONTAINER_CID=""
+    trap microvm_cleanup EXIT
+}
+
+microvm_cleanup() {
+        echo "$TAG cleaning up chroot: $CHROOT_DIR"
+        rm -rf "$CHROOT_DIR"
+        rm -rf "${STAGE_DIR:?}"
+        if [ -n "$CONTAINER_CID" ] && [ -n "$CONTAINER_TOOL" ]; then
+            echo "$TAG cleaning up container: $CONTAINER_CID"
+            $CONTAINER_TOOL rm -f "$CONTAINER_CID" >/dev/null 2>&1 || true
+        fi
+}
+
+# microvm_make_rootfs populates $CHROOT_DIR from ALPINE_PACKAGES.
+microvm_make_rootfs() {
+    # --- Populate rootfs ---
+    # Strategy 1: native apk (Alpine hosts, CI)
+    if command -v apk >/dev/null 2>&1; then
+        echo "$TAG rootfs: native apk"
+        mkdir -p \
+            "$CHROOT_DIR/etc/apk" \
+            "$CHROOT_DIR/lib/apk/db" \
+            "$CHROOT_DIR/var/cache/apk"
+        cat > "$CHROOT_DIR/etc/apk/repositories" <<EOF
+${ALPINE_MIRROR}/v${ALPINE_VERSION}/main
+${ALPINE_MIRROR}/v${ALPINE_VERSION}/community
+EOF
+        apk add \
+            --root "$CHROOT_DIR" \
+            --arch x86_64 \
+            --no-cache \
+            --allow-untrusted \
+            --initdb \
+            $ALPINE_PACKAGES
+
+    # Strategy 2: docker -> BuildKit local export.
+    # Do NOT use `docker export` here. On Docker's overlay2 driver it leaks the
+    # container's overlay mount (the mount survives `docker rm`), orphaning layers
+    # under /var/lib/docker that only a daemon restart reclaims; on a busy CI host
+    # this grows without bound. `buildx --output type=local` writes the image
+    # filesystem straight to a directory and releases every mount, so nothing leaks.
+    elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        echo "$TAG rootfs: docker buildx --output type=local (alpine:${ALPINE_VERSION})"
+        BUILD_CTX=$(mktemp -d)
+        cat > "$BUILD_CTX/Dockerfile" <<DOCKERFILE
+FROM alpine:${ALPINE_VERSION}
+RUN apk add --no-cache ${ALPINE_PACKAGES}
+DOCKERFILE
+        docker buildx build \
+            --platform linux/amd64 \
+            --output "type=local,dest=${CHROOT_DIR}" \
+            "$BUILD_CTX"
+        rm -rf "$BUILD_CTX"
+
+    # Strategy 3: podman -> run + export. Podman's store does not exhibit the docker
+    # overlay2 export-mount leak, and podman has no buildx.
+    elif command -v podman >/dev/null 2>&1; then
+        echo "$TAG rootfs: podman export (alpine:${ALPINE_VERSION})"
+        CONTAINER_TOOL=podman
+        CONTAINER_CID=$(podman run -d \
+            "alpine:${ALPINE_VERSION}" \
+            sh -c "apk add --no-cache ${ALPINE_PACKAGES}")
+
+        exit_code=$(podman wait "$CONTAINER_CID")
+        if [ "$exit_code" != "0" ]; then
+            echo "ERROR: package installation failed in container (exit $exit_code)" >&2
+            exit 1
+        fi
+
+        podman export "$CONTAINER_CID" | tar -x -C "$CHROOT_DIR"
+
+    else
+        echo "ERROR: no rootfs build tool available." >&2
+        echo "       Install one of: apk (Alpine), docker, podman" >&2
+        exit 1
+    fi
+}
+
+microvm_empty_dev() {
+    # --- /dev: empty mountpoint only ---
+    # tar extraction without root silently creates 0-byte regular files for device
+    # nodes. Drop them and leave an empty /dev mountpoint. The two static nodes the
+    # kernel needs (/dev/console to wire init's stdio, /dev/null) are written into
+    # the cpio archive under fakeroot at pack time — NOT created on the host. init
+    # mounts devtmpfs over /dev as its first action for everything else at runtime.
+    rm -rf "${CHROOT_DIR:?}/dev"
+    mkdir "$CHROOT_DIR/dev"
+}
+
+# microvm_locate_kernel finds the kernel and asserts fw_cfg is loadable or built in.
+microvm_locate_kernel() {
+    # --- Locate kernel ---
+    KERNEL_IMG=$(find "$CHROOT_DIR/boot" -name "vmlinuz*" | sort | tail -1)
+    if [ -z "$KERNEL_IMG" ]; then
+        echo "ERROR: no vmlinuz found in $CHROOT_DIR/boot" >&2
+        exit 1
+    fi
+    echo "$TAG kernel image: $KERNEL_IMG"
+
+    KERNEL_VER=$(basename "$KERNEL_IMG" | sed 's/vmlinuz-//')
+    KERNEL_CONFIG="$CHROOT_DIR/boot/config-${KERNEL_VER}"
+
+    # --- Assert fw_cfg module ---
+    if ! find "$CHROOT_DIR/lib/modules" \
+            -name "qemu_fw_cfg.ko*" \
+            -o -name "fw_cfg_sysfs.ko*" \
+        | grep -q .; then
+        if ! grep -q "CONFIG_FW_CFG_SYSFS=y" "$KERNEL_CONFIG" 2>/dev/null; then
+            echo "ERROR: qemu_fw_cfg module missing from initramfs — fw_cfg reads will fail at boot" >&2
+            exit 1
+        fi
+        echo "$TAG fw_cfg: built-in (CONFIG_FW_CFG_SYSFS=y)"
+    else
+        echo "$TAG fw_cfg: module found in lib/modules"
+    fi
+}
+
+# --- Strip kernel modules (Phase 2 keep-list approach) ---
+# Only modules needed by a virtio-mmio microvm guest are kept:
+#   virtio*.ko*    — virtio bus, net, blk, rng, console, and helpers
+#   *fw_cfg*.ko*   — QEMU fw_cfg sysfs driver (delivers boot blobs)
+#   $MICROVM_EXTRA_KEEP_GLOBS — caller-named module file globs
+#   $MICROVM_EXTRA_MODULES — caller-named modules, plus dependency closure
+# All other loadable modules are removed. Drivers compiled into the kernel
+# (CONFIG_VIRTIO_MMIO=y etc.) are unaffected — they live in vmlinuz, not here.
+
+# module_path prints a module's kernel/ path from the stock modules.dep, by
+# name or modules.alias; it fails when the module is not loadable.
+module_path() {
+    local kdir="$1" name="${2//-/_}" path alias_target
+    path=$(awk -F: -v n="$name" '{ f = $1; sub(/.*\//, "", f); sub(/\.ko(\.gz|\.xz|\.zst)?$/, "", f);
+        gsub(/-/, "_", f); if (f == n) { print $1; exit } }' "$kdir/modules.dep")
+    if [ -z "$path" ] && [ -f "$kdir/modules.alias" ]; then
+        alias_target=$(awk -v n="$2" '$1 == "alias" && $2 == n { print $3; exit }' "$kdir/modules.alias")
+        [ -n "$alias_target" ] && [ "$alias_target" != "$2" ] && path=$(module_path "$kdir" "$alias_target")
+    fi
+    [ -n "$path" ] && printf '%s\n' "$path"
+}
+
+# module_builtin reports whether a module name is compiled into the kernel.
+module_builtin() {
+    local kdir="$1" name="${2//-/_}"
+    [ -f "$kdir/modules.builtin" ] || return 1
+    awk -v n="$name" '{ f = $0; sub(/.*\//, "", f); sub(/\.ko$/, "", f); gsub(/-/, "_", f);
+        if (f == n) { found = 1; exit } } END { exit !found }' "$kdir/modules.builtin"
+}
+
+# image_kmod runs the image's own kmod (depmod, modprobe) through its musl
+# loader, so module metadata matches the guest's modprobe without a host kmod.
+image_kmod() {
+    "$CHROOT_DIR/lib/ld-musl-x86_64.so.1" --library-path "$CHROOT_DIR/lib:$CHROOT_DIR/usr/lib" \
+        --argv0 "$1" "$CHROOT_DIR/bin/kmod" "${@:2}"
+}
+
+microvm_strip_modules() {
+    echo "$TAG stripping kernel modules to virtio+fw_cfg+${MICROVM_EXTRA_MODULES} only..."
+    for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
+        kver="$(basename "$kver_dir")"
+        kernel_dir="$kver_dir/kernel"
+        [ -d "$kernel_dir" ] || continue
+
+        if [ ! -s "$kver_dir/modules.dep" ]; then
+            echo "ERROR: stock ${kver_dir}modules.dep missing — cannot resolve module dependencies" >&2
+            exit 1
+        fi
+
+        # Extra modules start the closure; the glob families are kept as found.
+        keep_list=$(mktemp)
+        : > "$keep_list"
+        for name in $MICROVM_EXTRA_MODULES; do
+            if ! path=$(module_path "$kver_dir" "$name"); then
+                if module_builtin "$kver_dir" "$name"; then continue; fi
+                echo "ERROR: module $name is neither loadable nor built into $kver" >&2
+                exit 1
+            fi
+            echo "$path" >> "$keep_list"
+        done
+
+        # Close over modules.dep hard dependencies and modules.softdep pre:/post:
+        # names until the set stops growing. A softdep must be loadable or built in.
+        while :; do
+            before=$(sort -u "$keep_list" | wc -l)
+            for path in $(sort -u "$keep_list"); do
+                awk -F': ' -v p="$path" '$1 == p { n = split($2, d, " "); for (i = 1; i <= n; i++) print d[i] }' \
+                    "$kver_dir/modules.dep" >> "$keep_list"
+                mod=$(basename "$path"); mod="${mod%%.ko*}"; mod="${mod//-/_}"
+                [ -f "$kver_dir/modules.softdep" ] || continue
+                for soft in $(awk -v n="$mod" '{ m = $2; gsub(/-/, "_", m) }
+                        $1 == "softdep" && m == n { for (i = 3; i <= NF; i++) if ($i != "pre:" && $i != "post:") print $i }' \
+                        "$kver_dir/modules.softdep"); do
+                    if soft_path=$(module_path "$kver_dir" "$soft"); then
+                        echo "$soft_path" >> "$keep_list"
+                    elif ! module_builtin "$kver_dir" "$soft"; then
+                        echo "ERROR: softdep $soft of $mod is neither loadable nor built into $kver" >&2
+                        exit 1
+                    fi
+                done
+            done
+            after=$(sort -u "$keep_list" | wc -l)
+            [ "$before" -eq "$after" ] && break
+        done
+
+        extra_names=$(sort -u "$keep_list" | while read -r p; do m=$(basename "$p"); m="${m%%.ko*}"; echo "${m//-/_}"; done)
+        find_args=(-name "virtio*.ko*" -o -name "*fw_cfg*.ko*")
+        for glob in ${MICROVM_EXTRA_KEEP_GLOBS[@]+"${MICROVM_EXTRA_KEEP_GLOBS[@]}"}; do
+            find_args+=(-o -name "$glob")
+        done
+        (cd "$kver_dir" && find kernel "${find_args[@]}") >> "$keep_list"
+
+        # Copy the keeper set out, preserving each kernel/ relative path.
+        tmp_keep=$(mktemp -d)
+        while read -r rel; do
+            rel="${rel#kernel/}"
+            mkdir -p "$tmp_keep/$(dirname "$rel")"
+            cp "$kernel_dir/$rel" "$tmp_keep/$rel"
+        done < <(sort -u "$keep_list")
+        rm -f "$keep_list"
+
+        # Replace kernel module tree with the keeper set.
+        rm -rf "$kernel_dir"
+        mkdir -p "$kernel_dir"
+        # Restore each kept file into the same relative path.
+        (cd "$tmp_keep" && find . -name "*.ko*" | while read -r f; do
+            dest_dir="$kernel_dir/$(dirname "${f#./}")"
+            mkdir -p "$dest_dir"
+            cp "$f" "$dest_dir/"
+        done)
+        rm -rf "$tmp_keep"
+
+        # Decompress kept modules to plain .ko. Alpine ships .ko.gz, but a host
+        # kmod that lacks gzip support (e.g. Debian trixie's kmod 34) silently
+        # produces an EMPTY modules.dep from compressed modules — the guest's
+        # modprobe then no-ops and qemu_fw_cfg never loads. Plain .ko sidesteps the
+        # host-kmod dependency entirely and the guest needs no decompressor either.
+        find "$kernel_dir" -name "*.ko.gz" -exec gunzip -f {} +
+
+        # Independent closure gate: each extra-closure module's own .modinfo depends=
+        # must name a kept module or a built-in, so a resolver bug fails here.
+        kept_names=$(find "$kernel_dir" -name "*.ko" -exec basename {} .ko \; | tr '-' '_' | sort -u)
+        while read -r ko; do
+            ko_name=$(basename "$ko" .ko); ko_name="${ko_name//-/_}"
+            grep -qx "$ko_name" <<< "$extra_names" || continue
+            deps=$(tr '\0' '\n' < "$ko" | grep -a -m1 '^depends=' | cut -d= -f2 | tr ',' ' ' || true)
+            for dep in $deps; do
+                dep="${dep//-/_}"
+                if ! grep -qx "$dep" <<< "$kept_names" && ! module_builtin "$kver_dir" "$dep"; then
+                    echo "ERROR: $(basename "$ko") depends on $dep, which is neither kept nor built in" >&2
+                    exit 1
+                fi
+            done
+        done < <(find "$kernel_dir" -name "*.ko")
+        for name in $MICROVM_EXTRA_MODULES; do
+            if ! grep -qx "${name//-/_}" <<< "$kept_names" && ! module_builtin "$kver_dir" "$name"; then
+                echo "ERROR: required module $name missing from the stripped module tree" >&2
+                exit 1
+            fi
+        done
+        echo "$TAG extra module closure: $(echo "$extra_names" | tr '\n' ' ')"
+        echo "$TAG modules kept: $(echo "$kept_names" | tr '\n' ' ')"
+
+        # Rebuild module metadata with the image's own kmod, the binary the guest's
+        # modprobe runs, so no host depmod is needed. Stock indexes still name .ko.gz
+        # files, so they are removed first and a failed rebuild cannot ship them.
+        for f in dep dep.bin alias alias.bin softdep weakdep symbols symbols.bin \
+            builtin.bin builtin.alias.bin devname; do
+            rm -f "$kver_dir/modules.$f"
+        done
+        if ! image_kmod depmod -b "$CHROOT_DIR" "$kver"; then
+            echo "ERROR: image depmod failed for $kver" >&2
+            exit 1
+        fi
+        if [ ! -s "$kver_dir/modules.dep" ] || [ ! -s "$kver_dir/modules.dep.bin" ]; then
+            echo "ERROR: ${kver_dir}modules.dep or modules.dep.bin missing or empty after depmod" >&2
+            exit 1
+        fi
+        # Resolution gate: the image's modprobe must resolve every required module
+        # to plain .ko files present in the stripped tree.
+        for name in $MICROVM_EXTRA_MODULES $MICROVM_GATE_MODULES; do
+            module_builtin "$kver_dir" "$name" && continue
+            if ! plan=$(image_kmod modprobe -d "$CHROOT_DIR" -S "$kver" --show-depends "$name"); then
+                echo "ERROR: image modprobe cannot resolve $name for $kver" >&2
+                exit 1
+            fi
+            while read -r verb path _; do
+                [ "$verb" = "insmod" ] || continue
+                case "$path" in
+                    "$CHROOT_DIR/lib/modules/$kver/kernel/"*.ko) [ -f "$path" ] && continue ;;
+                esac
+                echo "ERROR: modprobe plan for $name names $path, not a kept plain .ko" >&2
+                exit 1
+            done <<< "$plan"
+            echo "$TAG modprobe $name: $(awk '{ n = split($2, a, "/"); printf "%s ", a[n] }' <<< "$plan")"
+        done
+    done
+}
+
+# microvm_strip_rootfs drops package-manager artifacts and debug symbols.
+microvm_strip_rootfs() {
+    # --- Strip package-manager artifacts (not needed at runtime) ---
+    echo "$TAG stripping package manager artifacts..."
+    rm -rf \
+        "$CHROOT_DIR/lib/apk" \
+        "$CHROOT_DIR/var/cache/apk" \
+        "$CHROOT_DIR/etc/apk" \
+        "$CHROOT_DIR/usr/share/man" \
+        "$CHROOT_DIR/usr/share/doc" \
+        "$CHROOT_DIR/usr/share/apk" \
+        "$CHROOT_DIR/usr/include" \
+        "$CHROOT_DIR/usr/lib/pkgconfig"
+
+    # --- Strip debug symbols from binaries ---
+    echo "$TAG stripping debug symbols from binaries..."
+    find "$CHROOT_DIR/usr/sbin" "$CHROOT_DIR/usr/bin" \
+         "$CHROOT_DIR/sbin" "$CHROOT_DIR/bin" \
+        -type f 2>/dev/null | while read -r bin; do
+        strip --strip-all "$bin" 2>/dev/null || true
+    done
+}
+
+# microvm_stage_kernel copies vmlinuz to $STAGE_DIR, then drops /boot from the chroot.
+microvm_stage_kernel() {
+    # --- Copy vmlinuz out before stripping /boot from chroot ---
+    VMLINUZ_OUT="$STAGE_DIR/vmlinuz"
+    echo "$TAG copying kernel: $VMLINUZ_OUT"
+    cp "$KERNEL_IMG" "$VMLINUZ_OUT"
+
+    # Drop /boot from the chroot — vmlinuz, Alpine's stock initramfs-virt, System.map
+    # and kernel config all live here (~25 MiB). None are needed at runtime: the
+    # guest already has the kernel loaded by QEMU's -kernel, and Alpine's initramfs
+    # is unused because we replace it with our own /init. Leaving /boot in the cpio
+    # nearly doubles uncompressed initramfs size and forces a 512 MiB guest just to
+    # survive decompression.
+    rm -rf "${CHROOT_DIR:?}/boot"
+}
+
+microvm_pack_initramfs() {
+    # --- Build initramfs ---
+    INITRAMFS_OUT="$STAGE_DIR/initramfs.cpio.gz"
+    echo "$TAG building initramfs: $INITRAMFS_OUT"
+    # Create the static device nodes and pack the archive inside a single fakeroot
+    # session: mknod/cpio see faked device entries and write real char-device
+    # records into the cpio, while the host filesystem never gets an actual node.
+    fakeroot sh -c '
+        cd "$1" || exit 1
+        mknod -m 600 dev/console c 5 1
+        mknod -m 666 dev/null    c 1 3
+        find . | cpio --quiet -o -H newc | gzip -9 > "$2"
+    ' _ "$CHROOT_DIR" "$INITRAMFS_OUT"
+}

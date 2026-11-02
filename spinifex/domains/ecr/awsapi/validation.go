@@ -3,6 +3,7 @@ package awsapi
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -13,6 +14,10 @@ import (
 const (
 	minRepositoryNameLength = 2
 	maxRepositoryNameLength = 256
+
+	minLifecyclePolicyTextLength  = 100
+	maxLifecyclePolicyTextLength  = 30720
+	maxRepositoryPolicyTextLength = 10240
 )
 
 // ValidateRepositoryName returns InvalidParameterException naming the first
@@ -47,6 +52,18 @@ func MaxItemsError(field string, limit int) error {
 	return ConstraintError(field, fmt.Sprintf("Member must have length less than or equal to %d", limit))
 }
 
+// ValidateTextLength refuses text whose length in characters falls outside
+// [minLen, maxLen], the bounds of field's model shape.
+func ValidateTextLength(field, text string, minLen, maxLen int) error {
+	switch n := utf8.RuneCountInString(text); {
+	case n < minLen:
+		return ConstraintError(field, fmt.Sprintf("Member must have length greater than or equal to %d", minLen))
+	case n > maxLen:
+		return ConstraintError(field, fmt.Sprintf("Member must have length less than or equal to %d", maxLen))
+	}
+	return nil
+}
+
 // ConstraintError refuses field for failing constraint.
 func ConstraintError(field, constraint string) error {
 	return awserrors.Errorf(awserrors.ErrorECRInvalidParameter,
@@ -60,8 +77,9 @@ func MalformedBodyError() error {
 		"The request body is not valid JSON or does not match the input shape of the action")
 }
 
-// ValidateTags refuses a tag list with a missing or empty key. AWS answers a
-// null key as a parameter error and an empty one as a tag error.
+// ValidateTags refuses a tag list with a missing or empty key or a missing
+// value. AWS answers a null member as a parameter error and an empty key as a
+// tag error; an empty value is valid.
 func ValidateTags(tags []*ecr.Tag) error {
 	for i, t := range tags {
 		field := fmt.Sprintf("tags.%d.member.key", i+1)
@@ -70,6 +88,9 @@ func ValidateTags(tags []*ecr.Tag) error {
 		}
 		if aws.StringValue(t.Key) == "" {
 			return awserrors.Errorf(awserrors.ErrorInvalidTagParameter, "Tag parameters are invalid")
+		}
+		if t.Value == nil {
+			return RequiredParameterError(fmt.Sprintf("tags.%d.member.value", i+1))
 		}
 	}
 	return nil

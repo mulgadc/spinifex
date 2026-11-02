@@ -13,6 +13,7 @@ import {
 } from "react-hook-form"
 
 import type { SelectFieldOption } from "@/components/form-fields"
+import type { PickerNotice } from "@/components/picker-notice"
 import { pickerNotice } from "@/components/picker-notice"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Label } from "@/components/ui/label"
@@ -124,6 +125,21 @@ export function subnetGroupOptions(
     value: g.DBSubnetGroupName ?? "",
     label: `${g.DBSubnetGroupName} (${g.VpcId})`,
   }))
+}
+
+// With no group the database goes in the default VPC, which is a choice the
+// operator should see rather than an empty picker.
+export function subnetGroupNotice(
+  groups: DBSubnetGroup[],
+): PickerNotice | undefined {
+  if (groups.length > 0) {
+    return undefined
+  }
+
+  return {
+    tone: "muted",
+    text: "No DB subnet groups yet, so the database goes in the default VPC. To place it in another VPC, create a DB subnet group from that VPC's subnets under RDS, DB subnet groups.",
+  }
 }
 
 export function parameterGroupOptions(

@@ -341,6 +341,20 @@ describe("CreateDBInstancePage fields", () => {
     expect(screen.queryByLabelText(new RegExp(label, "i"))).toBeNull()
   })
 
+  it("says how to use another VPC when no DB subnet group exists", () => {
+    const qc = seed([image("postgres"), image("mariadb")])
+
+    qc.setQueryData(["rds", "subnetGroups"], { DBSubnetGroups: [] })
+    renderWithClient(<CreateDBInstancePage onClose={vi.fn()} />, qc)
+
+    expect(
+      screen.getByText(
+        /No DB subnet groups yet, so the database goes in the default VPC/,
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByLabelText("DB subnet group")).toBeNull()
+  })
+
   it("leaves deletion protection as the only live setting switch", () => {
     renderForm()
 

@@ -195,7 +195,7 @@ func TestGetCallerIdentity_User(t *testing.T) {
 	out, err := GetCallerIdentity(
 		"000000000000",
 		"arn:aws:iam::000000000000:user/alice",
-		PrincipalTypeUser,
+		stsdomain.PrincipalTypeUser,
 		"alice",
 		"",
 		&sts.GetCallerIdentityInput{},
@@ -220,7 +220,7 @@ func TestGetCallerIdentity_RootViaUserPath(t *testing.T) {
 	out, err := GetCallerIdentity(
 		"000000000000",
 		"arn:aws:iam::000000000000:root",
-		PrincipalTypeUser,
+		stsdomain.PrincipalTypeUser,
 		"root",
 		"",
 		&sts.GetCallerIdentityInput{},
@@ -243,7 +243,7 @@ func TestGetCallerIdentity_AssumedRole(t *testing.T) {
 	out, err := GetCallerIdentity(
 		"000000000000",
 		"arn:aws:sts::000000000000:assumed-role/app/session-1",
-		PrincipalTypeAssumedRole,
+		stsdomain.PrincipalTypeAssumedRole,
 		"session-1",
 		"AROAEXAMPLE:session-1",
 		&sts.GetCallerIdentityInput{},
@@ -262,7 +262,7 @@ func TestGetCallerIdentity_AssumedRoleSessionVanished(t *testing.T) {
 	_, err := GetCallerIdentity(
 		"000000000000",
 		"arn:aws:sts::000000000000:assumed-role/app/session-1",
-		PrincipalTypeAssumedRole,
+		stsdomain.PrincipalTypeAssumedRole,
 		"session-1",
 		"",
 		&sts.GetCallerIdentityInput{},
@@ -281,7 +281,7 @@ func TestGetCallerIdentity_UserLookupError(t *testing.T) {
 	_, err := GetCallerIdentity(
 		"000000000000",
 		"arn:aws:iam::000000000000:user/alice",
-		PrincipalTypeUser,
+		stsdomain.PrincipalTypeUser,
 		"alice",
 		"",
 		&sts.GetCallerIdentityInput{},
@@ -326,13 +326,13 @@ func TestGetSessionToken_ForwardsCallerFields(t *testing.T) {
 	// The wrapper's job is to forward c.identity as the user name, plus
 	// c.principalType and c.accessKey, through to the service so the handler can
 	// enforce its user-only / no-session rule; assert that mapping holds.
-	out, err := GetSessionToken("000000000000", "alice", PrincipalTypeUser, "AKIAEXAMPLE", &sts.GetSessionTokenInput{}, svc)
+	out, err := GetSessionToken("000000000000", "alice", stsdomain.PrincipalTypeUser, "AKIAEXAMPLE", &sts.GetSessionTokenInput{}, svc)
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Equal(t, "ASIAEXAMPLE", aws.StringValue(out.Credentials.AccessKeyId))
 	assert.Equal(t, "000000000000", got.accountID)
 	assert.Equal(t, "alice", got.userName)
-	assert.Equal(t, PrincipalTypeUser, got.principalType)
+	assert.Equal(t, stsdomain.PrincipalTypeUser, got.principalType)
 	assert.Equal(t, "AKIAEXAMPLE", got.accessKeyID)
 }
 
@@ -342,7 +342,7 @@ func TestGetSessionToken_PropagatesServiceError(t *testing.T) {
 			return nil, errors.New(awserrors.ErrorAccessDenied)
 		},
 	}
-	_, err := GetSessionToken("000000000000", "s1", PrincipalTypeAssumedRole, "ASIAEXAMPLE", &sts.GetSessionTokenInput{}, svc)
+	_, err := GetSessionToken("000000000000", "s1", stsdomain.PrincipalTypeAssumedRole, "ASIAEXAMPLE", &sts.GetSessionTokenInput{}, svc)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }

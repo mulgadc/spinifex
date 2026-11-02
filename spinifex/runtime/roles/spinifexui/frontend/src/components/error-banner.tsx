@@ -1,4 +1,14 @@
-export function ErrorBanner({ msg, error }: { msg?: string; error?: Error }) {
+import { cn } from "@/lib/utils"
+
+export function ErrorBanner({
+  msg,
+  error,
+  className,
+}: {
+  msg?: string
+  error?: Error
+  className?: string
+}) {
   let errorText: string | undefined
 
   if (error) {
@@ -14,7 +24,12 @@ export function ErrorBanner({ msg, error }: { msg?: string; error?: Error }) {
   }
 
   return (
-    <div className="mb-6 max-w-4xl rounded-md border border-destructive bg-destructive/10 p-4">
+    <div
+      className={cn(
+        "mb-6 max-w-4xl rounded-md border border-destructive bg-destructive/10 p-4",
+        className,
+      )}
+    >
       {msg && <h2 className="text-sm text-destructive">{msg}</h2>}
       {errorText && <p className="text-sm text-destructive">{errorText}</p>}
     </div>

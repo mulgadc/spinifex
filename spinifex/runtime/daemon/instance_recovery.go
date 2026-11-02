@@ -474,7 +474,7 @@ func (r *instanceRecovery) attempt(ctx context.Context, candidate recoveryCandid
 	// recovered instance and a reachable one. It runs in line rather than waiting
 	// for the affinity ticker, and a guest whose address does not arrive is
 	// marked impaired by the pass rather than reported healthy.
-	r.daemon.ClaimOCIAddresses(ctx)
+	r.daemon.ClaimCloudAddresses(ctx)
 
 	slog.InfoContext(ctx, "Recovered an instance onto this node",
 		"instanceId", id, "from", candidate.from, "node", r.daemon.node)

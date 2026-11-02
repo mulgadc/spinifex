@@ -25,6 +25,8 @@ describe("queryFn", () => {
       Bucket: "my-bucket",
       Prefix: undefined,
       Delimiter: "/",
+      MaxKeys: 100,
+      ContinuationToken: undefined,
     })
   })
 
@@ -34,6 +36,24 @@ describe("queryFn", () => {
       Bucket: "my-bucket",
       Prefix: "docs/",
       Delimiter: "/",
+      MaxKeys: 100,
+      ContinuationToken: undefined,
     })
+  })
+
+  it("s3BucketObjectsQueryOptions continues from a page's token", async () => {
+    await callQueryFn(s3BucketObjectsQueryOptions("my-bucket", "docs/", "t2"))
+    expect(mockSend.mock.calls[0]?.[0].input).toMatchObject({
+      Prefix: "docs/",
+      ContinuationToken: "t2",
+    })
+  })
+
+  it("keys each page apart, so pages do not overwrite each other", () => {
+    expect(
+      s3BucketObjectsQueryOptions("my-bucket", "docs/", "t2").queryKey,
+    ).not.toStrictEqual(
+      s3BucketObjectsQueryOptions("my-bucket", "docs/").queryKey,
+    )
   })
 })

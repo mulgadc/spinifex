@@ -41,7 +41,7 @@ func (integrationWeightsStub) Resolve(_ context.Context, modelID string) (string
 func TestListFoundationModels(t *testing.T) {
 	// Not t.Parallel(): ListFoundationModels/GetFoundationModel read the
 	// weights resolver through a package-level setter (StartGateway builds a
-	// GatewayConfig directly, with no field for it), so this test owns that
+	// pipeline.Config directly, with no field for it), so this test owns that
 	// process-wide state for its duration.
 	ochre.SetWeightsResolver(integrationWeightsStub{})
 	t.Cleanup(func() { ochre.SetWeightsResolver(nil) })

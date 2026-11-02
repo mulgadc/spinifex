@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -753,19 +755,45 @@ func (r *ClusterReconciler) maybeRecoverControlPlane(ctx context.Context, meta *
 
 	r.lastRestartAt = now
 	r.restartAttempts++
+	counted := false
 	for _, id := range restartable {
 		slog.Warn("ClusterReconciler: restarting wedged control-plane member in place",
 			"cluster", r.clusterName, "instanceId", id,
 			"attempt", r.restartAttempts, "members", len(members), "issue", issue)
 		if err := r.cpControl.StartInstance(ctx, id); err != nil {
+			if retryableStartRefusal(err) {
+				// Clears without anyone fixing anything: another node's room or
+				// its hold on the volume. Spent attempts would stop the retries
+				// while the member is still waiting to reuse its etcd disk.
+				slog.Warn("ClusterReconciler: CP restart refused, will retry",
+					"cluster", r.clusterName, "instanceId", id, "err", err)
+				continue
+			}
+			counted = true
 			slog.Warn("ClusterReconciler: CP restart failed",
 				"cluster", r.clusterName, "instanceId", id,
 				"attempt", r.restartAttempts, "err", err)
 			continue
 		}
+		counted = true
 		slog.Info("ClusterReconciler: control-plane restart issued",
 			"cluster", r.clusterName, "instanceId", id, "attempt", r.restartAttempts)
 	}
+	if !counted {
+		// Every member was refused for a reason that clears by itself. The
+		// backoff still spaces the next pass.
+		r.restartAttempts--
+	}
+}
+
+// retryableStartRefusal reports a start refused for a reason that clears by
+// itself: no capacity on the owning node, or its volume still held elsewhere.
+func retryableStartRefusal(err error) bool {
+	if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorInsufficientInstanceCapacity {
+		return true
+	}
+	_, message, _ := awserrors.ResolveErrorDetail(err)
+	return strings.Contains(message, ec2v1.VolumeHeldElsewhereText) || strings.Contains(err.Error(), ec2v1.VolumeHeldElsewhereText)
 }
 
 // maybeReformEtcdQuorum escalates a wedged HA control plane that the in-place

@@ -407,3 +407,15 @@ func TestPrepareRunInstances_PlatformTokenDefault(t *testing.T) {
 		})
 	}
 }
+
+// Ordinary RunInstances keeps AWS's default: IMDSv2 required and a hop limit of
+// 1, unless the request or a launch template says otherwise.
+func TestBuildMetadataOptions_DefaultsToHopLimitOne(t *testing.T) {
+	got := buildMetadataOptions(nil, "")
+	assert.Equal(t, int64(1), aws.Int64Value(got.HttpPutResponseHopLimit))
+	assert.Equal(t, ec2.HttpTokensStateRequired, aws.StringValue(got.HttpTokens))
+
+	got = buildMetadataOptions(aws.Int64(3), ec2.HttpTokensStateOptional)
+	assert.Equal(t, int64(3), aws.Int64Value(got.HttpPutResponseHopLimit))
+	assert.Equal(t, ec2.HttpTokensStateOptional, aws.StringValue(got.HttpTokens))
+}

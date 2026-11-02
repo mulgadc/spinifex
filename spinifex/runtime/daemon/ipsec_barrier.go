@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -145,7 +146,7 @@ func decodeStatus(data []byte) (ipsecStatusRecord, bool) {
 // heartbeating reports whether the node has written a heartbeat recently enough
 // to still count as part of the cluster.
 func (b *KVIPSecBarrier) heartbeating(ctx context.Context, node string) (bool, error) {
-	entry, err := b.kv.Get(ctx, "heartbeat."+node)
+	entry, err := b.kv.Get(ctx, clusterv1.HeartbeatKey(node))
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return false, nil
 	}
@@ -162,13 +163,9 @@ func (b *KVIPSecBarrier) heartbeating(ctx context.Context, node string) (bool, e
 // decodeHeartbeatTime returns when the heartbeat was written. A beat that cannot
 // be parsed or dated vouches for nothing, which is an answer rather than a fault.
 func decodeHeartbeatTime(data []byte) (time.Time, bool) {
-	var h Heartbeat
+	var h clusterv1.HeartbeatTimestamp
 	if json.Unmarshal(data, &h) != nil {
 		return time.Time{}, false
 	}
-	written, err := time.Parse(time.RFC3339, h.Timestamp)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return written.UTC(), true
+	return h.Time()
 }

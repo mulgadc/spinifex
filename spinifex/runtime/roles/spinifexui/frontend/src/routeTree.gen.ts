@@ -13,6 +13,7 @@ import { Route as AuthRouteRouteImport } from './routes/_auth/route'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthIndexRouteImport } from './routes/_auth/index'
 import { Route as AuthBedrockRouteRouteImport } from './routes/_auth/bedrock/route'
+import { Route as AuthDesignRouteImport } from './routes/_auth/design'
 import { Route as AuthNodesRouteImport } from './routes/_auth/nodes'
 import { Route as AuthS3ServiceMetricsRouteImport } from './routes/_auth/s3/service-metrics'
 import { Route as AuthEc2elasticIpsAllocateAddressRouteImport } from './routes/_auth/ec2/(elastic-ips)/allocate-address'
@@ -140,6 +141,11 @@ const AuthIndexRoute = AuthIndexRouteImport.update({
 const AuthBedrockRouteRoute = AuthBedrockRouteRouteImport.update({
   id: '/bedrock',
   path: '/bedrock',
+  getParentRoute: () => AuthRouteRoute,
+} as any)
+const AuthDesignRoute = AuthDesignRouteImport.update({
+  id: '/design',
+  path: '/design',
   getParentRoute: () => AuthRouteRoute,
 } as any)
 const AuthNodesRoute = AuthNodesRouteImport.update({
@@ -791,6 +797,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AuthIndexRoute
   '/login': typeof LoginRoute
   '/bedrock': typeof AuthBedrockRouteRouteWithChildren
+  '/design': typeof AuthDesignRoute
   '/nodes': typeof AuthNodesRoute
   '/s3/service-metrics': typeof AuthS3ServiceMetricsRoute
   '/s3/ls/$bucket': typeof AuthS3LsBucketRouteRouteWithChildren
@@ -904,6 +911,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/bedrock': typeof AuthBedrockRouteRouteWithChildren
+  '/design': typeof AuthDesignRoute
   '/nodes': typeof AuthNodesRoute
   '/': typeof AuthIndexRoute
   '/s3/service-metrics': typeof AuthS3ServiceMetricsRoute
@@ -1019,6 +1027,7 @@ export interface FileRoutesById {
   '/_auth': typeof AuthRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/_auth/bedrock': typeof AuthBedrockRouteRouteWithChildren
+  '/_auth/design': typeof AuthDesignRoute
   '/_auth/nodes': typeof AuthNodesRoute
   '/_auth/': typeof AuthIndexRoute
   '/_auth/s3/service-metrics': typeof AuthS3ServiceMetricsRoute
@@ -1136,6 +1145,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/bedrock'
+    | '/design'
     | '/nodes'
     | '/s3/service-metrics'
     | '/s3/ls/$bucket'
@@ -1249,6 +1259,7 @@ export interface FileRouteTypes {
   to:
     | '/login'
     | '/bedrock'
+    | '/design'
     | '/nodes'
     | '/'
     | '/s3/service-metrics'
@@ -1363,6 +1374,7 @@ export interface FileRouteTypes {
     | '/_auth'
     | '/login'
     | '/_auth/bedrock'
+    | '/_auth/design'
     | '/_auth/nodes'
     | '/_auth/'
     | '/_auth/s3/service-metrics'
@@ -1508,6 +1520,13 @@ declare module '@tanstack/react-router' {
       path: '/bedrock'
       fullPath: '/bedrock'
       preLoaderRoute: typeof AuthBedrockRouteRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/design': {
+      id: '/_auth/design'
+      path: '/design'
+      fullPath: '/design'
+      preLoaderRoute: typeof AuthDesignRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/nodes': {
@@ -2330,6 +2349,7 @@ const AuthS3LsBucketRouteRouteWithChildren =
 
 interface AuthRouteRouteChildren {
   AuthBedrockRouteRoute: typeof AuthBedrockRouteRouteWithChildren
+  AuthDesignRoute: typeof AuthDesignRoute
   AuthNodesRoute: typeof AuthNodesRoute
   AuthIndexRoute: typeof AuthIndexRoute
   AuthS3ServiceMetricsRoute: typeof AuthS3ServiceMetricsRoute
@@ -2432,6 +2452,7 @@ interface AuthRouteRouteChildren {
 
 const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthBedrockRouteRoute: AuthBedrockRouteRouteWithChildren,
+  AuthDesignRoute: AuthDesignRoute,
   AuthNodesRoute: AuthNodesRoute,
   AuthIndexRoute: AuthIndexRoute,
   AuthS3ServiceMetricsRoute: AuthS3ServiceMetricsRoute,

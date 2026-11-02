@@ -97,6 +97,52 @@ func TestRLC3_VolumeDeleteRequiresDetach(t *testing.T) {
 		"ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-005 §2 mechanism: deleting an attached volume must return VolumeInUse (detach-before-delete, rule #3)")
 }
 
+// TestS2_VolumeDeleteRecordsTheObligationBeforeRemovingTheRecord enforces
+// ADR-0003:S2's delete contract: "Delete first creates a durable obligation and
+// prevents new dependants ... The active record is removed only when all
+// required cleanup is durably complete."
+//
+// A delete that removes the record as part of the request cannot satisfy this,
+// because the cleanup it depends on costs one round trip per object and so has
+// no bound a request can carry. On prod a 100 GiB volume's delete overran its
+// 30 s budget, the tenant was told it failed, and the teardown that had been
+// started was left with no record accountable for it.
+func TestS2_VolumeDeleteRecordsTheObligationBeforeRemovingTheRecord(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = setupTestVolumeKV(t)
+	seedVolume(t, svc, "vol-obligation000", "available", "")
+
+	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: aws.String("vol-obligation000")}, testVolAccountID)
+	require.NoError(t, err)
+
+	owed, err := svc.GetVolumeMetadata(testVolAccountID, "vol-obligation000")
+	require.NoErrorf(t, err, "ADR-0003:S2: the active record must survive the request so the obligation stays readable (service_impl.go DeleteVolume: record the state, do not remove the document)")
+	assert.Equalf(t, volumeStateDeleting, owed.State,
+		"ADR-0003:S2: delete must first create a durable obligation (service_impl.go DeleteVolume: write State=%q before returning)", volumeStateDeleting)
+
+	// The obligation is what callers see, so describe must report it rather than
+	// the available state the volume no longer has. The attach refusal reads the
+	// same field (runtime/daemon/daemon_handlers_volume.go: State != "available").
+	described, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
+		VolumeIds: []*string{aws.String("vol-obligation000")},
+	}, testVolAccountID)
+	require.NoError(t, err)
+	require.Len(t, described.Volumes, 1)
+	assert.Equalf(t, volumeStateDeleting, aws.StringValue(described.Volumes[0].State),
+		"ADR-0003:S2: a delete must prevent new dependants, and %q is the state every dependant path gates on", volumeStateDeleting)
+
+	// A second delete adds nothing rather than racing the first teardown.
+	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: aws.String("vol-obligation000")}, testVolAccountID)
+	require.NoErrorf(t, err, "ADR-0003:S2: the obligation is durable, so a repeated delete is answered from it (service_impl.go DeleteVolume: return early on State==%q)", volumeStateDeleting)
+
+	reclaimed, err := svc.NewVolumeReclaimReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, reclaimed)
+	_, err = svc.GetVolumeMetadata(testVolAccountID, "vol-obligation000")
+	require.Errorf(t, err, "ADR-0003:S2: the active record is removed once cleanup is durably complete (volume_reclaim_reaper.go Sweep: delete the document last)")
+}
+
 // TestVolumeTagMirror_WritesOnlyControlPlaneDocument locks the single-writer
 // invariant: tag mutations must never rewrite config.json or route an encrypted
 // volume through the ebs.config keyholder queue.

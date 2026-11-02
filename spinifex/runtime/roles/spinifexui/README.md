@@ -55,3 +55,8 @@ For development use:
    cd frontend
    pnpm dev
    ```
+
+## UI conventions
+
+Every page is built from the design system in `docs/ui/design-system.md`: tokens, primitives, the list-and-panel layout, and the create-flow rules.
+Under `vite dev`, the `/design` route renders all of it in both themes, and a unit test fails when a shared component is missing from it.

@@ -1,18 +1,15 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { useNavigate } from "@tanstack/react-router"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
-import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   cliPlaceholder,
   commandFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
-import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
+import { FormLock } from "@/components/form-lock"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import {
   Field,
@@ -35,8 +32,14 @@ import {
   createDBParameterGroupSchema,
 } from "@/types/rds"
 
-export function CreateDBParameterGroupPage() {
-  const navigate = useNavigate()
+interface CreateDBParameterGroupPageProps {
+  // Called with the new parameter group's identifier once created, or with nothing on cancel.
+  onClose: (id?: string) => void
+}
+
+export function CreateDBParameterGroupPage({
+  onClose,
+}: CreateDBParameterGroupPageProps) {
   const createGroup = useCreateDBParameterGroup()
 
   const { data: engineVersionsData } = useSuspenseQuery(
@@ -74,28 +77,22 @@ export function CreateDBParameterGroupPage() {
   const values = useWatch({ control })
 
   const onSubmit = async (data: CreateDBParameterGroupFormData) => {
-    await createGroup.mutateAsync(data)
-    await navigate({
-      to: "/rds/describe-db-parameter-groups/$name",
-      params: { name: data.dbParameterGroupName },
-    })
+    try {
+      await createGroup.mutateAsync(data)
+    } catch {
+      // Surfaced beside the submit button through the mutation's error.
+      return
+    }
+
+    onClose(data.dbParameterGroupName)
   }
 
   return (
-    <>
-      <BackLink to="/rds/describe-db-parameter-groups">
-        Back to parameter groups
-      </BackLink>
-      <PageHeading title="Create DB Parameter Group" />
-
-      {createGroup.error && (
-        <ErrorBanner
-          error={createGroup.error}
-          msg="Failed to create the DB parameter group"
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <FormLock
+        className="space-y-6"
+        locked={createGroup.isPending || isSubmitting}
+      >
         <Field>
           <FieldTitle>
             <label htmlFor="parameter-group-name">Name</label>
@@ -178,16 +175,18 @@ export function CreateDBParameterGroupPage() {
         />
 
         <FormActions
+          error={createGroup.error}
+          errorMsg="Failed to create the DB parameter group"
           isPending={createGroup.isPending}
           isSubmitting={isSubmitting}
-          onCancel={async () => {
-            await navigate({ to: "/rds/describe-db-parameter-groups" })
+          onCancel={() => {
+            onClose()
           }}
           pendingLabel="Creating…"
           submitLabel="Create Parameter Group"
         />
-      </form>
-    </>
+      </FormLock>
+    </form>
   )
 }
 

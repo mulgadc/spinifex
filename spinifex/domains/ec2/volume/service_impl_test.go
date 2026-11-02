@@ -326,6 +326,12 @@ func TestCreateVolume_UsesInjectedProvider(t *testing.T) {
 	require.NoError(t, svc.UpdateVolumeState(testVolAccountID, aws.StringValue(vol.VolumeId), "available", "", ""))
 	_, err = svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: vol.VolumeId}, testVolAccountID)
 	require.NoError(t, err)
+	deleting, err := svc.metadata.GetVolume(context.Background(), testVolAccountID, aws.StringValue(vol.VolumeId))
+	require.NoError(t, err, "the record carries the obligation until the teardown is complete")
+	assert.Equal(t, "deleting", deleting.State)
+	reclaimed, err := svc.NewVolumeReclaimReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, reclaimed)
 	_, err = svc.metadata.GetVolume(context.Background(), testVolAccountID, aws.StringValue(vol.VolumeId))
 	assert.Error(t, err)
 }
@@ -1764,8 +1770,16 @@ func TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes(t *testing.T) {
 	err := svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID)
 	require.NoError(t, err, "terminate implies detach: a stale attachment must not block the terminate delete")
 
+	deleting, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
+	require.NoError(t, err)
+	assert.Equal(t, "deleting", deleting.State, "the volume must be recorded as deleting, not merely detached")
+	assert.Empty(t, deleting.AttachedInstance)
+
+	reclaimed, err := svc.NewVolumeReclaimReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, reclaimed)
 	_, err = svc.GetVolumeMetadata(testVolAccountID, volumeID)
-	require.Error(t, err, "the volume must actually be deleted, not merely detached")
+	require.Error(t, err, "the volume must actually be deleted once the teardown completes")
 	assert.Contains(t, err.Error(), awserrors.ErrorInvalidVolumeNotFound)
 }
 
@@ -1809,11 +1823,12 @@ func (p *failingDeleteProvider) DeleteVolume(context.Context, ebsprovider.Delete
 	return p.err
 }
 
-// TestDeleteVolume_ProviderFailureCarriesItsCause pins that a provider delete
-// failure keeps its cause on the way out. The terminate reaper retries this
-// every two minutes and logs whatever it is handed, so a bare ServerInternal
-// makes a persistent fault indistinguishable from a transient one.
-func TestDeleteVolume_ProviderFailureCarriesItsCause(t *testing.T) {
+// TestDeleteVolume_ProviderFailureDoesNotFailTheRequest pins the behaviour a
+// 100 GiB volume on prod needed: an unreachable blob node must not turn an
+// accepted delete into an error the tenant retries. The obligation is already
+// recorded, so the request succeeds and the teardown is the reclaimer's to
+// retry until it lands.
+func TestDeleteVolume_ProviderFailureDoesNotFailTheRequest(t *testing.T) {
 	kv := setupTestVolumeKV(t)
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
@@ -1829,12 +1844,74 @@ func TestDeleteVolume_ProviderFailureCarriesItsCause(t *testing.T) {
 	})
 
 	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, testVolAccountID)
-	require.Error(t, err)
+	require.NoError(t, err, "a provider that cannot be reached must not fail a delete the control plane has accepted")
 
-	assert.Equal(t, awserrors.ErrorServerInternal, awserrors.ValidErrorCodeFromError(err),
-		"the code stays ServerInternal so callers classify it unchanged")
-	assert.Contains(t, err.Error(), "dial node 6",
-		"an operator reading the reaper log must learn why the delete keeps failing")
+	meta, err := svc.metadata.GetVolume(context.Background(), testVolAccountID, volumeID)
+	require.NoError(t, err)
+	assert.Equal(t, "deleting", meta.State)
+
+	reclaimed, err := svc.NewVolumeReclaimReaper().Sweep(context.Background())
+	require.NoError(t, err, "a failed teardown is retried, not reported as a sweep failure")
+	assert.Equal(t, 0, reclaimed)
+	meta, err = svc.metadata.GetVolume(context.Background(), testVolAccountID, volumeID)
+	require.NoError(t, err, "the record survives so the obligation is still readable")
+	assert.Equal(t, "deleting", meta.State)
+
+	// The provider comes back, and the same record is what drives the retry.
+	svc.SetEBSProvider(&failingDeleteProvider{EBSProvider: svc.provider, err: nil})
+	reclaimed, err = svc.NewVolumeReclaimReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, reclaimed)
+	_, err = svc.metadata.GetVolume(context.Background(), testVolAccountID, volumeID)
+	assert.Error(t, err)
+}
+
+// TestDeleteVolume_SecondDeleteIsAcceptedWithoutASecondTeardown pins the dedupe
+// the deleting state buys. A tenant retry and DeleteOnTermination's own delete
+// both arrive for the same volume, and on prod three destructive handlers ran
+// one volume's teardown concurrently because nothing collapsed them.
+func TestDeleteVolume_SecondDeleteIsAcceptedWithoutASecondTeardown(t *testing.T) {
+	kv := setupTestVolumeKV(t)
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = kv
+
+	volumeID := "vol-deleted-twice"
+	createVolumeInStoreWithMeta(t, svc, store, volumeID, ebsmetadata.Volume{
+		VolumeID: volumeID, CapacityGiB: 10, State: "available",
+	})
+	counting := &countingDeleteProvider{EBSProvider: svc.provider}
+	svc.SetEBSProvider(counting)
+
+	for range 3 {
+		_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, testVolAccountID)
+		require.NoError(t, err, "AWS answers a repeated delete with the same empty success")
+	}
+	assert.Equal(t, 0, counting.calls, "no teardown runs in the request path at all")
+
+	// DeleteOnTermination arriving for a volume already owed must not reset it
+	// to available, which would let a second teardown through.
+	require.NoError(t, svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID))
+	meta, err := svc.metadata.GetVolume(context.Background(), testVolAccountID, volumeID)
+	require.NoError(t, err)
+	assert.Equal(t, "deleting", meta.State)
+
+	reclaimed, err := svc.NewVolumeReclaimReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, reclaimed)
+	assert.Equal(t, 1, counting.calls, "one recorded obligation is one teardown")
+}
+
+// countingDeleteProvider counts the deletes that reach the provider boundary.
+type countingDeleteProvider struct {
+	ebsprovider.EBSProvider
+
+	calls int
+}
+
+func (p *countingDeleteProvider) DeleteVolume(context.Context, ebsprovider.DeleteVolumeRequest) error {
+	p.calls++
+	return nil
 }
 
 // TestDeleteVolumeOnTerminate_SurfacesDeleteFailure verifies a DeleteVolume

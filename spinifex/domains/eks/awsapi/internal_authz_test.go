@@ -97,6 +97,8 @@ func TestAuthorizeInternal_RejectsNonCPPrincipals(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assertDenied(t, eksawsapi.AuthorizeInternal(t.Context(), nil, "ListInternalAddons",
 				tc.caller, []string{"alpha", tenantAccount}, nil))
+			assertDenied(t, eksawsapi.AuthorizeInternal(t.Context(), nil, "ListInternalWorkers",
+				tc.caller, []string{"alpha", tenantAccount}, nil))
 			assertDenied(t, eksawsapi.AuthorizeInternal(t.Context(), nil, "GetRecoveryDirective",
 				tc.caller, []string{"alpha", tenantAccount, cpInstanceID}, nil))
 			assertDenied(t, eksawsapi.AuthorizeInternal(t.Context(), nil, "PublishInternal",
@@ -123,6 +125,8 @@ func TestAuthorizeInternal_AllowsClusterMember(t *testing.T) {
 	})
 
 	require.NoError(t, eksawsapi.AuthorizeInternal(t.Context(), nc, "ListInternalAddons",
+		cpAgent(cpInstanceID), []string{"alpha", tenantAccount}, nil))
+	require.NoError(t, eksawsapi.AuthorizeInternal(t.Context(), nc, "ListInternalWorkers",
 		cpAgent(cpInstanceID), []string{"alpha", tenantAccount}, nil))
 	require.NoError(t, eksawsapi.AuthorizeInternal(t.Context(), nc, "GetRecoveryDirective",
 		cpAgent(cpInstanceID), []string{"alpha", tenantAccount, cpInstanceID}, nil))

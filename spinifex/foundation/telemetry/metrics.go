@@ -66,6 +66,23 @@ var (
 	fenceCounter    metric.Int64Counter
 	takeoverOnce    sync.Once
 	takeoverCounter metric.Int64Counter
+
+	liveStreamOnce    sync.Once
+	liveStreamCounter metric.Int64Counter
+	liveStreamOpen    metric.Int64UpDownCounter
+)
+
+// liveStreamOutcomeAttrKey names what happened to a live metrics stream
+// request. The LiveStream values below are the whole domain.
+const liveStreamOutcomeAttrKey = "outcome"
+
+// LiveStreamOutcome is what the gateway did with a live metrics stream request.
+type LiveStreamOutcome string
+
+const (
+	LiveStreamOpened         LiveStreamOutcome = "opened"
+	LiveStreamRefusedAccount LiveStreamOutcome = "refused_account"
+	LiveStreamRefusedTotal   LiveStreamOutcome = "refused_total"
 )
 
 // requestInstruments lazily creates the shared request instruments. The
@@ -168,5 +185,43 @@ func RecordVolumeTakeover(ctx context.Context) {
 	})
 	if takeoverCounter != nil {
 		takeoverCounter.Add(ctx, 1)
+	}
+}
+
+func liveStreamInstruments() {
+	liveStreamOnce.Do(func() {
+		m := otel.Meter(meterName)
+		var err error
+		liveStreamCounter, err = m.Int64Counter("mulga.live_metrics.streams",
+			metric.WithDescription("Count of live instance metrics stream requests, by whether the gateway opened or refused them."),
+			metric.WithUnit("{stream}"))
+		if err != nil {
+			otel.Handle(err)
+		}
+		liveStreamOpen, err = m.Int64UpDownCounter("mulga.live_metrics.open",
+			metric.WithDescription("Live instance metrics streams open on this gateway."),
+			metric.WithUnit("{stream}"))
+		if err != nil {
+			otel.Handle(err)
+		}
+	})
+}
+
+// RecordLiveStream counts one live metrics stream request by outcome. A
+// sustained refused rate means the caps are too low or a client is looping.
+func RecordLiveStream(ctx context.Context, outcome LiveStreamOutcome) {
+	liveStreamInstruments()
+	if liveStreamCounter != nil {
+		liveStreamCounter.Add(ctx, 1, metric.WithAttributeSet(
+			attribute.NewSet(attribute.String(liveStreamOutcomeAttrKey, string(outcome)))))
+	}
+}
+
+// RecordLiveStreamOpen moves the open-stream gauge by delta, +1 on open and
+// -1 on close.
+func RecordLiveStreamOpen(ctx context.Context, delta int64) {
+	liveStreamInstruments()
+	if liveStreamOpen != nil {
+		liveStreamOpen.Add(ctx, delta)
 	}
 }

@@ -13,12 +13,16 @@ import (
 	"slices"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
+	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ServiceName is the SigV4 credential-scope service the operator tooling signs for.
@@ -45,6 +49,20 @@ type Deps struct {
 	ModelAccess ModelAccess
 	Credentials ochre.CredentialResolver
 	Access      ochre.AccessResolver
+
+	// The /admin methods run against these. A nil IAM or Quota answers the
+	// methods that need it with InternalError.
+	IAM               iamdomain.IAMService
+	Quota             *quota.Service
+	ExpectedNodes     int
+	NodeIDs           []string
+	GatewayNodeIDs    []string
+	BucketStore       accountteardown.BucketStore
+	SignupMaxAccounts int
+	// Region and the SQS observations serve the SQS enable and status actions.
+	Region                 string
+	SQSWorkerPolling       func() bool
+	SQSTenantAPIRegistered func() bool
 }
 
 // adminActions are the actions only the super-admin account may call.
@@ -58,11 +76,21 @@ var adminActions = map[string]bool{
 	"RevokeModelAccess": true,
 	"ListModelAccess":   true,
 	"ListOchreCatalog":  true,
+	"EnsureSQSWorker":   true,
+	"EnableSQS":         true,
+	"DescribeSQS":       true,
+}
+
+// AdminActionNames lists the actions only the super-admin account may call, sorted.
+func AdminActionNames() []string {
+	return slices.Sorted(maps.Keys(adminActions))
 }
 
 // ActionNames lists every action the registration dispatches, sorted.
 func ActionNames() []string {
-	return slices.Sorted(maps.Keys(adminActions))
+	names := append(AdminActionNames(), GetInstanceMetricsAction, GetInstanceTypeCapacityAction)
+	slices.Sort(names)
+	return names
 }
 
 // NewRegistration returns the spinifex Query control-plane registration.
@@ -72,6 +100,7 @@ func NewRegistration(deps Deps) dispatch.Registration {
 		ResolveAction: resolveAction,
 		Dispatch:      deps.dispatch,
 		Errors:        dispatch.ErrorEnvelopeXML,
+		Traits:        dispatch.ServiceTraits{XMLErrorShape: dispatch.XMLErrorShapeEC2},
 		Inventory:     dispatch.Inventory{Registered: ActionNames()},
 	}
 }
@@ -79,6 +108,9 @@ func NewRegistration(deps Deps) dispatch.Registration {
 // resolveAction is the one Query Action parser telemetry and dispatch share.
 // It leaves the body readable for the dispatcher and answers "" on any failure.
 func resolveAction(r *http.Request) string {
+	if method, ok := PathMethod(r.URL.Path); ok {
+		return method
+	}
 	args, err := readQueryArgs(r)
 	if err != nil {
 		return ""
@@ -104,6 +136,9 @@ func readQueryArgs(r *http.Request) (map[string]string, error) {
 // before the super-admin account gate, and both before an unknown action is
 // refused, so a denied caller learns nothing about which actions exist.
 func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
+	if isAdminPath(inv.Request.URL.Path) {
+		return d.dispatchREST(w, inv)
+	}
 	r := inv.Request
 	args, err := readQueryArgs(r)
 	if err != nil {
@@ -114,6 +149,12 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	action := args["Action"]
 	if action == "" {
 		return errors.New(awserrors.ErrorMissingAction)
+	}
+
+	// Checked against the instance's ARN rather than "*", so a policy can grant
+	// or deny it per instance.
+	if action == GetInstanceMetricsAction {
+		return d.getInstanceMetrics(w, inv, args)
 	}
 
 	if err := inv.Authorize(ServiceName, action, []string{"*"}, nil); err != nil {
@@ -160,6 +201,11 @@ func (d Deps) run(ctx context.Context, action string, args map[string]string, ac
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		return GetNodes(ctx, d.NATS, d.activeNodes(ctx))
+	case GetInstanceTypeCapacityAction:
+		if d.NATS == nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		return GetInstanceTypeCapacity(ctx, d.NATS, d.activeNodes(ctx), accountID)
 	case "GetVMs":
 		if d.NATS == nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
@@ -212,6 +258,35 @@ func (d Deps) run(ctx context.Context, action string, args map[string]string, ac
 			return nil, err
 		}
 		return ochre.ModelAccessList{AccountID: targetAccount, ModelIDs: models}, nil
+	case "EnsureSQSWorker":
+		if d.NATS == nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		size, err := sqsVolumeSize(args["VolumeSizeGiB"])
+		if err != nil {
+			return nil, err
+		}
+		return EnsureSQSWorker(ctx, d.NATS, d.NodeIDs, args["NodeId"], args["InstanceType"], size, accountID, sqsWorkerEnsureWait)
+	case "EnableSQS", "DescribeSQS":
+		if d.NATS == nil || d.Region == "" {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		js, err := jetstream.New(d.NATS)
+		if err != nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		obs := SQSObservers{WorkerPolling: d.SQSWorkerPolling, TenantAPIRegistered: d.SQSTenantAPIRegistered}
+		if action == "DescribeSQS" {
+			return DescribeSQS(ctx, js, d.Region, obs)
+		}
+		size, err := sqsVolumeSize(args["VolumeSizeGiB"])
+		if err != nil {
+			return nil, err
+		}
+		return EnableSQS(ctx, d.NATS, js, d.NodeIDs, d.ExpectedNodes, SQSEnableInput{
+			Region: d.Region, NodeID: args["NodeId"], InstanceType: args["InstanceType"],
+			VolumeSizeGiB: size, AccountID: accountID,
+		}, obs, sqsWorkerEnsureWait)
 	case "ListOchreCatalog":
 		entries, err := ochre.AdminCatalog(ctx, accountID, d.credentials(), d.access())
 		if err != nil {

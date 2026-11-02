@@ -377,15 +377,17 @@ func TestRegisterTaskDefinition_EchoesEmptyCollections(t *testing.T) {
 	assert.False(t, aws.BoolValue(c.LinuxParameters.InitProcessEnabled))
 }
 
-// A container that supplied none of these fields must still read back with
-// them absent, so an existing revision registered before this change does not
-// gain fields and churn.
-func TestRegisterTaskDefinition_OmitsUnsuppliedCollections(t *testing.T) {
+// A container that supplied none of these fields reads back with AWS's
+// defaults: cpu 0, empty mountPoints/volumesFrom/systemControls, and on each
+// port mapping protocol tcp and, under awsvpc, hostPort equal to containerPort.
+func TestRegisterTaskDefinition_FillsAWSDefaults(t *testing.T) {
 	svc, _ := newTestService(t)
 	_, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
-		Family: aws.String("app"),
+		Family:      aws.String("app"),
+		NetworkMode: aws.String("awsvpc"),
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
 			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			PortMappings: []*ecs.PortMapping{{ContainerPort: aws.Int64(80)}},
 		}},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -394,13 +396,38 @@ func TestRegisterTaskDefinition_OmitsUnsuppliedCollections(t *testing.T) {
 		TaskDefinition: aws.String("app"),
 	}, testAccountID)
 	require.NoError(t, err)
+	assert.Equal(t, []*ecs.Volume{}, d.TaskDefinition.Volumes)
+	assert.Equal(t, []*ecs.TaskDefinitionPlacementConstraint{}, d.TaskDefinition.PlacementConstraints)
 	c := d.TaskDefinition.ContainerDefinitions[0]
 
 	assert.Nil(t, c.Environment)
-	assert.Nil(t, c.MountPoints)
-	assert.Nil(t, c.VolumesFrom)
-	assert.Nil(t, c.SystemControls)
+	require.NotNil(t, c.Cpu)
+	assert.Equal(t, int64(0), aws.Int64Value(c.Cpu))
+	assert.Equal(t, []*ecs.MountPoint{}, c.MountPoints)
+	assert.Equal(t, []*ecs.VolumeFrom{}, c.VolumesFrom)
+	assert.Equal(t, []*ecs.SystemControl{}, c.SystemControls)
 	assert.Nil(t, c.LinuxParameters)
+	require.Len(t, c.PortMappings, 1)
+	assert.Equal(t, "tcp", aws.StringValue(c.PortMappings[0].Protocol))
+	assert.Equal(t, int64(80), aws.Int64Value(c.PortMappings[0].HostPort))
+}
+
+// Outside awsvpc an omitted hostPort stays omitted, and a sent protocol is
+// echoed rather than defaulted.
+func TestRegisterTaskDefinition_BridgeLeavesHostPortUnset(t *testing.T) {
+	svc, _ := newTestService(t)
+	out, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family:      aws.String("app"),
+		NetworkMode: aws.String("bridge"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"), Essential: aws.Bool(true),
+			PortMappings: []*ecs.PortMapping{{ContainerPort: aws.Int64(53), Protocol: aws.String("udp")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	pm := out.TaskDefinition.ContainerDefinitions[0].PortMappings[0]
+	assert.Nil(t, pm.HostPort)
+	assert.Equal(t, "udp", aws.StringValue(pm.Protocol))
 }
 
 func TestRegisterTaskDefinition_AcceptsEmptyRuntimeFields(t *testing.T) {

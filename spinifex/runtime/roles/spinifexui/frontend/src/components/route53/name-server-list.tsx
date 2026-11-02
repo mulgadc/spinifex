@@ -8,7 +8,7 @@ function NameServerRow({ nameServer }: { nameServer: string }) {
 
   return (
     <li className="flex items-center justify-between gap-2 px-3 py-2">
-      <span className="font-mono text-sm">{nameServer}</span>
+      <span className="min-w-0 truncate font-mono text-sm">{nameServer}</span>
       <Button
         aria-label={`Copy ${nameServer}`}
         onClick={() => {
@@ -38,7 +38,7 @@ export function NameServerList({
   }
 
   return (
-    <ul className="max-w-md divide-y rounded-md border bg-card">
+    <ul className="divide-y rounded-md border bg-card">
       {nameServers.map((nameServer) => (
         <NameServerRow key={nameServer} nameServer={nameServer} />
       ))}

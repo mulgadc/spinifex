@@ -18,7 +18,7 @@ import (
 
 func TestConformanceMiddlewareDetectsStubbedNATSMalformedResponse(t *testing.T) {
 	collector := newConformanceCollector()
-	gw := startGateway(t, collector)
+	gw := startGateway(t, collector, nil)
 	stubEmptyInstanceBuckets(t, gw)
 	gw.StubSubject(t, "ec2.DescribeInstances", mustMarshal(t, &ec2.DescribeInstancesOutput{
 		Reservations: []*ec2.Reservation{{
@@ -78,7 +78,7 @@ func TestConformanceRatchetDoesNotBlockUnpromotedService(t *testing.T) {
 
 func TestConformanceMiddlewareAcceptsStubbedNATSConformingResponse(t *testing.T) {
 	collector := newConformanceCollector()
-	gw := startGateway(t, collector)
+	gw := startGateway(t, collector, nil)
 	stubEmptyInstanceBuckets(t, gw)
 	gw.StubSubject(t, "ec2.DescribeInstances", mustMarshal(t, &ec2.DescribeInstancesOutput{
 		Reservations: []*ec2.Reservation{{

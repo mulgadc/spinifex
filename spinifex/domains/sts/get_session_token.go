@@ -87,6 +87,9 @@ func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, caller
 
 	cred, plainSecret, plainToken, err := s.mintSession(ctx, userEnvelope(callerAccountID, callerUserName, userID), duration)
 	if err != nil {
+		if errors.Is(err, errAccountNotActive) {
+			return nil, errors.New(awserrors.ErrorAccessDenied)
+		}
 		return nil, err
 	}
 

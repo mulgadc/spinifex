@@ -11,8 +11,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
-	"syscall"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/agent"
@@ -61,17 +59,13 @@ func start(parent context.Context) int {
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
 
-	cmd := exec.CommandContext(ctx, taskRoot+"/bootstrap")
-	cmd.Env = []string{
+	cmd, err := agent.StartBootstrap(ctx, taskRoot+"/bootstrap", []string{
 		"AWS_LAMBDA_RUNTIME_API=" + runtimeAddr,
 		"_HANDLER=" + *handler,
 		"LAMBDA_TASK_ROOT=" + taskRoot,
 		"PATH=/bin:/sbin:/usr/bin",
-	}
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = 5 * time.Second
-	if err := cmd.Start(); err != nil {
+	}, os.Stdout, os.Stderr)
+	if err != nil {
 		slog.Error("start bootstrap", "err", err)
 		return 1
 	}

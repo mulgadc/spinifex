@@ -234,18 +234,27 @@ func (s *IAMServiceImpl) RemoveUserFromGroup(accountID string, input *iam.Remove
 	groupName := *input.GroupName
 	userName := *input.UserName
 
-	// Operate purely on the membership reference so a dangling pointer to an
-	// already-deleted group is still cleanable; never fetch the group here.
+	// Remove the membership reference without fetching the group, so a dangling
+	// pointer to an already-deleted group is still cleanable.
+	removed := false
 	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
 		idx := slices.Index(u.Groups, groupName)
 		if idx < 0 {
-			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return false, nil
 		}
 		u.Groups = slices.Delete(u.Groups, idx, idx+1)
+		removed = true
 		return true, nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	// AWS answers success for a non-member when the group exists.
+	if !removed {
+		if _, err := s.getGroup(ctx, accountID, groupName); err != nil {
+			return nil, err
+		}
+		return &iam.RemoveUserFromGroupOutput{}, nil
 	}
 
 	slog.Info("IAM user removed from group", "accountID", accountID, "userName", userName, "groupName", groupName)

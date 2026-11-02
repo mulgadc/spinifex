@@ -106,9 +106,14 @@ func (a *IAMAccounts) GetAccount(accountID string) (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Account{
+	out := &Account{
 		AccountID: account.AccountID, AccountName: account.AccountName, Status: account.Status,
-	}, nil
+		Generation: account.Generation,
+	}
+	if op := account.TerminationOp; op != nil {
+		out.TerminationOp = &TerminationOp{OperationID: op.OperationID, Fence: op.Fence}
+	}
+	return out, nil
 }
 
 func (a *IAMAccounts) QuiesceAccount(accountID, operationID string, fence uint64) (uint64, error) {

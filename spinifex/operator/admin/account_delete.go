@@ -85,6 +85,9 @@ type accountDeletionJob struct {
 	Holder     string             `json:"holder,omitempty"`
 	LeaseUntil string             `json:"leaseUntil,omitempty"`
 	Takeovers  []deletionTakeover `json:"takeovers,omitempty"`
+	// IAM is the quiescence evaluation made under the current fence. A takeover
+	// starts without one and the new holder records its own.
+	IAM *operatorv1.IAMQuiescence `json:"iam,omitempty"`
 }
 
 // deletionTakeover records one change of holder.
@@ -258,6 +261,7 @@ func (d Deps) runAccountDeletion(
 	ctx, cancel := context.WithTimeout(context.Background(), accountDeletionTimeout)
 	tracker := &deletionTracker{jobs: jobs, job: job, revision: revision, cancel: cancel}
 	engine.OnStage = tracker.stageFinished
+	engine.OnQuiesced = tracker.quiesced
 
 	go func() {
 		defer cancel()
@@ -293,6 +297,13 @@ type deletionTracker struct {
 func (t *deletionTracker) stageFinished(ctx context.Context, stage accountteardown.StageResult) {
 	t.mu.Lock()
 	t.job.Stages = append(t.job.Stages, stage)
+	t.mu.Unlock()
+	t.persist(ctx)
+}
+
+func (t *deletionTracker) quiesced(ctx context.Context, quiescence operatorv1.IAMQuiescence) {
+	t.mu.Lock()
+	t.job.IAM = &quiescence
 	t.mu.Unlock()
 	t.persist(ctx)
 }

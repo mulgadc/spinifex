@@ -8,7 +8,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,11 +21,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 )
 
 // Pins CURRENT behaviour: wire outcomes for invalid long-lived credentials, and
@@ -411,29 +414,43 @@ func TestCurrentBehaviour_AntiEnumeration_RejectionShapes(t *testing.T) {
 }
 
 // Pins CURRENT behaviour: the door caches only an account's ACTIVE status, per
-// gateway, for accountadmission.ActiveTTL; keys and sessions are re-read on every request.
+// gateway, and only while its accounts watcher runs; keys and sessions are re-read on
+// every request. A watched cache drops an entry when the record changes, so an
+// out-of-band status write is seen well before accountadmission.ActiveTTL.
 func TestCurrentBehaviour_Cache_AccountStatusIsTheOnlyAuthCache(t *testing.T) {
 	require.Equal(t, 5*time.Second, accountadmission.ActiveTTL)
+
+	denied := cbOutcome{status: http.StatusForbidden, code: awserrors.ErrorAccessDenied,
+		message: awserrors.ErrorLookup[awserrors.ErrorAccessDenied].Message}
 
 	for _, status := range []string{iamdomain.AccountStatusSuspended, iamdomain.AccountStatusTerminating} {
 		t.Run(status, func(t *testing.T) {
 			e := newCBEnv(t, cbEnvOpts{})
-			require.Equal(t, http.StatusOK, e.callerIdentity(t, e.alice).Code)
-			start := time.Now()
-			_, err := e.iam.SetAccountStatus(e.accountID, status)
+			accounts, err := e.js.KeyValue(t.Context(), iamdomain.KVBucketAccounts)
+			require.NoError(t, err)
+			admission := accountadmission.New(e.counter)
+			_, err = admission.Watch(t.Context(), accounts)
 			require.NoError(t, err)
 
-			// CURRENT: an out-of-band status write is not seen by a gateway
-			// holding a warm ACTIVE entry until that entry expires.
-			warm := e.callerIdentity(t, e.alice)
-			if time.Since(start) >= accountadmission.ActiveTTL {
-				t.Skip("cache window elapsed before the warm request; outcome not attributable")
-			}
-			assert.Equal(t, http.StatusOK, warm.Code)
+			gw := gwfix.WithDeps(&pipeline.Config{
+				DisableLogging: true,
+				Region:         gwfix.Region,
+				Credentials:    credverify.New(e.counter, e.sts),
+				Admission:      admission,
+			}, gwfix.Deps{NATS: e.nc, Nodes: 1, IAM: e.counter, STS: e.sts})
+			withCapabilities(gw)
+			withIAMAndSTS(gw)
+			h := gw.SetupRoutes()
 
-			denied := cbOutcome{status: http.StatusForbidden, code: awserrors.ErrorAccessDenied,
-				message: awserrors.ErrorLookup[awserrors.ErrorAccessDenied].Message}
-			assert.Equal(t, denied, cbOutcomeOf(e.request(t, e.gateway(), e.alice, "sts", cbForm("GetCallerIdentity"))))
+			require.Equal(t, http.StatusOK, e.request(t, h, e.alice, "sts", cbForm("GetCallerIdentity")).Code)
+			start := time.Now()
+			_, err = e.iam.SetAccountStatus(e.accountID, status)
+			require.NoError(t, err)
+
+			require.Eventually(t, func() bool {
+				return cbOutcomeOf(e.request(t, h, e.alice, "sts", cbForm("GetCallerIdentity"))) == denied
+			}, accountadmission.ActiveTTL-time.Second, 10*time.Millisecond)
+			assert.Less(t, time.Since(start), accountadmission.ActiveTTL, "the watcher, not the TTL, must have ended the warm entry")
 		})
 	}
 }

@@ -1226,27 +1226,27 @@ func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, e
 			status, AccountStatusActive, AccountStatusSuspended, AccountStatusTerminating)
 	}
 
-	account, err := s.GetAccount(accountID)
+	account, err := kvutil.Update(context.Background(), s.accountsBucket, accountID,
+		kvutil.CASConfig{NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity)},
+		func(a *Account) (bool, error) {
+			if a.Status == AccountStatusTerminating && status != AccountStatusTerminating {
+				return false, fmt.Errorf("account %s is terminating: %w", accountID, ErrAccountUndeletable)
+			}
+			if a.Status == status {
+				return false, nil
+			}
+			a.Status = status
+			a.Generation++
+			return true, nil
+		})
 	if err != nil {
+		if errors.Is(err, kvutil.ErrWrite) || errors.Is(err, kvutil.ErrRead) || errors.Is(err, kvutil.ErrDecode) {
+			return nil, fmt.Errorf("store account status: %w", err)
+		}
 		return nil, err
 	}
-	if account.Status == AccountStatusTerminating && status != AccountStatusTerminating {
-		return nil, fmt.Errorf("account %s is terminating: %w", accountID, ErrAccountUndeletable)
-	}
-	if account.Status == status {
-		return account, nil
-	}
 
-	account.Status = status
-	data, err := json.Marshal(account)
-	if err != nil {
-		return nil, fmt.Errorf("marshal account: %w", err)
-	}
-	if _, err := s.accountsBucket.Put(context.Background(), accountID, data); err != nil {
-		return nil, fmt.Errorf("store account status: %w", err)
-	}
-
-	slog.Info("Account status changed", "accountID", accountID, "status", status)
+	slog.Info("Account status changed", "accountID", accountID, "status", status, "generation", account.Generation)
 	return account, nil
 }
 

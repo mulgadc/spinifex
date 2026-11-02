@@ -184,4 +184,7 @@ type Account struct {
 	AccountName string `json:"account_name"` // Friendly name
 	Status      string `json:"status"`       // ACTIVE, SUSPENDED or TERMINATING
 	CreatedAt   string `json:"created_at"`   // RFC3339
+
+	// Generation counts status changes. Records written before it existed read as 0.
+	Generation uint64 `json:"generation,omitempty"`
 }

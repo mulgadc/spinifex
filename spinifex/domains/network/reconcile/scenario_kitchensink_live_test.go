@@ -60,7 +60,7 @@ func kitchenSinkIntent(t *testing.T) IntentState {
 			"vpc-a": {VPCID: "vpc-a", InternetGatewayID: "igw-a"},
 		},
 		EIPs: map[string]policy.EIPSpec{
-			"10.0.1.10": {VPCID: "vpc-a", ExternalIP: "192.168.0.50", LogicalIP: "10.0.1.10",
+			eipIntentKey("vpc-a", "10.0.1.10"): {VPCID: "vpc-a", ExternalIP: "192.168.0.50", LogicalIP: "10.0.1.10",
 				PortName: topology.Port("eni-pub"), MAC: "02:00:00:00:00:01"},
 		},
 		NATGWs: map[string]policy.NATGWSpec{

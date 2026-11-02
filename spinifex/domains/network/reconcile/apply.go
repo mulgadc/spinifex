@@ -872,7 +872,8 @@ func (r *reconciler) forgetIdlePorts(specs []policy.EIPSpec) {
 // never re-asserted, so a vpcd/OVN rebuild dropped it and its guest-port hop never
 // converged (inbound DNATs at the gateway but never reaches the guest; ICMP is
 // answered by the gateway LR, so ping works while TCP hangs). A user EIP on the same
-// private IP wins; the auto-assigned entry is skipped to avoid a duplicate rule.
+// private IP in the same VPC wins; the auto-assigned entry is skipped to avoid a
+// duplicate rule.
 func (r *reconciler) floatingIPSpecs(intent IntentState) []policy.EIPSpec {
 	specs := make([]policy.EIPSpec, 0, len(intent.EIPs)+len(intent.Ports))
 	for _, spec := range intent.EIPs {
@@ -883,7 +884,7 @@ func (r *reconciler) floatingIPSpecs(intent IntentState) []policy.EIPSpec {
 			continue
 		}
 		logicalIP := p.PrivateIP.String()
-		if _, hasEIP := intent.EIPs[logicalIP]; hasEIP {
+		if _, hasEIP := intent.EIPs[eipIntentKey(p.VPCID, logicalIP)]; hasEIP {
 			continue
 		}
 		specs = append(specs, policy.EIPSpec{
@@ -1014,7 +1015,7 @@ func (r *reconciler) applyPublicInstanceEgress(ctx context.Context, intent Inten
 		}
 	}
 	for _, e := range intent.EIPs {
-		r.ensureEIPEgressExemption(ctx, intent, e.VPCID, subnetIDForIP(intent.Subnets, e.LogicalIP), e.LogicalIP, res)
+		r.ensureEIPEgressExemption(ctx, intent, e.VPCID, subnetIDForIP(intent.Subnets, e.VPCID, e.LogicalIP), e.LogicalIP, res)
 	}
 }
 
@@ -1042,14 +1043,15 @@ func (r *reconciler) ensureEIPEgressExemption(ctx context.Context, intent Intent
 	}
 }
 
-// subnetIDForIP returns the SubnetID whose CIDR contains ip, or "" if none match.
-func subnetIDForIP(subnets map[string]topology.SubnetSpec, ip string) string {
+// subnetIDForIP returns the SubnetID in vpcID whose CIDR contains ip, or "" if
+// none match. VPC CIDRs overlap across tenants, so the CIDR alone is ambiguous.
+func subnetIDForIP(subnets map[string]topology.SubnetSpec, vpcID, ip string) string {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return ""
 	}
 	for _, s := range subnets {
-		if s.CIDR.IsValid() && s.CIDR.Contains(addr) {
+		if s.VPCID == vpcID && s.CIDR.IsValid() && s.CIDR.Contains(addr) {
 			return s.SubnetID
 		}
 	}

@@ -1159,10 +1159,10 @@ func TestFloatingIPSpecs(t *testing.T) {
 	intent := IntentState{
 		EIPs: map[string]policy.EIPSpec{
 			// User EIP on 172.31.0.9.
-			"172.31.0.9": {VPCID: "vpc-a", ExternalIP: "192.168.1.200", LogicalIP: "172.31.0.9", PortName: topology.Port("eni-eip")},
+			eipIntentKey("vpc-a", "172.31.0.9"): {VPCID: "vpc-a", ExternalIP: "192.168.1.200", LogicalIP: "172.31.0.9", PortName: topology.Port("eni-eip")},
 			// User EIP that also has an auto-assigned public IP recorded on its
 			// port: the EIP must win and the auto-assigned entry be skipped.
-			"172.31.0.4": {VPCID: "vpc-a", ExternalIP: "192.168.1.201", LogicalIP: "172.31.0.4", PortName: topology.Port("eni-dup")},
+			eipIntentKey("vpc-a", "172.31.0.4"): {VPCID: "vpc-a", ExternalIP: "192.168.1.201", LogicalIP: "172.31.0.4", PortName: topology.Port("eni-dup")},
 		},
 		Ports: map[string]topology.PortSpec{
 			// Auto-assigned public IP with no user EIP -> must produce a spec.
@@ -1171,6 +1171,9 @@ func TestFloatingIPSpecs(t *testing.T) {
 			// Same private IP as the user EIP above -> deduped out.
 			"eni-dup": {PortID: "eni-dup", VPCID: "vpc-a", PrivateIP: netip.MustParseAddr("172.31.0.4"),
 				PublicIP: netip.MustParseAddr("192.168.1.117"), MAC: mac},
+			// Same private IP as vpc-a's user EIP but in another VPC -> kept.
+			"eni-other-vpc": {PortID: "eni-other-vpc", VPCID: "vpc-b", PrivateIP: netip.MustParseAddr("172.31.0.4"),
+				PublicIP: netip.MustParseAddr("192.168.1.118"), MAC: mac},
 			// No public IP -> skipped.
 			"eni-nopub": {PortID: "eni-nopub", VPCID: "vpc-b", PrivateIP: netip.MustParseAddr("172.31.0.6")},
 		},
@@ -1202,9 +1205,12 @@ func TestFloatingIPSpecs(t *testing.T) {
 	if _, ok := byExternal["192.168.1.117"]; ok {
 		t.Errorf("auto-assigned 192.168.1.117 should be deduped by the user EIP on 172.31.0.4")
 	}
+	if _, ok := byExternal["192.168.1.118"]; !ok {
+		t.Errorf("auto-assigned 192.168.1.118 in vpc-b must not be deduped by vpc-a's EIP on the same private IP")
+	}
 	// No public IP -> no spec for that port.
-	if len(specs) != 3 {
-		t.Errorf("want 3 specs (2 EIP + 1 auto), got %d: %+v", len(specs), specs)
+	if len(specs) != 4 {
+		t.Errorf("want 4 specs (2 EIP + 2 auto), got %d: %+v", len(specs), specs)
 	}
 
 	// A NAT gateway's address holds an snat, never a dnat_and_snat, so it must
@@ -1229,7 +1235,7 @@ func TestHostBindSpecs_CarriesNATGatewayAddresses(t *testing.T) {
 
 	intent := IntentState{
 		EIPs: map[string]policy.EIPSpec{
-			"172.31.0.9": {VPCID: "vpc-a", ExternalIP: "192.168.1.200", LogicalIP: "172.31.0.9", PortName: topology.Port("eni-eip")},
+			eipIntentKey("vpc-a", "172.31.0.9"): {VPCID: "vpc-a", ExternalIP: "192.168.1.200", LogicalIP: "172.31.0.9", PortName: topology.Port("eni-eip")},
 		},
 		NATGWs: map[string]policy.NATGWSpec{
 			// One gateway, two associated subnets: the same address arrives
@@ -1282,7 +1288,7 @@ func TestHostBindSpecs_DedupesAgainstAnExistingEIP(t *testing.T) {
 
 	specs := r.hostBindSpecs(IntentState{
 		EIPs: map[string]policy.EIPSpec{
-			"172.31.0.9": {VPCID: "vpc-a", ExternalIP: "192.168.1.240", LogicalIP: "172.31.0.9",
+			eipIntentKey("vpc-a", "172.31.0.9"): {VPCID: "vpc-a", ExternalIP: "192.168.1.240", LogicalIP: "172.31.0.9",
 				PortName: topology.Port("eni-eip"), MAC: mac.String()},
 		},
 		NATGWs: map[string]policy.NATGWSpec{
@@ -1430,7 +1436,7 @@ func TestReconcile_MarksIGWAttachedOnlyOnSuccess(t *testing.T) {
 		// A distributed-NAT gateway LRP is link-local and gates the probe off,
 		// so an EIP is what gives the datapath check a target.
 		intent := igwIntent(t)
-		intent.EIPs["10.0.1.5"] = policy.EIPSpec{VPCID: "vpc-a", ExternalIP: "203.0.113.5", LogicalIP: "10.0.1.5"}
+		intent.EIPs[eipIntentKey("vpc-a", "10.0.1.5")] = policy.EIPSpec{VPCID: "vpc-a", ExternalIP: "203.0.113.5", LogicalIP: "10.0.1.5"}
 		if err := rec.Reconcile(ctx, intent); err != nil {
 			t.Fatalf("Reconcile = %v, want nil", err)
 		}
@@ -1606,7 +1612,7 @@ func TestReconcile_FailedAddEIPReportsPassIncomplete(t *testing.T) {
 	rec.nat = &stubNAT{NATManager: rec.nat, addErr: errors.New("ovsdb unreachable")}
 
 	intent := freshIntent(t)
-	intent.EIPs["10.0.1.10"] = policy.EIPSpec{
+	intent.EIPs[eipIntentKey("vpc-a", "10.0.1.10")] = policy.EIPSpec{
 		VPCID: "vpc-a", ExternalIP: "192.168.1.10", LogicalIP: "10.0.1.10",
 		PortName: topology.Port("eni-a"),
 	}

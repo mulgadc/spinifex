@@ -39,7 +39,7 @@ func TestExecute(t *testing.T) {
 
 	// Expect error, at least one drive or kernel image required
 	assert.Error(t, err)
-	assert.ErrorContains(t, err, "at least one drive or a kernel image is required")
+	assert.ErrorContains(t, err, "at least one drive, blockdev or a kernel image is required")
 	assert.Nil(t, cmd)
 
 	cfg.Drives = []Drive{
@@ -347,6 +347,14 @@ func TestExecute_DriveAndKernelInvariant(t *testing.T) {
 		assert.NotNil(t, cmd)
 	})
 
+	t.Run("blockdevs-only is OK", func(t *testing.T) {
+		cfg := base
+		cfg.Blockdevs = []Blockdev{{Value: "driver=raw,node-name=os,file.driver=nbd,file.server.type=unix,file.server.path=/run/os.sock"}}
+		cmd, err := cfg.Execute()
+		assert.NoError(t, err)
+		assert.NotNil(t, cmd)
+	})
+
 	t.Run("kernel-only is OK", func(t *testing.T) {
 		cfg := base
 		cfg.KernelImage = "/boot/vmlinuz"
@@ -359,7 +367,7 @@ func TestExecute_DriveAndKernelInvariant(t *testing.T) {
 		cfg := base
 		cmd, err := cfg.Execute()
 		assert.Error(t, err)
-		assert.ErrorContains(t, err, "at least one drive or a kernel image")
+		assert.ErrorContains(t, err, "at least one drive, blockdev or a kernel image")
 		assert.Nil(t, cmd)
 	})
 }

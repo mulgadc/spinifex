@@ -132,12 +132,12 @@ func TestBuildDrives(t *testing.T) {
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 			},
 			cpuCount: 2,
-			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=os,cache.direct=on,file.driver=nbd,file.server.type=unix,file.server.path=/tmp/boot.sock,file.export=,file.reconnect-delay=30"},
 			},
 			wantIOThreads: []IOThread{{ID: "ioth-os"}},
 			wantDevices: []Device{
-				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1"},
+				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1,werror=stop,rerror=stop"},
 			},
 		},
 		{
@@ -148,12 +148,12 @@ func TestBuildDrives(t *testing.T) {
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 			},
 			cpuCount: 4,
-			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=os,cache.direct=on,file.driver=nbd,file.server.type=unix,file.server.path=/tmp/boot.sock,file.export=,file.reconnect-delay=30"},
 			},
 			wantIOThreads: []IOThread{{ID: "ioth-os-0"}, {ID: "ioth-os-1"}},
 			wantDevices: []Device{
-				{Value: `{"driver":"virtio-blk-pci","drive":"os","num-queues":4,"bootindex":1,"iothread-vq-mapping":[{"iothread":"ioth-os-0","vqs":[0,2]},{"iothread":"ioth-os-1","vqs":[1,3]}]}`},
+				{Value: `{"driver":"virtio-blk-pci","drive":"os","num-queues":4,"bootindex":1,"iothread-vq-mapping":[{"iothread":"ioth-os-0","vqs":[0,2]},{"iothread":"ioth-os-1","vqs":[1,3]}],"werror":"stop","rerror":"stop"}`},
 			},
 		},
 		{
@@ -249,7 +249,7 @@ func TestBuildDrives(t *testing.T) {
 			wantErr:  "no free EBS hot-plug port for volume vol-overflow",
 		},
 		{
-			name: "mixed boot + EFI + data: boot and EFI keep the legacy -drive shape",
+			name: "mixed boot + EFI + data: boot is a -blockdev node and EFI keeps the pflash -drive",
 			requests: []EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
@@ -260,7 +260,6 @@ func TestBuildDrives(t *testing.T) {
 			// unaffected by the pool either way — they keep one IOThread each.
 			cpuCount: 2,
 			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
 				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
 			},
 			wantIOThreads: []IOThread{
@@ -268,10 +267,11 @@ func TestBuildDrives(t *testing.T) {
 				{ID: "ioth-vol-data-a"},
 			},
 			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=os,cache.direct=on,file.driver=nbd,file.server.type=unix,file.server.path=/tmp/boot.sock,file.export=,file.reconnect-delay=30"},
 				{Value: "driver=nbd,node-name=nbd-vol-data-a,server.type=unix,server.path=/tmp/data-a.sock,export=,reconnect-delay=30"},
 			},
 			wantDevices: []Device{
-				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1"},
+				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1,werror=stop,rerror=stop"},
 				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{0, 0, 3},
@@ -348,31 +348,72 @@ func TestBuildDrives(t *testing.T) {
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 				{Name: "vol-blk", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20},
 			},
-			cpuCount: 2,
-			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none", Werror: "stop", Rerror: "stop", ReconnectDelay: NBDReconnectDelaySeconds},
-			},
+			cpuCount:      2,
 			wantIOThreads: []IOThread{{ID: "ioth-os"}, {ID: "ioth-vol-blk"}},
 			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=os,cache.direct=on,file.driver=nbd,file.server.type=unix,file.server.path=/tmp/boot.sock,file.export=,file.reconnect-delay=30"},
 				{Value: "driver=raw,node-name=nbd-vol-blk,size=1048576,file.driver=host_device,file.filename=/dev/sdx,file.aio=native,file.cache.direct=on"},
 			},
 			wantDevices: []Device{
-				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1"},
+				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1,werror=stop,rerror=stop"},
 				{Value: "virtio-blk-pci,id=vdisk-vol-blk,drive=nbd-vol-blk,iothread=ioth-vol-blk,serial=volblk,bus=hotplug-ebs1,werror=stop,rerror=stop"},
 			},
 			wantHotplugPorts: []int{0, 1},
 		},
 		{
-			name:     "block boot volume is rejected",
-			requests: []EBSRequest{{Name: "vol-boot", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20, Boot: true}},
+			name: "block boot volume is a raw node over host_device named os under the bootindex device",
+			requests: []EBSRequest{
+				{Name: "vol-boot", BlockDevice: "/dev/sdx", BlockSizeBytes: 8 << 30, Boot: true},
+			},
+			cpuCount:      2,
+			wantIOThreads: []IOThread{{ID: "ioth-os"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=os,size=8589934592,file.driver=host_device,file.filename=/dev/sdx,file.aio=native,file.cache.direct=on"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1,werror=stop,rerror=stop"},
+			},
+			wantHotplugPorts: []int{0},
+		},
+		{
+			name: "block boot volume with four vCPUs keeps the mapped device and error policy",
+			requests: []EBSRequest{
+				{Name: "vol-boot", BlockDevice: "/dev/sdx", BlockSizeBytes: 8 << 30, Boot: true},
+			},
+			cpuCount:      4,
+			wantIOThreads: []IOThread{{ID: "ioth-os-0"}, {ID: "ioth-os-1"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=os,size=8589934592,file.driver=host_device,file.filename=/dev/sdx,file.aio=native,file.cache.direct=on"},
+			},
+			wantDevices: []Device{
+				{Value: `{"driver":"virtio-blk-pci","drive":"os","num-queues":4,"bootindex":1,"iothread-vq-mapping":[{"iothread":"ioth-os-0","vqs":[0,2]},{"iothread":"ioth-os-1","vqs":[1,3]}],"werror":"stop","rerror":"stop"}`},
+			},
+		},
+		{
+			name: "NBD boot volume over TCP renders inet server options under file.",
+			requests: []EBSRequest{
+				{Name: "vol-boot", NBDURI: "nbd://127.0.0.1:44801", Boot: true},
+			},
+			cpuCount:      2,
+			wantIOThreads: []IOThread{{ID: "ioth-os"}},
+			wantBlockdevs: []Blockdev{
+				{Value: "driver=raw,node-name=os,cache.direct=on,file.driver=nbd,file.server.type=inet,file.server.host=127.0.0.1,file.server.port=44801,file.export=,file.reconnect-delay=30"},
+			},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1,werror=stop,rerror=stop"},
+			},
+		},
+		{
+			name:     "unparseable NBD boot URI is rejected",
+			requests: []EBSRequest{{Name: "vol-boot", NBDURI: "http://example/boot", Boot: true}},
 			cpuCount: 2,
-			wantErr:  "volume vol-boot: block device export is only supported for data volumes",
+			wantErr:  "parse NBDURI for volume vol-boot",
 		},
 		{
 			name:     "block EFI volume is rejected",
 			requests: []EBSRequest{{Name: "vol-efi", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20, EFI: true}},
 			cpuCount: 2,
-			wantErr:  "volume vol-efi: block device export is only supported for data volumes",
+			wantErr:  "volume vol-efi: block device export is not supported for an EFI volume",
 		},
 		{
 			name:     "both NBDURI and BlockDevice set is rejected",
@@ -2166,6 +2207,61 @@ func TestStartQEMU_DiskBoot_DataVolumeStaysOnThePCIPath(t *testing.T) {
 	// The disk-boot path keeps building the volume into the instance Config.
 	assert.Len(t, argsContaining(deviceValues(instance.Config.Devices), "id=vdisk-vol-data-a"), 1)
 	assert.Equal(t, 1, instance.EBSRequests.Requests[1].HotplugPort)
+}
+
+// TestStartQEMU_DiskBoot_BootVolumeIsABlockdevNode launches a disk-boot guest
+// from each export kind and checks the boot volume reaches QEMU as the "os"
+// -blockdev node behind the bootindex=1 device, with no -drive left for it.
+func TestStartQEMU_DiskBoot_BootVolumeIsABlockdevNode(t *testing.T) {
+	tests := []struct {
+		name         string
+		req          func(t *testing.T) EBSRequest
+		wantBlockdev func(req EBSRequest) string
+	}{
+		{
+			name: "nbd export",
+			req: func(t *testing.T) EBSRequest {
+				return EBSRequest{Name: "vol-root", NBDURI: nbdListener(t), Boot: true}
+			},
+			wantBlockdev: func(req EBSRequest) string {
+				hostPort := strings.TrimPrefix(req.NBDURI, "nbd://")
+				host, port, _ := strings.Cut(hostPort, ":")
+				return "driver=raw,node-name=os,cache.direct=on,file.driver=nbd,file.server.type=inet,file.server.host=" + host +
+					",file.server.port=" + port + ",file.export=,file.reconnect-delay=30"
+			},
+		},
+		{
+			name: "block export",
+			req: func(t *testing.T) EBSRequest {
+				dev := filepath.Join(t.TempDir(), "sdx")
+				require.NoError(t, os.WriteFile(dev, nil, 0o600))
+				return EBSRequest{Name: "vol-root", BlockDevice: dev, BlockSizeBytes: 8 << 30, Boot: true}
+			},
+			wantBlockdev: func(req EBSRequest) string {
+				return "driver=raw,node-name=os,size=8589934592,file.driver=host_device,file.filename=" + req.BlockDevice +
+					",file.aio=native,file.cache.direct=on"
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := directBootManager(t, &fakeNetworkPlumber{})
+			launches := withFakeQEMU(t)
+
+			req := tt.req(t)
+			instance := &VM{ID: "i-boot-blockdev", InstanceType: "t3.nano"}
+			instance.EBSRequests.Requests = []EBSRequest{req}
+			require.NoError(t, m.startQEMU(instance, false))
+
+			got := launches()
+			require.Len(t, got, 1)
+			assert.Equal(t, []string{tt.wantBlockdev(req)}, allArgValues(got[0], "-blockdev"))
+			assert.Contains(t, allArgValues(got[0], "-device"), "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=1,bootindex=1,werror=stop,rerror=stop")
+			for _, d := range allArgValues(got[0], "-drive") {
+				assert.NotContains(t, d, "id=os", "the boot volume must not also be a -drive")
+			}
+		})
+	}
 }
 
 func deviceValues(devs []Device) []string {

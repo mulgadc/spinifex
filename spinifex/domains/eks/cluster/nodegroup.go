@@ -886,7 +886,7 @@ func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string
 		return s.attachRoleToProfile(accountID, profileName, roleName,
 			aws.StringValue(out.InstanceProfile.Arn), len(out.InstanceProfile.Roles) > 0)
 	}
-	if err.Error() != awserrors.ErrorIAMNoSuchEntity {
+	if code, _ := awserrors.ResolveErrorCode(err); code != awserrors.ErrorIAMNoSuchEntity {
 		return "", fmt.Errorf("get instance profile %q: %w", profileName, err)
 	}
 
@@ -895,7 +895,7 @@ func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string
 	})
 	if err != nil {
 		// A racing worker launch may have created it first; re-read and converge.
-		if err.Error() != awserrors.ErrorIAMEntityAlreadyExists {
+		if code, _ := awserrors.ResolveErrorCode(err); code != awserrors.ErrorIAMEntityAlreadyExists {
 			return "", fmt.Errorf("create instance profile %q: %w", profileName, err)
 		}
 		got, gerr := s.iamEnsurer().GetInstanceProfile(accountID, &iam.GetInstanceProfileInput{
@@ -922,7 +922,7 @@ func (s *EKSServiceImpl) attachRoleToProfile(accountID, profileName, roleName, p
 		InstanceProfileName: aws.String(profileName),
 		RoleName:            aws.String(roleName),
 	})
-	if err != nil && err.Error() != awserrors.ErrorIAMLimitExceeded {
+	if code, _ := awserrors.ResolveErrorCode(err); err != nil && code != awserrors.ErrorIAMLimitExceeded {
 		return "", fmt.Errorf("add role %q to instance profile %q: %w", roleName, profileName, err)
 	}
 	return profileARN, nil

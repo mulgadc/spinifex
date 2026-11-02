@@ -65,7 +65,7 @@ func (s *IAMServiceImpl) CreateGroup(accountID string, input *iam.CreateGroupInp
 	kvKey := accountID + "." + groupName
 	if _, err := s.groupsBucket.Create(ctx, kvKey, data); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+			return nil, awserrors.Errorf(awserrors.ErrorIAMEntityAlreadyExists, "Group with name %s already exists.", groupName)
 		}
 		return nil, fmt.Errorf("store group: %w", err)
 	}
@@ -175,11 +175,11 @@ func (s *IAMServiceImpl) DeleteGroup(accountID string, input *iam.DeleteGroupInp
 	}
 
 	if len(group.AttachedPolicies) > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+		return nil, errDetachPoliciesFirst
 	}
 
 	if len(group.InlinePolicies) > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+		return nil, errDeletePoliciesFirst
 	}
 
 	members, err := s.findGroupMembers(ctx, accountID, groupName)
@@ -187,7 +187,7 @@ func (s *IAMServiceImpl) DeleteGroup(accountID string, input *iam.DeleteGroupInp
 		return nil, fmt.Errorf("check group members: %w", err)
 	}
 	if len(members) > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMDeleteConflict, "Cannot delete entity, must remove users from group first.")
 	}
 
 	if err := s.groupsBucket.Delete(ctx, accountID+"."+groupName); err != nil {
@@ -265,7 +265,7 @@ func (s *IAMServiceImpl) ListGroupsForUser(accountID string, input *iam.ListGrou
 	for _, name := range user.Groups {
 		group, err := s.getGroup(ctx, accountID, name)
 		if err != nil {
-			if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+			if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorIAMNoSuchEntity {
 				// A dangling pointer to a vanished group is inert; skip it.
 				// Mirrors GetUserPolicies — transient/corrupt errors fail closed.
 				slog.Warn("ListGroupsForUser: member references missing group; skipping",
@@ -294,7 +294,7 @@ func (s *IAMServiceImpl) AttachGroupPolicy(accountID string, input *iam.AttachGr
 
 	// AWS-managed ARNs are stored opaquely (like roles); customer-managed ARNs must exist.
 	if !iamarn.IsAWSManagedPolicyARN(policyARN) {
-		if _, err := s.getPolicyByARN(ctx, accountID, policyARN); err != nil {
+		if err := s.attachablePolicy(ctx, accountID, policyARN); err != nil {
 			return nil, err
 		}
 	}
@@ -322,7 +322,7 @@ func (s *IAMServiceImpl) DetachGroupPolicy(accountID string, input *iam.DetachGr
 	err := s.updateGroupCAS(ctx, accountID, groupName, func(g *Group) (bool, error) {
 		idx := slices.Index(g.AttachedPolicies, policyARN)
 		if idx < 0 {
-			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return false, policyNotFound(policyARN)
 		}
 		g.AttachedPolicies = slices.Delete(g.AttachedPolicies, idx, idx+1)
 		return true, nil
@@ -408,7 +408,7 @@ func (s *IAMServiceImpl) GetGroupPolicy(accountID string, input *iam.GetGroupPol
 
 	doc, ok := group.InlinePolicies[policyName]
 	if !ok {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		return nil, noSuchEntity("group policy", policyName)
 	}
 
 	return &iam.GetGroupPolicyOutput{
@@ -427,7 +427,7 @@ func (s *IAMServiceImpl) DeleteGroupPolicy(accountID string, input *iam.DeleteGr
 
 	err := s.updateGroupCAS(ctx, accountID, groupName, func(g *Group) (bool, error) {
 		if _, ok := g.InlinePolicies[policyName]; !ok {
-			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return false, noSuchEntity("group policy", policyName)
 		}
 		delete(g.InlinePolicies, policyName)
 		return true, nil
@@ -470,7 +470,7 @@ func (s *IAMServiceImpl) getGroup(ctx context.Context, accountID, groupName stri
 	entry, err := s.groupsBucket.Get(ctx, accountID+"."+groupName)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return nil, noSuchEntity("group", groupName)
 		}
 		return nil, fmt.Errorf("get group: %w", err)
 	}

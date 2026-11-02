@@ -50,7 +50,7 @@ func TestCreateOpenIDConnectProvider_Idempotent(t *testing.T) {
 		t.Fatalf("first create: %v", err)
 	}
 	_, err := svc.CreateOpenIDConnectProvider(acct, in)
-	if err == nil || err.Error() != awserrors.ErrorIAMEntityAlreadyExists {
+	if err == nil || awserrors.ValidErrorCodeFromError(err) != awserrors.ErrorIAMEntityAlreadyExists {
 		t.Fatalf("duplicate create err = %v, want EntityAlreadyExists", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestGetOpenIDConnectProvider_NotFound(t *testing.T) {
 	_, err := svc.GetOpenIDConnectProvider("000000000001", &iam.GetOpenIDConnectProviderInput{
 		OpenIDConnectProviderArn: aws.String(OIDCProviderARN("000000000001", "10.0.0.1:9999/oidc/eks/x/y/z")),
 	})
-	if err == nil || err.Error() != awserrors.ErrorIAMNoSuchEntity {
+	if err == nil || awserrors.ValidErrorCodeFromError(err) != awserrors.ErrorIAMNoSuchEntity {
 		t.Fatalf("err = %v, want NoSuchEntity", err)
 	}
 }
@@ -195,7 +195,7 @@ func TestDeleteOpenIDConnectProvider(t *testing.T) {
 	_, err = svc.DeleteOpenIDConnectProvider(acct, &iam.DeleteOpenIDConnectProviderInput{
 		OpenIDConnectProviderArn: created.OpenIDConnectProviderArn,
 	})
-	if err == nil || err.Error() != awserrors.ErrorIAMNoSuchEntity {
+	if err == nil || awserrors.ValidErrorCodeFromError(err) != awserrors.ErrorIAMNoSuchEntity {
 		t.Fatalf("second delete err = %v, want NoSuchEntity", err)
 	}
 }

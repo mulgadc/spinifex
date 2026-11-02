@@ -66,7 +66,7 @@ func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.Crea
 
 	if _, err := s.instanceProfilesBucket.Create(ctx, accountID+"."+profileName, data); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+			return nil, awserrors.Errorf(awserrors.ErrorIAMEntityAlreadyExists, "Instance Profile %s already exists.", profileName)
 		}
 		return nil, fmt.Errorf("store instance profile: %w", err)
 	}
@@ -172,7 +172,7 @@ func (s *IAMServiceImpl) DeleteInstanceProfile(accountID string, input *iam.Dele
 	_, err := kvutil.DeleteIf(ctx, s.instanceProfilesBucket, accountID+"."+profileName, s.instanceProfileCASConfig(accountID, profileName),
 		func(p *InstanceProfile) error {
 			if p.RoleName != "" {
-				return errors.New(awserrors.ErrorIAMDeleteConflict)
+				return awserrors.Errorf(awserrors.ErrorIAMDeleteConflict, "Cannot delete entity, must remove roles from instance profile first.")
 			}
 			return nil
 		})
@@ -195,7 +195,7 @@ func (s *IAMServiceImpl) AddRoleToInstanceProfile(accountID string, input *iam.A
 
 	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
 		if p.RoleName != "" {
-			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
+			return false, awserrors.Errorf(awserrors.ErrorIAMLimitExceeded, "Cannot exceed quota for InstanceSessionsPerInstanceProfile: 1")
 		}
 		p.RoleName = roleName
 		return true, nil
@@ -216,7 +216,7 @@ func (s *IAMServiceImpl) RemoveRoleFromInstanceProfile(accountID string, input *
 
 	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
 		if p.RoleName == "" || p.RoleName != roleName {
-			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return false, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Role %s in Instance Profile %s cannot be found.", roleName, profileName)
 		}
 		p.RoleName = ""
 		return true, nil
@@ -357,11 +357,16 @@ func (s *IAMServiceImpl) ListInstanceProfileTags(accountID string, input *iam.Li
 	}, nil
 }
 
+// instanceProfileNotFound is NoSuchEntity with AWS's message for a missing instance profile.
+func instanceProfileNotFound(profileName string) error {
+	return awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile %s cannot be found.", profileName)
+}
+
 func (s *IAMServiceImpl) getInstanceProfile(ctx context.Context, accountID, profileName string) (*InstanceProfile, error) {
 	entry, err := s.instanceProfilesBucket.Get(ctx, accountID+"."+profileName)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return nil, instanceProfileNotFound(profileName)
 		}
 		return nil, fmt.Errorf("get instance profile: %w", err)
 	}
@@ -385,7 +390,7 @@ func (s *IAMServiceImpl) updateInstanceProfileCAS(ctx context.Context, accountID
 func (s *IAMServiceImpl) instanceProfileCASConfig(accountID, profileName string) kvutil.CASConfig {
 	return kvutil.CASConfig{
 		Attempts: instanceProfileCASMaxRetries,
-		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),
+		NotFound: instanceProfileNotFound(profileName),
 		Exhausted: func(string, int) error {
 			slog.Warn("IAM instance profile CAS exhausted retries",
 				"accountID", accountID, "instanceProfileName", profileName, "attempts", instanceProfileCASMaxRetries)

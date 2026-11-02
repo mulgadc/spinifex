@@ -178,7 +178,7 @@ func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *ia
 
 	if _, err := kv.Create(ctx, OIDCProviderKey(issuer), data); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+			return nil, awserrors.Errorf(awserrors.ErrorIAMEntityAlreadyExists, "Provider with url %s already exists.", issuer)
 		}
 		return nil, fmt.Errorf("store OIDC provider: %w", err)
 	}
@@ -268,7 +268,7 @@ func (s *IAMServiceImpl) DeleteOpenIDConnectProvider(accountID string, input *ia
 	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrBucketNotFound) {
-			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return nil, oidcProviderNotFound(arn)
 		}
 		return nil, fmt.Errorf("open IAM account bucket: %w", err)
 	}
@@ -276,7 +276,7 @@ func (s *IAMServiceImpl) DeleteOpenIDConnectProvider(accountID string, input *ia
 	key := OIDCProviderKey(issuer)
 	if _, err := kv.Get(ctx, key); err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return nil, oidcProviderNotFound(arn)
 		}
 		return nil, fmt.Errorf("get OIDC provider: %w", err)
 	}
@@ -356,7 +356,7 @@ func (s *IAMServiceImpl) updateOIDCProviderCAS(ctx context.Context, accountID, a
 	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrBucketNotFound) {
-			return errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return oidcProviderNotFound(arn)
 		}
 		return fmt.Errorf("open IAM account bucket: %w", err)
 	}
@@ -373,14 +373,14 @@ func (s *IAMServiceImpl) getOIDCProvider(ctx context.Context, accountID, arn str
 	kv, err := s.js.KeyValue(ctx, IAMAccountBucketName(accountID))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrBucketNotFound) {
-			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return nil, oidcProviderNotFound(arn)
 		}
 		return nil, fmt.Errorf("open IAM account bucket: %w", err)
 	}
 	entry, err := kv.Get(ctx, OIDCProviderKey(issuer))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return nil, oidcProviderNotFound(arn)
 		}
 		return nil, fmt.Errorf("get OIDC provider: %w", err)
 	}

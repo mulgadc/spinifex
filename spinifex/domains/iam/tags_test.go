@@ -460,7 +460,7 @@ func TestCreate_InvalidTagsRefusedAndNotStored(t *testing.T) {
 
 				_, err = ops.list(svc, id)
 				require.Error(t, err)
-				assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+				assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, awserrors.ValidErrorCodeFromError(err))
 			})
 		}
 	}
@@ -577,15 +577,15 @@ func TestResourceTagging_MissingEntity(t *testing.T) {
 
 			err := ops.tag(svc, ops.missingID, []*iam.Tag{sdkTag("env", "prod")})
 			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+			assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, awserrors.ValidErrorCodeFromError(err))
 
 			err = ops.untag(svc, ops.missingID, []*string{aws.String("env")})
 			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+			assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, awserrors.ValidErrorCodeFromError(err))
 
 			_, err = ops.list(svc, ops.missingID)
 			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error())
+			assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, awserrors.ValidErrorCodeFromError(err))
 		})
 	}
 }
@@ -608,7 +608,7 @@ func TestTagUser_MergedLimitExceeded(t *testing.T) {
 		Tags:     []*iam.Tag{sdkTag("overflow", "v")},
 	})
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorIAMLimitExceeded, err.Error())
+	assert.Equal(t, awserrors.ErrorIAMLimitExceeded, awserrors.ValidErrorCodeFromError(err))
 
 	// Upserting an existing key does not grow the set and stays allowed.
 	_, err = svc.TagUser(testAccountID, &iam.TagUserInput{

@@ -96,13 +96,13 @@ func ensureSQSRoleTrust(svc iamdomain.SystemInstanceRoleEnsurer, r sqsRole) erro
 	acct, name := awsidentifiers.GlobalAccountID, aws.String(r.name)
 	role, err := svc.GetRole(acct, &awsiam.GetRoleInput{RoleName: name})
 	if err != nil {
-		if err.Error() != awserrors.ErrorIAMNoSuchEntity {
+		if code, _ := awserrors.ResolveErrorCode(err); code != awserrors.ErrorIAMNoSuchEntity {
 			return fmt.Errorf("%s: read role: %w", r.label, err)
 		}
 		_, cerr := svc.CreateRole(acct, &awsiam.CreateRoleInput{RoleName: name,
 			AssumeRolePolicyDocument: aws.String(iamdomain.EC2InstanceTrustPolicy),
 			Description:              aws.String(r.description)})
-		if cerr != nil && cerr.Error() != awserrors.ErrorIAMEntityAlreadyExists {
+		if code, _ := awserrors.ResolveErrorCode(cerr); cerr != nil && code != awserrors.ErrorIAMEntityAlreadyExists {
 			return fmt.Errorf("%s: create role: %w", r.label, cerr)
 		}
 		if role, err = svc.GetRole(acct, &awsiam.GetRoleInput{RoleName: name}); err != nil {
@@ -132,11 +132,11 @@ func ensureSQSRoleInstanceProfile(svc iamdomain.SystemInstanceRoleEnsurer, r sqs
 	}
 	prof, err := get()
 	if err != nil {
-		if err.Error() != awserrors.ErrorIAMNoSuchEntity {
+		if code, _ := awserrors.ResolveErrorCode(err); code != awserrors.ErrorIAMNoSuchEntity {
 			return "", fmt.Errorf("%s: read instance profile: %w", r.label, err)
 		}
-		if _, cerr := svc.CreateInstanceProfile(acct, &awsiam.CreateInstanceProfileInput{InstanceProfileName: name}); cerr != nil &&
-			cerr.Error() != awserrors.ErrorIAMEntityAlreadyExists {
+		_, cerr := svc.CreateInstanceProfile(acct, &awsiam.CreateInstanceProfileInput{InstanceProfileName: name})
+		if code, _ := awserrors.ResolveErrorCode(cerr); cerr != nil && code != awserrors.ErrorIAMEntityAlreadyExists {
 			return "", fmt.Errorf("%s: create instance profile: %w", r.label, cerr)
 		}
 		if prof, err = get(); err != nil {
@@ -147,8 +147,8 @@ func ensureSQSRoleInstanceProfile(svc iamdomain.SystemInstanceRoleEnsurer, r sqs
 		return "", fmt.Errorf("%s: instance profile %s carries a role other than %s", r.label, r.name, r.name)
 	}
 	if len(prof.Roles) == 0 {
-		if _, aerr := svc.AddRoleToInstanceProfile(acct, &awsiam.AddRoleToInstanceProfileInput{
-			InstanceProfileName: name, RoleName: name}); aerr != nil && aerr.Error() != awserrors.ErrorIAMLimitExceeded {
+		_, aerr := svc.AddRoleToInstanceProfile(acct, &awsiam.AddRoleToInstanceProfileInput{InstanceProfileName: name, RoleName: name})
+		if code, _ := awserrors.ResolveErrorCode(aerr); aerr != nil && code != awserrors.ErrorIAMLimitExceeded {
 			return "", fmt.Errorf("%s: add role to instance profile: %w", r.label, aerr)
 		}
 		if prof, err = get(); err != nil {

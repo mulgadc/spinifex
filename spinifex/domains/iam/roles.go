@@ -106,7 +106,7 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 	kvKey := accountID + "." + roleName
 	if _, err := s.rolesBucket.Create(ctx, kvKey, data); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, errors.New(awserrors.ErrorIAMEntityAlreadyExists)
+			return nil, awserrors.Errorf(awserrors.ErrorIAMEntityAlreadyExists, "Role with name %s already exists.", roleName)
 		}
 		return nil, fmt.Errorf("store role: %w", err)
 	}
@@ -195,11 +195,11 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 	}
 
 	if len(role.AttachedPolicies) > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+		return nil, errDetachPoliciesFirst
 	}
 
 	if len(role.InlinePolicies) > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+		return nil, errDeletePoliciesFirst
 	}
 
 	profiles, err := s.findInstanceProfilesForRole(ctx, accountID, roleName)
@@ -207,7 +207,7 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 		return nil, fmt.Errorf("check role instance profiles: %w", err)
 	}
 	if len(profiles) > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+		return nil, awserrors.Errorf(awserrors.ErrorIAMDeleteConflict, "Cannot delete entity, must remove roles from instance profile first.")
 	}
 
 	if err := s.rolesBucket.Delete(ctx, accountID+"."+roleName); err != nil {
@@ -326,7 +326,7 @@ func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRol
 	// so ListAttachedRolePolicies / DescribeNodegroup round-trip instead of
 	// failing NoSuchEntity. Customer-managed ARNs must still exist.
 	if !iamarn.IsAWSManagedPolicyARN(policyARN) {
-		if _, err := s.getPolicyByARN(ctx, accountID, policyARN); err != nil {
+		if err := s.attachablePolicy(ctx, accountID, policyARN); err != nil {
 			return nil, err
 		}
 	}
@@ -354,7 +354,7 @@ func (s *IAMServiceImpl) DetachRolePolicy(accountID string, input *iam.DetachRol
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
 		idx := slices.Index(role.AttachedPolicies, policyARN)
 		if idx < 0 {
-			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return false, policyNotFound(policyARN)
 		}
 		role.AttachedPolicies = slices.Delete(role.AttachedPolicies, idx, idx+1)
 		return true, nil
@@ -444,7 +444,7 @@ func (s *IAMServiceImpl) GetRolePolicy(accountID string, input *iam.GetRolePolic
 
 	doc, ok := role.InlinePolicies[policyName]
 	if !ok {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		return nil, noSuchEntity("role policy", policyName)
 	}
 
 	return &iam.GetRolePolicyOutput{
@@ -463,7 +463,7 @@ func (s *IAMServiceImpl) DeleteRolePolicy(accountID string, input *iam.DeleteRol
 
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
 		if _, ok := role.InlinePolicies[policyName]; !ok {
-			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return false, noSuchEntity("role policy", policyName)
 		}
 		delete(role.InlinePolicies, policyName)
 		return true, nil
@@ -600,7 +600,7 @@ func (s *IAMServiceImpl) getRole(ctx context.Context, accountID, roleName string
 	entry, err := s.rolesBucket.Get(ctx, accountID+"."+roleName)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			return nil, noSuchEntity("role", roleName)
 		}
 		return nil, fmt.Errorf("get role: %w", err)
 	}
@@ -622,7 +622,7 @@ func (s *IAMServiceImpl) updateRoleCAS(ctx context.Context, accountID, roleName 
 	defer s.recordLocks.lock("role/" + accountID + "." + roleName)()
 	_, err := kvutil.Update(ctx, s.rolesBucket, accountID+"."+roleName, kvutil.CASConfig{
 		Attempts: roleCASMaxRetries,
-		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),
+		NotFound: noSuchEntity("role", roleName),
 		Exhausted: func(string, int) error {
 			// Only a CAS conflict reaches here, so the role is contended rather than
 			// broken; say so, or the caller's InternalError has no cause anywhere.

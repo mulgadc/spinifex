@@ -110,3 +110,6 @@ func invalidResourceARNError() error {
 // in the order AWS lists it when refusing a value. The exclusion values are
 // listed but not accepted.
 var ImageTagMutabilityValues = []string{"IMMUTABLE", "MUTABLE", "MUTABLE_WITH_EXCLUSION", "IMMUTABLE_WITH_EXCLUSION"}
+
+// TagStatusValues is the filter tagStatus enum AWS's model declares.
+var TagStatusValues = []string{"TAGGED", "UNTAGGED", "ANY"}

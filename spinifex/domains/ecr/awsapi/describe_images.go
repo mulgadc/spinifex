@@ -20,9 +20,8 @@ type describeImagesRequest struct {
 	RepositoryName string            `json:"repositoryName"`
 	RegistryID     string            `json:"registryId"`
 	ImageIDs       []imageIdentifier `json:"imageIds"`
-	// Filter is accepted but not yet implemented. Preserve its current wire
-	// behavior during the structural extraction; its semantics are a separate
-	// ECR compatibility decision.
+	// Filter's tagStatus is enum-checked but not yet applied; its semantics
+	// are a separate ECR compatibility decision.
 	Filter *tagStatusFilter `json:"filter"`
 }
 
@@ -35,6 +34,9 @@ func DescribeImages(ctx context.Context, catalog ImageCatalog, accountID string,
 		return nil, MalformedBodyError()
 	}
 	if err := ValidateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
+		return nil, err
+	}
+	if err := req.Filter.validate(); err != nil {
 		return nil, err
 	}
 

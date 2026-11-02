@@ -291,7 +291,7 @@ func (s *IAMServiceImpl) UpdateRoleDescription(accountID string, input *iam.Upda
 	}
 
 	slog.Info("IAM role description updated", "accountID", accountID, "roleName", roleName)
-	return &iam.UpdateRoleDescriptionOutput{Role: gotRoleToSDK(role)}, nil
+	return &iam.UpdateRoleDescriptionOutput{Role: describedRoleToSDK(role)}, nil
 }
 
 func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
@@ -695,6 +695,16 @@ func roleToSDK(r *Role) *iam.Role {
 func createdRoleToSDK(r *Role) *iam.Role {
 	out := roleToSDK(r)
 	out.Tags = tagsToSDK(r.Tags)
+	return out
+}
+
+// describedRoleToSDK is UpdateRoleDescription's shape, which carries no
+// MaxSessionDuration, Tags or RoleLastUsed.
+func describedRoleToSDK(r *Role) *iam.Role {
+	out := roleToSDK(r)
+	if r.Description != "" {
+		out.Description = aws.String(r.Description)
+	}
 	return out
 }
 

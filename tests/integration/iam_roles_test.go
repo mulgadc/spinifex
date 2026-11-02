@@ -115,7 +115,7 @@ func TestIAMRolesAndProfiles(t *testing.T) {
 	})
 	require.NoError(t, err, "update-role-description")
 	require.Equal(t, "described", aws.StringValue(descOut.Role.Description))
-	require.Equal(t, int64(7200), aws.Int64Value(descOut.Role.MaxSessionDuration))
+	require.Nil(t, descOut.Role.MaxSessionDuration, "AWS omits MaxSessionDuration from update-role-description")
 	got, err = iamCli.GetRole(&iam.GetRoleInput{RoleName: aws.String(iamRoleAppName)})
 	require.NoError(t, err, "get-role after update-role-description")
 	require.Equal(t, "described", aws.StringValue(got.Role.Description))

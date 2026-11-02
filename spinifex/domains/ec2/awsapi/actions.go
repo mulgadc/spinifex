@@ -134,6 +134,9 @@ func marshalEC2Response(action string, output any) ([]byte, error) {
 
 var ec2Actions = map[string]ec2Action{
 	"DescribeInstances": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstancesInput, c *call, accountID string) (any, error) {
+		if err := ec2instanceapi.ValidateDescribeInstancesInput(input); err != nil {
+			return nil, err
+		}
 		out, err := ec2instanceapi.DescribeInstancesChecked(ctx, input, c.NATS, 0, c.NodeIDs, accountID)
 		if err != nil {
 			return out, err
@@ -257,6 +260,9 @@ var ec2Actions = map[string]ec2Action{
 		}
 	}),
 	"DescribeImages": ec2Handler(func(ctx context.Context, input *ec2.DescribeImagesInput, c *call, accountID string) (any, error) {
+		if err := ec2imageapi.ValidateDescribeImagesInput(input); err != nil {
+			return nil, err
+		}
 		return ec2imageapi.DescribeImages(ctx, input, c.NATS, accountID)
 	}),
 	"CreateImage": ec2Handler(func(ctx context.Context, input *ec2.CreateImageInput, c *call, accountID string) (any, error) {
@@ -287,6 +293,9 @@ var ec2Actions = map[string]ec2Action{
 		return ec2zoneapi.DescribeAvailabilityZones(input, c.Region, c.AZ)
 	}),
 	"DescribeVolumes": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumesInput, c *call, accountID string) (any, error) {
+		if err := ec2volumeapi.ValidateDescribeVolumesInput(input); err != nil {
+			return nil, err
+		}
 		return ec2volumeapi.DescribeVolumes(ctx, input, c.NATS, accountID)
 	}),
 	"ModifyVolume": ec2Handler(func(ctx context.Context, input *ec2.ModifyVolumeInput, c *call, accountID string) (any, error) {

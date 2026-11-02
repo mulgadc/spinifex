@@ -53,8 +53,8 @@ func TestValidateDescribeImagesInput(t *testing.T) {
 			name: "MultipleValidImageIds",
 			input: &ec2.DescribeImagesInput{
 				ImageIds: []*string{
-					aws.String("ami-111"),
-					aws.String("ami-222"),
+					aws.String("ami-1a2b3c4d"),
+					aws.String("ami-0123456789abcdef1"),
 				},
 			},
 			wantErr: false,
@@ -63,7 +63,7 @@ func TestValidateDescribeImagesInput(t *testing.T) {
 			name: "MixedValidAndInvalidImageIds",
 			input: &ec2.DescribeImagesInput{
 				ImageIds: []*string{
-					aws.String("ami-valid"),
+					aws.String("ami-0123456789abcdef0"),
 					aws.String("invalid-id"),
 				},
 			},
@@ -85,11 +85,24 @@ func TestValidateDescribeImagesInput(t *testing.T) {
 			err := ValidateDescribeImagesInput(tt.input)
 
 			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Equal(t, tt.errMsg, err.Error())
+				code, ok := awserrors.ResolveErrorCode(err)
+				assert.True(t, ok)
+				assert.Equal(t, tt.errMsg, code)
 			} else {
 				assert.NoError(t, err)
 			}
 		})
+	}
+}
+
+// AWS answers a well-prefixed ID whose suffix is not 8 or 17 lowercase hex
+// characters with Malformed, not NotFound.
+func TestValidateDescribeImagesInput_MalformedSuffix(t *testing.T) {
+	for _, id := range []string{"ami-zzz", "ami-0123456789ABCDEF0", "ami-0123456789abcdef", "ami-"} {
+		err := ValidateDescribeImagesInput(&ec2.DescribeImagesInput{ImageIds: []*string{aws.String(id)}})
+		code, msg, ok := awserrors.ResolveErrorDetail(err)
+		assert.True(t, ok, id)
+		assert.Equal(t, awserrors.ErrorInvalidAMIIDMalformed, code, id)
+		assert.Equal(t, `Invalid id: "`+id+`"`, msg, id)
 	}
 }

@@ -2,19 +2,13 @@ package cli
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
-	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
-	"maps"
 	"os"
-	"slices"
 	"strings"
 	"time"
-	"uuid"
 
 	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
-	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/spf13/cobra"
 )
 
@@ -44,11 +38,22 @@ super admin (000000000001) can never be deleted.
 --force is for resources the ordinary API refuses to delete: a volume attached
 to an instance that will not terminate leaves both stranded and the account can
 never be emptied. It clears the attachment in the control plane without the
-guest's cooperation, so use it only once the guest is being destroyed.`,
+guest's cooperation, so use it only once the guest is being destroyed.
+
+The deletion always runs through the gateway's admin API (POST /admin/DeleteAccount,
+then DescribeAccountDeletion), signed with credentials from the standard AWS chain;
+the caller must hold spinifex:DeleteAccount and spinifex:DescribeAccountDeletion.
+--remote is accepted for existing scripts and has no effect.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runAccountDelete,
 
 	SilenceUsage: true,
+}
+
+// runAccountDelete always deletes through the gateway's admin API. The engine
+// is never built in this process, so a CLI delete cannot race a job's holder.
+func runAccountDelete(cmd *cobra.Command, args []string) error {
+	return runAccountDeleteRemote(cmd, args[0])
 }
 
 func init() {
@@ -58,113 +63,11 @@ func init() {
 	accountDeleteCmd.Flags().Bool("force", false, "Escalate past state guards for resources that will not delete")
 	accountDeleteCmd.Flags().Bool("yes", false, "Skip the interactive confirmation (requires --name)")
 	accountDeleteCmd.Flags().String("name", "", "Account name, which must match the stored record")
-	accountDeleteCmd.Flags().Bool("remote", false, "Delete over POST /admin/DeleteAccount instead of connecting to NATS")
-	accountDeleteCmd.Flags().String("endpoint", "", "Gateway endpoint for --remote (default: this node's AWS gateway)")
-	accountDeleteCmd.Flags().String("region", "", "SigV4 region for --remote (default: this node's region)")
-	accountDeleteCmd.Flags().String("ca-bundle", "", "CA certificate for --remote (default: this node's CA)")
-	accountDeleteCmd.Flags().String("client-token", "", "Idempotency token for --remote (default: generated; reuse it to follow the same teardown)")
-}
-
-func runAccountDelete(cmd *cobra.Command, args []string) error {
-	accountID := args[0]
-	if remote, _ := cmd.Flags().GetBool("remote"); remote {
-		return runAccountDeleteRemote(cmd, accountID)
-	}
-
-	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	force, _ := cmd.Flags().GetBool("force")
-	assumeYes, _ := cmd.Flags().GetBool("yes")
-	name, _ := cmd.Flags().GetString("name")
-
-	svc, cfg, nc, cleanup, err := initIAMServiceFromConfig()
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-
-	ctx, cancel := context.WithTimeout(cmd.Context(), accountDeleteTimeout)
-	defer cancel()
-
-	node := cfg.Nodes[cfg.Node]
-	buckets := objectstore.NewS3ObjectStoreFromConfig(
-		netaddr.DialTarget(node.Predastore.Host),
-		node.Predastore.Region,
-		node.Predastore.AccessKey,
-		node.Predastore.SecretKey,
-	)
-
-	// The configured node set, in the namespace daemons reply under, is what
-	// the instance inventory must hear from in full before it reads as empty.
-	nodes := accountteardown.ClusterNodes{
-		Expected:   len(cfg.Nodes),
-		DaemonIDs:  slices.Collect(maps.Keys(cfg.Nodes)),
-		GatewayIDs: cfg.NodesRunning("awsgw"),
-	}
-	engine, err := accountteardown.NewClusterEngine(ctx, nc, nodes, svc, buckets)
-	if err != nil {
-		return err
-	}
-
-	if dryRun {
-		return runAccountDryRun(ctx, engine, accountID)
-	}
-
-	// Always show the inventory before destroying it. An operator who has not
-	// seen what is about to go has not really confirmed anything.
-	plan, err := engine.Inventory(ctx, accountID)
-	if err != nil {
-		return err
-	}
-	printTeardownPlan(plan)
-
-	if name == "" {
-		if assumeYes {
-			return errors.New("--yes requires --name so the account is still confirmed")
-		}
-		name, err = promptAccountName(accountID)
-		if err != nil {
-			return err
-		}
-	}
-
-	result, err := engine.Teardown(ctx, accountteardown.Request{
-		AccountID: accountID, AccountName: name, Force: force,
-	})
-	if result != nil {
-		printTeardownResult(result)
-	}
-	if errors.Is(err, accountteardown.ErrResourcesStuck) {
-		fmt.Fprintf(os.Stderr, "\nThe account is still TERMINATING so its leftovers keep an owner.\n")
-		if !force {
-			fmt.Fprintf(os.Stderr, "Re-run with --force to clear resources the ordinary API refuses to delete.\n")
-		}
-		return err
-	}
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("\nAccount %s deleted. %d resources removed.\n", accountID, result.DeletedCount())
-	return nil
-}
-
-// accountDryRunner is the engine's explicit dry run.
-type accountDryRunner interface {
-	DryRun(ctx context.Context, accountID, correlationRef string) (*accountteardown.Result, error)
-}
-
-var _ accountDryRunner = (*accountteardown.Engine)(nil)
-
-// runAccountDryRun prints what a teardown would remove. Each run gets a fresh
-// correlation reference, which only ties it to its log records.
-func runAccountDryRun(ctx context.Context, engine accountDryRunner, accountID string) error {
-	result, err := engine.DryRun(ctx, accountID, uuid.NewV4().String())
-	if err != nil {
-		return err
-	}
-	printTeardownPlan(result)
-	fmt.Printf("\nDry run: nothing was deleted. %d resources would be removed.\n", result.DeletedCount())
-	return nil
+	accountDeleteCmd.Flags().Bool("remote", false, "Accepted for compatibility and ignored: deletion always goes through POST /admin/DeleteAccount")
+	accountDeleteCmd.Flags().String("endpoint", "", "Gateway endpoint (default: this node's AWS gateway)")
+	accountDeleteCmd.Flags().String("region", "", "SigV4 region (default: this node's region)")
+	accountDeleteCmd.Flags().String("ca-bundle", "", "CA certificate (default: this node's CA)")
+	accountDeleteCmd.Flags().String("client-token", "", "Idempotency token (default: generated; reuse it to follow the same teardown)")
 }
 
 // promptAccountName asks for the confirmation name on a terminal.
@@ -198,13 +101,6 @@ func printTeardownPlan(result *accountteardown.Result) {
 		for _, resource := range stage.Deleted {
 			fmt.Printf("    %s\n", resource)
 		}
-	}
-}
-
-func printTeardownResult(result *accountteardown.Result) {
-	fmt.Println()
-	for _, stage := range result.Stages {
-		printTeardownStage(stage)
 	}
 }
 

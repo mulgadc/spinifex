@@ -829,3 +829,21 @@ func TestAccountIDFromBucket(t *testing.T) {
 	_, ok = accountIDFromBucket("some-other-bucket")
 	assert.False(t, ok)
 }
+
+func TestService_DescribeClusters_ListsAlwaysPresent(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+
+	found, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{Clusters: []*string{aws.String("web")}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, found.Clusters, 1)
+	assert.NotNil(t, found.Failures)
+	assert.Empty(t, found.Failures)
+
+	miss, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{Clusters: []*string{aws.String("nope")}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, miss.Failures, 1)
+	assert.NotNil(t, miss.Clusters)
+	assert.Empty(t, miss.Clusters)
+}

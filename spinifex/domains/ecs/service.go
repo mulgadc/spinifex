@@ -288,7 +288,7 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 		names = []string{defaultCluster}
 	}
 	includeSettings := slices.Contains(awsStringSlice(input.Include), ecs.ClusterFieldSettings)
-	out := &ecs.DescribeClustersOutput{}
+	out := &ecs.DescribeClustersOutput{Clusters: []*ecs.Cluster{}, Failures: []*ecs.Failure{}}
 	for _, name := range names {
 		name = ClusterShortName(name)
 		var rec ClusterRecord

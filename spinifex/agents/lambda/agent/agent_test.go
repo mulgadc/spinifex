@@ -92,16 +92,21 @@ func TestRunServesRequestsAndEchoesIDs(t *testing.T) {
 	assert.Equal(t, "Unhandled", r2.FunctionError)
 }
 
-func TestRunReportsTimeoutAndContinues(t *testing.T) {
+func TestRunReportsTimeoutAndStops(t *testing.T) {
 	srv := runtimeapi.New() // no runtime polling: the invocation expires
 	link := &fakeLink{
-		got:  make(chan hostlink.Response, 1),
-		reqs: []hostlink.Request{{GrantID: "g", AttemptID: "a", RequestID: "r", DeadlineMs: deadline(30 * time.Millisecond)}},
+		got: make(chan hostlink.Response, 2),
+		reqs: []hostlink.Request{
+			{GrantID: "g", AttemptID: "a", RequestID: "r", DeadlineMs: deadline(30 * time.Millisecond)},
+			{GrantID: "g2", AttemptID: "a2", RequestID: "r2", DeadlineMs: deadline(2 * time.Second)},
+		},
 	}
-	require.NoError(t, Run(context.Background(), link, srv))
+	require.ErrorIs(t, Run(context.Background(), link, srv), ErrInvocationTimedOut)
 	r := <-link.got
 	assert.Equal(t, "Sandbox.Timedout", r.FunctionError)
 	assert.Equal(t, "g", r.GrantID)
+	assert.Len(t, link.reqs, 1, "the next request must not be taken")
+	assert.Empty(t, link.got, "nothing else is reported")
 }
 
 // blockLink blocks in Next until ctx ends.

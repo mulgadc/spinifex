@@ -17,9 +17,13 @@ const (
 	errTypeUnknown  = "Runtime.Unknown"
 )
 
+// ErrInvocationTimedOut stops the agent after it reports a timed-out
+// invocation, because the runtime may still be running it.
+var ErrInvocationTimedOut = errors.New("invocation timed out; environment must not serve another request")
+
 // Run serves requests from link until the host asks for shutdown (nil), the
-// runtime reports an init error, ctx ends, or the link fails. GrantID and
-// AttemptID are echoed to the host unchanged.
+// runtime reports an init error, an invocation times out, ctx ends, or the
+// link fails. GrantID and AttemptID are echoed to the host unchanged.
 func Run(ctx context.Context, link hostlink.Link, srv *runtimeapi.Server) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -48,6 +52,7 @@ func Run(ctx context.Context, link hostlink.Link, srv *runtimeapi.Server) error 
 			TraceID:     req.TraceID,
 			Payload:     req.Payload,
 		})
+		timedOut := errors.Is(err, runtimeapi.ErrDeadlineExceeded)
 		if err != nil {
 			if ctx.Err() != nil {
 				return cause(ctx, err)
@@ -63,6 +68,9 @@ func Run(ctx context.Context, link hostlink.Link, srv *runtimeapi.Server) error 
 		}
 		if err := link.Complete(ctx, resp); err != nil {
 			return cause(ctx, err)
+		}
+		if timedOut {
+			return ErrInvocationTimedOut
 		}
 	}
 }

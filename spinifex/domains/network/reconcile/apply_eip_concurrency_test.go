@@ -135,11 +135,11 @@ func TestApplyEIPs_HealthyPortDoesNotWaitForDeadOnes(t *testing.T) {
 	}
 
 	intent := IntentState{EIPs: map[string]policy.EIPSpec{
-		"10.0.0.1": {VPCID: "vpc-a", ExternalIP: "192.0.2.1", LogicalIP: "10.0.0.1", PortName: live},
+		eipIntentKey("vpc-a", "10.0.0.1"): {VPCID: "vpc-a", ExternalIP: "192.0.2.1", LogicalIP: "10.0.0.1", PortName: live},
 	}}
 	for i, name := range dead {
 		ip := "10.0.0." + string(rune('2'+i))
-		intent.EIPs[ip] = policy.EIPSpec{VPCID: "vpc-a", ExternalIP: "192.0.2.9", LogicalIP: ip, PortName: name}
+		intent.EIPs[eipIntentKey("vpc-a", ip)] = policy.EIPSpec{VPCID: "vpc-a", ExternalIP: "192.0.2.9", LogicalIP: ip, PortName: name}
 	}
 
 	res := &passResult{}

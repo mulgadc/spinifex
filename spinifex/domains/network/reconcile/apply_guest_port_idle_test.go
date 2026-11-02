@@ -27,7 +27,7 @@ func captureReconcileLogs(t *testing.T) *bytes.Buffer {
 
 func idleEIPIntent(idle bool) IntentState {
 	intent := IntentState{EIPs: map[string]policy.EIPSpec{
-		"10.0.0.4": {VPCID: "vpc-a", ExternalIP: "192.0.2.46", LogicalIP: "10.0.0.4", PortName: "port-eni-1"},
+		eipIntentKey("vpc-a", "10.0.0.4"): {VPCID: "vpc-a", ExternalIP: "192.0.2.46", LogicalIP: "10.0.0.4", PortName: "port-eni-1"},
 	}}
 	if idle {
 		intent.IdlePorts = map[string]string{"port-eni-1": "i-stopped"}

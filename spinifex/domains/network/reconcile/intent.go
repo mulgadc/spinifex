@@ -32,7 +32,7 @@ type IntentState struct {
 	Ports       map[string]topology.PortSpec
 	SGs         map[string]policy.SGSpec
 	IGWs        map[string]external.IGWSpec // attached only
-	EIPs        map[string]policy.EIPSpec   // keyed by logicalIP; associated only
+	EIPs        map[string]policy.EIPSpec   // keyed by eipIntentKey; associated only
 	NATGWs      map[string]policy.NATGWSpec
 	IGWRoutes   map[string]SubnetEgressIntent // per (subnet, dest) IGW egress reroute
 	NATGWRoutes map[string]SubnetEgressIntent // per (subnet, dest) NATGW egress reroute
@@ -55,6 +55,12 @@ type SubnetEgressIntent struct {
 	VPCID    string
 	SubnetID string
 	DestCIDR netip.Prefix
+}
+
+// eipIntentKey is the EIPs map key. Private IPs repeat across VPCs (every
+// default VPC is 172.31.0.0/16), so the VPC is part of the identity.
+func eipIntentKey(vpcID, privateIP string) string {
+	return vpcID + "|" + privateIP
 }
 
 // subnetEgressKey is the IGWRoutes/NATGWRoutes map key.
@@ -565,7 +571,7 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		}
 		// MAC drives distributed dnat_and_snat; empty falls back to centralised.
 		spec.MAC = rec.MacAddress
-		out[rec.PrivateIp] = spec
+		out[eipIntentKey(rec.VpcId, rec.PrivateIp)] = spec
 	}
 	return nil
 }

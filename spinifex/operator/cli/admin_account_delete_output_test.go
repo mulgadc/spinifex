@@ -2,11 +2,9 @@ package cli_test
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"os"
 	"testing"
-	"uuid"
 
 	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/mulgadc/spinifex/spinifex/operator/cli"
@@ -125,7 +123,11 @@ func TestPrintTeardownResultNamesStuckResources(t *testing.T) {
 		},
 	}
 
-	output := captureOutput(t, func() { cli.PrintTeardownResult(result) })
+	output := captureOutput(t, func() {
+		for _, stage := range result.Stages {
+			cli.PrintTeardownStage(stage)
+		}
+	})
 
 	assert.Contains(t, output, "1 deleted, 0 stuck")
 	assert.Contains(t, output, "STUCK")
@@ -161,48 +163,4 @@ func TestPromptAccountNameTreatsAnEmptyReplyAsCancelled(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cancelled")
-}
-
-// dryRunEngine stands in for the teardown engine's explicit dry run and keeps
-// the correlation reference each run was given.
-type dryRunEngine struct {
-	result *accountteardown.Result
-	err    error
-	refs   []string
-}
-
-func (e *dryRunEngine) DryRun(_ context.Context, _, correlationRef string) (*accountteardown.Result, error) {
-	e.refs = append(e.refs, correlationRef)
-	return e.result, e.err
-}
-
-// The dry run prints what it always printed, and each run hands the engine a
-// fresh UUID to log its shadow comparison under.
-func TestRunAccountDryRunPrintsThePlanUnderAFreshCorrelationRef(t *testing.T) {
-	engine := &dryRunEngine{result: teardownPlan()}
-
-	var err error
-	output := captureOutput(t, func() { err = cli.RunAccountDryRun(t.Context(), engine, "000000000042") })
-	require.NoError(t, err)
-	assert.Equal(t, "Account 000000000042 (tenant@example.com)\n\n"+
-		"  compute\n    instance i-1 (running)\n"+
-		"  storage\n    volume vol-1\n"+
-		"\nDry run: nothing was deleted. 2 resources would be removed.\n", output)
-
-	captureOutput(t, func() { err = cli.RunAccountDryRun(t.Context(), engine, "000000000042") })
-	require.NoError(t, err)
-	require.Len(t, engine.refs, 2)
-	for _, ref := range engine.refs {
-		_, parseErr := uuid.Parse(ref)
-		require.NoError(t, parseErr, ref)
-	}
-	assert.NotEqual(t, engine.refs[0], engine.refs[1])
-}
-
-func TestRunAccountDryRunReturnsTheEngineError(t *testing.T) {
-	engine := &dryRunEngine{err: accountteardown.ErrProtectedAccount}
-	var err error
-	output := captureOutput(t, func() { err = cli.RunAccountDryRun(t.Context(), engine, "000000000001") })
-	require.ErrorIs(t, err, accountteardown.ErrProtectedAccount)
-	assert.Empty(t, output)
 }

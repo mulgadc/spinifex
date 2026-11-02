@@ -85,6 +85,9 @@ type accountDeletionJob struct {
 	Holder     string             `json:"holder,omitempty"`
 	LeaseUntil string             `json:"leaseUntil,omitempty"`
 	Takeovers  []deletionTakeover `json:"takeovers,omitempty"`
+	// IAM is the quiescence evaluation made under the current fence. A takeover
+	// starts without one and the new holder records its own.
+	IAM *operatorv1.IAMQuiescence `json:"iam,omitempty"`
 }
 
 // deletionTakeover records one change of holder.
@@ -110,12 +113,12 @@ func (d Deps) deleteAccount(ctx context.Context, body []byte) (any, error) {
 	if err := validateDeleteAccountRequest(&req); err != nil {
 		return nil, err
 	}
-	if d.IAM == nil {
+	if d.Termination == nil {
 		slog.Error("DeleteAccount: IAM service not available")
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.IAM, d.BucketStore)
+	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore)
 	if err != nil {
 		slog.Error("DeleteAccount: failed to build teardown engine", "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)
@@ -258,6 +261,7 @@ func (d Deps) runAccountDeletion(
 	ctx, cancel := context.WithTimeout(context.Background(), accountDeletionTimeout)
 	tracker := &deletionTracker{jobs: jobs, job: job, revision: revision, cancel: cancel}
 	engine.OnStage = tracker.stageFinished
+	engine.OnQuiesced = tracker.quiesced
 
 	go func() {
 		defer cancel()
@@ -269,6 +273,8 @@ func (d Deps) runAccountDeletion(
 			AccountID:   job.AccountID,
 			AccountName: job.AccountName,
 			Force:       job.Force,
+			OperationID: job.OperationID,
+			Fence:       job.Fence,
 		})
 		tracker.finished(ctx, result, err)
 	}()
@@ -291,6 +297,13 @@ type deletionTracker struct {
 func (t *deletionTracker) stageFinished(ctx context.Context, stage accountteardown.StageResult) {
 	t.mu.Lock()
 	t.job.Stages = append(t.job.Stages, stage)
+	t.mu.Unlock()
+	t.persist(ctx)
+}
+
+func (t *deletionTracker) quiesced(ctx context.Context, quiescence operatorv1.IAMQuiescence) {
+	t.mu.Lock()
+	t.job.IAM = &quiescence
 	t.mu.Unlock()
 	t.persist(ctx)
 }
@@ -472,9 +485,36 @@ func claimDeletionJob(
 		reason = takeoverReasonLeaseExpired
 	}
 
-	// A failed job, or one whose holder stopped renewing its lease, is taken
-	// over at the next fence. Teardown is idempotent: it re-lists what is left.
-	// The operation keeps its id; a record from before fences gets one now.
+	return takeOverDeletionJob(ctx, jobs, req, holder, existing, existingRevision, reason, now)
+}
+
+// takeOverDeletionJob moves an unfinished job to the next fence under holder.
+// The write is conditional on the revision existing was read at, so of any
+// number of takers exactly one succeeds. The operation keeps its id.
+func takeOverDeletionJob(
+	ctx context.Context,
+	jobs jetstream.KeyValue,
+	req *operatorv1.DeleteAccountRequest,
+	holder string,
+	existing *accountDeletionJob,
+	existingRevision uint64,
+	reason string,
+	now time.Time,
+) (*accountDeletionJob, uint64, *accountDeletionJob, error) {
+	operationID := uuid.NewV4().String()
+	job := &accountDeletionJob{
+		DeletionID:  operationID,
+		OperationID: operationID,
+		AccountID:   req.AccountID,
+		AccountName: req.AccountName,
+		ClientToken: req.ClientToken,
+		State:       operatorv1.DeletionStateRunning,
+		Force:       req.Force,
+		StartedAt:   now.Format(time.RFC3339),
+		UpdatedAt:   now.Format(time.RFC3339),
+		Holder:      holder,
+		LeaseUntil:  now.Add(accountDeletionStale).Format(time.RFC3339),
+	}
 	if existing.OperationID != "" {
 		job.OperationID = existing.OperationID
 		job.DeletionID = existing.OperationID
@@ -483,13 +523,13 @@ func claimDeletionJob(
 	job.Takeovers = append(append([]deletionTakeover(nil), existing.Takeovers...), deletionTakeover{
 		Fence: job.Fence, Holder: holder, At: now.Format(time.RFC3339), Reason: reason,
 	})
-	record, err = json.Marshal(job)
+	record, err := json.Marshal(job)
 	if err != nil {
 		slog.Error("DeleteAccount: failed to marshal job record", "err", err)
 		return nil, 0, nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	revision, err = jobs.Update(ctx, req.AccountID, record, existingRevision)
+	revision, err := jobs.Update(ctx, req.AccountID, record, existingRevision)
 	if err != nil {
 		if isRevisionConflict(err) {
 			// Another taker won the same expired lease.

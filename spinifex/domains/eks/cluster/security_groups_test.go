@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -52,6 +53,11 @@ type fakeSGProvisioner struct {
 	// nodegroup SG IDs.
 	createIDs []string
 
+	// uniqueIDs makes CreateSecurityGroup hand out sg-1, sg-2, ... once createIDs
+	// is exhausted, so a flow that creates several SGs can tell them apart.
+	uniqueIDs bool
+	nextSeq   int
+
 	createErr    error
 	describeErr  error
 	deleteErr    error
@@ -72,12 +78,22 @@ func (f *fakeSGProvisioner) CreateSecurityGroup(_ context.Context, input *ec2.Cr
 		return nil, f.createErr
 	}
 	id := "sg-default"
-	if len(f.createIDs) > 0 {
+	switch {
+	case len(f.createIDs) > 0:
 		id = f.createIDs[0]
 		f.createIDs = f.createIDs[1:]
+	case f.uniqueIDs:
+		f.nextSeq++
+		id = "sg-" + strconv.Itoa(f.nextSeq)
 	}
 	if input.GroupName != nil && input.VpcId != nil {
 		f.existing[*input.GroupName+"|"+*input.VpcId] = id
+	}
+	for _, spec := range input.TagSpecifications {
+		if f.tagsByID == nil {
+			f.tagsByID = map[string][]*ec2.Tag{}
+		}
+		f.tagsByID[id] = append(f.tagsByID[id], spec.Tags...)
 	}
 	return &ec2.CreateSecurityGroupOutput{GroupId: aws.String(id)}, nil
 }
@@ -104,15 +120,18 @@ func (f *fakeSGProvisioner) DescribeSecurityGroups(_ context.Context, input *ec2
 		return out, nil
 	}
 	var name, vpc string
+	tagFilters := map[string]string{}
 	for _, filt := range input.Filters {
 		if filt == nil || filt.Name == nil || len(filt.Values) == 0 || filt.Values[0] == nil {
 			continue
 		}
-		switch *filt.Name {
-		case "group-name":
+		switch {
+		case *filt.Name == "group-name":
 			name = *filt.Values[0]
-		case "vpc-id":
+		case *filt.Name == "vpc-id":
 			vpc = *filt.Values[0]
+		case strings.HasPrefix(*filt.Name, "tag:"):
+			tagFilters[strings.TrimPrefix(*filt.Name, "tag:")] = *filt.Values[0]
 		}
 	}
 	out := &ec2.DescribeSecurityGroupsOutput{}
@@ -121,6 +140,9 @@ func (f *fakeSGProvisioner) DescribeSecurityGroups(_ context.Context, input *ec2
 		for key, id := range f.existing {
 			parts := strings.SplitN(key, "|", 2)
 			if len(parts) != 2 || parts[1] != vpc {
+				continue
+			}
+			if !sgTagsMatch(f.tagsByID[id], tagFilters) {
 				continue
 			}
 			out.SecurityGroups = append(out.SecurityGroups, &ec2.SecurityGroup{
@@ -267,7 +289,7 @@ func TestDeleteClusterSGs_DeletesBothExisting(t *testing.T) {
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-existing-cp"
 	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-existing-ng"
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.NoError(t, err)
 
 	require.Len(t, sgp.deleteCalls, 2)
@@ -291,7 +313,7 @@ func TestDeleteClusterSGs_ReapsLBCTaggedSGs(t *testing.T) {
 		"sg-lbc-other": {{Key: aws.String(lbcClusterOwnershipTagKey), Value: aws.String("beta")}},
 	}
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.NoError(t, err)
 
 	deleted := map[string]bool{}
@@ -309,7 +331,7 @@ func TestDeleteClusterSGs_MissingSGsNoOp(t *testing.T) {
 	t.Parallel()
 	sgp := newFakeSGProvisioner()
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.NoError(t, err)
 	assert.Empty(t, sgp.deleteCalls, "no delete calls expected when SGs already absent")
 }
@@ -323,7 +345,7 @@ func TestDeleteClusterSGs_FirstErrorSurfacedSweepContinues(t *testing.T) {
 	// after a single attempt per SG (the retry path is covered separately).
 	sgp.deleteErr = errors.New("vpcd unavailable")
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sg-existing-cp")
 	assert.Len(t, sgp.deleteCalls, 2, "both delete calls should be attempted despite first error")
@@ -348,7 +370,7 @@ func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
 		sgp.deleteFailsBefore = map[string]int{"sg-ng": 2} // 2 DepViolations, then ok
 
-		err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+		err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 		require.NoError(t, err, "delete must succeed once the ENI detaches")
 		assert.GreaterOrEqual(t, len(sgp.deleteCalls), 3, "retried past the transient violations")
 	})
@@ -359,7 +381,7 @@ func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 		sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
 		sgp.deleteErr = errors.New("DependencyViolation: still referenced")
 
-		err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+		err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 		require.Error(t, err, "a persistent DependencyViolation must surface, not leak the SG")
 		assert.Contains(t, err.Error(), "sg-ng")
 	})
@@ -382,7 +404,7 @@ func TestDeleteClusterSGs_RevokesCrossRefsBeforeDelete(t *testing.T) {
 	// AWS refuses to delete an SG still referenced by a sibling's rule.
 	sgp.enforceDepViolation = true
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.NoError(t, err, "revoke-then-delete must clear the cp<->ng cycle so both SGs delete")
 
 	require.Len(t, sgp.revokeCalls, 2, "ingress on both SGs must be revoked before delete")
@@ -418,7 +440,7 @@ func TestDeleteClusterSGs_RevokesEgressAndNonClusterReferrers(t *testing.T) {
 	}
 	sgp.enforceDepViolation = true
 
-	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
+	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa", "")
 	require.NoError(t, err, "revoking both directions on all non-default SGs must clear every cycle")
 
 	revokedEgress := map[string]bool{}
@@ -590,4 +612,65 @@ func assertSGCreateTagged(t *testing.T, in *ec2.CreateSecurityGroupInput, name, 
 	assert.Equal(t, tags.ManagedByEKS, got[tags.ManagedByKey])
 	assert.Equal(t, clusterName, got[clusterEKSClusterTagKey])
 	assert.Equal(t, role, got[clusterEKSRoleTagKey])
+}
+
+// sgTagsMatch reports whether tags carry every key=value in want.
+func sgTagsMatch(tags []*ec2.Tag, want map[string]string) bool {
+	have := sgTagMap(tags)
+	for k, v := range want {
+		if have[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func sgTagMap(tags []*ec2.Tag) map[string]string {
+	m := map[string]string{}
+	for _, tg := range tags {
+		m[aws.StringValue(tg.Key)] = aws.StringValue(tg.Value)
+	}
+	return m
+}
+
+func TestEnsureClusterSG_EmptyInputsRejected(t *testing.T) {
+	t.Parallel()
+	sg := newFakeSGProvisioner()
+	_, err := EnsureClusterSG(context.Background(), sg, testAccountID, "", "vpc-aaa")
+	require.Error(t, err)
+	_, err = EnsureClusterSG(context.Background(), sg, testAccountID, "c1", "")
+	require.Error(t, err)
+	assert.Empty(t, sg.createCalls)
+}
+
+func TestEnsureClusterSG_SecondCallReusesTheTaggedSG(t *testing.T) {
+	t.Parallel()
+	sg := newFakeSGProvisioner()
+	sg.uniqueIDs = true
+
+	first, err := EnsureClusterSG(context.Background(), sg, testAccountID, "c1", "vpc-aaa")
+	require.NoError(t, err)
+	second, err := EnsureClusterSG(context.Background(), sg, testAccountID, "c1", "vpc-aaa")
+	require.NoError(t, err)
+
+	assert.Equal(t, first, second)
+	assert.Len(t, sg.createCalls, 1)
+}
+
+func TestEnsureClusterSG_DuplicateSelfRuleTolerated(t *testing.T) {
+	t.Parallel()
+	sg := newFakeSGProvisioner()
+	sg.authorizeErr = errors.New(awserrors.ErrorInvalidPermissionDuplicate)
+
+	_, err := EnsureClusterSG(context.Background(), sg, testAccountID, "c1", "vpc-aaa")
+	require.NoError(t, err)
+}
+
+func TestEnsureClusterSG_AuthorizeErrorSurfaced(t *testing.T) {
+	t.Parallel()
+	sg := newFakeSGProvisioner()
+	sg.authorizeErr = errors.New("boom")
+
+	_, err := EnsureClusterSG(context.Background(), sg, testAccountID, "c1", "vpc-aaa")
+	require.Error(t, err)
 }

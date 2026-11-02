@@ -2,6 +2,7 @@ import { screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
+import { callerIdentityQueryOptions } from "@/queries/sts"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const { sdk } = vi.hoisted(() => {
@@ -42,16 +43,27 @@ const IMAGE = {
   ],
 }
 
-function renderDetails(tab: PanelTab, onClose = vi.fn()) {
+function renderDetails(
+  tab: PanelTab,
+  onClose = vi.fn(),
+  image: typeof IMAGE = IMAGE,
+) {
+  const queryClient = createTestQueryClient()
+
+  queryClient.setQueryData(callerIdentityQueryOptions.queryKey, {
+    Account: "000000000001",
+    $metadata: {},
+  })
+
   renderWithClient(
     <ImageDetails
-      image={IMAGE}
+      image={image}
       layout="page"
       onClose={onClose}
       onTabChange={vi.fn()}
       tab={tab}
     />,
-    createTestQueryClient(),
+    queryClient,
   )
 }
 
@@ -63,6 +75,14 @@ describe("ImageDetails", () => {
       "href",
       "/ec2/describe-snapshots/snap-1",
     )
+  })
+
+  it("hides the snapshot of an image another account owns", () => {
+    renderDetails("overview", vi.fn(), { ...IMAGE, OwnerId: "000000000000" })
+
+    expect(screen.getByText("/dev/vda", { selector: "*" })).toBeInTheDocument()
+    expect(screen.queryByText("snap-1")).not.toBeInTheDocument()
+    expect(screen.queryByText("Snapshot ID")).not.toBeInTheDocument()
   })
 
   it("deregisters only after it is confirmed, then closes", async () => {

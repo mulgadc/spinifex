@@ -57,7 +57,10 @@
   --console-muted: oklch(55% 0.01 254);
   --console-ok: oklch(50% 0.13 155);
   --console-fail: oklch(52% 0.2 27);
-  --warning-foreground: oklch(50% 0.11 70);
+  --warning-foreground: oklch(48% 0.1 85);
+  /* Orange for a warning, kept clear of the primary action's hue. */
+  --caution: oklch(72% 0.17 58);
+  --caution-foreground: oklch(50% 0.14 50);
   --danger: oklch(52% 0.19 17);
   --danger-foreground: oklch(46% 0.17 17);
   --info: oklch(58% 0.14 245);
@@ -123,6 +126,8 @@
   --console-ok: oklch(75% 0.15 155);
   --console-fail: oklch(70% 0.18 27);
   --warning-foreground: oklch(86% 0.14 85);
+  --caution: oklch(74% 0.16 58);
+  --caution-foreground: oklch(80% 0.13 58);
   --danger: oklch(64% 0.2 17);
   --danger-foreground: oklch(75% 0.15 17);
   --info: oklch(68% 0.13 245);
@@ -208,6 +213,10 @@
   --color-warning-foreground: var(--warning-foreground);
   --color-warning-subtle: color-mix(in oklch, var(--warning) 12%, transparent);
   --color-warning-border: color-mix(in oklch, var(--warning) 40%, transparent);
+  --color-caution: var(--caution);
+  --color-caution-foreground: var(--caution-foreground);
+  --color-caution-subtle: color-mix(in oklch, var(--caution) 12%, transparent);
+  --color-caution-border: color-mix(in oklch, var(--caution) 40%, transparent);
   --color-danger: var(--danger);
   --color-danger-foreground: var(--danger-foreground);
   --color-danger-subtle: color-mix(in oklch, var(--danger) 12%, transparent);
@@ -221,8 +230,9 @@
   --color-neutral-subtle: color-mix(in oklch, var(--neutral) 12%, transparent);
   --color-neutral-border: color-mix(in oklch, var(--neutral) 40%, transparent);
 
-  /* Console scale: 14px body and table text, 13px secondary text, 26px page
-     titles. Code sizes are set relative to the surrounding text. */
+  /* Console scale, in rem over a 110% root: about 15.4px body and table
+     text, 14.3px secondary text, 28.6px page titles at the browser default.
+     Code sizes are set relative to the surrounding text. */
   --text-2xs: 0.75rem;
   --text-2xs--line-height: 1rem;
   --text-xs: 0.8125rem;
@@ -281,6 +291,12 @@
   html,
   body {
     @apply overscroll-none;
+  }
+
+  /* Everything is sized in rem, so this scales text, spacing and breakpoints
+     together, as browser zoom would, and still honours the user's font size. */
+  html {
+    font-size: 110%;
   }
 
   body {

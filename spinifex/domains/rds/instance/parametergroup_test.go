@@ -156,6 +156,8 @@ func TestCreateDBParameterGroup_RejectsADuplicateName(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorDBParameterGroupAlreadyExists, awserrors.ValidErrorCodeFromError(err),
 		"the code has to survive resolution or the client sees a 500")
+	_, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, "Parameter group "+testParameterGroup+" already exists", message)
 }
 
 // The default group is what CreateDBInstance resolves when a request names none,
@@ -210,6 +212,8 @@ func TestDescribeDBParameterGroups_RejectsAnUnknownName(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorDBParameterGroupNotFound, awserrors.ValidErrorCodeFromError(err),
 		"the code has to survive resolution or the client sees a 500")
+	_, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, "DBParameterGroup not found: absent", message)
 
 	// A default.* name for an engine that does not exist is a not-found too,
 	// rather than a group that resolves to nothing.
@@ -457,7 +461,7 @@ func TestModifyDBParameterGroup_RejectsBadRequests(t *testing.T) {
 		want  string
 	}{
 		{"UnknownParameter", modifyParameters(testParameterGroup, parameter("not_a_setting", "1", "")),
-			"is not a parameter this engine exposes"},
+			"Could not find parameter with name: not_a_setting"},
 		{"OutOfRange", modifyParameters(testParameterGroup, parameter("max_connections", "999999", "")),
 			"outside its allowed range"},
 		{"Formula", modifyParameters(testParameterGroup, parameter("shared_buffers", "{DBInstanceClassMemory/32768}", "")),

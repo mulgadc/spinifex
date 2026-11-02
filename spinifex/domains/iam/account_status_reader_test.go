@@ -12,7 +12,7 @@ import (
 
 // newStatusReaderFixture starts a real IAM service (which creates and
 // migrates spinifex-accounts) and a reader attached to the same JetStream.
-func newStatusReaderFixture(t *testing.T) (iamdomain.IAMService, *iamdomain.AccountStatusReader, jetstream.JetStream) {
+func newStatusReaderFixture(t *testing.T) (*iamdomain.IAMServiceImpl, *iamdomain.AccountStatusReader, jetstream.JetStream) {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
 
@@ -32,7 +32,7 @@ func TestAccountStatusReader_TerminatingIsTrue(t *testing.T) {
 	require.NoError(t, err)
 	account, err := svc.CreateAccount("tenant@example.com")
 	require.NoError(t, err)
-	_, err = svc.SetAccountStatus(account.AccountID, iamdomain.AccountStatusTerminating)
+	_, err = svc.QuiesceAccount(account.AccountID, "op-1", 1)
 	require.NoError(t, err)
 
 	terminating, err := reader.AccountTerminating(t.Context(), account.AccountID)

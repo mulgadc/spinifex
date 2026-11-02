@@ -3,11 +3,11 @@
 package integration
 
 import (
-	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
 	"io"
 	"net/http"
 	"net/url"
@@ -21,12 +21,12 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
 	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -523,7 +523,7 @@ func iamUncased() map[string]string {
 		"PutGroupPolicy", "PutRolePolicy", "PutUserPolicy", "RemoveRoleFromInstanceProfile",
 		"RemoveUserFromGroup", "TagInstanceProfile", "TagRole", "TagUser",
 		"UntagInstanceProfile", "UntagRole", "UntagUser", "UpdateAccessKey",
-		"UpdateAssumeRolePolicy", "UpdateRole", "UpdateRoleDescription",
+		"UpdateAssumeRolePolicy", "UpdateRole", "UpdateRoleDescription", "UpdateUser",
 	} {
 		uncased[action] = byName
 	}

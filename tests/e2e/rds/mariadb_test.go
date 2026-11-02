@@ -31,6 +31,8 @@ const (
 	// and no MariaDB client can quote on our behalf, so rds-init's escaping and
 	// the agent's rotation are under test rather than assumed.
 	mariaRotatedPassword = "e2eR0tated\\Maria'2"
+	// The other half of the pair the backup-overlap rotations alternate between.
+	mariaBackupRotationPassword = "e2eDur1ng\\Backup'3"
 
 	// The table every MariaDB assertion is made against: a stop, a start or a VM
 	// replacement that loses it has not preserved the datadir.
@@ -64,14 +66,17 @@ var mariaUnpinnedVersions = []string{"11.4", "10.11", "11.8.8"}
 // field it cares about. Same class and storage as the PostgreSQL spec: the
 // engine is what is under test, not the sizing.
 func validMariaDBCreateInput(id string) *rds.CreateDBInstanceInput {
+	backup, maintenance := windowsClearOfTheRun()
 	return &rds.CreateDBInstanceInput{
-		DBInstanceIdentifier: aws.String(id),
-		Engine:               aws.String(mariaEngine),
-		DBInstanceClass:      aws.String(dbClass),
-		AllocatedStorage:     aws.Int64(dbStorageGiB),
-		DBName:               aws.String(mariaDBName),
-		MasterUsername:       aws.String(mariaMasterUser),
-		MasterUserPassword:   aws.String(mariaMasterPassword),
+		DBInstanceIdentifier:       aws.String(id),
+		Engine:                     aws.String(mariaEngine),
+		DBInstanceClass:            aws.String(dbClass),
+		AllocatedStorage:           aws.Int64(dbStorageGiB),
+		DBName:                     aws.String(mariaDBName),
+		MasterUsername:             aws.String(mariaMasterUser),
+		MasterUserPassword:         aws.String(mariaMasterPassword),
+		PreferredBackupWindow:      aws.String(backup),
+		PreferredMaintenanceWindow: aws.String(maintenance),
 	}
 }
 
@@ -266,6 +271,13 @@ func TestMariaDBInstance(t *testing.T) {
 			"the old password must be refused by the engine, not by the network")
 
 		conn = rotated
+	})
+
+	// A rotation that lands while an automated backup holds the engine. The window
+	// is opened on purpose, so this runs every time rather than only when one
+	// happens to open mid-test.
+	t.Run("TheMasterPasswordRotatesDuringAnAutomatedBackup", func(t *testing.T) {
+		rotateDuringAutomatedBackup(t, f, client, id, &conn)
 	})
 
 	// The family check is one funnel every binding path goes through, and modify

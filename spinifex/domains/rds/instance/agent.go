@@ -137,6 +137,10 @@ type Command struct {
 	Type       string      `json:"type" locationName:"Type"`
 	Parameters []Parameter `json:"parameters,omitempty" locationName:"Parameters" locationNameList:"member" xml:"Parameters>member"`
 	IssuedAt   *time.Time  `json:"issuedAt,omitempty" locationName:"IssuedAt" type:"timestamp"`
+	// How much of the issuer's budget was left when this copy was published. A
+	// duration rather than a deadline, so the guest needs no clock agreement with
+	// the host; zero means the issuer predates the field.
+	RemainingBudgetMs int64 `json:"remainingBudgetMs,omitempty" locationName:"RemainingBudgetMs"`
 }
 
 // CommandReply is the agent's result for a command from an earlier poll, carried on the next poll

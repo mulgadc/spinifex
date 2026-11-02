@@ -60,7 +60,7 @@ describe("AddonsTab", () => {
     renderWithClient(<AddonsTab clusterName={CLUSTER} />, seed())
     expect(screen.getByText("coredns")).toBeInTheDocument()
     expect(screen.getByText("v1.0.0")).toBeInTheDocument()
-    expect(screen.getByText("ACTIVE")).toBeInTheDocument()
+    expect(screen.getByText("active")).toHaveAttribute("data-tone", "success")
   })
 
   it("shows empty state when there are no add-ons", () => {
@@ -76,11 +76,11 @@ describe("AddonsTab", () => {
       <AddonsTab clusterName={CLUSTER} />,
       seed({ status: "CREATING" }),
     )
-    const badge = screen.getByText("CREATING")
-    expect(badge).toBeInTheDocument()
-    // In-progress renders as the calm secondary variant, not the failure one.
-    expect(badge.className).toContain("bg-secondary")
-    expect(badge.className).not.toContain("bg-destructive")
+    // In progress reads as a state change, not a failure.
+    expect(screen.getByText("creating")).toHaveAttribute(
+      "data-tone",
+      "progress",
+    )
   })
 
   it("surfaces a health issue on a failed add-on", () => {

@@ -8,10 +8,10 @@ import {
   PanelField,
   PanelFields,
   PanelSection,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
-import { Badge } from "@/components/ui/badge"
+import { Ec2Tags } from "@/components/resource-tags"
+import { StateBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
@@ -71,7 +71,11 @@ function Settings({
 
   return (
     <>
-      <PanelTags tags={rtb.Tags} />
+      <Ec2Tags
+        id={rtb.RouteTableId}
+        invalidate={["ec2", "routeTables"]}
+        tags={rtb.Tags}
+      />
       <PanelSection title="Manage">
         <div className="flex flex-col items-start gap-3">
           {main && (
@@ -148,9 +152,7 @@ export function RouteTableDetails({
       onClose={onClose}
       onTabChange={onTabChange}
       subtitle={name ? id : undefined}
-      summary={
-        isMainRouteTable(rtb) ? <Badge variant="secondary">Main</Badge> : null
-      }
+      summary={isMainRouteTable(rtb) ? <StateBadge state="main" /> : null}
       tab={tab}
       tabs={[
         {

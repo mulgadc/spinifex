@@ -106,10 +106,33 @@ func flushSupported(w http.ResponseWriter) bool {
 }
 
 func streamInstanceMetrics(w http.ResponseWriter, r *http.Request, nc *nats.Conn, accountID, instanceID string, since int64) error {
+	return streamLive(w, r, nc, liveSubjects{
+		action: GetInstanceMetricsAction,
+		sample: telemetryv1.LiveSampleSubject(accountID, instanceID),
+		watch:  telemetryv1.LiveWatchSubject(accountID, instanceID),
+		absent: awserrors.ErrorInvalidInstanceIDNotFound,
+	}, since, func(data []byte) ([]telemetryv1.LiveSample, error) {
+		var ring telemetryv1.LiveRing
+		err := json.Unmarshal(data, &ring)
+		return ring.Samples, err
+	}, func(s telemetryv1.LiveSample) int64 { return s.TimeMillis })
+}
+
+// liveSubjects names one live source: where its samples are published, where
+// to ask for its ring, and the error for a source nobody answers for.
+type liveSubjects struct {
+	action string
+	sample string
+	watch  string
+	absent string
+}
+
+func streamLive[S any](w http.ResponseWriter, r *http.Request, nc *nats.Conn, src liveSubjects, since int64,
+	decodeRing func([]byte) ([]S, error), stamp func(S) int64) error {
 	samples := make(chan *nats.Msg, 64)
-	sub, err := nc.ChanSubscribe(telemetryv1.LiveSampleSubject(accountID, instanceID), samples)
+	sub, err := nc.ChanSubscribe(src.sample, samples)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "GetInstanceMetrics: subscribe", "err", err)
+		slog.ErrorContext(r.Context(), src.action+": subscribe", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	defer func() { _ = sub.Unsubscribe() }()
@@ -118,22 +141,21 @@ func streamInstanceMetrics(w http.ResponseWriter, r *http.Request, nc *nats.Conn
 	if err != nil {
 		return errors.New(awserrors.ErrorInternalError)
 	}
-	watchSubject := telemetryv1.LiveWatchSubject(accountID, instanceID)
 
 	// Subscribed first, then asked for the ring, so nothing falls between them.
-	// No responder is an instance that is not running in this account, which
+	// No responder is a source that is not running in this account, which
 	// reads the same as one that does not exist.
-	reply, err := nc.Request(watchSubject, watch, liveWatchTimeout)
+	reply, err := nc.Request(src.watch, watch, liveWatchTimeout)
 	if err != nil {
 		if errors.Is(err, nats.ErrNoResponders) || errors.Is(err, nats.ErrTimeout) {
-			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			return errors.New(src.absent)
 		}
-		slog.ErrorContext(r.Context(), "GetInstanceMetrics: watch request", "err", err)
+		slog.ErrorContext(r.Context(), src.action+": watch request", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	var ring telemetryv1.LiveRing
-	if err := json.Unmarshal(reply.Data, &ring); err != nil {
-		slog.ErrorContext(r.Context(), "GetInstanceMetrics: malformed ring", "err", err)
+	ring, err := decodeRing(reply.Data)
+	if err != nil {
+		slog.ErrorContext(r.Context(), src.action+": malformed ring", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -146,22 +168,23 @@ func streamInstanceMetrics(w http.ResponseWriter, r *http.Request, nc *nats.Conn
 	// From here the status is committed, so failures end the stream quietly and
 	// the client reconnects.
 	last := since
-	send := func(s telemetryv1.LiveSample) bool {
-		if s.TimeMillis <= last {
+	send := func(s S) bool {
+		t := stamp(s)
+		if t <= last {
 			return true
 		}
 		data, err := json.Marshal(s)
 		if err != nil {
 			return true
 		}
-		last = s.TimeMillis
-		if _, err := fmt.Fprintf(w, "id: %d\nevent: sample\ndata: %s\n\n", s.TimeMillis, data); err != nil {
+		last = t
+		if _, err := fmt.Fprintf(w, "id: %d\nevent: sample\ndata: %s\n\n", t, data); err != nil {
 			return false
 		}
 		return ctrl.Flush() == nil
 	}
 
-	for _, s := range ring.Samples {
+	for _, s := range ring {
 		if !send(s) {
 			return nil
 		}
@@ -184,17 +207,17 @@ func streamInstanceMetrics(w http.ResponseWriter, r *http.Request, nc *nats.Conn
 		case <-end.C:
 			return nil
 		case <-renew.C:
-			if err := nc.Publish(watchSubject, watch); err != nil {
-				slog.DebugContext(r.Context(), "GetInstanceMetrics: renew watch", "err", err)
+			if err := nc.Publish(src.watch, watch); err != nil {
+				slog.DebugContext(r.Context(), src.action+": renew watch", "err", err)
 			}
 		case <-keepAlive.C:
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil || ctrl.Flush() != nil {
 				return nil
 			}
 		case msg := <-samples:
-			var s telemetryv1.LiveSample
+			var s S
 			if err := json.Unmarshal(msg.Data, &s); err != nil {
-				slog.DebugContext(r.Context(), "GetInstanceMetrics: malformed sample", "err", err)
+				slog.DebugContext(r.Context(), src.action+": malformed sample", "err", err)
 				continue
 			}
 			if !send(s) {

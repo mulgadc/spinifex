@@ -76,7 +76,7 @@ export function ActivationPanel({
 
       <div className="flex items-center gap-3">
         <ActivationBadge
-          fallback={activationQuery.isPending ? "Loading…" : "Unknown"}
+          fallback={activationQuery.isPending ? "loading…" : "unknown"}
           state={activation?.state}
         />
         <Button

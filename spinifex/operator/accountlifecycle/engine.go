@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sort"
 	"time"
+
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 )
 
 // AccountStatusTerminating mirrors iamdomain.AccountStatusTerminating.
@@ -28,6 +30,10 @@ type Engine struct {
 	// teardown in the background can publish progress. A teardown takes minutes
 	// and this is the only view into it while it runs.
 	OnStage func(ctx context.Context, stage StageResult)
+
+	// OnQuiesced receives the recorded quiescence evaluation once the account is
+	// TERMINATING and before the first stage. It records evidence and gates nothing.
+	OnQuiesced func(ctx context.Context, quiescence operatorv1.IAMQuiescence)
 
 	// ec2Inventory is EC2's read-only platform inventory. Only DryRun consults
 	// it, and only to log a comparison; no teardown or Inventory call does.
@@ -118,8 +124,12 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		return e.Inventory(ctx, req.AccountID)
 	}
 
-	if _, err := e.Accounts.SetAccountStatus(req.AccountID, AccountStatusTerminating); err != nil {
-		return nil, fmt.Errorf("mark account terminating: %w", err)
+	generation, err := e.Accounts.QuiesceAccount(req.AccountID, req.OperationID, req.Fence)
+	if err != nil {
+		return nil, fmt.Errorf("quiesce account: %w", err)
+	}
+	if e.OnQuiesced != nil {
+		e.OnQuiesced(ctx, e.evaluateQuiescence(ctx, req, generation))
 	}
 	e.logger().InfoContext(ctx, "Account teardown started",
 		"accountID", account.AccountID, "accountName", account.AccountName, "force", req.Force)
@@ -149,7 +159,7 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		return result, fmt.Errorf("%d resources left: %w", stuck, ErrResourcesStuck)
 	}
 
-	if err := e.Accounts.DeleteAccount(req.AccountID); err != nil {
+	if err := e.Accounts.DeleteAccount(req.AccountID, req.OperationID, req.Fence); err != nil {
 		return result, fmt.Errorf("delete account record: %w", err)
 	}
 	result.AccountDeleted = true
@@ -324,4 +334,24 @@ func containsResource(resources []Resource, want Resource) bool {
 // lives.
 func SortReapers(reapers []Reaper) {
 	sort.SliceStable(reapers, func(i, j int) bool { return reapers[i].Stage() < reapers[j].Stage() })
+}
+
+// evaluateQuiescence reads back what the quiesce wrote and, only if the fence
+// is confirmed, asks EC2 for its platform inventory within a short budget.
+func (e *Engine) evaluateQuiescence(ctx context.Context, req Request, generation uint64) operatorv1.IAMQuiescence {
+	ev := QuiesceEvidence{
+		OperationID: req.OperationID, Fence: req.Fence, Generation: generation, EvaluatedAt: time.Now(),
+	}
+	ev.Account, ev.ReadbackErr = e.Accounts.GetAccount(req.AccountID)
+	if _, confirmed := fenceReadback(ev); confirmed && e.ec2Inventory != nil {
+		budget := ec2PlatformShadowBudget
+		if e.ec2PlatformShadowBudget > 0 {
+			budget = e.ec2PlatformShadowBudget
+		}
+		inventoryCtx, cancel := context.WithTimeout(ctx, budget)
+		defer cancel()
+		reply := e.ec2Inventory.PlatformInventory(inventoryCtx, req.AccountID, req.OperationID)
+		ev.Inventory = &reply
+	}
+	return EvaluateQuiescence(ev)
 }

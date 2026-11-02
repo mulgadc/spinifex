@@ -33,9 +33,15 @@ func TestSetAccountStatusCountsOnlyChanges(t *testing.T) {
 		{AccountStatusTerminating, 3},
 	}
 	for _, step := range steps {
-		got, err := svc.SetAccountStatus(account.AccountID, step.status)
-		require.NoError(t, err)
-		assert.Equal(t, step.want, got.Generation, "status %s", step.status)
+		if step.status == AccountStatusTerminating {
+			generation, err := svc.QuiesceAccount(account.AccountID, "op-1", 1)
+			require.NoError(t, err)
+			assert.Equal(t, step.want, generation, "status %s", step.status)
+		} else {
+			got, err := svc.SetAccountStatus(account.AccountID, step.status)
+			require.NoError(t, err)
+			assert.Equal(t, step.want, got.Generation, "status %s", step.status)
+		}
 
 		stored, err := svc.GetAccount(account.AccountID)
 		require.NoError(t, err)

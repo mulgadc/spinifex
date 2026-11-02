@@ -620,6 +620,9 @@ var (
 	ErrorMissingRequiredParameterException = "MissingRequiredParameterException"
 	ErrorSerializationException            = "SerializationException"
 	ErrorUnknownOperationException         = "UnknownOperationException"
+	// Lambda wire codes that no other service shares.
+	ErrorResourceConflictException = "ResourceConflictException"
+	ErrorServiceException          = "ServiceException"
 )
 
 // ValidErrorCode returns the error code if it exists in ErrorLookup,
@@ -1452,6 +1455,8 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorMissingRequiredParameterException: {HTTPCode: 400, Message: "The request is missing a required parameter."},
 	ErrorSerializationException:            {HTTPCode: 400, Message: "The request body could not be deserialized."},
 	ErrorUnknownOperationException:         {HTTPCode: 400, Message: "The requested operation is not recognized."},
+	ErrorResourceConflictException:         {HTTPCode: 409, Message: "The resource already exists or is in a state that does not allow this operation."},
+	ErrorServiceException:                  {HTTPCode: 500, Message: "The Lambda service encountered an internal error."},
 
 	// Route 53.
 	ErrorNoSuchHostedZone:          {HTTPCode: 404, Message: "No hosted zone exists with the ID that you specified."},

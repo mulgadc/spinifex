@@ -381,6 +381,8 @@ func TestDescribeDBSnapshots_NamedSnapshotThatDoesNotExistIsAnError(t *testing.T
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorDBSnapshotNotFound)
+	_, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, "DBSnapshot not found: "+testSnapshotID+"", message)
 }
 
 // A filter this phase cannot honour is rejected, because a silently

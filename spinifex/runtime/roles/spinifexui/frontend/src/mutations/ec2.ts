@@ -1,6 +1,7 @@
 import {
   type _InstanceType,
   type EC2Client,
+  type IpPermission,
   type RequestLaunchTemplateData,
   type Tag,
   type TagSpecification,
@@ -206,6 +207,11 @@ async function runInstances(
       ? { GroupName: params.placementGroupName }
       : undefined,
     BlockDeviceMappings: buildBlockDeviceMappings(params),
+    TagSpecifications: buildTagSpec(
+      ResourceType.instance,
+      params.name?.trim(),
+      [],
+    ),
     // When a template is chosen the backend expands it, then the direct
     // params above overlay it (direct params win, matching AWS).
     LaunchTemplate: params.launchTemplateId
@@ -240,36 +246,67 @@ async function createLaunchWizardGroup(
   return sg.GroupId
 }
 
-// authorizeLaunchWizardIngress opens the ticked inbound ports on the new group.
-async function authorizeLaunchWizardIngress(
-  client: ReturnType<typeof getEc2Client>,
-  groupId: string,
-  params: CreateInstanceParams,
-): Promise<void> {
+interface LaunchWizardRuleInput {
+  allowPing?: boolean
+  allowSsh?: boolean
+  allowHttp?: boolean
+  allowHttps?: boolean
+  ruleSource?: "anywhere" | "custom"
+  customCidr?: string
+}
+
+// The ticked inbound rules: ping is ICMP echo request (type 8, any code), the
+// rest are single TCP ports. Shared with the CLI preview so the two agree.
+export function launchWizardPermissions(
+  params: LaunchWizardRuleInput,
+): IpPermission[] {
+  const cidrIp =
+    params.ruleSource === "custom" && params.customCidr
+      ? params.customCidr
+      : "0.0.0.0/0"
+
   const ports: number[] = [
     ...(params.allowSsh ? [22] : []),
     ...(params.allowHttp ? [80] : []),
     ...(params.allowHttps ? [443] : []),
   ]
 
-  if (ports.length === 0) {
+  return [
+    ...(params.allowPing
+      ? [
+          {
+            IpProtocol: "icmp",
+            FromPort: 8,
+            ToPort: -1,
+            IpRanges: [{ CidrIp: cidrIp }],
+          },
+        ]
+      : []),
+    ...ports.map((port) => ({
+      IpProtocol: "tcp",
+      FromPort: port,
+      ToPort: port,
+      IpRanges: [{ CidrIp: cidrIp }],
+    })),
+  ]
+}
+
+// authorizeLaunchWizardIngress opens the ticked inbound rules on the new group.
+async function authorizeLaunchWizardIngress(
+  client: ReturnType<typeof getEc2Client>,
+  groupId: string,
+  params: CreateInstanceParams,
+): Promise<void> {
+  const permissions = launchWizardPermissions(params)
+
+  if (permissions.length === 0) {
     return
   }
-
-  const cidrIp =
-    params.ruleSource === "custom" && params.customCidr
-      ? params.customCidr
-      : "0.0.0.0/0"
 
   await client.send(
     new AuthorizeSecurityGroupIngressCommand({
       GroupId: groupId,
-      IpPermissions: ports.map((port) => ({
-        IpProtocol: "tcp",
-        FromPort: port,
-        ToPort: port,
-        IpRanges: [{ CidrIp: cidrIp }],
-      })),
+      IpPermissions: permissions,
     }),
   )
 }

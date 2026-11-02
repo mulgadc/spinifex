@@ -219,7 +219,7 @@ func (e Engine) ValidateParameterValue(name, value string) (ParameterSpec, error
 	spec, ok := e.LookupParameter(name)
 	if !ok {
 		return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"%q is not a parameter this engine exposes", name)
+			"Could not find parameter with name: %s", name)
 	}
 	if !spec.IsModifiable {
 		return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,

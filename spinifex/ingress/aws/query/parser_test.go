@@ -713,6 +713,21 @@ func TestQueryParamsToStruct_CreateLaunchTemplateNestedData(t *testing.T) {
 		*input.LaunchTemplateData.InstanceMarketOptions.SpotOptions.ValidUntil)
 }
 
+// The Query protocol sends an empty list as its bare key, which must not read
+// as an absent one.
+func TestQueryParamsToStruct_EmptyListIsNotAbsent(t *testing.T) {
+	var input rds.DescribeDBEngineVersionsInput
+	err := QueryParamsToStruct(map[string]string{
+		"Filters.Filter.1.Name": "engine", "Filters.Filter.1.Values": "",
+		"Filters.Filter.2.Name": "status",
+	}, &input)
+	require.NoError(t, err)
+	require.Len(t, input.Filters, 2)
+	assert.NotNil(t, input.Filters[0].Values)
+	assert.Empty(t, input.Filters[0].Values)
+	assert.Nil(t, input.Filters[1].Values)
+}
+
 func TestParseArgs(t *testing.T) {
 	t.Run("indexed members stay distinct keys", func(t *testing.T) {
 		got, err := ParseArgs("Action=DescribeTags&ResourceArns.member.1=a&ResourceArns.member.2=b")

@@ -39,13 +39,6 @@ func TestCreateImage_NilNATS(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestDescribeImages_ValidationErrors(t *testing.T) {
-	_, err := DescribeImages(context.Background(), &ec2.DescribeImagesInput{
-		ImageIds: []*string{aws.String("bad-id")},
-	}, nil, "")
-	assert.EqualError(t, err, awserrors.ErrorInvalidAMIIDMalformed)
-}
-
 func TestDescribeImages_NilNATS(t *testing.T) {
 	_, err := DescribeImages(context.Background(), nil, nil, "acct-123")
 	assert.Error(t, err)

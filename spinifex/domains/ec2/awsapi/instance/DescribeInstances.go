@@ -89,6 +89,12 @@ func DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, n
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
 }
 
+// ValidateDescribeInstancesInput rejects any InstanceIds entry that is not a
+// well-formed instance ID with InvalidInstanceID.Malformed.
+func ValidateDescribeInstancesInput(input *ec2.DescribeInstancesInput) error {
+	return validateInstanceIDFormat(input.InstanceIds)
+}
+
 // DescribeInstancesChecked is the customer-facing variant served by the
 // gateway's DescribeInstances action. On top of DescribeInstances' aggregation,
 // it asserts InvalidInstanceID.NotFound for any explicitly named instance ID

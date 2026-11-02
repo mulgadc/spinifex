@@ -1445,15 +1445,9 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 			return driveConfig{}, fmt.Errorf("volume %s: block device export is not supported for an EFI volume", v.Name)
 
 		case v.Boot:
-			var blockdev Blockdev
-			if kind == volumeExportBlock {
-				blockdev = VolumeHostDeviceBlockdev(bootNodeName, HostDeviceOpts{Path: v.BlockDevice, SizeBytes: v.BlockSizeBytes})
-			} else {
-				server, err := nbdServerOpts(v.NBDURI)
-				if err != nil {
-					return driveConfig{}, fmt.Errorf("parse NBDURI for volume %s: %w", v.Name, err)
-				}
-				blockdev = bootNBDBlockdev(server)
+			blockdev, err := exportBlockdev(*v, kind, bootNodeName, bootNBDBlockdev)
+			if err != nil {
+				return driveConfig{}, err
 			}
 
 			// The boot disk's virtqueues are spread across a pool rather than
@@ -1497,15 +1491,9 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 			nodeName := VolumeNodeName(v.Name)
 			iothreadID := VolumeIOThreadID(v.Name)
 
-			var blockdev Blockdev
-			if kind == volumeExportBlock {
-				blockdev = VolumeHostDeviceBlockdev(nodeName, HostDeviceOpts{Path: v.BlockDevice, SizeBytes: v.BlockSizeBytes})
-			} else {
-				server, err := nbdServerOpts(v.NBDURI)
-				if err != nil {
-					return driveConfig{}, fmt.Errorf("parse NBDURI for volume %s: %w", v.Name, err)
-				}
-				blockdev = VolumeBlockdev(nodeName, server)
+			blockdev, err := exportBlockdev(*v, kind, nodeName, VolumeBlockdev)
+			if err != nil {
+				return driveConfig{}, err
 			}
 
 			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})

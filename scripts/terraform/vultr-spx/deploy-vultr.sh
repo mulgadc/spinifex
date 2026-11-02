@@ -329,6 +329,18 @@ restart_spinifex() {
     die "$NODE_NAME never logged its Vultr allocator; see journalctl -u spinifex-daemon on $IP"
 }
 
+# public_default_subnets turns on auto-assign for the default subnets formation
+# created before the Vultr pool existed, as AWS default subnets have it. Later
+# accounts are seeded with it by the daemon, which now sees the pool.
+public_default_subnets() {
+    log "auto-assigning public addresses in the default subnets"
+    on 'export AWS_PROFILE=spinifex
+        for s in $(aws ec2 describe-subnets --filters Name=default-for-az,Values=true \
+                --query "Subnets[?MapPublicIpOnLaunch==\`false\`].SubnetId" --output text); do
+            aws ec2 modify-subnet-attribute --subnet-id "$s" --map-public-ip-on-launch || exit 1
+        done' || die "could not turn on public addresses in the default subnets on $IP"
+}
+
 import_image() {
     log "importing $IMAGE"
     on "spx admin images import --name $IMAGE --config /etc/spinifex/spinifex.toml >/root/image-import.log 2>&1" ||
@@ -368,6 +380,7 @@ cmd_up() {
     for_nodes pool configure_pool
     for_nodes restart restart_spinifex
     IP="${IPS[0]}"
+    done_step public || { public_default_subnets; mark_step public; }
     if [ -n "$IMAGE" ]; then done_step image || { import_image; mark_step image; }; fi
     write_profile
     log "ready: https://$IP:9999 (profile $PROFILE)"

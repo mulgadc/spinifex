@@ -152,3 +152,30 @@ func TestImportCertificate_SerialZeroRejected(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorValidationException, code)
 	assert.Equal(t, "The serial number in the certificate is not supported by ACM.", msg)
 }
+
+func TestImportCertificate_ExpiredRejected(t *testing.T) {
+	t.Parallel()
+	svc := setupACMService(t)
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: "expired.example.com"},
+		NotBefore:    time.Now().Add(-48 * time.Hour),
+		NotAfter:     time.Now().Add(-24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		PrivateKey:  pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}),
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorValidationException, code)
+	assert.Equal(t, "The certificate is expired. You can Import a certificate only during its validity period.", msg)
+
+	list, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, list.CertificateSummaryList)
+}

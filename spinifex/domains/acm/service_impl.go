@@ -223,10 +223,13 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 	if leaf.SerialNumber.Sign() == 0 {
 		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "The serial number in the certificate is not supported by ACM.")
 	}
+	now := time.Now().UTC()
+	if now.After(leaf.NotAfter) {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "The certificate is expired. You can Import a certificate only during its validity period.")
+	}
 
 	certArn := aws.StringValue(input.CertificateArn)
 	var inUseBy []string
-	now := time.Now().UTC()
 	createdAt := now
 	tags := tagsToMap(input.Tags)
 	reimport := certArn != ""

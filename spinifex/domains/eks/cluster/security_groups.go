@@ -2,6 +2,8 @@ package cluster
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -40,6 +42,7 @@ const clusterEKSAccountTagKey = "spinifex:eks-cluster-account"
 const clusterEKSNodegroupTagKey = "spinifex:eks-nodegroup"
 
 const (
+	clusterEKSRoleCluster         = "cluster"
 	clusterEKSRoleControlPlane    = "control-plane"
 	clusterEKSRoleNodegroup       = "nodegroup"
 	clusterEKSRolePrivateEndpoint = "private-endpoint"
@@ -62,7 +65,100 @@ func ClusterNodegroupSGName(clusterName string) string {
 	return fmt.Sprintf("eks-cluster-%s-nodegroup-sg", clusterName)
 }
 
-// EnsureClusterSGs creates or reuses the control-plane and nodegroup SGs in the customer VPC.
+// clusterSGNamePrefix starts the name of the AWS-style cluster security group,
+// eks-cluster-sg-<cluster>-<id>.
+const clusterSGNamePrefix = "eks-cluster-sg-"
+
+// EnsureClusterSG creates or reuses the cluster security group in the customer
+// VPC: tagged as EKS tags its primary SG, inbound all from itself, outbound all
+// (the VPC service's default egress). It is found by tag, so the random name
+// suffix never has to be stored. Workers and the private-endpoint ENI carry it.
+func EnsureClusterSG(ctx context.Context, sgp sgProvisioner, accountID, clusterName, vpcID string) (string, error) {
+	if clusterName == "" {
+		return "", errors.New("eks: EnsureClusterSG empty cluster name")
+	}
+	if vpcID == "" {
+		return "", errors.New("eks: EnsureClusterSG empty vpc id")
+	}
+	id, err := lookupClusterSG(ctx, sgp, accountID, vpcID, clusterName)
+	if err != nil {
+		return "", err
+	}
+	if id == "" {
+		suffix := make([]byte, 8)
+		if _, err := rand.Read(suffix); err != nil {
+			return "", fmt.Errorf("generate cluster SG name: %w", err)
+		}
+		name := clusterSGNamePrefix + clusterName + "-" + hex.EncodeToString(suffix)
+		out, err := sgp.CreateSecurityGroup(ctx, &ec2.CreateSecurityGroupInput{
+			GroupName:   aws.String(name),
+			Description: aws.String(fmt.Sprintf("EKS created security group applied to ENI that is attached to EKS Control Plane master nodes, as well as any managed workloads (cluster %s)", clusterName)),
+			VpcId:       aws.String(vpcID),
+			TagSpecifications: []*ec2.TagSpecification{{
+				ResourceType: aws.String("security-group"),
+				Tags: []*ec2.Tag{
+					{Key: aws.String("Name"), Value: aws.String(name)},
+					{Key: aws.String("kubernetes.io/cluster/" + clusterName), Value: aws.String("owned")},
+					{Key: aws.String("aws:eks:cluster-name"), Value: aws.String(clusterName)},
+					{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
+					{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(clusterName)},
+					{Key: aws.String(clusterEKSRoleTagKey), Value: aws.String(clusterEKSRoleCluster)},
+				},
+			}},
+		}, accountID)
+		if err != nil {
+			return "", fmt.Errorf("create cluster SG %s: %w", name, err)
+		}
+		if out == nil || aws.StringValue(out.GroupId) == "" {
+			return "", fmt.Errorf("eks: CreateSecurityGroup returned empty GroupId for %s", name)
+		}
+		id = aws.StringValue(out.GroupId)
+	}
+	_, err = sgp.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(id),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("-1"),
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{
+				GroupId:     aws.String(id),
+				Description: aws.String("EKS cluster security group, all traffic from itself"),
+			}},
+		}},
+	}, accountID)
+	if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+		return "", fmt.Errorf("authorize self ingress on cluster SG %s: %w", id, err)
+	}
+	return id, nil
+}
+
+// EnsureWorkerSG returns the SG nodegroup workers launch with. A cluster created
+// before the cluster SG existed keeps its nodegroup SG and control-plane rules
+// until it is recreated; every other cluster gets the cluster SG.
+func EnsureWorkerSG(ctx context.Context, sgp sgProvisioner, accountID, clusterName, vpcID string) (string, error) {
+	if vpcID == "" {
+		return "", errors.New("eks: EnsureWorkerSG empty vpc id")
+	}
+	if id, err := lookupClusterSG(ctx, sgp, accountID, vpcID, clusterName); err != nil || id != "" {
+		return id, err
+	}
+	legacy, err := lookupSGByName(ctx, sgp, accountID, vpcID, ClusterNodegroupSGName(clusterName))
+	if err != nil {
+		return "", err
+	}
+	if legacy == "" {
+		return EnsureClusterSG(ctx, sgp, accountID, clusterName, vpcID)
+	}
+	cpSGID, ngSGID, err := EnsureClusterSGs(ctx, sgp, accountID, clusterName, vpcID)
+	if err != nil {
+		return "", err
+	}
+	if err := EnsureNodegroupSGRules(ctx, sgp, accountID, clusterName, cpSGID, ngSGID); err != nil {
+		return "", err
+	}
+	return ngSGID, nil
+}
+
+// EnsureClusterSGs creates or reuses the control-plane and nodegroup SGs: the
+// control-plane SG in the system CP VPC, and both in a pre-cluster-SG customer VPC.
 // Idempotent; the two creates are independent (DeleteCluster handles partial teardown).
 func EnsureClusterSGs(ctx context.Context, sgp sgProvisioner, accountID, clusterName, vpcID string) (controlPlaneSGID, nodegroupSGID string, err error) {
 	if clusterName == "" {
@@ -166,7 +262,18 @@ func DeleteClusterSGs(ctx context.Context, sgp sgProvisioner, accountID, cluster
 		}
 	}
 
-	// Delete only the cluster-owned SGs.
+	// The AWS-style cluster SG has a random name, so it is found by tag.
+	for _, g := range sgs {
+		if g == nil || g.GroupId == nil || !sgIsClusterSG(g, clusterName) {
+			continue
+		}
+		if delErr := deleteSGAwaitingDetach(ctx, sgp, accountID, aws.StringValue(g.GroupId)); delErr != nil {
+			slog.WarnContext(ctx, "DeleteClusterSGs: cluster SG delete failed", "sg", aws.StringValue(g.GroupId), "err", delErr)
+			record(fmt.Errorf("delete cluster SG %s: %w", aws.StringValue(g.GroupId), delErr))
+		}
+	}
+
+	// Delete the named cluster-owned SGs of a cluster created before the cluster SG.
 	for _, name := range []string{ClusterControlPlaneSGName(clusterName), ClusterNodegroupSGName(clusterName)} {
 		id, lookupErr := lookupSGByName(ctx, sgp, accountID, vpcID, name)
 		if lookupErr != nil {
@@ -484,6 +591,39 @@ func sgHasLBCClusterTag(g *ec2.SecurityGroup, clusterName string) bool {
 	return slices.ContainsFunc(g.Tags, func(tag *ec2.Tag) bool {
 		return tag != nil && aws.StringValue(tag.Key) == lbcClusterOwnershipTagKey && aws.StringValue(tag.Value) == clusterName
 	})
+}
+
+// sgIsClusterSG reports whether g is this cluster's AWS-style cluster SG.
+func sgIsClusterSG(g *ec2.SecurityGroup, clusterName string) bool {
+	var cluster, role string
+	for _, tag := range g.Tags {
+		switch aws.StringValue(tag.Key) {
+		case clusterEKSClusterTagKey:
+			cluster = aws.StringValue(tag.Value)
+		case clusterEKSRoleTagKey:
+			role = aws.StringValue(tag.Value)
+		}
+	}
+	return cluster == clusterName && role == clusterEKSRoleCluster
+}
+
+func lookupClusterSG(ctx context.Context, sgp sgProvisioner, accountID, vpcID, clusterName string) (string, error) {
+	out, err := sgp.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("vpc-id"), Values: aws.StringSlice([]string{vpcID})},
+			{Name: aws.String("tag:" + clusterEKSClusterTagKey), Values: aws.StringSlice([]string{clusterName})},
+			{Name: aws.String("tag:" + clusterEKSRoleTagKey), Values: aws.StringSlice([]string{clusterEKSRoleCluster})},
+		},
+	}, accountID)
+	if err != nil {
+		return "", fmt.Errorf("describe cluster SG for %s: %w", clusterName, err)
+	}
+	for _, g := range out.SecurityGroups {
+		if g != nil && g.GroupId != nil {
+			return *g.GroupId, nil
+		}
+	}
+	return "", nil
 }
 
 func lookupSGByName(ctx context.Context, sgp sgProvisioner, accountID, vpcID, name string) (string, error) {

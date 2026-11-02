@@ -632,3 +632,45 @@ func sgTagMap(tags []*ec2.Tag) map[string]string {
 	}
 	return m
 }
+
+func TestEnsureClusterSG_EmptyInputsRejected(t *testing.T) {
+	t.Parallel()
+	sg := newFakeSGProvisioner()
+	_, err := EnsureClusterSG(context.Background(), sg, testAccountID, "", "vpc-aaa")
+	require.Error(t, err)
+	_, err = EnsureClusterSG(context.Background(), sg, testAccountID, "c1", "")
+	require.Error(t, err)
+	assert.Empty(t, sg.createCalls)
+}
+
+func TestEnsureClusterSG_SecondCallReusesTheTaggedSG(t *testing.T) {
+	t.Parallel()
+	sg := newFakeSGProvisioner()
+	sg.uniqueIDs = true
+
+	first, err := EnsureClusterSG(context.Background(), sg, testAccountID, "c1", "vpc-aaa")
+	require.NoError(t, err)
+	second, err := EnsureClusterSG(context.Background(), sg, testAccountID, "c1", "vpc-aaa")
+	require.NoError(t, err)
+
+	assert.Equal(t, first, second)
+	assert.Len(t, sg.createCalls, 1)
+}
+
+func TestEnsureClusterSG_DuplicateSelfRuleTolerated(t *testing.T) {
+	t.Parallel()
+	sg := newFakeSGProvisioner()
+	sg.authorizeErr = errors.New(awserrors.ErrorInvalidPermissionDuplicate)
+
+	_, err := EnsureClusterSG(context.Background(), sg, testAccountID, "c1", "vpc-aaa")
+	require.NoError(t, err)
+}
+
+func TestEnsureClusterSG_AuthorizeErrorSurfaced(t *testing.T) {
+	t.Parallel()
+	sg := newFakeSGProvisioner()
+	sg.authorizeErr = errors.New("boom")
+
+	_, err := EnsureClusterSG(context.Background(), sg, testAccountID, "c1", "vpc-aaa")
+	require.Error(t, err)
+}

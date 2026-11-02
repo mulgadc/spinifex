@@ -472,13 +472,9 @@ type nodegroupLaunchCtx struct {
 func (s *EKSServiceImpl) launchNodegroupInfra(ctx context.Context, lc nodegroupLaunchCtx) {
 	acctKV, accountID, cluster, ng, meta, rec := lc.acctKV, lc.accountID, lc.cluster, lc.ng, lc.meta, lc.rec
 
-	cpSGID, ngSGID, err := EnsureClusterSGs(ctx, s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
+	ngSGID, err := EnsureWorkerSG(ctx, s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
 	if err != nil {
-		s.markNodegroupFailed(ctx, acctKV, cluster, ng, "ensure cluster SGs: "+err.Error())
-		return
-	}
-	if err := EnsureNodegroupSGRules(ctx, s.deps.VPCSG, accountID, cluster, cpSGID, ngSGID); err != nil {
-		s.markNodegroupFailed(ctx, acctKV, cluster, ng, "ensure nodegroup SG rules: "+err.Error())
+		s.markNodegroupFailed(ctx, acctKV, cluster, ng, "ensure cluster SG: "+err.Error())
 		return
 	}
 
@@ -707,11 +703,15 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 		}}
 	}
 
-	metadataOptions, err := s.workerMetadataOptions(ctx, rec, accountID)
+	metadataOptions, templateSGs, err := s.workerTemplateSettings(ctx, rec, accountID)
 	if err != nil {
 		return "", err
 	}
 	runInput.MetadataOptions = metadataOptions
+	// As on AWS, security groups named by the launch template replace the cluster SG.
+	if len(templateSGs) > 0 {
+		runInput.SecurityGroupIds = aws.StringSlice(templateSGs)
+	}
 
 	// Attach the node role's instance profile so IMDS serves the role to the ECR
 	// credential provider; without it worker pulls from the internal ECR get 401.
@@ -743,21 +743,23 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 	return "", errors.New("run worker returned no instance id")
 }
 
-// workerMetadataOptions chooses a worker's IMDS options: fields a launch template
-// version sets win as given, and every unset field gets the managed nodegroup
-// default (IMDSv2 required, hop limit 2) so pods behind the node can reach IMDS.
-func (s *EKSServiceImpl) workerMetadataOptions(ctx context.Context, rec *NodegroupRecord, accountID string) (*ec2.InstanceMetadataOptionsRequest, error) {
+// workerTemplateSettings chooses a worker's IMDS options and security groups.
+// Metadata fields a launch template version sets win as given, and every unset
+// field gets the managed nodegroup default (IMDSv2 required, hop limit 2) so pods
+// behind the node can reach IMDS. The template's security group IDs, if any, are
+// returned for the caller to use in place of the cluster SG.
+func (s *EKSServiceImpl) workerTemplateSettings(ctx context.Context, rec *NodegroupRecord, accountID string) (*ec2.InstanceMetadataOptionsRequest, []string, error) {
 	managedDefault := &ec2.InstanceMetadataOptionsRequest{
 		HttpTokens:              aws.String(ec2.HttpTokensStateRequired),
 		HttpPutResponseHopLimit: aws.Int64(workerMetadataHopLimit),
 	}
 	if rec.LaunchTemplate == nil {
-		return managedDefault, nil
+		return managedDefault, nil, nil
 	}
 	if s.deps.LaunchTemplates == nil {
 		slog.ErrorContext(ctx, "EKS nodegroup: launch template named but no launch template service wired",
 			"nodegroup", rec.Name, "launchTemplate", rec.LaunchTemplate.ID+rec.LaunchTemplate.Name)
-		return nil, errors.New(awserrors.ErrorServerInternal)
+		return nil, nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	version := rec.LaunchTemplate.Version
@@ -772,14 +774,16 @@ func (s *EKSServiceImpl) workerMetadataOptions(ctx context.Context, rec *Nodegro
 	}
 	out, err := s.deps.LaunchTemplates.DescribeLaunchTemplateVersions(ctx, in, accountID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(out.LaunchTemplateVersions) == 0 || out.LaunchTemplateVersions[0].LaunchTemplateData == nil {
-		return nil, errors.New(awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound)
+		return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound)
 	}
-	opts := out.LaunchTemplateVersions[0].LaunchTemplateData.MetadataOptions
+	data := out.LaunchTemplateVersions[0].LaunchTemplateData
+	sgIDs := aws.StringValueSlice(data.SecurityGroupIds)
+	opts := data.MetadataOptions
 	if opts == nil {
-		return managedDefault, nil
+		return managedDefault, sgIDs, nil
 	}
 	req := &ec2.InstanceMetadataOptionsRequest{
 		HttpTokens:              opts.HttpTokens,
@@ -796,7 +800,7 @@ func (s *EKSServiceImpl) workerMetadataOptions(ctx context.Context, rec *Nodegro
 	if req.HttpPutResponseHopLimit == nil {
 		req.HttpPutResponseHopLimit = managedDefault.HttpPutResponseHopLimit
 	}
-	return req, nil
+	return req, sgIDs, nil
 }
 
 // selectWorkerHost picks the host for the next worker: the eligible host (one
@@ -1092,9 +1096,9 @@ func (s *EKSServiceImpl) launchWorkersCAS(ctx context.Context, acctKV jetstream.
 		}
 		return nil, fmt.Errorf("resolve eks-node AMI: %w", err)
 	}
-	_, ngSGID, err := EnsureClusterSGs(ctx, s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
+	ngSGID, err := EnsureWorkerSG(ctx, s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
 	if err != nil {
-		return nil, fmt.Errorf("ensure cluster SGs: %w", err)
+		return nil, fmt.Errorf("ensure cluster SG: %w", err)
 	}
 
 	// Each iteration records at most one worker, so bound by the gap plus CAS slack.

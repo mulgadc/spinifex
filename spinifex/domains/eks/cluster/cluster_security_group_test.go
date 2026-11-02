@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -13,8 +14,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-const clusterSGNamePrefix = "eks-cluster-sg-"
 
 // sgCreatesIn returns the CreateSecurityGroup calls made against vpc whose name matches.
 func sgCreatesIn(f *fakeSGProvisioner, vpc string, match func(name string) bool) []*ec2.CreateSecurityGroupInput {
@@ -30,9 +29,7 @@ func sgCreatesIn(f *fakeSGProvisioner, vpc string, match func(name string) bool)
 func sgCreateTags(c *ec2.CreateSecurityGroupInput) map[string]string {
 	m := map[string]string{}
 	for _, spec := range c.TagSpecifications {
-		for k, v := range sgTagMap(spec.Tags) {
-			m[k] = v
-		}
+		maps.Copy(m, sgTagMap(spec.Tags))
 	}
 	return m
 }
@@ -65,6 +62,7 @@ func seedClusterSG(f *fakeSGProvisioner, cluster, vpc, id string) {
 		{Key: aws.String("kubernetes.io/cluster/" + cluster), Value: aws.String("owned")},
 		{Key: aws.String("aws:eks:cluster-name"), Value: aws.String(cluster)},
 		{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(cluster)},
+		{Key: aws.String(clusterEKSRoleTagKey), Value: aws.String("cluster")},
 	}
 }
 

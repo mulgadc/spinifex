@@ -338,6 +338,25 @@ func TestEnsureNodegroupSGRules_DuplicateRuleTolerated(t *testing.T) {
 		"duplicate-rule error must be treated as success")
 }
 
+// A cluster created before the cluster SG keeps launching workers into its
+// nodegroup SG with the control-plane cross rules.
+func TestCreateNodegroup_OldLayoutClusterKeepsNodegroupSG(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	f.sg.createIDs = []string{"sg-old-cp", "sg-old-ng"}
+	seedActiveClusterWithToken(t, f, "c1")
+	f.sg.existing[ClusterNodegroupSGName("c1")+"|vpc-aaa"] = "sg-old-ng"
+	markWorkersReady(t, f, "c1", "ng1", 1)
+
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	require.Len(t, f.worker.runCalls, 1)
+	assert.Equal(t, []string{"sg-old-ng"}, aws.StringValueSlice(f.worker.runCalls[0].SecurityGroupIds))
+	assert.Len(t, f.sg.authorizeCalls, 6, "the cp<->ng cross rules are still ensured")
+}
+
 func TestCreateNodegroup_HappyPath(t *testing.T) {
 	t.Parallel()
 	f := newEKSServiceFixture(t)
@@ -382,8 +401,14 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 		}
 	}
 
-	// SG ingress rules were authorized.
+	// A cluster with no SG yet gets the cluster SG, created once with its self
+	// rule, and every worker carries it.
+	require.Len(t, f.sg.createCalls, 1)
+	clusterSG := f.sg.existing[aws.StringValue(f.sg.createCalls[0].GroupName)+"|vpc-aaa"]
 	assert.NotEmpty(t, f.sg.authorizeCalls)
+	for _, call := range f.worker.runCalls {
+		assert.Equal(t, []string{clusterSG}, aws.StringValueSlice(call.SecurityGroupIds))
+	}
 
 	// Duplicate create → ResourceInUseException.
 	_, err = f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 2), testAccountID)

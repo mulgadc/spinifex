@@ -150,6 +150,11 @@ func providerSubjectCases() []providerSubjectCase {
 			"volume_id": "vol-testunpublish01",
 			"node_id":   "test-node",
 		}},
+		{"holds_unsealed_writes", "ebs.provider.v1.test-node.unsealed", map[string]any{
+			"node_id":    "test-node",
+			"volume_ids": []string{"vol-testunsealed01"},
+		}},
+		{"node_capabilities", "ebs.provider.v1.test-node.capabilities", map[string]any{}},
 	}
 }
 
@@ -867,7 +872,7 @@ func TestProviderHandlers_PublishVolume_IdempotentRepublish(t *testing.T) {
 	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
 		Name:   volumeName,
 		VB:     vb,
-		PID:    424242,
+		PID:    os.Getpid(),
 		NBDURI: existingURI,
 	})
 
@@ -893,7 +898,7 @@ func TestProviderHandlers_PublishVolume_IdempotentRepublish(t *testing.T) {
 	pid := cfg.MountedVolumes[0].PID
 	cfg.mu.Unlock()
 	assert.Equal(t, 1, count, "republish of an already-mounted volume must not add a second entry")
-	assert.Equal(t, 424242, pid, "republish must not spawn a second nbdkit (PID must be unchanged)")
+	assert.Equal(t, os.Getpid(), pid, "republish must not spawn a second nbdkit (PID must be unchanged)")
 }
 
 func TestProviderHandlers_PublishVolume_LegacyV1Wire(t *testing.T) {
@@ -905,7 +910,7 @@ func TestProviderHandlers_PublishVolume_LegacyV1Wire(t *testing.T) {
 	const existingURI = "nbd:unix:/fake/vol-publegacyv1.sock"
 	vb := createTestVBWithState(t, volumeName)
 	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
-		Name: volumeName, VB: vb, PID: 424242, NBDURI: existingURI,
+		Name: volumeName, VB: vb, PID: os.Getpid(), NBDURI: existingURI,
 	})
 
 	publishSubject, err := ebsprovider.PublishSubject(cfg.NodeName)
@@ -939,7 +944,7 @@ func TestProviderHandlers_PublishVolume_ReadOnlyModeMismatchRefused(t *testing.T
 	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
 		Name:     volumeName,
 		VB:       vb,
-		PID:      424243,
+		PID:      os.Getpid(),
 		NBDURI:   "nbd:unix:/fake/vol-readonlypub001.sock",
 		ReadOnly: false,
 	})
@@ -1038,8 +1043,8 @@ func TestProviderHandlers_PublishUnpublish_RequireNodeName(t *testing.T) {
 	cfgNamed := setupTestConfig(t, natsURL2)
 	ncNamed := startProviderSubjects(t, cfgNamed, natsURL2)
 
-	assert.Equal(t, ncNamed.NumSubscriptions()-3, ncNoNode.NumSubscriptions(),
-		"an empty NodeName must skip exactly the publish, unpublish and unsealed-writes subscriptions")
+	assert.Equal(t, ncNamed.NumSubscriptions()-4, ncNoNode.NumSubscriptions(),
+		"an empty NodeName must skip exactly the publish, unpublish, unsealed-writes and node capabilities subscriptions")
 
 	// The other provider subjects must still work without a node name.
 	body := marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion})

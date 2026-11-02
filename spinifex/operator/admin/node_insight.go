@@ -174,7 +174,8 @@ func (s *KVNetworkTests) Claim(ctx context.Context, testID string, until time.Ti
 	return nil
 }
 
-// Release drops the claim only if testID still holds it.
+// Release expires the claim only if testID still holds it. The key stays, so
+// it keeps naming the newest test for List after the slot is free.
 func (s *KVNetworkTests) Release(ctx context.Context, testID string) error {
 	held, rev, err := s.claims.Get(ctx, networkTestClaimKey)
 	if errors.Is(err, kvstore.ErrNotFound) {
@@ -186,7 +187,8 @@ func (s *KVNetworkTests) Release(ctx context.Context, testID string) error {
 	if held.TestID != testID {
 		return nil
 	}
-	return s.claims.CompareAndDelete(ctx, networkTestClaimKey, rev)
+	_, err = s.claims.CompareAndSet(ctx, networkTestClaimKey, &networkTestClaim{TestID: testID}, rev)
+	return err
 }
 
 func (s *KVNetworkTests) Put(ctx context.Context, t *NetworkTest) error {
@@ -198,8 +200,44 @@ func (s *KVNetworkTests) Get(ctx context.Context, testID string) (*NetworkTest, 
 	return t, err
 }
 
+// List also reads the newest test by the key its claim names. A listing can
+// miss a key while it is rewritten, and only the newest test still is, unless
+// its runner overran the claim. The lookup only adds to the listing.
 func (s *KVNetworkTests) List(ctx context.Context) ([]NetworkTest, error) {
-	return s.tests.List(ctx, networkTestPrefix)
+	tests, err := s.tests.List(ctx, networkTestPrefix)
+	if err != nil {
+		return nil, err
+	}
+	newest, err := s.newest(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "network tests: read the newest test", "err", err)
+		return tests, nil
+	}
+	if newest == nil {
+		return tests, nil
+	}
+	if i := slices.IndexFunc(tests, func(t NetworkTest) bool { return t.TestID == newest.TestID }); i >= 0 {
+		tests[i] = *newest
+		return tests, nil
+	}
+	return append(tests, *newest), nil
+}
+
+// newest is the test the claim names, or nil when there is no claim or its
+// test has no record.
+func (s *KVNetworkTests) newest(ctx context.Context) (*NetworkTest, error) {
+	claim, _, err := s.claims.Get(ctx, networkTestClaimKey)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t, err := s.Get(ctx, claim.TestID)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil, nil
+	}
+	return t, err
 }
 
 // StartNetworkTest validates the request, claims the cluster-wide slot,

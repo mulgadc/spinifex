@@ -162,6 +162,8 @@ func TestCreateDBSubnetGroup_RejectsADuplicateName(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorDBSubnetGroupAlreadyExists, awserrors.ValidErrorCodeFromError(err),
 		"the code has to survive resolution or the client sees a 500")
+	_, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, "The DB subnet group '"+testSubnetGroup+"' already exists.", message)
 }
 
 func TestDescribeDBSubnetGroups_ListsAndNames(t *testing.T) {

@@ -66,7 +66,7 @@ func (o *Owner) Create(ctx context.Context, accountID string, spec Spec) (*Recor
 	if _, err := kvstore.On[Record](kv).Create(ctx, MetaKey(spec.Name), rec); err != nil {
 		if errors.Is(err, kvstore.ErrExists) {
 			return nil, awserrors.Errorf(awserrors.ErrorDBParameterGroupAlreadyExists,
-				"DB parameter group %s already exists", spec.Name)
+				"Parameter group %s already exists", spec.Name)
 		}
 		return nil, err
 	}
@@ -217,7 +217,7 @@ func get(ctx context.Context, kv *kvstore.Bucket, accountID, name string) (*Reco
 	if engine, ok := rdsengine.EngineForDefaultParameterGroup(name); ok {
 		return defaultRecord(engine, accountID), 0, nil
 	}
-	return nil, 0, awserrors.Errorf(awserrors.ErrorDBParameterGroupNotFound, "DB parameter group %s not found", name)
+	return nil, 0, awserrors.Errorf(awserrors.ErrorDBParameterGroupNotFound, "DBParameterGroup not found: %s", name)
 }
 
 // The implicit group, identical for every account. It carries no tags and no stored values, so it

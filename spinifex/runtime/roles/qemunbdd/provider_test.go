@@ -3,11 +3,15 @@ package qemunbdd
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
+	"golang.org/x/sys/unix"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -668,3 +672,76 @@ func TestGetCapabilities_Fixed(t *testing.T) {
 }
 
 func unpublishErr(_ *ebsprovider.UnpublishedVolume, err error) error { return err }
+
+// runningExport starts a process standing in for a qemu-nbd that lost its
+// socket but kept running, reaped on its own goroutine as a real fork would be.
+func runningExport(t *testing.T) int {
+	t.Helper()
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+	cmd := exec.Command("sleep", "300")
+	require.NoError(t, cmd.Start())
+	reaped := make(chan struct{})
+	go func() { defer close(reaped); _ = cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-reaped })
+	return cmd.Process.Pid
+}
+
+// unstoppableExport returns a zombie: kill(pid,0) still reaches it and no
+// signal makes it exit, so it stands in for a qemu-nbd that will not stop.
+func unstoppableExport(t *testing.T) int {
+	t.Helper()
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+	cmd := exec.Command("sleep", "300")
+	require.NoError(t, cmd.Start())
+	require.NoError(t, cmd.Process.Kill())
+	var info unix.Siginfo
+	require.NoError(t, unix.Waitid(unix.P_PID, cmd.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil))
+	t.Cleanup(func() { _ = cmd.Wait() })
+	return cmd.Process.Pid
+}
+
+// aliveAtRun records, at the moment qemu-nbd is run, whether pid is alive.
+type aliveAtRun struct {
+	*fakeRunner
+	pid       int
+	aliveSeen []bool
+}
+
+func (r *aliveAtRun) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if name == "qemu-nbd" {
+		r.aliveSeen = append(r.aliveSeen, hostprocess.ProcessAlive(r.pid))
+	}
+	return r.fakeRunner.Run(ctx, name, args...)
+}
+
+// A qemu-nbd whose socket is gone still serves a client already connected to
+// it, so re-exporting beside it makes two writers on one qcow2.
+func TestPublishVolume_OrphanStoppedFirst(t *testing.T) {
+	p, fr := newTestProvider(t)
+	const volumeID = "vol-orph"
+	require.NoError(t, os.WriteFile(p.volumePath(volumeID), nil, 0o640))
+	pid := runningExport(t)
+	run := &aliveAtRun{fakeRunner: fr, pid: pid}
+	p.run = run
+	p.published[volumeID] = &publication{nodeID: "node-1", socketPath: p.socketPath(volumeID), pid: pid}
+
+	_, err := p.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: versioned(), VolumeID: volumeID, NodeID: "node-1"})
+	require.NoError(t, err)
+	assert.Equal(t, []bool{false}, run.aliveSeen, "the old qemu-nbd must be gone before the volume is exported again")
+}
+
+// A qemu-nbd that will not stop is still a writer, so a second export is
+// refused as retry-later and the entry kept so the next attempt tries again.
+func TestPublishVolume_OrphanUnstoppable(t *testing.T) {
+	p, fr := newTestProvider(t)
+	p.stopWait = 50 * time.Millisecond
+	const volumeID = "vol-orphan-stuck"
+	require.NoError(t, os.WriteFile(p.volumePath(volumeID), nil, 0o640))
+	pub := &publication{nodeID: "node-1", socketPath: p.socketPath(volumeID), pid: unstoppableExport(t)}
+	p.published[volumeID] = pub
+
+	_, err := p.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: versioned(), VolumeID: volumeID, NodeID: "node-1"})
+	require.ErrorIs(t, err, ebsprovider.ErrUnavailable)
+	assert.Same(t, pub, p.published[volumeID], "the entry must stay while its process may still write")
+	assert.Empty(t, fr.callsSnapshot(), "no second qemu-nbd may start beside one that would not stop")
+}

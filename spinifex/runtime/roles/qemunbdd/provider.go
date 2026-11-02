@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
@@ -75,6 +76,7 @@ type publication struct {
 
 // dead reports positive evidence that the export is no longer serving: its
 // qemu-nbd has exited or its socket is gone. Without a PID nothing is known.
+// A qemu-nbd whose socket is gone can still be writing for a connected client.
 func (p *publication) dead() bool {
 	if p.pid <= 0 {
 		return false
@@ -86,12 +88,19 @@ func (p *publication) dead() bool {
 	return errors.Is(err, os.ErrNotExist)
 }
 
+// defaultStopWait bounds the wait for a qemu-nbd to exit after SIGTERM
+// before a republish over its dead socket is refused.
+const defaultStopWait = 10 * time.Second
+
 // Provider is an EBSProvider backed by qcow2 files and qemu-nbd. One volume
 // is one qcow2 file; a snapshot is an independent copy, not a chunk
 // reference, so DeleteVolume never has to consult a snapshot the way viperblock does.
 type Provider struct {
 	baseDir string
 	run     runner
+
+	// stopWait overrides defaultStopWait. Zero means the default.
+	stopWait time.Duration
 
 	mu           sync.Mutex
 	published    map[string]*publication
@@ -710,6 +719,9 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 		// A dead export's entry is dropped and the volume exported again, so
 		// a republish after a crash never returns a socket nothing serves.
 		if pub.dead() {
+			if err := p.stopOrphanedExport(pub); err != nil {
+				return nil, fmt.Errorf("%w: volume %s: %v", ebsprovider.ErrUnavailable, req.VolumeID, err)
+			}
 			delete(p.published, req.VolumeID)
 		} else {
 			if pub.readOnly != req.ReadOnly {
@@ -747,6 +759,23 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 	pid := readPID(pidPath)
 	p.published[req.VolumeID] = &publication{nodeID: req.NodeID, socketPath: sockPath, pid: pid, readOnly: req.ReadOnly}
 	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, Export: ebsprovider.NewNBDExport(nbd.FormatNBDSocketURI(sockPath))}, nil
+}
+
+// stopOrphanedExport stops a dead entry's qemu-nbd if it is still running,
+// since a connected client keeps writing through it and a second export would
+// make two writers. It stops it as UnpublishVolume does, with SIGTERM.
+func (p *Provider) stopOrphanedExport(pub *publication) error {
+	if !hostprocess.ProcessAlive(pub.pid) {
+		return nil
+	}
+	wait := p.stopWait
+	if wait == 0 {
+		wait = defaultStopWait
+	}
+	if !hostprocess.TerminateProcess(pub.pid, wait) {
+		return fmt.Errorf("qemu-nbd %d lost its socket and did not exit", pub.pid)
+	}
+	return nil
 }
 
 // readPID best-effort reads the PID qemu-nbd's --fork wrote to pidPath. A

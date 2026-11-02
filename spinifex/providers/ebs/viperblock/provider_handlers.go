@@ -1415,14 +1415,15 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 	// ebs.mount subject is the route production actually takes: a retried
 	// attach racing a fresh one would otherwise start two real exports.
 	if mv, ok := findMountedVolume(cfg, volumeName); ok {
-		// An entry whose socket is gone describes an export that no longer
-		// exists, and returning its URI makes the volume unstartable forever:
-		// every caller waits for a socket nothing will create. Dropping it and
-		// mounting again is safe because an absent socket cannot be serving.
+		// Returning a dead entry's URI makes the volume unstartable forever:
+		// every caller waits for a socket nothing will create. The entry is
+		// dropped and the volume mounted again once its nbdkit is gone.
 		if stale, why := mountEntryIsStale(mv); stale {
 			slog.WarnContext(ctx, "ebs.mount: dropping stale mount entry and remounting",
 				"volume", volumeName, "uri", mv.NBDURI, "reason", why)
-			releaseStaleMount(ctx, cfg, volumeName)
+			if err := releaseStaleMount(ctx, cfg, volumeName); err != nil {
+				return viperblocklegacyv1.EBSMountResponse{Error: err.Error()}, err
+			}
 		} else {
 			// Access mode is fixed when nbdkit starts, so a remount asking for
 			// the other mode cannot be answered with the running export.
@@ -1694,13 +1695,13 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (viperbl
 		// drains to the backend and leaves a receipt. SIGKILLing into that
 		// discards the drain and leaves the WAL for the fallback seal below to
 		// replay, which costs far more than the caller's deadline allows.
-		hostprocess.TerminateProcess(matched.PID, pluginSealGrace)
+		hostprocess.TerminateProcess(matched.PID, cfg.exportSealGrace())
 
 		// The seal below rewrites the directory nbdkit writes, so a kill that
 		// did not take makes it a concurrent write to that directory. Fail the
 		// unmount instead: the entry stays mounted and a retry re-attempts
 		// both, which is what a failed seal already does.
-		if err := hostprocess.ForceKillProcess(matched.PID, fenceKillTimeout); err != nil {
+		if err := hostprocess.ForceKillProcess(matched.PID, cfg.exportKillWait()); err != nil {
 			slog.ErrorContext(ctx, "ebs.unmount: nbdkit did not exit, refusing to seal underneath a live writer",
 				"volume", matched.Name, "pid", matched.PID, "err", err)
 			ebsResponse.Error = fmt.Sprintf("kill nbdkit for %s: %v", matched.Name, err)
@@ -1840,7 +1841,7 @@ func publishError(version uint16, volumeID string, err error) *ebsprovider.Provi
 		return volumeInUseError("volume %s is held by another node: %v", volumeID, err)
 	case errors.Is(err, errReadOnlyMismatch):
 		return volumeInUseError("%v", err)
-	case mountErrRetryable(err):
+	case mountErrRetryable(err), errors.Is(err, ebsprovider.ErrUnavailable):
 		return unavailableError("mount volume %s: %v", volumeID, err)
 	default:
 		slog.Error("ebs.provider.volume.publish: mount failed", "volume", volumeID, "err", err)
@@ -1935,13 +1936,12 @@ func handleHoldsUnsealedWrites(ctx context.Context, cfg *Config, msg *nats.Msg) 
 	respondProvider(ctx, msg, ebsprovider.HoldsUnsealedWritesResponse{Versioned: ebsprovider.ReplyVersioned(req.SchemaVersion), Held: held})
 }
 
-// mountEntryIsStale reports whether a MountedVolume describes an export that is
-// no longer running, and why.
+// mountEntryIsStale reports whether a MountedVolume describes an export that no
+// new client can reach, and why.
 //
-// Only positive evidence of death counts. The entry guards against a second
-// nbdkit for one volume, so treating a live export as stale would create the
-// double-writer hazard it exists to prevent — an absent socket or a dead pid
-// are the two conditions under which no export can be serving.
+// Only positive evidence counts: an absent socket or a dead pid. An absent
+// socket does not mean the nbdkit has exited, since a client that connected
+// before it went keeps writing through it, so releaseStaleMount stops it.
 func mountEntryIsStale(mv MountedVolume) (bool, string) {
 	if mv.Socket != "" {
 		if _, err := os.Stat(mv.Socket); errors.Is(err, os.ErrNotExist) {
@@ -1956,7 +1956,18 @@ func mountEntryIsStale(mv MountedVolume) (bool, string) {
 
 // releaseStaleMount drops a dead export's entry and everything it held, so the
 // remount that follows starts from the same state a clean unmount would leave.
-func releaseStaleMount(ctx context.Context, cfg *Config, volumeName string) {
+//
+// An nbdkit still running behind a lost socket is a writer, so it goes through
+// unmountVolume, which stops it and seals its copy. If it will not stop, the
+// entry stays and the error wraps ErrUnavailable: a remount would be a second writer.
+func releaseStaleMount(ctx context.Context, cfg *Config, volumeName string) error {
+	if mv, ok := findMountedVolume(cfg, volumeName); ok && hostprocess.ProcessAlive(mv.PID) {
+		if _, err := unmountVolume(ctx, cfg, volumeName); err != nil {
+			return fmt.Errorf("%w: stop nbdkit %d behind the lost socket of %s: %v", ebsprovider.ErrUnavailable, mv.PID, volumeName, err)
+		}
+		return nil
+	}
+
 	cfg.mu.Lock()
 	var matched MountedVolume
 	found := false
@@ -1969,7 +1980,7 @@ func releaseStaleMount(ctx context.Context, cfg *Config, volumeName string) {
 	}
 	cfg.mu.Unlock()
 	if !found {
-		return
+		return nil
 	}
 
 	if matched.ConfigSub != nil {
@@ -1994,4 +2005,5 @@ func releaseStaleMount(ctx context.Context, cfg *Config, volumeName string) {
 		}
 	}
 	cfg.releaseVolumeLease(ctx, matched.Lease)
+	return nil
 }

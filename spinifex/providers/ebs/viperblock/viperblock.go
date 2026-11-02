@@ -214,6 +214,10 @@ type Config struct {
 	fenceWatchEvery time.Duration
 	processAlive    func(pid int) bool
 
+	// exportStopWait overrides both waits unmountVolume gives nbdkit to exit,
+	// pluginSealGrace and fenceKillTimeout. Zero means those.
+	exportStopWait time.Duration
+
 	// fenceNoticeEvery overrides the wait between fence notice attempts. Zero
 	// means defaultFenceNoticeRetry.
 	fenceNoticeEvery time.Duration
@@ -243,6 +247,20 @@ type Config struct {
 	ready chan struct{}
 
 	mu sync.Mutex
+}
+
+func (cfg *Config) exportSealGrace() time.Duration {
+	if cfg.exportStopWait > 0 {
+		return cfg.exportStopWait
+	}
+	return pluginSealGrace
+}
+
+func (cfg *Config) exportKillWait() time.Duration {
+	if cfg.exportStopWait > 0 {
+		return cfg.exportStopWait
+	}
+	return fenceKillTimeout
 }
 
 // seal persists volumeName's block map to predastore, honouring a test's

@@ -20,12 +20,14 @@ func TestWriteRunningSet_SeedFailure(t *testing.T) {
 	m, f := newFaultInjectedJSM(t)
 	f.setFail("ListKeys", true)
 	f.setFail("Keys", true)
+	f.setFail("Watch", true)
 
 	got := m.WriteRunningSet("node-1", "", runningSetOf("i-1"))
 	assert.Equal(t, RunningSetResult{Failed: 1}, got)
 
 	f.setFail("ListKeys", false)
 	f.setFail("Keys", false)
+	f.setFail("Watch", false)
 	got = m.WriteRunningSet("node-1", "", runningSetOf("i-1"))
 	assert.Equal(t, RunningSetResult{Written: 1}, got, "the next write must seed and publish")
 }

@@ -2080,7 +2080,8 @@ func TestJetStreamManager_InstanceRecordKVErrors(t *testing.T) {
 	t.Run("load state listing fails", func(t *testing.T) {
 		f.setFail("ListKeys", true)
 		f.setFail("Keys", true)
-		t.Cleanup(func() { f.setFail("ListKeys", false); f.setFail("Keys", false) })
+		f.setFail("Watch", true)
+		t.Cleanup(func() { f.setFail("ListKeys", false); f.setFail("Keys", false); f.setFail("Watch", false) })
 
 		vms, known, err := m.LoadState("node-1")
 		require.ErrorIs(t, err, errInjected)

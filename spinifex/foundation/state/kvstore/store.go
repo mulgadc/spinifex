@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -99,32 +100,32 @@ func (s *Store[T]) Upsert(ctx context.Context, key string, fn func(*T) (bool, er
 	})
 }
 
-// List decodes every record whose key carries the given prefix. An empty
-// prefix matches everything and an empty bucket is not an error. A key that
-// disappears between the listing and the read is skipped.
+// List decodes every record whose key carries the given prefix, in key order.
+// An empty prefix matches everything and an empty bucket is not an error. A
+// key deleted before the read is absent.
 func (s *Store[T]) List(ctx context.Context, prefix string) ([]T, error) {
 	var out []T
-	// Whole listing sits inside the wrapper, not just the key enumeration: a
-	// stream lost partway through the reads has to restart from the listing,
-	// so out is reset rather than appended to twice.
+	// Whole read sits inside the wrapper: a stream lost partway has to restart
+	// the read, so out is reset rather than appended to twice.
 	err := s.withKV(ctx, func(kv jetstream.KeyValue) error {
 		out = nil
-		keys, err := s.keys(ctx, kv)
+		latest, _, err := s.readRange(ctx, kv, ">", false)
 		if err != nil {
 			return err
 		}
+		keys := make([]string, 0, len(latest))
+		for key, entry := range latest {
+			if strings.HasPrefix(key, prefix) && live(entry) {
+				keys = append(keys, key)
+			}
+		}
+		slices.Sort(keys)
 		for _, key := range keys {
-			if !strings.HasPrefix(key, prefix) {
-				continue
+			var v T
+			if err := json.Unmarshal(latest[key].Value(), &v); err != nil {
+				return fmt.Errorf("kvstore: decode %s: %w", key, err)
 			}
-			v, _, err := s.get(ctx, kv, key)
-			if errors.Is(err, ErrNotFound) {
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			out = append(out, *v)
+			out = append(out, v)
 		}
 		return nil
 	})
@@ -146,9 +147,8 @@ type Item[T any] struct {
 // the highest stream sequence it saw. Filter takes NATS subject wildcards.
 //
 // One consumer answers the whole read, so the keys and the values are
-// mutually consistent. List is not: it enumerates keys through a consumer and
-// then fetches each value through a direct get, and each of those gets is
-// routed independently, so no two of them need come from the same replica.
+// mutually consistent, and the read ends only once the stream leader has
+// nothing in range newer than what was delivered.
 //
 // A deleted key is not returned, but its revision still counts towards
 // highWater. That is deliberate: the mark says how far this reader got
@@ -159,34 +159,27 @@ func (s *Store[T]) Snapshot(ctx context.Context, filter string) (items []Item[T]
 	// reset on entry rather than appended to across a retry.
 	err = s.withKV(ctx, func(kv jetstream.KeyValue) error {
 		items, highWater = nil, 0
-
-		watcher, err := kv.Watch(ctx, filter)
+		latest, mark, err := s.readRange(ctx, kv, filter, false)
 		if err != nil {
-			return fmt.Errorf("kvstore: snapshot %s %s: %w", s.cfg.Name, filter, err)
+			return err
 		}
-		defer func() { _ = watcher.Stop() }()
-
-		for entry := range watcher.Updates() {
-			// nil marks the end of the existing values, which is the whole
-			// snapshot: anything after it is a live update, not state.
-			if entry == nil {
-				return nil
+		highWater = mark
+		keys := make([]string, 0, len(latest))
+		for key, entry := range latest {
+			if live(entry) {
+				keys = append(keys, key)
 			}
-			if entry.Revision() > highWater {
-				highWater = entry.Revision()
-			}
-			if entry.Operation() != jetstream.KeyValuePut {
-				continue
-			}
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			entry := latest[key]
 			var v T
 			if err := json.Unmarshal(entry.Value(), &v); err != nil {
-				return fmt.Errorf("kvstore: decode %s: %w", entry.Key(), err)
+				return fmt.Errorf("kvstore: decode %s: %w", key, err)
 			}
-			items = append(items, Item[T]{Key: entry.Key(), Value: v, Revision: entry.Revision()})
+			items = append(items, Item[T]{Key: key, Value: v, Revision: entry.Revision()})
 		}
-		// The channel closed without the marker, so the watcher died mid-pass
-		// and what was collected is a partial view rather than a snapshot.
-		return fmt.Errorf("kvstore: snapshot %s %s: watcher closed early", s.cfg.Name, filter)
+		return nil
 	})
 	if err != nil {
 		return nil, 0, err
@@ -200,12 +193,12 @@ func (s *Store[T]) DeletePrefix(ctx context.Context, prefix string) error {
 	// Safe to re-run: a key deleted before the stream was lost is already
 	// absent on the retry, which Delete treats as success.
 	return s.withKV(ctx, func(kv jetstream.KeyValue) error {
-		keys, err := s.keys(ctx, kv)
+		latest, _, err := s.readRange(ctx, kv, ">", true)
 		if err != nil {
 			return err
 		}
-		for _, key := range keys {
-			if !strings.HasPrefix(key, prefix) {
+		for key, entry := range latest {
+			if !strings.HasPrefix(key, prefix) || !live(entry) {
 				continue
 			}
 			if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -310,19 +303,6 @@ func (s *Store[T]) CompareAndSet(ctx context.Context, key string, v *T, rev uint
 		return 0, fmt.Errorf("kvstore: update %s: %w", key, err)
 	}
 	return next, nil
-}
-
-// keys lists an already-opened bucket, treating an empty bucket as an empty
-// listing. Recovery is the caller's, so the raw error passes through.
-func (s *Store[T]) keys(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
-	keys, err := kv.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return keys, nil
 }
 
 // get is Get against an already-opened bucket, for loops that opened it once.

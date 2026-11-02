@@ -102,6 +102,13 @@ func (f *failingKV) ListKeys(ctx context.Context, opts ...jetstream.WatchOpt) (j
 	return f.KeyValue.ListKeys(ctx, opts...)
 }
 
+func (f *failingKV) Watch(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+	if f.fails("Watch") {
+		return nil, errInjected
+	}
+	return f.KeyValue.Watch(ctx, keys, opts...)
+}
+
 // fakeEIPService answers only the EIP calls a test configures; any other
 // method panics through the nil embedded interface.
 type fakeEIPService struct {

@@ -22,10 +22,12 @@ import (
 type accountIAM struct {
 	fakeIAM
 
-	account   *iamdomain.Account
-	getErr    error
-	deleted   bool
-	setStatus string
+	account *iamdomain.Account
+	getErr  error
+	deleted bool
+	// deletedUnder is the operation and fence the delete was issued under.
+	deletedUnder quiesceCall
+	setStatus    string
 }
 
 func (f *accountIAM) GetAccount(string) (*iamdomain.Account, error) {
@@ -43,8 +45,9 @@ func (f *accountIAM) QuiesceAccount(_, _ string, _ uint64) (uint64, error) {
 	return 1, nil
 }
 
-func (f *accountIAM) DeleteAccount(string) error {
+func (f *accountIAM) DeleteAccount(_, operationID string, fence uint64) error {
 	f.deleted = true
+	f.deletedUnder = quiesceCall{operationID, fence}
 	return nil
 }
 
@@ -194,8 +197,9 @@ func TestIAMAccountsAdapterCarriesEveryField(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, iamdomain.AccountStatusTerminating, svc.setStatus)
 
-	require.NoError(t, accounts.DeleteAccount("000000000042"))
+	require.NoError(t, accounts.DeleteAccount("000000000042", "op-1", 3))
 	assert.True(t, svc.deleted)
+	assert.Equal(t, quiesceCall{"op-1", 3}, svc.deletedUnder)
 }
 
 // The engine declares TERMINATING itself so its tests need no IAM service. The

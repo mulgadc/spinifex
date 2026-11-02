@@ -127,6 +127,7 @@ func newDeleteAccountGateway(t *testing.T) Deps {
 
 	return Deps{
 		IAM:            svc,
+		Termination:    svc,
 		NATS:           nc,
 		ExpectedNodes:  1,
 		NodeIDs:        []string{"node-1"},

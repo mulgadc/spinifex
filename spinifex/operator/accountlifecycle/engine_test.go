@@ -23,13 +23,15 @@ const (
 
 // fakeAccounts is an in-memory AccountStore that records what happened to it.
 type fakeAccounts struct {
-	account   *Account
-	statuses  []string
-	quiesces  []quiesceCall
-	deleted   bool
-	getErr    error
-	statusErr error
-	deleteErr error
+	account  *Account
+	statuses []string
+	quiesces []quiesceCall
+	deleted  bool
+	// deletedUnder is the operation and fence the delete was issued under.
+	deletedUnder quiesceCall
+	getErr       error
+	statusErr    error
+	deleteErr    error
 }
 
 func newFakeAccounts() *fakeAccounts {
@@ -62,11 +64,12 @@ func (f *fakeAccounts) QuiesceAccount(_, operationID string, fence uint64) (uint
 	return 1, nil
 }
 
-func (f *fakeAccounts) DeleteAccount(string) error {
+func (f *fakeAccounts) DeleteAccount(_, operationID string, fence uint64) error {
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
 	f.deleted = true
+	f.deletedUnder = quiesceCall{operationID, fence}
 	return nil
 }
 
@@ -265,6 +268,9 @@ func TestTeardownQuiescesUnderTheRequestsOperationAndFence(t *testing.T) {
 	}
 	if len(accounts.quiesces) != 1 || accounts.quiesces[0] != (quiesceCall{"op-7", 2}) {
 		t.Fatalf("expected one quiesce under op-7 fence 2, got %v", accounts.quiesces)
+	}
+	if accounts.deletedUnder != (quiesceCall{"op-7", 2}) {
+		t.Fatalf("expected the account removal under op-7 fence 2, got %v", accounts.deletedUnder)
 	}
 }
 

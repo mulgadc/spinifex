@@ -59,6 +59,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
+	accountlifecycle "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	instancecache "github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
@@ -93,6 +94,10 @@ var serviceName = "awsgw"
 
 // OIDCJWKSReader is wired into STS here, not beside its own definition in
 // domains/eks/cluster, because domains/eks/cluster must not import domains/sts.
+// The concrete IAM service is the one holder of the quiesce and fenced-delete
+// capabilities; the shared IAMService interface carries neither.
+var _ accountlifecycle.IAMBackend = (*iamdomain.IAMServiceImpl)(nil)
+
 var _ stsdomain.ClusterJWKSResolver = (*ekscluster.OIDCJWKSReader)(nil)
 
 // AccountStatusReader also serves as the quota override seal's TERMINATING
@@ -678,6 +683,7 @@ func launchService(config *config.ClusterConfig) error {
 		Access:      bedrockAccess,
 
 		IAM:                    iamService,
+		Termination:            iamService,
 		Quota:                  quotaSvc,
 		BucketStore:            objStore,
 		SignupMaxAccounts:      signupMaxAccounts,

@@ -150,8 +150,6 @@ type IAMService interface {
 	GetAccount(accountID string) (*Account, error)
 	ListAccounts() ([]*Account, error)
 	SetAccountStatus(accountID, status string) (*Account, error)
-	QuiesceAccount(accountID, operationID string, fence uint64) (uint64, error)
-	DeleteAccount(accountID string) error
 
 	// GetAccountSummary returns account-wide IAM usage counts plus AWS-parity
 	// quota values as a SummaryMap. Read-only and account-scoped.

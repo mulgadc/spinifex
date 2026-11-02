@@ -3,7 +3,10 @@ package iam
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
+
+	"github.com/nats-io/nats.go/jetstream"
 
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/stretchr/testify/assert"
@@ -240,6 +243,91 @@ func TestSetAccountStatusKeepsTheTerminationOp(t *testing.T) {
 	_, err = svc.SetAccountStatus(id, AccountStatusSuspended)
 	require.ErrorIs(t, err, ErrAccountUndeletable)
 
+	stored, err := svc.GetAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, &TerminationOp{OperationID: "op-1", Fence: 2}, stored.TerminationOp)
+}
+
+// racingDeleteBucket lets a takeover land between the delete's read and its
+// conditional delete.
+type racingDeleteBucket struct {
+	jetstream.KeyValue
+
+	raced   atomic.Bool
+	compete func()
+}
+
+func (b *racingDeleteBucket) Delete(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	if b.raced.CompareAndSwap(false, true) {
+		b.compete()
+	}
+	return b.KeyValue.Delete(ctx, key, opts...)
+}
+
+// The final removal is fenced: only the holder whose operation and fence are
+// on the record may remove the account.
+func TestDeleteAccountIsFenced(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		op      string
+		fence   uint64
+		wantErr error
+	}{
+		{"the matching operation and fence removes the account", "op-1", 2, nil},
+		{"a stale fence cannot remove the account", "op-1", 1, ErrQuiesceSuperseded},
+		{"a newer fence than the record cannot remove the account", "op-1", 3, ErrQuiesceSuperseded},
+		{"a different operation cannot remove the account", "op-2", 2, ErrQuiesceSuperseded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, id := newQuiesceAccount(t)
+			_, err := svc.QuiesceAccount(id, "op-1", 2)
+			require.NoError(t, err)
+
+			err = svc.DeleteAccount(id, tc.op, tc.fence)
+
+			_, getErr := svc.GetAccount(id)
+			if tc.wantErr == nil {
+				require.NoError(t, err)
+				require.Error(t, getErr, "the account must be gone")
+				return
+			}
+			require.ErrorIs(t, err, tc.wantErr)
+			require.NoError(t, getErr, "a refused delete must remove nothing")
+		})
+	}
+}
+
+func TestDeleteAccountOfARecordWithoutAnOperationIsRefused(t *testing.T) {
+	t.Parallel()
+	svc, id := newQuiesceAccount(t)
+	writeAccountRecord(t, svc, id, func(a *Account) { a.Status = AccountStatusTerminating })
+
+	require.ErrorIs(t, svc.DeleteAccount(id, "op-1", 1), ErrQuiesceSuperseded)
+	_, err := svc.GetAccount(id)
+	require.NoError(t, err)
+}
+
+// A record that changes between the read and the delete is not removed on the
+// strength of the earlier read: the conditional delete refuses and the retry
+// re-reads, so a takeover in that window wins.
+func TestDeleteAccountDoesNotRemoveARecordTakenOverMidDelete(t *testing.T) {
+	t.Parallel()
+	svc, id := newQuiesceAccount(t)
+	_, err := svc.QuiesceAccount(id, "op-1", 1)
+	require.NoError(t, err)
+
+	underlying := svc.accountsBucket
+	svc.accountsBucket = &racingDeleteBucket{KeyValue: underlying, compete: func() {
+		_, takeoverErr := svc.QuiesceAccount(id, "op-1", 2)
+		require.NoError(t, takeoverErr)
+	}}
+
+	require.ErrorIs(t, svc.DeleteAccount(id, "op-1", 1), ErrQuiesceSuperseded)
+	svc.accountsBucket = underlying
 	stored, err := svc.GetAccount(id)
 	require.NoError(t, err)
 	assert.Equal(t, &TerminationOp{OperationID: "op-1", Fence: 2}, stored.TerminationOp)

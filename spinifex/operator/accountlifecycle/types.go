@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 // Stage groups resources that must all be gone before the next group is
@@ -110,7 +112,16 @@ type Reaper interface {
 type AccountStore interface {
 	AccountQuiescer
 	GetAccount(accountID string) (*Account, error)
-	DeleteAccount(accountID string) error
+	DeleteAccount(accountID, operationID string, fence uint64) error
+}
+
+// IAMBackend is the IAM service the cluster engine runs against: the broad
+// service plus the two narrow termination capabilities, which the broad
+// interface deliberately does not carry so that not every holder can use them.
+type IAMBackend interface {
+	iamdomain.IAMService
+	AccountQuiescer
+	DeleteAccount(accountID, operationID string, fence uint64) error
 }
 
 // AccountQuiescer moves an account to TERMINATING for one deletion operation.

@@ -12,7 +12,7 @@ import (
 
 // newStatusReaderFixture starts a real IAM service (which creates and
 // migrates spinifex-accounts) and a reader attached to the same JetStream.
-func newStatusReaderFixture(t *testing.T) (iamdomain.IAMService, *iamdomain.AccountStatusReader, jetstream.JetStream) {
+func newStatusReaderFixture(t *testing.T) (*iamdomain.IAMServiceImpl, *iamdomain.AccountStatusReader, jetstream.JetStream) {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
 

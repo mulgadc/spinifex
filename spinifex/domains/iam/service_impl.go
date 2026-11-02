@@ -1317,24 +1317,46 @@ func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, e
 // teardown and does nothing about the account's resources — a caller that has
 // not emptied the account first strands every resource it owned, because the
 // ownership record is what attributes them.
-func (s *IAMServiceImpl) DeleteAccount(accountID string) error {
+func (s *IAMServiceImpl) DeleteAccount(accountID, operationID string, fence uint64) error {
 	if reason, protected := UndeletableAccountIDs[accountID]; protected {
 		return fmt.Errorf("%s (%s): %w", accountID, reason, ErrAccountUndeletable)
 	}
 
-	account, err := s.GetAccount(accountID)
-	if err != nil {
-		return err
-	}
-	if account.Status != AccountStatusTerminating {
-		return fmt.Errorf("account %s is %s, not %s: %w",
-			accountID, account.Status, AccountStatusTerminating, ErrAccountUndeletable)
-	}
+	ctx := context.Background()
+	var account Account
+	for attempt := 0; ; attempt++ {
+		entry, err := s.accountsBucket.Get(ctx, accountID)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				return errors.New(awserrors.ErrorIAMNoSuchEntity)
+			}
+			return fmt.Errorf("get account: %w", err)
+		}
+		account = Account{}
+		if err := json.Unmarshal(entry.Value(), &account); err != nil {
+			return fmt.Errorf("unmarshal account: %w", err)
+		}
+		if account.Status != AccountStatusTerminating {
+			return fmt.Errorf("account %s is %s, not %s: %w",
+				accountID, account.Status, AccountStatusTerminating, ErrAccountUndeletable)
+		}
+		if current := account.TerminationOp; current == nil || current.OperationID != operationID || current.Fence != fence {
+			return fmt.Errorf("account %s is not terminating under operation %s at fence %d: %w",
+				accountID, operationID, fence, ErrQuiesceSuperseded)
+		}
 
-	if err := s.accountsBucket.Delete(context.Background(), accountID); err != nil {
+		err = s.accountsBucket.Delete(ctx, accountID, jetstream.LastRevision(entry.Revision()))
+		if err == nil {
+			break
+		}
+		// The record moved between the read and the delete: re-read, and the
+		// checks above decide whether this holder still owns it.
+		if attempt < 3 && errors.Is(err, jetstream.ErrKeyExists) {
+			continue
+		}
 		return fmt.Errorf("delete account: %w", err)
 	}
-	slog.Info("Account deleted", "accountID", accountID, "name", account.AccountName)
+	slog.Info("Account deleted", "accountID", accountID, "name", account.AccountName, "operation_id", operationID, "fence", fence)
 
 	if s.natsConn != nil {
 		evt, err := json.Marshal(struct {

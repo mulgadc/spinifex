@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newLifecycleService(t *testing.T) iamdomain.IAMService {
+func newLifecycleService(t *testing.T) *iamdomain.IAMServiceImpl {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
@@ -92,11 +92,11 @@ func TestDeleteAccountRequiresTerminating(t *testing.T) {
 	account, err := svc.CreateAccount("tenant@example.com")
 	require.NoError(t, err)
 
-	require.Error(t, svc.DeleteAccount(account.AccountID))
+	require.Error(t, svc.DeleteAccount(account.AccountID, "op-1", 1))
 
 	_, err = svc.QuiesceAccount(account.AccountID, "op-1", 1)
 	require.NoError(t, err)
-	require.NoError(t, svc.DeleteAccount(account.AccountID))
+	require.NoError(t, svc.DeleteAccount(account.AccountID, "op-1", 1))
 
 	_, err = svc.GetAccount(account.AccountID)
 	assert.Error(t, err)
@@ -114,7 +114,7 @@ func TestProtectedAccountsCanNeverBeDeleted(t *testing.T) {
 			// Even a status that would otherwise permit deletion must not.
 			_, _ = svc.QuiesceAccount(accountID, "op-1", 1)
 
-			err := svc.DeleteAccount(accountID)
+			err := svc.DeleteAccount(accountID, "op-1", 1)
 
 			require.Error(t, err)
 			assert.ErrorIs(t, err, iamdomain.ErrAccountUndeletable)

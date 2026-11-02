@@ -149,7 +149,7 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		return result, fmt.Errorf("%d resources left: %w", stuck, ErrResourcesStuck)
 	}
 
-	if err := e.Accounts.DeleteAccount(req.AccountID); err != nil {
+	if err := e.Accounts.DeleteAccount(req.AccountID, req.OperationID, req.Fence); err != nil {
 		return result, fmt.Errorf("delete account record: %w", err)
 	}
 	result.AccountDeleted = true

@@ -303,6 +303,14 @@ func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, acco
 	if err != nil {
 		return nil, err
 	}
+	var clusterRec ClusterRecord
+	found, err := getJSON(ctx, kv, ClusterMetaKey(cluster), &clusterRec)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errors.New(awserrors.ErrorECSClusterNotFound)
+	}
 	keys, err := keysWithPrefix(ctx, kv, TasksPrefix(cluster))
 	if err != nil {
 		return nil, err

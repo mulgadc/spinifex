@@ -310,29 +310,15 @@ resource "aws_eks_node_group" "default" {
 }
 
 # ---------------------------------------------------------------------------
-# Open the NodePort on the auto-managed nodegroup SG
+# Open the NodePort on the cluster security group
 #
-# Spinifex creates the worker SG itself (vpc_config.security_group_ids is
-# ignored) and admits only intra-cluster traffic. To reach the demo NodePort
-# from a browser, look the SG up by its deterministic name and add one rule.
+# Spinifex creates the cluster security group itself, as EKS does, and attaches
+# it to the workers. It admits only intra-cluster traffic. To reach the demo
+# NodePort from a browser, add one rule to the SG the cluster reports.
 # ---------------------------------------------------------------------------
 
-data "aws_security_group" "nodegroup" {
-  filter {
-    name   = "group-name"
-    values = ["eks-cluster-${var.cluster_name}-nodegroup-sg"]
-  }
-
-  filter {
-    name   = "vpc-id"
-    values = [aws_vpc.main.id]
-  }
-
-  depends_on = [aws_eks_node_group.default]
-}
-
 resource "aws_vpc_security_group_ingress_rule" "nodeport" {
-  security_group_id = data.aws_security_group.nodegroup.id
+  security_group_id = aws_eks_cluster.this.vpc_config[0].cluster_security_group_id
   cidr_ipv4         = var.browse_cidr
   from_port         = var.node_port
   to_port           = var.node_port
@@ -365,6 +351,10 @@ output "cluster_name" {
 
 output "region" {
   value = var.region
+}
+
+output "cluster_security_group_id" {
+  value = aws_eks_cluster.this.vpc_config[0].cluster_security_group_id
 }
 
 output "node_port" {

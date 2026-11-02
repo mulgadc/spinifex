@@ -16,7 +16,8 @@
 # The workloads/ module then creates a Deployment, a NodePort Service, and an
 # Ingress (ingressClassName: alb). The LBC reconciles that Ingress into an
 # internet-facing ALB that terminates TLS with the ACM cert and forwards to the
-# workers' NodePort. The cluster's ELB-eligible subnets are injected by Spinifex
+# workers' NodePort, adding the ALB-to-NodePort rule to the cluster security group
+# itself. The cluster's ELB-eligible subnets are injected by Spinifex
 # into the alb IngressClassParams, so the Ingress needs no subnet annotations.
 #
 # Usage:
@@ -500,40 +501,6 @@ resource "aws_acm_certificate" "ingress" {
 
   tags = {
     Name = "${var.cluster_name}-ingress"
-  }
-}
-
-# ---------------------------------------------------------------------------
-# Let the ALB reach the workers' NodePort
-#
-# Spinifex auto-manages the nodegroup SG and admits only intra-cluster traffic.
-# The LBC-provisioned ALB lives in this VPC, so admit the VPC CIDR on the
-# NodePort. Look the SG up by its deterministic name and add one rule.
-# ---------------------------------------------------------------------------
-
-data "aws_security_group" "nodegroup" {
-  filter {
-    name   = "group-name"
-    values = ["eks-cluster-${var.cluster_name}-nodegroup-sg"]
-  }
-
-  filter {
-    name   = "vpc-id"
-    values = [aws_vpc.main.id]
-  }
-
-  depends_on = [aws_eks_node_group.workers]
-}
-
-resource "aws_vpc_security_group_ingress_rule" "nodeport_from_vpc" {
-  security_group_id = data.aws_security_group.nodegroup.id
-  cidr_ipv4         = aws_vpc.main.cidr_block
-  from_port         = var.node_port
-  to_port           = var.node_port
-  ip_protocol       = "tcp"
-
-  tags = {
-    Name = "${var.cluster_name}-alb-nodeport"
   }
 }
 

@@ -132,30 +132,32 @@ func TestEnsurePrivateEndpointENI_HappyPath(t *testing.T) {
 	sgp := newFakeSGProvisioner()
 	sgp.createIDs = []string{"sg-pe-001"}
 
-	pe, err := EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "subnet-aaa", "vpc-aaa")
+	pe, err := EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "subnet-aaa", "vpc-aaa", "sg-cluster")
 	require.NoError(t, err)
 	assert.Equal(t, "eni-pe-001", pe.ENIID)
 	assert.Equal(t, "10.0.1.50", pe.ENIIP)
 	assert.Equal(t, "02:0a:01:23:45:67", pe.ENIMac)
 	assert.Equal(t, "sg-pe-001", pe.SGID)
 
-	// ENI must be created in the customer subnet, bound to the private-endpoint SG.
+	// ENI must be created in the customer subnet, bound to the private-endpoint SG
+	// and the cluster SG.
 	require.Len(t, vpcSvc.createCalls, 1)
 	createIn := vpcSvc.createCalls[0]
 	assert.Equal(t, "subnet-aaa", aws.StringValue(createIn.SubnetId))
-	require.Len(t, createIn.Groups, 1)
-	assert.Equal(t, "sg-pe-001", aws.StringValue(createIn.Groups[0]))
+	assert.Equal(t, []string{"sg-pe-001", "sg-cluster"}, aws.StringValueSlice(createIn.Groups))
 }
 
 func TestEnsurePrivateEndpointENI_EmptyInputsRejected(t *testing.T) {
 	t.Parallel()
 	vpcSvc := &fakeK3sVPC{}
 	sgp := newFakeSGProvisioner()
-	_, err := EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "", "alpha", "subnet-aaa", "vpc-aaa")
+	_, err := EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "", "alpha", "subnet-aaa", "vpc-aaa", "sg-cluster")
 	require.Error(t, err)
-	_, err = EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "", "vpc-aaa")
+	_, err = EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "", "vpc-aaa", "sg-cluster")
 	require.Error(t, err)
-	_, err = EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "subnet-aaa", "")
+	_, err = EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "subnet-aaa", "", "sg-cluster")
+	require.Error(t, err)
+	_, err = EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "111122223333", "alpha", "subnet-aaa", "vpc-aaa", "")
 	require.Error(t, err)
 	assert.Empty(t, vpcSvc.createCalls)
 }

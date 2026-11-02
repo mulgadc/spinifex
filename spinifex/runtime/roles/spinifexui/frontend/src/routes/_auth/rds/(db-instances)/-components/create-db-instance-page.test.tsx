@@ -79,6 +79,20 @@ function seed(images: unknown[]): QueryClient {
       },
     ],
   })
+  qc.setQueryData(["ec2", "instances", "types"], {
+    InstanceTypes: [
+      {
+        InstanceType: "t3.micro",
+        VCpuInfo: { DefaultVCpus: 2 },
+        MemoryInfo: { SizeInMiB: 1024 },
+      },
+      {
+        InstanceType: "t3.small",
+        VCpuInfo: { DefaultVCpus: 2 },
+        MemoryInfo: { SizeInMiB: 2048 },
+      },
+    ],
+  })
   qc.setQueryData(["ec2", "securityGroups"], {
     SecurityGroups: [
       { GroupId: "sg-1", GroupName: "default", VpcId: "vpc-1" },
@@ -124,7 +138,7 @@ async function openAdvanced(user: ReturnType<typeof userEvent.setup>) {
 async function choose(
   user: ReturnType<typeof userEvent.setup>,
   trigger: string,
-  option: string,
+  option: string | RegExp,
 ) {
   await user.click(screen.getByLabelText(trigger))
   await user.click(screen.getByRole("option", { name: option }))
@@ -145,7 +159,7 @@ async function enter(
 
 async function fillRequired(user: ReturnType<typeof userEvent.setup>) {
   await enter(user, "DB instance identifier", "orders-db")
-  await choose(user, "DB instance class", "db.t3.micro")
+  await choose(user, "DB instance class", /^db\.t3\.micro.*1 GiB memory$/)
   await enter(user, "Master username", "dbadmin")
   await enter(user, "Master password", "Sup3rSecretPw")
   await enter(user, "Confirm master password", "Sup3rSecretPw")

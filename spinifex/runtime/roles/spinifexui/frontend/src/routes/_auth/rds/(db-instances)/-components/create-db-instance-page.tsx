@@ -12,7 +12,7 @@ import {
 } from "@/components/cli-command-panel"
 import { PanelSection } from "@/components/detail-panel"
 import { FormActions } from "@/components/form-actions"
-import { SelectField, selectOptions, TextField } from "@/components/form-fields"
+import { SelectField, TextField } from "@/components/form-fields"
 import { FormLock } from "@/components/form-lock"
 import {
   securityGroupIdsForVpc,
@@ -42,7 +42,7 @@ import {
 
 import {
   DeletionProtectionField,
-  instanceClassOptions,
+  useInstanceClassOptions,
   parameterGroupOptions,
   parameterGroupsForEngine,
   subnetGroupOptions,
@@ -166,8 +166,11 @@ export function CreateDBInstancePage({ onClose }: CreateDBInstancePageProps) {
     (v) => v.Engine === selectedEngine,
   )
 
-  const { instanceClasses, classNotice: engineClassNotice } =
-    instanceClassOptions(orderableQuery, selectedEngine)
+  const {
+    classOptions,
+    classSize,
+    classNotice: engineClassNotice,
+  } = useInstanceClassOptions(orderableQuery, selectedEngine)
 
   const [storageBounds] = orderableQuery.data?.OrderableDBInstanceOptions ?? []
 
@@ -351,7 +354,8 @@ export function CreateDBInstancePage({ onClose }: CreateDBInstancePageProps) {
               label="DB instance class"
               name="dbInstanceClass"
               notice={classNotice}
-              options={selectOptions(instanceClasses)}
+              options={classOptions}
+              description={classSize(values.dbInstanceClass)}
               placeholder="Select an instance class"
             />
 

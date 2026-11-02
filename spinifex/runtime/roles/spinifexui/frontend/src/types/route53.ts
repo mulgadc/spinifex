@@ -56,14 +56,14 @@ export const RECORD_VALUE_LABELS: Record<EditableRecordType, string> = {
 }
 
 export const RECORD_VALUE_HINTS: Record<EditableRecordType, string> = {
-  A: "One IPv4 address per line, e.g. 192.0.2.10",
-  AAAA: "One IPv6 address per line, e.g. 2001:db8::10",
+  A: "An IPv4 address, e.g. 192.0.2.10. Add a value for each further address.",
+  AAAA: "An IPv6 address, e.g. 2001:db8::10. Add a value for each further address.",
   CNAME: "One domain name, e.g. www.example.com",
-  MX: "One mail server per line, e.g. mail.example.com. A line may carry its own priority, as 20 backup.example.com.",
-  TXT: "One value per line, as plain text. Quotes are added for you.",
-  NS: "One name server per line, e.g. ns1.example.net",
-  SRV: "Priority weight port target per line, e.g. 10 5 5060 sip.example.com",
-  CAA: 'Flags tag "value" per line, e.g. 0 issue "letsencrypt.org"',
+  MX: "A mail server, e.g. mail.example.com. A value may carry its own priority, as 20 backup.example.com.",
+  TXT: "Plain text, one string per value. Quotes are added for you.",
+  NS: "A name server, e.g. ns1.example.net. Add a value for each further server.",
+  SRV: "Priority weight port target, e.g. 10 5 5060 sip.example.com",
+  CAA: 'Flags tag "value", e.g. 0 issue "letsencrypt.org"',
 }
 
 export const RECORD_TYPE_HELP: readonly (readonly [

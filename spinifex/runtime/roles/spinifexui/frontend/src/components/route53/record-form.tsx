@@ -25,6 +25,7 @@ import {
 import { FormLock } from "@/components/form-lock"
 import { FormPanel } from "@/components/form-panel"
 import { InfoList } from "@/components/info-tip"
+import { RecordValuesField } from "@/components/route53/record-values-field"
 import { Field, FieldDescription, FieldError } from "@/components/ui/field"
 import {
   Select,
@@ -33,7 +34,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
 import {
   DEFAULT_MX_PRIORITY,
   DEFAULT_TTL_SECONDS,
@@ -219,12 +219,19 @@ export function RecordForm({
           )}
           <Field>
             <FieldLabel id="record-values" label={RECORD_VALUE_LABELS[type]} />
-            <Textarea
-              aria-invalid={!!errors.values}
-              id="record-values"
-              rows={4}
-              variant="code"
-              {...register("values")}
+            <Controller
+              control={control}
+              name="values"
+              render={({ field }) => (
+                <RecordValuesField
+                  id="record-values"
+                  invalid={!!errors.values}
+                  label={RECORD_VALUE_LABELS[type]}
+                  multiple={type !== "CNAME"}
+                  onChange={field.onChange}
+                  value={field.value}
+                />
+              )}
             />
             <FieldDescription>{RECORD_VALUE_HINTS[type]}</FieldDescription>
             <FieldError errors={[errors.values]} />

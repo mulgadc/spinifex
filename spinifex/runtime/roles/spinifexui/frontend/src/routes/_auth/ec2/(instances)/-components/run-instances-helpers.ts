@@ -23,21 +23,7 @@ export type RunInstancesFormInput = z.input<typeof createInstanceSchema>
 
 export const DEFAULT_ROOT_DEVICE_NAME = "/dev/sda1"
 
-// "2 vCPU · 8 GiB memory", read from DescribeInstanceTypes, which reports
-// the size of every type the cluster offers.
-export function describeTypeSize(type: InstanceTypeInfo): string {
-  const vcpus = type.VCpuInfo?.DefaultVCpus
-  const mib = type.MemoryInfo?.SizeInMiB
-
-  return [
-    vcpus === undefined ? undefined : `${vcpus} vCPU`,
-    mib === undefined
-      ? undefined
-      : `${Number((mib / 1024).toFixed(2))} GiB memory`,
-  ]
-    .filter(Boolean)
-    .join(" · ")
-}
+export { describeTypeSize } from "@/lib/instance-type-size"
 
 export function typesForArchitecture(
   types: readonly InstanceTypeInfo[],

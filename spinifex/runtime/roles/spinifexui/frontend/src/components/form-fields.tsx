@@ -26,6 +26,8 @@ import {
 export interface SelectFieldOption {
   value: string
   label: string
+  // Shown muted after the label in the list, never in the closed trigger.
+  detail?: string
 }
 
 // For pickers whose values are already what the user should read.
@@ -123,6 +125,11 @@ export function SelectField<T extends FieldValues>({
                   {options.map((option) => (
                     <SelectItem key={option.value} value={option.value}>
                       {option.label}
+                      {option.detail && (
+                        <span className="text-muted-foreground">
+                          {option.detail}
+                        </span>
+                      )}
                     </SelectItem>
                   ))}
                 </SelectContent>

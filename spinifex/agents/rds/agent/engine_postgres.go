@@ -516,7 +516,9 @@ func (e *postgresEngine) Quiesce(ctx context.Context, label string, hold time.Du
 
 	// Held across the whole start, so a second quiesce waits and then finds the
 	// first one's hold rather than opening a concurrent backup alongside it.
-	e.mu.Lock()
+	if err := e.lockWithin(ctx); err != nil {
+		return err
+	}
 	defer e.mu.Unlock()
 	if e.held != nil {
 		return fmt.Errorf("the engine is already quiesced for backup %s", e.held.label)

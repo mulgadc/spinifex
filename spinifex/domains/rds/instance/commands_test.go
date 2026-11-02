@@ -2,6 +2,7 @@ package instance
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,4 +80,27 @@ func TestIssueCommand_CorrelatesTheReplyByCommandID(t *testing.T) {
 	issued := h.agent.received()
 	require.NotEmpty(t, issued)
 	assert.Equal(t, issued[0].CommandID, reply.CommandID)
+}
+
+// Each copy carries what its issuer has left, so a copy that reaches the agent
+// late cannot be granted a whole budget its issuer is about to give up on.
+func TestIssueCommand_StampsEachCopyWithTheBudgetLeft(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	h.agent.silenceType(CommandQuiesce)
+
+	const budget = 4500 * time.Millisecond
+	_, err := h.svc.issueCommand(t.Context(), testAccountID, testDBID, CommandQuiesce, budget, nil)
+	require.ErrorIs(t, err, ErrCommandUnreachable)
+
+	issued := h.agent.received()
+	require.GreaterOrEqual(t, len(issued), 2, "the issuer must have re-published at least once")
+	for i, copied := range issued {
+		assert.Positive(t, copied.RemainingBudgetMs, "copy %d carries no remaining budget", i)
+		assert.LessOrEqual(t, copied.RemainingBudgetMs, budget.Milliseconds(), "copy %d", i)
+		if i > 0 {
+			assert.LessOrEqual(t, copied.RemainingBudgetMs, issued[i-1].RemainingBudgetMs-commandRepublishEvery.Milliseconds()/2,
+				"copy %d was stamped with as much budget as the copy before it", i)
+		}
+	}
 }

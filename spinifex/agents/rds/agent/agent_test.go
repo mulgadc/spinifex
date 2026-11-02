@@ -763,10 +763,11 @@ func TestPollDBCommandsOutput_MatchesGatewayShape(t *testing.T) {
 	// either side's tags fails here.
 	payload := awsxml.QueryResponsePayload("PollDBCommands", &rdsawsapi.PollDBCommandsOutput{
 		Commands: []rdsinstance.Command{{
-			CommandID:  "cmd-1",
-			Type:       "reload-parameters",
-			Parameters: []rdsinstance.Parameter{{Name: "work_mem", Value: "8MB"}},
-			IssuedAt:   &issued,
+			CommandID:         "cmd-1",
+			Type:              "reload-parameters",
+			Parameters:        []rdsinstance.Parameter{{Name: "work_mem", Value: "8MB"}},
+			IssuedAt:          &issued,
+			RemainingBudgetMs: 29500,
 		}},
 	})
 	body, err := awsxml.Marshal(payload)
@@ -801,6 +802,9 @@ func TestPollDBCommandsOutput_MatchesGatewayShape(t *testing.T) {
 	}
 	if cmd.IssuedAt == nil || !cmd.IssuedAt.Equal(issued) {
 		t.Errorf("IssuedAt = %v, want %v", cmd.IssuedAt, issued)
+	}
+	if cmd.RemainingBudgetMs != 29500 {
+		t.Errorf("RemainingBudgetMs = %d, want 29500: a copy that loses it is granted a fresh budget", cmd.RemainingBudgetMs)
 	}
 }
 

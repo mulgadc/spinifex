@@ -114,8 +114,9 @@ type CodeStoredRequest struct {
 	Size         int64  `json:"size"`
 }
 
-// CodeStoredResponse returns the revision after the update.
+// CodeStoredResponse returns the record as stored and its revision.
 type CodeStoredResponse struct {
+	Record   Record `json:"record"`
 	Revision uint64 `json:"revision"`
 }
 

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +45,7 @@ type localClient struct {
 
 	mu             sync.Mutex
 	failCodeStored bool
+	passOwnerClock bool
 	rollbacks      int
 }
 
@@ -68,18 +70,23 @@ func (c *localClient) Get(ctx context.Context, account, region, name string) (fu
 	return r.Record, r.Revision, nil
 }
 
-func (c *localClient) CodeStored(ctx context.Context, account, region, name string, rev uint64, sha string, size int64) (uint64, error) {
+func (c *localClient) CodeStored(ctx context.Context, account, region, name string, rev uint64, sha string, size int64) (function.Record, uint64, error) {
 	c.mu.Lock()
-	fail := c.failCodeStored
+	fail, passClock := c.failCodeStored, c.passOwnerClock
 	c.mu.Unlock()
 	if fail {
-		return 0, errors.New("nats: timeout")
+		return function.Record{}, 0, errors.New("nats: timeout")
 	}
 	r, err := c.svc.CodeStored(ctx, &function.CodeStoredRequest{Region: region, FunctionName: name, Revision: rev, SHA256: sha, Size: size}, account)
 	if err != nil {
-		return 0, err
+		return function.Record{}, 0, err
 	}
-	return r.Revision, nil
+	// Let the wall clock pass the owner's millisecond, so a timestamp the
+	// gateway reads for itself would differ from the stored one.
+	for passClock && !time.Now().Truncate(time.Millisecond).After(r.Record.LastModified.Truncate(time.Millisecond)) {
+		runtime.Gosched()
+	}
+	return r.Record, r.Revision, nil
 }
 
 func (c *localClient) RollbackCreate(ctx context.Context, account, region, name string, rev uint64) error {
@@ -275,6 +282,22 @@ func TestCreateFunction_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(entry.Value()), "hunter2", "the environment is never stored in plaintext")
 	assert.Contains(t, string(entry.Value()), "envCipher")
+}
+
+func TestCreateFunction_RendersTheStoredTimestamps(t *testing.T) {
+	e := newEnv(t)
+	e.meta.passOwnerClock = true
+	rec, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
+	require.NoError(t, err)
+	var created lambda.FunctionConfiguration
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+
+	rec, err = e.do(http.MethodGet, "/2015-03-31/functions/hello", nil)
+	require.NoError(t, err)
+	var got lambda.GetFunctionOutput
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, *got.Configuration.LastModified, *created.LastModified)
+	assert.Equal(t, *got.Configuration.RevisionId, *created.RevisionId)
 }
 
 func TestCreateFunction_DuplicateNameLeavesFirstUntouched(t *testing.T) {

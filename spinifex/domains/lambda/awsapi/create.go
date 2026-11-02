@@ -95,17 +95,13 @@ func (d Deps) createFunction(ctx context.Context, c *call) (reply, error) {
 		d.rollback(ctx, c, p.Name, createRev, ref, "code write failed", err)
 		return reply{}, serviceError("the function code could not be stored")
 	}
-	storedRev, err := d.Meta.CodeStored(ctx, c.AccountID, c.Region, p.Name, createRev, sha, int64(len(p.Code)))
+	stored, storedRev, err := d.Meta.CodeStored(ctx, c.AccountID, c.Region, p.Name, createRev, sha, int64(len(p.Code)))
 	if err != nil {
 		d.rollback(ctx, c, p.Name, createRev, ref, "code-stored was not recorded", err)
 		return reply{}, serviceError("the function could not be completed")
 	}
 
-	now := time.Now().UTC()
-	rec.Code.SHA256, rec.Code.Size, rec.Code.State = sha, int64(len(p.Code)), function.CodeStored
-	rec.StateReasonCode, rec.StateReason = function.ReasonCodeCreating, function.ReasonCreating
-	rec.CreatedAt, rec.LastModified = now, now
-	cfg, err := configuration(rec, storedRev, p.Env)
+	cfg, err := configuration(stored, storedRev, p.Env)
 	if err != nil {
 		return reply{}, serviceError("could not build the function configuration")
 	}

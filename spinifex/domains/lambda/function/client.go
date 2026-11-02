@@ -16,8 +16,8 @@ type Client interface {
 	Create(ctx context.Context, accountID, region string, rec Record) (uint64, error)
 	// Get returns the record and revision, or ErrNotFound.
 	Get(ctx context.Context, accountID, region, name string) (Record, uint64, error)
-	// CodeStored marks the code stored and returns the new revision.
-	CodeStored(ctx context.Context, accountID, region, name string, revision uint64, sha256Hex string, size int64) (uint64, error)
+	// CodeStored marks the code stored and returns the stored record and revision.
+	CodeStored(ctx context.Context, accountID, region, name string, revision uint64, sha256Hex string, size int64) (Record, uint64, error)
 	// RollbackCreate frees the name while the record is still storing at revision.
 	RollbackCreate(ctx context.Context, accountID, region, name string, revision uint64) error
 }
@@ -51,13 +51,13 @@ func (c *NATSClient) Get(ctx context.Context, accountID, region, name string) (R
 	return resp.Record, resp.Revision, nil
 }
 
-func (c *NATSClient) CodeStored(ctx context.Context, accountID, region, name string, revision uint64, sha256Hex string, size int64) (uint64, error) {
+func (c *NATSClient) CodeStored(ctx context.Context, accountID, region, name string, revision uint64, sha256Hex string, size int64) (Record, uint64, error) {
 	resp, err := natsmsg.NATSRequest[CodeStoredResponse](ctx, c.conn, SubjectCodeStored,
 		&CodeStoredRequest{Region: region, FunctionName: name, Revision: revision, SHA256: sha256Hex, Size: size}, metaRequestTimeout, accountID)
 	if err != nil {
-		return 0, err
+		return Record{}, 0, err
 	}
-	return resp.Revision, nil
+	return resp.Record, resp.Revision, nil
 }
 
 func (c *NATSClient) RollbackCreate(ctx context.Context, accountID, region, name string, revision uint64) error {

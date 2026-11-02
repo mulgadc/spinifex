@@ -228,7 +228,7 @@ func (s *MetaService) CodeStored(ctx context.Context, req *CodeStoredRequest, ac
 		}
 		return nil, fmt.Errorf("lambda: update function record: %w", err)
 	}
-	return &CodeStoredResponse{Revision: rev}, nil
+	return &CodeStoredResponse{Record: rec, Revision: rev}, nil
 }
 
 // RollbackCreate frees the name of a create whose own code write failed. It

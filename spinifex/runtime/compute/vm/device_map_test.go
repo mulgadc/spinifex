@@ -128,6 +128,23 @@ func TestBuildDeviceMap(t *testing.T) {
 			wantLen: 4,
 		},
 		{
+			// A -blockdev boot node leaves the BlockBackend unnamed, so the
+			// entry is keyed by its node-name instead of "".
+			name: "blockdev boot device is named by its node-name",
+			devices: []qmp.BlockDevice{
+				{Device: "", Inserted: &qmp.BlockInserted{NodeName: "os"}, QDev: "/machine/peripheral-anon/device[0]/virtio-backend"},
+				{Device: "cloudinit", Inserted: &qmp.BlockInserted{NodeName: "#block123"}, QDev: "/machine/peripheral-anon/device[3]/virtio-backend"},
+				{Device: "", Inserted: &qmp.BlockInserted{NodeName: "nbd-vol-abc"}, QDev: "/machine/peripheral/vdisk-vol-abc/virtio-backend"},
+			},
+			want: map[string]string{
+				"os":            "/dev/vda",
+				"cloudinit":     "/dev/vdb",
+				"vdisk-vol-abc": "/dev/vdc",
+			},
+			absent:  []string{"", "nbd-vol-abc"},
+			wantLen: 3,
+		},
+		{
 			// Boot devices returned out of order: lowest PCI index wins /dev/vda;
 			// hot-plugged devices sort after boot devices.
 			name: "PCI-index ordering across mixed boot and hot-plug",

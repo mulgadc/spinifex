@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 )
 
 // IsMicrovm reports whether machineType is the QEMU microvm machine, with or
@@ -162,6 +164,8 @@ type blkDeviceJSON struct {
 	NumQueues int                 `json:"num-queues,omitempty"`
 	BootIndex int                 `json:"bootindex,omitempty"`
 	Mapping   []iothreadVQMapping `json:"iothread-vq-mapping"`
+	Werror    string              `json:"werror"`
+	Rerror    string              `json:"rerror"`
 }
 
 // BlkDeviceMapped returns a virtio-blk -device that spreads its virtqueues
@@ -197,6 +201,8 @@ func BlkDeviceMapped(machineType, drive, iothreadBase string, queues, bootIdx, p
 		NumQueues: queues,
 		BootIndex: bootIdx,
 		Mapping:   mapping,
+		Werror:    "stop",
+		Rerror:    "stop",
 	})
 	if err != nil {
 		return Device{}, fmt.Errorf("marshal virtio-blk iothread-vq-mapping: %w", err)
@@ -204,9 +210,9 @@ func BlkDeviceMapped(machineType, drive, iothreadBase string, queues, bootIdx, p
 	return Device{Value: string(b)}, nil
 }
 
-// BlkDevice returns the appropriate QEMU virtio-blk device string for
-// machineType. iothread and queues are omitted when empty/zero. bootIdx is
-// only emitted for PCI machines (MMIO has no bootindex concept).
+// BlkDevice returns the virtio-blk device string for machineType, omitting an
+// empty iothread or zero queues; bootIdx is PCI-only. It sets werror/rerror=stop
+// (see VolumeBlkDeviceArgs), as a -blockdev node has no BlockBackend to hold it.
 func BlkDevice(machineType, drive, iothread string, queues int, bootIdx int) Device {
 	var b strings.Builder
 	if IsMMIO(machineType) {
@@ -224,6 +230,7 @@ func BlkDevice(machineType, drive, iothread string, queues int, bootIdx int) Dev
 	if !IsMMIO(machineType) && bootIdx > 0 {
 		fmt.Fprintf(&b, ",bootindex=%d", bootIdx)
 	}
+	b.WriteString(",werror=stop,rerror=stop")
 	return Device{Value: b.String()}
 }
 
@@ -282,9 +289,9 @@ func HotplugEBSBus(port int) string {
 // (rendered as a joined command-line string) so the two block-graph shapes
 // cannot diverge.
 //
-// werror/rerror mirror the boot drive's on-error policy (see Drive.Werror):
-// a data volume has no -drive-backed BlockBackend to carry it, so the qdev
-// device itself sets werror=stop,rerror=stop.
+// werror=stop,rerror=stop pauses the VM and holds a failed request, so a
+// transient backend loss is resumed with cont instead of reaching the guest as
+// EIO. A -blockdev node has no BlockBackend to carry it, so the device sets it.
 func VolumeBlkDeviceArgs(volumeID, nodeName, iothreadID, bus string) []string {
 	return []string{
 		fmt.Sprintf("id=%s", VolumeDeviceID(volumeID)),
@@ -388,6 +395,31 @@ func VolumeBlockdev(nodeName string, server NBDServerOpts) Blockdev {
 	return Blockdev{Value: strings.Join(opts, ",")}
 }
 
+// bootNodeName is the boot volume's block-node name, which its -device names
+// with drive=.
+const bootNodeName = "os"
+
+// nbdServerOpts parses an NBD URI into the server options a blockdev takes.
+func nbdServerOpts(uri string) (NBDServerOpts, error) {
+	serverType, socketPath, host, port, err := nbd.ParseNBDURI(uri)
+	if err != nil {
+		return NBDServerOpts{}, err
+	}
+	return NBDServerOpts{Type: serverType, Path: socketPath, Host: host, Port: port}, nil
+}
+
+// bootNBDBlockdev renders the boot volume's -blockdev for an NBD export: a raw
+// node over an nbd node, the graph -drive format=raw,cache=none built, with the
+// same O_DIRECT setting and reconnect delay.
+func bootNBDBlockdev(server NBDServerOpts) Blockdev {
+	opts := []string{"driver=raw", fmt.Sprintf("node-name=%s", bootNodeName), "cache.direct=on", "file.driver=nbd"}
+	for _, arg := range server.CommandLineArgs() {
+		opts = append(opts, "file."+arg)
+	}
+	opts = append(opts, "file.export=", fmt.Sprintf("file.reconnect-delay=%d", NBDReconnectDelaySeconds))
+	return Blockdev{Value: strings.Join(opts, ",")}
+}
+
 // HostDeviceOpts is a host block device export. QEMU opens Path through the
 // host_device protocol driver with O_DIRECT and native AIO, and a raw format
 // node over it exposes only the first SizeBytes to the guest.
@@ -413,7 +445,7 @@ func (o HostDeviceOpts) QMPArgs(nodeName string) map[string]any {
 }
 
 // VolumeHostDeviceBlockdev renders the -blockdev equivalent of QMPArgs for a
-// data volume backed by a host block device.
+// volume backed by a host block device.
 func VolumeHostDeviceBlockdev(nodeName string, dev HostDeviceOpts) Blockdev {
 	return Blockdev{Value: fmt.Sprintf(
 		"driver=raw,node-name=%s,size=%d,file.driver=host_device,file.filename=%s,file.aio=native,file.cache.direct=on",

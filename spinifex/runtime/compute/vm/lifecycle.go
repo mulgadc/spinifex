@@ -1403,11 +1403,9 @@ func directBootLaunchConfig(base Config, requests []EBSRequest, cpuCount int) (C
 // classifyVolumeExport), or if the EBS hot-plug port pool is exhausted while
 // allocating one for a data volume.
 //
-// Boot volumes keep the existing anonymous if=none -drive shape exactly as
-// before — they are not detachable (see ErrVolumeNotDetachable), so the
-// anonymous-node problem this function otherwise fixes does not apply, and
-// changing the boot drive risks boot order. EFI volumes emit pflash unit=1;
-// the readonly CODE blob (unit=0) is added by Config.Execute.
+// The boot volume is a -blockdev node named "os" under a bootindex=1 device
+// that carries werror/rerror; it is never detached, so it keeps fixed names.
+// EFI volumes emit pflash unit=1; Config.Execute adds the CODE blob (unit=0).
 //
 // Every other (data) volume is given the same named node-name/device-id/
 // iothread-id shape AttachVolume's hot-plug path uses, via a -blockdev entry
@@ -1432,41 +1430,35 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 		}
 
 		switch {
-		case kind == volumeExportBlock && (v.Boot || v.EFI):
-			// Boot and EFI keep the legacy -drive shape, which has no
-			// host_device form here; only data volumes take a block export.
-			return driveConfig{}, fmt.Errorf("volume %s: block device export is only supported for data volumes", v.Name)
+		case kind == volumeExportBlock && v.EFI:
+			// The VARS store is a pflash -drive, which has no host_device form.
+			return driveConfig{}, fmt.Errorf("volume %s: block device export is not supported for an EFI volume", v.Name)
 
 		case v.Boot:
-			drive := Drive{
-				File:   v.NBDURI,
-				Format: "raw",
-				If:     "none",
-				Media:  "disk",
-				ID:     "os",
-				Cache:  "none",
-
-				// Pause the VM and hold the failed request rather than
-				// delivering EIO to the guest, which aborts its journal. A
-				// transient backend loss is then recovered with cont.
-				Werror:         "stop",
-				Rerror:         "stop",
-				ReconnectDelay: NBDReconnectDelaySeconds,
+			var blockdev Blockdev
+			if kind == volumeExportBlock {
+				blockdev = VolumeHostDeviceBlockdev(bootNodeName, HostDeviceOpts{Path: v.BlockDevice, SizeBytes: v.BlockSizeBytes})
+			} else {
+				server, err := nbdServerOpts(v.NBDURI)
+				if err != nil {
+					return driveConfig{}, fmt.Errorf("parse NBDURI for volume %s: %w", v.Name, err)
+				}
+				blockdev = bootNBDBlockdev(server)
 			}
 
 			// The boot disk's virtqueues are spread across a pool rather than
-			// all served by one host thread. A pool of 1 emits exactly the
-			// command line this used to, which is every guest below 4 vCPUs.
+			// all served by one host thread. A pool of 1 keeps the scalar
+			// iothread= form, which is every guest below 4 vCPUs.
 			pool := BlkIOThreadPoolSize(cpuCount)
 			for i := range pool {
 				cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: BlkIOThreadID("ioth-os", i, pool)})
 			}
-			dev, err := BlkDeviceMapped(machineType, drive.ID, "ioth-os", cpuCount, 1, pool)
+			dev, err := BlkDeviceMapped(machineType, bootNodeName, "ioth-os", cpuCount, 1, pool)
 			if err != nil {
 				return driveConfig{}, fmt.Errorf("boot volume %s: %w", v.Name, err)
 			}
+			cfg.Blockdevs = append(cfg.Blockdevs, blockdev)
 			cfg.Devices = append(cfg.Devices, dev)
-			cfg.Drives = append(cfg.Drives, drive)
 
 		case v.EFI:
 			cfg.Drives = append(cfg.Drives, Drive{
@@ -1499,16 +1491,11 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 			if kind == volumeExportBlock {
 				blockdev = VolumeHostDeviceBlockdev(nodeName, HostDeviceOpts{Path: v.BlockDevice, SizeBytes: v.BlockSizeBytes})
 			} else {
-				serverType, socketPath, nbdHost, nbdPort, err := nbd.ParseNBDURI(v.NBDURI)
+				server, err := nbdServerOpts(v.NBDURI)
 				if err != nil {
 					return driveConfig{}, fmt.Errorf("parse NBDURI for volume %s: %w", v.Name, err)
 				}
-				blockdev = VolumeBlockdev(nodeName, NBDServerOpts{
-					Type: serverType,
-					Path: socketPath,
-					Host: nbdHost,
-					Port: nbdPort,
-				})
+				blockdev = VolumeBlockdev(nodeName, server)
 			}
 
 			cfg.IOThreads = append(cfg.IOThreads, IOThread{ID: iothreadID})

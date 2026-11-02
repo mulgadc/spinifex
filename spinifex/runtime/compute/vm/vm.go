@@ -371,8 +371,8 @@ type Device struct {
 	Value string `json:"value"`
 }
 
-// Drive is one QEMU -drive entry, used for boot, EFI and pflash firmware
-// drives. Each set field becomes a key=value option.
+// Drive is one QEMU -drive entry, used for the pflash firmware drives (the
+// CODE blob and the EFI volume). Each set field becomes a key=value option.
 type Drive struct {
 	File   string `json:"file"`
 	Format string `json:"format"`
@@ -380,15 +380,6 @@ type Drive struct {
 	Media  string `json:"media"`
 	ID     string `json:"id"`
 	Cache  string `json:"cache,omitempty"`
-	// Werror and Rerror set QEMU's block on-error policy. "stop" pauses the VM
-	// and holds the failed request, so a transient backend loss is resumed with
-	// cont instead of reaching the guest as EIO and corrupting its filesystem.
-	Werror string `json:"werror,omitempty"`
-	Rerror string `json:"rerror,omitempty"`
-	// ReconnectDelay emits file.reconnect-delay, the seconds an NBD disconnect
-	// pauses requests before failing them. The file. prefix is required: the
-	// bare name reaches the format driver, which has no such option.
-	ReconnectDelay int `json:"reconnect_delay,omitempty"`
 	// Unit selects the pflash slot when If=="pflash": 0 is the CODE blob,
 	// 1 is the per-VM VARS volume. Ignored for non-pflash drives.
 	Unit int `json:"unit,omitempty"`
@@ -405,9 +396,9 @@ type IOThread struct {
 // Blockdev is a QEMU -blockdev entry: the command-line equivalent of the
 // blockdev-add QMP command. Unlike a -drive with if=none, it produces a
 // monitor-owned node addressable by node-name, which is what makes
-// blockdev-del able to remove it later. Used for data (non-boot, non-EFI)
-// volumes so a cold-booted one has the same detachable block-graph shape as
-// a hot-attached one; boot/EFI volumes keep the legacy -drive shape.
+// blockdev-del able to remove it later. Used for boot and data volumes, so a
+// cold-booted data volume has the same detachable block-graph shape as a
+// hot-attached one; EFI volumes keep the pflash -drive shape.
 type Blockdev struct {
 	Value string `json:"value"`
 }
@@ -571,8 +562,8 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-object", fmt.Sprintf("iothread,id=%s", iot.ID))
 	}
 
-	if len(cfg.Drives) == 0 && cfg.KernelImage == "" {
-		return nil, fmt.Errorf("at least one drive or a kernel image is required")
+	if len(cfg.Drives) == 0 && len(cfg.Blockdevs) == 0 && cfg.KernelImage == "" {
+		return nil, fmt.Errorf("at least one drive, blockdev or a kernel image is required")
 	}
 
 	drives := cfg.Drives
@@ -620,18 +611,6 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 
 		if drive.Cache != "" {
 			opts = append(opts, fmt.Sprintf("cache=%s", drive.Cache))
-		}
-
-		if drive.Werror != "" {
-			opts = append(opts, fmt.Sprintf("werror=%s", drive.Werror))
-		}
-
-		if drive.Rerror != "" {
-			opts = append(opts, fmt.Sprintf("rerror=%s", drive.Rerror))
-		}
-
-		if drive.ReconnectDelay > 0 {
-			opts = append(opts, fmt.Sprintf("file.reconnect-delay=%d", drive.ReconnectDelay))
 		}
 
 		args = append(args, "-drive", strings.Join(opts, ","))

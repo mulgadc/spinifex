@@ -84,6 +84,10 @@ func buildDeviceMap(devices []qmp.BlockDevice) map[string]string {
 
 		name := dev.Device
 		pciIndex := extractPCIIndex(dev.QDev)
+		// A -blockdev boot node has no BlockBackend name; its node-name is "os".
+		if name == "" && pciIndex >= 0 && dev.Inserted != nil {
+			name = dev.Inserted.NodeName
+		}
 
 		if pciIndex < 0 {
 			// Hot-plugged device: extract name and port from QDev path.

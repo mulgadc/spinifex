@@ -46,6 +46,9 @@ type Deps struct {
 	NATS        *nats.Conn
 	RootCAs     *x509.CertPool
 	ActiveNodes func(ctx context.Context) int
+	// NodeID names this gateway in a deletion job's holder field; the host
+	// name stands in when it is empty.
+	NodeID      string
 	ModelAccess ModelAccess
 	Credentials ochre.CredentialResolver
 	Access      ochre.AccessResolver

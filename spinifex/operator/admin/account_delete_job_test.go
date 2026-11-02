@@ -199,6 +199,15 @@ func storeDeletionJob(t *testing.T, gw Deps, job *accountDeletionJob) jetstream.
 	return jobs
 }
 
+// newTestTracker builds a tracker for a record seeded with storeDeletionJob,
+// at the revision a real holder would have been handed.
+func newTestTracker(t *testing.T, jobs jetstream.KeyValue, job *accountDeletionJob) *deletionTracker {
+	t.Helper()
+	entry, err := jobs.Get(t.Context(), job.AccountID)
+	require.NoError(t, err)
+	return &deletionTracker{jobs: jobs, job: job, revision: entry.Revision()}
+}
+
 func describeDeletion(t *testing.T, gw Deps, accountID string) *accountDeletionJob {
 	t.Helper()
 	body, err := json.Marshal(operatorv1.DescribeAccountDeletionRequest{AccountID: accountID})
@@ -512,7 +521,7 @@ func TestDeletionTrackerRecordsEachStageAsItFinishes(t *testing.T) {
 		State:      operatorv1.DeletionStateRunning,
 	}
 	jobs := storeDeletionJob(t, gw, job)
-	tracker := &deletionTracker{jobs: jobs, job: job}
+	tracker := newTestTracker(t, jobs, job)
 
 	tracker.stageFinished(t.Context(), accountteardown.StageResult{
 		Stage:   accountteardown.StageCompute,
@@ -538,7 +547,7 @@ func TestDeletionTrackerRecordsFailure(t *testing.T) {
 		State:      operatorv1.DeletionStateRunning,
 	}
 	jobs := storeDeletionJob(t, gw, job)
-	tracker := &deletionTracker{jobs: jobs, job: job}
+	tracker := newTestTracker(t, jobs, job)
 
 	tracker.finished(t.Context(), nil, assert.AnError)
 
@@ -558,7 +567,7 @@ func TestDeletionTrackerHeartbeatStops(t *testing.T) {
 		State:      operatorv1.DeletionStateRunning,
 	}
 	jobs := storeDeletionJob(t, gw, job)
-	tracker := &deletionTracker{jobs: jobs, job: job}
+	tracker := newTestTracker(t, jobs, job)
 
 	stop := tracker.startHeartbeat(t.Context())
 	stop()

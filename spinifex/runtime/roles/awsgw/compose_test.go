@@ -40,7 +40,7 @@ func TestComposeGateway_SetsEveryProductionHook(t *testing.T) {
 // Account termination probes the gateway node set before sealing, so awsgw
 // must hand the operator surface both node sets from the cluster config.
 func TestWithClusterNodes_SetsDaemonAndGatewaySets(t *testing.T) {
-	cfg := &config.ClusterConfig{Nodes: map[string]config.Config{
+	cfg := &config.ClusterConfig{Node: "n2", Nodes: map[string]config.Config{
 		"n1": {Services: []string{"nats", "awsgw", "daemon"}},
 		"n2": {Services: []string{"daemon"}},
 		"n3": {},
@@ -48,6 +48,7 @@ func TestWithClusterNodes_SetsDaemonAndGatewaySets(t *testing.T) {
 
 	got := withClusterNodes(operatoradmin.Deps{}, cfg)
 
+	assert.Equal(t, "n2", got.NodeID, "the deletion job holder is this node")
 	assert.Equal(t, 3, got.ExpectedNodes)
 	assert.Equal(t, []string{"n1", "n2", "n3"}, got.NodeIDs)
 	// n3 has no service list, which means every service, awsgw included.

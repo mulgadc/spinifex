@@ -1109,35 +1109,32 @@ provider = "bogus"
 }
 
 func TestLoadConfig_EBSProvider_SingleProviderPerCluster(t *testing.T) {
-	base := `
-node = "n1"
-
-[nodes.n1]
-region = "us-east-1"
-%s
-[nodes.n2]
-region = "us-east-1"
-%s
-`
-	qemu1 := "[nodes.n1.ebs]\nprovider = \"qemunbd\"\n"
-	qemu2 := "[nodes.n2.ebs]\nprovider = \"qemunbd\"\n"
-	viper2 := "[nodes.n2.ebs]\nprovider = \"viperblockd\"\n"
+	stanza := func(node, provider string) string {
+		return fmt.Sprintf("[nodes.%s.ebs]\nprovider = %q\n", node, provider)
+	}
 	cases := []struct {
 		name    string
-		n1, n2  string
+		ebs     []string
 		wantErr string
 	}{
-		{"both unset", "", "", ""},
-		{"unset and explicit viperblockd resolve alike", "", viper2, ""},
-		{"both qemunbd", qemu1, qemu2, ""},
-		{"unset beside qemunbd", "", qemu2, `[nodes.n1.ebs] provider resolves to "viperblockd" but [nodes.n2.ebs] resolves to "qemunbd"`},
-		{"qemunbd beside viperblockd", qemu1, viper2, `[nodes.n1.ebs] provider resolves to "qemunbd" but [nodes.n2.ebs] resolves to "viperblockd"`},
+		{"all unset", []string{"", "", ""}, ""},
+		{"explicit viperblockd beside unset peers", []string{"", stanza("n2", EBSProviderViperblockd), ""}, ""},
+		{"explicit qemunbd beside unset peers", []string{stanza("n1", EBSProviderQEMUNBD), "", ""}, ""},
+		{"all explicit qemunbd", []string{stanza("n1", EBSProviderQEMUNBD), stanza("n2", EBSProviderQEMUNBD), stanza("n3", EBSProviderQEMUNBD)}, ""},
+		{"two explicit providers differ", []string{stanza("n1", EBSProviderQEMUNBD), stanza("n2", EBSProviderViperblockd), ""},
+			`[nodes.n1.ebs] provider resolves to "qemunbd" but [nodes.n2.ebs] resolves to "viperblockd"`},
+		{"only the third node differs", []string{stanza("n1", EBSProviderViperblockd), stanza("n2", EBSProviderViperblockd), stanza("n3", EBSProviderQEMUNBD)},
+			`[nodes.n1.ebs] provider resolves to "viperblockd" but [nodes.n3.ebs] resolves to "qemunbd"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			body := "node = \"n1\"\n"
+			for i, ebs := range tc.ebs {
+				body += fmt.Sprintf("\n[nodes.n%d]\nregion = \"us-east-1\"\n%s", i+1, ebs)
+			}
 			resetViper(t)
 			path := filepath.Join(t.TempDir(), "spinifex.toml")
-			require.NoError(t, os.WriteFile(path, fmt.Appendf(nil, base, tc.n1, tc.n2), 0600))
+			require.NoError(t, os.WriteFile(path, []byte(body), 0600))
 
 			_, err := LoadConfig(path)
 			if tc.wantErr == "" {

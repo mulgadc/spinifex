@@ -802,19 +802,22 @@ func validateVultrPool(cc *ClusterConfig, p ExternalPool) error {
 	return nil
 }
 
-// validateSingleEBSProvider refuses nodes whose [nodes.<name>.ebs] entries
-// resolve to different providers. A cluster has one provider, because a volume
-// records none and any node may be asked to address it.
+// validateSingleEBSProvider refuses nodes whose explicit [nodes.<name>.ebs]
+// providers differ. A peer stanza without one is unknown, not the default: the
+// generated config omits it, and the cluster's KV lock is the authoritative check.
 func validateSingleEBSProvider(cc *ClusterConfig) error {
-	names := slices.Sorted(maps.Keys(cc.Nodes))
-	if len(names) == 0 {
-		return nil
-	}
-	first := names[0]
-	want := cc.Nodes[first].EBS.ResolvedProvider()
-	for _, name := range names[1:] {
-		if got := cc.Nodes[name].EBS.ResolvedProvider(); got != want {
-			return fmt.Errorf("config: [nodes.%s.ebs] provider resolves to %q but [nodes.%s.ebs] resolves to %q; every node in a cluster must use the same EBS provider (an unset provider means %q)", first, want, name, got, EBSProviderViperblockd)
+	var first, want string
+	for _, name := range slices.Sorted(maps.Keys(cc.Nodes)) {
+		if !viper.IsSet("nodes." + name + ".ebs.provider") {
+			continue
+		}
+		got := cc.Nodes[name].EBS.ResolvedProvider()
+		if first == "" {
+			first, want = name, got
+			continue
+		}
+		if got != want {
+			return fmt.Errorf("config: [nodes.%s.ebs] provider resolves to %q but [nodes.%s.ebs] resolves to %q; every node in a cluster must use the same EBS provider", first, want, name, got)
 		}
 	}
 	return nil

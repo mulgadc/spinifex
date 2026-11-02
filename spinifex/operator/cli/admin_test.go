@@ -1748,3 +1748,31 @@ func TestApplyNetworkConfig_PropagatesPoolDNSServersWithoutSelf(t *testing.T) {
 	require.Len(t, settings.Pools, 1)
 	assert.Equal(t, []string{"1.1.1.1", "10.0.0.6", "8.8.8.8"}, settings.Pools[0].DNSServers)
 }
+
+// A generated config writes no [nodes.<peer>.ebs] stanza, so a node switched to
+// a non-default provider must still load: an absent peer provider is unknown.
+func TestSpinifexTomlTemplate_NonDefaultProviderLoadsBesidePeers(t *testing.T) {
+	allNodes := map[string]formation.NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1", AdvertiseIP: "192.168.1.31"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2", AdvertiseIP: "192.168.1.32"},
+		"node3": {Name: "node3", BindIP: "10.0.0.3", AdvertiseIP: "192.168.1.33"},
+	}
+	settings := multinodeNorthstarSettings("/etc/spinifex/northstar/northstar.toml")
+	settings.RemoteNodes = buildRemoteNodes(allNodes, "node1", settings.NorthstarConfigPath)
+	require.Len(t, settings.RemoteNodes, 2)
+
+	path := filepath.Join(t.TempDir(), "spinifex.toml")
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+	rendered, err := os.ReadFile(path)
+	require.NoError(t, err)
+	const defaultLine = "provider = \"viperblockd\"\n"
+	require.Equal(t, 1, strings.Count(string(rendered), defaultLine), "the template must set the provider for its own node only")
+	switched := strings.Replace(string(rendered), defaultLine, "provider = \"qemunbd\"\n", 1)
+	require.NoError(t, os.WriteFile(path, []byte(switched), 0o600))
+
+	cfg, err := config.LoadConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, config.EBSProviderQEMUNBD, cfg.Nodes["node1"].EBS.ResolvedProvider())
+	assert.Contains(t, cfg.Nodes, "node2")
+	assert.Contains(t, cfg.Nodes, "node3")
+}

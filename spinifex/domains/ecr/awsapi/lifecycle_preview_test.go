@@ -3,6 +3,7 @@ package awsapi
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,14 +70,37 @@ func TestEvaluateLifecyclePreview_MapsPolicyAndRepositoryFailures(t *testing.T) 
 		code     string
 	}{
 		{"missing policy", fakeLifecyclePolicyStore{err: ecrdomain.ErrNotFound}, fakeImageCatalog{}, `{"repositoryName":"team/app"}`, awserrors.ErrorLifecyclePolicyNotFound},
-		{"missing repository", fakeLifecyclePolicyStore{}, fakeImageCatalog{err: ecrdomain.ErrNotFound}, `{"repositoryName":"team/app","lifecyclePolicyText":"{}"}`, awserrors.ErrorRepositoryNotFound},
-		{"invalid policy", fakeLifecyclePolicyStore{}, fakeImageCatalog{}, `{"repositoryName":"team/app","lifecyclePolicyText":"not-json"}`, awserrors.ErrorECRInvalidParameter},
+		{"missing repository", fakeLifecyclePolicyStore{}, fakeImageCatalog{err: ecrdomain.ErrNotFound}, `{"repositoryName":"team/app","lifecyclePolicyText":` + strconvQuote(lifecyclePreviewPolicy) + `}`, awserrors.ErrorRepositoryNotFound},
+		{"invalid policy", fakeLifecyclePolicyStore{}, fakeImageCatalog{}, `{"repositoryName":"team/app","lifecyclePolicyText":` + strconvQuote("not-json"+strings.Repeat(" ", 100)) + `}`, awserrors.ErrorECRInvalidParameter},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := EvaluateLifecyclePreview(context.Background(), tc.policies, tc.catalog, "123456789012", []byte(tc.body))
 			require.Error(t, err)
 			assert.Equal(t, tc.code, awserrors.ValidErrorCodeFromError(err))
+		})
+	}
+}
+
+// A parseable policy outside the model's 100-30720 characters is refused on
+// length, and an omitted text still falls back to the stored policy.
+func TestEvaluateLifecyclePreview_PolicyTextLength(t *testing.T) {
+	cases := []struct {
+		name    string
+		text    string
+		message string
+	}{
+		{"too short", `{"rules":[]}`, "Invalid parameter at 'lifecyclePolicyText' failed to satisfy constraint: 'Member must have length greater than or equal to 100'"},
+		{"too long", lifecyclePreviewPolicy + strings.Repeat(" ", 30720), "Invalid parameter at 'lifecyclePolicyText' failed to satisfy constraint: 'Member must have length less than or equal to 30720'"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"repositoryName":"team/app","lifecyclePolicyText":` + strconvQuote(tc.text) + `}`)
+			_, err := EvaluateLifecyclePreview(context.Background(), fakeLifecyclePolicyStore{}, fakeImageCatalog{}, "123456789012", body)
+			code, message, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorECRInvalidParameter, code)
+			assert.Equal(t, tc.message, message)
 		})
 	}
 }

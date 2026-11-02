@@ -71,6 +71,12 @@ func PutLifecyclePolicy(ctx context.Context, nc *nats.Conn, accountID string, bo
 	if err != nil {
 		return nil, err
 	}
+	if req.LifecyclePolicyText == "" {
+		return nil, RequiredParameterError("lifecyclePolicyText")
+	}
+	if err := ValidateTextLength("lifecyclePolicyText", req.LifecyclePolicyText, minLifecyclePolicyTextLength, maxLifecyclePolicyTextLength); err != nil {
+		return nil, err
+	}
 	if _, err := ecrdomain.ParseLifecyclePolicy([]byte(req.LifecyclePolicyText)); err != nil {
 		return nil, InvalidLifecyclePolicyError()
 	}

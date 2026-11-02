@@ -554,7 +554,7 @@ func TestLaunchSystemInstance_ConfigAndRun(t *testing.T) {
 		v, ok := d.vmMgr.Get(out.InstanceID)
 		require.True(t, ok)
 		assert.Equal(t, vm.GenerateDevMAC(out.InstanceID), v.DevMAC)
-		assert.Equal(t, microvmMachineType(), v.Config.MachineType)
+		assert.Equal(t, vm.MicroVMMachineType(), v.Config.MachineType)
 	})
 }
 

@@ -290,7 +290,7 @@ func TestBuildNICNetdevs_SingleNIC(t *testing.T) {
 			{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 		},
 	}
-	res := buildNICNetdevs("i-test", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-test", input, vm.MicroVMMachineType(), 0)
 	require.Len(t, res.netdevs, 1)
 	require.Len(t, res.devices, 1)
 	assert.Contains(t, res.netdevs[0].Value, "tap,id=net0,")
@@ -307,7 +307,7 @@ func TestBuildNICNetdevs_TwoNICs(t *testing.T) {
 			{MAC: "02:aa:bb:cc:dd:02", IsDefault: false},
 		},
 	}
-	res := buildNICNetdevs("i-test2", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-test2", input, vm.MicroVMMachineType(), 0)
 	require.Len(t, res.netdevs, 2)
 	require.Len(t, res.devices, 2)
 	assert.Contains(t, res.netdevs[0].Value, "id=net0,")
@@ -318,7 +318,7 @@ func TestBuildNICNetdevs_TwoNICs(t *testing.T) {
 
 func TestBuildNICNetdevs_EmptyNICs(t *testing.T) {
 	input := &elbv2domain.SystemInstanceInput{ENIID: "eni-empty"}
-	res := buildNICNetdevs("i-empty", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-empty", input, vm.MicroVMMachineType(), 0)
 	assert.Empty(t, res.netdevs)
 	assert.Empty(t, res.devices)
 }
@@ -332,7 +332,7 @@ func TestBuildNICNetdevs_UnprovisionedMgmtNIC_Skipped(t *testing.T) {
 			{MAC: ""},
 		},
 	}
-	res := buildNICNetdevs("i-test3", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-test3", input, vm.MicroVMMachineType(), 0)
 	require.Len(t, res.netdevs, 1)
 	require.Len(t, res.devices, 1)
 	assert.Contains(t, res.netdevs[0].Value, "id=net0,")
@@ -348,7 +348,7 @@ func TestBuildNICNetdevs_ProvisionedMgmtNIC_Included(t *testing.T) {
 			{MAC: "02:aa:bb:cc:dd:02"},
 		},
 	}
-	res := buildNICNetdevs("i-test4", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-test4", input, vm.MicroVMMachineType(), 0)
 	require.Len(t, res.netdevs, 2)
 	require.Len(t, res.devices, 2)
 	assert.Contains(t, res.netdevs[0].Value, "id=net0,")
@@ -371,7 +371,7 @@ func TestBuildNICNetdevs_UnprovisionedMgmtNIC_ExtraENIUnaffected(t *testing.T) {
 			{MAC: "02:aa:bb:cc:dd:03"},
 		},
 	}
-	res := buildNICNetdevs("i-test5", input, microvmMachineType(), 0)
+	res := buildNICNetdevs("i-test5", input, vm.MicroVMMachineType(), 0)
 	require.Len(t, res.netdevs, 2)
 	require.Len(t, res.devices, 2)
 	assert.Contains(t, res.netdevs[0].Value, "id=net0,")
@@ -405,11 +405,11 @@ func TestNicProvisioned_NonMgmtSlotsAlwaysTrue(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// microvmMachineType
+// vm.MicroVMMachineType
 // ---------------------------------------------------------------------------
 
 func TestMicrovmMachineType(t *testing.T) {
-	mt := microvmMachineType()
+	mt := vm.MicroVMMachineType()
 	assert.Contains(t, mt, "microvm,")
 	assert.Contains(t, mt, "isa-serial=on")
 }

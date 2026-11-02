@@ -859,57 +859,31 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 		imageDir = guest.imageDir()
 	}
 
-	// Build kernel cmdline. Devices sit on the PCIe bus (pcie=on), so no
-	// virtio_mmio.device= arguments.
-	//
-	// Boot-time performance flags:
-	//   quiet                   — suppress info printk to ttyS0 (115200 baud serial
-	//                             writes dominate boot time)
-	//   loglevel                — 3 on SQS guests (errors only); 7 on the LB so
-	//                             kernel warnings reach the console log
-	//   mitigations=off         — skip spectre/meltdown microcode patching at
-	//                             boot. Load balancer only: KVM guest on trusted
-	//                             host CPU, single-tenant LB workload, no untrusted
-	//                             code in the VM. Saves ~200-500ms. The SQS
-	//                             guests hold tenant data and keep mitigations on.
-	//   tsc=reliable            — skip TSC calibration loop on KVM (host already
-	//                             vouched for invariant TSC)
-	//   no_timer_check          — skip APIC/PIT cross-check; microvm has no PIT
-	//   reboot=t                — triple-fault reboot; skip ACPI/keyboard probes
-	//   i8042.no{pnp,aux,kbd}   — microvm has no PS/2; skip i8042 probe timeouts
-	var sb strings.Builder
-	if guest == nil {
-		sb.WriteString("console=ttyS0 quiet loglevel=7 mitigations=off")
-	} else {
-		sb.WriteString("console=ttyS0 quiet loglevel=3")
+	// The LB opts out of mitigations: single-tenant, no untrusted code, and it
+	// saves ~200-500ms of boot. SQS guests hold tenant data and keep them on.
+	// loglevel 7 lets LB kernel warnings reach the console; SQS logs errors only.
+	spec := vm.MicroVMSpec{
+		Name:           instanceID,
+		Architecture:   architecture,
+		VCPUs:          vcpus,
+		MemoryMiB:      memMiB,
+		Firmware:       firmware,
+		ImageDir:       imageDir,
+		LogLevel:       3,
+		MitigationsOff: guest == nil,
+		FwCfg:          fwCfg,
 	}
-	sb.WriteString(" tsc=reliable no_timer_check reboot=t i8042.nopnp i8042.noaux i8042.nokbd")
-	cmdline := sb.String()
-
-	machineType := microvmMachineType()
-
-	cfg := vm.Config{
-		Name:          instanceID,
-		EnableKVM:     true,
-		NoGraphic:     true,
-		Architecture:  architecture,
-		CPUType:       "host,-pmu",
-		CPUCount:      vcpus,
-		Memory:        memMiB,
-		MachineType:   machineType,
-		BIOS:          firmware,
-		KernelImage:   filepath.Join(imageDir, "vmlinuz"),
-		Initrd:        filepath.Join(imageDir, "initramfs.cpio.gz"),
-		KernelCmdline: cmdline,
-		FwCfg:         fwCfg,
+	if guest == nil {
+		spec.LogLevel = 7
 	}
 
 	// Wire netdevs and devices for each NIC in declaration order.
 	// Tap device creation happens later in startQEMU (host-side only here).
-	allNICs := buildNICNetdevs(instanceID, input, machineType, d.guestOverlayMTU())
-	cfg.NetDevs = append(cfg.NetDevs, allNICs.netdevs...)
-	cfg.Devices = append(cfg.Devices, allNICs.devices...)
+	allNICs := buildNICNetdevs(instanceID, input, vm.MicroVMMachineType(), d.guestOverlayMTU())
+	spec.NetDevs = allNICs.netdevs
+	spec.Devices = allNICs.devices
 
+	cfg := vm.NewMicroVMConfig(spec)
 	return cfg, nil
 }
 
@@ -917,13 +891,6 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *elbv2domain.Sys
 type nicNetdevResult struct {
 	netdevs []vm.NetDev
 	devices []vm.Device
-}
-
-// microvmMachineType returns the QEMU -M string for the microvm machine.
-// pcie=on gives NICs a PCI bus with MSI-X; virtio-mmio's shared level-triggered
-// lines stalled a NIC's RX path. isa-serial stays on for per-VM console logs.
-func microvmMachineType() string {
-	return "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on,pcie=on"
 }
 
 // buildNICNetdevs produces QEMU -netdev and -device entries for each NIC in

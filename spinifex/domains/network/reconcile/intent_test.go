@@ -183,10 +183,10 @@ func TestLoadIntentFromKV_EIPStateFilter(t *testing.T) {
 		t.Fatalf("LoadIntentFromKV: %v", err)
 	}
 
-	if _, ok := intent.EIPs["10.0.1.5"]; !ok {
+	if _, ok := intent.EIPs[eipIntentKey("vpc-local", "10.0.1.5")]; !ok {
 		t.Errorf("associated EIP missing from intent")
 	}
-	if _, ok := intent.EIPs["10.0.1.6"]; ok {
+	if _, ok := intent.EIPs[eipIntentKey("vpc-local", "10.0.1.6")]; ok {
 		t.Errorf("non-associated EIP leaked into intent")
 	}
 }

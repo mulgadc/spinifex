@@ -3503,14 +3503,18 @@ func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord, lbArns []string) 
 		HealthCheckEnabled:         aws.Bool(r.HealthCheck.Enabled),
 		HealthCheckProtocol:        aws.String(r.HealthCheck.Protocol),
 		HealthCheckPort:            aws.String(r.HealthCheck.Port),
-		HealthCheckPath:            aws.String(r.HealthCheck.Path),
 		HealthCheckIntervalSeconds: aws.Int64(r.HealthCheck.IntervalSeconds),
 		HealthCheckTimeoutSeconds:  aws.Int64(r.HealthCheck.TimeoutSeconds),
 		HealthyThresholdCount:      aws.Int64(r.HealthCheck.HealthyThreshold),
 		UnhealthyThresholdCount:    aws.Int64(r.HealthCheck.UnhealthyThreshold),
-		Matcher: &elbv2.Matcher{
-			HttpCode: aws.String(r.HealthCheck.Matcher),
-		},
+	}
+
+	// AWS omits both keys on TCP target groups, which have no path or matcher.
+	if r.HealthCheck.Path != "" {
+		tg.HealthCheckPath = aws.String(r.HealthCheck.Path)
+	}
+	if r.HealthCheck.Matcher != "" {
+		tg.Matcher = &elbv2.Matcher{HttpCode: aws.String(r.HealthCheck.Matcher)}
 	}
 
 	// Omitted for NLB (TCP/UDP/TLS) target groups, matching AWS, which returns

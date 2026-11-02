@@ -459,11 +459,12 @@ func TestCreateTargetGroup_TCPProtocol(t *testing.T) {
 	assert.Equal(t, int64(5432), *tg.Port)
 	// NLB health check defaults: TCP protocol, no path, no matcher.
 	assert.Equal(t, "TCP", *tg.HealthCheckProtocol)
-	assert.Empty(t, *tg.HealthCheckPath)
-	assert.Empty(t, *tg.Matcher.HttpCode)
+	assert.Nil(t, tg.HealthCheckPath)
+	assert.Nil(t, tg.Matcher)
+	assert.Equal(t, int64(30), *tg.HealthCheckIntervalSeconds)
 	assert.Equal(t, int64(10), *tg.HealthCheckTimeoutSeconds)
-	assert.Equal(t, int64(3), *tg.HealthyThresholdCount)
-	assert.Equal(t, int64(3), *tg.UnhealthyThresholdCount)
+	assert.Equal(t, int64(5), *tg.HealthyThresholdCount)
+	assert.Equal(t, int64(2), *tg.UnhealthyThresholdCount)
 }
 
 func TestCreateTargetGroup_NLBProtocols(t *testing.T) {

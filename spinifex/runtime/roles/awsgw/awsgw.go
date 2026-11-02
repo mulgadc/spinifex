@@ -41,6 +41,8 @@ import (
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
+	lambdaawsapi "github.com/mulgadc/spinifex/spinifex/domains/lambda/awsapi"
+	lambdafunction "github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
@@ -368,17 +370,35 @@ func launchService(config *config.ClusterConfig) error {
 	// Lambda code copies live in a Regional system bucket reached through a
 	// scoped role session. Nothing is provisioned until the store is first used.
 	lambdaCodeStore, err := newLambdaCodeStore(codeStoreWiring{
-		Region:        nodeConfig.Region,
-		Node:          config.Node,
-		Endpoint:      netaddr.DialTarget(nodeConfig.Predastore.Host),
-		SigningRegion: nodeConfig.Predastore.Region,
-		RootAccessKey: nodeConfig.Predastore.AccessKey,
-		RootSecretKey: nodeConfig.Predastore.SecretKey,
+		Region:          nodeConfig.Region,
+		Node:            config.Node,
+		Endpoint:        netaddr.DialTarget(nodeConfig.Predastore.Host),
+		PresignEndpoint: lambdaPresignEndpoint(nodeConfig.Predastore.Host, nodeConfig.AdvertiseIP),
+		SigningRegion:   nodeConfig.Predastore.Region,
+		RootAccessKey:   nodeConfig.Predastore.AccessKey,
+		RootSecretKey:   nodeConfig.Predastore.SecretKey,
 	}, iamService, stsService)
 	if err != nil {
 		return err
 	}
-	_ = lambdaCodeStore // no Lambda handler is registered to use it yet
+	lambdaKey, err := masterkey.New(masterKey)
+	if err != nil {
+		return fmt.Errorf("lambda environment key: %w", err)
+	}
+	// Built but not routed: Lambda stays out of the public router until its runtime image exists.
+	_ = lambdaawsapi.NewRegistration(lambdaawsapi.Deps{
+		Meta: lambdafunction.NewNATSClient(natsConn),
+		Codes: func(ctx context.Context) (lambdaawsapi.CodeStore, error) {
+			store, err := lambdaCodeStore.Store(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return store, nil
+		},
+		Roles:  iamdomain.NewRoleResolver(iamService),
+		Trusts: lambdaRoleTrusts(iamService),
+		AEAD:   lambdaKey.AEAD,
+	})
 
 	// ECR auth bridge: load (or first-run create) the ES256 signing key from the
 	// cluster-replicated awsgw-keys KV bucket, then build the token issuer

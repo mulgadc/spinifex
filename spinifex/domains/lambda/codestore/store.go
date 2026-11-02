@@ -31,6 +31,8 @@ var (
 	ErrCodeTooLarge = errors.New("lambda code copy too large")
 	// ErrInvalidRef means a reference segment is empty or unsafe as a key segment.
 	ErrInvalidRef = errors.New("invalid lambda code reference")
+	// ErrNoPresignEndpoint means no off-host Predastore address is configured.
+	ErrNoPresignEndpoint = errors.New("lambda code store: no off-host endpoint for download URLs")
 )
 
 var (
@@ -71,6 +73,27 @@ func (r Ref) key(sha256Hex string) (string, error) {
 type Store struct {
 	bucket  string
 	objects objectstore.ObjectStore
+	presign presignFunc
+
+	// creds and provider are the scoped session behind presign; nil on stores
+	// built without one.
+	creds    *credentials.Credentials
+	provider *sessionProvider
+	now      func() time.Time
+}
+
+// presignMargin is slack kept between a signed URL's end and its session's.
+const presignMargin = 30 * time.Second
+
+// presignFunc signs a GET for the input; nil on stores that cannot presign.
+type presignFunc func(in *s3.GetObjectInput, ttl time.Duration) (string, error)
+
+// presignWith signs GETs with the session credentials behind client.
+func presignWith(client *s3.S3) presignFunc {
+	return func(in *s3.GetObjectInput, ttl time.Duration) (string, error) {
+		req, _ := client.GetObjectRequest(in)
+		return req.Presign(ttl)
+	}
 }
 
 // OpenConfig is what the composition layer supplies to open the scoped store.
@@ -81,6 +104,9 @@ type OpenConfig struct {
 	Assume        AssumeFunc
 	HTTPClient    *http.Client
 	now           func() time.Time
+	// PresignEndpoint is the Predastore URL off-host clients reach; download
+	// URLs are signed for it. Empty disables download URLs.
+	PresignEndpoint string
 }
 
 // Open builds the store on a refreshing code-store session and draws the first
@@ -97,7 +123,8 @@ func Open(cfg OpenConfig) (*Store, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 120 * time.Second}
 	}
-	creds := credentials.NewCredentials(newSessionProvider(cfg.Assume, now))
+	provider := newSessionProvider(cfg.Assume, now)
+	creds := credentials.NewCredentials(provider)
 	if _, err := creds.Get(); err != nil {
 		return nil, err
 	}
@@ -111,7 +138,14 @@ func Open(cfg OpenConfig) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lambda code store session: %w", err)
 	}
-	return newStore(cfg.Region, objectstore.NewS3ObjectStore(s3.New(sess))), nil
+	s3Client := s3.New(sess)
+	store := newStore(cfg.Region, objectstore.NewS3ObjectStore(s3Client))
+	// Without an off-host address a download URL would name an internal one.
+	if cfg.PresignEndpoint != "" {
+		store.presign = presignWith(s3.New(sess, &aws.Config{Endpoint: aws.String(cfg.PresignEndpoint)}))
+	}
+	store.creds, store.provider, store.now = creds, provider, now
+	return store, nil
 }
 
 func newStore(region string, objects objectstore.ObjectStore) *Store {
@@ -167,6 +201,59 @@ func (s *Store) Get(ctx context.Context, ref Ref, wantSHA256 string) ([]byte, er
 		return nil, ErrDigestMismatch
 	}
 	return code, nil
+}
+
+// ensureSession guarantees the signing session outlasts ttl, drawing a new one
+// if it does not, and fails rather than sign a URL that would outlive it.
+func (s *Store) ensureSession(ttl time.Duration) error {
+	if s.creds == nil || s.provider == nil {
+		return nil
+	}
+	need := ttl + presignMargin
+	if _, err := s.creds.Get(); err != nil {
+		return fmt.Errorf("lambda code store session: %w", err)
+	}
+	for attempt := range 2 {
+		exp, err := s.creds.ExpiresAt()
+		if err != nil {
+			return fmt.Errorf("lambda code store session expiry: %w", err)
+		}
+		if !exp.Before(s.now().Add(need)) {
+			return nil
+		}
+		if attempt == 1 {
+			break
+		}
+		s.provider.requireRemaining(need)
+		s.creds.Expire()
+		if _, err := s.creds.Get(); err != nil {
+			return fmt.Errorf("lambda code store session: %w", err)
+		}
+	}
+	return errors.New("lambda code store: session expires before the presigned URL would")
+}
+
+// PresignGet returns a time-limited GET URL for the copy with the recorded
+// digest, signed by a session that outlasts the URL.
+func (s *Store) PresignGet(ctx context.Context, ref Ref, sha256Hex string, ttl time.Duration) (string, error) {
+	if s.presign == nil {
+		return "", ErrNoPresignEndpoint
+	}
+	key, err := ref.key(sha256Hex)
+	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := s.ensureSession(ttl); err != nil {
+		return "", err
+	}
+	url, err := s.presign(&s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)}, ttl)
+	if err != nil {
+		return "", fmt.Errorf("presign lambda code copy: %w", err)
+	}
+	return url, nil
 }
 
 // Delete removes the copy with the recorded digest; an absent copy is already

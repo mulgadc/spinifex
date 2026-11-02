@@ -19,6 +19,7 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/codestore"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -180,7 +181,8 @@ func TestNewLambdaCodeStore_ProvisionsOnlyOnFirstUse(t *testing.T) {
 
 	roleName := aws.String(stsdomain.CodeStoreRoleName(codeStoreTestRegion))
 	_, err = iamSvc.GetRole(identifiers.GlobalAccountID, &iam.GetRoleInput{RoleName: roleName})
-	require.EqualError(t, err, "NoSuchEntity", "no role before first use")
+	code, _ := awserrors.ResolveErrorCode(err)
+	require.Equal(t, awserrors.ErrorIAMNoSuchEntity, code, "no role before first use")
 	assert.Empty(t, s3Calls, "no bucket request before first use")
 
 	_, err = mgr.Store(t.Context())

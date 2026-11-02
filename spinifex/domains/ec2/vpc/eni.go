@@ -224,7 +224,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	groupNames := make(map[string]string)
 	s.fillSGNames(ctx, accountID, record.SecurityGroupIds, groupNames)
 	return &ec2.CreateNetworkInterfaceOutput{
-		NetworkInterface: s.eniRecordToEC2(&record, accountID, groupNames),
+		NetworkInterface: s.eniRecordToEC2(&record, accountID, groupNames, s.vpcDNSHostnames(ctx, accountID, record.VpcId)),
 	}, nil
 }
 
@@ -595,7 +595,7 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 		}
 
 		s.fillSGNames(ctx, accountID, record.SecurityGroupIds, groupNames)
-		enis = append(enis, s.eniRecordToEC2(&record, accountID, groupNames))
+		enis = append(enis, s.eniRecordToEC2(&record, accountID, groupNames, s.vpcDNSHostnames(ctx, accountID, record.VpcId)))
 	}
 
 	// If specific ENI IDs were requested but not found, return error
@@ -1076,9 +1076,26 @@ func (s *VPCServiceImpl) fillSGNames(ctx context.Context, accountID string, ids 
 	}
 }
 
+// vpcDNSHostnames reports whether the VPC has enableDnsHostnames on. An
+// unreadable VPC reads as off, so its interfaces go unnamed.
+func (s *VPCServiceImpl) vpcDNSHostnames(ctx context.Context, accountID, vpcID string) bool {
+	entry, err := s.vpcKV.Get(ctx, kvutil.AccountKey(accountID, vpcID))
+	if err != nil {
+		slog.WarnContext(ctx, "vpcDNSHostnames: VPC read failed", "vpcId", vpcID, "err", err)
+		return false
+	}
+	var rec VPCRecord
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		slog.WarnContext(ctx, "vpcDNSHostnames: VPC unmarshal failed", "vpcId", vpcID, "err", err)
+		return false
+	}
+	return rec.EnableDnsHostnames
+}
+
 // eniRecordToEC2 converts an ENI record to an EC2 NetworkInterface, naming
-// each security group from groupNames.
-func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, groupNames map[string]string) *ec2.NetworkInterface {
+// each security group from groupNames. AWS names the interface only while its
+// VPC has enableDnsHostnames on.
+func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, groupNames map[string]string, dnsHostnames bool) *ec2.NetworkInterface {
 	// ENIs with spinifex:managed-by tag are system-managed (e.g. by ELBv2)
 	requesterManaged := record.Tags["spinifex:managed-by"] != ""
 
@@ -1116,7 +1133,7 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, gro
 		eni.Groups = groups
 	}
 
-	if s.privateDNSName != nil && record.PrivateIpAddress != "" {
+	if dnsHostnames && s.privateDNSName != nil && record.PrivateIpAddress != "" {
 		if name := s.privateDNSName(record.PrivateIpAddress); name != "" {
 			eni.PrivateDnsName = aws.String(name)
 			eni.PrivateIpAddresses[0].PrivateDnsName = aws.String(name)

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -60,6 +61,10 @@ func TestBuildDirectBootConfig_ArgvUnchanged(t *testing.T) {
 				"-M", machine)
 		}},
 	}
+	// Execute resolves a QEMU binary on PATH; CI runners have none installed.
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "qemu-system-x86_64"), nil, 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			run := t.TempDir()

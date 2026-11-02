@@ -197,9 +197,6 @@ func (s *Service) ListHostedZones(ctx context.Context, in *route53.ListHostedZon
 		MaxItems:    aws.String(strconv.Itoa(limit)),
 		Marker:      in.Marker,
 	}
-	if out.Marker == nil {
-		out.Marker = aws.String("")
-	}
 	if truncated {
 		out.NextMarker = aws.String(zones[start+limit].ID)
 	}
@@ -217,7 +214,7 @@ func (s *Service) ListHostedZonesByName(ctx context.Context, in *route53.ListHos
 	}
 	dnsName := normalizeName(aws.StringValue(in.DNSName))
 	if startID != "" && dnsName == "" {
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "HostedZoneId requires DNSName")
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "The specified marker is not valid.")
 	}
 	zones, err := s.sortedZones(ctx, account, compareByName)
 	if err != nil {
@@ -388,7 +385,7 @@ func (s *Service) GetChange(ctx context.Context, in *route53.GetChangeInput, acc
 	id := BareChangeID(aws.StringValue(in.Id))
 	c, err := s.store.GetChange(ctx, account, id)
 	if errors.Is(err, kvstore.ErrNotFound) {
-		return nil, awserrors.Errorf(awserrors.ErrorNoSuchChange, "A change with the specified change ID does not exist: %s", id)
+		return nil, awserrors.Errorf(awserrors.ErrorNoSuchChange, "Could not find resource with ID: %s", id)
 	}
 	if err != nil {
 		return nil, internal("get change", err)
@@ -561,7 +558,7 @@ func maxItems(raw *string, ceiling int) (int, error) {
 	}
 	n, err := strconv.Atoi(*raw)
 	if err != nil || n < 1 {
-		return 0, awserrors.Errorf(awserrors.ErrorInvalidInput, "MaxItems must be a positive integer")
+		return 0, awserrors.Errorf(awserrors.ErrorInvalidInput, "maxitems must be a positive integer.")
 	}
 	return min(n, ceiling), nil
 }
@@ -573,7 +570,7 @@ func taggedZoneID(resourceType, id string) (string, error) {
 	case route53.TagResourceTypeHealthcheck:
 		return "", awserrors.Errorf(awserrors.ErrorRoute53NoSuchHealthCheck, "No health check exists with the ID %s", id)
 	default:
-		return "", awserrors.Errorf(awserrors.ErrorInvalidInput, "ResourceType must be hostedzone or healthcheck")
+		return "", awserrors.Errorf(awserrors.ErrorInvalidInput, "Invalid resource type: %s", resourceType)
 	}
 }
 

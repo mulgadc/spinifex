@@ -197,7 +197,7 @@ export function SecurityGroupsPage({
           </Link>
         }
         subtitle="Stateful firewalls for the instances in a VPC."
-        title="Security groups"
+        title="Security Groups"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

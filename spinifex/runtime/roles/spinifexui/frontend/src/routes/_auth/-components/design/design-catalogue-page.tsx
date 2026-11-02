@@ -13,7 +13,7 @@ export function DesignCataloguePage() {
     <>
       <PageHeading
         subtitle="Every token, primitive and pattern the console is built from. Switch theme from the header to check both."
-        title="Design system"
+        title="Design System"
       />
       <div className="flex flex-col gap-10">
         <RulesSection />

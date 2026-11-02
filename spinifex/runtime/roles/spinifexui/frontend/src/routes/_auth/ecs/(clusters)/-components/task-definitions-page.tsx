@@ -48,7 +48,7 @@ export function TaskDefinitionsPage({
             Register task definition
           </Link>
         }
-        title="Task definitions"
+        title="Task Definitions"
       />
       <EcsSectionNav />
       <TaskDefinitionsList />

@@ -215,7 +215,7 @@ export function DescribeTargetGroupsPage({
           </Link>
         }
         subtitle="The instances a load balancer forwards to."
-        title="Target groups"
+        title="Target Groups"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

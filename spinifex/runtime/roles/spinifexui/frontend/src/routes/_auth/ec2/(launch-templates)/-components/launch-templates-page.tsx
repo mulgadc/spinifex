@@ -162,7 +162,7 @@ export function LaunchTemplatesPage({
             Create launch template
           </Link>
         }
-        title="Launch templates"
+        title="Launch Templates"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

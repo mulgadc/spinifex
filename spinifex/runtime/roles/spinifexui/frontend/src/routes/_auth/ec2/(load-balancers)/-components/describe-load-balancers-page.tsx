@@ -183,7 +183,7 @@ export function DescribeLoadBalancersPage({
           </Link>
         }
         subtitle="Spread traffic across targets in a VPC."
-        title="Load balancers"
+        title="Load Balancers"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

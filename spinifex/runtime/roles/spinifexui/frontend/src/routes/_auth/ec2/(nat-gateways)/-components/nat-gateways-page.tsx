@@ -193,7 +193,7 @@ export function NatGatewaysPage({
           </Link>
         }
         subtitle="Let private subnets reach out without being reached."
-        title="NAT gateways"
+        title="NAT Gateways"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

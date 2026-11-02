@@ -192,7 +192,7 @@ export function KeyPairsPage({
           </div>
         }
         subtitle="SSH keys that instances accept at launch."
-        title="Key pairs"
+        title="Key Pairs"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

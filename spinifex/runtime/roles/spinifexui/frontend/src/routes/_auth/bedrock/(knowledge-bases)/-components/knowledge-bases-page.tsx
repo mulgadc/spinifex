@@ -146,7 +146,7 @@ export function KnowledgeBasesPage({
             Create knowledge base
           </Link>
         }
-        title="Knowledge bases"
+        title="Knowledge Bases"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

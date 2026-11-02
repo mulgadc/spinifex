@@ -179,7 +179,7 @@ export function InternetGatewaysPage({
           </Link>
         }
         subtitle="Connect a VPC to the outside world."
-        title="Internet gateways"
+        title="Internet Gateways"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

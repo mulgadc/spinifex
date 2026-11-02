@@ -176,7 +176,7 @@ export function ListHostedZonesPage({
           </Link>
         }
         subtitle="Domains whose DNS this cluster serves"
-        title="Hosted zones"
+        title="Hosted Zones"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

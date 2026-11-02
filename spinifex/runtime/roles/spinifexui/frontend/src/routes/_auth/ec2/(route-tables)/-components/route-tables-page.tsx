@@ -191,7 +191,7 @@ export function RouteTablesPage({
           </Link>
         }
         subtitle="Decide where traffic from each subnet goes."
-        title="Route tables"
+        title="Route Tables"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

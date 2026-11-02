@@ -160,7 +160,7 @@ export function InstanceProfilesPage({
           </Link>
         }
         subtitle="Containers that pass a role to an EC2 instance."
-        title="Instance profiles"
+        title="Instance Profiles"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

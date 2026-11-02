@@ -153,7 +153,7 @@ export function PlacementGroupsPage({
           </Link>
         }
         subtitle="Control how instances are spread across hosts."
-        title="Placement groups"
+        title="Placement Groups"
       />
       {selection.ids.length > 0 && (
         <SelectionBar count={selection.ids.length} onClear={selection.clear}>

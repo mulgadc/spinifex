@@ -82,6 +82,7 @@ func (alwaysTerminatingChecker) AccountTerminating(context.Context, string) (boo
 // no seal request is ever sent and the account stays TERMINATING with one
 // stuck ec2-account-settings item.
 func TestSealReaperNoResponderKeepsAccountTerminating(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	capability := newSealCapabilityClient(nc, []string{"node-1"})
@@ -220,6 +221,7 @@ func TestSealReaperInventoryDoesNotSeal(t *testing.T) {
 // engine: teardown seals the record, replacing the characterisation test that
 // showed it used to survive.
 func TestTeardownSealsAccountSettings(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := testCtx(t)
 

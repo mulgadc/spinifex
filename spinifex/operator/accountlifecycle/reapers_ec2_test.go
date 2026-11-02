@@ -336,8 +336,10 @@ func instancesIn(state string, instanceIDs ...string) ec2.DescribeInstancesOutpu
 // carries no block device mapping for the volume, so the attachment record is
 // the only thing standing between the guest and a deleted disk.
 func TestVolumeReaperForceRetainsAVolumeALiveInstanceHolds(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"running", "stopped", "shutting-down", "pending"} {
 		t.Run(state, func(t *testing.T) {
+			t.Parallel()
 			cluster := newFakeCluster(t)
 			volume := newHeldVolume(cluster, "vol-held", "i-live")
 			subject := "ec2.DescribeInstances"
@@ -423,6 +425,7 @@ func TestVolumeReaperForceRetainsAVolumeWhenTheHolderCannotBeProvenGone(t *testi
 // still names it, so the ordinary delete refuses forever. Once the holder is
 // proven absent the attachment is cleared and the volume deleted.
 func TestVolumeReaperForceDeletesOnceTheHolderIsProvenGone(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(cluster *fakeCluster){
 		"terminated": func(cluster *fakeCluster) {
 			cluster.reply("ec2.DescribeTerminatedInstances", instancesIn("terminated", "i-gone"))
@@ -431,6 +434,7 @@ func TestVolumeReaperForceDeletesOnceTheHolderIsProvenGone(t *testing.T) {
 	}
 	for name, setup := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			cluster := newFakeCluster(t)
 			volume := newHeldVolume(cluster, "vol-held", "i-gone")
 			setup(cluster)
@@ -471,6 +475,7 @@ func TestVolumeReaperForceLeavesAnUnattachedRefusalAlone(t *testing.T) {
 // End to end through the engine: a forced teardown whose guest is still up
 // leaves the volume, names why, and keeps the account TERMINATING.
 func TestForcedTeardownKeepsTheAccountWhileALiveGuestHoldsAVolume(t *testing.T) {
+	t.Parallel()
 	cluster := newFakeCluster(t)
 	volume := newHeldVolume(cluster, "vol-held", "i-live")
 	cluster.reply("ec2.DescribeInstances", instancesIn("running", "i-live"))

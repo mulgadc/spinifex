@@ -271,6 +271,7 @@ func TestTeardownPreservesRegistrationOrderWithinAStage(t *testing.T) {
 // The deadlock the whole --force flag exists for: a volume an instance still
 // holds. Without force it must be reported, not silently skipped.
 func TestStuckResourceIsReportedAndTheAccountSurvives(t *testing.T) {
+	t.Parallel()
 	accounts := newFakeAccounts()
 	volumes := &fakeReaper{
 		kind: "volume", stage: StageStorage, blockedUntilForce: true,
@@ -318,6 +319,7 @@ func TestResourceDeletedOnThePassThatCrossesTheDeadlineIsNotStuck(t *testing.T) 
 
 // The reason a resource would not go is the useful half of the report.
 func TestStuckResourceCarriesTheDeleteFailureReason(t *testing.T) {
+	t.Parallel()
 	volumes := &fakeReaper{
 		kind: "volume", stage: StageStorage, blockedUntilForce: true,
 		resources: []Resource{{Kind: "volume", ID: "vol-stuck"}},

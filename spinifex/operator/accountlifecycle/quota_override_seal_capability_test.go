@@ -48,6 +48,7 @@ func TestQuotaSealCapabilityComplete(t *testing.T) {
 }
 
 func TestQuotaSealCapabilityIncomplete(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		serve  func(t *testing.T, nc *nats.Conn)
@@ -77,6 +78,7 @@ func TestQuotaSealCapabilityIncomplete(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, nc, _ := testutil.StartTestJetStream(t)
 			tc.serve(t, nc)
 			report := testQuotaCapabilityClient(nc, tc.nodes).CheckSealCapability(testCtx(t), "req")

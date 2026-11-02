@@ -3,6 +3,7 @@ package nodefacts
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"net"
 	"os"
@@ -155,7 +156,9 @@ func addCPUInfo(c *clusterv1.CPUFacts, procRoot string) {
 		model   string
 		flags   []string
 		threads int
+		socket  string
 		sockets = map[string]bool{}
+		cores   = map[string]bool{}
 	)
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -171,8 +174,11 @@ func addCPUInfo(c *clusterv1.CPUFacts, procRoot string) {
 		case "model name":
 			model = value
 		case "physical id":
+			socket = value
 			sockets[value] = true
-		case "flags":
+		case "core id":
+			cores[socket+"/"+value] = true
+		case "flags", "Features": // ARM names the same list Features
 			if flags == nil {
 				flags = strings.Fields(value)
 			}
@@ -186,6 +192,9 @@ func addCPUInfo(c *clusterv1.CPUFacts, procRoot string) {
 	}
 	if c.Sockets == 0 {
 		c.Sockets = max(len(sockets), 1)
+	}
+	if c.Cores == 0 {
+		c.Cores = cmp.Or(len(cores), threads)
 	}
 	switch {
 	case slices.Contains(flags, "svm"):

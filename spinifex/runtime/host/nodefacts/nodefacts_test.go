@@ -72,8 +72,8 @@ func TestProcessorsSummariseEverySocket(t *testing.T) {
 
 func TestCPUInfoKeepsEveryFlagAndNamesTheNotableOnes(t *testing.T) {
 	proc := t.TempDir()
-	cpuinfo := "processor\t: 0\nmodel name\t: AMD EPYC 7713\nphysical id\t: 0\nflags\t\t: fpu sse2 svm avx2 aes sev\n\n" +
-		"processor\t: 1\nphysical id\t: 0\nflags\t\t: fpu sse2 svm avx2 aes sev\n"
+	cpuinfo := "processor\t: 0\nmodel name\t: AMD EPYC 7713\nphysical id\t: 0\ncore id\t\t: 0\nflags\t\t: fpu sse2 svm avx2 aes sev\n\n" +
+		"processor\t: 1\nphysical id\t: 0\ncore id\t\t: 0\nflags\t\t: fpu sse2 svm avx2 aes sev\n"
 	require.NoError(t, os.WriteFile(filepath.Join(proc, "cpuinfo"), []byte(cpuinfo), 0o644))
 
 	var c clusterv1.CPUFacts
@@ -83,6 +83,21 @@ func TestCPUInfoKeepsEveryFlagAndNamesTheNotableOnes(t *testing.T) {
 	assert.Equal(t, []string{"avx2", "aes", "sev"}, c.Features)
 	assert.Equal(t, "AMD-V", c.Virtualization)
 	assert.Equal(t, 2, c.Threads)
+	assert.Equal(t, 1, c.Cores, "two threads of one core")
+}
+
+func TestCPUInfoReadsARMFeaturesAndCountsCoresWithoutCoreIDs(t *testing.T) {
+	proc := t.TempDir()
+	cpuinfo := "processor\t: 0\nFeatures\t: fp asimd aes pmull sha2\n\n" +
+		"processor\t: 1\nFeatures\t: fp asimd aes pmull sha2\n"
+	require.NoError(t, os.WriteFile(filepath.Join(proc, "cpuinfo"), []byte(cpuinfo), 0o644))
+
+	var c clusterv1.CPUFacts
+	addCPUInfo(&c, proc)
+
+	assert.Equal(t, []string{"fp", "asimd", "aes", "pmull", "sha2"}, c.Flags)
+	assert.Equal(t, []string{"aes"}, c.Features)
+	assert.Equal(t, 2, c.Cores, "with no core ids every thread is a core")
 }
 
 func TestIdentityDropsFirmwarePlaceholders(t *testing.T) {

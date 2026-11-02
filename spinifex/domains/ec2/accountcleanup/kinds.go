@@ -282,15 +282,15 @@ func (c *Cleanup) finishLaunchTemplates(ctx context.Context, acct string, run *l
 // cleanTagIndex clears entries whose owner re-scan resolved and holds no
 // record for the ID, then re-lists the index to prove each clear. Entries of
 // resources that still exist are theirs, not residue, and are left alone.
-func (c *Cleanup) cleanTagIndex(ctx context.Context, acct string, kind *kindRun, tagged []string, listed bool, owners map[string]ownedIDs, res *Result) KindReport {
+func (c *Cleanup) cleanTagIndex(ctx context.Context, acct string, kind *kindRun, tagged, prefixes []string, listed bool, owners map[string]ownedIDs, res *Result) KindReport {
 	if listed {
-		c.clearOrphanTags(ctx, acct, kind, tagged, owners, res)
+		c.clearOrphanTags(ctx, acct, kind, tagged, prefixes, owners, res)
 	}
 	c.finishKind(kind)
 	return kind.report
 }
 
-func (c *Cleanup) clearOrphanTags(ctx context.Context, acct string, kind *kindRun, tagged []string, owners map[string]ownedIDs, res *Result) {
+func (c *Cleanup) clearOrphanTags(ctx context.Context, acct string, kind *kindRun, tagged, prefixes []string, owners map[string]ownedIDs, res *Result) {
 	// A resource this run reports as not deleted owns its tags even when its
 	// kind's re-scan failed.
 	reported := map[string]bool{}
@@ -317,7 +317,7 @@ func (c *Cleanup) clearOrphanTags(ctx context.Context, acct string, kind *kindRu
 			cleared = append(cleared, id)
 		}
 	}
-	after, err := c.tags.ScanAccountResourceIDs(ctx, acct, keyPairIDPrefix, placementGroupIDPrefix, launchTemplateIDPrefix)
+	after, err := c.tags.ScanAccountResourceIDs(ctx, acct, prefixes...)
 	if err != nil {
 		slog.WarnContext(ctx, "Platform cleanup: tag index re-scan failed", "err", err)
 		kind.incomplete(ec2v1.PlatformReasonStoreListFailed)

@@ -775,3 +775,38 @@ func (f failingResidue) CleanupAccountResidue(ctx context.Context, acct string, 
 	}
 	return &ec2launchtemplate.AccountCleanup{KeptTemplateIDs: scan.LiveTemplateIDs, OrphanBodiesFailed: scan.OrphanVersionBodies}, nil
 }
+
+// A run limited to one kind cleans that kind and its tag-index entries only:
+// the other kinds keep their resources and their tags, and are not reported.
+func TestCleanupPlatformLimitedToKindsLeavesTheRestAlone(t *testing.T) {
+	o := newOwners(t)
+	keyID := o.importKey(t, testAccount, "k1")
+	groupID := o.createGroup(t, testAccount, "g1")
+	o.tag(t, testAccount, keyID)
+
+	c := o.newCleanup()
+	c.now = func() time.Time { return time.Now().Add(time.Hour) }
+	res, err := c.CleanupPlatform(t.Context(), &Request{AccountID: testAccount, Kinds: []string{ec2v1.PlatformKindPlacementGroup}})
+	require.NoError(t, err)
+
+	assert.Equal(t, []Item{item(groupID, ec2v1.PlatformKindPlacementGroup, DispositionDeleted, "")}, res.Items)
+	assert.Equal(t, map[string]string{
+		ec2v1.PlatformKindPlacementGroup: ec2v1.PlatformStatusObservedClean,
+		ec2v1.PlatformKindTagIndex:       ec2v1.PlatformStatusObservedClean,
+	}, statuses(res))
+
+	keys, err := o.keys.ScanAccount(t.Context(), testAccount)
+	require.NoError(t, err)
+	assert.Equal(t, []string{keyID}, keys.LiveKeyPairIDs, "an unselected kind is not touched")
+	tagged, err := o.tags.ScanAccountResourceIDs(t.Context(), testAccount, "key-")
+	require.NoError(t, err)
+	assert.Equal(t, []string{keyID}, tagged, "an unselected kind keeps its tags")
+}
+
+func TestCleanupPlatformRefusesAKindItCannotClean(t *testing.T) {
+	o := newOwners(t)
+	for _, kinds := range [][]string{{ec2v1.PlatformKindTagIndex}, {"volume"}} {
+		_, err := o.newCleanup().CleanupPlatform(t.Context(), &Request{AccountID: testAccount, Kinds: kinds})
+		require.Error(t, err, "%v", kinds)
+	}
+}

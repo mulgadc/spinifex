@@ -69,6 +69,28 @@ var (
 	_ TagIndexOwner       = (*ec2tags.TagsServiceImpl)(nil)
 )
 
+// kindPrefixes maps each cleanable kind to its resource-ID prefix in the tag index.
+var kindPrefixes = map[string]string{
+	ec2v1.PlatformKindKeyPair:        keyPairIDPrefix,
+	ec2v1.PlatformKindPlacementGroup: placementGroupIDPrefix,
+	ec2v1.PlatformKindLaunchTemplate: launchTemplateIDPrefix,
+}
+
+// selectKinds returns the kinds a request cleans, in report order. No kinds
+// means all three; a kind that is not cleanable, such as the tag index, is refused.
+func selectKinds(requested []string) ([]string, error) {
+	all := []string{ec2v1.PlatformKindKeyPair, ec2v1.PlatformKindPlacementGroup, ec2v1.PlatformKindLaunchTemplate}
+	if len(requested) == 0 {
+		return all, nil
+	}
+	for _, kind := range requested {
+		if !slices.Contains(all, kind) {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "The kind is not one of key-pair, placement-group or launch-template.")
+		}
+	}
+	return slices.DeleteFunc(all, func(kind string) bool { return !slices.Contains(requested, kind) }), nil
+}
+
 // DefaultSettleWindow is how old headerless residue must be before it is
 // removed; anything younger may be a create still in flight.
 const DefaultSettleWindow = 10 * time.Minute
@@ -102,6 +124,7 @@ const (
 // CleanupPlatform deletes the account's key pairs, empty placement groups and
 // launch templates, removes settled residue and orphaned tag-index entries,
 // then re-scans every owner store to build the result. It is safe to re-run.
+// Request.Kinds limits the run to those kinds and their tag-index entries.
 func (c *Cleanup) CleanupPlatform(ctx context.Context, req *Request) (*Result, error) {
 	if req == nil || req.AccountID == "" {
 		return nil, awserrors.Errorf(awserrors.ErrorMissingParameter, "The request must specify an account ID.")
@@ -118,27 +141,54 @@ func (c *Cleanup) CleanupPlatform(ctx context.Context, req *Request) (*Result, e
 	acct := req.AccountID
 	res := &Result{AccountID: acct, CorrelationRef: req.CorrelationRef}
 
-	refs := c.readReferences(ctx, acct)
-	keyRun := c.cleanKeyPairs(ctx, acct, settledBefore, refs)
-	groupRun := c.cleanPlacementGroups(ctx, acct, refs)
-	templateRun := c.cleanLaunchTemplates(ctx, acct, settledBefore)
+	kinds, err := selectKinds(req.Kinds)
+	if err != nil {
+		return nil, err
+	}
+	var prefixes []string
+	for _, kind := range kinds {
+		prefixes = append(prefixes, kindPrefixes[kind])
+	}
+
+	var keyRun *keyPairRun
+	var groupRun *placementGroupRun
+	var templateRun *launchTemplateRun
+	if slices.Contains(kinds, ec2v1.PlatformKindKeyPair) || slices.Contains(kinds, ec2v1.PlatformKindPlacementGroup) {
+		refs := c.readReferences(ctx, acct)
+		if slices.Contains(kinds, ec2v1.PlatformKindKeyPair) {
+			keyRun = c.cleanKeyPairs(ctx, acct, settledBefore, refs)
+		}
+		if slices.Contains(kinds, ec2v1.PlatformKindPlacementGroup) {
+			groupRun = c.cleanPlacementGroups(ctx, acct, refs)
+		}
+	}
+	if slices.Contains(kinds, ec2v1.PlatformKindLaunchTemplate) {
+		templateRun = c.cleanLaunchTemplates(ctx, acct, settledBefore)
+	}
 
 	// Tags are listed before the owner re-scans, so a resource created in
 	// between is seen as owned and keeps its tags.
 	tagKind := c.startKind(ec2v1.PlatformKindTagIndex)
-	tagged, tagErr := c.tags.ScanAccountResourceIDs(ctx, acct, keyPairIDPrefix, placementGroupIDPrefix, launchTemplateIDPrefix)
+	tagged, tagErr := c.tags.ScanAccountResourceIDs(ctx, acct, prefixes...)
 	if tagErr != nil {
 		slog.WarnContext(ctx, "Platform cleanup: tag index listing failed", "err", tagErr)
 		tagKind.incomplete(ec2v1.PlatformReasonStoreListFailed)
 	}
 
-	owners := map[string]ownedIDs{
-		keyPairIDPrefix:        c.finishKeyPairs(ctx, acct, keyRun, res),
-		placementGroupIDPrefix: c.finishPlacementGroups(ctx, acct, groupRun, res),
-		launchTemplateIDPrefix: c.finishLaunchTemplates(ctx, acct, templateRun, res),
+	owners := map[string]ownedIDs{}
+	if keyRun != nil {
+		owners[keyPairIDPrefix] = c.finishKeyPairs(ctx, acct, keyRun, res)
+		res.Kinds = append(res.Kinds, keyRun.kind.report)
 	}
-	res.Kinds = []KindReport{keyRun.kind.report, groupRun.kind.report, templateRun.kind.report}
-	res.Kinds = append(res.Kinds, c.cleanTagIndex(ctx, acct, tagKind, tagged, tagErr == nil, owners, res))
+	if groupRun != nil {
+		owners[placementGroupIDPrefix] = c.finishPlacementGroups(ctx, acct, groupRun, res)
+		res.Kinds = append(res.Kinds, groupRun.kind.report)
+	}
+	if templateRun != nil {
+		owners[launchTemplateIDPrefix] = c.finishLaunchTemplates(ctx, acct, templateRun, res)
+		res.Kinds = append(res.Kinds, templateRun.kind.report)
+	}
+	res.Kinds = append(res.Kinds, c.cleanTagIndex(ctx, acct, tagKind, tagged, prefixes, tagErr == nil, owners, res))
 
 	slog.InfoContext(ctx, "Platform cleanup completed", "accountID", acct, "correlationRef", req.CorrelationRef,
 		"items", len(res.Items), "duration_ms", otelsetup.Millis(time.Since(start)))

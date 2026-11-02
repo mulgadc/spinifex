@@ -7,6 +7,9 @@ import "time"
 type Request struct {
 	AccountID      string `json:"account_id"`
 	CorrelationRef string `json:"correlation_ref,omitempty"`
+
+	// Kinds limits the run to these platform kinds. Empty means all three.
+	Kinds []string `json:"kinds,omitempty"`
 }
 
 // Result is what the owner stores hold after one run. Kinds reuse the ec2.v1

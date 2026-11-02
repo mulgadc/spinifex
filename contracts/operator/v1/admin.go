@@ -25,6 +25,10 @@ const (
 	DeletionStateRunning   = "RUNNING"
 	DeletionStateCompleted = "COMPLETED"
 	DeletionStateFailed    = "FAILED"
+
+	// DeletionStateExercised ends a non-finalizing run: the account is left
+	// TERMINATING and a later DeleteAccount takes the same operation over.
+	DeletionStateExercised = "EXERCISED"
 )
 
 // CreateAccountRequest is the /admin/CreateAccount request body.
@@ -52,6 +56,10 @@ type DeleteAccountRequest struct {
 	ClientToken string `json:"clientToken"`
 	Force       bool   `json:"force,omitempty"`
 	DryRun      bool   `json:"dryRun,omitempty"`
+
+	// NonFinalizing quiesces the account, cleans the quiesced EC2 platform
+	// kinds and stops. No legacy stage runs and the account record stays.
+	NonFinalizing bool `json:"nonFinalizing,omitempty"`
 }
 
 // DescribeAccountDeletionRequest is the /admin/DescribeAccountDeletion body.
@@ -76,8 +84,8 @@ type ListAccountsResponse struct {
 }
 
 // IAMQuiescence is the coordinator's recorded view of IAM quiescence for one
-// fence. Recording only: it admits nothing, and QuiescedScope stays empty until
-// a final inventory re-read exists to catch a late write.
+// fence. Recording only: it admits nothing. QuiescedScope is filled only for a
+// non-finalizing run, and holds as of EvaluatedAt: a write after that is not caught.
 type IAMQuiescence struct {
 	OperationID   string            `json:"operationId"`
 	Fence         uint64            `json:"fence"`
@@ -135,4 +143,68 @@ const (
 	ReasonParticipantNotDeclared       = "participant-not-declared"
 	ReasonOwnerInventoryIncomplete     = "owner-inventory-incomplete"
 	ReasonFinalInventoryRereadNotWired = "final-inventory-reread-not-wired"
+)
+
+// ExerciseResult is what a non-finalizing run did after IAM quiescence.
+type ExerciseResult struct {
+	// Skipped is the fixed reason no cleanup ran; Cleanup is then absent.
+	Skipped    string           `json:"skipped,omitempty"`
+	Cleanup    *PlatformCleanup `json:"cleanup,omitempty"`
+	Accounting []KindAccounting `json:"accounting,omitempty"`
+}
+
+// PlatformCleanup is the EC2 platform cleanup result. It carries resource IDs,
+// fixed reasons and counts only, never names, tags, key material or data.
+type PlatformCleanup struct {
+	Kinds  []CleanupKind  `json:"kinds"`
+	Items  []CleanupItem  `json:"items,omitempty"`
+	Counts []CleanupCount `json:"counts,omitempty"`
+}
+
+// CleanupKind is one kind's scan status after the cleanup's own re-scan.
+type CleanupKind struct {
+	Kind              string   `json:"kind"`
+	Status            string   `json:"status"`
+	IncompleteReasons []string `json:"incompleteReasons,omitempty"`
+}
+
+// CleanupItem is one resource by its ID with what the cleanup did to it.
+type CleanupItem struct {
+	ResourceID  string `json:"resourceId"`
+	Kind        string `json:"kind"`
+	Disposition string `json:"disposition"`
+	Reason      string `json:"reason,omitempty"`
+	MemberCount int    `json:"memberCount,omitempty"`
+}
+
+// CleanupCount is the number of records of one class that have no public ID.
+type CleanupCount struct {
+	Kind        string `json:"kind"`
+	Class       string `json:"class"`
+	Disposition string `json:"disposition"`
+	Reason      string `json:"reason,omitempty"`
+	Count       int    `json:"count"`
+}
+
+// KindAccounting is the final inventory re-read held against the cleanup result
+// for one kind. Quiescence is not rewritten from it.
+type KindAccounting struct {
+	Kind      string `json:"kind"`
+	Status    string `json:"status"`
+	Reason    string `json:"reason,omitempty"`
+	Remaining int    `json:"remaining"`
+}
+
+// Accounting statuses and fixed reasons of a KindAccounting.
+const (
+	AccountingAccounted   = "accounted"
+	AccountingUnaccounted = "unaccounted"
+
+	AccountingReasonRereadIncomplete = "reread-incomplete"
+	AccountingReasonUnnamedRemainder = "unnamed-remainder"
+)
+
+// Fixed reasons an exercise ran no cleanup.
+const (
+	ExerciseSkippedNoQuiescedKind = "no-quiesced-kind"
 )

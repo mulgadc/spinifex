@@ -724,6 +724,9 @@ func launchService(config *config.ClusterConfig) error {
 		SQSWorkerPolling:       sqsRelay.WorkerPresent,
 		SQSTenantAPIRegistered: func() bool { return sqsServed(composedServices) },
 	})
+	operatorAdminDeps = withPlatformCleaner(operatorAdminDeps, func() (accountlifecycle.PlatformCleaner, error) {
+		return platformCleaner(janitorCtx, &nodeConfig, natsConn, js, operatorAdminDeps.NodeIDs)
+	})
 	operatorControlPlane := operatoradmin.NewRegistration(operatorAdminDeps)
 	// Every gateway scans for account deletions whose holder died; the fenced
 	// takeover makes any number of them safe.

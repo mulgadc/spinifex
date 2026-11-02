@@ -45,6 +45,7 @@ func TestS7_DeletionResumerActsOnlyOnAnAcceptedOperationWithoutALiveLease(t *tes
 		},
 		"failed job":    func(j *accountDeletionJob) { j.State = operatorv1.DeletionStateFailed },
 		"completed job": func(j *accountDeletionJob) { j.State = operatorv1.DeletionStateCompleted },
+		"exercised job": func(j *accountDeletionJob) { j.State = operatorv1.DeletionStateExercised },
 		"legacy record": func(j *accountDeletionJob) { j.OperationID, j.Fence, j.LeaseUntil = "", 0, "" },
 	}
 	for name, mutate := range cases {

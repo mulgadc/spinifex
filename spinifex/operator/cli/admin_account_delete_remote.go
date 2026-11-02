@@ -24,6 +24,7 @@ var accountDeletePollInterval = 10 * time.Second
 func runAccountDeleteRemote(cmd *cobra.Command, accountID string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	force, _ := cmd.Flags().GetBool("force")
+	nonFinalizing, _ := cmd.Flags().GetBool("non-finalizing")
 	assumeYes, _ := cmd.Flags().GetBool("yes")
 	name, _ := cmd.Flags().GetString("name")
 	clientToken, _ := cmd.Flags().GetString("client-token")
@@ -66,6 +67,7 @@ func runAccountDeleteRemote(cmd *cobra.Command, accountID string) error {
 
 	started, err := deleteAccountRemote(ctx, target, operatorv1.DeleteAccountRequest{
 		AccountID: accountID, AccountName: name, ClientToken: clientToken, Force: force,
+		NonFinalizing: nonFinalizing,
 	})
 	if err != nil {
 		var adminErr *adminError
@@ -100,6 +102,9 @@ func followAccountDeletion(ctx context.Context, target adminTarget, accountID st
 		switch job.State {
 		case operatorv1.DeletionStateCompleted:
 			fmt.Printf("\nAccount %s deleted.\n", accountID)
+			return nil
+		case operatorv1.DeletionStateExercised:
+			fmt.Printf("\nAccount %s exercised and left TERMINATING; a normal delete finishes it.\n", accountID)
 			return nil
 		case operatorv1.DeletionStateFailed:
 			fmt.Fprintf(os.Stderr, "\nThe account is still TERMINATING so its leftovers keep an owner.\n")

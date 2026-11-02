@@ -35,6 +35,12 @@ type Engine struct {
 	// TERMINATING and before the first stage. It records evidence and gates nothing.
 	OnQuiesced func(ctx context.Context, quiescence operatorv1.IAMQuiescence)
 
+	// Cleanup runs the EC2 platform cleanup. Only Exercise uses it.
+	Cleanup PlatformCleaner
+
+	// OnExercised receives what a non-finalizing run did after quiescence.
+	OnExercised func(ctx context.Context, result operatorv1.ExerciseResult)
+
 	// ec2Inventory is EC2's read-only platform inventory. Only DryRun consults
 	// it, and only to log a comparison; no teardown or Inventory call does.
 	ec2Inventory ec2PlatformInventory
@@ -129,7 +135,7 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("quiesce account: %w", err)
 	}
 	if e.OnQuiesced != nil {
-		e.OnQuiesced(ctx, e.evaluateQuiescence(ctx, req, generation))
+		e.OnQuiesced(ctx, e.evaluateQuiescence(ctx, req, generation, false))
 	}
 	e.logger().InfoContext(ctx, "Account teardown started",
 		"accountID", account.AccountID, "accountName", account.AccountName, "force", req.Force)
@@ -338,9 +344,9 @@ func SortReapers(reapers []Reaper) {
 
 // evaluateQuiescence reads back what the quiesce wrote and, only if the fence
 // is confirmed, asks EC2 for its platform inventory within a short budget.
-func (e *Engine) evaluateQuiescence(ctx context.Context, req Request, generation uint64) operatorv1.IAMQuiescence {
+func (e *Engine) evaluateQuiescence(ctx context.Context, req Request, generation uint64, exercise bool) operatorv1.IAMQuiescence {
 	ev := QuiesceEvidence{
-		OperationID: req.OperationID, Fence: req.Fence, Generation: generation, EvaluatedAt: time.Now(),
+		OperationID: req.OperationID, Fence: req.Fence, Generation: generation, EvaluatedAt: time.Now(), Exercise: exercise,
 	}
 	ev.Account, ev.ReadbackErr = e.Accounts.GetAccount(req.AccountID)
 	if _, confirmed := fenceReadback(ev); confirmed && e.ec2Inventory != nil {

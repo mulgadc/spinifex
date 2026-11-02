@@ -66,7 +66,10 @@ type accountDeletionJob struct {
 	ClientToken string `json:"clientToken"`
 	State       string `json:"state"`
 	Force       bool   `json:"force"`
-	StartedAt   string `json:"startedAt"`
+	// NonFinalizing marks an exercise: it quiesces and cleans the quiesced EC2
+	// platform kinds, then ends EXERCISED with the account still TERMINATING.
+	NonFinalizing bool   `json:"nonFinalizing,omitempty"`
+	StartedAt     string `json:"startedAt"`
 	// UpdatedAt is the running job's heartbeat. Its absence for long enough is
 	// what lets another gateway take over after a restart.
 	UpdatedAt  string                        `json:"updatedAt"`
@@ -88,6 +91,8 @@ type accountDeletionJob struct {
 	// IAM is the quiescence evaluation made under the current fence. A takeover
 	// starts without one and the new holder records its own.
 	IAM *operatorv1.IAMQuiescence `json:"iam,omitempty"`
+	// Exercise is what a non-finalizing run did after quiescence.
+	Exercise *operatorv1.ExerciseResult `json:"exercise,omitempty"`
 }
 
 // deletionTakeover records one change of holder.
@@ -101,6 +106,7 @@ type deletionTakeover struct {
 const (
 	takeoverReasonLeaseExpired = "lease_expired"
 	takeoverReasonFailed       = "failed"
+	takeoverReasonExercised    = "exercised"
 )
 
 // deleteAccount starts a teardown, or answers a dry run inline.
@@ -116,6 +122,11 @@ func (d Deps) deleteAccount(ctx context.Context, body []byte) (any, error) {
 	if d.Termination == nil {
 		slog.Error("DeleteAccount: IAM service not available")
 		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+
+	if req.NonFinalizing && d.PlatformCleaner == nil {
+		slog.Error("DeleteAccount: platform cleanup not available")
+		return nil, errors.New(awserrors.ErrorServiceUnavailable)
 	}
 
 	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore)
@@ -262,6 +273,10 @@ func (d Deps) runAccountDeletion(
 	tracker := &deletionTracker{jobs: jobs, job: job, revision: revision, cancel: cancel}
 	engine.OnStage = tracker.stageFinished
 	engine.OnQuiesced = tracker.quiesced
+	if job.NonFinalizing {
+		engine.Cleanup = d.PlatformCleaner
+		engine.OnExercised = tracker.exercised
+	}
 
 	go func() {
 		defer cancel()
@@ -269,13 +284,19 @@ func (d Deps) runAccountDeletion(
 		stop := tracker.startHeartbeat(ctx)
 		defer stop()
 
-		result, err := engine.Teardown(ctx, accountteardown.Request{
+		request := accountteardown.Request{
 			AccountID:   job.AccountID,
 			AccountName: job.AccountName,
 			Force:       job.Force,
 			OperationID: job.OperationID,
 			Fence:       job.Fence,
-		})
+		}
+		if job.NonFinalizing {
+			_, err := engine.Exercise(ctx, request)
+			tracker.finished(ctx, nil, err)
+			return
+		}
+		result, err := engine.Teardown(ctx, request)
 		tracker.finished(ctx, result, err)
 	}()
 }
@@ -308,6 +329,13 @@ func (t *deletionTracker) quiesced(ctx context.Context, quiescence operatorv1.IA
 	t.persist(ctx)
 }
 
+func (t *deletionTracker) exercised(ctx context.Context, result operatorv1.ExerciseResult) {
+	t.mu.Lock()
+	t.job.Exercise = &result
+	t.mu.Unlock()
+	t.persist(ctx)
+}
+
 func (t *deletionTracker) finished(ctx context.Context, result *accountteardown.Result, err error) {
 	t.mu.Lock()
 	if result != nil {
@@ -316,6 +344,8 @@ func (t *deletionTracker) finished(ctx context.Context, result *accountteardown.
 	if err != nil {
 		t.job.State = operatorv1.DeletionStateFailed
 		t.job.Error = err.Error()
+	} else if t.job.NonFinalizing {
+		t.job.State = operatorv1.DeletionStateExercised
 	} else {
 		t.job.State = operatorv1.DeletionStateCompleted
 	}
@@ -445,8 +475,10 @@ func claimDeletionJob(
 		StartedAt:   now.Format(time.RFC3339),
 		UpdatedAt:   now.Format(time.RFC3339),
 		Fence:       1,
-		Holder:      holder,
-		LeaseUntil:  now.Add(accountDeletionStale).Format(time.RFC3339),
+
+		NonFinalizing: req.NonFinalizing,
+		Holder:        holder,
+		LeaseUntil:    now.Add(accountDeletionStale).Format(time.RFC3339),
 	}
 	record, err := json.Marshal(job)
 	if err != nil {
@@ -478,6 +510,9 @@ func claimDeletionJob(
 	}
 
 	reason := takeoverReasonFailed
+	if existing.State == operatorv1.DeletionStateExercised {
+		reason = takeoverReasonExercised
+	}
 	if existing.State == operatorv1.DeletionStateRunning {
 		if !deletionLeaseExpired(existing, now) {
 			return nil, 0, nil, errors.New(awserrors.ErrorOperationInProgress)
@@ -512,8 +547,10 @@ func takeOverDeletionJob(
 		Force:       req.Force,
 		StartedAt:   now.Format(time.RFC3339),
 		UpdatedAt:   now.Format(time.RFC3339),
-		Holder:      holder,
-		LeaseUntil:  now.Add(accountDeletionStale).Format(time.RFC3339),
+
+		NonFinalizing: req.NonFinalizing,
+		Holder:        holder,
+		LeaseUntil:    now.Add(accountDeletionStale).Format(time.RFC3339),
 	}
 	if existing.OperationID != "" {
 		job.OperationID = existing.OperationID
@@ -557,7 +594,7 @@ func replayDeletionJob(
 		return nil, err
 	}
 	if existing.ClientToken == req.ClientToken {
-		if existing.AccountName != req.AccountName {
+		if existing.AccountName != req.AccountName || existing.NonFinalizing != req.NonFinalizing {
 			return nil, errors.New(awserrors.ErrorIdempotentParameterMismatch)
 		}
 		// A RUNNING job whose lease has lapsed has no holder to follow, so the
@@ -702,6 +739,9 @@ func validateDeleteAccountRequest(req *operatorv1.DeleteAccountRequest) error {
 	}
 	if !accountIDRE.MatchString(req.AccountID) {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if req.NonFinalizing && (req.Force || req.DryRun) {
+		return errors.New(awserrors.ErrorInvalidParameterCombination)
 	}
 	if req.DryRun {
 		// A dry run deletes nothing, so it needs neither the name confirmation

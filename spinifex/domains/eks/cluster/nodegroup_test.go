@@ -86,6 +86,9 @@ type fakeWorkerLauncher struct {
 	// before subsequent calls succeed — simulates a transient launch failure
 	// (QMP timeout, host pressure) that clears on retry.
 	failNextN int
+	// beforeRun, when set, runs at the start of every launch, before it is
+	// recorded, so a test can inspect durable state at launch time.
+	beforeRun func(*ec2.RunInstancesInput)
 }
 
 var _ WorkerLauncher = (*fakeWorkerLauncher)(nil)
@@ -101,6 +104,9 @@ func (f *fakeWorkerLauncher) RunWorkerInstance(ctx context.Context, input *ec2.R
 func (f *fakeWorkerLauncher) RunWorkerInstanceOnNode(_ context.Context, nodeID string, input *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.beforeRun != nil {
+		f.beforeRun(input)
+	}
 	f.runCalls = append(f.runCalls, input)
 	f.runNodes = append(f.runNodes, nodeID)
 	if f.failNextN > 0 {

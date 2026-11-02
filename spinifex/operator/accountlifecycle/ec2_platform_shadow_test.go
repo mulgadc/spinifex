@@ -384,6 +384,7 @@ func TestDryRunShadowIsBoundedByItsBudget(t *testing.T) {
 // The caller's deadline wins over the budget, so a dry run never outlasts the
 // bound its caller already set.
 func TestDryRunShadowStopsAtTheCallersDeadline(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	serveInventory(t, nc, func() []byte { return nil })
 	engine, logs := shadowEngine(newEC2PlatformInventoryClient(nc), legacyPlatform()...)

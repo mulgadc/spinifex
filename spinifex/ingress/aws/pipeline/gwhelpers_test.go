@@ -1988,6 +1988,7 @@ func ec2Pipeline(t *testing.T, mutate func(*ec2PipelineEnv), statements ...iamdo
 	gw := withEC2(withRealAuth(cfg), func(d *ec2awsapi.Deps) {
 		d.AZ = gwfix.Region + "a"
 		d.Endpoint = "https://registry.example"
+		d.NodeIDs = []string{"node-1"}
 	})
 	r := chi.NewRouter()
 	for _, mw := range env.Outer {
@@ -2085,7 +2086,10 @@ func newEC2Daemon(t *testing.T, nc *nats.Conn) *ec2Daemon {
 			reply = r
 		}
 		d.mu.Unlock()
-		_ = m.Respond([]byte(reply))
+		out := nats.NewMsg(m.Reply)
+		out.Data = []byte(reply)
+		out.Header.Set(natsmsg.NodeIDHeader, "node-1")
+		_ = m.RespondMsg(out)
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })

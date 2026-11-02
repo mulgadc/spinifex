@@ -76,6 +76,7 @@ func emptyInstanceBuckets(t *testing.T, nc *nats.Conn) {
 // from the aggregate, so an empty answer from the rest is not evidence the
 // account has no instances.
 func TestInstanceReaperFailsClosedWhenANodeDoesNotAnswer(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	emptyInstanceBuckets(t, nc)
 	answerAsNode(t, nc, "ec2.DescribeInstances", "node-1", describeOutput(t))
@@ -92,6 +93,7 @@ func TestInstanceReaperFailsClosedWhenANodeDoesNotAnswer(t *testing.T) {
 // The partial list is the dangerous shape: the reaper would terminate what it
 // can see and then report the stage drained on the next, equally partial pass.
 func TestInstanceReaperFailsClosedOnAPartialList(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	emptyInstanceBuckets(t, nc)
 	answerAsNode(t, nc, "ec2.DescribeInstances", "node-1", describeOutput(t, "i-on-node-1"))
@@ -120,6 +122,7 @@ func TestInstanceReaperFailsClosedWhenANodeAnswersWithAnError(t *testing.T) {
 // replies: two frames from one node while another is silent is still missing
 // a node.
 func TestInstanceReaperFailsClosedWhenOneNodeAnswersTwice(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	emptyInstanceBuckets(t, nc)
 	answerAsNode(t, nc, "ec2.DescribeInstances", "node-1", describeOutput(t))
@@ -170,6 +173,7 @@ func TestInstanceReaperListsEveryNodeWhenAllAnswer(t *testing.T) {
 // End to end through the engine: with a node silent, the compute stage must
 // not read as drained and the account record must survive.
 func TestTeardownDoesNotReportComputeDrainedWhileANodeIsSilent(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	emptyInstanceBuckets(t, nc)
 	answerAsNode(t, nc, "ec2.DescribeInstances", "node-1", describeOutput(t))

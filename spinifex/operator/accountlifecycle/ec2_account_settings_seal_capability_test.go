@@ -69,7 +69,9 @@ func nodeResult(t *testing.T, report sealCapabilityReport, node string) nodeSeal
 // Each sub-case names exactly one way a node fails to prove capability
 // version 1, and that failure alone makes the whole probe incomplete.
 func TestSealCapabilityIncomplete(t *testing.T) {
+	t.Parallel()
 	t.Run("missing", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		report := testCapabilityClient(nc, []string{"node-1"}).CheckSealCapability(testCtx(t), "req")
 		assert.False(t, report.Complete)
@@ -77,6 +79,7 @@ func TestSealCapabilityIncomplete(t *testing.T) {
 	})
 
 	t.Run("duplicate", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		serveCapability(t, nc, ec2v1.AccountSettingsSealCapabilitySubject("node-1"), capabilityReply("node-1", "node-1", 1))
 		serveCapability(t, nc, ec2v1.AccountSettingsSealCapabilitySubject("node-1"), capabilityReply("node-1", "node-1", 1))
@@ -86,6 +89,7 @@ func TestSealCapabilityIncomplete(t *testing.T) {
 	})
 
 	t.Run("unreachable timeout", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		serveCapability(t, nc, ec2v1.AccountSettingsSealCapabilitySubject("node-1"), func(msg *nats.Msg) {
 			time.Sleep(time.Second)
@@ -98,6 +102,7 @@ func TestSealCapabilityIncomplete(t *testing.T) {
 	})
 
 	t.Run("transport closed connection", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		nc.Close()
 		report := testCapabilityClient(nc, []string{"node-1"}).CheckSealCapability(testCtx(t), "req")
@@ -106,6 +111,7 @@ func TestSealCapabilityIncomplete(t *testing.T) {
 	})
 
 	t.Run("malformed body", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		serveCapability(t, nc, ec2v1.AccountSettingsSealCapabilitySubject("node-1"), func(msg *nats.Msg) {
 			reply := nats.NewMsg(msg.Reply)
@@ -119,6 +125,7 @@ func TestSealCapabilityIncomplete(t *testing.T) {
 	})
 
 	t.Run("error reply", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		serveCapability(t, nc, ec2v1.AccountSettingsSealCapabilitySubject("node-1"), func(msg *nats.Msg) {
 			reply := nats.NewMsg(msg.Reply)
@@ -132,6 +139,7 @@ func TestSealCapabilityIncomplete(t *testing.T) {
 	})
 
 	t.Run("wrong identity no header", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		serveCapability(t, nc, ec2v1.AccountSettingsSealCapabilitySubject("node-1"), capabilityReply("node-1", "", 1))
 		report := testCapabilityClient(nc, []string{"node-1"}).CheckSealCapability(testCtx(t), "req")
@@ -140,6 +148,7 @@ func TestSealCapabilityIncomplete(t *testing.T) {
 	})
 
 	t.Run("wrong identity another node header", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		serveCapability(t, nc, ec2v1.AccountSettingsSealCapabilitySubject("node-1"), capabilityReply("node-1", "node-9", 1))
 		report := testCapabilityClient(nc, []string{"node-1"}).CheckSealCapability(testCtx(t), "req")
@@ -148,6 +157,7 @@ func TestSealCapabilityIncomplete(t *testing.T) {
 	})
 
 	t.Run("wrong identity body node differs", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		serveCapability(t, nc, ec2v1.AccountSettingsSealCapabilitySubject("node-1"), capabilityReply("node-9", "node-1", 1))
 		report := testCapabilityClient(nc, []string{"node-1"}).CheckSealCapability(testCtx(t), "req")
@@ -156,6 +166,7 @@ func TestSealCapabilityIncomplete(t *testing.T) {
 	})
 
 	t.Run("lower version", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		serveCapability(t, nc, ec2v1.AccountSettingsSealCapabilitySubject("node-1"), capabilityReply("node-1", "node-1", 0))
 		report := testCapabilityClient(nc, []string{"node-1"}).CheckSealCapability(testCtx(t), "req")
@@ -164,6 +175,7 @@ func TestSealCapabilityIncomplete(t *testing.T) {
 	})
 
 	t.Run("configured set empty", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		report := testCapabilityClient(nc, nil).CheckSealCapability(testCtx(t), "req")
 		assert.False(t, report.Complete)
@@ -171,6 +183,7 @@ func TestSealCapabilityIncomplete(t *testing.T) {
 	})
 
 	t.Run("invalid node id", func(t *testing.T) {
+		t.Parallel()
 		_, nc, _ := testutil.StartTestJetStream(t)
 		report := testCapabilityClient(nc, []string{"bad.node"}).CheckSealCapability(testCtx(t), "req")
 		assert.False(t, report.Complete)
@@ -201,6 +214,7 @@ func TestSealCapabilityCompleteAllowsSeal(t *testing.T) {
 // names the silent node and its reason, sends no seal request, and leaves the
 // settings record untouched (the fake sealer records no call).
 func TestSealCapabilityIncompleteKeepsAccountTerminating(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	serveCapability(t, nc, ec2v1.AccountSettingsSealCapabilitySubject("node-1"), capabilityReply("node-1", "node-1", 1))
 	// node-2 has no subscriber.
@@ -231,6 +245,7 @@ func TestSealCapabilityIncompleteKeepsAccountTerminating(t *testing.T) {
 // Delete re-probe and succeed, which proves the result is retryable and the
 // probe is never cached across attempts.
 func TestSealCapabilityRetriesThenSeals(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	serveCapability(t, nc, ec2v1.AccountSettingsSealCapabilitySubject("node-1"), capabilityReply("node-1", "node-1", 1))
 

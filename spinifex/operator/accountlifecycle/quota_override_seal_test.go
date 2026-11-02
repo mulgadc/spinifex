@@ -53,6 +53,7 @@ func incompleteReport(node string) sealCapabilityReport {
 // seal request is sent and the account stays TERMINATING with one stuck
 // quota-override item.
 func TestQuotaSealReaperNoResponderKeepsAccountTerminating(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	capability := newQuotaSealCapabilityClient(nc, []string{"gw-1"})

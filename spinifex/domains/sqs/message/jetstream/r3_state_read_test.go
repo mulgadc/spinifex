@@ -16,7 +16,7 @@ import (
 // only to the state stream's followers, records the leader has just deleted
 // or purged. A follower may not have applied the change yet, so a read it
 // answered itself could still return the record.
-func TestR3GetStateAfterDeleteFromFollower(t *testing.T) {
+func testR3GetStateAfterDeleteFromFollower(t *testing.T) {
 	const rounds, batch = 20, 200
 	c := startCluster(t)
 	s := c.store(t)
@@ -75,7 +75,7 @@ func TestR3GetStateAfterDeleteFromFollower(t *testing.T) {
 // through stores connected only to the state stream's followers, right after
 // the leader deleted it. The namespaces hold state only, so the message-body
 // scan, which this does not cover, has nothing of theirs to find.
-func TestR3StateEnumerationAfterDeleteFromFollower(t *testing.T) {
+func testR3StateEnumerationAfterDeleteFromFollower(t *testing.T) {
 	const rounds, batch = 20, 200
 	c := startCluster(t)
 	s := c.store(t)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	sqsjs "github.com/mulgadc/spinifex/spinifex/domains/sqs/message/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	jsapi "github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
@@ -27,6 +28,7 @@ func TestNATSOrderedFeedStallRepro(t *testing.T) {
 		require.NoError(t, err)
 		opts = append(opts, jsapi.PullExpiry(d))
 	}
+	clustersize.RedeclareForTest(t, 3)
 	c := startCluster(t)
 	ctx := context.Background()
 	// NATS_ORDERED_REPRO_TOPOLOGY=store reads SQS_M_0 among the store's

@@ -11,7 +11,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/message"
 	sqsjs "github.com/mulgadc/spinifex/spinifex/domains/sqs/message/jetstream"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	jsapi "github.com/nats-io/nats.go/jetstream"
@@ -100,7 +99,6 @@ type lagCluster struct {
 }
 
 func startLagCluster(t *testing.T) *lagCluster {
-	clustersize.RedeclareForTest(t, 3)
 	c := &lagCluster{}
 	for i := range 3 {
 		for j := range 3 {
@@ -167,7 +165,7 @@ func localMsgs(t *testing.T, srv *server.Server, stream string) uint64 {
 // bodies follow a surviving queue's, while one follower of the message
 // stream is held behind, then lists and scans the shard at once. A round
 // counts only when the follower measurably still holds the purged bodies.
-func TestR3BodyEnumerationAfterDeleteWithLaggingFollower(t *testing.T) {
+func testR3BodyEnumerationAfterDeleteWithLaggingFollower(t *testing.T) {
 	if testing.Short() {
 		t.Skip("holds a follower behind for several seconds")
 	}

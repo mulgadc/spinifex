@@ -46,7 +46,6 @@ func startClusterLogged(t *testing.T, logDir string) *cluster {
 	for i := range 3 {
 		c.dirs[i] = t.TempDir()
 	}
-	clustersize.RedeclareForTest(t, 3)
 	c.start()
 	t.Cleanup(c.stop)
 	return c
@@ -156,10 +155,36 @@ func (c *cluster) store(t *testing.T) *sqsjs.Store {
 	return s
 }
 
-// TestR3Conformance runs the suite on a three-node cluster. Every case shares
+// TestR3 owns the process-wide topology until all parallel scenarios and
+// their server cleanups finish. Limit concurrency to three isolated clusters.
+func TestR3(t *testing.T) { //nolint:tparallel // The parent must exclude R1 tests while it owns the global topology.
+	clustersize.RedeclareForTest(t, 3)
+	slots := make(chan struct{}, 3)
+	for _, tc := range []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{"Conformance", testR3Conformance},
+		{"FeedOpenedAfterRestart", testR3FeedOpenedAfterRestart},
+		{"FeedOpenAcrossRestart", testR3FeedOpenAcrossRestart},
+		{"BodyEnumerationAfterDeleteWithLaggingFollower", testR3BodyEnumerationAfterDeleteWithLaggingFollower},
+		{"GetStateAfterDeleteFromFollower", testR3GetStateAfterDeleteFromFollower},
+		{"StateEnumerationAfterDeleteFromFollower", testR3StateEnumerationAfterDeleteFromFollower},
+		{"ProvisionsThreeReplicas", testR3ProvisionsThreeReplicas},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			slots <- struct{}{}
+			t.Cleanup(func() { <-slots })
+			tc.run(t)
+		})
+	}
+}
+
+// testR3Conformance runs the suite on a three-node cluster. Every case shares
 // the cluster, using fresh queue IDs; Reopen stops all three nodes, as a
 // Region-wide crash would, and restarts them over the same data.
-func TestR3Conformance(t *testing.T) {
+func testR3Conformance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts a three-node cluster")
 	}
@@ -180,7 +205,7 @@ func TestR3Conformance(t *testing.T) {
 
 // TestR3ProvisionsThreeReplicas: on three nodes every stream and state
 // bucket is R3, never the R5 a larger cluster rule would give.
-func TestR3ProvisionsThreeReplicas(t *testing.T) {
+func testR3ProvisionsThreeReplicas(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts a three-node cluster")
 	}

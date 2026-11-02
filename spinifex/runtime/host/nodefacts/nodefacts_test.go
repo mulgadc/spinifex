@@ -70,6 +70,21 @@ func TestProcessorsSummariseEverySocket(t *testing.T) {
 	assert.Equal(t, 3675, c.MaxMHz)
 }
 
+func TestCPUInfoKeepsEveryFlagAndNamesTheNotableOnes(t *testing.T) {
+	proc := t.TempDir()
+	cpuinfo := "processor\t: 0\nmodel name\t: AMD EPYC 7713\nphysical id\t: 0\nflags\t\t: fpu sse2 svm avx2 aes sev\n\n" +
+		"processor\t: 1\nphysical id\t: 0\nflags\t\t: fpu sse2 svm avx2 aes sev\n"
+	require.NoError(t, os.WriteFile(filepath.Join(proc, "cpuinfo"), []byte(cpuinfo), 0o644))
+
+	var c clusterv1.CPUFacts
+	addCPUInfo(&c, proc)
+
+	assert.Equal(t, []string{"fpu", "sse2", "svm", "avx2", "aes", "sev"}, c.Flags)
+	assert.Equal(t, []string{"avx2", "aes", "sev"}, c.Features)
+	assert.Equal(t, "AMD-V", c.Virtualization)
+	assert.Equal(t, 2, c.Threads)
+}
+
 func TestIdentityDropsFirmwarePlaceholders(t *testing.T) {
 	s := parseIdentity(fixture(t, "node1", "dmi-identity.txt"))
 	assert.Equal(t, "GIGABYTE", s.Vendor)

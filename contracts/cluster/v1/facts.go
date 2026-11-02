@@ -95,7 +95,9 @@ type CPUFacts struct {
 	MaxMHz         int      `json:"max_mhz,omitempty"`
 	CurrentMHz     int      `json:"current_mhz,omitempty"`
 	Virtualization string   `json:"virtualization,omitempty"`
+	// Features are the flags worth naming; Flags is every flag the CPU reports.
 	Features       []string `json:"features,omitempty"`
+	Flags          []string `json:"flags,omitempty"`
 }
 
 // MemoryFacts groups identical DIMMs so a 32-slot board reads as one line.

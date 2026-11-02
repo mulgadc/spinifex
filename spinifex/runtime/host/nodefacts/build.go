@@ -193,6 +193,7 @@ func addCPUInfo(c *clusterv1.CPUFacts, procRoot string) {
 	case slices.Contains(flags, "vmx"):
 		c.Virtualization = "VT-x"
 	}
+	c.Flags = flags
 	for _, want := range []string{"avx512f", "avx2", "aes", "sev", "sme"} {
 		if slices.Contains(flags, want) {
 			c.Features = append(c.Features, want)

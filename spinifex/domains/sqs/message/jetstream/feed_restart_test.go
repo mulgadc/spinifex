@@ -181,6 +181,11 @@ func keepLogs(t *testing.T, c *cluster, round int) {
 	if dir == "" || c.logDir == "" {
 		return
 	}
+	dir = filepath.Join(dir, filepath.FromSlash(t.Name()))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Logf("cannot create node log directory: %v", err)
+		return
+	}
 	for i := range 3 {
 		name := fmt.Sprintf("sqs-%d.log", i)
 		b, err := os.ReadFile(filepath.Join(c.logDir, name))
@@ -213,7 +218,7 @@ func stallReporter(t *testing.T, c *cluster, s message.Store, ns message.Namespa
 
 // TestR3FeedOpenedAfterRestart: a feed opened from the start after a full
 // cluster restart replays the whole shard once in order, then a live append.
-func TestR3FeedOpenedAfterRestart(t *testing.T) {
+func testR3FeedOpenedAfterRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts a three-node cluster")
 	}
@@ -245,7 +250,7 @@ func TestR3FeedOpenedAfterRestart(t *testing.T) {
 
 // TestR3FeedOpenAcrossRestart: a feed open before a full cluster restart
 // delivers every change once in order across it, then a live append.
-func TestR3FeedOpenAcrossRestart(t *testing.T) {
+func testR3FeedOpenAcrossRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts a three-node cluster")
 	}

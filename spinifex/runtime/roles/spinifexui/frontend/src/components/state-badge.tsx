@@ -39,6 +39,7 @@ const DANGER_STATES = new Set([
   "blackhole",
   "unhealthy",
   "unavailable",
+  "notready",
 ])
 
 // Orange: the resource works but needs attention.

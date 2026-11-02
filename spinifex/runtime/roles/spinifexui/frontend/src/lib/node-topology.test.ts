@@ -133,6 +133,18 @@ describe("buildTopology", () => {
     )
     expect(at("node:node1")?.y).toBeGreaterThan(at("switch:aa:aa")?.y ?? 0)
   })
+
+  it("lays the tiers out as columns when drawn across", () => {
+    const placed = layoutTopology(buildTopology(prod), "across")
+    const at = (id: string) => placed.find((p) => p.id === id)
+
+    expect(at("internet")?.x).toBeLessThan(at("switch:aa:aa")?.x ?? 0)
+    expect(at("switch:aa:aa")?.y).toBeLessThan(
+      at("switch:d0:ea:11:a8:91:4c")?.y ?? 0,
+    )
+    expect(at("node:node1")?.x).toBeGreaterThan(at("switch:aa:aa")?.x ?? 0)
+    expect(at("node:node1")?.y).toBeLessThan(at("node:node2")?.y ?? 0)
+  })
 })
 
 describe("rateThroughput", () => {

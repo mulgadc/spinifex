@@ -10,6 +10,14 @@ vi.mock("@/hooks/use-admin", () => ({
   useAdmin: (): unknown => mockUseAdmin(),
 }))
 
+const navigate = vi.hoisted(() => vi.fn())
+
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal, { navigate })
+})
+
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>()
 
@@ -154,34 +162,39 @@ describe("AdminDashboardPanel", () => {
     expect(screen.getByText("16.0 / 32.0 GB")).toBeInTheDocument()
   })
 
-  it("renders nodes section as collapsed by default", () => {
-    setupMocks()
-    renderWithClient(<AdminDashboardPanel />, createTestQueryClient())
-    expect(screen.getByText("Nodes (1)")).toBeInTheDocument()
-    // The table should not be visible
-    expect(screen.queryByText("node-1")).not.toBeInTheDocument()
-  })
-
-  it("expands nodes table on click", async () => {
+  it("opens the nodes table by default and collapses it on click", async () => {
     setupMocks()
     const user = userEvent.setup()
     renderWithClient(<AdminDashboardPanel />, createTestQueryClient())
 
-    await user.click(screen.getByText("Nodes (1)"))
-
-    expect(screen.getByText("node-1")).toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "node-1" })).toHaveAttribute(
+      "href",
+      "/nodes",
+    )
     expect(screen.getByText("10.0.0.1")).toBeInTheDocument()
-    expect(screen.getByText("us-east-1a")).toBeInTheDocument()
-    expect(
-      screen.getByText("nats:leader,predastore:primary"),
-    ).toBeInTheDocument()
+    expect(screen.getByText("ready")).toHaveAttribute("data-tone", "success")
+
+    await user.click(screen.getByText("Nodes (1)"))
+
+    expect(screen.queryByText("10.0.0.1")).not.toBeInTheDocument()
   })
 
-  it("formats uptime in days and hours", async () => {
+  it("opens the node on the Nodes page when its row is clicked", async () => {
     setupMocks()
     const user = userEvent.setup()
     renderWithClient(<AdminDashboardPanel />, createTestQueryClient())
-    await user.click(screen.getByText("Nodes (1)"))
+
+    await user.click(screen.getByText("10.0.0.1"))
+
+    expect(navigate).toHaveBeenCalledWith({
+      to: "/nodes",
+      search: { selected: "node-1", tab: "overview", create: false },
+    })
+  })
+
+  it("formats uptime in days and hours", () => {
+    setupMocks()
+    renderWithClient(<AdminDashboardPanel />, createTestQueryClient())
     // 90061 seconds = 1d 1h
     expect(screen.getByText("1d 1h")).toBeInTheDocument()
   })
@@ -208,23 +221,19 @@ describe("AdminDashboardPanel", () => {
     expect(screen.queryByText(/Nodes \(/)).not.toBeInTheDocument()
   })
 
-  it("formats uptime in hours and minutes when less than a day", async () => {
+  it("formats uptime in hours and minutes when less than a day", () => {
     // 2h 1m
     const shortUptimeNode = { ...nodeData, uptime: 7260 }
     setupMocks({ nodes: [shortUptimeNode] })
-    const user = userEvent.setup()
     renderWithClient(<AdminDashboardPanel />, createTestQueryClient())
-    await user.click(screen.getByText("Nodes (1)"))
     expect(screen.getByText("2h 1m")).toBeInTheDocument()
   })
 
-  it("formats uptime in minutes only when less than an hour", async () => {
+  it("formats uptime in minutes only when less than an hour", () => {
     // 5m
     const shortUptimeNode = { ...nodeData, uptime: 300 }
     setupMocks({ nodes: [shortUptimeNode] })
-    const user = userEvent.setup()
     renderWithClient(<AdminDashboardPanel />, createTestQueryClient())
-    await user.click(screen.getByText("Nodes (1)"))
     expect(screen.getByText("5m")).toBeInTheDocument()
   })
 })

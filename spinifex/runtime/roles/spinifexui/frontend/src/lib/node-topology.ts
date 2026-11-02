@@ -217,12 +217,22 @@ export interface Placed {
   y: number
 }
 
-const COLUMN = 220
-const ROW = 190
+// "down" draws the tiers as rows, top to bottom; "across" draws them as
+// columns, left to right, so each tier stacks its devices vertically.
+export type LayoutDirection = "down" | "across"
 
-// Three tiers, top down: the internet, the switches, the nodes. Each tier is
-// centred on the widest, and switches carrying WAN sit nearest the internet.
-export function layoutTopology(topology: Topology): Placed[] {
+// Node cards list their ports, so they are tall; across stacks them with room.
+const SPACING: Record<LayoutDirection, { along: number; between: number }> = {
+  down: { along: 400, between: 240 },
+  across: { along: 230, between: 400 },
+}
+
+// Three tiers: the internet, the switches, the nodes. Each tier is centred on
+// the widest, and switches carrying WAN sit nearest the internet.
+export function layoutTopology(
+  topology: Topology,
+  direction: LayoutDirection = "down",
+): Placed[] {
   const tier = (kind: DeviceKind) =>
     topology.devices
       .filter((device) =>
@@ -239,14 +249,18 @@ export function layoutTopology(topology: Topology): Placed[] {
 
   const tiers = [tier("internet"), tier("switch"), tier("node")]
   const widest = Math.max(...tiers.map((row) => row.length), 1)
+  const { along, between } = SPACING[direction]
 
   return tiers.flatMap((row, depth) => {
-    const offset = ((widest - row.length) * COLUMN) / 2
+    const offset = ((widest - row.length) * along) / 2
 
-    return row.map((device, index) => ({
-      id: device.id,
-      x: offset + index * COLUMN,
-      y: depth * ROW,
-    }))
+    return row.map((device, index) => {
+      const a = offset + index * along
+      const b = depth * between
+
+      return direction === "down"
+        ? { id: device.id, x: a, y: b }
+        : { id: device.id, x: b, y: a }
+    })
   })
 }

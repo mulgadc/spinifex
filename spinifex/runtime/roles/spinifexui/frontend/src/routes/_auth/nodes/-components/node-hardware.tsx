@@ -134,9 +134,24 @@ function ProcessorSection({ cpu }: { cpu: NodeFacts["cpu"] }) {
         <PanelField label="Virtualisation">
           {cpu.virtualization || "none"}
         </PanelField>
-        {cpu.features && cpu.features.length > 0 && (
-          <PanelField label="Features" mono>
-            {cpu.features.join(" ")}
+        {Boolean(cpu.features?.length || cpu.flags?.length) && (
+          <PanelField
+            info={
+              cpu.flags?.length ? (
+                <span className="max-h-64 overflow-y-auto font-mono break-words">
+                  {cpu.flags.join(" ")}
+                </span>
+              ) : undefined
+            }
+            label="Features"
+            mono
+          >
+            {cpu.features?.join(" ") || "-"}
+            {cpu.flags?.length ? (
+              <span className="text-muted-foreground">
+                {` · ${cpu.flags.length} flags`}
+              </span>
+            ) : null}
           </PanelField>
         )}
       </PanelFields>

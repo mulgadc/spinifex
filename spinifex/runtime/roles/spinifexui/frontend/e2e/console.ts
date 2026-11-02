@@ -183,6 +183,7 @@ async function installConsole(page: Page): Promise<ConsoleApi> {
   api.handle("GetCallerIdentity", stsIdentity(ADMIN_ACCOUNT))
   api.handle("GetVersion", () => json(VERSION))
   api.handle("GetNodes", () => json(NODES))
+  api.handle("GetNodeFacts", () => json({ nodes: [] }))
   api.handle("GetVMs", () => json({ vms: [] }))
   api.handle("GetInstanceTypeCapacity", instanceTypeCapacity({}))
 

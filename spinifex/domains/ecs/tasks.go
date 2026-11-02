@@ -237,6 +237,9 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *taskdefin
 		GPU:                  gpu,
 		CreatedAt:            now,
 	}
+	if td.TaskRoleArn != "" {
+		rec.CredID = uuid.NewV4().String()
+	}
 	for _, c := range td.Containers {
 		rec.Containers = append(rec.Containers, ContainerState{Name: c.Name, Status: TaskStatusPending})
 	}
@@ -257,6 +260,7 @@ func (s *Service) publishAssign(ctx context.Context, kv jetstream.KeyValue, acco
 		TaskDefFamily:    td.Family,
 		TaskDefRevision:  td.Revision,
 		TaskRoleARN:      td.TaskRoleArn,
+		CredID:           rec.CredID,
 		ExecutionRoleARN: td.ExecutionRoleArn,
 		ENIID:            rec.ENIID,
 		ENIMacAddress:    rec.ENIMacAddress,

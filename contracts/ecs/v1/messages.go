@@ -126,8 +126,8 @@ type Assign struct {
 	ENIPrivateIP  string `json:"eniPrivateIp,omitempty"`
 	ENISubnetID   string `json:"eniSubnetId,omitempty"`
 	// TaskRoleARN is the task's IAM role (from the taskdef); when set, the agent
-	// serves its credentials at 169.254.170.2 under CredID, defaulting CredID to
-	// the taskID when the scheduler leaves it empty.
+	// serves its credentials at 169.254.170.2 under CredID, a scheduler-minted
+	// secret. An assign without a CredID gets no credentials.
 	CredID      string `json:"credId,omitempty"`
 	TaskRoleARN string `json:"taskRoleArn,omitempty"`
 	// ExecutionRoleARN is the task's execution role (from the taskdef); when set,

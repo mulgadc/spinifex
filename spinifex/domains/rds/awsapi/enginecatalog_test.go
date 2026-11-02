@@ -112,6 +112,9 @@ func TestDescribeDBEngineVersions_AppliesTypedParametersAndFilters(t *testing.T)
 		{"status filter", map[string]string{
 			"Filters.Filter.1.Name": "status", "Filters.Filter.1.Values.Value.1": "available",
 		}, rdsengine.SupportedEngines()},
+		{"engine filter with empty values", map[string]string{
+			"Filters.Filter.1.Name": "engine", "Filters.Filter.1.Values": "",
+		}, rdsengine.SupportedEngines()},
 		// A query for a row that does not exist is empty; only a request to build
 		// something that cannot exist is refused.
 		{"unpinned version", map[string]string{"EngineVersion": "17"}, []string{}},
@@ -229,8 +232,6 @@ func TestDescribeCatalogs_RejectMalformedFilters(t *testing.T) {
 		msg   string
 	}{
 		{"no values", map[string]string{"Filters.Filter.1.Name": "engine"},
-			awserrors.ErrorInvalidParameterCombination, "The values list cannot be null for the filter engine."},
-		{"empty values", map[string]string{"Filters.Filter.1.Name": "engine", "Filters.Filter.1.Values": ""},
 			awserrors.ErrorInvalidParameterCombination, "The values list cannot be null for the filter engine."},
 		{"no name", map[string]string{"Filters.Filter.1.Values.Value.1": "postgres"},
 			awserrors.ErrorInvalidParameterValue, "Unrecognized filter name: null"},

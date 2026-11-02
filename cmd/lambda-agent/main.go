@@ -6,8 +6,8 @@
 // never starts the function's bootstrap: the message protocol and grant
 // fencing do not exist yet. The agent never listens for the host.
 //
-// A lambdatestlink build instead relays invocations over an unauthenticated
-// test carrier for local proofs; it is not the guest protocol.
+// A lambdatestlink build opens the same connection, then relays one invocation
+// over a test carrier for local proofs; the carrier is not the guest protocol.
 package main
 
 import (

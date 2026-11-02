@@ -34,6 +34,10 @@ Under TLS 1.3 the guest's handshake can complete before the host refuses its cer
 | `expect` | `<Region>/<account>/<function ID>/<environment ID>/<generation>` |
 | `host-addr` | Host listener as `host:port` |
 
+The guest's own interface settings come from `opt/spinifex/netcfg`, the entry other system VMs use.
+The agent unloads `qemu_fw_cfg` even when an entry is missing, and refuses to start if the fw_cfg tree is still readable afterwards.
+Until the message format exists, the agent authenticates and holds the connection but accepts no host message and starts no user code.
+
 **Authority:** one environment's attempt only.
 The user runtime never holds these keys, and sharing the guest with the agent gives user code no platform authority.
 

@@ -520,8 +520,8 @@ resource "aws_eks_node_group" "workers" {
 #
 # Spinifex wires the controller's AWS credentials and ELB-eligible subnets at the
 # node level, so no IRSA role or subnet tagging is needed here. addon_version is
-# omitted: the AWS provider demands a v-prefixed version that the catalog rejects,
-# so let Spinifex default to its catalog version.
+# omitted so Spinifex installs its catalog default. To pin one, use the AWS form
+# from DescribeAddonVersions, for example v2.11.0-eksbuild.1.
 # ---------------------------------------------------------------------------
 
 resource "aws_eks_addon" "lbc" {
@@ -542,7 +542,7 @@ resource "aws_eks_addon" "lbc" {
 # Installed through the EKS API; Spinifex stages the bundle host-side and the
 # worker renders it into the K3s auto-deploy dir. The workloads module registers
 # the git repo and creates the Argo CD Application that syncs the demo app.
-# addon_version omitted (see the LBC note).
+# addon_version omitted: the catalog default is installed (see the LBC note).
 # ---------------------------------------------------------------------------
 
 resource "aws_eks_addon" "argocd" {
@@ -562,7 +562,7 @@ resource "aws_eks_addon" "argocd" {
 #
 # Ships a default gp3 StorageClass (provisioner ebs.csi.aws.com). A PVC in the
 # demo app's git manifests dynamically provisions a Viperblock-backed EBS volume
-# so the app's state survives pod restarts. addon_version omitted (see LBC note).
+# so the app's state survives pod restarts. addon_version omitted: catalog default.
 # ---------------------------------------------------------------------------
 
 resource "aws_eks_addon" "ebs_csi" {

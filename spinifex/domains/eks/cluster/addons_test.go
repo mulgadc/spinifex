@@ -98,7 +98,9 @@ func TestCreateAddon_UnknownVersionRejected(t *testing.T) {
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 		AddonVersion: aws.String("9.9.9-nope"),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
 }
 
 func TestCreateAddon_CreatesStagingAndDefaultsVersion(t *testing.T) {
@@ -113,7 +115,7 @@ func TestCreateAddon_CreatesStagingAndDefaultsVersion(t *testing.T) {
 	require.NotNil(t, out.Addon)
 	// Version defaults to catalog default; status starts CREATING (honest until
 	// VM-side delivery confirms ACTIVE).
-	assert.Equal(t, spec.DefaultVersion, aws.StringValue(out.Addon.AddonVersion))
+	assert.Equal(t, spec.AWSVersion(spec.DefaultVersion), aws.StringValue(out.Addon.AddonVersion))
 	assert.Equal(t, string(addon.StatusCreating), aws.StringValue(out.Addon.Status))
 	assert.Contains(t, aws.StringValue(out.Addon.AddonArn), ":addon/c1/"+albController)
 
@@ -214,7 +216,7 @@ func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, `{"replicaCount":2}`, aws.StringValue(desc.Addon.ConfigurationValues))
-	assert.Equal(t, spec.DefaultVersion, aws.StringValue(desc.Addon.AddonVersion))
+	assert.Equal(t, spec.AWSVersion(spec.DefaultVersion), aws.StringValue(desc.Addon.AddonVersion))
 	assert.Equal(t, string(addon.StatusUpdating), aws.StringValue(desc.Addon.Status))
 }
 
@@ -230,7 +232,9 @@ func TestUpdateAddon_UnknownVersionRejected(t *testing.T) {
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 		AddonVersion: aws.String("9.9.9-nope"),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
 }
 
 func TestUpdateAddon_MissingIsNotFound(t *testing.T) {

@@ -82,17 +82,39 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	if err == nil {
 		return nil
 	}
-	if action, _, _, ok := router.Lookup(inv.Request.Method, inv.Request.URL.EscapedPath()); ok && IsInternalAction(action) {
+	action, _, _, routed := router.Lookup(inv.Request.Method, inv.Request.URL.EscapedPath())
+	if routed && IsInternalAction(action) {
 		return err
 	}
 	code, msg, ok := awserrors.ResolveErrorDetail(err)
 	if !ok || code != awserrors.ErrorInvalidParameterValue {
 		return err
 	}
-	if msg == "" {
-		return errors.New(awserrors.ErrorEKSInvalidParameter)
+	wire := awserrors.ErrorEKSInvalidParameter
+	if override, ok := parameterRefusalCodes[action]; ok {
+		wire = override
+		if msg == "" {
+			msg = "a parameter of the request is not valid"
+		}
 	}
-	return awserrors.Errorf(awserrors.ErrorEKSInvalidParameter, "%s", msg)
+	if msg == "" {
+		return errors.New(wire)
+	}
+	return awserrors.Errorf(wire, "%s", msg)
+}
+
+// parameterRefusalCodes holds the operations whose model does not declare
+// InvalidParameterException, with the declared code a refused parameter uses.
+var parameterRefusalCodes = map[string]string{
+	"DescribeCluster":              awserrors.ErrorEKSClient,
+	"DeleteCluster":                awserrors.ErrorEKSClient,
+	"DescribeAccessEntry":          awserrors.ErrorEKSInvalidRequest,
+	"DeleteAccessEntry":            awserrors.ErrorEKSInvalidRequest,
+	"DisassociateAccessPolicy":     awserrors.ErrorEKSInvalidRequest,
+	"ListAssociatedAccessPolicies": awserrors.ErrorEKSInvalidRequest,
+	"TagResource":                  awserrors.ErrorEKSBadRequest,
+	"UntagResource":                awserrors.ErrorEKSBadRequest,
+	"ListTagsForResource":          awserrors.ErrorEKSBadRequest,
 }
 
 // serve resolves the route, authorizes the request, then runs the action.

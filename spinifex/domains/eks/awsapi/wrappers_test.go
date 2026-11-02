@@ -176,7 +176,7 @@ func TestGatewayWrappers_Addons(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, out1)
 
-	out2, err := DescribeAddonVersions(context.Background(), nc, acct)
+	out2, err := DescribeAddonVersions(context.Background(), nc, acct, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, out2)
 

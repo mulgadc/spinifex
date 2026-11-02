@@ -131,7 +131,7 @@ var routes = []route{
 	// Addons
 	{Method: "GET", Pattern: "/addons/supported-versions", Action: "DescribeAddonVersions",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
-			return DescribeAddonVersions(ctx, nc, acct)
+			return DescribeAddonVersions(ctx, nc, acct, b)
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/addons", Action: "ListAddons",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {

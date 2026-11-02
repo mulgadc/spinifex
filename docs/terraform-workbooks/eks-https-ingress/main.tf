@@ -446,8 +446,8 @@ resource "aws_eks_node_group" "workers" {
 #
 # Spinifex wires the controller's AWS credentials and ELB-eligible subnets at the
 # node level, so no IRSA role or subnet tagging is needed here. addon_version is
-# omitted: the AWS provider demands a v-prefixed version that the catalog rejects,
-# so let Spinifex default to its catalog version.
+# omitted so Spinifex installs its catalog default. To pin one, use the AWS form
+# from DescribeAddonVersions, for example v2.11.0-eksbuild.1.
 # ---------------------------------------------------------------------------
 
 resource "aws_eks_addon" "lbc" {

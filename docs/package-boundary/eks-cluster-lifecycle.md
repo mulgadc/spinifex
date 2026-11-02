@@ -34,7 +34,7 @@ Node group workers and CSI-provisioned EBS volumes are never removed by a cluste
 
 ## Gaps
 
-1. Four `eks.*` handlers still hold their request for work that grows with the resource, and the subject table names them as not conformant: `CreateCluster` (reclaiming a `FAILED` cluster of the same name tears its infra down inline), `DeleteNodegroup` (one awaited terminate per worker), `UpdateNodegroupConfig` (one awaited launch or terminate per worker added or removed) and `RestoreSnapshot` (launches a control-plane VM and fences the old one inline).
+1. Three `eks.*` handlers still hold their request for work that grows with the resource, and the subject table names them as not conformant: `CreateCluster` (reclaiming a `FAILED` cluster of the same name tears its infra down inline), `UpdateNodegroupConfig` (one awaited launch or terminate per worker added or removed) and `RestoreSnapshot` (launches a control-plane VM and fences the old one inline).
 2. AWS's answer to a repeat delete on a `DELETING` cluster has not been observed; `DELETING` from the record is the chosen behaviour.
 3. Control-plane, load balancer and VPC resources in the system account are keyed by the bare cluster name, so a teardown by name can reach another tenant's same-named cluster.
 4. The teardown deletes load balancers the in-cluster controller created in the customer account, which AWS leaves behind.

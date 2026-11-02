@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/agent"
@@ -23,34 +24,56 @@ const (
 	taskRoot    = "/var/task"
 )
 
-var (
-	linkPath = flag.String("link", os.Getenv("LAMBDA_AGENT_LINK"), "test carrier device path")
-	handler  = flag.String("handler", os.Getenv("_HANDLER"), "function handler passed to the bootstrap")
-)
+var handler = flag.String("handler", os.Getenv("_HANDLER"), "function handler passed to the bootstrap")
 
-func start(parent context.Context) int {
-	if *linkPath == "" {
-		slog.Error("no test carrier configured; refusing to start")
-		return 2
+// testlink relays one invocation over the test carrier on the authenticated
+// connection; the carrier is not the guest protocol.
+type testlink struct {
+	startup
+	runtimeAddr    string
+	startBootstrap func(ctx context.Context, env []string) (*exec.Cmd, error)
+}
+
+func start(ctx context.Context) int {
+	t := testlink{
+		startup:     defaultStartup(),
+		runtimeAddr: runtimeAddr,
+		startBootstrap: func(ctx context.Context, env []string) (*exec.Cmd, error) {
+			return agent.StartBootstrap(ctx, taskRoot+"/bootstrap", env, os.Stdout, os.Stderr)
+		},
 	}
-	// The bootstrap is tenant code; fw_cfg must be unreadable before it runs.
-	if err := hostlink.SealFwCfg(hostlink.FwCfgRoot, hostlink.UnloadFwCfg); err != nil {
-		slog.Error("seal fw_cfg; refusing to start", "err", err)
-		return 2
-	}
-	dev, err := os.OpenFile(*linkPath, os.O_RDWR, 0)
+	code, err := t.run(ctx)
 	if err != nil {
-		slog.Error("open test carrier; refusing to start", "err", err)
-		return 2
+		slog.Error("lambda-agent stopping", "exit", code, "err", err)
 	}
-	defer dev.Close()
-	link := hostlink.NewTestStream(dev)
+	return code
+}
+
+func (t testlink) run(parent context.Context) (int, error) {
+	conn, code, err := t.connect(parent)
+	if err != nil {
+		return code, err
+	}
+	defer conn.Close()
+	link := hostlink.NewTestStream(conn)
+
+	// The handshake can return before the host refuses the guest, so nothing
+	// tenant-facing starts until the host's first valid frame arrives.
+	first, err := link.Next(parent)
+	if errors.Is(err, hostlink.ErrShutdown) {
+		return exitClosed, nil
+	}
+	if err != nil {
+		return exitLink, fmt.Errorf("first frame from host: %w", err)
+	}
+	if parent.Err() != nil {
+		return exitLink, context.Cause(parent)
+	}
 
 	srv := runtimeapi.New()
-	ln, err := net.Listen("tcp", runtimeAddr)
+	ln, err := net.Listen("tcp", t.runtimeAddr)
 	if err != nil {
-		slog.Error("listen runtime api", "err", err)
-		return 1
+		return exitLink, fmt.Errorf("listen runtime api: %w", err)
 	}
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = hs.Serve(ln) }()
@@ -58,16 +81,14 @@ func start(parent context.Context) int {
 
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
-
-	cmd, err := agent.StartBootstrap(ctx, taskRoot+"/bootstrap", []string{
-		"AWS_LAMBDA_RUNTIME_API=" + runtimeAddr,
+	cmd, err := t.startBootstrap(ctx, []string{
+		"AWS_LAMBDA_RUNTIME_API=" + ln.Addr().String(),
 		"_HANDLER=" + *handler,
 		"LAMBDA_TASK_ROOT=" + taskRoot,
 		"PATH=/bin:/sbin:/usr/bin",
-	}, os.Stdout, os.Stderr)
+	})
 	if err != nil {
-		slog.Error("start bootstrap", "err", err)
-		return 1
+		return exitLink, fmt.Errorf("start bootstrap: %w", err)
 	}
 	exited := make(chan struct{})
 	go func() {
@@ -76,12 +97,32 @@ func start(parent context.Context) int {
 		cancel(fmt.Errorf("bootstrap exited: %w", err))
 	}()
 
-	err = agent.Run(ctx, link, srv)
+	err = agent.Run(ctx, &oneInvocation{Link: link, first: &first}, srv)
 	cancel(errors.New("agent stopping"))
 	<-exited
 	if err != nil {
-		slog.Error("agent stopped", "err", err)
-		return 1
+		return exitLink, err
 	}
-	return 0
+	return exitClosed, nil
+}
+
+// oneInvocation serves the host's first request and then stops the agent:
+// each test VM runs a single invocation.
+type oneInvocation struct {
+	hostlink.Link
+	first *hostlink.Request
+}
+
+var _ hostlink.Link = (*oneInvocation)(nil)
+
+func (o *oneInvocation) Next(ctx context.Context) (hostlink.Request, error) {
+	if err := ctx.Err(); err != nil {
+		return hostlink.Request{}, err
+	}
+	if o.first == nil {
+		return hostlink.Request{}, hostlink.ErrShutdown
+	}
+	req := *o.first
+	o.first = nil
+	return req, nil
 }
